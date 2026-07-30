@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+out/
+dist/
+dist-electron/
+release/
+
+# electron-vite cache
+.vite/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+
+# Env & secrets — NEVER commit these
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# TypeScript build info
+*.tsbuildinfo
+
+# electron-builder
+app-update.yml
+
+# Test artifacts
+coverage/
+
+# pi local state (per-machine, not project config)
+.pi/
