@@ -54,6 +54,7 @@ const tokenQueue = ['sep-token-AAAA', 'sep-token-BBBB'];
 let tokenIndex = 0;
 
 const sepExtension: ExtensionFactory = (pi) => {
+  console.log('  [extension] factory called, registering before_provider_headers');
   pi.on('before_provider_headers', (event: BeforeProviderHeadersEvent) => {
     const token = tokenQueue[tokenIndex % tokenQueue.length] ?? 'sep-token-fallback';
     tokenIndex++;
@@ -64,12 +65,14 @@ const sepExtension: ExtensionFactory = (pi) => {
 
 // ── 3. Test runner ────────────────────────────────────────────────────────────
 
-async function waitSettled(session: Awaited<ReturnType<typeof createAgentSession>>): Promise<void> {
+async function waitSettled(session: Awaited<ReturnType<typeof createAgentSession>>['session']): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('prompt timeout after 30s')), 30_000);
-    session.on('agent_settled', () => {
-      clearTimeout(timer);
-      resolve();
+    session.subscribe((event) => {
+      if (event.type === 'agent_settled') {
+        clearTimeout(timer);
+        resolve();
+      }
     });
   });
 }
@@ -103,15 +106,23 @@ async function main(): Promise<void> {
   if (!model) throw new Error('model not found after registerProvider');
   console.log('✓ provider registered, model resolved:', model.id);
 
+  // Create ResourceLoader and reload
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: '.pi',
+    extensionFactories: [sepExtension],
+    noExtensions: false,  // 明确启用 extensions
+    noSkills: true,
+    noContextFiles: true,
+  });
+  await resourceLoader.reload();
+  console.log('✓ resource loader reloaded');
+
   // Create session with extension
-  const session = await createAgentSession({
+  const { session } = await createAgentSession({
     modelRuntime,
     model,
-    resourceLoader: new DefaultResourceLoader({
-      extensionFactories: [sepExtension],
-      noSkills: true,
-      noContextFiles: true,
-    }),
+    resourceLoader,
     sessionManager: SessionManager.inMemory(),
     noTools: 'all',
   });

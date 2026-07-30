@@ -71,10 +71,15 @@ const guardExtension: ExtensionFactory = (pi) => {
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
-async function waitSettled(session: Awaited<ReturnType<typeof createAgentSession>>): Promise<void> {
+async function waitSettled(session: Awaited<ReturnType<typeof createAgentSession>>['session']): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('timeout after 30s')), 30_000);
-    session.on('agent_settled', () => { clearTimeout(timer); resolve(); });
+    session.subscribe((event) => {
+      if (event.type === 'agent_settled') {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
   });
 }
 
@@ -99,14 +104,18 @@ async function main(): Promise<void> {
   log(`faux model registered: ${model.id}`);
 
   // 3. Create session with guard extension
-  const session = await createAgentSession({
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: '.pi',
+    extensionFactories: [guardExtension],
+    noSkills: true,
+    noContextFiles: true,
+  });
+  await resourceLoader.reload();
+  const { session } = await createAgentSession({
     modelRuntime,
     model,
-    resourceLoader: new DefaultResourceLoader({
-      extensionFactories: [guardExtension],
-      noSkills: true,
-      noContextFiles: true,
-    }),
+    resourceLoader,
     sessionManager: SessionManager.inMemory(),
     // bash tool is enabled so the tool_call event fires normally
   });

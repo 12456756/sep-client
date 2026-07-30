@@ -45,7 +45,7 @@ const eventLog: EventLog = {
   error_detected: false,
 };
 
-function waitSettledOrError(session: Awaited<ReturnType<typeof createAgentSession>>): Promise<void> {
+function waitSettledOrError(session: Awaited<ReturnType<typeof createAgentSession>>['session']): Promise<void> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       // If we timeout, check what we captured
@@ -57,38 +57,31 @@ function waitSettledOrError(session: Awaited<ReturnType<typeof createAgentSessio
       }
     }, 20_000);
 
-    session.on('agent_end', (event: unknown) => {
-      eventLog.agent_end_count++;
-      const e = event as { willRetry?: boolean; messages?: unknown[] };
-      console.log(`  [agent_end #${eventLog.agent_end_count}] willRetry=${e.willRetry ?? false}, messages=${(e.messages ?? []).length}`);
-
-      // If agent_end fires with no messages and willRetry=false, that's our error signal
-      if (e.willRetry === false) {
-        console.log('  → final agent_end with willRetry=false — error detected');
-        eventLog.error_detected = true;
+    session.subscribe((event) => {
+      if (event.type === 'agent_end') {
+        eventLog.agent_end_count++;
+        const e = event as { willRetry?: boolean; messages?: unknown[] };
+        console.log(`  [agent_end #${eventLog.agent_end_count}] willRetry=${e.willRetry ?? false}, messages=${(e.messages ?? []).length}`);
+        if (e.willRetry === false) {
+          console.log('  → final agent_end with willRetry=false — error detected');
+          eventLog.error_detected = true;
+          clearTimeout(timer);
+          resolve();
+        }
+      } else if (event.type === 'agent_settled') {
+        console.log('  [agent_settled]');
+        eventLog.agent_settled = true;
         clearTimeout(timer);
         resolve();
+      } else if (event.type === 'auto_retry_start') {
+        const e = event as { attempt?: number; errorMessage?: string };
+        console.log(`  [auto_retry_start] attempt=${e.attempt}, error="${e.errorMessage}"`);
+        eventLog.error_detected = true;
+      } else if (event.type === 'auto_retry_end') {
+        const e = event as { success?: boolean };
+        console.log(`  [auto_retry_end] success=${e.success}`);
+        if (e.success === false) eventLog.error_detected = true;
       }
-    });
-
-    session.on('agent_settled', () => {
-      console.log('  [agent_settled]');
-      eventLog.agent_settled = true;
-      clearTimeout(timer);
-      resolve();
-    });
-
-    // Some pi versions may fire 'auto_retry_start' and 'auto_retry_end'
-    session.on('auto_retry_start', (event: unknown) => {
-      const e = event as { attempt?: number; errorMessage?: string };
-      console.log(`  [auto_retry_start] attempt=${e.attempt}, error="${e.errorMessage}"`);
-      eventLog.error_detected = true;
-    });
-
-    session.on('auto_retry_end', (event: unknown) => {
-      const e = event as { success?: boolean };
-      console.log(`  [auto_retry_end] success=${e.success}`);
-      if (e.success === false) eventLog.error_detected = true;
     });
   });
 }
@@ -123,10 +116,17 @@ async function main(): Promise<void> {
   if (!model) throw new Error('model not found');
   console.log('✓ provider registered:', model.id);
 
-  const session = await createAgentSession({
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: process.cwd(),
+    agentDir: '.pi',
+    noSkills: true,
+    noContextFiles: true,
+  });
+  await resourceLoader.reload();
+  const { session } = await createAgentSession({
     modelRuntime,
     model,
-    resourceLoader: new DefaultResourceLoader({ noSkills: true, noContextFiles: true }),
+    resourceLoader,
     sessionManager: SessionManager.inMemory(),
     noTools: 'all',
   });

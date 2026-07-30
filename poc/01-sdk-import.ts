@@ -22,8 +22,10 @@ async function main(): Promise<void> {
   console.log('✓ import @earendil-works/pi-coding-agent');
 
   // Step 2: minimal session — no real model, no network calls
-  const session = await createAgentSession({
+  const { session } = await createAgentSession({
     resourceLoader: new DefaultResourceLoader({
+      cwd: process.cwd(),
+      agentDir: '.pi',
       noSkills: true,
       noContextFiles: true,
     }),
@@ -31,16 +33,16 @@ async function main(): Promise<void> {
   });
 
   console.log('✓ createAgentSession() resolved');
-  console.log(`  typeof session      : ${typeof session}`);
-  console.log(`  typeof session.prompt : ${typeof (session as Record<string, unknown>).prompt}`);
-  console.log(`  typeof session.on     : ${typeof (session as Record<string, unknown>).on}`);
+  console.log(`  typeof session           : ${typeof session}`);
+  console.log(`  typeof session.prompt    : ${typeof (session as Record<string, unknown>).prompt}`);
+  console.log(`  typeof session.subscribe : ${typeof (session as Record<string, unknown>).subscribe}`);
 
   // Verify the session exposes the methods we'll use downstream
   if (typeof (session as Record<string, unknown>).prompt !== 'function') {
     throw new Error('session.prompt is not a function');
   }
-  if (typeof (session as Record<string, unknown>).on !== 'function') {
-    throw new Error('session.on is not a function');
+  if (typeof (session as Record<string, unknown>).subscribe !== 'function') {
+    throw new Error('session.subscribe is not a function');
   }
 
   console.log('\n✅ PoC ① PASS — SDK import + session init OK\n');

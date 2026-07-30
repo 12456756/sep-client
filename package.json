@@ -2,6 +2,7 @@
   "name": "sep-client",
   "version": "0.1.0",
   "description": "SEP Enterprise Client — Electron shell for the Silicon Employee Platform",
+  "type": "module",
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
