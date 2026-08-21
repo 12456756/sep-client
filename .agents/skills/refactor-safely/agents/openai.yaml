@@ -1,0 +1,4 @@
+interface:
+  display_name: "Refactor Safely"
+  short_description: "Refactor with dependency analysis"
+  default_prompt: "Use $refactor-safely to plan and execute this refactor with impact checks."

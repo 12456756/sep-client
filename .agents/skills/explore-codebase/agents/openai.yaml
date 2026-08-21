@@ -1,0 +1,4 @@
+interface:
+  display_name: "Explore Codebase"
+  short_description: "Map repository structure and flows"
+  default_prompt: "Use $explore-codebase to locate the implementation and explain its execution flow."

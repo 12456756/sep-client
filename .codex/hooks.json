@@ -1,0 +1,33 @@
+{
+  "description": "Keep the code-review graph current for this workspace.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >/dev/null || true; command -v uvx >/dev/null 2>&1 || exit 0; git rev-parse --git-dir >/dev/null 2>&1 && uvx code-review-graph update --skip-flows --repo \"$(git rev-parse --show-toplevel 2>/dev/null)\" || true'",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/update-code-review-graph.ps1')\"",
+            "timeout": 30,
+            "statusMessage": "Updating code-review graph"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh -c 'cat >/dev/null || true; command -v uvx >/dev/null 2>&1 || exit 0; git rev-parse --git-dir >/dev/null 2>&1 && uvx code-review-graph status --repo \"$(git rev-parse --show-toplevel 2>/dev/null)\" || true'",
+            "commandWindows": "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command \"& (Join-Path (git rev-parse --show-toplevel) '.codex/hooks/check-code-review-graph.ps1')\"",
+            "timeout": 10,
+            "statusMessage": "Checking code-review graph"
+          }
+        ]
+      }
+    ]
+  }
+}

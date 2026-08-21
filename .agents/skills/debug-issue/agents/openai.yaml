@@ -1,0 +1,4 @@
+interface:
+  display_name: "Debug Issue"
+  short_description: "Trace defects with graph navigation"
+  default_prompt: "Use $debug-issue to trace this defect and identify its impact radius."

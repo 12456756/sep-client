@@ -1,0 +1,4 @@
+interface:
+  display_name: "React Best Practices"
+  short_description: "Optimize React performance patterns"
+  default_prompt: "Use $react-best-practices to review this React code for performance issues."
