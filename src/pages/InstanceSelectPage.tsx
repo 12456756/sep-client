@@ -4,36 +4,22 @@
  * 功能:
  *   - 展示用户可用的 AI 实例列表
  *   - 记住上次选择的实例（高亮显示）
- *   - 选择实例后获取 instanceToken
+ *   - 选择实例后由主进程启动带自动刷新令牌的会话
  *   - 跳转到聊天页面
  */
 
 import { useEffect, useState } from 'react';
 import { Button } from '../components/ui/Button';
+import type { EmployeeInstanceSnapshot } from '../shared/types';
 
-interface Instance {
-  id: string;
-  name: string;
-  status: string;
-  templateVersion: string;
-  template: {
-    id: string;
-    name: string;
-    avatar: string | null;
-  };
-  department: {
-    id: string;
-    name: string;
-  } | null;
-}
+type Instance = EmployeeInstanceSnapshot;
 
 interface InstanceSelectPageProps {
-  accessToken: string;
-  onInstanceSelected: (instanceId: string, instanceToken: string, instanceName: string) => void;
+  onInstanceSelected: (instanceId: string, instanceName: string, instances: EmployeeInstanceSnapshot[]) => Promise<void>;
   onLogout: () => void;
 }
 
-export function InstanceSelectPage({ accessToken, onInstanceSelected, onLogout }: InstanceSelectPageProps) {
+export function InstanceSelectPage({ onInstanceSelected, onLogout }: InstanceSelectPageProps) {
   const [instances, setInstances] = useState<Instance[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -56,14 +42,19 @@ export function InstanceSelectPage({ accessToken, onInstanceSelected, onLogout }
     setError(null);
 
     try {
-      const result = await window.electronAPI.getInstances(accessToken);
+      const result = await window.electronAPI.getInstances();
 
       if (result.success && result.data) {
         setInstances(result.data);
 
-        // 如果只有一个实例，自动选择并跳转
         if (result.data.length === 1) {
-          await handleConfirm(result.data[0].id);
+          await handleConfirm(result.data[0], result.data);
+          return;
+        }
+
+        const saved = localStorage.getItem('lastSelectedInstanceId');
+        if (saved && result.data.some(instance => instance.id === saved)) {
+          setSelectedId(saved);
         }
       } else {
         setError(result.error?.message || '获取实例列表失败');
@@ -75,26 +66,13 @@ export function InstanceSelectPage({ accessToken, onInstanceSelected, onLogout }
     }
   };
 
-  const handleConfirm = async (instanceId: string) => {
+  const handleConfirm = async (instance: Instance, availableInstances = instances) => {
     setConfirming(true);
     setError(null);
 
     try {
-      const result = await window.electronAPI.getInstanceToken(instanceId);
-
-      if (result.success && result.data) {
-        // 保存选择到 localStorage
-        localStorage.setItem('lastSelectedInstanceId', instanceId);
-
-        // 获取实例名称
-        const instance = instances.find(i => i.id === instanceId);
-        const instanceName = instance?.name || 'Unknown Instance';
-
-        // 回调到 App.tsx，传递实例名称
-        onInstanceSelected(instanceId, result.data.instanceToken, instanceName);
-      } else {
-        setError(result.error?.message || '获取实例令牌失败');
-      }
+      await onInstanceSelected(instance.id, instance.name, availableInstances);
+      localStorage.setItem('lastSelectedInstanceId', instance.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误');
     } finally {
@@ -173,6 +151,7 @@ export function InstanceSelectPage({ accessToken, onInstanceSelected, onLogout }
               <button
                 key={instance.id}
                 onClick={() => setSelectedId(instance.id)}
+                disabled={confirming}
                 className={`
                   w-full text-left p-5 rounded-lg border-2 transition-all
                   ${isSelected
@@ -226,7 +205,10 @@ export function InstanceSelectPage({ accessToken, onInstanceSelected, onLogout }
         {/* Confirm Button */}
         <div className="mt-8">
           <Button
-            onClick={() => selectedId && handleConfirm(selectedId)}
+            onClick={() => {
+              const instance = instances.find(item => item.id === selectedId);
+              if (instance) void handleConfirm(instance);
+            }}
             disabled={!selectedId || confirming}
             variant="primary"
             className="w-full"

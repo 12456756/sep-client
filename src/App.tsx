@@ -1,158 +1,191 @@
 /**
  * src/App.tsx — Main Application
  *
- * Routing: Login → Instance Select → Task Board
+ * Routing: Login → Instance Select → Workspace Home
  */
 
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { LoginPage } from './pages/LoginPage';
-import { InstanceSelectPage } from './pages/InstanceSelectPage';
-import { TaskBoardPage } from './pages/TaskBoardPage';
+import { WorkspaceHomePage } from './pages/WorkspaceHomePage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
-
-type AppRoute = 'login' | 'instance-select' | 'task-board';
+import type { EmployeeInstanceSnapshot, RememberedAccount } from './shared/types';
 
 interface AuthState {
-  accessToken: string;
-  expiresIn: number;
   user: { id: string; email: string; name: string };
   enterprise: { id: string; name: string } | null;
 }
 
 interface SessionState {
   instanceId: string;
-  instanceToken: string;
   instanceName: string;
 }
 
 interface ToolApprovalRequest {
+  requestId: string;
   toolName: string;
   input: unknown;
 }
 
+const INSTANCE_LOAD_TIMEOUT_MS = 3_000;
+
 export default function App() {
-  const [route, setRoute] = useState<AppRoute>('login');
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
+  const [instances, setInstances] = useState<EmployeeInstanceSnapshot[]>([]);
   const [toolApprovalRequest, setToolApprovalRequest] = useState<ToolApprovalRequest | null>(null);
+  const [restoringAuth, setRestoringAuth] = useState(true);
+  const [rememberedAccounts, setRememberedAccounts] = useState<RememberedAccount[]>([]);
+  const [encryptionAvailable, setEncryptionAvailable] = useState(true);
+  const [loadingInstances, setLoadingInstances] = useState(false);
+  const [instanceError, setInstanceError] = useState<string | null>(null);
 
-  // Check for stored credentials on mount
   useEffect(() => {
-    checkStoredCredentials();
+    void loadRememberedAccounts();
   }, []);
 
-  // Listen for tool approval requests
   useEffect(() => {
     const cleanup = window.electronAPI.onToolApprovalRequest((request) => {
-      console.log('[App] Tool approval request:', request);
       setToolApprovalRequest(request);
     });
 
     return cleanup;
   }, []);
 
-  const checkStoredCredentials = async () => {
-    try {
-      const result = await window.electronAPI.checkStoredCredentials();
+  useEffect(() => {
+    return window.electronAPI.onAuthenticationRequired(() => {
+      setAuthState(null);
+      setSessionState(null);
+      setInstances([]);
+      setLoadingInstances(false);
+      setInstanceError(null);
+      setToolApprovalRequest(null);
+    });
+  }, []);
 
-      if (result.hasCredentials) {
-        console.log('[App] Found stored credentials:', result);
-        // TODO: Auto-navigate to instance select page
-      }
+  const loadRememberedAccounts = async () => {
+    try {
+      const result = await window.electronAPI.listRememberedAccounts();
+      setRememberedAccounts(result.accounts);
+      setEncryptionAvailable(result.encryptionAvailable);
     } catch (error) {
-      console.error('[App] Failed to check stored credentials:', error);
+      console.error('[App] Failed to read stored accounts:', error);
+    } finally {
+      setRestoringAuth(false);
     }
+  };
+
+  const handleAccountListChange = (accounts: RememberedAccount[]) => {
+    setRememberedAccounts(accounts);
   };
 
   const handleLoginSuccess = (data: AuthState) => {
-    console.log('[App] Login successful:', data);
     setAuthState(data);
-    setRoute('instance-select');
+    setSessionState(null);
+    setInstances([]);
+    setLoadingInstances(false);
+    setInstanceError(null);
   };
 
-  const handleInstanceSelected = async (instanceId: string, instanceToken: string, instanceName: string) => {
-    console.log('[App] Instance selected:', instanceId);
+  useEffect(() => {
+    if (!authState || sessionState) return;
+    let active = true;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    setLoadingInstances(true);
+    setInstanceError(null);
 
-    try {
-      // Get refresh token from main process
-      const tokenResult = await window.electronAPI.getRefreshToken();
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('加载可用硅基员工超时，请检查网络后重试。')), INSTANCE_LOAD_TIMEOUT_MS);
+    });
 
-      if (!tokenResult.success || !tokenResult.data) {
-        console.error('[App] Failed to get refresh token:', tokenResult.error);
-        // TODO: Show error message to user
+    void Promise.race([window.electronAPI.getInstances(), timeout]).then(result => {
+      if (!active) return;
+      if (!result.success || !result.data?.length) {
+        setInstanceError(result.error?.message || '当前账号没有可用的硅基员工实例。');
         return;
       }
-
-      const refreshToken = tokenResult.data.refreshToken;
-
-      // Start pi session immediately
-      await window.electronAPI.startSession({
-        employeeId: instanceId,
-        gatewayUrl: 'http://localhost:3001/gateway',
-        refreshToken,
-      });
-
-      setSessionState({ instanceId, instanceToken, instanceName });
-      setRoute('task-board');
-    } catch (error) {
-      console.error('[App] Failed to start session:', error);
-      // TODO: Show error message to user
-    }
-  };
+      const availableInstances = result.data;
+      const instance = availableInstances[0];
+      setLoadingInstances(false);
+      setInstances(availableInstances);
+      setSessionState({ instanceId: instance.id, instanceName: instance.name });
+    }).catch(error => {
+      if (active) setInstanceError(error instanceof Error ? error.message : '获取硅基员工实例失败。');
+    }).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (active) setLoadingInstances(false);
+    });
+    return () => {
+      active = false;
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [authState, sessionState]);
 
   const handleLogout = async () => {
     try {
       await window.electronAPI.logout();
-      setAuthState(null);
-      setSessionState(null);
-      setRoute('login');
     } catch (error) {
       console.error('[App] Logout failed:', error);
+    } finally {
+      setAuthState(null);
+      setSessionState(null);
+      setInstances([]);
+      setLoadingInstances(false);
+      setInstanceError(null);
+      setToolApprovalRequest(null);
+      const result = await window.electronAPI.listRememberedAccounts();
+      setRememberedAccounts(result.accounts);
+      setEncryptionAvailable(result.encryptionAvailable);
     }
   };
 
   const handleToolApprove = () => {
-    console.log('[App] Tool approved');
-    window.electronAPI.sendToolApprovalResponse({ approved: true });
+    if (!toolApprovalRequest) return;
+    window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true });
     setToolApprovalRequest(null);
   };
 
   const handleToolDeny = () => {
-    console.log('[App] Tool denied');
-    window.electronAPI.sendToolApprovalResponse({ approved: false, reason: 'User denied' });
+    if (!toolApprovalRequest) return;
+    window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' });
     setToolApprovalRequest(null);
   };
 
-  // Render current route
   const renderRoute = () => {
-    switch (route) {
-      case 'login':
-        return <LoginPage onLoginSuccess={handleLoginSuccess} />;
-
-      case 'instance-select':
-        if (!authState) {
-          setRoute('login');
-          return null;
-        }
-        return (
-          <InstanceSelectPage
-            accessToken={authState.accessToken}
-            onInstanceSelected={handleInstanceSelected}
-            onLogout={handleLogout}
-          />
-        );
-
-      case 'task-board':
-        if (!sessionState) {
-          setRoute('login');
-          return null;
-        }
-
-        return <TaskBoardPage instanceName={sessionState.instanceName} />;
-
-      default:
-        return null;
+    if (restoringAuth) {
+      return (
+        <div className="flex min-h-dvh items-center justify-center bg-[#fffafa]">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-[#ead0d0] border-t-[#c83a3a]" />
+        </div>
+      );
     }
+
+    if (!authState) {
+      return (
+        <LoginPage
+          encryptionAvailable={encryptionAvailable}
+          rememberedAccounts={rememberedAccounts}
+          onAccountListChange={handleAccountListChange}
+          onLoginSuccess={handleLoginSuccess}
+        />
+      );
+    }
+
+    if (!sessionState) {
+      if (loadingInstances) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在加载可用的硅基员工…</p></div>;
+      if (instanceError) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={handleLogout}>退出登录</button></div>;
+      return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在准备工作台…</p></div>;
+    }
+
+    return (
+      <WorkspaceHomePage
+        userName={authState.user.name || authState.user.email}
+        enterpriseName={authState.enterprise?.name}
+        employeeInstanceId={sessionState.instanceId}
+        employeeInstanceName={sessionState.instanceName}
+        instances={instances}
+        onLogout={handleLogout}
+      />
+    );
   };
 
   return (
