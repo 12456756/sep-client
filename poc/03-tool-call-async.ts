@@ -30,14 +30,6 @@ import {
 // ── timing log ────────────────────────────────────────────────────────────────
 const log = (msg: string) => console.log(`  [${new Date().toISOString().slice(11, 23)}] ${msg}`);
 
-// ── async decision state ──────────────────────────────────────────────────────
-interface ApprovalRequest {
-  toolName: string;
-  input: unknown;
-  resolve: (decision: boolean) => void;
-}
-let pendingApproval: ApprovalRequest | null = null;
-
 /**
  * Simulates the Electron IPC round-trip: main asks renderer, renderer replies.
  * In the real app this would be win.webContents.send() + ipcMain.once().
@@ -59,7 +51,7 @@ const guardExtension: ExtensionFactory = (pi) => {
     const t0 = Date.now();
 
     // Await async GUI approval (would be IPC to renderer in real app)
-    const allow = await simulateGuiApproval(toolName, (event as Record<string, unknown>).input);
+    const allow = await simulateGuiApproval(toolName, (event as unknown as Record<string, unknown>).input);
     const elapsed = Date.now() - t0;
     log(`async handler returned after ${elapsed}ms — allow=${allow}`);
 

@@ -48,6 +48,16 @@ const server = createServer((req, res) => {
   });
 });
 
+function closeServer(): Promise<void> {
+  return new Promise(resolve => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close(() => resolve());
+  });
+}
+
 // ── 2. Token rotation for before_provider_headers ────────────────────────────
 
 const tokenQueue = ['sep-token-AAAA', 'sep-token-BBBB'];
@@ -156,12 +166,10 @@ async function main(): Promise<void> {
   if (!t1.includes('sep-token-BBBB')) throw new Error(`expected BBBB in second token, got: ${t1}`);
 
   console.log('\n✅ PoC ② PASS — before_provider_headers 动态令牌注入 OK\n');
-  server.close();
-  process.exit(0);
+  await closeServer();
 }
 
 main().catch((err: unknown) => {
   console.error('\n❌ PoC ② FAIL:', err);
-  server.close();
-  process.exit(1);
+  void closeServer().finally(() => process.exitCode = 1);
 });

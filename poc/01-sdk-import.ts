@@ -34,14 +34,14 @@ async function main(): Promise<void> {
 
   console.log('✓ createAgentSession() resolved');
   console.log(`  typeof session           : ${typeof session}`);
-  console.log(`  typeof session.prompt    : ${typeof (session as Record<string, unknown>).prompt}`);
-  console.log(`  typeof session.subscribe : ${typeof (session as Record<string, unknown>).subscribe}`);
+  console.log(`  typeof session.prompt    : ${typeof session.prompt}`);
+  console.log(`  typeof session.subscribe : ${typeof session.subscribe}`);
 
   // Verify the session exposes the methods we'll use downstream
-  if (typeof (session as Record<string, unknown>).prompt !== 'function') {
+  if (typeof session.prompt !== 'function') {
     throw new Error('session.prompt is not a function');
   }
-  if (typeof (session as Record<string, unknown>).subscribe !== 'function') {
+  if (typeof session.subscribe !== 'function') {
     throw new Error('session.subscribe is not a function');
   }
 

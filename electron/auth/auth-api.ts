@@ -4,7 +4,8 @@
  * Handles all authentication-related API calls to SEP backend.
  */
 
-import { config } from './config';
+import { config } from '../infrastructure/config';
+import type { EmployeeInstanceSnapshot } from '../../src/shared/types';
 
 // ─────────────────────────────────────────────────────────────────
 // Types
@@ -33,21 +34,7 @@ export interface LoginResponse {
   } | null;
 }
 
-export interface ClientInstance {
-  id: string;
-  name: string;
-  status: 'ACTIVE' | 'PAUSED' | 'REVOKED';
-  templateVersion: string;
-  template: {
-    id: string;
-    name: string;
-    avatar: string | null;
-  };
-  department: {
-    id: string;
-    name: string;
-  } | null;
-}
+export type ClientInstance = EmployeeInstanceSnapshot;
 
 export interface InstanceTokenRequest {
   refreshToken: string;
@@ -141,7 +128,8 @@ export async function getInstances(accessToken: string): Promise<ClientInstance[
  * POST /client/auth/token
  */
 export async function getInstanceToken(
-  req: InstanceTokenRequest
+  req: InstanceTokenRequest,
+  signal?: AbortSignal,
 ): Promise<InstanceTokenResponse> {
   const response = await fetch(`${config.SEP_BASE_URL}/client/auth/token`, {
     method: 'POST',
@@ -149,6 +137,7 @@ export async function getInstanceToken(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(req),
+    signal,
   });
 
   if (!response.ok) {

@@ -16,5 +16,5 @@
       "@shared/*": ["./src/shared/*"]
     }
   },
-  "include": ["electron/**/*", "pi-extension/**/*", "scripts/**/*", "poc/**/*"]
+  "include": ["electron/**/*", "pi-extension/**/*", "scripts/**/*", "poc/**/*", "src/shared/**/*"]
 }

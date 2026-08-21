@@ -11,7 +11,8 @@
  *   GET  /control              — current mode + captured token count
  */
 
-import express from 'express';
+import * as express from 'express';
+import type { Request, Response } from 'express';
 
 const app = express();
 app.use(express.json());
@@ -21,7 +22,7 @@ let mode: GatewayMode = 'ok';
 const capturedTokens: string[] = [];
 
 // POST /v1/chat/completions
-app.post('/v1/chat/completions', (req, res) => {
+app.post('/v1/chat/completions', (req: Request, res: Response) => {
   const auth = req.headers['authorization'] ?? '(none)';
   capturedTokens.push(String(auth));
   console.log(`[fake-gateway] ${mode.toUpperCase()} | auth: ${String(auth).slice(0, 48)}`);
@@ -58,12 +59,12 @@ app.post('/v1/chat/completions', (req, res) => {
 });
 
 // GET /log — inspect captured tokens
-app.get('/log', (_req, res) => {
+app.get('/log', (_req: Request, res: Response) => {
   res.json({ count: capturedTokens.length, tokens: capturedTokens });
 });
 
 // POST /control — switch response mode
-app.post('/control', (req, res) => {
+app.post('/control', (req: Request, res: Response) => {
   const body = req.body as { mode?: string };
   if (body.mode === 'ok' || body.mode === '401' || body.mode === '500') {
     mode = body.mode;
@@ -74,7 +75,7 @@ app.post('/control', (req, res) => {
 });
 
 // GET /control — status
-app.get('/control', (_req, res) => {
+app.get('/control', (_req: Request, res: Response) => {
   res.json({ mode, capturedCount: capturedTokens.length });
 });
 

@@ -5,13 +5,186 @@
 
 // ──────────────────────────── Auth ─────────────────────────────
 
-export interface LoginCredentials {
+export interface LoginRequest {
   email: string
-  password: string
+  password?: string
+  rememberPassword: boolean
+  useSavedPassword: boolean
+}
+
+export interface RememberedAccount {
+  email: string
+  displayName: string
+  enterpriseName: string
+  lastLoginAt: string
+  hasSavedPassword: boolean
+}
+
+export interface RememberedAccountsResult {
+  accounts: RememberedAccount[]
+  encryptionAvailable: boolean
+}
+
+export type AuthErrorCode =
+  | 'INVALID_ARGUMENT'
+  | 'INVALID_CREDENTIALS'
+  | 'ACCOUNT_DISABLED'
+  | 'RATE_LIMITED'
+  | 'NETWORK_ERROR'
+  | 'SERVICE_UNAVAILABLE'
+  | 'STORAGE_UNAVAILABLE'
+  | 'AUTH_REQUIRED'
+  | 'INTERNAL_ERROR'
+
+export interface AuthError {
+  code: AuthErrorCode
+  message: string
+  statusCode: number
+  retryable?: boolean
+}
+
+export interface AuthResult<T> {
+  success: boolean
+  data?: T
+  error?: AuthError
+}
+
+export interface LoginData {
+  user: { id: string; email: string; name: string }
+  enterprise: { id: string; name: string } | null
+}
+
+export type LoginResult = AuthResult<LoginData>
+export type PasswordAvailabilityResult = { passwordAvailable: boolean }
+export type ForgetAccountResult = AuthResult<null>
+export type LogoutResult = AuthResult<null>
+
+// ──────────────────────────── Tasks ────────────────────────────
+
+export const TaskStatus = {
+  PENDING: 'pending',
+  RUNNING: 'running',
+  WAITING_APPROVAL: 'waiting_approval',
+  PAUSED: 'paused',
+  INTERRUPTED: 'interrupted',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+} as const
+
+export type ClientTaskStatus = typeof TaskStatus[keyof typeof TaskStatus]
+export type ClientTaskLogLevel = 'info' | 'warning' | 'error'
+
+export interface ClientTaskLog {
+  timestamp: number
+  message: string
+  level?: ClientTaskLogLevel
+}
+
+/** Serialized task shape returned by Electron main. */
+export interface ClientTask {
+  id: string
+  title: string
+  prompt: string
+  status: ClientTaskStatus
+  workDir: string | null
+  createdAt: number
+  startedAt: number | null
+  completedAt: number | null
+  error: string | null
+  files: string[]
+  logs: ClientTaskLog[]
+  progress?: number
+  ownerId: string
+  ownerEnterpriseId: string
+  employeeInstanceId: string | null
+  activeRunId: string | null
+}
+
+export type ClientTaskRunOutcome = 'running' | 'completed' | 'failed' | 'cancelled' | 'stopped' | 'interrupted'
+
+/** Renderer-safe summary of one persisted execution attempt. */
+export interface ClientTaskRun {
+  id: string
+  taskId: string
+  employeeInstanceId: string
+  modelId: string
+  runtimeKey: string
+  outcome: ClientTaskRunOutcome
+  startedAt: number
+  endedAt: number | null
+  sessionId: string | null
+  error: string | null
+}
+
+export interface ClientTaskMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: number
+  runId: string
+}
+
+export interface ClientTaskStats {
+  total: number
+  pending: number
+  running: number
+  waitingApproval: number
+  paused: number
+  interrupted: number
+  completed: number
+  failed: number
+}
+
+export type TaskErrorCode =
+  | 'AUTH_REQUIRED'
+  | 'INVALID_ARGUMENT'
+  | 'NOT_FOUND'
+  | 'INVALID_STATE'
+  | 'PERSISTENCE_ERROR'
+  | 'INTERNAL_ERROR'
+
+export interface TaskError {
+  code: TaskErrorCode
+  message: string
+}
+
+export interface TaskListResult {
+  success: boolean
+  tasks?: ClientTask[]
+  error?: TaskError
+}
+
+export interface TaskResult {
+  success: boolean
+  task?: ClientTask
+  error?: TaskError
+}
+
+export interface TaskRunListResult {
+  success: boolean
+  runs?: ClientTaskRun[]
+  error?: TaskError
+}
+
+export interface TaskRunResult {
+  success: boolean
+  run?: ClientTaskRun
+  error?: TaskError
+}
+
+export interface TaskTimelineResult {
+  success: boolean
+  events?: TaskExecutionEvent[]
+  error?: TaskError
+}
+
+export interface CreateTaskRequest {
+  title: string
+  prompt: string
+  workDir?: string
 }
 
 export interface AuthSession {
-  accessToken: string
   memberId: string
   enterpriseId: string
   displayName: string
@@ -20,7 +193,24 @@ export interface AuthSession {
 
 // ──────────────────────────── Instances ────────────────────────
 
-export type InstanceStatus = 'ACTIVE' | 'SUSPENDED' | 'REVOKED'
+export type InstanceStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
+
+export interface EmployeeInstanceSnapshot {
+  id: string
+  name: string
+  status: InstanceStatus
+  templateVersion: string
+  template: {
+    id: string
+    name: string
+    avatar: string | null
+  }
+  department: {
+    id: string
+    name: string
+  } | null
+  allowedModels: string[]
+}
 
 export interface PackageRef {
   type: 'npm' | 'git' | 'zip'
@@ -95,6 +285,26 @@ export type PiClientEvent =
   | PiSessionErrorEvent
 
 // ──────────────────────────── Permission ───────────────────────
+
+export interface TaskExecutionEvent {
+  taskId: string
+  runId: string
+  employeeInstanceId: string
+  sequence: number
+  type: string
+  occurredAt: number
+  data: unknown
+}
+
+export interface ToolAuthorizationRequest {
+  requestId: string
+  taskId: string
+  runId: string
+  employeeInstanceId: string
+  toolName: string
+  input: unknown
+  timestamp: number
+}
 
 /** 高危工具调用，等待用户批准（文档 §6.2 措施 ④） */
 export interface PermissionRequest {
