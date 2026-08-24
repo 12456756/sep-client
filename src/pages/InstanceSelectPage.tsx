@@ -1,5 +1,5 @@
 /**
- * src/pages/InstanceSelectPage.tsx — 实例选择页面
+ * src/pages/InstanceSelectPage.tsx — 订阅选择页面
  *
  * 功能:
  *   - 展示用户可用的 AI 实例列表
@@ -10,17 +10,17 @@
 
 import { useEffect, useState } from 'react';
 import { Button } from '../components/ui/Button';
-import type { EmployeeInstanceSnapshot } from '../shared/types';
+import type { SubscriptionSnapshot } from '../shared/types';
 
-type Instance = EmployeeInstanceSnapshot;
+type Subscription = SubscriptionSnapshot;
 
 interface InstanceSelectPageProps {
-  onInstanceSelected: (instanceId: string, instanceName: string, instances: EmployeeInstanceSnapshot[]) => Promise<void>;
+  onInstanceSelected: (subscriptionId: string, instanceName: string, instances: SubscriptionSnapshot[]) => Promise<void>;
   onLogout: () => void;
 }
 
 export function InstanceSelectPage({ onInstanceSelected, onLogout }: InstanceSelectPageProps) {
-  const [instances, setInstances] = useState<Instance[]>([]);
+  const [instances, setInstances] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -31,7 +31,7 @@ export function InstanceSelectPage({ onInstanceSelected, onLogout }: InstanceSel
   useEffect(() => {
     loadInstances();
     // 从 localStorage 读取上次选择的实例
-    const saved = localStorage.getItem('lastSelectedInstanceId');
+    const saved = localStorage.getItem('lastSelectedSubscriptionId');
     if (saved) {
       setLastSelectedId(saved);
     }
@@ -52,8 +52,8 @@ export function InstanceSelectPage({ onInstanceSelected, onLogout }: InstanceSel
           return;
         }
 
-        const saved = localStorage.getItem('lastSelectedInstanceId');
-        if (saved && result.data.some(instance => instance.id === saved)) {
+        const saved = localStorage.getItem('lastSelectedSubscriptionId');
+        if (saved && result.data.some(instance => instance.subscriptionId === saved)) {
           setSelectedId(saved);
         }
       } else {
@@ -66,13 +66,13 @@ export function InstanceSelectPage({ onInstanceSelected, onLogout }: InstanceSel
     }
   };
 
-  const handleConfirm = async (instance: Instance, availableInstances = instances) => {
+  const handleConfirm = async (instance: Subscription, availableInstances = instances) => {
     setConfirming(true);
     setError(null);
 
     try {
-      await onInstanceSelected(instance.id, instance.name, availableInstances);
-      localStorage.setItem('lastSelectedInstanceId', instance.id);
+      await onInstanceSelected(instance.subscriptionId, instance.name, availableInstances);
+      localStorage.setItem('lastSelectedSubscriptionId', instance.subscriptionId);
     } catch (err) {
       setError(err instanceof Error ? err.message : '未知错误');
     } finally {
@@ -144,13 +144,13 @@ export function InstanceSelectPage({ onInstanceSelected, onLogout }: InstanceSel
         {/* Instance List */}
         <div className="space-y-3">
           {instances.map((instance) => {
-            const isSelected = selectedId === instance.id;
-            const isLastSelected = lastSelectedId === instance.id;
+            const isSelected = selectedId === instance.subscriptionId;
+            const isLastSelected = lastSelectedId === instance.subscriptionId;
 
             return (
               <button
-                key={instance.id}
-                onClick={() => setSelectedId(instance.id)}
+                key={instance.subscriptionId}
+                onClick={() => setSelectedId(instance.subscriptionId)}
                 disabled={confirming}
                 className={`
                   w-full text-left p-5 rounded-lg border-2 transition-all
@@ -206,7 +206,7 @@ export function InstanceSelectPage({ onInstanceSelected, onLogout }: InstanceSel
         <div className="mt-8">
           <Button
             onClick={() => {
-              const instance = instances.find(item => item.id === selectedId);
+              const instance = instances.find(item => item.subscriptionId === selectedId);
               if (instance) void handleConfirm(instance);
             }}
             disabled={!selectedId || confirming}

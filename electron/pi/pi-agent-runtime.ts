@@ -23,6 +23,10 @@ export interface PiAgentSessionConfig {
   resumeSessionFile?: string
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>
+  /** Subscription-isolated skills/context; never read from global ~/.pi. */
+  skillPaths?: string[]
+  agentsFiles?: Array<{ path: string; content: string }>
+  systemPrompt?: string
 }
 
 export interface PiAgentRuntime {

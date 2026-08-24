@@ -65,7 +65,7 @@ function isTaskStatus(value: unknown): value is ClientTask['status'] {
 
 function parseTask(value: unknown): ClientTask | null {
   if (!value || typeof value !== 'object') return null
-  const item = value as Partial<ClientTask>
+  const item = value as Partial<ClientTask> & { employeeInstanceId?: unknown }
   if (
     typeof item.id !== 'string' ||
     item.id.length === 0 ||
@@ -97,6 +97,9 @@ function parseTask(value: unknown): ClientTask | null {
     )
   })
 
+  const subscriptionId = typeof item.subscriptionId === 'string'
+    ? item.subscriptionId
+    : typeof item.employeeInstanceId === 'string' ? item.employeeInstanceId : null
   return {
     id: item.id,
     title: item.title,
@@ -114,7 +117,7 @@ function parseTask(value: unknown): ClientTask | null {
       : undefined,
     ownerId: item.ownerId,
     ownerEnterpriseId: item.ownerEnterpriseId,
-    employeeInstanceId: typeof item.employeeInstanceId === 'string' ? item.employeeInstanceId : null,
+    subscriptionId,
     activeRunId: typeof item.activeRunId === 'string' ? item.activeRunId : null,
   }
 }
@@ -225,7 +228,10 @@ export class TaskStore implements TaskStorePort {
       version: 3,
       owner: { ...scope },
       updatedAt: Date.now(),
-      tasks: tasks.map(task => ({ ...task, files: [...task.files], logs: task.logs.map(log => ({ ...log })) })),
+      tasks: tasks.map(task => {
+        const { employeeInstanceId: _legacyEmployeeInstanceId, ...canonicalTask } = task
+        return { ...canonicalTask, files: [...task.files], logs: task.logs.map(log => ({ ...log })) }
+      }),
     }
 
     try {

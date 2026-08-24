@@ -8,17 +8,19 @@ export interface PiHostConfig {
   taskManager: TaskManager
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
-  resolveEmployee: (employeeInstanceId: string) => EmployeeRuntimeConfig | null
+  resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   userDataDir: string
 }
 
 export interface SessionConfig {
-  employeeId: string
+  subscriptionId?: string
+  /** @deprecated Use subscriptionId. */
+  employeeId?: string
 }
 
 export class PiHost {
   private readonly coordinator: TaskExecutionCoordinator
-  private activeEmployeeInstanceId: string | null = null
+  private activeSubscriptionId: string | null = null
 
   constructor(private readonly config: PiHostConfig) {
     this.coordinator = new TaskExecutionCoordinator({
@@ -33,22 +35,23 @@ export class PiHost {
   }
 
   async startSession(sessionConfig: SessionConfig): Promise<void> {
-    if (!this.config.resolveEmployee(sessionConfig.employeeId)) {
+    const subscriptionId = sessionConfig.subscriptionId ?? sessionConfig.employeeId
+    if (!subscriptionId || !this.config.resolveEmployee(subscriptionId)) {
       throw new Error('The selected employee is no longer available.')
     }
-    this.activeEmployeeInstanceId = sessionConfig.employeeId
+    this.activeSubscriptionId = subscriptionId
   }
 
   async executeTask(taskId: string): Promise<void> {
-    await this.coordinator.executeTask(taskId, this.activeEmployeeInstanceId)
+    await this.coordinator.executeTask(taskId, this.activeSubscriptionId)
   }
 
   async continueTask(taskId: string, prompt: string): Promise<void> {
-    await this.coordinator.continueConversation(taskId, prompt, this.activeEmployeeInstanceId)
+    await this.coordinator.continueConversation(taskId, prompt, this.activeSubscriptionId)
   }
 
   async retryTask(taskId: string): Promise<void> {
-    await this.coordinator.retryTask(taskId, this.activeEmployeeInstanceId)
+    await this.coordinator.retryTask(taskId, this.activeSubscriptionId)
   }
 
   async pauseTask(taskId: string): Promise<void> {
@@ -63,15 +66,15 @@ export class PiHost {
     return this.coordinator.respondToApproval(response)
   }
 
-  async stopSession(employeeInstanceId = this.activeEmployeeInstanceId): Promise<void> {
-    if (!employeeInstanceId) return
-    await this.coordinator.stopEmployee(employeeInstanceId)
-    if (this.activeEmployeeInstanceId === employeeInstanceId) this.activeEmployeeInstanceId = null
+  async stopSession(subscriptionId = this.activeSubscriptionId): Promise<void> {
+    if (!subscriptionId) return
+    await this.coordinator.stopSubscription(subscriptionId)
+    if (this.activeSubscriptionId === subscriptionId) this.activeSubscriptionId = null
   }
 
   async stopAllSessions(): Promise<void> {
     await this.coordinator.stopAll()
-    this.activeEmployeeInstanceId = null
+    this.activeSubscriptionId = null
   }
 
   async sendPrompt(_text: string): Promise<void> {

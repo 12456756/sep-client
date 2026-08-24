@@ -22,7 +22,9 @@ export interface TaskRunRecord {
   id: string
   taskId: string
   owner: TaskOwnerScope
-  employeeInstanceId: string
+  subscriptionId: string
+  /** @deprecated Read compatibility for older run records. Not persisted. */
+  employeeInstanceId?: string
   modelId: string
   runtimeKey: string
   workspaceDir: string
@@ -47,7 +49,9 @@ export interface TaskRunPaths {
 export interface CreateTaskRunInput {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId?: string
+  /** @deprecated Use subscriptionId. */
+  employeeInstanceId?: string
   modelId: string
   runtimeKey: string
   workspaceDir: string
@@ -96,7 +100,8 @@ function sanitizeValue(value: unknown, depth = 0, key = ''): unknown {
 }
 
 function sanitizeEvent(event: TaskExecutionEvent): TaskExecutionEvent {
-  return { ...event, data: sanitizeValue(event.data) }
+  const { employeeInstanceId: _legacyEmployeeInstanceId, ...canonicalEvent } = event
+  return { ...canonicalEvent, data: sanitizeValue(event.data) }
 }
 
 function assertSafeId(value: string, name: string): void {
@@ -111,6 +116,27 @@ function assertContained(root: string, target: string): void {
   }
 }
 
+function parseRunRecord(value: unknown, taskId: string, runId: string, scope: TaskOwnerScope): TaskRunRecord | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Partial<TaskRunRecord> & { employeeInstanceId?: unknown }
+  if (
+    (record.version !== 1 && record.version !== 2) || record.id !== runId || record.taskId !== taskId ||
+    !record.owner || record.owner.memberId !== scope.memberId || record.owner.enterpriseId !== scope.enterpriseId ||
+    typeof record.modelId !== 'string' || typeof record.runtimeKey !== 'string' ||
+    typeof record.workspaceDir !== 'string' || typeof record.sessionDir !== 'string' ||
+    typeof record.agentDir !== 'string' || typeof record.startedAt !== 'number' ||
+    (record.sessionId !== null && typeof record.sessionId !== 'string') ||
+    (record.sessionFile !== null && typeof record.sessionFile !== 'string')
+  ) return null
+  const subscriptionId = typeof record.subscriptionId === 'string'
+    ? record.subscriptionId
+    : typeof record.employeeInstanceId === 'string' ? record.employeeInstanceId : null
+  if (!subscriptionId || typeof record.endedAt !== 'number' && record.endedAt !== null ||
+      !['running', 'completed', 'failed', 'cancelled', 'stopped', 'interrupted'].includes(record.outcome as string) ||
+      (record.error !== null && typeof record.error !== 'string')) return null
+  return { ...record as TaskRunRecord, subscriptionId, employeeInstanceId: subscriptionId }
+}
+
 export class TaskRunStore implements TaskRunStorePort {
   private readonly rootDir: string
   private readonly writeChains = new Map<string, Promise<void>>()
@@ -120,13 +146,16 @@ export class TaskRunStore implements TaskRunStorePort {
   }
 
   async create(scope: TaskOwnerScope, input: CreateTaskRunInput): Promise<TaskRunRecord> {
+    const subscriptionId = input.subscriptionId ?? input.employeeInstanceId
+    if (!subscriptionId) throw new TaskScopeError('A valid subscription is required.')
     const paths = this.getPaths(scope, input.taskId, input.runId)
     const record: TaskRunRecord = {
       version: 2,
       id: input.runId,
       taskId: input.taskId,
       owner: { ...scope },
-      employeeInstanceId: input.employeeInstanceId,
+      subscriptionId,
+      employeeInstanceId: subscriptionId,
       modelId: input.modelId,
       runtimeKey: input.runtimeKey,
       workspaceDir: input.workspaceDir,
@@ -152,12 +181,7 @@ export class TaskRunStore implements TaskRunStorePort {
   async get(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskRunRecord | null> {
     const paths = this.getPaths(scope, taskId, runId)
     try {
-      const record = JSON.parse(await readFile(paths.runFile, 'utf8')) as TaskRunRecord
-      if (
-        (record.version !== 1 && record.version !== 2) || record.id !== runId || record.taskId !== taskId ||
-        record.owner.memberId !== scope.memberId || record.owner.enterpriseId !== scope.enterpriseId
-      ) return null
-      return record
+      return parseRunRecord(JSON.parse(await readFile(paths.runFile, 'utf8')) as unknown, taskId, runId, scope)
     } catch {
       return null
     }
@@ -199,10 +223,17 @@ export class TaskRunStore implements TaskRunStorePort {
       if (!line.trim()) continue
       try {
         const event = JSON.parse(line) as TaskExecutionEvent
-        if (
-          event && event.taskId === taskId && event.runId === runId &&
-          typeof event.sequence === 'number' && typeof event.type === 'string'
-        ) events.push(sanitizeEvent(event))
+        if (event && event.taskId === taskId && event.runId === runId &&
+            typeof event.sequence === 'number' && typeof event.type === 'string') {
+          const legacyEvent = event as TaskExecutionEvent & { employeeInstanceId?: unknown }
+          const subscriptionId = typeof legacyEvent.subscriptionId === 'string'
+            ? legacyEvent.subscriptionId
+            : typeof legacyEvent.employeeInstanceId === 'string' ? legacyEvent.employeeInstanceId : null
+          if (subscriptionId) {
+            const { employeeInstanceId: _legacyEmployeeInstanceId, ...canonicalEvent } = event as TaskExecutionEvent & { employeeInstanceId?: string }
+            events.push(sanitizeEvent({ ...canonicalEvent, subscriptionId, employeeInstanceId: subscriptionId }))
+          }
+        }
       } catch {
         // Ignore a partial or corrupt trailing JSONL line.
       }
@@ -298,9 +329,12 @@ export class TaskRunStore implements TaskRunStorePort {
     const paths = this.getPaths(scope, event.taskId, event.runId)
     const eventFile = join(paths.taskDir, 'events.jsonl')
     const key = `${scope.enterpriseId}:${scope.memberId}:${event.taskId}`
+    const subscriptionId = event.subscriptionId ?? event.employeeInstanceId
+    if (!subscriptionId) return Promise.reject(new TaskScopeError('A valid subscription is required.'))
+    const canonicalEvent: TaskExecutionEvent = { ...event, subscriptionId }
     return this.enqueue(key, async () => {
       await mkdir(paths.taskDir, { recursive: true })
-      await appendFile(eventFile, `${JSON.stringify(sanitizeEvent(event))}\n`, { encoding: 'utf8', mode: 0o600 })
+      await appendFile(eventFile, `${JSON.stringify(sanitizeEvent(canonicalEvent))}\n`, { encoding: 'utf8', mode: 0o600 })
     })
   }
 
@@ -330,18 +364,14 @@ export class TaskRunStore implements TaskRunStorePort {
     const paths = this.getPaths(scope, taskId, runId)
     const key = `${scope.enterpriseId}:${scope.memberId}:${taskId}:${runId}`
     await this.enqueue(key, async () => {
-      let record: TaskRunRecord
+      let record: TaskRunRecord | null
       try {
-        record = JSON.parse(await readFile(paths.runFile, 'utf8')) as TaskRunRecord
+        record = parseRunRecord(JSON.parse(await readFile(paths.runFile, 'utf8')) as unknown, taskId, runId, scope)
       } catch (error) {
         throw new TaskPersistenceError(error instanceof Error ? error.message : undefined)
       }
       if (
-        (record.version !== 1 && record.version !== 2) ||
-        record.id !== runId ||
-        record.taskId !== taskId ||
-        record.owner.memberId !== scope.memberId ||
-        record.owner.enterpriseId !== scope.enterpriseId
+        !record
       ) {
         throw new TaskScopeError('Task run does not belong to the active user.')
       }
@@ -362,7 +392,8 @@ export class TaskRunStore implements TaskRunStorePort {
     const temporaryFile = `${file}.${randomUUID()}.tmp`
     try {
       await mkdir(join(file, '..'), { recursive: true })
-      await writeFile(temporaryFile, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 })
+      const { employeeInstanceId: _legacyEmployeeInstanceId, ...canonicalRecord } = record
+      await writeFile(temporaryFile, JSON.stringify(canonicalRecord), { encoding: 'utf8', mode: 0o600 })
       await rename(temporaryFile, file)
     } catch (error) {
       await rm(temporaryFile, { force: true }).catch(() => undefined)

@@ -96,7 +96,9 @@ export interface ClientTask {
   progress?: number
   ownerId: string
   ownerEnterpriseId: string
-  employeeInstanceId: string | null
+  subscriptionId: string | null
+  /** @deprecated Read compatibility for older renderer/main code. Not persisted. */
+  employeeInstanceId?: string | null
   activeRunId: string | null
 }
 
@@ -106,7 +108,9 @@ export type ClientTaskRunOutcome = 'running' | 'completed' | 'failed' | 'cancell
 export interface ClientTaskRun {
   id: string
   taskId: string
-  employeeInstanceId: string
+  subscriptionId: string
+  /** @deprecated Read compatibility for older renderer/main code. Not persisted. */
+  employeeInstanceId?: string
   modelId: string
   runtimeKey: string
   outcome: ClientTaskRunOutcome
@@ -195,8 +199,10 @@ export interface AuthSession {
 
 export type InstanceStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
 
-export interface EmployeeInstanceSnapshot {
+export interface SubscriptionSnapshot {
   id: string
+  subscriptionId: string
+  employeeId: string
   name: string
   status: InstanceStatus
   templateVersion: string
@@ -210,7 +216,11 @@ export interface EmployeeInstanceSnapshot {
     name: string
   } | null
   allowedModels: string[]
+  upgradeAvailable?: boolean
 }
+
+/** @deprecated Use SubscriptionSnapshot. */
+export type EmployeeInstanceSnapshot = SubscriptionSnapshot
 
 export interface PackageRef {
   type: 'npm' | 'git' | 'zip'
@@ -218,7 +228,7 @@ export interface PackageRef {
 }
 
 export interface EmployeeInstance {
-  instanceId: string
+  subscriptionId: string
   displayName: string
   description?: string
   templateId: string
@@ -289,7 +299,9 @@ export type PiClientEvent =
 export interface TaskExecutionEvent {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
+  /** @deprecated Read compatibility for older renderer/main code. Not persisted. */
+  employeeInstanceId?: string
   sequence: number
   type: string
   occurredAt: number
@@ -300,7 +312,9 @@ export interface ToolAuthorizationRequest {
   requestId: string
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
+  /** @deprecated Read compatibility for older renderer/main code. Not persisted. */
+  employeeInstanceId?: string
   toolName: string
   input: unknown
   timestamp: number
@@ -309,7 +323,9 @@ export interface ToolAuthorizationRequest {
 /** 高危工具调用，等待用户批准（文档 §6.2 措施 ④） */
 export interface PermissionRequest {
   requestId: string     // UUID，用于响应时匹配
-  instanceId: string
+  subscriptionId: string
+  /** @deprecated UI compatibility only. */
+  instanceId?: string
   instanceDisplayName: string
   toolName: string
   description: string   // 人读说明，如"写入文件 ~/Documents/..."

@@ -7,9 +7,14 @@ import { TaskManager } from './task-manager'
 import { WorkspaceLockManager } from './workspace-lock-manager'
 
 export interface EmployeeRuntimeConfig {
-  employeeInstanceId: string
+  subscriptionId?: string
+  /** @deprecated Use subscriptionId. */
+  employeeInstanceId?: string
   modelId: string
   gatewayUrl: string
+  skillPaths?: string[]
+  agentsFiles?: Array<{ path: string; content: string }>
+  systemPrompt?: string
 }
 
 export interface TaskExecutionCoordinatorOptions {
@@ -18,7 +23,7 @@ export interface TaskExecutionCoordinatorOptions {
   onAuthenticationRequired: () => void
   onEvent: (event: TaskExecutionEvent) => void
   onApprovalRequest: (request: Parameters<ApprovalBroker['request']>[0]) => void
-  resolveEmployee: (employeeInstanceId: string) => EmployeeRuntimeConfig | null
+  resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   taskRunStore?: TaskRunStorePort
   userDataDir?: string
   getTaskWorkspaceRoot?: () => string
@@ -29,7 +34,7 @@ type ControlIntent = 'none' | 'pause' | 'cancel' | 'interrupt'
 interface ActiveRun {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   releaseWorkspace: () => void
   worker: PiTaskWorker
   control: ControlIntent
@@ -43,13 +48,13 @@ export class TaskExecutionCoordinator {
   private readonly getRefreshToken: () => string
   private readonly onAuthenticationRequired: () => void
   private readonly onEvent: (event: TaskExecutionEvent) => void
-  private readonly resolveEmployee: (employeeInstanceId: string) => EmployeeRuntimeConfig | null
+  private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
   private readonly locks = new WorkspaceLockManager()
   private readonly approvalBroker: ApprovalBroker
   private readonly queues = new Map<string, QueuedRun[]>()
-  private readonly activeByEmployee = new Map<string, ActiveRun>()
+  private readonly activeBySubscription = new Map<string, ActiveRun>()
   private readonly activeByTask = new Map<string, ActiveRun>()
   private eventChain: Promise<void> = Promise.resolve()
 
@@ -66,7 +71,7 @@ export class TaskExecutionCoordinator {
 
   async executeTask(
     taskId: string,
-    defaultEmployeeInstanceId: string | null,
+    defaultSubscriptionId: string | null,
     options: { resumeRunId?: string } = {},
   ): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
@@ -76,40 +81,40 @@ export class TaskExecutionCoordinator {
     }
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) return
 
-    const employeeInstanceId = task.employeeInstanceId ?? defaultEmployeeInstanceId
-    if (!employeeInstanceId) throw new Error('Select a silicon employee before executing the task.')
-    if (!this.resolveEmployee(employeeInstanceId)) throw new Error('The selected employee is no longer available.')
+    const subscriptionId = task.subscriptionId ?? task.employeeInstanceId ?? defaultSubscriptionId
+    if (!subscriptionId) throw new Error('Select a silicon employee before executing the task.')
+    if (!this.resolveEmployee(subscriptionId)) throw new Error('The selected employee is no longer available.')
 
-    if (!task.employeeInstanceId) await this.taskManager.bindTaskInstance(taskId, employeeInstanceId)
+    if (!task.subscriptionId) await this.taskManager.bindTaskSubscription(taskId, subscriptionId)
     if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) {
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
     }
 
-    const queue = this.queues.get(employeeInstanceId) ?? []
+    const queue = this.queues.get(subscriptionId) ?? []
     queue.push({ taskId, prompt: task.prompt, resumeRunId: options.resumeRunId })
-    this.queues.set(employeeInstanceId, queue)
-    void this.pump(employeeInstanceId)
+    this.queues.set(subscriptionId, queue)
+    void this.pump(subscriptionId)
   }
 
-  async continueConversation(taskId: string, prompt: string, employeeInstanceId: string | null): Promise<void> {
+  async continueConversation(taskId: string, prompt: string, subscriptionId: string | null): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (!prompt.trim()) throw new Error('A message is required.')
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) throw new Error('Task is already running.')
-    const employeeId = task.employeeInstanceId ?? employeeInstanceId
-    if (!employeeId || !this.resolveEmployee(employeeId)) throw new Error('The selected employee is no longer available.')
+    const selectedSubscriptionId = task.subscriptionId ?? task.employeeInstanceId ?? subscriptionId
+    if (!selectedSubscriptionId || !this.resolveEmployee(selectedSubscriptionId)) throw new Error('The selected employee is no longer available.')
     const scope = this.taskManager.getCurrentUserScope()
     const runs = scope && this.taskRunStore ? await this.taskRunStore.list(scope, taskId) : []
     const prior = runs.find(run => Boolean(run.sessionFile) && run.outcome !== 'running')
     if (!prior) throw new Error('No resumable Pi session is available for this conversation.')
     if (task.status !== TaskStatus.PENDING) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
-    const queue = this.queues.get(employeeId) ?? []
+    const queue = this.queues.get(selectedSubscriptionId) ?? []
     queue.push({ taskId, prompt: prompt.trim(), resumeRunId: prior.id })
-    this.queues.set(employeeId, queue)
-    void this.pump(employeeId)
+    this.queues.set(selectedSubscriptionId, queue)
+    void this.pump(selectedSubscriptionId)
   }
 
-  async retryTask(taskId: string, defaultEmployeeInstanceId: string | null): Promise<void> {
+  async retryTask(taskId: string, defaultSubscriptionId: string | null): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) return
@@ -117,7 +122,7 @@ export class TaskExecutionCoordinator {
       throw new Error('Only terminal or interrupted tasks can be retried.')
     }
     await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
-    await this.executeTask(taskId, defaultEmployeeInstanceId)
+    await this.executeTask(taskId, defaultSubscriptionId)
   }
 
   async pauseTask(taskId: string): Promise<void> {
@@ -150,8 +155,8 @@ export class TaskExecutionCoordinator {
     await active.completion
   }
 
-  async stopEmployee(employeeInstanceId: string): Promise<void> {
-    const active = this.activeByEmployee.get(employeeInstanceId)
+  async stopSubscription(subscriptionId: string): Promise<void> {
+    const active = this.activeBySubscription.get(subscriptionId)
     if (!active) return
     active.control = 'pause'
     this.approvalBroker.denyRun(active.runId)
@@ -172,9 +177,9 @@ export class TaskExecutionCoordinator {
     return this.approvalBroker.respond(response)
   }
 
-  private async pump(employeeInstanceId: string): Promise<void> {
-    if (this.activeByEmployee.has(employeeInstanceId)) return
-    const queue = this.queues.get(employeeInstanceId)
+  private async pump(subscriptionId: string): Promise<void> {
+    if (this.activeBySubscription.has(subscriptionId)) return
+    const queue = this.queues.get(subscriptionId)
     const queued = queue?.[0]
     if (!queued) return
     const taskId = queued.taskId
@@ -182,14 +187,15 @@ export class TaskExecutionCoordinator {
     const task = await this.taskManager.getTask(taskId)
     if (!task) {
       queue?.shift()
-      return this.pump(employeeInstanceId)
+      return this.pump(subscriptionId)
     }
-    const employee = this.resolveEmployee(employeeInstanceId)
+    const employee = this.resolveEmployee(subscriptionId)
     if (!employee) {
       queue?.shift()
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.FAILED, '硅基员工当前不可用')
-      return this.pump(employeeInstanceId)
+      return this.pump(subscriptionId)
     }
+    const employeeSubscriptionId = employee.subscriptionId ?? employee.employeeInstanceId ?? subscriptionId
 
     const runId = randomUUID()
     const releaseWorkspace = this.locks.acquire(runId, task.workDir)
@@ -201,10 +207,10 @@ export class TaskExecutionCoordinator {
     const priorRun = scope && this.taskRunStore && resumeRunId
       ? await this.taskRunStore.get(scope, taskId, resumeRunId)
       : null
-    if (resumeRunId && (!priorRun || !priorRun.sessionFile || priorRun.employeeInstanceId !== employeeInstanceId)) {
+    if (resumeRunId && (!priorRun || !priorRun.sessionFile || (priorRun.subscriptionId ?? priorRun.employeeInstanceId) !== subscriptionId)) {
       releaseWorkspace()
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.FAILED, '所选运行没有可恢复的 Pi 会话')
-      return this.pump(employeeInstanceId)
+      return this.pump(subscriptionId)
     }
     const runPaths = scope && this.taskRunStore
       ? this.taskRunStore.getPaths(scope, taskId, runId)
@@ -213,13 +219,16 @@ export class TaskExecutionCoordinator {
       context: {
         taskId,
         runId,
-        employeeInstanceId,
+        subscriptionId: employeeSubscriptionId,
         modelId: employee.modelId,
         gatewayUrl: employee.gatewayUrl,
         workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
         agentDir: runPaths?.agentDir ?? `${this.getTaskWorkspaceRoot()}/.pi-runs/${runId}`,
         sessionDir: runPaths?.sessionDir ?? `${this.getTaskWorkspaceRoot()}/.pi-sessions/${runId}`,
         resumeSessionFile: priorRun?.sessionFile ?? undefined,
+        skillPaths: employee.skillPaths,
+        agentsFiles: employee.agentsFiles,
+        systemPrompt: employee.systemPrompt,
       },
       getRefreshToken: this.getRefreshToken,
       onAuthenticationRequired: this.onAuthenticationRequired,
@@ -231,19 +240,19 @@ export class TaskExecutionCoordinator {
     })
     let resolveCompletion!: () => void
     const completion = new Promise<void>(resolve => { resolveCompletion = resolve })
-    const active: ActiveRun = { taskId, runId, employeeInstanceId, releaseWorkspace, worker, control: 'none', completion }
+    const active: ActiveRun = { taskId, runId, subscriptionId, releaseWorkspace, worker, control: 'none', completion }
     let runCreated = false
 
-    this.activeByEmployee.set(employeeInstanceId, active)
+    this.activeBySubscription.set(subscriptionId, active)
     this.activeByTask.set(taskId, active)
     try {
       if (scope && this.taskRunStore) {
         await this.taskRunStore.create(scope, {
           taskId,
           runId,
-          employeeInstanceId,
+          subscriptionId: employeeSubscriptionId,
           modelId: employee.modelId,
-          runtimeKey: `${employeeInstanceId}:${employee.modelId}`,
+          runtimeKey: `${employeeSubscriptionId}:${employee.modelId}`,
           workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
           prompt: queued.prompt,
         })
@@ -270,7 +279,7 @@ export class TaskExecutionCoordinator {
       console.error('[TaskExecutionCoordinator] run failed', {
         taskId,
         runId,
-        employeeInstanceId,
+        subscriptionId,
         modelId: employee.modelId,
         control: active.control,
         error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -297,11 +306,11 @@ export class TaskExecutionCoordinator {
       await worker.dispose()
       releaseWorkspace()
       if (this.activeByTask.get(taskId) === active) this.activeByTask.delete(taskId)
-      if (this.activeByEmployee.get(employeeInstanceId) === active) this.activeByEmployee.delete(employeeInstanceId)
+      if (this.activeBySubscription.get(subscriptionId) === active) this.activeBySubscription.delete(subscriptionId)
       const currentTask = await this.taskManager.getTask(taskId)
       if (currentTask?.activeRunId === runId) await this.taskManager.clearTaskRun(taskId, runId)
       resolveCompletion()
-      void this.pump(employeeInstanceId)
+      void this.pump(subscriptionId)
     }
   }
 

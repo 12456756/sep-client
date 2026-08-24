@@ -127,31 +127,32 @@ export class TaskManager {
     title: string,
     prompt: string,
     workDir?: string,
-    employeeInstanceId: string | null = null,
+    subscriptionId: string | null = null,
   ): Promise<Task> {
     const user = await this.requireCurrentUser()
     const task: Task = {
       id: randomUUID(), title, prompt, status: TaskStatus.PENDING, workDir: workDir || null,
       createdAt: Date.now(), startedAt: null, completedAt: null, error: null, files: [], logs: [],
       ownerId: user.memberId, ownerEnterpriseId: user.enterpriseId,
-      employeeInstanceId, activeRunId: null,
+      subscriptionId, activeRunId: null,
     }
     await this.commit(nextTasks => nextTasks.set(task.id, task))
     this.notifyTaskUpdate(task.id)
     return cloneTask(task)
   }
 
-  async bindTaskInstance(taskId: string, employeeInstanceId: string): Promise<Task> {
-    if (!employeeInstanceId) throw new TaskScopeError('A valid employee instance is required.')
+  async bindTaskSubscription(taskId: string, subscriptionId: string): Promise<Task> {
+    if (!subscriptionId) throw new TaskScopeError('A valid subscription is required.')
     const task = await this.requireTask(taskId)
-    if (task.employeeInstanceId && task.employeeInstanceId !== employeeInstanceId) {
-      throw new TaskScopeError('Task is already bound to a different employee instance.')
+    const currentSubscriptionId = task.subscriptionId ?? task.employeeInstanceId ?? null
+    if (currentSubscriptionId && currentSubscriptionId !== subscriptionId) {
+      throw new TaskScopeError('Task is already bound to a different subscription.')
     }
-    if (task.employeeInstanceId === employeeInstanceId) return cloneTask(task)
+    if (currentSubscriptionId === subscriptionId) return cloneTask(task)
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) throw new TaskScopeError('Task not found.')
-      nextTask.employeeInstanceId = employeeInstanceId
+      nextTask.subscriptionId = subscriptionId
     })
     this.notifyTaskUpdate(taskId)
     return (await this.getTask(taskId))!
@@ -177,8 +178,18 @@ export class TaskManager {
     this.notifyTaskUpdate(taskId)
   }
 
-  async getTasksByInstance(employeeInstanceId: string): Promise<Task[]> {
-    return (await this.getAllTasks()).filter(task => task.employeeInstanceId === employeeInstanceId)
+  async getTasksBySubscription(subscriptionId: string): Promise<Task[]> {
+    return (await this.getAllTasks()).filter(task => (task.subscriptionId ?? task.employeeInstanceId) === subscriptionId)
+  }
+
+  /** @deprecated Use bindTaskSubscription. */
+  bindTaskInstance(taskId: string, employeeInstanceId: string): Promise<Task> {
+    return this.bindTaskSubscription(taskId, employeeInstanceId)
+  }
+
+  /** @deprecated Use getTasksBySubscription. */
+  getTasksByInstance(employeeInstanceId: string): Promise<Task[]> {
+    return this.getTasksBySubscription(employeeInstanceId)
   }
 
   async getTask(taskId: string): Promise<Task | null> {

@@ -334,8 +334,13 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       cwd: config.workspaceDir,
       agentDir: config.agentDir,
       extensionFactories: buildExtensions(config),
-      noSkills: true,
-      noContextFiles: true,
+      noSkills: !config.skillPaths?.length,
+      noContextFiles: !config.agentsFiles?.length,
+      additionalSkillPaths: config.skillPaths,
+      agentsFilesOverride: config.agentsFiles
+        ? () => ({ agentsFiles: config.agentsFiles ?? [] })
+        : undefined,
+      systemPrompt: config.systemPrompt,
     })
     await resourceLoader.reload()
     const extensionState = resourceLoader.getExtensions()

@@ -2,7 +2,7 @@ import type {
   ClientTask,
   ClientTaskStats,
   CreateTaskRequest,
-  EmployeeInstanceSnapshot,
+  SubscriptionSnapshot,
   ForgetAccountResult,
   LoginRequest,
   LoginResult,
@@ -19,6 +19,7 @@ import type {
   ClientTaskMessage,
   ToolAuthorizationRequest,
 } from './types'
+import type { EmployeeSkillsResponse, PackageInfo, SkillPreviewResponse } from '../../electron/auth/auth-api'
 
 export interface IpcError {
   message: string
@@ -36,7 +37,7 @@ export interface TaskCommandResult {
 }
 
 export interface InstanceListResult extends IpcCommandResult {
-  data?: EmployeeInstanceSnapshot[]
+  data?: SubscriptionSnapshot[]
 }
 
 export interface TaskStatsResult extends IpcCommandResult {
@@ -48,17 +49,23 @@ export interface SelectDirectoryResult extends IpcCommandResult {
 }
 
 export interface CreateTaskInput extends CreateTaskRequest {
+  subscriptionId?: string
+  /** @deprecated Use subscriptionId. */
   employeeInstanceId?: string
 }
 
 export interface ExecuteTaskInput {
   taskId: string
+  subscriptionId?: string
+  /** @deprecated Use subscriptionId. */
   employeeInstanceId?: string
 }
 
 export interface ContinueTaskInput {
   taskId: string
   prompt: string
+  subscriptionId?: string
+  /** @deprecated Use subscriptionId. */
   employeeInstanceId?: string
 }
 
@@ -80,8 +87,12 @@ export interface ElectronAPI {
   getRememberedPassword: (email: string) => Promise<PasswordAvailabilityResult>
   forgetAccount: (email: string) => Promise<ForgetAccountResult>
   logout: () => Promise<LogoutResult>
+  getCurrentSession: () => Promise<LoginResult>
   getInstances: () => Promise<InstanceListResult>
-  startSession: (config: { employeeId: string }) => Promise<IpcCommandResult>
+  getPackageInfo: (subscriptionId: string) => Promise<{ success: boolean; data?: PackageInfo; error?: IpcError }>
+  getEmployeeSkills: (employeeId: string) => Promise<{ success: boolean; data?: EmployeeSkillsResponse; error?: IpcError }>
+  getSkillPreview: (versionId: string) => Promise<{ success: boolean; data?: SkillPreviewResponse; error?: IpcError }>
+  startSession: (config: { subscriptionId: string }) => Promise<IpcCommandResult>
   sendPrompt: (text: string) => Promise<{ ok: boolean }>
   stopSession: () => Promise<{ ok: boolean }>
   createTask: (data: CreateTaskInput) => Promise<TaskResult>

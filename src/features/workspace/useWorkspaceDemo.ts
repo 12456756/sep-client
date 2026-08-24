@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ClientTask, ClientTaskMessage, EmployeeInstanceSnapshot } from '../../shared/types';
+import type { ClientTask, ClientTaskMessage, SubscriptionSnapshot } from '../../shared/types';
 
 export type TaskType = 'conversation' | 'workflow';
 export type TaskStatus = 'queued' | 'running' | 'waiting-approval' | 'completed' | 'failed' | 'cancelled' | 'stopped';
@@ -178,7 +178,7 @@ function mapClientTask(task: ClientTask, employeeName = '硅基员工', type?: T
     id: task.id,
     type: isConversation,
     title: task.title,
-    employeeId: task.employeeInstanceId ?? 'selected-instance',
+    employeeId: task.subscriptionId ?? 'selected-instance',
     employeeName,
     modelId: 'sep-balanced',
     skillIds: [],
@@ -204,10 +204,10 @@ function mapClientTask(task: ClientTask, employeeName = '硅基员工', type?: T
   };
 }
 
-export function useWorkspaceDemo(options: { employeeInstanceId?: string; employeeName?: string; instances?: EmployeeInstanceSnapshot[] } = {}): WorkspaceDemo {
+export function useWorkspaceDemo(options: { subscriptionId?: string; employeeName?: string; instances?: SubscriptionSnapshot[] } = {}): WorkspaceDemo {
   const [tasks, setTasks] = useState<Task[]>([]);
   const employees = useMemo<AvailableEmployee[]>(() => (options.instances ?? []).map((instance) => ({
-    id: instance.id,
+    id: instance.subscriptionId,
     displayName: instance.name,
     description: `${instance.template.name}${instance.department ? ` · ${instance.department.name}` : ''}`,
     avatar: instance.template.avatar ?? instance.name.slice(0, 1),
@@ -215,7 +215,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
   })), [options.instances]);
   const [skills, setSkills] = useState(initialSkills);
   const workflows = useMemo(() => {
-    const employeeIds = (options.instances ?? []).map(instance => instance.id);
+    const employeeIds = (options.instances ?? []).map(instance => instance.subscriptionId);
     return initialWorkflows.map(workflow => ({ ...workflow, employeeIds }));
   }, [options.instances]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -231,15 +231,15 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
   useEffect(() => {
     let active = true;
     setConversationDraft(draft => {
-      const selected = (options.instances ?? []).find(instance => instance.id === draft.employeeId)
-        ?? (options.instances ?? []).find(instance => instance.id === options.employeeInstanceId)
+      const selected = (options.instances ?? []).find(instance => instance.subscriptionId === draft.employeeId)
+        ?? (options.instances ?? []).find(instance => instance.subscriptionId === options.subscriptionId)
         ?? options.instances?.[0];
       if (!selected) return draft;
       return { ...draft, employeeId: selected.id, modelId: selected.allowedModels[0] ?? '' };
     });
     const replaceTasks = (nextTasks: ClientTask[]) => {
       if (active) setTasks(current => nextTasks.map((task) => {
-        const mapped = mapClientTask(task, options.instances?.find(item => item.id === task.employeeInstanceId)?.name ?? options.employeeName, taskTypeById.current.get(task.id));
+        const mapped = mapClientTask(task, options.instances?.find(item => item.subscriptionId === task.subscriptionId)?.name ?? options.employeeName, taskTypeById.current.get(task.id));
         const existing = current.find(item => item.id === task.id);
         return existing?.messages.length ? { ...mapped, messages: existing.messages } : mapped;
       }));
@@ -270,7 +270,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     const unsubscribeList = window.electronAPI.onTaskListUpdated(replaceTasks);
     const unsubscribeTask = window.electronAPI.onTaskUpdated((updatedTask) => {
       if (!active) return;
-      const nextTask = mapClientTask(updatedTask, options.instances?.find(item => item.id === updatedTask.employeeInstanceId)?.name ?? options.employeeName, taskTypeById.current.get(updatedTask.id), textByTask.current.get(updatedTask.id));
+      const nextTask = mapClientTask(updatedTask, options.instances?.find(item => item.subscriptionId === updatedTask.subscriptionId)?.name ?? options.employeeName, taskTypeById.current.get(updatedTask.id), textByTask.current.get(updatedTask.id));
       setTasks((items) => {
         const index = items.findIndex((item) => item.id === nextTask.id);
         if (index === -1) return [nextTask, ...items];
@@ -306,7 +306,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
       unsubscribeTask();
       unsubscribePi();
     };
-  }, [options.employeeInstanceId, options.employeeName, options.instances]);
+  }, [options.subscriptionId, options.employeeName, options.instances]);
   const currentTask = () => tasks.find((item) => item.id === selectedTaskId);
 
   const createConversationTask = async (text: string) => {
@@ -314,13 +314,13 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     if (!trimmed) return;
     setError(null);
     try {
-      const employeeInstanceId = conversationDraft.employeeId || options.employeeInstanceId;
-      const result = await window.electronAPI.createTask({ title: trimmed.slice(0, 80), prompt: trimmed, workDir: conversationDraft.workspace.path || undefined, employeeInstanceId });
+      const subscriptionId = conversationDraft.employeeId || options.subscriptionId;
+      const result = await window.electronAPI.createTask({ title: trimmed.slice(0, 80), prompt: trimmed, workDir: conversationDraft.workspace.path || undefined, subscriptionId });
       if (!result.success || !result.task) throw new Error(result.error?.message || '创建任务失败');
       taskTypeById.current.set(result.task.id, 'conversation');
       textByTask.current.delete(result.task.id);
       setSelectedTaskId(result.task.id); setView('tasks');
-      const execution = await window.electronAPI.executeTask({ taskId: result.task.id, employeeInstanceId });
+      const execution = await window.electronAPI.executeTask({ taskId: result.task.id, subscriptionId });
       if (!execution.success) throw new Error(execution.error?.message || '启动任务失败');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '任务启动失败');
@@ -334,7 +334,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     const prompt = text.trim();
     const pendingId = `${task.id}-pending-user-${Date.now()}`;
     setTasks(items => items.map(item => item.id === task.id ? { ...item, messages: [...item.messages, { id: pendingId, role: 'user', content: prompt, createdAt: new Date().toISOString() }] } : item));
-    void window.electronAPI.continueTask({ taskId: task.id, prompt, employeeInstanceId: task.employeeId }).then(result => {
+    void window.electronAPI.continueTask({ taskId: task.id, prompt, subscriptionId: task.employeeId }).then(result => {
       if (!result.success) {
         setTasks(items => items.map(item => item.id === task.id ? { ...item, messages: item.messages.filter(message => message.id !== pendingId) } : item));
         setError(result.error?.message || '发送消息失败');
@@ -352,11 +352,11 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     const inputLines = Object.entries(draft.inputs).map(([key, value]) => `- ${key}: ${String(value)}`).join('\n');
     const prompt = `${WORKFLOW_PROMPT_MARKER}\n${workflow.name}\n\n${workflow.description}\n\n执行参数：\n${inputLines || '- 无'}`;
     try {
-      const result = await window.electronAPI.createTask({ title: workflow.name, prompt, workDir: draft.workspace.path || undefined, employeeInstanceId: employee.id });
+      const result = await window.electronAPI.createTask({ title: workflow.name, prompt, workDir: draft.workspace.path || undefined, subscriptionId: employee.id });
       if (!result.success || !result.task) throw new Error(result.error?.message || '创建任务失败');
       taskTypeById.current.set(result.task.id, 'workflow');
       setSelectedTaskId(result.task.id); setView('tasks');
-      const execution = await window.electronAPI.executeTask({ taskId: result.task.id, employeeInstanceId: employee.id });
+      const execution = await window.electronAPI.executeTask({ taskId: result.task.id, subscriptionId: employee.id });
       if (!execution.success) throw new Error(execution.error?.message || '启动任务失败');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '任务启动失败');

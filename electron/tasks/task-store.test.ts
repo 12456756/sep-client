@@ -34,7 +34,7 @@ function task(
     logs: [],
     ownerId: owner.memberId,
     ownerEnterpriseId: owner.enterpriseId,
-    employeeInstanceId: null,
+    subscriptionId: null,
     activeRunId: null,
   }
 }
@@ -117,13 +117,33 @@ describe('TaskStore', () => {
     const file = store.getTaskFileForTesting(scope)
     await mkdir(join(file, '..'), { recursive: true })
     const legacyTask = task(scope, 'v2-task')
-    delete (legacyTask as Partial<ClientTask>).employeeInstanceId
+    delete (legacyTask as Partial<ClientTask>).subscriptionId
     delete (legacyTask as Partial<ClientTask>).activeRunId
     await writeFile(file, JSON.stringify({ version: 2, owner: scope, updatedAt: 1, tasks: [legacyTask] }))
 
     const loaded = await store.load(scope)
-    assert.equal(loaded[0]?.employeeInstanceId, null)
+    assert.equal(loaded[0]?.subscriptionId, null)
     assert.equal(loaded[0]?.activeRunId, null)
+  })
+
+  it('maps legacy employee instance ids and writes only subscriptionId', async () => {
+    const userData = await makeUserDataDir()
+    const store = new TaskStore(userData)
+    await store.initialize()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const legacyTask = task(scope, 'legacy-task')
+    delete (legacyTask as Partial<ClientTask>).subscriptionId
+    ;(legacyTask as ClientTask & { employeeInstanceId?: string }).employeeInstanceId = 'subscription-a'
+    const file = store.getTaskFileForTesting(scope)
+    await mkdir(join(file, '..'), { recursive: true })
+    await writeFile(file, JSON.stringify({ version: 3, owner: scope, updatedAt: 1, tasks: [legacyTask] }))
+
+    const loaded = await store.load(scope)
+    assert.equal(loaded[0]?.subscriptionId, 'subscription-a')
+    await store.save(scope, loaded)
+    const persisted = JSON.parse(await readFile(file, 'utf8')) as { tasks: Array<Record<string, unknown>> }
+    assert.equal(persisted.tasks[0]?.subscriptionId, 'subscription-a')
+    assert.equal('employeeInstanceId' in (persisted.tasks[0] ?? {}), false)
   })
 
   it('uses a valid backup when the primary file is malformed', async () => {

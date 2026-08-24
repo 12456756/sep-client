@@ -8,7 +8,7 @@ import { useState, useEffect } from 'react';
 import { LoginPage } from './pages/LoginPage';
 import { WorkspaceHomePage } from './pages/WorkspaceHomePage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
-import type { EmployeeInstanceSnapshot, RememberedAccount } from './shared/types';
+import type { SubscriptionSnapshot, RememberedAccount } from './shared/types';
 
 interface AuthState {
   user: { id: string; email: string; name: string };
@@ -16,8 +16,8 @@ interface AuthState {
 }
 
 interface SessionState {
-  instanceId: string;
-  instanceName: string;
+  subscriptionId: string;
+  subscriptionName: string;
 }
 
 interface ToolApprovalRequest {
@@ -31,7 +31,7 @@ const INSTANCE_LOAD_TIMEOUT_MS = 3_000;
 export default function App() {
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
-  const [instances, setInstances] = useState<EmployeeInstanceSnapshot[]>([]);
+  const [instances, setInstances] = useState<SubscriptionSnapshot[]>([]);
   const [toolApprovalRequest, setToolApprovalRequest] = useState<ToolApprovalRequest | null>(null);
   const [restoringAuth, setRestoringAuth] = useState(true);
   const [rememberedAccounts, setRememberedAccounts] = useState<RememberedAccount[]>([]);
@@ -41,6 +41,14 @@ export default function App() {
 
   useEffect(() => {
     void loadRememberedAccounts();
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    void window.electronAPI.getCurrentSession().then(result => {
+      if (active && result.success && result.data) setAuthState(result.data);
+    }).catch(() => undefined);
+    return () => { active = false };
   }, []);
 
   useEffect(() => {
@@ -104,10 +112,10 @@ export default function App() {
         return;
       }
       const availableInstances = result.data;
-      const instance = availableInstances[0];
+      const subscription = availableInstances[0];
       setLoadingInstances(false);
       setInstances(availableInstances);
-      setSessionState({ instanceId: instance.id, instanceName: instance.name });
+      setSessionState({ subscriptionId: subscription.subscriptionId, subscriptionName: subscription.name });
     }).catch(error => {
       if (active) setInstanceError(error instanceof Error ? error.message : '获取硅基员工实例失败。');
     }).finally(() => {
@@ -180,8 +188,8 @@ export default function App() {
       <WorkspaceHomePage
         userName={authState.user.name || authState.user.email}
         enterpriseName={authState.enterprise?.name}
-        employeeInstanceId={sessionState.instanceId}
-        employeeInstanceName={sessionState.instanceName}
+        subscriptionId={sessionState.subscriptionId}
+        subscriptionName={sessionState.subscriptionName}
         instances={instances}
         onLogout={handleLogout}
       />
