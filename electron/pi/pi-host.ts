@@ -12,15 +12,10 @@ export interface PiHostConfig {
   userDataDir: string
 }
 
-export interface SessionConfig {
-  employeeId: string
-}
-
 export class PiHost {
   private readonly coordinator: TaskExecutionCoordinator
-  private activeEmployeeInstanceId: string | null = null
 
-  constructor(private readonly config: PiHostConfig) {
+  constructor(config: PiHostConfig) {
     this.coordinator = new TaskExecutionCoordinator({
       taskManager: config.taskManager,
       getRefreshToken: config.getRefreshToken,
@@ -32,23 +27,16 @@ export class PiHost {
     })
   }
 
-  async startSession(sessionConfig: SessionConfig): Promise<void> {
-    if (!this.config.resolveEmployee(sessionConfig.employeeId)) {
-      throw new Error('The selected employee is no longer available.')
-    }
-    this.activeEmployeeInstanceId = sessionConfig.employeeId
-  }
-
   async executeTask(taskId: string): Promise<void> {
-    await this.coordinator.executeTask(taskId, this.activeEmployeeInstanceId)
+    await this.coordinator.executeTask(taskId)
   }
 
   async continueTask(taskId: string, prompt: string): Promise<void> {
-    await this.coordinator.continueConversation(taskId, prompt, this.activeEmployeeInstanceId)
+    await this.coordinator.continueConversation(taskId, prompt)
   }
 
   async retryTask(taskId: string): Promise<void> {
-    await this.coordinator.retryTask(taskId, this.activeEmployeeInstanceId)
+    await this.coordinator.retryTask(taskId)
   }
 
   async pauseTask(taskId: string): Promise<void> {
@@ -63,18 +51,7 @@ export class PiHost {
     return this.coordinator.respondToApproval(response)
   }
 
-  async stopSession(employeeInstanceId = this.activeEmployeeInstanceId): Promise<void> {
-    if (!employeeInstanceId) return
-    await this.coordinator.stopEmployee(employeeInstanceId)
-    if (this.activeEmployeeInstanceId === employeeInstanceId) this.activeEmployeeInstanceId = null
-  }
-
   async stopAllSessions(): Promise<void> {
     await this.coordinator.stopAll()
-    this.activeEmployeeInstanceId = null
-  }
-
-  async sendPrompt(_text: string): Promise<void> {
-    throw new Error('Direct prompts are not supported while task execution is scheduled.')
   }
 }

@@ -141,22 +141,6 @@ export class TaskManager {
     return cloneTask(task)
   }
 
-  async bindTaskInstance(taskId: string, employeeInstanceId: string): Promise<Task> {
-    if (!employeeInstanceId) throw new TaskScopeError('A valid employee instance is required.')
-    const task = await this.requireTask(taskId)
-    if (task.employeeInstanceId && task.employeeInstanceId !== employeeInstanceId) {
-      throw new TaskScopeError('Task is already bound to a different employee instance.')
-    }
-    if (task.employeeInstanceId === employeeInstanceId) return cloneTask(task)
-    await this.commit(nextTasks => {
-      const nextTask = nextTasks.get(taskId)
-      if (!nextTask) throw new TaskScopeError('Task not found.')
-      nextTask.employeeInstanceId = employeeInstanceId
-    })
-    this.notifyTaskUpdate(taskId)
-    return (await this.getTask(taskId))!
-  }
-
   async setTaskRun(taskId: string, runId: string): Promise<void> {
     await this.requireTask(taskId)
     await this.commit(nextTasks => {

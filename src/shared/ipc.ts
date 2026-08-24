@@ -48,18 +48,16 @@ export interface SelectDirectoryResult extends IpcCommandResult {
 }
 
 export interface CreateTaskInput extends CreateTaskRequest {
-  employeeInstanceId?: string
+  employeeInstanceId: string
 }
 
 export interface ExecuteTaskInput {
   taskId: string
-  employeeInstanceId?: string
 }
 
 export interface ContinueTaskInput {
   taskId: string
   prompt: string
-  employeeInstanceId?: string
 }
 
 export interface TaskMessagesResult {
@@ -81,9 +79,6 @@ export interface ElectronAPI {
   forgetAccount: (email: string) => Promise<ForgetAccountResult>
   logout: () => Promise<LogoutResult>
   getInstances: () => Promise<InstanceListResult>
-  startSession: (config: { employeeId: string }) => Promise<IpcCommandResult>
-  sendPrompt: (text: string) => Promise<{ ok: boolean }>
-  stopSession: () => Promise<{ ok: boolean }>
   createTask: (data: CreateTaskInput) => Promise<TaskResult>
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult>

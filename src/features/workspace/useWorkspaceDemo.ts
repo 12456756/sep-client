@@ -320,7 +320,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
       taskTypeById.current.set(result.task.id, 'conversation');
       textByTask.current.delete(result.task.id);
       setSelectedTaskId(result.task.id); setView('tasks');
-      const execution = await window.electronAPI.executeTask({ taskId: result.task.id, employeeInstanceId });
+      const execution = await window.electronAPI.executeTask({ taskId: result.task.id });
       if (!execution.success) throw new Error(execution.error?.message || '启动任务失败');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '任务启动失败');
@@ -334,7 +334,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     const prompt = text.trim();
     const pendingId = `${task.id}-pending-user-${Date.now()}`;
     setTasks(items => items.map(item => item.id === task.id ? { ...item, messages: [...item.messages, { id: pendingId, role: 'user', content: prompt, createdAt: new Date().toISOString() }] } : item));
-    void window.electronAPI.continueTask({ taskId: task.id, prompt, employeeInstanceId: task.employeeId }).then(result => {
+    void window.electronAPI.continueTask({ taskId: task.id, prompt }).then(result => {
       if (!result.success) {
         setTasks(items => items.map(item => item.id === task.id ? { ...item, messages: item.messages.filter(message => message.id !== pendingId) } : item));
         setError(result.error?.message || '发送消息失败');
@@ -356,7 +356,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
       if (!result.success || !result.task) throw new Error(result.error?.message || '创建任务失败');
       taskTypeById.current.set(result.task.id, 'workflow');
       setSelectedTaskId(result.task.id); setView('tasks');
-      const execution = await window.electronAPI.executeTask({ taskId: result.task.id, employeeInstanceId: employee.id });
+      const execution = await window.electronAPI.executeTask({ taskId: result.task.id });
       if (!execution.success) throw new Error(execution.error?.message || '启动任务失败');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '任务启动失败');

@@ -64,11 +64,7 @@ export class TaskExecutionCoordinator {
     this.approvalBroker = new ApprovalBroker({ onRequest: options.onApprovalRequest })
   }
 
-  async executeTask(
-    taskId: string,
-    defaultEmployeeInstanceId: string | null,
-    options: { resumeRunId?: string } = {},
-  ): Promise<void> {
+  async executeTask(taskId: string, options: { resumeRunId?: string } = {}): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED) {
@@ -76,11 +72,10 @@ export class TaskExecutionCoordinator {
     }
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) return
 
-    const employeeInstanceId = task.employeeInstanceId ?? defaultEmployeeInstanceId
+    const employeeInstanceId = task.employeeInstanceId
     if (!employeeInstanceId) throw new Error('Select a silicon employee before executing the task.')
     if (!this.resolveEmployee(employeeInstanceId)) throw new Error('The selected employee is no longer available.')
 
-    if (!task.employeeInstanceId) await this.taskManager.bindTaskInstance(taskId, employeeInstanceId)
     if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) {
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
     }
@@ -91,12 +86,12 @@ export class TaskExecutionCoordinator {
     void this.pump(employeeInstanceId)
   }
 
-  async continueConversation(taskId: string, prompt: string, employeeInstanceId: string | null): Promise<void> {
+  async continueConversation(taskId: string, prompt: string): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (!prompt.trim()) throw new Error('A message is required.')
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) throw new Error('Task is already running.')
-    const employeeId = task.employeeInstanceId ?? employeeInstanceId
+    const employeeId = task.employeeInstanceId
     if (!employeeId || !this.resolveEmployee(employeeId)) throw new Error('The selected employee is no longer available.')
     const scope = this.taskManager.getCurrentUserScope()
     const runs = scope && this.taskRunStore ? await this.taskRunStore.list(scope, taskId) : []
@@ -109,7 +104,7 @@ export class TaskExecutionCoordinator {
     void this.pump(employeeId)
   }
 
-  async retryTask(taskId: string, defaultEmployeeInstanceId: string | null): Promise<void> {
+  async retryTask(taskId: string): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) return
@@ -117,7 +112,7 @@ export class TaskExecutionCoordinator {
       throw new Error('Only terminal or interrupted tasks can be retried.')
     }
     await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
-    await this.executeTask(taskId, defaultEmployeeInstanceId)
+    await this.executeTask(taskId)
   }
 
   async pauseTask(taskId: string): Promise<void> {
@@ -145,15 +140,6 @@ export class TaskExecutionCoordinator {
       return
     }
     active.control = 'cancel'
-    this.approvalBroker.denyRun(active.runId)
-    await active.worker.abort()
-    await active.completion
-  }
-
-  async stopEmployee(employeeInstanceId: string): Promise<void> {
-    const active = this.activeByEmployee.get(employeeInstanceId)
-    if (!active) return
-    active.control = 'pause'
     this.approvalBroker.denyRun(active.runId)
     await active.worker.abort()
     await active.completion
