@@ -3,13 +3,11 @@ import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
 import { ApprovalBroker } from '../pi/approval-broker'
 import { PiTaskWorker } from '../pi/pi-task-worker'
 import { TaskRunStore, type TaskRunStorePort } from './task-run-store'
-import { TaskManager } from './task-manager'
+import type { TaskManager } from './task-manager'
 import { WorkspaceLockManager } from './workspace-lock-manager'
 
 export interface EmployeeRuntimeConfig {
-  subscriptionId?: string
-  /** @deprecated Use subscriptionId. */
-  employeeInstanceId?: string
+  subscriptionId: string
   modelId: string
   gatewayUrl: string
   skillPaths?: string[]
@@ -21,9 +19,10 @@ export interface TaskExecutionCoordinatorOptions {
   taskManager: TaskManager
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
+  onSubscriptionAuthorizationRejected?: (subscriptionId: string, status: 403 | 404) => void
   onEvent: (event: TaskExecutionEvent) => void
   onApprovalRequest: (request: Parameters<ApprovalBroker['request']>[0]) => void
-  resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
+  resolveEmployee: (subscriptionId: string, modelId?: string | null) => EmployeeRuntimeConfig | null
   taskRunStore?: TaskRunStorePort
   userDataDir?: string
   getTaskWorkspaceRoot?: () => string
@@ -47,8 +46,9 @@ export class TaskExecutionCoordinator {
   private readonly taskManager: TaskManager
   private readonly getRefreshToken: () => string
   private readonly onAuthenticationRequired: () => void
+  private readonly onSubscriptionAuthorizationRejected: TaskExecutionCoordinatorOptions['onSubscriptionAuthorizationRejected']
   private readonly onEvent: (event: TaskExecutionEvent) => void
-  private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
+  private readonly resolveEmployee: TaskExecutionCoordinatorOptions['resolveEmployee']
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
   private readonly locks = new WorkspaceLockManager()
@@ -62,6 +62,7 @@ export class TaskExecutionCoordinator {
     this.taskManager = options.taskManager
     this.getRefreshToken = options.getRefreshToken
     this.onAuthenticationRequired = options.onAuthenticationRequired
+    this.onSubscriptionAuthorizationRejected = options.onSubscriptionAuthorizationRejected
     this.onEvent = options.onEvent
     this.resolveEmployee = options.resolveEmployee
     this.taskRunStore = options.taskRunStore ?? (options.userDataDir ? new TaskRunStore(options.userDataDir) : null)
@@ -81,9 +82,9 @@ export class TaskExecutionCoordinator {
     }
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) return
 
-    const subscriptionId = task.subscriptionId ?? task.employeeInstanceId ?? defaultSubscriptionId
+    const subscriptionId = task.subscriptionId ?? defaultSubscriptionId
     if (!subscriptionId) throw new Error('Select a silicon employee before executing the task.')
-    if (!this.resolveEmployee(subscriptionId)) throw new Error('The selected employee is no longer available.')
+    if (!this.resolveEmployee(subscriptionId, task.modelId)) throw new Error('The selected employee or model is no longer available.')
 
     if (!task.subscriptionId) await this.taskManager.bindTaskSubscription(taskId, subscriptionId)
     if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) {
@@ -101,8 +102,8 @@ export class TaskExecutionCoordinator {
     if (!task) throw new Error('Task not found.')
     if (!prompt.trim()) throw new Error('A message is required.')
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) throw new Error('Task is already running.')
-    const selectedSubscriptionId = task.subscriptionId ?? task.employeeInstanceId ?? subscriptionId
-    if (!selectedSubscriptionId || !this.resolveEmployee(selectedSubscriptionId)) throw new Error('The selected employee is no longer available.')
+    const selectedSubscriptionId = task.subscriptionId ?? subscriptionId
+    if (!selectedSubscriptionId || !this.resolveEmployee(selectedSubscriptionId, task.modelId)) throw new Error('The selected employee or model is no longer available.')
     const scope = this.taskManager.getCurrentUserScope()
     const runs = scope && this.taskRunStore ? await this.taskRunStore.list(scope, taskId) : []
     const prior = runs.find(run => Boolean(run.sessionFile) && run.outcome !== 'running')
@@ -189,13 +190,13 @@ export class TaskExecutionCoordinator {
       queue?.shift()
       return this.pump(subscriptionId)
     }
-    const employee = this.resolveEmployee(subscriptionId)
+    const employee = this.resolveEmployee(subscriptionId, task.modelId)
     if (!employee) {
       queue?.shift()
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.FAILED, '硅基员工当前不可用')
       return this.pump(subscriptionId)
     }
-    const employeeSubscriptionId = employee.subscriptionId ?? employee.employeeInstanceId ?? subscriptionId
+    const employeeSubscriptionId = employee.subscriptionId
 
     const runId = randomUUID()
     const releaseWorkspace = this.locks.acquire(runId, task.workDir)
@@ -207,7 +208,7 @@ export class TaskExecutionCoordinator {
     const priorRun = scope && this.taskRunStore && resumeRunId
       ? await this.taskRunStore.get(scope, taskId, resumeRunId)
       : null
-    if (resumeRunId && (!priorRun || !priorRun.sessionFile || (priorRun.subscriptionId ?? priorRun.employeeInstanceId) !== subscriptionId)) {
+    if (resumeRunId && (!priorRun || !priorRun.sessionFile || priorRun.subscriptionId !== subscriptionId)) {
       releaseWorkspace()
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.FAILED, '所选运行没有可恢复的 Pi 会话')
       return this.pump(subscriptionId)
@@ -232,6 +233,7 @@ export class TaskExecutionCoordinator {
       },
       getRefreshToken: this.getRefreshToken,
       onAuthenticationRequired: this.onAuthenticationRequired,
+      onSubscriptionAuthorizationRejected: this.onSubscriptionAuthorizationRejected,
       onApprovalRequest: request => this.approvalBroker.request(request),
       onEvent: event => this.enqueueEvent(event),
       onSessionCreated: async session => {

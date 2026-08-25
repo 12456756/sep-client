@@ -37,7 +37,6 @@ export interface LoginResponse {
   } | null;
 }
 
-export type ClientInstance = SubscriptionSnapshot;
 export type SubscriptionSnapshot = SharedSubscriptionSnapshot;
 
 export interface RefreshResponse {
@@ -64,11 +63,6 @@ export interface EmploymentTokenResponse {
     status: string;
   };
 }
-
-/** @deprecated Use the subscription/employment names above. */
-export type InstanceTokenRequest = EmploymentTokenRequest;
-/** @deprecated Use EmploymentTokenResponse. */
-export type InstanceTokenResponse = EmploymentTokenResponse;
 
 export interface PackageInfo {
   version: string;
@@ -107,6 +101,40 @@ export interface SkillPreviewResponse {
   version: SkillVersionSummary;
   capability: EmployeeSkillSnapshot['capability'];
   content: string;
+}
+
+export interface KnowledgeBaseGrant {
+  id: string;
+  knowledgeBase: { id: string; name: string };
+}
+
+export interface KnowledgeBaseGrantResponse {
+  grants: KnowledgeBaseGrant[];
+}
+
+export interface KnowledgeBaseSearchRequest {
+  query: string;
+  subscriptionId: string;
+  topK?: number;
+  scoreThreshold?: number;
+  strategy?: 'auto' | 'lexical' | 'vector' | 'hybrid';
+}
+
+export interface KnowledgeBaseSearchResult {
+  chunkId: string;
+  knowledgeBaseId: string;
+  source: string;
+  score: number;
+  content: string;
+}
+
+export interface KnowledgeBaseSearchResponse {
+  query: string;
+  subscriptionId: string;
+  strategy: string;
+  durationMs: number;
+  count: number;
+  results: KnowledgeBaseSearchResult[];
 }
 
 export interface ApiError {
@@ -162,7 +190,7 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
 }
 
 /**
- * Get list of authorized AI employee instances
+ * Get the current member's authorized employee subscriptions.
  *
  * GET /client/instances
  */
@@ -189,11 +217,8 @@ export async function getSubscriptions(accessToken: string): Promise<Subscriptio
   return payload.map(normalizeSubscription).filter((item): item is SubscriptionSnapshot => item !== null);
 }
 
-/** @deprecated Kept as a source-compatible alias during the endpoint migration. */
-export const getInstances = getSubscriptions;
-
 /**
- * Exchange refresh token for instance-level access token
+ * Exchange a refresh token for a subscription-scoped employment token.
  *
  * POST /client/auth/token
  */
@@ -214,9 +239,6 @@ export async function getEmploymentToken(req: EmploymentTokenRequest, signal?: A
   return response.json() as Promise<EmploymentTokenResponse>;
 }
 
-/** @deprecated Use getEmploymentToken. */
-export const getInstanceToken = getEmploymentToken;
-
 export async function getPackageInfo(accessToken: string, subscriptionId: string): Promise<PackageInfo> {
   return authorizedJson<PackageInfo>(`/enterprise/subscriptions/${encodeURIComponent(subscriptionId)}/package`, accessToken);
 }
@@ -227,6 +249,45 @@ export async function getEmployeeSkills(accessToken: string, employeeId: string)
 
 export async function getSkillPreview(accessToken: string, versionId: string): Promise<SkillPreviewResponse> {
   return authorizedJson<SkillPreviewResponse>(`/enterprise/skill-versions/${encodeURIComponent(versionId)}/preview`, accessToken);
+}
+
+export async function getKnowledgeBaseGrants(accessToken: string, subscriptionId: string): Promise<KnowledgeBaseGrantResponse> {
+  return authorizedJson<KnowledgeBaseGrantResponse>(
+    `/knowledge-bases/grants/by-subscription/${encodeURIComponent(subscriptionId)}`,
+    accessToken,
+  );
+}
+
+export async function searchKnowledgeBases(
+  accessToken: string,
+  request: KnowledgeBaseSearchRequest,
+): Promise<KnowledgeBaseSearchResponse> {
+  if (!request.query.trim() || !request.subscriptionId.trim()) {
+    throw new AuthApiError({ statusCode: 400, message: 'A query and subscription ID are required.', error: 'Bad Request' });
+  }
+  const topK = Number.isFinite(request.topK)
+    ? Math.max(1, Math.min(20, Math.floor(request.topK!)))
+    : 5;
+  const scoreThreshold = Number.isFinite(request.scoreThreshold)
+    ? Math.max(0, Math.min(1, request.scoreThreshold!))
+    : 0.5;
+  const strategy = request.strategy === 'lexical' || request.strategy === 'vector' || request.strategy === 'hybrid'
+    ? request.strategy
+    : 'auto';
+  const response = await fetch(`${config.SEP_BASE_URL}/knowledge-bases/search`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...request,
+      query: request.query.trim(),
+      subscriptionId: request.subscriptionId.trim(),
+      topK,
+      scoreThreshold,
+      strategy,
+    }),
+  });
+  if (!response.ok) throw new AuthApiError(await readApiError(response));
+  return response.json() as Promise<KnowledgeBaseSearchResponse>;
 }
 
 async function authorizedJson<T>(path: string, accessToken: string): Promise<T> {

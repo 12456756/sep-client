@@ -128,13 +128,14 @@ export class TaskManager {
     prompt: string,
     workDir?: string,
     subscriptionId: string | null = null,
+    modelId: string | null = null,
   ): Promise<Task> {
     const user = await this.requireCurrentUser()
     const task: Task = {
       id: randomUUID(), title, prompt, status: TaskStatus.PENDING, workDir: workDir || null,
       createdAt: Date.now(), startedAt: null, completedAt: null, error: null, files: [], logs: [],
       ownerId: user.memberId, ownerEnterpriseId: user.enterpriseId,
-      subscriptionId, activeRunId: null,
+      subscriptionId, modelId, activeRunId: null,
     }
     await this.commit(nextTasks => nextTasks.set(task.id, task))
     this.notifyTaskUpdate(task.id)
@@ -144,7 +145,7 @@ export class TaskManager {
   async bindTaskSubscription(taskId: string, subscriptionId: string): Promise<Task> {
     if (!subscriptionId) throw new TaskScopeError('A valid subscription is required.')
     const task = await this.requireTask(taskId)
-    const currentSubscriptionId = task.subscriptionId ?? task.employeeInstanceId ?? null
+    const currentSubscriptionId = task.subscriptionId
     if (currentSubscriptionId && currentSubscriptionId !== subscriptionId) {
       throw new TaskScopeError('Task is already bound to a different subscription.')
     }
@@ -168,6 +169,20 @@ export class TaskManager {
     this.notifyTaskUpdate(taskId)
   }
 
+  async setTaskModel(taskId: string, modelId: string): Promise<void> {
+    if (!modelId.trim()) throw new TaskScopeError('A valid model is required.')
+    await this.requireTask(taskId)
+    await this.commit(nextTasks => {
+      const nextTask = nextTasks.get(taskId)
+      if (!nextTask) throw new TaskScopeError('Task not found.')
+      if (nextTask.status === TaskStatus.RUNNING || nextTask.status === TaskStatus.WAITING_APPROVAL) {
+        throw new TaskScopeError('Running tasks cannot change model.')
+      }
+      nextTask.modelId = modelId
+    })
+    this.notifyTaskUpdate(taskId)
+  }
+
   async clearTaskRun(taskId: string, expectedRunId?: string): Promise<void> {
     const task = await this.getTask(taskId)
     if (!task || (expectedRunId && task.activeRunId !== expectedRunId)) return
@@ -179,17 +194,7 @@ export class TaskManager {
   }
 
   async getTasksBySubscription(subscriptionId: string): Promise<Task[]> {
-    return (await this.getAllTasks()).filter(task => (task.subscriptionId ?? task.employeeInstanceId) === subscriptionId)
-  }
-
-  /** @deprecated Use bindTaskSubscription. */
-  bindTaskInstance(taskId: string, employeeInstanceId: string): Promise<Task> {
-    return this.bindTaskSubscription(taskId, employeeInstanceId)
-  }
-
-  /** @deprecated Use getTasksBySubscription. */
-  getTasksByInstance(employeeInstanceId: string): Promise<Task[]> {
-    return this.getTasksBySubscription(employeeInstanceId)
+    return (await this.getAllTasks()).filter(task => task.subscriptionId === subscriptionId)
   }
 
   async getTask(taskId: string): Promise<Task | null> {

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { execFile as execFileCallback } from 'node:child_process'
 import { promisify } from 'node:util'
-import { join } from 'node:path'
-import { lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { join, relative } from 'node:path'
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import {
   getEmployeeSkills,
   getPackageInfo,
@@ -15,6 +15,7 @@ import { config } from '../infrastructure/config'
 
 const execFile = promisify(execFileCallback)
 const MAX_PACKAGE_BYTES = 100 * 1024 * 1024
+const MAX_ARCHIVE_ENTRIES = 10_000
 const EXACT_NPM_SPEC = /^(?:@[^/\s]+\/)?[^@\s]+@(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
 const FULL_GIT_COMMIT = /^[0-9a-f]{40}$/i
 const APPROVED_STATUSES = new Set(['PLATFORM_APPROVED', 'APPROVED', 'PUBLISHED'])
@@ -52,6 +53,14 @@ interface RuntimeManifest {
   skills: InstalledSkill[]
 }
 
+interface ApprovedSkillVersion {
+  skillVersionId: string
+  capabilityId: string
+  capabilityName: string
+  capabilityDescription: string | null | undefined
+  version: string
+}
+
 export class SubscriptionRuntimeError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options)
@@ -77,10 +86,19 @@ export class SubscriptionRuntimeManager {
     return operation
   }
 
-  async clear(subscriptionId?: string): Promise<void> {
-    if (!subscriptionId) return
-    const root = join(this.userDataDir, 'runtime', subscriptionId)
-    await rm(root, { recursive: true, force: true })
+  async clear(subscriptionId?: string, enterpriseId?: string): Promise<void> {
+    const runtimeRoot = join(this.userDataDir, 'runtime')
+    if (!subscriptionId) {
+      await rm(runtimeRoot, { recursive: true, force: true })
+      return
+    }
+    if (enterpriseId) {
+      await rm(join(runtimeRoot, safeSegment(enterpriseId), safeSegment(subscriptionId)), { recursive: true, force: true })
+      return
+    }
+    for (const enterprise of await listDirectories(runtimeRoot)) {
+      await rm(join(runtimeRoot, enterprise, safeSegment(subscriptionId)), { recursive: true, force: true })
+    }
   }
 
   private async prepareInternal(subscription: SubscriptionSnapshot, accessToken: string, enterpriseId: string): Promise<PreparedSubscriptionRuntime> {
@@ -89,8 +107,9 @@ export class SubscriptionRuntimeManager {
     const runtimeRoot = join(this.userDataDir, 'runtime', safeSegment(enterpriseId), safeSegment(subscription.subscriptionId))
     const versionRoot = join(runtimeRoot, safeSegment(packageInfo.version))
     const manifestPath = join(versionRoot, 'runtime-manifest.json')
+    const approvedSkills = await this.listApprovedSkills(accessToken, subscription)
     const cached = await this.readManifest(manifestPath)
-    if (cached && this.matchesManifest(cached, subscription, packageInfo)) {
+    if (cached && this.matchesManifest(cached, subscription, packageInfo, approvedSkills)) {
       return this.toPrepared(versionRoot, cached)
     }
 
@@ -100,7 +119,7 @@ export class SubscriptionRuntimeManager {
     try {
       await mkdir(stagingRoot, { recursive: true })
       const packageSha256 = await this.installPackage(stagingRoot, packageInfo, subscription, accessToken)
-      const skills = await this.syncSkills(stagingRoot, accessToken, subscription)
+      const skills = await this.syncSkills(stagingRoot, accessToken, approvedSkills)
       const manifest: RuntimeManifest = {
         schemaVersion: 1,
         subscriptionId: subscription.subscriptionId,
@@ -130,13 +149,7 @@ export class SubscriptionRuntimeManager {
     if (!packageInfo.version || packageInfo.version !== subscription.templateVersion) {
       throw new SubscriptionRuntimeError(`The subscription is locked to package ${subscription.templateVersion}, but SEP returned ${packageInfo.version || 'no version'}.`)
     }
-    if (packageInfo.packageRef?.type === 'npm' && !EXACT_NPM_SPEC.test(packageInfo.packageRef.spec)) {
-      throw new SubscriptionRuntimeError('SEP returned a non-pinned npm package reference.')
-    }
-    if (packageInfo.packageRef?.type === 'git') {
-      const hash = packageInfo.packageRef.spec.split('#').pop() ?? ''
-      if (!FULL_GIT_COMMIT.test(hash)) throw new SubscriptionRuntimeError('SEP returned a git package without an immutable commit.')
-    }
+    assertPackageRefMatchesVersion(packageInfo)
   }
 
   private async installPackage(stagingRoot: string, packageInfo: PackageInfo, subscription: SubscriptionSnapshot, accessToken: string): Promise<string | null> {
@@ -147,7 +160,7 @@ export class SubscriptionRuntimeManager {
       })
       return await hashPackageFiles(stagingRoot)
     }
-    if (!packageInfo.zipAvailable) throw new SubscriptionRuntimeError('SEP has no installable package reference or ZIP fallback.')
+    assertZipFallbackInstallable(packageInfo)
     const response = await fetch(`${config.SEP_BASE_URL}/digital-employees/${encodeURIComponent(subscription.employeeId)}/package/download`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
@@ -158,28 +171,44 @@ export class SubscriptionRuntimeManager {
     if (packageInfo.sha256 && packageInfo.sha256.toLowerCase() !== digest) throw new SubscriptionRuntimeError('Employee ZIP SHA-256 verification failed.')
     const archive = join(stagingRoot, '.package.zip')
     await writeFile(archive, bytes, { mode: 0o600 })
+    await inspectZipArchive(archive)
     await execFile('unzip', ['-q', archive, '-d', stagingRoot], { timeout: 2 * 60 * 1000, maxBuffer: 2 * 1024 * 1024 })
     await rm(archive, { force: true })
+    await assertNoSymbolicLinks(stagingRoot)
     return digest
   }
 
-  private async syncSkills(stagingRoot: string, accessToken: string, subscription: SubscriptionSnapshot): Promise<InstalledSkill[]> {
+  private async listApprovedSkills(accessToken: string, subscription: SubscriptionSnapshot): Promise<ApprovedSkillVersion[]> {
     const response = await getEmployeeSkills(accessToken, subscription.employeeId)
-    const skillsRoot = join(stagingRoot, 'skills')
-    await mkdir(skillsRoot, { recursive: true })
-    const installed: InstalledSkill[] = []
+    const approved: ApprovedSkillVersion[] = []
     for (const entry of response.skills) {
       const version = entry.currentVersion
       if (!version || !APPROVED_STATUSES.has(version.status)) continue
-      const preview = await getSkillPreview(accessToken, version.id)
+      approved.push({
+        skillVersionId: version.id,
+        capabilityId: entry.capability.id,
+        capabilityName: entry.capability.name || entry.capability.id,
+        capabilityDescription: entry.capability.description,
+        version: version.version,
+      })
+    }
+    return approved
+  }
+
+  private async syncSkills(stagingRoot: string, accessToken: string, approvedSkills: ApprovedSkillVersion[]): Promise<InstalledSkill[]> {
+    const skillsRoot = join(stagingRoot, 'skills')
+    await mkdir(skillsRoot, { recursive: true })
+    const installed: InstalledSkill[] = []
+    for (const entry of approvedSkills) {
+      const preview = await getSkillPreview(accessToken, entry.skillVersionId)
       if (!APPROVED_STATUSES.has(preview.version.status)) continue
-      const name = safeSegment(entry.capability.name || entry.capability.id)
+      const name = safeSegment(entry.capabilityName)
       const skillDir = join(skillsRoot, name)
       const skillPath = join(skillDir, 'SKILL.md')
       await mkdir(skillDir, { recursive: true })
-      const content = `---\nname: ${yamlScalar(name)}\ndescription: ${yamlScalar(entry.capability.description || entry.capability.name)}\n---\n\n${limitMarkdown(preview.content)}\n`
+      const content = `---\nname: ${yamlScalar(name)}\ndescription: ${yamlScalar(entry.capabilityDescription || entry.capabilityName)}\n---\n\n${limitMarkdown(preview.content)}\n`
       await writeFile(skillPath, content, { mode: 0o600 })
-      installed.push({ skillVersionId: version.id, capabilityId: entry.capability.id, version: version.version, path: join('skills', name, 'SKILL.md') })
+      installed.push({ skillVersionId: entry.skillVersionId, capabilityId: entry.capabilityId, version: entry.version, path: join('skills', name, 'SKILL.md') })
     }
     return installed
   }
@@ -191,11 +220,13 @@ export class SubscriptionRuntimeManager {
     } catch { return null }
   }
 
-  private matchesManifest(manifest: RuntimeManifest, subscription: SubscriptionSnapshot, packageInfo: PackageInfo): boolean {
+  private matchesManifest(manifest: RuntimeManifest, subscription: SubscriptionSnapshot, packageInfo: PackageInfo, approvedSkills: ApprovedSkillVersion[]): boolean {
     return manifest.subscriptionId === subscription.subscriptionId &&
       manifest.employeeId === subscription.employeeId &&
       manifest.packageVersion === packageInfo.version &&
-      JSON.stringify(manifest.packageRef) === JSON.stringify(packageInfo.packageRef)
+      manifest.installerVersion === this.installerVersion &&
+      JSON.stringify(manifest.packageRef) === JSON.stringify(packageInfo.packageRef) &&
+      sameSkillSelection(manifest.skills, approvedSkills)
   }
 
   private async toPrepared(versionRoot: string, manifest: RuntimeManifest): Promise<PreparedSubscriptionRuntime> {
@@ -218,7 +249,7 @@ export class SubscriptionRuntimeManager {
       packageSha256: manifest.packageSha256,
       runtimeDir: versionRoot,
       skillsDir,
-      skillPaths: [...new Set([...packageSkillPaths, ...manifest.skills.map(skill => join(versionRoot, skill.path))])],
+      skillPaths: [...new Set(packageSkillPaths)],
       installedSkills: manifest.skills,
       agentsFiles: agentsContent ? [{ path: agentsPath, content: limitMarkdown(agentsContent) }] : [],
       systemPrompt: systemPrompt ? limitMarkdown(systemPrompt) : undefined,
@@ -228,17 +259,111 @@ export class SubscriptionRuntimeManager {
 
 async function hashPackageFiles(root: string): Promise<string | null> {
   const hash = createHash('sha256')
-  let included = false
-  for (const name of ['package.json', 'package-lock.json', 'npm-shrinkwrap.json']) {
-    try {
-      hash.update(name)
-      hash.update(await readFile(join(root, name)))
-      included = true
-    } catch {
-      // A git package may not have a lockfile; package.json is still enough for a diagnostic hash.
+  const files = await listFiles(root)
+  for (const file of files) {
+    const path = relative(root, file).replaceAll('\\', '/')
+    if (path === 'runtime-manifest.json' || path === '.package.zip') continue
+    hash.update(path)
+    hash.update('\0')
+    hash.update(await readFile(file))
+    hash.update('\0')
+  }
+  return files.length ? hash.digest('hex') : null
+}
+
+function npmSpecVersion(spec: string): string {
+  return spec.slice(spec.lastIndexOf('@') + 1)
+}
+
+export function assertPackageRefMatchesVersion(packageInfo: PackageInfo): void {
+  if (packageInfo.packageRef?.type === 'npm') {
+    if (!EXACT_NPM_SPEC.test(packageInfo.packageRef.spec)) {
+      throw new SubscriptionRuntimeError('SEP returned a non-pinned npm package reference.')
+    }
+    if (npmSpecVersion(packageInfo.packageRef.spec) !== packageInfo.version) {
+      throw new SubscriptionRuntimeError('SEP returned an npm package reference that does not match the locked package version.')
     }
   }
-  return included ? hash.digest('hex') : null
+  if (packageInfo.packageRef?.type === 'git') {
+    const hash = packageInfo.packageRef.spec.split('#').pop() ?? ''
+    if (!FULL_GIT_COMMIT.test(hash)) throw new SubscriptionRuntimeError('SEP returned a git package without an immutable commit.')
+  }
+}
+
+export function assertZipFallbackInstallable(packageInfo: PackageInfo): void {
+  if (!packageInfo.zipAvailable) throw new SubscriptionRuntimeError('SEP has no installable package reference or ZIP fallback.')
+  if (!packageInfo.sha256) throw new SubscriptionRuntimeError('SEP must provide SHA-256 for ZIP package installation.')
+}
+
+export const runtimeTestInternals = {
+  hashPackageFiles,
+  sameSkillSelection,
+  assertSafeZipEntries,
+  assertSafeZipMetadata,
+}
+
+async function inspectZipArchive(archive: string): Promise<void> {
+  const [{ stdout: names }, { stdout: metadata }] = await Promise.all([
+    execFile('unzip', ['-Z1', archive], { timeout: 30_000, maxBuffer: 2 * 1024 * 1024 }),
+    execFile('zipinfo', ['-l', archive], { timeout: 30_000, maxBuffer: 2 * 1024 * 1024 }),
+  ])
+  assertSafeZipEntries(names.split(/\r?\n/).filter(Boolean))
+  assertSafeZipMetadata(metadata)
+}
+
+function assertSafeZipEntries(entries: string[]): void {
+  if (entries.length === 0 || entries.length > MAX_ARCHIVE_ENTRIES) {
+    throw new SubscriptionRuntimeError('Employee ZIP has an invalid number of entries.')
+  }
+  for (const rawEntry of entries) {
+    const entry = rawEntry.replaceAll('\\', '/')
+    const segments = entry.split('/')
+    if (
+      entry.includes('\0') ||
+      entry.length > 1_024 ||
+      entry.startsWith('/') ||
+      /^[A-Za-z]:\//.test(entry) ||
+      segments.some(segment => segment === '..')
+    ) {
+      throw new SubscriptionRuntimeError('Employee ZIP contains an unsafe path.')
+    }
+  }
+}
+
+function assertSafeZipMetadata(metadata: string): void {
+  let entryCount = 0
+  let uncompressedBytes = 0
+  for (const line of metadata.split(/\r?\n/)) {
+    const match = /^([bcdlps-])[rwxStTs-]{9}\s+\S+\s+\S+\s+(\d+)\s/.exec(line)
+    if (!match) continue
+    entryCount += 1
+    if (match[1] !== '-' && match[1] !== 'd') {
+      throw new SubscriptionRuntimeError('Employee ZIP contains a link or special file.')
+    }
+    uncompressedBytes += Number(match[2])
+    if (!Number.isSafeInteger(uncompressedBytes) || uncompressedBytes > MAX_PACKAGE_BYTES) {
+      throw new SubscriptionRuntimeError('Employee ZIP exceeds the uncompressed size limit.')
+    }
+  }
+  if (entryCount === 0 || entryCount > MAX_ARCHIVE_ENTRIES) {
+    throw new SubscriptionRuntimeError('Employee ZIP metadata is invalid.')
+  }
+}
+
+async function assertNoSymbolicLinks(root: string): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true })
+  for (const entry of entries) {
+    const path = join(root, entry.name)
+    const stats = await lstat(path)
+    if (stats.isSymbolicLink()) throw new SubscriptionRuntimeError('Employee package contains a symbolic link.')
+    if (stats.isDirectory()) await assertNoSymbolicLinks(path)
+  }
+}
+
+function sameSkillSelection(installed: InstalledSkill[], approved: ApprovedSkillVersion[]): boolean {
+  if (installed.length !== approved.length) return false
+  const installedIds = new Set(installed.map(skill => `${skill.capabilityId}:${skill.skillVersionId}:${skill.version}`))
+  return approved.every(skill => installedIds.has(`${skill.capabilityId}:${skill.skillVersionId}:${skill.version}`))
 }
 
 function safeSegment(value: string): string {
@@ -257,6 +382,25 @@ function limitMarkdown(value: string): string {
 
 async function pathExists(path: string): Promise<boolean> {
   try { await lstat(path); return true } catch { return false }
+}
+
+async function listDirectories(root: string): Promise<string[]> {
+  try {
+    const entries = await readdir(root, { withFileTypes: true })
+    return entries.filter(entry => entry.isDirectory()).map(entry => entry.name)
+  } catch {
+    return []
+  }
+}
+
+async function listFiles(root: string): Promise<string[]> {
+  const entries = await readdir(root, { withFileTypes: true })
+  const files = await Promise.all(entries.map(async entry => {
+    const path = join(root, entry.name)
+    if (entry.isDirectory()) return listFiles(path)
+    return entry.isFile() ? [path] : []
+  }))
+  return files.flat().sort()
 }
 
 async function readOptionalFile(path: string): Promise<string | null> {

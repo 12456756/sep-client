@@ -97,8 +97,7 @@ export interface ClientTask {
   ownerId: string
   ownerEnterpriseId: string
   subscriptionId: string | null
-  /** @deprecated Read compatibility for older renderer/main code. Not persisted. */
-  employeeInstanceId?: string | null
+  modelId?: string | null
   activeRunId: string | null
 }
 
@@ -109,8 +108,6 @@ export interface ClientTaskRun {
   id: string
   taskId: string
   subscriptionId: string
-  /** @deprecated Read compatibility for older renderer/main code. Not persisted. */
-  employeeInstanceId?: string
   modelId: string
   runtimeKey: string
   outcome: ClientTaskRunOutcome
@@ -186,6 +183,7 @@ export interface CreateTaskRequest {
   title: string
   prompt: string
   workDir?: string
+  modelId?: string
 }
 
 export interface AuthSession {
@@ -195,16 +193,16 @@ export interface AuthSession {
   enterpriseName: string
 }
 
-// ──────────────────────────── Instances ────────────────────────
+// ──────────────────────────── Subscriptions ────────────────────
 
-export type InstanceStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
+export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
 
 export interface SubscriptionSnapshot {
   id: string
   subscriptionId: string
   employeeId: string
   name: string
-  status: InstanceStatus
+  status: SubscriptionStatus
   templateVersion: string
   template: {
     id: string
@@ -219,15 +217,12 @@ export interface SubscriptionSnapshot {
   upgradeAvailable?: boolean
 }
 
-/** @deprecated Use SubscriptionSnapshot. */
-export type EmployeeInstanceSnapshot = SubscriptionSnapshot
-
 export interface PackageRef {
   type: 'npm' | 'git' | 'zip'
   spec: string          // e.g. "@sep/employee-video@1.2.0" or git URL
 }
 
-export interface EmployeeInstance {
+export interface SubscriptionRuntimeDescriptor {
   subscriptionId: string
   displayName: string
   description?: string
@@ -237,7 +232,7 @@ export interface EmployeeInstance {
   config: Record<string, unknown>
   allowedTools: string[]
   allowedModels: string[]
-  status: InstanceStatus
+  status: SubscriptionStatus
 }
 
 // ──────────────────────────── Pi Events ────────────────────────
@@ -300,8 +295,6 @@ export interface TaskExecutionEvent {
   taskId: string
   runId: string
   subscriptionId: string
-  /** @deprecated Read compatibility for older renderer/main code. Not persisted. */
-  employeeInstanceId?: string
   sequence: number
   type: string
   occurredAt: number
@@ -313,8 +306,6 @@ export interface ToolAuthorizationRequest {
   taskId: string
   runId: string
   subscriptionId: string
-  /** @deprecated Read compatibility for older renderer/main code. Not persisted. */
-  employeeInstanceId?: string
   toolName: string
   input: unknown
   timestamp: number
@@ -324,9 +315,7 @@ export interface ToolAuthorizationRequest {
 export interface PermissionRequest {
   requestId: string     // UUID，用于响应时匹配
   subscriptionId: string
-  /** @deprecated UI compatibility only. */
-  instanceId?: string
-  instanceDisplayName: string
+  subscriptionDisplayName: string
   toolName: string
   description: string   // 人读说明，如"写入文件 ~/Documents/..."
   inputSummary: Record<string, unknown>
@@ -340,7 +329,7 @@ export type SessionState = 'idle' | 'running' | 'awaiting-permission' | 'error' 
 
 export interface ClientState {
   auth: AuthSession | null
-  activeInstanceId: string | null
+  activeSubscriptionId: string | null
   sessionState: SessionState
   lockReason?: string
 }

@@ -23,8 +23,6 @@ export interface TaskRunRecord {
   taskId: string
   owner: TaskOwnerScope
   subscriptionId: string
-  /** @deprecated Read compatibility for older run records. Not persisted. */
-  employeeInstanceId?: string
   modelId: string
   runtimeKey: string
   workspaceDir: string
@@ -49,9 +47,7 @@ export interface TaskRunPaths {
 export interface CreateTaskRunInput {
   taskId: string
   runId: string
-  subscriptionId?: string
-  /** @deprecated Use subscriptionId. */
-  employeeInstanceId?: string
+  subscriptionId: string
   modelId: string
   runtimeKey: string
   workspaceDir: string
@@ -100,8 +96,7 @@ function sanitizeValue(value: unknown, depth = 0, key = ''): unknown {
 }
 
 function sanitizeEvent(event: TaskExecutionEvent): TaskExecutionEvent {
-  const { employeeInstanceId: _legacyEmployeeInstanceId, ...canonicalEvent } = event
-  return { ...canonicalEvent, data: sanitizeValue(event.data) }
+  return { ...event, data: sanitizeValue(event.data) }
 }
 
 function assertSafeId(value: string, name: string): void {
@@ -134,7 +129,8 @@ function parseRunRecord(value: unknown, taskId: string, runId: string, scope: Ta
   if (!subscriptionId || typeof record.endedAt !== 'number' && record.endedAt !== null ||
       !['running', 'completed', 'failed', 'cancelled', 'stopped', 'interrupted'].includes(record.outcome as string) ||
       (record.error !== null && typeof record.error !== 'string')) return null
-  return { ...record as TaskRunRecord, subscriptionId, employeeInstanceId: subscriptionId }
+  const { employeeInstanceId: _legacySubscriptionId, ...canonicalRecord } = record
+  return { ...canonicalRecord as TaskRunRecord, subscriptionId }
 }
 
 export class TaskRunStore implements TaskRunStorePort {
@@ -146,8 +142,7 @@ export class TaskRunStore implements TaskRunStorePort {
   }
 
   async create(scope: TaskOwnerScope, input: CreateTaskRunInput): Promise<TaskRunRecord> {
-    const subscriptionId = input.subscriptionId ?? input.employeeInstanceId
-    if (!subscriptionId) throw new TaskScopeError('A valid subscription is required.')
+    const subscriptionId = input.subscriptionId
     const paths = this.getPaths(scope, input.taskId, input.runId)
     const record: TaskRunRecord = {
       version: 2,
@@ -155,7 +150,6 @@ export class TaskRunStore implements TaskRunStorePort {
       taskId: input.taskId,
       owner: { ...scope },
       subscriptionId,
-      employeeInstanceId: subscriptionId,
       modelId: input.modelId,
       runtimeKey: input.runtimeKey,
       workspaceDir: input.workspaceDir,
@@ -222,16 +216,23 @@ export class TaskRunStore implements TaskRunStorePort {
     for (const line of contents.split(/\r?\n/)) {
       if (!line.trim()) continue
       try {
-        const event = JSON.parse(line) as TaskExecutionEvent
+        const event = JSON.parse(line) as Partial<TaskExecutionEvent> & { employeeInstanceId?: unknown }
         if (event && event.taskId === taskId && event.runId === runId &&
-            typeof event.sequence === 'number' && typeof event.type === 'string') {
-          const legacyEvent = event as TaskExecutionEvent & { employeeInstanceId?: unknown }
-          const subscriptionId = typeof legacyEvent.subscriptionId === 'string'
-            ? legacyEvent.subscriptionId
-            : typeof legacyEvent.employeeInstanceId === 'string' ? legacyEvent.employeeInstanceId : null
+            typeof event.sequence === 'number' && typeof event.type === 'string' &&
+            typeof event.occurredAt === 'number') {
+          const subscriptionId = typeof event.subscriptionId === 'string'
+            ? event.subscriptionId
+            : typeof event.employeeInstanceId === 'string' ? event.employeeInstanceId : null
           if (subscriptionId) {
-            const { employeeInstanceId: _legacyEmployeeInstanceId, ...canonicalEvent } = event as TaskExecutionEvent & { employeeInstanceId?: string }
-            events.push(sanitizeEvent({ ...canonicalEvent, subscriptionId, employeeInstanceId: subscriptionId }))
+            events.push(sanitizeEvent({
+              taskId,
+              runId,
+              subscriptionId,
+              sequence: event.sequence,
+              type: event.type,
+              occurredAt: event.occurredAt,
+              data: event.data,
+            }))
           }
         }
       } catch {
@@ -329,12 +330,9 @@ export class TaskRunStore implements TaskRunStorePort {
     const paths = this.getPaths(scope, event.taskId, event.runId)
     const eventFile = join(paths.taskDir, 'events.jsonl')
     const key = `${scope.enterpriseId}:${scope.memberId}:${event.taskId}`
-    const subscriptionId = event.subscriptionId ?? event.employeeInstanceId
-    if (!subscriptionId) return Promise.reject(new TaskScopeError('A valid subscription is required.'))
-    const canonicalEvent: TaskExecutionEvent = { ...event, subscriptionId }
     return this.enqueue(key, async () => {
       await mkdir(paths.taskDir, { recursive: true })
-      await appendFile(eventFile, `${JSON.stringify(sanitizeEvent(canonicalEvent))}\n`, { encoding: 'utf8', mode: 0o600 })
+      await appendFile(eventFile, `${JSON.stringify(sanitizeEvent(event))}\n`, { encoding: 'utf8', mode: 0o600 })
     })
   }
 
@@ -392,8 +390,7 @@ export class TaskRunStore implements TaskRunStorePort {
     const temporaryFile = `${file}.${randomUUID()}.tmp`
     try {
       await mkdir(join(file, '..'), { recursive: true })
-      const { employeeInstanceId: _legacyEmployeeInstanceId, ...canonicalRecord } = record
-      await writeFile(temporaryFile, JSON.stringify(canonicalRecord), { encoding: 'utf8', mode: 0o600 })
+      await writeFile(temporaryFile, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 })
       await rename(temporaryFile, file)
     } catch (error) {
       await rm(temporaryFile, { force: true }).catch(() => undefined)

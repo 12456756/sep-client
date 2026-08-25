@@ -1,12 +1,5 @@
-import { refreshAccessToken, type LoginResponse, type RefreshResponse } from './auth-api'
-import {
-  clearCredentials,
-  getAuthMeta,
-  getRefreshToken,
-  saveAuthMeta,
-  saveRefreshToken,
-  type AuthMeta,
-} from './credentials'
+import type { LoginResponse, RefreshResponse } from './auth-api'
+import type { AuthMeta } from './credentials'
 
 const EXPIRY_SKEW_MS = 30_000
 
@@ -19,12 +12,27 @@ export class AuthenticationRequiredError extends Error {
   }
 }
 
+export interface AuthSessionStorage {
+  getRefreshToken(): string | null
+  getAuthMeta(): AuthMeta | null
+  saveRefreshToken(token: string): void
+  saveAuthMeta(meta: AuthMeta): void
+  clearCredentials(): void
+}
+
+export interface AuthSessionManagerOptions {
+  refreshAccessToken(refreshToken: string): Promise<RefreshResponse>
+  storage: AuthSessionStorage
+}
+
 export class AuthSessionManager {
   private accessToken: string | null = null
   private accessTokenExpiresAt = 0
   private refreshToken: string | null = null
   private meta: AuthMeta | null = null
   private refreshPromise: Promise<string> | null = null
+
+  constructor(private readonly options: AuthSessionManagerOptions) {}
 
   setLogin(response: LoginResponse): AuthMeta {
     if (!response.enterprise) {
@@ -49,8 +57,8 @@ export class AuthSessionManager {
     }
 
     try {
-      saveRefreshToken(response.refreshToken)
-      saveAuthMeta(this.meta)
+      this.options.storage.saveRefreshToken(response.refreshToken)
+      this.options.storage.saveAuthMeta(this.meta)
     } catch (error) {
       this.clear()
       throw error
@@ -59,7 +67,7 @@ export class AuthSessionManager {
   }
 
   getStoredMeta(): AuthMeta | null {
-    return getAuthMeta()
+    return this.options.storage.getAuthMeta()
   }
 
   getMeta(): AuthMeta | null {
@@ -86,22 +94,27 @@ export class AuthSessionManager {
   }
 
   async restore(): Promise<AuthMeta | null> {
-    const refreshToken = getRefreshToken()
-    const meta = getAuthMeta()
+    const refreshToken = this.options.storage.getRefreshToken()
+    const meta = this.options.storage.getAuthMeta()
     if (!refreshToken || !meta) return null
     this.refreshToken = refreshToken
     this.meta = meta
     try {
       await this.getValidAccessToken()
       return this.meta
-    } catch {
-      this.clear()
+    } catch (error) {
+      if (isAuthenticationRejection(error) && (this.refreshToken || this.meta)) this.clear()
+      else {
+        this.accessToken = null
+        this.accessTokenExpiresAt = 0
+      }
+      if (!isAuthenticationRejection(error)) throw error
       return null
     }
   }
 
   getRefreshToken(): string {
-    if (!this.refreshToken) this.refreshToken = getRefreshToken()
+    if (!this.refreshToken) this.refreshToken = this.options.storage.getRefreshToken()
     if (!this.refreshToken) {
       throw new AuthenticationRequiredError()
     }
@@ -114,15 +127,15 @@ export class AuthSessionManager {
     this.refreshToken = null
     this.meta = null
     this.refreshPromise = null
-    clearCredentials()
+    this.options.storage.clearCredentials()
   }
 
   private async refresh(refreshToken: string): Promise<string> {
     let response: RefreshResponse
     try {
-      response = await refreshAccessToken(refreshToken)
+      response = await this.options.refreshAccessToken(refreshToken)
     } catch (error) {
-      this.clear()
+      if (isAuthenticationRejection(error)) this.clear()
       throw error
     }
     if (!response.accessToken || !response.user || !response.enterprise) {
@@ -143,13 +156,17 @@ export class AuthSessionManager {
     }
     if (response.refreshToken && response.refreshToken !== refreshToken) {
       this.refreshToken = response.refreshToken
-      saveRefreshToken(response.refreshToken)
+      this.options.storage.saveRefreshToken(response.refreshToken)
     }
-    saveAuthMeta(this.meta)
+    this.options.storage.saveAuthMeta(this.meta)
     return response.accessToken
   }
 
   private isAccessTokenExpired(): boolean {
     return !this.accessToken || Date.now() + EXPIRY_SKEW_MS >= this.accessTokenExpiresAt
   }
+}
+
+function isAuthenticationRejection(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && (error as { statusCode?: unknown }).statusCode === 401)
 }

@@ -118,6 +118,7 @@ function parseTask(value: unknown): ClientTask | null {
     ownerId: item.ownerId,
     ownerEnterpriseId: item.ownerEnterpriseId,
     subscriptionId,
+    modelId: typeof item.modelId === 'string' ? item.modelId : null,
     activeRunId: typeof item.activeRunId === 'string' ? item.activeRunId : null,
   }
 }
@@ -228,10 +229,11 @@ export class TaskStore implements TaskStorePort {
       version: 3,
       owner: { ...scope },
       updatedAt: Date.now(),
-      tasks: tasks.map(task => {
-        const { employeeInstanceId: _legacyEmployeeInstanceId, ...canonicalTask } = task
-        return { ...canonicalTask, files: [...task.files], logs: task.logs.map(log => ({ ...log })) }
-      }),
+      tasks: tasks.map(task => ({
+        ...task,
+        files: [...task.files],
+        logs: task.logs.map(log => ({ ...log })),
+      })),
     }
 
     try {

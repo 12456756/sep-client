@@ -1,7 +1,7 @@
 /**
  * src/App.tsx — Main Application
  *
- * Routing: Login → Instance Select → Workspace Home
+ * Routing: Login → Subscription Select → Workspace Home
  */
 
 import { useState, useEffect } from 'react';
@@ -26,18 +26,18 @@ interface ToolApprovalRequest {
   input: unknown;
 }
 
-const INSTANCE_LOAD_TIMEOUT_MS = 3_000;
+const SUBSCRIPTION_LOAD_TIMEOUT_MS = 3_000;
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const [sessionState, setSessionState] = useState<SessionState | null>(null);
-  const [instances, setInstances] = useState<SubscriptionSnapshot[]>([]);
+  const [subscriptions, setSubscriptions] = useState<SubscriptionSnapshot[]>([]);
   const [toolApprovalRequest, setToolApprovalRequest] = useState<ToolApprovalRequest | null>(null);
   const [restoringAuth, setRestoringAuth] = useState(true);
   const [rememberedAccounts, setRememberedAccounts] = useState<RememberedAccount[]>([]);
   const [encryptionAvailable, setEncryptionAvailable] = useState(true);
-  const [loadingInstances, setLoadingInstances] = useState(false);
-  const [instanceError, setInstanceError] = useState<string | null>(null);
+  const [loadingSubscriptions, setLoadingSubscriptions] = useState(false);
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
 
   useEffect(() => {
     void loadRememberedAccounts();
@@ -63,11 +63,38 @@ export default function App() {
     return window.electronAPI.onAuthenticationRequired(() => {
       setAuthState(null);
       setSessionState(null);
-      setInstances([]);
-      setLoadingInstances(false);
-      setInstanceError(null);
+      setSubscriptions([]);
+      setLoadingSubscriptions(false);
+      setSubscriptionError(null);
       setToolApprovalRequest(null);
     });
+  }, []);
+
+  useEffect(() => {
+    const removeDirectoryListener = window.electronAPI.onSubscriptionDirectoryUpdated(nextSubscriptions => {
+      setSubscriptions(nextSubscriptions);
+      setSessionState(current => {
+        if (!current) return nextSubscriptions[0]
+          ? { subscriptionId: nextSubscriptions[0].subscriptionId, subscriptionName: nextSubscriptions[0].name }
+          : null;
+        const currentSubscription = nextSubscriptions.find(item => item.subscriptionId === current.subscriptionId);
+        return currentSubscription
+          ? { subscriptionId: currentSubscription.subscriptionId, subscriptionName: currentSubscription.name }
+          : nextSubscriptions[0]
+            ? { subscriptionId: nextSubscriptions[0].subscriptionId, subscriptionName: nextSubscriptions[0].name }
+            : null;
+      });
+      setSubscriptionError(nextSubscriptions.length ? null : '当前账号没有可用的硅基员工。');
+    });
+    const removeRejectionListener = window.electronAPI.onSubscriptionAuthorizationRejected(rejection => {
+      setSubscriptions(current => current.filter(item => item.subscriptionId !== rejection.subscriptionId));
+      setSessionState(current => current?.subscriptionId === rejection.subscriptionId ? null : current);
+      setSubscriptionError('当前硅基员工的授权或订阅状态已失效，正在刷新可用员工。');
+    });
+    return () => {
+      removeDirectoryListener();
+      removeRejectionListener();
+    };
   }, []);
 
   const loadRememberedAccounts = async () => {
@@ -89,38 +116,38 @@ export default function App() {
   const handleLoginSuccess = (data: AuthState) => {
     setAuthState(data);
     setSessionState(null);
-    setInstances([]);
-    setLoadingInstances(false);
-    setInstanceError(null);
+    setSubscriptions([]);
+    setLoadingSubscriptions(false);
+    setSubscriptionError(null);
   };
 
   useEffect(() => {
     if (!authState || sessionState) return;
     let active = true;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    setLoadingInstances(true);
-    setInstanceError(null);
+    setLoadingSubscriptions(true);
+    setSubscriptionError(null);
 
     const timeout = new Promise<never>((_resolve, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('加载可用硅基员工超时，请检查网络后重试。')), INSTANCE_LOAD_TIMEOUT_MS);
+      timeoutId = setTimeout(() => reject(new Error('加载可用硅基员工超时，请检查网络后重试。')), SUBSCRIPTION_LOAD_TIMEOUT_MS);
     });
 
-    void Promise.race([window.electronAPI.getInstances(), timeout]).then(result => {
+    void Promise.race([window.electronAPI.getSubscriptions(), timeout]).then(result => {
       if (!active) return;
       if (!result.success || !result.data?.length) {
-        setInstanceError(result.error?.message || '当前账号没有可用的硅基员工实例。');
+        setSubscriptionError(result.error?.message || '当前账号没有可用的硅基员工。');
         return;
       }
-      const availableInstances = result.data;
-      const subscription = availableInstances[0];
-      setLoadingInstances(false);
-      setInstances(availableInstances);
+      const availableSubscriptions = result.data;
+      const subscription = availableSubscriptions[0];
+      setLoadingSubscriptions(false);
+      setSubscriptions(availableSubscriptions);
       setSessionState({ subscriptionId: subscription.subscriptionId, subscriptionName: subscription.name });
     }).catch(error => {
-      if (active) setInstanceError(error instanceof Error ? error.message : '获取硅基员工实例失败。');
+      if (active) setSubscriptionError(error instanceof Error ? error.message : '获取硅基员工失败。');
     }).finally(() => {
       if (timeoutId) clearTimeout(timeoutId);
-      if (active) setLoadingInstances(false);
+      if (active) setLoadingSubscriptions(false);
     });
     return () => {
       active = false;
@@ -136,9 +163,9 @@ export default function App() {
     } finally {
       setAuthState(null);
       setSessionState(null);
-      setInstances([]);
-      setLoadingInstances(false);
-      setInstanceError(null);
+      setSubscriptions([]);
+      setLoadingSubscriptions(false);
+      setSubscriptionError(null);
       setToolApprovalRequest(null);
       const result = await window.electronAPI.listRememberedAccounts();
       setRememberedAccounts(result.accounts);
@@ -179,8 +206,8 @@ export default function App() {
     }
 
     if (!sessionState) {
-      if (loadingInstances) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在加载可用的硅基员工…</p></div>;
-      if (instanceError) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={handleLogout}>退出登录</button></div>;
+      if (loadingSubscriptions) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在加载可用的硅基员工…</p></div>;
+      if (subscriptionError) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{subscriptionError}</p><button className="workspace-primary-button" onClick={handleLogout}>退出登录</button></div>;
       return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在准备工作台…</p></div>;
     }
 
@@ -190,7 +217,7 @@ export default function App() {
         enterpriseName={authState.enterprise?.name}
         subscriptionId={sessionState.subscriptionId}
         subscriptionName={sessionState.subscriptionName}
-        instances={instances}
+        subscriptions={subscriptions}
         onLogout={handleLogout}
       />
     );

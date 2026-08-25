@@ -8,7 +8,8 @@ export interface PiHostConfig {
   taskManager: TaskManager
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
-  resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
+  onSubscriptionAuthorizationRejected: (subscriptionId: string, status: 403 | 404) => void
+  resolveEmployee: (subscriptionId: string, modelId?: string | null) => EmployeeRuntimeConfig | null
   userDataDir: string
 }
 
@@ -27,6 +28,7 @@ export class PiHost {
       taskManager: config.taskManager,
       getRefreshToken: config.getRefreshToken,
       onAuthenticationRequired: config.onAuthenticationRequired,
+      onSubscriptionAuthorizationRejected: config.onSubscriptionAuthorizationRejected,
       onEvent: config.onEvent,
       onApprovalRequest: config.onToolApprovalRequest,
       resolveEmployee: config.resolveEmployee,

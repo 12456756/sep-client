@@ -6,9 +6,7 @@ import { PiCodingAgentAdapter } from './sdk'
 export interface PiTaskWorkerContext {
   taskId: string
   runId: string
-  subscriptionId?: string
-  /** @deprecated Use subscriptionId. */
-  employeeInstanceId?: string
+  subscriptionId: string
   modelId: string
   gatewayUrl: string
   workspaceDir: string
@@ -23,6 +21,7 @@ export interface PiTaskWorkerContext {
 interface TokenManagerPort {
   initialize(subscriptionId: string): Promise<void>
   getValidToken(): Promise<string>
+  forceRefresh?(): Promise<string>
   stop(): void
 }
 
@@ -30,6 +29,7 @@ export interface PiTaskWorkerOptions {
   context: PiTaskWorkerContext
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
+  onSubscriptionAuthorizationRejected?: (subscriptionId: string, status: 403 | 404) => void
   onApprovalRequest: (request: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
   onEvent: (event: TaskExecutionEvent) => Promise<void> | void
   onSessionCreated?: (session: { sessionId: string; sessionFile: string | null }) => Promise<void> | void
@@ -44,6 +44,7 @@ export class PiTaskWorker {
   private readonly onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   private readonly onEvent: PiTaskWorkerOptions['onEvent']
   private readonly onSessionCreated: PiTaskWorkerOptions['onSessionCreated']
+  private readonly onSubscriptionAuthorizationRejected: PiTaskWorkerOptions['onSubscriptionAuthorizationRejected']
   private session: PiAgentSession | null = null
   private unsubscribe: (() => void) | null = null
   private active = false
@@ -57,6 +58,7 @@ export class PiTaskWorker {
     this.onApprovalRequest = options.onApprovalRequest
     this.onEvent = options.onEvent
     this.onSessionCreated = options.onSessionCreated
+    this.onSubscriptionAuthorizationRejected = options.onSubscriptionAuthorizationRejected
     this.tokenManager = options.createTokenManager?.() ?? new EmploymentTokenManager({
       getRefreshToken: options.getRefreshToken,
       onAuthenticationRequired: options.onAuthenticationRequired,
@@ -66,9 +68,8 @@ export class PiTaskWorker {
   async run(prompt: string): Promise<void> {
     if (this.active) throw new Error('Pi task worker is already active.')
     this.active = true
-    const subscriptionId = this.context.subscriptionId ?? this.context.employeeInstanceId
-    if (!subscriptionId) throw new Error('A subscription is required to run a task.')
-    let stage = 'instance-token'
+    const subscriptionId = this.context.subscriptionId
+    let stage = 'employment-token'
     const logContext = {
       taskId: this.context.taskId,
       runId: this.context.runId,
@@ -95,6 +96,12 @@ export class PiTaskWorker {
       agentsFiles: this.context.agentsFiles,
       systemPrompt: this.context.systemPrompt,
       getAccessToken: () => this.tokenManager.getValidToken(),
+      refreshAccessToken: this.tokenManager.forceRefresh
+        ? () => this.tokenManager.forceRefresh!()
+        : undefined,
+      onGatewayAuthorizationRejected: status => {
+        this.onSubscriptionAuthorizationRejected?.(subscriptionId, status)
+      },
       authorizeTool: async request => {
         await this.emit('approval_requested', { toolName: request.toolName })
         const approved = await this.onApprovalRequest({
@@ -174,7 +181,7 @@ export class PiTaskWorker {
     const event: TaskExecutionEvent = {
       taskId: this.context.taskId,
       runId: this.context.runId,
-      subscriptionId: this.context.subscriptionId ?? this.context.employeeInstanceId ?? '',
+      subscriptionId: this.context.subscriptionId,
       sequence: ++this.sequence,
       type,
       occurredAt: Date.now(),
