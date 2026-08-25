@@ -24,10 +24,8 @@ export const config = {
    */
   CLIENT_VERSION: process.env['npm_package_version'] || '1.0.0',
 
-  /**
-   * Instance token refresh timing
-   */
-  INSTANCE_TOKEN_REFRESH_BEFORE_MS: 5 * 60 * 1000, // 5 minutes before expiry
+  /** Employment token refresh timing. */
+  EMPLOYMENT_TOKEN_REFRESH_BEFORE_MS: 5 * 60 * 1000,
 
   /**
    * Development mode flags

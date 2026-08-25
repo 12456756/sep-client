@@ -11,6 +11,7 @@ import {
   type ToolCallEvent,
   type ToolCallEventResult,
 } from '@earendil-works/pi-coding-agent'
+import { lazyApi, type ProviderStreams } from '@earendil-works/pi-ai'
 import type {
   PiAgentEvent,
   PiAgentRuntime,
@@ -29,6 +30,198 @@ const MAX_OBJECT_KEYS = 50
 const MAX_DEPTH = 5
 const SENSITIVE_KEY = /authorization|cookie|password|secret|token|api[-_]?key|credential/i
 let gatewayRequestSequence = 0
+
+export type GatewayErrorKind =
+  | 'unauthorized'
+  | 'forbidden'
+  | 'rate_limited'
+  | 'transient'
+  | 'non_retryable'
+
+export interface GatewayErrorInfo {
+  kind: GatewayErrorKind
+  status?: number
+  retryAfterMs?: number
+  retryable: boolean
+  message: string
+}
+
+const MAX_GATEWAY_RETRY_AFTER_MS = 60_000
+const MAX_GATEWAY_TRANSIENT_RETRIES = 2
+const OPENAI_COMPLETIONS_MODULE_ID = '@earendil-works/pi-ai/api/openai-completions'
+const openAICompletionsApi = lazyApi(
+  () => import(OPENAI_COMPLETIONS_MODULE_ID) as Promise<ProviderStreams>,
+)
+
+function getNumericStatus(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const value = error as {
+    status?: unknown
+    statusCode?: unknown
+    response?: { status?: unknown; statusCode?: unknown }
+    cause?: { status?: unknown; statusCode?: unknown }
+  }
+  for (const candidate of [
+    value.status,
+    value.statusCode,
+    value.response?.status,
+    value.response?.statusCode,
+    value.cause?.status,
+    value.cause?.statusCode,
+  ]) {
+    if (typeof candidate === 'number' && Number.isInteger(candidate)) return candidate
+  }
+  return undefined
+}
+
+function getHeader(error: unknown, name: string): string | undefined {
+  if (!error || typeof error !== 'object') return undefined
+  const value = error as {
+    headers?: Headers | Record<string, unknown>
+    response?: { headers?: Headers | Record<string, unknown> }
+  }
+  const headers = value.headers ?? value.response?.headers
+  if (!headers) return undefined
+  if (headers instanceof Headers) return headers.get(name) ?? headers.get(name.toLowerCase()) ?? undefined
+  for (const [key, candidate] of Object.entries(headers)) {
+    if (key.toLowerCase() === name.toLowerCase() && typeof candidate === 'string') return candidate
+  }
+  return undefined
+}
+
+export function parseRetryAfterMs(value: string | undefined, now = Date.now()): number | undefined {
+  if (!value) return undefined
+  const seconds = Number.parseFloat(value.trim())
+  const delay = Number.isFinite(seconds)
+    ? seconds * 1_000
+    : Date.parse(value) - now
+  if (!Number.isFinite(delay)) return undefined
+  return Math.min(MAX_GATEWAY_RETRY_AFTER_MS, Math.max(0, Math.ceil(delay)))
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message.trim()) return truncate(error.message)
+  return truncate(String(error))
+}
+
+/** Classify SDK/provider errors without exposing credentials or raw response bodies. */
+export function classifyGatewayError(error: unknown): GatewayErrorInfo {
+  const status = getNumericStatus(error)
+  const message = errorMessage(error)
+  const lower = message.toLowerCase()
+  const retryAfterMs = parseRetryAfterMs(getHeader(error, 'retry-after'))
+  if (status === 401 || /\b401\b|unauthorized|invalid employment token/i.test(lower)) {
+    return { kind: 'unauthorized', status: status ?? 401, retryable: true, message }
+  }
+  if (status === 403 || /\b403\b|forbidden|subscription|insufficient balance|not authorized/i.test(lower)) {
+    return { kind: 'forbidden', status: status ?? 403, retryable: false, message }
+  }
+  if (status === 429 || /\b429\b|rate.?limit|too many requests/i.test(lower)) {
+    return { kind: 'rate_limited', status: status ?? 429, retryAfterMs, retryable: true, message }
+  }
+  const networkFailure = !status && /network|fetch failed|econn|etimedout|socket|connection reset|terminated/i.test(lower)
+  if (networkFailure || (status !== undefined && status >= 500)) {
+    return { kind: 'transient', status, retryable: true, message }
+  }
+  return { kind: 'non_retryable', status, retryable: false, message }
+}
+
+export function gatewayBackoffMs(
+  info: GatewayErrorInfo,
+  retryIndex: number,
+  baseDelayMs = 1_000,
+): number {
+  if (info.retryAfterMs !== undefined) return info.retryAfterMs
+  return Math.min(8_000, baseDelayMs * 2 ** Math.max(0, retryIndex))
+}
+
+function abortableSleep(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (delayMs <= 0) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('The request was aborted.', 'AbortError'))
+      return
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, delayMs)
+    const onAbort = () => {
+      clearTimeout(timer)
+      reject(new DOMException('The request was aborted.', 'AbortError'))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+/**
+ * Keep gateway recovery bounded at the HTTP boundary. The SDK provider retry
+ * loop is disabled below so a 401 can refresh exactly once per request and a
+ * transient response cannot multiply the token refresh or backoff attempts.
+ */
+export function createGatewayFetch(
+  config: Pick<PiAgentSessionConfig, 'refreshAccessToken' | 'onGatewayAuthorizationRejected'>,
+  baseFetch: typeof globalThis.fetch = globalThis.fetch,
+  sleep: (delayMs: number, signal?: AbortSignal) => Promise<void> = abortableSleep,
+): typeof globalThis.fetch {
+  return async (input, init) => {
+    const request = input instanceof Request ? input.clone() : null
+    const originalHeaders = new Headers(init?.headers ?? request?.headers)
+    const signal = init?.signal ?? request?.signal
+    let authRetried = false
+    let transientRetries = 0
+    let headers = new Headers(originalHeaders)
+
+    for (;;) {
+      const responseInput = request ? request.clone() : input
+      const responseInit = request
+        ? { ...init, headers, signal }
+        : { ...init, headers, signal }
+      let response: Response
+      try {
+        response = await baseFetch(responseInput, responseInit)
+      } catch (error) {
+        if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw error
+        if (transientRetries >= MAX_GATEWAY_TRANSIENT_RETRIES) throw error
+        const delay = gatewayBackoffMs({ kind: 'transient', retryable: true, message: errorMessage(error) }, transientRetries)
+        transientRetries += 1
+        await sleep(delay, signal)
+        continue
+      }
+
+      if (response.status === 401 && config.refreshAccessToken && !authRetried) {
+        authRetried = true
+        await response.body?.cancel()
+        const refreshedToken = await config.refreshAccessToken()
+        headers = new Headers(headers)
+        headers.set('Authorization', buildBearerAuthorizationHeader(refreshedToken))
+        continue
+      }
+
+      if (response.status === 403 || response.status === 404) {
+        config.onGatewayAuthorizationRejected?.(response.status)
+        return response
+      }
+
+      if ((response.status === 429 || response.status >= 500) && transientRetries < MAX_GATEWAY_TRANSIENT_RETRIES) {
+        const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after') ?? undefined)
+        await response.body?.cancel()
+        const info: GatewayErrorInfo = {
+          kind: response.status === 429 ? 'rate_limited' : 'transient',
+          status: response.status,
+          retryAfterMs,
+          retryable: true,
+          message: `SEP gateway returned HTTP ${response.status}`,
+        }
+        const delay = gatewayBackoffMs(info, transientRetries)
+        transientRetries += 1
+        await sleep(delay, signal)
+        continue
+      }
+      return response
+    }
+  }
+}
 
 function truncate(value: string): string {
   const redacted = value
@@ -219,17 +412,15 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
       console.error('[PiGateway] provider request hook entered', { requestId })
       try {
         const normalized = normalizeGatewayPayload(event.payload)
-        let loggedPayload: unknown
-        try {
-          loggedPayload = sanitize(normalized)
-        } catch (error) {
-          console.error('[PiGateway] payload log sanitize failed', {
-            requestId,
-            error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-          })
-          loggedPayload = '[payload logging failed]'
-        }
-        console.error('[PiGateway] normalized provider payload', { requestId, payload: loggedPayload })
+        const record = normalized && typeof normalized === 'object'
+          ? normalized as Record<string, unknown>
+          : undefined
+        console.error('[PiGateway] normalized provider request', {
+          requestId,
+          model: typeof record?.model === 'string' ? record.model : undefined,
+          messageCount: Array.isArray(record?.messages) ? record.messages.length : 0,
+          stream: record?.stream === true,
+        })
         return normalized
       } catch (error) {
         console.error('[PiGateway] payload normalization failed', {
@@ -312,11 +503,18 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     ])
 
     const modelRuntime = await ModelRuntime.create({ modelsPath: null })
+    const gatewayFetch = createGatewayFetch(config)
     modelRuntime.registerProvider('sep-gateway', {
       name: 'SEP Gateway',
       baseUrl: config.gatewayUrl,
       apiKey: 'placeholder',
       api: 'openai-completions',
+      streamSimple: (requestModel, context, options) => openAICompletionsApi.streamSimple(requestModel, context, {
+        ...options,
+        fetch: gatewayFetch,
+        maxRetries: 0,
+        maxRetryDelayMs: MAX_GATEWAY_RETRY_AFTER_MS,
+      }),
       models: [{
         id: config.modelId,
         name: config.modelId,
@@ -334,8 +532,13 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       cwd: config.workspaceDir,
       agentDir: config.agentDir,
       extensionFactories: buildExtensions(config),
-      noSkills: true,
-      noContextFiles: true,
+      noSkills: !config.skillPaths?.length,
+      noContextFiles: !config.agentsFiles?.length,
+      additionalSkillPaths: config.skillPaths,
+      agentsFilesOverride: config.agentsFiles
+        ? () => ({ agentsFiles: config.agentsFiles ?? [] })
+        : undefined,
+      systemPrompt: config.systemPrompt,
     })
     await resourceLoader.reload()
     const extensionState = resourceLoader.getExtensions()

@@ -1,23 +1,27 @@
 import type { TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
-import { InstanceTokenManager } from '../auth/instance-token-manager'
+import { EmploymentTokenManager } from '../auth/employment-token-manager'
 import type { PiAgentRuntime, PiAgentSession } from './pi-agent-runtime'
 import { PiCodingAgentAdapter } from './sdk'
 
 export interface PiTaskWorkerContext {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   gatewayUrl: string
   workspaceDir: string
   agentDir: string
   sessionDir: string
   resumeSessionFile?: string
+  skillPaths?: string[]
+  agentsFiles?: Array<{ path: string; content: string }>
+  systemPrompt?: string
 }
 
 interface TokenManagerPort {
-  initialize(instanceId: string): Promise<void>
+  initialize(subscriptionId: string): Promise<void>
   getValidToken(): Promise<string>
+  forceRefresh?(): Promise<string>
   stop(): void
 }
 
@@ -25,6 +29,7 @@ export interface PiTaskWorkerOptions {
   context: PiTaskWorkerContext
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
+  onSubscriptionAuthorizationRejected?: (subscriptionId: string, status: 403 | 404) => void
   onApprovalRequest: (request: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
   onEvent: (event: TaskExecutionEvent) => Promise<void> | void
   onSessionCreated?: (session: { sessionId: string; sessionFile: string | null }) => Promise<void> | void
@@ -39,6 +44,7 @@ export class PiTaskWorker {
   private readonly onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   private readonly onEvent: PiTaskWorkerOptions['onEvent']
   private readonly onSessionCreated: PiTaskWorkerOptions['onSessionCreated']
+  private readonly onSubscriptionAuthorizationRejected: PiTaskWorkerOptions['onSubscriptionAuthorizationRejected']
   private session: PiAgentSession | null = null
   private unsubscribe: (() => void) | null = null
   private active = false
@@ -52,7 +58,8 @@ export class PiTaskWorker {
     this.onApprovalRequest = options.onApprovalRequest
     this.onEvent = options.onEvent
     this.onSessionCreated = options.onSessionCreated
-    this.tokenManager = options.createTokenManager?.() ?? new InstanceTokenManager({
+    this.onSubscriptionAuthorizationRejected = options.onSubscriptionAuthorizationRejected
+    this.tokenManager = options.createTokenManager?.() ?? new EmploymentTokenManager({
       getRefreshToken: options.getRefreshToken,
       onAuthenticationRequired: options.onAuthenticationRequired,
     })
@@ -61,17 +68,18 @@ export class PiTaskWorker {
   async run(prompt: string): Promise<void> {
     if (this.active) throw new Error('Pi task worker is already active.')
     this.active = true
-    let stage = 'instance-token'
+    const subscriptionId = this.context.subscriptionId
+    let stage = 'employment-token'
     const logContext = {
       taskId: this.context.taskId,
       runId: this.context.runId,
-      employeeInstanceId: this.context.employeeInstanceId,
+      subscriptionId,
       modelId: this.context.modelId,
     }
     console.info('[PiTaskWorker] run started', logContext)
     let session: PiAgentSession
     try {
-      await this.tokenManager.initialize(this.context.employeeInstanceId)
+      await this.tokenManager.initialize(subscriptionId)
       stage = 'session-create'
       console.error('[PiTaskWorker] creating runtime session', {
         runtime: this.runtime.constructor?.name ?? 'unknown',
@@ -84,13 +92,22 @@ export class PiTaskWorker {
       agentDir: this.context.agentDir,
       sessionDir: this.context.sessionDir,
       resumeSessionFile: this.context.resumeSessionFile,
+      skillPaths: this.context.skillPaths,
+      agentsFiles: this.context.agentsFiles,
+      systemPrompt: this.context.systemPrompt,
       getAccessToken: () => this.tokenManager.getValidToken(),
+      refreshAccessToken: this.tokenManager.forceRefresh
+        ? () => this.tokenManager.forceRefresh!()
+        : undefined,
+      onGatewayAuthorizationRejected: status => {
+        this.onSubscriptionAuthorizationRejected?.(subscriptionId, status)
+      },
       authorizeTool: async request => {
         await this.emit('approval_requested', { toolName: request.toolName })
         const approved = await this.onApprovalRequest({
           taskId: this.context.taskId,
           runId: this.context.runId,
-          employeeInstanceId: this.context.employeeInstanceId,
+          subscriptionId,
           toolName: request.toolName,
           input: request.input,
         })
@@ -164,7 +181,7 @@ export class PiTaskWorker {
     const event: TaskExecutionEvent = {
       taskId: this.context.taskId,
       runId: this.context.runId,
-      employeeInstanceId: this.context.employeeInstanceId,
+      subscriptionId: this.context.subscriptionId,
       sequence: ++this.sequence,
       type,
       occurredAt: Date.now(),

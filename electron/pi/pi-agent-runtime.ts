@@ -22,7 +22,15 @@ export interface PiAgentSessionConfig {
   sessionDir: string
   resumeSessionFile?: string
   getAccessToken: () => Promise<string>
+  /** Force one employment-token refresh after a gateway 401. */
+  refreshAccessToken?: () => Promise<string>
+  /** Invalidate cached subscription state after a gateway authorization rejection. */
+  onGatewayAuthorizationRejected?: (status: 403 | 404) => void
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>
+  /** Subscription-isolated skills/context; never read from global ~/.pi. */
+  skillPaths?: string[]
+  agentsFiles?: Array<{ path: string; content: string }>
+  systemPrompt?: string
 }
 
 export interface PiAgentRuntime {

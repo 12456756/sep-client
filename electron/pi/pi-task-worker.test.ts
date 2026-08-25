@@ -22,9 +22,11 @@ class FakeSession implements PiAgentSession {
   disposed = false
   aborted = false
 
+  constructor(private readonly failure?: string) {}
+
   async prompt(): Promise<void> {
     this.listener?.({ type: 'agent_start', data: {} })
-    this.listener?.({ type: 'agent_end', data: { willRetry: false } })
+    this.listener?.({ type: 'agent_end', data: { willRetry: false }, failure: this.failure })
   }
 
   async abort(): Promise<void> { this.aborted = true }
@@ -56,7 +58,7 @@ afterEach(async () => {
 
 function context(root: string) {
   return {
-    taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', modelId: 'model-a',
+    taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', modelId: 'model-a',
     gatewayUrl: 'http://localhost:19999', workspaceDir: root,
     agentDir: join(root, 'agent'), sessionDir: join(root, 'sessions'),
   }
@@ -99,5 +101,22 @@ describe('PiTaskWorker', () => {
     })
     await assert.rejects(worker.run('hello'), /init failed/)
     assert.equal(tokenManager.stopped, true)
+  })
+
+  it('rejects a run when a stream ends with a provider failure', async () => {
+    const tokenManager = new FakeTokenManager()
+    const session = new FakeSession('SEP gateway stream was interrupted.')
+    const runtime: PiAgentRuntime = {
+      async createSession(): Promise<PiAgentSession> { return session },
+    }
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()), getRefreshToken: () => 'refresh-token',
+      onAuthenticationRequired: () => {}, onApprovalRequest: async () => true,
+      onEvent: () => {}, runtime, createTokenManager: () => tokenManager,
+    })
+
+    await assert.rejects(worker.run('hello'), /stream was interrupted/)
+    await worker.dispose()
+    assert.equal(session.disposed, true)
   })
 })

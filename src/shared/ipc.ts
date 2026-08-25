@@ -2,7 +2,7 @@ import type {
   ClientTask,
   ClientTaskStats,
   CreateTaskRequest,
-  EmployeeInstanceSnapshot,
+  SubscriptionSnapshot,
   ForgetAccountResult,
   LoginRequest,
   LoginResult,
@@ -19,6 +19,14 @@ import type {
   ClientTaskMessage,
   ToolAuthorizationRequest,
 } from './types'
+import type {
+  EmployeeSkillsResponse,
+  KnowledgeBaseGrantResponse,
+  KnowledgeBaseSearchRequest,
+  KnowledgeBaseSearchResponse,
+  PackageInfo,
+  SkillPreviewResponse,
+} from '../../electron/auth/auth-api'
 
 export interface IpcError {
   message: string
@@ -35,8 +43,13 @@ export interface TaskCommandResult {
   error?: TaskError
 }
 
-export interface InstanceListResult extends IpcCommandResult {
-  data?: EmployeeInstanceSnapshot[]
+export interface SubscriptionListResult extends IpcCommandResult {
+  data?: SubscriptionSnapshot[]
+}
+
+export interface SubscriptionAuthorizationRejection {
+  subscriptionId: string
+  status: 403 | 404
 }
 
 export interface TaskStatsResult extends IpcCommandResult {
@@ -48,18 +61,18 @@ export interface SelectDirectoryResult extends IpcCommandResult {
 }
 
 export interface CreateTaskInput extends CreateTaskRequest {
-  employeeInstanceId?: string
+  subscriptionId?: string
 }
 
 export interface ExecuteTaskInput {
   taskId: string
-  employeeInstanceId?: string
+  subscriptionId?: string
 }
 
 export interface ContinueTaskInput {
   taskId: string
   prompt: string
-  employeeInstanceId?: string
+  subscriptionId?: string
 }
 
 export interface TaskMessagesResult {
@@ -80,8 +93,16 @@ export interface ElectronAPI {
   getRememberedPassword: (email: string) => Promise<PasswordAvailabilityResult>
   forgetAccount: (email: string) => Promise<ForgetAccountResult>
   logout: () => Promise<LogoutResult>
-  getInstances: () => Promise<InstanceListResult>
-  startSession: (config: { employeeId: string }) => Promise<IpcCommandResult>
+  getCurrentSession: () => Promise<LoginResult>
+  getSubscriptions: () => Promise<SubscriptionListResult>
+  /** @deprecated Use getSubscriptions. */
+  getInstances: () => Promise<SubscriptionListResult>
+  getPackageInfo: (subscriptionId: string) => Promise<{ success: boolean; data?: PackageInfo; error?: IpcError }>
+  getEmployeeSkills: (employeeId: string) => Promise<{ success: boolean; data?: EmployeeSkillsResponse; error?: IpcError }>
+  getSkillPreview: (versionId: string) => Promise<{ success: boolean; data?: SkillPreviewResponse; error?: IpcError }>
+  getKnowledgeBaseGrants: (subscriptionId: string) => Promise<{ success: boolean; data?: KnowledgeBaseGrantResponse; error?: IpcError }>
+  searchKnowledgeBases: (request: KnowledgeBaseSearchRequest) => Promise<{ success: boolean; data?: KnowledgeBaseSearchResponse; error?: IpcError }>
+  startSession: (config: { subscriptionId: string }) => Promise<IpcCommandResult>
   sendPrompt: (text: string) => Promise<{ ok: boolean }>
   stopSession: () => Promise<{ ok: boolean }>
   createTask: (data: CreateTaskInput) => Promise<TaskResult>
@@ -96,6 +117,7 @@ export interface ElectronAPI {
   getTaskTimeline: (taskId: string, runId: string) => Promise<TaskTimelineResult>
   pauseTask: (taskId: string) => Promise<IpcCommandResult>
   cancelTask: (taskId: string) => Promise<IpcCommandResult>
+  setTaskModel: (taskId: string, modelId: string) => Promise<IpcCommandResult>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: () => Promise<SelectDirectoryResult>
@@ -104,5 +126,7 @@ export interface ElectronAPI {
   onTaskUpdated: (callback: (task: ClientTask) => void) => () => void
   onTaskListUpdated: (callback: (tasks: ClientTask[]) => void) => () => void
   onAuthenticationRequired: (callback: () => void) => () => void
+  onSubscriptionDirectoryUpdated: (callback: (subscriptions: SubscriptionSnapshot[]) => void) => () => void
+  onSubscriptionAuthorizationRejected: (callback: (rejection: SubscriptionAuthorizationRejection) => void) => () => void
   sendToolApprovalResponse: (response: ToolApprovalResponse) => void
 }

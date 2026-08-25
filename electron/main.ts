@@ -15,9 +15,22 @@ import type { PiHost } from './pi/pi-host';
 import { TaskManager, TaskPersistenceError, TaskScopeError } from './tasks/task-manager';
 import { TaskRunStore, type TaskRunRecord } from './tasks/task-run-store';
 import { getDeviceFingerprint } from './auth/device-fingerprint';
-import { login, getInstances, AuthApiError, type ClientInstance } from './auth/auth-api';
+import {
+  login,
+  getSubscriptions,
+  getPackageInfo,
+  getEmployeeSkills,
+  getSkillPreview,
+  getKnowledgeBaseGrants,
+  searchKnowledgeBases,
+  refreshAccessToken,
+  AuthApiError,
+  type SubscriptionSnapshot,
+  type KnowledgeBaseSearchRequest,
+} from './auth/auth-api';
 import { AuthSessionManager, AuthenticationRequiredError } from './auth/auth-session-manager';
 import { config } from './infrastructure/config';
+import { SubscriptionRuntimeManager, type PreparedSubscriptionRuntime } from './runtime/subscription-runtime';
 import type {
   AuthError,
   AuthErrorCode,
@@ -29,9 +42,14 @@ import type {
 } from '../src/shared/types';
 import {
   forgetRememberedAccount,
+  clearCredentials,
+  getAuthMeta,
+  getRefreshToken,
   getRememberedPassword,
   listRememberedAccounts,
   saveRememberedAccount,
+  saveAuthMeta,
+  saveRefreshToken,
 } from './auth/credentials';
 
 let mainWindow: BrowserWindow | null = null;
@@ -39,10 +57,26 @@ let piHost: PiHost | null = null;
 let piHostInitialization: Promise<void> | null = null;
 let taskManager: TaskManager | null = null;
 let taskRunStore: TaskRunStore | null = null;
-let activeInstances: ClientInstance[] = [];
-let activeInstanceId: string | null = null;
+let activeSubscriptions: SubscriptionSnapshot[] = [];
+let activeSubscriptionId: string | null = null;
+const preparedRuntimes = new Map<string, PreparedSubscriptionRuntime>();
 let authenticationCleanupPromise: Promise<void> | null = null;
-const authSession = new AuthSessionManager();
+const authSession = new AuthSessionManager({
+  refreshAccessToken,
+  storage: {
+    getRefreshToken,
+    getAuthMeta,
+    saveRefreshToken,
+    saveAuthMeta,
+    clearCredentials,
+  },
+});
+let subscriptionRuntime: SubscriptionRuntimeManager | null = null;
+
+function ensureSubscriptionRuntime(): SubscriptionRuntimeManager {
+  if (!subscriptionRuntime) subscriptionRuntime = new SubscriptionRuntimeManager(app.getPath('userData'), app.getVersion())
+  return subscriptionRuntime
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -111,7 +145,7 @@ function toClientTaskRun(record: TaskRunRecord) {
   return {
     id: record.id,
     taskId: record.taskId,
-    employeeInstanceId: record.employeeInstanceId,
+    subscriptionId: record.subscriptionId,
     modelId: record.modelId,
     runtimeKey: record.runtimeKey,
     outcome: record.outcome,
@@ -128,15 +162,29 @@ function taskError(error: unknown): { code: string; message: string } {
   return { code: 'INTERNAL_ERROR', message: 'The task operation could not be completed.' }
 }
 
-function resolveEmployee(employeeInstanceId: string) {
-  const instance = activeInstances.find(item => item.id === employeeInstanceId)
-  const modelId = instance?.allowedModels?.[0]
-  if (!instance || !modelId) return null
+function resolveEmployee(subscriptionId: string, requestedModelId?: string | null) {
+  const subscription = activeSubscriptions.find(item => item.subscriptionId === subscriptionId)
+  const modelId = requestedModelId || subscription?.allowedModels?.[0]
+  if (!subscription || !modelId || !subscription.allowedModels.includes(modelId)) return null
+  const runtime = preparedRuntimes.get(subscriptionId)
   return {
-    employeeInstanceId,
+    subscriptionId,
     modelId,
     gatewayUrl: config.SEP_GATEWAY_URL,
+    skillPaths: runtime?.skillPaths,
+    agentsFiles: runtime?.agentsFiles,
+    systemPrompt: runtime?.systemPrompt,
   }
+}
+
+async function prepareSubscription(subscriptionId: string): Promise<void> {
+  const subscription = activeSubscriptions.find(item => item.subscriptionId === subscriptionId)
+  if (!subscription) throw new AuthApiError({ statusCode: 403, message: 'The selected subscription is no longer available.', error: 'Forbidden' })
+  const accessToken = await authSession.getValidAccessToken()
+  const meta = authSession.getMeta()
+  if (!meta) throw new AuthenticationRequiredError()
+  const runtime = await ensureSubscriptionRuntime().prepare(subscription, accessToken, meta.enterpriseId)
+  preparedRuntimes.set(subscriptionId, runtime)
 }
 
 function invalidateAuthentication(): void {
@@ -149,13 +197,24 @@ function invalidateAuthentication(): void {
     } finally {
       const manager = await ensureTaskManager()
       manager.clearCurrentUser()
-      activeInstances = []
-      activeInstanceId = null
+      activeSubscriptions = []
+      activeSubscriptionId = null
+      preparedRuntimes.clear()
       authSession.clear()
       mainWindow?.webContents.send('auth:required')
       authenticationCleanupPromise = null
     }
   })()
+}
+
+function invalidateSubscriptionAuthorization(subscriptionId: string, status: 403 | 404): void {
+  activeSubscriptions = activeSubscriptions.filter(item => item.subscriptionId !== subscriptionId)
+  preparedRuntimes.delete(subscriptionId)
+  if (activeSubscriptionId === subscriptionId) activeSubscriptionId = null
+  mainWindow?.webContents.send('subscription:authorization-rejected', { subscriptionId, status })
+  void refreshSubscriptionDirectory(true).catch(error => {
+    console.warn('[main] Failed to refresh subscriptions after gateway rejection:', error instanceof Error ? error.name : 'unknown')
+  })
 }
 
 // 延迟加载 PiHost，避免启动时加载 pi-coding-agent
@@ -254,6 +313,7 @@ async function initPiHost(): Promise<void> {
     taskManager: manager,
     getRefreshToken: () => authSession.getRefreshToken(),
     onAuthenticationRequired: invalidateAuthentication,
+    onSubscriptionAuthorizationRejected: invalidateSubscriptionAuthorization,
     resolveEmployee,
     userDataDir: app.getPath('userData'),
   });
@@ -318,8 +378,9 @@ ipcMain.handle('auth:login', async (_event, input: unknown): Promise<LoginResult
     authSession.setLogin(response)
     const manager = await ensureTaskManager()
     await manager.setCurrentUser(response.user.id, response.enterprise.id)
-    activeInstances = []
-    activeInstanceId = null
+    activeSubscriptions = []
+    activeSubscriptionId = null
+    preparedRuntimes.clear()
     saveRememberedAccount(
       {
         email: response.user.email || email,
@@ -363,8 +424,9 @@ ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
     if (piHost) await piHost.stopAllSessions()
     const manager = await ensureTaskManager()
     manager.clearCurrentUser()
-    activeInstances = []
-    activeInstanceId = null
+    activeSubscriptions = []
+    activeSubscriptionId = null
+    preparedRuntimes.clear()
     authSession.clear()
     return { success: true, data: null }
   } catch (error) {
@@ -372,21 +434,42 @@ ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
   }
 })
 
-// ── Auth: Get instances ──────────────────────────────────────────────────────
-
-ipcMain.handle('auth:get-instances', async () => {
+ipcMain.handle('auth:get-current-session', async (): Promise<LoginResult> => {
   try {
-    const instances = await getInstances(authSession.getAccessToken());
-
-    // Filter only ACTIVE instances
-    activeInstances = instances.filter(inst => inst.status === 'ACTIVE')
-    if (activeInstanceId && !activeInstances.some(instance => instance.id === activeInstanceId)) {
-      activeInstanceId = null
-    }
-
+    const meta = await authSession.restore()
+    if (!meta) return { success: false, error: authError('AUTH_REQUIRED', 'Please sign in.', 401) }
+    const manager = await ensureTaskManager()
+    await manager.setCurrentUser(meta.memberId, meta.enterpriseId)
     return {
       success: true,
-      data: activeInstances,
+      data: {
+        user: { id: meta.memberId, email: meta.email, name: meta.displayName },
+        enterprise: { id: meta.enterpriseId, name: meta.enterpriseName },
+      },
+    }
+  } catch (error) {
+    return { success: false, error: mapAuthError(error) }
+  }
+})
+
+// ── Auth: Get subscriptions ─────────────────────────────────────────────────
+
+async function refreshSubscriptionDirectory(notifyRenderer = false): Promise<SubscriptionSnapshot[]> {
+  const subscriptions = await getSubscriptions(await authSession.getValidAccessToken())
+  activeSubscriptions = subscriptions.filter(subscription => subscription.status === 'ACTIVE')
+  if (activeSubscriptionId && !activeSubscriptions.some(subscription => subscription.subscriptionId === activeSubscriptionId)) {
+    preparedRuntimes.delete(activeSubscriptionId)
+    activeSubscriptionId = null
+  }
+  if (notifyRenderer) mainWindow?.webContents.send('subscription:directory-updated', activeSubscriptions)
+  return activeSubscriptions
+}
+
+async function loadSubscriptions() {
+  try {
+    return {
+      success: true,
+      data: await refreshSubscriptionDirectory(),
     };
   } catch (error) {
     if (error instanceof AuthenticationRequiredError) {
@@ -412,22 +495,105 @@ ipcMain.handle('auth:get-instances', async () => {
       },
     };
   }
-});
+}
+
+ipcMain.handle('auth:get-subscriptions', loadSubscriptions)
+// Compatibility channel for older renderer builds during the endpoint migration.
+ipcMain.handle('auth:get-instances', loadSubscriptions)
+
+ipcMain.handle('subscription:get-package', async (_event, subscriptionId: unknown) => {
+  try {
+    if (typeof subscriptionId !== 'string' || !subscriptionId) return { success: false, error: { message: 'A valid subscription ID is required.', statusCode: 400 } }
+    return { success: true, data: await getPackageInfo(await authSession.getValidAccessToken(), subscriptionId) }
+  } catch (error) {
+    if (error instanceof AuthApiError && error.isUnauthorized) invalidateAuthentication()
+    return { success: false, error: { message: error instanceof Error ? error.message : 'Package lookup failed.', statusCode: error instanceof AuthApiError ? error.statusCode : 0 } }
+  }
+})
+
+ipcMain.handle('subscription:get-skills', async (_event, employeeId: unknown) => {
+  try {
+    if (typeof employeeId !== 'string' || !employeeId) return { success: false, error: { message: 'A valid employee ID is required.', statusCode: 400 } }
+    return { success: true, data: await getEmployeeSkills(await authSession.getValidAccessToken(), employeeId) }
+  } catch (error) {
+    if (error instanceof AuthApiError && error.isUnauthorized) invalidateAuthentication()
+    return { success: false, error: { message: error instanceof Error ? error.message : 'Skill lookup failed.', statusCode: error instanceof AuthApiError ? error.statusCode : 0 } }
+  }
+})
+
+ipcMain.handle('subscription:get-skill-preview', async (_event, versionId: unknown) => {
+  try {
+    if (typeof versionId !== 'string' || !versionId) return { success: false, error: { message: 'A valid skill version ID is required.', statusCode: 400 } }
+    return { success: true, data: await getSkillPreview(await authSession.getValidAccessToken(), versionId) }
+  } catch (error) {
+    if (error instanceof AuthApiError && error.isUnauthorized) invalidateAuthentication()
+    return { success: false, error: { message: error instanceof Error ? error.message : 'Skill preview failed.', statusCode: error instanceof AuthApiError ? error.statusCode : 0 } }
+  }
+})
+
+ipcMain.handle('subscription:get-knowledge-base-grants', async (_event, subscriptionId: unknown) => {
+  try {
+    if (typeof subscriptionId !== 'string' || !subscriptionId) {
+      return { success: false, error: { message: 'A valid subscription ID is required.', statusCode: 400 } }
+    }
+    return { success: true, data: await getKnowledgeBaseGrants(await authSession.getValidAccessToken(), subscriptionId) }
+  } catch (error) {
+    if (error instanceof AuthApiError && error.isUnauthorized) invalidateAuthentication()
+    return {
+      success: false,
+      error: {
+        message: error instanceof Error ? error.message : 'Knowledge base grants lookup failed.',
+        statusCode: error instanceof AuthApiError ? error.statusCode : 0,
+      },
+    }
+  }
+})
+
+ipcMain.handle('subscription:search-knowledge-bases', async (_event, input: unknown) => {
+  try {
+    if (!isRecord(input) || typeof input.query !== 'string' || typeof input.subscriptionId !== 'string') {
+      return { success: false, error: { message: 'A query and subscription ID are required.', statusCode: 400 } }
+    }
+    const strategy = isKnowledgeBaseSearchStrategy(input.strategy) ? input.strategy : undefined
+    const request: KnowledgeBaseSearchRequest = {
+      query: input.query,
+      subscriptionId: input.subscriptionId,
+      ...(typeof input.topK === 'number' ? { topK: input.topK } : {}),
+      ...(typeof input.scoreThreshold === 'number' ? { scoreThreshold: input.scoreThreshold } : {}),
+      ...(strategy ? { strategy } : {}),
+    }
+    return { success: true, data: await searchKnowledgeBases(await authSession.getValidAccessToken(), request) }
+  } catch (error) {
+    if (error instanceof AuthApiError && error.isUnauthorized) invalidateAuthentication()
+    return {
+      success: false,
+      error: {
+        message: error instanceof Error ? error.message : 'Knowledge base search failed.',
+        statusCode: error instanceof AuthApiError ? error.statusCode : 0,
+      },
+    }
+  }
+})
+
+function isKnowledgeBaseSearchStrategy(value: unknown): value is NonNullable<KnowledgeBaseSearchRequest['strategy']> {
+  return value === 'auto' || value === 'lexical' || value === 'vector' || value === 'hybrid'
+
+}
 
 // ── Pi Session ───────────────────────────────────────────────────────────────
 
-ipcMain.handle('pi:start-session', async (_event, session: { employeeId: string }) => {
+ipcMain.handle('pi:start-session', async (_event, session: { subscriptionId: string }) => {
   try {
-    if (typeof session?.employeeId !== 'string' || !session.employeeId) {
+    if (typeof session?.subscriptionId !== 'string' || !session.subscriptionId) {
       return {
         success: false,
         error: { message: 'A valid employee ID is required', statusCode: 400 },
       };
     }
-    if (!resolveEmployee(session.employeeId)) {
+    if (!resolveEmployee(session.subscriptionId)) {
       return {
         success: false,
-        error: { message: 'The selected instance is no longer available.', statusCode: 403 },
+        error: { message: 'The selected subscription is no longer available.', statusCode: 403 },
       };
     }
 
@@ -436,8 +602,9 @@ ipcMain.handle('pi:start-session', async (_event, session: { employeeId: string 
       await initPiHost();
     }
     if (!piHost) throw new Error('Failed to initialize piHost');
-    await piHost.startSession({ employeeId: session.employeeId })
-    activeInstanceId = session.employeeId
+    await prepareSubscription(session.subscriptionId)
+    await piHost.startSession({ subscriptionId: session.subscriptionId })
+    activeSubscriptionId = session.subscriptionId
     return { success: true };
   } catch (error) {
     return {
@@ -456,28 +623,29 @@ ipcMain.handle('pi:send-prompt', async (_event, text: string) => {
   return { ok: true };
 });
 
-ipcMain.handle('pi:stop-session', async (_event, employeeInstanceId?: unknown) => {
+ipcMain.handle('pi:stop-session', async (_event, subscriptionId?: unknown) => {
   if (!piHost) throw new Error('piHost not initialized')
-  if (typeof employeeInstanceId !== 'undefined' && (typeof employeeInstanceId !== 'string' || !employeeInstanceId)) {
+  if (typeof subscriptionId !== 'undefined' && (typeof subscriptionId !== 'string' || !subscriptionId)) {
     return { ok: false }
   }
-  await piHost.stopSession(employeeInstanceId)
+  await piHost.stopSession(subscriptionId)
   return { ok: true }
 })
 
 // ── Task Management ──────────────────────────────────────────────────────────
 
-ipcMain.handle('task:create', async (_event, data: { title: string; prompt: string; workDir?: string; employeeInstanceId?: string }) => {
+ipcMain.handle('task:create', async (_event, data: { title: string; prompt: string; workDir?: string; subscriptionId?: string; modelId?: string }) => {
   try {
     if (!data || typeof data.title !== 'string' || typeof data.prompt !== 'string') {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'Invalid task request.' } }
     }
-    const employeeInstanceId = data.employeeInstanceId ?? activeInstanceId
-    if (employeeInstanceId && !resolveEmployee(employeeInstanceId)) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
+    const subscriptionId = data.subscriptionId ?? activeSubscriptionId
+    const employee = subscriptionId ? resolveEmployee(subscriptionId, data.modelId) : null
+    if (subscriptionId && !employee) {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee or model is unavailable.' } }
     }
     const manager = await ensureTaskManager()
-    const task = await manager.createTask(data.title, data.prompt, data.workDir, employeeInstanceId)
+    const task = await manager.createTask(data.title, data.prompt, data.workDir, subscriptionId, employee?.modelId ?? null)
     return { success: true, task }
   } catch (error) {
     return { success: false, error: taskError(error) }
@@ -491,15 +659,18 @@ ipcMain.handle('task:execute', async (_event, input: unknown) => {
       : isRecord(input) && typeof input.taskId === 'string'
         ? input.taskId
         : null
-    const employeeInstanceId = isRecord(input) && typeof input.employeeInstanceId === 'string'
-      ? input.employeeInstanceId
-      : activeInstanceId
+    const subscriptionId = isRecord(input) && typeof input.subscriptionId === 'string'
+      ? input.subscriptionId
+      : activeSubscriptionId
     if (!taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     }
     if (!piHost) await initPiHost()
     if (!piHost) throw new Error('Pi host is unavailable.')
-    if (employeeInstanceId) await piHost.startSession({ employeeId: employeeInstanceId })
+    if (subscriptionId) {
+      await prepareSubscription(subscriptionId)
+      await piHost.startSession({ subscriptionId })
+    }
     await piHost.executeTask(taskId)
     return { success: true }
   } catch (error) {
@@ -514,16 +685,17 @@ ipcMain.handle('task:continue', async (_event, input: unknown) => {
     }
     const manager = await ensureTaskManager()
     const task = await manager.getTask(input.taskId)
-    if (!task || !task.employeeInstanceId) {
+    if (!task || !task.subscriptionId) {
       return { success: false, error: { code: 'NOT_FOUND', message: 'Task or employee binding not found.' } }
     }
-    const employeeInstanceId = typeof input.employeeInstanceId === 'string' ? input.employeeInstanceId : task.employeeInstanceId
-    if (employeeInstanceId !== task.employeeInstanceId || !resolveEmployee(employeeInstanceId)) {
+    const subscriptionId = typeof input.subscriptionId === 'string' ? input.subscriptionId : task.subscriptionId
+    if (subscriptionId !== task.subscriptionId || !resolveEmployee(subscriptionId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
     if (!piHost) await initPiHost()
     if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.startSession({ employeeId: employeeInstanceId })
+    await prepareSubscription(subscriptionId)
+    await piHost.startSession({ subscriptionId })
     await piHost.continueTask(input.taskId, input.prompt)
     return { success: true }
   } catch (error) {
@@ -551,13 +723,14 @@ ipcMain.handle('task:retry', async (_event, taskId: unknown) => {
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
     if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    const employeeInstanceId = task.employeeInstanceId ?? activeInstanceId
-    if (!employeeInstanceId || !resolveEmployee(employeeInstanceId)) {
+    const subscriptionId = task.subscriptionId ?? activeSubscriptionId
+    if (!subscriptionId || !resolveEmployee(subscriptionId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
     if (!piHost) await initPiHost()
     if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.startSession({ employeeId: employeeInstanceId })
+    await prepareSubscription(subscriptionId)
+    await piHost.startSession({ subscriptionId })
     await piHost.retryTask(taskId)
     return { success: true }
   } catch (error) {
@@ -664,6 +837,24 @@ ipcMain.handle('task:cancel', async (_event, taskId: unknown) => {
   }
 })
 
+ipcMain.handle('task:set-model', async (_event, input: unknown) => {
+  try {
+    if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.modelId !== 'string' || !input.taskId || !input.modelId) {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and model are required.' } }
+    }
+    const manager = await ensureTaskManager()
+    const task = await manager.getTask(input.taskId)
+    if (!task || !task.subscriptionId) return { success: false, error: { code: 'NOT_FOUND', message: 'Task or subscription binding not found.' } }
+    if (!resolveEmployee(task.subscriptionId, input.modelId)) {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected model is unavailable.' } }
+    }
+    await manager.setTaskModel(input.taskId, input.modelId)
+    return { success: true }
+  } catch (error) {
+    return { success: false, error: taskError(error) }
+  }
+})
+
 ipcMain.handle('task:delete', async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
@@ -735,6 +926,15 @@ app.whenReady().then(async () => {
       createWindow();
     }
   });
+
+  app.on('browser-window-focus', () => {
+    if (!authSession.getMeta()) return
+    void refreshSubscriptionDirectory(true).catch(error => {
+      if (error instanceof AuthenticationRequiredError || error instanceof AuthApiError && error.isUnauthorized) {
+        invalidateAuthentication()
+      }
+    })
+  })
 });
 
 app.on('window-all-closed', () => {

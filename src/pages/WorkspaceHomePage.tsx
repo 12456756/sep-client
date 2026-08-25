@@ -5,13 +5,13 @@ import { WorkspaceComposer } from '../components/workspace/WorkspaceComposer';
 import { WorkspaceSidebar } from '../components/workspace/WorkspaceSidebar';
 import { WorkflowView } from '../components/workspace/WorkflowView';
 import { useWorkspaceDemo, type TaskStatus } from '../features/workspace/useWorkspaceDemo';
-import type { EmployeeInstanceSnapshot } from '../shared/types';
+import type { SubscriptionSnapshot } from '../shared/types';
 
-interface Props { userName: string; enterpriseName?: string; employeeInstanceId: string; employeeInstanceName: string; instances?: EmployeeInstanceSnapshot[]; onLogout: () => Promise<void> }
+interface Props { userName: string; enterpriseName?: string; subscriptionId?: string; subscriptionName?: string; subscriptions?: SubscriptionSnapshot[]; onLogout: () => Promise<void> }
 const statusLabel: Record<TaskStatus, string> = { queued: '排队中', running: '运行中', 'waiting-approval': '待审批', completed: '已完成', failed: '失败', cancelled: '已取消', stopped: '已停止' };
 
-export function WorkspaceHomePage({ userName, enterpriseName, employeeInstanceId, employeeInstanceName, instances, onLogout }: Props) {
-  const workspace = useWorkspaceDemo({ employeeInstanceId, employeeName: employeeInstanceName, instances });
+export function WorkspaceHomePage({ userName, enterpriseName, subscriptionId, subscriptionName, subscriptions, onLogout }: Props) {
+  const workspace = useWorkspaceDemo({ subscriptionId, employeeName: subscriptionName, subscriptions });
   const [mode, setMode] = useState<'conversation' | 'workflow'>('conversation');
   const [navigationBusy, setNavigationBusy] = useState(false);
   const selectedTask = workspace.tasks.find((item) => item.id === workspace.selectedTaskId);

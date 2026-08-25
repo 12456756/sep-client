@@ -22,7 +22,7 @@ export interface TaskRunRecord {
   id: string
   taskId: string
   owner: TaskOwnerScope
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   runtimeKey: string
   workspaceDir: string
@@ -47,7 +47,7 @@ export interface TaskRunPaths {
 export interface CreateTaskRunInput {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   runtimeKey: string
   workspaceDir: string
@@ -111,6 +111,28 @@ function assertContained(root: string, target: string): void {
   }
 }
 
+function parseRunRecord(value: unknown, taskId: string, runId: string, scope: TaskOwnerScope): TaskRunRecord | null {
+  if (!value || typeof value !== 'object') return null
+  const record = value as Partial<TaskRunRecord> & { employeeInstanceId?: unknown }
+  if (
+    (record.version !== 1 && record.version !== 2) || record.id !== runId || record.taskId !== taskId ||
+    !record.owner || record.owner.memberId !== scope.memberId || record.owner.enterpriseId !== scope.enterpriseId ||
+    typeof record.modelId !== 'string' || typeof record.runtimeKey !== 'string' ||
+    typeof record.workspaceDir !== 'string' || typeof record.sessionDir !== 'string' ||
+    typeof record.agentDir !== 'string' || typeof record.startedAt !== 'number' ||
+    (record.sessionId !== null && typeof record.sessionId !== 'string') ||
+    (record.sessionFile !== null && typeof record.sessionFile !== 'string')
+  ) return null
+  const subscriptionId = typeof record.subscriptionId === 'string'
+    ? record.subscriptionId
+    : typeof record.employeeInstanceId === 'string' ? record.employeeInstanceId : null
+  if (!subscriptionId || typeof record.endedAt !== 'number' && record.endedAt !== null ||
+      !['running', 'completed', 'failed', 'cancelled', 'stopped', 'interrupted'].includes(record.outcome as string) ||
+      (record.error !== null && typeof record.error !== 'string')) return null
+  const { employeeInstanceId: _legacySubscriptionId, ...canonicalRecord } = record
+  return { ...canonicalRecord as TaskRunRecord, subscriptionId }
+}
+
 export class TaskRunStore implements TaskRunStorePort {
   private readonly rootDir: string
   private readonly writeChains = new Map<string, Promise<void>>()
@@ -120,13 +142,14 @@ export class TaskRunStore implements TaskRunStorePort {
   }
 
   async create(scope: TaskOwnerScope, input: CreateTaskRunInput): Promise<TaskRunRecord> {
+    const subscriptionId = input.subscriptionId
     const paths = this.getPaths(scope, input.taskId, input.runId)
     const record: TaskRunRecord = {
       version: 2,
       id: input.runId,
       taskId: input.taskId,
       owner: { ...scope },
-      employeeInstanceId: input.employeeInstanceId,
+      subscriptionId,
       modelId: input.modelId,
       runtimeKey: input.runtimeKey,
       workspaceDir: input.workspaceDir,
@@ -152,12 +175,7 @@ export class TaskRunStore implements TaskRunStorePort {
   async get(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskRunRecord | null> {
     const paths = this.getPaths(scope, taskId, runId)
     try {
-      const record = JSON.parse(await readFile(paths.runFile, 'utf8')) as TaskRunRecord
-      if (
-        (record.version !== 1 && record.version !== 2) || record.id !== runId || record.taskId !== taskId ||
-        record.owner.memberId !== scope.memberId || record.owner.enterpriseId !== scope.enterpriseId
-      ) return null
-      return record
+      return parseRunRecord(JSON.parse(await readFile(paths.runFile, 'utf8')) as unknown, taskId, runId, scope)
     } catch {
       return null
     }
@@ -198,11 +216,25 @@ export class TaskRunStore implements TaskRunStorePort {
     for (const line of contents.split(/\r?\n/)) {
       if (!line.trim()) continue
       try {
-        const event = JSON.parse(line) as TaskExecutionEvent
-        if (
-          event && event.taskId === taskId && event.runId === runId &&
-          typeof event.sequence === 'number' && typeof event.type === 'string'
-        ) events.push(sanitizeEvent(event))
+        const event = JSON.parse(line) as Partial<TaskExecutionEvent> & { employeeInstanceId?: unknown }
+        if (event && event.taskId === taskId && event.runId === runId &&
+            typeof event.sequence === 'number' && typeof event.type === 'string' &&
+            typeof event.occurredAt === 'number') {
+          const subscriptionId = typeof event.subscriptionId === 'string'
+            ? event.subscriptionId
+            : typeof event.employeeInstanceId === 'string' ? event.employeeInstanceId : null
+          if (subscriptionId) {
+            events.push(sanitizeEvent({
+              taskId,
+              runId,
+              subscriptionId,
+              sequence: event.sequence,
+              type: event.type,
+              occurredAt: event.occurredAt,
+              data: event.data,
+            }))
+          }
+        }
       } catch {
         // Ignore a partial or corrupt trailing JSONL line.
       }
@@ -330,18 +362,14 @@ export class TaskRunStore implements TaskRunStorePort {
     const paths = this.getPaths(scope, taskId, runId)
     const key = `${scope.enterpriseId}:${scope.memberId}:${taskId}:${runId}`
     await this.enqueue(key, async () => {
-      let record: TaskRunRecord
+      let record: TaskRunRecord | null
       try {
-        record = JSON.parse(await readFile(paths.runFile, 'utf8')) as TaskRunRecord
+        record = parseRunRecord(JSON.parse(await readFile(paths.runFile, 'utf8')) as unknown, taskId, runId, scope)
       } catch (error) {
         throw new TaskPersistenceError(error instanceof Error ? error.message : undefined)
       }
       if (
-        (record.version !== 1 && record.version !== 2) ||
-        record.id !== runId ||
-        record.taskId !== taskId ||
-        record.owner.memberId !== scope.memberId ||
-        record.owner.enterpriseId !== scope.enterpriseId
+        !record
       ) {
         throw new TaskScopeError('Task run does not belong to the active user.')
       }

@@ -1,4 +1,4 @@
-import { Bot, CheckSquare, ChevronLeft, ChevronRight, Filter, FolderKanban, LogOut, Plus, Search, Sparkles, Wrench } from 'lucide-react';
+import { Bot, CheckSquare, ChevronLeft, ChevronRight, Filter, FolderKanban, LogOut, Plus, Search, Wrench } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { Task, TaskFilters, TaskStatus, WorkspaceView } from '../../features/workspace/useWorkspaceDemo';
 

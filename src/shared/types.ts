@@ -96,7 +96,8 @@ export interface ClientTask {
   progress?: number
   ownerId: string
   ownerEnterpriseId: string
-  employeeInstanceId: string | null
+  subscriptionId: string | null
+  modelId?: string | null
   activeRunId: string | null
 }
 
@@ -106,7 +107,7 @@ export type ClientTaskRunOutcome = 'running' | 'completed' | 'failed' | 'cancell
 export interface ClientTaskRun {
   id: string
   taskId: string
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   runtimeKey: string
   outcome: ClientTaskRunOutcome
@@ -182,6 +183,7 @@ export interface CreateTaskRequest {
   title: string
   prompt: string
   workDir?: string
+  modelId?: string
 }
 
 export interface AuthSession {
@@ -191,14 +193,16 @@ export interface AuthSession {
   enterpriseName: string
 }
 
-// ──────────────────────────── Instances ────────────────────────
+// ──────────────────────────── Subscriptions ────────────────────
 
-export type InstanceStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
+export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
 
-export interface EmployeeInstanceSnapshot {
+export interface SubscriptionSnapshot {
   id: string
+  subscriptionId: string
+  employeeId: string
   name: string
-  status: InstanceStatus
+  status: SubscriptionStatus
   templateVersion: string
   template: {
     id: string
@@ -210,6 +214,7 @@ export interface EmployeeInstanceSnapshot {
     name: string
   } | null
   allowedModels: string[]
+  upgradeAvailable?: boolean
 }
 
 export interface PackageRef {
@@ -217,8 +222,8 @@ export interface PackageRef {
   spec: string          // e.g. "@sep/employee-video@1.2.0" or git URL
 }
 
-export interface EmployeeInstance {
-  instanceId: string
+export interface SubscriptionRuntimeDescriptor {
+  subscriptionId: string
   displayName: string
   description?: string
   templateId: string
@@ -227,7 +232,7 @@ export interface EmployeeInstance {
   config: Record<string, unknown>
   allowedTools: string[]
   allowedModels: string[]
-  status: InstanceStatus
+  status: SubscriptionStatus
 }
 
 // ──────────────────────────── Pi Events ────────────────────────
@@ -289,7 +294,7 @@ export type PiClientEvent =
 export interface TaskExecutionEvent {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   sequence: number
   type: string
   occurredAt: number
@@ -300,7 +305,7 @@ export interface ToolAuthorizationRequest {
   requestId: string
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   toolName: string
   input: unknown
   timestamp: number
@@ -309,8 +314,8 @@ export interface ToolAuthorizationRequest {
 /** 高危工具调用，等待用户批准（文档 §6.2 措施 ④） */
 export interface PermissionRequest {
   requestId: string     // UUID，用于响应时匹配
-  instanceId: string
-  instanceDisplayName: string
+  subscriptionId: string
+  subscriptionDisplayName: string
   toolName: string
   description: string   // 人读说明，如"写入文件 ~/Documents/..."
   inputSummary: Record<string, unknown>
@@ -324,7 +329,7 @@ export type SessionState = 'idle' | 'running' | 'awaiting-permission' | 'error' 
 
 export interface ClientState {
   auth: AuthSession | null
-  activeInstanceId: string | null
+  activeSubscriptionId: string | null
   sessionState: SessionState
   lockReason?: string
 }
