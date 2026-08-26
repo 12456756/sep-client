@@ -40,7 +40,6 @@ let piHostInitialization: Promise<void> | null = null;
 let taskManager: TaskManager | null = null;
 let taskRunStore: TaskRunStore | null = null;
 let activeInstances: ClientInstance[] = [];
-let activeInstanceId: string | null = null;
 let authenticationCleanupPromise: Promise<void> | null = null;
 const authSession = new AuthSessionManager();
 
@@ -150,7 +149,6 @@ function invalidateAuthentication(): void {
       const manager = await ensureTaskManager()
       manager.clearCurrentUser()
       activeInstances = []
-      activeInstanceId = null
       authSession.clear()
       mainWindow?.webContents.send('auth:required')
       authenticationCleanupPromise = null
@@ -179,9 +177,9 @@ function createWindow(): void {
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#00000000',
+      color: '#f1f1f0',
       symbolColor: '#6f6567',
-      height: 40,
+      height: 44,
     },
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
@@ -319,7 +317,6 @@ ipcMain.handle('auth:login', async (_event, input: unknown): Promise<LoginResult
     const manager = await ensureTaskManager()
     await manager.setCurrentUser(response.user.id, response.enterprise.id)
     activeInstances = []
-    activeInstanceId = null
     saveRememberedAccount(
       {
         email: response.user.email || email,
@@ -364,7 +361,6 @@ ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
     const manager = await ensureTaskManager()
     manager.clearCurrentUser()
     activeInstances = []
-    activeInstanceId = null
     authSession.clear()
     return { success: true, data: null }
   } catch (error) {
@@ -380,9 +376,6 @@ ipcMain.handle('auth:get-instances', async () => {
 
     // Filter only ACTIVE instances
     activeInstances = instances.filter(inst => inst.status === 'ACTIVE')
-    if (activeInstanceId && !activeInstances.some(instance => instance.id === activeInstanceId)) {
-      activeInstanceId = null
-    }
 
     return {
       success: true,
@@ -414,57 +407,6 @@ ipcMain.handle('auth:get-instances', async () => {
   }
 });
 
-// ── Pi Session ───────────────────────────────────────────────────────────────
-
-ipcMain.handle('pi:start-session', async (_event, session: { employeeId: string }) => {
-  try {
-    if (typeof session?.employeeId !== 'string' || !session.employeeId) {
-      return {
-        success: false,
-        error: { message: 'A valid employee ID is required', statusCode: 400 },
-      };
-    }
-    if (!resolveEmployee(session.employeeId)) {
-      return {
-        success: false,
-        error: { message: 'The selected instance is no longer available.', statusCode: 403 },
-      };
-    }
-
-    // 按需初始化 PiHost（首次使用时）
-    if (!piHost) {
-      await initPiHost();
-    }
-    if (!piHost) throw new Error('Failed to initialize piHost');
-    await piHost.startSession({ employeeId: session.employeeId })
-    activeInstanceId = session.employeeId
-    return { success: true };
-  } catch (error) {
-    return {
-      success: false,
-      error: {
-        message: error instanceof Error ? error.message : 'Failed to start session',
-        statusCode: error instanceof AuthApiError ? error.statusCode : 0,
-      },
-    };
-  }
-});
-
-ipcMain.handle('pi:send-prompt', async (_event, text: string) => {
-  if (!piHost) throw new Error('piHost not initialized');
-  await piHost.sendPrompt(text);
-  return { ok: true };
-});
-
-ipcMain.handle('pi:stop-session', async (_event, employeeInstanceId?: unknown) => {
-  if (!piHost) throw new Error('piHost not initialized')
-  if (typeof employeeInstanceId !== 'undefined' && (typeof employeeInstanceId !== 'string' || !employeeInstanceId)) {
-    return { ok: false }
-  }
-  await piHost.stopSession(employeeInstanceId)
-  return { ok: true }
-})
-
 // ── Task Management ──────────────────────────────────────────────────────────
 
 ipcMain.handle('task:create', async (_event, data: { title: string; prompt: string; workDir?: string; employeeInstanceId?: string }) => {
@@ -472,8 +414,8 @@ ipcMain.handle('task:create', async (_event, data: { title: string; prompt: stri
     if (!data || typeof data.title !== 'string' || typeof data.prompt !== 'string') {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'Invalid task request.' } }
     }
-    const employeeInstanceId = data.employeeInstanceId ?? activeInstanceId
-    if (employeeInstanceId && !resolveEmployee(employeeInstanceId)) {
+    const employeeInstanceId = data.employeeInstanceId
+    if (typeof employeeInstanceId !== 'string' || !resolveEmployee(employeeInstanceId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
     }
     const manager = await ensureTaskManager()
@@ -491,15 +433,11 @@ ipcMain.handle('task:execute', async (_event, input: unknown) => {
       : isRecord(input) && typeof input.taskId === 'string'
         ? input.taskId
         : null
-    const employeeInstanceId = isRecord(input) && typeof input.employeeInstanceId === 'string'
-      ? input.employeeInstanceId
-      : activeInstanceId
     if (!taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     }
     if (!piHost) await initPiHost()
     if (!piHost) throw new Error('Pi host is unavailable.')
-    if (employeeInstanceId) await piHost.startSession({ employeeId: employeeInstanceId })
     await piHost.executeTask(taskId)
     return { success: true }
   } catch (error) {
@@ -517,13 +455,11 @@ ipcMain.handle('task:continue', async (_event, input: unknown) => {
     if (!task || !task.employeeInstanceId) {
       return { success: false, error: { code: 'NOT_FOUND', message: 'Task or employee binding not found.' } }
     }
-    const employeeInstanceId = typeof input.employeeInstanceId === 'string' ? input.employeeInstanceId : task.employeeInstanceId
-    if (employeeInstanceId !== task.employeeInstanceId || !resolveEmployee(employeeInstanceId)) {
+    if (!resolveEmployee(task.employeeInstanceId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
     if (!piHost) await initPiHost()
     if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.startSession({ employeeId: employeeInstanceId })
     await piHost.continueTask(input.taskId, input.prompt)
     return { success: true }
   } catch (error) {
@@ -551,13 +487,11 @@ ipcMain.handle('task:retry', async (_event, taskId: unknown) => {
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
     if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    const employeeInstanceId = task.employeeInstanceId ?? activeInstanceId
-    if (!employeeInstanceId || !resolveEmployee(employeeInstanceId)) {
+    if (!task.employeeInstanceId || !resolveEmployee(task.employeeInstanceId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
     if (!piHost) await initPiHost()
     if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.startSession({ employeeId: employeeInstanceId })
     await piHost.retryTask(taskId)
     return { success: true }
   } catch (error) {

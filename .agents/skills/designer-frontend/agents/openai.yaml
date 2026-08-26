@@ -1,0 +1,4 @@
+interface:
+  display_name: "SEP Frontend Design"
+  short_description: "Review and improve layout, color, components, and motion"
+  default_prompt: "Apply the project frontend design system to this Electron React UI task. Inspect existing screens before editing, preserve the workbench style, and verify layout and interaction states at desktop sizes."

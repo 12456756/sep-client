@@ -68,7 +68,7 @@ export interface ApiError {
  * POST /client/auth/login
  */
 export async function login(req: LoginRequest): Promise<LoginResponse> {
-  const response = await fetch(`${config.SEP_BASE_URL}/client/auth/login`, {
+  const response = await fetch(`${config.SEP_API_BASE_URL}/client/auth/login`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -99,7 +99,7 @@ export async function login(req: LoginRequest): Promise<LoginResponse> {
  * GET /client/instances
  */
 export async function getInstances(accessToken: string): Promise<ClientInstance[]> {
-  const response = await fetch(`${config.SEP_BASE_URL}/client/instances`, {
+  const response = await fetch(`${config.SEP_API_BASE_URL}/client/instances`, {
     headers: {
       'Authorization': `Bearer ${accessToken}`,
     },
@@ -131,7 +131,7 @@ export async function getInstanceToken(
   req: InstanceTokenRequest,
   signal?: AbortSignal,
 ): Promise<InstanceTokenResponse> {
-  const response = await fetch(`${config.SEP_BASE_URL}/client/auth/token`, {
+  const response = await fetch(`${config.SEP_API_BASE_URL}/client/auth/token`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

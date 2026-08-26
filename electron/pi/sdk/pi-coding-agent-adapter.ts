@@ -240,6 +240,13 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
         throw error
       }
     })
+
+    pi.on('after_provider_response', event => {
+      console.error('[PiGateway] provider response received', {
+        status: event.status,
+        headers: sanitize(event.headers),
+      })
+    })
   }
 
   const toolGuard: ExtensionFactory = pi => {

@@ -1,10 +1,4 @@
-/**
- * src/App.tsx — Main Application
- *
- * Routing: Login → Instance Select → Workspace Home
- */
-
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { LoginPage } from './pages/LoginPage';
 import { WorkspaceHomePage } from './pages/WorkspaceHomePage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
@@ -13,11 +7,6 @@ import type { EmployeeInstanceSnapshot, RememberedAccount } from './shared/types
 interface AuthState {
   user: { id: string; email: string; name: string };
   enterprise: { id: string; name: string } | null;
-}
-
-interface SessionState {
-  instanceId: string;
-  instanceName: string;
 }
 
 interface ToolApprovalRequest {
@@ -30,7 +19,6 @@ const INSTANCE_LOAD_TIMEOUT_MS = 3_000;
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState | null>(null);
-  const [sessionState, setSessionState] = useState<SessionState | null>(null);
   const [instances, setInstances] = useState<EmployeeInstanceSnapshot[]>([]);
   const [toolApprovalRequest, setToolApprovalRequest] = useState<ToolApprovalRequest | null>(null);
   const [restoringAuth, setRestoringAuth] = useState(true);
@@ -40,76 +28,41 @@ export default function App() {
   const [instanceError, setInstanceError] = useState<string | null>(null);
 
   useEffect(() => {
-    void loadRememberedAccounts();
-  }, []);
-
-  useEffect(() => {
-    const cleanup = window.electronAPI.onToolApprovalRequest((request) => {
-      setToolApprovalRequest(request);
-    });
-
-    return cleanup;
-  }, []);
-
-  useEffect(() => {
-    return window.electronAPI.onAuthenticationRequired(() => {
-      setAuthState(null);
-      setSessionState(null);
-      setInstances([]);
-      setLoadingInstances(false);
-      setInstanceError(null);
-      setToolApprovalRequest(null);
-    });
-  }, []);
-
-  const loadRememberedAccounts = async () => {
-    try {
-      const result = await window.electronAPI.listRememberedAccounts();
+    void window.electronAPI.listRememberedAccounts().then(result => {
       setRememberedAccounts(result.accounts);
       setEncryptionAvailable(result.encryptionAvailable);
-    } catch (error) {
-      console.error('[App] Failed to read stored accounts:', error);
-    } finally {
       setRestoringAuth(false);
-    }
-  };
+    }).catch(() => setRestoringAuth(false));
+  }, []);
 
-  const handleAccountListChange = (accounts: RememberedAccount[]) => {
-    setRememberedAccounts(accounts);
-  };
+  useEffect(() => window.electronAPI.onToolApprovalRequest(setToolApprovalRequest), []);
 
-  const handleLoginSuccess = (data: AuthState) => {
-    setAuthState(data);
-    setSessionState(null);
+  useEffect(() => window.electronAPI.onAuthenticationRequired(() => {
+    setAuthState(null);
     setInstances([]);
     setLoadingInstances(false);
     setInstanceError(null);
-  };
+    setToolApprovalRequest(null);
+  }), []);
 
   useEffect(() => {
-    if (!authState || sessionState) return;
+    if (!authState) return;
     let active = true;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     setLoadingInstances(true);
     setInstanceError(null);
-
     const timeout = new Promise<never>((_resolve, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('加载可用硅基员工超时，请检查网络后重试。')), INSTANCE_LOAD_TIMEOUT_MS);
+      timeoutId = setTimeout(() => reject(new Error('加载员工团队超时，请稍后重试。')), INSTANCE_LOAD_TIMEOUT_MS);
     });
-
     void Promise.race([window.electronAPI.getInstances(), timeout]).then(result => {
       if (!active) return;
       if (!result.success || !result.data?.length) {
         setInstanceError(result.error?.message || '当前账号没有可用的硅基员工实例。');
         return;
       }
-      const availableInstances = result.data;
-      const instance = availableInstances[0];
-      setLoadingInstances(false);
-      setInstances(availableInstances);
-      setSessionState({ instanceId: instance.id, instanceName: instance.name });
+      setInstances(result.data);
     }).catch(error => {
-      if (active) setInstanceError(error instanceof Error ? error.message : '获取硅基员工实例失败。');
+      if (active) setInstanceError(error instanceof Error ? error.message : '获取员工实例失败。');
     }).finally(() => {
       if (timeoutId) clearTimeout(timeoutId);
       if (active) setLoadingInstances(false);
@@ -118,18 +71,14 @@ export default function App() {
       active = false;
       if (timeoutId) clearTimeout(timeoutId);
     };
-  }, [authState, sessionState]);
+  }, [authState]);
 
   const handleLogout = async () => {
     try {
       await window.electronAPI.logout();
-    } catch (error) {
-      console.error('[App] Logout failed:', error);
     } finally {
       setAuthState(null);
-      setSessionState(null);
       setInstances([]);
-      setLoadingInstances(false);
       setInstanceError(null);
       setToolApprovalRequest(null);
       const result = await window.electronAPI.listRememberedAccounts();
@@ -138,64 +87,16 @@ export default function App() {
     }
   };
 
-  const handleToolApprove = () => {
-    if (!toolApprovalRequest) return;
-    window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true });
-    setToolApprovalRequest(null);
-  };
-
-  const handleToolDeny = () => {
-    if (!toolApprovalRequest) return;
-    window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' });
-    setToolApprovalRequest(null);
-  };
-
   const renderRoute = () => {
-    if (restoringAuth) {
-      return (
-        <div className="flex min-h-dvh items-center justify-center bg-[#fffafa]">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-[#ead0d0] border-t-[#c83a3a]" />
-        </div>
-      );
-    }
-
-    if (!authState) {
-      return (
-        <LoginPage
-          encryptionAvailable={encryptionAvailable}
-          rememberedAccounts={rememberedAccounts}
-          onAccountListChange={handleAccountListChange}
-          onLoginSuccess={handleLoginSuccess}
-        />
-      );
-    }
-
-    if (!sessionState) {
-      if (loadingInstances) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在加载可用的硅基员工…</p></div>;
-      if (instanceError) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={handleLogout}>退出登录</button></div>;
-      return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在准备工作台…</p></div>;
-    }
-
-    return (
-      <WorkspaceHomePage
-        userName={authState.user.name || authState.user.email}
-        enterpriseName={authState.enterprise?.name}
-        employeeInstanceId={sessionState.instanceId}
-        employeeInstanceName={sessionState.instanceName}
-        instances={instances}
-        onLogout={handleLogout}
-      />
-    );
+    if (restoringAuth) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在恢复工作台</p></div>;
+    if (!authState) return <LoginPage encryptionAvailable={encryptionAvailable} rememberedAccounts={rememberedAccounts} onAccountListChange={setRememberedAccounts} onLoginSuccess={setAuthState} />;
+    if (loadingInstances) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在准备你的员工团队</p></div>;
+    if (instanceError && instances.length === 0) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={() => void handleLogout()}>退出登录</button></div>;
+    return <WorkspaceHomePage userName={authState.user.name || authState.user.email} enterpriseName={authState.enterprise?.name} employeeInstanceId={instances[0]?.id} employeeInstanceName={instances[0]?.name} instances={instances} onLogout={handleLogout} />;
   };
 
-  return (
-    <>
-      {renderRoute()}
-      <ToolApprovalDialog
-        request={toolApprovalRequest}
-        onApprove={handleToolApprove}
-        onDeny={handleToolDeny}
-      />
-    </>
-  );
+  return <>
+    {renderRoute()}
+    <ToolApprovalDialog request={toolApprovalRequest} onApprove={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true }); setToolApprovalRequest(null); }} onDeny={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' }); setToolApprovalRequest(null); }} />
+  </>;
 }

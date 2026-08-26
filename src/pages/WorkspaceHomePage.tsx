@@ -1,79 +1,48 @@
-import { useMemo, useState } from 'react';
-import { Bot, Check, Download, Filter, FolderKanban, MessageSquareText, Wrench } from 'lucide-react';
+import { Bot, ChevronLeft, ChevronRight, FolderOpen, MessageSquareText, Wrench } from 'lucide-react';
+import { useState } from 'react';
+import { ConversationArtifactsPanel } from '../components/workspace/ConversationArtifactsPanel';
 import { ConversationView } from '../components/workspace/ConversationView';
+import { NewTaskTypePicker } from '../components/workspace/NewTaskTypePicker';
+import { TaskCenterCreatePage } from '../components/workspace/TaskCenterCreatePage';
+import { TaskCenterHomePage } from '../components/workspace/TaskCenterHomePage';
+import { WorkflowView } from '../components/workspace/WorkflowView';
 import { WorkspaceComposer } from '../components/workspace/WorkspaceComposer';
 import { WorkspaceSidebar } from '../components/workspace/WorkspaceSidebar';
-import { WorkflowView } from '../components/workspace/WorkflowView';
-import { useWorkspaceDemo, type TaskStatus } from '../features/workspace/useWorkspaceDemo';
+import { useWorkspaceDemo } from '../features/workspace/useWorkspaceDemo';
 import type { EmployeeInstanceSnapshot } from '../shared/types';
 
-interface Props { userName: string; enterpriseName?: string; employeeInstanceId: string; employeeInstanceName: string; instances?: EmployeeInstanceSnapshot[]; onLogout: () => Promise<void> }
-const statusLabel: Record<TaskStatus, string> = { queued: '排队中', running: '运行中', 'waiting-approval': '待审批', completed: '已完成', failed: '失败', cancelled: '已取消', stopped: '已停止' };
+interface Props { userName: string; enterpriseName?: string; employeeInstanceId?: string; employeeInstanceName?: string; instances?: EmployeeInstanceSnapshot[]; onLogout: () => Promise<void> }
 
 export function WorkspaceHomePage({ userName, enterpriseName, employeeInstanceId, employeeInstanceName, instances, onLogout }: Props) {
   const workspace = useWorkspaceDemo({ employeeInstanceId, employeeName: employeeInstanceName, instances });
   const [mode, setMode] = useState<'conversation' | 'workflow'>('conversation');
-  const [navigationBusy, setNavigationBusy] = useState(false);
-  const selectedTask = workspace.tasks.find((item) => item.id === workspace.selectedTaskId);
-  const activeEmployee = workspace.employees.find((item) => item.id === workspace.conversationDraft.employeeId);
-  const models = activeEmployee?.modelOptions ?? workspace.employees[0]?.modelOptions ?? [];
-  const filteredTasks = useMemo(() => workspace.tasks.filter((task) => !workspace.filters.status.length || workspace.filters.status.includes(task.status)), [workspace.tasks, workspace.filters.status]);
-  const navigate = async (action: () => Promise<void>) => { setNavigationBusy(true); try { await action(); } finally { setNavigationBusy(false); } };
-  const newTask = () => { workspace.newTask(); setMode('conversation'); };
+  const [artifactsExpanded, setArtifactsExpanded] = useState(() => typeof window === 'undefined' || window.innerWidth > 960);
+  const [taskCenterPage, setTaskCenterPage] = useState<'home' | 'create'>('home');
+  const [taskCenterTemplateId, setTaskCenterTemplateId] = useState<string | undefined>();
+  const selectedTask = workspace.tasks.find(item => item.id === workspace.selectedTaskId);
+  const [activeEmployeeId, setActiveEmployeeId] = useState('');
 
-  const renderResource = () => {
-    if (workspace.view === 'employees') return <ResourcePage icon={<Bot size={26} />} title="硅基员工" subtitle={`企业授权给你的 ${workspace.employees.length} 名 AI 员工。新建任务时选择执行身份。`} items={workspace.employees.map((item) => ({ title: item.displayName, description: item.description, meta: `${item.modelOptions.length} 个可用模型`, action: '查看员工' }))} />;
-    if (workspace.view === 'skills') return <ResourcePage icon={<Wrench size={26} />} title="技能" subtitle="安装是客户端资源准备，启用关系只属于当前任务。" items={workspace.skills.map((item) => ({ title: item.name, description: `${item.description} · v${item.version}`, meta: item.installed ? '已安装，可在任务中启用' : '可下载', action: item.installed ? '已安装' : '下载', disabled: item.installed }))} onAction={(index) => workspace.installSkill(workspace.skills[index].id)} />;
-    if (workspace.view === 'workflows') return <ResourcePage icon={<FolderKanban size={26} />} title="已授权工作流" subtitle={`${enterpriseName || '当前企业'}分配给你的工作流模板。`} items={workspace.workflows.map((item) => ({ title: item.name, description: item.description, meta: `v${item.version} · ${item.inputs.length} 个输入参数`, action: '使用工作流' }))} onAction={() => { workspace.newTask(); setMode('workflow'); workspace.setView('tasks'); }} />;
-    if (workspace.view === 'status') return <StatusPage tasks={filteredTasks} onSelect={workspace.selectTask} />;
-    if (selectedTask) return selectedTask.type === 'conversation' ? <ConversationView task={selectedTask} onStop={workspace.stopTask} onRetry={workspace.retryTask} onModelChange={workspace.switchTaskModel} models={models} /> : <WorkflowView task={selectedTask} onCancel={workspace.cancelTask} onRetry={workspace.retryTask} />;
-    return <WelcomePage userName={userName} mode={mode} onMode={setMode} />;
+  const startConversation = () => { setMode('conversation'); workspace.setView('tasks'); };
+  const startTaskCenter = () => { setMode('workflow'); setTaskCenterTemplateId(undefined); setTaskCenterPage('create'); workspace.setView('workflows'); };
+  const newTask = () => workspace.newTask();
+  const selectEmployee = (id: string) => { setActiveEmployeeId(id); workspace.updateConversationDraft({ employeeId: id, modelId: workspace.employees.find(item => item.id === id)?.modelOptions[0]?.id || '' }); };
+  const selectTask = (id: string) => { const task = workspace.tasks.find(item => item.id === id); if (task?.employeeId) setActiveEmployeeId(task.employeeId); workspace.selectTask(id); };
+  const renderContent = () => {
+    if (workspace.view === 'new-task') return <NewTaskTypePicker onConversation={startConversation} onTaskCenter={startTaskCenter} />;
+    if (workspace.view === 'employees') return <EmployeeResourcePage employees={workspace.employees} onSelect={selectEmployee} />;
+    if (workspace.view === 'skills') return <ResourcePage icon={<Wrench size={22} />} title="技能与资源" subtitle="为员工准备可复用的工作能力。" items={workspace.skills.map(skill => ({ title: skill.name, description: skill.description, meta: skill.installed ? '已安装，可在任务中使用' : '可安装', action: skill.installed ? '已安装' : '安装' }))} />;
+    if (workspace.view === 'workflows') return taskCenterPage === 'create' ? <TaskCenterCreatePage key={taskCenterTemplateId || 'blank-plan'} employees={workspace.employees} workflows={workspace.workflows} initialWorkflowId={taskCenterTemplateId} onBack={() => setTaskCenterPage('home')} onSubmit={workspace.createWorkflowTask} /> : <TaskCenterHomePage tasks={workspace.tasks} workflows={workspace.workflows} onCreate={workflowId => { setTaskCenterTemplateId(workflowId); setTaskCenterPage('create'); }} onSelectTask={selectTask} onRetry={workspace.retryTask} />;
+    if (selectedTask?.type === 'conversation') return <div className={`conversation-layout ${artifactsExpanded ? '' : 'artifacts-collapsed'}`}><div className="conversation-column"><ConversationView task={selectedTask} employees={workspace.employees} activeEmployeeId={activeEmployeeId || selectedTask.employeeId} onStop={workspace.stopTask} onRetry={workspace.retryTask} /><div className="workspace-docked-composer"><WorkspaceComposer compact mode="conversation" busy={selectedTask.status === 'queued' || selectedTask.status === 'running'} draft={workspace.conversationDraft} employees={workspace.employees} skills={workspace.skills} workflows={workspace.workflows} currentTask={selectedTask} activeEmployeeId={activeEmployeeId} onEmployeeChange={selectEmployee} onDraftChange={workspace.updateConversationDraft} onConversationSubmit={workspace.sendMessage} onWorkflowSubmit={workspace.createWorkflowTask} /></div></div>{artifactsExpanded && <ConversationArtifactsPanel task={selectedTask} expanded onToggle={() => setArtifactsExpanded(false)} />}<button className={`conversation-artifacts-launcher ${artifactsExpanded ? 'expanded' : ''}`} type="button" onClick={() => setArtifactsExpanded(value => !value)} aria-expanded={artifactsExpanded} aria-label={artifactsExpanded ? '收起成果与进展' : '展开成果与进展'} title={artifactsExpanded ? '收起成果与进展' : '展开成果与进展'}><ChevronLeft size={16} className="conversation-artifacts-launcher-icon" /></button></div>;
+    if (selectedTask) return <WorkflowView task={selectedTask} employees={workspace.employees} onBack={() => { setTaskCenterPage('home'); workspace.setView('workflows'); }} onCancel={workspace.cancelTask} onRetry={() => workspace.retryTask()} />;
+    return <ConversationLanding userName={userName} />;
   };
 
-  return (
-    <main className="workspace-shell">
-      <div className="workspace-titlebar electron-drag-region" aria-hidden="true" />
-      <WorkspaceSidebar expanded={workspace.sidebarExpanded} view={workspace.view} tasks={workspace.tasks} selectedTaskId={workspace.selectedTaskId} filters={workspace.filters} onToggle={() => workspace.setSidebarExpanded(!workspace.sidebarExpanded)} onNew={newTask} onView={workspace.setView} onSelectTask={workspace.selectTask} onFilters={workspace.setFilters} onLogout={() => void navigate(onLogout)} />
-      <section className="workspace-main">
-        <div className="workspace-canvas">
-          {workspace.error && <div className="workspace-inline-error workspace-page-error">{workspace.error}</div>}
-          <div className="workspace-content">{renderResource()}</div>
-          {workspace.view === 'tasks' && !selectedTask && (
-            <div className="workspace-docked-composer">
-              <WorkspaceComposer mode={mode} busy={navigationBusy} draft={workspace.conversationDraft} employees={workspace.employees} skills={workspace.skills} workflows={workspace.workflows} onDraftChange={workspace.updateConversationDraft} onConversationSubmit={workspace.createConversationTask} onWorkflowSubmit={workspace.createWorkflowTask} />
-            </div>
-          )}
-          {workspace.view === 'tasks' && selectedTask?.type === 'conversation' && (
-            <div className="workspace-docked-composer">
-              <WorkspaceComposer compact mode="conversation" busy={selectedTask.status === 'queued' || selectedTask.status === 'running'} draft={workspace.conversationDraft} employees={workspace.employees} skills={workspace.skills} workflows={workspace.workflows} currentTask={selectedTask} onDraftChange={workspace.updateConversationDraft} onConversationSubmit={workspace.sendMessage} onWorkflowSubmit={workspace.createWorkflowTask} />
-            </div>
-          )}
-        </div>
-      </section>
-    </main>
-  );
+  const handleView = (view: Parameters<typeof workspace.setView>[0]) => { if (view === 'tasks') setMode('conversation'); if (view === 'workflows') { setMode('workflow'); setTaskCenterPage('home'); } workspace.setView(view); };
+  return <main className={`workspace-shell ${workspace.sidebarExpanded ? '' : 'sidebar-collapsed'}`}><div className="workspace-titlebar electron-drag-region" aria-hidden="true" />{!workspace.sidebarExpanded && <button className="workspace-floating-sidebar-toggle workspace-sidebar-open-toggle" type="button" onClick={() => workspace.setSidebarExpanded(true)} aria-label="展开侧栏" title="展开侧栏"><ChevronRight size={16} className="workspace-sidebar-toggle-icon" /></button>}<WorkspaceSidebar expanded={workspace.sidebarExpanded} view={workspace.view} tasks={workspace.tasks} selectedTaskId={workspace.selectedTaskId} filters={workspace.filters} userName={userName} enterpriseName={enterpriseName} onToggle={() => workspace.setSidebarExpanded(!workspace.sidebarExpanded)} onNew={newTask} onView={handleView} onSelectTask={selectTask} onFilters={workspace.setFilters} onLogout={() => void onLogout()} /><section className="workspace-main"><div className="workspace-canvas">{workspace.error && <div className="workspace-inline-error workspace-page-error">{workspace.error}</div>}<div className="workspace-content">{renderContent()}</div>{workspace.view === 'tasks' && !selectedTask && <div className="workspace-docked-composer"><WorkspaceComposer mode={mode} draft={workspace.conversationDraft} employees={workspace.employees} skills={workspace.skills} workflows={workspace.workflows} onDraftChange={workspace.updateConversationDraft} onConversationSubmit={workspace.createConversationTask} onWorkflowSubmit={workspace.createWorkflowTask} /></div>}</div></section></main>;
 }
 
-function WelcomePage({ userName, mode, onMode }: { userName: string; mode: 'conversation' | 'workflow'; onMode: (mode: 'conversation' | 'workflow') => void }) {
-  return (
-    <div className="workspace-home">
-      <div className="workspace-home-heading">
-        <h1>你好，{userName}</h1>
-        <p>今天想让你的硅基员工帮你做什么？</p>
-      </div>
-      <div className="workspace-home-mode" role="tablist" aria-label="任务类型">
-        <button role="tab" aria-selected={mode === 'conversation'} className={mode === 'conversation' ? 'active' : ''} onClick={() => onMode('conversation')}><MessageSquareText size={15} />对话任务</button>
-        <button role="tab" aria-selected={mode === 'workflow'} className={mode === 'workflow' ? 'active' : ''} onClick={() => onMode('workflow')}><FolderKanban size={15} />工作流任务</button>
-      </div>
-    </div>
-  );
-}
+function ConversationLanding({ userName }: { userName: string }) { return <section className="workspace-home"><span className="eyebrow"><MessageSquareText size={14} />对话工作台</span><h1>你好，{userName}</h1><p>把目标交代给合适的硅基员工，今天的工作从这里开始。</p></section>; }
 
-function ResourcePage({ icon, title, subtitle, items, onAction }: { icon: React.ReactNode; title: string; subtitle: string; items: { title: string; description: string; meta: string; action: string; disabled?: boolean }[]; onAction?: (index: number) => void }) {
-  return <div className="resource-page"><header><div className="resource-heading-icon">{icon}</div><div><small>个人可用资源</small><h1>{title}</h1><p>{subtitle}</p></div><button className="workspace-secondary-button"><Filter size={15} />筛选</button></header><div className="resource-grid">{items.map((item, index) => <article key={item.title}><div className="resource-card-icon"><Check size={17} /></div><div><h2>{item.title}</h2><p>{item.description}</p><small>{item.meta}</small></div>{onAction && <button className="workspace-secondary-button" onClick={() => onAction(index)} disabled={item.disabled}>{item.action === '下载' ? <Download size={14} /> : <Check size={14} />}{item.action}</button>}</article>)}</div></div>;
-}
+function EmployeeResourcePage({ employees, onSelect }: { employees: { id: string; displayName: string; description: string; avatar: string; modelOptions: { id: string }[] }[]; onSelect: (id: string) => void }) { return <ResourcePage icon={<Bot size={22} />} title="硅基员工" subtitle={`当前账号可安排 ${employees.length} 位员工。`} items={employees.map(employee => ({ title: employee.displayName, description: employee.description, meta: `${employee.modelOptions.length} 个可用模型`, action: '开始对话', onAction: () => onSelect(employee.id) }))} />; }
 
-function StatusPage({ tasks, onSelect }: { tasks: ReturnType<typeof useWorkspaceDemo>['tasks']; onSelect: (id: string) => void }) {
-  const groups: TaskStatus[] = ['queued', 'running', 'waiting-approval', 'completed', 'failed', 'cancelled', 'stopped'];
-  return <div className="status-page"><header><div><small>仅当前账号</small><h1>任务状态</h1><p>查看你创建的所有对话任务和工作流任务。</p></div><span className="status-count"><Check size={15} />{tasks.length} 个任务</span></header><div className="status-groups">{groups.map((status) => <section key={status}><h2>{statusLabel[status]} <small>{tasks.filter((task) => task.status === status).length}</small></h2>{tasks.filter((task) => task.status === status).map((task) => <button key={task.id} onClick={() => onSelect(task.id)}><span className={`workspace-task-status-dot ${task.status}`} /><span><strong>{task.title}</strong><small>{task.employeeName} · {task.type === 'conversation' ? '对话任务' : '工作流任务'}</small></span></button>)}</section>)}</div></div>;
-}
+function ResourcePage({ icon, title, subtitle, items }: { icon: React.ReactNode; title: string; subtitle: string; items: { title: string; description: string; meta: string; action?: string; onAction?: () => void }[] }) { return <section className="resource-page"><header><div className="resource-heading-icon">{icon}</div><div><span className="eyebrow">个人可用资源</span><h1>{title}</h1><p>{subtitle}</p></div></header><div className="resource-grid">{items.map(item => <article key={item.title}><div className="resource-card-icon"><FolderOpen size={16} /></div><div><h2>{item.title}</h2><p>{item.description}</p><small>{item.meta}</small></div>{item.action && <button className="workspace-secondary-button" onClick={item.onAction} title={item.action}>{item.action}</button>}</article>)}</div></section>; }

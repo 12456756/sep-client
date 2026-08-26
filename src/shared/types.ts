@@ -324,7 +324,6 @@ export type SessionState = 'idle' | 'running' | 'awaiting-permission' | 'error' 
 
 export interface ClientState {
   auth: AuthSession | null
-  activeInstanceId: string | null
   sessionState: SessionState
   lockReason?: string
 }

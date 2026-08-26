@@ -7,7 +7,7 @@
  *   - 60 秒倒计时，超时自动拒绝
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/Button';
 
 interface ToolApprovalRequest {
@@ -44,6 +44,7 @@ const TOOL_DESCRIPTIONS: Record<string, { title: string; description: string; ri
 
 export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalDialogProps) {
   const [countdown, setCountdown] = useState(TIMEOUT_SECONDS);
+  const denyButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!request) return;
@@ -64,6 +65,10 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
 
     return () => clearInterval(timer);
   }, [request, onDeny]);
+
+  useEffect(() => {
+    if (request) denyButtonRef.current?.focus();
+  }, [request]);
 
   if (!request) return null;
 
@@ -86,16 +91,16 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
   const shouldTruncate = inputDisplay.length > 500;
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" role="presentation">
+      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" role="dialog" aria-modal="true" aria-labelledby="tool-approval-title" aria-describedby="tool-approval-description">
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-start justify-between">
             <div>
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">
+              <h2 id="tool-approval-title" className="text-xl font-semibold text-gray-900 dark:text-gray-100">
                 🔐 工具执行授权
               </h2>
-              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+              <p id="tool-approval-description" className="text-sm text-gray-600 dark:text-gray-400 mt-1">
                 {toolInfo.description}
               </p>
             </div>
@@ -160,9 +165,12 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
         <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
           <div className="flex gap-3">
             <Button
+              ref={denyButtonRef}
               onClick={onDeny}
               variant="secondary"
               className="flex-1"
+              aria-label="拒绝工具执行"
+              title="拒绝工具执行"
             >
               ❌ 拒绝执行
             </Button>
@@ -170,6 +178,8 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
               onClick={onApprove}
               variant="primary"
               className="flex-1"
+              aria-label="允许工具执行"
+              title="允许工具执行"
             >
               ✅ 允许执行
             </Button>

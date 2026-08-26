@@ -3,7 +3,7 @@ import type { ClientTask, ClientTaskMessage, EmployeeInstanceSnapshot } from '..
 
 export type TaskType = 'conversation' | 'workflow';
 export type TaskStatus = 'queued' | 'running' | 'waiting-approval' | 'completed' | 'failed' | 'cancelled' | 'stopped';
-export type WorkspaceView = 'tasks' | 'employees' | 'skills' | 'workflows' | 'status';
+export type WorkspaceView = 'new-task' | 'tasks' | 'employees' | 'skills' | 'workflows' | 'status';
 
 export interface AvailableModel {
   id: string;
@@ -71,6 +71,14 @@ export interface TaskArtifact {
   summary: string;
 }
 
+export interface TaskPlanStepDraft {
+  id: string;
+  employeeInstanceId: string;
+  title: string;
+  instruction: string;
+  expectedOutput: string;
+}
+
 export interface Task {
   id: string;
   type: TaskType;
@@ -91,6 +99,7 @@ export interface Task {
   logs: string[];
   artifacts: TaskArtifact[];
   activity?: string;
+  planSteps?: TaskPlanStepDraft[];
 }
 
 export interface ConversationDraft {
@@ -105,6 +114,8 @@ export interface WorkflowDraft {
   employeeId: string;
   workspace: LocalWorkspaceBinding;
   inputs: Record<string, string | number | boolean>;
+  goal?: string;
+  steps?: TaskPlanStepDraft[];
 }
 
 export interface TaskFilters {
@@ -133,7 +144,7 @@ interface WorkspaceDemo {
   createWorkflowTask: (draft: WorkflowDraft) => void;
   sendMessage: (text: string) => void;
   stopTask: () => void;
-  retryTask: () => void;
+  retryTask: (taskId?: string) => void;
   cancelTask: () => void;
   resolveApproval: (approved: boolean) => void;
   switchTaskModel: (modelId: string) => void;
@@ -155,6 +166,25 @@ const initialWorkflows: AvailableWorkflow[] = [
 
 const defaultWorkspace: LocalWorkspaceBinding = { path: '', displayName: '未选择工作空间', accessMode: 'read-write' };
 const WORKFLOW_PROMPT_MARKER = '[SEP_WORKFLOW_TASK]';
+const TASK_PLAN_MARKER = '[SEP_TASK_PLAN]';
+
+function parseTaskPlan(prompt: string): { goal: string; steps: TaskPlanStepDraft[] } | null {
+  const markerIndex = prompt.indexOf(TASK_PLAN_MARKER);
+  if (markerIndex === -1) return null;
+  const payload = prompt.slice(markerIndex + TASK_PLAN_MARKER.length).trim().split('\n')[0];
+  try {
+    const parsed = JSON.parse(payload) as { goal?: unknown; steps?: unknown };
+    if (typeof parsed.goal !== 'string' || !Array.isArray(parsed.steps)) return null;
+    const steps = parsed.steps.filter((step): step is TaskPlanStepDraft => {
+      if (!step || typeof step !== 'object') return false;
+      const item = step as Record<string, unknown>;
+      return typeof item.id === 'string' && typeof item.employeeInstanceId === 'string' && typeof item.title === 'string' && typeof item.instruction === 'string' && typeof item.expectedOutput === 'string';
+    });
+    return { goal: parsed.goal, steps };
+  } catch {
+    return null;
+  }
+}
 
 function mapTaskStatus(status: ClientTask['status']): TaskStatus {
   switch (status) {
@@ -173,6 +203,7 @@ function mapClientTask(task: ClientTask, employeeName = '硅基员工', type?: T
   const createdAt = new Date(task.createdAt).toISOString();
   const updatedAt = new Date(task.completedAt ?? task.startedAt ?? task.createdAt).toISOString();
   const isConversation = type ?? (task.prompt.startsWith(WORKFLOW_PROMPT_MARKER) ? 'workflow' : 'conversation');
+  const taskPlan = isConversation === 'workflow' ? parseTaskPlan(task.prompt) : null;
 
   return {
     id: task.id,
@@ -192,7 +223,7 @@ function mapClientTask(task: ClientTask, employeeName = '硅基员工', type?: T
     messages: isConversation === 'conversation'
       ? [{ id: `${task.id}-prompt`, role: 'user', content: task.prompt, createdAt }, ...(streamedText ? [{ id: `${task.id}-assistant`, role: 'assistant' as const, content: streamedText, createdAt, modelId: 'sep-balanced' }] : [])]
       : [],
-    goal: task.prompt,
+    goal: taskPlan?.goal ?? task.prompt,
     logs: task.logs.map((entry) => entry.message),
     artifacts: task.files.map((file, index) => ({
       id: `${task.id}-file-${index}`,
@@ -201,6 +232,7 @@ function mapClientTask(task: ClientTask, employeeName = '硅基员工', type?: T
       summary: file,
     })),
     activity: task.status === 'running' ? '正在执行' : undefined,
+    planSteps: taskPlan?.steps,
   };
 }
 
@@ -211,7 +243,9 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     displayName: instance.name,
     description: `${instance.template.name}${instance.department ? ` · ${instance.department.name}` : ''}`,
     avatar: instance.template.avatar ?? instance.name.slice(0, 1),
-    modelOptions: instance.allowedModels.map((id, index) => ({ id, displayName: id, providerName: 'SEP Gateway', description: '授权模型', isDefault: index === 0, supportsTools: true })),
+    // Older/current SEP instance responses may omit the optional model list.
+    // Keep the employee visible instead of crashing the whole workspace on login.
+    modelOptions: (Array.isArray(instance.allowedModels) ? instance.allowedModels : []).map((id, index) => ({ id, displayName: id, providerName: 'SEP Gateway', description: '授权模型', isDefault: index === 0, supportsTools: true })),
   })), [options.instances]);
   const [skills, setSkills] = useState(initialSkills);
   const workflows = useMemo(() => {
@@ -231,11 +265,8 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
   useEffect(() => {
     let active = true;
     setConversationDraft(draft => {
-      const selected = (options.instances ?? []).find(instance => instance.id === draft.employeeId)
-        ?? (options.instances ?? []).find(instance => instance.id === options.employeeInstanceId)
-        ?? options.instances?.[0];
-      if (!selected) return draft;
-      return { ...draft, employeeId: selected.id, modelId: selected.allowedModels[0] ?? '' };
+      if (!draft.employeeId || (options.instances ?? []).some(instance => instance.id === draft.employeeId)) return draft;
+      return { ...draft, employeeId: '', modelId: '' };
     });
     const replaceTasks = (nextTasks: ClientTask[]) => {
       if (active) setTasks(current => nextTasks.map((task) => {
@@ -320,7 +351,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
       taskTypeById.current.set(result.task.id, 'conversation');
       textByTask.current.delete(result.task.id);
       setSelectedTaskId(result.task.id); setView('tasks');
-      const execution = await window.electronAPI.executeTask({ taskId: result.task.id, employeeInstanceId });
+      const execution = await window.electronAPI.executeTask({ taskId: result.task.id });
       if (!execution.success) throw new Error(execution.error?.message || '启动任务失败');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '任务启动失败');
@@ -334,7 +365,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     const prompt = text.trim();
     const pendingId = `${task.id}-pending-user-${Date.now()}`;
     setTasks(items => items.map(item => item.id === task.id ? { ...item, messages: [...item.messages, { id: pendingId, role: 'user', content: prompt, createdAt: new Date().toISOString() }] } : item));
-    void window.electronAPI.continueTask({ taskId: task.id, prompt, employeeInstanceId: task.employeeId }).then(result => {
+    void window.electronAPI.continueTask({ taskId: task.id, prompt }).then(result => {
       if (!result.success) {
         setTasks(items => items.map(item => item.id === task.id ? { ...item, messages: item.messages.filter(message => message.id !== pendingId) } : item));
         setError(result.error?.message || '发送消息失败');
@@ -350,13 +381,16 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     if (!workflow || !employee) return;
     setError(null);
     const inputLines = Object.entries(draft.inputs).map(([key, value]) => `- ${key}: ${String(value)}`).join('\n');
-    const prompt = `${WORKFLOW_PROMPT_MARKER}\n${workflow.name}\n\n${workflow.description}\n\n执行参数：\n${inputLines || '- 无'}`;
+    const goal = draft.goal?.trim() || workflow.description;
+    const planPayload = JSON.stringify({ goal, steps: draft.steps ?? [] });
+    const planText = (draft.steps ?? []).map((step, index) => `${index + 1}. ${step.title}\n   员工实例：${step.employeeInstanceId}\n   工作：${step.instruction}\n   预期输出：${step.expectedOutput}`).join('\n\n');
+    const prompt = `${WORKFLOW_PROMPT_MARKER}\n${workflow.name}\n\n工作目标：\n${goal}\n\n工作计划：\n${planText || '- 由执行员工制定'}\n\n执行参数：\n${inputLines || '- 无'}\n\n${TASK_PLAN_MARKER}\n${planPayload}`;
     try {
       const result = await window.electronAPI.createTask({ title: workflow.name, prompt, workDir: draft.workspace.path || undefined, employeeInstanceId: employee.id });
       if (!result.success || !result.task) throw new Error(result.error?.message || '创建任务失败');
       taskTypeById.current.set(result.task.id, 'workflow');
       setSelectedTaskId(result.task.id); setView('tasks');
-      const execution = await window.electronAPI.executeTask({ taskId: result.task.id, employeeInstanceId: employee.id });
+      const execution = await window.electronAPI.executeTask({ taskId: result.task.id });
       if (!execution.success) throw new Error(execution.error?.message || '启动任务失败');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '任务启动失败');
@@ -385,12 +419,12 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     updateConversationDraft: (patch) => setConversationDraft((draft) => ({ ...draft, ...patch })),
     createConversationTask, createWorkflowTask, sendMessage,
     stopTask: () => { if (task) void runTaskCommand(() => window.electronAPI.pauseTask(task.id), setError); },
-    retryTask: () => { if (task) void runTaskCommand(() => window.electronAPI.retryTask(task.id), setError); },
+    retryTask: (taskId) => { const target = taskId ? tasks.find(item => item.id === taskId) : task; if (target) void runTaskCommand(() => window.electronAPI.retryTask(target.id), setError); },
     cancelTask: () => { if (task) void runTaskCommand(() => window.electronAPI.cancelTask(task.id), setError); },
     resolveApproval: () => undefined,
     switchTaskModel: () => undefined,
     installSkill: (id) => setSkills((items) => items.map((item) => item.id === id ? { ...item, installed: true } : item)),
-    newTask: () => { setSelectedTaskId(null); setView('tasks'); setError(null); setConversationDraft({ employeeId: '', modelId: '', skillIds: [], workspace: defaultWorkspace }); },
+    newTask: () => { setSelectedTaskId(null); setView('new-task'); setError(null); setConversationDraft({ employeeId: '', modelId: '', skillIds: [], workspace: defaultWorkspace }); },
     error,
   };
 }
