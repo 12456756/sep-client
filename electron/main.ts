@@ -177,9 +177,9 @@ function createWindow(): void {
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#00000000',
+      color: '#f1f1f0',
       symbolColor: '#6f6567',
-      height: 40,
+      height: 44,
     },
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
