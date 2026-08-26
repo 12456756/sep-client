@@ -79,6 +79,12 @@ export interface TaskPlanStepDraft {
   expectedOutput: string;
 }
 
+export interface DagNodeDraft extends TaskPlanStepDraft {
+  dependsOn: string[];
+  x?: number;
+  y?: number;
+}
+
 export interface Task {
   id: string;
   type: TaskType;
@@ -116,6 +122,8 @@ export interface WorkflowDraft {
   inputs: Record<string, string | number | boolean>;
   goal?: string;
   steps?: TaskPlanStepDraft[];
+  nodes?: DagNodeDraft[];
+  mode?: 'auto' | 'manual';
 }
 
 export interface TaskFilters {
@@ -346,6 +354,7 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     setError(null);
     try {
       const employeeInstanceId = conversationDraft.employeeId || options.employeeInstanceId;
+      if (!employeeInstanceId) throw new Error('请选择一位硅基员工');
       const result = await window.electronAPI.createTask({ title: trimmed.slice(0, 80), prompt: trimmed, workDir: conversationDraft.workspace.path || undefined, employeeInstanceId });
       if (!result.success || !result.task) throw new Error(result.error?.message || '创建任务失败');
       taskTypeById.current.set(result.task.id, 'conversation');
@@ -377,20 +386,33 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
   };
 
   const createWorkflowTask = async (draft: WorkflowDraft) => {
-    const workflow = workflows.find((item) => item.id === draft.workflowId); const employee = employees.find((item) => item.id === draft.employeeId) ?? employees[0];
-    if (!workflow || !employee) return;
+    const workflow = workflows.find((item) => item.id === draft.workflowId);
+    const employee = employees.find((item) => item.id === draft.employeeId) ?? employees[0];
+    if (!employee) return;
     setError(null);
     const inputLines = Object.entries(draft.inputs).map(([key, value]) => `- ${key}: ${String(value)}`).join('\n');
-    const goal = draft.goal?.trim() || workflow.description;
-    const planPayload = JSON.stringify({ goal, steps: draft.steps ?? [] });
-    const planText = (draft.steps ?? []).map((step, index) => `${index + 1}. ${step.title}\n   员工实例：${step.employeeInstanceId}\n   工作：${step.instruction}\n   预期输出：${step.expectedOutput}`).join('\n\n');
-    const prompt = `${WORKFLOW_PROMPT_MARKER}\n${workflow.name}\n\n工作目标：\n${goal}\n\n工作计划：\n${planText || '- 由执行员工制定'}\n\n执行参数：\n${inputLines || '- 无'}\n\n${TASK_PLAN_MARKER}\n${planPayload}`;
+    const goal = draft.goal?.trim() || workflow?.description || '完成用户交代的工作';
+    const nodes = (draft.nodes ?? (draft.steps ?? []).map((step, index, steps) => ({ ...step, dependsOn: index ? [steps[index - 1].id] : [] }))).map(node => ({
+      id: node.id.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 128),
+      employeeInstanceId: node.employeeInstanceId,
+      instruction: node.instruction,
+      expectedOutput: node.expectedOutput,
+      dependsOn: node.dependsOn,
+    }));
+    if (!nodes.length) return;
+    const planText = nodes.map((node, index) => `${index + 1}. ${node.instruction}`).join('\n');
+    const prompt = `${WORKFLOW_PROMPT_MARKER}\n${workflow?.name || '自动编排工作'}\n\n工作目标：\n${goal}\n\nDAG 工作计划：\n${planText}\n\n执行参数：\n${inputLines || '- 无'}`;
     try {
-      const result = await window.electronAPI.createTask({ title: workflow.name, prompt, workDir: draft.workspace.path || undefined, employeeInstanceId: employee.id });
+      const result = await window.electronAPI.createWorkflow({
+        title: workflow?.name || goal.slice(0, 80),
+        prompt,
+        workDir: draft.workspace.path || undefined,
+        nodes,
+      });
       if (!result.success || !result.task) throw new Error(result.error?.message || '创建任务失败');
       taskTypeById.current.set(result.task.id, 'workflow');
       setSelectedTaskId(result.task.id); setView('tasks');
-      const execution = await window.electronAPI.executeTask({ taskId: result.task.id });
+      const execution = await window.electronAPI.startWorkflow(result.task.id);
       if (!execution.success) throw new Error(execution.error?.message || '启动任务失败');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '任务启动失败');

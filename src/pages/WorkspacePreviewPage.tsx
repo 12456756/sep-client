@@ -55,6 +55,14 @@ const previewApi: ElectronAPI = {
   onTaskListUpdated: callback => { listListeners.add(callback); return () => listListeners.delete(callback); },
   onAuthenticationRequired: () => () => undefined,
   sendToolApprovalResponse: () => undefined,
+  createWorkflow: async input => {
+    const value = input as { title?: string; prompt?: string; nodes?: unknown[] };
+    const task: ClientTask = { id: `preview-${Date.now()}`, title: value.title || 'DAG 工作流', prompt: value.prompt || '', status: 'pending', workDir: null, createdAt: Date.now(), startedAt: null, completedAt: null, error: null, files: [], logs: [], progress: 0, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', employeeInstanceId: previewInstances[0].id, activeRunId: null };
+    previewTasks = [task, ...previewTasks]; notifyTask(task); return { success: true, task, graph: { nodes: value.nodes ?? [] } };
+  },
+  validateWorkflow: async data => ({ success: true, graph: data }),
+  getWorkflow: async taskId => ({ success: true, task: previewTasks.find(item => item.id === taskId), graph: { nodes: [] } }),
+  startWorkflow: async taskId => { const task = previewTasks.find(item => item.id === taskId); if (task) { task.status = 'running'; task.progress = 12; notifyTask({ ...task }); } return { success: true }; },
 };
 
 if (!('electronAPI' in window)) Object.defineProperty(window, 'electronAPI', { value: previewApi, configurable: true });

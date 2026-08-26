@@ -8,7 +8,7 @@ import type {
 
 export type { ElectronAPI } from '../src/shared/ipc';
 
-const electronAPI: ElectronAPI = {
+const electronAPI = {
   login: credentials => ipcRenderer.invoke('auth:login', credentials),
   listRememberedAccounts: () => ipcRenderer.invoke('auth:list-remembered-accounts'),
   getRememberedPassword: email => ipcRenderer.invoke('auth:get-remembered-password', email),
@@ -56,6 +56,19 @@ const electronAPI: ElectronAPI = {
     return () => ipcRenderer.removeListener('auth:required', handler);
   },
   sendToolApprovalResponse: response => ipcRenderer.send('pi:tool-approval-response', response),
+  createConversation: (data: unknown) => ipcRenderer.invoke('conversation:create', data),
+  switchConversationEmployee: (data: unknown) => ipcRenderer.invoke('task:switch-employee', data),
+  validateWorkflow: (data: unknown) => ipcRenderer.invoke('workflow:validate', data),
+  createWorkflow: (data: unknown) => ipcRenderer.invoke('workflow:create', data),
+  getWorkflow: (taskId: string) => ipcRenderer.invoke('workflow:get', taskId),
+  startWorkflow: (taskId: string) => ipcRenderer.invoke('workflow:start', taskId),
+} as ElectronAPI & {
+  createConversation: (data: unknown) => Promise<unknown>
+  switchConversationEmployee: (data: unknown) => Promise<unknown>
+  validateWorkflow: (data: unknown) => Promise<unknown>
+  createWorkflow: (data: unknown) => Promise<unknown>
+  getWorkflow: (taskId: string) => Promise<unknown>
+  startWorkflow: (taskId: string) => Promise<unknown>
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

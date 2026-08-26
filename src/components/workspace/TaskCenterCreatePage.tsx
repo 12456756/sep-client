@@ -1,49 +1,105 @@
-import { ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Check, ChevronDown, Copy, FilePlus2, FolderOpen, ListChecks, MoreHorizontal, Paperclip, Plus, ShieldCheck, Trash2, UserRound, X } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { AvailableEmployee, AvailableWorkflow, LocalWorkspaceBinding, TaskPlanStepDraft, WorkflowDraft } from '../../features/workspace/useWorkspaceDemo';
+import { ArrowLeft, Bot, ChevronRight, FolderOpen, Link2, Plus, Sparkles, Trash2, UserRound, X } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
+import type { AvailableEmployee, AvailableWorkflow, DagNodeDraft, LocalWorkspaceBinding, WorkflowDraft } from '../../features/workspace/useWorkspaceDemo';
 
-interface Props { employees: AvailableEmployee[]; workflows: AvailableWorkflow[]; initialWorkflowId?: string; onBack: () => void; onSubmit: (draft: WorkflowDraft) => void; }
-type Stage = 1 | 2 | 3;
-const goalExamples = ['整理销售数据并生成分析报告', '分析主要竞品并输出对比结论', '生成本周项目进展周报', '审核一批文档并整理问题清单'];
-const createId = () => `plan-step-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+interface Props {
+  employees: AvailableEmployee[];
+  workflows: AvailableWorkflow[];
+  initialWorkflowId?: string;
+  onBack: () => void;
+  onSubmit: (draft: WorkflowDraft) => void;
+}
 
-function buildSuggestedSteps(goal: string, employees: AvailableEmployee[]): TaskPlanStepDraft[] {
-  const titles = ['梳理输入与工作范围', '完成核心工作并形成产出', '复核结果并准备交付'];
-  const outputs = ['清晰的输入清单和执行要点', '可供下一步使用的阶段性成果', '经过检查的最终交付物'];
-  return titles.map((title, index) => ({ id: createId(), employeeInstanceId: employees[index % Math.max(employees.length, 1)]?.id ?? '', title, instruction: index === 0 ? `理解目标并整理“${goal}”所需的输入、约束和检查项。` : index === 1 ? `根据前一步结果完成主要工作，围绕“${goal}”形成可交付内容。` : '检查前序成果的完整性和准确性，整理最终交付说明。', expectedOutput: outputs[index] }));
+type CreateMode = 'auto' | 'manual';
+const makeId = () => `node-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+const defaultWorkspace: LocalWorkspaceBinding = { path: '', displayName: '未选择工作目录', accessMode: 'read-write' };
+
+function makeAutoNodes(goal: string, employees: AvailableEmployee[]): DagNodeDraft[] {
+  const roles = ['拆解目标与整理输入', '完成核心工作并形成中间成果', '复核结果并准备最终交付'];
+  return employees.slice(0, Math.min(3, employees.length)).map((employee, index) => ({
+    id: `auto-${index + 1}`,
+    employeeInstanceId: employee.id,
+    title: roles[index],
+    instruction: index === 0 ? `理解“${goal}”，整理执行输入、约束和检查项。` : index === 1 ? `根据前一步成果完成“${goal}”的核心工作。` : `复核前序成果，整理“${goal}”的最终交付。`,
+    expectedOutput: index === 0 ? '执行清单与输入摘要' : index === 1 ? '可供复核的阶段成果' : '最终交付说明与成果文件',
+    dependsOn: index ? [`auto-${index}`] : [],
+    x: 80 + index * 280,
+    y: 110,
+  }));
 }
 
 export function TaskCenterCreatePage({ employees, workflows, initialWorkflowId, onBack, onSubmit }: Props) {
   const initialWorkflow = workflows.find(item => item.id === initialWorkflowId);
-  const [stage, setStage] = useState<Stage>(1);
-  const [workflowId, setWorkflowId] = useState(initialWorkflow?.id ?? workflows[0]?.id ?? '');
+  const [mode, setMode] = useState<CreateMode>('auto');
   const [goal, setGoal] = useState(initialWorkflow?.description ?? '');
-  const [workspace, setWorkspace] = useState<LocalWorkspaceBinding>({ path: '', displayName: '未选择工作目录', accessMode: 'read-only' });
-  const [attachments, setAttachments] = useState<string[]>([]);
-  const [steps, setSteps] = useState<TaskPlanStepDraft[]>([]);
-  const [continueOnFailure, setContinueOnFailure] = useState(false);
-  const [requireFinalApproval, setRequireFinalApproval] = useState(true);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [newStep, setNewStep] = useState<TaskPlanStepDraft>({ id: createId(), employeeInstanceId: employees[0]?.id ?? '', title: '', instruction: '', expectedOutput: '' });
-  const drawerRef = useRef<HTMLElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const employeeById = useMemo(() => new Map(employees.map(employee => [employee.id, employee])), [employees]);
-  const canGenerate = Boolean(goal.trim() && employees.length);
-  const canStart = Boolean(workflowId && goal.trim() && steps.length && steps.every(step => step.employeeInstanceId && step.title.trim() && step.instruction.trim()));
-  const estimatedMinutes = Math.max(5, steps.length * 5);
+  const [workspace, setWorkspace] = useState(defaultWorkspace);
+  const [nodes, setNodes] = useState<DagNodeDraft[]>([]);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [draggedEmployeeId, setDraggedEmployeeId] = useState<string | null>(null);
+  const [movingNode, setMovingNode] = useState<{ id: string; offsetX: number; offsetY: number } | null>(null);
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const employeeById = useMemo(() => new Map(employees.map(item => [item.id, item])), [employees]);
+  const selectedNode = nodes.find(node => node.id === selectedNodeId);
+  const canSubmit = Boolean(goal.trim() && employees.length && (mode === 'auto' || nodes.length));
 
-  useEffect(() => { if (!drawerOpen) return; const outside = (event: PointerEvent) => { if (!drawerRef.current?.contains(event.target as Node)) setDrawerOpen(false); }; const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setDrawerOpen(false); }; document.addEventListener('pointerdown', outside); document.addEventListener('keydown', escape); return () => { document.removeEventListener('pointerdown', outside); document.removeEventListener('keydown', escape); }; }, [drawerOpen]);
-  const chooseDirectory = async () => { const result = await window.electronAPI.selectDirectory(); if (result.success && result.path) setWorkspace(current => ({ ...current, path: result.path!, displayName: result.path!.split(/[\\/]/).filter(Boolean).pop() || result.path! })); };
-  const updateStep = (id: string, patch: Partial<TaskPlanStepDraft>) => setSteps(items => items.map(item => item.id === id ? { ...item, ...patch } : item));
-  const moveStep = (index: number, direction: -1 | 1) => setSteps(items => { const target = index + direction; if (target < 0 || target >= items.length) return items; const next = [...items]; [next[index], next[target]] = [next[target], next[index]]; return next; });
-  const submit = () => { if (!canStart) return; onSubmit({ workflowId, employeeId: steps[0].employeeInstanceId, workspace, goal: goal.trim(), steps, inputs: { goal: goal.trim(), attachments: attachments.join(', '), continueOnFailure, requireFinalApproval } }); };
-  const handleFiles = (event: React.ChangeEvent<HTMLInputElement>) => { const names = Array.from(event.target.files ?? []).map(file => file.name); setAttachments(items => Array.from(new Set([...items, ...names]))); event.currentTarget.value = ''; };
+  const chooseDirectory = async () => {
+    const result = await window.electronAPI.selectDirectory();
+    if (result.success && result.path) setWorkspace(current => ({ ...current, path: result.path!, displayName: result.path!.split(/[\\/]/).filter(Boolean).pop() || result.path! }));
+  };
+  const updateNode = (id: string, patch: Partial<DagNodeDraft>) => setNodes(items => items.map(node => node.id === id ? { ...node, ...patch } : node));
+  const dependsOnNode = (nodeId: string, dependencyId: string): boolean => {
+    const dependency = nodes.find(node => node.id === dependencyId);
+    return dependency?.dependsOn.some(id => id === nodeId || dependsOnNode(nodeId, id)) ?? false;
+  };
+  const toggleDependency = (nodeId: string, dependencyId: string) => {
+    if (nodeId === dependencyId || dependsOnNode(nodeId, dependencyId)) return;
+    const node = nodes.find(item => item.id === nodeId);
+    if (!node) return;
+    updateNode(nodeId, { dependsOn: node.dependsOn.includes(dependencyId) ? node.dependsOn.filter(id => id !== dependencyId) : [...node.dependsOn, dependencyId] });
+  };
+  const addEmployeeNode = (employeeId: string, point?: { x: number; y: number }) => {
+    const employee = employeeById.get(employeeId); if (!employee) return;
+    const id = makeId(); const previous = nodes[nodes.length - 1];
+    setNodes(items => [...items, { id, employeeInstanceId: employee.id, title: `${employee.displayName}的工作`, instruction: `请围绕“${goal.trim() || '用户目标'}”完成你的职责。`, expectedOutput: '阶段工作成果', dependsOn: previous ? [previous.id] : [], x: point?.x ?? 80 + (items.length % 3) * 280, y: point?.y ?? 100 + Math.floor(items.length / 3) * 190 }]);
+    setSelectedNodeId(id);
+  };
+  const removeNode = (id: string) => { setNodes(items => items.filter(node => node.id !== id).map(node => ({ ...node, dependsOn: node.dependsOn.filter(dep => dep !== id) }))); if (selectedNodeId === id) setSelectedNodeId(null); };
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault(); if (!draggedEmployeeId || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    addEmployeeNode(draggedEmployeeId, { x: Math.max(20, event.clientX - rect.left - 110), y: Math.max(20, event.clientY - rect.top - 55) });
+    setDraggedEmployeeId(null);
+  };
+  const moveNode = (event: React.PointerEvent<HTMLElement>, node: DagNodeDraft) => {
+    if (!canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    setMovingNode({ id: node.id, offsetX: event.clientX - rect.left - (node.x ?? 0), offsetY: event.clientY - rect.top - (node.y ?? 0) });
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedNodeId(node.id);
+  };
+  const updateNodePosition = (event: React.PointerEvent<HTMLElement>) => {
+    if (!movingNode || !canvasRef.current) return;
+    const rect = canvasRef.current.getBoundingClientRect();
+    updateNode(movingNode.id, { x: Math.max(18, event.clientX - rect.left - movingNode.offsetX), y: Math.max(18, event.clientY - rect.top - movingNode.offsetY) });
+  };
+  const stopMovingNode = (event: React.PointerEvent<HTMLElement>) => {
+    if (movingNode && event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    setMovingNode(null);
+  };
+  const submit = () => {
+    if (!canSubmit) return;
+    const generated = mode === 'auto' ? makeAutoNodes(goal.trim(), employees) : nodes;
+    const first = generated[0];
+    if (!first) return;
+    onSubmit({ workflowId: initialWorkflow?.id || 'auto-dag', employeeId: first.employeeInstanceId, workspace, goal: goal.trim(), steps: generated, nodes: generated, mode, inputs: { goal: goal.trim(), accessMode: workspace.accessMode } });
+  };
 
-  return <section className="task-plan-create">
-    <header className="task-plan-create-header"><button className="task-plan-back" type="button" onClick={onBack}><ArrowLeft size={16} />任务中心</button><ol className="task-plan-stages" aria-label="创建进度">{(['描述目标', '确认计划', '检查启动'] as const).map((label, index) => { const value = (index + 1) as Stage; return <li key={label} className={stage === value ? 'active' : stage > value ? 'completed' : ''}><span>{stage > value ? <Check size={12} /> : value}</span><strong>{label}</strong></li>; })}</ol></header>
-    {stage === 1 && <div className="task-plan-goal-stage task-plan-stage-enter"><div className="task-plan-stage-heading"><span className="eyebrow"><ListChecks size={14} />描述工作目标</span><h1>你希望完成什么工作？</h1><p>先说清楚结果，员工安排和执行顺序可以在下一步调整。</p></div><label className="task-plan-goal-field"><span>工作目标</span><textarea value={goal} onChange={event => setGoal(event.target.value)} placeholder="例如：整理本季度销售数据，并生成一份给管理层的分析报告" rows={6} autoFocus /></label><div className="task-plan-examples"><span>示例目标</span><div>{goalExamples.map(example => <button type="button" key={example} onClick={() => setGoal(example)}>{example}</button>)}</div></div><div className="task-plan-source-row"><label><span>工作方案</span><select value={workflowId} onChange={event => { setWorkflowId(event.target.value); const selected = workflows.find(item => item.id === event.target.value); if (selected && !goal.trim()) setGoal(selected.description); }}><option value="">从目标开始</option>{workflows.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><div><span>工作目录</span><div className="task-plan-workspace-control"><button type="button" onClick={() => void chooseDirectory()} title={workspace.path || '选择工作目录'}><FolderOpen size={15} /><span>{workspace.displayName}</span></button><label><ShieldCheck size={14} /><select value={workspace.accessMode} onChange={event => setWorkspace(current => ({ ...current, accessMode: event.target.value as LocalWorkspaceBinding['accessMode'] }))} aria-label="工作目录权限"><option value="read-only">只读</option><option value="read-write">可修改文件</option></select></label></div></div></div><div className="task-plan-attachments"><input ref={fileInputRef} type="file" multiple onChange={handleFiles} tabIndex={-1} aria-hidden="true" /><button type="button" onClick={() => fileInputRef.current?.click()}><Paperclip size={15} />添加附件</button>{attachments.map(name => <span key={name}><FilePlus2 size={13} />{name}<button type="button" onClick={() => setAttachments(items => items.filter(item => item !== name))} aria-label={`移除${name}`}><X size={12} /></button></span>)}</div><details className="task-plan-advanced"><summary>高级设置<ChevronDown size={14} /></summary><label><input type="checkbox" checked={continueOnFailure} onChange={event => setContinueOnFailure(event.target.checked)} />某一步失败后继续后续步骤</label><label><input type="checkbox" checked={requireFinalApproval} onChange={event => setRequireFinalApproval(event.target.checked)} />最终交付前需要确认</label></details><footer className="task-plan-stage-actions"><span>{employees.length ? `${employees.length} 位员工可安排` : '当前没有可安排的员工'}</span><button className="workspace-primary-button" type="button" disabled={!canGenerate} onClick={() => { setSteps(buildSuggestedSteps(goal.trim(), employees)); setStage(2); }}>生成工作计划<ArrowRight size={16} /></button></footer></div>}
-    {stage === 2 && <div className="task-plan-editor-stage task-plan-stage-enter"><main className="task-plan-step-column"><div className="task-plan-column-heading"><div><span>工作步骤</span><small>员工将按顺序接力完成工作</small></div><button className="workspace-secondary-button" type="button" onClick={() => setSteps(buildSuggestedSteps(goal.trim(), employees))}>重新生成</button></div><div className="task-plan-step-list">{steps.map((step, index) => { const employee = employeeById.get(step.employeeInstanceId); return <article className="task-plan-step-card" key={step.id}><header><span className="task-plan-step-number">{index + 1}</span><label className="task-plan-step-employee"><span className="workspace-avatar workspace-avatar-text">{employee?.avatar || <UserRound size={15} />}</span><select value={step.employeeInstanceId} onChange={event => updateStep(step.id, { employeeInstanceId: event.target.value })} aria-label={`第${index + 1}步执行员工`}>{employees.map(item => <option key={item.id} value={item.id}>{item.displayName}</option>)}</select></label><div className="task-plan-step-actions"><button type="button" onClick={() => moveStep(index, -1)} disabled={index === 0} title="上移"><ArrowUp size={14} /></button><button type="button" onClick={() => moveStep(index, 1)} disabled={index === steps.length - 1} title="下移"><ArrowDown size={14} /></button><button type="button" onClick={() => setSteps(items => [...items.slice(0, index + 1), { ...step, id: createId(), title: `${step.title}（副本）` }, ...items.slice(index + 1)])} title="复制步骤"><Copy size={14} /></button><button type="button" onClick={() => setSteps(items => items.filter(item => item.id !== step.id))} title="删除步骤"><Trash2 size={14} /></button></div></header><label><span>步骤名称</span><input value={step.title} onChange={event => updateStep(step.id, { title: event.target.value })} /></label><label><span>交代给员工的工作</span><textarea rows={3} value={step.instruction} onChange={event => updateStep(step.id, { instruction: event.target.value })} /></label><div className="task-plan-step-meta"><label><span>输入</span><input value={index === 0 ? attachments.join(', ') || '用户目标与工作目录' : `步骤 ${index} 的产物`} readOnly /></label><label><span>预期输出</span><input value={step.expectedOutput} onChange={event => updateStep(step.id, { expectedOutput: event.target.value })} /></label></div><footer><span>依赖：{index === 0 ? '无' : `步骤 ${index}`}</span><button type="button" title="更多操作"><MoreHorizontal size={15} /></button></footer></article>; })}</div><button className="task-plan-add-step" type="button" onClick={() => { setNewStep({ id: createId(), employeeInstanceId: employees[0]?.id ?? '', title: '', instruction: '', expectedOutput: '' }); setDrawerOpen(true); }}><Plus size={16} />添加工作步骤</button></main><aside className="task-plan-summary"><span className="eyebrow">计划摘要</span><h2>{goal}</h2><dl><div><dt>工作目录</dt><dd>{workspace.displayName}</dd></div><div><dt>执行步骤</dt><dd>{steps.length} 个步骤</dd></div><div><dt>参与员工</dt><dd>{new Set(steps.map(step => step.employeeInstanceId)).size} 位</dd></div><div><dt>预计耗时</dt><dd>约 {estimatedMinutes} 分钟</dd></div></dl><div className="task-plan-sequence">{steps.map((step, index) => <span key={step.id}>{index + 1}. {step.title || '未命名步骤'}</span>)}</div><footer><button className="workspace-secondary-button" type="button" onClick={() => setStage(1)}>返回修改</button><button className="workspace-primary-button" type="button" disabled={!steps.length} onClick={() => setStage(3)}>检查计划<ArrowRight size={15} /></button></footer></aside></div>}
-    {stage === 3 && <div className="task-plan-review-stage task-plan-stage-enter"><div className="task-plan-stage-heading"><span className="eyebrow"><Check size={14} />检查并启动</span><h1>确认员工安排与交付目标</h1><p>启动后会直接进入执行详情。</p></div><section><div><span>工作目标</span><p>{goal}</p></div><div><span>执行顺序</span><ol>{steps.map((step, index) => <li key={step.id}><span>{index + 1}</span><strong>{step.title}</strong><small>{employeeById.get(step.employeeInstanceId)?.displayName || '未选择员工'}</small>{index < steps.length - 1 && <ArrowRight size={14} />}</li>)}</ol></div><div className="task-plan-review-grid"><span><small>工作目录</small><strong>{workspace.displayName}</strong></span><span><small>权限</small><strong>{workspace.accessMode === 'read-only' ? '只读' : '可修改文件'}</strong></span><span><small>预计耗时</small><strong>约 {estimatedMinutes} 分钟</strong></span><span><small>最终确认</small><strong>{requireFinalApproval ? '需要' : '不需要'}</strong></span></div></section><footer><button className="workspace-secondary-button" type="button" onClick={() => setStage(2)}>返回修改</button><button className="workspace-primary-button" type="button" disabled={!canStart} onClick={submit}>开始安排工作<ArrowRight size={16} /></button></footer></div>}
-    {drawerOpen && <div className="task-plan-drawer-layer"><aside className="task-plan-step-drawer" ref={drawerRef} aria-label="添加工作步骤"><header><div><span className="eyebrow">工作计划</span><h2>添加工作步骤</h2></div><button type="button" onClick={() => setDrawerOpen(false)} aria-label="关闭"><X size={17} /></button></header><label><span>选择员工</span><select value={newStep.employeeInstanceId} onChange={event => setNewStep(current => ({ ...current, employeeInstanceId: event.target.value }))}>{employees.map(employee => <option key={employee.id} value={employee.id}>{employee.displayName} · {employee.description}</option>)}</select></label><label><span>步骤名称</span><input value={newStep.title} onChange={event => setNewStep(current => ({ ...current, title: event.target.value }))} placeholder="例如：审核销售结论" autoFocus /></label><label><span>交代给员工的工作</span><textarea rows={5} value={newStep.instruction} onChange={event => setNewStep(current => ({ ...current, instruction: event.target.value }))} placeholder="说明具体工作、判断标准和注意事项" /></label><label><span>需要使用的输入</span><input value={steps.length ? `步骤 ${steps.length} 的产物` : '用户目标与工作目录'} readOnly /></label><label><span>预期输出</span><textarea rows={3} value={newStep.expectedOutput} onChange={event => setNewStep(current => ({ ...current, expectedOutput: event.target.value }))} placeholder="说明这一步应该交付什么" /></label><footer><button className="workspace-secondary-button" type="button" onClick={() => setDrawerOpen(false)}>取消</button><button className="workspace-primary-button" type="button" disabled={!newStep.employeeInstanceId || !newStep.title.trim() || !newStep.instruction.trim()} onClick={() => { setSteps(items => [...items, { ...newStep, title: newStep.title.trim(), instruction: newStep.instruction.trim(), expectedOutput: newStep.expectedOutput.trim() }]); setDrawerOpen(false); }}>添加步骤</button></footer></aside></div>}
+  return <section className="task-plan-create task-dag-create">
+    <header className="task-plan-create-header"><button className="task-plan-back" type="button" onClick={onBack}><ArrowLeft size={16} />任务中心</button><div className="task-dag-title"><span className="eyebrow"><Sparkles size={14} />安排一组员工</span><strong>把目标交代清楚，员工会按 DAG 协作完成</strong></div></header>
+    <div className="task-dag-intro"><div><h1>你希望完成什么工作？</h1><p>先选择工作方式，再确认员工、依赖关系和交付结果。</p></div><div className="task-dag-mode-switch" role="tablist" aria-label="创建方式"><button type="button" className={mode === 'auto' ? 'active' : ''} onClick={() => setMode('auto')} role="tab" aria-selected={mode === 'auto'}><Sparkles size={15} /><span><strong>自动编排</strong><small>输入目标，由系统安排员工</small></span></button><button type="button" className={mode === 'manual' ? 'active' : ''} onClick={() => setMode('manual')} role="tab" aria-selected={mode === 'manual'}><Link2 size={15} /><span><strong>员工编排</strong><small>拖动员工，自定义工作流</small></span></button></div></div>
+    <label className="task-dag-goal"><span>工作目标</span><textarea value={goal} onChange={event => setGoal(event.target.value)} rows={4} placeholder="例如：整理本季度销售数据，并生成管理层分析报告" autoFocus /></label>
+    <div className="task-dag-workspace-row"><div><span>工作目录</span><button type="button" onClick={() => void chooseDirectory()} title="选择工作目录"><FolderOpen size={15} /><strong>{workspace.displayName}</strong></button></div><label><span>权限</span><select value={workspace.accessMode} onChange={event => setWorkspace(current => ({ ...current, accessMode: event.target.value as LocalWorkspaceBinding['accessMode'] }))}><option value="read-write">可修改文件</option><option value="read-only">只读</option></select></label></div>
+    {mode === 'auto' ? <section className="task-auto-preview"><div className="task-auto-preview-heading"><div><span className="eyebrow"><Bot size={14} />系统将为你安排员工</span><h2>目标确认后生成协作图</h2></div><span>{employees.length} 位可用员工</span></div><div className="task-auto-employee-strip">{employees.slice(0, 5).map(employee => <span key={employee.id}><span className="workspace-avatar workspace-avatar-text">{employee.avatar || <UserRound size={14} />}</span>{employee.displayName}</span>)}</div><p>系统会根据员工的职责和可用模型生成起始节点；需要调整员工或顺序时，可切换到“员工编排”。</p></section> : <section className="task-dag-editor"><aside className="task-dag-palette"><div className="task-dag-panel-heading"><strong>可用员工</strong><small>拖到画布添加节点</small></div><div className="task-dag-employee-list">{employees.map(employee => <button key={employee.id} type="button" draggable onDragStart={() => setDraggedEmployeeId(employee.id)} onClick={() => addEmployeeNode(employee.id)} title="拖动或点击添加"><span className="workspace-avatar workspace-avatar-text">{employee.avatar || <UserRound size={14} />}</span><span><strong>{employee.displayName}</strong><small>{employee.description}</small></span><Plus size={14} /></button>)}</div></aside><div className="task-dag-canvas" ref={canvasRef} onDragOver={event => event.preventDefault()} onDrop={handleDrop} onClick={() => setSelectedNodeId(null)} onPointerMove={updateNodePosition} onPointerUp={stopMovingNode} onPointerCancel={stopMovingNode}><div className="task-dag-canvas-grid" aria-hidden="true" />{nodes.length > 1 && <svg className="task-dag-links" aria-hidden="true"><defs><marker id="task-dag-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" /></marker></defs>{nodes.flatMap(node => node.dependsOn.map(dependency => { const source = nodes.find(item => item.id === dependency); if (!source) return null; return <line key={`${dependency}-${node.id}`} x1={(source.x ?? 0) + 220} y1={(source.y ?? 0) + 56} x2={node.x ?? 0} y2={(node.y ?? 0) + 56} />; }))}</svg>}{nodes.length === 0 && <div className="task-dag-canvas-empty"><Link2 size={22} /><strong>拖动员工到这里</strong><span>也可以点击左侧员工添加第一个节点</span></div>}{nodes.map((node, index) => { const employee = employeeById.get(node.employeeInstanceId); return <article key={node.id} className={`task-dag-node ${selectedNodeId === node.id ? 'selected' : ''}`} style={{ left: node.x, top: node.y }} onPointerDown={event => moveNode(event, node)} onClick={event => { event.stopPropagation(); setSelectedNodeId(node.id); }}><header><span className="task-dag-node-index">{index + 1}</span><span className="workspace-avatar workspace-avatar-text">{employee?.avatar || <UserRound size={14} />}</span><div><strong>{employee?.displayName || '未选择员工'}</strong><small>{node.title}</small></div><button type="button" onPointerDown={event => event.stopPropagation()} onClick={() => removeNode(node.id)} aria-label="删除节点" title="删除节点"><Trash2 size={13} /></button></header><p>{node.instruction}</p>{node.dependsOn.length > 0 && <footer><ChevronRight size={13} />接收前置节点成果</footer>}</article>; })}</div>{selectedNode && <aside className="task-dag-node-inspector"><div className="task-dag-panel-heading"><strong>节点设置</strong><button type="button" onClick={() => setSelectedNodeId(null)} aria-label="关闭节点设置"><X size={15} /></button></div><label><span>执行员工</span><select value={selectedNode.employeeInstanceId} onChange={event => updateNode(selectedNode.id, { employeeInstanceId: event.target.value })}>{employees.map(employee => <option key={employee.id} value={employee.id}>{employee.displayName}</option>)}</select></label><label><span>节点名称</span><input value={selectedNode.title} onChange={event => updateNode(selectedNode.id, { title: event.target.value })} /></label><label><span>交代工作</span><textarea rows={5} value={selectedNode.instruction} onChange={event => updateNode(selectedNode.id, { instruction: event.target.value })} /></label><label><span>预期输出</span><textarea rows={3} value={selectedNode.expectedOutput} onChange={event => updateNode(selectedNode.id, { expectedOutput: event.target.value })} /></label><div className="task-dag-dependencies"><span>依赖节点</span><div>{nodes.filter(node => node.id !== selectedNode.id).map(node => <button key={node.id} type="button" disabled={dependsOnNode(selectedNode.id, node.id)} className={selectedNode.dependsOn.includes(node.id) ? 'active' : ''} onClick={() => toggleDependency(selectedNode.id, node.id)}>{nodes.indexOf(node) + 1}. {node.title || '未命名节点'}</button>)}</div></div></aside>}</section>}
+    <footer className="task-dag-actions"><span>{mode === 'auto' ? '确认后会生成 DAG 并进入执行详情' : `${nodes.length} 个节点 · 可继续调整依赖和员工`}</span><button className="workspace-primary-button" type="button" disabled={!canSubmit} onClick={submit}>{mode === 'auto' ? '生成并开始安排' : '保存编排并开始'}<ChevronRight size={16} /></button></footer>
   </section>;
 }

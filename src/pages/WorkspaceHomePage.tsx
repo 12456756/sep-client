@@ -1,5 +1,5 @@
 import { Bot, ChevronLeft, ChevronRight, FolderOpen, MessageSquareText, Wrench } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ConversationArtifactsPanel } from '../components/workspace/ConversationArtifactsPanel';
 import { ConversationView } from '../components/workspace/ConversationView';
 import { NewTaskTypePicker } from '../components/workspace/NewTaskTypePicker';
@@ -21,6 +21,11 @@ export function WorkspaceHomePage({ userName, enterpriseName, employeeInstanceId
   const [taskCenterTemplateId, setTaskCenterTemplateId] = useState<string | undefined>();
   const selectedTask = workspace.tasks.find(item => item.id === workspace.selectedTaskId);
   const [activeEmployeeId, setActiveEmployeeId] = useState('');
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    contentRef.current?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [workspace.view, selectedTask?.id, taskCenterPage]);
 
   const startConversation = () => { setMode('conversation'); workspace.setView('tasks'); };
   const startTaskCenter = () => { setMode('workflow'); setTaskCenterTemplateId(undefined); setTaskCenterPage('create'); workspace.setView('workflows'); };
@@ -38,7 +43,7 @@ export function WorkspaceHomePage({ userName, enterpriseName, employeeInstanceId
   };
 
   const handleView = (view: Parameters<typeof workspace.setView>[0]) => { if (view === 'tasks') setMode('conversation'); if (view === 'workflows') { setMode('workflow'); setTaskCenterPage('home'); } workspace.setView(view); };
-  return <main className={`workspace-shell ${workspace.sidebarExpanded ? '' : 'sidebar-collapsed'}`}><div className="workspace-titlebar electron-drag-region" aria-hidden="true" />{!workspace.sidebarExpanded && <button className="workspace-floating-sidebar-toggle workspace-sidebar-open-toggle" type="button" onClick={() => workspace.setSidebarExpanded(true)} aria-label="展开侧栏" title="展开侧栏"><ChevronRight size={16} className="workspace-sidebar-toggle-icon" /></button>}<WorkspaceSidebar expanded={workspace.sidebarExpanded} view={workspace.view} tasks={workspace.tasks} selectedTaskId={workspace.selectedTaskId} filters={workspace.filters} userName={userName} enterpriseName={enterpriseName} onToggle={() => workspace.setSidebarExpanded(!workspace.sidebarExpanded)} onNew={newTask} onView={handleView} onSelectTask={selectTask} onFilters={workspace.setFilters} onLogout={() => void onLogout()} /><section className="workspace-main"><div className="workspace-canvas">{workspace.error && <div className="workspace-inline-error workspace-page-error">{workspace.error}</div>}<div className="workspace-content">{renderContent()}</div>{workspace.view === 'tasks' && !selectedTask && <div className="workspace-docked-composer"><WorkspaceComposer mode={mode} draft={workspace.conversationDraft} employees={workspace.employees} skills={workspace.skills} workflows={workspace.workflows} onDraftChange={workspace.updateConversationDraft} onConversationSubmit={workspace.createConversationTask} onWorkflowSubmit={workspace.createWorkflowTask} /></div>}</div></section></main>;
+  return <main className={`workspace-shell ${workspace.sidebarExpanded ? '' : 'sidebar-collapsed'}`}><div className="workspace-titlebar electron-drag-region" aria-hidden="true" />{!workspace.sidebarExpanded && <button className="workspace-floating-sidebar-toggle workspace-sidebar-open-toggle" type="button" onClick={() => workspace.setSidebarExpanded(true)} aria-label="展开侧栏" title="展开侧栏"><ChevronRight size={16} className="workspace-sidebar-toggle-icon" /></button>}<WorkspaceSidebar expanded={workspace.sidebarExpanded} view={workspace.view} tasks={workspace.tasks} selectedTaskId={workspace.selectedTaskId} filters={workspace.filters} userName={userName} enterpriseName={enterpriseName} onToggle={() => workspace.setSidebarExpanded(!workspace.sidebarExpanded)} onNew={newTask} onView={handleView} onSelectTask={selectTask} onFilters={workspace.setFilters} onLogout={() => void onLogout()} /><section className="workspace-main"><div className="workspace-canvas">{workspace.error && <div className="workspace-inline-error workspace-page-error">{workspace.error}</div>}<div className="workspace-content" ref={contentRef}>{renderContent()}</div>{workspace.view === 'tasks' && !selectedTask && <div className="workspace-docked-composer"><WorkspaceComposer mode={mode} draft={workspace.conversationDraft} employees={workspace.employees} skills={workspace.skills} workflows={workspace.workflows} onDraftChange={workspace.updateConversationDraft} onConversationSubmit={workspace.createConversationTask} onWorkflowSubmit={workspace.createWorkflowTask} /></div>}</div></section></main>;
 }
 
 function ConversationLanding({ userName }: { userName: string }) { return <section className="workspace-home"><span className="eyebrow"><MessageSquareText size={14} />对话工作台</span><h1>你好，{userName}</h1><p>把目标交代给合适的硅基员工，今天的工作从这里开始。</p></section>; }

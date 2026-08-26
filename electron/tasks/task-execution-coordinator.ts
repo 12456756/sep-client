@@ -5,6 +5,7 @@ import { PiTaskWorker } from '../pi/pi-task-worker'
 import { TaskRunStore, type TaskRunStorePort } from './task-run-store'
 import { TaskManager } from './task-manager'
 import { WorkspaceLockManager } from './workspace-lock-manager'
+import { ConversationContextStore, type ConversationMessage } from './domain/conversation-context'
 
 export interface EmployeeRuntimeConfig {
   employeeInstanceId: string
@@ -36,7 +37,7 @@ interface ActiveRun {
   completion: Promise<void>
 }
 
-interface QueuedRun { taskId: string; prompt: string; resumeRunId?: string }
+interface QueuedRun { taskId: string; prompt: string; conversation: boolean; resumeSessionFile?: string }
 
 export class TaskExecutionCoordinator {
   private readonly taskManager: TaskManager
@@ -52,6 +53,8 @@ export class TaskExecutionCoordinator {
   private readonly activeByEmployee = new Map<string, ActiveRun>()
   private readonly activeByTask = new Map<string, ActiveRun>()
   private eventChain: Promise<void> = Promise.resolve()
+  private readonly conversationStores = new Map<string, ConversationContextStore>()
+  private readonly responseBuffers = new Map<string, string>()
 
   constructor(options: TaskExecutionCoordinatorOptions) {
     this.taskManager = options.taskManager
@@ -64,7 +67,7 @@ export class TaskExecutionCoordinator {
     this.approvalBroker = new ApprovalBroker({ onRequest: options.onApprovalRequest })
   }
 
-  async executeTask(taskId: string, options: { resumeRunId?: string } = {}): Promise<void> {
+  async executeTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED) {
@@ -81,30 +84,43 @@ export class TaskExecutionCoordinator {
     }
 
     const queue = this.queues.get(employeeInstanceId) ?? []
-    queue.push({ taskId, prompt: task.prompt, resumeRunId: options.resumeRunId })
+    queue.push({ taskId, prompt: task.prompt, conversation: options.conversation === true })
     this.queues.set(employeeInstanceId, queue)
     void this.pump(employeeInstanceId)
   }
 
   async continueConversation(taskId: string, prompt: string): Promise<void> {
+    return this.continueConversationAs(taskId, prompt)
+  }
+
+  async switchConversationEmployee(taskId: string, employeeInstanceId: string): Promise<void> {
+    const task = await this.taskManager.getTask(taskId)
+    if (!task) throw new Error('Task not found.')
+    if (this.activeByTask.has(taskId) || this.isQueued(taskId)) throw new Error('Task is already running.')
+    if (!this.resolveEmployee(employeeInstanceId)) throw new Error('The selected employee is no longer available.')
+    await this.taskManager.setTaskEmployee(taskId, employeeInstanceId)
+  }
+
+  private async continueConversationAs(taskId: string, prompt: string, employeeOverride?: string): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (!prompt.trim()) throw new Error('A message is required.')
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) throw new Error('Task is already running.')
-    const employeeId = task.employeeInstanceId
+    const employeeId = employeeOverride ?? task.employeeInstanceId
     if (!employeeId || !this.resolveEmployee(employeeId)) throw new Error('The selected employee is no longer available.')
     const scope = this.taskManager.getCurrentUserScope()
-    const runs = scope && this.taskRunStore ? await this.taskRunStore.list(scope, taskId) : []
-    const prior = runs.find(run => Boolean(run.sessionFile) && run.outcome !== 'running')
-    if (!prior) throw new Error('No resumable Pi session is available for this conversation.')
+    if (!scope || !this.taskRunStore) throw new Error('Conversation storage is unavailable.')
+    const sharedSession = await this.conversationStore(scope, taskId).getSharedSession()
+    if (!sharedSession?.sessionFile) throw new Error('No resumable Pi session is available for this conversation.')
     if (task.status !== TaskStatus.PENDING) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
     const queue = this.queues.get(employeeId) ?? []
-    queue.push({ taskId, prompt: prompt.trim(), resumeRunId: prior.id })
+    if (employeeId !== task.employeeInstanceId) await this.taskManager.setTaskEmployee(taskId, employeeId)
+    queue.push({ taskId, prompt: prompt.trim(), conversation: true, resumeSessionFile: sharedSession.sessionFile })
     this.queues.set(employeeId, queue)
     void this.pump(employeeId)
   }
 
-  async retryTask(taskId: string): Promise<void> {
+  async retryTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (this.activeByTask.has(taskId) || this.isQueued(taskId)) return
@@ -112,7 +128,7 @@ export class TaskExecutionCoordinator {
       throw new Error('Only terminal or interrupted tasks can be retried.')
     }
     await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
-    await this.executeTask(taskId)
+    await this.executeTask(taskId, options)
   }
 
   async pauseTask(taskId: string): Promise<void> {
@@ -183,17 +199,11 @@ export class TaskExecutionCoordinator {
 
     queue?.shift()
     const scope = this.taskManager.getCurrentUserScope()
-    const resumeRunId = queued.resumeRunId
-    const priorRun = scope && this.taskRunStore && resumeRunId
-      ? await this.taskRunStore.get(scope, taskId, resumeRunId)
-      : null
-    if (resumeRunId && (!priorRun || !priorRun.sessionFile || priorRun.employeeInstanceId !== employeeInstanceId)) {
-      releaseWorkspace()
-      await this.taskManager.updateTaskStatus(taskId, TaskStatus.FAILED, '所选运行没有可恢复的 Pi 会话')
-      return this.pump(employeeInstanceId)
-    }
     const runPaths = scope && this.taskRunStore
       ? this.taskRunStore.getPaths(scope, taskId, runId)
+      : null
+    const conversationPaths = queued.conversation && scope && this.taskRunStore
+      ? this.taskRunStore.getConversationSessionPaths(scope, taskId)
       : null
     const worker = new PiTaskWorker({
       context: {
@@ -203,16 +213,24 @@ export class TaskExecutionCoordinator {
         modelId: employee.modelId,
         gatewayUrl: employee.gatewayUrl,
         workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
-        agentDir: runPaths?.agentDir ?? `${this.getTaskWorkspaceRoot()}/.pi-runs/${runId}`,
-        sessionDir: runPaths?.sessionDir ?? `${this.getTaskWorkspaceRoot()}/.pi-sessions/${runId}`,
-        resumeSessionFile: priorRun?.sessionFile ?? undefined,
+        agentDir: conversationPaths?.agentDir ?? runPaths?.agentDir ?? `${this.getTaskWorkspaceRoot()}/.pi-runs/${runId}`,
+        sessionDir: conversationPaths?.sessionDir ?? runPaths?.sessionDir ?? `${this.getTaskWorkspaceRoot()}/.pi-sessions/${runId}`,
+        resumeSessionFile: queued.resumeSessionFile,
       },
       getRefreshToken: this.getRefreshToken,
       onAuthenticationRequired: this.onAuthenticationRequired,
       onApprovalRequest: request => this.approvalBroker.request(request),
       onEvent: event => this.enqueueEvent(event),
       onSessionCreated: async session => {
-        if (scope && this.taskRunStore) await this.taskRunStore.setSession(scope, taskId, runId, session)
+        if (scope && this.taskRunStore) {
+          await this.taskRunStore.setSession(scope, taskId, runId, session)
+          if (queued.conversation) await this.conversationStore(scope, taskId).setSharedSession({
+            sessionId: session.sessionId,
+            sessionFile: session.sessionFile,
+            lastRunId: runId,
+            updatedAt: Date.now(),
+          })
+        }
       },
     })
     let resolveCompletion!: () => void
@@ -234,6 +252,7 @@ export class TaskExecutionCoordinator {
           prompt: queued.prompt,
         })
         runCreated = true
+        if (task.prompt) await this.conversationStore(scope, taskId).appendMessage(this.userMessage(taskId, runId, employeeInstanceId, employee.modelId, queued.prompt))
       }
       await this.taskManager.setTaskRun(taskId, runId)
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
@@ -280,6 +299,14 @@ export class TaskExecutionCoordinator {
         await this.taskRunStore.finish(scope, taskId, runId, active.control === 'pause' ? 'stopped' : active.control === 'interrupt' ? 'interrupted' : active.control === 'cancel' ? 'cancelled' : 'failed', error instanceof Error ? error.message : 'Agent execution failed.')
       }
     } finally {
+      const response = this.responseBuffers.get(runId)
+      if (response && scope) {
+        await this.conversationStore(scope, taskId).appendMessage({
+          id: `${runId}-assistant`, taskId, turnId: runId, runId,
+          employeeInstanceId, modelId: employee.modelId, role: 'assistant', content: response, createdAt: Date.now(),
+        })
+      }
+      this.responseBuffers.delete(runId)
       await worker.dispose()
       releaseWorkspace()
       if (this.activeByTask.get(taskId) === active) this.activeByTask.delete(taskId)
@@ -304,6 +331,11 @@ export class TaskExecutionCoordinator {
     const scope = this.taskManager.getCurrentUserScope()
     if (scope && this.taskRunStore) await this.taskRunStore.appendEvent(scope, event)
 
+    if (event.type === 'text_delta') {
+      const data = event.data as { text?: unknown }
+      if (typeof data.text === 'string') this.responseBuffers.set(event.runId, `${this.responseBuffers.get(event.runId) ?? ''}${data.text}`)
+    }
+
     if (event.type === 'approval_requested') {
       await this.taskManager.updateTaskStatus(event.taskId, TaskStatus.WAITING_APPROVAL)
     } else if (event.type === 'approval_resolved') {
@@ -318,6 +350,21 @@ export class TaskExecutionCoordinator {
       await this.taskManager.addTaskLog(event.taskId, '开始自动重试', 'warning')
     }
     this.onEvent(event)
+  }
+
+  private conversationStore(scope: { memberId: string; enterpriseId: string }, taskId: string): ConversationContextStore {
+    const key = `${scope.enterpriseId}:${scope.memberId}:${taskId}`
+    let store = this.conversationStores.get(key)
+    if (!store && this.taskRunStore) {
+      store = new ConversationContextStore(this.taskRunStore.getPaths(scope, taskId, 'store').taskDir)
+      this.conversationStores.set(key, store)
+    }
+    if (!store) throw new Error('Conversation storage is unavailable.')
+    return store
+  }
+
+  private userMessage(taskId: string, runId: string, employeeInstanceId: string, modelId: string, content: string): ConversationMessage {
+    return { id: `${runId}-user`, taskId, turnId: runId, runId, employeeInstanceId, modelId, role: 'user', content, createdAt: Date.now() }
   }
 
   private isQueued(taskId: string): boolean {

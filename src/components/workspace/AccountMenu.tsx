@@ -1,4 +1,4 @@
-import { Building2, Check, ChevronDown, CircleUserRound, LogOut, RefreshCw, Settings2, WalletCards } from 'lucide-react';
+import { Building2, ChevronDown, CircleUserRound, LogOut, RefreshCw, Settings2, WalletCards } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 
 interface Props { userName: string; email?: string; enterpriseName?: string; onLogout: () => void }

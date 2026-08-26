@@ -10,33 +10,33 @@ export interface InstanceTokenManagerOptions {
 }
 
 export class InstanceTokenManager {
-  private instanceToken: string | null = null;
+  private employmentToken: string | null = null;
   private expiresAt = 0;
   private refreshTimer: NodeJS.Timeout | null = null;
   private refreshPromise: Promise<string> | null = null;
-  private instanceId: string | null = null;
+  private subscriptionId: string | null = null;
   private generation = 0;
   private controller: AbortController | null = null;
 
   constructor(private readonly options: InstanceTokenManagerOptions) {}
 
-  async initialize(instanceId: string): Promise<void> {
+  async initialize(subscriptionId: string): Promise<void> {
     this.stop();
-    this.instanceId = instanceId;
+    this.subscriptionId = subscriptionId;
     this.controller = new AbortController();
     await this.refreshNow();
   }
 
   async getValidToken(): Promise<string> {
-    if (!this.instanceId) throw new Error('Instance token manager is not initialized');
+    if (!this.subscriptionId) throw new Error('Employment token manager is not initialized');
 
     if (
-      !this.instanceToken ||
+      !this.employmentToken ||
       Date.now() + config.INSTANCE_TOKEN_REFRESH_BEFORE_MS >= this.expiresAt
     ) {
       return this.refreshNow();
     }
-    return this.instanceToken;
+    return this.employmentToken;
   }
 
   stop(): void {
@@ -46,22 +46,22 @@ export class InstanceTokenManager {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     this.refreshTimer = null;
     this.refreshPromise = null;
-    this.instanceToken = null;
+    this.employmentToken = null;
     this.expiresAt = 0;
-    this.instanceId = null;
+    this.subscriptionId = null;
   }
 
   private refreshNow(): Promise<string> {
     if (this.refreshPromise) return this.refreshPromise;
 
     const generation = this.generation;
-    const instanceId = this.instanceId;
+    const subscriptionId = this.subscriptionId;
     const controller = this.controller;
-    if (!instanceId || !controller) {
-      return Promise.reject(new Error('Instance token manager is not initialized'));
+    if (!subscriptionId || !controller) {
+      return Promise.reject(new Error('Employment token manager is not initialized'));
     }
 
-    const request = this.performRefresh(generation, instanceId, controller.signal);
+    const request = this.performRefresh(generation, subscriptionId, controller.signal);
     const trackedRequest = request.finally(() => {
       if (this.refreshPromise === trackedRequest) this.refreshPromise = null;
     });
@@ -71,42 +71,42 @@ export class InstanceTokenManager {
 
   private async performRefresh(
     generation: number,
-    instanceId: string,
+    subscriptionId: string,
     signal: AbortSignal,
   ): Promise<string> {
     try {
       const response = await getInstanceToken({
         refreshToken: this.options.getRefreshToken(),
-        instanceId,
+        subscriptionId,
       }, signal);
 
-      if (!this.isCurrent(generation, instanceId, signal)) {
+      if (!this.isCurrent(generation, subscriptionId, signal)) {
         throw new DOMException('Stale instance token request', 'AbortError');
       }
 
-      this.instanceToken = response.instanceToken;
+      this.employmentToken = response.employmentToken;
       const expiresIn = response.expiresIn > 0
         ? response.expiresIn
         : DEFAULT_TOKEN_TTL_SECONDS;
       this.expiresAt = Date.now() + expiresIn * 1000;
-      this.scheduleRefresh(expiresIn * 1000, generation, instanceId);
-      return response.instanceToken;
+      this.scheduleRefresh(expiresIn * 1000, generation, subscriptionId);
+      return response.employmentToken;
     } catch (error) {
-      if (this.isAbort(error) || !this.isCurrent(generation, instanceId, signal)) throw error;
+      if (this.isAbort(error) || !this.isCurrent(generation, subscriptionId, signal)) throw error;
 
       if (error instanceof AuthApiError && error.isUnauthorized) {
         this.stop();
         this.options.onAuthenticationRequired?.();
-      } else if (this.instanceToken && Date.now() < this.expiresAt) {
-        this.scheduleRetry(generation, instanceId);
+      } else if (this.employmentToken && Date.now() < this.expiresAt) {
+        this.scheduleRetry(generation, subscriptionId);
       }
       throw error;
     }
   }
 
-  private isCurrent(generation: number, instanceId: string, signal: AbortSignal): boolean {
+  private isCurrent(generation: number, subscriptionId: string, signal: AbortSignal): boolean {
     return generation === this.generation &&
-      instanceId === this.instanceId &&
+      subscriptionId === this.subscriptionId &&
       signal === this.controller?.signal &&
       !signal.aborted;
   }
@@ -115,7 +115,7 @@ export class InstanceTokenManager {
     return error instanceof DOMException && error.name === 'AbortError';
   }
 
-  private scheduleRefresh(tokenLifetimeMs: number, generation: number, instanceId: string): void {
+  private scheduleRefresh(tokenLifetimeMs: number, generation: number, subscriptionId: string): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     const refreshLeadMs = Math.min(
       config.INSTANCE_TOKEN_REFRESH_BEFORE_MS,
@@ -123,19 +123,19 @@ export class InstanceTokenManager {
     );
     const delay = Math.max(1_000, this.expiresAt - refreshLeadMs - Date.now());
     this.refreshTimer = setTimeout(() => {
-      if (this.generation !== generation || this.instanceId !== instanceId) return;
+      if (this.generation !== generation || this.subscriptionId !== subscriptionId) return;
       void this.refreshNow().catch((error: unknown) => {
         if (!this.isAbort(error)) console.error('[token-manager] automatic refresh failed:', error);
       });
     }, delay);
   }
 
-  private scheduleRetry(generation: number, instanceId: string): void {
+  private scheduleRetry(generation: number, subscriptionId: string): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     const remainingLifetime = this.expiresAt - Date.now();
     if (remainingLifetime <= 0) return;
     this.refreshTimer = setTimeout(() => {
-      if (this.generation !== generation || this.instanceId !== instanceId) return;
+      if (this.generation !== generation || this.subscriptionId !== subscriptionId) return;
       void this.refreshNow().catch((error: unknown) => {
         if (!this.isAbort(error)) console.error('[token-manager] refresh retry failed:', error);
       });

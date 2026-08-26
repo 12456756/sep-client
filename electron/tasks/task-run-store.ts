@@ -18,7 +18,7 @@ export type TaskRunOutcome =
   | 'interrupted'
 
 export interface TaskRunRecord {
-  version: 1 | 2
+  version: 3
   id: string
   taskId: string
   owner: TaskOwnerScope
@@ -44,6 +44,11 @@ export interface TaskRunPaths {
   agentDir: string
 }
 
+export interface ConversationSessionPaths {
+  sessionDir: string
+  agentDir: string
+}
+
 export interface CreateTaskRunInput {
   taskId: string
   runId: string
@@ -58,6 +63,7 @@ export interface TaskRunStorePort {
   create(scope: TaskOwnerScope, input: CreateTaskRunInput): Promise<TaskRunRecord>
   get(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskRunRecord | null>
   list(scope: TaskOwnerScope, taskId: string): Promise<TaskRunRecord[]>
+  getLatestSession(scope: TaskOwnerScope, taskId: string, employeeInstanceId: string): Promise<TaskRunRecord | null>
   getTimeline(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskExecutionEvent[]>
   getMessages(scope: TaskOwnerScope, taskId: string, initialPrompt: string): Promise<ClientTaskMessage[]>
   markActiveRunsInterrupted(scope: TaskOwnerScope): Promise<number>
@@ -68,6 +74,7 @@ export interface TaskRunStorePort {
   finish(scope: TaskOwnerScope, taskId: string, runId: string, outcome: TaskRunOutcome, error?: string): Promise<void>
   appendEvent(scope: TaskOwnerScope, event: TaskExecutionEvent): Promise<void>
   getPaths(scope: TaskOwnerScope, taskId: string, runId: string): TaskRunPaths
+  getConversationSessionPaths(scope: TaskOwnerScope, taskId: string): ConversationSessionPaths
 }
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/
@@ -116,13 +123,13 @@ export class TaskRunStore implements TaskRunStorePort {
   private readonly writeChains = new Map<string, Promise<void>>()
 
   constructor(userDataDir: string) {
-    this.rootDir = join(userDataDir, 'task-data', 'v2')
+    this.rootDir = join(userDataDir, 'task-data', 'v3')
   }
 
   async create(scope: TaskOwnerScope, input: CreateTaskRunInput): Promise<TaskRunRecord> {
     const paths = this.getPaths(scope, input.taskId, input.runId)
     const record: TaskRunRecord = {
-      version: 2,
+      version: 3,
       id: input.runId,
       taskId: input.taskId,
       owner: { ...scope },
@@ -154,7 +161,7 @@ export class TaskRunStore implements TaskRunStorePort {
     try {
       const record = JSON.parse(await readFile(paths.runFile, 'utf8')) as TaskRunRecord
       if (
-        (record.version !== 1 && record.version !== 2) || record.id !== runId || record.taskId !== taskId ||
+        record.version !== 3 || record.id !== runId || record.taskId !== taskId ||
         record.owner.memberId !== scope.memberId || record.owner.enterpriseId !== scope.enterpriseId
       ) return null
       return record
@@ -183,6 +190,13 @@ export class TaskRunStore implements TaskRunStorePort {
     return records
       .filter((record): record is TaskRunRecord => record !== null)
       .sort((a, b) => b.startedAt - a.startedAt)
+  }
+
+  async getLatestSession(scope: TaskOwnerScope, taskId: string, employeeInstanceId: string): Promise<TaskRunRecord | null> {
+    const records = await this.list(scope, taskId)
+    return records
+      .filter(record => record.employeeInstanceId === employeeInstanceId && Boolean(record.sessionFile))
+      .sort((a, b) => b.startedAt - a.startedAt)[0] ?? null
   }
 
   async getTimeline(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskExecutionEvent[]> {
@@ -321,6 +335,19 @@ export class TaskRunStore implements TaskRunStorePort {
     return paths
   }
 
+  getConversationSessionPaths(scope: TaskOwnerScope, taskId: string): ConversationSessionPaths {
+    const taskDir = this.getPaths(scope, taskId, 'conversation-session').taskDir
+    const enterprise = encodeTaskScopeSegment(scope.enterpriseId, 'enterpriseId')
+    const member = encodeTaskScopeSegment(scope.memberId, 'memberId')
+    const ownerRoot = join(this.rootDir, enterprise, member)
+    const paths = {
+      sessionDir: join(taskDir, 'conversation', 'pi-session'),
+      agentDir: join(taskDir, 'conversation', 'pi-agent'),
+    }
+    for (const path of Object.values(paths)) assertContained(ownerRoot, path)
+    return paths
+  }
+
   private async mutate(
     scope: TaskOwnerScope,
     taskId: string,
@@ -337,7 +364,7 @@ export class TaskRunStore implements TaskRunStorePort {
         throw new TaskPersistenceError(error instanceof Error ? error.message : undefined)
       }
       if (
-        (record.version !== 1 && record.version !== 2) ||
+        record.version !== 3 ||
         record.id !== runId ||
         record.taskId !== taskId ||
         record.owner.memberId !== scope.memberId ||

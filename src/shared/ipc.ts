@@ -60,6 +60,10 @@ export interface ContinueTaskInput {
   prompt: string
 }
 
+export interface WorkflowCreateResult extends TaskResult {
+  graph?: unknown
+}
+
 export interface TaskMessagesResult {
   success: boolean
   messages?: ClientTaskMessage[]
@@ -91,6 +95,10 @@ export interface ElectronAPI {
   getTaskTimeline: (taskId: string, runId: string) => Promise<TaskTimelineResult>
   pauseTask: (taskId: string) => Promise<IpcCommandResult>
   cancelTask: (taskId: string) => Promise<IpcCommandResult>
+  createWorkflow: (data: unknown) => Promise<WorkflowCreateResult>
+  validateWorkflow: (data: unknown) => Promise<WorkflowCreateResult>
+  getWorkflow: (taskId: string) => Promise<WorkflowCreateResult>
+  startWorkflow: (taskId: string) => Promise<IpcCommandResult>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: () => Promise<SelectDirectoryResult>
