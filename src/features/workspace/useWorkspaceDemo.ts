@@ -243,7 +243,9 @@ export function useWorkspaceDemo(options: { employeeInstanceId?: string; employe
     displayName: instance.name,
     description: `${instance.template.name}${instance.department ? ` · ${instance.department.name}` : ''}`,
     avatar: instance.template.avatar ?? instance.name.slice(0, 1),
-    modelOptions: instance.allowedModels.map((id, index) => ({ id, displayName: id, providerName: 'SEP Gateway', description: '授权模型', isDefault: index === 0, supportsTools: true })),
+    // Older/current SEP instance responses may omit the optional model list.
+    // Keep the employee visible instead of crashing the whole workspace on login.
+    modelOptions: (Array.isArray(instance.allowedModels) ? instance.allowedModels : []).map((id, index) => ({ id, displayName: id, providerName: 'SEP Gateway', description: '授权模型', isDefault: index === 0, supportsTools: true })),
   })), [options.instances]);
   const [skills, setSkills] = useState(initialSkills);
   const workflows = useMemo(() => {
