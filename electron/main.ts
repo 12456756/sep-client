@@ -10,8 +10,8 @@
 
 import { app, BrowserWindow, ipcMain, safeStorage, dialog, Menu } from 'electron';
 import { join } from 'node:path';
-import './infrastructure/undici-polyfill'; // 必须在 pi-host 加载前注入
-import type { PiHost } from './pi/pi-host';
+import './infrastructure/undici-polyfill'; // Pi SDK 使用的网络兼容层
+import { TaskExecutionCoordinator } from './tasks/task-execution-coordinator';
 import { TaskManager, TaskPersistenceError, TaskScopeError } from './tasks/task-manager';
 import { TaskRunStore, type TaskRunRecord } from './tasks/task-run-store';
 import { getDeviceFingerprint } from './auth/device-fingerprint';
@@ -27,6 +27,9 @@ import type {
   PasswordAvailabilityResult,
   RememberedAccountsResult,
 } from '../src/shared/types';
+import { createWorkflowGraph, WorkflowGraphError } from './tasks/domain/workflow-graph';
+import { WorkflowStore } from './tasks/workflow-store';
+import { TaskMetadataStore } from './tasks/task-metadata-store';
 import {
   forgetRememberedAccount,
   getRememberedPassword,
@@ -35,10 +38,12 @@ import {
 } from './auth/credentials';
 
 let mainWindow: BrowserWindow | null = null;
-let piHost: PiHost | null = null;
-let piHostInitialization: Promise<void> | null = null;
+let taskCoordinator: TaskExecutionCoordinator | null = null;
+let taskCoordinatorInitialization: Promise<void> | null = null;
 let taskManager: TaskManager | null = null;
 let taskRunStore: TaskRunStore | null = null;
+let workflowStore: WorkflowStore | null = null;
+let taskMetadataStore: TaskMetadataStore | null = null;
 let activeInstances: ClientInstance[] = [];
 let authenticationCleanupPromise: Promise<void> | null = null;
 const authSession = new AuthSessionManager();
@@ -106,6 +111,16 @@ function ensureTaskRunStore(): TaskRunStore {
   return taskRunStore
 }
 
+function ensureWorkflowStore(): WorkflowStore {
+  if (!workflowStore) workflowStore = new WorkflowStore(app.getPath('userData'))
+  return workflowStore
+}
+
+function ensureTaskMetadataStore(): TaskMetadataStore {
+  if (!taskMetadataStore) taskMetadataStore = new TaskMetadataStore(app.getPath('userData'))
+  return taskMetadataStore
+}
+
 function toClientTaskRun(record: TaskRunRecord) {
   return {
     id: record.id,
@@ -142,7 +157,7 @@ function invalidateAuthentication(): void {
   if (authenticationCleanupPromise) return
   authenticationCleanupPromise = (async () => {
     try {
-      if (piHost) await piHost.stopAllSessions()
+      if (taskCoordinator) await taskCoordinator.stopAll()
     } catch (error) {
       console.warn('[main] Failed to stop Pi during authentication cleanup:', error instanceof Error ? error.name : 'unknown')
     } finally {
@@ -156,9 +171,24 @@ function invalidateAuthentication(): void {
   })()
 }
 
-// 延迟加载 PiHost，避免启动时加载 pi-coding-agent
-async function loadPiHost(): Promise<typeof import('./pi/pi-host')> {
-  return await import('./pi/pi-host');
+async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
+  if (taskCoordinator) return taskCoordinator
+  if (taskCoordinatorInitialization) { await taskCoordinatorInitialization; return taskCoordinator! }
+  taskCoordinatorInitialization = (async () => {
+    if (!safeStorage.isEncryptionAvailable()) console.warn('[main] safeStorage encryption NOT available on this platform')
+    const manager = await ensureTaskManager()
+    taskCoordinator = new TaskExecutionCoordinator({
+      taskManager: manager,
+      getRefreshToken: () => authSession.getRefreshToken(),
+      onAuthenticationRequired: invalidateAuthentication,
+      onEvent: event => mainWindow?.webContents.send('pi:event', event),
+      onApprovalRequest: request => mainWindow?.webContents.send('pi:tool-approval-request', request),
+      resolveEmployee,
+      userDataDir: app.getPath('userData'),
+    })
+  })()
+  try { await taskCoordinatorInitialization } catch (error) { taskCoordinatorInitialization = null; throw error }
+  return taskCoordinator!
 }
 
 // ── 1. 创建主窗口 ─────────────────────────────────────────────────────────────
@@ -185,7 +215,7 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false, // pi-host runs in main, renderer is sandboxed via contextBridge
+    sandbox: false, // Pi runs in main, renderer is isolated via contextBridge
     },
   });
 
@@ -224,48 +254,6 @@ function createWindow(): void {
 }
 
 // ── 2. Pi Host 初始化 ─────────────────────────────────────────────────────────
-
-async function initPiHost(): Promise<void> {
-  if (piHost) return
-  if (piHostInitialization) return piHostInitialization
-
-  piHostInitialization = (async () => {
-  if (!safeStorage.isEncryptionAvailable()) {
-    console.warn('[main] safeStorage encryption NOT available on this platform');
-  }
-
-  // Task storage and the Pi SDK are independent startup work.
-  const [manager, { PiHost }] = await Promise.all([
-    ensureTaskManager(),
-    loadPiHost(),
-  ])
-  console.log('[main] task-manager initialized');
-
-  piHost = new PiHost({
-    onEvent: (event) => {
-      // Forward pi events to renderer
-      mainWindow?.webContents.send('pi:event', event);
-    },
-    onToolApprovalRequest: request => {
-      mainWindow?.webContents.send('pi:tool-approval-request', request)
-    },
-    taskManager: manager,
-    getRefreshToken: () => authSession.getRefreshToken(),
-    onAuthenticationRequired: invalidateAuthentication,
-    resolveEmployee,
-    userDataDir: app.getPath('userData'),
-  });
-
-  console.log('[main] pi-host initialized');
-  })()
-
-  try {
-    await piHostInitialization
-  } catch (error) {
-    piHostInitialization = null
-    throw error
-  }
-}
 
 // ── 3. IPC handlers ───────────────────────────────────────────────────────────
 
@@ -312,7 +300,7 @@ ipcMain.handle('auth:login', async (_event, input: unknown): Promise<LoginResult
       return { success: false, error: authError('INTERNAL_ERROR', 'The service returned an invalid response.', 502, true) };
     }
 
-    if (piHost) await piHost.stopAllSessions()
+    if (taskCoordinator) await taskCoordinator.stopAll()
     authSession.setLogin(response)
     const manager = await ensureTaskManager()
     await manager.setCurrentUser(response.user.id, response.enterprise.id)
@@ -357,7 +345,7 @@ ipcMain.handle('auth:forget-account', async (_event, email: unknown): Promise<Fo
 
 ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
   try {
-    if (piHost) await piHost.stopAllSessions()
+    if (taskCoordinator) await taskCoordinator.stopAll()
     const manager = await ensureTaskManager()
     manager.clearCurrentUser()
     activeInstances = []
@@ -436,9 +424,10 @@ ipcMain.handle('task:execute', async (_event, input: unknown) => {
     if (!taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     }
-    if (!piHost) await initPiHost()
-    if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.executeTask(taskId)
+    const manager = await ensureTaskManager()
+    const scope = manager.getCurrentUserScope()
+    const metadata = scope ? await ensureTaskMetadataStore().load(scope, taskId) : null
+    await (await ensureTaskCoordinator()).executeTask(taskId, { conversation: metadata?.kind === 'conversation' })
     return { success: true }
   } catch (error) {
     return { success: false, error: taskError(error) }
@@ -458,13 +447,114 @@ ipcMain.handle('task:continue', async (_event, input: unknown) => {
     if (!resolveEmployee(task.employeeInstanceId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
-    if (!piHost) await initPiHost()
-    if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.continueTask(input.taskId, input.prompt)
+    await (await ensureTaskCoordinator()).continueConversation(input.taskId, input.prompt)
     return { success: true }
   } catch (error) {
     return { success: false, error: taskError(error) }
   }
+})
+
+ipcMain.handle('task:switch-employee', async (_event, input: unknown) => {
+  try {
+    if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.employeeInstanceId !== 'string') {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and employee are required.' } }
+    }
+    if (!resolveEmployee(input.employeeInstanceId)) {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
+    }
+    await (await ensureTaskCoordinator()).switchConversationEmployee(input.taskId, input.employeeInstanceId)
+    const manager = await ensureTaskManager()
+    const scope = manager.getCurrentUserScope()
+    if (scope) {
+      const metadata = await ensureTaskMetadataStore().load(scope, input.taskId)
+      if (metadata?.kind === 'conversation') {
+        metadata.currentEmployeeId = input.employeeInstanceId
+        if (!metadata.participantEmployeeIds.includes(input.employeeInstanceId)) metadata.participantEmployeeIds.push(input.employeeInstanceId)
+        await ensureTaskMetadataStore().save(scope, metadata)
+      }
+    }
+    return { success: true }
+  } catch (error) { return { success: false, error: taskError(error) } }
+})
+
+ipcMain.handle('workflow:validate', async (_event, input: unknown) => {
+  try {
+    if (!isRecord(input) || !Array.isArray(input.nodes)) {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'Workflow nodes are required.' } }
+    }
+    return { success: true, graph: createWorkflowGraph(input.nodes as never) }
+  } catch (error) {
+    if (error instanceof WorkflowGraphError) return { success: false, error: { code: 'INVALID_ARGUMENT', message: error.message } }
+    return { success: false, error: taskError(error) }
+  }
+})
+
+ipcMain.handle('workflow:create', async (_event, input: unknown) => {
+  try {
+    if (!isRecord(input) || typeof input.title !== 'string' || !input.title.trim() || !Array.isArray(input.nodes)) {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A title and workflow nodes are required.' } }
+    }
+    const graph = createWorkflowGraph(input.nodes as never)
+    const employee = graph.nodes[0]?.employeeInstanceId
+    if (!employee || !resolveEmployee(employee)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The workflow employee is unavailable.' } }
+    const manager = await ensureTaskManager()
+    const task = await manager.createTask(input.title.trim(), typeof input.prompt === 'string' ? input.prompt : input.title.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, employee)
+    const scope = manager.getCurrentUserScope()
+    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    await ensureWorkflowStore().save(scope, task.id, graph)
+    await ensureTaskMetadataStore().save(scope, {
+      version: 1, taskId: task.id, kind: 'workflow', participantEmployeeIds: [...new Set(graph.nodes.map(node => node.employeeInstanceId))],
+      currentEmployeeId: employee, createdAt: Date.now(),
+    })
+    return { success: true, task, graph }
+  } catch (error) {
+    if (error instanceof WorkflowGraphError) return { success: false, error: { code: 'INVALID_ARGUMENT', message: error.message } }
+    return { success: false, error: taskError(error) }
+  }
+})
+
+ipcMain.handle('conversation:create', async (_event, input: unknown) => {
+  try {
+    if (!isRecord(input) || typeof input.title !== 'string' || !input.title.trim() || typeof input.prompt !== 'string' || !input.prompt.trim() || typeof input.employeeInstanceId !== 'string') {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A title, prompt, and employee are required.' } }
+    }
+    if (!resolveEmployee(input.employeeInstanceId)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
+    const manager = await ensureTaskManager()
+    const task = await manager.createTask(input.title.trim(), input.prompt.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, input.employeeInstanceId)
+    const scope = manager.getCurrentUserScope()
+    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    await ensureTaskMetadataStore().save(scope, {
+      version: 1, taskId: task.id, kind: 'conversation', participantEmployeeIds: [input.employeeInstanceId],
+      currentEmployeeId: input.employeeInstanceId, createdAt: Date.now(),
+    })
+    return { success: true, task }
+  } catch (error) { return { success: false, error: taskError(error) } }
+})
+
+ipcMain.handle('workflow:get', async (_event, taskId: unknown) => {
+  try {
+    if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+    const manager = await ensureTaskManager()
+    if (!await manager.getTask(taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    const scope = manager.getCurrentUserScope()
+    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const graph = await ensureWorkflowStore().load(scope, taskId)
+    if (!graph) return { success: false, error: { code: 'NOT_FOUND', message: 'Workflow not found.' } }
+    return { success: true, graph }
+  } catch (error) { return { success: false, error: taskError(error) } }
+})
+
+ipcMain.handle('workflow:start', async (_event, taskId: unknown) => {
+  try {
+    if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+    const manager = await ensureTaskManager()
+    const task = await manager.getTask(taskId)
+    if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    const scope = manager.getCurrentUserScope()
+    if (!scope || !await ensureWorkflowStore().load(scope, taskId)) return { success: false, error: { code: 'INVALID_STATE', message: 'A valid workflow definition is required.' } }
+    await (await ensureTaskCoordinator()).executeTask(taskId)
+    return { success: true }
+  } catch (error) { return { success: false, error: taskError(error) } }
 })
 
 ipcMain.handle('task:get-messages', async (_event, taskId: unknown) => {
@@ -490,9 +580,9 @@ ipcMain.handle('task:retry', async (_event, taskId: unknown) => {
     if (!task.employeeInstanceId || !resolveEmployee(task.employeeInstanceId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
-    if (!piHost) await initPiHost()
-    if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.retryTask(taskId)
+    const scope = manager.getCurrentUserScope()
+    const metadata = scope ? await ensureTaskMetadataStore().load(scope, taskId) : null
+    await (await ensureTaskCoordinator()).retryTask(taskId, { conversation: metadata?.kind === 'conversation' })
     return { success: true }
   } catch (error) {
     return { success: false, error: taskError(error) }
@@ -575,9 +665,7 @@ ipcMain.handle('task:pause', async (_event, taskId: unknown) => {
     if (typeof taskId !== 'string' || !taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     }
-    if (!piHost) await initPiHost()
-    if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.pauseTask(taskId)
+    await (await ensureTaskCoordinator()).pauseTask(taskId)
     return { success: true }
   } catch (error) {
     return { success: false, error: taskError(error) }
@@ -589,9 +677,7 @@ ipcMain.handle('task:cancel', async (_event, taskId: unknown) => {
     if (typeof taskId !== 'string' || !taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     }
-    if (!piHost) await initPiHost()
-    if (!piHost) throw new Error('Pi host is unavailable.')
-    await piHost.cancelTask(taskId)
+    await (await ensureTaskCoordinator()).cancelTask(taskId)
     return { success: true }
   } catch (error) {
     return { success: false, error: taskError(error) }
@@ -623,8 +709,8 @@ ipcMain.handle('task:get-stats', async () => {
 })
 
 ipcMain.on('pi:tool-approval-response', (_event, response: { requestId?: string; approved?: unknown; reason?: unknown }) => {
-  if (!piHost || typeof response?.approved !== 'boolean') return
-  piHost.respondToApproval({
+  if (!taskCoordinator || typeof response?.approved !== 'boolean') return
+  taskCoordinator.respondToApproval({
     requestId: typeof response.requestId === 'string' ? response.requestId : undefined,
     approved: response.approved,
     reason: typeof response.reason === 'string' ? response.reason : undefined,
@@ -661,7 +747,7 @@ ipcMain.handle('util:select-directory', async () => {
 
 app.whenReady().then(async () => {
   ensureTaskManager()
-  // 不在启动时初始化 PiHost，延迟到用户选择实例后
+  // 延迟到首次任务执行时初始化任务协调器
   createWindow();
 
   app.on('activate', () => {
@@ -678,7 +764,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', async () => {
-  if (piHost) {
-    await piHost.stopAllSessions()
+  if (taskCoordinator) {
+    await taskCoordinator.stopAll()
   }
 });

@@ -151,6 +151,20 @@ export class TaskManager {
     this.notifyTaskUpdate(taskId)
   }
 
+  async setTaskEmployee(taskId: string, employeeInstanceId: string): Promise<Task> {
+    await this.requireTask(taskId)
+    await this.commit(nextTasks => {
+      const task = nextTasks.get(taskId)
+      if (!task) throw new TaskScopeError('Task not found.')
+      if (task.status === TaskStatus.RUNNING || task.status === TaskStatus.WAITING_APPROVAL) {
+        throw new TaskScopeError('A running task cannot switch employee.')
+      }
+      task.employeeInstanceId = employeeInstanceId
+    })
+    this.notifyTaskUpdate(taskId)
+    return (await this.getTask(taskId)) as Task
+  }
+
   async clearTaskRun(taskId: string, expectedRunId?: string): Promise<void> {
     const task = await this.getTask(taskId)
     if (!task || (expectedRunId && task.activeRunId !== expectedRunId)) return

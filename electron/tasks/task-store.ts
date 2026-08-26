@@ -32,7 +32,7 @@ export class TaskScopeError extends Error {
 }
 
 interface PersistedTaskStore {
-  version: 2 | 3
+  version: 3
   owner: TaskOwnerScope
   updatedAt: number
   tasks: ClientTask[]
@@ -123,7 +123,7 @@ function parseEnvelope(value: unknown, scope: TaskOwnerScope): ClientTask[] | nu
   if (!value || typeof value !== 'object') return null
   const item = value as Partial<PersistedTaskStore>
   if (
-    (item.version !== 2 && item.version !== 3) ||
+    item.version !== 3 ||
     !item.owner ||
     item.owner.memberId !== scope.memberId ||
     item.owner.enterpriseId !== scope.enterpriseId ||
@@ -152,12 +152,14 @@ export interface TaskStorePort {
 
 export class TaskStore implements TaskStorePort {
   private readonly rootDir: string
+  private readonly legacyRootDir: string
   private initialized = false
   private initialization: Promise<void> | null = null
   private readonly writeChains = new Map<string, Promise<void>>()
 
   constructor(private readonly userDataDir: string) {
-    this.rootDir = join(userDataDir, 'task-data', 'v2')
+    this.rootDir = join(userDataDir, 'task-data', 'v3')
+    this.legacyRootDir = join(userDataDir, 'task-data', 'v2')
   }
 
   async initialize(): Promise<void> {
@@ -286,6 +288,13 @@ export class TaskStore implements TaskStorePort {
 
   private async removeLegacyStore(): Promise<void> {
     const legacyFile = join(this.userDataDir, 'tasks.json')
+    if (await this.pathExists(this.legacyRootDir)) {
+      try {
+        await rm(this.legacyRootDir, { recursive: true, force: true })
+      } catch (error) {
+        throw new TaskPersistenceError(error instanceof Error ? error.message : 'Failed to remove v2 task data.')
+      }
+    }
     if (!await this.pathExists(legacyFile)) return
     try {
       await rm(legacyFile, { force: true })

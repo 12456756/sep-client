@@ -109,21 +109,18 @@ describe('TaskStore', () => {
     await assert.rejects(store.load({ memberId: '', enterpriseId: 'enterprise-a' }), TaskScopeError)
   })
 
-  it('loads v2 snapshots with empty execution context', async () => {
+  it('starts with empty v3 storage after deleting v2 data', async () => {
     const userData = await makeUserDataDir()
     const store = new TaskStore(userData)
     await store.initialize()
     const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
-    const file = store.getTaskFileForTesting(scope)
-    await mkdir(join(file, '..'), { recursive: true })
-    const legacyTask = task(scope, 'v2-task')
-    delete (legacyTask as Partial<ClientTask>).employeeInstanceId
-    delete (legacyTask as Partial<ClientTask>).activeRunId
-    await writeFile(file, JSON.stringify({ version: 2, owner: scope, updatedAt: 1, tasks: [legacyTask] }))
-
-    const loaded = await store.load(scope)
-    assert.equal(loaded[0]?.employeeInstanceId, null)
-    assert.equal(loaded[0]?.activeRunId, null)
+    const v2 = join(userData, 'task-data', 'v2')
+    await mkdir(v2, { recursive: true })
+    await writeFile(join(v2, 'stale.json'), 'stale')
+    const freshStore = new TaskStore(userData)
+    await freshStore.initialize()
+    assert.deepEqual(await freshStore.load(scope), [])
+    await assert.rejects(stat(v2))
   })
 
   it('uses a valid backup when the primary file is malformed', async () => {
@@ -134,7 +131,7 @@ describe('TaskStore', () => {
     await store.save(scope, [task(scope, 'kept')])
     const file = store.getTaskFileForTesting(scope)
     await writeFile(file, '{broken')
-    await writeFile(`${file}.bak`, JSON.stringify({ version: 2, owner: scope, updatedAt: 2, tasks: [task(scope, 'backup')] }))
+    await writeFile(`${file}.bak`, JSON.stringify({ version: 3, owner: scope, updatedAt: 2, tasks: [task(scope, 'backup')] }))
 
     assert.deepEqual((await store.load(scope)).map(item => item.id), ['backup'])
   })

@@ -30,8 +30,8 @@ export class AuthSessionManager {
       throw new Error('Your account is not associated with an enterprise.')
     }
 
-    const expiresIn = Number.isFinite(response.expiresIn) && response.expiresIn > 0
-      ? response.expiresIn
+    const expiresIn = Number.isFinite(response.accessTokenExpiresIn) && response.accessTokenExpiresIn > 0
+      ? response.accessTokenExpiresIn
       : 60 * 60
 
     this.accessToken = response.accessToken
