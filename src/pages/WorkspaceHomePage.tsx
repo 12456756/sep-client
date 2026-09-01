@@ -11,10 +11,10 @@ import { WorkspaceSidebar } from '../components/workspace/WorkspaceSidebar';
 import { useWorkspaceDemo } from '../features/workspace/useWorkspaceDemo';
 import type { EmployeeInstanceSnapshot } from '../shared/types';
 
-interface Props { userName: string; enterpriseName?: string; employeeInstanceId?: string; employeeInstanceName?: string; instances?: EmployeeInstanceSnapshot[]; onLogout: () => Promise<void> }
+interface Props { userName: string; enterpriseName?: string; subscriptionId?: string; employeeInstanceName?: string; instances?: EmployeeInstanceSnapshot[]; onLogout: () => Promise<void> }
 
-export function WorkspaceHomePage({ userName, enterpriseName, employeeInstanceId, employeeInstanceName, instances, onLogout }: Props) {
-  const workspace = useWorkspaceDemo({ employeeInstanceId, employeeName: employeeInstanceName, instances });
+export function WorkspaceHomePage({ userName, enterpriseName, subscriptionId, employeeInstanceName, instances, onLogout }: Props) {
+  const workspace = useWorkspaceDemo({ subscriptionId, employeeName: employeeInstanceName, instances });
   const [mode, setMode] = useState<'conversation' | 'workflow'>('conversation');
   const [artifactsExpanded, setArtifactsExpanded] = useState(() => typeof window === 'undefined' || window.innerWidth > 960);
   const [taskCenterPage, setTaskCenterPage] = useState<'home' | 'create'>('home');

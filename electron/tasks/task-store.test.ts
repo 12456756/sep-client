@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus, type ClientTask } from '../../src/shared/types'
 import { TaskPersistenceError, TaskScopeError, TaskStore } from './task-store'
-import { TaskManager } from './task-manager'
+import { TaskAdmissionError, TaskManager } from './task-manager'
 
 const temporaryDirectories: string[] = []
 
@@ -34,7 +34,7 @@ function task(
     logs: [],
     ownerId: owner.memberId,
     ownerEnterpriseId: owner.enterpriseId,
-    employeeInstanceId: null,
+    subscriptionId: null,
     activeRunId: null,
   }
 }
@@ -173,6 +173,23 @@ describe('TaskManager user scope', () => {
     assert.equal(persisted[0]?.logs.length, 1)
   })
 
+  it('recovers a task admitted before a crash even if it never reached running', async () => {
+    const userData = await makeUserDataDir()
+    const store = new TaskStore(userData)
+    await store.initialize()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const admitted = task(scope, 'admitted', TaskStatus.PENDING)
+    admitted.activeRunId = 'run-a'
+    await store.save(scope, [admitted])
+
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const recovered = await manager.getTask('admitted')
+    assert.equal(recovered?.status, TaskStatus.INTERRUPTED)
+    assert.equal(recovered?.activeRunId, null)
+  })
+
   it('rejects operations without an active scope', async () => {
     const manager = new TaskManager(await makeUserDataDir())
     await manager.initialize()
@@ -192,5 +209,38 @@ describe('TaskManager user scope', () => {
     await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
     await assert.rejects(manager.createTask('title', 'prompt'), TaskPersistenceError)
     assert.deepEqual(await manager.getAllTasks(), [])
+  })
+
+  it('admits only one execution when submissions race', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const created = await manager.createTask('title', 'prompt')
+
+    const results = await Promise.allSettled([
+      manager.admitTask(created.id, 'run-a'),
+      manager.admitTask(created.id, 'run-b'),
+    ])
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+    assert.equal(results.filter(result => result.status === 'rejected').length, 1)
+    const rejected = results.find((result): result is PromiseRejectedResult => result.status === 'rejected')
+    assert.ok(rejected?.reason instanceof TaskAdmissionError)
+    assert.equal((await manager.getTask(created.id))?.activeRunId, 'run-a')
+  })
+
+  it('allows a queued admission to be cancelled and released', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const created = await manager.createTask('title', 'prompt')
+    await manager.admitTask(created.id, 'run-a')
+    await manager.cancelTask(created.id)
+    assert.equal((await manager.getTask(created.id))?.status, TaskStatus.FAILED)
+    await manager.clearTaskRun(created.id, 'run-a')
+    assert.equal((await manager.getTask(created.id))?.activeRunId, null)
   })
 })

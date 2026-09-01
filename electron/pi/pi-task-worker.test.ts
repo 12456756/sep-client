@@ -56,7 +56,7 @@ afterEach(async () => {
 
 function context(root: string) {
   return {
-    taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', modelId: 'model-a',
+    taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', modelId: 'model-a',
     gatewayUrl: 'http://localhost:19999', workspaceDir: root,
     agentDir: join(root, 'agent'), sessionDir: join(root, 'sessions'),
   }

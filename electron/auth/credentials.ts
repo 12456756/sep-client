@@ -10,8 +10,8 @@ import {
 import { join } from 'path'
 import type { RememberedAccount } from '../../src/shared/types'
 
-// Non-sensitive identity data is JSON. Tokens and remembered passwords are
-// encrypted by the OS and are only ever decrypted in the Electron main process.
+  // 非敏感身份数据使用 JSON 保存。令牌和记住的密码由操作系统加密，
+  // 只在 Electron 主进程中解密。
 export interface AuthMeta {
   memberId: string
   enterpriseId: string
@@ -135,7 +135,7 @@ export function saveRefreshToken(token: string): void {
 
   writeFileAtomically(RT_FILE, safeStorage.encryptString(token))
 
-  // Remove the short-lived tokens file created by versions before this policy.
+  // 删除旧版本在当前安全策略之前创建的短期令牌文件。
   securelyDelete(LEGACY_TOKENS_FILE)
 }
 
@@ -145,7 +145,7 @@ export function getRefreshToken(): string | null {
   try {
     return safeStorage.decryptString(readFileSync(RT_FILE))
   } catch {
-    // Key rotation or moving this file to another OS account invalidates it.
+  // 密钥轮换或将文件移到其他操作系统账户后，该文件会失效。
     return null
   }
 }

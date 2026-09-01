@@ -1,9 +1,9 @@
 /**
- * 主进程与渲染进程共享的类型定义
- * IPC 通道两侧均引用此文件
+ * 涓昏繘绋嬩笌娓叉煋杩涚▼鍏变韩鐨勭被鍨嬪畾涔?
+ * IPC 閫氶亾涓や晶鍧囧紩鐢ㄦ鏂囦欢
  */
 
-// ──────────────────────────── Auth ─────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Auth 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface LoginRequest {
   email: string
@@ -59,7 +59,7 @@ export type PasswordAvailabilityResult = { passwordAvailable: boolean }
 export type ForgetAccountResult = AuthResult<null>
 export type LogoutResult = AuthResult<null>
 
-// ──────────────────────────── Tasks ────────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Tasks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export const TaskStatus = {
   PENDING: 'pending',
@@ -96,7 +96,7 @@ export interface ClientTask {
   progress?: number
   ownerId: string
   ownerEnterpriseId: string
-  employeeInstanceId: string | null
+  subscriptionId?: string | null
   activeRunId: string | null
 }
 
@@ -106,7 +106,7 @@ export type ClientTaskRunOutcome = 'running' | 'completed' | 'failed' | 'cancell
 export interface ClientTaskRun {
   id: string
   taskId: string
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   runtimeKey: string
   outcome: ClientTaskRunOutcome
@@ -191,7 +191,7 @@ export interface AuthSession {
   enterpriseName: string
 }
 
-// ──────────────────────────── Instances ────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Instances 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export type InstanceStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
 
@@ -218,7 +218,7 @@ export interface PackageRef {
 }
 
 export interface EmployeeInstance {
-  instanceId: string
+  subscriptionId: string
   displayName: string
   description?: string
   templateId: string
@@ -230,9 +230,9 @@ export interface EmployeeInstance {
   status: InstanceStatus
 }
 
-// ──────────────────────────── Pi Events ────────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Pi Events 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-/** pi 事件类型（见文档 §4.3） */
+/** Pi 事件类型（参见接口文档第 4.3 节）。 */
 export type PiEventType =
   | 'text_delta'
   | 'tool_execution_start'
@@ -284,12 +284,12 @@ export type PiClientEvent =
   | PiToolBlockedEvent
   | PiSessionErrorEvent
 
-// ──────────────────────────── Permission ───────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Permission 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface TaskExecutionEvent {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   sequence: number
   type: string
   occurredAt: number
@@ -300,25 +300,25 @@ export interface ToolAuthorizationRequest {
   requestId: string
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   toolName: string
   input: unknown
   timestamp: number
 }
 
-/** 高危工具调用，等待用户批准（文档 §6.2 措施 ④） */
+/** 楂樺嵄宸ュ叿璋冪敤锛岀瓑寰呯敤鎴锋壒鍑嗭紙鏂囨。 搂6.2 鎺柦 鈶ｏ級 */
 export interface PermissionRequest {
-  requestId: string     // UUID，用于响应时匹配
-  instanceId: string
-  instanceDisplayName: string
+  requestId: string     // UUID，用于响应时匹配请求。
+  subscriptionId: string
+  subscriptionDisplayName: string
   toolName: string
-  description: string   // 人读说明，如"写入文件 ~/Documents/..."
+  description: string   // 浜鸿璇存槑锛屽"鍐欏叆鏂囦欢 ~/Documents/..."
   inputSummary: Record<string, unknown>
 }
 
 export type PermissionDecision = 'allow-once' | 'allow-always' | 'deny'
 
-// ──────────────────────────── Client State ─────────────────────
+// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Client State 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export type SessionState = 'idle' | 'running' | 'awaiting-permission' | 'error' | 'locked'
 

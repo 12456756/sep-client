@@ -61,8 +61,8 @@ describe('ApprovalBroker', () => {
       onRequest: request => requests.push(request.requestId),
       timeoutMs: 1_000,
     })
-    const first = broker.request({ taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', toolName: 'write', input: {} })
-    const second = broker.request({ taskId: 'task-b', runId: 'run-b', employeeInstanceId: 'employee-b', toolName: 'bash', input: {} })
+    const first = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
+    const second = broker.request({ taskId: 'task-b', runId: 'run-b', subscriptionId: 'employee-b', toolName: 'bash', input: {} })
 
     assert.equal(broker.respond({ requestId: requests[1], approved: false }), true)
     assert.equal(broker.respond({ requestId: requests[0], approved: true }), true)
@@ -73,22 +73,22 @@ describe('ApprovalBroker', () => {
 
   it('denies timed out and cancelled approvals', async () => {
     const broker = new ApprovalBroker({ onRequest: () => {}, timeoutMs: 5 })
-    const timed = broker.request({ taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', toolName: 'write', input: {} })
+    const timed = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
     assert.equal(await timed, false)
 
-    const pending = broker.request({ taskId: 'task-b', runId: 'run-b', employeeInstanceId: 'employee-b', toolName: 'edit', input: {} })
+    const pending = broker.request({ taskId: 'task-b', runId: 'run-b', subscriptionId: 'employee-b', toolName: 'edit', input: {} })
     broker.denyRun('run-b')
     assert.equal(await pending, false)
   })
 
   it('supports an ID-less response only for one pending request', async () => {
     const broker = new ApprovalBroker({ onRequest: () => {}, timeoutMs: 1_000 })
-    const one = broker.request({ taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', toolName: 'write', input: {} })
+    const one = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
     assert.equal(broker.respond({ approved: true }), true)
     assert.equal(await one, true)
 
-    const first = broker.request({ taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', toolName: 'write', input: {} })
-    const second = broker.request({ taskId: 'task-b', runId: 'run-b', employeeInstanceId: 'employee-b', toolName: 'edit', input: {} })
+    const first = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
+    const second = broker.request({ taskId: 'task-b', runId: 'run-b', subscriptionId: 'employee-b', toolName: 'edit', input: {} })
     assert.equal(broker.respond({ approved: true }), false)
     broker.denyAll()
     await Promise.all([first, second])

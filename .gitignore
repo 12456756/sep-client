@@ -39,5 +39,10 @@ app-update.yml
 # Test artifacts
 coverage/
 
+# UI verification screenshots — per-run output, not project source
+output/
+artifacts/
+.playwright-mcp/
+
 # pi local state (per-machine, not project config)
 .pi/

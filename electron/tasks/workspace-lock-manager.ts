@@ -9,7 +9,7 @@ interface HeldLock {
 function canonicalizePath(workDir: string | null, defaultWorkDir: string): string {
   const input = workDir?.trim() || defaultWorkDir
   const absolute = resolve(input)
-  if (existsSync(absolute)) return normalize(realpathSync(absolute)).toLowerCase()
+  if (existsSync(absolute)) return normalizeCase(normalize(realpathSync(absolute)))
 
   let current = absolute
   const suffix: string[] = []
@@ -20,7 +20,11 @@ function canonicalizePath(workDir: string | null, defaultWorkDir: string): strin
     current = parent
   }
   const base = existsSync(current) ? realpathSync(current) : current
-  return normalize(resolve(base, ...suffix)).toLowerCase()
+  return normalizeCase(normalize(resolve(base, ...suffix)))
+}
+
+function normalizeCase(path: string): string {
+  return process.platform === 'win32' ? path.toLowerCase() : path
 }
 
 function pathsOverlap(left: string, right: string): boolean {

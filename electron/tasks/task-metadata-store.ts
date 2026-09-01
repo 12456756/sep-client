@@ -9,8 +9,8 @@ export interface TaskMetadata {
   version: 1
   taskId: string
   kind: TaskKind
-  participantEmployeeIds: string[]
-  currentEmployeeId: string | null
+  participantSubscriptionIds: string[]
+  currentSubscriptionId: string | null
   createdAt: number
 }
 
@@ -38,7 +38,7 @@ export class TaskMetadataStore {
     try {
       const metadata = JSON.parse(await readFile(this.file(scope, taskId), 'utf8')) as TaskMetadata
       if (metadata?.version !== 1 || metadata.taskId !== taskId || !['conversation', 'workflow'].includes(metadata.kind)) return null
-      return { ...metadata, participantEmployeeIds: [...metadata.participantEmployeeIds] }
+      return { ...metadata, participantSubscriptionIds: [...metadata.participantSubscriptionIds] }
     } catch { return null }
   }
 }

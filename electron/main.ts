@@ -1,18 +1,21 @@
 /**
- * electron/main.ts — Electron 主进程入口
+ * Electron 主进程入口，负责窗口、任务运行时和 IPC。
+/*
+ * electron/main.ts 鈥?Electron 涓昏繘绋嬪叆鍙?
  *
- * 职责:
- *   - 创建 BrowserWindow + preload 注入
- *   - 管理 pi session 生命周期（通过 pi-host.ts）
- *   - 处理 IPC 通信（renderer ↔ main ↔ pi-host）
- *   - 应用生命周期管理（ready, quit, 等）
+ * 鑱岃矗:
+ *   - 鍒涘缓 BrowserWindow + preload 娉ㄥ叆
+ *   - 管理 pi session 生命周期（通过 TaskExecutionCoordinator）
+ *   - 处理经过校验的 renderer <-> main IPC 通信
+ *   - 搴旂敤鐢熷懡鍛ㄦ湡绠＄悊锛坮eady, quit, 绛夛級
  */
 
 import { app, BrowserWindow, ipcMain, safeStorage, dialog, Menu } from 'electron';
 import { join } from 'node:path';
-import './infrastructure/undici-polyfill'; // Pi SDK 使用的网络兼容层
-import { TaskExecutionCoordinator } from './tasks/task-execution-coordinator';
-import { TaskManager, TaskPersistenceError, TaskScopeError } from './tasks/task-manager';
+import './infrastructure/undici-polyfill'; // Pi SDK 使用的网络兼容层。
+import type { TaskExecutionCoordinator } from './tasks/task-execution-coordinator';
+import { ConversationRecoveryError } from './tasks/conversation-recovery-error';
+import { TaskAdmissionError, TaskManager, TaskPersistenceError, TaskScopeError } from './tasks/task-manager';
 import { TaskRunStore, type TaskRunRecord } from './tasks/task-run-store';
 import { getDeviceFingerprint } from './auth/device-fingerprint';
 import { login, getInstances, AuthApiError, type ClientInstance } from './auth/auth-api';
@@ -30,6 +33,7 @@ import type {
 import { createWorkflowGraph, WorkflowGraphError } from './tasks/domain/workflow-graph';
 import { WorkflowStore } from './tasks/workflow-store';
 import { TaskMetadataStore } from './tasks/task-metadata-store';
+import { SubscriptionRuntime } from './runtime/subscription-runtime';
 import {
   forgetRememberedAccount,
   getRememberedPassword,
@@ -45,6 +49,7 @@ let taskRunStore: TaskRunStore | null = null;
 let workflowStore: WorkflowStore | null = null;
 let taskMetadataStore: TaskMetadataStore | null = null;
 let activeInstances: ClientInstance[] = [];
+let subscriptionRuntime: SubscriptionRuntime | null = null
 let authenticationCleanupPromise: Promise<void> | null = null;
 const authSession = new AuthSessionManager();
 
@@ -125,7 +130,7 @@ function toClientTaskRun(record: TaskRunRecord) {
   return {
     id: record.id,
     taskId: record.taskId,
-    employeeInstanceId: record.employeeInstanceId,
+    subscriptionId: record.subscriptionId,
     modelId: record.modelId,
     runtimeKey: record.runtimeKey,
     outcome: record.outcome,
@@ -137,20 +142,47 @@ function toClientTaskRun(record: TaskRunRecord) {
 }
 
 function taskError(error: unknown): { code: string; message: string } {
+  if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.statusCode === 401)) return { code: 'AUTH_REQUIRED', message: 'Please sign in again.' }
+  if (error instanceof AuthApiError && error.resource === 'package' && error.statusCode === 404) return { code: 'EMPLOYEE_PACKAGE_UNAVAILABLE', message: 'The selected employee package is not available. Ask an administrator to publish the subscribed version.' }
+  if (error instanceof AuthApiError && (error.statusCode === 403 || error.statusCode === 404)) return { code: 'AUTH_REQUIRED', message: 'The selected employee is no longer available.' }
+  if (error instanceof ConversationRecoveryError) return { code: error.code, message: error.message }
+  if (error instanceof TaskAdmissionError) return { code: 'INVALID_STATE', message: error.message }
   if (error instanceof TaskScopeError) return { code: 'AUTH_REQUIRED', message: error.message }
   if (error instanceof TaskPersistenceError) return { code: 'PERSISTENCE_ERROR', message: 'Task history could not be saved.' }
   return { code: 'INTERNAL_ERROR', message: 'The task operation could not be completed.' }
 }
 
-function resolveEmployee(employeeInstanceId: string) {
-  const instance = activeInstances.find(item => item.id === employeeInstanceId)
+function resolveEmployee(subscriptionId: string) {
+  const instance = activeInstances.find(item => item.id === subscriptionId)
   const modelId = instance?.allowedModels?.[0]
   if (!instance || !modelId) return null
   return {
-    employeeInstanceId,
+    subscriptionId,
     modelId,
     gatewayUrl: config.SEP_GATEWAY_URL,
   }
+}
+
+function ensureSubscriptionRuntime(): SubscriptionRuntime {
+  if (!subscriptionRuntime) subscriptionRuntime = new SubscriptionRuntime(join(app.getPath('userData'), 'runtime'))
+  return subscriptionRuntime
+}
+
+async function authorizeEmployee(subscriptionId: string) {
+  const accessToken = await authSession.getValidAccessToken()
+  const instances = await getInstances(accessToken)
+  activeInstances = instances.filter(instance => instance.status === 'ACTIVE')
+  const instance = activeInstances.find(item => item.id === subscriptionId)
+  const employee = resolveEmployee(subscriptionId)
+  if (!instance || !employee || !instance.template.id || !instance.templateVersion) return null
+  const runtime = await ensureSubscriptionRuntime().prepare({
+    enterpriseId: authSession.getMeta()?.enterpriseId ?? '',
+    subscriptionId,
+    employeeId: instance.template.id,
+    templateVersion: instance.templateVersion,
+    accessToken,
+  })
+  return { ...employee, additionalSkillPaths: runtime.skillPaths }
 }
 
 function invalidateAuthentication(): void {
@@ -164,6 +196,7 @@ function invalidateAuthentication(): void {
       const manager = await ensureTaskManager()
       manager.clearCurrentUser()
       activeInstances = []
+      subscriptionRuntime?.invalidate()
       authSession.clear()
       mainWindow?.webContents.send('auth:required')
       authenticationCleanupPromise = null
@@ -177,6 +210,9 @@ async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
   taskCoordinatorInitialization = (async () => {
     if (!safeStorage.isEncryptionAvailable()) console.warn('[main] safeStorage encryption NOT available on this platform')
     const manager = await ensureTaskManager()
+    // 将 Pi SDK 放在异步边界之后加载：其内置 undici 依赖的 Node API，
+    // 只有先加载上面的兼容层后，Electron 33 才能提供。
+    const { TaskExecutionCoordinator } = await import('./tasks/task-execution-coordinator')
     taskCoordinator = new TaskExecutionCoordinator({
       taskManager: manager,
       getRefreshToken: () => authSession.getRefreshToken(),
@@ -184,6 +220,7 @@ async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
       onEvent: event => mainWindow?.webContents.send('pi:event', event),
       onApprovalRequest: request => mainWindow?.webContents.send('pi:tool-approval-request', request),
       resolveEmployee,
+      authorizeEmployee,
       userDataDir: app.getPath('userData'),
     })
   })()
@@ -191,7 +228,7 @@ async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
   return taskCoordinator!
 }
 
-// ── 1. 创建主窗口 ─────────────────────────────────────────────────────────────
+// 鈹€鈹€ 1. 鍒涘缓涓荤獥鍙?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 function createWindow(): void {
   Menu.setApplicationMenu(null);
@@ -219,7 +256,7 @@ function createWindow(): void {
     },
   });
 
-  // Load renderer
+  // 加载渲染进程。
   if (process.env['ELECTRON_RENDERER_URL']) {
     console.log('[main] loading renderer from URL:', process.env['ELECTRON_RENDERER_URL']);
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']);
@@ -234,9 +271,8 @@ function createWindow(): void {
 
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[main] renderer loaded successfully');
-    // Some Windows/Electron combinations do not emit ready-to-show when the
-    // renderer is loaded from the Vite dev server. Do not leave the window
-    // permanently hidden after a successful load.
+    // 某些 Windows/Electron 组合在从 Vite 开发服务器加载渲染进程时，
+    // 不会触发 ready-to-show。加载成功后不要让窗口一直隐藏。
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
       mainWindow.show();
     }
@@ -253,11 +289,11 @@ function createWindow(): void {
   console.log('[main] window created');
 }
 
-// ── 2. Pi Host 初始化 ─────────────────────────────────────────────────────────
+// 2. TaskExecutionCoordinator 和 Pi 运行时。
 
-// ── 3. IPC handlers ───────────────────────────────────────────────────────────
+// 鈹€鈹€ 3. IPC handlers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-// ── Auth: Login ──────────────────────────────────────────────────────────────
+// 鈹€鈹€ Auth: Login 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 ipcMain.handle('auth:login', async (_event, input: unknown): Promise<LoginResult> => {
   try {
@@ -305,6 +341,7 @@ ipcMain.handle('auth:login', async (_event, input: unknown): Promise<LoginResult
     const manager = await ensureTaskManager()
     await manager.setCurrentUser(response.user.id, response.enterprise.id)
     activeInstances = []
+    subscriptionRuntime?.invalidate()
     saveRememberedAccount(
       {
         email: response.user.email || email,
@@ -349,6 +386,7 @@ ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
     const manager = await ensureTaskManager()
     manager.clearCurrentUser()
     activeInstances = []
+    subscriptionRuntime?.invalidate()
     authSession.clear()
     return { success: true, data: null }
   } catch (error) {
@@ -356,13 +394,13 @@ ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
   }
 })
 
-// ── Auth: Get instances ──────────────────────────────────────────────────────
+// 鈹€鈹€ Auth: Get instances 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 ipcMain.handle('auth:get-instances', async () => {
   try {
-    const instances = await getInstances(authSession.getAccessToken());
+    const instances = await getInstances(await authSession.getValidAccessToken());
 
-    // Filter only ACTIVE instances
+// 仅保留 ACTIVE 状态的实例。
     activeInstances = instances.filter(inst => inst.status === 'ACTIVE')
 
     return {
@@ -395,19 +433,38 @@ ipcMain.handle('auth:get-instances', async () => {
   }
 });
 
-// ── Task Management ──────────────────────────────────────────────────────────
+// 鈹€鈹€ Task Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-ipcMain.handle('task:create', async (_event, data: { title: string; prompt: string; workDir?: string; employeeInstanceId?: string }) => {
+ipcMain.handle('task:create', async (_event, data: unknown) => {
   try {
-    if (!data || typeof data.title !== 'string' || typeof data.prompt !== 'string') {
+    if (!isRecord(data) || typeof data.title !== 'string' || !data.title.trim() || typeof data.prompt !== 'string' || !data.prompt.trim()) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'Invalid task request.' } }
     }
-    const employeeInstanceId = data.employeeInstanceId
-    if (typeof employeeInstanceId !== 'string' || !resolveEmployee(employeeInstanceId)) {
+    if (typeof data.workDir !== 'undefined' && (typeof data.workDir !== 'string' || !data.workDir.trim())) {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The workspace directory is invalid.' } }
+    }
+    if (typeof data.subscriptionId !== 'string') {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is invalid.' } }
+    }
+    const subscriptionId = data.subscriptionId
+    if (!await authorizeEmployee(subscriptionId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
     }
     const manager = await ensureTaskManager()
-    const task = await manager.createTask(data.title, data.prompt, data.workDir, employeeInstanceId)
+    const task = await manager.createTask(data.title.trim(), data.prompt.trim(), data.workDir?.trim(), subscriptionId)
+  // 当前 renderer 的对话编辑器使用 task:create。
+  // 在 task:create 边界完成初始化，确保首轮运行被识别为对话任务，
+  // 并使用任务级共享 Pi 会话。
+    const scope = manager.getCurrentUserScope()
+    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    await ensureTaskMetadataStore().save(scope, {
+      version: 1,
+      taskId: task.id,
+      kind: 'conversation',
+      participantSubscriptionIds: [subscriptionId],
+      currentSubscriptionId: subscriptionId,
+      createdAt: Date.now(),
+    })
     return { success: true, task }
   } catch (error) {
     return { success: false, error: taskError(error) }
@@ -439,15 +496,25 @@ ipcMain.handle('task:continue', async (_event, input: unknown) => {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.prompt !== 'string' || !input.prompt.trim()) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and message are required.' } }
     }
+    const validRecoveryModes = new Set(['strict', 'confirm_rebuild', 'auto_rebuild_from_task_history'])
+    if (typeof input.recoveryMode !== 'undefined' && (typeof input.recoveryMode !== 'string' || !validRecoveryModes.has(input.recoveryMode))) {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The recovery mode is invalid.' } }
+    }
+    if (typeof input.confirmRecovery !== 'undefined' && typeof input.confirmRecovery !== 'boolean') {
+      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The recovery confirmation is invalid.' } }
+    }
     const manager = await ensureTaskManager()
     const task = await manager.getTask(input.taskId)
-    if (!task || !task.employeeInstanceId) {
+    if (!task || !task.subscriptionId) {
       return { success: false, error: { code: 'NOT_FOUND', message: 'Task or employee binding not found.' } }
     }
-    if (!resolveEmployee(task.employeeInstanceId)) {
+    if (!await authorizeEmployee(task.subscriptionId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
-    await (await ensureTaskCoordinator()).continueConversation(input.taskId, input.prompt)
+    await (await ensureTaskCoordinator()).continueConversation(input.taskId, input.prompt, {
+      mode: input.recoveryMode === 'strict' || input.recoveryMode === 'auto_rebuild_from_task_history' ? input.recoveryMode : 'confirm_rebuild',
+      confirmed: input.confirmRecovery === true,
+    })
     return { success: true }
   } catch (error) {
     return { success: false, error: taskError(error) }
@@ -456,20 +523,20 @@ ipcMain.handle('task:continue', async (_event, input: unknown) => {
 
 ipcMain.handle('task:switch-employee', async (_event, input: unknown) => {
   try {
-    if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.employeeInstanceId !== 'string') {
+    if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.subscriptionId !== 'string') {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and employee are required.' } }
     }
-    if (!resolveEmployee(input.employeeInstanceId)) {
+    if (!await authorizeEmployee(input.subscriptionId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
     }
-    await (await ensureTaskCoordinator()).switchConversationEmployee(input.taskId, input.employeeInstanceId)
+    await (await ensureTaskCoordinator()).switchConversationEmployee(input.taskId, input.subscriptionId)
     const manager = await ensureTaskManager()
     const scope = manager.getCurrentUserScope()
     if (scope) {
       const metadata = await ensureTaskMetadataStore().load(scope, input.taskId)
       if (metadata?.kind === 'conversation') {
-        metadata.currentEmployeeId = input.employeeInstanceId
-        if (!metadata.participantEmployeeIds.includes(input.employeeInstanceId)) metadata.participantEmployeeIds.push(input.employeeInstanceId)
+        metadata.currentSubscriptionId = input.subscriptionId
+        if (!metadata.participantSubscriptionIds.includes(input.subscriptionId)) metadata.participantSubscriptionIds.push(input.subscriptionId)
         await ensureTaskMetadataStore().save(scope, metadata)
       }
     }
@@ -495,16 +562,16 @@ ipcMain.handle('workflow:create', async (_event, input: unknown) => {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A title and workflow nodes are required.' } }
     }
     const graph = createWorkflowGraph(input.nodes as never)
-    const employee = graph.nodes[0]?.employeeInstanceId
-    if (!employee || !resolveEmployee(employee)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The workflow employee is unavailable.' } }
+    const employee = graph.nodes[0]?.subscriptionId
+    if (!employee || !await authorizeEmployee(employee)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The workflow employee is unavailable.' } }
     const manager = await ensureTaskManager()
     const task = await manager.createTask(input.title.trim(), typeof input.prompt === 'string' ? input.prompt : input.title.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, employee)
     const scope = manager.getCurrentUserScope()
     if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
     await ensureWorkflowStore().save(scope, task.id, graph)
     await ensureTaskMetadataStore().save(scope, {
-      version: 1, taskId: task.id, kind: 'workflow', participantEmployeeIds: [...new Set(graph.nodes.map(node => node.employeeInstanceId))],
-      currentEmployeeId: employee, createdAt: Date.now(),
+      version: 1, taskId: task.id, kind: 'workflow', participantSubscriptionIds: [...new Set(graph.nodes.map(node => node.subscriptionId))],
+      currentSubscriptionId: employee, createdAt: Date.now(),
     })
     return { success: true, task, graph }
   } catch (error) {
@@ -515,17 +582,17 @@ ipcMain.handle('workflow:create', async (_event, input: unknown) => {
 
 ipcMain.handle('conversation:create', async (_event, input: unknown) => {
   try {
-    if (!isRecord(input) || typeof input.title !== 'string' || !input.title.trim() || typeof input.prompt !== 'string' || !input.prompt.trim() || typeof input.employeeInstanceId !== 'string') {
+    if (!isRecord(input) || typeof input.title !== 'string' || !input.title.trim() || typeof input.prompt !== 'string' || !input.prompt.trim() || typeof input.subscriptionId !== 'string') {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A title, prompt, and employee are required.' } }
     }
-    if (!resolveEmployee(input.employeeInstanceId)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
+    if (!await authorizeEmployee(input.subscriptionId)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
     const manager = await ensureTaskManager()
-    const task = await manager.createTask(input.title.trim(), input.prompt.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, input.employeeInstanceId)
+    const task = await manager.createTask(input.title.trim(), input.prompt.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, input.subscriptionId)
     const scope = manager.getCurrentUserScope()
     if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
     await ensureTaskMetadataStore().save(scope, {
-      version: 1, taskId: task.id, kind: 'conversation', participantEmployeeIds: [input.employeeInstanceId],
-      currentEmployeeId: input.employeeInstanceId, createdAt: Date.now(),
+      version: 1, taskId: task.id, kind: 'conversation', participantSubscriptionIds: [input.subscriptionId],
+      currentSubscriptionId: input.subscriptionId, createdAt: Date.now(),
     })
     return { success: true, task }
   } catch (error) { return { success: false, error: taskError(error) } }
@@ -577,7 +644,7 @@ ipcMain.handle('task:retry', async (_event, taskId: unknown) => {
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
     if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    if (!task.employeeInstanceId || !resolveEmployee(task.employeeInstanceId)) {
+    if (!task.subscriptionId || !await authorizeEmployee(task.subscriptionId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
     const scope = manager.getCurrentUserScope()
@@ -717,7 +784,7 @@ ipcMain.on('pi:tool-approval-response', (_event, response: { requestId?: string;
   })
 })
 
-// ── Utility: Directory Selector ───────────────────────────────────────────────
+// 鈹€鈹€ Utility: Directory Selector 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 ipcMain.handle('util:select-directory', async () => {
   if (!mainWindow) {
@@ -727,7 +794,7 @@ ipcMain.handle('util:select-directory', async () => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
-      title: '选择工作目录',
+      title: '閫夋嫨宸ヤ綔鐩綍',
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -743,11 +810,11 @@ ipcMain.handle('util:select-directory', async () => {
   }
 });
 
-// ── 4. App lifecycle ──────────────────────────────────────────────────────────
+// 鈹€鈹€ 4. App lifecycle 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 app.whenReady().then(async () => {
   ensureTaskManager()
-  // 延迟到首次任务执行时初始化任务协调器
+  // 寤惰繜鍒伴娆′换鍔℃墽琛屾椂鍒濆鍖栦换鍔″崗璋冨櫒
   createWindow();
 
   app.on('activate', () => {

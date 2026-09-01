@@ -2,7 +2,7 @@ export type WorkflowNodeStatus = 'pending' | 'ready' | 'running' | 'blocked' | '
 
 export interface WorkflowNodeDefinition {
   id: string
-  employeeInstanceId: string
+  subscriptionId: string
   instruction: string
   dependsOn: string[]
   expectedOutput?: string
@@ -35,7 +35,7 @@ export function validateWorkflowNodes(nodes: WorkflowNodeDefinition[]): Workflow
     if (!node || !/^[A-Za-z0-9_-]{1,128}$/.test(node.id)) throw new WorkflowGraphError('Workflow node IDs must be safe and non-empty.')
     if (ids.has(node.id)) throw new WorkflowGraphError(`Duplicate workflow node: ${node.id}`)
     ids.add(node.id)
-    if (typeof node.employeeInstanceId !== 'string' || !node.employeeInstanceId) throw new WorkflowGraphError(`Node ${node.id} has no employee.`)
+    if (typeof node.subscriptionId !== 'string' || !node.subscriptionId) throw new WorkflowGraphError(`Node ${node.id} has no employee.`)
     if (typeof node.instruction !== 'string' || !node.instruction.trim()) throw new WorkflowGraphError(`Node ${node.id} has no instruction.`)
     if (!Array.isArray(node.dependsOn) || new Set(node.dependsOn).size !== node.dependsOn.length) throw new WorkflowGraphError(`Node ${node.id} has invalid dependencies.`)
   }

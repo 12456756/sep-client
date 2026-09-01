@@ -86,7 +86,7 @@ function gatewayContent(value: unknown): string {
   return value == null ? '' : String(value)
 }
 
-/** Serialize every provider request to the exact SEP gateway message shape. */
+/** 将每次提供商请求序列化为 SEP 网关要求的消息格式。 */
 export function normalizeGatewayPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== 'object' || !Array.isArray((payload as { messages?: unknown }).messages)) {
     return payload
@@ -219,17 +219,12 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
       console.error('[PiGateway] provider request hook entered', { requestId })
       try {
         const normalized = normalizeGatewayPayload(event.payload)
-        let loggedPayload: unknown
-        try {
-          loggedPayload = sanitize(normalized)
-        } catch (error) {
-          console.error('[PiGateway] payload log sanitize failed', {
-            requestId,
-            error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-          })
-          loggedPayload = '[payload logging failed]'
-        }
-        console.error('[PiGateway] normalized provider payload', { requestId, payload: loggedPayload })
+        const normalizedRecord = normalized && typeof normalized === 'object' ? normalized as { model?: unknown; messages?: unknown } : {}
+        console.error('[PiGateway] normalized provider request', {
+          requestId,
+          model: typeof normalizedRecord.model === 'string' ? normalizedRecord.model : undefined,
+          messageCount: Array.isArray(normalizedRecord.messages) ? normalizedRecord.messages.length : 0,
+        })
         return normalized
       } catch (error) {
         console.error('[PiGateway] payload normalization failed', {
@@ -254,6 +249,10 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
       const toolName = event.toolName ?? 'unknown'
       if (READ_ONLY_TOOLS.has(toolName)) return { block: false }
       if (!APPROVAL_TOOLS.has(toolName)) {
+        await config.reportPolicyEvent?.('unknown_tool_blocked', {
+          toolName,
+          reason: 'Unknown tools are denied by default.',
+        })
         return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
       }
       const approved = await config.authorizeTool({ toolName, input: sanitize(event.input) })
@@ -341,8 +340,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       cwd: config.workspaceDir,
       agentDir: config.agentDir,
       extensionFactories: buildExtensions(config),
-      noSkills: true,
+      noSkills: false,
       noContextFiles: true,
+      additionalSkillPaths: config.additionalSkillPaths,
     })
     await resourceLoader.reload()
     const extensionState = resourceLoader.getExtensions()
