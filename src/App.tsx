@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { LoginPage } from './pages/LoginPage';
-import { WorkspaceHomePage } from './pages/WorkspaceHomePage';
+import { ClientAppPage } from './pages/ClientAppPage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
 import type { EmployeeInstanceSnapshot, RememberedAccount } from './shared/types';
 
@@ -92,7 +92,7 @@ export default function App() {
     if (!authState) return <LoginPage encryptionAvailable={encryptionAvailable} rememberedAccounts={rememberedAccounts} onAccountListChange={setRememberedAccounts} onLoginSuccess={setAuthState} />;
     if (loadingInstances) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在准备你的员工团队</p></div>;
     if (instanceError && instances.length === 0) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={() => void handleLogout()}>退出登录</button></div>;
-    return <WorkspaceHomePage userName={authState.user.name || authState.user.email} enterpriseName={authState.enterprise?.name} employeeInstanceId={instances[0]?.id} employeeInstanceName={instances[0]?.name} instances={instances} onLogout={handleLogout} />;
+    return <ClientAppPage userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={instances} onLogout={handleLogout} />;
   };
 
   return <>

@@ -1,22 +1,28 @@
 import type { TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
 import { InstanceTokenManager } from '../auth/instance-token-manager'
-import type { PiAgentRuntime, PiAgentSession } from './pi-agent-runtime'
+import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 import { PiCodingAgentAdapter } from './sdk'
+import { SharedPiSessionAdapter } from './shared-session-adapter'
+
+export function createDefaultSharedPiSessionAdapter(): SharedPiSessionAdapter {
+  return new SharedPiSessionAdapter(new PiCodingAgentAdapter())
+}
 
 export interface PiTaskWorkerContext {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   gatewayUrl: string
   workspaceDir: string
   agentDir: string
   sessionDir: string
   resumeSessionFile?: string
+  additionalSkillPaths?: string[]
 }
 
 interface TokenManagerPort {
-  initialize(instanceId: string): Promise<void>
+  initialize(subscriptionId: string): Promise<void>
   getValidToken(): Promise<string>
   stop(): void
 }
@@ -29,6 +35,7 @@ export interface PiTaskWorkerOptions {
   onEvent: (event: TaskExecutionEvent) => Promise<void> | void
   onSessionCreated?: (session: { sessionId: string; sessionFile: string | null }) => Promise<void> | void
   runtime?: PiAgentRuntime
+  sessionAdapter?: SharedPiSessionAdapter
   createTokenManager?: () => TokenManagerPort
 }
 
@@ -39,6 +46,7 @@ export class PiTaskWorker {
   private readonly onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   private readonly onEvent: PiTaskWorkerOptions['onEvent']
   private readonly onSessionCreated: PiTaskWorkerOptions['onSessionCreated']
+  private readonly sessionAdapter: SharedPiSessionAdapter | null
   private session: PiAgentSession | null = null
   private unsubscribe: (() => void) | null = null
   private active = false
@@ -52,6 +60,7 @@ export class PiTaskWorker {
     this.onApprovalRequest = options.onApprovalRequest
     this.onEvent = options.onEvent
     this.onSessionCreated = options.onSessionCreated
+    this.sessionAdapter = options.sessionAdapter ?? null
     this.tokenManager = options.createTokenManager?.() ?? new InstanceTokenManager({
       getRefreshToken: options.getRefreshToken,
       onAuthenticationRequired: options.onAuthenticationRequired,
@@ -65,18 +74,18 @@ export class PiTaskWorker {
     const logContext = {
       taskId: this.context.taskId,
       runId: this.context.runId,
-      employeeInstanceId: this.context.employeeInstanceId,
+      subscriptionId: this.context.subscriptionId,
       modelId: this.context.modelId,
     }
     console.info('[PiTaskWorker] run started', logContext)
     let session: PiAgentSession
     try {
-      await this.tokenManager.initialize(this.context.employeeInstanceId)
+      await this.tokenManager.initialize(this.context.subscriptionId)
       stage = 'session-create'
       console.error('[PiTaskWorker] creating runtime session', {
         runtime: this.runtime.constructor?.name ?? 'unknown',
       })
-      session = await this.runtime.createSession({
+      const sessionConfig: PiAgentSessionConfig = {
       runId: this.context.runId,
       modelId: this.context.modelId,
       gatewayUrl: this.context.gatewayUrl,
@@ -84,20 +93,22 @@ export class PiTaskWorker {
       agentDir: this.context.agentDir,
       sessionDir: this.context.sessionDir,
       resumeSessionFile: this.context.resumeSessionFile,
+      additionalSkillPaths: this.context.additionalSkillPaths,
       getAccessToken: () => this.tokenManager.getValidToken(),
       authorizeTool: async request => {
-        await this.emit('approval_requested', { toolName: request.toolName })
-        const approved = await this.onApprovalRequest({
+        return this.onApprovalRequest({
           taskId: this.context.taskId,
           runId: this.context.runId,
-          employeeInstanceId: this.context.employeeInstanceId,
+          subscriptionId: this.context.subscriptionId,
           toolName: request.toolName,
           input: request.input,
         })
-        await this.emit('approval_resolved', { approved, toolName: request.toolName })
-        return approved
       },
-      })
+      reportPolicyEvent: (type, data) => this.emit(type, data),
+      }
+      session = this.sessionAdapter
+        ? await this.sessionAdapter.open(sessionConfig)
+        : await this.runtime.createSession(sessionConfig)
     } catch (error) {
       console.error('[PiTaskWorker] run setup failed', {
         ...logContext,
@@ -109,12 +120,16 @@ export class PiTaskWorker {
       throw error
     }
     if (!this.active) {
-      await session.dispose()
+      if (this.sessionAdapter) await this.sessionAdapter.reset()
+      else await session.dispose()
       return
     }
 
     this.session = session
-    this.unsubscribe = session.subscribe(event => {
+    const subscribe = this.sessionAdapter
+      ? (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => this.sessionAdapter!.subscribe(listener)
+      : (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => session.subscribe(listener)
+    this.unsubscribe = subscribe(event => {
       if (event.failure) this.finalFailure = event.failure
       void this.emit(event.type, event.data)
     })
@@ -151,9 +166,10 @@ export class PiTaskWorker {
     this.unsubscribe = null
     unsubscribe?.()
     try {
-      if (session) await session.abort()
+      if (session && !this.sessionAdapter) await session.abort()
     } finally {
-      await session?.dispose()
+      if (this.sessionAdapter) await this.sessionAdapter.reset()
+      else if (session) await session.dispose()
       this.tokenManager.stop()
       await this.eventChain.catch(() => undefined)
     }
@@ -164,7 +180,7 @@ export class PiTaskWorker {
     const event: TaskExecutionEvent = {
       taskId: this.context.taskId,
       runId: this.context.runId,
-      employeeInstanceId: this.context.employeeInstanceId,
+      subscriptionId: this.context.subscriptionId,
       sequence: ++this.sequence,
       type,
       occurredAt: Date.now(),

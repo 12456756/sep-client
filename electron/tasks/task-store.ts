@@ -114,7 +114,7 @@ function parseTask(value: unknown): ClientTask | null {
       : undefined,
     ownerId: item.ownerId,
     ownerEnterpriseId: item.ownerEnterpriseId,
-    employeeInstanceId: typeof item.employeeInstanceId === 'string' ? item.employeeInstanceId : null,
+    subscriptionId: typeof item.subscriptionId === 'string' ? item.subscriptionId : null,
     activeRunId: typeof item.activeRunId === 'string' ? item.activeRunId : null,
   }
 }
@@ -194,7 +194,7 @@ export class TaskStore implements TaskStorePort {
       try {
         await copyFile(backup, file)
       } catch {
-        // The backup remains available for the next load.
+  // 保留备份文件，供下一次加载时使用。
       }
       return recovered
     }
@@ -236,7 +236,7 @@ export class TaskStore implements TaskStorePort {
       try {
         await chmod(temporaryFile, 0o600)
       } catch {
-        // The OS user-data directory remains the primary boundary on filesystems without chmod.
+  // 在不支持 chmod 的文件系统上，操作系统用户数据目录仍是主要隔离边界。
       }
       if (await this.pathExists(file)) {
         await copyFile(file, backup)
@@ -248,7 +248,7 @@ export class TaskStore implements TaskStorePort {
         await rm(temporaryFile, { force: true })
         if (!await this.pathExists(file) && await this.pathExists(backup)) await copyFile(backup, file)
       } catch {
-        // Preserve the original persistence error.
+  // 保留原始持久化错误。
       }
       throw new TaskPersistenceError(error instanceof Error ? error.message : undefined)
     }
@@ -282,7 +282,7 @@ export class TaskStore implements TaskStorePort {
     try {
       await rename(file, quarantineFile)
     } catch {
-      // A corrupted file must never prevent the app from loading an empty scope.
+  // 损坏的文件不能阻止应用加载空的数据范围。
     }
   }
 

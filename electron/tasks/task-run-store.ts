@@ -22,7 +22,7 @@ export interface TaskRunRecord {
   id: string
   taskId: string
   owner: TaskOwnerScope
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   runtimeKey: string
   workspaceDir: string
@@ -52,7 +52,7 @@ export interface ConversationSessionPaths {
 export interface CreateTaskRunInput {
   taskId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   runtimeKey: string
   workspaceDir: string
@@ -63,7 +63,6 @@ export interface TaskRunStorePort {
   create(scope: TaskOwnerScope, input: CreateTaskRunInput): Promise<TaskRunRecord>
   get(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskRunRecord | null>
   list(scope: TaskOwnerScope, taskId: string): Promise<TaskRunRecord[]>
-  getLatestSession(scope: TaskOwnerScope, taskId: string, employeeInstanceId: string): Promise<TaskRunRecord | null>
   getTimeline(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskExecutionEvent[]>
   getMessages(scope: TaskOwnerScope, taskId: string, initialPrompt: string): Promise<ClientTaskMessage[]>
   markActiveRunsInterrupted(scope: TaskOwnerScope): Promise<number>
@@ -71,8 +70,16 @@ export interface TaskRunStorePort {
     sessionId: string
     sessionFile: string | null
   }): Promise<void>
-  finish(scope: TaskOwnerScope, taskId: string, runId: string, outcome: TaskRunOutcome, error?: string): Promise<void>
-  appendEvent(scope: TaskOwnerScope, event: TaskExecutionEvent): Promise<void>
+  transition(
+    scope: TaskOwnerScope,
+    taskId: string,
+    runId: string,
+    expected: readonly TaskRunOutcome[],
+    outcome: TaskRunOutcome,
+    error?: string,
+  ): Promise<boolean>
+  finish(scope: TaskOwnerScope, taskId: string, runId: string, outcome: TaskRunOutcome, error?: string): Promise<boolean>
+  appendEvent(scope: TaskOwnerScope, event: TaskExecutionEvent): Promise<TaskExecutionEvent>
   getPaths(scope: TaskOwnerScope, taskId: string, runId: string): TaskRunPaths
   getConversationSessionPaths(scope: TaskOwnerScope, taskId: string): ConversationSessionPaths
 }
@@ -133,7 +140,7 @@ export class TaskRunStore implements TaskRunStorePort {
       id: input.runId,
       taskId: input.taskId,
       owner: { ...scope },
-      employeeInstanceId: input.employeeInstanceId,
+      subscriptionId: input.subscriptionId,
       modelId: input.modelId,
       runtimeKey: input.runtimeKey,
       workspaceDir: input.workspaceDir,
@@ -192,13 +199,6 @@ export class TaskRunStore implements TaskRunStorePort {
       .sort((a, b) => b.startedAt - a.startedAt)
   }
 
-  async getLatestSession(scope: TaskOwnerScope, taskId: string, employeeInstanceId: string): Promise<TaskRunRecord | null> {
-    const records = await this.list(scope, taskId)
-    return records
-      .filter(record => record.employeeInstanceId === employeeInstanceId && Boolean(record.sessionFile))
-      .sort((a, b) => b.startedAt - a.startedAt)[0] ?? null
-  }
-
   async getTimeline(scope: TaskOwnerScope, taskId: string, runId: string): Promise<TaskExecutionEvent[]> {
     const paths = this.getPaths(scope, taskId, runId)
     const eventFile = join(paths.taskDir, 'events.jsonl')
@@ -218,7 +218,7 @@ export class TaskRunStore implements TaskRunStorePort {
           typeof event.sequence === 'number' && typeof event.type === 'string'
         ) events.push(sanitizeEvent(event))
       } catch {
-        // Ignore a partial or corrupt trailing JSONL line.
+  // 忽略末尾不完整或损坏的 JSONL 行。
       }
     }
     return events.sort((a, b) => a.sequence - b.sequence)
@@ -273,6 +273,28 @@ export class TaskRunStore implements TaskRunStorePort {
         if (!SAFE_ID.test(runId)) continue
         const record = await this.get(scope, taskId, runId)
         if (!record || record.outcome !== 'running') continue
+        const timeline = await this.getTimeline(scope, taskId, runId)
+        const completedToolIds = new Set(timeline
+          .filter(event => event.type === 'tool_execution_end')
+          .map(event => (event.data as { toolId?: unknown }).toolId)
+          .filter((toolId): toolId is string => typeof toolId === 'string'))
+        for (const event of timeline) {
+          if (event.type !== 'tool_execution_start') continue
+          const data = event.data as { toolId?: unknown; toolName?: unknown }
+          if (
+            typeof data.toolId !== 'string' || completedToolIds.has(data.toolId) ||
+            typeof data.toolName !== 'string' || !['bash', 'write', 'edit'].includes(data.toolName)
+          ) continue
+          await this.appendEvent(scope, {
+            taskId,
+            runId,
+            subscriptionId: record.subscriptionId,
+            sequence: 0,
+            type: 'SIDE_EFFECT_UNKNOWN',
+            occurredAt: Date.now(),
+            data: { toolId: data.toolId, toolName: data.toolName, startedAt: event.occurredAt, replayAllowed: false },
+          })
+        }
         await this.finish(scope, taskId, runId, 'interrupted', 'Application stopped before the run completed.')
         changed++
       }
@@ -299,22 +321,52 @@ export class TaskRunStore implements TaskRunStorePort {
     runId: string,
     outcome: TaskRunOutcome,
     error?: string,
-  ): Promise<void> {
-    await this.mutate(scope, taskId, runId, record => ({
-      ...record,
-      outcome,
-      endedAt: Date.now(),
-      error: sanitizeError(error),
-    }))
+  ): Promise<boolean> {
+    return this.transition(scope, taskId, runId, ['running'], outcome, error)
   }
 
-  appendEvent(scope: TaskOwnerScope, event: TaskExecutionEvent): Promise<void> {
+  async transition(
+    scope: TaskOwnerScope,
+    taskId: string,
+    runId: string,
+    expected: readonly TaskRunOutcome[],
+    outcome: TaskRunOutcome,
+    error?: string,
+  ): Promise<boolean> {
+    let changed = false
+    await this.mutate(scope, taskId, runId, record => {
+      if (!expected.includes(record.outcome)) return record
+      changed = true
+      return {
+        ...record,
+        outcome,
+        endedAt: outcome === 'running' ? null : Date.now(),
+        error: sanitizeError(error),
+      }
+    })
+    return changed
+  }
+
+  appendEvent(scope: TaskOwnerScope, event: TaskExecutionEvent): Promise<TaskExecutionEvent> {
     const paths = this.getPaths(scope, event.taskId, event.runId)
     const eventFile = join(paths.taskDir, 'events.jsonl')
     const key = `${scope.enterpriseId}:${scope.memberId}:${event.taskId}`
-    return this.enqueue(key, async () => {
+    return this.enqueueValue(key, async () => {
+      const run = await this.get(scope, event.taskId, event.runId)
+      if (!run || run.subscriptionId !== event.subscriptionId) {
+        throw new TaskScopeError('Task event does not belong to the persisted run.')
+      }
+      const timeline = await this.getTimeline(scope, event.taskId, event.runId)
+      const usedSequences = new Set(timeline.map(item => item.sequence))
+      const nextSequence = (timeline.at(-1)?.sequence ?? 0) + 1
+      const requestedSequence = Number.isInteger(event.sequence) && event.sequence > 0 ? event.sequence : nextSequence
+      const persistedEvent = sanitizeEvent({
+        ...event,
+        sequence: usedSequences.has(requestedSequence) ? nextSequence : requestedSequence,
+      })
       await mkdir(paths.taskDir, { recursive: true })
-      await appendFile(eventFile, `${JSON.stringify(sanitizeEvent(event))}\n`, { encoding: 'utf8', mode: 0o600 })
+      await appendFile(eventFile, `${JSON.stringify(persistedEvent)}\n`, { encoding: 'utf8', mode: 0o600 })
+      return persistedEvent
     })
   }
 
@@ -355,7 +407,7 @@ export class TaskRunStore implements TaskRunStorePort {
     update: (record: TaskRunRecord) => TaskRunRecord,
   ): Promise<void> {
     const paths = this.getPaths(scope, taskId, runId)
-    const key = `${scope.enterpriseId}:${scope.memberId}:${taskId}:${runId}`
+    const key = `${scope.enterpriseId}:${scope.memberId}:${taskId}`
     await this.enqueue(key, async () => {
       let record: TaskRunRecord
       try {
@@ -382,6 +434,16 @@ export class TaskRunStore implements TaskRunStorePort {
     this.writeChains.set(key, next)
     return next.finally(() => {
       if (this.writeChains.get(key) === next) this.writeChains.delete(key)
+    })
+  }
+
+  private enqueueValue<T>(key: string, operation: () => Promise<T>): Promise<T> {
+    const prior = this.writeChains.get(key) ?? Promise.resolve()
+    const result = prior.catch(() => undefined).then(operation)
+    const tracked = result.then(() => undefined)
+    this.writeChains.set(key, tracked)
+    return result.finally(() => {
+      if (this.writeChains.get(key) === tracked) this.writeChains.delete(key)
     })
   }
 

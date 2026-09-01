@@ -6,9 +6,9 @@ import { WorkflowExecutor } from './workflow-executor'
 describe('WorkflowExecutor', () => {
   it('runs independent nodes concurrently and blocks dependents after failure', async () => {
     const graph = createWorkflowGraph([
-      { id: 'a', employeeInstanceId: 'employee-a', instruction: 'a', dependsOn: [] },
-      { id: 'b', employeeInstanceId: 'employee-b', instruction: 'b', dependsOn: [] },
-      { id: 'c', employeeInstanceId: 'employee-c', instruction: 'c', dependsOn: ['a'] },
+      { id: 'a', subscriptionId: 'employee-a', instruction: 'a', dependsOn: [] },
+      { id: 'b', subscriptionId: 'employee-b', instruction: 'b', dependsOn: [] },
+      { id: 'c', subscriptionId: 'employee-c', instruction: 'c', dependsOn: ['a'] },
     ])
     const started: string[] = []
     const result = await new WorkflowExecutor().run(graph, {

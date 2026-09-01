@@ -21,8 +21,10 @@ export interface PiAgentSessionConfig {
   agentDir: string
   sessionDir: string
   resumeSessionFile?: string
+  additionalSkillPaths?: string[]
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>
+  reportPolicyEvent?: (type: string, data: unknown) => Promise<void> | void
 }
 
 export interface PiAgentRuntime {

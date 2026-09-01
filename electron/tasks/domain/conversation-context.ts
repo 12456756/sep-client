@@ -6,22 +6,14 @@ export interface ConversationMessage {
   taskId: string
   turnId: string
   runId: string
-  employeeInstanceId: string
+  subscriptionId: string
   modelId: string
   role: 'user' | 'assistant' | 'tool'
   content: string
   createdAt: number
 }
 
-export interface EmployeeSessionBinding {
-  employeeInstanceId: string
-  sessionId: string
-  sessionFile: string | null
-  lastRunId: string
-  updatedAt: number
-}
-
-/** Durable Pi session shared by all turns in one conversation task. */
+/** 一个对话任务所有轮次共享的持久化 Pi 会话。 */
 export interface SharedConversationSessionBinding {
   sessionId: string
   sessionFile: string | null
@@ -32,21 +24,17 @@ export interface SharedConversationSessionBinding {
 export interface ConversationContextStorePort {
   appendMessage(message: ConversationMessage): Promise<void>
   listMessages(): Promise<ConversationMessage[]>
-  getEmployeeSession(employeeInstanceId: string): Promise<EmployeeSessionBinding | null>
-  setEmployeeSession(binding: EmployeeSessionBinding): Promise<void>
   getSharedSession(): Promise<SharedConversationSessionBinding | null>
   setSharedSession(binding: SharedConversationSessionBinding): Promise<void>
 }
 
 export class ConversationContextStore implements ConversationContextStorePort {
   private readonly messagesFile: string
-  private readonly sessionsFile: string
   private readonly sharedSessionFile: string
   private writeChain: Promise<void> = Promise.resolve()
 
   constructor(taskDir: string) {
     this.messagesFile = join(taskDir, 'conversation', 'messages.jsonl')
-    this.sessionsFile = join(taskDir, 'conversation', 'participants.json')
     this.sharedSessionFile = join(taskDir, 'conversation', 'session.json')
   }
 
@@ -67,24 +55,6 @@ export class ConversationContextStore implements ConversationContextStorePort {
         } catch { return [] }
       })
     } catch { return [] }
-  }
-
-  async getEmployeeSession(employeeInstanceId: string): Promise<EmployeeSessionBinding | null> {
-    try {
-      const entries = JSON.parse(await readFile(this.sessionsFile, 'utf8')) as Record<string, EmployeeSessionBinding>
-      const value = entries[employeeInstanceId]
-      return value && value.employeeInstanceId === employeeInstanceId ? { ...value } : null
-    } catch { return null }
-  }
-
-  setEmployeeSession(binding: EmployeeSessionBinding): Promise<void> {
-    return this.enqueue(async () => {
-      let entries: Record<string, EmployeeSessionBinding> = {}
-      try { entries = JSON.parse(await readFile(this.sessionsFile, 'utf8')) as Record<string, EmployeeSessionBinding> } catch { /* create file */ }
-      entries[binding.employeeInstanceId] = { ...binding }
-      await mkdir(dirname(this.sessionsFile), { recursive: true })
-      await writeFile(this.sessionsFile, JSON.stringify(entries), { encoding: 'utf8', mode: 0o600 })
-    })
   }
 
   async getSharedSession(): Promise<SharedConversationSessionBinding | null> {

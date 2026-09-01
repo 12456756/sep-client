@@ -49,14 +49,14 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
   useEffect(() => {
     if (!request) return;
 
-    // Reset countdown when new request comes
+  // 收到新请求时重置倒计时。
     setCountdown(TIMEOUT_SECONDS);
 
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-          onDeny(); // Auto-deny on timeout
+    onDeny(); // 超时后自动拒绝。
           return 0;
         }
         return prev - 1;
@@ -78,7 +78,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
     risk: '未知风险，建议拒绝',
   };
 
-  // Format input for display
+  // 格式化输入内容以供显示。
   const formatInput = (input: unknown): string => {
     if (typeof input === 'string') return input;
     if (typeof input === 'object' && input !== null) {

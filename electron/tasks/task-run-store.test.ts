@@ -24,7 +24,7 @@ describe('TaskRunStore', () => {
     const record = await store.create(owner, {
       taskId: 'task-a',
       runId: 'run-a',
-      employeeInstanceId: 'employee-a',
+      subscriptionId: 'employee-a',
       modelId: 'model-a',
       runtimeKey: 'employee-a:model-a',
       workspaceDir: 'C:/workspace/task-a',
@@ -35,7 +35,7 @@ describe('TaskRunStore', () => {
     assert.match(record.sessionDir, /task-a/)
     await store.setSession(owner, 'task-a', 'run-a', { sessionId: 'session-a', sessionFile: 'C:/session.jsonl' })
     await store.appendEvent(owner, {
-      taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', sequence: 1,
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
       type: 'text_delta', occurredAt: 1, data: { text: 'hello' },
     })
     await store.finish(owner, 'task-a', 'run-a', 'completed')
@@ -53,7 +53,7 @@ describe('TaskRunStore', () => {
     const store = new TaskRunStore(await makeUserDataDir())
     const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
     await store.create(owner, {
-      taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', modelId: 'model-a',
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', modelId: 'model-a',
       runtimeKey: 'runtime-a', workspaceDir: 'C:/workspace/task-a',
       prompt: 'first question',
     })
@@ -71,18 +71,18 @@ describe('TaskRunStore', () => {
     const store = new TaskRunStore(await makeUserDataDir())
     const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
     await store.create(owner, {
-      taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', modelId: 'model-a',
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', modelId: 'model-a',
       runtimeKey: 'runtime-a', workspaceDir: 'C:/workspace/task-a',
       prompt: 'first question',
     })
     const paths = store.getPaths(owner, 'task-a', 'run-a')
     await appendFile(join(paths.taskDir, 'events.jsonl'), '{broken}\n')
     await store.appendEvent(owner, {
-      taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', sequence: 2,
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 2,
       type: 'agent_end', occurredAt: 2, data: { token: 'hidden' },
     })
     await store.appendEvent(owner, {
-      taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', sequence: 1,
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
       type: 'agent_start', occurredAt: 1, data: null,
     })
     assert.equal(await store.markActiveRunsInterrupted(owner), 1)
@@ -99,24 +99,24 @@ describe('TaskRunStore', () => {
     const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
     const createRun = async (runId: string, prompt: string) => {
       await store.create(owner, {
-        taskId: 'task-a', runId, employeeInstanceId: 'employee-a', modelId: 'model-a',
+        taskId: 'task-a', runId, subscriptionId: 'employee-a', modelId: 'model-a',
         runtimeKey: 'runtime-a', workspaceDir: 'C:/workspace/task-a', prompt,
       })
     }
     await createRun('run-a', 'first question')
     await store.appendEvent(owner, {
-      taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', sequence: 1,
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
       type: 'text_delta', occurredAt: 1, data: { text: 'first ' },
     })
     await store.appendEvent(owner, {
-      taskId: 'task-a', runId: 'run-a', employeeInstanceId: 'employee-a', sequence: 2,
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 2,
       type: 'text_delta', occurredAt: 2, data: { text: 'answer' },
     })
     await store.finish(owner, 'task-a', 'run-a', 'completed')
     await new Promise(resolve => setTimeout(resolve, 2))
     await createRun('run-b', 'follow-up question')
     await store.appendEvent(owner, {
-      taskId: 'task-a', runId: 'run-b', employeeInstanceId: 'employee-a', sequence: 1,
+      taskId: 'task-a', runId: 'run-b', subscriptionId: 'employee-a', sequence: 1,
       type: 'text_delta', occurredAt: 3, data: { text: 'follow-up answer' },
     })
 

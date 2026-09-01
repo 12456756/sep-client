@@ -1,4 +1,4 @@
-import type { LoginResponse } from './auth-api'
+import { refreshAccessToken, type LoginResponse } from './auth-api'
 import {
   clearCredentials,
   getAuthMeta,
@@ -24,6 +24,7 @@ export class AuthSessionManager {
   private accessTokenExpiresAt = 0
   private refreshToken: string | null = null
   private meta: AuthMeta | null = null
+  private refreshPromise: Promise<string> | null = null
 
   setLogin(response: LoginResponse): AuthMeta {
     if (!response.enterprise) {
@@ -70,6 +71,34 @@ export class AuthSessionManager {
     return this.accessToken
   }
 
+  async getValidAccessToken(): Promise<string> {
+    if (this.accessToken && !this.isAccessTokenExpired()) return this.accessToken
+    if (this.refreshPromise) return this.refreshPromise
+    const refreshToken = this.getRefreshToken()
+    const request = refreshAccessToken(refreshToken).then(response => {
+      if (!response.accessToken || !response.enterprise) throw new AuthenticationRequiredError()
+      this.accessToken = response.accessToken
+      this.accessTokenExpiresAt = Date.now() + (response.accessTokenExpiresIn > 0 ? response.accessTokenExpiresIn : 3600) * 1000
+      this.meta = {
+        memberId: response.user.id,
+        enterpriseId: response.enterprise.id,
+        displayName: response.user.name,
+        enterpriseName: response.enterprise.name,
+        email: response.user.email,
+      }
+      saveAuthMeta(this.meta)
+      return response.accessToken
+    }).catch(error => {
+      if (error instanceof AuthenticationRequiredError || (error && typeof error === 'object' && (error as { statusCode?: number }).statusCode === 401)) {
+        this.clear()
+        throw new AuthenticationRequiredError()
+      }
+      throw error
+    })
+    this.refreshPromise = request
+    return request.finally(() => { if (this.refreshPromise === request) this.refreshPromise = null })
+  }
+
   getRefreshToken(): string {
     if (!this.refreshToken) this.refreshToken = getRefreshToken()
     if (!this.refreshToken) {
@@ -83,6 +112,7 @@ export class AuthSessionManager {
     this.accessTokenExpiresAt = 0
     this.refreshToken = null
     this.meta = null
+    this.refreshPromise = null
     clearCredentials()
   }
 

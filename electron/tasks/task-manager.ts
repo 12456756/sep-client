@@ -1,5 +1,7 @@
 import type { BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { mkdir, rm } from 'node:fs/promises'
+import { join } from 'node:path'
 import type {
   ClientTask,
   ClientTaskLogLevel,
@@ -13,11 +15,19 @@ import {
   TaskStore,
   type TaskOwnerScope,
   type TaskStorePort,
+  encodeTaskScopeSegment,
 } from './task-store'
 import { TaskRunStore, type TaskRunStorePort } from './task-run-store'
+import {
+  assertTaskTransition,
+  TaskAdmissionError,
+  isTaskExecutionStatus,
+  isTaskTerminal,
+} from './domain/task-state-machine'
 
 export { TaskStatus } from '../../src/shared/types'
 export { TaskPersistenceError, TaskScopeError } from './task-store'
+export { TaskAdmissionError } from './domain/task-state-machine'
 export type { ClientTask as Task, ClientTaskLog as TaskLog } from '../../src/shared/types'
 
 type Task = ClientTask
@@ -31,6 +41,7 @@ function cloneTasks(tasks: Map<string, Task>): Map<string, Task> {
 }
 
 export class TaskManager {
+  private readonly userDataDir: string
   private tasks = new Map<string, Task>()
   private mainWindow: BrowserWindow | null = null
   private currentUser: TaskOwnerScope | null = null
@@ -47,6 +58,7 @@ export class TaskManager {
     store: TaskStorePort = new TaskStore(userDataDir),
     runStore: TaskRunStorePort = new TaskRunStore(userDataDir),
   ) {
+    this.userDataDir = userDataDir
     this.mainWindow = mainWindow
     this.store = store
     this.runStore = runStore
@@ -78,11 +90,16 @@ export class TaskManager {
     const loadedTasks = (await this.store.load(scope)).map(cloneTask)
     let recovered = false
     for (const task of loadedTasks) {
-      if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.WAITING_APPROVAL) continue
+      if (
+        task.status !== TaskStatus.RUNNING &&
+        task.status !== TaskStatus.WAITING_APPROVAL &&
+        !(task.status === TaskStatus.PENDING && task.activeRunId)
+      ) continue
+      assertTaskTransition(task.status, TaskStatus.INTERRUPTED)
       task.status = TaskStatus.INTERRUPTED
       task.activeRunId = null
-      if (!task.logs.some(log => log.message === '上次会话已结束，任务已中断')) {
-        task.logs.push({ timestamp: Date.now(), message: '上次会话已结束，任务已中断', level: 'warning' })
+      if (!task.logs.some(log => log.message === 'Previous session ended; task interrupted.')) {
+        task.logs.push({ timestamp: Date.now(), message: 'Previous session ended; task interrupted.', level: 'warning' })
       }
       recovered = true
     }
@@ -123,43 +140,69 @@ export class TaskManager {
     return this.currentUser ? { ...this.currentUser } : null
   }
 
+  isPersistenceDegraded(): boolean {
+    return this.persistenceDegraded
+  }
+
+  async recoverPersistence(): Promise<void> {
+    const scope = await this.requireCurrentUser()
+    await this.setCurrentUser(scope.memberId, scope.enterpriseId)
+    if (this.persistenceDegraded) throw new TaskPersistenceError('Task history recovery did not complete.')
+  }
+
   async createTask(
     title: string,
     prompt: string,
     workDir?: string,
-    employeeInstanceId: string | null = null,
+    subscriptionId: string | null = null,
   ): Promise<Task> {
     const user = await this.requireCurrentUser()
+    const id = randomUUID()
+    const resolvedWorkDir = workDir?.trim() || join(
+      this.userDataDir,
+      'task-workspaces', 'v1', encodeTaskScopeSegment(user.enterpriseId, 'enterpriseId'),
+      encodeTaskScopeSegment(user.memberId, 'memberId'), id,
+    )
+    await mkdir(resolvedWorkDir, { recursive: true })
     const task: Task = {
-      id: randomUUID(), title, prompt, status: TaskStatus.PENDING, workDir: workDir || null,
+      id, title, prompt, status: TaskStatus.PENDING, workDir: resolvedWorkDir,
       createdAt: Date.now(), startedAt: null, completedAt: null, error: null, files: [], logs: [],
       ownerId: user.memberId, ownerEnterpriseId: user.enterpriseId,
-      employeeInstanceId, activeRunId: null,
+      subscriptionId, activeRunId: null,
     }
-    await this.commit(nextTasks => nextTasks.set(task.id, task))
+    try {
+      await this.commit(nextTasks => nextTasks.set(task.id, task))
+    } catch (error) {
+      if (!workDir?.trim()) await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
     this.notifyTaskUpdate(task.id)
     return cloneTask(task)
   }
 
-  async setTaskRun(taskId: string, runId: string): Promise<void> {
+  async admitTask(taskId: string, runId: string): Promise<void> {
     await this.requireTask(taskId)
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) throw new TaskScopeError('Task not found.')
+      if (nextTask.activeRunId) throw new TaskAdmissionError()
+      if (nextTask.status !== TaskStatus.PENDING) {
+        throw new TaskAdmissionError(`Task cannot be admitted while it is ${nextTask.status}.`)
+      }
       nextTask.activeRunId = runId
     })
     this.notifyTaskUpdate(taskId)
   }
 
-  async setTaskEmployee(taskId: string, employeeInstanceId: string): Promise<Task> {
+  async setTaskEmployee(taskId: string, subscriptionId: string): Promise<Task> {
     await this.requireTask(taskId)
     await this.commit(nextTasks => {
       const task = nextTasks.get(taskId)
       if (!task) throw new TaskScopeError('Task not found.')
-      if (task.status === TaskStatus.RUNNING || task.status === TaskStatus.WAITING_APPROVAL) {
-        throw new TaskScopeError('A running task cannot switch employee.')
+      if (task.activeRunId || isTaskExecutionStatus(task.status)) {
+        throw new TaskAdmissionError('A running task cannot switch employee.')
       }
-      task.employeeInstanceId = employeeInstanceId
+      task.subscriptionId = subscriptionId
     })
     this.notifyTaskUpdate(taskId)
     return (await this.getTask(taskId)) as Task
@@ -175,8 +218,31 @@ export class TaskManager {
     this.notifyTaskUpdate(taskId)
   }
 
-  async getTasksByInstance(employeeInstanceId: string): Promise<Task[]> {
-    return (await this.getAllTasks()).filter(task => task.employeeInstanceId === employeeInstanceId)
+  async settleTaskRun(
+    taskId: string,
+    runId: string,
+    status: ClientTaskStatus,
+    error?: string,
+  ): Promise<boolean> {
+    await this.requireTask(taskId)
+    let changed = false
+    await this.commit(nextTasks => {
+      const task = nextTasks.get(taskId)
+      if (!task || task.activeRunId !== runId) return
+      assertTaskTransition(task.status, status)
+      task.status = status
+      task.activeRunId = null
+      task.error = error ?? null
+      task.completedAt = status === TaskStatus.COMPLETED || status === TaskStatus.FAILED ? Date.now() : null
+      if (status === TaskStatus.PENDING) task.startedAt = null
+      changed = true
+    })
+    if (changed) this.notifyTaskUpdate(taskId)
+    return changed
+  }
+
+  async getTasksBySubscription(subscriptionId: string): Promise<Task[]> {
+    return (await this.getAllTasks()).filter(task => task.subscriptionId === subscriptionId)
   }
 
   async getTask(taskId: string): Promise<Task | null> {
@@ -195,6 +261,7 @@ export class TaskManager {
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) return
+      assertTaskTransition(nextTask.status, status)
       if (status === TaskStatus.RUNNING && !nextTask.startedAt) nextTask.startedAt = Date.now()
       if (status === TaskStatus.COMPLETED || status === TaskStatus.FAILED) nextTask.completedAt = Date.now()
       if (status === TaskStatus.RUNNING) {
@@ -228,7 +295,7 @@ export class TaskManager {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) return
       nextTask.files.push(filePath)
-      nextTask.logs.push({ timestamp: Date.now(), message: `生成文件: ${filePath}`, level: 'info' })
+      nextTask.logs.push({ timestamp: Date.now(), message: `鐢熸垚鏂囦欢: ${filePath}`, level: 'info' })
     })
     this.notifyTaskUpdate(taskId)
   }
@@ -244,12 +311,14 @@ export class TaskManager {
 
   async pauseTask(taskId: string): Promise<void> {
     const task = await this.getTask(taskId)
-    if (!task || task.status !== TaskStatus.RUNNING) return
+    if (!task || (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.WAITING_APPROVAL && !(task.status === TaskStatus.PENDING && task.activeRunId))) return
+    if (task.status === TaskStatus.WAITING_APPROVAL) assertTaskTransition(task.status, TaskStatus.PAUSED)
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) return
+      assertTaskTransition(nextTask.status, TaskStatus.PAUSED)
       nextTask.status = TaskStatus.PAUSED
-      nextTask.logs.push({ timestamp: Date.now(), message: '任务已暂停', level: 'warning' })
+      nextTask.logs.push({ timestamp: Date.now(), message: 'Task paused.', level: 'warning' })
     })
     this.notifyTaskUpdate(taskId)
   }
@@ -257,23 +326,25 @@ export class TaskManager {
   async cancelTask(taskId: string): Promise<void> {
     const task = await this.getTask(taskId)
     if (!task) return
-    if (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.WAITING_APPROVAL) {
+    if (!isTaskExecutionStatus(task.status) && !(task.status === TaskStatus.PENDING && task.activeRunId)) {
       return
     }
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) return
+      assertTaskTransition(nextTask.status, TaskStatus.FAILED)
       nextTask.status = TaskStatus.FAILED
       nextTask.completedAt = Date.now()
-      nextTask.error = '用户取消'
-      nextTask.logs.push({ timestamp: Date.now(), message: '任务已取消', level: 'warning' })
+      nextTask.error = '鐢ㄦ埛鍙栨秷'
+      nextTask.error = 'Task cancelled.'
+      nextTask.logs.push({ timestamp: Date.now(), message: 'Task cancelled.', level: 'warning' })
     })
     this.notifyTaskUpdate(taskId)
   }
 
   async deleteTask(taskId: string): Promise<boolean> {
     const task = await this.getTask(taskId)
-    if (!task || (task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED)) return false
+    if (!task || task.activeRunId || !isTaskTerminal(task.status)) return false
     await this.commit(nextTasks => nextTasks.delete(taskId))
     this.notifyTaskListUpdate()
     return true

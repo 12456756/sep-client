@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code when working with code in this repository.
+This file provides guidance to Codex when working with code in this repository.
 
 ## What this project is
 
@@ -53,8 +53,8 @@ sep-client/
 │   └── credentials.ts   safeStorage wrapper for refresh token
 ├── pi-extension/
 │   ├── index.ts         buildSepExtensions() — assembles extension array
-│   ├── guard.ts         tool_call permission interceptor
-│   └── provider.ts      before_provider_headers dynamic token injection
+│   ├── guard.ts         provider-neutral tool policy
+│   └── provider.ts      provider-neutral authorization header policy
 ├── src/                 React renderer
 │   ├── App.tsx
 │   ├── main.tsx
@@ -193,7 +193,7 @@ listeners on React component unmount via the returned unsubscribe function.
 
 - Refresh token encrypted at rest via `electron.safeStorage` — see `electron/credentials.ts`
 - Token values must never appear in logs, console, or IPC event payloads
-- All `bash`, `write`, `edit` tool calls require explicit user approval — enforced in `pi-extension/guard.ts`
+- All `bash`, `write`, `edit` tool calls require explicit user approval — SDK hook wiring is isolated in `electron/pi/sdk/`; provider-neutral policy lives in `pi-extension/`
 - Unknown tools: block by default; approval timeout 60 s → auto-deny
 - Blocked tool calls still reach the provider for the follow-up turn (pi continues the agent loop)
 
@@ -215,7 +215,7 @@ this is already set; do not remove it.
 ```
 feat(pi-host): add auto-reconnect on session drop
 fix(guard): increase approval timeout to 60 s
-chore(poc): document API corrections in CLAUDE.md
+chore(poc): document API corrections in AGENTS.md
 ```
 
 Types: `feat` `fix` `refactor` `chore` `docs` `test` `perf`
@@ -225,3 +225,40 @@ Types: `feat` `fix` `refactor` `chore` `docs` `test` `perf`
 `@earendil-works/pi-coding-agent` and `@earendil-works/pi-ai` are pinned at `0.83.0`.
 Do not bump these without a dedicated discussion and a full PoC re-run. Every script in
 `poc/` must pass after any version change before UI work resumes.
+
+## Electron 33 pi SDK loading boundary
+
+- `pi-coding-agent@0.83.0` bundles `undici@8.5.0`, which expects Node `>=22.19.0`; Electron 33 uses Node 20.
+- Keep `TaskExecutionCoordinator` as a type-only import in `electron/main.ts`; load it dynamically inside `ensureTaskCoordinator()` after `undici-polyfill` runs.
+- Do not statically import the coordinator or pi SDK from the main entry. Doing so can crash startup with `markAsUncloneable is not a function`.
+- After changing this boundary, run `npm run typecheck`, `npm run test:tasks`, `npm run build`, and all four `poc:*` scripts.
+
+## Frontend UI reference and integration rules
+
+When a renderer UI needs visual improvement, use proven component references as design
+inputs instead of inventing every pattern from scratch. The preferred reference sources
+are:
+
+- `https://beautifului.dev` for polished interaction and visual patterns.
+- `https://beui.dev` for compact application components and layout ideas.
+- `https://rareui.com` for distinctive but reusable UI treatments.
+- `https://transitions.dev` for restrained transitions and state-change motion.
+- `https://ui.shadcn.com` for accessible, composable React component structure.
+
+Follow this workflow:
+
+1. Identify the exact component or interaction needed, then inspect several references
+   before choosing one. Prefer an existing repository pattern when it already satisfies
+   the requirement.
+2. Adapt the reference to the current React, Tailwind, Radix and `lucide-react` stack;
+   do not introduce a new UI framework, duplicate an existing primitive, or copy a whole
+   page when only one component is needed.
+4. Keep business logic, IPC contracts, data loading, and component responsibilities
+   unchanged unless the task explicitly requires them. Keep copied presentation code
+   free of secrets, remote runtime dependencies, and unnecessary packages.
+5. Re-check responsive behavior at `1200x800` and `960x640`. Verify keyboard focus,
+   hover/active/disabled/loading/error states, readable contrast, reduced-motion behavior,
+   and that long labels do not overlap neighboring controls.
+6. Before delivery, run the relevant typecheck/build commands and inspect the rendered
+   page with Playwright when the change is visual. Record the reference source and any
+   material adaptation in the change summary.

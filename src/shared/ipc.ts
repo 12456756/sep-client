@@ -48,7 +48,7 @@ export interface SelectDirectoryResult extends IpcCommandResult {
 }
 
 export interface CreateTaskInput extends CreateTaskRequest {
-  employeeInstanceId: string
+  subscriptionId: string
 }
 
 export interface ExecuteTaskInput {
@@ -58,6 +58,20 @@ export interface ExecuteTaskInput {
 export interface ContinueTaskInput {
   taskId: string
   prompt: string
+  recoveryMode?: 'strict' | 'confirm_rebuild' | 'auto_rebuild_from_task_history'
+  confirmRecovery?: boolean
+}
+
+export interface CreateConversationInput {
+  title: string
+  prompt: string
+  workDir?: string
+  subscriptionId: string
+}
+
+export interface SwitchConversationEmployeeInput {
+  taskId: string
+  subscriptionId: string
 }
 
 export interface WorkflowCreateResult extends TaskResult {
@@ -84,8 +98,10 @@ export interface ElectronAPI {
   logout: () => Promise<LogoutResult>
   getInstances: () => Promise<InstanceListResult>
   createTask: (data: CreateTaskInput) => Promise<TaskResult>
+  createConversation: (data: CreateConversationInput) => Promise<TaskResult>
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult>
+  switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (taskId: string) => Promise<IpcCommandResult>
   getTask: (taskId: string) => Promise<TaskResult>

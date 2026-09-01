@@ -3,9 +3,9 @@ import * as assert from 'node:assert/strict'
 import { createWorkflowGraph, nextWorkflowNodes, updateWorkflowNode, validateWorkflowNodes, workflowTerminalStatus, WorkflowGraphError } from './workflow-graph'
 
 const nodes = [
-  { id: 'research', employeeInstanceId: 'employee-a', instruction: 'Research', dependsOn: [] },
-  { id: 'write', employeeInstanceId: 'employee-b', instruction: 'Write', dependsOn: ['research'] },
-  { id: 'publish', employeeInstanceId: 'employee-c', instruction: 'Publish', dependsOn: ['write'] },
+  { id: 'research', subscriptionId: 'employee-a', instruction: 'Research', dependsOn: [] },
+  { id: 'write', subscriptionId: 'employee-b', instruction: 'Write', dependsOn: ['research'] },
+  { id: 'publish', subscriptionId: 'employee-c', instruction: 'Publish', dependsOn: ['write'] },
 ]
 
 describe('workflow graph domain', () => {
