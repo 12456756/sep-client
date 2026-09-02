@@ -13,7 +13,7 @@ import { TaskStatus } from '../../src/shared/types'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from './task-run-store'
-import type { TaskOwnerScope } from './task-store'
+import { TaskStore, type TaskOwnerScope, type TaskStorePort } from './task-store'
 
 const SCOPE: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
@@ -373,5 +373,86 @@ describe('C6 — 事件序号分配是 O(n^2) 文件读，且失败被静默吞�
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
+  })
+})
+
+describe('C8 — setCurrentUser 绕过 mutationChain，在途 commit 会写错 scope', () => {
+  /** save 可暂停的 store：用来把一次 commit 停在写盘那一刻。 */
+  function gatedStore(userData: string) {
+    const inner = new TaskStore(userData)
+    let gate: Promise<void> | null = null
+    let openGate: (() => void) | null = null
+    const store: TaskStorePort = {
+      initialize: () => inner.initialize(),
+      load: scope => inner.load(scope),
+      async save(scope, tasks) {
+        if (gate) {
+          const waiting = gate
+          gate = null
+          await waiting
+        }
+        await inner.save(scope, tasks)
+      },
+    }
+    return {
+      store,
+      inner,
+      blockNextSave: () => { gate = new Promise<void>(resolve => { openGate = resolve }) },
+      release: () => { openGate?.(); openGate = null },
+    }
+  }
+
+  it('does not write the new scope snapshot into the previous scope file', async () => {
+    const userData = await makeUserDataDir()
+    const gated = gatedStore(userData)
+    const manager = new TaskManager(userData, null, gated.store)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('a-task', 'prompt')
+
+    gated.blockNextSave()
+    const pendingCommit = manager.addTaskLog(task.id, 'from-a')
+    await new Promise(resolve => setTimeout(resolve, 30))
+
+    // 修复前这次切换不排队：它会清空 tasks、装载 B 的空列表，
+    // 随后被放行的 commit 拿着 B 的快照写进 A 的文件，A 的任务凭空消失。
+    const switching = manager.setCurrentUser('member-b', 'enterprise-a')
+    await new Promise(resolve => setTimeout(resolve, 30))
+    gated.release()
+    await Promise.all([pendingCommit, switching])
+
+    assert.deepEqual((await manager.getAllTasks()).map(item => item.title), [], 'B 的视图不该看到 A 的任务')
+
+    const persistedA = await gated.inner.load({ memberId: 'member-a', enterpriseId: 'enterprise-a' })
+    assert.equal(persistedA.length, 1, 'A 的任务被在途 commit 抹掉了')
+    assert.deepEqual(persistedA[0]?.logs.map(log => log.message), ['from-a'])
+  })
+
+  it('discards a queued commit once the scope generation moved on', async () => {
+    const userData = await makeUserDataDir()
+    const gated = gatedStore(userData)
+    const manager = new TaskManager(userData, null, gated.store)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('a-task', 'prompt')
+
+    // 第一条占住写链并停在写盘处，第二条排在它后面还没开始。
+    gated.blockNextSave()
+    const first = manager.addTaskLog(task.id, 'first')
+    await new Promise(resolve => setTimeout(resolve, 30))
+    const second = manager.addTaskLog(task.id, 'second')
+
+    // clearCurrentUser 是同步的（认证失效路径会调它），世代号必须同步递增，
+    // 否则排在后面的 commit 会在已经清空的状态上继续写。
+    manager.clearCurrentUser()
+    gated.release()
+    await Promise.allSettled([first, second])
+
+    const persisted = await gated.inner.load({ memberId: 'member-a', enterpriseId: 'enterprise-a' })
+    assert.deepEqual(
+      persisted[0]?.logs.map(log => log.message),
+      ['first'],
+      '世代号变化后排队的 commit 仍然落盘了',
+    )
   })
 })

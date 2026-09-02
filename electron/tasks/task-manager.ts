@@ -51,6 +51,11 @@ export class TaskManager {
   private readonly store: TaskStorePort
   private readonly runStore: TaskRunStorePort
   private mutationChain: Promise<void> = Promise.resolve()
+  /**
+   * scope 世代号。每次切换或清空当前用户都 +1，在途的 commit 靠它判断自己是否已经
+   * 属于上一个 scope（C8）。clearCurrentUser 是同步的，所以世代号也必须同步递增。
+   */
+  private generation = 0
 
   constructor(
     userDataDir: string,
@@ -83,49 +88,56 @@ export class TaskManager {
     const scope = { memberId, enterpriseId }
     this.validateScope(scope)
 
-    this.currentUser = null
-    this.tasks.clear()
-    this.notifyTaskListUpdate()
+    // C8：scope 切换必须与 commit 共用同一条串行链。原来它直接改 currentUser 与 tasks，
+    // 在途的 commit 恢复执行后会拿新 scope 的 tasks 去覆盖旧 scope 的文件
+    // ——旧 scope 的数据被写成新 scope 的内容，新 scope 的内存状态又被回滚。
+    await this.serialize(async () => {
+      this.generation += 1
+      this.currentUser = null
+      this.tasks.clear()
+      this.notifyTaskListUpdate()
 
-    const loadedTasks = (await this.store.load(scope)).map(cloneTask)
-    let recovered = false
-    for (const task of loadedTasks) {
-      if (
-        task.status !== TaskStatus.RUNNING &&
-        task.status !== TaskStatus.WAITING_APPROVAL &&
-        !(task.status === TaskStatus.PENDING && task.activeRunId)
-      ) continue
-      assertTaskTransition(task.status, TaskStatus.INTERRUPTED)
-      task.status = TaskStatus.INTERRUPTED
-      task.activeRunId = null
-      if (!task.logs.some(log => log.message === 'Previous session ended; task interrupted.')) {
-        task.logs.push({ timestamp: Date.now(), message: 'Previous session ended; task interrupted.', level: 'warning' })
+      const loadedTasks = (await this.store.load(scope)).map(cloneTask)
+      let recovered = false
+      for (const task of loadedTasks) {
+        if (
+          task.status !== TaskStatus.RUNNING &&
+          task.status !== TaskStatus.WAITING_APPROVAL &&
+          !(task.status === TaskStatus.PENDING && task.activeRunId)
+        ) continue
+        assertTaskTransition(task.status, TaskStatus.INTERRUPTED)
+        task.status = TaskStatus.INTERRUPTED
+        task.activeRunId = null
+        if (!task.logs.some(log => log.message === 'Previous session ended; task interrupted.')) {
+          task.logs.push({ timestamp: Date.now(), message: 'Previous session ended; task interrupted.', level: 'warning' })
+        }
+        recovered = true
       }
-      recovered = true
-    }
 
-    this.currentUser = scope
-    this.tasks = new Map(loadedTasks.map(task => [task.id, task]))
-    this.persistenceDegraded = false
+      this.currentUser = scope
+      this.tasks = new Map(loadedTasks.map(task => [task.id, task]))
+      this.persistenceDegraded = false
 
-    try {
-      await this.runStore.markActiveRunsInterrupted(scope)
-    } catch (error) {
-      console.warn('[TaskManager] Failed to recover persisted task runs:', error instanceof Error ? error.name : 'unknown')
-    }
-
-    if (recovered) {
       try {
-        await this.store.save(scope, loadedTasks)
+        await this.runStore.markActiveRunsInterrupted(scope)
       } catch (error) {
-        this.persistenceDegraded = true
-        console.warn('[TaskManager] Failed to persist recovered tasks:', error instanceof Error ? error.name : 'unknown')
+        console.warn('[TaskManager] Failed to recover persisted task runs:', error instanceof Error ? error.name : 'unknown')
       }
-    }
+
+      if (recovered) {
+        try {
+          await this.store.save(scope, loadedTasks)
+        } catch (error) {
+          this.persistenceDegraded = true
+          console.warn('[TaskManager] Failed to persist recovered tasks:', error instanceof Error ? error.name : 'unknown')
+        }
+      }
+    })
     this.notifyTaskListUpdate()
   }
 
   clearCurrentUser(): void {
+    this.generation += 1
     this.currentUser = null
     this.tasks.clear()
     this.persistenceDegraded = false
@@ -360,15 +372,29 @@ export class TaskManager {
 
   private async commit(mutate: (nextTasks: Map<string, Task>) => void): Promise<void> {
     const scope = await this.requireCurrentUser()
-    const submit = async () => {
+    const generation = this.generation
+    await this.serialize(async () => {
+      // C8：排队期间 scope 可能已经切走。世代号变了就放弃这次写入——否则会把新 scope
+      // 的内存快照写进旧 scope 的文件，并把新 scope 的内存状态覆盖回去。
+      if (this.generation !== generation) {
+        console.warn('[TaskManager] discarded an in-flight commit from a previous scope', {
+          committedGeneration: generation,
+          currentGeneration: this.generation,
+        })
+        return
+      }
       if (this.persistenceDegraded) throw new TaskPersistenceError('Task history needs recovery before it can be changed.')
       const nextTasks = cloneTasks(this.tasks)
       mutate(nextTasks)
       await this.store.save(scope, Array.from(nextTasks.values()))
       this.tasks = nextTasks
-    }
-    const next = this.mutationChain.catch(() => undefined).then(submit)
-    this.mutationChain = next
+    })
+  }
+
+  /** commit 与 scope 切换共用的串行链。前一个失败不影响后一个排队（C8）。 */
+  private async serialize(operation: () => Promise<void>): Promise<void> {
+    const next = this.mutationChain.catch(() => undefined).then(operation)
+    this.mutationChain = next.then(() => undefined, () => undefined)
     await next
   }
 
