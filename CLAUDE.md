@@ -35,6 +35,12 @@ npm run build       # production build
 npm run typecheck   # tsc check — main process + renderer separately
 npm run lint        # eslint
 
+# Backend gate — all four must pass after any change under electron/
+npm run test:tasks        # every *.test.ts under electron/
+npm run test:invariants   # the I1-I9 concurrency invariants + defect regressions
+npm run check:boundaries  # layer boundaries, no bare console.*, mojibake detection
+npm run build
+
 # PoC validation — run before any UI work; all 4 must pass
 npm run poc:01      # SDK import + createAgentSession
 npm run poc:02      # provider registration + before_provider_headers
@@ -42,15 +48,34 @@ npm run poc:03      # async tool_call interceptor
 npm run poc:04      # 401 error surfacing
 ```
 
+`poc:01..04` is the only automated check of the Electron 33 / undici SDK loading boundary.
+Do not skip it after touching `electron/main.ts` or anything under `electron/pi/`.
+
 ## Repo layout
+
+The `electron/` tree is layered by responsibility, not by origin. Dependencies flow one way:
+`controller/` → `service/` → {`data/`, `runtime/`} → {`domain/`, `errors/`, `common/`}.
+`runtime/` is the only layer allowed to reach `pi/sdk/`. Reverse imports are rejected by
+`npm run check:boundaries`. Full rationale and the remaining phases:
+`docs/architecture/后端结构重构实施方案.md`.
 
 ```
 sep-client/
 ├── electron/
-│   ├── main.ts          Electron entry, BrowserWindow, IPC handlers
+│   ├── main.ts          Electron entry, BrowserWindow, ipcMain handlers
 │   ├── preload.ts       contextBridge — the only renderer↔main bridge
-│   ├── pi-host.ts       pi session lifecycle (create, prompt, events, destroy)
-│   └── credentials.ts   safeStorage wrapper for refresh token
+│   ├── controller/      channels.ts = the single definition point for all IPC channel names
+│   ├── data/            stores: task / task-run / task-metadata / workflow
+│   ├── domain/          pure logic, zero IO: task-state-machine / workflow-graph /
+│   │                    conversation-context
+│   ├── runtime/         execution & scheduling: task-execution-coordinator / task-manager /
+│   │                    workspace-lock-manager / approval-runtime
+│   ├── errors/          error-codes (the only error-code table) / app-error / error-mapper /
+│   │                    error-reporter
+│   ├── common/          leaf layer: logger / redact / with-timeout / config / undici-polyfill
+│   │   └── platform/    SEP platform channel: platform-api / auth-session-manager /
+│   │                    instance-token-manager / instance-directory / credential-vault
+│   └── pi/sdk/          pi SDK types and lifecycle may appear ONLY here
 ├── pi-extension/
 │   ├── index.ts         buildSepExtensions() — assembles extension array
 │   ├── guard.ts         provider-neutral tool policy
@@ -65,8 +90,13 @@ sep-client/
 │   ├── 02-provider.ts
 │   ├── 03-tool-call-async.ts
 │   └── 04-failure.ts
+├── scripts/
+│   └── check-boundaries.ts  layer boundaries + no bare console.* + mojibake detection
 └── docs/
-    └── 交接/            handover documents
+    ├── architecture/    the authoritative refactor plan (behavioural baseline)
+    ├── plans/           feature design documents
+    ├── 对接/            platform API integration guides
+    └── archive/         superseded documents, kept for history
 ```
 
 ## pi-coding-agent SDK — verified API (v0.83.0)
@@ -191,8 +221,10 @@ listeners on React component unmount via the returned unsubscribe function.
 
 ## Security
 
-- Refresh token encrypted at rest via `electron.safeStorage` — see `electron/credentials.ts`
+- Refresh token encrypted at rest via `electron.safeStorage` — see `electron/common/platform/credential-vault.ts`
 - Token values must never appear in logs, console, or IPC event payloads
+- Log only through `electron/common/logger.ts`; every field passes `electron/common/redact.ts`.
+  Bare `console.*` in `electron/` fails `npm run check:boundaries`
 - All `bash`, `write`, `edit` tool calls require explicit user approval — SDK hook wiring is isolated in `electron/pi/sdk/`; provider-neutral policy lives in `pi-extension/`
 - Unknown tools: block by default; approval timeout 60 s → auto-deny
 - Blocked tool calls still reach the provider for the follow-up turn (pi continues the agent loop)
@@ -213,7 +245,7 @@ this is already set; do not remove it.
 ## Git commits
 
 ```
-feat(pi-host): add auto-reconnect on session drop
+feat(coordinator): add auto-reconnect on session drop
 fix(guard): increase approval timeout to 60 s
 chore(poc): document API corrections in AGENTS.md
 ```
