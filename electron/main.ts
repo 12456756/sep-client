@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import './infrastructure/undici-polyfill'; // Pi SDK 使用的网络兼容层。
 import type { TaskExecutionCoordinator } from './tasks/task-execution-coordinator';
 import { ConversationRecoveryError } from './tasks/conversation-recovery-error';
-import { TaskAdmissionError, TaskManager, TaskPersistenceError, TaskScopeError } from './tasks/task-manager';
+import { TaskAdmissionError, TaskManager, TaskPersistenceError, TaskScopeError, InvalidTaskTransitionError } from './tasks/task-manager';
 import { TaskRunStore, type TaskRunRecord } from './tasks/task-run-store';
 import { getDeviceFingerprint } from './auth/device-fingerprint';
 import { login, getInstances, AuthApiError, type ClientInstance } from './auth/auth-api';
@@ -150,6 +150,9 @@ function taskError(error: unknown): { code: string; message: string } {
   if (error instanceof AuthApiError && (error.statusCode === 403 || error.statusCode === 404)) return { code: 'AUTH_REQUIRED', message: 'The selected employee is no longer available.' }
   if (error instanceof ConversationRecoveryError) return { code: error.code, message: error.message }
   if (error instanceof TaskAdmissionError) return { code: 'INVALID_STATE', message: error.message }
+  // C9：状态机拒绝跃迁是"当前状态不允许"，不是内部故障。原来它落到最后一行的
+  // INTERNAL_ERROR，用户看到的错误类别是错的。
+  if (error instanceof InvalidTaskTransitionError) return { code: 'INVALID_STATE', message: error.message }
   if (error instanceof TaskScopeError) return { code: 'AUTH_REQUIRED', message: error.message }
   if (error instanceof TaskPersistenceError) return { code: 'PERSISTENCE_ERROR', message: 'Task history could not be saved.' }
   return { code: 'INTERNAL_ERROR', message: 'The task operation could not be completed.' }

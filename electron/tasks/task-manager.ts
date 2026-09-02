@@ -20,6 +20,7 @@ import {
 import { TaskRunStore, type TaskRunStorePort } from './task-run-store'
 import {
   assertTaskTransition,
+  canTransitionTask,
   TaskAdmissionError,
   isTaskExecutionStatus,
   isTaskTerminal,
@@ -27,7 +28,7 @@ import {
 
 export { TaskStatus } from '../../src/shared/types'
 export { TaskPersistenceError, TaskScopeError } from './task-store'
-export { TaskAdmissionError } from './domain/task-state-machine'
+export { TaskAdmissionError, InvalidTaskTransitionError } from './domain/task-state-machine'
 export type { ClientTask as Task, ClientTaskLog as TaskLog } from '../../src/shared/types'
 
 type Task = ClientTask
@@ -221,13 +222,16 @@ export class TaskManager {
   }
 
   async clearTaskRun(taskId: string, expectedRunId?: string): Promise<void> {
-    const task = await this.getTask(taskId)
-    if (!task || (expectedRunId && task.activeRunId !== expectedRunId)) return
+    // C9：唯一检查点在 mutate 闭包内。放在外面就是 check-then-commit：
+    // 两者之间 activeRunId 可能已经换成另一个 run，那就会清掉不该清的准入。
+    let changed = false
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
-      if (nextTask) nextTask.activeRunId = null
+      if (!nextTask || (expectedRunId && nextTask.activeRunId !== expectedRunId)) return
+      nextTask.activeRunId = null
+      changed = true
     })
-    this.notifyTaskUpdate(taskId)
+    if (changed) this.notifyTaskUpdate(taskId)
   }
 
   async settleTaskRun(
@@ -301,15 +305,16 @@ export class TaskManager {
   }
 
   async addTaskFile(taskId: string, filePath: string): Promise<void> {
-    const task = await this.getTask(taskId)
-    if (!task || task.files.includes(filePath)) return
+    let changed = false
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
-      if (!nextTask) return
+      // C9：去重判断必须与写入同处一个闭包，否则并发两次同名文件都会被追加。
+      if (!nextTask || nextTask.files.includes(filePath)) return
       nextTask.files.push(filePath)
       nextTask.logs.push({ timestamp: Date.now(), message: `生成文件: ${filePath}`, level: 'info' })
+      changed = true
     })
-    this.notifyTaskUpdate(taskId)
+    if (changed) this.notifyTaskUpdate(taskId)
   }
 
   async updateTaskProgress(taskId: string, progress: number): Promise<void> {
@@ -322,34 +327,48 @@ export class TaskManager {
   }
 
   async pauseTask(taskId: string): Promise<void> {
-    const task = await this.getTask(taskId)
-    if (!task || (task.status !== TaskStatus.RUNNING && task.status !== TaskStatus.WAITING_APPROVAL && !(task.status === TaskStatus.PENDING && task.activeRunId))) return
-    if (task.status === TaskStatus.WAITING_APPROVAL) assertTaskTransition(task.status, TaskStatus.PAUSED)
+    let changed = false
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) return
-      assertTaskTransition(nextTask.status, TaskStatus.PAUSED)
+      // C9：原来这里有两处判断——闭包外一个"不可暂停就静默返回"，闭包内一个
+      // assertTaskTransition 会抛。两者之间状态一变，用户看到的就是 INTERNAL_ERROR
+      // 而不是 INVALID_STATE。现在只有这一个检查点，语义取原来对外的那个：静默忽略。
+      const pausable = nextTask.status === TaskStatus.RUNNING ||
+        nextTask.status === TaskStatus.WAITING_APPROVAL ||
+        (nextTask.status === TaskStatus.PENDING && nextTask.activeRunId !== null)
+      if (!pausable || !canTransitionTask(nextTask.status, TaskStatus.PAUSED)) return
       nextTask.status = TaskStatus.PAUSED
       nextTask.logs.push({ timestamp: Date.now(), message: 'Task paused.', level: 'warning' })
+      changed = true
     })
-    this.notifyTaskUpdate(taskId)
+    if (changed) this.notifyTaskUpdate(taskId)
   }
 
   async deleteTask(taskId: string): Promise<boolean> {
-    const task = await this.getTask(taskId)
-    if (!task || task.activeRunId || !isTaskTerminal(task.status)) return false
-    await this.commit(nextTasks => nextTasks.delete(taskId))
-    this.notifyTaskListUpdate()
-    return true
+    let deleted = false
+    await this.commit(nextTasks => {
+      const nextTask = nextTasks.get(taskId)
+      // C9：准入可能在检查与删除之间发生，闭包外判断会删掉正在跑的任务。
+      if (!nextTask || nextTask.activeRunId || !isTaskTerminal(nextTask.status)) return
+      nextTasks.delete(taskId)
+      deleted = true
+    })
+    if (deleted) this.notifyTaskListUpdate()
+    return deleted
   }
 
   async clearCompletedTasks(): Promise<number> {
-    await this.requireCurrentUser()
-    const completed = Array.from(this.tasks.values()).filter(task => task.status === TaskStatus.COMPLETED)
-    if (completed.length === 0) return 0
-    await this.commit(nextTasks => completed.forEach(task => nextTasks.delete(task.id)))
-    this.notifyTaskListUpdate()
-    return completed.length
+    let removed = 0
+    await this.commit(nextTasks => {
+      for (const [id, task] of nextTasks) {
+        if (task.status !== TaskStatus.COMPLETED || task.activeRunId) continue
+        nextTasks.delete(id)
+        removed += 1
+      }
+    })
+    if (removed > 0) this.notifyTaskListUpdate()
+    return removed
   }
 
   async getTasksByStatus(status: ClientTaskStatus): Promise<Task[]> {

@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
-import { TaskManager } from './task-manager'
+import { InvalidTaskTransitionError, TaskManager } from './task-manager'
 import { TaskRunStore } from './task-run-store'
 import { TaskStore, type TaskOwnerScope, type TaskStorePort } from './task-store'
 
@@ -454,5 +454,80 @@ describe('C8 — setCurrentUser 绕过 mutationChain，在途 commit 会写错 s
       ['first'],
       '世代号变化后排队的 commit 仍然落盘了',
     )
+  })
+})
+
+describe('C9 — check-then-commit 会歪曲错误码，并留下竞态窗口', () => {
+  it('maps a rejected state transition to INVALID_STATE, not INTERNAL_ERROR', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('t', 'prompt', undefined, 'employee-a')
+
+    await manager.admitTask(task.id, 'run-a')
+    await manager.settleTaskRun(task.id, 'run-a', TaskStatus.PAUSED)
+
+    // PAUSED 只能去 PENDING / INTERRUPTED。抛出的必须是可识别的
+    // InvalidTaskTransitionError，main.ts 的 taskError 才能把它映射成 INVALID_STATE；
+    // 原来它落到最后一行变成 INTERNAL_ERROR。
+    await assert.rejects(
+      () => manager.updateTaskStatus(task.id, TaskStatus.COMPLETED),
+      (error: unknown) => {
+        assert.equal(error instanceof InvalidTaskTransitionError, true, `实际抛出 ${(error as Error).name}`)
+        assert.equal((error as InvalidTaskTransitionError).from, TaskStatus.PAUSED)
+        assert.equal((error as InvalidTaskTransitionError).to, TaskStatus.COMPLETED)
+        return true
+      },
+    )
+  })
+
+  it('does not delete a task that was admitted after the eligibility check', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('t', 'prompt', undefined, 'employee-a')
+    await manager.admitTask(task.id, 'run-a')
+    await manager.settleTaskRun(task.id, 'run-a', TaskStatus.FAILED, 'boom')
+
+    // 终态且无 active run -> 可删。并发再准入一次：谁先谁后都行，但结果必须自洽——
+    // 修复前 deleteTask 在闭包外判断，删除可以落在准入之后，于是"任务已删除"与
+    // "准入成功"同时成立。
+    const [deletion, admission] = await Promise.allSettled([
+      manager.deleteTask(task.id),
+      (async () => {
+        await manager.updateTaskStatus(task.id, TaskStatus.PENDING)
+        await manager.admitTask(task.id, 'run-b')
+      })(),
+    ])
+    const survivor = await manager.getTask(task.id)
+    const deleted = deletion.status === 'fulfilled' && deletion.value
+    if (deleted) {
+      assert.equal(survivor, null, 'deleteTask 报告删除成功，任务却还在')
+      assert.equal(admission.status, 'rejected', '任务已被删除，准入却报告成功')
+    } else {
+      assert.notEqual(survivor, null, '未报告删除，任务却不见了')
+      assert.equal(admission.status, 'fulfilled')
+      assert.equal(survivor?.activeRunId, 'run-b')
+    }
+  })
+
+  it('appends a file exactly once when two callers race', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('t', 'prompt')
+
+    await Promise.all([
+      manager.addTaskFile(task.id, 'out/report.md'),
+      manager.addTaskFile(task.id, 'out/report.md'),
+      manager.addTaskFile(task.id, 'out/report.md'),
+    ])
+
+    const stored = await manager.getTask(task.id)
+    assert.deepEqual(stored?.files, ['out/report.md'], '并发调用把同一个文件追加了多次')
+    assert.equal(stored?.logs.filter(log => log.message.includes('out/report.md')).length, 1)
   })
 })
