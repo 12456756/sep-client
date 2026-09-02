@@ -187,16 +187,36 @@ async function authorizeEmployee(subscriptionId: string) {
   return { ...employee, additionalSkillPaths: runtime.skillPaths }
 }
 
+/** 认证失效清理的预算。stopAll 内部要等 worker.abort() 与在途事件落盘（C7）。 */
+const AUTH_CLEANUP_BUDGET_MS = 5_000
+
 function invalidateAuthentication(): void {
   if (authenticationCleanupPromise) return
   authenticationCleanupPromise = (async () => {
+    // C7：必须有界。stopAll 会等每个 active run 的 abort 与 completion，
+    // 无界等待会让"重新登录"这件事永远卡住，且清理只做了一半（scope 还在，token 已废）。
+    const stopped = await settleWithTimeout(
+      taskCoordinator ? taskCoordinator.stopAll() : Promise.resolve(),
+      AUTH_CLEANUP_BUDGET_MS,
+      'authentication-cleanup-stop-all',
+    )
+    if (!stopped.ok) {
+      console.error('[main] failed to stop Pi during authentication cleanup', {
+        timedOut: stopped.timedOut,
+        budgetMs: AUTH_CLEANUP_BUDGET_MS,
+        error: stopped.timedOut
+          ? undefined
+          : stopped.error instanceof Error ? stopped.error.name : 'unknown',
+      })
+    }
     try {
-      if (taskCoordinator) await taskCoordinator.stopAll()
-    } catch (error) {
-      console.warn('[main] Failed to stop Pi during authentication cleanup:', error instanceof Error ? error.name : 'unknown')
-    } finally {
       const manager = await ensureTaskManager()
       manager.clearCurrentUser()
+    } catch (error) {
+      console.error('[main] failed to clear task scope during authentication cleanup', {
+        error: error instanceof Error ? error.name : 'unknown',
+      })
+    } finally {
       activeInstances = []
       instanceDirectory.invalidate()
       subscriptionRuntime?.invalidate()
@@ -205,6 +225,30 @@ function invalidateAuthentication(): void {
       authenticationCleanupPromise = null
     }
   })()
+}
+
+/**
+ * 认证失效清理进行中。此时 token 已经作废、scope 还没清掉，是个半清理状态；
+ * 任何任务操作都必须直接拒掉，不能在这个状态上继续写数据（C7）。
+ */
+function authenticationInvalidating(): boolean {
+  return authenticationCleanupPromise !== null
+}
+
+/**
+ * 取当前 scope，取不到就返回统一的错误信封。
+ * main.ts 里原有 12 处逐字复制的 scope 守卫，这里先收成一个入口；
+ * 正式落成 service/scope-guard.ts 在 Phase 5。
+ */
+function requireScope(manager: TaskManager):
+  | { ok: true; scope: NonNullable<ReturnType<TaskManager['getCurrentUserScope']>> }
+  | { ok: false; error: { code: string; message: string } } {
+  if (authenticationInvalidating()) {
+    return { ok: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+  }
+  const scope = manager.getCurrentUserScope()
+  if (!scope) return { ok: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+  return { ok: true, scope }
 }
 
 async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
@@ -456,8 +500,9 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_CREATE, async (_event, data: unknown) => {
   // 当前 renderer 的对话编辑器使用 task:create。
   // 在 task:create 边界完成初始化，确保首轮运行被识别为对话任务，
   // 并使用任务级共享 Pi 会话。
-    const scope = manager.getCurrentUserScope()
-    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const scope = guard.scope
     await ensureTaskMetadataStore().save(scope, {
       version: 1,
       taskId: task.id,
@@ -483,8 +528,9 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_EXECUTE, async (_event, input: unknown) => {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     }
     const manager = await ensureTaskManager()
-    const scope = manager.getCurrentUserScope()
-    const metadata = scope ? await ensureTaskMetadataStore().load(scope, taskId) : null
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const metadata = await ensureTaskMetadataStore().load(guard.scope, taskId)
     await (await ensureTaskCoordinator()).executeTask(taskId, { conversation: metadata?.kind === 'conversation' })
     return { success: true }
   } catch (error) {
@@ -532,14 +578,13 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, async (_event, input: unkno
     }
     await (await ensureTaskCoordinator()).switchConversationEmployee(input.taskId, input.subscriptionId)
     const manager = await ensureTaskManager()
-    const scope = manager.getCurrentUserScope()
-    if (scope) {
-      const metadata = await ensureTaskMetadataStore().load(scope, input.taskId)
-      if (metadata?.kind === 'conversation') {
-        metadata.currentSubscriptionId = input.subscriptionId
-        if (!metadata.participantSubscriptionIds.includes(input.subscriptionId)) metadata.participantSubscriptionIds.push(input.subscriptionId)
-        await ensureTaskMetadataStore().save(scope, metadata)
-      }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const metadata = await ensureTaskMetadataStore().load(guard.scope, input.taskId)
+    if (metadata?.kind === 'conversation') {
+      metadata.currentSubscriptionId = input.subscriptionId
+      if (!metadata.participantSubscriptionIds.includes(input.subscriptionId)) metadata.participantSubscriptionIds.push(input.subscriptionId)
+      await ensureTaskMetadataStore().save(guard.scope, metadata)
     }
     return { success: true }
   } catch (error) { return { success: false, error: taskError(error) } }
@@ -567,8 +612,9 @@ ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_CREATE, async (_event, input: unknown) =
     if (!employee || !await authorizeEmployee(employee)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The workflow employee is unavailable.' } }
     const manager = await ensureTaskManager()
     const task = await manager.createTask(input.title.trim(), typeof input.prompt === 'string' ? input.prompt : input.title.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, employee)
-    const scope = manager.getCurrentUserScope()
-    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const scope = guard.scope
     await ensureWorkflowStore().save(scope, task.id, graph)
     await ensureTaskMetadataStore().save(scope, {
       version: 1, taskId: task.id, kind: 'workflow', participantSubscriptionIds: [...new Set(graph.nodes.map(node => node.subscriptionId))],
@@ -589,8 +635,9 @@ ipcMain.handle(INVOKE_CHANNELS.CONVERSATION_CREATE, async (_event, input: unknow
     if (!await authorizeEmployee(input.subscriptionId)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
     const manager = await ensureTaskManager()
     const task = await manager.createTask(input.title.trim(), input.prompt.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, input.subscriptionId)
-    const scope = manager.getCurrentUserScope()
-    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const scope = guard.scope
     await ensureTaskMetadataStore().save(scope, {
       version: 1, taskId: task.id, kind: 'conversation', participantSubscriptionIds: [input.subscriptionId],
       currentSubscriptionId: input.subscriptionId, createdAt: Date.now(),
@@ -604,8 +651,9 @@ ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_GET, async (_event, taskId: unknown) => 
     if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     const manager = await ensureTaskManager()
     if (!await manager.getTask(taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    const scope = manager.getCurrentUserScope()
-    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const scope = guard.scope
     const graph = await ensureWorkflowStore().load(scope, taskId)
     if (!graph) return { success: false, error: { code: 'NOT_FOUND', message: 'Workflow not found.' } }
     return { success: true, graph }
@@ -618,8 +666,9 @@ ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_START, async (_event, taskId: unknown) =
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
     if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    const scope = manager.getCurrentUserScope()
-    if (!scope || !await ensureWorkflowStore().load(scope, taskId)) return { success: false, error: { code: 'INVALID_STATE', message: 'A valid workflow definition is required.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    if (!await ensureWorkflowStore().load(guard.scope, taskId)) return { success: false, error: { code: 'INVALID_STATE', message: 'A valid workflow definition is required.' } }
     await (await ensureTaskCoordinator()).executeTask(taskId)
     return { success: true }
   } catch (error) { return { success: false, error: taskError(error) } }
@@ -631,8 +680,9 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_GET_MESSAGES, async (_event, taskId: unknown
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
     if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    const scope = manager.getCurrentUserScope()
-    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const scope = guard.scope
     return { success: true, messages: await ensureTaskRunStore().getMessages(scope, taskId, task.prompt) }
   } catch (error) { return { success: false, error: taskError(error) } }
 })
@@ -648,8 +698,9 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_RETRY, async (_event, taskId: unknown) => {
     if (!task.subscriptionId || !await authorizeEmployee(task.subscriptionId)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
     }
-    const scope = manager.getCurrentUserScope()
-    const metadata = scope ? await ensureTaskMetadataStore().load(scope, taskId) : null
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const metadata = await ensureTaskMetadataStore().load(guard.scope, taskId)
     await (await ensureTaskCoordinator()).retryTask(taskId, { conversation: metadata?.kind === 'conversation' })
     return { success: true }
   } catch (error) {
@@ -685,8 +736,9 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_LIST_RUNS, async (_event, taskId: unknown) =
     if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     const manager = await ensureTaskManager()
     if (!await manager.getTask(taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    const scope = manager.getCurrentUserScope()
-    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const scope = guard.scope
     const runs = await ensureTaskRunStore().list(scope, taskId)
     return { success: true, runs: runs.map(toClientTaskRun) }
   } catch (error) {
@@ -701,8 +753,9 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_GET_RUN, async (_event, input: unknown) => {
     }
     const manager = await ensureTaskManager()
     if (!await manager.getTask(input.taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    const scope = manager.getCurrentUserScope()
-    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const scope = guard.scope
     const run = await ensureTaskRunStore().get(scope, input.taskId, input.runId)
     if (!run) return { success: false, error: { code: 'NOT_FOUND', message: 'Run not found.' } }
     return { success: true, run: toClientTaskRun(run) }
@@ -718,8 +771,9 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_GET_TIMELINE, async (_event, input: unknown)
     }
     const manager = await ensureTaskManager()
     if (!await manager.getTask(input.taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
-    const scope = manager.getCurrentUserScope()
-    if (!scope) return { success: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+    const guard = requireScope(manager)
+    if (!guard.ok) return { success: false, error: guard.error }
+    const scope = guard.scope
     const run = await ensureTaskRunStore().get(scope, input.taskId, input.runId)
     if (!run) return { success: false, error: { code: 'NOT_FOUND', message: 'Run not found.' } }
     return { success: true, events: await ensureTaskRunStore().getTimeline(scope, input.taskId, input.runId) }

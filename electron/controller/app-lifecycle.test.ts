@@ -48,3 +48,36 @@ describe('app shutdown wiring', () => {
     )
   })
 })
+
+describe('authentication invalidation', () => {
+  it('bounds the cleanup instead of waiting on stopAll forever (C7)', () => {
+    const budget = /AUTH_CLEANUP_BUDGET_MS\s*=\s*([\d_]+)/.exec(mainSource)
+    assert.ok(budget, '认证失效清理预算必须是一个具名常量')
+    const milliseconds = Number(budget[1]!.replaceAll('_', ''))
+    assert.ok(milliseconds > 0 && milliseconds <= 30_000, `清理预算 ${milliseconds}ms 不合理`)
+    assert.match(
+      mainSource,
+      /settleWithTimeout\(\s*\r?\n?\s*taskCoordinator \? taskCoordinator\.stopAll\(\)/,
+      'stopAll 必须走有界等待，否则"重新登录"会永远卡住',
+    )
+  })
+
+  it('routes every scope guard through one entry point (C7/C9)', () => {
+    const direct = mainSource.match(/getCurrentUserScope\(\)/g) ?? []
+    assert.equal(
+      direct.length,
+      1,
+      `main.ts 里应只有 requireScope 一处直接读 scope，实际 ${direct.length} 处`,
+    )
+    assert.match(
+      mainSource,
+      /function authenticationInvalidating\(\)/,
+      '清理进行中必须能被识别，否则会在半清理状态上继续写数据',
+    )
+    assert.match(
+      mainSource,
+      /if \(authenticationInvalidating\(\)\) \{/,
+      'requireScope 必须先判失效中',
+    )
+  })
+})
