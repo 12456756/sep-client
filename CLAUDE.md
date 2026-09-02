@@ -53,29 +53,103 @@ Do not skip it after touching `electron/main.ts` or anything under `electron/pi/
 
 ## Repo layout
 
-The `electron/` tree is layered by responsibility, not by origin. Dependencies flow one way:
-`controller/` → `service/` → {`data/`, `runtime/`} → {`domain/`, `errors/`, `common/`}.
-`runtime/` is the only layer allowed to reach `pi/sdk/`. Reverse imports are rejected by
-`npm run check:boundaries`. Full rationale and the remaining phases:
-`docs/architecture/后端结构重构实施方案.md`.
+The `electron/` tree is layered by responsibility, not by origin. **This is the target structure
+from `docs/architecture/后端结构重构实施方案.md` §3.2.** That refactor is at Phase 4 of 8, so
+entries marked `(Phase N)` do not exist yet. Put new code where this tree says it belongs, not
+where similar code happens to sit today; if the right home is still `(Phase N)`, say so rather
+than inventing a different one.
+
+Dependencies flow one way. `runtime/` is the only layer allowed to reach `pi/sdk/`:
+
+```
+renderer ──IPC──▶ controller/ ──▶ service/ ──▶ { data/ , runtime/ } ──▶ pi/sdk/
+                                                        │
+                                       { domain/ , errors/ , common/ }   leaf layers
+```
+
+Reverse imports are rejected by `npm run check:boundaries`:
+
+| # | Boundary | Status |
+|---|----------|--------|
+| B1a | `webContents.send` only in `bootstrap/renderer-bridge.ts` | enforced |
+| B1b | `ipcMain` and channel literals only in `controller/` | Phase 6 |
+| B2 | `service/` must not import `pi/` or `@earendil-works/*` | Phase 5 |
+| B3 | `data/` must not import `service/` or `runtime/` | Phase 7 |
+| B4 | `common/` is a leaf — imports nothing from the layers above | enforced |
 
 ```
 sep-client/
 ├── electron/
-│   ├── main.ts          Electron entry, BrowserWindow, ipcMain handlers
-│   ├── preload.ts       contextBridge — the only renderer↔main bridge
-│   ├── controller/      channels.ts = the single definition point for all IPC channel names
-│   ├── data/            stores: task / task-run / task-metadata / workflow
-│   ├── domain/          pure logic, zero IO: task-state-machine / workflow-graph /
-│   │                    conversation-context
-│   ├── runtime/         execution & scheduling: task-execution-coordinator / task-manager /
-│   │                    workspace-lock-manager / approval-runtime
-│   ├── errors/          error-codes (the only error-code table) / app-error / error-mapper /
-│   │                    error-reporter
-│   ├── common/          leaf layer: logger / redact / with-timeout / config / undici-polyfill
-│   │   └── platform/    SEP platform channel: platform-api / auth-session-manager /
-│   │                    instance-token-manager / instance-directory / credential-vault
-│   └── pi/sdk/          pi SDK types and lifecycle may appear ONLY here
+│   ├── main.ts                  polyfill → assemble → register IPC → window lifecycle
+│   ├── preload.ts               contextBridge — the only renderer↔main bridge
+│   ├── bootstrap/               assembly and process lifecycle
+│   │   ├── composition-root.ts  createBackend() — the single assembly entry point
+│   │   ├── employee-access.ts   employee directory snapshot + authorization
+│   │   ├── main-window.ts       BrowserWindow creation and display
+│   │   ├── renderer-bridge.ts   the only main→renderer push exit; owns the window ref
+│   │   └── shutdown.ts          two-phase bounded shutdown
+│   ├── controller/              validate → call service → convert to envelope
+│   │   ├── channels.ts          the single definition point for IPC channel names
+│   │   ├── router.ts            (Phase 6) table-driven registration + zod + one catch
+│   │   ├── context.ts           (Phase 6) RequestContext: scope + service handles
+│   │   └── routes/              (Phase 6) 33 routes split by domain
+│   ├── service/                 (Phase 5) use cases + authorization. Touches no Pi
+│   │   │                        object, sends no IPC, builds no file paths
+│   │   ├── task-service.ts           (Phase 5)
+│   │   ├── conversation-service.ts   (Phase 5)
+│   │   ├── workflow-service.ts       (Phase 5)
+│   │   ├── employee-directory.ts     (Phase 5) the only platform-directory read point
+│   │   ├── employee-authorizer.ts    (Phase 5) pure: directory snapshot in, result out
+│   │   └── scope-guard.ts            (Phase 5) the only scope check
+│   ├── data/                    knows scope and data, never whether a task may run
+│   │   ├── atomic-file.ts            (Phase 7) the only atomic write
+│   │   ├── scope-path.ts             (Phase 7) the only path derivation
+│   │   ├── task-store.ts
+│   │   ├── task-run-store.ts         run records (Phase 7 splits out the two below)
+│   │   ├── task-event-store.ts       (Phase 7) event log + in-memory sequence cursor
+│   │   ├── task-message-projector.ts (Phase 7) message projection
+│   │   ├── task-metadata-store.ts
+│   │   └── workflow-store.ts
+│   ├── domain/                  pure logic, zero IO
+│   │   ├── task-state-machine.ts
+│   │   ├── workflow-graph.ts
+│   │   └── conversation-context.ts
+│   ├── runtime/                 execution and scheduling; does not know IPC exists
+│   │   ├── task-execution-coordinator.ts
+│   │   ├── task-manager.ts      admission + state-machine execution
+│   │   ├── admission-queue.ts   (Phase 8) runId-addressed queue
+│   │   ├── worker-registry.ts   (Phase 8) worker lifecycle + completion signal
+│   │   ├── event-pipeline.ts    (Phase 8) event serialization + drain()
+│   │   ├── workspace-lock-manager.ts
+│   │   ├── approval-runtime.ts  tool-approval broker (60 s timeout → auto-deny)
+│   │   └── task-notifier.ts     the push interface; implementation injected by bootstrap
+│   ├── errors/
+│   │   ├── error-codes.ts       the only error-code table:
+│   │   │                        code → 中文 message / status / retryable / log level
+│   │   ├── app-error.ts
+│   │   ├── error-mapper.ts      unknown → envelope, the only mapping point
+│   │   └── error-reporter.ts    redacted reporting + process fallback + fatal dialog
+│   ├── common/                  platform channel + infrastructure (leaf layer)
+│   │   ├── platform/            SEP platform channel (was auth/)
+│   │   │   ├── platform-api.ts
+│   │   │   ├── auth-session-manager.ts
+│   │   │   ├── authentication-required-error.ts
+│   │   │   ├── instance-token-manager.ts
+│   │   │   ├── instance-directory.ts    TTL + singleflight subscription directory
+│   │   │   ├── credential-vault.ts      safeStorage wrapper for the refresh token
+│   │   │   └── device-fingerprint.ts
+│   │   ├── logger.ts            the only log entry point; bare console.* is rejected
+│   │   ├── redact.ts            the only redaction implementation
+│   │   ├── lazy-async.ts        load-once async value, shared by concurrent waiters
+│   │   ├── with-timeout.ts      bounded waits
+│   │   ├── config.ts            (constants.ts: Phase 5)
+│   │   └── undici-polyfill.ts   must stay main.ts's first side-effect import
+│   └── pi/sdk/                  pi SDK types and lifecycle may appear ONLY here
+│       ├── pi-coding-agent-adapter.ts   the only file importing @earendil-works/*
+│       ├── pi-agent-runtime.ts          SDK-agnostic port contract
+│       ├── pi-task-worker.ts
+│       ├── shared-session-adapter.ts
+│       └── subscription-resource-loader.ts
 ├── pi-extension/
 │   ├── index.ts         buildSepExtensions() — assembles extension array
 │   ├── guard.ts         provider-neutral tool policy
@@ -261,8 +335,14 @@ Do not bump these without a dedicated discussion and a full PoC re-run. Every sc
 ## Electron 33 pi SDK loading boundary
 
 - `pi-coding-agent@0.83.0` bundles `undici@8.5.0`, which expects Node `>=22.19.0`; Electron 33 uses Node 20.
-- Keep `TaskExecutionCoordinator` as a type-only import in `electron/main.ts`; load it dynamically inside `ensureTaskCoordinator()` after `undici-polyfill` runs.
-- Do not statically import the coordinator or pi SDK from the main entry. Doing so can crash startup with `markAsUncloneable is not a function`.
+- Keep `import './common/undici-polyfill'` as the **first** import in `electron/main.ts`.
+- `TaskExecutionCoordinator` may only be reached through the single dynamic import inside
+  `BackendRuntime.loadTaskCoordinator()` (`electron/bootstrap/composition-root.ts`). Everywhere
+  else it must be `import type`.
+- Do not statically import the coordinator or the pi SDK from anywhere reachable at startup.
+  Doing so can crash startup with `markAsUncloneable is not a function`.
+- `electron/pi/sdk/sdk-boundary.test.ts` asserts all of the above at the source level; the build
+  should still emit `task-execution-coordinator-*.js` as a separate chunk.
 - After changing this boundary, run `npm run typecheck`, `npm run test:tasks`, `npm run build`, and all four `poc:*` scripts.
 
 ## Frontend UI reference and integration rules
