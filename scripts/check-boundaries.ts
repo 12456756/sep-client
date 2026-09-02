@@ -226,9 +226,27 @@ function matchLines(file: SourceFile, pattern: RegExp, detail: (line: string) =>
     pattern.test(line) ? [{ file: file.path, line: index + 1, detail: detail(line.trim()) }] : [])
 }
 
+/**
+ * main -> renderer 推送的唯一出口。方案 3.3 节 B1 的可执行形态：`TaskManager` 原来
+ * 自己持有 BrowserWindow 直接 send，Phase 4 换成注入的 `runtime/task-notifier.ts` 接口。
+ */
+const RENDERER_PUSH_EXIT = 'electron/bootstrap/renderer-bridge.ts'
+
 const layerRules: Rule[] = [
   {
-    id: 'B1:ipc-in-controller',
+    id: 'B1a:renderer-push-single-exit',
+    status: 'enforced',
+    description: `webContents.send 只允许出现在 ${RENDERER_PUSH_EXIT}`,
+    check: files => backendSources(files, 'electron/')
+      .filter(file => file.path !== RENDERER_PUSH_EXIT)
+      .flatMap(file => matchLines(
+        file,
+        /webContents\.send\s*\(/,
+        line => `绕过唯一推送出口：${line.slice(0, 80)}`,
+      )),
+  },
+  {
+    id: 'B1b:ipc-registration-in-controller',
     status: 'pending',
     enforcedAt: 'Phase 6（控制层表驱动）',
     description: 'ipcMain 与通道字面量只允许出现在 electron/controller/',
@@ -264,12 +282,11 @@ const layerRules: Rule[] = [
   },
   {
     id: 'B4:common-leaf',
-    status: 'pending',
-    enforcedAt: 'Phase 4（组装根）',
+    status: 'enforced',
     description: 'electron/common/ 是叶子，不得依赖其他后端分层',
     check: files => backendSources(files, 'electron/common/').flatMap(file => matchLines(
       file,
-      /from\s+['"](?:\.\.?\/)*(?:controller|service|data|domain|runtime|pi|tasks|auth)\//,
+      /from\s+['"](?:\.\.?\/)*(?:bootstrap|controller|service|data|domain|runtime|pi|tasks|auth)\//,
       line => `common 依赖了上层：${line.slice(0, 80)}`,
     )),
   },

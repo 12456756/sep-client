@@ -1,4 +1,3 @@
-import type { BrowserWindow } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -27,6 +26,7 @@ import {
 } from '../domain/task-state-machine'
 import { describeError } from '../common/redact'
 import { logger } from '../common/logger'
+import { silentTaskNotifier, type TaskNotifier } from './task-notifier'
 
 const log = logger.child('task-manager')
 
@@ -48,7 +48,7 @@ function cloneTasks(tasks: Map<string, Task>): Map<string, Task> {
 export class TaskManager {
   private readonly userDataDir: string
   private tasks = new Map<string, Task>()
-  private mainWindow: BrowserWindow | null = null
+  private readonly notifier: TaskNotifier
   private currentUser: TaskOwnerScope | null = null
   private initialized = false
   private initializing: Promise<void> | null = null
@@ -64,12 +64,12 @@ export class TaskManager {
 
   constructor(
     userDataDir: string,
-    mainWindow: BrowserWindow | null = null,
+    notifier: TaskNotifier | null = null,
     store: TaskStorePort = new TaskStore(userDataDir),
     runStore: TaskRunStorePort = new TaskRunStore(userDataDir),
   ) {
     this.userDataDir = userDataDir
-    this.mainWindow = mainWindow
+    this.notifier = notifier ?? silentTaskNotifier
     this.store = store
     this.runStore = runStore
   }
@@ -82,10 +82,6 @@ export class TaskManager {
       })
     }
     await this.initializing
-  }
-
-  setMainWindow(window: BrowserWindow | null): void {
-    this.mainWindow = window
   }
 
   async setCurrentUser(memberId: string, enterpriseId: string): Promise<void> {
@@ -444,14 +440,13 @@ export class TaskManager {
 
   private notifyTaskUpdate(taskId: string): void {
     const task = this.tasks.get(taskId)
-    if (task) this.mainWindow?.webContents.send('task:updated', cloneTask(task))
+    if (task) this.notifier.taskUpdated(cloneTask(task))
   }
 
   private notifyTaskListUpdate(): void {
-    if (!this.mainWindow) return
     const tasks = this.currentUser
       ? Array.from(this.tasks.values()).sort((a, b) => b.createdAt - a.createdAt).map(cloneTask)
       : []
-    this.mainWindow.webContents.send('task:list-updated', tasks)
+    this.notifier.taskListUpdated(tasks)
   }
 }

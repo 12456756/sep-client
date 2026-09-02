@@ -17,17 +17,38 @@ async function sourceFiles(directory: string): Promise<string[]> {
 
 describe('Pi SDK boundary', () => {
   it('loads the task coordinator lazily after the Electron compatibility layer', async () => {
-    const mainSource = await readFile(join(process.cwd(), 'electron', 'main.ts'), 'utf8')
-    // 这两个是 main.ts 里的源码字面量，不是本文件的 import——Phase 3 搬家后要跟着更新。
-    const compatibilityImport = mainSource.indexOf(`import './common/undici-polyfill'`)
-    const coordinatorImport = mainSource.indexOf(`await import('./runtime/task-execution-coordinator')`)
+    const root = process.cwd()
+    const mainSource = await readFile(join(root, 'electron', 'main.ts'), 'utf8')
+    const compositionSource = await readFile(join(root, 'electron', 'bootstrap', 'composition-root.ts'), 'utf8')
 
-    assert.ok(compatibilityImport >= 0, 'Electron compatibility layer must be loaded by main.ts')
-    assert.ok(coordinatorImport > compatibilityImport, 'Task coordinator must load after the compatibility layer')
-    assert.doesNotMatch(
-      mainSource,
-      /import\s+(?!type\b)[^;\n]*from\s+['"]\.\/runtime\/task-execution-coordinator['"]/,
-      'Any static coordinator import would load the pi SDK before main.ts can initialize compatibility support',
+    // 下面几个都是被检查文件里的源码字面量，不是本文件的 import——搬家后要跟着更新。
+    // main.ts 的第一个 import 必须是兼容层：它之后的任何静态 import 都可能拉进 pi SDK。
+    const firstImport = /^\s*import\s.*$/m.exec(mainSource)
+    assert.ok(firstImport, 'main.ts must import something')
+    assert.match(
+      firstImport[0],
+      /['"]\.\/common\/undici-polyfill['"]/,
+      'main.ts 的第一个 import 必须是 Electron 兼容层',
+    )
+
+    // 协调器只能通过动态 import 加载，且只有组装根这一处。
+    assert.match(
+      compositionSource,
+      /await import\('\.\.\/runtime\/task-execution-coordinator'\)/,
+      '协调器必须在组装根里用动态 import 加载',
+    )
+
+    const staticImporters: string[] = []
+    for (const file of await sourceFiles(join(root, 'electron'))) {
+      const source = await readFile(file, 'utf8')
+      if (/import\s+(?!type\b)[^;\n]*from\s+['"][^'"]*runtime\/task-execution-coordinator['"]/.test(source)) {
+        staticImporters.push(relative(root, file).replaceAll('\\', '/'))
+      }
+    }
+    assert.deepEqual(
+      staticImporters,
+      [],
+      'Any static coordinator import would load the pi SDK before the compatibility layer runs',
     )
   })
 
