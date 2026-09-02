@@ -18,6 +18,7 @@ import { TaskRunStore, type TaskRunRecord } from './tasks/task-run-store';
 import { getDeviceFingerprint } from './auth/device-fingerprint';
 import { login, getInstances, AuthApiError, type ClientInstance } from './auth/auth-api';
 import { AuthSessionManager, AuthenticationRequiredError } from './auth/auth-session-manager';
+import { InstanceDirectory } from './auth/instance-directory';
 import { config } from './infrastructure/config';
 import { settleWithTimeout } from './common/with-timeout';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
@@ -52,6 +53,8 @@ let activeInstances: ClientInstance[] = [];
 let subscriptionRuntime: SubscriptionRuntime | null = null
 let authenticationCleanupPromise: Promise<void> | null = null;
 const authSession = new AuthSessionManager();
+/** 平台订阅目录：TTL 缓存 + 单飞，避免一个 run 打多次 /client/subscriptions（C4）。 */
+const instanceDirectory = new InstanceDirectory(getInstances);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -170,8 +173,7 @@ function ensureSubscriptionRuntime(): SubscriptionRuntime {
 
 async function authorizeEmployee(subscriptionId: string) {
   const accessToken = await authSession.getValidAccessToken()
-  const instances = await getInstances(accessToken)
-  activeInstances = instances.filter(instance => instance.status === 'ACTIVE')
+  activeInstances = await instanceDirectory.list(accessToken)
   const instance = activeInstances.find(item => item.id === subscriptionId)
   const employee = resolveEmployee(subscriptionId)
   if (!instance || !employee || !instance.template.id || !instance.templateVersion) return null
@@ -196,6 +198,7 @@ function invalidateAuthentication(): void {
       const manager = await ensureTaskManager()
       manager.clearCurrentUser()
       activeInstances = []
+      instanceDirectory.invalidate()
       subscriptionRuntime?.invalidate()
       authSession.clear()
       mainWindow?.webContents.send(EVENT_CHANNELS.AUTH_REQUIRED)
@@ -398,10 +401,8 @@ ipcMain.handle(INVOKE_CHANNELS.AUTH_LOGOUT, async (): Promise<LogoutResult> => {
 
 ipcMain.handle(INVOKE_CHANNELS.AUTH_GET_INSTANCES, async () => {
   try {
-    const instances = await getInstances(await authSession.getValidAccessToken());
-
-// 仅保留 ACTIVE 状态的实例。
-    activeInstances = instances.filter(inst => inst.status === 'ACTIVE')
+    // 用户显式刷新：绕过 TTL，但仍与在途请求合并（C4）。只保留 ACTIVE 实例。
+    activeInstances = await instanceDirectory.refresh(await authSession.getValidAccessToken());
 
     return {
       success: true,

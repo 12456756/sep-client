@@ -61,6 +61,8 @@ interface QueuedRun {
   taskId: string
   runId: string
   subscriptionId: string
+  /** 入队前授权一次的结果，随条目携带（C4）。调度循环内只读，不再发网络请求。 */
+  employee: EmployeeRuntimeConfig
   prompt: string
   conversation: boolean
   resumeSessionFile?: string
@@ -146,7 +148,9 @@ export class TaskExecutionCoordinator {
     }
     const subscriptionId = task.subscriptionId
     if (!subscriptionId) throw new Error('Select a silicon employee before executing the task.')
-    if (!await this.authorizeEmployee(subscriptionId)) throw new Error('The selected employee is no longer available.')
+    // C4：授权（含平台往返）在入队前完成一次，结果随队列条目携带。
+    const employee = await this.authorizeEmployee(subscriptionId)
+    if (!employee) throw new Error('The selected employee is no longer available.')
 
     if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) {
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
@@ -156,7 +160,7 @@ export class TaskExecutionCoordinator {
     await this.taskManager.admitTask(taskId, runId)
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
-    this.queue.push({ taskId, runId, subscriptionId, prompt: task.prompt, conversation: options.conversation === true })
+    this.queue.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: options.conversation === true })
     void this.pump()
   }
 
@@ -187,7 +191,10 @@ export class TaskExecutionCoordinator {
     if (!task) throw new Error('Task not found.')
     if (!prompt.trim()) throw new Error('A message is required.')
     const employeeId = employeeOverride ?? task.subscriptionId
-    if (!employeeId || !await this.authorizeEmployee(employeeId)) throw new Error('The selected employee is no longer available.')
+    if (!employeeId) throw new Error('The selected employee is no longer available.')
+    // C4：与 executeTask 一致，授权在入队前完成一次。
+    const employee = await this.authorizeEmployee(employeeId)
+    if (!employee) throw new Error('The selected employee is no longer available.')
     const scope = this.taskManager.getCurrentUserScope()
     if (!scope || !this.taskRunStore) throw new Error('Conversation storage is unavailable.')
     const contextStore = this.conversationStore(scope, taskId)
@@ -216,7 +223,7 @@ export class TaskExecutionCoordinator {
     await this.taskManager.admitTask(taskId, runId)
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
-    this.queue.push({ taskId, runId, subscriptionId: employeeId, prompt: prompt.trim(), conversation: true, resumeSessionFile, workerPrompt, degradedRecovery })
+    this.queue.push({ taskId, runId, subscriptionId: employeeId, employee, prompt: prompt.trim(), conversation: true, resumeSessionFile, workerPrompt, degradedRecovery })
     void this.pump()
   }
 
@@ -324,8 +331,9 @@ export class TaskExecutionCoordinator {
             }
             continue
           }
-          const employee = await this.authorizeEmployee(queued.subscriptionId)
-          if (!employee) {
+          // C4：调度循环内禁止任何网络调用。授权已在入队前完成，配置随条目携带；
+          // 这里只用同步快照做一次存活性检查——一次慢的平台请求不该拖住全局准入。
+          if (!this.resolveEmployee(queued.subscriptionId)) {
             if (!this.dequeue(queued.runId)) continue
             console.warn('[TaskExecutionCoordinator] dropped queued run', {
               taskId: queued.taskId,
@@ -342,7 +350,7 @@ export class TaskExecutionCoordinator {
             releaseWorkspace()
             continue
           }
-          void this.startRun(queued, task, employee, releaseWorkspace)
+          void this.startRun(queued, task, releaseWorkspace)
         }
       } while (this.pumpRequested)
     } finally {
@@ -386,12 +394,12 @@ export class TaskExecutionCoordinator {
   private async startRun(
     queued: QueuedRun,
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
-    employee: EmployeeRuntimeConfig,
     releaseWorkspace: () => void,
   ): Promise<void> {
     const taskId = queued.taskId
     const runId = queued.runId
     const subscriptionId = queued.subscriptionId
+    const employee = queued.employee
     const scope = this.taskManager.getCurrentUserScope()
     // C2：锁的获取与释放必须在同一个词法块内。getPaths 会对非法 taskId/runId 抛
     // TaskScopeError，createWorker 构造 PiTaskWorker 也可能抛；这些步骤此前在 try 之外，
@@ -473,7 +481,7 @@ export class TaskExecutionCoordinator {
       await worker.run(queued.workerPrompt ?? queued.prompt)
       await (this.eventChains.get(taskId) ?? Promise.resolve())
       if (this.activeByTask.get(taskId) !== active) return
-      await this.finalizeRun(active, queued, employee, scope, runCreated)
+      await this.finalizeRun(active, queued, scope, runCreated)
       return
     } catch (error) {
       console.error('[TaskExecutionCoordinator] run failed', {
@@ -486,7 +494,7 @@ export class TaskExecutionCoordinator {
         error: error instanceof Error ? `${error.name}: ${error.message}` : String(error as unknown),
       })
       if (active) {
-        await this.finalizeRun(active, queued, employee, scope, runCreated, error)
+        await this.finalizeRun(active, queued, scope, runCreated, error)
       } else {
         // 建仓阶段就失败：既没有 worker 也没有 run 记录，只把任务本身结算掉。
         await this.taskManager
@@ -519,11 +527,11 @@ export class TaskExecutionCoordinator {
   private async finalizeRun(
     active: ActiveRun,
     queued: QueuedRun,
-    employee: EmployeeRuntimeConfig,
     scope: { memberId: string; enterpriseId: string } | null,
     runCreated: boolean,
     failure?: unknown,
   ): Promise<void> {
+    const employee = queued.employee
     const outcome = active.control === 'cancel'
       ? 'cancelled'
       : active.control === 'interrupt'

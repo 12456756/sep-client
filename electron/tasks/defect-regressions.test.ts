@@ -37,25 +37,36 @@ async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 
 }
 
 /**
- * 只在指定 subscriptionId 的第 N 次授权调用上挂起。
- * `executeTask` 与 `pump()` 各调一次 authorizeEmployee，靠序号就能精确停在 pump 里。
+ * 在 pump() 内部的 getTask 调用上挂起。
+ *
+ * C4 之后 pump() 里已经没有网络调用，唯一还能停住它的挂起点就是 getTask。按调用
+ * 次数计数会随实现漂移（executeTask / admitTask / updateTaskStatus 都会调 getTask），
+ * 所以直接认调用栈：只在调用方是 pump 时挂起。精确，且不会因为别处多调一次就失效。
  */
-function suspendOnNthAuthorization(subscriptionId: string, nth: number) {
-  let seen = 0
-  let release: (() => void) | null = null
-  return {
-    get suspended(): boolean { return release !== null },
-    release: () => {
-      const resume = release
-      release = null
-      resume?.()
-    },
-    authorize: async (id: string): Promise<EmployeeRuntimeConfig | null> => {
-      if (id === subscriptionId && ++seen === nth) {
-        await new Promise<void>(resolve => { release = resolve })
-      }
-      return EMPLOYEES[id] ?? null
-    },
+class GatedTaskManager extends TaskManager {
+  private targetTaskId: string | null = null
+  private resume: (() => void) | null = null
+
+  suspendPumpOn(taskId: string): void {
+    this.targetTaskId = taskId
+  }
+
+  get suspended(): boolean {
+    return this.resume !== null
+  }
+
+  release(): void {
+    const resume = this.resume
+    this.resume = null
+    resume?.()
+  }
+
+  override async getTask(taskId: string): ReturnType<TaskManager['getTask']> {
+    if (taskId === this.targetTaskId && new Error().stack?.includes('.pump')) {
+      this.targetTaskId = null
+      await new Promise<void>(resolve => { this.resume = resolve })
+    }
+    return super.getTask(taskId)
   }
 }
 
@@ -88,7 +99,7 @@ afterEach(async () => {
 describe('C1 — pump() 按下标 splice 队列会误删无关条目', () => {
   it('starts a queued run exactly once when an earlier queue entry is cancelled mid-pump', async () => {
     const userData = await makeUserDataDir()
-    const manager = new TaskManager(userData)
+    const manager = new GatedTaskManager(userData)
     await manager.initialize()
     await manager.setCurrentUser('member-a', 'enterprise-a')
 
@@ -99,8 +110,6 @@ describe('C1 — pump() 按下标 splice 队列会误删无关条目', () => {
 
     const started: string[] = []
     const workers = makeWorkerFactory(started)
-    // 第 1 次 employee-v 授权来自 executeTask，第 2 次来自 pump——停在后者。
-    const gate = suspendOnNthAuthorization('employee-v', 2)
     const coordinator = new TaskExecutionCoordinator({
       taskManager: manager,
       taskRunStore: new TaskRunStore(userData),
@@ -109,7 +118,6 @@ describe('C1 — pump() 按下标 splice 队列会误删无关条目', () => {
       onEvent: () => {},
       onApprovalRequest: () => {},
       resolveEmployee: id => EMPLOYEES[id] ?? null,
-      authorizeEmployee: gate.authorize,
       createWorker: options => ({
         run: workers.create(options.context.taskId),
         async abort() { workers.releaseTask(options.context.taskId) },
@@ -126,29 +134,33 @@ describe('C1 — pump() 按下标 splice 队列会误删无关条目', () => {
     await new Promise(resolve => setTimeout(resolve, 40))
     assert.equal(started.length, 1, 'blocked 不该拿到锁')
 
-    // victim 入队排在 blocked 之后；pump 停在 victim 的授权挂起点（下标 1）。
-    await coordinator.executeTask(victim.id)
-    await waitFor(() => gate.suspended)
+    // victim 入队排在 blocked 之后；pump 停在 victim 的 getTask 上（下标 1）。
+    manager.suspendPumpOn(victim.id)
+    try {
+      await coordinator.executeTask(victim.id)
+      await waitFor(() => manager.suspended, 2_000)
 
-    // pump 挂起期间移除队首：修复前 splice(1) 打偏，victim 启动后仍留在队列里。
-    await coordinator.cancelTask(blocked.id)
-    gate.release()
-    await waitFor(() => started.includes(victim.id))
+      // pump 挂起期间移除队首：修复前 splice(1) 打偏，victim 启动后仍留在队列里。
+      await coordinator.cancelTask(blocked.id)
+      manager.release()
+      await waitFor(() => started.includes(victim.id))
 
-    // 只结束 holder，触发下一轮 pump。若 victim 仍在队列里，它会被二次启动
-    // ——WorkspaceLockManager.acquire 对同一 runId 不判冲突，拦不住。
-    workers.releaseTask(holder.id)
-    await waitFor(async () => (await manager.getTask(holder.id))?.activeRunId === null)
-    await new Promise(resolve => setTimeout(resolve, 120))
+      // 只结束 holder，触发下一轮 pump。若 victim 仍在队列里，它会被二次启动
+      // ——WorkspaceLockManager.acquire 对同一 runId 不判冲突，拦不住。
+      workers.releaseTask(holder.id)
+      await waitFor(async () => (await manager.getTask(holder.id))?.activeRunId === null)
+      await new Promise(resolve => setTimeout(resolve, 120))
 
-    const victimStarts = started.filter(id => id === victim.id).length
-    assert.equal(victimStarts, 1, `victim 被启动 ${victimStarts} 次，队列条目寻址打偏`)
+      const victimStarts = started.filter(id => id === victim.id).length
+      assert.equal(victimStarts, 1, `victim 被启动 ${victimStarts} 次，队列条目寻址打偏`)
 
-    const cancelled = await manager.getTask(blocked.id)
-    assert.equal(cancelled?.status, TaskStatus.PENDING)
-    assert.equal(cancelled?.activeRunId, null)
-
-    workers.releaseAll()
+      const cancelled = await manager.getTask(blocked.id)
+      assert.equal(cancelled?.status, TaskStatus.PENDING)
+      assert.equal(cancelled?.activeRunId, null)
+    } finally {
+      manager.release()
+      workers.releaseAll()
+    }
     await waitFor(async () => (await manager.getAllTasks()).every(task => task.activeRunId === null))
   })
 })
@@ -200,5 +212,72 @@ describe('C2 — 锁获取与 try/finally 之间的裸露区会永久泄漏工�
 
     workers.releaseAll()
     await waitFor(async () => (await manager.getTask(followUp.id))?.status === TaskStatus.COMPLETED)
+  })
+})
+
+describe('C4 — authorizeEmployee 在调度循环内发网络请求', () => {
+  it('authorizes once per run at enqueue time and never inside pump', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+
+    const shared = join(userData, 'shared-workspace')
+    const holder = await manager.createTask('holder', 'a', shared, 'employee-a')
+    const queued = await manager.createTask('queued', 'b', shared, 'employee-a')
+
+    const authorizations: string[] = []
+    const skillPaths = [join(userData, 'runtime', 'skills', 'demo')]
+    const contexts: Array<{ taskId: string; additionalSkillPaths?: string[] }> = []
+    const started: string[] = []
+    const workers = makeWorkerFactory(started)
+    const coordinator = new TaskExecutionCoordinator({
+      taskManager: manager,
+      taskRunStore: new TaskRunStore(userData),
+      getRefreshToken: () => 'refresh-token',
+      onAuthenticationRequired: () => {},
+      onEvent: () => {},
+      onApprovalRequest: () => {},
+      // 同步快照不带 additionalSkillPaths，正如 main.ts 里的 resolveEmployee。
+      resolveEmployee: id => EMPLOYEES[id] ?? null,
+      // 只有授权（含平台往返）才知道技能包路径。
+      authorizeEmployee: async id => {
+        authorizations.push(id)
+        const employee = EMPLOYEES[id]
+        return employee ? { ...employee, additionalSkillPaths: skillPaths } : null
+      },
+      createWorker: options => {
+        contexts.push({
+          taskId: options.context.taskId,
+          additionalSkillPaths: options.context.additionalSkillPaths,
+        })
+        return {
+          run: workers.create(options.context.taskId),
+          async abort() { workers.releaseTask(options.context.taskId) },
+          async dispose() {},
+        }
+      },
+    })
+
+    await coordinator.executeTask(holder.id)
+    await waitFor(() => started.length === 1)
+    // queued 会因锁冲突被 pump 反复看到；修复前每一轮都要打一次平台。
+    await coordinator.executeTask(queued.id)
+    await new Promise(resolve => setTimeout(resolve, 60))
+    workers.releaseTask(holder.id)
+    await waitFor(() => started.includes(queued.id))
+    workers.releaseAll()
+    await waitFor(async () => (await manager.getAllTasks()).every(task => task.activeRunId === null))
+
+    assert.deepEqual(
+      authorizations,
+      ['employee-a', 'employee-a'],
+      `每个 run 只应授权一次，实际 ${authorizations.length} 次`,
+    )
+    // 入队前授权拿到的配置必须随条目走到 worker，否则技能包路径在排队后就丢了。
+    assert.equal(contexts.length, 2)
+    for (const context of contexts) {
+      assert.deepEqual(context.additionalSkillPaths, skillPaths, `${context.taskId} 丢了技能包路径`)
+    }
   })
 })
