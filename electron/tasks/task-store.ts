@@ -11,6 +11,10 @@ import {
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { TaskStatus, type ClientTask, type ClientTaskLog } from '../../src/shared/types'
+import { describeError } from '../common/redact'
+import { logger } from '../common/logger'
+
+const log = logger.child('task-store')
 
 export interface TaskOwnerScope {
   memberId: string
@@ -299,7 +303,7 @@ export class TaskStore implements TaskStorePort {
     try {
       await rm(legacyFile, { force: true })
     } catch (error) {
-      console.warn('[TaskStore] Failed to remove deprecated task history:', error instanceof Error ? error.name : 'unknown')
+      log.warn('failed to remove deprecated task history', { cause: describeError(error) })
     }
   }
 

@@ -285,8 +285,7 @@ const CONSOLE_ALLOWLIST = new Set([
 const loggingRules: Rule[] = [
   {
     id: 'log:no-bare-console',
-    status: 'pending',
-    enforcedAt: 'Phase 2（日志模块落地）',
+    status: 'enforced',
     description: '后端禁止裸 console.*，统一走 common/logger.ts',
     check: files => backendSources(files, 'electron/')
       .filter(file => !CONSOLE_ALLOWLIST.has(file.path))

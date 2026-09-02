@@ -3,6 +3,9 @@ import { InstanceTokenManager } from '../auth/instance-token-manager'
 import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 import { PiCodingAgentAdapter } from './sdk'
 import { SharedPiSessionAdapter } from './shared-session-adapter'
+import { logger } from '../common/logger'
+
+const log = logger.child('pi-task-worker')
 
 export function createDefaultSharedPiSessionAdapter(): SharedPiSessionAdapter {
   return new SharedPiSessionAdapter(new PiCodingAgentAdapter())
@@ -77,12 +80,12 @@ export class PiTaskWorker {
       subscriptionId: this.context.subscriptionId,
       modelId: this.context.modelId,
     }
-    console.info('[PiTaskWorker] run started', logContext)
+    log.info('run started', logContext)
     let session: PiAgentSession
     try {
       await this.tokenManager.initialize(this.context.subscriptionId)
       stage = 'session-create'
-      console.error('[PiTaskWorker] creating runtime session', {
+      log.info('creating runtime session', {
         runtime: this.runtime.constructor?.name ?? 'unknown',
       })
       const sessionConfig: PiAgentSessionConfig = {
@@ -110,7 +113,7 @@ export class PiTaskWorker {
         ? await this.sessionAdapter.open(sessionConfig)
         : await this.runtime.createSession(sessionConfig)
     } catch (error) {
-      console.error('[PiTaskWorker] run setup failed', {
+      log.error('run setup failed', {
         ...logContext,
         stage,
         error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -142,9 +145,9 @@ export class PiTaskWorker {
       await this.eventChain
       stage = 'agent-result'
       if (this.finalFailure) throw new Error(this.finalFailure)
-      console.info('[PiTaskWorker] run completed', logContext)
+      log.info('run completed', logContext)
     } catch (error) {
-      console.error('[PiTaskWorker] run failed', {
+      log.error('run failed', {
         ...logContext,
         stage,
         error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),

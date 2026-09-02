@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { ToolApprovalResponse } from '../../src/shared/ipc'
+import { logger } from '../common/logger'
+
+const log = logger.child('approval-broker')
 
 interface PendingApproval {
   request: ToolAuthorizationRequest
@@ -56,7 +59,7 @@ export class ApprovalBroker {
    */
   respond(response: ToolApprovalResponse): boolean {
     if (!response.requestId) {
-      console.warn('[ApprovalBroker] rejected approval response without requestId', {
+      log.warn('rejected approval response without requestId', {
         pending: this.pending.size,
         approved: response.approved,
       })
@@ -64,7 +67,7 @@ export class ApprovalBroker {
     }
     if (!this.pending.has(response.requestId)) {
       // 多半是超时自动拒绝之后用户才点的按钮。不能追认，只记一笔。
-      console.warn('[ApprovalBroker] approval response for an unknown request', {
+      log.warn('approval response for an unknown request', {
         pending: this.pending.size,
         approved: response.approved,
       })

@@ -1,5 +1,9 @@
 import { AuthApiError, getInstanceToken } from './auth-api';
 import { config } from '../infrastructure/config';
+import { describeError } from '../common/redact'
+import { logger } from '../common/logger'
+
+const log = logger.child('instance-token-manager')
 
 const DEFAULT_TOKEN_TTL_SECONDS = 15 * 60;
 const RETRY_DELAY_MS = 5_000;
@@ -125,7 +129,7 @@ export class InstanceTokenManager {
     this.refreshTimer = setTimeout(() => {
       if (this.generation !== generation || this.subscriptionId !== subscriptionId) return;
       void this.refreshNow().catch((error: unknown) => {
-        if (!this.isAbort(error)) console.error('[token-manager] automatic refresh failed:', error);
+        if (!this.isAbort(error)) log.error('automatic refresh failed', { cause: describeError(error) });
       });
     }, delay);
   }
@@ -137,7 +141,7 @@ export class InstanceTokenManager {
     this.refreshTimer = setTimeout(() => {
       if (this.generation !== generation || this.subscriptionId !== subscriptionId) return;
       void this.refreshNow().catch((error: unknown) => {
-        if (!this.isAbort(error)) console.error('[token-manager] refresh retry failed:', error);
+        if (!this.isAbort(error)) log.error('refresh retry failed', { cause: describeError(error) });
       });
     }, Math.min(RETRY_DELAY_MS, remainingLifetime));
   }

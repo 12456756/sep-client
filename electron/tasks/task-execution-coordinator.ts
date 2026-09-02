@@ -9,6 +9,9 @@ import { WorkspaceLockManager } from './workspace-lock-manager'
 import { ConversationContextStore, type ConversationMessage } from './domain/conversation-context'
 import type { SharedPiSessionAdapter } from '../pi/shared-session-adapter'
 import { ConversationRecoveryError } from './conversation-recovery-error'
+import { logger } from '../common/logger'
+
+const log = logger.child('task-execution-coordinator')
 
 const SIDE_EFFECT_TOOLS = new Set(['bash', 'write', 'edit'])
 
@@ -323,7 +326,7 @@ export class TaskExecutionCoordinator {
           const task = await this.taskManager.getTask(queued.taskId)
           if (!task || task.activeRunId !== queued.runId) {
             if (this.dequeue(queued.runId)) {
-              console.warn('[TaskExecutionCoordinator] dropped queued run', {
+              log.warn('dropped queued run', {
                 taskId: queued.taskId,
                 runId: queued.runId,
                 reason: task ? 'run_no_longer_admitted' : 'task_missing',
@@ -335,7 +338,7 @@ export class TaskExecutionCoordinator {
           // 这里只用同步快照做一次存活性检查——一次慢的平台请求不该拖住全局准入。
           if (!this.resolveEmployee(queued.subscriptionId)) {
             if (!this.dequeue(queued.runId)) continue
-            console.warn('[TaskExecutionCoordinator] dropped queued run', {
+            log.warn('dropped queued run', {
               taskId: queued.taskId,
               runId: queued.runId,
               reason: 'employee_unavailable',
@@ -484,7 +487,7 @@ export class TaskExecutionCoordinator {
       await this.finalizeRun(active, queued, scope, runCreated)
       return
     } catch (error) {
-      console.error('[TaskExecutionCoordinator] run failed', {
+      log.error('run failed', {
         taskId,
         runId,
         subscriptionId,
@@ -522,7 +525,7 @@ export class TaskExecutionCoordinator {
     // 不接就是一条未处理拒绝；但错误本身要记下来，事件落盘失败此前完全无痕。
     void chain
       .catch(error => {
-        console.error('[TaskExecutionCoordinator] failed to persist task event', {
+        log.error('failed to persist task event', {
           taskId: event.taskId,
           runId: event.runId,
           type: event.type,
@@ -548,7 +551,7 @@ export class TaskExecutionCoordinator {
       if (!chain) return
       await chain.catch(() => undefined)
     }
-    console.warn('[TaskExecutionCoordinator] event chain did not drain', { taskId })
+    log.warn('event chain did not drain', { taskId })
   }
 
   private async finalizeRun(
@@ -687,7 +690,7 @@ export class TaskExecutionCoordinator {
     const runIds = this.queue.filter(entry => entry.taskId === taskId).map(entry => entry.runId)
     const removed = runIds.filter(runId => this.dequeue(runId))
     if (removed.length > 0) {
-      console.warn('[TaskExecutionCoordinator] dropped queued run', {
+      log.warn('dropped queued run', {
         taskId,
         runId: removed.join(','),
         reason: 'task_paused_or_cancelled',

@@ -3,6 +3,7 @@ import type { FileHandle } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ClientTaskMessage, TaskExecutionEvent } from '../../src/shared/types'
+import { redactOptionalText, redactValue } from '../common/redact'
 import {
   TaskPersistenceError,
   TaskScopeError,
@@ -87,31 +88,8 @@ export interface TaskRunStorePort {
 
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/
 
-function sanitizeError(error: string | undefined): string | null {
-  if (!error) return null
-  const redacted = error
-    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
-    .replace(/([?&](?:token|password|secret|api[_-]?key)=)[^&\s]+/gi, '$1[redacted]')
-  return redacted.length > 8_192 ? `${redacted.slice(0, 8_192)}...[truncated]` : redacted
-}
-
-const SENSITIVE_KEY = /authorization|cookie|password|secret|token|api[-_]?key|credential/i
-function sanitizeValue(value: unknown, depth = 0, key = ''): unknown {
-  if (SENSITIVE_KEY.test(key)) return '[redacted]'
-  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
-  if (typeof value === 'string') return sanitizeError(value) ?? ''
-  if (!value || typeof value !== 'object' || depth >= 5) return depth >= 5 ? '[max-depth]' : undefined
-  if (Array.isArray(value)) return value.slice(0, 50).map(item => sanitizeValue(item, depth + 1))
-  const output: Record<string, unknown> = {}
-  for (const [entryKey, entryValue] of Object.entries(value).slice(0, 50)) {
-    const item = sanitizeValue(entryValue, depth + 1, entryKey)
-    if (item !== undefined) output[entryKey] = item
-  }
-  return output
-}
-
 function sanitizeEvent(event: TaskExecutionEvent): TaskExecutionEvent {
-  return { ...event, data: sanitizeValue(event.data) }
+  return { ...event, data: redactValue(event.data) }
 }
 
 function assertSafeId(value: string, name: string): void {
@@ -347,7 +325,7 @@ export class TaskRunStore implements TaskRunStorePort {
         ...record,
         outcome,
         endedAt: outcome === 'running' ? null : Date.now(),
-        error: sanitizeError(error),
+        error: redactOptionalText(error),
       }
     })
     // run 进入终态后不会再有事件，游标可以丢掉，避免长驻进程里无限积累。

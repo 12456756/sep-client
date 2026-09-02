@@ -76,7 +76,7 @@ describe('authentication invalidation', () => {
     )
     assert.match(
       mainSource,
-      /if \(authenticationInvalidating\(\)\) \{/,
+      /if \(authenticationInvalidating\(\)\)/,
       'requireScope 必须先判失效中',
     )
   })

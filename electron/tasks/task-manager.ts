@@ -25,6 +25,10 @@ import {
   isTaskExecutionStatus,
   isTaskTerminal,
 } from './domain/task-state-machine'
+import { describeError } from '../common/redact'
+import { logger } from '../common/logger'
+
+const log = logger.child('task-manager')
 
 export { TaskStatus } from '../../src/shared/types'
 export { TaskPersistenceError, TaskScopeError } from './task-store'
@@ -122,7 +126,7 @@ export class TaskManager {
       try {
         await this.runStore.markActiveRunsInterrupted(scope)
       } catch (error) {
-        console.warn('[TaskManager] Failed to recover persisted task runs:', error instanceof Error ? error.name : 'unknown')
+        log.warn('failed to recover persisted task runs', { cause: describeError(error) })
       }
 
       if (recovered) {
@@ -130,7 +134,7 @@ export class TaskManager {
           await this.store.save(scope, loadedTasks)
         } catch (error) {
           this.persistenceDegraded = true
-          console.warn('[TaskManager] Failed to persist recovered tasks:', error instanceof Error ? error.name : 'unknown')
+          log.warn('failed to persist recovered tasks', { cause: describeError(error) })
         }
       }
     })
@@ -396,7 +400,7 @@ export class TaskManager {
       // C8：排队期间 scope 可能已经切走。世代号变了就放弃这次写入——否则会把新 scope
       // 的内存快照写进旧 scope 的文件，并把新 scope 的内存状态覆盖回去。
       if (this.generation !== generation) {
-        console.warn('[TaskManager] discarded an in-flight commit from a previous scope', {
+        log.warn('discarded an in-flight commit from a previous scope', {
           committedGeneration: generation,
           currentGeneration: this.generation,
         })

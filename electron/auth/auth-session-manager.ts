@@ -1,3 +1,4 @@
+import { AuthenticationRequiredError } from './authentication-required-error'
 import { refreshAccessToken, type LoginResponse } from './auth-api'
 import {
   clearCredentials,
@@ -9,15 +10,6 @@ import {
 } from './credentials'
 
 const EXPIRY_SKEW_MS = 30_000
-
-export class AuthenticationRequiredError extends Error {
-  readonly statusCode = 401
-
-  constructor(message = 'Authentication required. Please sign in again.') {
-    super(message)
-    this.name = 'AuthenticationRequiredError'
-  }
-}
 
 export class AuthSessionManager {
   private accessToken: string | null = null

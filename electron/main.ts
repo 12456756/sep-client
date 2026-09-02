@@ -12,26 +12,36 @@ import { app, BrowserWindow, ipcMain, safeStorage, dialog, Menu } from 'electron
 import { join } from 'node:path';
 import './infrastructure/undici-polyfill'; // Pi SDK 使用的网络兼容层。
 import type { TaskExecutionCoordinator } from './tasks/task-execution-coordinator';
-import { ConversationRecoveryError } from './tasks/conversation-recovery-error';
-import { TaskAdmissionError, TaskManager, TaskPersistenceError, TaskScopeError, InvalidTaskTransitionError } from './tasks/task-manager';
+import { TaskManager } from './tasks/task-manager';
 import { TaskRunStore, type TaskRunRecord } from './tasks/task-run-store';
 import { getDeviceFingerprint } from './auth/device-fingerprint';
 import { login, getInstances, AuthApiError, type ClientInstance } from './auth/auth-api';
-import { AuthSessionManager, AuthenticationRequiredError } from './auth/auth-session-manager';
+import { AuthSessionManager } from './auth/auth-session-manager';
+import { AuthenticationRequiredError } from './auth/authentication-required-error';
 import { InstanceDirectory } from './auth/instance-directory';
 import { config } from './infrastructure/config';
 import { settleWithTimeout } from './common/with-timeout';
+import { describeError } from './common/redact';
+import { logger } from './common/logger';
+
+const log = logger.child('main');
+import { authFailure, failure, type IpcFailure } from './errors/error-mapper';
+import {
+  installProcessHandlers,
+  reportAuthFailure,
+  reportFailure,
+  reportFatal,
+  setFatalPresenter,
+} from './errors/error-reporter';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
 import type {
-  AuthError,
-  AuthErrorCode,
   ForgetAccountResult,
   LoginResult,
   LogoutResult,
   PasswordAvailabilityResult,
   RememberedAccountsResult,
 } from '../src/shared/types';
-import { createWorkflowGraph, WorkflowGraphError } from './tasks/domain/workflow-graph';
+import { createWorkflowGraph } from './tasks/domain/workflow-graph';
 import { WorkflowStore } from './tasks/workflow-store';
 import { TaskMetadataStore } from './tasks/task-metadata-store';
 import { SubscriptionRuntime } from './runtime/subscription-runtime';
@@ -64,43 +74,6 @@ function normalizeEmail(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const email = value.trim().toLowerCase();
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) && email.length <= 254 ? email : null;
-}
-
-function authError(
-  code: AuthErrorCode,
-  message: string,
-  statusCode: number,
-  retryable = false,
-): AuthError {
-  return { code, message, statusCode, ...(retryable ? { retryable: true } : {}) };
-}
-
-function mapAuthError(error: unknown): AuthError {
-  if (error instanceof AuthenticationRequiredError) {
-    return authError('AUTH_REQUIRED', 'Please sign in again.', 401);
-  }
-  if (error instanceof AuthApiError) {
-    if (error.isNetworkError && error.statusCode === 0) {
-      return authError('NETWORK_ERROR', 'Network connection failed. Please try again.', 0, true);
-    }
-    if (error.statusCode === 401) {
-      return authError('INVALID_CREDENTIALS', 'Email or password is incorrect.', 401);
-    }
-    if (error.statusCode === 403) {
-      return authError('ACCOUNT_DISABLED', 'This account is not permitted to sign in.', 403);
-    }
-    if (error.statusCode === 429) {
-      return authError('RATE_LIMITED', 'Too many attempts. Please try again later.', 429, true);
-    }
-    if (error.statusCode >= 500) {
-      return authError('SERVICE_UNAVAILABLE', 'The service is temporarily unavailable.', error.statusCode, true);
-    }
-    return authError('INTERNAL_ERROR', 'The request could not be completed.', error.statusCode);
-  }
-  if (error instanceof Error && /safeStorage|secure storage|persist credentials/i.test(error.message)) {
-    return authError('STORAGE_UNAVAILABLE', 'System secure storage is unavailable.', 422);
-  }
-  return authError('INTERNAL_ERROR', 'The request could not be completed.', 0);
 }
 
 async function ensureTaskManager(): Promise<TaskManager> {
@@ -142,20 +115,6 @@ function toClientTaskRun(record: TaskRunRecord) {
     sessionId: record.sessionId,
     error: record.error,
   }
-}
-
-function taskError(error: unknown): { code: string; message: string } {
-  if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.statusCode === 401)) return { code: 'AUTH_REQUIRED', message: 'Please sign in again.' }
-  if (error instanceof AuthApiError && error.resource === 'package' && error.statusCode === 404) return { code: 'EMPLOYEE_PACKAGE_UNAVAILABLE', message: 'The selected employee package is not available. Ask an administrator to publish the subscribed version.' }
-  if (error instanceof AuthApiError && (error.statusCode === 403 || error.statusCode === 404)) return { code: 'AUTH_REQUIRED', message: 'The selected employee is no longer available.' }
-  if (error instanceof ConversationRecoveryError) return { code: error.code, message: error.message }
-  if (error instanceof TaskAdmissionError) return { code: 'INVALID_STATE', message: error.message }
-  // C9：状态机拒绝跃迁是"当前状态不允许"，不是内部故障。原来它落到最后一行的
-  // INTERNAL_ERROR，用户看到的错误类别是错的。
-  if (error instanceof InvalidTaskTransitionError) return { code: 'INVALID_STATE', message: error.message }
-  if (error instanceof TaskScopeError) return { code: 'AUTH_REQUIRED', message: error.message }
-  if (error instanceof TaskPersistenceError) return { code: 'PERSISTENCE_ERROR', message: 'Task history could not be saved.' }
-  return { code: 'INTERNAL_ERROR', message: 'The task operation could not be completed.' }
 }
 
 function resolveEmployee(subscriptionId: string) {
@@ -204,20 +163,18 @@ function invalidateAuthentication(): void {
       'authentication-cleanup-stop-all',
     )
     if (!stopped.ok) {
-      console.error('[main] failed to stop Pi during authentication cleanup', {
+      log.error('failed to stop Pi during authentication cleanup', {
         timedOut: stopped.timedOut,
         budgetMs: AUTH_CLEANUP_BUDGET_MS,
-        error: stopped.timedOut
-          ? undefined
-          : stopped.error instanceof Error ? stopped.error.name : 'unknown',
+        cause: stopped.timedOut ? undefined : describeError(stopped.error),
       })
     }
     try {
       const manager = await ensureTaskManager()
       manager.clearCurrentUser()
     } catch (error) {
-      console.error('[main] failed to clear task scope during authentication cleanup', {
-        error: error instanceof Error ? error.name : 'unknown',
+      log.error('failed to clear task scope during authentication cleanup', {
+        cause: describeError(error),
       })
     } finally {
       activeInstances = []
@@ -245,12 +202,11 @@ function authenticationInvalidating(): boolean {
  */
 function requireScope(manager: TaskManager):
   | { ok: true; scope: NonNullable<ReturnType<TaskManager['getCurrentUserScope']>> }
-  | { ok: false; error: { code: string; message: string } } {
-  if (authenticationInvalidating()) {
-    return { ok: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
-  }
+  | { ok: false; failure: IpcFailure } {
+  // 清理进行中时 scope 还没清掉但已经不可信，必须先拒（C7）。
+  if (authenticationInvalidating()) return { ok: false, failure: failure('AUTH_REQUIRED') }
   const scope = manager.getCurrentUserScope()
-  if (!scope) return { ok: false, error: { code: 'AUTH_REQUIRED', message: 'Please sign in again.' } }
+  if (!scope) return { ok: false, failure: failure('AUTH_REQUIRED') }
   return { ok: true, scope }
 }
 
@@ -258,7 +214,7 @@ async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
   if (taskCoordinator) return taskCoordinator
   if (taskCoordinatorInitialization) { await taskCoordinatorInitialization; return taskCoordinator! }
   taskCoordinatorInitialization = (async () => {
-    if (!safeStorage.isEncryptionAvailable()) console.warn('[main] safeStorage encryption NOT available on this platform')
+    if (!safeStorage.isEncryptionAvailable()) log.warn('safeStorage encryption is not available on this platform')
     const manager = await ensureTaskManager()
     // 将 Pi SDK 放在异步边界之后加载：其内置 undici 依赖的 Node API，
     // 只有先加载上面的兼容层后，Electron 33 才能提供。
@@ -308,19 +264,19 @@ function createWindow(): void {
 
   // 加载渲染进程。
   if (process.env['ELECTRON_RENDERER_URL']) {
-    console.log('[main] loading renderer from URL:', process.env['ELECTRON_RENDERER_URL']);
+    log.debug('loading renderer from dev server');
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']);
   } else {
-    console.log('[main] ELECTRON_RENDERER_URL not set, loading from file');
+    log.debug('loading renderer from bundled file');
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'));
   }
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-    console.error('[main] renderer failed to load:', errorCode, errorDescription);
+    log.error('renderer failed to load', { errorCode, errorDescription });
   });
 
   mainWindow.webContents.on('did-finish-load', () => {
-    console.log('[main] renderer loaded successfully');
+    log.info('renderer loaded');
     // 某些 Windows/Electron 组合在从 Vite 开发服务器加载渲染进程时，
     // 不会触发 ready-to-show。加载成功后不要让窗口一直隐藏。
     if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
@@ -336,7 +292,7 @@ function createWindow(): void {
     mainWindow = null;
   });
 
-  console.log('[main] window created');
+  log.info('main window created');
 }
 
 // 2. TaskExecutionCoordinator 和 Pi 运行时。
@@ -348,7 +304,7 @@ function createWindow(): void {
 ipcMain.handle(INVOKE_CHANNELS.AUTH_LOGIN, async (_event, input: unknown): Promise<LoginResult> => {
   try {
     if (!isRecord(input)) {
-      return { success: false, error: authError('INVALID_ARGUMENT', 'Invalid login request.', 400) };
+      return authFailure('INVALID_ARGUMENT', '登录请求参数不合法。');
     }
     const email = normalizeEmail(input.email);
     const rememberPassword = input.rememberPassword;
@@ -360,14 +316,14 @@ ipcMain.handle(INVOKE_CHANNELS.AUTH_LOGIN, async (_event, input: unknown): Promi
       (typeof input.password !== 'string' && !useSavedPassword) ||
       (useSavedPassword && typeof input.password !== 'undefined')
     ) {
-      return { success: false, error: authError('INVALID_ARGUMENT', 'Invalid login request.', 400) };
+      return authFailure('INVALID_ARGUMENT', '登录请求参数不合法。');
     }
     if (rememberPassword && !safeStorage.isEncryptionAvailable()) {
-      return { success: false, error: authError('STORAGE_UNAVAILABLE', 'System secure storage is unavailable.', 422) };
+      return authFailure('STORAGE_UNAVAILABLE');
     }
     const password = useSavedPassword ? getRememberedPassword(email) : input.password as string;
     if (!password) {
-      return { success: false, error: authError('INVALID_ARGUMENT', 'Please enter your password again.', 400) };
+      return authFailure('INVALID_ARGUMENT', '请重新输入密码。');
     }
 
     const response = await login({
@@ -383,7 +339,7 @@ ipcMain.handle(INVOKE_CHANNELS.AUTH_LOGIN, async (_event, input: unknown): Promi
       typeof response.user.email !== 'string' || !response.enterprise ||
       typeof response.enterprise.id !== 'string' || typeof response.enterprise.name !== 'string'
     ) {
-      return { success: false, error: authError('INTERNAL_ERROR', 'The service returned an invalid response.', 502, true) };
+      return authFailure('SERVICE_UNAVAILABLE', '服务返回了无法识别的响应。');
     }
 
     if (taskCoordinator) await taskCoordinator.stopAll()
@@ -405,7 +361,7 @@ ipcMain.handle(INVOKE_CHANNELS.AUTH_LOGIN, async (_event, input: unknown): Promi
   } catch (error) {
     authSession.clear();
     taskManager?.clearCurrentUser();
-    return { success: false, error: mapAuthError(error) };
+    return reportAuthFailure(INVOKE_CHANNELS.AUTH_LOGIN, error);
   }
 });
 
@@ -421,12 +377,12 @@ ipcMain.handle(INVOKE_CHANNELS.AUTH_GET_REMEMBERED_PASSWORD, async (_event, emai
 
 ipcMain.handle(INVOKE_CHANNELS.AUTH_FORGET_ACCOUNT, async (_event, email: unknown): Promise<ForgetAccountResult> => {
   const normalized = normalizeEmail(email);
-  if (!normalized) return { success: false, error: authError('INVALID_ARGUMENT', 'A valid email is required.', 400) };
+  if (!normalized) return authFailure('INVALID_ARGUMENT', '请输入有效的邮箱地址。');
   try {
     forgetRememberedAccount(normalized);
     return { success: true, data: null };
   } catch (error) {
-    return { success: false, error: mapAuthError(error) };
+    return reportAuthFailure(INVOKE_CHANNELS.AUTH_FORGET_ACCOUNT, error);
   }
 });
 
@@ -440,7 +396,7 @@ ipcMain.handle(INVOKE_CHANNELS.AUTH_LOGOUT, async (): Promise<LogoutResult> => {
     authSession.clear()
     return { success: true, data: null }
   } catch (error) {
-    return { success: false, error: mapAuthError(error) }
+    return reportAuthFailure(INVOKE_CHANNELS.AUTH_LOGOUT, error)
   }
 })
 
@@ -486,17 +442,17 @@ ipcMain.handle(INVOKE_CHANNELS.AUTH_GET_INSTANCES, async () => {
 ipcMain.handle(INVOKE_CHANNELS.TASK_CREATE, async (_event, data: unknown) => {
   try {
     if (!isRecord(data) || typeof data.title !== 'string' || !data.title.trim() || typeof data.prompt !== 'string' || !data.prompt.trim()) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'Invalid task request.' } }
+      return failure('INVALID_ARGUMENT', '任务请求参数不合法。')
     }
     if (typeof data.workDir !== 'undefined' && (typeof data.workDir !== 'string' || !data.workDir.trim())) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The workspace directory is invalid.' } }
+      return failure('INVALID_ARGUMENT', '工作目录不合法。')
     }
     if (typeof data.subscriptionId !== 'string') {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is invalid.' } }
+      return failure('INVALID_ARGUMENT', '所选硅基员工不合法。')
     }
     const subscriptionId = data.subscriptionId
     if (!await authorizeEmployee(subscriptionId)) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
+      return failure('INVALID_ARGUMENT')
     }
     const manager = await ensureTaskManager()
     const task = await manager.createTask(data.title.trim(), data.prompt.trim(), data.workDir?.trim(), subscriptionId)
@@ -504,7 +460,7 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_CREATE, async (_event, data: unknown) => {
   // 在 task:create 边界完成初始化，确保首轮运行被识别为对话任务，
   // 并使用任务级共享 Pi 会话。
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const scope = guard.scope
     await ensureTaskMetadataStore().save(scope, {
       version: 1,
@@ -516,7 +472,7 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_CREATE, async (_event, data: unknown) => {
     })
     return { success: true, task }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_CREATE, error, { authenticated: true })
   }
 })
 
@@ -528,38 +484,38 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_EXECUTE, async (_event, input: unknown) => {
         ? input.taskId
         : null
     if (!taskId) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     }
     const manager = await ensureTaskManager()
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const metadata = await ensureTaskMetadataStore().load(guard.scope, taskId)
     await (await ensureTaskCoordinator()).executeTask(taskId, { conversation: metadata?.kind === 'conversation' })
     return { success: true }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_EXECUTE, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_CONTINUE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.prompt !== 'string' || !input.prompt.trim()) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and message are required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务与消息内容。')
     }
     const validRecoveryModes = new Set(['strict', 'confirm_rebuild', 'auto_rebuild_from_task_history'])
     if (typeof input.recoveryMode !== 'undefined' && (typeof input.recoveryMode !== 'string' || !validRecoveryModes.has(input.recoveryMode))) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The recovery mode is invalid.' } }
+      return failure('INVALID_ARGUMENT', '会话恢复模式不合法。')
     }
     if (typeof input.confirmRecovery !== 'undefined' && typeof input.confirmRecovery !== 'boolean') {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The recovery confirmation is invalid.' } }
+      return failure('INVALID_ARGUMENT', '会话恢复确认参数不合法。')
     }
     const manager = await ensureTaskManager()
     const task = await manager.getTask(input.taskId)
     if (!task || !task.subscriptionId) {
-      return { success: false, error: { code: 'NOT_FOUND', message: 'Task or employee binding not found.' } }
+      return failure('NOT_FOUND', '未找到任务或其硅基员工绑定。')
     }
     if (!await authorizeEmployee(task.subscriptionId)) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
+      return failure('INVALID_ARGUMENT')
     }
     await (await ensureTaskCoordinator()).continueConversation(input.taskId, input.prompt, {
       mode: input.recoveryMode === 'strict' || input.recoveryMode === 'auto_rebuild_from_task_history' ? input.recoveryMode : 'confirm_rebuild',
@@ -567,22 +523,22 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_CONTINUE, async (_event, input: unknown) => 
     })
     return { success: true }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_CONTINUE, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.subscriptionId !== 'string') {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and employee are required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务与硅基员工。')
     }
     if (!await authorizeEmployee(input.subscriptionId)) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
+      return failure('INVALID_ARGUMENT')
     }
     await (await ensureTaskCoordinator()).switchConversationEmployee(input.taskId, input.subscriptionId)
     const manager = await ensureTaskManager()
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const metadata = await ensureTaskMetadataStore().load(guard.scope, input.taskId)
     if (metadata?.kind === 'conversation') {
       metadata.currentSubscriptionId = input.subscriptionId
@@ -590,33 +546,32 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, async (_event, input: unkno
       await ensureTaskMetadataStore().save(guard.scope, metadata)
     }
     return { success: true }
-  } catch (error) { return { success: false, error: taskError(error) } }
+  } catch (error) { return reportFailure(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, error, { authenticated: true }) }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_VALIDATE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || !Array.isArray(input.nodes)) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'Workflow nodes are required.' } }
+      return failure('INVALID_ARGUMENT', '需要提供工作流节点。')
     }
     return { success: true, graph: createWorkflowGraph(input.nodes as never) }
   } catch (error) {
-    if (error instanceof WorkflowGraphError) return { success: false, error: { code: 'INVALID_ARGUMENT', message: error.message } }
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.WORKFLOW_VALIDATE, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_CREATE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.title !== 'string' || !input.title.trim() || !Array.isArray(input.nodes)) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A title and workflow nodes are required.' } }
+      return failure('INVALID_ARGUMENT', '需要提供标题与工作流节点。')
     }
     const graph = createWorkflowGraph(input.nodes as never)
     const employee = graph.nodes[0]?.subscriptionId
-    if (!employee || !await authorizeEmployee(employee)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The workflow employee is unavailable.' } }
+    if (!employee || !await authorizeEmployee(employee)) return failure('INVALID_ARGUMENT')
     const manager = await ensureTaskManager()
     const task = await manager.createTask(input.title.trim(), typeof input.prompt === 'string' ? input.prompt : input.title.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, employee)
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const scope = guard.scope
     await ensureWorkflowStore().save(scope, task.id, graph)
     await ensureTaskMetadataStore().save(scope, {
@@ -625,103 +580,102 @@ ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_CREATE, async (_event, input: unknown) =
     })
     return { success: true, task, graph }
   } catch (error) {
-    if (error instanceof WorkflowGraphError) return { success: false, error: { code: 'INVALID_ARGUMENT', message: error.message } }
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.WORKFLOW_CREATE, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.CONVERSATION_CREATE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.title !== 'string' || !input.title.trim() || typeof input.prompt !== 'string' || !input.prompt.trim() || typeof input.subscriptionId !== 'string') {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A title, prompt, and employee are required.' } }
+      return failure('INVALID_ARGUMENT', '需要提供标题、任务描述与硅基员工。')
     }
-    if (!await authorizeEmployee(input.subscriptionId)) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The selected employee is unavailable.' } }
+    if (!await authorizeEmployee(input.subscriptionId)) return failure('INVALID_ARGUMENT')
     const manager = await ensureTaskManager()
     const task = await manager.createTask(input.title.trim(), input.prompt.trim(), typeof input.workDir === 'string' ? input.workDir : undefined, input.subscriptionId)
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const scope = guard.scope
     await ensureTaskMetadataStore().save(scope, {
       version: 1, taskId: task.id, kind: 'conversation', participantSubscriptionIds: [input.subscriptionId],
       currentSubscriptionId: input.subscriptionId, createdAt: Date.now(),
     })
     return { success: true, task }
-  } catch (error) { return { success: false, error: taskError(error) } }
+  } catch (error) { return reportFailure(INVOKE_CHANNELS.CONVERSATION_CREATE, error, { authenticated: true }) }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_GET, async (_event, taskId: unknown) => {
   try {
-    if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+    if (typeof taskId !== 'string' || !taskId) return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     const manager = await ensureTaskManager()
-    if (!await manager.getTask(taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    if (!await manager.getTask(taskId)) return failure('NOT_FOUND', '未找到该任务。')
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const scope = guard.scope
     const graph = await ensureWorkflowStore().load(scope, taskId)
-    if (!graph) return { success: false, error: { code: 'NOT_FOUND', message: 'Workflow not found.' } }
+    if (!graph) return failure('NOT_FOUND', '未找到该工作流。')
     return { success: true, graph }
-  } catch (error) { return { success: false, error: taskError(error) } }
+  } catch (error) { return reportFailure(INVOKE_CHANNELS.WORKFLOW_GET, error, { authenticated: true }) }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_START, async (_event, taskId: unknown) => {
   try {
-    if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+    if (typeof taskId !== 'string' || !taskId) return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
-    if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    if (!task) return failure('NOT_FOUND', '未找到该任务。')
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
-    if (!await ensureWorkflowStore().load(guard.scope, taskId)) return { success: false, error: { code: 'INVALID_STATE', message: 'A valid workflow definition is required.' } }
+    if (!guard.ok) return guard.failure
+    if (!await ensureWorkflowStore().load(guard.scope, taskId)) return failure('INVALID_STATE', '需要有效的工作流定义。')
     await (await ensureTaskCoordinator()).executeTask(taskId)
     return { success: true }
-  } catch (error) { return { success: false, error: taskError(error) } }
+  } catch (error) { return reportFailure(INVOKE_CHANNELS.WORKFLOW_START, error, { authenticated: true }) }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_GET_MESSAGES, async (_event, taskId: unknown) => {
   try {
-    if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+    if (typeof taskId !== 'string' || !taskId) return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
-    if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    if (!task) return failure('NOT_FOUND', '未找到该任务。')
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const scope = guard.scope
     return { success: true, messages: await ensureTaskRunStore().getMessages(scope, taskId, task.prompt) }
-  } catch (error) { return { success: false, error: taskError(error) } }
+  } catch (error) { return reportFailure(INVOKE_CHANNELS.TASK_GET_MESSAGES, error, { authenticated: true }) }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_RETRY, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     }
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
-    if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    if (!task) return failure('NOT_FOUND', '未找到该任务。')
     if (!task.subscriptionId || !await authorizeEmployee(task.subscriptionId)) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'The task employee is unavailable.' } }
+      return failure('INVALID_ARGUMENT')
     }
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const metadata = await ensureTaskMetadataStore().load(guard.scope, taskId)
     await (await ensureTaskCoordinator()).retryTask(taskId, { conversation: metadata?.kind === 'conversation' })
     return { success: true }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_RETRY, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_GET, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     }
     const manager = await ensureTaskManager()
     const task = await manager.getTask(taskId)
-    if (!task) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    if (!task) return failure('NOT_FOUND', '未找到该任务。')
     return { success: true, task }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_GET, error, { authenticated: true })
   }
 })
 
@@ -730,97 +684,97 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_GET_ALL, async () => {
     const manager = await ensureTaskManager()
     return { success: true, tasks: await manager.getAllTasks() }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_GET_ALL, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_LIST_RUNS, async (_event, taskId: unknown) => {
   try {
-    if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+    if (typeof taskId !== 'string' || !taskId) return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     const manager = await ensureTaskManager()
-    if (!await manager.getTask(taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    if (!await manager.getTask(taskId)) return failure('NOT_FOUND', '未找到该任务。')
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const scope = guard.scope
     const runs = await ensureTaskRunStore().list(scope, taskId)
     return { success: true, runs: runs.map(toClientTaskRun) }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_LIST_RUNS, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_GET_RUN, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.runId !== 'string') {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and run ID are required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务与执行记录 ID。')
     }
     const manager = await ensureTaskManager()
-    if (!await manager.getTask(input.taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    if (!await manager.getTask(input.taskId)) return failure('NOT_FOUND', '未找到该任务。')
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const scope = guard.scope
     const run = await ensureTaskRunStore().get(scope, input.taskId, input.runId)
-    if (!run) return { success: false, error: { code: 'NOT_FOUND', message: 'Run not found.' } }
+    if (!run) return failure('NOT_FOUND', '未找到该执行记录。')
     return { success: true, run: toClientTaskRun(run) }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_GET_RUN, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_GET_TIMELINE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.runId !== 'string') {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and run ID are required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务与执行记录 ID。')
     }
     const manager = await ensureTaskManager()
-    if (!await manager.getTask(input.taskId)) return { success: false, error: { code: 'NOT_FOUND', message: 'Task not found.' } }
+    if (!await manager.getTask(input.taskId)) return failure('NOT_FOUND', '未找到该任务。')
     const guard = requireScope(manager)
-    if (!guard.ok) return { success: false, error: guard.error }
+    if (!guard.ok) return guard.failure
     const scope = guard.scope
     const run = await ensureTaskRunStore().get(scope, input.taskId, input.runId)
-    if (!run) return { success: false, error: { code: 'NOT_FOUND', message: 'Run not found.' } }
+    if (!run) return failure('NOT_FOUND', '未找到该执行记录。')
     return { success: true, events: await ensureTaskRunStore().getTimeline(scope, input.taskId, input.runId) }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_GET_TIMELINE, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_PAUSE, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     }
     await (await ensureTaskCoordinator()).pauseTask(taskId)
     return { success: true }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_PAUSE, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_CANCEL, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     }
     await (await ensureTaskCoordinator()).cancelTask(taskId)
     return { success: true }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_CANCEL, error, { authenticated: true })
   }
 })
 
 ipcMain.handle(INVOKE_CHANNELS.TASK_DELETE, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
-      return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
+      return failure('INVALID_ARGUMENT', '需要有效的任务 ID。')
     }
     const manager = await ensureTaskManager()
     if (!await manager.deleteTask(taskId)) {
-      return { success: false, error: { code: 'INVALID_STATE', message: 'Cannot delete active task.' } }
+      return failure('INVALID_STATE', '任务正在执行，无法删除。')
     }
     return { success: true }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_DELETE, error, { authenticated: true })
   }
 })
 
@@ -829,7 +783,7 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_GET_STATS, async () => {
     const manager = await ensureTaskManager()
     return { success: true, stats: await manager.getTaskStats() }
   } catch (error) {
-    return { success: false, error: taskError(error) }
+    return reportFailure(INVOKE_CHANNELS.TASK_GET_STATS, error, { authenticated: true })
   }
 })
 
@@ -837,7 +791,7 @@ ipcMain.on(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, (_event, response: unknown) => 
   if (!taskCoordinator || !isRecord(response)) return
   // 渲染进程送来的参数一律先校验。requestId 必填（C5）：缺了就不批，不做任何推断。
   if (typeof response['requestId'] !== 'string' || !response['requestId'] || typeof response['approved'] !== 'boolean') {
-    console.warn('[main] discarded malformed tool approval response')
+    log.warn('discarded malformed tool approval response')
     return
   }
   taskCoordinator.respondToApproval({
@@ -886,14 +840,17 @@ async function stopAllAndDispose(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  // 报错模块的两件兜底：进程级异常有痕迹，致命错误用户看得见（第 4.3 节）。
+  setFatalPresenter((title, message) => dialog.showErrorBox(title, message));
+  installProcessHandlers();
+  log.info('application ready', { version: app.getVersion(), platform: process.platform });
+
   // 必须 await：不 await 的话初始化失败会变成无人处理的 rejection，
   // 而窗口已经打开，用户看到的是一个"能打开但坏掉"的应用（C3）。
   try {
     await ensureTaskManager()
   } catch (error) {
-    console.error('[main] task manager initialization failed', {
-      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-    })
+    reportFatal('无法启动任务运行时', error, { stage: 'task-manager-init' })
   }
   // 任务协调器延迟到首次任务执行时初始化（SDK 加载边界，见 CLAUDE.md）。
   createWindow();
@@ -919,22 +876,20 @@ app.on('before-quit', event => {
   event.preventDefault()
   shuttingDown = true
   const startedAt = Date.now()
-  console.info('[main] shutdown started', { activeRuns: taskCoordinator ? 'unknown' : 0 })
+  log.info('shutdown started', { coordinatorLoaded: taskCoordinator !== null })
   void settleWithTimeout(stopAllAndDispose(), SHUTDOWN_BUDGET_MS, 'shutdown')
     .then(result => {
       if (result.ok) {
-        console.info('[main] shutdown complete', { elapsedMs: Date.now() - startedAt })
+        log.info('shutdown complete', { elapsedMs: Date.now() - startedAt })
         return
       }
       // 超时说明有 run 没收干净：SIDE_EFFECT_UNKNOWN 可能没落盘，
       // 下次启动只能靠 markActiveRunsInterrupted 兜底，精度更低。
-      console.error('[main] shutdown did not finish within budget', {
+      log.error('shutdown did not finish within budget', {
         elapsedMs: Date.now() - startedAt,
         budgetMs: SHUTDOWN_BUDGET_MS,
         timedOut: result.timedOut,
-        error: result.timedOut
-          ? undefined
-          : result.error instanceof Error ? `${result.error.name}: ${result.error.message}` : String(result.error),
+        cause: result.timedOut ? undefined : describeError(result.error),
       })
     })
     .finally(() => app.exit(0))
