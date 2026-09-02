@@ -12,8 +12,7 @@
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { InstanceDirectory } from '../common/platform/instance-directory'
-import { getInstances, type ClientInstance } from '../common/platform/platform-api'
-import { config } from '../common/config'
+import { getInstances } from '../common/platform/platform-api'
 import { lazyAsync, type LazyAsync } from '../common/lazy-async'
 import { logger } from '../common/logger'
 import { describeError } from '../common/redact'
@@ -21,13 +20,13 @@ import { settleWithTimeout } from '../common/with-timeout'
 import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
 import { WorkflowStore } from '../data/workflow-store'
-import { SubscriptionRuntime } from '../pi/sdk/subscription-resource-loader'
 // 必须是 import type：静态加载协调器会把 pi SDK 拉到兼容层之前，
 // Electron 33 上以 `markAsUncloneable is not a function` 崩在启动路径。
-import type { EmployeeRuntimeConfig, TaskExecutionCoordinator } from '../runtime/task-execution-coordinator'
+import type { TaskExecutionCoordinator } from '../runtime/task-execution-coordinator'
 import { TaskManager } from '../runtime/task-manager'
 import type { RendererPort } from '../runtime/task-notifier'
 import type { TaskOwnerScope } from '../data/task-store'
+import { EmployeeAccess } from './employee-access'
 
 const log = logger.child('composition-root')
 
@@ -41,90 +40,6 @@ export interface BackendOptions {
   renderer: RendererPort
   /** safeStorage 可用性。注入而非直接 import electron，组装根才能脱离 Electron 单测。 */
   isEncryptionAvailable?: () => boolean
-}
-
-/**
- * 员工目录快照 + 授权。收纳 main.ts 原来的模块级 `activeInstances`、
- * `resolveEmployee()`、`authorizeEmployee()` 与 `ensureSubscriptionRuntime()`，行为不变。
- *
- * Phase 5 会拆成 `service/employee-directory.ts`（TTL 缓存，唯一平台目录读取点）与
- * `service/employee-authorizer.ts`（纯函数，目录快照入参）。拆分的前置条件是先把
- * `SubscriptionRuntime` 反转成注入的端口——它在 `pi/sdk/` 下，而 B2 不允许
- * `service/` 直接依赖 `pi/`。
- */
-class EmployeeAccess {
-  private instances: ClientInstance[] = []
-  private readonly subscriptionRuntime: SubscriptionRuntime
-
-  constructor(
-    private readonly authSession: AuthSessionManager,
-    private readonly directory: InstanceDirectory,
-    runtimeDir: string,
-  ) {
-    // 构造函数不做 IO，所以不需要惰性单例：SubscriptionRuntime 只是记住根目录。
-    this.subscriptionRuntime = new SubscriptionRuntime(runtimeDir)
-  }
-
-  /** 当前目录快照。只读，不发请求。 */
-  snapshot(): ClientInstance[] {
-    return this.instances
-  }
-
-  /** 用户显式刷新：绕过 TTL，但仍与在途请求合并（C4）。只保留 ACTIVE 实例。 */
-  async refresh(): Promise<ClientInstance[]> {
-    this.instances = await this.directory.refresh(await this.authSession.getValidAccessToken())
-    return this.instances
-  }
-
-  /**
-   * 登录与登出：丢掉目录快照与技能包缓存。
-   *
-   * 注意它**没有**丢平台目录的 TTL 缓存——这是照搬 main.ts 今天的行为（登录/登出只清
-   * `activeInstances` 与 `subscriptionRuntime`），Phase 4 不在结构调整里夹带行为修正。
-   * 这个差异本身是个缺陷，紧随其后的 C10 提交会把两者合成一个入口。
-   */
-  reset(): void {
-    this.instances = []
-    this.subscriptionRuntime.invalidate()
-  }
-
-  /** 认证失效：连平台目录的 TTL 缓存一起丢。 */
-  clear(): void {
-    this.reset()
-    this.directory.invalidate()
-  }
-
-  /**
-   * 从快照解析运行配置。**禁止在这里发网络请求**——调度循环（`pump`）走的就是它，
-   * 一次慢请求会让所有任务的准入全部停摆（C4）。
-   */
-  resolve(subscriptionId: string): EmployeeRuntimeConfig | null {
-    const instance = this.instances.find(item => item.id === subscriptionId)
-    const modelId = instance?.allowedModels?.[0]
-    if (!instance || !modelId) return null
-    return { subscriptionId, modelId, gatewayUrl: config.SEP_GATEWAY_URL }
-  }
-
-  /**
-   * 入队前授权一次：刷目录、备好技能包。结果随队列条目携带，调度循环内不再重算（C4）。
-   * 返回值必须带 `additionalSkillPaths`——换成 `resolve()` 的结果会让排队过的 run
-   * 静默丢掉技能包路径。
-   */
-  async authorize(subscriptionId: string): Promise<EmployeeRuntimeConfig | null> {
-    const accessToken = await this.authSession.getValidAccessToken()
-    this.instances = await this.directory.list(accessToken)
-    const instance = this.instances.find(item => item.id === subscriptionId)
-    const employee = this.resolve(subscriptionId)
-    if (!instance || !employee || !instance.template.id || !instance.templateVersion) return null
-    const runtime = await this.subscriptionRuntime.prepare({
-      enterpriseId: this.authSession.getMeta()?.enterpriseId ?? '',
-      subscriptionId,
-      employeeId: instance.template.id,
-      templateVersion: instance.templateVersion,
-      accessToken,
-    })
-    return { ...employee, additionalSkillPaths: runtime.skillPaths }
-  }
 }
 
 /**
@@ -207,7 +122,7 @@ class BackendRuntime {
   async signOut(): Promise<void> {
     await this.stopAll()
     this.taskManager.clearCurrentUser()
-    this.employees.reset()
+    this.employees.clear()
     this.authSession.clear()
   }
 

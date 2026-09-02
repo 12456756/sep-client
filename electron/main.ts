@@ -137,7 +137,7 @@ function registerIpcHandlers(backend: Backend): void {
       await backend.stopAll();
       backend.authSession.setLogin(response);
       await backend.taskManager.setCurrentUser(response.user.id, response.enterprise.id);
-      backend.employees.reset();
+      backend.employees.clear();
       saveRememberedAccount(
         {
           email: response.user.email || email,
