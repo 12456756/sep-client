@@ -46,7 +46,7 @@ export default [
     },
   },
   {
-    files: ['electron/infrastructure/undici-polyfill.ts'],
+    files: ['electron/common/undici-polyfill.ts'],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
     },

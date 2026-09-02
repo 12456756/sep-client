@@ -278,7 +278,7 @@ const layerRules: Rule[] = [
 /** logger 自身与 undici 兼容层在 logger 可用之前运行，允许裸 console。 */
 const CONSOLE_ALLOWLIST = new Set([
   'electron/common/logger.ts',
-  'electron/infrastructure/undici-polyfill.ts',
+  'electron/common/undici-polyfill.ts',
   'scripts/check-boundaries.ts',
 ])
 

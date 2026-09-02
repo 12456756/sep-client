@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
 import { TaskManager } from './task-manager'
-import { TaskRunStore } from './task-run-store'
+import { TaskRunStore } from '../data/task-run-store'
 
 const temporaryDirectories: string[] = []
 

@@ -1,5 +1,5 @@
 /**
- * electron/auth/instance-directory.ts — 平台订阅目录的读取入口
+ * electron/common/platform/instance-directory.ts — 平台订阅目录的读取入口
  *
  * `GET /client/subscriptions` 此前每次授权都打一次，一个 run 至少 3 次往返
  * （IPC handler、coordinator.executeTask、pump 各一次）。这里加 TTL 缓存与单飞去重：
@@ -9,7 +9,7 @@
  * 失败不写缓存也不供陈旧数据，保持原有的失败语义：调用方照旧看到错误。
  * 方案第 2 章 C4；Phase 5 会正式落成 service/employee-directory.ts。
  */
-import type { ClientInstance } from './auth-api'
+import type { ClientInstance } from './platform-api'
 
 const DEFAULT_TTL_MS = 15_000
 

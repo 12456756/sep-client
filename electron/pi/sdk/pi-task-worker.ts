@@ -1,9 +1,9 @@
-import type { TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
-import { InstanceTokenManager } from '../auth/instance-token-manager'
+import type { TaskExecutionEvent, ToolAuthorizationRequest } from '../../../src/shared/types'
+import { InstanceTokenManager } from '../../common/platform/instance-token-manager'
 import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
-import { PiCodingAgentAdapter } from './sdk'
+import { PiCodingAgentAdapter } from './pi-coding-agent-adapter'
 import { SharedPiSessionAdapter } from './shared-session-adapter'
-import { logger } from '../common/logger'
+import { logger } from '../../common/logger'
 
 const log = logger.child('pi-task-worker')
 

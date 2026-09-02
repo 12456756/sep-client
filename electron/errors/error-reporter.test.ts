@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict'
 import { setLogSink, type LogRecord } from '../common/logger'
 import { appError } from './app-error'
 import { reportError, reportFailure, reportFatal, setFatalPresenter } from './error-reporter'
-import { TaskPersistenceError } from '../tasks/task-manager'
+import { TaskPersistenceError } from '../runtime/task-manager'
 
 const captured: LogRecord[] = []
 let restore: (() => void) | null = null

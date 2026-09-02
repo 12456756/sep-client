@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { getEmployeeSkills, getPackageInfo, type EmployeeSkill } from '../auth/auth-api'
-import { config } from '../infrastructure/config'
+import { getEmployeeSkills, getPackageInfo, type EmployeeSkill } from '../../common/platform/platform-api'
+import { config } from '../../common/config'
 
 export interface SubscriptionRuntimeInput {
   enterpriseId: string

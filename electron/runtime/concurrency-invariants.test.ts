@@ -13,11 +13,11 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
-import { ApprovalBroker } from '../pi/approval-broker'
+import { ApprovalBroker } from './approval-runtime'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
 import { TaskManager } from './task-manager'
-import { TaskRunStore } from './task-run-store'
-import { TaskStore, type TaskOwnerScope, type TaskStorePort } from './task-store'
+import { TaskRunStore } from '../data/task-run-store'
+import { TaskStore, type TaskOwnerScope, type TaskStorePort } from '../data/task-store'
 
 const SCOPE: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const EMPLOYEE: EmployeeRuntimeConfig = {

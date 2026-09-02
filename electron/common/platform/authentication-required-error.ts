@@ -1,5 +1,5 @@
 /**
- * electron/auth/authentication-required-error.ts
+ * electron/common/platform/authentication-required-error.ts
  *
  * 从 auth-session-manager.ts 里单独拆出来的纯错误类。原因很具体：
  * auth-session-manager 依赖 credentials.ts，后者 import electron，于是任何想识别这个

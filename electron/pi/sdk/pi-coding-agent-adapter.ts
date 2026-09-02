@@ -16,7 +16,7 @@ import type {
   PiAgentRuntime,
   PiAgentSession,
   PiAgentSessionConfig,
-} from '../pi-agent-runtime'
+} from './pi-agent-runtime'
 import { redactText, redactValue } from '../../common/redact'
 import {
   APPROVAL_TOOLS,

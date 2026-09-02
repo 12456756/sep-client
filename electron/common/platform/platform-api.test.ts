@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { getEmployeeSkills, getInstances, getPackageInfo } from './auth-api'
+import { getEmployeeSkills, getInstances, getPackageInfo } from './platform-api'
 
 const originalFetch = globalThis.fetch
 

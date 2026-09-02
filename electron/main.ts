@@ -10,16 +10,16 @@
 
 import { app, BrowserWindow, ipcMain, safeStorage, dialog, Menu } from 'electron';
 import { join } from 'node:path';
-import './infrastructure/undici-polyfill'; // Pi SDK 使用的网络兼容层。
-import type { TaskExecutionCoordinator } from './tasks/task-execution-coordinator';
-import { TaskManager } from './tasks/task-manager';
-import { TaskRunStore, type TaskRunRecord } from './tasks/task-run-store';
-import { getDeviceFingerprint } from './auth/device-fingerprint';
-import { login, getInstances, AuthApiError, type ClientInstance } from './auth/auth-api';
-import { AuthSessionManager } from './auth/auth-session-manager';
-import { AuthenticationRequiredError } from './auth/authentication-required-error';
-import { InstanceDirectory } from './auth/instance-directory';
-import { config } from './infrastructure/config';
+import './common/undici-polyfill'; // Pi SDK 使用的网络兼容层。
+import type { TaskExecutionCoordinator } from './runtime/task-execution-coordinator';
+import { TaskManager } from './runtime/task-manager';
+import { TaskRunStore, type TaskRunRecord } from './data/task-run-store';
+import { getDeviceFingerprint } from './common/platform/device-fingerprint';
+import { login, getInstances, AuthApiError, type ClientInstance } from './common/platform/platform-api';
+import { AuthSessionManager } from './common/platform/auth-session-manager';
+import { AuthenticationRequiredError } from './common/platform/authentication-required-error';
+import { InstanceDirectory } from './common/platform/instance-directory';
+import { config } from './common/config';
 import { settleWithTimeout } from './common/with-timeout';
 import { describeError } from './common/redact';
 import { logger } from './common/logger';
@@ -41,16 +41,16 @@ import type {
   PasswordAvailabilityResult,
   RememberedAccountsResult,
 } from '../src/shared/types';
-import { createWorkflowGraph } from './tasks/domain/workflow-graph';
-import { WorkflowStore } from './tasks/workflow-store';
-import { TaskMetadataStore } from './tasks/task-metadata-store';
-import { SubscriptionRuntime } from './runtime/subscription-runtime';
+import { createWorkflowGraph } from './domain/workflow-graph';
+import { WorkflowStore } from './data/workflow-store';
+import { TaskMetadataStore } from './data/task-metadata-store';
+import { SubscriptionRuntime } from './pi/sdk/subscription-resource-loader';
 import {
   forgetRememberedAccount,
   getRememberedPassword,
   listRememberedAccounts,
   saveRememberedAccount,
-} from './auth/credentials';
+} from './common/platform/credential-vault';
 
 let mainWindow: BrowserWindow | null = null;
 let taskCoordinator: TaskExecutionCoordinator | null = null;
@@ -218,7 +218,7 @@ async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
     const manager = await ensureTaskManager()
     // 将 Pi SDK 放在异步边界之后加载：其内置 undici 依赖的 Node API，
     // 只有先加载上面的兼容层后，Electron 33 才能提供。
-    const { TaskExecutionCoordinator } = await import('./tasks/task-execution-coordinator')
+    const { TaskExecutionCoordinator } = await import('./runtime/task-execution-coordinator')
     taskCoordinator = new TaskExecutionCoordinator({
       taskManager: manager,
       getRefreshToken: () => authSession.getRefreshToken(),

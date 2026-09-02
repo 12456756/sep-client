@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { InstanceDirectory } from './instance-directory'
-import type { ClientInstance } from './auth-api'
+import type { ClientInstance } from './platform-api'
 
 function instance(id: string, status: string): ClientInstance {
   return { id, status, template: { id: `${id}-template` }, templateVersion: '1.0.0', allowedModels: ['model-a'] } as unknown as ClientInstance

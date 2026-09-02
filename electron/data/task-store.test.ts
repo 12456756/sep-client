@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus, type ClientTask } from '../../src/shared/types'
 import { TaskPersistenceError, TaskScopeError, TaskStore } from './task-store'
-import { TaskAdmissionError, TaskManager } from './task-manager'
+import { TaskAdmissionError, TaskManager } from '../runtime/task-manager'
 
 const temporaryDirectories: string[] = []
 

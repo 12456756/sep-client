@@ -9,16 +9,16 @@
  * ConversationRecoveryError.code），所以本模块显式依赖那些类。方案第 4.2 节
  * 的安排就是"错误类留在原处、翻译集中一处"，代价即此。
  */
-import { AuthApiError } from '../auth/auth-api'
-import { AuthenticationRequiredError } from '../auth/authentication-required-error'
-import { ConversationRecoveryError } from '../tasks/conversation-recovery-error'
-import { WorkflowGraphError } from '../tasks/domain/workflow-graph'
+import { AuthApiError } from '../common/platform/platform-api'
+import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
+import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
+import { WorkflowGraphError } from '../domain/workflow-graph'
 import {
   InvalidTaskTransitionError,
   TaskAdmissionError,
   TaskPersistenceError,
   TaskScopeError,
-} from '../tasks/task-manager'
+} from '../runtime/task-manager'
 import { describeError } from '../common/redact'
 import type { AuthError } from '../../src/shared/types'
 import { AppError } from './app-error'

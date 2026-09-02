@@ -1,5 +1,5 @@
 import { AuthenticationRequiredError } from './authentication-required-error'
-import { refreshAccessToken, type LoginResponse } from './auth-api'
+import { refreshAccessToken, type LoginResponse } from './platform-api'
 import {
   clearCredentials,
   getAuthMeta,
@@ -7,7 +7,7 @@ import {
   saveAuthMeta,
   saveRefreshToken,
   type AuthMeta,
-} from './credentials'
+} from './credential-vault'
 
 const EXPIRY_SKEW_MS = 30_000
 

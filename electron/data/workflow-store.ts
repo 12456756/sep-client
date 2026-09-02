@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { encodeTaskScopeSegment, type TaskOwnerScope } from './task-store'
-import type { WorkflowGraph } from './domain/workflow-graph'
+import type { WorkflowGraph } from '../domain/workflow-graph'
 
 export class WorkflowStore {
   constructor(private readonly userDataDir: string) {}

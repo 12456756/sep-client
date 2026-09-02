@@ -12,8 +12,8 @@ import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
 import { InvalidTaskTransitionError, TaskManager } from './task-manager'
-import { TaskRunStore } from './task-run-store'
-import { TaskStore, type TaskOwnerScope, type TaskStorePort } from './task-store'
+import { TaskRunStore } from '../data/task-run-store'
+import { TaskStore, type TaskOwnerScope, type TaskStorePort } from '../data/task-store'
 
 const SCOPE: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 

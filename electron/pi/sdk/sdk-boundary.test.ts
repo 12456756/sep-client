@@ -18,14 +18,15 @@ async function sourceFiles(directory: string): Promise<string[]> {
 describe('Pi SDK boundary', () => {
   it('loads the task coordinator lazily after the Electron compatibility layer', async () => {
     const mainSource = await readFile(join(process.cwd(), 'electron', 'main.ts'), 'utf8')
-    const compatibilityImport = mainSource.indexOf("import './infrastructure/undici-polyfill'")
-    const coordinatorImport = mainSource.indexOf("await import('./tasks/task-execution-coordinator')")
+    // 这两个是 main.ts 里的源码字面量，不是本文件的 import——Phase 3 搬家后要跟着更新。
+    const compatibilityImport = mainSource.indexOf(`import './common/undici-polyfill'`)
+    const coordinatorImport = mainSource.indexOf(`await import('./runtime/task-execution-coordinator')`)
 
     assert.ok(compatibilityImport >= 0, 'Electron compatibility layer must be loaded by main.ts')
     assert.ok(coordinatorImport > compatibilityImport, 'Task coordinator must load after the compatibility layer')
     assert.doesNotMatch(
       mainSource,
-      /import\s+(?!type\b)[^;\n]*from\s+['"]\.\/tasks\/task-execution-coordinator['"]/,
+      /import\s+(?!type\b)[^;\n]*from\s+['"]\.\/runtime\/task-execution-coordinator['"]/,
       'Any static coordinator import would load the pi SDK before main.ts can initialize compatibility support',
     )
   })

@@ -16,23 +16,23 @@ import {
   type TaskOwnerScope,
   type TaskStorePort,
   encodeTaskScopeSegment,
-} from './task-store'
-import { TaskRunStore, type TaskRunStorePort } from './task-run-store'
+} from '../data/task-store'
+import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
 import {
   assertTaskTransition,
   canTransitionTask,
   TaskAdmissionError,
   isTaskExecutionStatus,
   isTaskTerminal,
-} from './domain/task-state-machine'
+} from '../domain/task-state-machine'
 import { describeError } from '../common/redact'
 import { logger } from '../common/logger'
 
 const log = logger.child('task-manager')
 
 export { TaskStatus } from '../../src/shared/types'
-export { TaskPersistenceError, TaskScopeError } from './task-store'
-export { TaskAdmissionError, InvalidTaskTransitionError } from './domain/task-state-machine'
+export { TaskPersistenceError, TaskScopeError } from '../data/task-store'
+export { TaskAdmissionError, InvalidTaskTransitionError } from '../domain/task-state-machine'
 export type { ClientTask as Task, ClientTaskLog as TaskLog } from '../../src/shared/types'
 
 type Task = ClientTask

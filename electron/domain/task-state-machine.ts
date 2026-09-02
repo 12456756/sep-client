@@ -1,4 +1,4 @@
-import { TaskStatus, type ClientTaskStatus } from '../../../src/shared/types'
+import { TaskStatus, type ClientTaskStatus } from '../../src/shared/types'
 
 const transitions: Record<ClientTaskStatus, readonly ClientTaskStatus[]> = {
   [TaskStatus.PENDING]: [TaskStatus.RUNNING, TaskStatus.PAUSED, TaskStatus.INTERRUPTED, TaskStatus.FAILED],

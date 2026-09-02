@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { normalizeGatewayPayload } from './sdk/pi-coding-agent-adapter'
+import { normalizeGatewayPayload } from './pi-coding-agent-adapter'
 
 describe('SEP gateway payload compatibility', () => {
   it('flattens tool calls and tool results into supported messages', () => {

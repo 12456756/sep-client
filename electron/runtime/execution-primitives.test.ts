@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { ApprovalBroker } from '../pi/approval-broker'
+import { ApprovalBroker } from './approval-runtime'
 import { WorkspaceLockManager } from './workspace-lock-manager'
 
 const temporaryDirectories: string[] = []

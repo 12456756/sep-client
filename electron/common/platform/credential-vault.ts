@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'fs'
 import { join } from 'path'
-import type { RememberedAccount } from '../../src/shared/types'
+import type { RememberedAccount } from '../../../src/shared/types'
 
   // 非敏感身份数据使用 JSON 保存。令牌和记住的密码由操作系统加密，
   // 只在 Electron 主进程中解密。

@@ -1,7 +1,7 @@
-import { AuthApiError, getInstanceToken } from './auth-api';
-import { config } from '../infrastructure/config';
-import { describeError } from '../common/redact'
-import { logger } from '../common/logger'
+import { AuthApiError, getInstanceToken } from './platform-api';
+import { config } from '../config';
+import { describeError } from '../redact'
+import { logger } from '../logger'
 
 const log = logger.child('instance-token-manager')
 

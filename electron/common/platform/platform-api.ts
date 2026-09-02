@@ -1,7 +1,7 @@
 /** Electron 主进程使用的 SEP 认证和订阅接口。 */
 
-import { config } from '../infrastructure/config';
-import type { EmployeeInstanceSnapshot } from '../../src/shared/types';
+import { config } from '../config';
+import type { EmployeeInstanceSnapshot } from '../../../src/shared/types';
 
 export interface LoginRequest {
   email: string;
