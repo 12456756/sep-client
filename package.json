@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "lint": "eslint . --ext .ts,.tsx",
     "auth:smoke": "bash scripts/test-auth-flow.sh",
-    "test:tasks": "tsx --test electron/tasks/*.test.ts electron/tasks/domain/conversation-context.test.ts electron/tasks/domain/task-state-machine.test.ts electron/pi/*.test.ts electron/auth/*.test.ts",
+    "test:tasks": "tsx --test electron/auth/*.test.ts electron/controller/*.test.ts electron/pi/*.test.ts electron/tasks/*.test.ts electron/tasks/domain/*.test.ts",
     "poc:gw": "tsx poc/fake-gateway.ts",
     "poc:01": "tsx poc/01-sdk-import.ts",
     "poc:02": "tsx poc/02-provider.ts",

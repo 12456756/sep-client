@@ -5,63 +5,64 @@ import type {
   TaskExecutionEvent,
   ToolAuthorizationRequest,
 } from '../src/shared/types';
+import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
 
 export type { ElectronAPI } from '../src/shared/ipc';
 
 const electronAPI = {
-  login: credentials => ipcRenderer.invoke('auth:login', credentials),
-  listRememberedAccounts: () => ipcRenderer.invoke('auth:list-remembered-accounts'),
-  getRememberedPassword: email => ipcRenderer.invoke('auth:get-remembered-password', email),
-  forgetAccount: email => ipcRenderer.invoke('auth:forget-account', email),
-  logout: () => ipcRenderer.invoke('auth:logout'),
-  getInstances: () => ipcRenderer.invoke('auth:get-instances'),
-  createTask: data => ipcRenderer.invoke('task:create', data),
-  executeTask: taskId => ipcRenderer.invoke('task:execute', taskId),
-  continueTask: input => ipcRenderer.invoke('task:continue', input),
-  getTaskMessages: taskId => ipcRenderer.invoke('task:get-messages', taskId),
-  retryTask: taskId => ipcRenderer.invoke('task:retry', taskId),
-  getTask: taskId => ipcRenderer.invoke('task:get', taskId),
-  getAllTasks: () => ipcRenderer.invoke('task:get-all'),
-  listTaskRuns: taskId => ipcRenderer.invoke('task:list-runs', taskId),
-  getTaskRun: (taskId, runId) => ipcRenderer.invoke('task:get-run', { taskId, runId }),
-  getTaskTimeline: (taskId, runId) => ipcRenderer.invoke('task:get-timeline', { taskId, runId }),
-  pauseTask: taskId => ipcRenderer.invoke('task:pause', taskId),
-  cancelTask: taskId => ipcRenderer.invoke('task:cancel', taskId),
-  deleteTask: taskId => ipcRenderer.invoke('task:delete', taskId),
-  getTaskStats: () => ipcRenderer.invoke('task:get-stats'),
-  selectDirectory: () => ipcRenderer.invoke('util:select-directory'),
+  login: credentials => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LOGIN, credentials),
+  listRememberedAccounts: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LIST_REMEMBERED_ACCOUNTS),
+  getRememberedPassword: email => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_REMEMBERED_PASSWORD, email),
+  forgetAccount: email => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_FORGET_ACCOUNT, email),
+  logout: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LOGOUT),
+  getInstances: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_INSTANCES),
+  createTask: data => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CREATE, data),
+  executeTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_EXECUTE, taskId),
+  continueTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CONTINUE, input),
+  getTaskMessages: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_MESSAGES, taskId),
+  retryTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_RETRY, taskId),
+  getTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET, taskId),
+  getAllTasks: () => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_ALL),
+  listTaskRuns: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_LIST_RUNS, taskId),
+  getTaskRun: (taskId, runId) => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_RUN, { taskId, runId }),
+  getTaskTimeline: (taskId, runId) => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_TIMELINE, { taskId, runId }),
+  pauseTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_PAUSE, taskId),
+  cancelTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CANCEL, taskId),
+  deleteTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_DELETE, taskId),
+  getTaskStats: () => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_STATS),
+  selectDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY),
   onPiEvent: callback => {
     const handler = (_event: IpcRendererEvent, data: TaskExecutionEvent) => callback(data);
-    ipcRenderer.on('pi:event', handler);
-    return () => ipcRenderer.removeListener('pi:event', handler);
+    ipcRenderer.on(EVENT_CHANNELS.PI_EVENT, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.PI_EVENT, handler);
   },
   onToolApprovalRequest: callback => {
     const handler = (_event: IpcRendererEvent, request: ToolAuthorizationRequest) => callback(request);
-    ipcRenderer.on('pi:tool-approval-request', handler);
-    return () => ipcRenderer.removeListener('pi:tool-approval-request', handler);
+    ipcRenderer.on(EVENT_CHANNELS.TOOL_APPROVAL_REQUEST, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.TOOL_APPROVAL_REQUEST, handler);
   },
   onTaskUpdated: callback => {
     const handler = (_event: IpcRendererEvent, task: ClientTask) => callback(task);
-    ipcRenderer.on('task:updated', handler);
-    return () => ipcRenderer.removeListener('task:updated', handler);
+    ipcRenderer.on(EVENT_CHANNELS.TASK_UPDATED, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.TASK_UPDATED, handler);
   },
   onTaskListUpdated: callback => {
     const handler = (_event: IpcRendererEvent, tasks: ClientTask[]) => callback(tasks);
-    ipcRenderer.on('task:list-updated', handler);
-    return () => ipcRenderer.removeListener('task:list-updated', handler);
+    ipcRenderer.on(EVENT_CHANNELS.TASK_LIST_UPDATED, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.TASK_LIST_UPDATED, handler);
   },
   onAuthenticationRequired: callback => {
     const handler = () => callback();
-    ipcRenderer.on('auth:required', handler);
-    return () => ipcRenderer.removeListener('auth:required', handler);
+    ipcRenderer.on(EVENT_CHANNELS.AUTH_REQUIRED, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.AUTH_REQUIRED, handler);
   },
-  sendToolApprovalResponse: response => ipcRenderer.send('pi:tool-approval-response', response),
-  createConversation: data => ipcRenderer.invoke('conversation:create', data),
-  switchConversationEmployee: data => ipcRenderer.invoke('task:switch-employee', data),
-  validateWorkflow: (data: unknown) => ipcRenderer.invoke('workflow:validate', data),
-  createWorkflow: (data: unknown) => ipcRenderer.invoke('workflow:create', data),
-  getWorkflow: (taskId: string) => ipcRenderer.invoke('workflow:get', taskId),
-  startWorkflow: (taskId: string) => ipcRenderer.invoke('workflow:start', taskId),
-} as ElectronAPI;
+  sendToolApprovalResponse: response => ipcRenderer.send(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, response),
+  createConversation: data => ipcRenderer.invoke(INVOKE_CHANNELS.CONVERSATION_CREATE, data),
+  switchConversationEmployee: data => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, data),
+  validateWorkflow: data => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_VALIDATE, data),
+  createWorkflow: data => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_CREATE, data),
+  getWorkflow: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_GET, taskId),
+  startWorkflow: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_START, taskId),
+} satisfies ElectronAPI;
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

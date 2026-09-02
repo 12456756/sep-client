@@ -19,6 +19,7 @@ import { getDeviceFingerprint } from './auth/device-fingerprint';
 import { login, getInstances, AuthApiError, type ClientInstance } from './auth/auth-api';
 import { AuthSessionManager, AuthenticationRequiredError } from './auth/auth-session-manager';
 import { config } from './infrastructure/config';
+import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
 import type {
   AuthError,
   AuthErrorCode,
@@ -196,7 +197,7 @@ function invalidateAuthentication(): void {
       activeInstances = []
       subscriptionRuntime?.invalidate()
       authSession.clear()
-      mainWindow?.webContents.send('auth:required')
+      mainWindow?.webContents.send(EVENT_CHANNELS.AUTH_REQUIRED)
       authenticationCleanupPromise = null
     }
   })()
@@ -215,8 +216,8 @@ async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
       taskManager: manager,
       getRefreshToken: () => authSession.getRefreshToken(),
       onAuthenticationRequired: invalidateAuthentication,
-      onEvent: event => mainWindow?.webContents.send('pi:event', event),
-      onApprovalRequest: request => mainWindow?.webContents.send('pi:tool-approval-request', request),
+      onEvent: event => mainWindow?.webContents.send(EVENT_CHANNELS.PI_EVENT, event),
+      onApprovalRequest: request => mainWindow?.webContents.send(EVENT_CHANNELS.TOOL_APPROVAL_REQUEST, request),
       resolveEmployee,
       authorizeEmployee,
       userDataDir: app.getPath('userData'),
@@ -293,7 +294,7 @@ function createWindow(): void {
 
 // ── Auth: Login ──────────────────────────────────────────────────────────────
 
-ipcMain.handle('auth:login', async (_event, input: unknown): Promise<LoginResult> => {
+ipcMain.handle(INVOKE_CHANNELS.AUTH_LOGIN, async (_event, input: unknown): Promise<LoginResult> => {
   try {
     if (!isRecord(input)) {
       return { success: false, error: authError('INVALID_ARGUMENT', 'Invalid login request.', 400) };
@@ -357,17 +358,17 @@ ipcMain.handle('auth:login', async (_event, input: unknown): Promise<LoginResult
   }
 });
 
-ipcMain.handle('auth:list-remembered-accounts', async (): Promise<RememberedAccountsResult> => ({
+ipcMain.handle(INVOKE_CHANNELS.AUTH_LIST_REMEMBERED_ACCOUNTS, async (): Promise<RememberedAccountsResult> => ({
   accounts: listRememberedAccounts(),
   encryptionAvailable: safeStorage.isEncryptionAvailable(),
 }));
 
-ipcMain.handle('auth:get-remembered-password', async (_event, email: unknown): Promise<PasswordAvailabilityResult> => {
+ipcMain.handle(INVOKE_CHANNELS.AUTH_GET_REMEMBERED_PASSWORD, async (_event, email: unknown): Promise<PasswordAvailabilityResult> => {
   const normalized = normalizeEmail(email);
   return { passwordAvailable: normalized ? Boolean(getRememberedPassword(normalized)) : false };
 });
 
-ipcMain.handle('auth:forget-account', async (_event, email: unknown): Promise<ForgetAccountResult> => {
+ipcMain.handle(INVOKE_CHANNELS.AUTH_FORGET_ACCOUNT, async (_event, email: unknown): Promise<ForgetAccountResult> => {
   const normalized = normalizeEmail(email);
   if (!normalized) return { success: false, error: authError('INVALID_ARGUMENT', 'A valid email is required.', 400) };
   try {
@@ -378,7 +379,7 @@ ipcMain.handle('auth:forget-account', async (_event, email: unknown): Promise<Fo
   }
 });
 
-ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
+ipcMain.handle(INVOKE_CHANNELS.AUTH_LOGOUT, async (): Promise<LogoutResult> => {
   try {
     if (taskCoordinator) await taskCoordinator.stopAll()
     const manager = await ensureTaskManager()
@@ -394,7 +395,7 @@ ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
 
 // ── Auth: Get instances ──────────────────────────────────────────────────────
 
-ipcMain.handle('auth:get-instances', async () => {
+ipcMain.handle(INVOKE_CHANNELS.AUTH_GET_INSTANCES, async () => {
   try {
     const instances = await getInstances(await authSession.getValidAccessToken());
 
@@ -433,7 +434,7 @@ ipcMain.handle('auth:get-instances', async () => {
 
 // ── Task Management ──────────────────────────────────────────────────────────
 
-ipcMain.handle('task:create', async (_event, data: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_CREATE, async (_event, data: unknown) => {
   try {
     if (!isRecord(data) || typeof data.title !== 'string' || !data.title.trim() || typeof data.prompt !== 'string' || !data.prompt.trim()) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'Invalid task request.' } }
@@ -469,7 +470,7 @@ ipcMain.handle('task:create', async (_event, data: unknown) => {
   }
 })
 
-ipcMain.handle('task:execute', async (_event, input: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_EXECUTE, async (_event, input: unknown) => {
   try {
     const taskId = typeof input === 'string'
       ? input
@@ -489,7 +490,7 @@ ipcMain.handle('task:execute', async (_event, input: unknown) => {
   }
 })
 
-ipcMain.handle('task:continue', async (_event, input: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_CONTINUE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.prompt !== 'string' || !input.prompt.trim()) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and message are required.' } }
@@ -519,7 +520,7 @@ ipcMain.handle('task:continue', async (_event, input: unknown) => {
   }
 })
 
-ipcMain.handle('task:switch-employee', async (_event, input: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.subscriptionId !== 'string') {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and employee are required.' } }
@@ -542,7 +543,7 @@ ipcMain.handle('task:switch-employee', async (_event, input: unknown) => {
   } catch (error) { return { success: false, error: taskError(error) } }
 })
 
-ipcMain.handle('workflow:validate', async (_event, input: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_VALIDATE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || !Array.isArray(input.nodes)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'Workflow nodes are required.' } }
@@ -554,7 +555,7 @@ ipcMain.handle('workflow:validate', async (_event, input: unknown) => {
   }
 })
 
-ipcMain.handle('workflow:create', async (_event, input: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_CREATE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.title !== 'string' || !input.title.trim() || !Array.isArray(input.nodes)) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A title and workflow nodes are required.' } }
@@ -578,7 +579,7 @@ ipcMain.handle('workflow:create', async (_event, input: unknown) => {
   }
 })
 
-ipcMain.handle('conversation:create', async (_event, input: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.CONVERSATION_CREATE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.title !== 'string' || !input.title.trim() || typeof input.prompt !== 'string' || !input.prompt.trim() || typeof input.subscriptionId !== 'string') {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A title, prompt, and employee are required.' } }
@@ -596,7 +597,7 @@ ipcMain.handle('conversation:create', async (_event, input: unknown) => {
   } catch (error) { return { success: false, error: taskError(error) } }
 })
 
-ipcMain.handle('workflow:get', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_GET, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     const manager = await ensureTaskManager()
@@ -609,7 +610,7 @@ ipcMain.handle('workflow:get', async (_event, taskId: unknown) => {
   } catch (error) { return { success: false, error: taskError(error) } }
 })
 
-ipcMain.handle('workflow:start', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.WORKFLOW_START, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     const manager = await ensureTaskManager()
@@ -622,7 +623,7 @@ ipcMain.handle('workflow:start', async (_event, taskId: unknown) => {
   } catch (error) { return { success: false, error: taskError(error) } }
 })
 
-ipcMain.handle('task:get-messages', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_GET_MESSAGES, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     const manager = await ensureTaskManager()
@@ -634,7 +635,7 @@ ipcMain.handle('task:get-messages', async (_event, taskId: unknown) => {
   } catch (error) { return { success: false, error: taskError(error) } }
 })
 
-ipcMain.handle('task:retry', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_RETRY, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
@@ -654,7 +655,7 @@ ipcMain.handle('task:retry', async (_event, taskId: unknown) => {
   }
 })
 
-ipcMain.handle('task:get', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_GET, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
@@ -668,7 +669,7 @@ ipcMain.handle('task:get', async (_event, taskId: unknown) => {
   }
 })
 
-ipcMain.handle('task:get-all', async () => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_GET_ALL, async () => {
   try {
     const manager = await ensureTaskManager()
     return { success: true, tasks: await manager.getAllTasks() }
@@ -677,7 +678,7 @@ ipcMain.handle('task:get-all', async () => {
   }
 })
 
-ipcMain.handle('task:list-runs', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_LIST_RUNS, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
     const manager = await ensureTaskManager()
@@ -691,7 +692,7 @@ ipcMain.handle('task:list-runs', async (_event, taskId: unknown) => {
   }
 })
 
-ipcMain.handle('task:get-run', async (_event, input: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_GET_RUN, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.runId !== 'string') {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and run ID are required.' } }
@@ -708,7 +709,7 @@ ipcMain.handle('task:get-run', async (_event, input: unknown) => {
   }
 })
 
-ipcMain.handle('task:get-timeline', async (_event, input: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_GET_TIMELINE, async (_event, input: unknown) => {
   try {
     if (!isRecord(input) || typeof input.taskId !== 'string' || typeof input.runId !== 'string') {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task and run ID are required.' } }
@@ -725,7 +726,7 @@ ipcMain.handle('task:get-timeline', async (_event, input: unknown) => {
   }
 })
 
-ipcMain.handle('task:pause', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_PAUSE, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
@@ -737,7 +738,7 @@ ipcMain.handle('task:pause', async (_event, taskId: unknown) => {
   }
 })
 
-ipcMain.handle('task:cancel', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_CANCEL, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
@@ -749,7 +750,7 @@ ipcMain.handle('task:cancel', async (_event, taskId: unknown) => {
   }
 })
 
-ipcMain.handle('task:delete', async (_event, taskId: unknown) => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_DELETE, async (_event, taskId: unknown) => {
   try {
     if (typeof taskId !== 'string' || !taskId) {
       return { success: false, error: { code: 'INVALID_ARGUMENT', message: 'A valid task ID is required.' } }
@@ -764,7 +765,7 @@ ipcMain.handle('task:delete', async (_event, taskId: unknown) => {
   }
 })
 
-ipcMain.handle('task:get-stats', async () => {
+ipcMain.handle(INVOKE_CHANNELS.TASK_GET_STATS, async () => {
   try {
     const manager = await ensureTaskManager()
     return { success: true, stats: await manager.getTaskStats() }
@@ -773,7 +774,7 @@ ipcMain.handle('task:get-stats', async () => {
   }
 })
 
-ipcMain.on('pi:tool-approval-response', (_event, response: { requestId?: string; approved?: unknown; reason?: unknown }) => {
+ipcMain.on(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, (_event, response: { requestId?: string; approved?: unknown; reason?: unknown }) => {
   if (!taskCoordinator || typeof response?.approved !== 'boolean') return
   taskCoordinator.respondToApproval({
     requestId: typeof response.requestId === 'string' ? response.requestId : undefined,
@@ -784,7 +785,7 @@ ipcMain.on('pi:tool-approval-response', (_event, response: { requestId?: string;
 
 // ── Utility: Directory Selector ───────────────────────────────────────────────
 
-ipcMain.handle('util:select-directory', async () => {
+ipcMain.handle(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, async () => {
   if (!mainWindow) {
     return { success: false, error: { message: 'Main window not available' } };
   }
