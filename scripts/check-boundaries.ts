@@ -83,7 +83,7 @@ function loadSourceFiles(): SourceFile[] {
 /**
  * 反向表：Unicode 字符 -> 它在 GBK/cp936 里的字节。用运行时解码 GBK 全部双字节
  * 组合再取反得到，不引第三方依赖。U+20AC 固定映射到单字节 0x80——2026-09-01 那次
- * 事故的编辑器用的是 cp936，`─`(E2 94 80) 正是被读成 `鈹€` 的。
+ * 事故的编辑器用的是 cp936，`─`(E2 94 80) 正是被读成 `鈹€` 的。 mojibake-sample
  */
 let gbkBytesByChar: Map<string, number[]> | null = null
 
@@ -176,6 +176,12 @@ const encodingRules: Rule[] = [
   },
 ]
 
+/**
+ * 允许一行携带乱码样例的豁免标记。方案第 4.4 节与本文件自身都必须原样引用坏字符，
+ * 否则说不清事故长什么样；豁免必须显式写在同一行，便于审。
+ */
+const MOJIBAKE_SAMPLE_MARKER = 'mojibake-sample'
+
 encodingRules.push({
   id: 'encoding:mojibake',
   status: 'enforced',
@@ -185,6 +191,7 @@ encodingRules.push({
     for (const file of files) {
       if (file.invalidUtf8) continue
       file.lines.forEach((line, index) => {
+        if (line.includes(MOJIBAKE_SAMPLE_MARKER)) return
         for (const match of line.matchAll(NON_ASCII_RUN)) {
           const run = match[0]
           const reversed = reverseGbkMisread(run)
