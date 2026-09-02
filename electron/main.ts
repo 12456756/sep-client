@@ -1,13 +1,11 @@
 /**
- * Electron 主进程入口，负责窗口、任务运行时和 IPC。
-/*
- * electron/main.ts 鈥?Electron 涓昏繘绋嬪叆鍙?
+ * electron/main.ts — Electron 主进程入口
  *
- * 鑱岃矗:
- *   - 鍒涘缓 BrowserWindow + preload 娉ㄥ叆
+ * 职责:
+ *   - 创建 BrowserWindow + preload 注入
  *   - 管理 pi session 生命周期（通过 TaskExecutionCoordinator）
  *   - 处理经过校验的 renderer <-> main IPC 通信
- *   - 搴旂敤鐢熷懡鍛ㄦ湡绠＄悊锛坮eady, quit, 绛夛級
+ *   - 应用生命周期管理（ready, quit, 等）
  */
 
 import { app, BrowserWindow, ipcMain, safeStorage, dialog, Menu } from 'electron';
@@ -228,7 +226,7 @@ async function ensureTaskCoordinator(): Promise<TaskExecutionCoordinator> {
   return taskCoordinator!
 }
 
-// 鈹€鈹€ 1. 鍒涘缓涓荤獥鍙?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── 1. 创建主窗口 ─────────────────────────────────────────────────────────────
 
 function createWindow(): void {
   Menu.setApplicationMenu(null);
@@ -291,9 +289,9 @@ function createWindow(): void {
 
 // 2. TaskExecutionCoordinator 和 Pi 运行时。
 
-// 鈹€鈹€ 3. IPC handlers 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── 3. IPC handlers ───────────────────────────────────────────────────────────
 
-// 鈹€鈹€ Auth: Login 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Auth: Login ──────────────────────────────────────────────────────────────
 
 ipcMain.handle('auth:login', async (_event, input: unknown): Promise<LoginResult> => {
   try {
@@ -394,7 +392,7 @@ ipcMain.handle('auth:logout', async (): Promise<LogoutResult> => {
   }
 })
 
-// 鈹€鈹€ Auth: Get instances 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Auth: Get instances ──────────────────────────────────────────────────────
 
 ipcMain.handle('auth:get-instances', async () => {
   try {
@@ -433,7 +431,7 @@ ipcMain.handle('auth:get-instances', async () => {
   }
 });
 
-// 鈹€鈹€ Task Management 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Task Management ──────────────────────────────────────────────────────────
 
 ipcMain.handle('task:create', async (_event, data: unknown) => {
   try {
@@ -784,7 +782,7 @@ ipcMain.on('pi:tool-approval-response', (_event, response: { requestId?: string;
   })
 })
 
-// 鈹€鈹€ Utility: Directory Selector 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── Utility: Directory Selector ───────────────────────────────────────────────
 
 ipcMain.handle('util:select-directory', async () => {
   if (!mainWindow) {
@@ -794,7 +792,7 @@ ipcMain.handle('util:select-directory', async () => {
   try {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
-      title: '閫夋嫨宸ヤ綔鐩綍',
+      title: '选择工作目录',
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -810,11 +808,11 @@ ipcMain.handle('util:select-directory', async () => {
   }
 });
 
-// 鈹€鈹€ 4. App lifecycle 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ── 4. App lifecycle ──────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
   ensureTaskManager()
-  // 寤惰繜鍒伴娆′换鍔℃墽琛屾椂鍒濆鍖栦换鍔″崗璋冨櫒
+  // 延迟到首次任务执行时初始化任务协调器
   createWindow();
 
   app.on('activate', () => {

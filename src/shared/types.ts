@@ -1,9 +1,9 @@
 /**
- * 涓昏繘绋嬩笌娓叉煋杩涚▼鍏变韩鐨勭被鍨嬪畾涔?
- * IPC 閫氶亾涓や晶鍧囧紩鐢ㄦ鏂囦欢
+ * 主进程与渲染进程共享的类型定义
+ * IPC 通道两侧均引用此文件
  */
 
-// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Auth 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ──────────────────────────── Auth ─────────────────────────────
 
 export interface LoginRequest {
   email: string
@@ -59,7 +59,7 @@ export type PasswordAvailabilityResult = { passwordAvailable: boolean }
 export type ForgetAccountResult = AuthResult<null>
 export type LogoutResult = AuthResult<null>
 
-// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Tasks 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ──────────────────────────── Tasks ────────────────────────────
 
 export const TaskStatus = {
   PENDING: 'pending',
@@ -191,7 +191,7 @@ export interface AuthSession {
   enterpriseName: string
 }
 
-// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Instances 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ──────────────────────────── Instances ────────────────────────
 
 export type InstanceStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
 
@@ -230,7 +230,7 @@ export interface EmployeeInstance {
   status: InstanceStatus
 }
 
-// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Pi Events 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ──────────────────────────── Pi Events ────────────────────────
 
 /** Pi 事件类型（参见接口文档第 4.3 节）。 */
 export type PiEventType =
@@ -284,7 +284,7 @@ export type PiClientEvent =
   | PiToolBlockedEvent
   | PiSessionErrorEvent
 
-// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Permission 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ──────────────────────────── Permission ───────────────────────
 
 export interface TaskExecutionEvent {
   taskId: string
@@ -306,19 +306,19 @@ export interface ToolAuthorizationRequest {
   timestamp: number
 }
 
-/** 楂樺嵄宸ュ叿璋冪敤锛岀瓑寰呯敤鎴锋壒鍑嗭紙鏂囨。 搂6.2 鎺柦 鈶ｏ級 */
+/** 高危工具调用，等待用户批准（文档 §6.2 措施 ④） */
 export interface PermissionRequest {
   requestId: string     // UUID，用于响应时匹配请求。
   subscriptionId: string
   subscriptionDisplayName: string
   toolName: string
-  description: string   // 浜鸿璇存槑锛屽"鍐欏叆鏂囦欢 ~/Documents/..."
+  description: string   // 人读说明，如"写入文件 ~/Documents/..."
   inputSummary: Record<string, unknown>
 }
 
 export type PermissionDecision = 'allow-once' | 'allow-always' | 'deny'
 
-// 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€ Client State 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+// ──────────────────────────── Client State ─────────────────────
 
 export type SessionState = 'idle' | 'running' | 'awaiting-permission' | 'error' | 'locked'
 

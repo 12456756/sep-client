@@ -573,11 +573,11 @@ export class TaskExecutionCoordinator {
         }
         pending.set(data.toolId, { toolName: data.toolName, startedAt: event.occurredAt })
       }
-      await this.taskManager.addTaskLog(event.taskId, `鎵ц宸ュ叿: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
+      await this.taskManager.addTaskLog(event.taskId, `执行工具: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
     } else if (event.type === 'tool_execution_end') {
       const data = event.data as { toolId?: unknown; toolName?: unknown }
       if (typeof data.toolId === 'string') this.inFlightSideEffects.get(event.runId)?.delete(data.toolId)
-      await this.taskManager.addTaskLog(event.taskId, `宸ュ叿鎵ц瀹屾垚: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
+      await this.taskManager.addTaskLog(event.taskId, `工具执行完成: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
     } else if (event.type === 'auto_retry_start') {
       await this.taskManager.addTaskLog(event.taskId, 'Automatic retry started.', 'warning')
     }

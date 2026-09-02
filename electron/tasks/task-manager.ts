@@ -295,7 +295,7 @@ export class TaskManager {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) return
       nextTask.files.push(filePath)
-      nextTask.logs.push({ timestamp: Date.now(), message: `鐢熸垚鏂囦欢: ${filePath}`, level: 'info' })
+      nextTask.logs.push({ timestamp: Date.now(), message: `生成文件: ${filePath}`, level: 'info' })
     })
     this.notifyTaskUpdate(taskId)
   }
@@ -335,7 +335,7 @@ export class TaskManager {
       assertTaskTransition(nextTask.status, TaskStatus.FAILED)
       nextTask.status = TaskStatus.FAILED
       nextTask.completedAt = Date.now()
-      nextTask.error = '鐢ㄦ埛鍙栨秷'
+      nextTask.error = '用户取消'
       nextTask.error = 'Task cancelled.'
       nextTask.logs.push({ timestamp: Date.now(), message: 'Task cancelled.', level: 'warning' })
     })
