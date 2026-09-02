@@ -4,10 +4,10 @@ import { TaskStatus, type TaskExecutionEvent, type ToolAuthorizationRequest } fr
 import { ApprovalBroker } from '../pi/approval-broker'
 import { createDefaultSharedPiSessionAdapter, PiTaskWorker, type PiTaskWorkerOptions } from '../pi/pi-task-worker'
 import { TaskRunStore, type TaskRunStorePort } from './task-run-store'
-import { TaskManager } from './task-manager'
+import type { TaskManager } from './task-manager'
 import { WorkspaceLockManager } from './workspace-lock-manager'
 import { ConversationContextStore, type ConversationMessage } from './domain/conversation-context'
-import { SharedPiSessionAdapter } from '../pi/shared-session-adapter'
+import type { SharedPiSessionAdapter } from '../pi/shared-session-adapter'
 import { ConversationRecoveryError } from './conversation-recovery-error'
 
 const SIDE_EFFECT_TOOLS = new Set(['bash', 'write', 'edit'])
