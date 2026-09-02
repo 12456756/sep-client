@@ -40,7 +40,6 @@ function pathsOverlap(left: string, right: string): boolean {
 export class WorkspaceLockManager {
   private readonly locks = new Map<string, HeldLock>()
   private readonly defaultWorkDir: string
-  private readonly waiters = new Set<() => void>()
 
   constructor(defaultWorkDir = process.cwd()) {
     this.defaultWorkDir = defaultWorkDir
@@ -66,18 +65,7 @@ export class WorkspaceLockManager {
       if (released) return
       released = true
       if (this.locks.get(runId)?.path === path) this.locks.delete(runId)
-      for (const wake of this.waiters) wake()
     }
-  }
-
-  waitForRelease(): Promise<void> {
-    return new Promise(resolvePromise => {
-      const resolveOnce = () => {
-        this.waiters.delete(resolveOnce)
-        resolvePromise()
-      }
-      this.waiters.add(resolveOnce)
-    })
   }
 
   get size(): number {

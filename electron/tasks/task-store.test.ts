@@ -230,7 +230,7 @@ describe('TaskManager user scope', () => {
     assert.equal((await manager.getTask(created.id))?.activeRunId, 'run-a')
   })
 
-  it('allows a queued admission to be cancelled and released', async () => {
+  it('releases a queued admission when the run is settled back to pending', async () => {
     const userData = await makeUserDataDir()
     const manager = new TaskManager(userData)
     await manager.initialize()
@@ -238,9 +238,10 @@ describe('TaskManager user scope', () => {
     await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
     const created = await manager.createTask('title', 'prompt')
     await manager.admitTask(created.id, 'run-a')
-    await manager.cancelTask(created.id)
-    assert.equal((await manager.getTask(created.id))?.status, TaskStatus.FAILED)
-    await manager.clearTaskRun(created.id, 'run-a')
-    assert.equal((await manager.getTask(created.id))?.activeRunId, null)
+    // Mirrors TaskExecutionCoordinator.cancelTask for a run that is still queued.
+    assert.equal(await manager.settleTaskRun(created.id, 'run-a', TaskStatus.PENDING), true)
+    const settled = await manager.getTask(created.id)
+    assert.equal(settled?.status, TaskStatus.PENDING)
+    assert.equal(settled?.activeRunId, null)
   })
 })

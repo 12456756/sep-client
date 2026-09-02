@@ -323,25 +323,6 @@ export class TaskManager {
     this.notifyTaskUpdate(taskId)
   }
 
-  async cancelTask(taskId: string): Promise<void> {
-    const task = await this.getTask(taskId)
-    if (!task) return
-    if (!isTaskExecutionStatus(task.status) && !(task.status === TaskStatus.PENDING && task.activeRunId)) {
-      return
-    }
-    await this.commit(nextTasks => {
-      const nextTask = nextTasks.get(taskId)
-      if (!nextTask) return
-      assertTaskTransition(nextTask.status, TaskStatus.FAILED)
-      nextTask.status = TaskStatus.FAILED
-      nextTask.completedAt = Date.now()
-      nextTask.error = '用户取消'
-      nextTask.error = 'Task cancelled.'
-      nextTask.logs.push({ timestamp: Date.now(), message: 'Task cancelled.', level: 'warning' })
-    })
-    this.notifyTaskUpdate(taskId)
-  }
-
   async deleteTask(taskId: string): Promise<boolean> {
     const task = await this.getTask(taskId)
     if (!task || task.activeRunId || !isTaskTerminal(task.status)) return false
