@@ -12,6 +12,18 @@ import { ConversationRecoveryError } from './conversation-recovery-error'
 
 const SIDE_EFFECT_TOOLS = new Set(['bash', 'write', 'edit'])
 
+interface Deferred {
+  promise: Promise<void>
+  resolve: () => void
+}
+
+/** 在 try 之前就建好，保证 finally 里一定有可调用的 resolve（C2）。 */
+function createDeferred(): Deferred {
+  let resolve!: () => void
+  const promise = new Promise<void>(settle => { resolve = settle })
+  return { promise, resolve }
+}
+
 export interface EmployeeRuntimeConfig {
   subscriptionId: string
   modelId: string
@@ -381,49 +393,54 @@ export class TaskExecutionCoordinator {
     const runId = queued.runId
     const subscriptionId = queued.subscriptionId
     const scope = this.taskManager.getCurrentUserScope()
-    const runPaths = scope && this.taskRunStore
-      ? this.taskRunStore.getPaths(scope, taskId, runId)
-      : null
-    const conversationPaths = queued.conversation && scope && this.taskRunStore
-      ? this.taskRunStore.getConversationSessionPaths(scope, taskId)
-      : null
-    const worker = this.createWorker({
-      context: {
-        taskId,
-        runId,
-        subscriptionId,
-        modelId: employee.modelId,
-        gatewayUrl: employee.gatewayUrl,
-        workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
-        agentDir: conversationPaths?.agentDir ?? runPaths?.agentDir ?? `${this.getTaskWorkspaceRoot()}/.pi-runs/${runId}`,
-        sessionDir: conversationPaths?.sessionDir ?? runPaths?.sessionDir ?? `${this.getTaskWorkspaceRoot()}/.pi-sessions/${runId}`,
-        resumeSessionFile: queued.resumeSessionFile,
-        additionalSkillPaths: employee.additionalSkillPaths,
-      },
-      getRefreshToken: this.getRefreshToken,
-      onAuthenticationRequired: this.onAuthenticationRequired,
-      onApprovalRequest: request => this.approvalBroker.request(request),
-      onEvent: event => this.enqueueEvent(event),
-      onSessionCreated: async session => {
-        if (scope && this.taskRunStore) {
-          await this.taskRunStore.setSession(scope, taskId, runId, session)
-          if (queued.conversation) await this.conversationStore(scope, taskId).setSharedSession({
-            sessionId: session.sessionId,
-            sessionFile: session.sessionFile,
-            lastRunId: runId,
-            updatedAt: Date.now(),
-          })
-        }
-      },
-      sessionAdapter: queued.conversation && scope ? this.conversationAdapter(scope, taskId) : undefined,
-    })
-    let resolveCompletion!: () => void
-    const completion = new Promise<void>(resolve => { resolveCompletion = resolve })
-    const active: ActiveRun = { taskId, runId, subscriptionId, releaseWorkspace, worker, control: 'none', completion }
+    // C2：锁的获取与释放必须在同一个词法块内。getPaths 会对非法 taskId/runId 抛
+    // TaskScopeError，createWorker 构造 PiTaskWorker 也可能抛；这些步骤此前在 try 之外，
+    // 一抛就再也走不到 finally，该工作目录被永久锁死且没有任何日志。
+    let worker: TaskWorkerPort | null = null
+    let active: ActiveRun | null = null
+    const settled = createDeferred()
     let runCreated = false
-
-    this.activeByTask.set(taskId, active)
     try {
+      const runPaths = scope && this.taskRunStore
+        ? this.taskRunStore.getPaths(scope, taskId, runId)
+        : null
+      const conversationPaths = queued.conversation && scope && this.taskRunStore
+        ? this.taskRunStore.getConversationSessionPaths(scope, taskId)
+        : null
+      worker = this.createWorker({
+        context: {
+          taskId,
+          runId,
+          subscriptionId,
+          modelId: employee.modelId,
+          gatewayUrl: employee.gatewayUrl,
+          workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
+          agentDir: conversationPaths?.agentDir ?? runPaths?.agentDir ?? `${this.getTaskWorkspaceRoot()}/.pi-runs/${runId}`,
+          sessionDir: conversationPaths?.sessionDir ?? runPaths?.sessionDir ?? `${this.getTaskWorkspaceRoot()}/.pi-sessions/${runId}`,
+          resumeSessionFile: queued.resumeSessionFile,
+          additionalSkillPaths: employee.additionalSkillPaths,
+        },
+        getRefreshToken: this.getRefreshToken,
+        onAuthenticationRequired: this.onAuthenticationRequired,
+        onApprovalRequest: request => this.approvalBroker.request(request),
+        onEvent: event => this.enqueueEvent(event),
+        onSessionCreated: async session => {
+          if (scope && this.taskRunStore) {
+            await this.taskRunStore.setSession(scope, taskId, runId, session)
+            if (queued.conversation) await this.conversationStore(scope, taskId).setSharedSession({
+              sessionId: session.sessionId,
+              sessionFile: session.sessionFile,
+              lastRunId: runId,
+              updatedAt: Date.now(),
+            })
+          }
+        },
+        sessionAdapter: queued.conversation && scope ? this.conversationAdapter(scope, taskId) : undefined,
+      })
+      const completion = settled.promise
+      active = { taskId, runId, subscriptionId, releaseWorkspace, worker, control: 'none', completion }
+      this.activeByTask.set(taskId, active)
+
       if (scope && this.taskRunStore) {
         await this.taskRunStore.create(scope, {
           taskId,
@@ -464,21 +481,28 @@ export class TaskExecutionCoordinator {
         runId,
         subscriptionId,
         modelId: employee.modelId,
-        control: active.control,
-        error: error instanceof Error ? `${(error as Error).name}: ${(error as Error).message}` : String(error as unknown),
+        control: active?.control ?? 'none',
+        stage: active ? 'run' : 'setup',
+        error: error instanceof Error ? `${error.name}: ${error.message}` : String(error as unknown),
       })
-      await this.finalizeRun(active, queued, employee, scope, runCreated, error)
+      if (active) {
+        await this.finalizeRun(active, queued, employee, scope, runCreated, error)
+      } else {
+        // 建仓阶段就失败：既没有 worker 也没有 run 记录，只把任务本身结算掉。
+        await this.taskManager
+          .settleTaskRun(taskId, runId, TaskStatus.FAILED, 'The run could not be started.')
+          .catch(() => undefined)
+      }
     } finally {
       this.responseBuffers.delete(runId)
       this.inFlightSideEffects.delete(runId)
-      await worker.dispose().catch(() => undefined)
+      if (worker) await worker.dispose().catch(() => undefined)
       releaseWorkspace()
-      if (this.activeByTask.get(taskId) === active) this.activeByTask.delete(taskId)
+      if (active && this.activeByTask.get(taskId) === active) this.activeByTask.delete(taskId)
       const currentTask = await this.taskManager.getTask(taskId).catch(() => null)
       if (currentTask?.activeRunId === runId) await this.taskManager.clearTaskRun(taskId, runId).catch(() => undefined)
-      resolveCompletion()
-      void this.pump()
-    }
+      settled.resolve()
+      void this.pump()    }
   }
 
   private enqueueEvent(event: TaskExecutionEvent): Promise<void> {

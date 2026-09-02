@@ -152,3 +152,53 @@ describe('C1 — pump() 按下标 splice 队列会误删无关条目', () => {
     await waitFor(async () => (await manager.getAllTasks()).every(task => task.activeRunId === null))
   })
 })
+
+describe('C2 — 锁获取与 try/finally 之间的裸露区会永久泄漏工作区锁', () => {
+  it('releases the workspace lock when createWorker throws during setup', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+
+    const shared = join(userData, 'shared-workspace')
+    const doomed = await manager.createTask('doomed', 'a', shared, 'employee-a')
+    const followUp = await manager.createTask('follow-up', 'b', shared, 'employee-a')
+
+    const started: string[] = []
+    const workers = makeWorkerFactory(started)
+    let failNext = true
+    const coordinator = new TaskExecutionCoordinator({
+      taskManager: manager,
+      taskRunStore: new TaskRunStore(userData),
+      getRefreshToken: () => 'refresh-token',
+      onAuthenticationRequired: () => {},
+      onEvent: () => {},
+      onApprovalRequest: () => {},
+      resolveEmployee: id => EMPLOYEES[id] ?? null,
+      createWorker: options => {
+        if (failNext) {
+          failNext = false
+          throw new Error('worker construction failed')
+        }
+        return {
+          run: workers.create(options.context.taskId),
+          async abort() { workers.releaseTask(options.context.taskId) },
+          async dispose() {},
+        }
+      },
+    })
+
+    await coordinator.executeTask(doomed.id)
+    await waitFor(async () => (await manager.getTask(doomed.id))?.activeRunId === null)
+    assert.equal(started.length, 0, 'worker 构造失败，不该有 run 启动')
+    assert.equal((await manager.getTask(doomed.id))?.status, TaskStatus.FAILED)
+
+    // 修复前 releaseWorkspace 从未被调用，shared-workspace 被永久锁死，
+    // 落在同一目录的后续任务会静默滞留队列。
+    await coordinator.executeTask(followUp.id)
+    await waitFor(() => started.includes(followUp.id), 2_000)
+
+    workers.releaseAll()
+    await waitFor(async () => (await manager.getTask(followUp.id))?.status === TaskStatus.COMPLETED)
+  })
+})
