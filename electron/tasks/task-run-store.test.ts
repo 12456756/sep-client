@@ -89,8 +89,12 @@ describe('TaskRunStore', () => {
     const record = await store.get(owner, 'task-a', 'run-a')
     assert.equal(record?.outcome, 'interrupted')
     const timeline = await store.getTimeline(owner, 'task-a', 'run-a')
-    assert.deepEqual(timeline.map(event => event.sequence), [1, 2])
-    assert.deepEqual(timeline[1]?.data, { token: '[redacted]' })
+    // 显式 sequence 只在推进游标时被采纳（C6）：agent_end 请求 2 被采纳，
+    // 随后 agent_start 请求 1 已落在游标之后，改判为 3。落盘顺序因此严格递增（I3），
+    // 而旧实现会同时收下 2 和 1。
+    assert.deepEqual(timeline.map(event => event.sequence), [2, 3])
+    assert.equal(timeline[0]?.type, 'agent_end')
+    assert.deepEqual(timeline[0]?.data, { token: '[redacted]' })
     assert.equal((await store.list(owner, 'task-a')).length, 1)
   })
 

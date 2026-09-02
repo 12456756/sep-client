@@ -13,6 +13,9 @@ import { TaskStatus } from '../../src/shared/types'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from './task-run-store'
+import type { TaskOwnerScope } from './task-store'
+
+const SCOPE: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
 const GATEWAY = 'http://gateway.invalid'
 const EMPLOYEES: Record<string, EmployeeRuntimeConfig> = {
@@ -278,6 +281,97 @@ describe('C4 — authorizeEmployee 在调度循环内发网络请求', () => {
     assert.equal(contexts.length, 2)
     for (const context of contexts) {
       assert.deepEqual(context.additionalSkillPaths, skillPaths, `${context.taskId} 丢了技能包路径`)
+    }
+  })
+})
+
+describe('C6 — 事件序号分配是 O(n^2) 文件读，且失败被静默吞掉', () => {
+  const RUN = { taskId: 'task-seq', runId: 'run-seq', subscriptionId: 'employee-a' }
+
+  async function seedRun(userData: string, store: TaskRunStore): Promise<void> {
+    await store.create(SCOPE, {
+      ...RUN,
+      modelId: 'model-a',
+      runtimeKey: 'employee-a:model-a',
+      workspaceDir: userData,
+      prompt: 'prompt',
+    })
+  }
+
+  function delta(text: string) {
+    return { ...RUN, sequence: 0, type: 'text_delta' as const, occurredAt: Date.now(), data: { text } }
+  }
+
+  it('continues the sequence after a restart instead of restarting from 1', async () => {
+    const userData = await makeUserDataDir()
+    const first = new TaskRunStore(userData)
+    await seedRun(userData, first)
+    for (let index = 0; index < 5; index += 1) await first.appendEvent(SCOPE, delta(`a-${index}`))
+
+    // 新实例 = 进程重启后续写。游标必须从文件尾部重建，否则序号会从 1 重来并撞号。
+    const second = new TaskRunStore(userData)
+    assert.equal((await second.appendEvent(SCOPE, delta('b-0'))).sequence, 6)
+
+    const timeline = await second.getTimeline(SCOPE, RUN.taskId, RUN.runId)
+    assert.deepEqual(timeline.map(event => event.sequence), [1, 2, 3, 4, 5, 6])
+  })
+
+  it('recovers the highest sequence from a file larger than the tail budget', async () => {
+    const userData = await makeUserDataDir()
+    const store = new TaskRunStore(userData)
+    await seedRun(userData, store)
+    // 每条约 30KB，三条就超过 64KB 的尾部预算，回读时开头的半行会被切掉。
+    for (let index = 0; index < 3; index += 1) await store.appendEvent(SCOPE, delta('x'.repeat(30_000)))
+
+    const restarted = new TaskRunStore(userData)
+    assert.equal((await restarted.appendEvent(SCOPE, delta('after'))).sequence, 4, '尾部回读没拿到最大序号')
+  })
+
+  it('reports a failed event append instead of leaving an unhandled rejection', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('doomed', 'prompt', undefined, 'employee-a')
+
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      const coordinator = new TaskExecutionCoordinator({
+        taskManager: manager,
+        taskRunStore: new TaskRunStore(userData),
+        getRefreshToken: () => 'refresh-token',
+        onAuthenticationRequired: () => {},
+        onEvent: () => {},
+        onApprovalRequest: () => {},
+        resolveEmployee: id => EMPLOYEES[id] ?? null,
+        createWorker: options => ({
+          async run() {
+            // subscriptionId 与持久化的 run 不符 -> appendEvent 抛 TaskScopeError。
+            await options.onEvent({
+              taskId: options.context.taskId,
+              runId: options.context.runId,
+              subscriptionId: 'employee-imposter',
+              sequence: 0,
+              type: 'text_delta',
+              occurredAt: Date.now(),
+              data: { text: 'nope' },
+            })
+          },
+          async abort() {},
+          async dispose() {},
+        }),
+      })
+
+      await coordinator.executeTask(task.id)
+      await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+      await new Promise(resolve => setTimeout(resolve, 80))
+
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.FAILED)
+      assert.deepEqual(unhandled, [], '事件落盘失败变成了未处理拒绝')
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
     }
   })
 })

@@ -1,4 +1,5 @@
-import { appendFile, mkdir, readFile, rename, rm, readdir, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, open, readFile, rename, rm, readdir, writeFile } from 'node:fs/promises'
+import type { FileHandle } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ClientTaskMessage, TaskExecutionEvent } from '../../src/shared/types'
@@ -125,9 +126,14 @@ function assertContained(root: string, target: string): void {
   }
 }
 
+/** 首次初始化序号时最多回读的字节数。事件按 sequence 递增追加，尾部就是最大值。 */
+const SEQUENCE_TAIL_BYTES = 64 * 1024
+
 export class TaskRunStore implements TaskRunStorePort {
   private readonly rootDir: string
   private readonly writeChains = new Map<string, Promise<void>>()
+  /** C6：per-(scope, task, run) 的序号游标，取代每条事件全量读 events.jsonl。 */
+  private readonly sequenceCursors = new Map<string, number>()
 
   constructor(userDataDir: string) {
     this.rootDir = join(userDataDir, 'task-data', 'v3')
@@ -344,6 +350,10 @@ export class TaskRunStore implements TaskRunStorePort {
         error: sanitizeError(error),
       }
     })
+    // run 进入终态后不会再有事件，游标可以丢掉，避免长驻进程里无限积累。
+    if (changed && outcome !== 'running') {
+      this.sequenceCursors.delete(`${scope.enterpriseId}:${scope.memberId}:${taskId}:${runId}`)
+    }
     return changed
   }
 
@@ -351,23 +361,62 @@ export class TaskRunStore implements TaskRunStorePort {
     const paths = this.getPaths(scope, event.taskId, event.runId)
     const eventFile = join(paths.taskDir, 'events.jsonl')
     const key = `${scope.enterpriseId}:${scope.memberId}:${event.taskId}`
-    return this.enqueueValue(key, async () => {
+    return this.enqueue(key, async () => {
       const run = await this.get(scope, event.taskId, event.runId)
       if (!run || run.subscriptionId !== event.subscriptionId) {
         throw new TaskScopeError('Task event does not belong to the persisted run.')
       }
-      const timeline = await this.getTimeline(scope, event.taskId, event.runId)
-      const usedSequences = new Set(timeline.map(item => item.sequence))
-      const nextSequence = (timeline.at(-1)?.sequence ?? 0) + 1
-      const requestedSequence = Number.isInteger(event.sequence) && event.sequence > 0 ? event.sequence : nextSequence
-      const persistedEvent = sanitizeEvent({
-        ...event,
-        sequence: usedSequences.has(requestedSequence) ? nextSequence : requestedSequence,
-      })
+      // C6：序号由内存游标分配。原来每条事件都调 getTimeline() 全量读并逐行 JSON.parse
+      // 整个 events.jsonl，只为算下一个序号——而 text_delta 是逐 token 产生的，
+      // 一个 2000 delta 的 run 要做 2000 次全文件读取，全部串在同一条写链上。
+      const cursorKey = `${key}:${event.runId}`
+      let cursor = this.sequenceCursors.get(cursorKey)
+      if (cursor === undefined) cursor = await this.readSequenceTail(eventFile, event.taskId, event.runId)
+      const requested = Number.isInteger(event.sequence) && event.sequence > cursor ? event.sequence : cursor + 1
+      this.sequenceCursors.set(cursorKey, requested)
+      const persistedEvent = sanitizeEvent({ ...event, sequence: requested })
       await mkdir(paths.taskDir, { recursive: true })
       await appendFile(eventFile, `${JSON.stringify(persistedEvent)}\n`, { encoding: 'utf8', mode: 0o600 })
       return persistedEvent
     })
+  }
+
+  /**
+   * 从 events.jsonl 尾部回读，取该 run 已用的最大 sequence。只在游标缺失时走一次
+   * （进程重启后续写、或崩溃恢复补事件），并且只读尾部若干字节，不整文件读。
+   */
+  private async readSequenceTail(eventFile: string, taskId: string, runId: string): Promise<number> {
+    let handle: FileHandle
+    try {
+      handle = await open(eventFile, 'r')
+    } catch {
+      return 0
+    }
+    try {
+      const { size } = await handle.stat()
+      const length = Math.min(size, SEQUENCE_TAIL_BYTES)
+      if (length === 0) return 0
+      const buffer = Buffer.alloc(length)
+      await handle.read(buffer, 0, length, size - length)
+      const text = buffer.toString('utf8')
+      // 起始处可能被截断成半行，丢掉；文件本身就比预算小时不用丢。
+      const lines = text.split('\n').slice(size > length ? 1 : 0)
+      let highest = 0
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try {
+          const event = JSON.parse(line) as TaskExecutionEvent
+          if (event?.taskId === taskId && event.runId === runId && typeof event.sequence === 'number') {
+            highest = Math.max(highest, event.sequence)
+          }
+        } catch {
+          // 末尾可能是一条不完整的行，忽略。
+        }
+      }
+      return highest
+    } finally {
+      await handle.close().catch(() => undefined)
+    }
   }
 
   getPaths(scope: TaskOwnerScope, taskId: string, runId: string): TaskRunPaths {
@@ -428,19 +477,17 @@ export class TaskRunStore implements TaskRunStorePort {
     })
   }
 
-  private enqueue(key: string, operation: () => Promise<void>): Promise<void> {
+  /**
+   * 把同一 key 上的写操作串成一条链。原来有 enqueue / enqueueValue 两个近乎相同的
+   * 实现（方案第 6 章），归并为一个泛型版本。
+   *
+   * tracked 必须自带 catch：它是 result 的分支，一旦这批之后没有后续操作来接
+   * `prior`，它就是一条未处理拒绝（C6）。错误本身由 result 交回调用方，不会被吞。
+   */
+  private enqueue<T>(key: string, operation: () => Promise<T>): Promise<T> {
     const prior = this.writeChains.get(key) ?? Promise.resolve()
-    const next = prior.catch(() => undefined).then(operation)
-    this.writeChains.set(key, next)
-    return next.finally(() => {
-      if (this.writeChains.get(key) === next) this.writeChains.delete(key)
-    })
-  }
-
-  private enqueueValue<T>(key: string, operation: () => Promise<T>): Promise<T> {
-    const prior = this.writeChains.get(key) ?? Promise.resolve()
-    const result = prior.catch(() => undefined).then(operation)
-    const tracked = result.then(() => undefined)
+    const result = prior.then(operation)
+    const tracked = result.then(() => undefined, () => undefined)
     this.writeChains.set(key, tracked)
     return result.finally(() => {
       if (this.writeChains.get(key) === tracked) this.writeChains.delete(key)

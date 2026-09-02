@@ -479,7 +479,7 @@ export class TaskExecutionCoordinator {
       }
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       await worker.run(queued.workerPrompt ?? queued.prompt)
-      await (this.eventChains.get(taskId) ?? Promise.resolve())
+      await this.drainEvents(taskId)
       if (this.activeByTask.get(taskId) !== active) return
       await this.finalizeRun(active, queued, scope, runCreated)
       return
@@ -518,10 +518,37 @@ export class TaskExecutionCoordinator {
     const operation = prior.catch(() => undefined).then(() => this.handleWorkerEvent(event))
     const chain = operation.then(() => undefined)
     this.eventChains.set(event.taskId, chain)
-    void chain.finally(() => {
-      if (this.eventChains.get(event.taskId) === chain) this.eventChains.delete(event.taskId)
-    })
+    // C6：链条错误不再被静默吞掉。这里必须 catch——chain 是 operation 的分支，
+    // 不接就是一条未处理拒绝；但错误本身要记下来，事件落盘失败此前完全无痕。
+    void chain
+      .catch(error => {
+        console.error('[TaskExecutionCoordinator] failed to persist task event', {
+          taskId: event.taskId,
+          runId: event.runId,
+          type: event.type,
+          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error as unknown),
+        })
+      })
+      .finally(() => {
+        if (this.eventChains.get(event.taskId) === chain) this.eventChains.delete(event.taskId)
+      })
     return operation
+  }
+
+  /**
+   * 等到该 task 的事件链真正排空。
+   *
+   * C6：原来 startRun 只 `await this.eventChains.get(taskId)` 一次，那不是屏障——
+   * 等待期间接上来的新事件不在这次等待里。这里循环到链表项消失为止（链条 settle 时
+   * 自己会把 map 项删掉）。上限只为防跑飞的事件流把停机拖死。
+   */
+  private async drainEvents(taskId: string): Promise<void> {
+    for (let round = 0; round < 1_000; round += 1) {
+      const chain = this.eventChains.get(taskId)
+      if (!chain) return
+      await chain.catch(() => undefined)
+    }
+    console.warn('[TaskExecutionCoordinator] event chain did not drain', { taskId })
   }
 
   private async finalizeRun(
