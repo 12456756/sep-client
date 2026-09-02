@@ -300,7 +300,7 @@ export class TaskExecutionCoordinator {
     this.conversationAdapters.clear()
   }
 
-  respondToApproval(response: { requestId?: string; approved: boolean; reason?: string }): boolean {
+  respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {
     return this.approvalBroker.respond(response)
   }
 

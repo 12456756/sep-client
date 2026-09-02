@@ -85,7 +85,11 @@ export interface TaskMessagesResult {
 }
 
 export interface ToolApprovalResponse {
-  requestId?: string
+  /**
+   * 必填。审批结果只按 requestId 匹配，主进程不做任何"只有一个 pending 就当它"的推断
+   * ——那样会批准错的工具调用（见后端方案 C5）。
+   */
+  requestId: string
   approved: boolean
   reason?: string
 }

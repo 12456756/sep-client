@@ -81,16 +81,34 @@ describe('ApprovalBroker', () => {
     assert.equal(await pending, false)
   })
 
-  it('supports an ID-less response only for one pending request', async () => {
+  // C5：原来这里断言的是"只有一个 pending 时可以省略 requestId"。那个回退能批准错的
+  // 调用——A 超时被自动拒绝后 B 进入 pending，用户点的是 A 的批准按钮，被批准的是 B。
+  it('refuses a response without a requestId even when exactly one request is pending', async () => {
     const broker = new ApprovalBroker({ onRequest: () => {}, timeoutMs: 1_000 })
-    const one = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
-    assert.equal(broker.respond({ approved: true }), true)
-    assert.equal(await one, true)
+    const only = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
 
-    const first = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
-    const second = broker.request({ taskId: 'task-b', runId: 'run-b', subscriptionId: 'employee-b', toolName: 'edit', input: {} })
-    assert.equal(broker.respond({ approved: true }), false)
+    assert.equal(broker.respond({ requestId: '', approved: true }), false)
+    assert.equal(broker.size, 1, '缺 requestId 的响应不该消耗掉 pending 请求')
+
     broker.denyAll()
-    await Promise.all([first, second])
+    assert.equal(await only, false)
+  })
+
+  it('refuses a response whose requestId is no longer pending', async () => {
+    const delivered: string[] = []
+    const broker = new ApprovalBroker({
+      onRequest: request => { delivered.push(request.requestId) },
+      timeoutMs: 5,
+    })
+    const timedOut = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
+    assert.equal(await timedOut, false)
+
+    // A 已超时拒绝，B 现在是唯一 pending。用户此刻点的是 A 的按钮。
+    const next = broker.request({ taskId: 'task-b', runId: 'run-b', subscriptionId: 'employee-b', toolName: 'bash', input: {} })
+    assert.equal(broker.respond({ requestId: delivered[0]!, approved: true }), false, 'A 的批准不得落到 B 上')
+    assert.equal(broker.size, 1)
+
+    broker.denyAll()
+    assert.equal(await next, false, 'bash 未经用户批准就被放行')
   })
 })

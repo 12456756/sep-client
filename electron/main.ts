@@ -776,12 +776,17 @@ ipcMain.handle(INVOKE_CHANNELS.TASK_GET_STATS, async () => {
   }
 })
 
-ipcMain.on(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, (_event, response: { requestId?: string; approved?: unknown; reason?: unknown }) => {
-  if (!taskCoordinator || typeof response?.approved !== 'boolean') return
+ipcMain.on(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, (_event, response: unknown) => {
+  if (!taskCoordinator || !isRecord(response)) return
+  // 渲染进程送来的参数一律先校验。requestId 必填（C5）：缺了就不批，不做任何推断。
+  if (typeof response['requestId'] !== 'string' || !response['requestId'] || typeof response['approved'] !== 'boolean') {
+    console.warn('[main] discarded malformed tool approval response')
+    return
+  }
   taskCoordinator.respondToApproval({
-    requestId: typeof response.requestId === 'string' ? response.requestId : undefined,
-    approved: response.approved,
-    reason: typeof response.reason === 'string' ? response.reason : undefined,
+    requestId: response['requestId'],
+    approved: response['approved'],
+    reason: typeof response['reason'] === 'string' ? response['reason'] : undefined,
   })
 })
 

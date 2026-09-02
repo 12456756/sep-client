@@ -43,11 +43,34 @@ export class ApprovalBroker {
     })
   }
 
+  /**
+   * 处理渲染进程送来的审批结果。
+   *
+   * C5：requestId 必填，没有任何"只有一个 pending 就当它"的回退。
+   * 原来的回退能批准错的调用：请求 A 在 60s 超时被自动拒绝，紧接着请求 B 进入 pending，
+   * 用户此时点了针对 A 的批准按钮 —— 命中单条 pending 分支后被批准的是 B，而 B 可能是
+   * 一个 bash。这违反"所有 bash/write/edit 需显式用户批准"：用户批准的不是这一个。
+   *
+   * 渲染进程本来就一直带着 requestId（src/App.tsx 从 request.requestId 取），
+   * 所以回退分支从来没有真实调用方，只是个隐患。
+   */
   respond(response: ToolApprovalResponse): boolean {
-    let requestId = response.requestId
-    if (!requestId && this.pending.size === 1) requestId = this.pending.keys().next().value
-    if (!requestId) return false
-    return this.resolve(requestId, response.approved, response.reason ?? 'user_response')
+    if (!response.requestId) {
+      console.warn('[ApprovalBroker] rejected approval response without requestId', {
+        pending: this.pending.size,
+        approved: response.approved,
+      })
+      return false
+    }
+    if (!this.pending.has(response.requestId)) {
+      // 多半是超时自动拒绝之后用户才点的按钮。不能追认，只记一笔。
+      console.warn('[ApprovalBroker] approval response for an unknown request', {
+        pending: this.pending.size,
+        approved: response.approved,
+      })
+      return false
+    }
+    return this.resolve(response.requestId, response.approved, response.reason ?? 'user_response')
   }
 
   denyRun(runId: string): void {

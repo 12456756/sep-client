@@ -67,7 +67,7 @@ describe('InstanceDirectory', () => {
 
   it('refresh bypasses the TTL', async () => {
     let calls = 0
-    let clock = 0
+    const clock = 0
     const directory = new InstanceDirectory(async () => {
       calls += 1
       return [instance('a', 'ACTIVE')]
