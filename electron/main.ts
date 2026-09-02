@@ -19,6 +19,7 @@ import { getDeviceFingerprint } from './auth/device-fingerprint';
 import { login, getInstances, AuthApiError, type ClientInstance } from './auth/auth-api';
 import { AuthSessionManager, AuthenticationRequiredError } from './auth/auth-session-manager';
 import { config } from './infrastructure/config';
+import { settleWithTimeout } from './common/with-timeout';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
 import type {
   AuthError,
@@ -811,9 +812,27 @@ ipcMain.handle(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, async () => {
 
 // ── 4. App lifecycle ──────────────────────────────────────────────────────────
 
+/** 停机预算。必须有界：worker.abort() 与事件落盘都可能卡住（C3/C7）。 */
+const SHUTDOWN_BUDGET_MS = 5_000
+
+let shuttingDown = false
+
+async function stopAllAndDispose(): Promise<void> {
+  if (!taskCoordinator) return
+  await taskCoordinator.stopAll()
+}
+
 app.whenReady().then(async () => {
-  ensureTaskManager()
-  // 延迟到首次任务执行时初始化任务协调器
+  // 必须 await：不 await 的话初始化失败会变成无人处理的 rejection，
+  // 而窗口已经打开，用户看到的是一个"能打开但坏掉"的应用（C3）。
+  try {
+    await ensureTaskManager()
+  } catch (error) {
+    console.error('[main] task manager initialization failed', {
+      error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
+    })
+  }
+  // 任务协调器延迟到首次任务执行时初始化（SDK 加载边界，见 CLAUDE.md）。
   createWindow();
 
   app.on('activate', () => {
@@ -829,8 +848,31 @@ app.on('window-all-closed', () => {
   }
 });
 
-app.on('will-quit', async () => {
-  if (taskCoordinator) {
-    await taskCoordinator.stopAll()
-  }
+// C3：Electron 不 await 生命周期监听器的返回值，原来挂在 will-quit 上的 async
+// stopAll() 在第一个 await 处就被丢下，进程继续退出。改成两阶段：先拦住退出，
+// 在有界预算内收干净，再强制 exit。
+app.on('before-quit', event => {
+  if (shuttingDown) return
+  event.preventDefault()
+  shuttingDown = true
+  const startedAt = Date.now()
+  console.info('[main] shutdown started', { activeRuns: taskCoordinator ? 'unknown' : 0 })
+  void settleWithTimeout(stopAllAndDispose(), SHUTDOWN_BUDGET_MS, 'shutdown')
+    .then(result => {
+      if (result.ok) {
+        console.info('[main] shutdown complete', { elapsedMs: Date.now() - startedAt })
+        return
+      }
+      // 超时说明有 run 没收干净：SIDE_EFFECT_UNKNOWN 可能没落盘，
+      // 下次启动只能靠 markActiveRunsInterrupted 兜底，精度更低。
+      console.error('[main] shutdown did not finish within budget', {
+        elapsedMs: Date.now() - startedAt,
+        budgetMs: SHUTDOWN_BUDGET_MS,
+        timedOut: result.timedOut,
+        error: result.timedOut
+          ? undefined
+          : result.error instanceof Error ? `${result.error.name}: ${result.error.message}` : String(result.error),
+      })
+    })
+    .finally(() => app.exit(0))
 });
