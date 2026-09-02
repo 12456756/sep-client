@@ -294,32 +294,56 @@ export class TaskExecutionCoordinator {
     try {
       do {
         this.pumpRequested = false
-        for (let index = 0; index < this.queue.length;) {
-          const queued = this.queue[index]
+        // 对队列快照迭代，条目一律按 runId 寻址（C1）：本轮的两个挂起点
+        // （getTask 与 authorizeEmployee）期间 pauseTask / cancelTask 可能同步
+        // splice 队列，按下标操作会删掉别的条目。dequeue 返回 false 即说明
+        // 该条目已被别人移走，直接跳过。
+        for (const snapshot of [...this.queue]) {
+          const queued = this.queue.find(entry => entry.runId === snapshot.runId)
+          if (!queued) continue
           const task = await this.taskManager.getTask(queued.taskId)
           if (!task || task.activeRunId !== queued.runId) {
-            this.queue.splice(index, 1)
+            if (this.dequeue(queued.runId)) {
+              console.warn('[TaskExecutionCoordinator] dropped queued run', {
+                taskId: queued.taskId,
+                runId: queued.runId,
+                reason: task ? 'run_no_longer_admitted' : 'task_missing',
+              })
+            }
             continue
           }
           const employee = await this.authorizeEmployee(queued.subscriptionId)
           if (!employee) {
-            this.queue.splice(index, 1)
+            if (!this.dequeue(queued.runId)) continue
+            console.warn('[TaskExecutionCoordinator] dropped queued run', {
+              taskId: queued.taskId,
+              runId: queued.runId,
+              reason: 'employee_unavailable',
+            })
             await this.taskManager.updateTaskStatus(queued.taskId, TaskStatus.FAILED, 'Selected employee is unavailable.')
             await this.taskManager.clearTaskRun(queued.taskId, queued.runId)
             continue
           }
           const releaseWorkspace = this.locks.acquire(queued.runId, task.workDir)
-          if (!releaseWorkspace) {
-            index++
+          if (!releaseWorkspace) continue
+          if (!this.dequeue(queued.runId)) {
+            releaseWorkspace()
             continue
           }
-          this.queue.splice(index, 1)
           void this.startRun(queued, task, employee, releaseWorkspace)
         }
       } while (this.pumpRequested)
     } finally {
       this.pumping = false
     }
+  }
+
+  /** 按 runId 从队列取出条目；返回是否真的取到（C1）。 */
+  private dequeue(runId: string): boolean {
+    const index = this.queue.findIndex(entry => entry.runId === runId)
+    if (index === -1) return false
+    this.queue.splice(index, 1)
+    return true
   }
 
   private async isReadableSessionFile(file: string): Promise<boolean> {
@@ -599,10 +623,18 @@ export class TaskExecutionCoordinator {
     return { id: `${runId}-user`, taskId, turnId: runId, runId, subscriptionId, modelId, role: 'user', content, createdAt: Date.now() }
   }
 
-  private removeQueuedTask(taskId: string): void {
-    for (let index = this.queue.length - 1; index >= 0; index--) {
-      if (this.queue[index].taskId === taskId) this.queue.splice(index, 1)
+  /** 移除某个 task 的全部排队条目，逐条按 runId 取出（C1）。返回被移除的 runId。 */
+  private removeQueuedTask(taskId: string): string[] {
+    const runIds = this.queue.filter(entry => entry.taskId === taskId).map(entry => entry.runId)
+    const removed = runIds.filter(runId => this.dequeue(runId))
+    if (removed.length > 0) {
+      console.warn('[TaskExecutionCoordinator] dropped queued run', {
+        taskId,
+        runId: removed.join(','),
+        reason: 'task_paused_or_cancelled',
+      })
     }
+    return removed
   }
 
   private conversationAdapter(scope: { memberId: string; enterpriseId: string }, taskId: string): SharedPiSessionAdapter {
