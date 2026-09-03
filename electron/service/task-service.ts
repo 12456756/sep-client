@@ -1,0 +1,186 @@
+/**
+ * electron/service/task-service.ts — 任务用例编排
+ *
+ * 服务层的规矩（方案 3.2 / 3.3 节）：不碰 Pi 对象、不发 IPC、不拼文件路径。
+ * 执行能力经 `TaskExecutionPort` 端口注入，所以本文件不 import `runtime/` 的实现，
+ * 也就不会把 pi SDK 拉进来（B2）。
+ *
+ * 参数校验留在控制层（Phase 6 用 zod 表驱动）；这里假定入参已经是合法类型，
+ * 只负责"这件事该怎么做"以及失败时抛哪个错误码。
+ */
+import type { ClientTask, ClientTaskMessage, ClientTaskStats, TaskExecutionEvent } from '../../src/shared/types'
+import type { TaskOwnerScope } from '../data/task-store'
+import type { TaskMetadata, TaskMetadataStore } from '../data/task-metadata-store'
+import type { TaskRunRecord, TaskRunStore } from '../data/task-run-store'
+import type { TaskManager } from '../runtime/task-manager'
+import { AppError } from '../errors/app-error'
+import { requireScope, type ScopeSource } from './scope-guard'
+import type { EmployeeAuthorizer } from './employee-authorizer'
+
+/** 会话恢复模式。与协调器的 SessionRecoveryMode 同集合，这里不 import 实现。 */
+export type SessionRecoveryMode = 'strict' | 'confirm_rebuild' | 'auto_rebuild_from_task_history'
+
+/**
+ * 服务层用到的执行能力。实现是 `runtime/task-execution-coordinator.ts`；
+ * 声明成端口是为了让服务层不依赖协调器本体——它静态 import 了 pi SDK。
+ */
+export interface TaskExecutionPort {
+  executeTask(taskId: string, options?: { conversation?: boolean }): Promise<void>
+  retryTask(taskId: string, options?: { conversation?: boolean }): Promise<void>
+  continueConversation(
+    taskId: string,
+    prompt: string,
+    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean },
+  ): Promise<void>
+  switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void>
+  pauseTask(taskId: string): Promise<void>
+  cancelTask(taskId: string): Promise<void>
+}
+
+export interface TaskServiceDependencies {
+  scope: ScopeSource
+  taskManager: TaskManager
+  taskRunStore: TaskRunStore
+  taskMetadataStore: TaskMetadataStore
+  employees: EmployeeAuthorizer
+  /** 惰性取协调器：它必须在异步边界之后才能加载（Electron 33 / undici 边界）。 */
+  execution: () => Promise<TaskExecutionPort>
+}
+
+export interface CreateTaskInput {
+  title: string
+  prompt: string
+  workDir?: string | undefined
+  subscriptionId: string
+}
+
+export class TaskService {
+  constructor(private readonly deps: TaskServiceDependencies) {}
+
+  /**
+   * 建任务 + 落一份元数据。`task:create` 与 `conversation:create` 的公共部分
+   * （方案 Phase 5：两个 channel 保留为薄入口，渲染进程在用 `task:create`，不能删）。
+   *
+   * 授权必须在建任务之前：建完再发现员工不可用，就留下一个永远跑不起来的任务。
+   */
+  async create(input: CreateTaskInput, kind: TaskMetadata['kind']): Promise<ClientTask> {
+    await this.requireAuthorizedEmployee(input.subscriptionId)
+    const task = await this.deps.taskManager.createTask(
+      input.title,
+      input.prompt,
+      input.workDir,
+      input.subscriptionId,
+    )
+    await this.deps.taskMetadataStore.save(this.scope(), {
+      version: 1,
+      taskId: task.id,
+      kind,
+      participantSubscriptionIds: [input.subscriptionId],
+      currentSubscriptionId: input.subscriptionId,
+      createdAt: Date.now(),
+    })
+    return task
+  }
+
+  /** 首次执行。是不是对话任务由元数据决定，而不是由调用方声明。 */
+  async execute(taskId: string): Promise<void> {
+    const conversation = await this.isConversation(taskId)
+    await (await this.deps.execution()).executeTask(taskId, { conversation })
+  }
+
+  /** 重试。与 execute 一样要先确认任务归属与员工可用性。 */
+  async retry(taskId: string): Promise<void> {
+    const task = await this.requireTask(taskId)
+    await this.requireAuthorizedEmployee(task.subscriptionId)
+    const conversation = await this.isConversation(taskId)
+    await (await this.deps.execution()).retryTask(taskId, { conversation })
+  }
+
+  async pause(taskId: string): Promise<void> {
+    await (await this.deps.execution()).pauseTask(taskId)
+  }
+
+  async cancel(taskId: string): Promise<void> {
+    await (await this.deps.execution()).cancelTask(taskId)
+  }
+
+  /** 删除。任务正在执行时不允许删（判断在 TaskManager 的 commit 闭包内，C9）。 */
+  async delete(taskId: string): Promise<void> {
+    if (!await this.deps.taskManager.deleteTask(taskId)) {
+      throw new AppError('INVALID_STATE', { message: '任务正在执行，无法删除。' })
+    }
+  }
+
+  // ── 查询 ────────────────────────────────────────────────────────────────────
+
+  async get(taskId: string): Promise<ClientTask> {
+    return this.requireTask(taskId)
+  }
+
+  async list(): Promise<ClientTask[]> {
+    return this.deps.taskManager.getAllTasks()
+  }
+
+  async stats(): Promise<ClientTaskStats> {
+    return this.deps.taskManager.getTaskStats()
+  }
+
+  async messages(taskId: string): Promise<ClientTaskMessage[]> {
+    const task = await this.requireTask(taskId)
+    return this.deps.taskRunStore.getMessages(this.scope(), taskId, task.prompt)
+  }
+
+  async listRuns(taskId: string): Promise<TaskRunRecord[]> {
+    await this.requireTask(taskId)
+    return this.deps.taskRunStore.list(this.scope(), taskId)
+  }
+
+  async getRun(taskId: string, runId: string): Promise<TaskRunRecord> {
+    await this.requireTask(taskId)
+    const run = await this.deps.taskRunStore.get(this.scope(), taskId, runId)
+    if (!run) throw new AppError('NOT_FOUND', { message: '未找到该执行记录。' })
+    return run
+  }
+
+  async timeline(taskId: string, runId: string): Promise<TaskExecutionEvent[]> {
+    await this.requireTask(taskId)
+    const scope = this.scope()
+    // 先确认 run 存在，否则"空时间线"与"记录不存在"对用户是同一个结果。
+    if (!await this.deps.taskRunStore.get(scope, taskId, runId)) {
+      throw new AppError('NOT_FOUND', { message: '未找到该执行记录。' })
+    }
+    return this.deps.taskRunStore.getTimeline(scope, taskId, runId)
+  }
+
+  // ── 内部 ────────────────────────────────────────────────────────────────────
+
+  /** 唯一的 scope 取用点，失效清理进行中也在这里被拒（C7）。 */
+  private scope(): TaskOwnerScope {
+    return requireScope(this.deps.scope)
+  }
+
+  private async requireTask(taskId: string): Promise<ClientTask> {
+    const task = await this.deps.taskManager.getTask(taskId)
+    if (!task) throw new AppError('NOT_FOUND', { message: '未找到该任务。' })
+    return task
+  }
+
+  /**
+   * 员工必须当下可用才放行。授权顺带把技能包备好，结果由协调器在入队时复用（C4）。
+   * `subscriptionId` 为空说明任务没绑定员工——那是数据问题，同样不能跑。
+   *
+   * 码是 `INVALID_ARGUMENT`，照搬 Phase 4 之前 handler 里的行为（Phase 5 不改行为）。
+   * 它给用户的文案是"请求参数不合法。"，对"所选员工已不可用"其实是误导——
+   * 错误码表里有更贴切的 `EMPLOYEE_UNAVAILABLE`。换码属行为变更，留作独立提交。
+   */
+  private async requireAuthorizedEmployee(subscriptionId: string | null | undefined): Promise<void> {
+    if (!subscriptionId || !await this.deps.employees.authorize(subscriptionId)) {
+      throw new AppError('INVALID_ARGUMENT')
+    }
+  }
+
+  private async isConversation(taskId: string): Promise<boolean> {
+    const metadata = await this.deps.taskMetadataStore.load(this.scope(), taskId)
+    return metadata?.kind === 'conversation'
+  }
+}

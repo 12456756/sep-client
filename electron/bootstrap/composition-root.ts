@@ -29,6 +29,9 @@ import type { RendererPort } from '../runtime/task-notifier'
 import type { TaskOwnerScope } from '../data/task-store'
 import { EmployeeAuthorizer } from '../service/employee-authorizer'
 import { EmployeeDirectory } from '../service/employee-directory'
+import { ConversationService } from '../service/conversation-service'
+import { TaskService } from '../service/task-service'
+import { WorkflowService } from '../service/workflow-service'
 
 const log = logger.child('composition-root')
 
@@ -55,6 +58,9 @@ class BackendRuntime {
   readonly workflowStore: WorkflowStore
   readonly taskMetadataStore: TaskMetadataStore
   readonly employees: EmployeeAuthorizer
+  readonly tasks: TaskService
+  readonly conversations: ConversationService
+  readonly workflows: WorkflowService
 
   private readonly userDataDir: string
   private readonly renderer: RendererPort
@@ -81,6 +87,19 @@ class BackendRuntime {
       new SubscriptionRuntime(join(userDataDir, 'runtime')),
       config.SEP_GATEWAY_URL,
     )
+
+    // 服务层。`scope: this` 是因为"当前 scope"含了认证失效清理的判断（C7），
+    // 而那份状态归组装根；`execution` 必须是惰性的——协调器只能在异步边界之后加载。
+    const shared = {
+      scope: this,
+      taskManager: this.taskManager,
+      taskMetadataStore: this.taskMetadataStore,
+      employees: this.employees,
+      execution: () => this.getTaskCoordinator(),
+    }
+    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore })
+    this.conversations = new ConversationService({ ...shared, tasks: this.tasks })
+    this.workflows = new WorkflowService({ ...shared, workflowStore: this.workflowStore })
   }
 
   /**
