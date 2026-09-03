@@ -76,6 +76,22 @@ describe('startup ordering', () => {
     assert.match(mainSource, /app\.exit\(1\)/, '组装失败后不能继续开窗')
   })
 
+  it('makes an uncaught exception visible, not just logged', () => {
+    // 不传 onFatal 的话 uncaughtException 只留一条日志，用户面对的是一个状态已不可信
+    // 却毫无提示的应用——第 4.3 节「致命错误可见」只兑现了初始化失败那一半。
+    assert.match(
+      mainSource,
+      /installProcessHandlers\(\{\s*onFatal:/,
+      'installProcessHandlers 必须接上 onFatal',
+    )
+    assert.match(mainSource, /function presentFatalOnce\(/, '致命错误呈现必须收成一个入口')
+    assert.match(
+      mainSource,
+      /if \(fatalPresented\) return/,
+      'showErrorBox 是模态的，反复触发的异常不能弹第二次',
+    )
+  })
+
   it('keeps ipc registration behind a successful assembly', () => {
     const composed = mainSource.indexOf('await createBackend({')
     const registered = mainSource.indexOf('registerIpcHandlers(backend)')

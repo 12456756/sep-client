@@ -51,6 +51,19 @@ const log = logger.child('main');
 /** main -> renderer 的唯一出口，同时持有当前窗口。 */
 const bridge = new RendererBridge();
 
+/**
+ * 致命错误只弹第一次。`uncaughtException` 可能来自定时器或事件监听器而反复触发，
+ * `dialog.showErrorBox` 是模态的，弹第二次起只会让应用彻底没法操作。
+ * 后续异常仍然由 error-reporter 记进日志，不丢。
+ */
+let fatalPresented = false;
+
+function presentFatalOnce(error: unknown): void {
+  if (fatalPresented) return;
+  fatalPresented = true;
+  reportFatal('应用遇到未预期的错误', error, { stage: 'uncaught-exception' });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
@@ -588,8 +601,10 @@ function openMainWindow(): void {
 
 app.whenReady().then(async () => {
   // 报错模块的两件兜底：进程级异常有痕迹，致命错误用户看得见（第 4.3 节）。
+  // onFatal 必须传：不传的话 uncaughtException 只留一条日志，用户面对的是一个
+  // 状态已不可信却毫无提示的应用——正是第 4.3 节要避免的情形。
   setFatalPresenter((title, message) => dialog.showErrorBox(title, message));
-  installProcessHandlers();
+  installProcessHandlers({ onFatal: presentFatalOnce });
   log.info('application ready', { version: app.getVersion(), platform: process.platform });
 
   // 组装必须先成功再开窗。失败就弹中文错误框并退出——留一个"能打开但坏掉"的窗口
