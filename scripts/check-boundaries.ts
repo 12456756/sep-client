@@ -227,6 +227,23 @@ function matchLines(file: SourceFile, pattern: RegExp, detail: (line: string) =>
 }
 
 /**
+ * 整行都是注释。用于那些"匹配的是标识符或字符串字面量"的规则——文档里提到
+ * `task:create` 这样的通道名是必要的说明，不是违规；不排除的话规则会逼人删注释。
+ * 行尾注释不算：那一行上还有真代码。
+ */
+function isCommentLine(line: string): boolean {
+  const trimmed = line.trimStart()
+  return trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')
+}
+
+function matchCodeLines(file: SourceFile, pattern: RegExp, detail: (line: string) => string): Violation[] {
+  return file.lines.flatMap((line, index) =>
+    !isCommentLine(line) && pattern.test(line)
+      ? [{ file: file.path, line: index + 1, detail: detail(line.trim()) }]
+      : [])
+}
+
+/**
  * main -> renderer 推送的唯一出口。方案 3.3 节 B1 的可执行形态：`TaskManager` 原来
  * 自己持有 BrowserWindow 直接 send，Phase 4 换成注入的 `runtime/task-notifier.ts` 接口。
  */
@@ -252,7 +269,7 @@ const layerRules: Rule[] = [
     description: 'ipcMain 与通道字面量只允许出现在 electron/controller/',
     check: files => backendSources(files, 'electron/')
       .filter(file => !file.path.startsWith('electron/controller/'))
-      .flatMap(file => matchLines(
+      .flatMap(file => matchCodeLines(
         file,
         /\bipcMain\b|(['"`])(?:auth|task|conversation|workflow|pi|util):[a-z-]+\1/,
         line => `控制层之外出现 IPC 细节：${line.slice(0, 80)}`,
