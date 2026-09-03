@@ -94,8 +94,8 @@ describe('startup ordering', () => {
 
   it('keeps ipc registration behind a successful assembly', () => {
     const composed = mainSource.indexOf('await createBackend({')
-    const registered = mainSource.indexOf('registerIpcHandlers(backend)')
-    assert.ok(registered > composed, 'handler 必须在 backend 就绪之后注册，才不需要判空')
+    const registered = mainSource.indexOf('registerRoutes(')
+    assert.ok(registered > composed, '路由必须在 backend 就绪之后注册，才不需要判空')
   })
 
   it('never lets the task workspace root fall back to process.cwd()', () => {

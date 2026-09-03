@@ -11,7 +11,8 @@
  */
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import * as ts from 'typescript'
@@ -84,31 +85,60 @@ function channelReferences(relativePath: string, holder: string): Set<string> {
   return found
 }
 
-/** `ipcMain.handle(...)` / `ipcMain.on(...)` 的第一个实参。 */
-function ipcMainRegistrations(): { handle: Set<string>; on: Set<string> } {
-  const source = parse('electron/main.ts')
-  const handle = new Set<string>()
-  const on = new Set<string>()
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      ts.isIdentifier(node.expression.expression) &&
-      node.expression.expression.text === 'ipcMain'
-    ) {
-      const method = node.expression.name.text
-      const first = node.arguments[0]
-      assert.ok(
-        first && ts.isPropertyAccessExpression(first),
-        `ipcMain.${method} must take a channel constant, not a literal: ${node.getText().slice(0, 60)}`,
-      )
-      const target = method === 'handle' ? handle : on
-      target.add(`${(first.expression as ts.Identifier).text}.${first.name.text}`)
+/**
+ * `route(INVOKE_CHANNELS.X, …)` / `listener(SEND_CHANNELS.X, …)` 的第一个实参。
+ *
+ * Phase 6 起注册是表驱动的，`ipcMain` 只出现在 controller/router.ts。所以这里断言的
+ * 对象从"main.ts 里的 ipcMain 调用"换成"routes/ 里的路由声明"——这比原来更强：
+ * 它同时盯住了"第二个参数必须是 schema"（不填 schema 就注册不了）。
+ */
+function routeDeclarations(): { routes: Set<string>; listeners: Set<string>; missingSchema: string[] } {
+  const routes = new Set<string>()
+  const listeners = new Set<string>()
+  const missingSchema: string[] = []
+  for (const file of readdirSync(join(repoRoot, 'electron/controller/routes'))) {
+    if (!file.endsWith('.routes.ts')) continue
+    const source = parse(`electron/controller/routes/${file}`)
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        (node.expression.text === 'route' || node.expression.text === 'listener')
+      ) {
+        const first = node.arguments[0]
+        assert.ok(
+          first && ts.isPropertyAccessExpression(first),
+          `${file}: ${node.expression.text}() 的通道必须是常量，不能是字面量`,
+        )
+        const channel = `${(first.expression as ts.Identifier).text}.${first.name.text}`
+        if (node.arguments.length < 3) missingSchema.push(channel)
+        ;(node.expression.text === 'route' ? routes : listeners).add(channel)
+      }
+      node.forEachChild(visit)
     }
-    node.forEachChild(visit)
+    visit(source)
   }
-  visit(source)
-  return { handle, on }
+  return { routes, listeners, missingSchema }
+}
+
+/**
+ * `ipcMain` 只允许出现在 controller/router.ts（边界 B1）。
+ * 整行注释跳过——`channels.ts` 的注释里必须能写出 `ipcMain.handle` 来说明通道用途，
+ * 那是文档不是注册（与 check-boundaries 的 matchCodeLines 同一套判定）。
+ */
+function ipcMainReferences(): string[] {
+  const found: string[] = []
+  const listed = execFileSync('git', ['ls-files', '-z'], { cwd: repoRoot, encoding: 'utf8' }).split('\0')
+  for (const path of listed) {
+    if (!path.startsWith('electron/') || !path.endsWith('.ts') || path.endsWith('.test.ts')) continue
+    const hit = readFileSync(join(repoRoot, path), 'utf8').split('\n').some(line => {
+      const trimmed = line.trimStart()
+      if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return false
+      return /\bipcMain\b/.test(line)
+    })
+    if (hit) found.push(path)
+  }
+  return found
 }
 
 describe('IPC contract', () => {
@@ -127,16 +157,26 @@ describe('IPC contract', () => {
     assert.equal(new Set(ALL_CHANNELS).size, ALL_CHANNELS.length)
   })
 
-  it('every invoke channel has exactly one main-process handler', () => {
-    const { handle } = ipcMainRegistrations()
+  it('every invoke channel has exactly one route', () => {
+    const { routes } = routeDeclarations()
     const expected = Object.keys(INVOKE_CHANNELS).map(key => `INVOKE_CHANNELS.${key}`)
-    assert.deepEqual([...handle].sort(), expected.sort())
+    assert.deepEqual([...routes].sort(), expected.sort())
   })
 
-  it('every send channel has exactly one main-process listener', () => {
-    const { on } = ipcMainRegistrations()
+  it('every send channel has exactly one listener', () => {
+    const { listeners } = routeDeclarations()
     const expected = Object.keys(SEND_CHANNELS).map(key => `SEND_CHANNELS.${key}`)
-    assert.deepEqual([...on].sort(), expected.sort())
+    assert.deepEqual([...listeners].sort(), expected.sort())
+  })
+
+  it('every route declares a schema', () => {
+    // route() 的第二个参数是必填位置参数，所以这条在编译期就成立；
+    // 断言它是为了防有人给 route 加个"schema 可选"的重载（方案 Phase 6 的结构强制）。
+    assert.deepEqual(routeDeclarations().missingSchema, [])
+  })
+
+  it('keeps ipcMain inside controller/router.ts', () => {
+    assert.deepEqual(ipcMainReferences(), ['electron/controller/router.ts'])
   })
 
   it('preload subscribes to every main-to-renderer event channel', () => {

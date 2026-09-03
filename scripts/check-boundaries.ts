@@ -264,8 +264,7 @@ const layerRules: Rule[] = [
   },
   {
     id: 'B1b:ipc-registration-in-controller',
-    status: 'pending',
-    enforcedAt: 'Phase 6（控制层表驱动）',
+    status: 'enforced',
     description: 'ipcMain 与通道字面量只允许出现在 electron/controller/',
     check: files => backendSources(files, 'electron/')
       .filter(file => !file.path.startsWith('electron/controller/'))
