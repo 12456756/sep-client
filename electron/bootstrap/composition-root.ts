@@ -11,8 +11,8 @@
  */
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
-import { InstanceDirectory } from '../common/platform/instance-directory'
 import { getInstances } from '../common/platform/platform-api'
+import { config } from '../common/config'
 import { lazyAsync, type LazyAsync } from '../common/lazy-async'
 import { logger } from '../common/logger'
 import { describeError } from '../common/redact'
@@ -20,13 +20,15 @@ import { settleWithTimeout } from '../common/with-timeout'
 import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
 import { WorkflowStore } from '../data/workflow-store'
+import { SubscriptionRuntime } from '../pi/sdk/subscription-resource-loader'
 // 必须是 import type：静态加载协调器会把 pi SDK 拉到兼容层之前，
 // Electron 33 上以 `markAsUncloneable is not a function` 崩在启动路径。
 import type { TaskExecutionCoordinator } from '../runtime/task-execution-coordinator'
 import { TaskManager } from '../runtime/task-manager'
 import type { RendererPort } from '../runtime/task-notifier'
 import type { TaskOwnerScope } from '../data/task-store'
-import { EmployeeAccess } from './employee-access'
+import { EmployeeAuthorizer } from '../service/employee-authorizer'
+import { EmployeeDirectory } from '../service/employee-directory'
 
 const log = logger.child('composition-root')
 
@@ -52,7 +54,7 @@ class BackendRuntime {
   readonly taskRunStore: TaskRunStore
   readonly workflowStore: WorkflowStore
   readonly taskMetadataStore: TaskMetadataStore
-  readonly employees: EmployeeAccess
+  readonly employees: EmployeeAuthorizer
 
   private readonly userDataDir: string
   private readonly renderer: RendererPort
@@ -70,11 +72,14 @@ class BackendRuntime {
     this.taskRunStore = new TaskRunStore(userDataDir)
     this.workflowStore = new WorkflowStore(userDataDir)
     this.taskMetadataStore = new TaskMetadataStore(userDataDir)
-    this.employees = new EmployeeAccess(
+    this.employees = new EmployeeAuthorizer(
       this.authSession,
-      // 平台订阅目录：TTL 缓存 + 单飞，避免一个 run 打多次 /client/subscriptions（C4）。
-      new InstanceDirectory(getInstances),
-      join(userDataDir, 'runtime'),
+      // 全后端唯一的平台目录读取点：TTL 缓存 + 单飞，
+      // 避免一个 run 打多次 /client/subscriptions（C4）。
+      new EmployeeDirectory(getInstances),
+      // 技能包准备经端口注入——B2 不允许 service/ 直接依赖 pi/。
+      new SubscriptionRuntime(join(userDataDir, 'runtime')),
+      config.SEP_GATEWAY_URL,
     )
   }
 

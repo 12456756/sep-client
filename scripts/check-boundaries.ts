@@ -260,8 +260,7 @@ const layerRules: Rule[] = [
   },
   {
     id: 'B2:service-purity',
-    status: 'pending',
-    enforcedAt: 'Phase 5（服务层）',
+    status: 'enforced',
     description: 'electron/service/ 不得直接依赖 pi/ 或 @earendil-works/*',
     check: files => backendSources(files, 'electron/service/').flatMap(file => matchLines(
       file,

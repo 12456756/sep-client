@@ -1,17 +1,17 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { InstanceDirectory } from './instance-directory'
-import type { ClientInstance } from './platform-api'
+import { EmployeeDirectory } from './employee-directory'
+import type { ClientInstance } from '../common/platform/platform-api'
 
 function instance(id: string, status: string): ClientInstance {
   return { id, status, template: { id: `${id}-template` }, templateVersion: '1.0.0', allowedModels: ['model-a'] } as unknown as ClientInstance
 }
 
-describe('InstanceDirectory', () => {
+describe('EmployeeDirectory', () => {
   it('serves the cached snapshot inside the TTL without hitting the platform', async () => {
     let calls = 0
     let clock = 1_000
-    const directory = new InstanceDirectory(async () => {
+    const directory = new EmployeeDirectory(async () => {
       calls += 1
       return [instance('a', 'ACTIVE')]
     }, 15_000, () => clock)
@@ -30,7 +30,7 @@ describe('InstanceDirectory', () => {
     let calls = 0
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
-    const directory = new InstanceDirectory(async () => {
+    const directory = new EmployeeDirectory(async () => {
       calls += 1
       await gate
       return [instance('a', 'ACTIVE')]
@@ -43,7 +43,7 @@ describe('InstanceDirectory', () => {
   })
 
   it('keeps only ACTIVE subscriptions', async () => {
-    const directory = new InstanceDirectory(async () => [
+    const directory = new EmployeeDirectory(async () => [
       instance('a', 'ACTIVE'),
       instance('b', 'SUSPENDED'),
       instance('c', 'ACTIVE'),
@@ -54,7 +54,7 @@ describe('InstanceDirectory', () => {
 
   it('propagates failures and does not cache them', async () => {
     let calls = 0
-    const directory = new InstanceDirectory(async () => {
+    const directory = new EmployeeDirectory(async () => {
       calls += 1
       if (calls === 1) throw new Error('platform down')
       return [instance('a', 'ACTIVE')]
@@ -68,7 +68,7 @@ describe('InstanceDirectory', () => {
   it('refresh bypasses the TTL', async () => {
     let calls = 0
     const clock = 0
-    const directory = new InstanceDirectory(async () => {
+    const directory = new EmployeeDirectory(async () => {
       calls += 1
       return [instance('a', 'ACTIVE')]
     }, 60_000, () => clock)
@@ -82,7 +82,7 @@ describe('InstanceDirectory', () => {
 
   it('invalidate drops the snapshot', async () => {
     let calls = 0
-    const directory = new InstanceDirectory(async () => {
+    const directory = new EmployeeDirectory(async () => {
       calls += 1
       return [instance('a', 'ACTIVE')]
     }, 60_000)

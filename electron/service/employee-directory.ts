@@ -1,5 +1,5 @@
 /**
- * electron/common/platform/instance-directory.ts — 平台订阅目录的读取入口
+ * electron/service/employee-directory.ts — 平台订阅目录的读取入口
  *
  * `GET /client/subscriptions` 此前每次授权都打一次，一个 run 至少 3 次往返
  * （IPC handler、coordinator.executeTask、pump 各一次）。这里加 TTL 缓存与单飞去重：
@@ -7,13 +7,16 @@
  *   - TTL 外的并发请求合并成一次往返，避免惊群。
  *
  * 失败不写缓存也不供陈旧数据，保持原有的失败语义：调用方照旧看到错误。
- * 方案第 2 章 C4；Phase 5 会正式落成 service/employee-directory.ts。
+ *
+ * 这里是**全后端唯一的平台目录读取点**（方案 3.2 节）。`snapshot()` 是唯一的目录快照，
+ * 不允许任何调用方再自己存一份副本——C10 就是"两份副本其中一份忘了清"造成的。
+ * 身份变化时必须 `invalidate()`：缓存不按身份分键。
  */
-import type { ClientInstance } from './platform-api'
+import type { ClientInstance } from '../common/platform/platform-api'
 
 const DEFAULT_TTL_MS = 15_000
 
-export class InstanceDirectory {
+export class EmployeeDirectory {
   private cached: { instances: ClientInstance[]; fetchedAt: number } | null = null
   private inFlight: Promise<ClientInstance[]> | null = null
 
