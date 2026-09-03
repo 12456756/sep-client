@@ -19,6 +19,7 @@ import { getDeviceFingerprint } from './common/platform/device-fingerprint';
 import { login, AuthApiError } from './common/platform/platform-api';
 import { AuthenticationRequiredError } from './common/platform/authentication-required-error';
 import { logger } from './common/logger';
+import { appError } from './errors/app-error';
 import { authFailure, failure, type IpcFailure } from './errors/error-mapper';
 import {
   installProcessHandlers,
@@ -191,18 +192,17 @@ function registerIpcHandlers(backend: Backend): void {
     try {
       return { success: true, data: await backend.employees.refresh() };
     } catch (error) {
-      if (error instanceof AuthenticationRequiredError) {
+      // 401 必须触发失效清理，否则用户停在一个令牌已作废的界面上。
+      // 403 不算——那是权限不足，重新登录也不会变（保持 C7 之前就有的判定）。
+      if (
+        error instanceof AuthenticationRequiredError ||
+        (error instanceof AuthApiError && error.isUnauthorized)
+      ) {
         backend.invalidateAuthentication();
-        return { success: false, error: { message: error.message, statusCode: 401 } };
       }
-      if (error instanceof AuthApiError) {
-        if (error.isUnauthorized) backend.invalidateAuthentication();
-        return { success: false, error: { message: error.message, statusCode: error.statusCode } };
-      }
-      return {
-        success: false,
-        error: { message: error instanceof Error ? error.message : 'Unknown error', statusCode: 0 },
-      };
+      // C11：这里原有三处手写信封，把 AuthApiError 的英文 message 直接送进 IPC，
+      // 而 App.tsx 会原样显示；且三条分支都不记日志，平台请求失败在日志里毫无痕迹。
+      return reportFailure(INVOKE_CHANNELS.AUTH_GET_INSTANCES, error, { authenticated: true });
     }
   });
 
@@ -552,7 +552,12 @@ function registerIpcHandlers(backend: Backend): void {
   ipcMain.handle(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, async () => {
     const window = bridge.currentWindow();
     if (!window) {
-      return { success: false, error: { message: 'Main window not available' } };
+      // 渲染进程跑在窗口里，所以这条分支意味着窗口在调用途中被销毁了——
+      // 属于不变式被破坏，走 error 级日志（第 5.2 节），不是静默失败。
+      return reportFailure(
+        INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY,
+        appError('INTERNAL_ERROR', { details: { reason: 'main window unavailable' } }),
+      );
     }
 
     try {
@@ -567,10 +572,7 @@ function registerIpcHandlers(backend: Backend): void {
 
       return { success: true, path: result.filePaths[0] };
     } catch (error) {
-      return {
-        success: false,
-        error: { message: error instanceof Error ? error.message : 'Unknown error' },
-      };
+      return reportFailure(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, error);
     }
   });
 

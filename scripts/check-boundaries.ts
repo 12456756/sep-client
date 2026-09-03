@@ -292,6 +292,31 @@ const layerRules: Rule[] = [
   },
 ]
 
+/**
+ * 唯一允许构造错误信封的目录。方案第 4.2 节：「router.ts 的 catch 调它，业务代码里
+ * 不再出现任何手写的 `{ success: false, error: {...} }`」。
+ *
+ * C11 就是这条没被机器盯住的后果：Phase 2 漏掉 auth:get-instances 与
+ * util:select-directory 共 5 处，于是 AuthApiError 的英文 message 被直送 IPC
+ * （App.tsx 原样显示），而且三条分支都不记日志。
+ */
+const ENVELOPE_FACTORY_DIR = 'electron/errors/'
+
+const errorRules: Rule[] = [
+  {
+    id: 'errors:no-handwritten-envelope',
+    status: 'enforced',
+    description: `错误信封只能由 ${ENVELOPE_FACTORY_DIR} 构造，业务代码走 failure() / reportFailure()`,
+    check: files => backendSources(files, 'electron/')
+      .filter(file => !file.path.startsWith(ENVELOPE_FACTORY_DIR))
+      .flatMap(file => matchLines(
+        file,
+        /\berror:\s*\{/,
+        line => `手写错误信封：${line.slice(0, 80)}`,
+      )),
+  },
+]
+
 /** logger 自身与 undici 兼容层在 logger 可用之前运行，允许裸 console。 */
 const CONSOLE_ALLOWLIST = new Set([
   'electron/common/logger.ts',
@@ -353,7 +378,7 @@ const testRules: Rule[] = [
   },
 ]
 
-const rules: Rule[] = [...encodingRules, ...layerRules, ...loggingRules, ...testRules]
+const rules: Rule[] = [...encodingRules, ...layerRules, ...errorRules, ...loggingRules, ...testRules]
 
 function main(): void {
   const files = loadSourceFiles()
