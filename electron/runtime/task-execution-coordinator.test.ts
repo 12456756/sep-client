@@ -7,6 +7,7 @@ import { TaskStatus } from '../../src/shared/types'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
+import { projectTaskMessages } from '../data/task-message-projector'
 
 const temporaryDirectories: string[] = []
 
@@ -146,7 +147,8 @@ describe('conversation task lifecycle', () => {
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal(count, 2)
     assert.equal(sessionFiles[1], sessionFiles[0])
-    const messages = await runStore.getMessages({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id, 'legacy')
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const messages = await projectTaskMessages({ listRuns: id => runStore.list(scope, id), getTimeline: (id, runId) => runStore.events.getTimeline(scope, id, runId) }, task.id, 'legacy')
     assert.deepEqual(messages.map(message => message.content), ['first', 'answer-1', 'second', 'answer-2'])
   })
 
@@ -186,7 +188,7 @@ describe('conversation task lifecycle', () => {
     assert.equal(settled?.activeRunId, null)
     const runs = await runStore.list({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id)
     assert.equal(runs[0]?.outcome, 'cancelled')
-    const timeline = await runStore.getTimeline({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id, runs[0]!.id)
+    const timeline = await runStore.events.getTimeline({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id, runs[0]!.id)
     assert.ok(timeline.some(event => event.type === 'SIDE_EFFECT_UNKNOWN'))
   })
 })

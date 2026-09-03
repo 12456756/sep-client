@@ -1,25 +1,19 @@
-import {
-  chmod,
-  copyFile,
-  lstat,
-  mkdir,
-  readFile,
-  rename,
-  rm,
-  writeFile,
-} from 'node:fs/promises'
+/**
+ * electron/data/task-store.ts — 任务快照的读写
+ *
+ * 原子写与 `.bak` / 隔离语义在 `atomic-file.ts`，路径推导在 `scope-path.ts`。
+ * 这里只剩两件事：快照的**校验**（跨 scope 的条目一律丢掉）与 scope 级写串行化。
+ */
+import { mkdir, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { TaskStatus, type ClientTask, type ClientTaskLog } from '../../src/shared/types'
 import { describeError } from '../common/redact'
 import { logger } from '../common/logger'
+import { pathExists, readJsonWithBackup, writeJsonAtomic } from './atomic-file'
+import { ScopePath, type TaskOwnerScope } from './scope-path'
+import { WriteChain } from './write-chain'
 
 const log = logger.child('task-store')
-
-export interface TaskOwnerScope {
-  memberId: string
-  enterpriseId: string
-}
 
 export class TaskPersistenceError extends Error {
   constructor(message = 'Task history could not be persisted.') {
@@ -28,39 +22,11 @@ export class TaskPersistenceError extends Error {
   }
 }
 
-export class TaskScopeError extends Error {
-  constructor(message = 'A valid authenticated task scope is required.') {
-    super(message)
-    this.name = 'TaskScopeError'
-  }
-}
-
 interface PersistedTaskStore {
   version: 3
   owner: TaskOwnerScope
   updatedAt: number
   tasks: ClientTask[]
-}
-
-const MAX_SCOPE_SEGMENT_LENGTH = 256
-
-function validateScopeSegment(value: string, name: string): void {
-  if (
-    typeof value !== 'string' ||
-    value.length === 0 ||
-    value.length > MAX_SCOPE_SEGMENT_LENGTH ||
-    value.includes('/') ||
-    value.includes('\\') ||
-    value === '.' ||
-    value === '..'
-  ) {
-    throw new TaskScopeError(`Invalid task scope ${name}.`)
-  }
-}
-
-export function encodeTaskScopeSegment(value: string, name: string): string {
-  validateScopeSegment(value, name)
-  return Buffer.from(value, 'utf8').toString('base64url')
 }
 
 function isTaskStatus(value: unknown): value is ClientTask['status'] {
@@ -154,15 +120,17 @@ export interface TaskStorePort {
   save(scope: TaskOwnerScope, tasks: ClientTask[]): Promise<void>
 }
 
+
 export class TaskStore implements TaskStorePort {
-  private readonly rootDir: string
+  private readonly paths: ScopePath
   private readonly legacyRootDir: string
   private initialized = false
   private initialization: Promise<void> | null = null
-  private readonly writeChains = new Map<string, Promise<void>>()
+  /** 同一 scope 的快照写严格串行（不变式 I5）。 */
+  private readonly writes = new WriteChain()
 
   constructor(private readonly userDataDir: string) {
-    this.rootDir = join(userDataDir, 'task-data', 'v3')
+    this.paths = new ScopePath(userDataDir)
     this.legacyRootDir = join(userDataDir, 'task-data', 'v2')
   }
 
@@ -170,7 +138,7 @@ export class TaskStore implements TaskStorePort {
     if (this.initialized) return
     if (!this.initialization) {
       this.initialization = (async () => {
-        await mkdir(this.rootDir, { recursive: true })
+        await mkdir(this.paths.dataRoot(), { recursive: true })
         await this.removeLegacyStore()
         this.initialized = true
       })()
@@ -178,141 +146,59 @@ export class TaskStore implements TaskStorePort {
     await this.initialization
   }
 
+  /** 读不出来就当空快照：`.bak` 回退与损坏隔离都在 atomic-file 里。 */
   async load(scope: TaskOwnerScope): Promise<ClientTask[]> {
     this.ensureInitialized()
-    const file = this.getTaskFile(scope)
-    const backup = `${file}.bak`
-    if (!await this.pathExists(file)) {
-      if (!await this.pathExists(backup)) return []
-      const recovered = await this.readFile(backup, scope)
-      if (recovered) return recovered
-      await this.quarantine(backup, 'backup')
-      return []
-    }
-
-    const tasks = await this.readFile(file, scope)
-    if (tasks) return tasks
-
-    const recovered = await this.pathExists(backup) ? await this.readFile(backup, scope) : null
-    if (recovered) {
-      try {
-        await copyFile(backup, file)
-      } catch {
-  // 保留备份文件，供下一次加载时使用。
-      }
-      return recovered
-    }
-
-    await this.quarantine(file, 'store')
-    return []
+    const tasks = await readJsonWithBackup(
+      this.paths.taskSnapshotFile(scope),
+      value => parseEnvelope(value, scope),
+    )
+    return tasks ?? []
   }
 
+  /** 同一 scope 的写严格串行（不变式 I5）。前一个失败不影响后一个排队。 */
   save(scope: TaskOwnerScope, tasks: ClientTask[]): Promise<void> {
     this.ensureInitialized()
-    const key = this.getScopeKey(scope)
-    const prior = this.writeChains.get(key) ?? Promise.resolve()
-    const write = prior.catch(() => undefined).then(() => this.writeSnapshot(scope, tasks))
-    this.writeChains.set(key, write)
-    return write.finally(() => {
-      if (this.writeChains.get(key) === write) this.writeChains.delete(key)
-    })
+    return this.writes.run(this.paths.scopeKey(scope), () => this.writeSnapshot(scope, tasks))
   }
 
   getTaskFileForTesting(scope: TaskOwnerScope): string {
-    return this.getTaskFile(scope)
+    return this.paths.taskSnapshotFile(scope)
   }
 
   private async writeSnapshot(scope: TaskOwnerScope, tasks: ClientTask[]): Promise<void> {
-    const file = this.getTaskFile(scope)
-    const directory = join(file, '..')
-    const temporaryFile = `${file}.${randomUUID()}.tmp`
-    const backup = `${file}.bak`
     const envelope: PersistedTaskStore = {
       version: 3,
       owner: { ...scope },
       updatedAt: Date.now(),
       tasks: tasks.map(task => ({ ...task, files: [...task.files], logs: task.logs.map(log => ({ ...log })) })),
     }
-
     try {
-      await mkdir(directory, { recursive: true })
-      await writeFile(temporaryFile, JSON.stringify(envelope), { mode: 0o600 })
-      try {
-        await chmod(temporaryFile, 0o600)
-      } catch {
-  // 在不支持 chmod 的文件系统上，操作系统用户数据目录仍是主要隔离边界。
-      }
-      if (await this.pathExists(file)) {
-        await copyFile(file, backup)
-        await rm(file, { force: true })
-      }
-      await rename(temporaryFile, file)
+      await writeJsonAtomic(this.paths.taskSnapshotFile(scope), envelope)
     } catch (error) {
-      try {
-        await rm(temporaryFile, { force: true })
-        if (!await this.pathExists(file) && await this.pathExists(backup)) await copyFile(backup, file)
-      } catch {
-  // 保留原始持久化错误。
-      }
       throw new TaskPersistenceError(error instanceof Error ? error.message : undefined)
     }
-  }
-
-  private getScopeKey(scope: TaskOwnerScope): string {
-    return `${encodeTaskScopeSegment(scope.enterpriseId, 'enterpriseId')}:${encodeTaskScopeSegment(scope.memberId, 'memberId')}`
-  }
-
-  private getTaskFile(scope: TaskOwnerScope): string {
-    const enterprise = encodeTaskScopeSegment(scope.enterpriseId, 'enterpriseId')
-    const member = encodeTaskScopeSegment(scope.memberId, 'memberId')
-    return join(this.rootDir, enterprise, member, 'tasks.json')
   }
 
   private ensureInitialized(): void {
     if (!this.initialized) throw new TaskPersistenceError('Task store is not initialized.')
   }
 
-  private async readFile(file: string, scope: TaskOwnerScope): Promise<ClientTask[] | null> {
-    try {
-      return parseEnvelope(JSON.parse(await readFile(file, 'utf8')) as unknown, scope)
-    } catch {
-      return null
-    }
-  }
-
-  private async quarantine(file: string, kind: string): Promise<void> {
-    if (!await this.pathExists(file)) return
-    const quarantineFile = `${file}.corrupt-${kind}-${Date.now()}-${randomUUID()}.json`
-    try {
-      await rename(file, quarantineFile)
-    } catch {
-  // 损坏的文件不能阻止应用加载空的数据范围。
-    }
-  }
-
+  /** v2 与更早的单文件历史一律删掉，不迁移——它们的 scope 语义与 v3 不同。 */
   private async removeLegacyStore(): Promise<void> {
     const legacyFile = join(this.userDataDir, 'tasks.json')
-    if (await this.pathExists(this.legacyRootDir)) {
+    if (await pathExists(this.legacyRootDir)) {
       try {
         await rm(this.legacyRootDir, { recursive: true, force: true })
       } catch (error) {
         throw new TaskPersistenceError(error instanceof Error ? error.message : 'Failed to remove v2 task data.')
       }
     }
-    if (!await this.pathExists(legacyFile)) return
+    if (!await pathExists(legacyFile)) return
     try {
       await rm(legacyFile, { force: true })
     } catch (error) {
       log.warn('failed to remove deprecated task history', { cause: describeError(error) })
-    }
-  }
-
-  private async pathExists(path: string): Promise<boolean> {
-    try {
-      await lstat(path)
-      return true
-    } catch {
-      return false
     }
   }
 }

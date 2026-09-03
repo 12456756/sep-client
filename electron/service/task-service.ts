@@ -9,9 +9,10 @@
  * 只负责"这件事该怎么做"以及失败时抛哪个错误码。
  */
 import type { ClientTask, ClientTaskMessage, ClientTaskStats, TaskExecutionEvent } from '../../src/shared/types'
-import type { TaskOwnerScope } from '../data/task-store'
+import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskMetadata, TaskMetadataStore } from '../data/task-metadata-store'
 import type { TaskRunRecord, TaskRunStore } from '../data/task-run-store'
+import { projectTaskMessages } from '../data/task-message-projector'
 import type { TaskManager } from '../runtime/task-manager'
 import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
@@ -127,7 +128,11 @@ export class TaskService {
 
   async messages(taskId: string): Promise<ClientTaskMessage[]> {
     const task = await this.requireTask(taskId)
-    return this.deps.taskRunStore.getMessages(this.scope(), taskId, task.prompt)
+    const scope = this.scope()
+    return projectTaskMessages({
+      listRuns: id => this.deps.taskRunStore.list(scope, id),
+      getTimeline: (id, runId) => this.deps.taskRunStore.events.getTimeline(scope, id, runId),
+    }, taskId, task.prompt)
   }
 
   async listRuns(taskId: string): Promise<TaskRunRecord[]> {
@@ -149,7 +154,7 @@ export class TaskService {
     if (!await this.deps.taskRunStore.get(scope, taskId, runId)) {
       throw new AppError('NOT_FOUND', { message: '未找到该执行记录。' })
     }
-    return this.deps.taskRunStore.getTimeline(scope, taskId, runId)
+    return this.deps.taskRunStore.events.getTimeline(scope, taskId, runId)
   }
 
   // ── 内部 ────────────────────────────────────────────────────────────────────

@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus, type ClientTask } from '../../src/shared/types'
-import { TaskPersistenceError, TaskScopeError, TaskStore } from './task-store'
+import { TaskPersistenceError, TaskStore } from './task-store'
+import { TaskScopeError } from './scope-path'
 import { TaskAdmissionError, TaskManager } from '../runtime/task-manager'
 
 const temporaryDirectories: string[] = []

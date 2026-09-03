@@ -4,6 +4,7 @@ import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskRunStore } from './task-run-store'
+import { projectTaskMessages } from './task-message-projector'
 
 const temporaryDirectories: string[] = []
 
@@ -34,7 +35,7 @@ describe('TaskRunStore', () => {
     assert.equal(record.sessionId, null)
     assert.match(record.sessionDir, /task-a/)
     await store.setSession(owner, 'task-a', 'run-a', { sessionId: 'session-a', sessionFile: 'C:/session.jsonl' })
-    await store.appendEvent(owner, {
+    await store.events.appendEvent(owner, {
       taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
       type: 'text_delta', occurredAt: 1, data: { text: 'hello' },
     })
@@ -77,18 +78,18 @@ describe('TaskRunStore', () => {
     })
     const paths = store.getPaths(owner, 'task-a', 'run-a')
     await appendFile(join(paths.taskDir, 'events.jsonl'), '{broken}\n')
-    await store.appendEvent(owner, {
+    await store.events.appendEvent(owner, {
       taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 2,
       type: 'agent_end', occurredAt: 2, data: { token: 'hidden' },
     })
-    await store.appendEvent(owner, {
+    await store.events.appendEvent(owner, {
       taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
       type: 'agent_start', occurredAt: 1, data: null,
     })
     assert.equal(await store.markActiveRunsInterrupted(owner), 1)
     const record = await store.get(owner, 'task-a', 'run-a')
     assert.equal(record?.outcome, 'interrupted')
-    const timeline = await store.getTimeline(owner, 'task-a', 'run-a')
+    const timeline = await store.events.getTimeline(owner, 'task-a', 'run-a')
     // 显式 sequence 只在推进游标时被采纳（C6）：agent_end 请求 2 被采纳，
     // 随后 agent_start 请求 1 已落在游标之后，改判为 3。落盘顺序因此严格递增（I3），
     // 而旧实现会同时收下 2 和 1。
@@ -108,23 +109,23 @@ describe('TaskRunStore', () => {
       })
     }
     await createRun('run-a', 'first question')
-    await store.appendEvent(owner, {
+    await store.events.appendEvent(owner, {
       taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
       type: 'text_delta', occurredAt: 1, data: { text: 'first ' },
     })
-    await store.appendEvent(owner, {
+    await store.events.appendEvent(owner, {
       taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 2,
       type: 'text_delta', occurredAt: 2, data: { text: 'answer' },
     })
     await store.finish(owner, 'task-a', 'run-a', 'completed')
     await new Promise(resolve => setTimeout(resolve, 2))
     await createRun('run-b', 'follow-up question')
-    await store.appendEvent(owner, {
+    await store.events.appendEvent(owner, {
       taskId: 'task-a', runId: 'run-b', subscriptionId: 'employee-a', sequence: 1,
       type: 'text_delta', occurredAt: 3, data: { text: 'follow-up answer' },
     })
 
-    const messages = await store.getMessages(owner, 'task-a', 'legacy fallback')
+    const messages = await projectTaskMessages({ listRuns: id => store.list(owner, id), getTimeline: (id, runId) => store.events.getTimeline(owner, id, runId) }, 'task-a', 'legacy fallback')
     assert.deepEqual(messages.map(message => [message.role, message.content]), [
       ['user', 'first question'],
       ['assistant', 'first answer'],

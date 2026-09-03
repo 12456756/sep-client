@@ -17,7 +17,8 @@ import { ApprovalBroker } from './approval-runtime'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
-import { TaskStore, type TaskOwnerScope, type TaskStorePort } from '../data/task-store'
+import { TaskStore, type TaskStorePort } from '../data/task-store'
+import type { TaskOwnerScope } from '../data/scope-path'
 
 const SCOPE: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const EMPLOYEE: EmployeeRuntimeConfig = {
@@ -166,7 +167,7 @@ describe('I3 — 每个 run 的事件按 sequence 严格单调递增落盘', () 
       prompt: 'prompt',
     })
 
-    await Promise.all(Array.from({ length: 50 }, (_unused, index) => runStore.appendEvent(SCOPE, {
+    await Promise.all(Array.from({ length: 50 }, (_unused, index) => runStore.events.appendEvent(SCOPE, {
       taskId, runId,
       subscriptionId: EMPLOYEE.subscriptionId,
       sequence: 0,
@@ -175,7 +176,7 @@ describe('I3 — 每个 run 的事件按 sequence 严格单调递增落盘', () 
       data: { text: `chunk-${index}` },
     })))
 
-    const timeline = await runStore.getTimeline(SCOPE, taskId, runId)
+    const timeline = await runStore.events.getTimeline(SCOPE, taskId, runId)
     assert.equal(timeline.length, 50)
     const sequences = timeline.map(event => event.sequence)
     assert.deepEqual(sequences, Array.from({ length: 50 }, (_unused, index) => index + 1))
@@ -213,7 +214,7 @@ describe('I4 — 同一 taskId 的事件处理严格串行', () => {
       .filter(event => event.type === 'text_delta')
       .map(event => (event.data as { text: string }).text)
     assert.deepEqual(texts, Array.from({ length: 12 }, (_unused, index) => `chunk-${index + 1}`))
-    const timeline = await harness.runStore.getTimeline(SCOPE, task.id, harness.handled[0]!.runId)
+    const timeline = await harness.runStore.events.getTimeline(SCOPE, task.id, harness.handled[0]!.runId)
     assert.deepEqual(timeline.map(event => event.sequence), timeline.map((_unused, index) => index + 1))
   })
 })
@@ -324,7 +325,7 @@ describe('I7 — 停机时每个 in-flight 副作用工具都产出一条 SIDE_E
     const runs = await harness.runStore.list(SCOPE, task.id)
     assert.equal(runs.length, 1)
     assert.equal(runs[0]?.outcome, 'interrupted')
-    const timeline = await harness.runStore.getTimeline(SCOPE, task.id, runs[0]!.id)
+    const timeline = await harness.runStore.events.getTimeline(SCOPE, task.id, runs[0]!.id)
     const unknown = timeline.filter(event => event.type === 'SIDE_EFFECT_UNKNOWN')
     assert.equal(unknown.length, 2, '未为每个 in-flight 副作用工具产出 SIDE_EFFECT_UNKNOWN')
     assert.deepEqual(

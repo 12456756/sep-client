@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, rm } from 'node:fs/promises'
-import { join } from 'node:path'
 import type {
   ClientTask,
   ClientTaskLogLevel,
@@ -8,14 +7,8 @@ import type {
   ClientTaskStatus,
 } from '../../src/shared/types'
 import { TaskStatus } from '../../src/shared/types'
-import {
-  TaskPersistenceError,
-  TaskScopeError,
-  TaskStore,
-  type TaskOwnerScope,
-  type TaskStorePort,
-  encodeTaskScopeSegment,
-} from '../data/task-store'
+import { TaskPersistenceError, TaskStore, type TaskStorePort } from '../data/task-store'
+import { ScopePath, TaskScopeError, type TaskOwnerScope } from '../data/scope-path'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
 import {
   assertTaskTransition,
@@ -31,7 +24,8 @@ import { silentTaskNotifier, type TaskNotifier } from './task-notifier'
 const log = logger.child('task-manager')
 
 export { TaskStatus } from '../../src/shared/types'
-export { TaskPersistenceError, TaskScopeError } from '../data/task-store'
+export { TaskPersistenceError } from '../data/task-store'
+export { TaskScopeError } from '../data/scope-path'
 export { TaskAdmissionError, InvalidTaskTransitionError } from '../domain/task-state-machine'
 export type { ClientTask as Task, ClientTaskLog as TaskLog } from '../../src/shared/types'
 
@@ -46,7 +40,7 @@ function cloneTasks(tasks: Map<string, Task>): Map<string, Task> {
 }
 
 export class TaskManager {
-  private readonly userDataDir: string
+  private readonly paths: ScopePath
   private tasks = new Map<string, Task>()
   private readonly notifier: TaskNotifier
   private currentUser: TaskOwnerScope | null = null
@@ -68,7 +62,7 @@ export class TaskManager {
     store: TaskStorePort = new TaskStore(userDataDir),
     runStore: TaskRunStorePort = new TaskRunStore(userDataDir),
   ) {
-    this.userDataDir = userDataDir
+    this.paths = new ScopePath(userDataDir)
     this.notifier = notifier ?? silentTaskNotifier
     this.store = store
     this.runStore = runStore
@@ -171,11 +165,7 @@ export class TaskManager {
   ): Promise<Task> {
     const user = await this.requireCurrentUser()
     const id = randomUUID()
-    const resolvedWorkDir = workDir?.trim() || join(
-      this.userDataDir,
-      'task-workspaces', 'v1', encodeTaskScopeSegment(user.enterpriseId, 'enterpriseId'),
-      encodeTaskScopeSegment(user.memberId, 'memberId'), id,
-    )
+    const resolvedWorkDir = workDir?.trim() || this.paths.defaultWorkspaceDir(user, id)
     await mkdir(resolvedWorkDir, { recursive: true })
     const task: Task = {
       id, title, prompt, status: TaskStatus.PENDING, workDir: resolvedWorkDir,

@@ -12,7 +12,7 @@
  * "认证失效清理进行中"的判断在 `currentScope()` 里面（C7）：那是个半清理状态
  * ——token 已作废、scope 还没清掉——任何需要 scope 的用例都必须直接拒掉。
  */
-import type { TaskOwnerScope } from '../data/task-store'
+import type { TaskOwnerScope } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
 
 /** 提供当前 scope 的一方。实现是 bootstrap/composition-root.ts 的 Backend。 */

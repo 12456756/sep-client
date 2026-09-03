@@ -13,7 +13,8 @@ import { TaskStatus } from '../../src/shared/types'
 import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
 import { InvalidTaskTransitionError, TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
-import { TaskStore, type TaskOwnerScope, type TaskStorePort } from '../data/task-store'
+import { TaskStore, type TaskStorePort } from '../data/task-store'
+import type { TaskOwnerScope } from '../data/scope-path'
 
 const SCOPE: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
@@ -306,13 +307,13 @@ describe('C6 — 事件序号分配是 O(n^2) 文件读，且失败被静默吞�
     const userData = await makeUserDataDir()
     const first = new TaskRunStore(userData)
     await seedRun(userData, first)
-    for (let index = 0; index < 5; index += 1) await first.appendEvent(SCOPE, delta(`a-${index}`))
+    for (let index = 0; index < 5; index += 1) await first.events.appendEvent(SCOPE, delta(`a-${index}`))
 
     // 新实例 = 进程重启后续写。游标必须从文件尾部重建，否则序号会从 1 重来并撞号。
     const second = new TaskRunStore(userData)
-    assert.equal((await second.appendEvent(SCOPE, delta('b-0'))).sequence, 6)
+    assert.equal((await second.events.appendEvent(SCOPE, delta('b-0'))).sequence, 6)
 
-    const timeline = await second.getTimeline(SCOPE, RUN.taskId, RUN.runId)
+    const timeline = await second.events.getTimeline(SCOPE, RUN.taskId, RUN.runId)
     assert.deepEqual(timeline.map(event => event.sequence), [1, 2, 3, 4, 5, 6])
   })
 
@@ -321,10 +322,10 @@ describe('C6 — 事件序号分配是 O(n^2) 文件读，且失败被静默吞�
     const store = new TaskRunStore(userData)
     await seedRun(userData, store)
     // 每条约 30KB，三条就超过 64KB 的尾部预算，回读时开头的半行会被切掉。
-    for (let index = 0; index < 3; index += 1) await store.appendEvent(SCOPE, delta('x'.repeat(30_000)))
+    for (let index = 0; index < 3; index += 1) await store.events.appendEvent(SCOPE, delta('x'.repeat(30_000)))
 
     const restarted = new TaskRunStore(userData)
-    assert.equal((await restarted.appendEvent(SCOPE, delta('after'))).sequence, 4, '尾部回读没拿到最大序号')
+    assert.equal((await restarted.events.appendEvent(SCOPE, delta('after'))).sequence, 4, '尾部回读没拿到最大序号')
   })
 
   it('reports a failed event append instead of leaving an unhandled rejection', async () => {

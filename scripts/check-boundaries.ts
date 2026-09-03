@@ -286,8 +286,7 @@ const layerRules: Rule[] = [
   },
   {
     id: 'B3:data-purity',
-    status: 'pending',
-    enforcedAt: 'Phase 7（数据层归一）',
+    status: 'enforced',
     description: 'electron/data/ 不得依赖 service/ 或 runtime/',
     check: files => backendSources(files, 'electron/data/').flatMap(file => matchLines(
       file,

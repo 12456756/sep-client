@@ -634,7 +634,7 @@ export class TaskExecutionCoordinator {
 
     const scope = this.taskManager.getCurrentUserScope()
     const persistedEvent = scope && this.taskRunStore
-      ? await this.taskRunStore.appendEvent(scope, event)
+      ? await this.taskRunStore.events.appendEvent(scope, event)
       : event
 
     if (persistedEvent.type === 'text_delta') {
@@ -673,7 +673,7 @@ export class TaskExecutionCoordinator {
     const key = `${scope.enterpriseId}:${scope.memberId}:${taskId}`
     let store = this.conversationStores.get(key)
     if (!store && this.taskRunStore) {
-      store = new ConversationContextStore(this.taskRunStore.getPaths(scope, taskId, 'store').taskDir)
+      store = new ConversationContextStore(this.taskRunStore.getTaskDir(scope, taskId))
       this.conversationStores.set(key, store)
     }
     if (!store) throw new Error('Conversation storage is unavailable.')
