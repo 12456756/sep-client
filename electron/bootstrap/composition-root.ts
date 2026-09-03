@@ -108,8 +108,11 @@ class BackendRuntime {
   /**
    * 认证失效清理进行中。此时 token 已经作废、scope 还没清掉，是个半清理状态；
    * 任何任务操作都必须直接拒掉，不能在这个状态上继续写数据（C7）。
+   *
+   * 私有：外部只该问 `currentScope()`，这个判断是它的一部分——留成公开方法就等于
+   * 邀请调用方自己拼"先判失效中、再取 scope"，那正是 12 处重复守卫的来路。
    */
-  authenticationInvalidating(): boolean {
+  private authenticationInvalidating(): boolean {
     return this.authenticationCleanup !== null
   }
 

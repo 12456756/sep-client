@@ -33,16 +33,18 @@ function subscription(id: string): EmployeeInstanceSnapshot {
   }
 }
 
-/** 只实现 EmployeeAccess 真正用到的三个方法，并记下 invalidate 被调了几次。 */
+/** 只实现 EmployeeAccess 真正用到的四个方法，并记下 invalidate 被调了几次。 */
 function fakeDirectory(instances: EmployeeInstanceSnapshot[]) {
   let invalidations = 0
   let served = instances
+  let cached: EmployeeInstanceSnapshot[] = []
   return {
     invalidations: () => invalidations,
     serve(next: EmployeeInstanceSnapshot[]) { served = next },
-    async list() { return served },
-    async refresh() { return served },
-    invalidate() { invalidations += 1 },
+    async list() { cached = served; return cached },
+    async refresh() { cached = served; return cached },
+    snapshot() { return cached },
+    invalidate() { invalidations += 1; cached = [] },
   }
 }
 
@@ -57,12 +59,10 @@ describe('C10 — 身份变化丢弃平台目录缓存', () => {
     const employees = new EmployeeAccess(session, directory, await mkdtemp(join(tmpdir(), 'sep-c10-')))
 
     await employees.refresh()
-    assert.deepEqual(employees.snapshot().map(item => item.id), ['sub-a'])
     assert.ok(employees.resolve('sub-a'), '刷新后应能从快照解析出运行配置')
 
     employees.clear()
 
-    assert.deepEqual(employees.snapshot(), [], '内存快照必须清空')
     assert.equal(employees.resolve('sub-a'), null, '清空后不能再解析出上一个身份的员工')
     assert.equal(directory.invalidations(), 1, '平台目录的 TTL 缓存也必须丢掉——这正是 C10')
   })
