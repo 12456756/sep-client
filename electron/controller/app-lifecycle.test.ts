@@ -97,6 +97,16 @@ describe('startup ordering', () => {
     const registered = mainSource.indexOf('registerIpcHandlers(backend)')
     assert.ok(registered > composed, 'handler 必须在 backend 就绪之后注册，才不需要判空')
   })
+
+  it('never lets the task workspace root fall back to process.cwd()', () => {
+    // 协调器的默认值是 process.cwd()，打包后那是安装目录；这个根是 workDir 为空时
+    // pi 真正落文件的位置（workspaceDir / .pi-runs / .pi-sessions）。
+    assert.match(
+      compositionSource,
+      /getTaskWorkspaceRoot: \(\) => join\(this\.userDataDir, 'task-workspaces'\)/,
+      '组装根必须显式注入任务工作区根目录',
+    )
+  })
 })
 
 describe('authentication invalidation', () => {

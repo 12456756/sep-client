@@ -179,6 +179,10 @@ class BackendRuntime {
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: subscriptionId => this.employees.authorize(subscriptionId),
       userDataDir: this.userDataDir,
+      // 必须显式注入：协调器的默认值是 `process.cwd()`，打包后那是安装目录，
+      // 而这个根被用作 workDir 为空时的兜底（workspaceDir 与 .pi-runs/.pi-sessions），
+      // 也就是 pi 真正落文件的位置。指向 TaskManager 放默认工作区的同一棵树。
+      getTaskWorkspaceRoot: () => join(this.userDataDir, 'task-workspaces'),
     })
     log.info('task coordinator loaded')
     return coordinator
