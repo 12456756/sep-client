@@ -9,11 +9,10 @@ import { WorkspaceLockManager } from './workspace-lock-manager'
 import { ConversationContextStore, type ConversationMessage } from '../domain/conversation-context'
 import type { SharedPiSessionAdapter } from '../pi/sdk/shared-session-adapter'
 import { ConversationRecoveryError } from './conversation-recovery-error'
+import { hasSideEffects } from '../common/constants'
 import { logger } from '../common/logger'
 
 const log = logger.child('task-execution-coordinator')
-
-const SIDE_EFFECT_TOOLS = new Set(['bash', 'write', 'edit'])
 
 interface Deferred {
   promise: Promise<void>
@@ -651,7 +650,7 @@ export class TaskExecutionCoordinator {
       await this.taskManager.updateTaskStatus(event.taskId, TaskStatus.RUNNING)
     } else if (event.type === 'tool_execution_start') {
       const data = event.data as { toolId?: unknown; toolName?: unknown }
-      if (typeof data.toolId === 'string' && typeof data.toolName === 'string' && SIDE_EFFECT_TOOLS.has(data.toolName)) {
+      if (typeof data.toolId === 'string' && typeof data.toolName === 'string' && hasSideEffects(data.toolName)) {
         let pending = this.inFlightSideEffects.get(event.runId)
         if (!pending) {
           pending = new Map()

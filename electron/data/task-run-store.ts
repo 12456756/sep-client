@@ -3,6 +3,7 @@ import type { FileHandle } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ClientTaskMessage, TaskExecutionEvent } from '../../src/shared/types'
+import { hasSideEffects } from '../common/constants'
 import { redactOptionalText, redactValue } from '../common/redact'
 import {
   TaskPersistenceError,
@@ -267,7 +268,7 @@ export class TaskRunStore implements TaskRunStorePort {
           const data = event.data as { toolId?: unknown; toolName?: unknown }
           if (
             typeof data.toolId !== 'string' || completedToolIds.has(data.toolId) ||
-            typeof data.toolName !== 'string' || !['bash', 'write', 'edit'].includes(data.toolName)
+            typeof data.toolName !== 'string' || !hasSideEffects(data.toolName)
           ) continue
           await this.appendEvent(scope, {
             taskId,

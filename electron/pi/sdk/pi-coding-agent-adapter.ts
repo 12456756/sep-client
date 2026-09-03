@@ -19,9 +19,9 @@ import type {
 } from './pi-agent-runtime'
 import { redactText, redactValue } from '../../common/redact'
 import {
-  APPROVAL_TOOLS,
   READ_ONLY_TOOLS,
   buildBearerAuthorizationHeader,
+  requiresToolApproval,
 } from '../../../pi-extension'
 import { logger } from '../../common/logger'
 
@@ -220,7 +220,7 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
       if (READ_ONLY_TOOLS.has(toolName)) return { block: false }
-      if (!APPROVAL_TOOLS.has(toolName)) {
+      if (!requiresToolApproval(toolName)) {
         await config.reportPolicyEvent?.('unknown_tool_blocked', {
           toolName,
           reason: 'Unknown tools are denied by default.',
