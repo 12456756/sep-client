@@ -5,6 +5,38 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ApprovalBroker } from './approval-runtime'
 import { WorkspaceLockManager } from './workspace-lock-manager'
+import { AdmissionQueue } from './admission-queue'
+import { createRunCompletion, WorkerRegistry } from './worker-registry'
+import { EventPipeline } from './event-pipeline'
+import type { ActiveRun, QueuedRun } from './run-contracts'
+import type { TaskExecutionEvent } from '../../src/shared/types'
+
+function queued(runId: string, taskId = `task-of-${runId}`): QueuedRun {
+  return {
+    taskId,
+    runId,
+    subscriptionId: 'employee-a',
+    employee: { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' },
+    prompt: 'hello',
+    conversation: false,
+  }
+}
+
+function activeRun(taskId: string, runId: string): ActiveRun {
+  return {
+    taskId,
+    runId,
+    subscriptionId: 'employee-a',
+    releaseWorkspace: () => {},
+    worker: { run: async () => {}, abort: async () => {}, dispose: async () => {} },
+    control: 'none',
+    completion: Promise.resolve(),
+  }
+}
+
+function event(taskId: string, runId: string, type: string): TaskExecutionEvent {
+  return { taskId, runId, subscriptionId: 'employee-a', sequence: 0, type, occurredAt: 1, data: null } as TaskExecutionEvent
+}
 
 const temporaryDirectories: string[] = []
 
@@ -110,5 +142,170 @@ describe('ApprovalBroker', () => {
 
     broker.denyAll()
     assert.equal(await next, false, 'bash 未经用户批准就被放行')
+  })
+})
+
+// C1：队列只能按 runId 寻址。这些用例断言的是"写不出按下标的 bug"，
+// 而不只是"当前实现正确"。
+describe('AdmissionQueue', () => {
+  it('takes by runId, and reports whether this call is the one that took it', () => {
+    const queue = new AdmissionQueue()
+    queue.push(queued('run-a'))
+    queue.push(queued('run-b'))
+
+    assert.equal(queue.take('run-a'), true)
+    assert.equal(queue.take('run-a'), false, '第二次 take 必须返回 false，否则同一 run 会被启动两次')
+    assert.equal(queue.size, 1)
+    assert.equal(queue.find('run-b')?.runId, 'run-b')
+    assert.equal(queue.find('run-a'), undefined)
+  })
+
+  it('keeps the snapshot stable while the live queue is mutated underneath it', () => {
+    const queue = new AdmissionQueue()
+    for (const runId of ['run-a', 'run-b', 'run-c']) queue.push(queued(runId))
+
+    const seen: string[] = []
+    for (const entry of queue.snapshot()) {
+      // 模拟挂起点期间 pauseTask 同步移走了另一个条目。
+      if (entry.runId === 'run-a') queue.take('run-b')
+      seen.push(entry.runId)
+    }
+
+    assert.deepEqual(seen, ['run-a', 'run-b', 'run-c'], '快照必须完整走完，不受同步移除影响')
+    assert.equal(queue.find('run-b'), undefined)
+    assert.deepEqual([queue.take('run-b'), queue.take('run-c')], [false, true], '被别人取走的条目不得再次取到')
+  })
+
+  it('lists the run IDs belonging to one task without exposing an index', () => {
+    const queue = new AdmissionQueue()
+    queue.push(queued('run-a', 'task-1'))
+    queue.push(queued('run-b', 'task-2'))
+    queue.push(queued('run-c', 'task-1'))
+
+    assert.deepEqual(queue.runIdsFor('task-1'), ['run-a', 'run-c'])
+    assert.deepEqual(queue.runIdsFor('task-missing'), [])
+  })
+})
+
+describe('WorkerRegistry', () => {
+  // C2：完成信号必须在建仓之前就可用，否则建仓抛出时等 completion 的人永远等不到。
+  it('creates a completion signal that is settleable before anything else exists', async () => {
+    const completion = createRunCompletion()
+    let settled = false
+    void completion.promise.then(() => { settled = true })
+
+    completion.settle()
+    completion.settle()
+    await completion.promise
+    assert.equal(settled, true)
+  })
+
+  it('holds at most one active run per task and only forgets the current one', () => {
+    const registry = new WorkerRegistry()
+    const first = activeRun('task-1', 'run-a')
+    const second = activeRun('task-1', 'run-b')
+
+    registry.register(first)
+    assert.equal(registry.active('task-1'), first)
+    assert.equal(registry.isCurrent(first), true)
+
+    registry.register(second)
+    assert.equal(registry.size, 1, '不变式 I1：同一 task 最多一条 active run')
+    assert.equal(registry.isCurrent(first), false)
+
+    registry.forget(first)
+    assert.equal(registry.active('task-1'), second, '过期的 run 不得把后来者踢出注册表')
+
+    registry.forget(second)
+    assert.equal(registry.size, 0)
+  })
+
+  it('lists every active run across tasks', () => {
+    const registry = new WorkerRegistry()
+    registry.register(activeRun('task-1', 'run-a'))
+    registry.register(activeRun('task-2', 'run-b'))
+    assert.deepEqual(registry.list().map(run => run.runId).sort(), ['run-a', 'run-b'])
+  })
+})
+
+describe('EventPipeline', () => {
+  // 不变式 I4：同一 taskId 的事件严格按到达顺序处理。
+  it('processes the events of one task in arrival order even when handling is slow', async () => {
+    const handled: string[] = []
+    const pipeline = new EventPipeline({
+      handle: async received => {
+        await new Promise(resolve => setTimeout(resolve, received.type === 'first' ? 20 : 0))
+        handled.push(received.type)
+      },
+    })
+
+    const all = [
+      pipeline.enqueue(event('task-1', 'run-a', 'first')),
+      pipeline.enqueue(event('task-1', 'run-a', 'second')),
+      pipeline.enqueue(event('task-1', 'run-a', 'third')),
+    ]
+    await Promise.all(all)
+    assert.deepEqual(handled, ['first', 'second', 'third'])
+  })
+
+  // C6 的另一半：链条错误交回调用方，不再被静默吞掉。
+  it('hands a handler failure back to the caller and keeps the chain usable', async () => {
+    const handled: string[] = []
+    const pipeline = new EventPipeline({
+      handle: async received => {
+        if (received.type === 'boom') throw new Error('persist failed')
+        handled.push(received.type)
+      },
+    })
+
+    await assert.rejects(pipeline.enqueue(event('task-1', 'run-a', 'boom')), /persist failed/)
+    await pipeline.enqueue(event('task-1', 'run-a', 'after'))
+    assert.deepEqual(handled, ['after'])
+  })
+
+  // C6：drain 必须是屏障——等待期间接上来的新事件也要等到。
+  it('drains events enqueued while the drain is already waiting', async () => {
+    const handled: string[] = []
+    const pipeline: EventPipeline = new EventPipeline({
+      handle: async received => {
+        handled.push(received.type)
+        if (received.type === 'first') void pipeline.enqueue(event('task-1', 'run-a', 'follow-up'))
+      },
+    })
+
+    void pipeline.enqueue(event('task-1', 'run-a', 'first'))
+    await pipeline.drain('task-1')
+    assert.deepEqual(handled, ['first', 'follow-up'], 'drain 期间接上来的事件也必须排空')
+  })
+
+  it('accumulates text deltas per run and yields them exactly once', () => {
+    const pipeline = new EventPipeline({ handle: async () => {} })
+    pipeline.appendResponse('run-a', 'Hello, ')
+    pipeline.appendResponse('run-a', 'world')
+    pipeline.appendResponse('run-b', 'other')
+
+    assert.equal(pipeline.takeResponse('run-a'), 'Hello, world')
+    assert.equal(pipeline.takeResponse('run-a'), undefined)
+    assert.equal(pipeline.takeResponse('run-b'), 'other')
+  })
+
+  // 不变式 I7：只有副作用工具需要 SIDE_EFFECT_UNKNOWN；判定点只有一个。
+  it('tracks only side-effecting tools as in-flight, and clears them on end', () => {
+    const pipeline = new EventPipeline({ handle: async () => {} })
+    pipeline.sideEffectStarted('run-a', 'tool-1', 'bash', 100)
+    pipeline.sideEffectStarted('run-a', 'tool-2', 'read', 101)
+    pipeline.sideEffectStarted('run-a', 'tool-3', 'write', 102)
+
+    assert.deepEqual(
+      pipeline.pendingSideEffects('run-a').map(([toolId, pending]) => [toolId, pending.toolName]),
+      [['tool-1', 'bash'], ['tool-3', 'write']],
+      'read 不是副作用工具，不该被登记',
+    )
+
+    pipeline.sideEffectEnded('run-a', 'tool-1')
+    assert.deepEqual(pipeline.pendingSideEffects('run-a').map(([toolId]) => toolId), ['tool-3'])
+
+    pipeline.forgetRun('run-a')
+    assert.deepEqual(pipeline.pendingSideEffects('run-a'), [])
   })
 })

@@ -14,16 +14,16 @@ import type { TaskMetadata, TaskMetadataStore } from '../data/task-metadata-stor
 import type { TaskRunRecord, TaskRunStore } from '../data/task-run-store'
 import { projectTaskMessages } from '../data/task-message-projector'
 import type { TaskManager } from '../runtime/task-manager'
+import type { SessionRecoveryMode } from '../runtime/run-contracts'
 import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 
-/** 会话恢复模式。与协调器的 SessionRecoveryMode 同集合，这里不 import 实现。 */
-export type SessionRecoveryMode = 'strict' | 'confirm_rebuild' | 'auto_rebuild_from_task_history'
-
 /**
  * 服务层用到的执行能力。实现是 `runtime/task-execution-coordinator.ts`；
  * 声明成端口是为了让服务层不依赖协调器本体——它静态 import 了 pi SDK。
+ * 词汇（`SessionRecoveryMode` 等）取自 `runtime/run-contracts.ts`，那是个零依赖的
+ * 类型模块，import 它不会把 SDK 拉进来。
  */
 export interface TaskExecutionPort {
   executeTask(taskId: string, options?: { conversation?: boolean }): Promise<void>

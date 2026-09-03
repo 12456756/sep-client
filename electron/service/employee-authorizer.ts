@@ -12,8 +12,9 @@
  */
 import type { ClientInstance } from '../common/platform/platform-api'
 // import type 会被编译擦除，所以不构成对 runtime/ 的运行时依赖；
-// EmployeeRuntimeConfig 是协调器的入参契约，定义点留在协调器那边（Phase 8 再评估）。
-import type { EmployeeRuntimeConfig } from '../runtime/task-execution-coordinator'
+// EmployeeRuntimeConfig 是协调器的入参契约。定义点在 runtime/run-contracts.ts——
+// 那是个零依赖的类型模块，import 它不会把 pi SDK 拉进服务层（B2）。
+import type { EmployeeRuntimeConfig } from '../runtime/run-contracts'
 
 /** 只用会话的这两件事，按最小需要声明，测试才好替。 */
 export interface SessionTokens {

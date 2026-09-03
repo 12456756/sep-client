@@ -1,10 +1,11 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
-import { TaskExecutionCoordinator, type EmployeeRuntimeConfig } from './task-execution-coordinator'
+import { TaskExecutionCoordinator } from './task-execution-coordinator'
+import type { EmployeeRuntimeConfig } from './run-contracts'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
 import { projectTaskMessages } from '../data/task-message-projector'
@@ -190,5 +191,56 @@ describe('conversation task lifecycle', () => {
     assert.equal(runs[0]?.outcome, 'cancelled')
     const timeline = await runStore.events.getTimeline({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id, runs[0]!.id)
     assert.ok(timeline.some(event => event.type === 'SIDE_EFFECT_UNKNOWN'))
+  })
+})
+
+// Phase 8 把协调器拆成"编排者 + 五个协作者"，前提是外部看到的东西一个字都不变。
+// 这里按源码字面量钉住 8 个公开方法的签名：拆分把方法搬进协作者、或顺手改个参数，
+// 都会在这里失败，而不是等到渲染进程调用时才发现。
+const PUBLIC_SIGNATURES = [
+  'async executeTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {',
+  'async continueConversation(',
+  'async switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void> {',
+  'async retryTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {',
+  'async pauseTask(taskId: string): Promise<void> {',
+  'async cancelTask(taskId: string): Promise<void> {',
+  'async stopAll(): Promise<void> {',
+  'respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {',
+]
+
+describe('TaskExecutionCoordinator public surface', () => {
+  it('keeps exactly the eight documented methods, with unchanged signatures', async () => {
+    const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-execution-coordinator.ts'), 'utf8')
+
+    for (const signature of PUBLIC_SIGNATURES) {
+      assert.ok(source.includes(`  ${signature}`), `公开方法签名变了: ${signature}`)
+    }
+
+    // 缩进两格且不以 private/readonly 开头的成员声明就是公开成员。多出一个也算破约。
+    const declared = source
+      .split(/\r?\n/)
+      .flatMap(line => /^ {2}(?:async )?([A-Za-z_$][\w$]*)\(/.exec(line)?.slice(1, 2) ?? [])
+      .filter(name => name !== 'constructor')
+    assert.deepEqual(
+      declared.sort(),
+      [
+        'cancelTask', 'continueConversation', 'executeTask', 'pauseTask',
+        'respondToApproval', 'retryTask', 'stopAll', 'switchConversationEmployee',
+      ],
+      '公开方法集合变了：协调器只应暴露这 8 个',
+    )
+  })
+
+  it('delegates to the five collaborators instead of owning their state', async () => {
+    const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-execution-coordinator.ts'), 'utf8')
+
+    for (const collaborator of ['AdmissionQueue', 'WorkerRegistry', 'EventPipeline', 'WorkspaceLockManager', 'ApprovalBroker']) {
+      assert.ok(source.includes(collaborator), `协调器必须经 ${collaborator} 工作`)
+    }
+
+    // 拆分前这些状态直接长在协调器上。搬回去就等于把 C1/C2/C6 的修法拆散了。
+    for (const field of ['this.queue', 'this.activeByTask', 'this.eventChains', 'this.responseBuffers', 'this.inFlightSideEffects']) {
+      assert.ok(!source.includes(field), `${field} 已迁入协作者，协调器不得重新持有`)
+    }
   })
 })

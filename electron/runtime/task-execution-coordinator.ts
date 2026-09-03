@@ -1,3 +1,18 @@
+/**
+ * electron/runtime/task-execution-coordinator.ts — 执行编排者（Phase 8）
+ *
+ * 拆分之后这个文件只做编排：把一次 run 的生命周期串起来，具体机制交给五个协作者。
+ *   - `AdmissionQueue`        准入队列，按 runId 寻址（C1）
+ *   - `WorkerRegistry`        在跑的 run + 完成信号（C2、不变式 I1）
+ *   - `EventPipeline`         事件串行化 / drain / 派生状态（C6、I4、I7）
+ *   - `WorkspaceLockManager`  工作目录互斥（I2）
+ *   - `ApprovalBroker`        工具授权与 60s 超时自动拒绝
+ *
+ * 8 个公开方法的签名不变：executeTask / continueConversation /
+ * switchConversationEmployee / retryTask / pauseTask / cancelTask / stopAll /
+ * respondToApproval。协调器自己只保留三样东西：调度循环 `pump()`、一次 run 的
+ * 建仓与收尾 `startRun()` / `finalizeRun()`、以及会话上下文的按 scope 缓存。
+ */
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { TaskStatus, type TaskExecutionEvent, type ToolAuthorizationRequest } from '../../src/shared/types'
@@ -9,29 +24,19 @@ import { WorkspaceLockManager } from './workspace-lock-manager'
 import { ConversationContextStore, type ConversationMessage } from '../domain/conversation-context'
 import type { SharedPiSessionAdapter } from '../pi/sdk/shared-session-adapter'
 import { ConversationRecoveryError } from './conversation-recovery-error'
-import { hasSideEffects } from '../common/constants'
+import { AdmissionQueue } from './admission-queue'
+import { EventPipeline } from './event-pipeline'
+import { createRunCompletion, WorkerRegistry } from './worker-registry'
+import type {
+  ActiveRun,
+  EmployeeRuntimeConfig,
+  QueuedRun,
+  SessionRecoveryMode,
+  TaskWorkerPort,
+} from './run-contracts'
 import { logger } from '../common/logger'
 
 const log = logger.child('task-execution-coordinator')
-
-interface Deferred {
-  promise: Promise<void>
-  resolve: () => void
-}
-
-/** 在 try 之前就建好，保证 finally 里一定有可调用的 resolve（C2）。 */
-function createDeferred(): Deferred {
-  let resolve!: () => void
-  const promise = new Promise<void>(settle => { resolve = settle })
-  return { promise, resolve }
-}
-
-export interface EmployeeRuntimeConfig {
-  subscriptionId: string
-  modelId: string
-  gatewayUrl: string
-  additionalSkillPaths?: string[]
-}
 
 export interface TaskExecutionCoordinatorOptions {
   taskManager: TaskManager
@@ -47,39 +52,6 @@ export interface TaskExecutionCoordinatorOptions {
   getTaskWorkspaceRoot?: () => string
 }
 
-type ControlIntent = 'none' | 'pause' | 'cancel' | 'interrupt'
-
-interface ActiveRun {
-  taskId: string
-  runId: string
-  subscriptionId: string
-  releaseWorkspace: () => void
-  worker: TaskWorkerPort
-  control: ControlIntent
-  completion: Promise<void>
-}
-
-interface QueuedRun {
-  taskId: string
-  runId: string
-  subscriptionId: string
-  /** 入队前授权一次的结果，随条目携带（C4）。调度循环内只读，不再发网络请求。 */
-  employee: EmployeeRuntimeConfig
-  prompt: string
-  conversation: boolean
-  resumeSessionFile?: string
-  workerPrompt?: string
-  degradedRecovery?: { originalSessionFile: string; mode: SessionRecoveryMode }
-}
-
-export type SessionRecoveryMode = 'strict' | 'confirm_rebuild' | 'auto_rebuild_from_task_history'
-
-interface TaskWorkerPort {
-  run(prompt: string): Promise<void>
-  abort(): Promise<void>
-  dispose(): Promise<void>
-}
-
 export class TaskExecutionCoordinator {
   private readonly taskManager: TaskManager
   private readonly getRefreshToken: () => string
@@ -91,16 +63,17 @@ export class TaskExecutionCoordinator {
   private readonly getTaskWorkspaceRoot: () => string
   private readonly locks: WorkspaceLockManager
   private readonly approvalBroker: ApprovalBroker
-  private readonly queue: QueuedRun[] = []
+  /** 准入队列。runId 寻址，没有任何按下标的接口（C1）。 */
+  private readonly admission = new AdmissionQueue()
   private pumping = false
   private pumpRequested = false
-  private readonly activeByTask = new Map<string, ActiveRun>()
+  /** 在跑的 run 与完成信号（C2 / 不变式 I1）。 */
+  private readonly workers = new WorkerRegistry()
+  /** 事件串行化 + drain + 派生状态（C6）。 */
+  private readonly events: EventPipeline
   private readonly createWorker: (options: PiTaskWorkerOptions) => TaskWorkerPort
-  private readonly eventChains = new Map<string, Promise<void>>()
   private readonly conversationStores = new Map<string, ConversationContextStore>()
   private readonly conversationAdapters = new Map<string, SharedPiSessionAdapter>()
-  private readonly responseBuffers = new Map<string, string>()
-  private readonly inFlightSideEffects = new Map<string, Map<string, { toolName: string; startedAt: number }>>()
 
   constructor(options: TaskExecutionCoordinatorOptions) {
     this.taskManager = options.taskManager
@@ -113,6 +86,7 @@ export class TaskExecutionCoordinator {
     this.taskRunStore = options.taskRunStore ?? (options.userDataDir ? new TaskRunStore(options.userDataDir) : null)
     this.getTaskWorkspaceRoot = options.getTaskWorkspaceRoot ?? (() => process.cwd())
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
+    this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvalBroker = new ApprovalBroker({
       onRequest: async request => {
         await this.enqueueEvent({
@@ -162,7 +136,7 @@ export class TaskExecutionCoordinator {
     await this.taskManager.admitTask(taskId, runId)
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
-    this.queue.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: options.conversation === true })
+    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: options.conversation === true })
     void this.pump()
   }
 
@@ -225,7 +199,7 @@ export class TaskExecutionCoordinator {
     await this.taskManager.admitTask(taskId, runId)
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
-    this.queue.push({ taskId, runId, subscriptionId: employeeId, employee, prompt: prompt.trim(), conversation: true, resumeSessionFile, workerPrompt, degradedRecovery })
+    this.admission.push({ taskId, runId, subscriptionId: employeeId, employee, prompt: prompt.trim(), conversation: true, resumeSessionFile, workerPrompt, degradedRecovery })
     void this.pump()
   }
 
@@ -240,7 +214,7 @@ export class TaskExecutionCoordinator {
   }
 
   async pauseTask(taskId: string): Promise<void> {
-    const active = this.activeByTask.get(taskId)
+    const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
       const task = await this.taskManager.getTask(taskId)
@@ -257,7 +231,7 @@ export class TaskExecutionCoordinator {
   }
 
   async cancelTask(taskId: string): Promise<void> {
-    const active = this.activeByTask.get(taskId)
+    const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
       const task = await this.taskManager.getTask(taskId)
@@ -284,7 +258,7 @@ export class TaskExecutionCoordinator {
 
   async stopAll(): Promise<void> {
     this.approvalBroker.denyAll()
-    await Promise.all(Array.from(this.activeByTask.values()).map(async active => {
+    await Promise.all(this.workers.list().map(async active => {
       active.control = 'interrupt'
       await this.enqueueEvent({
         taskId: active.taskId,
@@ -316,15 +290,15 @@ export class TaskExecutionCoordinator {
       do {
         this.pumpRequested = false
         // 对队列快照迭代，条目一律按 runId 寻址（C1）：本轮的两个挂起点
-        // （getTask 与 authorizeEmployee）期间 pauseTask / cancelTask 可能同步
-        // splice 队列，按下标操作会删掉别的条目。dequeue 返回 false 即说明
-        // 该条目已被别人移走，直接跳过。
-        for (const snapshot of [...this.queue]) {
-          const queued = this.queue.find(entry => entry.runId === snapshot.runId)
+        // （getTask 与工作区加锁）期间 pauseTask / cancelTask 会同步移除队列
+        // 条目，按下标操作会删掉别的条目。`take()` 返回 false 就说明该条目
+        // 已被别人取走，直接跳过。
+        for (const snapshot of this.admission.snapshot()) {
+          const queued = this.admission.find(snapshot.runId)
           if (!queued) continue
           const task = await this.taskManager.getTask(queued.taskId)
           if (!task || task.activeRunId !== queued.runId) {
-            if (this.dequeue(queued.runId)) {
+            if (this.admission.take(queued.runId)) {
               log.warn('dropped queued run', {
                 taskId: queued.taskId,
                 runId: queued.runId,
@@ -336,7 +310,7 @@ export class TaskExecutionCoordinator {
           // C4：调度循环内禁止任何网络调用。授权已在入队前完成，配置随条目携带；
           // 这里只用同步快照做一次存活性检查——一次慢的平台请求不该拖住全局准入。
           if (!this.resolveEmployee(queued.subscriptionId)) {
-            if (!this.dequeue(queued.runId)) continue
+            if (!this.admission.take(queued.runId)) continue
             log.warn('dropped queued run', {
               taskId: queued.taskId,
               runId: queued.runId,
@@ -348,7 +322,7 @@ export class TaskExecutionCoordinator {
           }
           const releaseWorkspace = this.locks.acquire(queued.runId, task.workDir)
           if (!releaseWorkspace) continue
-          if (!this.dequeue(queued.runId)) {
+          if (!this.admission.take(queued.runId)) {
             releaseWorkspace()
             continue
           }
@@ -358,14 +332,6 @@ export class TaskExecutionCoordinator {
     } finally {
       this.pumping = false
     }
-  }
-
-  /** 按 runId 从队列取出条目；返回是否真的取到（C1）。 */
-  private dequeue(runId: string): boolean {
-    const index = this.queue.findIndex(entry => entry.runId === runId)
-    if (index === -1) return false
-    this.queue.splice(index, 1)
-    return true
   }
 
   private async isReadableSessionFile(file: string): Promise<boolean> {
@@ -408,7 +374,9 @@ export class TaskExecutionCoordinator {
     // 一抛就再也走不到 finally，该工作目录被永久锁死且没有任何日志。
     let worker: TaskWorkerPort | null = null
     let active: ActiveRun | null = null
-    const settled = createDeferred()
+    // C2：完成信号必须在建仓之前就建好，否则建仓抛出时 finally 里没有可调用的 settle，
+    // 等 completion 的 pauseTask / cancelTask / stopAll 会永远等下去。
+    const completion = createRunCompletion()
     let runCreated = false
     try {
       const runPaths = scope && this.taskRunStore
@@ -447,9 +415,8 @@ export class TaskExecutionCoordinator {
         },
         sessionAdapter: queued.conversation && scope ? this.conversationAdapter(scope, taskId) : undefined,
       })
-      const completion = settled.promise
-      active = { taskId, runId, subscriptionId, releaseWorkspace, worker, control: 'none', completion }
-      this.activeByTask.set(taskId, active)
+      active = { taskId, runId, subscriptionId, releaseWorkspace, worker, control: 'none', completion: completion.promise }
+      this.workers.register(active)
 
       if (scope && this.taskRunStore) {
         await this.taskRunStore.create(scope, {
@@ -481,8 +448,8 @@ export class TaskExecutionCoordinator {
       }
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       await worker.run(queued.workerPrompt ?? queued.prompt)
-      await this.drainEvents(taskId)
-      if (this.activeByTask.get(taskId) !== active) return
+      await this.events.drain(taskId)
+      if (!this.workers.isCurrent(active)) return
       await this.finalizeRun(active, queued, scope, runCreated)
       return
     } catch (error) {
@@ -504,53 +471,23 @@ export class TaskExecutionCoordinator {
           .catch(() => undefined)
       }
     } finally {
-      this.responseBuffers.delete(runId)
-      this.inFlightSideEffects.delete(runId)
+      this.events.forgetRun(runId)
       if (worker) await worker.dispose().catch(() => undefined)
       releaseWorkspace()
-      if (active && this.activeByTask.get(taskId) === active) this.activeByTask.delete(taskId)
+      if (active) this.workers.forget(active)
       const currentTask = await this.taskManager.getTask(taskId).catch(() => null)
       if (currentTask?.activeRunId === runId) await this.taskManager.clearTaskRun(taskId, runId).catch(() => undefined)
-      settled.resolve()
-      void this.pump()    }
-  }
-
-  private enqueueEvent(event: TaskExecutionEvent): Promise<void> {
-    const prior = this.eventChains.get(event.taskId) ?? Promise.resolve()
-    const operation = prior.catch(() => undefined).then(() => this.handleWorkerEvent(event))
-    const chain = operation.then(() => undefined)
-    this.eventChains.set(event.taskId, chain)
-    // C6：链条错误不再被静默吞掉。这里必须 catch——chain 是 operation 的分支，
-    // 不接就是一条未处理拒绝；但错误本身要记下来，事件落盘失败此前完全无痕。
-    void chain
-      .catch(error => {
-        log.error('failed to persist task event', {
-          taskId: event.taskId,
-          runId: event.runId,
-          type: event.type,
-          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error as unknown),
-        })
-      })
-      .finally(() => {
-        if (this.eventChains.get(event.taskId) === chain) this.eventChains.delete(event.taskId)
-      })
-    return operation
+      completion.settle()
+      void this.pump()
+    }
   }
 
   /**
-   * 等到该 task 的事件链真正排空。
-   *
-   * C6：原来 startRun 只 `await this.eventChains.get(taskId)` 一次，那不是屏障——
-   * 等待期间接上来的新事件不在这次等待里。这里循环到链表项消失为止（链条 settle 时
-   * 自己会把 map 项删掉）。上限只为防跑飞的事件流把停机拖死。
+   * 事件入列。串行化、错误上报、排空全在 `EventPipeline` 里（C6）——协调器只是把
+   * 自己造的事件和 worker 报上来的事件汇到同一个入口。
    */
-  private async drainEvents(taskId: string): Promise<void> {
-    for (let round = 0; round < 1_000; round += 1) {
-      const chain = this.eventChains.get(taskId)
-      if (!chain) return
-      await chain.catch(() => undefined)
-    }
-    log.warn('event chain did not drain', { taskId })
+  private enqueueEvent(event: TaskExecutionEvent): Promise<void> {
+    return this.events.enqueue(event)
   }
 
   private async finalizeRun(
@@ -570,8 +507,9 @@ export class TaskExecutionCoordinator {
           : failure ? 'failed' : 'completed'
     const error = failure instanceof Error ? failure.message : failure ? String(failure) : undefined
     if (active.control !== 'none' || failure) {
-      const pending = this.inFlightSideEffects.get(active.runId)
-      for (const [toolId, tool] of pending ?? []) {
+      // I7：每个还没收到 tool_execution_end 的副作用调用都必须留下一条
+      // SIDE_EFFECT_UNKNOWN，否则下次启动无法判定副作用是否已经发生。
+      for (const [toolId, tool] of this.events.pendingSideEffects(active.runId)) {
         await this.enqueueEvent({
           taskId: active.taskId,
           runId: active.runId,
@@ -605,18 +543,17 @@ export class TaskExecutionCoordinator {
         data: error ? { error } : null,
       })
     }
-    const response = this.responseBuffers.get(active.runId)
+    const response = this.events.takeResponse(active.runId)
     if (response && scope && queued.conversation) {
       await this.conversationStore(scope, active.taskId).appendMessage({
         id: `${active.runId}-assistant`, taskId: active.taskId, turnId: active.runId, runId: active.runId,
         subscriptionId: active.subscriptionId, modelId: employee.modelId, role: 'assistant', content: response, createdAt: Date.now(),
       })
-      this.responseBuffers.delete(active.runId)
     }
     if (runCreated && scope && this.taskRunStore) {
       await this.taskRunStore.finish(scope, active.taskId, active.runId, outcome, error)
     }
-    if (this.activeByTask.get(active.taskId) === active) {
+    if (this.workers.isCurrent(active)) {
       const nextStatus = active.control === 'interrupt'
         ? TaskStatus.INTERRUPTED
         : active.control === 'pause'
@@ -629,7 +566,7 @@ export class TaskExecutionCoordinator {
   }
 
   private async handleWorkerEvent(event: TaskExecutionEvent): Promise<void> {
-    const active = this.activeByTask.get(event.taskId)
+    const active = this.workers.active(event.taskId)
     if (!active || active.runId !== event.runId) return
 
     const scope = this.taskManager.getCurrentUserScope()
@@ -639,9 +576,7 @@ export class TaskExecutionCoordinator {
 
     if (persistedEvent.type === 'text_delta') {
       const data = persistedEvent.data as { text?: unknown }
-      if (typeof data.text === 'string') {
-        this.responseBuffers.set(persistedEvent.runId, `${this.responseBuffers.get(persistedEvent.runId) ?? ''}${data.text}`)
-      }
+      if (typeof data.text === 'string') this.events.appendResponse(persistedEvent.runId, data.text)
     }
 
     if (event.type === 'approval_requested') {
@@ -650,18 +585,14 @@ export class TaskExecutionCoordinator {
       await this.taskManager.updateTaskStatus(event.taskId, TaskStatus.RUNNING)
     } else if (event.type === 'tool_execution_start') {
       const data = event.data as { toolId?: unknown; toolName?: unknown }
-      if (typeof data.toolId === 'string' && typeof data.toolName === 'string' && hasSideEffects(data.toolName)) {
-        let pending = this.inFlightSideEffects.get(event.runId)
-        if (!pending) {
-          pending = new Map()
-          this.inFlightSideEffects.set(event.runId, pending)
-        }
-        pending.set(data.toolId, { toolName: data.toolName, startedAt: event.occurredAt })
+      if (typeof data.toolId === 'string' && typeof data.toolName === 'string') {
+        // 是不是副作用工具由 EventPipeline 判定——hasSideEffects 只有一个调用点。
+        this.events.sideEffectStarted(event.runId, data.toolId, data.toolName, event.occurredAt)
       }
       await this.taskManager.addTaskLog(event.taskId, `执行工具: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
     } else if (event.type === 'tool_execution_end') {
       const data = event.data as { toolId?: unknown; toolName?: unknown }
-      if (typeof data.toolId === 'string') this.inFlightSideEffects.get(event.runId)?.delete(data.toolId)
+      if (typeof data.toolId === 'string') this.events.sideEffectEnded(event.runId, data.toolId)
       await this.taskManager.addTaskLog(event.taskId, `工具执行完成: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
     } else if (event.type === 'auto_retry_start') {
       await this.taskManager.addTaskLog(event.taskId, 'Automatic retry started.', 'warning')
@@ -686,8 +617,7 @@ export class TaskExecutionCoordinator {
 
   /** 移除某个 task 的全部排队条目，逐条按 runId 取出（C1）。返回被移除的 runId。 */
   private removeQueuedTask(taskId: string): string[] {
-    const runIds = this.queue.filter(entry => entry.taskId === taskId).map(entry => entry.runId)
-    const removed = runIds.filter(runId => this.dequeue(runId))
+    const removed = this.admission.runIdsFor(taskId).filter(runId => this.admission.take(runId))
     if (removed.length > 0) {
       log.warn('dropped queued run', {
         taskId,
