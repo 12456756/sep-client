@@ -6,7 +6,8 @@
 import { ArrowLeft, MessageSquareText, Send, SlidersHorizontal, Workflow, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { PermissionPanel } from '../../components/enterprise/PermissionPanel';
-import { AvailabilityChip, Empty, EmployeeAvatar, SkillStateChip } from '../../components/enterprise/atoms';
+import { AvailabilityChip, Empty, SkillStateChip } from '../../components/enterprise/atoms';
+import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { EMPLOYEE_AVAILABILITY, relativeTime } from '../../features/enterprise/vocabulary';
 
@@ -36,9 +37,9 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
       </button>
 
       <header className="ent-detail-head ent-card pad">
-        <EmployeeAvatar mark={employee.mark} size="lg" dim={!employee.assignedToMe} />
+        <EmployeeFace seed={employee.id} size="lg" />
         <div className="ent-detail-id">
-          <h1>{employee.name}</h1>
+          {/* 名字在顶栏（见 ClientAppPage），这张卡只补它的身份与状态。 */}
           <p>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''} · 员工包 {employee.version}</p>
           <div className="ent-detail-chips">
             <AvailabilityChip value={employee.availability} />
@@ -51,7 +52,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
             <MessageSquareText size={14} aria-hidden />
             开始对话
           </button>
-          <button type="button" className="ent-btn" onClick={() => workspace.navigate({ name: 'arrange', custom: true })} disabled={!employee.assignedToMe}>
+          <button type="button" className="ent-btn" onClick={() => workspace.navigate({ name: 'arrange', mode: 'chat', employeeId: employee.id })} disabled={!employee.assignedToMe}>
             <Workflow size={14} aria-hidden />
             安排工作
           </button>

@@ -3,10 +3,14 @@ import type { ClientTask, ClientTaskMessage, EmployeeInstanceSnapshot, TaskExecu
 import { ClientAppPage } from './ClientAppPage';
 
 const now = Date.now();
+/** 预览里放六位员工：首页员工墙一行铺四张卡，两行才看得出换行和气泡的位置。 */
 const previewInstances: EmployeeInstanceSnapshot[] = [
   { id: 'preview-content', name: '运营文案助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'content', name: '内容运营', avatar: '文' }, department: { id: 'marketing', name: '市场部' }, allowedModels: ['gpt-5.2'] },
   { id: 'preview-analysis', name: '数据分析助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'analysis', name: '数据分析', avatar: '数' }, department: { id: 'data', name: '数据部' }, allowedModels: ['gpt-5.2'] },
   { id: 'preview-review', name: '交付审核助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'review', name: '审核校对', avatar: '审' }, department: { id: 'quality', name: '质量部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-support', name: '客户支持助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'support', name: '客户支持', avatar: '客' }, department: { id: 'service', name: '客服部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-research', name: '市场调研助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'research', name: '市场调研', avatar: '研' }, department: { id: 'marketing', name: '市场部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-design', name: '设计助理', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'design', name: '视觉设计', avatar: '设' }, department: { id: 'design', name: '设计部' }, allowedModels: ['gpt-5.2'] },
 ];
 
 const planSteps = [
@@ -16,10 +20,32 @@ const planSteps = [
 ];
 const workflowPrompt = (goal: string) => `[SEP_WORKFLOW_TASK]\n分析报告\n\n工作目标：\n${goal}\n\n[SEP_TASK_PLAN]\n${JSON.stringify({ goal, steps: planSteps })}`;
 
+/**
+ * 多人协作的工作。走新的 [SEP_WORK_META] 编码（见 work-mapping），
+ * 这样工作详情页才读得出参与员工和步骤 —— 上面那个 legacy 编码只带得出一位员工。
+ */
+const teamPrompt = (goal: string) => {
+  const steps = [
+    { id: 'step-1', employeeId: 'preview-research', title: '收集竞品活动资料', input: '活动周期与竞品名单', output: '竞品活动资料汇总', dependsOn: [] as string[], needsConfirm: false },
+    { id: 'step-2', employeeId: 'preview-analysis', title: '分析活动转化率', input: '竞品资料与本次活动数据', output: '转化率分析结果', dependsOn: ['step-1'], needsConfirm: false },
+    { id: 'step-3', employeeId: 'preview-content', title: '生成活动复盘报告', input: '转化率分析结果', output: '618 活动复盘报告', dependsOn: ['step-2'], needsConfirm: true },
+  ];
+  const meta = {
+    kind: 'flow' as const,
+    goal,
+    steps,
+    participants: ['preview-research', 'preview-analysis', 'preview-content'],
+    sharedContext: { goal, confirmedInputs: ['活动数据在「运营/618」文件夹', '上季度复盘可作为格式参考'], previousResults: [], userNotes: [] },
+  };
+  return `618 活动复盘报告\n\n工作目标：\n${goal}\n\n[SEP_WORK_META]${JSON.stringify(meta)}`;
+};
+
 let previewTasks: ClientTask[] = [
+  { id: 'preview-team', title: '618 活动复盘报告', prompt: teamPrompt('复盘 618 活动的投放与转化，产出可交付的复盘报告'), status: 'running', workDir: 'D:/workspace/618-analysis', createdAt: now - 136 * 60_000, startedAt: now - 130 * 60_000, completedAt: null, error: null, files: ['D:/workspace/618-analysis/活动数据分析.xlsx', 'D:/workspace/618-analysis/关键结论汇总.pptx'], logs: [{ timestamp: now - 130 * 60_000, message: '市场调研助手已接单' }, { timestamp: now - 96 * 60_000, message: '整理竞品活动资料' }, { timestamp: now - 74 * 60_000, message: '读取 12 个数据文件' }, { timestamp: now - 38 * 60_000, message: '完成数据清洗' }, { timestamp: now - 12 * 60_000, message: '正在分析活动转化率' }], progress: 72, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-analysis', activeRunId: 'preview-run-0' },
   { id: 'preview-running', title: '整理季度经营数据', prompt: workflowPrompt('整理季度经营数据并生成管理层分析报告'), status: 'running', workDir: 'D:/workspace/quarter-report', createdAt: now - 28 * 60_000, startedAt: now - 25 * 60_000, completedAt: null, error: null, files: ['D:/workspace/quarter-report/clean-data.xlsx'], logs: [{ timestamp: now - 20 * 60_000, message: '数据分析助手已接单' }, { timestamp: now - 6 * 60_000, message: '已完成数据清理，正在整理报告' }], progress: 62, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-analysis', activeRunId: 'preview-run-1' },
-  { id: 'preview-failed', title: '官网内容更新', prompt: workflowPrompt('更新官网产品介绍并完成发布前审核'), status: 'failed', workDir: 'D:/workspace/website', createdAt: now - 3 * 60 * 60_000, startedAt: now - 2.8 * 60 * 60_000, completedAt: now - 2.5 * 60 * 60_000, error: '输入文件不可用', files: [], logs: [{ timestamp: now - 2.5 * 60 * 60_000, message: '读取输入文件失败', level: 'error' }], progress: 34, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-content', activeRunId: null },
+  { id: 'preview-failed', title: '官网内容更新', prompt: workflowPrompt('更新官网产品介绍并完成发布前审核'), status: 'failed', workDir: 'D:/workspace/website', createdAt: now - 3 * 60 * 60_000, startedAt: now - 2.8 * 60 * 60_000, completedAt: now - 2.5 * 60 * 60_000, error: '输入文件不可用', files: [], logs: [{ timestamp: now - 2.5 * 60 * 60_000, message: '读取输入文件失败', level: 'error' }], progress: 34, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-research', activeRunId: null },
   { id: 'preview-delivered', title: '上周项目进展周报', prompt: workflowPrompt('整理上周项目进展并生成周报'), status: 'completed', workDir: 'D:/workspace/weekly-report', createdAt: now - 24 * 60 * 60_000, startedAt: now - 23 * 60 * 60_000, completedAt: now - 22 * 60 * 60_000, error: null, files: ['D:/workspace/weekly-report/weekly-report.docx'], logs: [{ timestamp: now - 22 * 60 * 60_000, message: '最终报告已完成' }], progress: 100, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-content', activeRunId: null },
+  { id: 'preview-waiting', title: '客户续约风险清单', prompt: workflowPrompt('整理本月到期客户的续约风险清单'), status: 'waiting_approval', workDir: 'D:/workspace/renewal', createdAt: now - 50 * 60_000, startedAt: now - 46 * 60_000, completedAt: null, error: null, files: [], logs: [{ timestamp: now - 8 * 60_000, message: '清单已整理好，等你确认口径' }], progress: 70, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-support', activeRunId: null },
 ];
 
 const taskListeners = new Set<(task: ClientTask) => void>();

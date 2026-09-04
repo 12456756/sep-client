@@ -24,14 +24,15 @@ export const TERM_MAP: Record<string, string> = {
 
 interface StatusPresentation {
   label: string;
-  /** 语义色 token 名，对应 enterprise.css 中的 --state-* 变量。 */
+  /** 语义色档位，对应 enterprise.css 里的 .ent-chip.*。 */
   tone: 'ready' | 'busy' | 'attention' | 'danger' | 'muted';
   /** 一句话解释，用于 title 与无障碍说明。 */
   hint: string;
 }
 
 export const EMPLOYEE_AVAILABILITY: Record<EmployeeAvailability, StatusPresentation> = {
-  ready: { label: '可工作', tone: 'ready', hint: '现在就能接受新的工作安排' },
+  ready: { label: '空闲', tone: 'ready', hint: '现在就能接受新的工作安排' },
+  // 「工作中」和工作的「正在进行」共用主色浅底（设计稿如此），不另分一支颜色。
   working: { label: '工作中', tone: 'busy', hint: '正在处理其他工作，可以排队' },
   'needs-auth': { label: '需要授权', tone: 'attention', hint: '需要你开启本机操作权限后才能开始' },
   unavailable: { label: '暂时不可用', tone: 'muted', hint: '企业暂停了这位员工，或授权已到期' },
@@ -87,6 +88,33 @@ export function relativeTime(at: number | null, now = Date.now()): string {
 
 export function clockTime(at: number): string {
   return new Date(at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+/** 「今天 14:32」「昨天 18:21」「8月27日 14:20」。抽屉和工作详情页都按这个写时间。 */
+export function dayTimeText(at: number, now = Date.now()): string {
+  const time = new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+  const start = (value: number) => { const day = new Date(value); day.setHours(0, 0, 0, 0); return day.getTime(); };
+  const days = Math.round((start(now) - start(at)) / DAY);
+  if (days <= 0) return `今天 ${time}`;
+  if (days === 1) return `昨天 ${time}`;
+  return `${new Date(at).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })} ${time}`;
+}
+
+/** 「1 小时 32 分钟」。用于「已进行」「耗时」，不足一分钟按「不到 1 分钟」。 */
+export function durationText(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / MINUTE));
+  if (total < 1) return '不到 1 分钟';
+  const hours = Math.floor(total / 60);
+  const minutes = total % 60;
+  if (!hours) return `${minutes} 分钟`;
+  return minutes ? `${hours} 小时 ${minutes} 分钟` : `${hours} 小时`;
+}
+
+/** 完整时间点，用于工作详情页的「开始时间 / 完成时间」。 */
+export function stampText(at: number): string {
+  const date = new Date(at);
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /** 「已完成 3 / 5 个步骤」。步骤数为 0 时不显示分母。 */

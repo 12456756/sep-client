@@ -82,7 +82,7 @@ export function decodeWorkMeta(prompt: string): WorkMeta | null {
       kind: parsed.kind,
       goal: typeof parsed.goal === 'string' ? parsed.goal : '',
       templateId: typeof parsed.templateId === 'string' ? parsed.templateId : undefined,
-      steps: Array.isArray(parsed.steps) ? parsed.steps.filter(isStepShape) : [],
+      steps: normalizeSteps(parsed.steps),
       participants: Array.isArray(parsed.participants) ? parsed.participants.filter(item => typeof item === 'string') : [],
       sharedContext: normalizeContext(parsed.sharedContext),
       stopReason: typeof parsed.stopReason === 'string' ? parsed.stopReason : null,
@@ -92,10 +92,31 @@ export function decodeWorkMeta(prompt: string): WorkMeta | null {
   }
 }
 
-function isStepShape(value: unknown): value is Omit<WorkStep, 'state' | 'employeeName'> {
-  if (!value || typeof value !== 'object') return false;
-  const item = value as Record<string, unknown>;
-  return typeof item.id === 'string' && typeof item.employeeId === 'string' && typeof item.title === 'string';
+/**
+ * 步骤反序列化。老工作的步骤只有 inheritPrevious（单亲链），
+ * 这里按「依赖上一步」还原成依赖图 —— 不转换的话历史工作的步骤清单会全部断链。
+ */
+function normalizeSteps(raw: unknown): Omit<WorkStep, 'state' | 'employeeName'>[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Omit<WorkStep, 'state' | 'employeeName'>[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const source = item as Record<string, unknown>;
+    if (typeof source.id !== 'string' || typeof source.employeeId !== 'string' || typeof source.title !== 'string') continue;
+    const previous = out[out.length - 1];
+    out.push({
+      id: source.id,
+      employeeId: source.employeeId,
+      title: source.title,
+      input: typeof source.input === 'string' ? source.input : '',
+      output: typeof source.output === 'string' ? source.output : '',
+      dependsOn: Array.isArray(source.dependsOn)
+        ? source.dependsOn.filter((dep): dep is string => typeof dep === 'string')
+        : source.inheritPrevious && previous ? [previous.id] : [],
+      needsConfirm: source.needsConfirm === true,
+    });
+  }
+  return out;
 }
 
 function normalizeContext(value: unknown): SharedContext {
@@ -202,6 +223,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, active
     deliverables: task.files.map((file, index) => ({
       id: `${task.id}-file-${index}`,
       name: file.split(/[\\/]/).pop() || file,
+      path: file,
       note: '由员工在工作过程中产出',
     })),
     timeline: buildTimeline(task, kind, nameOf(currentEmployeeId)),

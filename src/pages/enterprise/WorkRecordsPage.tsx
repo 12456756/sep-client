@@ -9,7 +9,8 @@
 
 import { AlertTriangle, ChevronDown, Copy, FileCheck2, History, MessageSquareText, Search, StopCircle, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Empty, EmployeeAvatar, WorkStatusChip } from '../../components/enterprise/atoms';
+import { Empty, WorkStatusChip } from '../../components/enterprise/atoms';
+import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { WorkItem } from '../../features/enterprise/types';
 import { clockTime, relativeTime } from '../../features/enterprise/vocabulary';
@@ -128,7 +129,7 @@ export function WorkRecordsPage({ workspace }: Props) {
                   const person = workspace.myEmployees.find(item => item.id === id);
                   return (
                     <span key={id} title={person?.name ?? '已停用的员工'}>
-                      <EmployeeAvatar mark={person?.mark ?? '员'} size="sm" dim={id !== work.currentEmployeeId} />
+                      <EmployeeFace seed={id} size="sm" round />
                       {person?.name ?? '已停用的员工'}
                     </span>
                   );

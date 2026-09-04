@@ -88,11 +88,37 @@ export interface WorkStep {
   input: string;
   /** 产生什么结果。 */
   output: string;
-  /** 上一步结果是否交给这一步。 */
-  inheritPrevious: boolean;
+  /**
+   * 需要哪些上游步骤全部完成后才开始。空数组表示可以立刻开工。
+   *
+   * 这里是依赖图而不是「上一步」：一个步骤连到多个步骤表示后面可以并行，
+   * 多个步骤连到同一个步骤表示它要等全部前置完成。
+   */
+  dependsOn: string[];
   /** 这一步完成后是否需要用户确认。 */
   needsConfirm: boolean;
   state: WorkStepState;
+}
+
+/**
+ * 编排画布上的一个工作步骤。和运行期的 WorkStep 分开：
+ * 坐标只在编排时有意义，状态只在运行时有意义，混在一个类型里两边都要写假字段。
+ *
+ * 员工与步骤是两个概念：同一位员工可以承担多个步骤，所以 id 独立于 employeeId。
+ */
+export interface WorkDraftStep {
+  id: string;
+  employeeId: string;
+  title: string;
+  input: string;
+  output: string;
+  dependsOn: string[];
+  needsConfirm: boolean;
+  /** 这一步单独追加的技能包。工作级的共享技能包不在这里。 */
+  skillIds: string[];
+  /** 画布坐标。 */
+  x: number;
+  y: number;
 }
 
 /** 切换员工时同步给下一位员工的共享背景。 */
@@ -116,6 +142,8 @@ export interface WorkMessage {
 export interface WorkDeliverable {
   id: string;
   name: string;
+  /** 文件在本机的完整路径。界面上只在需要时展示，复制路径按它。 */
+  path: string;
   note: string;
 }
 
@@ -190,10 +218,17 @@ export interface SavedWorkFlow {
   id: string;
   name: string;
   goal: string;
+  /**
+   * 数据版本。缺失或 1 表示旧的线性链格式（步骤带 inheritPrevious、没有坐标），
+   * 读取时按「每一步依赖上一步」升级成依赖图并补上自动布局坐标。
+   */
+  version?: 1 | 2;
   /** 保存时的工作步骤，重新使用时原样带回安排工作页。 */
-  steps: { id: string; employeeId: string; title: string; input: string; output: string; inheritPrevious: boolean; needsConfirm: boolean }[];
+  steps: WorkDraftStep[];
   /** 保存时已确认可以交给员工的资料说明。 */
   confirmedInputs: string[];
+  /** 整个工作共享的技能包。 */
+  sharedSkillIds?: string[];
   savedAt: number;
 }
 
@@ -241,12 +276,23 @@ export interface EmployeeSkill {
 
 // ─────────────────────────────── 导航 ────────────────────────────────
 
+/**
+ * 「安排工作」的四个画面。pick 是入口，另外三个是三种安排方式。
+ *
+ * - `pick`   选择用哪种方式安排
+ * - `chat`   对话式：一位同事，边聊边做
+ * - `auto`   自动编排：说清目标，系统自己选人并排出流程
+ * - `manual` 自己编排：自己选人、自己决定先后
+ */
+export type ArrangeMode = 'pick' | 'chat' | 'auto' | 'manual';
+
 export type AppRoute =
   | { name: 'home' }
   /** scope 决定员工页默认看哪一批人：首页「企业硅基员工」进来看全部，「已分配给我」进来只看自己的。 */
   | { name: 'employees'; scope?: 'mine' | 'all' }
   | { name: 'employee'; employeeId: string }
-  | { name: 'arrange'; templateId?: string; custom?: boolean }
+  /** employeeId 只在 chat 下有意义：从员工页点「安排工作」时预选那位同事。 */
+  | { name: 'arrange'; templateId?: string; mode?: ArrangeMode; employeeId?: string }
   | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped' }
   | { name: 'work'; workId: string }
   | { name: 'skills'; skillId?: string };
