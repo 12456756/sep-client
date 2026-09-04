@@ -3,7 +3,7 @@
  *
  * Phase 7 之前这个文件捆了五件事（方案 1.3 节）：run 记录、事件日志、消息投影、
  * 崩溃恢复、路径推导。现在事件在 `task-event-store.ts`、投影在
- * `task-message-projector.ts`、路径在 `scope-path.ts`、原子写在 `atomic-file.ts`。
+ * `task-messages.ts`、路径在 `scope-path.ts`、原子写在 `atomic-file.ts`。
  *
  * 这里留下的是 run 记录本身，加上崩溃恢复——后者必须同时读 run 记录与事件，
  * 所以本类拥有一个 `TaskEventStore` 实例并以 `events` 暴露；事件的逻辑一行都不在这里。

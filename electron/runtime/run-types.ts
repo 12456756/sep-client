@@ -1,5 +1,5 @@
 /**
- * electron/runtime/run-contracts.ts — 执行层的共享类型
+ * electron/runtime/run-types.ts — 执行层的共享类型
  *
  * Phase 8 把协调器拆成"编排者 + 五个协作者"，于是队列、worker 注册表、事件管道都要说
  * 同一套词汇。这些类型此前散在 `task-execution-coordinator.ts` 里，谁想用就得 import

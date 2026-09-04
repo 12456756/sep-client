@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { SharedPiSessionAdapter } from './shared-session-adapter'
+import { SharedPiSession } from './pi-shared-session'
 import type { PiAgentEvent, PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 
 class FakeSession implements PiAgentSession {
@@ -22,7 +22,7 @@ class FakeSession implements PiAgentSession {
   emit(event: PiAgentEvent): void { for (const listener of this.listeners) listener(event) }
 }
 
-describe('SharedPiSessionAdapter', () => {
+describe('SharedPiSession', () => {
   it('reuses one session and rebuilds on employee switch with the same file', async () => {
     const sessions: FakeSession[] = []
     const configs: PiAgentSessionConfig[] = []
@@ -34,7 +34,7 @@ describe('SharedPiSessionAdapter', () => {
         return session
       },
     }
-    const adapter = new SharedPiSessionAdapter(runtime)
+    const adapter = new SharedPiSession(runtime)
     const events: string[] = []
     const unsubscribe = adapter.subscribe(event => events.push(event.type))
     const first = await adapter.open({ runId: 'run-1', modelId: 'm1', gatewayUrl: 'g', workspaceDir: 'w', agentDir: 'a', sessionDir: 's', getAccessToken: async () => 'x', authorizeTool: async () => true }) as FakeSession

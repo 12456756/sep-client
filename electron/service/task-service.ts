@@ -12,9 +12,9 @@ import type { ClientTask, ClientTaskMessage, ClientTaskStats, TaskExecutionEvent
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskMetadata, TaskMetadataStore } from '../data/task-metadata-store'
 import type { TaskRunRecord, TaskRunStore } from '../data/task-run-store'
-import { projectTaskMessages } from '../data/task-message-projector'
+import { projectTaskMessages } from '../data/task-messages'
 import type { TaskManager } from '../runtime/task-manager'
-import type { SessionRecoveryMode } from '../runtime/run-contracts'
+import type { SessionRecoveryMode } from '../runtime/run-types'
 import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { EmployeeAuthorizer } from './employee-authorizer'
@@ -22,7 +22,7 @@ import type { EmployeeAuthorizer } from './employee-authorizer'
 /**
  * 服务层用到的执行能力。实现是 `runtime/task-execution-coordinator.ts`；
  * 声明成端口是为了让服务层不依赖协调器本体——它静态 import 了 pi SDK。
- * 词汇（`SessionRecoveryMode` 等）取自 `runtime/run-contracts.ts`，那是个零依赖的
+ * 词汇（`SessionRecoveryMode` 等）取自 `runtime/run-types.ts`，那是个零依赖的
  * 类型模块，import 它不会把 SDK 拉进来。
  */
 export interface TaskExecutionPort {

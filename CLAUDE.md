@@ -53,11 +53,10 @@ Do not skip it after touching `electron/main.ts` or anything under `electron/pi/
 
 ## Repo layout
 
-The `electron/` tree is layered by responsibility, not by origin. **This is the target structure
-from `docs/architecture/后端结构重构实施方案.md` §3.2.** That refactor is at Phase 4 of 8, so
-entries marked `(Phase N)` do not exist yet. Put new code where this tree says it belongs, not
-where similar code happens to sit today; if the right home is still `(Phase N)`, say so rather
-than inventing a different one.
+The `electron/` tree is layered by responsibility, not by origin. **This is the structure from
+`docs/architecture/后端结构重构实施方案.md` §3.2**, which is complete — all 8 phases landed, and
+after Phase 8 a naming pass replaced the jargon-heavy file names with plain ones. Put new code
+where this tree says it belongs, not where similar code happens to sit today.
 
 Dependencies flow one way. `runtime/` is the only layer allowed to reach `pi/sdk/`:
 
@@ -72,10 +71,13 @@ Reverse imports are rejected by `npm run check:boundaries`:
 | # | Boundary | Status |
 |---|----------|--------|
 | B1a | `webContents.send` only in `bootstrap/renderer-bridge.ts` | enforced |
-| B1b | `ipcMain` and channel literals only in `controller/` | Phase 6 |
-| B2 | `service/` must not import `pi/` or `@earendil-works/*` | Phase 5 |
-| B3 | `data/` must not import `service/` or `runtime/` | Phase 7 |
+| B1b | `ipcMain` and channel literals only in `controller/` | enforced |
+| B2 | `service/` must not import `pi/` or `@earendil-works/*` | enforced |
+| B3 | `data/` must not import `service/` or `runtime/` | enforced |
 | B4 | `common/` is a leaf — imports nothing from the layers above | enforced |
+
+Five more rules in the same script: `errors:no-handwritten-envelope`, `log:no-bare-console`,
+`test:every-suite-registered`, `encoding:utf8`, `encoding:mojibake`. All enforced.
 
 ```
 sep-client/
@@ -83,31 +85,32 @@ sep-client/
 │   ├── main.ts                  polyfill → assemble → register IPC → window lifecycle
 │   ├── preload.ts               contextBridge — the only renderer↔main bridge
 │   ├── bootstrap/               assembly and process lifecycle
-│   │   ├── composition-root.ts  createBackend() — the single assembly entry point
-│   │   ├── employee-access.ts   employee directory snapshot + authorization
+│   │   ├── build-backend.ts     createBackend() — the single assembly entry point
 │   │   ├── main-window.ts       BrowserWindow creation and display
 │   │   ├── renderer-bridge.ts   the only main→renderer push exit; owns the window ref
 │   │   └── shutdown.ts          two-phase bounded shutdown
 │   ├── controller/              validate → call service → convert to envelope
 │   │   ├── channels.ts          the single definition point for IPC channel names
-│   │   ├── router.ts            (Phase 6) table-driven registration + zod + one catch
-│   │   ├── context.ts           (Phase 6) RequestContext: scope + service handles
-│   │   └── routes/              (Phase 6) 33 routes split by domain
-│   ├── service/                 (Phase 5) use cases + authorization. Touches no Pi
-│   │   │                        object, sends no IPC, builds no file paths
-│   │   ├── task-service.ts           (Phase 5)
-│   │   ├── conversation-service.ts   (Phase 5)
-│   │   ├── workflow-service.ts       (Phase 5)
-│   │   ├── employee-directory.ts     (Phase 5) the only platform-directory read point
-│   │   ├── employee-authorizer.ts    (Phase 5) pure: directory snapshot in, result out
-│   │   └── scope-guard.ts            (Phase 5) the only scope check
+│   │   ├── router.ts            table-driven registration + zod + one catch
+│   │   ├── request-context.ts   RequestContext: scope + service handles
+│   │   └── routes/              33 routes split by domain — auth, task,
+│   │                            conversation, workflow, system (+ index.ts)
+│   ├── service/                 use cases + authorization. Touches no Pi object,
+│   │   │                        sends no IPC, builds no file paths
+│   │   ├── task-service.ts
+│   │   ├── conversation-service.ts
+│   │   ├── workflow-service.ts
+│   │   ├── employee-directory.ts     the only platform-directory read point
+│   │   ├── employee-authorizer.ts    pure: directory snapshot in, result out
+│   │   └── scope-guard.ts            the only scope check
 │   ├── data/                    knows scope and data, never whether a task may run
-│   │   ├── atomic-file.ts            (Phase 7) the only atomic write
-│   │   ├── scope-path.ts             (Phase 7) the only path derivation
+│   │   ├── atomic-file.ts            the only atomic write (.bak + rollback + quarantine)
+│   │   ├── scope-path.ts             the only path derivation; owns the scope primitives
+│   │   ├── write-chain.ts            per-key serialized writes
 │   │   ├── task-store.ts
-│   │   ├── task-run-store.ts         run records (Phase 7 splits out the two below)
-│   │   ├── task-event-store.ts       (Phase 7) event log + in-memory sequence cursor
-│   │   ├── task-message-projector.ts (Phase 7) message projection
+│   │   ├── task-run-store.ts         run records; owns `.events`
+│   │   ├── task-event-store.ts       event log + in-memory sequence cursor
+│   │   ├── task-messages.ts          message projection (pure, no fs)
 │   │   ├── task-metadata-store.ts
 │   │   └── workflow-store.ts
 │   ├── domain/                  pure logic, zero IO
@@ -115,13 +118,15 @@ sep-client/
 │   │   ├── workflow-graph.ts
 │   │   └── conversation-context.ts
 │   ├── runtime/                 execution and scheduling; does not know IPC exists
-│   │   ├── task-execution-coordinator.ts
+│   │   ├── task-execution-coordinator.ts  the orchestrator — 8 public methods, pinned
 │   │   ├── task-manager.ts      admission + state-machine execution
-│   │   ├── admission-queue.ts   (Phase 8) runId-addressed queue
-│   │   ├── worker-registry.ts   (Phase 8) worker lifecycle + completion signal
-│   │   ├── event-pipeline.ts    (Phase 8) event serialization + drain()
+│   │   ├── run-types.ts         shared vocabulary (zero-dependency type module)
+│   │   ├── run-queue.ts         runId-addressed admission queue
+│   │   ├── run-workers.ts       worker lifecycle + completion signal
+│   │   ├── run-events.ts        event serialization + drain() + derived state
+│   │   ├── run-approvals.ts     tool approval (60 s timeout → auto-deny)
 │   │   ├── workspace-lock-manager.ts
-│   │   ├── approval-runtime.ts  tool-approval broker (60 s timeout → auto-deny)
+│   │   ├── conversation-recovery-error.ts
 │   │   └── task-notifier.ts     the push interface; implementation injected by bootstrap
 │   ├── errors/
 │   │   ├── error-codes.ts       the only error-code table:
@@ -140,16 +145,17 @@ sep-client/
 │   │   │   └── device-fingerprint.ts
 │   │   ├── logger.ts            the only log entry point; bare console.* is rejected
 │   │   ├── redact.ts            the only redaction implementation
-│   │   ├── lazy-async.ts        load-once async value, shared by concurrent waiters
+│   │   ├── load-once.ts         load-once async value, shared by concurrent waiters
 │   │   ├── with-timeout.ts      bounded waits
-│   │   ├── config.ts            (constants.ts: Phase 5)
+│   │   ├── config.ts            gateway URL, platform base URL, timeouts
+│   │   ├── constants.ts         SIDE_EFFECT_TOOLS + hasSideEffects() — one definition
 │   │   └── undici-polyfill.ts   must stay main.ts's first side-effect import
 │   └── pi/sdk/                  pi SDK types and lifecycle may appear ONLY here
 │       ├── pi-coding-agent-adapter.ts   the only file importing @earendil-works/*
 │       ├── pi-agent-runtime.ts          SDK-agnostic port contract
 │       ├── pi-task-worker.ts
-│       ├── shared-session-adapter.ts
-│       └── subscription-resource-loader.ts
+│       ├── pi-shared-session.ts         one pi session reused across conversation turns
+│       └── pi-skill-packages.ts         SkillPackageStore: downloads + caches skill packages
 ├── pi-extension/
 │   ├── index.ts         buildSepExtensions() — assembles extension array
 │   ├── guard.ts         provider-neutral tool policy
@@ -337,7 +343,7 @@ Do not bump these without a dedicated discussion and a full PoC re-run. Every sc
 - `pi-coding-agent@0.83.0` bundles `undici@8.5.0`, which expects Node `>=22.19.0`; Electron 33 uses Node 20.
 - Keep `import './common/undici-polyfill'` as the **first** import in `electron/main.ts`.
 - `TaskExecutionCoordinator` may only be reached through the single dynamic import inside
-  `BackendRuntime.loadTaskCoordinator()` (`electron/bootstrap/composition-root.ts`). Everywhere
+  `BackendRuntime.loadTaskCoordinator()` (`electron/bootstrap/build-backend.ts`). Everywhere
   else it must be `import type`.
 - Do not statically import the coordinator or the pi SDK from anywhere reachable at startup.
   Doing so can crash startup with `markAsUncloneable is not a function`.

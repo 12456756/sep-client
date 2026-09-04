@@ -19,7 +19,7 @@ describe('Pi SDK boundary', () => {
   it('loads the task coordinator lazily after the Electron compatibility layer', async () => {
     const root = process.cwd()
     const mainSource = await readFile(join(root, 'electron', 'main.ts'), 'utf8')
-    const compositionSource = await readFile(join(root, 'electron', 'bootstrap', 'composition-root.ts'), 'utf8')
+    const compositionSource = await readFile(join(root, 'electron', 'bootstrap', 'build-backend.ts'), 'utf8')
 
     // 下面几个都是被检查文件里的源码字面量，不是本文件的 import——搬家后要跟着更新。
     // main.ts 的第一个 import 必须是兼容层：它之后的任何静态 import 都可能拉进 pi SDK。

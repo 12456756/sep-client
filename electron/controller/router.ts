@@ -18,7 +18,7 @@ import { appError } from '../errors/app-error'
 import { authFailure, failure } from '../errors/error-mapper'
 import { reportAuthFailure, reportFailure } from '../errors/error-reporter'
 import type { InvokeChannel, SendChannel } from './channels'
-import type { RequestContext } from './context'
+import type { RequestContext } from './request-context'
 
 const log = logger.child('router')
 

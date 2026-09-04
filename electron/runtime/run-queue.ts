@@ -1,5 +1,5 @@
 /**
- * electron/runtime/admission-queue.ts — 准入队列，按 runId 寻址（C1）
+ * electron/runtime/run-queue.ts — 准入队列，按 runId 寻址（C1）
  *
  * C1 是一个严重缺陷：`pump()` 原来对 `this.queue` 按**下标**迭代并 `splice(index, 1)`，
  * 而循环里有两个挂起点（`getTask` 与授权）。`pauseTask` / `cancelTask` 调用的
@@ -11,9 +11,9 @@
  * 也就写不出那个 bug。`take()` 返回布尔值同样是必要的——"我以为我取到了"和
  * "我确实取到了"必须能区分，否则同一个 run 会被启动两次。
  */
-import type { QueuedRun } from './run-contracts'
+import type { QueuedRun } from './run-types'
 
-export class AdmissionQueue {
+export class RunQueue {
   private readonly entries: QueuedRun[] = []
 
   push(entry: QueuedRun): void {

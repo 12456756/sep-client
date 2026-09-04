@@ -5,7 +5,7 @@ import type { PiAgentEvent, PiAgentRuntime, PiAgentSession, PiAgentSessionConfig
  * 切换员工时使用同一个会话文件重建 AgentSession，确保持久化历史始终
  * 是唯一的对话上下文来源。
  */
-export class SharedPiSessionAdapter {
+export class SharedPiSession {
   private session: PiAgentSession | null = null
   private sessionFile: string | null = null
   private unsubscribeSession: (() => void) | null = null

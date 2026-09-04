@@ -1,9 +1,20 @@
+/**
+ * electron/runtime/run-approvals.ts — 工具授权，按 requestId 寻址（C5）
+ *
+ * `bash` / `write` / `edit` 必须经用户明确批准；未知工具默认拒绝；等待上限 60 秒，
+ * 超时自动拒绝。
+ *
+ * C5 是一个严重缺陷：`respond()` 原来有个"只有一个 pending 时可以省略 requestId"的
+ * 回退。它能批准**错的**调用——A 超时被自动拒绝、B 随后进入 pending，用户点的是 A 的
+ * 批准按钮，被放行的却是 B。于是一个从未被批准的 `bash` 得到执行。所以这里没有任何
+ * 按数量的回退：requestId 对不上就返回 false，pending 一个都不消耗。
+ */
 import { randomUUID } from 'node:crypto'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { ToolApprovalResponse } from '../../src/shared/ipc'
 import { logger } from '../common/logger'
 
-const log = logger.child('approval-broker')
+const log = logger.child('run-approvals')
 
 interface PendingApproval {
   request: ToolAuthorizationRequest
@@ -11,19 +22,19 @@ interface PendingApproval {
   timer: NodeJS.Timeout
 }
 
-export interface ApprovalBrokerOptions {
+export interface ToolApprovalsOptions {
   timeoutMs?: number
   onRequest: (request: ToolAuthorizationRequest) => unknown | Promise<unknown>
   onResolved?: (request: ToolAuthorizationRequest, approved: boolean, reason: string) => unknown | Promise<unknown>
 }
 
-export class ApprovalBroker {
+export class ToolApprovals {
   private readonly pending = new Map<string, PendingApproval>()
   private readonly timeoutMs: number
-  private readonly onRequest: ApprovalBrokerOptions['onRequest']
-  private readonly onResolved: ApprovalBrokerOptions['onResolved']
+  private readonly onRequest: ToolApprovalsOptions['onRequest']
+  private readonly onResolved: ToolApprovalsOptions['onResolved']
 
-  constructor(options: ApprovalBrokerOptions) {
+  constructor(options: ToolApprovalsOptions) {
     this.timeoutMs = options.timeoutMs ?? 60_000
     this.onRequest = options.onRequest
     this.onResolved = options.onResolved

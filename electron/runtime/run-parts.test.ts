@@ -3,12 +3,12 @@ import * as assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { ApprovalBroker } from './approval-runtime'
+import { ToolApprovals } from './run-approvals'
 import { WorkspaceLockManager } from './workspace-lock-manager'
-import { AdmissionQueue } from './admission-queue'
-import { createRunCompletion, WorkerRegistry } from './worker-registry'
-import { EventPipeline } from './event-pipeline'
-import type { ActiveRun, QueuedRun } from './run-contracts'
+import { RunQueue } from './run-queue'
+import { createRunCompletion, WorkerRegistry } from './run-workers'
+import { EventPipeline } from './run-events'
+import type { ActiveRun, QueuedRun } from './run-types'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 
 function queued(runId: string, taskId = `task-of-${runId}`): QueuedRun {
@@ -86,10 +86,10 @@ describe('WorkspaceLockManager', () => {
   })
 })
 
-describe('ApprovalBroker', () => {
+describe('ToolApprovals', () => {
   it('routes concurrent approvals by request ID', async () => {
     const requests: string[] = []
-    const broker = new ApprovalBroker({
+    const broker = new ToolApprovals({
       onRequest: request => requests.push(request.requestId),
       timeoutMs: 1_000,
     })
@@ -104,7 +104,7 @@ describe('ApprovalBroker', () => {
   })
 
   it('denies timed out and cancelled approvals', async () => {
-    const broker = new ApprovalBroker({ onRequest: () => {}, timeoutMs: 5 })
+    const broker = new ToolApprovals({ onRequest: () => {}, timeoutMs: 5 })
     const timed = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
     assert.equal(await timed, false)
 
@@ -116,7 +116,7 @@ describe('ApprovalBroker', () => {
   // C5：原来这里断言的是"只有一个 pending 时可以省略 requestId"。那个回退能批准错的
   // 调用——A 超时被自动拒绝后 B 进入 pending，用户点的是 A 的批准按钮，被批准的是 B。
   it('refuses a response without a requestId even when exactly one request is pending', async () => {
-    const broker = new ApprovalBroker({ onRequest: () => {}, timeoutMs: 1_000 })
+    const broker = new ToolApprovals({ onRequest: () => {}, timeoutMs: 1_000 })
     const only = broker.request({ taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', toolName: 'write', input: {} })
 
     assert.equal(broker.respond({ requestId: '', approved: true }), false)
@@ -128,7 +128,7 @@ describe('ApprovalBroker', () => {
 
   it('refuses a response whose requestId is no longer pending', async () => {
     const delivered: string[] = []
-    const broker = new ApprovalBroker({
+    const broker = new ToolApprovals({
       onRequest: request => { delivered.push(request.requestId) },
       timeoutMs: 5,
     })
@@ -147,9 +147,9 @@ describe('ApprovalBroker', () => {
 
 // C1：队列只能按 runId 寻址。这些用例断言的是"写不出按下标的 bug"，
 // 而不只是"当前实现正确"。
-describe('AdmissionQueue', () => {
+describe('RunQueue', () => {
   it('takes by runId, and reports whether this call is the one that took it', () => {
-    const queue = new AdmissionQueue()
+    const queue = new RunQueue()
     queue.push(queued('run-a'))
     queue.push(queued('run-b'))
 
@@ -161,7 +161,7 @@ describe('AdmissionQueue', () => {
   })
 
   it('keeps the snapshot stable while the live queue is mutated underneath it', () => {
-    const queue = new AdmissionQueue()
+    const queue = new RunQueue()
     for (const runId of ['run-a', 'run-b', 'run-c']) queue.push(queued(runId))
 
     const seen: string[] = []
@@ -177,7 +177,7 @@ describe('AdmissionQueue', () => {
   })
 
   it('lists the run IDs belonging to one task without exposing an index', () => {
-    const queue = new AdmissionQueue()
+    const queue = new RunQueue()
     queue.push(queued('run-a', 'task-1'))
     queue.push(queued('run-b', 'task-2'))
     queue.push(queued('run-c', 'task-1'))

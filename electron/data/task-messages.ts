@@ -1,5 +1,5 @@
 /**
- * electron/data/task-message-projector.ts — 消息投影
+ * electron/data/task-messages.ts — 消息投影
  *
  * 从 `task-run-store` 拆出来的第二块（方案 Phase 7）。它不持有任何状态、不碰文件系统：
  * 把 run 记录与事件时间线投影成渲染进程要的消息列表，是一段纯粹的读侧变换。

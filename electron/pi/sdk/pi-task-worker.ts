@@ -2,13 +2,13 @@ import type { TaskExecutionEvent, ToolAuthorizationRequest } from '../../../src/
 import { InstanceTokenManager } from '../../common/platform/instance-token-manager'
 import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 import { PiCodingAgentAdapter } from './pi-coding-agent-adapter'
-import { SharedPiSessionAdapter } from './shared-session-adapter'
+import { SharedPiSession } from './pi-shared-session'
 import { logger } from '../../common/logger'
 
 const log = logger.child('pi-task-worker')
 
-export function createDefaultSharedPiSessionAdapter(): SharedPiSessionAdapter {
-  return new SharedPiSessionAdapter(new PiCodingAgentAdapter())
+export function createDefaultSharedPiSession(): SharedPiSession {
+  return new SharedPiSession(new PiCodingAgentAdapter())
 }
 
 export interface PiTaskWorkerContext {
@@ -38,7 +38,7 @@ export interface PiTaskWorkerOptions {
   onEvent: (event: TaskExecutionEvent) => Promise<void> | void
   onSessionCreated?: (session: { sessionId: string; sessionFile: string | null }) => Promise<void> | void
   runtime?: PiAgentRuntime
-  sessionAdapter?: SharedPiSessionAdapter
+  sessionAdapter?: SharedPiSession
   createTokenManager?: () => TokenManagerPort
 }
 
@@ -49,7 +49,7 @@ export class PiTaskWorker {
   private readonly onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   private readonly onEvent: PiTaskWorkerOptions['onEvent']
   private readonly onSessionCreated: PiTaskWorkerOptions['onSessionCreated']
-  private readonly sessionAdapter: SharedPiSessionAdapter | null
+  private readonly sessionAdapter: SharedPiSession | null
   private session: PiAgentSession | null = null
   private unsubscribe: (() => void) | null = null
   private active = false

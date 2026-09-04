@@ -1,5 +1,5 @@
 /**
- * electron/bootstrap/composition-root.ts — 组装根
+ * electron/bootstrap/build-backend.ts — 组装根
  *
  * `createBackend()` 是后端唯一的装配入口，替掉 main.ts 原来的 10 个模块级可变全局
  * （mainWindow、taskCoordinator、taskCoordinatorInitialization、taskManager、
@@ -13,14 +13,14 @@ import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { getInstances } from '../common/platform/platform-api'
 import { config } from '../common/config'
-import { lazyAsync, type LazyAsync } from '../common/lazy-async'
+import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
 import { describeError } from '../common/redact'
 import { settleWithTimeout } from '../common/with-timeout'
 import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
 import { WorkflowStore } from '../data/workflow-store'
-import { SubscriptionRuntime } from '../pi/sdk/subscription-resource-loader'
+import { SkillPackageStore } from '../pi/sdk/pi-skill-packages'
 // 必须是 import type：静态加载协调器会把 pi SDK 拉到兼容层之前，
 // Electron 33 上以 `markAsUncloneable is not a function` 崩在启动路径。
 import type { TaskExecutionCoordinator } from '../runtime/task-execution-coordinator'
@@ -33,7 +33,7 @@ import { ConversationService } from '../service/conversation-service'
 import { TaskService } from '../service/task-service'
 import { WorkflowService } from '../service/workflow-service'
 
-const log = logger.child('composition-root')
+const log = logger.child('build-backend')
 
 /** 认证失效清理的预算。stopAll 内部要等 worker.abort() 与在途事件落盘（C7）。 */
 export const AUTH_CLEANUP_BUDGET_MS = 5_000
@@ -72,7 +72,7 @@ class BackendRuntime {
     this.userDataDir = userDataDir
     this.renderer = renderer
     this.isEncryptionAvailable = isEncryptionAvailable
-    this.coordinator = lazyAsync(() => this.loadTaskCoordinator())
+    this.coordinator = loadOnce(() => this.loadTaskCoordinator())
     this.authSession = new AuthSessionManager()
     this.taskManager = new TaskManager(userDataDir, renderer)
     this.taskRunStore = new TaskRunStore(userDataDir)
@@ -84,7 +84,7 @@ class BackendRuntime {
       // 避免一个 run 打多次 /client/subscriptions（C4）。
       new EmployeeDirectory(getInstances),
       // 技能包准备经端口注入——B2 不允许 service/ 直接依赖 pi/。
-      new SubscriptionRuntime(join(userDataDir, 'runtime')),
+      new SkillPackageStore(join(userDataDir, 'runtime')),
       config.SEP_GATEWAY_URL,
     )
 
@@ -109,7 +109,7 @@ class BackendRuntime {
    * 在一个异步边界之后用动态 `import` 取，静态 import 会崩在启动路径上
    * （`markAsUncloneable is not a function`）。见 CLAUDE.md 的加载边界一节。
    *
-   * 并发等待与失败重试的语义由 `common/lazy-async.ts` 唯一实现并单测覆盖——
+   * 并发等待与失败重试的语义由 `common/load-once.ts` 唯一实现并单测覆盖——
    * 原来手写的两字段惰性单例在失败路径上会交给等待者一个 undefined。
    */
   getTaskCoordinator(): Promise<TaskExecutionCoordinator> {

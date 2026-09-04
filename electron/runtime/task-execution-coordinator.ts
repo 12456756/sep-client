@@ -2,11 +2,13 @@
  * electron/runtime/task-execution-coordinator.ts — 执行编排者（Phase 8）
  *
  * 拆分之后这个文件只做编排：把一次 run 的生命周期串起来，具体机制交给五个协作者。
- *   - `AdmissionQueue`        准入队列，按 runId 寻址（C1）
- *   - `WorkerRegistry`        在跑的 run + 完成信号（C2、不变式 I1）
- *   - `EventPipeline`         事件串行化 / drain / 派生状态（C6、I4、I7）
- *   - `WorkspaceLockManager`  工作目录互斥（I2）
- *   - `ApprovalBroker`        工具授权与 60s 超时自动拒绝
+ *   - `RunQueue`             run-queue.ts       准入队列，按 runId 寻址（C1）
+ *   - `WorkerRegistry`       run-workers.ts     在跑的 run + 完成信号（C2、不变式 I1）
+ *   - `EventPipeline`        run-events.ts      事件串行化 / drain / 派生状态（C6、I4、I7）
+ *   - `WorkspaceLockManager` workspace-lock-manager.ts  工作目录互斥（I2）
+ *   - `ToolApprovals`        run-approvals.ts   工具授权与 60s 超时自动拒绝（C5）
+ *
+ * 共享词汇在 `run-types.ts`（零依赖类型模块）。
  *
  * 8 个公开方法的签名不变：executeTask / continueConversation /
  * switchConversationEmployee / retryTask / pauseTask / cancelTask / stopAll /
@@ -16,24 +18,24 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { TaskStatus, type TaskExecutionEvent, type ToolAuthorizationRequest } from '../../src/shared/types'
-import { ApprovalBroker } from './approval-runtime'
-import { createDefaultSharedPiSessionAdapter, PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
+import { ToolApprovals } from './run-approvals'
+import { createDefaultSharedPiSession, PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
 import type { TaskManager } from './task-manager'
 import { WorkspaceLockManager } from './workspace-lock-manager'
 import { ConversationContextStore, type ConversationMessage } from '../domain/conversation-context'
-import type { SharedPiSessionAdapter } from '../pi/sdk/shared-session-adapter'
+import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
 import { ConversationRecoveryError } from './conversation-recovery-error'
-import { AdmissionQueue } from './admission-queue'
-import { EventPipeline } from './event-pipeline'
-import { createRunCompletion, WorkerRegistry } from './worker-registry'
+import { RunQueue } from './run-queue'
+import { EventPipeline } from './run-events'
+import { createRunCompletion, WorkerRegistry } from './run-workers'
 import type {
   ActiveRun,
   EmployeeRuntimeConfig,
   QueuedRun,
   SessionRecoveryMode,
   TaskWorkerPort,
-} from './run-contracts'
+} from './run-types'
 import { logger } from '../common/logger'
 
 const log = logger.child('task-execution-coordinator')
@@ -62,9 +64,9 @@ export class TaskExecutionCoordinator {
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
   private readonly locks: WorkspaceLockManager
-  private readonly approvalBroker: ApprovalBroker
+  private readonly approvals: ToolApprovals
   /** 准入队列。runId 寻址，没有任何按下标的接口（C1）。 */
-  private readonly admission = new AdmissionQueue()
+  private readonly admission = new RunQueue()
   private pumping = false
   private pumpRequested = false
   /** 在跑的 run 与完成信号（C2 / 不变式 I1）。 */
@@ -73,7 +75,7 @@ export class TaskExecutionCoordinator {
   private readonly events: EventPipeline
   private readonly createWorker: (options: PiTaskWorkerOptions) => TaskWorkerPort
   private readonly conversationStores = new Map<string, ConversationContextStore>()
-  private readonly conversationAdapters = new Map<string, SharedPiSessionAdapter>()
+  private readonly conversationAdapters = new Map<string, SharedPiSession>()
 
   constructor(options: TaskExecutionCoordinatorOptions) {
     this.taskManager = options.taskManager
@@ -87,7 +89,7 @@ export class TaskExecutionCoordinator {
     this.getTaskWorkspaceRoot = options.getTaskWorkspaceRoot ?? (() => process.cwd())
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
-    this.approvalBroker = new ApprovalBroker({
+    this.approvals = new ToolApprovals({
       onRequest: async request => {
         await this.enqueueEvent({
           taskId: request.taskId,
@@ -225,7 +227,7 @@ export class TaskExecutionCoordinator {
       return
     }
     active.control = 'pause'
-    this.approvalBroker.denyRun(active.runId)
+    this.approvals.denyRun(active.runId)
     await active.worker.abort()
     await active.completion
   }
@@ -251,13 +253,13 @@ export class TaskExecutionCoordinator {
       occurredAt: Date.now(),
       data: null,
     })
-    this.approvalBroker.denyRun(active.runId)
+    this.approvals.denyRun(active.runId)
     await active.worker.abort()
     await active.completion
   }
 
   async stopAll(): Promise<void> {
-    this.approvalBroker.denyAll()
+    this.approvals.denyAll()
     await Promise.all(this.workers.list().map(async active => {
       active.control = 'interrupt'
       await this.enqueueEvent({
@@ -277,7 +279,7 @@ export class TaskExecutionCoordinator {
   }
 
   respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {
-    return this.approvalBroker.respond(response)
+    return this.approvals.respond(response)
   }
 
   private async pump(): Promise<void> {
@@ -400,7 +402,7 @@ export class TaskExecutionCoordinator {
         },
         getRefreshToken: this.getRefreshToken,
         onAuthenticationRequired: this.onAuthenticationRequired,
-        onApprovalRequest: request => this.approvalBroker.request(request),
+        onApprovalRequest: request => this.approvals.request(request),
         onEvent: event => this.enqueueEvent(event),
         onSessionCreated: async session => {
           if (scope && this.taskRunStore) {
@@ -628,11 +630,11 @@ export class TaskExecutionCoordinator {
     return removed
   }
 
-  private conversationAdapter(scope: { memberId: string; enterpriseId: string }, taskId: string): SharedPiSessionAdapter {
+  private conversationAdapter(scope: { memberId: string; enterpriseId: string }, taskId: string): SharedPiSession {
     const key = `${scope.enterpriseId}:${scope.memberId}:${taskId}`
     let adapter = this.conversationAdapters.get(key)
     if (!adapter) {
-      adapter = createDefaultSharedPiSessionAdapter()
+      adapter = createDefaultSharedPiSession()
       this.conversationAdapters.set(key, adapter)
     }
     return adapter

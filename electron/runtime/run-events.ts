@@ -1,5 +1,5 @@
 /**
- * electron/runtime/event-pipeline.ts — 事件串行化 + drain() + 派生状态（C6）
+ * electron/runtime/run-events.ts — 事件串行化 + drain() + 派生状态（C6）
  *
  * 三件事都是"从事件流里长出来的"，所以在一处：
  *   1. **串行化**：同一 taskId 的事件严格按到达顺序处理（不变式 I4）。
@@ -19,7 +19,7 @@ import { hasSideEffects } from '../common/constants'
 import { describeError } from '../common/redact'
 import { logger } from '../common/logger'
 
-const log = logger.child('event-pipeline')
+const log = logger.child('run-events')
 
 /** drain 的轮数上限。只为防跑飞的事件流把停机拖死，正常情况下一两轮就空了。 */
 const MAX_DRAIN_ROUNDS = 1_000

@@ -1,5 +1,5 @@
 /**
- * electron/controller/context.ts — RequestContext
+ * electron/controller/request-context.ts — RequestContext
  *
  * route handler 能看到的全部东西。**不含 scope**：scope 的唯一解析点是
  * `service/scope-guard.ts`（Phase 5 把它做成"服务层内部抛 AppError"），
@@ -7,7 +7,7 @@
  * 方案 3.2 节写的是"RequestContext：scope + 各服务句柄"，那份设计早于 Phase 5 的决定。
  */
 import type { BrowserWindow } from 'electron'
-import type { Backend } from '../bootstrap/composition-root'
+import type { Backend } from '../bootstrap/build-backend'
 
 export interface RequestContext {
   /** 服务层句柄。任务类路由只该用这几个。 */

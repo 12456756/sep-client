@@ -4,17 +4,17 @@
  * 只做四件事，一个业务判断都没有：
  *   兼容层 → 组装后端 → 注册路由表 → 窗口与生命周期
  *
- * 没有模块级可变状态：后端由 bootstrap/composition-root.ts 装配，窗口引用归
+ * 没有模块级可变状态：后端由 bootstrap/build-backend.ts 装配，窗口引用归
  * bootstrap/renderer-bridge.ts，IPC 注册归 controller/router.ts。
  */
 import './common/undici-polyfill'; // Pi SDK 使用的网络兼容层，必须是第一个副作用 import。
 import { app, BrowserWindow, dialog, safeStorage } from 'electron';
-import { createBackend } from './bootstrap/composition-root';
+import { createBackend } from './bootstrap/build-backend';
 import { createMainWindow } from './bootstrap/main-window';
 import { RendererBridge } from './bootstrap/renderer-bridge';
 import { installShutdownHandler } from './bootstrap/shutdown';
 import { logger } from './common/logger';
-import { createRequestContext } from './controller/context';
+import { createRequestContext } from './controller/request-context';
 import { registerRoutes } from './controller/router';
 import { listeners, routes } from './controller/routes';
 import {

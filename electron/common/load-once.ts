@@ -1,5 +1,5 @@
 /**
- * electron/common/lazy-async.ts — 只加载一次的异步惰性值
+ * electron/common/load-once.ts — 只加载一次的异步惰性值
  *
  * 存在的理由是一个具体缺陷：手写的"惰性单例 + 初始化 promise"两字段写法在**失败**路径上
  * 会骗人。原来的形态是
@@ -23,7 +23,7 @@ export interface LazyAsync<T> {
   peek(): T | null
 }
 
-export function lazyAsync<T>(load: () => Promise<T>): LazyAsync<T> {
+export function loadOnce<T>(load: () => Promise<T>): LazyAsync<T> {
   let pending: Promise<T> | null = null
   let resolved: T | null = null
 

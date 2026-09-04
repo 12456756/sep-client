@@ -7,7 +7,7 @@
 import { z } from 'zod'
 import { INVOKE_CHANNELS } from '../channels'
 import { route } from '../router'
-import { CREATE_TASK_INVALID, createTaskInput } from './task.routes'
+import { CREATE_TASK_INVALID, createTaskInput } from './task'
 
 /** 三种会话恢复模式，与服务层的 SessionRecoveryMode 同集合。 */
 const recoveryMode = z.enum(['strict', 'confirm_rebuild', 'auto_rebuild_from_task_history'])

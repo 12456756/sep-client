@@ -97,7 +97,7 @@ function routeDeclarations(): { routes: Set<string>; listeners: Set<string>; mis
   const listeners = new Set<string>()
   const missingSchema: string[] = []
   for (const file of readdirSync(join(repoRoot, 'electron/controller/routes'))) {
-    if (!file.endsWith('.routes.ts')) continue
+    if (!file.endsWith('.ts') || file === 'index.ts') continue
     const source = parse(`electron/controller/routes/${file}`)
     const visit = (node: ts.Node): void => {
       if (

@@ -13,9 +13,9 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
-import { ApprovalBroker } from './approval-runtime'
+import { ToolApprovals } from './run-approvals'
 import { TaskExecutionCoordinator } from './task-execution-coordinator'
-import type { EmployeeRuntimeConfig } from './run-contracts'
+import type { EmployeeRuntimeConfig } from './run-types'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
 import { TaskStore, type TaskStorePort } from '../data/task-store'
@@ -340,7 +340,7 @@ describe('I8 — 审批超时后自动拒绝，且拒绝后不可被追认', () 
   it('auto-denies on timeout and refuses a late approval for the same requestId', async () => {
     const delivered: string[] = []
     const resolutions: Array<{ requestId: string; approved: boolean; reason: string }> = []
-    const broker = new ApprovalBroker({
+    const broker = new ToolApprovals({
       timeoutMs: 30,
       onRequest: request => { delivered.push(request.requestId) },
       onResolved: (request, approved, reason) =>

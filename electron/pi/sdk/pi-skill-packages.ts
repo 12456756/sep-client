@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { getEmployeeSkills, getPackageInfo, type EmployeeSkill } from '../../common/platform/platform-api'
 import { config } from '../../common/config'
 
-export interface SubscriptionRuntimeInput {
+export interface SkillPackageRequest {
   enterpriseId: string
   subscriptionId: string
   employeeId: string
@@ -12,7 +12,7 @@ export interface SubscriptionRuntimeInput {
   accessToken: string
 }
 
-export interface SubscriptionRuntimeResult {
+export interface SkillPackageResult {
   packageVersion: string
   skillPaths: string[]
 }
@@ -25,12 +25,12 @@ function safeSegment(value: string): string {
   return value
 }
 
-export class SubscriptionRuntime {
-  private readonly cache = new Map<string, Promise<SubscriptionRuntimeResult>>()
+export class SkillPackageStore {
+  private readonly cache = new Map<string, Promise<SkillPackageResult>>()
 
   constructor(private readonly rootDir: string) {}
 
-  prepare(input: SubscriptionRuntimeInput): Promise<SubscriptionRuntimeResult> {
+  prepare(input: SkillPackageRequest): Promise<SkillPackageResult> {
     const key = `${input.enterpriseId}:${input.subscriptionId}:${input.templateVersion}`
     const existing = this.cache.get(key)
     if (existing) return existing
@@ -47,7 +47,7 @@ export class SubscriptionRuntime {
     else for (const key of this.cache.keys()) if (key.includes(`:${subscriptionId}:`)) this.cache.delete(key)
   }
 
-  private async install(input: SubscriptionRuntimeInput): Promise<SubscriptionRuntimeResult> {
+  private async install(input: SkillPackageRequest): Promise<SkillPackageResult> {
     if (!VERSION.test(input.templateVersion)) throw new Error('The employee package version is invalid.')
     const packageInfo = await getPackageInfo(input.subscriptionId, input.accessToken)
     if (packageInfo.version !== input.templateVersion) throw new Error('The employee package version does not match the subscription.')

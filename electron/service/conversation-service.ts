@@ -12,7 +12,7 @@ import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import type { CreateTaskInput, TaskExecutionPort, TaskService } from './task-service'
-import type { SessionRecoveryMode } from '../runtime/run-contracts'
+import type { SessionRecoveryMode } from '../runtime/run-types'
 
 export interface ConversationServiceDependencies {
   scope: ScopeSource

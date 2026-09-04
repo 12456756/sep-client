@@ -8,13 +8,13 @@
  *     结果随队列条目携带，调度循环内不再重算。
  *
  * B2：本文件不 import `pi/`。技能包准备经 `SkillPackageProvisioner` 端口注入，
- * 实现是 `pi/sdk/subscription-resource-loader.ts` 的 `SubscriptionRuntime`。
+ * 实现是 `pi/sdk/pi-skill-packages.ts` 的 `SkillPackageStore`。
  */
 import type { ClientInstance } from '../common/platform/platform-api'
 // import type 会被编译擦除，所以不构成对 runtime/ 的运行时依赖；
-// EmployeeRuntimeConfig 是协调器的入参契约。定义点在 runtime/run-contracts.ts——
+// EmployeeRuntimeConfig 是协调器的入参契约。定义点在 runtime/run-types.ts——
 // 那是个零依赖的类型模块，import 它不会把 pi SDK 拉进服务层（B2）。
-import type { EmployeeRuntimeConfig } from '../runtime/run-contracts'
+import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 
 /** 只用会话的这两件事，按最小需要声明，测试才好替。 */
 export interface SessionTokens {
@@ -32,8 +32,8 @@ export interface EmployeeDirectoryPort {
 }
 
 /**
- * 技能包准备的端口。实现是 `pi/sdk/subscription-resource-loader.ts` 的
- * `SubscriptionRuntime`，由组装根注入——B2 不允许 `service/` 直接依赖 `pi/`。
+ * 技能包准备的端口。实现是 `pi/sdk/pi-skill-packages.ts` 的
+ * `SkillPackageStore`，由组装根注入——B2 不允许 `service/` 直接依赖 `pi/`。
  */
 export interface SkillPackageProvisioner {
   prepare(input: {

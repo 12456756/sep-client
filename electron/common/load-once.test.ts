@@ -1,5 +1,5 @@
 /**
- * lazyAsync 的回归测试。
+ * loadOnce 的回归测试。
  *
  * 重点是**失败路径**：Phase 4 之前 main.ts 的 `ensureTaskCoordinator()` 在初始化失败时
  * 会让并发等待者拿到 undefined 而不是拒绝。下面第三个用例专门盯这件事——
@@ -7,7 +7,7 @@
  */
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { lazyAsync } from './lazy-async'
+import { loadOnce } from './load-once'
 
 /** 手动控制的 promise，用来精确安排"并发等待者已经挂上去了"这个时刻。 */
 function gate<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
@@ -20,10 +20,10 @@ function gate<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: 
   return { promise, resolve, reject }
 }
 
-describe('lazyAsync', () => {
+describe('loadOnce', () => {
   it('loads once no matter how many callers race', async () => {
     let loads = 0
-    const lazy = lazyAsync(async () => {
+    const lazy = loadOnce(async () => {
       loads += 1
       return { id: loads }
     })
@@ -37,7 +37,7 @@ describe('lazyAsync', () => {
 
   it('exposes the resolved value to peek, but only after it resolves', async () => {
     const barrier = gate<string>()
-    const lazy = lazyAsync(() => barrier.promise)
+    const lazy = loadOnce(() => barrier.promise)
 
     assert.equal(lazy.peek(), null, '还没加载完就不该有值')
     const inFlight = lazy.get()
@@ -50,7 +50,7 @@ describe('lazyAsync', () => {
 
   it('rejects every concurrent waiter instead of handing out undefined', async () => {
     const barrier = gate<string>()
-    const lazy = lazyAsync(() => barrier.promise)
+    const lazy = loadOnce(() => barrier.promise)
     const failure = new Error('load failed')
 
     // 两个等待者必须在失败发生之前就挂上去，才复现原来的时序。
@@ -65,7 +65,7 @@ describe('lazyAsync', () => {
 
   it('retries on the next call after a failure', async () => {
     let attempts = 0
-    const lazy = lazyAsync(async () => {
+    const lazy = loadOnce(async () => {
       attempts += 1
       if (attempts === 1) throw new Error('transient')
       return 'second attempt'

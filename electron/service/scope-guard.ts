@@ -15,7 +15,7 @@
 import type { TaskOwnerScope } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
 
-/** 提供当前 scope 的一方。实现是 bootstrap/composition-root.ts 的 Backend。 */
+/** 提供当前 scope 的一方。实现是 bootstrap/build-backend.ts 的 Backend。 */
 export interface ScopeSource {
   /** 当前 scope；未登录或正在清理时为 null。 */
   currentScope(): TaskOwnerScope | null

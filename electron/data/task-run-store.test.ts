@@ -4,7 +4,7 @@ import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskRunStore } from './task-run-store'
-import { projectTaskMessages } from './task-message-projector'
+import { projectTaskMessages } from './task-messages'
 
 const temporaryDirectories: string[] = []
 

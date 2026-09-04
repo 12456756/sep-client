@@ -16,7 +16,7 @@ import { TaskStatus } from '../../src/shared/types'
 import { encodeTaskScopeSegment } from './scope-path'
 import { TaskStore } from './task-store'
 import { TaskRunStore } from './task-run-store'
-import { projectTaskMessages } from './task-message-projector'
+import { projectTaskMessages } from './task-messages'
 import { WorkflowStore } from './workflow-store'
 import { TaskMetadataStore } from './task-metadata-store'
 

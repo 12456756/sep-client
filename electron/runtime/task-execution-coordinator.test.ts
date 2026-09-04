@@ -5,10 +5,10 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskExecutionCoordinator } from './task-execution-coordinator'
-import type { EmployeeRuntimeConfig } from './run-contracts'
+import type { EmployeeRuntimeConfig } from './run-types'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
-import { projectTaskMessages } from '../data/task-message-projector'
+import { projectTaskMessages } from '../data/task-messages'
 
 const temporaryDirectories: string[] = []
 
@@ -234,7 +234,7 @@ describe('TaskExecutionCoordinator public surface', () => {
   it('delegates to the five collaborators instead of owning their state', async () => {
     const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-execution-coordinator.ts'), 'utf8')
 
-    for (const collaborator of ['AdmissionQueue', 'WorkerRegistry', 'EventPipeline', 'WorkspaceLockManager', 'ApprovalBroker']) {
+    for (const collaborator of ['RunQueue', 'WorkerRegistry', 'EventPipeline', 'WorkspaceLockManager', 'ToolApprovals']) {
       assert.ok(source.includes(collaborator), `协调器必须经 ${collaborator} 工作`)
     }
 

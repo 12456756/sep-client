@@ -8,7 +8,7 @@
  *
  * 停机时 in-flight 副作用工具必须产出 SIDE_EFFECT_UNKNOWN 这一行为本身，
  * 由 runtime/concurrency-invariants.test.ts 的 I7 覆盖。
- * 协调器惰性加载的并发/失败语义由 common/lazy-async.test.ts 用运行时测试覆盖。
+ * 协调器惰性加载的并发/失败语义由 common/load-once.test.ts 用运行时测试覆盖。
  */
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
@@ -25,7 +25,7 @@ function read(...segments: string[]): string {
 
 const mainSource = read('main.ts')
 const shutdownSource = read('bootstrap', 'shutdown.ts')
-const compositionSource = read('bootstrap', 'composition-root.ts')
+const compositionSource = read('bootstrap', 'build-backend.ts')
 const bridgeSource = read('bootstrap', 'renderer-bridge.ts')
 
 describe('app shutdown wiring', () => {
@@ -123,10 +123,10 @@ describe('authentication invalidation', () => {
   })
 
   it('routes every scope read through one entry point (C7/C9)', () => {
-    const sources = { 'main.ts': mainSource, 'composition-root.ts': compositionSource }
+    const sources = { 'main.ts': mainSource, 'build-backend.ts': compositionSource }
     for (const [name, source] of Object.entries(sources)) {
       const direct = source.match(/getCurrentUserScope\(\)/g) ?? []
-      const expected = name === 'composition-root.ts' ? 1 : 0
+      const expected = name === 'build-backend.ts' ? 1 : 0
       assert.equal(direct.length, expected, `${name} 里应有 ${expected} 处直接读 scope，实际 ${direct.length} 处`)
     }
     assert.match(
@@ -145,7 +145,7 @@ describe('authentication invalidation', () => {
 describe('renderer push has a single exit', () => {
   it('keeps webContents.send inside the renderer bridge', () => {
     assert.match(bridgeSource, /webContents\.send\(/, 'bridge 才是推送出口')
-    for (const [name, source] of Object.entries({ 'main.ts': mainSource, 'composition-root.ts': compositionSource })) {
+    for (const [name, source] of Object.entries({ 'main.ts': mainSource, 'build-backend.ts': compositionSource })) {
       assert.doesNotMatch(source, /webContents\.send\(/, `${name} 不该直接推给渲染进程（B1）`)
     }
   })

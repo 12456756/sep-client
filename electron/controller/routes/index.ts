@@ -5,11 +5,11 @@
  * 「每个 INVOKE / SEND 通道恰有一条 route」，所以漏填一条会在测试里立刻暴露。
  */
 import type { Listener, Route } from '../router'
-import { authRoutes } from './auth.routes'
-import { conversationRoutes } from './conversation.routes'
-import { systemListeners, systemRoutes } from './system.routes'
-import { taskRoutes } from './task.routes'
-import { workflowRoutes } from './workflow.routes'
+import { authRoutes } from './auth'
+import { conversationRoutes } from './conversation'
+import { systemListeners, systemRoutes } from './system'
+import { taskRoutes } from './task'
+import { workflowRoutes } from './workflow'
 
 export const routes: readonly Route[] = [
   ...authRoutes,

@@ -1,5 +1,5 @@
 /**
- * electron/runtime/worker-registry.ts — 在跑的 run 及其完成信号（C2）
+ * electron/runtime/run-workers.ts — 在跑的 run 及其完成信号（C2）
  *
  * 不变式 I1：同一 taskId 最多一个 active run。这个类是它的唯一实现点。
  *
@@ -12,7 +12,7 @@
  * `forget()` 保证"移出注册表"只在仍是当前 run 时发生。锁的获取与释放留在 `startRun`
  * 的同一个 try/finally 词法块内——那是 C2 修法的关键形状，不能再拆开。
  */
-import type { ActiveRun } from './run-contracts'
+import type { ActiveRun } from './run-types'
 
 export interface RunCompletion {
   /** 等这条 run 收干净。pauseTask / cancelTask / stopAll 都 await 它。 */
