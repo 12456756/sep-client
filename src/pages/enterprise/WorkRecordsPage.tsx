@@ -7,7 +7,7 @@
  * 已确认的内容和终止原因都会保留，不会一起消失。
  */
 
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Copy, FileCheck2, History, MessageSquareText, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ClipboardCheck, Copy, FileCheck2, History, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Empty, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
@@ -24,25 +24,29 @@ import { clockTime, relativeTime } from '../../features/enterprise/vocabulary';
  *
  * 六句话都只做一件事：跳到这项工作。刻意不在列表里直接确认或重试 ——
  * 确认要先看结果，重试要先看中断原因，在一排卡片里点一下就发生太容易点错。
- * 到了工作详情页，「确认，继续」和「重新执行」就在抬头右边。
+ * 到了工作详情页，「确认，继续」和「重新试一次」就在标题底下那条提示里。
  */
-const LEAD: Record<WorkStatus, { label: string; icon: typeof MessageSquareText }> = {
+const LEAD: Record<WorkStatus, { label: string; icon: typeof ClipboardCheck }> = {
   arranging: { label: '查看安排', icon: Workflow },
   running: { label: '查看进展', icon: Activity },
   'waiting-user': { label: '去确认', icon: CheckCircle2 },
-  completed: { label: '查看对话', icon: MessageSquareText },
+  completed: { label: '查看完成情况', icon: ClipboardCheck },
   failed: { label: '去重试', icon: RotateCcw },
-  paused: { label: '继续工作', icon: PlayCircle },
+  paused: { label: '去重新执行', icon: PlayCircle },
 };
 
 type Bucket = 'all' | 'active' | 'mine' | 'done' | 'stopped';
 
+/**
+ * 「未完成」收的是中断了的和被你终止的两种 —— 它们的共同点是「停了，而且没交付」。
+ * 终止过的工作不算「进行中」：它不会自己接着跑，摆在进行中会让人以为还有人在做。
+ */
 const BUCKETS: { id: Bucket; label: string; match: (work: WorkItem) => boolean }[] = [
   { id: 'all', label: '全部', match: () => true },
-  { id: 'active', label: '进行中', match: work => work.status === 'running' || work.status === 'arranging' || work.status === 'paused' },
+  { id: 'active', label: '进行中', match: work => work.status === 'running' || work.status === 'arranging' },
   { id: 'mine', label: '需要我处理', match: work => work.status === 'waiting-user' || Boolean(work.nextUserAction) },
   { id: 'done', label: '已完成', match: work => work.status === 'completed' },
-  { id: 'stopped', label: '未完成', match: work => work.status === 'failed' },
+  { id: 'stopped', label: '未完成', match: work => work.status === 'failed' || work.status === 'paused' },
 ];
 
 interface Props {
@@ -125,12 +129,13 @@ export function WorkRecordsPage({ workspace }: Props) {
         {records.map(work => {
           const people = [...new Set([work.currentEmployeeId, ...work.participants])].filter(Boolean);
           const expanded = openId === work.id;
-          const closed = work.status === 'completed' || work.status === 'failed';
+          // 已经停下来的三种：做完了、中断了、被你终止了。终止过的工作不能再终止一次。
+          const over = work.status === 'completed' || work.status === 'failed' || work.status === 'paused';
           const lead = LEAD[work.status];
           const LeadIcon = lead.icon;
           const result = work.deliverables.length
             ? work.deliverables.map(item => item.name).join('、')
-            : closed
+            : over
               ? '这项工作没有留下可交付的文件'
               : '还没有最终结果';
 
@@ -186,7 +191,7 @@ export function WorkRecordsPage({ workspace }: Props) {
                   <Copy size={13} aria-hidden />
                   复制为新工作
                 </button>
-                {!closed ? (
+                {!over ? (
                   <button type="button" className="ent-btn sm danger ghost" onClick={() => { setStopping(work.id); setStopReason(''); }} disabled={workspace.busy}>
                     <StopCircle size={13} aria-hidden />
                     终止当前工作
@@ -252,7 +257,7 @@ export function WorkRecordsPage({ workspace }: Props) {
                       )}
                       {work.stopReason ? (
                         <>
-                          <h3>终止原因</h3>
+                          <h3>{work.status === 'failed' ? '中断原因' : '终止原因'}</h3>
                           <p className="ent-hint">{work.stopReason}</p>
                         </>
                       ) : null}

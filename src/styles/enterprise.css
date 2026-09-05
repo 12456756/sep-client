@@ -315,6 +315,9 @@
 .ent-flow-act p { min-width: 0; flex: 1 1 240px; margin: 0; color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 1.7; overflow-wrap: anywhere; }
 .ent-flow-act.danger { border-color: var(--ent-danger-line); background: var(--ent-danger-bg); }
 .ent-flow-act.danger > svg { color: var(--ent-danger); }
+/* 已终止不是「出事了」，只是停了 —— 给它一档中性的底，不用红也不用黄。 */
+.ent-flow-act.quiet { border-color: var(--ent-line); background: var(--ent-panel-subtle); }
+.ent-flow-act.quiet > svg { color: var(--ent-ink-3); }
 
 /* 输入框只有一件事：写字。控件全部收进框内底部那一排。 */
 .ent-ask { display: flex; flex-direction: column; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-lg); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
@@ -640,6 +643,35 @@
 .ent-drawer-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
 
 /*
+ * 宽抽屉：工作详情页的「对话」和「改一版安排」。
+ * 比员工工作清单那档宽一截 —— 一边要放对话气泡，一边要放一列输入框，400 宽两者都挤。
+ */
+.ent-drawer.wide { width: min(720px, 94vw); }
+/* .ent-field 的标题在别处是 <label>，抽屉里外层已经是 <label> 了，只能用 <span>。 */
+.ent-drawer .ent-field > span { color: var(--ent-ink-2); font-size: var(--ent-fs-body); font-weight: 600; }
+.ent-drawer .ent-field + .ent-field, .ent-drawer .ent-field + .ent-plan-h { margin-top: 14px; }
+.ent-drawer .ent-hint { margin: 12px 0 0; }
+/* 对话列表交给抽屉正文滚，自己不再限高 —— 两层滚动条同时出现会不知道该滚哪个。 */
+.ent-drawer .ent-talk { max-height: none; margin-bottom: 0; }
+.ent-drawer-lead { display: flex; gap: 8px; margin: 0 0 16px; padding: 10px 12px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius-sm); background: var(--ent-brand-softer); color: var(--ent-ink-2); font-size: var(--ent-fs-body); line-height: 1.7; }
+.ent-drawer-lead > svg { flex: 0 0 auto; margin-top: 3px; color: var(--ent-brand); }
+.ent-drawer-lead > span { min-width: 0; }
+.ent-drawer-lead strong { color: var(--ent-ink); font-weight: 600; }
+.ent-drawer-foot { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding: 14px 18px 18px; box-shadow: inset 0 1px 0 var(--ent-line); }
+.ent-drawer-foot .ent-ask, .ent-drawer-foot .ent-confirm { min-width: 0; flex: 1; }
+
+/* 「改一版安排」的步骤表。员工那一行是死的，两个输入框是活的。 */
+.ent-plan-h { margin: 0 0 10px; font-size: var(--ent-fs-module); font-weight: 600; }
+.ent-plan-h em { color: var(--ent-ink-3); font-style: normal; font-weight: 400; }
+.ent-plan-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.ent-plan-step { display: flex; flex-direction: column; gap: 10px; padding: 12px 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel-subtle); }
+.ent-plan-step .ent-input { background: var(--ent-panel); }
+.ent-plan-who { display: flex; align-items: center; gap: 8px; color: var(--ent-ink); font-size: var(--ent-fs-body); }
+.ent-plan-who > b { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: var(--ent-brand-ink); background: var(--ent-brand-soft); font-size: var(--ent-fs-note); font-weight: 600; }
+.ent-plan-who > strong { min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-plan-who > em { flex: 0 0 auto; color: var(--ent-danger); font-size: var(--ent-fs-note); font-style: normal; }
+
+/*
  * 一张工作卡：图标片 + 标题 + 一行进度或完成说明 + 右侧箭头。
  * hover 时底色转成最浅的紫、描边转淡紫、箭头右移 2px —— 三样都很轻，150ms。
  */
@@ -704,13 +736,52 @@
 .ent-wk-meta > span { display: inline-flex; align-items: center; gap: 10px; }
 .ent-wk-meta > span + span::before { content: ''; width: 1px; height: 11px; background: var(--ent-line-strong); }
 /* 三格 30 / 40 / 30，两格 60 / 40（设计稿的比例）。 */
+/*
+ * 三格这一排不写行高，还是原来那个高度（由「工作信息」「执行员工」自己的内容定）。
+ * 成员名单不再参与撑高 —— 它是滚动容器，条目多了在框里滚，不会把这一排顶高。
+ *
+ * 两格这一排原来是 align-items: start，所以「最终产物」总比「工作过程」矮一截。
+ * 现在给一个固定行高 + stretch：两格一样高，而且动作记录多一条、产物多一个文件
+ * 都不再改变框的高度 —— 那会把下面的东西整块推走，同一项工作看两次位置两个样。
+ * 208 就是「工作过程」原来的高度，不是新挑的尺寸。
+ */
 .ent-wk-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 4fr) minmax(0, 3fr); gap: 14px; align-items: stretch; }
-.ent-wk-two { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 4fr); gap: 14px; align-items: start; }
+.ent-wk-two { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 4fr); grid-auto-rows: 208px; gap: 14px; align-items: stretch; }
 .ent-panel { display: flex; flex-direction: column; padding: 16px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); }
 .ent-panel > h2 { margin: 0 0 13px; font-size: var(--ent-fs-module); font-weight: 600; }
 .ent-panel > h2 em { color: var(--ent-ink-3); font-style: normal; font-weight: 400; }
 
 /* 成员表。头像 + 姓名 + 职能 + 状态标签，一行一位。 */
+/*
+ * 「工作过程」「最终产物」的清单：这两格所在的一排行高是定的，
+ * 清单撑满卡片剩下的空间并在里面滚。min-height: 0 是关键 —— 少了它，
+ * flex 项的最小高度等于内容高度，条目一多还是会把卡片顶开。
+ *
+ * 滚动条收细并去掉轨道底色：这几块都不宽，系统默认那条会吃掉右边一列内容。
+ */
+.ent-wk-log, .ent-wk-files {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ent-line-strong) transparent;
+}
+
+/*
+ * 成员名单：最多三位，第四位起在框里滚。
+ *
+ * 三格那一排的行高没有写死（还是原来的高度），所以只能给名单自己设上限 ——
+ * 不设的话人一多就把整排顶高，那就是「框的高度跟着数量变」。
+ * 137px 既是三行的高度，也正好等于隔壁「工作信息」的高度，
+ * 所以这一排在任何人数下都还是原来那个 206 高，一格没动。
+ */
+.ent-wk-people {
+  max-height: 137px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ent-line-strong) transparent;
+}
+
 .ent-wk-people { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .ent-wk-people li { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 10px; }
 .ent-wk-people span { display: flex; min-width: 0; flex-direction: column; }

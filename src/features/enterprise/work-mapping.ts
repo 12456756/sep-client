@@ -229,7 +229,13 @@ export function buildWorkItem({ task, employees, messages, streamingText, active
     timeline: buildTimeline(task, kind, nameOf(currentEmployeeId)),
     messages: buildMessages(task, messages, streamingText, currentEmployeeId, nameOf(currentEmployeeId)),
     sharedContext: meta?.sharedContext ?? { goal: readableGoal(task.prompt), confirmedInputs: [], previousResults: [], userNotes: [] },
-    stopReason: meta?.stopReason ?? (task.status === 'interrupted' ? '应用退出导致中断' : null),
+    /*
+     * 为什么中断 / 为什么被终止，都落在 task.error 上：平台报的失败原因写在这里，
+     * 用户自己填的终止原因也由 stopWork 写在这里（见 useEnterpriseWorkspace）。
+     * 不映射过来的话，工作详情页那条提示和工作记录里的「终止原因」永远是空的 ——
+     * 界面已经答应过用户「终止原因会保留」。
+     */
+    stopReason: meta?.stopReason ?? task.error ?? (task.status === 'interrupted' ? '应用退出导致中断' : null),
     workDir: task.workDir,
   };
 }

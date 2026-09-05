@@ -46,7 +46,9 @@ export const WORK_STATUS: Record<WorkStatus, StatusPresentation> = {
   'waiting-user': { label: '等待你确认', tone: 'attention', hint: '需要你确认后才能继续' },
   completed: { label: '已完成', tone: 'ready', hint: '结果已交付，可查看或复制为新工作' },
   failed: { label: '需要重试', tone: 'danger', hint: '执行中断，可重试或换其他员工' },
-  paused: { label: '已暂停', tone: 'muted', hint: '你终止了这项工作，已完成部分被保留' },
+  // 「已终止」而不是「已暂停」：终止之后不会自己接着跑，要用「重新执行」从头开一遍。
+  // 说「暂停」会让人等它自己醒过来。这一行的用词和终止按钮、工作过程里那条记录一致。
+  paused: { label: '已终止', tone: 'muted', hint: '你终止了这项工作，已完成部分被保留' },
 };
 
 export const WORK_STEP_STATE: Record<WorkStepState, StatusPresentation> = {

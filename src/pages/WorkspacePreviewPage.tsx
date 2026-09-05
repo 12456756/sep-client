@@ -52,7 +52,23 @@ const teamPrompt = (goal: string) => {
   return `618 活动复盘报告\n\n工作目标：\n${goal}\n\n[SEP_WORK_META]${JSON.stringify(meta)}`;
 };
 
+/**
+ * 对话式工作。工作详情页抬头右边那颗主按钮按类型分岔：这一类是「继续对话」，
+ * 上面 flow 的两类是「改一版安排」，所以预览里两类都得有。
+ */
+const chatPrompt = (goal: string) => {
+  const meta = {
+    kind: 'conversation' as const,
+    goal,
+    steps: [] as unknown[],
+    participants: ['preview-content'],
+    sharedContext: { goal, confirmedInputs: [], previousResults: [], userNotes: [] },
+  };
+  return `${goal}\n\n工作目标：\n${goal}\n\n[SEP_WORK_META]${JSON.stringify(meta)}`;
+};
+
 let previewTasks: ClientTask[] = [
+  { id: 'preview-chat', title: '客户反馈整理成改进清单', prompt: chatPrompt('把这个季度收到的客户反馈整理成一份可执行的改进清单'), status: 'running', workDir: 'D:/workspace/feedback', createdAt: now - 42 * 60_000, startedAt: now - 40 * 60_000, completedAt: null, error: null, files: [], logs: [{ timestamp: now - 40 * 60_000, message: '运营文案助手已接单' }, { timestamp: now - 9 * 60_000, message: '已按主题归好类，正在写改进建议' }], progress: 55, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-content', activeRunId: 'preview-run-chat' },
   { id: 'preview-team', title: '618 活动复盘报告', prompt: teamPrompt('复盘 618 活动的投放与转化，产出可交付的复盘报告'), status: 'running', workDir: 'D:/workspace/618-analysis', createdAt: now - 136 * 60_000, startedAt: now - 130 * 60_000, completedAt: null, error: null, files: ['D:/workspace/618-analysis/活动数据分析.xlsx', 'D:/workspace/618-analysis/关键结论汇总.pptx'], logs: [{ timestamp: now - 130 * 60_000, message: '市场调研助手已接单' }, { timestamp: now - 96 * 60_000, message: '整理竞品活动资料' }, { timestamp: now - 74 * 60_000, message: '读取 12 个数据文件' }, { timestamp: now - 38 * 60_000, message: '完成数据清洗' }, { timestamp: now - 12 * 60_000, message: '正在分析活动转化率' }], progress: 72, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-analysis', activeRunId: 'preview-run-0' },
   { id: 'preview-running', title: '整理季度经营数据', prompt: workflowPrompt('整理季度经营数据并生成管理层分析报告'), status: 'running', workDir: 'D:/workspace/quarter-report', createdAt: now - 28 * 60_000, startedAt: now - 25 * 60_000, completedAt: null, error: null, files: ['D:/workspace/quarter-report/clean-data.xlsx'], logs: [{ timestamp: now - 20 * 60_000, message: '数据分析助手已接单' }, { timestamp: now - 6 * 60_000, message: '已完成数据清理，正在整理报告' }], progress: 62, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-analysis', activeRunId: 'preview-run-1' },
   { id: 'preview-failed', title: '官网内容更新', prompt: workflowPrompt('更新官网产品介绍并完成发布前审核'), status: 'failed', workDir: 'D:/workspace/website', createdAt: now - 3 * 60 * 60_000, startedAt: now - 2.8 * 60 * 60_000, completedAt: now - 2.5 * 60 * 60_000, error: '输入文件不可用', files: [], logs: [{ timestamp: now - 2.5 * 60 * 60_000, message: '读取输入文件失败', level: 'error' }], progress: 34, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-research', activeRunId: null },
@@ -95,6 +111,12 @@ function pushMessage(taskId: string, role: ClientTaskMessage['role'], content: s
   list.push({ id: `${taskId}-msg-${list.length}`, role, content, createdAt: Date.now(), runId: `${taskId}-run` });
   previewMessages.set(taskId, list);
 }
+
+// 对话式工作要有几句话才看得出对话抽屉长什么样：气泡左右分列、员工那一侧带头像。
+pushMessage('preview-chat', 'user', '把这个季度收到的客户反馈整理成一份可执行的改进清单，按影响面排序。');
+pushMessage('preview-chat', 'assistant', '我先把反馈按主题归类，一共分出六类：交付时效、沟通节奏、报告可读性、价格、功能缺口、售后响应。其中交付时效和沟通节奏出现得最多。\n\n接下来我按「影响多少客户 × 我们改起来的成本」排一遍，再给每一类写两三条具体的改进动作。');
+pushMessage('preview-chat', 'user', '价格这一类先不用管，那不是我们能决定的。');
+pushMessage('preview-chat', 'assistant', '好，价格那一类我从清单里去掉，只在附录里留一句「已收到相关反馈」备查。现在按剩下五类写改进动作。');
 
 const previewApi: ElectronAPI = {
   login: async () => ({ success: true, data: { user: { id: 'preview-user', email: 'preview@sep.local', name: '预览账号' }, enterprise: { id: 'preview-enterprise', name: 'SEP 示例企业' } } }),

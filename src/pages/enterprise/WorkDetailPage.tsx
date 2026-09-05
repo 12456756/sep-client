@@ -7,17 +7,24 @@
  * 多人协作和单人工作共用这一套骨架，只换中间三格的内容
  * （成员表 ↔ 执行员工、进度圆环 ↔ 完成面板）—— 两套页面各写一遍的话，改一处要改两处。
  *
- * 对话排在报表后面而不是最上面：这一页的第一个问题永远是「干成了什么」，
- * 但对话必须留着 —— 对话式工作靠它继续，等你拍板的工作靠它回话。
+ * 对话不在这一页上。它整块搬进了一个抽屉（见 WorkTalkDrawer），只在你要用的时候
+ * 拉出来 —— 报表页的第一个问题永远是「干成了什么」，而编排出来的工作根本没有对话
+ * 可言（员工的动作在「工作过程」里）。除了少掉这一块，页面的排版一格没动。
+ *
+ * 抬头右边那颗主按钮按工作类型给：对话式工作是「继续对话」，编排出来的工作是
+ * 「改一版安排」。两者都不跳去「安排工作」页 —— 一个开对话抽屉，一个开一张
+ * 只问「要完成什么」的表单。
  */
 
 import {
-  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, PencilLine, RotateCcw,
-  Send, Share2, StopCircle, XCircle,
+  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, MessageSquareText,
+  PencilLine, RotateCcw, Share2, StopCircle, XCircle,
 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Empty, StatusChip, StepStateChip, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
+import { WorkPlanDrawer } from '../../components/enterprise/WorkPlanDrawer';
+import { WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkItem, WorkTimelineEntry } from '../../features/enterprise/types';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
@@ -38,22 +45,33 @@ export function WorkDetailPage({ workspace, workId }: Props) {
     );
   }
   // 找不到工作时上面直接返回，所以下面这一层可以放心用 hook。
-  return <Detail work={work} workspace={workspace} />;
+  // key 带上工作 id：改一版安排之后会跳到新工作，不重置的话抽屉会开着不动、内容换成新的那一项。
+  return <Detail key={work.id} work={work} workspace={workspace} />;
 }
 
+/** 抬头右边和抽屉之间共用的一个状态：现在拉开的是哪个抽屉。 */
+type Panel = 'talk' | 'plan' | null;
+
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
-  const talk = useRef<HTMLDivElement | null>(null);
   const team = useTeam(work, workspace);
   const solo = team.length <= 1;
   const finished = work.status === 'completed';
-  const closed = finished || work.status === 'paused';
+  /** 这项工作已经不会自己往前走了。耗时、结束时间、能不能终止都按它算。 */
+  const over = finished || work.status === 'paused' || work.status === 'failed';
   const percent = Math.round(work.progress);
   const doing = work.timeline.filter(entry => entry.kind === 'employee').at(-1);
   const next = work.steps.find(step => step.state === 'pending');
+  const [panel, setPanel] = useState<Panel>(null);
 
   return (
     <div className="ent-page ent-wk">
-      <button type="button" className="ent-wk-back" onClick={() => workspace.navigate({ name: 'records' })}>
+      {/* 返回是真的返回：从首页员工抽屉进来的回首页，从工作记录进来的回工作记录。
+          没有上一页时（比如刚安排完直接落在这一页）退到工作记录。 */}
+      <button
+        type="button"
+        className="ent-wk-back"
+        onClick={() => (workspace.canGoBack ? workspace.goBack() : workspace.navigate({ name: 'records' }))}
+      >
         <ArrowLeft size={14} aria-hidden />
         返回
       </button>
@@ -63,17 +81,17 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         <WorkStatusChip value={work.status} />
         <div className="ent-wk-head-actions">
           <ShareButton work={work} />
-          {closed || work.status === 'failed' ? (
-            <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
-              <RotateCcw size={14} aria-hidden />
-              重新执行
+          {work.kind === 'conversation' ? (
+            <button type="button" className="ent-btn primary sm" onClick={() => setPanel('talk')}>
+              <MessageSquareText size={14} aria-hidden />
+              继续对话
             </button>
           ) : (
             <button
               type="button"
               className="ent-btn primary sm"
-              title="把这项工作的步骤复制到「安排工作」画布上改一版，不影响正在跑的这一项"
-              onClick={() => workspace.duplicateWork(work.id)}
+              title="同一批同事、同样的顺序，只改要完成什么。会开一项新工作，不影响这一项"
+              onClick={() => setPanel('plan')}
             >
               <PencilLine size={14} aria-hidden />
               改一版安排
@@ -85,7 +103,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
       <div className="ent-wk-meta">
         <span>{solo ? team[0]?.roleName ?? '硅基员工' : `${team.length} 位同事协作`}</span>
         <span>{stampText(work.createdAt)} 开始</span>
-        <span>{closed ? `耗时 ${durationText(work.updatedAt - work.createdAt)}` : `已运行 ${durationText(Date.now() - work.createdAt)}`}</span>
+        <span>{over ? `耗时 ${durationText(work.updatedAt - work.createdAt)}` : `已运行 ${durationText(Date.now() - work.createdAt)}`}</span>
       </div>
 
       <div className="ent-wk-grid">
@@ -131,7 +149,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
               <dt>开始时间</dt>
               <dd className="mono">{stampText(work.createdAt)}</dd>
             </div>
-            {closed ? (
+            {over ? (
               <div>
                 <dt>{finished ? '完成时间' : '结束时间'}</dt>
                 <dd className="mono">{stampText(work.updatedAt)}</dd>
@@ -167,8 +185,8 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
               <button
                 type="button"
                 className="ent-btn sm"
-                title="跳到员工给出的最后一段说明"
-                onClick={() => talk.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                title="打开对话，看员工给出的最后一段说明"
+                onClick={() => setPanel('talk')}
               >
                 查看总结
               </button>
@@ -208,11 +226,85 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         </section>
       </div>
 
-      <Talk work={work} workspace={workspace} anchor={talk} />
+      {/* 这一条留在原来对话模块的位置上：对话搬进抽屉之后，页面上其余的排版一格没动。 */}
+      <NeedsYou work={work} workspace={workspace} onTalk={() => setPanel('talk')} />
 
       <MoreInfo work={work} />
+
+      {panel === 'talk' ? <WorkTalkDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
+      {panel === 'plan' ? <WorkPlanDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
     </div>
   );
+}
+
+/**
+ * 「现在需要你」。工作停在原地时，那一句话和唯一一颗能让它继续的按钮。
+ *
+ * 位置就是原来对话模块的位置 —— 那条提示本来是对话模块的第一块，
+ * 对话搬进抽屉之后它留在页面上，页面的排版因此和以前一样。
+ *
+ * 已终止的工作也在这里给「重新执行」：抬头那颗主按钮改成按工作类型给之后，
+ * 它不再是「重新执行」，不放在这里就没地方重开一项已经终止的工作。
+ *
+ * 流程工作多给一颗「补充说明」：确认是「就这样，继续」，但有时候你要说的是
+ * 「这里改一下再继续」，那就得开对话。对话式工作不给 —— 它抬头上那颗主按钮
+ * 本来就是「继续对话」。
+ */
+function NeedsYou({ work, workspace, onTalk }: { work: WorkItem; workspace: EnterpriseWorkspace; onTalk: () => void }) {
+  const talkable = work.kind === 'flow';
+
+  if (work.status === 'waiting-user') {
+    return (
+      <div className="ent-flow-act">
+        <AlertTriangle size={16} aria-hidden />
+        <p>现在需要你：{work.nextUserAction ?? '看一下结果再决定怎么继续'}</p>
+        {talkable ? (
+          <button type="button" className="ent-btn sm" onClick={onTalk}>
+            <MessageSquareText size={13} aria-hidden />
+            补充说明
+          </button>
+        ) : null}
+        <button type="button" className="ent-btn primary sm" onClick={() => void workspace.confirmStep(work.id)} disabled={workspace.busy}>
+          <CheckCircle2 size={13} aria-hidden />
+          确认，继续
+        </button>
+      </div>
+    );
+  }
+
+  if (work.status === 'failed') {
+    return (
+      <div className="ent-flow-act danger">
+        <XCircle size={16} aria-hidden />
+        <p>{work.stopReason ? `中断原因：${work.stopReason}` : work.nextUserAction ?? '这项工作中断了，看一下再决定怎么继续'}</p>
+        {talkable ? (
+          <button type="button" className="ent-btn sm" onClick={onTalk}>
+            <MessageSquareText size={13} aria-hidden />
+            补充说明
+          </button>
+        ) : null}
+        <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
+          <RotateCcw size={13} aria-hidden />
+          重新试一次
+        </button>
+      </div>
+    );
+  }
+
+  if (work.status === 'paused') {
+    return (
+      <div className="ent-flow-act quiet">
+        <StopCircle size={16} aria-hidden />
+        <p>这项工作已终止{work.stopReason ? `：${work.stopReason}` : ''}。已完成的动作和已产出的文件都还留着。</p>
+        <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
+          <RotateCcw size={13} aria-hidden />
+          重新执行
+        </button>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 /**
@@ -259,7 +351,7 @@ function MoreInfo({ work }: { work: WorkItem }) {
           ) : null}
           {work.stopReason ? (
             <>
-              <h3>中断原因</h3>
+              <h3>{work.status === 'paused' ? '终止原因' : '中断原因'}</h3>
               <p className="ent-prose">{work.stopReason}</p>
             </>
           ) : null}
@@ -369,140 +461,6 @@ function Process({ work, names }: { work: WorkItem; names: string[] }) {
         // 所以按人筛可能一条都没有。这里把原因说清，不让用户以为界面坏了。
         <p className="ent-hint">{who ? '这位同事的动作还没有单独上报，先看「全部」。' : '还没有动作记录。'}</p>
       )}
-    </section>
-  );
-}
-
-/**
- * 对话。你说的话进气泡靠右，员工说的话是裸的正文（两边都套气泡的话，
- * 页面上一半面积是边框）。输入框下面那一排是「换个人做」和「终止」——
- * 它们和「说下一句」是同一件事，所以放在一起。
- */
-function Talk({ work, workspace, anchor }: {
-  work: WorkItem;
-  workspace: EnterpriseWorkspace;
-  anchor: RefObject<HTMLDivElement>;
-}) {
-  const [draft, setDraft] = useState('');
-  const [stopping, setStopping] = useState(false);
-  const [reason, setReason] = useState('');
-  const list = useRef<HTMLDivElement | null>(null);
-  const closed = work.status === 'completed' || work.status === 'paused';
-  const needsMe = work.status === 'waiting-user' || work.status === 'failed';
-
-  // 只把对话这一块滚到最新，不用 scrollIntoView —— 那会把整页也一起拉下去。
-  useEffect(() => {
-    const node = list.current;
-    if (node) node.scrollTop = node.scrollHeight;
-  }, [work.messages.length]);
-
-  const send = () => {
-    const text = draft.trim();
-    if (!text) return;
-    workspace.sendMessage(work.id, text);
-    setDraft('');
-  };
-
-  return (
-    <section className="ent-panel" ref={anchor}>
-      <h2>对话</h2>
-
-      {needsMe ? (
-        <div className={`ent-flow-act${work.status === 'failed' ? ' danger' : ''}`}>
-          {work.status === 'failed' ? <XCircle size={16} aria-hidden /> : <AlertTriangle size={16} aria-hidden />}
-          <p>现在需要你：{work.nextUserAction ?? (work.stopReason ? `中断原因：${work.stopReason}` : '看一下结果再决定怎么继续')}</p>
-          {work.status === 'waiting-user' ? (
-            <button type="button" className="ent-btn primary sm" onClick={() => void workspace.confirmStep(work.id)} disabled={workspace.busy}>
-              <CheckCircle2 size={13} aria-hidden />
-              确认，继续
-            </button>
-          ) : (
-            <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
-              <RotateCcw size={13} aria-hidden />
-              重新试一次
-            </button>
-          )}
-        </div>
-      ) : null}
-
-      <div className="ent-talk" ref={list}>
-        {work.messages.map(message => (
-          message.role === 'system' ? (
-            <p className="ent-talk-sys" key={message.id}>{message.content}</p>
-          ) : (
-            <div className={`ent-say${message.role === 'user' ? ' user' : ''}`} key={message.id}>
-              {message.role === 'employee' ? (
-                <span className="ent-say-who">
-                  <EmployeeFace seed={message.employeeId || work.currentEmployeeId} size="sm" round />
-                  {message.employeeName}
-                </span>
-              ) : null}
-              <p>{message.content}</p>
-            </div>
-          )
-        ))}
-      </div>
-
-      {stopping ? (
-        <div className="ent-confirm">
-          <p>
-            <StopCircle size={14} aria-hidden />
-            终止之后这项工作不再继续，<strong>已完成的部分和已产出的文件会保留</strong>。
-          </p>
-          <input className="ent-input" value={reason} placeholder="终止原因（可留空）" onChange={event => setReason(event.target.value)} />
-          <div className="ent-confirm-foot">
-            <button type="button" className="ent-btn sm" onClick={() => setStopping(false)}>不终止</button>
-            <button
-              type="button"
-              className="ent-btn danger sm"
-              onClick={() => {
-                void workspace.stopWork(work.id, reason.trim() || '用户终止了这项工作');
-                setStopping(false);
-                setReason('');
-              }}
-            >
-              确认终止
-            </button>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="ent-ask">
-        <textarea
-          className="ent-ask-input"
-          value={draft}
-          placeholder={closed ? '这项工作已经结束，说一句会重新开始跟进' : `告诉 ${work.currentEmployeeName} 下一步要做什么（Ctrl + Enter 发送）`}
-          aria-label="给员工的下一句话"
-          onChange={event => setDraft(event.target.value)}
-          onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); } }}
-        />
-        <div className="ent-ask-bar">
-          <label className="ent-ask-who">
-            <EmployeeFace seed={work.currentEmployeeId || 'sep'} size="sm" round />
-            <select
-              value={work.currentEmployeeId}
-              aria-label="换一位员工接手"
-              disabled={workspace.busy || closed}
-              onChange={event => void workspace.switchEmployee(work.id, event.target.value)}
-            >
-              {workspace.myEmployees.map(item => (
-                <option key={item.id} value={item.id}>{item.name}{item.id === work.currentEmployeeId ? '（当前）' : ''}</option>
-              ))}
-            </select>
-            <ChevronDown size={13} aria-hidden />
-          </label>
-          <span className="ent-ask-spacer" />
-          {closed ? null : (
-            <button type="button" className="ent-ask-stop" onClick={() => setStopping(true)}>
-              <StopCircle size={13} aria-hidden />
-              终止
-            </button>
-          )}
-          <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy} aria-label="发送">
-            <Send size={15} aria-hidden />
-          </button>
-        </div>
-      </div>
     </section>
   );
 }
