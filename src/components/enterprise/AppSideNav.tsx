@@ -4,11 +4,11 @@
  * 自上而下三段：企业标记与名称、五个入口、账号。账号固定贴底，
  * 菜单向上弹出，避免被窗口底边裁掉。企业管理类入口只对有权限的成员显示。
  *
- * 「待我处理」的数量挂在「工作记录」上，不再单独放一个铃铛 ——
- * 铃铛点开也是跳到工作记录，两个入口指同一个地方是多余的。
+ * 「待我处理」的数量挂在「工作记录」上，作为这个入口的注解。顶栏右上角那颗铃铛
+ * 指向同一页 —— 数字说明入口现在的情况，铃铛是随时都在的提醒，两者不冲突。
  *
  * 顶部的企业块同时是 Electron 的窗口拖拽区（Windows 的窗口按钮由
- * titleBarOverlay 画在右上角，那一侧的留白见 enterprise.css 的 .ent-drag-strip）。
+ * titleBarOverlay 画在右上角，那一侧的留白见 enterprise.css 的 .ent-top）。
  */
 
 import { Building2, ChevronUp, ClipboardList, GraduationCap, LayoutGrid, ListTodo, LogOut, Settings, ShieldCheck, Users } from 'lucide-react';

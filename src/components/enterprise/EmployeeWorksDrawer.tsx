@@ -141,7 +141,7 @@ function Tile({ work, onOpenWork }: { work: WorkItem; onOpenWork: (id: string) =
           <>
             <small>{look.note} · 已进行 {durationText(Date.now() - work.createdAt)}</small>
             <span className="ent-bar">
-              <span><i style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
+              <span><i className={percent >= 100 ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
               <b>{percent}%</b>
             </span>
             <small>最后更新：{relativeTime(work.updatedAt)}</small>
@@ -158,9 +158,13 @@ function Tile({ work, onOpenWork }: { work: WorkItem; onOpenWork: (id: string) =
   );
 }
 
-/** 每种状态的图标、图标片配色和那一句附注。全部集中在这里，不散在 JSX 里。 */
+/**
+ * 每种状态的图标、图标片配色和那一句附注。全部集中在这里，不散在 JSX 里。
+ * running 的 kind 是 live：那颗圈要转起来（见 .ent-worktile.live），
+ * 其余状态的图标是静止的形状 —— 停着的事不该看起来在动。
+ */
 const LOOK: Record<WorkItem['status'], { icon: typeof Workflow; kind: string; note: string }> = {
-  running: { icon: Loader2, kind: '', note: '正在进行' },
+  running: { icon: Loader2, kind: 'live', note: '正在进行' },
   arranging: { icon: Workflow, kind: '', note: '已安排好，还没开工' },
   'waiting-user': { icon: Hourglass, kind: 'call', note: '等你拍板' },
   completed: { icon: FileCheck2, kind: 'done', note: '已完成' },

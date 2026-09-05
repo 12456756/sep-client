@@ -80,8 +80,12 @@
   --ent-drag-h: 44px;
   --ent-side-w: 232px;
   --ent-shell-gap: 12px;
-  /** 员工墙两侧渐隐的宽度：露出下一页的一小条，暗示「还有更多员工」。 */
-  --ent-wall-fade: 56px;
+  /**
+   * 员工墙两侧渐隐带的宽度，同时也是首页内容的左右内边距 ——
+   * 整墙用等宽的负 margin 顶到内边距外面，卡片区就正好和统计格左右对齐，
+   * 被裁掉的相邻列露在内容区外侧的留白里（设计稿如此）。
+   */
+  --ent-wall-fade: 64px;
 
   /*
    * 圆角一套，全项目共用（设计稿的统一圆角规范）：
@@ -188,7 +192,7 @@
 }
 /* 再窄就只剩图标：文字收掉，入口一个不少，位置也不变。 */
 @media (max-width: 900px) {
-  :root { --ent-side-w: 68px; }
+  :root { --ent-side-w: 68px; --ent-wall-fade: 52px; }
   .ent-side { padding: 0 10px 10px; }
   .ent-side-brand { justify-content: center; padding: 0; }
   .ent-side-brand strong, .ent-nav-item > span, .ent-nav-group,
@@ -211,7 +215,7 @@
 .ent-top-head { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .ent-top-title { overflow: hidden; font-size: var(--ent-fs-page); font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
 .ent-top-sub { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-body); text-overflow: ellipsis; white-space: nowrap; }
-.ent-top-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; }
+.ent-top-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-left: auto; }
 /* 抬头上的控件不能跟着拖窗口，否则点不动。 */
 .ent-top-actions, .ent-top button { -webkit-app-region: no-drag; }
 /* 圆形图标钮。页面抬头右侧的操作用它。 */
@@ -250,7 +254,7 @@
 .ent-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 14px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius-btn); color: var(--ent-brand-ink); background: var(--ent-panel); font-size: var(--ent-fs-body); font-weight: 500; white-space: nowrap; cursor: pointer; transition: background var(--ent-ease), border-color var(--ent-ease), color var(--ent-ease); }
 .ent-btn svg { flex: 0 0 auto; }
 .ent-btn:focus-visible, .ent-nav-item:focus-visible, .ent-side-user:focus-visible, .ent-top-icon:focus-visible,
-.ent-figure:focus-visible, .ent-desk-open:focus-visible, .ent-desk-bubble:focus-visible,
+.ent-figure:focus-visible, .ent-desk-open:focus-visible,
 .ent-arrangebar-site:focus-visible, .ent-arrangebar-clear:focus-visible,
 .ent-note:focus-visible, .ent-fold-btn:focus-visible,
 .ent-ask-stop:focus-visible, .ent-ask-send:focus-visible,
@@ -435,14 +439,15 @@
  * 尺寸按设计稿：统计格 192×68、员工卡 ≥160×130、卡片圆角 10、头像片 52×64。
  * 视觉重点是员工，不是统计 —— 所以统计格刻意做小，只占一行的一小段。
  */
-.ent-home { display: flex; flex-direction: column; gap: 18px; padding-bottom: 8px; }
+/* 左右内边距用渐隐带的宽度，员工墙靠负 margin 顶出去（见 .ent-wall）。 */
+.ent-home { display: flex; flex-direction: column; gap: 18px; padding-inline: var(--ent-wall-fade); padding-bottom: 8px; }
 
 /* 统计格。整块可点，点进员工页对应的范围 —— 数字后面就该能跟到人。 */
 .ent-figures { display: flex; flex-wrap: wrap; gap: 14px; }
-.ent-figure { display: flex; width: 192px; min-height: 68px; flex: 0 0 auto; align-items: center; gap: 11px; padding: 0 16px 0 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); text-align: left; cursor: pointer; transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
+.ent-figure { display: flex; width: 192px; min-height: 62px; flex: 0 0 auto; align-items: center; gap: 11px; padding: 0 16px 0 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); text-align: left; cursor: pointer; transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
 .ent-figure:hover { border-color: var(--ent-brand-border); box-shadow: var(--ent-shadow-lift); }
-/* 图标片：浅紫底 + 主色图标，第二格偏蓝一档（设计稿如此），不做渐变。 */
-.ent-figure > i { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; border-radius: 9px; color: var(--ent-brand); background: var(--ent-brand-soft); }
+/* 图标片：浅紫底 + 实心剪影，第二格偏蓝一档（设计稿如此），不做渐变。 */
+.ent-figure > i { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: 9px; color: var(--ent-brand); background: var(--ent-brand-soft); }
 .ent-figure.alt > i { color: var(--ent-accent); background: var(--ent-accent-soft); }
 .ent-figure-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
 .ent-figure-copy small { color: #7a8090; font-size: var(--ent-fs-note); }
@@ -450,52 +455,86 @@
 .ent-figure-copy strong em { margin-left: 4px; color: var(--ent-ink-3); font-size: var(--ent-fs-body); font-style: normal; font-weight: 500; }
 
 /*
- * 员工墙。设计稿是「两行一页 + 左右翻页箭头 + 两侧被裁掉一半的员工卡渐隐」：
- * 用原生横向滚动 + scroll-snap 实现，箭头只是 scrollBy 的快捷方式 ——
- * 触控板横扫、键盘、无障碍滚动天然可用，不用自己算 transform。
- * 每行放几张由 Wall 量容器宽度算出来（见 HomePage），不写死列数。
+ * 员工墙。设计稿是「两行 + 左右圆箭头 + 两侧被裁掉的员工卡渐隐」。
  *
- * 两侧的内边距正好是渐隐带的宽度：一页的宽度是内容盒宽度，所以左右两页
- * 各有一小条压在渐隐带下面，形成「还有更多员工」的暗示。
- * 上边的内边距是留给提醒气泡的 —— 滚动容器会裁掉溢出，气泡必须在里面。
+ * 整墙用负 margin 顶到 .ent-home 的左右内边距外面，两条内边距就成了两侧的渐隐窄带 ——
+ * 于是第一张整卡的左边缘正好落在统计格的左边缘上，被裁的卡露在内容区外侧的留白里。
+ *
+ * 人少的时候（Wall 不加 .turning）就是一片普通卡片，从左上往右排、先填满第一排，
+ * 没有箭头也没有窄带。人多到一屏放不下就成环：一条横轨，一次滑一列，左右都不到头。
+ *
+ * 上下那点内边距是给卡片的 hover（上移 2px）和投影留的 —— 取景框是 clip 的，不留会被切掉。
  */
-.ent-wall { position: relative; }
-.ent-wall-track { display: flex; gap: 26px; padding: 22px var(--ent-wall-fade) 10px; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scroll-padding-inline: var(--ent-wall-fade); scrollbar-width: none; }
-.ent-wall-track::-webkit-scrollbar { display: none; }
+.ent-wall { position: relative; margin-inline: calc(-1 * var(--ent-wall-fade)); }
 /*
- * 一页两行，每行 --ent-wall-cols 张。格子按 1fr 均分，卡片本身封顶 190
- * （设计稿 160~175 那一档）并在格子里居中 —— 宽窗口下多出来的空间变成更宽的间距，
- * 而不是把卡片拉成一块大板子。
+ * overflow: clip 而不是 hidden：轨道左右各多挂两列，要裁掉，但不要因此变成一个
+ * 可以被焦点滚动的滚动容器。clip 只裁不滚，Chrome 130（Electron 33）原生支持。
  */
-.ent-wall-page { display: grid; flex: 0 0 100%; grid-template-columns: repeat(var(--ent-wall-cols, 4), minmax(0, 1fr)); gap: 26px 14px; align-content: start; justify-items: center; scroll-snap-align: start; }
-/* 两侧渐隐：一层化到页面底色的渐变盖在被裁掉的卡片上。到头那一侧自己淡出。 */
-.ent-wall::before, .ent-wall::after { content: ''; position: absolute; z-index: 4; top: 0; bottom: 0; width: var(--ent-wall-fade); pointer-events: none; transition: opacity var(--ent-ease); }
-.ent-wall::before { left: 0; background: linear-gradient(90deg, var(--ent-canvas) 34%, rgb(247 248 252 / 0%)); }
-.ent-wall::after { right: 0; background: linear-gradient(270deg, var(--ent-canvas) 34%, rgb(247 248 252 / 0%)); }
-.ent-wall.at-start::before, .ent-wall.at-end::after { opacity: 0; }
-/* 圆箭头钮：32 白底浅描边，hover 换成浅紫底 + 主色箭头。 */
-.ent-wall-arrow { position: absolute; z-index: 5; top: 50%; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid var(--ent-line); border-radius: 50%; color: #69708a; background: var(--ent-panel); box-shadow: var(--ent-shadow); cursor: pointer; transform: translateY(-50%); transition: color var(--ent-ease), border-color var(--ent-ease), background var(--ent-ease), opacity var(--ent-ease); }
-.ent-wall-arrow.left { left: 2px; }
-.ent-wall-arrow.right { right: 2px; }
-.ent-wall-arrow:hover:not(:disabled) { border-color: var(--ent-brand-border); color: var(--ent-brand); background: var(--ent-brand-tint); }
-.ent-wall-arrow:disabled { opacity: 0; pointer-events: none; }
+.ent-wall-frame { padding: 10px 0; overflow: clip; }
+/*
+ * 一屏就放得下：auto-fill 的固定宽列从左往右排，第一排先填满，第二排有几个是几个。
+ * 两排不用一样多 —— 五个人硬摊成三加二会在右边留一个空格子。
+ *
+ * 这一档没有相邻列要露，所以取景框把两条窄带还原成内边距，卡片才和统计格左边缘对齐
+ * （成环时是轨道自己往左顶两列来对齐的，见 .ent-wall-track）。
+ */
+.ent-wall:not(.turning) .ent-wall-frame { padding-inline: var(--ent-wall-fade); }
+.ent-wall-flat { display: grid; grid-template-columns: repeat(auto-fill, var(--ent-desk-w, 190px)); gap: 18px var(--ent-wall-gap, 14px); align-content: start; }
+/*
+ * 成环之后的横轨。列宽就是一张卡的宽度、间距是算出来铺满一屏的那个值
+ * （都由 Wall 量出来），所以第一张整卡对齐统计格、最后一张整卡对齐内容区右边缘。
+ *
+ * 轨道往左顶两列（SPARE = 2）：正中那 cols 列落在内容区里，左右各一列落在渐隐窄带里，
+ * 再往外各一列在画面之外候场 —— 滑动时它顶上来，右边就不会空出一块底色。
+ */
+.ent-wall-track { display: grid; grid-auto-flow: column; grid-auto-columns: var(--ent-desk-w, 190px); column-gap: var(--ent-wall-gap, 14px); margin-left: calc(var(--ent-wall-fade) - 2 * (var(--ent-desk-w, 190px) + var(--ent-wall-gap, 14px))); }
+/* 只在真的在滑的时候才挂过渡：滑完要把位移归零，那一帧不能跟着动画倒回去。 */
+.ent-wall-track.sliding { transition: transform 260ms cubic-bezier(.22, 1, .36, 1); }
+/* minmax(0,1fr) 是必须的：不写的话隐式列按 max-content 撑开，卡片会顶破格子。 */
+.ent-wall-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; align-content: start; justify-items: center; }
+/*
+ * 两侧渐隐：给整个取景框加一层左右两端化空的遮罩，露在窄带里的那条卡边就由内向外淡掉。
+ * 遮罩加在取景框上而不是轨道上 —— 轨道是会横滑的，遮罩跟着滑就没有「固定的两条窄带」了；
+ * 也不用盖一层渐变，盖上去的那层会把卡片的投影一起糊成一块。
+ */
+.ent-wall.turning .ent-wall-frame {
+  mask-image: linear-gradient(to right,
+    rgb(0 0 0 / 0%) 0,
+    #000 var(--ent-wall-fade),
+    #000 calc(100% - var(--ent-wall-fade)),
+    rgb(0 0 0 / 0%) 100%);
+}
+/* 一屏就放得下时没有相邻列可露，箭头和人数一起收掉。 */
+/*
+ * 可用人数：只有成环时才写，告诉用户转一圈总共有多少人可以派活。
+ * 放在墙的右下角而不是右上角 —— 上沿是提醒气泡的地方，窗口一窄两者就会叠在一起。
+ */
+.ent-wall-count { position: absolute; z-index: 6; right: var(--ent-wall-fade); bottom: -4px; color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-variant-numeric: tabular-nums; }
+/* 圆箭头钮：32 白底浅描边，压在渐隐带上；hover 换成浅紫底 + 主色箭头。 */
+.ent-wall-arrow { position: absolute; z-index: 5; top: 50%; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid var(--ent-line); border-radius: 50%; color: #69708a; background: var(--ent-panel); box-shadow: var(--ent-shadow); cursor: pointer; transform: translateY(-50%); transition: color var(--ent-ease), border-color var(--ent-ease), background var(--ent-ease); }
+.ent-wall-arrow.left { left: calc(var(--ent-wall-fade) / 2 - 16px); }
+.ent-wall-arrow.right { right: calc(var(--ent-wall-fade) / 2 - 16px); }
+.ent-wall-arrow:hover { border-color: var(--ent-brand-border); color: var(--ent-brand); background: var(--ent-brand-tint); }
+.ent-wall-arrow:active { background: var(--ent-brand-soft); }
 
-/* 内联 SVG 头像（见 EmployeeFace）。尺寸在这里定，组件内部只管画。 */
+/* DiceBear toon-head 画的半身像（见 EmployeeFace）。尺寸在这里定，组件内部只管画。 */
 .ent-face { display: block; flex: 0 0 auto; overflow: hidden; border-radius: 8px; background: var(--ent-brand-soft); }
 .ent-face > svg { display: block; width: 100%; height: 100%; }
 .ent-face.sm { width: 30px; height: 30px; border-radius: 8px; }
 .ent-face.md { width: 40px; height: 40px; border-radius: 9px; }
 .ent-face.lg { width: 52px; height: 52px; border-radius: 10px; }
 .ent-face.xl { width: 60px; height: 60px; border-radius: 10px; }
-.ent-face.card { width: 52px; height: 64px; border-radius: 9px; }
+/* 员工卡上的那张片子：58×70 的圆角矩形，是卡片里最大的一块（设计稿如此）。 */
+.ent-face.card { width: 58px; height: 70px; border-radius: 10px; }
 .ent-face.round { border-radius: 50%; }
 
 /*
  * 员工卡。设计稿：左边头像片，右边姓名 / 职位 / 状态标签，
  * 下面一行「今日工作 x/y」，卡片最下沿一条细进度条。
- * 「在干活」只由那颗「工作中」标签表达 —— 不做发光、不做呼吸，全页没有一处在闪。
+ * 「在干活」只由那颗「工作中」标签表达 —— 不做发光、不做呼吸，全页没有一处在闪；
+ * 卡片上沿也不浮任何东西，要提醒的事都收进状态旁边那几颗小图标里。
  */
-.ent-desk { position: relative; display: flex; width: 100%; max-width: 190px; min-height: 130px; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease), transform var(--ent-ease); }
+.ent-desk { display: flex; width: 100%; max-width: var(--ent-desk-w, 190px); min-height: 138px; flex-direction: column; gap: 9px; padding: 12px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease), transform var(--ent-ease); }
 .ent-desk:hover { border-color: var(--ent-brand-border); box-shadow: var(--ent-shadow-lift); transform: translateY(-2px); }
 /* 暂时不可用的员工整张卡沉下去：还能点开看他手上的工作，但不再像「能派活」。 */
 .ent-desk.off { background: var(--ent-panel-subtle); box-shadow: none; }
@@ -505,46 +544,38 @@
 .ent-desk-id { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 2px; }
 .ent-desk-id strong { max-width: 100%; overflow: hidden; font-size: var(--ent-fs-title); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ent-desk-id small { max-width: 100%; overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
-.ent-desk-id .ent-chip { margin-top: 2px; }
+.ent-desk-id .ent-desk-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 2px; }
+/*
+ * 状态旁边那几颗小图标：做完了等你查阅（铃）、等你拍板（沙漏）、中断了（叉）。
+ * 只有图形没有文字 —— 卡上那一格写不下一句话，而这几件事在铃铛、抽屉和工作记录里
+ * 都查得到，卡片只负责让你看见「这个人身上有事」。三件事同时有就三颗，
+ * 挤不下时换行（所以 .ent-desk-state 允许 wrap），不省掉任何一颗。
+ * 它们在整块可点的按钮里面，所以不是独立控件，解释走 title 和按钮的 aria-label。
+ */
+.ent-desk-flag { display: grid; flex: 0 0 auto; place-items: center; }
+.ent-desk-flag.done { color: var(--ent-brand-ink); }
+.ent-desk-flag.call { color: var(--ent-attention); }
+.ent-desk-flag.stop { color: var(--ent-danger); }
 
 /* 今日工作一行 + 贴着卡片下沿的进度条，和设计稿一样。 */
 .ent-desk-load { display: flex; align-items: baseline; gap: 8px; padding-top: 8px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-desk-load b { margin-left: auto; color: var(--ent-ink-2); font-weight: 600; font-variant-numeric: tabular-nums; }
 .ent-desk-track { display: block; height: 5px; border-radius: 999px; background: var(--ent-track); overflow: hidden; }
-.ent-desk-track i { display: block; height: 100%; border-radius: inherit; background: var(--ent-brand-solid); transition: width var(--ent-ease); }
-
-/* 卡片按 50ms 的间隔依次淡入，整段不超过 400ms（设计稿如此）。 */
-.ent-wall-page > * { animation: ent-page-in 240ms cubic-bezier(.22, 1, .36, 1) backwards; }
-.ent-wall-page > *:nth-child(2) { animation-delay: 50ms; }
-.ent-wall-page > *:nth-child(3) { animation-delay: 100ms; }
-.ent-wall-page > *:nth-child(4) { animation-delay: 150ms; }
-.ent-wall-page > *:nth-child(5) { animation-delay: 60ms; }
-.ent-wall-page > *:nth-child(6) { animation-delay: 110ms; }
-.ent-wall-page > *:nth-child(7) { animation-delay: 160ms; }
-.ent-wall-page > *:nth-child(n+8) { animation-delay: 160ms; }
+/* 填充的配色与流动在下面的 .ent-bar 那一段里，两条进度条共用同一套。 */
+.ent-desk-track i { display: block; height: 100%; border-radius: inherit; transition: width var(--ent-ease); }
 
 /*
- * 提醒气泡：员工的一句话，浮在卡片上沿，尖角指着卡片说明这句话是谁说的。
- * 三种语气按后果分档：做完了请查阅（珊瑚）→ 等你拍板（土黄）→ 中断了（绛红）。
- * 它盖在卡片本体的点击之上，所以点「请查阅」直接进那项工作，不会弹出一个列表。
+ * 卡片依次淡入，整段不超过 400ms（设计稿如此）。只在第一次铺开时放 ——
+ * 成环之后转动是整条轨道横滑（.ent-wall-track.sliding），轨道的列用固定的 key，
+ * 滑动时不会重新挂载，所以不会跟着重放一次淡入。
  */
-.ent-desk-bubble { position: absolute; z-index: 3; right: 6px; bottom: calc(100% - 10px); left: 6px; display: flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius-sm); color: var(--ent-brand-ink); background: var(--ent-brand-soft); box-shadow: var(--ent-shadow); font-size: var(--ent-fs-note); text-align: left; cursor: pointer; transition: background var(--ent-ease), transform var(--ent-ease); }
-.ent-desk-bubble > svg { flex: 0 0 auto; }
-/* 省略号只吃工作名，后半句（请查阅 / 等你拍板）永远完整 —— 那半句才是要用户动的。 */
-.ent-desk-bubble-what { overflow: hidden; min-width: 0; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
-.ent-desk-bubble-say { flex: 0 0 auto; }
-.ent-desk-bubble > em { flex: 0 0 auto; padding: 0 6px; border-radius: 999px; background: rgb(91 92 226 / 12%); font-style: normal; font-variant-numeric: tabular-nums; }
-.ent-desk-bubble:hover { background: #e4e6fd; transform: translateY(-1px); }
-/* 尖角是一个转 45° 的小方块，只留朝下的两条边，颜色跟着气泡走。 */
-.ent-desk-bubble::after { content: ''; position: absolute; top: 100%; left: 20px; width: 9px; height: 9px; border-right: 1px solid var(--ent-brand-border); border-bottom: 1px solid var(--ent-brand-border); background: var(--ent-brand-soft); transform: translateY(-5px) rotate(45deg); }
-.ent-desk-bubble.call { border-color: var(--ent-attention-line); color: var(--ent-attention); background: var(--ent-attention-bg); }
-.ent-desk-bubble.call::after { border-color: var(--ent-attention-line); background: var(--ent-attention-bg); }
-.ent-desk-bubble.call:hover { background: #fbecc9; }
-.ent-desk-bubble.call > em { background: rgb(138 100 16 / 12%); }
-.ent-desk-bubble.stop { border-color: var(--ent-danger-line); color: var(--ent-danger); background: var(--ent-danger-bg); }
-.ent-desk-bubble.stop::after { border-color: var(--ent-danger-line); background: var(--ent-danger-bg); }
-.ent-desk-bubble.stop:hover { background: #fadde3; }
-.ent-desk-bubble.stop > em { background: rgb(191 49 73 / 12%); }
+.ent-wall-flat > *, .ent-wall-track > * { animation: ent-page-in 240ms cubic-bezier(.22, 1, .36, 1) backwards; }
+.ent-wall-flat > *:nth-child(2), .ent-wall-track > *:nth-child(2) { animation-delay: 40ms; }
+.ent-wall-flat > *:nth-child(3), .ent-wall-track > *:nth-child(3) { animation-delay: 80ms; }
+.ent-wall-flat > *:nth-child(4), .ent-wall-track > *:nth-child(4) { animation-delay: 120ms; }
+.ent-wall-flat > *:nth-child(5), .ent-wall-track > *:nth-child(5) { animation-delay: 160ms; }
+.ent-wall-flat > *:nth-child(n+6), .ent-wall-track > *:nth-child(n+6) { animation-delay: 160ms; }
+
 
 /*
  * 派活框。设计稿里它是页面最后一段：一行输入 + 一排工具按钮 + 右侧发送键。
@@ -627,8 +658,31 @@
 /* 行内进度条：细条 + 右侧百分比。工作详情页也用它。 */
 .ent-bar { display: flex; align-items: center; gap: 9px; }
 .ent-bar > span { min-width: 0; flex: 1; height: 5px; border-radius: 999px; background: var(--ent-track); overflow: hidden; }
-.ent-bar > span > i { display: block; height: 100%; border-radius: inherit; background: var(--ent-brand-solid); transition: width var(--ent-ease); }
+.ent-bar > span > i { display: block; height: 100%; border-radius: inherit; transition: width var(--ent-ease); }
 .ent-bar > b { flex: 0 0 auto; color: var(--ent-brand-ink); font-size: var(--ent-fs-note); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/*
+ * 进度条的填充：主色底 + 一层 45° 的白色斜纹，斜纹顺着进度方向一直往前走 ——
+ * 一眼就分得出「这条在动」和「这条停着」，不用去读百分比。
+ *
+ * 斜纹只是同一块主色上的一层白，不引入第二种颜色；一格 10px 配 5px 高的条，
+ * 纹路细到不会盖掉「填了多少」这个主信息。位移正好走一格，所以循环处接得上、看不出跳。
+ * 满格（.full）就停下：已经到头了还在流动，等于说还在推进。
+ */
+@keyframes ent-bar-flow { to { background-position-x: 10px; } }
+.ent-desk-track i, .ent-bar > span > i {
+  background-color: var(--ent-brand-solid);
+  background-image: repeating-linear-gradient(45deg,
+    rgb(255 255 255 / 30%) 0 2.5px,
+    rgb(255 255 255 / 0%) 2.5px 5px);
+  background-size: 10px 10px;
+  animation: ent-bar-flow 700ms linear infinite;
+}
+.ent-desk-track i.full, .ent-bar > span > i.full { animation: none; }
+
+/* 正在跑的那一项，图标片里的圈转起来 —— 其余状态的图标是静止的形状，不转。 */
+@keyframes ent-spin { to { transform: rotate(1turn); } }
+.ent-worktile.live > i > svg { animation: ent-spin 1100ms linear infinite; }
 
 /*
  * ── 工作详情 ──────────────────────────────────────────────────────────
@@ -1104,18 +1158,24 @@
   .ent-segment button, .ent-icon-btn, .ent-record, .ent-record-filters button, .ent-record-caret,
   .ent-section-head button.link, .ent-user-menu button, .ent-side-menu button,
   .ent-switch span, .ent-switch span::after,
-  .ent-figure, .ent-desk, .ent-desk-bubble, .ent-desk-track i, .ent-wall-arrow, .ent-wall::before, .ent-wall::after,
+  .ent-figure, .ent-desk, .ent-desk-track i, .ent-wall-arrow,
   .ent-arrangebar-card, .ent-arrangebar-site, .ent-arrangebar-clear,
   .ent-drawer-tabs button, .ent-worktile, .ent-worktile > svg:last-child, .ent-wk-files li,
   .ent-bar > span > i, .ent-wk-back, .ent-wk-copy,
   .ent-wk-tabs button, .ent-wk-more > button > svg, .ent-wk-more-fold,
   .ent-node, .ent-node-del, .ent-node-port, .ent-edge-line, .ent-edge-cut,
-  .ent-ask, .ent-ask-who, .ent-ask-stop, .ent-ask-send { transition: none; }
+  .ent-ask, .ent-ask-who, .ent-ask-stop, .ent-ask-send,
+  .ent-wall-track, .ent-wall-track.sliding { transition: none; }
   .ent-btn:active:not(:disabled), .ent-node-port.out:hover,
-  .ent-figure:hover, .ent-desk:hover, .ent-desk-bubble:hover, .ent-emp-card:hover,
+  .ent-figure:hover, .ent-desk:hover, .ent-emp-card:hover,
   .ent-worktile:hover > svg:last-child { transform: none; }
-  /* 进出场一律不做：整页、员工卡、抽屉与遮罩都直接是终态。 */
-  .ent-page, .ent-wall-page > *, .ent-drawer, .ent-drawer-back { animation: none; }
+  /*
+   * 进出场和循环动画一律不做：整页、员工卡、抽屉与遮罩都直接是终态。
+   * 进度条的白色斜纹和正在进行那颗转圈的图标也停住 —— 它们是一直在动的，
+   * 在要求减少动态效果的系统上是最刺眼的两处。斜纹本身留着，只是不流动。
+   */
+  .ent-page, .ent-wall-flat > *, .ent-wall-track > *, .ent-drawer, .ent-drawer-back,
+  .ent-desk-track i, .ent-bar > span > i, .ent-worktile.live > i > svg { animation: none; }
 }
 
 /* 1120 这一档：两格统计仍然并排，只是不再留额外的呼吸位。 */

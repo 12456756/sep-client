@@ -7,13 +7,33 @@
  * 已确认的内容和终止原因都会保留，不会一起消失。
  */
 
-import { AlertTriangle, ChevronDown, Copy, FileCheck2, History, MessageSquareText, Search, StopCircle, Trash2 } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, Copy, FileCheck2, History, MessageSquareText, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Empty, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
-import type { WorkItem } from '../../features/enterprise/types';
+import type { WorkItem, WorkStatus } from '../../features/enterprise/types';
 import { clockTime, relativeTime } from '../../features/enterprise/vocabulary';
+
+/**
+ * 卡片上那颗主按钮说什么。
+ *
+ * 六种状态六句话，不是「结束了 / 没结束」两档 —— 分两档的话正在跑的工作也写着
+ * 「继续工作」（在跑的东西没有什么可继续的），还没开工的草稿也写着「继续工作」，
+ * 而中断了的工作写着「查看对话」，跟它自己的状态标签「需要重试」对不上。
+ *
+ * 六句话都只做一件事：跳到这项工作。刻意不在列表里直接确认或重试 ——
+ * 确认要先看结果，重试要先看中断原因，在一排卡片里点一下就发生太容易点错。
+ * 到了工作详情页，「确认，继续」和「重新执行」就在抬头右边。
+ */
+const LEAD: Record<WorkStatus, { label: string; icon: typeof MessageSquareText }> = {
+  arranging: { label: '查看安排', icon: Workflow },
+  running: { label: '查看进展', icon: Activity },
+  'waiting-user': { label: '去确认', icon: CheckCircle2 },
+  completed: { label: '查看对话', icon: MessageSquareText },
+  failed: { label: '去重试', icon: RotateCcw },
+  paused: { label: '继续工作', icon: PlayCircle },
+};
 
 type Bucket = 'all' | 'active' | 'mine' | 'done' | 'stopped';
 
@@ -106,6 +126,8 @@ export function WorkRecordsPage({ workspace }: Props) {
           const people = [...new Set([work.currentEmployeeId, ...work.participants])].filter(Boolean);
           const expanded = openId === work.id;
           const closed = work.status === 'completed' || work.status === 'failed';
+          const lead = LEAD[work.status];
+          const LeadIcon = lead.icon;
           const result = work.deliverables.length
             ? work.deliverables.map(item => item.name).join('、')
             : closed
@@ -148,8 +170,8 @@ export function WorkRecordsPage({ workspace }: Props) {
 
               <div className="ent-record-actions">
                 <button type="button" className="ent-btn sm primary" onClick={() => workspace.navigate({ name: 'work', workId: work.id })}>
-                  <MessageSquareText size={13} aria-hidden />
-                  {closed ? '查看对话' : '继续工作'}
+                  <LeadIcon size={13} aria-hidden />
+                  {lead.label}
                 </button>
                 <button type="button" className="ent-btn sm" onClick={() => open(work, 'result')}>
                   <FileCheck2 size={13} aria-hidden />

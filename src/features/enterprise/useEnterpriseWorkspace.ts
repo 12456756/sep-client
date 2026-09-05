@@ -35,6 +35,25 @@ import type {
 import { upgradeDraftSteps, layoutSteps } from './work-graph';
 import { buildWorkItem, completedStepCount, encodeWorkPrompt, type WorkMeta } from './work-mapping';
 
+/**
+ * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
+ *
+ * 判定口径是「他名下有一项工作正在跑」，不是「他是当前负责人」：一项流程工作跑起来之后，
+ * 参与其中的同事都在这项工作里，只认当前那一位会让其余人显示成空闲。
+ *
+ * 「等你拍板」和「中断了」不算：那些工作已经不在推进了，这位员工现在确实能接新活。
+ * 这两件事由员工卡上状态旁边的小图标、顶栏铃铛和工作记录来说。
+ */
+function busyEmployeeIds(works: WorkItem[]): Set<string> {
+  const busy = new Set<string>();
+  works.filter(work => work.status === 'running').forEach(work => {
+    busy.add(work.currentEmployeeId);
+    work.participants.forEach(id => busy.add(id));
+    work.steps.forEach(step => busy.add(step.employeeId));
+  });
+  return busy;
+}
+
 /** 「安排工作」页提交的内容。 */
 export interface ArrangeWorkDraft {
   title: string;
@@ -304,7 +323,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
 
   /** 员工是否正在处理工作，用于卡片状态。 */
   const employees = useMemo<SiliconEmployee[]>(() => {
-    const busyIds = new Set(works.filter(work => work.status === 'running').map(work => work.currentEmployeeId));
+    const busyIds = busyEmployeeIds(works);
     const lastWorked = new Map<string, number>();
     works.forEach(work => {
       work.participants.forEach(id => {

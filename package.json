@@ -21,6 +21,8 @@
     "poc:04": "tsx poc/04-failure.ts"
   },
   "dependencies": {
+    "@dicebear/core": "9.4.3",
+    "@dicebear/toon-head": "9.4.3",
     "@earendil-works/pi-coding-agent": "0.83.0",
     "@radix-ui/react-dialog": "^1.1.23",
     "@radix-ui/react-scroll-area": "^1.2.0",

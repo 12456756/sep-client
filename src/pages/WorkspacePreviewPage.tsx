@@ -3,7 +3,11 @@ import type { ClientTask, ClientTaskMessage, EmployeeInstanceSnapshot, TaskExecu
 import { ClientAppPage } from './ClientAppPage';
 
 const now = Date.now();
-/** 预览里放六位员工：首页员工墙一行铺四张卡，两行才看得出换行和气泡的位置。 */
+/**
+ * 预览里放十四位员工：宽窗口下首页一屏能铺六列（十二张），必须比它多才看得出
+ * 员工墙成环之后的样子 —— 两侧被裁掉的那一列、左右两个箭头、右上角的可用人数。
+ * 前六位挂着真实的工作，用来看状态标签和提醒气泡；后面几位只占位置。
+ */
 const previewInstances: EmployeeInstanceSnapshot[] = [
   { id: 'preview-content', name: '运营文案助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'content', name: '内容运营', avatar: '文' }, department: { id: 'marketing', name: '市场部' }, allowedModels: ['gpt-5.2'] },
   { id: 'preview-analysis', name: '数据分析助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'analysis', name: '数据分析', avatar: '数' }, department: { id: 'data', name: '数据部' }, allowedModels: ['gpt-5.2'] },
@@ -11,6 +15,14 @@ const previewInstances: EmployeeInstanceSnapshot[] = [
   { id: 'preview-support', name: '客户支持助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'support', name: '客户支持', avatar: '客' }, department: { id: 'service', name: '客服部' }, allowedModels: ['gpt-5.2'] },
   { id: 'preview-research', name: '市场调研助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'research', name: '市场调研', avatar: '研' }, department: { id: 'marketing', name: '市场部' }, allowedModels: ['gpt-5.2'] },
   { id: 'preview-design', name: '设计助理', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'design', name: '视觉设计', avatar: '设' }, department: { id: 'design', name: '设计部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-ops', name: '流程运维助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'ops', name: '流程运维', avatar: '运' }, department: { id: 'it', name: '信息部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-hr', name: '招聘协助员', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'hr', name: '人力协助', avatar: '人' }, department: { id: 'hr', name: '人力部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-finance', name: '财务对账助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'finance', name: '财务对账', avatar: '财' }, department: { id: 'finance', name: '财务部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-legal', name: '合同审阅助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'legal', name: '合同审阅', avatar: '法' }, department: { id: 'legal', name: '法务部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-sales', name: '销售线索助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'sales', name: '销售支持', avatar: '销' }, department: { id: 'sales', name: '销售部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-training', name: '培训编写助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'training', name: '培训编写', avatar: '培' }, department: { id: 'hr', name: '人力部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-translate', name: '文档翻译助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'translate', name: '文档翻译', avatar: '译' }, department: { id: 'marketing', name: '市场部' }, allowedModels: ['gpt-5.2'] },
+  { id: 'preview-qa', name: '测试用例助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'qa', name: '质量测试', avatar: '测' }, department: { id: 'quality', name: '质量部' }, allowedModels: ['gpt-5.2'] },
 ];
 
 const planSteps = [
@@ -44,7 +56,7 @@ let previewTasks: ClientTask[] = [
   { id: 'preview-team', title: '618 活动复盘报告', prompt: teamPrompt('复盘 618 活动的投放与转化，产出可交付的复盘报告'), status: 'running', workDir: 'D:/workspace/618-analysis', createdAt: now - 136 * 60_000, startedAt: now - 130 * 60_000, completedAt: null, error: null, files: ['D:/workspace/618-analysis/活动数据分析.xlsx', 'D:/workspace/618-analysis/关键结论汇总.pptx'], logs: [{ timestamp: now - 130 * 60_000, message: '市场调研助手已接单' }, { timestamp: now - 96 * 60_000, message: '整理竞品活动资料' }, { timestamp: now - 74 * 60_000, message: '读取 12 个数据文件' }, { timestamp: now - 38 * 60_000, message: '完成数据清洗' }, { timestamp: now - 12 * 60_000, message: '正在分析活动转化率' }], progress: 72, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-analysis', activeRunId: 'preview-run-0' },
   { id: 'preview-running', title: '整理季度经营数据', prompt: workflowPrompt('整理季度经营数据并生成管理层分析报告'), status: 'running', workDir: 'D:/workspace/quarter-report', createdAt: now - 28 * 60_000, startedAt: now - 25 * 60_000, completedAt: null, error: null, files: ['D:/workspace/quarter-report/clean-data.xlsx'], logs: [{ timestamp: now - 20 * 60_000, message: '数据分析助手已接单' }, { timestamp: now - 6 * 60_000, message: '已完成数据清理，正在整理报告' }], progress: 62, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-analysis', activeRunId: 'preview-run-1' },
   { id: 'preview-failed', title: '官网内容更新', prompt: workflowPrompt('更新官网产品介绍并完成发布前审核'), status: 'failed', workDir: 'D:/workspace/website', createdAt: now - 3 * 60 * 60_000, startedAt: now - 2.8 * 60 * 60_000, completedAt: now - 2.5 * 60 * 60_000, error: '输入文件不可用', files: [], logs: [{ timestamp: now - 2.5 * 60 * 60_000, message: '读取输入文件失败', level: 'error' }], progress: 34, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-research', activeRunId: null },
-  { id: 'preview-delivered', title: '上周项目进展周报', prompt: workflowPrompt('整理上周项目进展并生成周报'), status: 'completed', workDir: 'D:/workspace/weekly-report', createdAt: now - 24 * 60 * 60_000, startedAt: now - 23 * 60 * 60_000, completedAt: now - 22 * 60 * 60_000, error: null, files: ['D:/workspace/weekly-report/weekly-report.docx'], logs: [{ timestamp: now - 22 * 60 * 60_000, message: '最终报告已完成' }], progress: 100, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-content', activeRunId: null },
+  { id: 'preview-delivered', title: '上周项目进展周报', prompt: workflowPrompt('整理上周项目进展并生成周报'), status: 'completed', workDir: 'D:/workspace/weekly-report', createdAt: now - 3 * 60 * 60_000, startedAt: now - 2.9 * 60 * 60_000, completedAt: now - 2.2 * 60 * 60_000, error: null, files: ['D:/workspace/weekly-report/weekly-report.docx'], logs: [{ timestamp: now - 2.2 * 60 * 60_000, message: '最终报告已完成' }], progress: 100, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-content', activeRunId: null },
   { id: 'preview-waiting', title: '客户续约风险清单', prompt: workflowPrompt('整理本月到期客户的续约风险清单'), status: 'waiting_approval', workDir: 'D:/workspace/renewal', createdAt: now - 50 * 60_000, startedAt: now - 46 * 60_000, completedAt: null, error: null, files: [], logs: [{ timestamp: now - 8 * 60_000, message: '清单已整理好，等你确认口径' }], progress: 70, ownerId: 'preview-user', ownerEnterpriseId: 'preview-enterprise', subscriptionId: 'preview-support', activeRunId: null },
 ];
 
