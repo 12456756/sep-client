@@ -1,20 +1,4 @@
-/**
- * electron/runtime/task-execution-coordinator.ts — 执行编排者（Phase 8）
- *
- * 拆分之后这个文件只做编排：把一次 run 的生命周期串起来，具体机制交给五个协作者。
- *   - `RunQueue`             run-queue.ts       准入队列，按 runId 寻址（C1）
- *   - `WorkerRegistry`       run-workers.ts     在跑的 run + 完成信号（C2、不变式 I1）
- *   - `EventPipeline`        run-events.ts      事件串行化 / drain / 派生状态（C6、I4、I7）
- *   - `WorkspaceLockManager` workspace-lock-manager.ts  工作目录互斥（I2）
- *   - `ToolApprovals`        run-approvals.ts   工具授权与 60s 超时自动拒绝（C5）
- *
- * 共享词汇在 `run-types.ts`（零依赖类型模块）。
- *
- * 8 个公开方法的签名不变：executeTask / continueConversation /
- * switchConversationEmployee / retryTask / pauseTask / cancelTask / stopAll /
- * respondToApproval。协调器自己只保留三样东西：调度循环 `pump()`、一次 run 的
- * 建仓与收尾 `startRun()` / `finalizeRun()`、以及会话上下文的按 scope 缓存。
- */
+
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { TaskStatus, type TaskExecutionEvent, type ToolAuthorizationRequest } from '../../src/shared/types'
@@ -35,8 +19,14 @@ import type {
   QueuedRun,
   SessionRecoveryMode,
   TaskWorkerPort,
+  ControlIntent,
 } from './run-types'
 import { logger } from '../common/logger'
+import type { WorkPlanStorePort } from '../data/work-plan-store'
+import type { WorkflowCheckpointStorePort } from '../data/workflow-checkpoint-store'
+import { WorkflowExecutionCoordinator } from './workflow-execution-coordinator'
+import { createWorkflowRunnerState, resumeInterrupted, retryFailedNode, stopWorkflow as stopWorkflowState, type WorkflowRunnerState } from './workflow-runner'
+import { shouldPushTaskEvent } from './task-event-visibility'
 
 const log = logger.child('task-execution-coordinator')
 
@@ -52,6 +42,8 @@ export interface TaskExecutionCoordinatorOptions {
   taskRunStore?: TaskRunStorePort
   userDataDir?: string
   getTaskWorkspaceRoot?: () => string
+  workPlanStore?: WorkPlanStorePort
+  workflowCheckpointStore?: WorkflowCheckpointStorePort
 }
 
 export class TaskExecutionCoordinator {
@@ -63,15 +55,18 @@ export class TaskExecutionCoordinator {
   private readonly authorizeEmployee: (subscriptionId: string) => Promise<EmployeeRuntimeConfig | null>
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
+  private readonly workPlanStore: WorkPlanStorePort | null
+  private readonly workflowCheckpointStore: WorkflowCheckpointStorePort | null
+  private readonly activeWorkflows = new Map<string, { taskId: string; runId: string; subscriptionId: string; coordinator: WorkflowExecutionCoordinator; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
-  /** 准入队列。runId 寻址，没有任何按下标的接口（C1）。 */
+
   private readonly admission = new RunQueue()
   private pumping = false
   private pumpRequested = false
-  /** 在跑的 run 与完成信号（C2 / 不变式 I1）。 */
+
   private readonly workers = new WorkerRegistry()
-  /** 事件串行化 + drain + 派生状态（C6）。 */
+
   private readonly events: EventPipeline
   private readonly createWorker: (options: PiTaskWorkerOptions) => TaskWorkerPort
   private readonly conversationStores = new Map<string, ConversationContextStore>()
@@ -87,6 +82,8 @@ export class TaskExecutionCoordinator {
     this.createWorker = options.createWorker ?? (workerOptions => new PiTaskWorker(workerOptions))
     this.taskRunStore = options.taskRunStore ?? (options.userDataDir ? new TaskRunStore(options.userDataDir) : null)
     this.getTaskWorkspaceRoot = options.getTaskWorkspaceRoot ?? (() => process.cwd())
+    this.workPlanStore = options.workPlanStore ?? null
+    this.workflowCheckpointStore = options.workflowCheckpointStore ?? null
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvals = new ToolApprovals({
@@ -124,9 +121,36 @@ export class TaskExecutionCoordinator {
     if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED) {
       throw new Error('Terminal tasks cannot be executed.')
     }
+    const scope = this.taskManager.getCurrentUserScope()
+    const workflow = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
+    if (workflow && workflow.mode !== 'conversation') {
+      const checkpoint = scope && this.workflowCheckpointStore
+        ? await this.workflowCheckpointStore.get(scope, taskId)
+        : null
+      if (checkpoint?.state.status === 'waiting-user') {
+        throw new Error('Workflow is waiting for a failed node retry or stop.')
+      }
+      if (checkpoint?.state.status === 'interrupted') {
+        throw new Error('Workflow is interrupted. Resume it explicitly before execution.')
+      }
+      if (checkpoint?.state.status === 'stopped') {
+        throw new Error('Stopped workflows cannot be executed again.')
+      }
+      const primarySubscriptionId = workflow.nodes[0]?.subscriptionId ?? task.subscriptionId
+      if (!primarySubscriptionId) throw new Error('Select a silicon employee before executing the task.')
+      const employee = await this.authorizeEmployee(primarySubscriptionId)
+      if (!employee) throw new Error('The selected employee is no longer available.')
+      if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
+      const runId = randomUUID()
+      await this.taskManager.admitTask(taskId, runId)
+      const admittedTask = await this.taskManager.getTask(taskId)
+      if (!admittedTask || admittedTask.activeRunId !== runId) return
+      this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: workflow.goal, conversation: false, workflow })
+      void this.pump()
+      return
+    }
     const subscriptionId = task.subscriptionId
     if (!subscriptionId) throw new Error('Select a silicon employee before executing the task.')
-    // C4：授权（含平台往返）在入队前完成一次，结果随队列条目携带。
     const employee = await this.authorizeEmployee(subscriptionId)
     if (!employee) throw new Error('The selected employee is no longer available.')
 
@@ -170,7 +194,6 @@ export class TaskExecutionCoordinator {
     if (!prompt.trim()) throw new Error('A message is required.')
     const employeeId = employeeOverride ?? task.subscriptionId
     if (!employeeId) throw new Error('The selected employee is no longer available.')
-    // C4：与 executeTask 一致，授权在入队前完成一次。
     const employee = await this.authorizeEmployee(employeeId)
     if (!employee) throw new Error('The selected employee is no longer available.')
     const scope = this.taskManager.getCurrentUserScope()
@@ -205,9 +228,15 @@ export class TaskExecutionCoordinator {
     void this.pump()
   }
 
-  async retryTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {
+  async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string } = {}): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
+    const scope = this.taskManager.getCurrentUserScope()
+    const workflow = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
+    if (workflow && workflow.mode !== 'conversation') {
+      await this.retryWorkflow(task, workflow, options.nodeId)
+      return
+    }
     if (task.status !== TaskStatus.FAILED && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.INTERRUPTED) {
       throw new Error('Only terminal or interrupted tasks can be retried.')
     }
@@ -215,7 +244,90 @@ export class TaskExecutionCoordinator {
     await this.executeTask(taskId, options)
   }
 
+  async stopWorkflow(taskId: string, reason?: string): Promise<void> {
+    const activeWorkflow = this.activeWorkflows.get(taskId)
+    if (activeWorkflow) {
+      activeWorkflow.control = 'stop'
+      await this.enqueueEvent({
+        taskId, runId: activeWorkflow.runId, subscriptionId: activeWorkflow.subscriptionId, sequence: 0,
+        type: 'stop_requested', occurredAt: Date.now(), data: reason ? { reason } : null,
+      })
+      this.approvals.denyRun(activeWorkflow.runId)
+      await activeWorkflow.coordinator.stop()
+      await activeWorkflow.completion
+      return
+    }
+    const scope = this.taskManager.getCurrentUserScope()
+    if (!scope || !this.workPlanStore || !this.workflowCheckpointStore) throw new Error('Workflow storage is unavailable.')
+    const task = await this.taskManager.getTask(taskId)
+    if (!task) throw new Error('Task not found.')
+    const plan = await this.workPlanStore.get(scope, taskId)
+    if (!plan || plan.mode === 'conversation') throw new Error('The task is not an orchestration workflow.')
+    this.removeQueuedTask(taskId)
+    const checkpoint = await this.workflowCheckpointStore.get(scope, taskId)
+    const state = checkpoint?.state ?? createWorkflowRunnerState(plan.nodes)
+    const stopped = stopWorkflowState(state)
+    await this.saveWorkflowCheckpoint(scope, taskId, plan.planHash, null, stopped)
+    const latest = await this.taskManager.getTask(taskId)
+    if (!latest || latest.status === TaskStatus.COMPLETED || latest.status === TaskStatus.FAILED) return
+    if (latest.activeRunId) {
+      if (latest.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
+      const pending = await this.taskManager.getTask(taskId)
+      if (pending?.status !== TaskStatus.PAUSED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PAUSED, reason)
+      await this.taskManager.clearTaskRun(taskId, latest.activeRunId)
+      return
+    }
+    if (latest.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
+    const current = await this.taskManager.getTask(taskId)
+    if (current?.status === TaskStatus.PENDING) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PAUSED, reason)
+  }
+
+  private async retryWorkflow(
+    task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
+    plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
+    nodeId?: string,
+  ): Promise<void> {
+    const scope = this.taskManager.getCurrentUserScope()
+    if (!scope || !this.workflowCheckpointStore) throw new Error('Workflow checkpoint storage is unavailable.')
+    const checkpoint = await this.workflowCheckpointStore.get(scope, task.id)
+    if (!checkpoint) throw new Error('Workflow has no recoverable checkpoint.')
+    if (checkpoint.state.status === 'stopped' || checkpoint.state.status === 'completed') throw new Error('This workflow cannot be retried.')
+    let nextState: WorkflowRunnerState
+    if (nodeId) {
+      nextState = retryFailedNode(checkpoint.state, plan.nodes, nodeId)
+      if (nextState === checkpoint.state) throw new Error('The selected node is not waiting for a retry.')
+    } else {
+      if (checkpoint.state.status !== 'interrupted') throw new Error('A failed workflow node must be selected for retry.')
+      nextState = resumeInterrupted(checkpoint.state)
+    }
+    await this.saveWorkflowCheckpoint(scope, task.id, checkpoint.planHash, null, nextState)
+    if (task.status !== TaskStatus.PENDING) await this.taskManager.updateTaskStatus(task.id, TaskStatus.PENDING)
+    await this.executeTask(task.id, { conversation: false })
+  }
+
+  private async saveWorkflowCheckpoint(
+    scope: NonNullable<ReturnType<TaskManager['getCurrentUserScope']>>,
+    taskId: string,
+    planHash: string,
+    activeRunId: string | null,
+    state: WorkflowRunnerState,
+  ): Promise<void> {
+    if (!this.workflowCheckpointStore) throw new Error('Workflow checkpoint storage is unavailable.')
+    await this.workflowCheckpointStore.save(scope, {
+      version: 1, taskId, owner: { ...scope }, planHash, activeRunId,
+      state: structuredClone(state), updatedAt: Date.now(),
+    })
+  }
+
   async pauseTask(taskId: string): Promise<void> {
+    const activeWorkflow = this.activeWorkflows.get(taskId)
+    if (activeWorkflow) {
+      activeWorkflow.control = 'pause'
+      this.approvals.denyRun(activeWorkflow.runId)
+      await activeWorkflow.coordinator.abort()
+      await activeWorkflow.completion
+      return
+    }
     const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
@@ -233,6 +345,23 @@ export class TaskExecutionCoordinator {
   }
 
   async cancelTask(taskId: string): Promise<void> {
+    const activeWorkflow = this.activeWorkflows.get(taskId)
+    if (activeWorkflow) {
+      activeWorkflow.control = 'cancel'
+      await this.enqueueEvent({
+        taskId,
+        runId: activeWorkflow.runId,
+        subscriptionId: activeWorkflow.subscriptionId,
+        sequence: 0,
+        type: 'cancel_requested',
+        occurredAt: Date.now(),
+        data: null,
+      })
+      this.approvals.denyRun(activeWorkflow.runId)
+      await activeWorkflow.coordinator.abort()
+      await activeWorkflow.completion
+      return
+    }
     const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
@@ -260,7 +389,21 @@ export class TaskExecutionCoordinator {
 
   async stopAll(): Promise<void> {
     this.approvals.denyAll()
-    await Promise.all(this.workers.list().map(async active => {
+    const workflowStops = Array.from(this.activeWorkflows.values()).map(async activeWorkflow => {
+      activeWorkflow.control = 'interrupt'
+      await this.enqueueEvent({
+        taskId: activeWorkflow.taskId,
+        runId: activeWorkflow.runId,
+        subscriptionId: activeWorkflow.subscriptionId,
+        sequence: 0,
+        type: 'shutdown_requested',
+        occurredAt: Date.now(),
+        data: null,
+      })
+      await activeWorkflow.coordinator.abort()
+      await activeWorkflow.completion
+    })
+    await Promise.all([Promise.all(workflowStops), Promise.all(this.workers.list().map(async active => {
       active.control = 'interrupt'
       await this.enqueueEvent({
         taskId: active.taskId,
@@ -273,7 +416,7 @@ export class TaskExecutionCoordinator {
       })
       await active.worker.abort()
       await active.completion
-    }))
+    }))])
     await Promise.all(Array.from(this.conversationAdapters.values()).map(adapter => adapter.dispose()))
     this.conversationAdapters.clear()
   }
@@ -291,10 +434,6 @@ export class TaskExecutionCoordinator {
     try {
       do {
         this.pumpRequested = false
-        // 对队列快照迭代，条目一律按 runId 寻址（C1）：本轮的两个挂起点
-        // （getTask 与工作区加锁）期间 pauseTask / cancelTask 会同步移除队列
-        // 条目，按下标操作会删掉别的条目。`take()` 返回 false 就说明该条目
-        // 已被别人取走，直接跳过。
         for (const snapshot of this.admission.snapshot()) {
           const queued = this.admission.find(snapshot.runId)
           if (!queued) continue
@@ -309,8 +448,6 @@ export class TaskExecutionCoordinator {
             }
             continue
           }
-          // C4：调度循环内禁止任何网络调用。授权已在入队前完成，配置随条目携带；
-          // 这里只用同步快照做一次存活性检查——一次慢的平台请求不该拖住全局准入。
           if (!this.resolveEmployee(queued.subscriptionId)) {
             if (!this.admission.take(queued.runId)) continue
             log.warn('dropped queued run', {
@@ -366,18 +503,17 @@ export class TaskExecutionCoordinator {
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     releaseWorkspace: () => void,
   ): Promise<void> {
+    if (queued.workflow) {
+      await this.startWorkflowRun(queued, task, releaseWorkspace)
+      return
+    }
     const taskId = queued.taskId
     const runId = queued.runId
     const subscriptionId = queued.subscriptionId
     const employee = queued.employee
     const scope = this.taskManager.getCurrentUserScope()
-    // C2：锁的获取与释放必须在同一个词法块内。getPaths 会对非法 taskId/runId 抛
-    // TaskScopeError，createWorker 构造 PiTaskWorker 也可能抛；这些步骤此前在 try 之外，
-    // 一抛就再也走不到 finally，该工作目录被永久锁死且没有任何日志。
     let worker: TaskWorkerPort | null = null
     let active: ActiveRun | null = null
-    // C2：完成信号必须在建仓之前就建好，否则建仓抛出时 finally 里没有可调用的 settle，
-    // 等 completion 的 pauseTask / cancelTask / stopAll 会永远等下去。
     const completion = createRunCompletion()
     let runCreated = false
     try {
@@ -467,7 +603,6 @@ export class TaskExecutionCoordinator {
       if (active) {
         await this.finalizeRun(active, queued, scope, runCreated, error)
       } else {
-        // 建仓阶段就失败：既没有 worker 也没有 run 记录，只把任务本身结算掉。
         await this.taskManager
           .settleTaskRun(taskId, runId, TaskStatus.FAILED, 'The run could not be started.')
           .catch(() => undefined)
@@ -484,10 +619,7 @@ export class TaskExecutionCoordinator {
     }
   }
 
-  /**
-   * 事件入列。串行化、错误上报、排空全在 `EventPipeline` 里（C6）——协调器只是把
-   * 自己造的事件和 worker 报上来的事件汇到同一个入口。
-   */
+
   private enqueueEvent(event: TaskExecutionEvent): Promise<void> {
     return this.events.enqueue(event)
   }
@@ -509,8 +641,6 @@ export class TaskExecutionCoordinator {
           : failure ? 'failed' : 'completed'
     const error = failure instanceof Error ? failure.message : failure ? String(failure) : undefined
     if (active.control !== 'none' || failure) {
-      // I7：每个还没收到 tool_execution_end 的副作用调用都必须留下一条
-      // SIDE_EFFECT_UNKNOWN，否则下次启动无法判定副作用是否已经发生。
       for (const [toolId, tool] of this.events.pendingSideEffects(active.runId)) {
         await this.enqueueEvent({
           taskId: active.taskId,
@@ -567,11 +697,121 @@ export class TaskExecutionCoordinator {
     }
   }
 
+  private async startWorkflowRun(
+    queued: QueuedRun,
+    task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
+    releaseWorkspace: () => void,
+  ): Promise<void> {
+    const plan = queued.workflow
+    if (!plan) {
+      releaseWorkspace()
+      return
+    }
+    const taskId = queued.taskId
+    const runId = queued.runId
+    const scope = this.taskManager.getCurrentUserScope()
+    const completion = createRunCompletion()
+    let parentCreated = false
+    let workflow: WorkflowExecutionCoordinator | null = null
+    try {
+      if (scope && this.taskRunStore) {
+        await this.taskRunStore.create(scope, {
+          taskId,
+          runId,
+          subscriptionId: queued.subscriptionId,
+          modelId: queued.employee.modelId,
+          runtimeKey: `${queued.subscriptionId}:${queued.employee.modelId}`,
+          workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
+          prompt: plan.goal,
+        })
+        parentCreated = true
+      }
+      workflow = new WorkflowExecutionCoordinator({
+        scope,
+        taskManager: this.taskManager,
+        taskRunStore: this.taskRunStore,
+        checkpointStore: this.workflowCheckpointStore,
+        createWorker: this.createWorker,
+        getRefreshToken: this.getRefreshToken,
+        onAuthenticationRequired: this.onAuthenticationRequired,
+        onApprovalRequest: request => this.approvals.request(request),
+        onEvent: event => this.enqueueEvent(event),
+        authorizeEmployee: this.authorizeEmployee,
+        workspaceRoot: task.workDir ?? this.getTaskWorkspaceRoot(),
+        workflowSubscriptionId: queued.subscriptionId,
+      })
+      this.activeWorkflows.set(taskId, {
+        taskId,
+        runId,
+        subscriptionId: queued.subscriptionId,
+        coordinator: workflow,
+        completion: completion.promise,
+        releaseWorkspace,
+        control: 'none',
+      })
+      await this.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
+      const result = await workflow.execute(plan, taskId, runId)
+      await this.events.drain(taskId)
+      const activeWorkflow = this.activeWorkflows.get(taskId)
+      const control = activeWorkflow?.runId === runId ? activeWorkflow.control : 'none'
+      const error = result.error
+      const outcome = control === 'cancel'
+        ? 'cancelled'
+        : control === 'interrupt'
+          ? 'interrupted'
+          : control === 'pause' || control === 'stop'
+            ? 'stopped'
+            : result.status === 'completed'
+              ? 'completed'
+              : result.status === 'interrupted'
+                ? 'interrupted'
+                : result.status === 'stopped' || result.status === 'waiting-user'
+                  ? 'stopped'
+                  : 'failed'
+      if (parentCreated && scope && this.taskRunStore) {
+        await this.taskRunStore.finish(scope, taskId, runId, outcome, error)
+      }
+      if (activeWorkflow?.runId === runId) {
+        const status = control === 'cancel'
+          ? TaskStatus.PENDING
+          : control === 'interrupt' || result.status === 'interrupted'
+            ? TaskStatus.INTERRUPTED
+            : control === 'pause' || control === 'stop' || result.status === 'stopped' || result.status === 'waiting-user'
+              ? TaskStatus.PAUSED
+              : result.status === 'completed'
+                ? TaskStatus.COMPLETED
+                : TaskStatus.FAILED
+        await this.taskManager.settleTaskRun(taskId, runId, status, error)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (parentCreated && scope && this.taskRunStore) {
+        await this.taskRunStore.finish(scope, taskId, runId, 'failed', message).catch(() => undefined)
+      }
+      await this.taskManager.settleTaskRun(taskId, runId, TaskStatus.FAILED, message).catch(() => undefined)
+    } finally {
+      this.events.forgetRun(runId)
+      if (this.activeWorkflows.get(taskId)?.runId === runId) this.activeWorkflows.delete(taskId)
+      releaseWorkspace()
+      await this.taskManager.clearTaskRun(taskId, runId).catch(() => undefined)
+      completion.settle()
+      void this.pump()
+    }
+  }
+
   private async handleWorkerEvent(event: TaskExecutionEvent): Promise<void> {
     const active = this.workers.active(event.taskId)
-    if (!active || active.runId !== event.runId) return
+    const workflow = this.activeWorkflows.get(event.taskId)
+    if (active && active.runId !== event.runId) return
+    if (!active && !workflow) return
 
     const scope = this.taskManager.getCurrentUserScope()
+    if (!active && workflow && event.runId !== workflow.runId) {
+      const nodeRun = scope && this.taskRunStore
+        ? await this.taskRunStore.get(scope, event.taskId, event.runId)
+        : null
+      if (!nodeRun) return
+    }
     const persistedEvent = scope && this.taskRunStore
       ? await this.taskRunStore.events.appendEvent(scope, event)
       : event
@@ -588,18 +828,17 @@ export class TaskExecutionCoordinator {
     } else if (event.type === 'tool_execution_start') {
       const data = event.data as { toolId?: unknown; toolName?: unknown }
       if (typeof data.toolId === 'string' && typeof data.toolName === 'string') {
-        // 是不是副作用工具由 EventPipeline 判定——hasSideEffects 只有一个调用点。
         this.events.sideEffectStarted(event.runId, data.toolId, data.toolName, event.occurredAt)
       }
-      await this.taskManager.addTaskLog(event.taskId, `执行工具: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
+      await this.taskManager.addTaskLog(event.taskId, `Executing tool: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
     } else if (event.type === 'tool_execution_end') {
       const data = event.data as { toolId?: unknown; toolName?: unknown }
       if (typeof data.toolId === 'string') this.events.sideEffectEnded(event.runId, data.toolId)
-      await this.taskManager.addTaskLog(event.taskId, `工具执行完成: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
+      await this.taskManager.addTaskLog(event.taskId, `Tool completed: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
     } else if (event.type === 'auto_retry_start') {
       await this.taskManager.addTaskLog(event.taskId, 'Automatic retry started.', 'warning')
     }
-    this.onEvent(persistedEvent)
+    if (shouldPushTaskEvent(persistedEvent)) this.onEvent(persistedEvent)
   }
 
   private conversationStore(scope: { memberId: string; enterpriseId: string }, taskId: string): ConversationContextStore {
@@ -617,7 +856,7 @@ export class TaskExecutionCoordinator {
     return { id: `${runId}-user`, taskId, turnId: runId, runId, subscriptionId, modelId, role: 'user', content, createdAt: Date.now() }
   }
 
-  /** 移除某个 task 的全部排队条目，逐条按 runId 取出（C1）。返回被移除的 runId。 */
+
   private removeQueuedTask(taskId: string): string[] {
     const removed = this.admission.runIdsFor(taskId).filter(runId => this.admission.take(runId))
     if (removed.length > 0) {

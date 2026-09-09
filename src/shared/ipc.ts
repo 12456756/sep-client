@@ -78,6 +78,16 @@ export interface WorkflowCreateResult extends TaskResult {
   graph?: unknown
 }
 
+export interface RetryTaskInput {
+  taskId: string
+  nodeId?: string
+}
+
+export interface StopWorkflowInput {
+  taskId: string
+  reason?: string
+}
+
 export interface TaskMessagesResult {
   success: boolean
   messages?: ClientTaskMessage[]
@@ -107,7 +117,7 @@ export interface ElectronAPI {
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult>
   switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
-  retryTask: (taskId: string) => Promise<IpcCommandResult>
+  retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>
   getTask: (taskId: string) => Promise<TaskResult>
   getAllTasks: () => Promise<TaskListResult>
   listTaskRuns: (taskId: string) => Promise<TaskRunListResult>
@@ -119,6 +129,19 @@ export interface ElectronAPI {
   validateWorkflow: (data: unknown) => Promise<WorkflowCreateResult>
   getWorkflow: (taskId: string) => Promise<WorkflowCreateResult>
   startWorkflow: (taskId: string) => Promise<IpcCommandResult>
+  retryWorkflowNode: (input: RetryTaskInput) => Promise<IpcCommandResult>
+  resumeWorkflow: (taskId: string) => Promise<IpcCommandResult>
+  stopWorkflow: (input: StopWorkflowInput) => Promise<IpcCommandResult>
+  getArrangementContext: () => Promise<unknown>
+  listArrangementDrafts: () => Promise<unknown>
+  createArrangementDraft: (input: unknown) => Promise<unknown>
+  getArrangementDraft: (draftId: string) => Promise<unknown>
+  updateArrangementDraft: (input: unknown) => Promise<unknown>
+  deleteArrangementDraft: (draftId: string) => Promise<unknown>
+  validateArrangementDraft: (draftId: string) => Promise<unknown>
+  preflightArrangementDraft: (input: unknown) => Promise<unknown>
+  confirmArrangementDraft: (input: unknown) => Promise<unknown>
+  confirmAndStartArrangement: (input: unknown) => Promise<unknown>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: () => Promise<SelectDirectoryResult>

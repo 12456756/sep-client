@@ -83,6 +83,21 @@ export class WorkflowService {
     await (await this.deps.execution()).executeTask(taskId)
   }
 
+  async retryNode(taskId: string, nodeId: string): Promise<void> {
+    await this.requireTask(taskId)
+    await (await this.deps.execution()).retryTask(taskId, { conversation: false, nodeId })
+  }
+
+  async resume(taskId: string): Promise<void> {
+    await this.requireTask(taskId)
+    await (await this.deps.execution()).retryTask(taskId, { conversation: false })
+  }
+
+  async stop(taskId: string, reason?: string): Promise<void> {
+    await this.requireTask(taskId)
+    await (await this.deps.execution()).stopWorkflow(taskId, reason)
+  }
+
   private async requireTask(taskId: string): Promise<ClientTask> {
     const task = await this.deps.taskManager.getTask(taskId)
     if (!task) throw new AppError('NOT_FOUND', { message: '未找到该任务。' })

@@ -30,6 +30,10 @@ export const CREATE_TASK_INVALID = '任务请求参数不合法。'
 const executeInput = z.union([taskId, z.object({ taskId })]).transform(
   value => (typeof value === 'string' ? value : value.taskId),
 )
+const retryInput = z.union([
+  taskId,
+  z.object({ taskId, nodeId: z.string().min(1).optional() }),
+]).transform(value => typeof value === 'string' ? { taskId: value, nodeId: undefined } : value)
 
 /** run 记录投影：只把渲染进程契约里声明的字段送出去。 */
 function toClientTaskRun(record: TaskRunRecord) {
@@ -60,8 +64,8 @@ export const taskRoutes = [
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
 
-  route(INVOKE_CHANNELS.TASK_RETRY, taskId, async (ctx, id) => {
-    await ctx.tasks.retry(id)
+  route(INVOKE_CHANNELS.TASK_RETRY, retryInput, async (ctx, input) => {
+    await ctx.tasks.retry(input.taskId, input.nodeId)
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
 

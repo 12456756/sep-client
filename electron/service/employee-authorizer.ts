@@ -75,6 +75,10 @@ export class EmployeeAuthorizer {
     return this.directory.refresh(await this.session.getValidAccessToken())
   }
 
+  async list(): Promise<ClientInstance[]> {
+    return this.directory.list(await this.session.getValidAccessToken())
+  }
+
   /**
    * 身份变化时的唯一收尾：丢掉平台目录的 TTL 缓存与技能包缓存。
    *

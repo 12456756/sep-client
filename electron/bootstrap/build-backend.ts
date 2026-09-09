@@ -20,6 +20,8 @@ import { settleWithTimeout } from '../common/with-timeout'
 import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
 import { WorkflowStore } from '../data/workflow-store'
+import { WorkPlanStore } from '../data/work-plan-store'
+import { WorkflowCheckpointStore } from '../data/workflow-checkpoint-store'
 import { SkillPackageStore } from '../pi/sdk/pi-skill-packages'
 // 必须是 import type：静态加载协调器会把 pi SDK 拉到兼容层之前，
 // Electron 33 上以 `markAsUncloneable is not a function` 崩在启动路径。
@@ -32,6 +34,8 @@ import { EmployeeDirectory } from '../service/employee-directory'
 import { ConversationService } from '../service/conversation-service'
 import { TaskService } from '../service/task-service'
 import { WorkflowService } from '../service/workflow-service'
+import { ArrangementService } from '../service/arrangement-service'
+import { ArrangementDraftStore } from '../data/arrangement-draft-store'
 
 const log = logger.child('build-backend')
 
@@ -61,7 +65,10 @@ class BackendRuntime {
   readonly tasks: TaskService
   readonly conversations: ConversationService
   readonly workflows: WorkflowService
+  readonly arrangements: ArrangementService
 
+  private readonly workPlans: WorkPlanStore
+  private readonly workflowCheckpoints: WorkflowCheckpointStore
   private readonly userDataDir: string
   private readonly renderer: RendererPort
   private readonly isEncryptionAvailable: () => boolean
@@ -78,6 +85,9 @@ class BackendRuntime {
     this.taskRunStore = new TaskRunStore(userDataDir)
     this.workflowStore = new WorkflowStore(userDataDir)
     this.taskMetadataStore = new TaskMetadataStore(userDataDir)
+    const arrangementDrafts = new ArrangementDraftStore(userDataDir)
+    this.workPlans = new WorkPlanStore(userDataDir)
+    this.workflowCheckpoints = new WorkflowCheckpointStore(userDataDir)
     this.employees = new EmployeeAuthorizer(
       this.authSession,
       // 全后端唯一的平台目录读取点：TTL 缓存 + 单飞，
@@ -100,6 +110,15 @@ class BackendRuntime {
     this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks })
     this.workflows = new WorkflowService({ ...shared, workflowStore: this.workflowStore })
+    this.arrangements = new ArrangementService({
+      scope: this,
+      drafts: arrangementDrafts,
+      employees: this.employees,
+      workPlans: this.workPlans,
+      taskMetadata: this.taskMetadataStore,
+      taskManager: this.taskManager,
+      execution: () => this.getTaskCoordinator(),
+    })
   }
 
   /**
@@ -207,6 +226,8 @@ class BackendRuntime {
       // 而这个根被用作 workDir 为空时的兜底（workspaceDir 与 .pi-runs/.pi-sessions），
       // 也就是 pi 真正落文件的位置。指向 TaskManager 放默认工作区的同一棵树。
       getTaskWorkspaceRoot: () => join(this.userDataDir, 'task-workspaces'),
+      workPlanStore: this.workPlans,
+      workflowCheckpointStore: this.workflowCheckpoints,
     })
     log.info('task coordinator loaded')
     return coordinator

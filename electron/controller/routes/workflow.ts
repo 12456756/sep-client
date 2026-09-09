@@ -10,6 +10,8 @@ import { INVOKE_CHANNELS } from '../channels'
 import { route } from '../router'
 
 const taskId = z.string().min(1)
+const retryNodeInput = z.object({ taskId, nodeId: z.string().min(1) })
+const stopInput = z.object({ taskId, reason: z.string().trim().max(500).optional() })
 const TASK_ID_INVALID = '需要有效的任务 ID。'
 
 const validateInput = z.object({ nodes: z.array(z.unknown()) })
@@ -46,4 +48,19 @@ export const workflowRoutes = [
     await ctx.workflows.start(id)
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
+
+  route(INVOKE_CHANNELS.WORKFLOW_RETRY_NODE, retryNodeInput, async (ctx, input) => {
+    await ctx.workflows.retryNode(input.taskId, input.nodeId)
+    return { success: true }
+  }, { invalidMessage: '需要有效的任务与节点 ID。' }),
+
+  route(INVOKE_CHANNELS.WORKFLOW_RESUME, taskId, async (ctx, id) => {
+    await ctx.workflows.resume(id)
+    return { success: true }
+  }, { invalidMessage: TASK_ID_INVALID }),
+
+  route(INVOKE_CHANNELS.WORKFLOW_STOP, stopInput, async (ctx, input) => {
+    await ctx.workflows.stop(input.taskId, input.reason)
+    return { success: true }
+  }, { invalidMessage: '需要有效的任务 ID。' }),
 ]

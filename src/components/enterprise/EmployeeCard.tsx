@@ -6,7 +6,8 @@
 import { MessageSquareText, ShieldCheck, Sparkles, Workflow } from 'lucide-react';
 import type { SiliconEmployee } from '../../features/enterprise/types';
 import { relativeTime } from '../../features/enterprise/vocabulary';
-import { AvailabilityChip, EmployeeAvatar } from './atoms';
+import { AvailabilityChip } from './atoms';
+import { EmployeeFace } from './EmployeeFace';
 
 interface Props {
   employee: SiliconEmployee;
@@ -23,7 +24,7 @@ export function EmployeeCard({ employee, onOpen, onChat, onArrange, compact = fa
   if (compact) {
     return (
       <div className="ent-emp-row">
-        <EmployeeAvatar mark={employee.mark} size="sm" dim={!employee.assignedToMe} />
+        <EmployeeFace seed={employee.id} size="sm" round />
         <button type="button" className="ent-emp-row-name" onClick={() => onOpen(employee.id)}>
           <strong>{employee.name}</strong>
           <small>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''}</small>
@@ -42,7 +43,7 @@ export function EmployeeCard({ employee, onOpen, onChat, onArrange, compact = fa
   return (
     <article className={`ent-card ent-emp-card${employee.assignedToMe ? '' : ' off'}`}>
       <header>
-        <EmployeeAvatar mark={employee.mark} dim={!employee.assignedToMe} />
+        <EmployeeFace seed={employee.id} size="md" />
         <div className="ent-emp-card-id">
           <strong title={employee.name}>{employee.name}</strong>
           <small>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''}</small>

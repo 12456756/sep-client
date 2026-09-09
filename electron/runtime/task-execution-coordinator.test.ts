@@ -153,6 +153,45 @@ describe('conversation task lifecycle', () => {
     assert.deepEqual(messages.map(message => message.content), ['first', 'answer-1', 'second', 'answer-2'])
   })
 
+  it('selectively pushes renderer events while persisting the complete run timeline', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    const runStore = new TaskRunStore(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('chat', 'first', undefined, 'employee-a')
+    const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
+    const pushed: string[] = []
+    const coordinator = new TaskExecutionCoordinator({
+      taskManager: manager,
+      taskRunStore: runStore,
+      getRefreshToken: () => 'refresh-token',
+      onAuthenticationRequired: () => {},
+      onEvent: event => pushed.push(event.type),
+      onApprovalRequest: () => {},
+      resolveEmployee: id => id === employee.subscriptionId ? employee : null,
+      createWorker: options => ({
+        async run() {
+          const base = { taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, occurredAt: Date.now() }
+          await options.onEvent({ ...base, sequence: 1, type: 'agent_start', data: {} })
+          await options.onEvent({ ...base, sequence: 2, type: 'text_delta', data: { text: 'answer' } })
+          await options.onEvent({ ...base, sequence: 3, type: 'tool_execution_start', data: { toolId: 'tool-1', toolName: 'write', input: { path: 'secret.txt' } } })
+          await options.onEvent({ ...base, sequence: 4, type: 'tool_execution_end', data: { toolId: 'tool-1', toolName: 'write', success: true } })
+          await options.onEvent({ ...base, sequence: 5, type: 'agent_settled', data: {} })
+        },
+        async abort() {},
+        async dispose() {},
+      }),
+    })
+
+    await coordinator.executeTask(task.id, { conversation: true })
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    assert.deepEqual(pushed, ['text_delta', 'tool_execution_start', 'tool_execution_end'])
+    const runs = await runStore.list({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id)
+    const timeline = await runStore.events.getTimeline({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id, runs[0]!.id)
+    assert.deepEqual(timeline.map(event => event.type), ['agent_start', 'text_delta', 'tool_execution_start', 'tool_execution_end', 'agent_settled', 'run_completed'])
+  })
+
   it('cancels an active conversation run while preserving its timeline', async () => {
     const userData = await makeUserDataDir()
     const manager = new TaskManager(userData)
@@ -194,29 +233,28 @@ describe('conversation task lifecycle', () => {
   })
 })
 
-// Phase 8 把协调器拆成"编排者 + 五个协作者"，前提是外部看到的东西一个字都不变。
-// 这里按源码字面量钉住 8 个公开方法的签名：拆分把方法搬进协作者、或顺手改个参数，
-// 都会在这里失败，而不是等到渲染进程调用时才发现。
+// Phase 8 public-surface regression coverage.
 const PUBLIC_SIGNATURES = [
   'async executeTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {',
   'async continueConversation(',
   'async switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void> {',
-  'async retryTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {',
+  'async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string } = {}): Promise<void> {',
   'async pauseTask(taskId: string): Promise<void> {',
   'async cancelTask(taskId: string): Promise<void> {',
   'async stopAll(): Promise<void> {',
+  'async stopWorkflow(taskId: string, reason?: string): Promise<void> {',
   'respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {',
 ]
 
 describe('TaskExecutionCoordinator public surface', () => {
-  it('keeps exactly the eight documented methods, with unchanged signatures', async () => {
+  it('keeps the documented public methods, with unchanged signatures', async () => {
     const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-execution-coordinator.ts'), 'utf8')
 
     for (const signature of PUBLIC_SIGNATURES) {
-      assert.ok(source.includes(`  ${signature}`), `公开方法签名变了: ${signature}`)
+      assert.ok(source.includes(`  ${signature}`), `missing public method: ${signature}`)
     }
 
-    // 缩进两格且不以 private/readonly 开头的成员声明就是公开成员。多出一个也算破约。
+    // Public members are intentionally limited to the documented coordinator API.
     const declared = source
       .split(/\r?\n/)
       .flatMap(line => /^ {2}(?:async )?([A-Za-z_$][\w$]*)\(/.exec(line)?.slice(1, 2) ?? [])
@@ -225,9 +263,9 @@ describe('TaskExecutionCoordinator public surface', () => {
       declared.sort(),
       [
         'cancelTask', 'continueConversation', 'executeTask', 'pauseTask',
-        'respondToApproval', 'retryTask', 'stopAll', 'switchConversationEmployee',
+        'respondToApproval', 'retryTask', 'stopAll', 'stopWorkflow', 'switchConversationEmployee',
       ],
-      '公开方法集合变了：协调器只应暴露这 8 个',
+      'public method set changed: coordinator must expose only the documented methods',
     )
   })
 
@@ -235,12 +273,12 @@ describe('TaskExecutionCoordinator public surface', () => {
     const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-execution-coordinator.ts'), 'utf8')
 
     for (const collaborator of ['RunQueue', 'WorkerRegistry', 'EventPipeline', 'WorkspaceLockManager', 'ToolApprovals']) {
-      assert.ok(source.includes(collaborator), `协调器必须经 ${collaborator} 工作`)
+      assert.ok(source.includes(collaborator), `coordinator must delegate to ${collaborator}`)
     }
 
-    // 拆分前这些状态直接长在协调器上。搬回去就等于把 C1/C2/C6 的修法拆散了。
+    // These states moved to collaborators and must not be reintroduced here.
     for (const field of ['this.queue', 'this.activeByTask', 'this.eventChains', 'this.responseBuffers', 'this.inFlightSideEffects']) {
-      assert.ok(!source.includes(field), `${field} 已迁入协作者，协调器不得重新持有`)
+      assert.ok(!source.includes(field), `${field} must stay outside the coordinator`)
     }
   })
 })

@@ -156,8 +156,28 @@ export class ScopePath {
     return join(this.taskDir(scope, taskId), 'workflow.json')
   }
 
+  workPlanFile(scope: TaskOwnerScope, taskId: string): string {
+    return join(this.taskDir(scope, taskId), 'work-plan.json')
+  }
+
+  workflowCheckpointFile(scope: TaskOwnerScope, taskId: string): string {
+    return join(this.taskDir(scope, taskId), 'workflow-checkpoint.json')
+  }
+
   metadataFile(scope: TaskOwnerScope, taskId: string): string {
     return join(this.taskDir(scope, taskId), 'metadata.json')
+  }
+
+  arrangementDraftsRoot(scope: TaskOwnerScope): string {
+    return join(this.ownerRoot(scope), 'arrangement-drafts')
+  }
+
+  arrangementDraftFile(scope: TaskOwnerScope, draftId: string): string {
+    assertSafeId(draftId, 'draftId')
+    const ownerRoot = this.ownerRoot(scope)
+    const path = join(this.arrangementDraftsRoot(scope), `${draftId}.json`)
+    assertContained(ownerRoot, path)
+    return path
   }
 
   /** 一个 run 的四个路径。 */

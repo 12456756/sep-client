@@ -9,6 +9,7 @@
 import type { ClientTask, ClientTaskMessage } from '../../shared/types';
 import type {
   SharedContext,
+  WorkActivity,
   SiliconEmployee,
   WorkItem,
   WorkMessage,
@@ -82,7 +83,7 @@ export function decodeWorkMeta(prompt: string): WorkMeta | null {
       kind: parsed.kind,
       goal: typeof parsed.goal === 'string' ? parsed.goal : '',
       templateId: typeof parsed.templateId === 'string' ? parsed.templateId : undefined,
-      steps: Array.isArray(parsed.steps) ? parsed.steps.filter(isStepShape) : [],
+      steps: normalizeSteps(parsed.steps),
       participants: Array.isArray(parsed.participants) ? parsed.participants.filter(item => typeof item === 'string') : [],
       sharedContext: normalizeContext(parsed.sharedContext),
       stopReason: typeof parsed.stopReason === 'string' ? parsed.stopReason : null,
@@ -92,10 +93,31 @@ export function decodeWorkMeta(prompt: string): WorkMeta | null {
   }
 }
 
-function isStepShape(value: unknown): value is Omit<WorkStep, 'state' | 'employeeName'> {
-  if (!value || typeof value !== 'object') return false;
-  const item = value as Record<string, unknown>;
-  return typeof item.id === 'string' && typeof item.employeeId === 'string' && typeof item.title === 'string';
+/**
+ * 步骤反序列化。老工作的步骤只有 inheritPrevious（单亲链），
+ * 这里按「依赖上一步」还原成依赖图 —— 不转换的话历史工作的步骤清单会全部断链。
+ */
+function normalizeSteps(raw: unknown): Omit<WorkStep, 'state' | 'employeeName'>[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Omit<WorkStep, 'state' | 'employeeName'>[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const source = item as Record<string, unknown>;
+    if (typeof source.id !== 'string' || typeof source.employeeId !== 'string' || typeof source.title !== 'string') continue;
+    const previous = out[out.length - 1];
+    out.push({
+      id: source.id,
+      employeeId: source.employeeId,
+      title: source.title,
+      input: typeof source.input === 'string' ? source.input : '',
+      output: typeof source.output === 'string' ? source.output : '',
+      dependsOn: Array.isArray(source.dependsOn)
+        ? source.dependsOn.filter((dep): dep is string => typeof dep === 'string')
+        : source.inheritPrevious && previous ? [previous.id] : [],
+      needsConfirm: source.needsConfirm === true,
+    });
+  }
+  return out;
 }
 
 function normalizeContext(value: unknown): SharedContext {
@@ -161,11 +183,12 @@ interface BuildInput {
   messages?: ClientTaskMessage[];
   /** 正在流式输出的文本，按 taskId 传入。 */
   streamingText?: string;
+  activities?: WorkActivity[];
   /** 当前活跃员工，切换员工后由本地状态覆盖任务上的订阅。 */
   activeEmployeeId?: string;
 }
 
-export function buildWorkItem({ task, employees, messages, streamingText, activeEmployeeId }: BuildInput): WorkItem {
+export function buildWorkItem({ task, employees, messages, streamingText, activities = [], activeEmployeeId }: BuildInput): WorkItem {
   const meta = decodeWorkMeta(task.prompt);
   const kind: 'conversation' | 'flow' = meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
   const status = toWorkStatus(task.status);
@@ -202,12 +225,20 @@ export function buildWorkItem({ task, employees, messages, streamingText, active
     deliverables: task.files.map((file, index) => ({
       id: `${task.id}-file-${index}`,
       name: file.split(/[\\/]/).pop() || file,
+      path: file,
       note: '由员工在工作过程中产出',
     })),
     timeline: buildTimeline(task, kind, nameOf(currentEmployeeId)),
     messages: buildMessages(task, messages, streamingText, currentEmployeeId, nameOf(currentEmployeeId)),
+    activities,
     sharedContext: meta?.sharedContext ?? { goal: readableGoal(task.prompt), confirmedInputs: [], previousResults: [], userNotes: [] },
-    stopReason: meta?.stopReason ?? (task.status === 'interrupted' ? '应用退出导致中断' : null),
+    /*
+     * 为什么中断 / 为什么被终止，都落在 task.error 上：平台报的失败原因写在这里，
+     * 用户自己填的终止原因也由 stopWork 写在这里（见 useEnterpriseWorkspace）。
+     * 不映射过来的话，工作详情页那条提示和工作记录里的「终止原因」永远是空的 ——
+     * 界面已经答应过用户「终止原因会保留」。
+     */
+    stopReason: meta?.stopReason ?? task.error ?? (task.status === 'interrupted' ? '应用退出导致中断' : null),
     workDir: task.workDir,
   };
 }

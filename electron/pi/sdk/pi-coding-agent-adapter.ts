@@ -21,6 +21,7 @@ import { redactText, redactValue } from '../../common/redact'
 import {
   READ_ONLY_TOOLS,
   buildBearerAuthorizationHeader,
+  evaluateToolCall,
   requiresToolApproval,
 } from '../../../pi-extension'
 import { logger } from '../../common/logger'
@@ -219,6 +220,17 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (config.toolPolicy) {
+        const decision = evaluateToolCall(toolName, event.input, config.toolPolicy)
+        if (!decision.allowed) {
+          await config.reportPolicyEvent?.('tool_call_blocked', {
+            toolName,
+            reason: decision.reason ?? 'policy-denied',
+          })
+          return { block: true, reason: `Tool denied by task policy: ${toolName}` }
+        }
+        if (!decision.requiresApproval) return { block: false }
+      }
       if (READ_ONLY_TOOLS.has(toolName)) return { block: false }
       if (!requiresToolApproval(toolName)) {
         await config.reportPolicyEvent?.('unknown_tool_blocked', {

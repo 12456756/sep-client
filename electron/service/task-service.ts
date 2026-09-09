@@ -27,7 +27,7 @@ import type { EmployeeAuthorizer } from './employee-authorizer'
  */
 export interface TaskExecutionPort {
   executeTask(taskId: string, options?: { conversation?: boolean }): Promise<void>
-  retryTask(taskId: string, options?: { conversation?: boolean }): Promise<void>
+  retryTask(taskId: string, options?: { conversation?: boolean; nodeId?: string }): Promise<void>
   continueConversation(
     taskId: string,
     prompt: string,
@@ -36,6 +36,7 @@ export interface TaskExecutionPort {
   switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void>
   pauseTask(taskId: string): Promise<void>
   cancelTask(taskId: string): Promise<void>
+  stopWorkflow(taskId: string, reason?: string): Promise<void>
 }
 
 export interface TaskServiceDependencies {
@@ -90,11 +91,11 @@ export class TaskService {
   }
 
   /** 重试。与 execute 一样要先确认任务归属与员工可用性。 */
-  async retry(taskId: string): Promise<void> {
+  async retry(taskId: string, nodeId?: string): Promise<void> {
     const task = await this.requireTask(taskId)
-    await this.requireAuthorizedEmployee(task.subscriptionId)
     const conversation = await this.isConversation(taskId)
-    await (await this.deps.execution()).retryTask(taskId, { conversation })
+    if (conversation) await this.requireAuthorizedEmployee(task.subscriptionId)
+    await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}) })
   }
 
   async pause(taskId: string): Promise<void> {

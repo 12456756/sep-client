@@ -10,12 +10,14 @@ import { conversationRoutes } from './conversation'
 import { systemListeners, systemRoutes } from './system'
 import { taskRoutes } from './task'
 import { workflowRoutes } from './workflow'
+import { arrangementRoutes } from './arrangement'
 
 export const routes: readonly Route[] = [
   ...authRoutes,
   ...taskRoutes,
   ...conversationRoutes,
   ...workflowRoutes,
+  ...arrangementRoutes,
   ...systemRoutes,
 ]
 

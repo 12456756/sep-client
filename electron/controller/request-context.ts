@@ -14,6 +14,7 @@ export interface RequestContext {
   readonly tasks: Backend['tasks']
   readonly conversations: Backend['conversations']
   readonly workflows: Backend['workflows']
+  readonly arrangements: Backend['arrangements']
   readonly employees: Backend['employees']
   /**
    * 后端本体。auth 与 system 路由需要它的生命周期能力：登录要 `stopAll` +
@@ -33,6 +34,7 @@ export function createRequestContext(
     tasks: backend.tasks,
     conversations: backend.conversations,
     workflows: backend.workflows,
+    arrangements: backend.arrangements,
     employees: backend.employees,
     backend,
     window,

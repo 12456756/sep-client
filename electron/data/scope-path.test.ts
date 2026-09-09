@@ -56,6 +56,14 @@ describe('ScopePath 的目录布局（第 11 章硬约束）', () => {
     )
   })
 
+  it('derives arrangement drafts inside the authenticated owner scope', () => {
+    const root = new ScopePath('/tmp/sep-user-data')
+    const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
+    const path = root.arrangementDraftFile(scope, 'draft-a')
+    assert.match(path, /arrangement-drafts[\\/]draft-a\.json$/)
+    assert.ok(path.startsWith(root.ownerRoot(scope)))
+  })
+
   it('derives the task directory from taskId alone', () => {
     // Phase 7 之前想拿 taskDir 得先编一个假 runId（getPaths(scope, taskId, 'store')），
     // 于是一个非法 runId 会在完全无关的调用里通过校验。

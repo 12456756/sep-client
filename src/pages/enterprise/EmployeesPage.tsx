@@ -109,7 +109,7 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
               employee={employee}
               onOpen={open}
               onChat={employee.assignedToMe ? id => open(id) : undefined}
-              onArrange={employee.assignedToMe ? () => workspace.navigate({ name: 'arrange', custom: true }) : undefined}
+              onArrange={employee.assignedToMe ? () => workspace.navigate({ name: 'arrange', mode: 'chat', employeeId: employee.id }) : undefined}
             />
           ))}
         </div>

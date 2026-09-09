@@ -23,15 +23,38 @@ import type {
   AppRoute,
   EmployeeSkill,
   EnterpriseOverview,
+  MySkillVersion,
   OperationPermission,
   OperationPermissionId,
   SavedWorkFlow,
   SiliconEmployee,
+  WorkActivity,
+  WorkDraftStep,
   WorkItem,
-  WorkStep,
   WorkTemplate,
 } from './types';
+import { upgradeDraftSteps, layoutSteps } from './work-graph';
 import { buildWorkItem, completedStepCount, encodeWorkPrompt, type WorkMeta } from './work-mapping';
+import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
+
+/**
+ * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
+ *
+ * 判定口径是「他名下有一项工作正在跑」，不是「他是当前负责人」：一项流程工作跑起来之后，
+ * 参与其中的同事都在这项工作里，只认当前那一位会让其余人显示成空闲。
+ *
+ * 「等你拍板」和「中断了」不算：那些工作已经不在推进了，这位员工现在确实能接新活。
+ * 这两件事由员工卡上状态旁边的小图标、顶栏铃铛和工作记录来说。
+ */
+function busyEmployeeIds(works: WorkItem[]): Set<string> {
+  const busy = new Set<string>();
+  works.filter(work => work.status === 'running').forEach(work => {
+    busy.add(work.currentEmployeeId);
+    work.participants.forEach(id => busy.add(id));
+    work.steps.forEach(step => busy.add(step.employeeId));
+  });
+  return busy;
+}
 
 /** 「安排工作」页提交的内容。 */
 export interface ArrangeWorkDraft {
@@ -39,18 +62,31 @@ export interface ArrangeWorkDraft {
   goal: string;
   templateId?: string;
   workDir: string;
-  steps: Pick<WorkStep, 'id' | 'employeeId' | 'title' | 'input' | 'output' | 'inheritPrevious' | 'needsConfirm'>[];
+  steps: WorkDraftStep[];
   /** 用户已确认可以交给员工的资料说明。 */
   confirmedInputs: string[];
+  /** 整个工作共享的技能包。这一版只跟着工作一起记住，不下发给员工。 */
+  sharedSkillIds: string[];
 }
 
-/** 从首页输入框或「复制为新工作」带到安排工作页的初始内容。 */
+/** 从模板、已保存的常用工作或「复制为新工作」带到安排工作页的初始内容。 */
 export interface ArrangeSeed {
   goal: string;
-  steps: ArrangeWorkDraft['steps'];
+  steps: WorkDraftStep[];
   /** 从已保存的常用工作带回时有值，用来预填工作名称。 */
   title?: string;
   confirmedInputs?: string[];
+  sharedSkillIds?: string[];
+}
+
+/**
+ * 开一段对话式工作时的可选设置。
+ * workDir 会真的传给主进程；skillIds 这一版只记在界面上，
+ * 技能包还没有下发通道，所以页面必须写清它现在生效到哪一层。
+ */
+export interface ConversationOptions {
+  workDir?: string;
+  skillIds?: string[];
 }
 
 /**
@@ -66,11 +102,14 @@ function readSavedFlows(enterpriseId: string): SavedWorkFlow[] {
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((item): item is SavedWorkFlow =>
-      Boolean(item) && typeof item === 'object'
-      && typeof (item as SavedWorkFlow).id === 'string'
-      && typeof (item as SavedWorkFlow).name === 'string'
-      && Array.isArray((item as SavedWorkFlow).steps));
+    return parsed
+      .filter((item): item is SavedWorkFlow =>
+        Boolean(item) && typeof item === 'object'
+        && typeof (item as SavedWorkFlow).id === 'string'
+        && typeof (item as SavedWorkFlow).name === 'string'
+        && Array.isArray((item as SavedWorkFlow).steps))
+      // v1 存的是线性链，升级成依赖图并补上画布坐标，否则旧记录进画布会没有连线。
+      .map(item => ({ ...item, version: 2 as const, steps: upgradeDraftSteps(item.steps) }));
   } catch {
     // 本地数据坏了不能拖垮首页，按「没有保存过」处理。
     return [];
@@ -84,6 +123,101 @@ interface Options {
   instances: EmployeeInstanceSnapshot[];
 }
 
+/**
+ * 「已查阅」记账，按企业隔离存在本机。
+ *
+ * 首页员工卡上那个「某项工作做完了，请查阅」的气泡要在用户看过之后消失，
+ * 而平台没有「已读」这种字段，所以本机记下 workId → 当时的更新时间：
+ * 记的是时间而不是布尔值，工作完成之后又有新进展时会再提醒一次。
+ */
+const reviewedKey = (enterpriseId: string) => `sep.reviewed.${enterpriseId}`;
+
+function readReviewed(enterpriseId: string): Record<string, number> {
+  try {
+    const raw = window.localStorage.getItem(reviewedKey(enterpriseId));
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, number> = {};
+    for (const [id, at] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof at === 'number' && Number.isFinite(at)) out[id] = at;
+    }
+    return out;
+  } catch {
+    // 本地数据坏了不能拖垮首页，按「什么都没看过」处理：最坏情况是多提醒一次。
+    return {};
+  }
+}
+
+/**
+ * 个人技能版本也存在浏览器本地，按企业隔离。
+ *
+ * 只存「用户自己改的那一层」（我的版本状态 + 每个字段的我的值），
+ * 企业标准每次都从企业侧重新读 —— 否则企业改了标准，本地旧值会把它盖住，
+ * 用户会以为自己在看最新的企业版本。
+ *
+ * 平台没有个人技能写接口，所以这一层只到本地为止；界面上必须写清这一点。
+ */
+interface MySkillEdit {
+  my: MySkillVersion;
+  /** fieldId → 我的值。 */
+  values: Record<string, string>;
+}
+
+const mySkillsKey = (enterpriseId: string) => `sep.mySkills.${enterpriseId}`;
+
+function readMySkillEdits(enterpriseId: string): Record<string, MySkillEdit> {
+  try {
+    const raw = window.localStorage.getItem(mySkillsKey(enterpriseId));
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, MySkillEdit> = {};
+    for (const [id, entry] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!entry || typeof entry !== 'object') continue;
+      const { my, values } = entry as Partial<MySkillEdit>;
+      if (!my || typeof my !== 'object' || typeof my.state !== 'string') continue;
+      out[id] = { my, values: values && typeof values === 'object' ? values : {} };
+    }
+    return out;
+  } catch {
+    // 本地数据坏了不能拖垮技能页，按「没有个人版本」处理。
+    return {};
+  }
+}
+
+function writeMySkillEdits(enterpriseId: string, skills: EmployeeSkill[]): void {
+  try {
+    const out: Record<string, MySkillEdit> = {};
+    for (const skill of skills) {
+      if (skill.my.state === 'none') continue;
+      out[skill.id] = {
+        my: skill.my,
+        values: Object.fromEntries(skill.fields.map(field => [field.id, field.myValue])),
+      };
+    }
+    window.localStorage.setItem(mySkillsKey(enterpriseId), JSON.stringify(out));
+  } catch {
+    // 写不进去（隐私模式、配额满）不该让用户的这一次操作失败，界面上已经说明只存本机。
+  }
+}
+
+/** 把本地存的个人修改叠回企业标准上。企业标准里已经没有的字段直接丢掉。 */
+function applyMySkillEdits(skills: EmployeeSkill[], edits: Record<string, MySkillEdit>): EmployeeSkill[] {
+  return skills.map(skill => {
+    const edit = edits[skill.id];
+    if (!edit) return skill;
+    return {
+      ...skill,
+      my: edit.my,
+      fields: skill.fields.map(field => {
+        const mine = edit.values[field.id];
+        return typeof mine === 'string' ? { ...field, myValue: mine } : field;
+      }),
+    };
+  });
+}
+
 export interface EnterpriseWorkspace {
   overview: EnterpriseOverview;
   /** 企业全部员工，含未分配给我的。 */
@@ -95,6 +229,11 @@ export interface EnterpriseWorkspace {
   savedFlows: SavedWorkFlow[];
   skills: EmployeeSkill[];
   works: WorkItem[];
+  /**
+   * 已经做完、但用户还没打开看过的工作。首页员工卡的提醒气泡按它显示。
+   * 打开工作详情即视为查阅过，所以这里不需要额外的「标记已读」操作。
+   */
+  unreviewedWorkIds: ReadonlySet<string>;
   route: AppRoute;
   /** 是否有可返回的上一页，供顶栏决定是否显示返回按钮。 */
   canGoBack: boolean;
@@ -108,7 +247,7 @@ export interface EnterpriseWorkspace {
   navigate: (route: AppRoute) => void;
   goBack: () => void;
   dismissError: () => void;
-  startConversation: (employeeId: string, text: string) => Promise<void>;
+  startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<void>;
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<void>;
   sendMessage: (workId: string, text: string) => void;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
@@ -138,13 +277,25 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   const [history, setHistory] = useState<AppRoute[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [skills, setSkills] = useState<EmployeeSkill[]>(() => initialSkills());
+  const [skills, setSkills] = useState<EmployeeSkill[]>(() => applyMySkillEdits(initialSkills(), readMySkillEdits(enterpriseId)));
   const [permissionOverrides, setPermissionOverrides] = useState<Record<string, OperationPermission[]>>({});
   const [activeEmployeeByWork, setActiveEmployeeByWork] = useState<Record<string, string>>({});
   const [arrangeSeed, setArrangeSeed] = useState<ArrangeSeed | null>(null);
   const [savedFlows, setSavedFlows] = useState<SavedWorkFlow[]>(() => readSavedFlows(enterpriseId));
+  const [reviewedAt, setReviewedAt] = useState<Record<string, number>>(() => readReviewed(enterpriseId));
   const streamingText = useRef(new Map<string, string>());
+  const runtimeActivities = useRef(new Map<string, WorkActivity[]>());
+  const latestRunByTask = useRef(new Map<string, string>());
   const messagesByTask = useRef(new Map<string, ClientTaskMessage[]>());
+  const clearRuntimeState = useCallback((taskId: string): void => {
+    for (const key of [...streamingText.current.keys()]) {
+      if (key.startsWith(`${taskId}:`)) streamingText.current.delete(key);
+    }
+    for (const key of [...runtimeActivities.current.keys()]) {
+      if (key.startsWith(`${taskId}:`)) runtimeActivities.current.delete(key);
+    }
+    latestRunByTask.current.delete(taskId);
+  }, []);
 
   // ── 员工 ─────────────────────────────────────────────────────────────
   const myEmployees = useMemo<SiliconEmployee[]>(() => instances.map(instance => {
@@ -177,7 +328,8 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
       task,
       employees: myEmployees,
       messages: messagesByTask.current.get(task.id),
-      streamingText: streamingText.current.get(task.id),
+      streamingText: streamingText.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')),
+      activities: runtimeActivities.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')) ?? [],
       activeEmployeeId: activeEmployeeByWork[task.id],
     }));
     return items.sort((left, right) => right.updatedAt - left.updatedAt);
@@ -185,7 +337,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
 
   /** 员工是否正在处理工作，用于卡片状态。 */
   const employees = useMemo<SiliconEmployee[]>(() => {
-    const busyIds = new Set(works.filter(work => work.status === 'running').map(work => work.currentEmployeeId));
+    const busyIds = busyEmployeeIds(works);
     const lastWorked = new Map<string, number>();
     works.forEach(work => {
       work.participants.forEach(id => {
@@ -217,6 +369,38 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     ...template,
     employeeIds: template.steps.map((_, index) => myEmployees[index % Math.max(1, myEmployees.length)]?.id ?? '').filter(Boolean),
   })), [myEmployees]);
+
+  // ── 已查阅 ────────────────────────────────────────────────────────────
+  /**
+   * 打开一项工作就算查阅过它。只有这一个记账点 ——
+   * 记在导航这一层而不是各个入口上，从首页气泡、工作记录还是弹窗进来都算。
+   */
+  useEffect(() => {
+    if (route.name !== 'work') return;
+    const work = works.find(item => item.id === route.workId);
+    if (!work) return;
+    setReviewedAt(current => {
+      if ((current[work.id] ?? 0) >= work.updatedAt) return current;
+      // 顺手丢掉已经不存在的工作，否则这条记录会随删掉的工作一直堆下去。
+      const next: Record<string, number> = { [work.id]: work.updatedAt };
+      for (const item of works) {
+        if (item.id !== work.id && current[item.id] !== undefined) next[item.id] = current[item.id]!;
+      }
+      try {
+        window.localStorage.setItem(reviewedKey(enterpriseId), JSON.stringify(next));
+      } catch {
+        // 写不进去（无痕模式、配额满）只影响下次打开时会不会再提醒一次，不阻断本次使用。
+      }
+      return next;
+    });
+  }, [route, works, enterpriseId]);
+
+  const unreviewedWorkIds = useMemo(
+    () => new Set(works
+      .filter(work => work.status === 'completed' && (reviewedAt[work.id] ?? 0) < work.updatedAt)
+      .map(work => work.id)),
+    [works, reviewedAt],
+  );
 
   // ── 订阅本地工作与执行事件 ──────────────────────────────────────────────
   useEffect(() => {
@@ -255,15 +439,19 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     });
     const unsubscribePi = api.onPiEvent(event => {
       if (!active) return;
+      latestRunByTask.current.set(event.taskId, event.runId);
+      const key = runtimeKey(event.taskId, event.runId);
       if (event.type === 'text_delta') {
         const data = event.data as { text?: unknown };
-        if (typeof data.text !== 'string') return;
-        streamingText.current.set(event.taskId, `${streamingText.current.get(event.taskId) ?? ''}${data.text}`);
-        setTasks(current => [...current]);
-      } else if (event.type === 'agent_end' || event.type === 'session_error') {
-        streamingText.current.delete(event.taskId);
-        setTasks(current => [...current]);
+        if (typeof data.text === 'string') {
+          streamingText.current.set(key, `${streamingText.current.get(key) ?? ''}${data.text}`);
+        }
       }
+      const previous = runtimeActivities.current.get(key) ?? [];
+      const next = applyRuntimeEvent(previous, event);
+      if (next !== previous) runtimeActivities.current.set(key, next);
+      if (event.type === 'agent_end' || event.type === 'session_error') streamingText.current.delete(key);
+      setTasks(current => [...current]);
     });
 
     return () => {
@@ -307,7 +495,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     }
   }, []);
 
-  const startConversation = useCallback(async (employeeId: string, text: string) => {
+  const startConversation = useCallback(async (employeeId: string, text: string, options?: ConversationOptions) => {
     const goal = text.trim();
     if (!goal) return;
     const employee = myEmployees.find(item => item.id === employeeId);
@@ -324,10 +512,16 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     setBusy(true);
     setError(null);
     try {
-      const payload = { title, prompt: encodeWorkPrompt(title, meta), subscriptionId: employeeId };
+      const payload = {
+        title,
+        prompt: encodeWorkPrompt(title, meta),
+        subscriptionId: employeeId,
+        // 工作空间可选。留空时由主进程按默认工作目录准备，界面上不强制用户设置。
+        ...(options?.workDir?.trim() ? { workDir: options.workDir.trim() } : {}),
+      };
       const created = await api.createConversation(payload);
       if (!created.success || !created.task) throw new Error(created.error?.message || '创建工作失败');
-      streamingText.current.delete(created.task.id);
+      clearRuntimeState(created.task.id);
       setActiveEmployeeByWork(current => ({ ...current, [created.task!.id]: employeeId }));
       navigate({ name: 'work', workId: created.task.id });
       const started = await api.executeTask({ taskId: created.task.id });
@@ -337,16 +531,27 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     } finally {
       setBusy(false);
     }
-  }, [myEmployees, navigate]);
+  }, [clearRuntimeState, myEmployees, navigate]);
 
   const arrangeWork = useCallback(async (draft: ArrangeWorkDraft) => {
     const steps = draft.steps.filter(step => step.employeeId && step.title.trim());
     if (!steps.length) { setError('请至少安排一个工作步骤'); return; }
+    // 上面可能滤掉了没填全的步骤，指向它们的依赖要一起去掉，否则主进程会报「依赖缺失」。
+    const kept = new Set(steps.map(step => step.id));
+    const planned = steps.map(step => ({
+      id: step.id,
+      employeeId: step.employeeId,
+      title: step.title,
+      input: step.input,
+      output: step.output,
+      dependsOn: step.dependsOn.filter(dep => kept.has(dep)),
+      needsConfirm: step.needsConfirm,
+    }));
     const meta: WorkMeta = {
       kind: 'flow',
       goal: draft.goal.trim() || draft.title,
       templateId: draft.templateId,
-      steps,
+      steps: planned,
       participants: [...new Set(steps.map(step => step.employeeId))],
       sharedContext: {
         goal: draft.goal.trim() || draft.title,
@@ -363,13 +568,13 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
         title: draft.title.trim() || meta.goal.slice(0, 40),
         prompt: encodeWorkPrompt(draft.title.trim() || meta.goal.slice(0, 40), meta),
         workDir: draft.workDir || undefined,
-        // 主进程仍按步骤依赖执行，界面不展示这些字段。
-        nodes: steps.map((step, index) => ({
-          id: step.id.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 128),
+        // 步骤 id 生成时就是安全形式（见 work-graph 的 createDraftStep），这里直接透传依赖图。
+        nodes: planned.map(step => ({
+          id: step.id,
           subscriptionId: step.employeeId,
           instruction: [step.title, step.input && `需要：${step.input}`].filter(Boolean).join('\n'),
           expectedOutput: step.output || step.title,
-          dependsOn: index && step.inheritPrevious ? [steps[index - 1].id.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 128)] : [],
+          dependsOn: step.dependsOn,
         })),
       });
       if (!created.success || !created.task) throw new Error(created.error?.message || '创建工作失败');
@@ -414,17 +619,32 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     const ok = await run(() => window.electronAPI.deleteTask(workId), '删除失败，请重试');
     if (ok) {
       messagesByTask.current.delete(workId);
-      streamingText.current.delete(workId);
+      clearRuntimeState(workId);
       setTasks(current => current.filter(task => task.id !== workId));
       setRoute(current => (current.name === 'work' && current.workId === workId ? { name: 'records' } : current));
     }
-  }, [run]);
+  }, [clearRuntimeState, run]);
 
   const duplicateWork = useCallback((workId: string) => {
     const work = works.find(item => item.id === workId);
     if (!work) return;
-    setArrangeSeed({ goal: work.goal, steps: work.steps.map(step => ({ ...step })) });
-    navigate({ name: 'arrange', templateId: undefined, custom: true });
+    // 运行期的步骤没有画布坐标，自动布局按依赖分层补上，进「自己编排」时直接是一条链。
+    setArrangeSeed({
+      goal: work.goal,
+      steps: layoutSteps(work.steps.map(step => ({
+        id: step.id,
+        employeeId: step.employeeId,
+        title: step.title,
+        input: step.input,
+        output: step.output,
+        dependsOn: [...step.dependsOn],
+        needsConfirm: step.needsConfirm,
+        skillIds: [],
+        x: 0,
+        y: 0,
+      }))),
+    });
+    navigate({ name: 'arrange', mode: 'manual' });
   }, [works, navigate]);
 
   // ── 常用工作 ──────────────────────────────────────────────────────────
@@ -467,9 +687,10 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
       title: flow.name,
       goal: flow.goal,
       confirmedInputs: flow.confirmedInputs,
+      sharedSkillIds: flow.sharedSkillIds,
       steps: flow.steps.map(step => ({ ...step, employeeId: available.has(step.employeeId) ? step.employeeId : '' })),
     });
-    navigate({ name: 'arrange', custom: true });
+    navigate({ name: 'arrange', mode: 'manual' });
   }, [savedFlows, myEmployees, navigate]);
 
   const chooseFolder = useCallback(async () => {
@@ -498,9 +719,17 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   }, [patchPermission]);
 
   // ── 个人技能版本 ───────────────────────────────────────────────────────
+  /**
+   * 每次改动都顺手落盘。写操作放在 updater 里是为了拿到「改完之后」的完整数组：
+   * StrictMode 下 updater 会跑两次，但写入内容完全相同，所以是幂等的。
+   */
   const patchSkill = useCallback((skillId: string, patch: (skill: EmployeeSkill) => EmployeeSkill) => {
-    setSkills(current => current.map(skill => (skill.id === skillId ? patch(skill) : skill)));
-  }, []);
+    setSkills(current => {
+      const next = current.map(skill => (skill.id === skillId ? patch(skill) : skill));
+      writeMySkillEdits(enterpriseId, next);
+      return next;
+    });
+  }, [enterpriseId]);
 
   const createMySkillVersion = useCallback((skillId: string) => {
     patchSkill(skillId, skill => ({
@@ -537,7 +766,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   }, [patchSkill]);
 
   return {
-    overview, employees, myEmployees, templates, savedFlows, skills, works, route, error, busy,
+    overview, employees, myEmployees, templates, savedFlows, skills, works, unreviewedWorkIds, route, error, busy,
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, goBack, dismissError: () => setError(null),

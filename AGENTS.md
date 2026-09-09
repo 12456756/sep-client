@@ -380,3 +380,150 @@ Follow this workflow:
 6. Before delivery, run the relevant typecheck/build commands and inspect the rendered
    page with Playwright when the change is visual. Record the reference source and any
    material adaptation in the change summary.
+
+## ECC Workflow Routing
+
+The selected ECC skills are project-local under `.agents/skills/`. Load them only when the
+task matches; do not load every skill for every request.
+
+- New features, bug fixes, and refactors: use `$tdd-workflow`.
+- Authentication, authorization, IPC input, file access, secrets, or external APIs: use
+  `$security-review`.
+- Layer boundaries, ports, adapters, or dependency direction: use `$hexagonal-architecture`.
+- IPC contracts, request/response envelopes, or service/repository boundaries: use
+  `$api-design` and `$backend-patterns`.
+- Error codes, retries, timeouts, or failure propagation: use `$error-handling`.
+- pi-coding-agent sessions, tool calls, memory, retries, or provider behavior: use
+  `$ai-regression-testing`.
+- Agent or LLM behavior regressions, wrapper failures, or pre-release agent audits: use
+  `$agent-architecture-audit`.
+- Significant architecture choices: use `$architecture-decision-records`.
+- Before claiming a change is complete: use `$verification-loop`.
+
+Adapt verification to this repository's scripts:
+
+```bash
+npm run typecheck
+npm run lint
+npm run test:tasks
+npm run test:invariants
+npm run check:boundaries
+npm run build
+npm run poc:01
+npm run poc:02
+npm run poc:03
+npm run poc:04
+```
+
+## ECC Common and TypeScript Coding Standards
+
+The project-specific instructions above take precedence where they are more specific.
+Apply the following ECC standards to TypeScript and JavaScript work in this repository.
+
+### Immutability (Critical)
+
+Always create new objects; do not mutate existing application data in place. Immutable
+data prevents hidden side effects, makes debugging easier, and supports safe concurrency.
+
+```typescript
+// Incorrect: mutates the original object.
+user.name = name
+
+// Correct: returns a new object.
+const updatedUser = { ...user, name }
+```
+
+### Core Principles
+
+- **KISS:** Prefer the simplest solution that satisfies the requirement. Optimize for
+  clarity over cleverness and avoid premature optimization.
+- **DRY:** Extract genuinely repeated logic into shared functions or utilities. Do not
+  introduce speculative abstractions.
+- **YAGNI:** Do not build features or generalized extension points before they are needed.
+  Start simple and refactor only when actual pressure warrants it.
+
+### File Organization
+
+- Favor focused, cohesive modules with low coupling over large catch-all files.
+- Keep source files typically in the 200-400 line range; treat 800 lines as a soft
+  maintainability ceiling. Generated, vendored, and test files may exceed this when
+  justified.
+- Extract utilities from oversized modules.
+- Organize code by feature or domain rather than only by technical type.
+
+### Error Handling and Validation
+
+- Handle errors explicitly at every layer; never silently swallow errors.
+- Use user-friendly messages in UI-facing code and log detailed, redacted context on the
+  main-process side through the repository logger.
+- Validate all input at system boundaries, including renderer IPC arguments, API responses,
+  and file content.
+- Prefer schema-based validation, fail fast with clear messages, and treat external data as
+  untrusted.
+
+### Naming and Maintainability
+
+- Use descriptive `camelCase` names for variables and functions.
+- Prefix booleans with `is`, `has`, `should`, or `can`.
+- Use `PascalCase` for interfaces, types, and components; use `UPPER_SNAKE_CASE` for
+  constants.
+- Prefer early returns to nested conditionals. Avoid nesting deeper than four levels.
+- Replace meaningful magic numbers, delays, and thresholds with named constants.
+- Keep functions focused, normally under 50 lines.
+
+Before marking work complete, check that code is readable and well named, functions and files
+are focused, errors are handled, values are not hardcoded, and immutable patterns are used.
+
+### TypeScript and JavaScript Types
+
+- Give exported functions, shared utilities, public class methods, shared models, and
+  component props explicit parameter and return types.
+- Let TypeScript infer obvious local variable types.
+- Extract repeated inline object shapes into named types or interfaces.
+- Use `interface` for object shapes intended to be extended or implemented.
+- Use `type` for unions, intersections, tuples, mapped types, and utility types.
+- Prefer string-literal unions to `enum` unless an enum is required for interoperability.
+- Avoid `any` in application code. Represent external or untrusted values as `unknown`, then
+  narrow them safely. Use generics when the type depends on the caller.
+
+```typescript
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message
+  }
+
+  return 'Unexpected error'
+}
+```
+
+### React and JavaScript
+
+- Define React component props with a named `interface` or `type`, including explicit callback
+  types. Do not use `React.FC` without a specific reason.
+- In `.js` and `.jsx` files, add JSDoc where types materially improve clarity and a TypeScript
+  migration is impractical. Keep JSDoc aligned with runtime behavior.
+
+### TypeScript Error Handling and Validation
+
+- Prefer `async`/`await` with `try`/`catch` around asynchronous operations.
+- Treat caught errors as `unknown`, narrow them safely, log the original error through
+  `electron/common/logger.ts`, and throw a useful error for the caller.
+- Use Zod for schema-based validation when a runtime schema is needed; infer TypeScript types
+  from the schema rather than maintaining duplicate shapes.
+
+```typescript
+import { z } from 'zod'
+
+const userSchema = z.object({
+  email: z.string().email(),
+  age: z.number().int().min(0).max(150)
+})
+
+type UserInput = z.infer<typeof userSchema>
+```
+
+### Production Logging
+
+- Do not add `console.log` to production code.
+- Use the project's logger and redaction flow. In particular, bare `console.*` calls in
+  `electron/` are rejected by `npm run check:boundaries`.

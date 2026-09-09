@@ -199,6 +199,8 @@ export interface EmployeeInstanceSnapshot {
   id: string
   name: string
   status: InstanceStatus
+  startDate?: number | null
+  endDate?: number | null
   templateVersion: string
   template: {
     id: string

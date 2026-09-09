@@ -102,6 +102,8 @@ interface SubscriptionPayload {
   template: unknown;
   allowedModels: unknown;
   department: unknown;
+  startDate?: unknown;
+  endDate?: unknown;
 }
 
 function normalizeSubscription(value: unknown): ClientInstance {
@@ -112,7 +114,12 @@ function normalizeSubscription(value: unknown): ClientInstance {
   const name = typeof item.name === 'string' ? item.name : id;
   const template = item.template && typeof item.template === 'object' ? item.template as Record<string, unknown> : {};
   const department = item.department && typeof item.department === 'object' ? item.department as Record<string, unknown> : null;
-  return {
+  const toTimestamp = (candidate: unknown): number | null => {
+    if (typeof candidate !== 'string' && typeof candidate !== 'number') return null
+    const timestamp = typeof candidate === 'number' ? candidate : Date.parse(candidate)
+    return Number.isFinite(timestamp) ? timestamp : null
+  }
+  const normalized: ClientInstance = {
     id,
     name,
     status: item.status === 'ACTIVE' ? 'ACTIVE' : item.status === 'REVOKED' ? 'REVOKED' : 'PAUSED',
@@ -131,6 +138,13 @@ function normalizeSubscription(value: unknown): ClientInstance {
       ? item.allowedModels.filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
       : [config.SEP_DEFAULT_MODEL],
   };
+  const startDate = toTimestamp(item.startDate)
+  const endDate = toTimestamp(item.endDate)
+  return {
+    ...normalized,
+    ...(startDate === null ? {} : { startDate }),
+    ...(endDate === null ? {} : { endDate }),
+  }
 }
 
 /** 获取当前成员处于 ACTIVE 状态的员工订阅。 */

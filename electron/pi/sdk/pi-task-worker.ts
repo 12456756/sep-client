@@ -22,6 +22,7 @@ export interface PiTaskWorkerContext {
   sessionDir: string
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
+  toolPolicy?: PiAgentSessionConfig['toolPolicy']
 }
 
 interface TokenManagerPort {
@@ -97,6 +98,7 @@ export class PiTaskWorker {
       sessionDir: this.context.sessionDir,
       resumeSessionFile: this.context.resumeSessionFile,
       additionalSkillPaths: this.context.additionalSkillPaths,
+      toolPolicy: this.context.toolPolicy,
       getAccessToken: () => this.tokenManager.getValidToken(),
       authorizeTool: async request => {
         return this.onApprovalRequest({
