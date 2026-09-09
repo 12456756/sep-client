@@ -28,12 +28,14 @@ import type {
   OperationPermissionId,
   SavedWorkFlow,
   SiliconEmployee,
+  WorkActivity,
   WorkDraftStep,
   WorkItem,
   WorkTemplate,
 } from './types';
 import { upgradeDraftSteps, layoutSteps } from './work-graph';
 import { buildWorkItem, completedStepCount, encodeWorkPrompt, type WorkMeta } from './work-mapping';
+import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
 
 /**
  * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
@@ -282,7 +284,18 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   const [savedFlows, setSavedFlows] = useState<SavedWorkFlow[]>(() => readSavedFlows(enterpriseId));
   const [reviewedAt, setReviewedAt] = useState<Record<string, number>>(() => readReviewed(enterpriseId));
   const streamingText = useRef(new Map<string, string>());
+  const runtimeActivities = useRef(new Map<string, WorkActivity[]>());
+  const latestRunByTask = useRef(new Map<string, string>());
   const messagesByTask = useRef(new Map<string, ClientTaskMessage[]>());
+  const clearRuntimeState = useCallback((taskId: string): void => {
+    for (const key of [...streamingText.current.keys()]) {
+      if (key.startsWith(`${taskId}:`)) streamingText.current.delete(key);
+    }
+    for (const key of [...runtimeActivities.current.keys()]) {
+      if (key.startsWith(`${taskId}:`)) runtimeActivities.current.delete(key);
+    }
+    latestRunByTask.current.delete(taskId);
+  }, []);
 
   // ── 员工 ─────────────────────────────────────────────────────────────
   const myEmployees = useMemo<SiliconEmployee[]>(() => instances.map(instance => {
@@ -315,7 +328,8 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
       task,
       employees: myEmployees,
       messages: messagesByTask.current.get(task.id),
-      streamingText: streamingText.current.get(task.id),
+      streamingText: streamingText.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')),
+      activities: runtimeActivities.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')) ?? [],
       activeEmployeeId: activeEmployeeByWork[task.id],
     }));
     return items.sort((left, right) => right.updatedAt - left.updatedAt);
@@ -425,15 +439,19 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     });
     const unsubscribePi = api.onPiEvent(event => {
       if (!active) return;
+      latestRunByTask.current.set(event.taskId, event.runId);
+      const key = runtimeKey(event.taskId, event.runId);
       if (event.type === 'text_delta') {
         const data = event.data as { text?: unknown };
-        if (typeof data.text !== 'string') return;
-        streamingText.current.set(event.taskId, `${streamingText.current.get(event.taskId) ?? ''}${data.text}`);
-        setTasks(current => [...current]);
-      } else if (event.type === 'agent_end' || event.type === 'session_error') {
-        streamingText.current.delete(event.taskId);
-        setTasks(current => [...current]);
+        if (typeof data.text === 'string') {
+          streamingText.current.set(key, `${streamingText.current.get(key) ?? ''}${data.text}`);
+        }
       }
+      const previous = runtimeActivities.current.get(key) ?? [];
+      const next = applyRuntimeEvent(previous, event);
+      if (next !== previous) runtimeActivities.current.set(key, next);
+      if (event.type === 'agent_end' || event.type === 'session_error') streamingText.current.delete(key);
+      setTasks(current => [...current]);
     });
 
     return () => {
@@ -503,7 +521,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
       };
       const created = await api.createConversation(payload);
       if (!created.success || !created.task) throw new Error(created.error?.message || '创建工作失败');
-      streamingText.current.delete(created.task.id);
+      clearRuntimeState(created.task.id);
       setActiveEmployeeByWork(current => ({ ...current, [created.task!.id]: employeeId }));
       navigate({ name: 'work', workId: created.task.id });
       const started = await api.executeTask({ taskId: created.task.id });
@@ -513,7 +531,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     } finally {
       setBusy(false);
     }
-  }, [myEmployees, navigate]);
+  }, [clearRuntimeState, myEmployees, navigate]);
 
   const arrangeWork = useCallback(async (draft: ArrangeWorkDraft) => {
     const steps = draft.steps.filter(step => step.employeeId && step.title.trim());
@@ -601,11 +619,11 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     const ok = await run(() => window.electronAPI.deleteTask(workId), '删除失败，请重试');
     if (ok) {
       messagesByTask.current.delete(workId);
-      streamingText.current.delete(workId);
+      clearRuntimeState(workId);
       setTasks(current => current.filter(task => task.id !== workId));
       setRoute(current => (current.name === 'work' && current.workId === workId ? { name: 'records' } : current));
     }
-  }, [run]);
+  }, [clearRuntimeState, run]);
 
   const duplicateWork = useCallback((workId: string) => {
     const work = works.find(item => item.id === workId);

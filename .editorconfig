@@ -1,0 +1,17 @@
+root = true
+
+# 全仓库统一 UTF-8。2026-09-01 曾发生一次编辑器以 GBK 读入 UTF-8 源文件、
+# 再存回 UTF-8 导致中文被永久替换的事故（见 docs/architecture/后端结构重构实施方案.md §4.4）。
+[*]
+charset = utf-8
+end_of_line = crlf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{json,yml,yaml}]
+indent_size = 2

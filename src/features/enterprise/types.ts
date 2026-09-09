@@ -1,3 +1,5 @@
+import type { WorkActivity } from '../../shared/work-activity'
+
 /**
  * 客户端业务域模型 —— 面向「企业 / 硅基员工 / 工作」而非「Agent / 任务 / DAG」。
  *
@@ -147,6 +149,8 @@ export interface WorkDeliverable {
   note: string;
 }
 
+export type { WorkActivity, WorkActivityState } from '../../shared/work-activity'
+
 export interface WorkTimelineEntry {
   id: string;
   at: number;
@@ -175,6 +179,8 @@ export interface WorkItem {
   deliverables: WorkDeliverable[];
   timeline: WorkTimelineEntry[];
   messages: WorkMessage[];
+  /** ??????????????????????????? */
+  activities: WorkActivity[];
   sharedContext: SharedContext;
   /** 终止原因。终止后仍保留已完成动作与已产生文件。 */
   stopReason: string | null;

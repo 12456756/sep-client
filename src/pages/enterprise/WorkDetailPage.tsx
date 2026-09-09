@@ -17,7 +17,7 @@
  */
 
 import {
-  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, MessageSquareText,
+  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, LoaderCircle, MessageSquareText,
   PencilLine, RotateCcw, Share2, StopCircle, XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
@@ -26,7 +26,7 @@ import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { WorkPlanDrawer } from '../../components/enterprise/WorkPlanDrawer';
 import { WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
-import type { SiliconEmployee, WorkItem, WorkTimelineEntry } from '../../features/enterprise/types';
+import type { SiliconEmployee, WorkActivity, WorkItem, WorkTimelineEntry } from '../../features/enterprise/types';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import { dayTimeText, durationText, relativeTime, stampText, WORK_STATUS } from '../../features/enterprise/vocabulary';
 
@@ -435,6 +435,11 @@ function Process({ work, names }: { work: WorkItem; names: string[] }) {
   return (
     <section className="ent-panel">
       <h2>工作过程</h2>
+      {work.activities.length ? (
+        <ul className="ent-wk-activity-list" aria-live="polite" aria-label="实时工作活动">
+          {work.activities.slice(-8).map(activity => <WorkActivityRow key={activity.id} activity={activity} />)}
+        </ul>
+      ) : null}
       {names.length > 1 ? (
         <div className="ent-wk-tabs" role="tablist" aria-label="按员工筛选">
           <button type="button" role="tab" aria-selected={!who} className={who ? undefined : 'active'} onClick={() => setWho('')}>全部</button>
@@ -466,6 +471,25 @@ function Process({ work, names }: { work: WorkItem; names: string[] }) {
 }
 
 /** 分享 = 把这项工作的摘要复制到剪贴板。没有分享通道，所以按钮只做它真做得到的事。 */
+function WorkActivityRow({ activity }: { activity: WorkActivity }) {
+  const stateLabel = activity.state === 'running'
+    ? '进行中'
+    : activity.state === 'waiting-user'
+      ? '等待确认'
+      : activity.state === 'failed'
+        ? '失败'
+        : '已完成';
+  return (
+    <li className={`ent-wk-activity ${activity.state}`}>
+      <span className="ent-wk-activity-icon" aria-hidden>
+        {activity.state === 'running' ? <LoaderCircle size={14} className="ent-spin" /> : activity.state === 'failed' ? <XCircle size={14} /> : activity.state === 'waiting-user' ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
+      </span>
+      <span className="ent-wk-activity-copy"><strong>{activity.text}</strong><small>{stateLabel}</small></span>
+      <time>{hhmm(activity.endedAt ?? activity.startedAt)}</time>
+    </li>
+  );
+}
+
 function ShareButton({ work }: { work: WorkItem }) {
   const [done, setDone] = useState(false);
   const share = () => {

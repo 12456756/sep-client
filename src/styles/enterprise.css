@@ -824,6 +824,22 @@
 .ent-wk-tabs button { min-height: 24px; padding: 0 11px; border: 0; border-radius: 999px; color: var(--ent-ink-2); background: var(--ent-panel-subtle); font-size: var(--ent-fs-note); cursor: pointer; transition: color var(--ent-ease), background var(--ent-ease); }
 .ent-wk-tabs button:hover { color: var(--ent-brand-ink); }
 .ent-wk-tabs button.active { color: #fff; background: var(--ent-brand-solid); font-weight: 500; }
+.ent-wk-activity-list { display: flex; flex-direction: column; gap: 7px; margin: 0 0 14px; padding: 0; list-style: none; }
+.ent-wk-activity { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; min-height: 45px; padding: 8px 10px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius-xs); background: var(--ent-brand-softer); }
+.ent-wk-activity.running { border-color: #c9d7ff; background: #f3f6ff; }
+.ent-wk-activity.waiting-user { border-color: #f1d7a0; background: #fff9ed; }
+.ent-wk-activity.failed { border-color: #f2c9c7; background: #fff5f4; }
+.ent-wk-activity-icon { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; color: var(--ent-brand-ink); background: #fff; }
+.ent-wk-activity.completed .ent-wk-activity-icon { color: var(--ent-ready-solid); }
+.ent-wk-activity.waiting-user .ent-wk-activity-icon { color: #a96f12; }
+.ent-wk-activity.failed .ent-wk-activity-icon { color: var(--ent-danger); }
+.ent-wk-activity-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.ent-wk-activity-copy strong { overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-wk-activity-copy small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-wk-activity time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-variant-numeric: tabular-nums; }
+.ent-spin { animation: ent-spin 1s linear infinite; }
+@keyframes ent-spin { to { transform: rotate(360deg); } }
+
 .ent-wk-log { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
 .ent-wk-log li { position: relative; display: grid; grid-template-columns: 7px auto minmax(0, 1fr) auto; align-items: baseline; gap: 10px; padding: 7px 0; }
 .ent-wk-log li:not(:last-child)::before { content: ''; position: absolute; top: 15px; bottom: -3px; left: 3px; width: 1px; background: var(--ent-line); }

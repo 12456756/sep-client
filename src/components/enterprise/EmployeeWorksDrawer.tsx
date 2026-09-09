@@ -36,8 +36,9 @@ export function EmployeeWorksDrawer({ employee, works, onClose, onOpenWork }: Pr
 
   // 打开时焦点落在第一张工作卡上，Esc 关闭，Tab 在抽屉内循环。
   useEffect(() => {
-    panel.current?.querySelector<HTMLElement>('.ent-worktile')?.focus()
-      ?? panel.current?.querySelector<HTMLElement>('button')?.focus();
+    const initialFocus = panel.current?.querySelector<HTMLElement>('.ent-worktile')
+      ?? panel.current?.querySelector<HTMLElement>('button');
+    initialFocus?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
       if (event.key !== 'Tab' || !panel.current) return;

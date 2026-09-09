@@ -180,6 +180,19 @@ const previewApi: ElectronAPI = {
   validateWorkflow: async data => ({ success: true, graph: data }),
   getWorkflow: async taskId => ({ success: true, task: previewTasks.find(item => item.id === taskId), graph: { nodes: [] } }),
   startWorkflow: async taskId => { const task = previewTasks.find(item => item.id === taskId); if (task) { task.status = 'running'; task.startedAt = Date.now(); task.progress = 12; task.logs = [...task.logs, { timestamp: Date.now(), message: '第一位员工开始处理第一个步骤' }]; notifyTask({ ...task }); fakeReply(task.id, '我先按第一个步骤整理需要的资料，完成后会把结果交给下一位员工。'); } return { success: true }; },
+  retryWorkflowNode: async () => ({ success: true }),
+  resumeWorkflow: async taskId => { const task = previewTasks.find(item => item.id === taskId); if (task) { task.status = 'running'; notifyTask({ ...task }); } return { success: true }; },
+  stopWorkflow: async () => ({ success: true }),
+  getArrangementContext: async () => ({}),
+  listArrangementDrafts: async () => ({}),
+  createArrangementDraft: async () => ({}),
+  getArrangementDraft: async () => ({}),
+  updateArrangementDraft: async () => ({}),
+  deleteArrangementDraft: async () => ({}),
+  validateArrangementDraft: async () => ({}),
+  preflightArrangementDraft: async () => ({}),
+  confirmArrangementDraft: async () => ({}),
+  confirmAndStartArrangement: async () => ({}),
 };
 
 if (!('electronAPI' in window)) Object.defineProperty(window, 'electronAPI', { value: previewApi, configurable: true });

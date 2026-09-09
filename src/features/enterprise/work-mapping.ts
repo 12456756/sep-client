@@ -9,6 +9,7 @@
 import type { ClientTask, ClientTaskMessage } from '../../shared/types';
 import type {
   SharedContext,
+  WorkActivity,
   SiliconEmployee,
   WorkItem,
   WorkMessage,
@@ -182,11 +183,12 @@ interface BuildInput {
   messages?: ClientTaskMessage[];
   /** 正在流式输出的文本，按 taskId 传入。 */
   streamingText?: string;
+  activities?: WorkActivity[];
   /** 当前活跃员工，切换员工后由本地状态覆盖任务上的订阅。 */
   activeEmployeeId?: string;
 }
 
-export function buildWorkItem({ task, employees, messages, streamingText, activeEmployeeId }: BuildInput): WorkItem {
+export function buildWorkItem({ task, employees, messages, streamingText, activities = [], activeEmployeeId }: BuildInput): WorkItem {
   const meta = decodeWorkMeta(task.prompt);
   const kind: 'conversation' | 'flow' = meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
   const status = toWorkStatus(task.status);
@@ -228,6 +230,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, active
     })),
     timeline: buildTimeline(task, kind, nameOf(currentEmployeeId)),
     messages: buildMessages(task, messages, streamingText, currentEmployeeId, nameOf(currentEmployeeId)),
+    activities,
     sharedContext: meta?.sharedContext ?? { goal: readableGoal(task.prompt), confirmedInputs: [], previousResults: [], userNotes: [] },
     /*
      * 为什么中断 / 为什么被终止，都落在 task.error 上：平台报的失败原因写在这里，

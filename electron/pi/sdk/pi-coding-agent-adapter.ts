@@ -16,46 +16,19 @@ import type {
   PiAgentRuntime,
   PiAgentSession,
   PiAgentSessionConfig,
-} from '../pi-agent-runtime'
+} from './pi-agent-runtime'
+import { redactText, redactValue } from '../../common/redact'
 import {
-  APPROVAL_TOOLS,
   READ_ONLY_TOOLS,
   buildBearerAuthorizationHeader,
+  evaluateToolCall,
+  requiresToolApproval,
 } from '../../../pi-extension'
+import { logger } from '../../common/logger'
 
-const MAX_STRING_LENGTH = 8_192
-const MAX_ARRAY_LENGTH = 50
-const MAX_OBJECT_KEYS = 50
-const MAX_DEPTH = 5
-const SENSITIVE_KEY = /authorization|cookie|password|secret|token|api[-_]?key|credential/i
+const log = logger.child('pi-gateway')
+
 let gatewayRequestSequence = 0
-
-function truncate(value: string): string {
-  const redacted = value
-    .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
-    .replace(/([?&](?:token|password|secret|api[_-]?key)=)[^&\s]+/gi, '$1[redacted]')
-  return redacted.length <= MAX_STRING_LENGTH
-    ? redacted
-    : `${redacted.slice(0, MAX_STRING_LENGTH)}...[truncated]`
-}
-
-function sanitize(value: unknown, depth = 0, key = ''): unknown {
-  if (SENSITIVE_KEY.test(key)) return '[redacted]'
-  if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
-  if (typeof value === 'string') return truncate(value)
-  if (typeof value !== 'object') return undefined
-  if (depth >= MAX_DEPTH) return '[max-depth]'
-  if (Array.isArray(value)) {
-    return value.slice(0, MAX_ARRAY_LENGTH).map(item => sanitize(item, depth + 1))
-  }
-
-  const output: Record<string, unknown> = {}
-  for (const [entryKey, entryValue] of Object.entries(value).slice(0, MAX_OBJECT_KEYS)) {
-    const sanitized = sanitize(entryValue, depth + 1, entryKey)
-    if (sanitized !== undefined) output[entryKey] = sanitized
-  }
-  return output
-}
 
 function getFailure(messages: unknown): string | undefined {
   if (!Array.isArray(messages)) return undefined
@@ -66,7 +39,7 @@ function getFailure(messages: unknown): string | undefined {
     if (candidate.role !== 'assistant') continue
     if (candidate.stopReason !== 'error' && candidate.stopReason !== 'aborted') return undefined
     if (typeof candidate.errorMessage === 'string' && candidate.errorMessage.trim()) {
-      return truncate(candidate.errorMessage)
+      return redactText(candidate.errorMessage)
     }
     return candidate.stopReason === 'aborted' ? 'Agent run was aborted.' : 'Agent run failed.'
   }
@@ -151,7 +124,7 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
     case 'message_update': {
       const update = raw.assistantMessageEvent as Record<string, unknown> | undefined
       if (update?.type !== 'text_delta' || typeof update.delta !== 'string') return null
-      return { type: 'text_delta', data: { text: truncate(update.delta) } }
+      return { type: 'text_delta', data: { text: redactText(update.delta) } }
     }
     case 'tool_execution_start':
       return {
@@ -159,7 +132,7 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
         data: {
           toolId: raw.toolCallId,
           toolName: raw.toolName,
-          input: sanitize(raw.args),
+          input: redactValue(raw.args),
         },
       }
     case 'tool_execution_end':
@@ -169,7 +142,7 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
           toolId: raw.toolCallId,
           toolName: raw.toolName,
           success: raw.isError !== true,
-          error: raw.isError === true ? sanitize(raw.result) : undefined,
+          error: raw.isError === true ? redactValue(raw.result) : undefined,
         },
       }
     case 'agent_end':
@@ -185,7 +158,7 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
           attempt: event.attempt,
           maxAttempts: event.maxAttempts,
           delayMs: event.delayMs,
-          error: truncate(event.errorMessage),
+          error: redactText(event.errorMessage),
         },
       }
     case 'auto_retry_end':
@@ -194,7 +167,7 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
         data: {
           success: event.success,
           attempt: event.attempt,
-          error: event.finalError ? truncate(event.finalError) : undefined,
+          error: event.finalError ? redactText(event.finalError) : undefined,
         },
       }
     case 'agent_start':
@@ -205,7 +178,7 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
     case 'message_end':
     case 'compaction_start':
     case 'compaction_end':
-      return { type: event.type, data: sanitize(raw) }
+      return { type: event.type, data: redactValue(raw) }
     default:
       return null
   }
@@ -213,21 +186,21 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
 
 function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
   const gatewayPayload: ExtensionFactory = pi => {
-    console.error('[PiGateway] provider payload hook registered')
+    log.debug('provider payload hook registered')
     pi.on('before_provider_request', (event: BeforeProviderRequestEvent) => {
       const requestId = ++gatewayRequestSequence
-      console.error('[PiGateway] provider request hook entered', { requestId })
+      log.debug('provider request hook entered', { requestId })
       try {
         const normalized = normalizeGatewayPayload(event.payload)
         const normalizedRecord = normalized && typeof normalized === 'object' ? normalized as { model?: unknown; messages?: unknown } : {}
-        console.error('[PiGateway] normalized provider request', {
+        log.debug('normalized provider request', {
           requestId,
           model: typeof normalizedRecord.model === 'string' ? normalizedRecord.model : undefined,
           messageCount: Array.isArray(normalizedRecord.messages) ? normalizedRecord.messages.length : 0,
         })
         return normalized
       } catch (error) {
-        console.error('[PiGateway] payload normalization failed', {
+        log.error('payload normalization failed', {
           requestId,
           error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
           stack: error instanceof Error ? error.stack : undefined,
@@ -237,9 +210,9 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
     })
 
     pi.on('after_provider_response', event => {
-      console.error('[PiGateway] provider response received', {
+      log.debug('provider response received', {
         status: event.status,
-        headers: sanitize(event.headers),
+        headers: redactValue(event.headers),
       })
     })
   }
@@ -247,15 +220,26 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (config.toolPolicy) {
+        const decision = evaluateToolCall(toolName, event.input, config.toolPolicy)
+        if (!decision.allowed) {
+          await config.reportPolicyEvent?.('tool_call_blocked', {
+            toolName,
+            reason: decision.reason ?? 'policy-denied',
+          })
+          return { block: true, reason: `Tool denied by task policy: ${toolName}` }
+        }
+        if (!decision.requiresApproval) return { block: false }
+      }
       if (READ_ONLY_TOOLS.has(toolName)) return { block: false }
-      if (!APPROVAL_TOOLS.has(toolName)) {
+      if (!requiresToolApproval(toolName)) {
         await config.reportPolicyEvent?.('unknown_tool_blocked', {
           toolName,
           reason: 'Unknown tools are denied by default.',
         })
         return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
       }
-      const approved = await config.authorizeTool({ toolName, input: sanitize(event.input) })
+      const approved = await config.authorizeTool({ toolName, input: redactValue(event.input) })
       return approved
         ? { block: false }
         : { block: true, reason: `User denied execution of high-risk tool: ${toolName}` }
@@ -263,9 +247,9 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
   }
 
   const providerAuth: ExtensionFactory = pi => {
-    console.error('[PiGateway] provider headers hook registered')
+    log.debug('provider headers hook registered')
     pi.on('before_provider_headers', async (event: BeforeProviderHeadersEvent): Promise<void> => {
-      console.error('[PiGateway] provider headers hook entered')
+      log.debug('provider headers hook entered')
       event.headers.authorization = buildBearerAuthorizationHeader(await config.getAccessToken())
     })
   }
@@ -306,7 +290,7 @@ class PiCodingAgentSession implements PiAgentSession {
 
 export class PiCodingAgentAdapter implements PiAgentRuntime {
   async createSession(config: PiAgentSessionConfig): Promise<PiAgentSession> {
-    console.error('[PiGateway] createSession started', {
+    log.info('createSession started', {
       modelId: config.modelId,
       gatewayUrl: config.gatewayUrl,
       workspaceDir: config.workspaceDir,
@@ -346,7 +330,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     })
     await resourceLoader.reload()
     const extensionState = resourceLoader.getExtensions()
-    console.error('[PiGateway] resource loader reloaded', {
+    log.debug('resource loader reloaded', {
       extensionCount: extensionState.extensions.length,
       extensionErrors: extensionState.errors,
       extensionPaths: extensionState.extensions.map(extension => extension.path),
@@ -363,7 +347,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       resourceLoader,
       sessionManager,
     })
-    console.error('[PiGateway] createAgentSession completed', { sessionId: session.sessionId })
+    log.info('createAgentSession completed', { sessionId: session.sessionId })
     return new PiCodingAgentSession(session)
   }
 }
