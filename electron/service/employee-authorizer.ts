@@ -19,7 +19,7 @@ import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 /** 只用会话的这两件事，按最小需要声明，测试才好替。 */
 export interface SessionTokens {
   getValidAccessToken(): Promise<string>
-  getMeta(): { enterpriseId: string } | null
+  getMeta(): { enterpriseId: string; memberId?: string } | null
 }
 
 /** 只用平台目录的这四件事。实现是 service/employee-directory.ts。 */
@@ -117,4 +117,3 @@ export class EmployeeAuthorizer {
     return { ...employee, additionalSkillPaths: runtime.skillPaths }
   }
 }
-

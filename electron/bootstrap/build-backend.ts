@@ -12,6 +12,7 @@ import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
 import { describeError } from '../common/redact'
 import { settleWithTimeout } from '../common/with-timeout'
+import { SkillVersionStore } from '../data/skill-version-store'
 import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
 import { WorkPlanStore } from '../data/work-plan-store'
@@ -84,7 +85,7 @@ class BackendRuntime {
       // 避免一个 run 打多次 /client/subscriptions（C4）。
       new EmployeeDirectory(getSubscriptions),
       // 技能包准备经端口注入——B2 不允许 service/ 直接依赖 pi/。
-      new SkillPackageStore(join(userDataDir, 'runtime')),
+      new SkillPackageStore(join(userDataDir, 'runtime'), new SkillVersionStore(join(userDataDir, 'skill-data', 'v1'))),
       config.SEP_GATEWAY_URL,
     )
 
@@ -235,4 +236,3 @@ export async function createBackend(options: BackendOptions): Promise<Backend> {
   log.info('backend assembled')
   return backend
 }
-

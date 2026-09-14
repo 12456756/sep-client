@@ -1,12 +1,14 @@
 import { createHash } from 'node:crypto'
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { SkillVersionStore } from '../../data/skill-version-store'
 import { getEmployeeSkills, getPackageInfo, previewSkill, type EmployeeSkill } from '../../common/platform/platform-api'
 
 export interface SkillPackageRequest {
   enterpriseId: string
   subscriptionId: string
   employeeId: string
+  memberId?: string
   templateVersion: string
   accessToken: string
 }
@@ -27,7 +29,7 @@ function safeSegment(value: string): string {
 export class SkillPackageStore {
   private readonly cache = new Map<string, Promise<SkillPackageResult>>()
 
-  constructor(private readonly rootDir: string) {}
+  constructor(private readonly rootDir: string, private readonly versions?: SkillVersionStore) {}
 
   prepare(input: SkillPackageRequest): Promise<SkillPackageResult> {
     const key = `${input.enterpriseId}:${input.subscriptionId}:${input.templateVersion}`
@@ -59,7 +61,9 @@ export class SkillPackageStore {
     const paths: string[] = []
     for (const skill of skillsResponse.skills) {
       if (!skill || typeof skill !== 'object' || !APPROVED.has(skill.currentVersion.status) || !skill.currentVersion.version) continue
-      const content = await this.resolveSkillContent(skill, input.accessToken)
+      const local = input.memberId && this.versions ? await this.versions.selected({ enterpriseId: input.enterpriseId, memberId: input.memberId }, input.subscriptionId, skill.capability.id) : null
+      const localVersion = local && input.memberId && this.versions ? await this.versions.load({ enterpriseId: input.enterpriseId, memberId: input.memberId }, input.subscriptionId, skill.capability.id, local) : null
+      const content = localVersion?.content ?? await this.resolveSkillContent(skill, input.accessToken)
       if (!content) continue
       const skillName = safeSegment(skill.capability.id || skill.capability.name || `skill-${paths.length + 1}`)
       const target = join(skillRoot, skillName)
