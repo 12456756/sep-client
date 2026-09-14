@@ -1,4 +1,4 @@
-﻿import type { ElectronAPI } from '../shared/ipc';
+import type { ElectronAPI } from '../shared/ipc';
 
 const previewArrangement = {
   getArrangementPlan: async (taskId: string) => ({ success: true, plan: previewPlans[taskId] ?? null }),
@@ -30,20 +30,20 @@ const now = Date.now();
  * 前六位挂着真实的工作，用来看状态标签和提醒气泡；后面几位只占位置。
  */
 const previewInstances: Subscription[] = [
-  { id: 'preview-content', name: '运营文案助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'content', name: '内容运营', avatar: '文' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-analysis', name: '数据分析助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'analysis', name: '数据分析', avatar: '数' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-review', name: '交付审核助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'review', name: '审核校对', avatar: '审' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-support', name: '客户支持助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'support', name: '客户支持', avatar: '客' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-research', name: '市场调研助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'research', name: '市场调研', avatar: '研' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-design', name: '设计助理', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'design', name: '视觉设计', avatar: '设' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-ops', name: '流程运维助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'ops', name: '流程运维', avatar: '运' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-hr', name: '招聘协助员', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'hr', name: '人力协助', avatar: '人' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-finance', name: '财务对账助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'finance', name: '财务对账', avatar: '财' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-legal', name: '合同审阅助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'legal', name: '合同审阅', avatar: '法' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-sales', name: '销售线索助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'sales', name: '销售支持', avatar: '销' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-training', name: '培训编写助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'training', name: '培训编写', avatar: '培' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-translate', name: '文档翻译助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'translate', name: '文档翻译', avatar: '译' }, allowedModels: ['gpt-5.2'] },
-  { id: 'preview-qa', name: '测试用例助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'qa', name: '质量测试', avatar: '测' }, allowedModels: ['gpt-5.2'] },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '运营文案助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'content', name: '内容运营', avatar: '文' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '数据分析助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'analysis', name: '数据分析', avatar: '数' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '交付审核助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'review', name: '审核校对', avatar: '审' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '客户支持助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'support', name: '客户支持', avatar: '客' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '市场调研助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'research', name: '市场调研', avatar: '研' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '设计助理', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'design', name: '视觉设计', avatar: '设' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '流程运维助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'ops', name: '流程运维', avatar: '运' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '招聘协助员', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'hr', name: '人力协助', avatar: '人' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '财务对账助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'finance', name: '财务对账', avatar: '财' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '合同审阅助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'legal', name: '合同审阅', avatar: '法' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '销售线索助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'sales', name: '销售支持', avatar: '销' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '培训编写助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'training', name: '培训编写', avatar: '培' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '文档翻译助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'translate', name: '文档翻译', avatar: '译' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
+  { id: '', subscriptionId: '', employeeId: '-employee', name: '测试用例助手', status: 'ACTIVE', templateVersion: '1.0.0', template: { id: 'qa', name: '质量测试', avatar: '测' }, allowedModels: ['gpt-5.2'], department: null, upgradeAvailable: false },
 ];
 
 const planSteps: ArrangementPlanSnapshot['nodes'] = [
@@ -376,7 +376,7 @@ pushMessage('preview-chat', 'user', '价格这一类先不用管，那不是我�
 pushMessage('preview-chat', 'assistant', '好，价格那一类我从清单里去掉，只在附录里留一句「已收到相关反馈」备查。现在按剩下五类写改进动作。');
 
 const previewApi: ElectronAPI = {
-  login: async () => ({ success: true, data: { user: { id: 'preview-user', email: 'preview@sep.local', name: '预览账号' }, enterprise: { id: 'preview-enterprise', name: 'SEP 示例企业' } } }),
+  login: async () => ({ success: true, data: { user: { id: 'preview-user', email: 'preview@sep.local', name: '预览账号' }, enterprise: { id: '', subscriptionId: '', employeeId: '-employee', name: 'SEP 示例企业' } } }),
   listRememberedAccounts: async () => ({ accounts: [], encryptionAvailable: true }),
   getRememberedPassword: async () => ({ passwordAvailable: false }),
   forgetAccount: async () => ({ success: true, data: null }),
