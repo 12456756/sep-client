@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
-import type { Subscription } from '../shared/types';
+import type { EmployeeInstanceSnapshot } from '../shared/types';
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
 import { EmployeesPage } from './enterprise/EmployeesPage';
@@ -29,7 +29,7 @@ interface Props {
   userName: string;
   enterpriseId: string;
   enterpriseName: string;
-  instances: Subscription[];
+  instances: EmployeeInstanceSnapshot[];
   onLogout: () => void | Promise<void>;
   /** 企业管理员才看到技能审核与员工权限入口。平台接口未开放，暂按 false。 */
   canManage?: boolean;
@@ -56,26 +56,7 @@ export function ClientAppPage({ userName, enterpriseId, enterpriseName, instance
     switch (route.name) {
       case 'home': return { title: '首页' };
       case 'work': return null;
-      case 'arrange': {
-        const mode = route.mode ?? 'pick';
-        if (mode === 'chat') return { title: '对话式', subtitle: '与一个员工直接沟通，边聊边完成工作。' };
-        if (mode === 'auto') {
-          return {
-            title: '自动编排',
-            subtitle: '告诉系统你想完成什么，AI 会自动选择员工并安排工作。',
-          };
-        }
-        if (mode === 'manual') {
-          return {
-            title: '自己编排',
-            subtitle: '自己选择员工，并决定员工之间如何协作。',
-          };
-        }
-        return {
-          title: '安排工作',
-          subtitle: '选择一种适合你的方式开始安排工作。',
-        };
-      }
+      case 'arrange': return null;
       case 'employees': return { title: '硅基员工', subtitle: `企业共 ${overview.totalEmployees} 位，其中 ${overview.availableToMe} 位已分配给你` };
       case 'employee': {
         const employee = workspace.employees.find(item => item.id === route.employeeId);
@@ -155,4 +136,3 @@ function PageBody({ workspace }: { workspace: ReturnType<typeof useEnterpriseWor
       return <HomePage workspace={workspace} />;
   }
 }
-

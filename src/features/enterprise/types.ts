@@ -55,6 +55,7 @@ export interface SiliconEmployee {
   mark: string;
   /** 职能名称，例如「数据分析」。 */
   roleName: string;
+  department: string | null;
   availability: EmployeeAvailability;
   /** 是否已分配给当前用户。未分配的员工只用于展示企业规模，不作为操作对象。 */
   assignedToMe: boolean;
@@ -163,8 +164,8 @@ export interface WorkItem {
   id: string;
   title: string;
   goal: string;
-  /** 对话式工作与编排式工作走不同的页面，但在记录里统一呈现。 */
-  kind: 'conversation' | 'arrangement';
+  /** 对话式工作与流程式工作走不同的页面，但在记录里统一呈现。 */
+  kind: 'conversation' | 'flow';
   status: WorkStatus;
   progress: number;
   currentEmployeeId: string;
@@ -178,7 +179,7 @@ export interface WorkItem {
   deliverables: WorkDeliverable[];
   timeline: WorkTimelineEntry[];
   messages: WorkMessage[];
-  /** 运行时推送的动作详情，用于工作详情页展示写入、编辑、审批等关键动作。 */
+  /** ??????????????????????????? */
   activities: WorkActivity[];
   sharedContext: SharedContext;
   /** 终止原因。终止后仍保留已完成动作与已产生文件。 */
@@ -187,9 +188,9 @@ export interface WorkItem {
   workDir: string | null;
 }
 
-// ───────────────────────────── 固定安排 ─────────────────────────────
+// ───────────────────────────── 固定工作流程 ─────────────────────────────
 
-export interface ArrangementTemplateInput {
+export interface WorkTemplateInput {
   id: string;
   label: string;
   type: 'text' | 'long-text' | 'path' | 'enum';
@@ -198,14 +199,14 @@ export interface ArrangementTemplateInput {
   placeholder?: string;
 }
 
-/** 企业预设的固定安排，是「安排工作」的默认入口。 */
-export interface ArrangementTemplate {
+/** 企业预设的固定工作流程，是「安排工作」的默认入口。 */
+export interface WorkTemplate {
   id: string;
   name: string;
   goal: string;
   /** 默认参与员工，按顺序对应工作步骤。 */
   employeeIds: string[];
-  requiredInputs: ArrangementTemplateInput[];
+  requiredInputs: WorkTemplateInput[];
   /** 最终输出形式，例如「Word 报告」。 */
   outputForm: string;
   /** 预设步骤，进入自定义安排时作为初始内容。 */
@@ -215,11 +216,11 @@ export interface ArrangementTemplate {
 /**
  * 用户自己保存下来的常用工作。
  *
- * 和企业预设安排（ArrangementTemplate）分开：企业预设是企业维护的、只读的；
+ * 和企业预设流程（WorkTemplate）分开：企业预设是企业维护的、只读的；
  * 这里是用户在「安排工作」里调好之后自己存的，只属于自己，可以删。
  * 两者在首页「常做的工作」里并排出现，用标记区分来源。
  */
-export interface SavedArrangement {
+export interface SavedWorkFlow {
   id: string;
   name: string;
   goal: string;
@@ -303,5 +304,3 @@ export type AppRoute =
   | { name: 'skills'; skillId?: string };
 
 export type AppRouteName = AppRoute['name'];
-
-

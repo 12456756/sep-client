@@ -7,7 +7,7 @@
  * 已确认的内容和终止原因都会保留，不会一起消失。
  */
 
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ClipboardCheck, Copy, FileCheck2, GitBranch, History, PlayCircle, RotateCcw, Search, StopCircle, Trash2 } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ClipboardCheck, Copy, FileCheck2, History, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { Empty, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
@@ -27,7 +27,7 @@ import { clockTime, relativeTime } from '../../features/enterprise/vocabulary';
  * 到了工作详情页，「确认，继续」和「重新试一次」就在标题底下那条提示里。
  */
 const LEAD: Record<WorkStatus, { label: string; icon: typeof ClipboardCheck }> = {
-  arranging: { label: '查看安排', icon: GitBranch },
+  arranging: { label: '查看安排', icon: Workflow },
   running: { label: '查看进展', icon: Activity },
   'waiting-user': { label: '去确认', icon: CheckCircle2 },
   completed: { label: '查看完成情况', icon: ClipboardCheck },
@@ -298,5 +298,3 @@ export function WorkRecordsPage({ workspace }: Props) {
     </div>
   );
 }
-
-

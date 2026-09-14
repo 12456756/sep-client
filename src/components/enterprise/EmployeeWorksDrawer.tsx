@@ -8,7 +8,7 @@
  * 用户不会丢掉「我刚点的是谁」这个上下文。
  */
 
-import { ChevronRight, FileCheck2, Hourglass, ListTree, Loader2, PauseCircle, X, XCircle } from 'lucide-react';
+import { ChevronRight, FileCheck2, Hourglass, Loader2, PauseCircle, Workflow, X, XCircle } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { SiliconEmployee, WorkItem } from '../../features/enterprise/types';
 import { dayTimeText, durationText, EMPLOYEE_AVAILABILITY, relativeTime } from '../../features/enterprise/vocabulary';
@@ -64,7 +64,7 @@ export function EmployeeWorksDrawer({ employee, works, onClose, onOpenWork }: Pr
           <EmployeeFace seed={employee.id} size="xl" />
           <div className="ent-drawer-id">
             <h2 id="ent-drawer-name">{employee.name}</h2>
-            <small>{employee.roleName}</small>
+            <small>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''}</small>
             <span className={`ent-drawer-live ${tone}`}>
               <i aria-hidden />
               {employee.availability === 'working' ? '正在工作' : state.label}
@@ -164,13 +164,11 @@ function Tile({ work, onOpenWork }: { work: WorkItem; onOpenWork: (id: string) =
  * running 的 kind 是 live：那颗圈要转起来（见 .ent-worktile.live），
  * 其余状态的图标是静止的形状 —— 停着的事不该看起来在动。
  */
-const LOOK: Record<WorkItem['status'], { icon: typeof ListTree; kind: string; note: string }> = {
+const LOOK: Record<WorkItem['status'], { icon: typeof Workflow; kind: string; note: string }> = {
   running: { icon: Loader2, kind: 'live', note: '正在进行' },
-  arranging: { icon: ListTree, kind: '', note: '已安排好，还没开工' },
+  arranging: { icon: Workflow, kind: '', note: '已安排好，还没开工' },
   'waiting-user': { icon: Hourglass, kind: 'call', note: '等你拍板' },
   completed: { icon: FileCheck2, kind: 'done', note: '已完成' },
   failed: { icon: XCircle, kind: 'stop', note: '中断了，等你处理' },
   paused: { icon: PauseCircle, kind: '', note: '已终止' },
 };
-
-

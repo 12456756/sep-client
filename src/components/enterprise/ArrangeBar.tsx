@@ -103,5 +103,3 @@ export function ArrangeBar({ employees, busy, onSend, onChooseSite }: Props) {
     </div>
   );
 }
-
-

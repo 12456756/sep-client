@@ -1,4 +1,3 @@
-import type { RunSettings } from './run-settings';
 /**
  * 把平台数据与本地状态聚合成业务域模型。
  *
@@ -11,10 +10,10 @@ import type { RunSettings } from './run-settings';
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ArrangementPlanSnapshot, ClientTask, ClientTaskMessage, Subscription } from '../../shared/types';
+import type { ClientTask, ClientTaskMessage, EmployeeInstanceSnapshot } from '../../shared/types';
 import {
   ENTERPRISE_TOTAL_EMPLOYEES,
-  ARRANGEMENT_TEMPLATES,
+  WORK_TEMPLATES,
   defaultPermissions,
   initialSkills,
   profileForRole,
@@ -27,21 +26,21 @@ import type {
   MySkillVersion,
   OperationPermission,
   OperationPermissionId,
-  SavedArrangement,
+  SavedWorkFlow,
   SiliconEmployee,
   WorkActivity,
   WorkDraftStep,
   WorkItem,
-  ArrangementTemplate,
+  WorkTemplate,
 } from './types';
 import { upgradeDraftSteps, layoutSteps } from './work-graph';
-import { buildWorkItem, completedStepCount } from './work-mapping';
+import { buildWorkItem, completedStepCount, encodeWorkPrompt, type WorkMeta } from './work-mapping';
 import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
 
 /**
  * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
  *
- * 判定口径是「他名下有一项工作正在跑」，不是「他是当前负责人」：一项编排工作跑起来之后，
+ * 判定口径是「他名下有一项工作正在跑」，不是「他是当前负责人」：一项流程工作跑起来之后，
  * 参与其中的同事都在这项工作里，只认当前那一位会让其余人显示成空闲。
  *
  * 「等你拍板」和「中断了」不算：那些工作已经不在推进了，这位员工现在确实能接新活。
@@ -61,14 +60,13 @@ function busyEmployeeIds(works: WorkItem[]): Set<string> {
 export interface ArrangeWorkDraft {
   title: string;
   goal: string;
+  templateId?: string;
   workDir: string;
   steps: WorkDraftStep[];
   /** 用户已确认可以交给员工的资料说明。 */
   confirmedInputs: string[];
   /** 整个工作共享的技能包。这一版只跟着工作一起记住，不下发给员工。 */
   sharedSkillIds: string[];
-  arrangementMode?: 'auto' | 'manual';
-  execution?: Omit<RunSettings, 'workDir'>;
 }
 
 /** 从模板、已保存的常用工作或「复制为新工作」带到安排工作页的初始内容。 */
@@ -88,30 +86,28 @@ export interface ArrangeSeed {
  */
 export interface ConversationOptions {
   workDir?: string;
-  model?: string;
-  permissionPreset?: 'read-only' | 'workspace-edit' | 'full-local';
-  allowWithoutApproval?: boolean;
   skillIds?: string[];
 }
 
 /**
  * 常用工作存在浏览器本地，按企业隔离。
- * 这类安排暂时没有独立远端接口，因此按企业隔离保存在本地。
+ * 平台还没有「个人流程模板」接口，先落本地；接口补齐后换成远端读写即可，
+ * 页面消费的是 workspace.savedFlows，不需要跟着改。
  */
-const savedArrangementsKey = (enterpriseId: string) => `sep.savedArrangements.${enterpriseId}`;
+const savedFlowsKey = (enterpriseId: string) => `sep.savedFlows.${enterpriseId}`;
 
-function readSavedArrangements(enterpriseId: string): SavedArrangement[] {
+function readSavedFlows(enterpriseId: string): SavedWorkFlow[] {
   try {
-    const raw = window.localStorage.getItem(savedArrangementsKey(enterpriseId));
+    const raw = window.localStorage.getItem(savedFlowsKey(enterpriseId));
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     return parsed
-      .filter((item): item is SavedArrangement =>
+      .filter((item): item is SavedWorkFlow =>
         Boolean(item) && typeof item === 'object'
-        && typeof (item as SavedArrangement).id === 'string'
-        && typeof (item as SavedArrangement).name === 'string'
-        && Array.isArray((item as SavedArrangement).steps))
+        && typeof (item as SavedWorkFlow).id === 'string'
+        && typeof (item as SavedWorkFlow).name === 'string'
+        && Array.isArray((item as SavedWorkFlow).steps))
       // v1 存的是线性链，升级成依赖图并补上画布坐标，否则旧记录进画布会没有连线。
       .map(item => ({ ...item, version: 2 as const, steps: upgradeDraftSteps(item.steps) }));
   } catch {
@@ -124,7 +120,7 @@ interface Options {
   userName: string;
   enterpriseId: string;
   enterpriseName: string;
-  instances: Subscription[];
+  instances: EmployeeInstanceSnapshot[];
 }
 
 /**
@@ -228,9 +224,9 @@ export interface EnterpriseWorkspace {
   employees: SiliconEmployee[];
   /** 我可以直接安排的员工。 */
   myEmployees: SiliconEmployee[];
-  templates: ArrangementTemplate[];
-  /** 用户自己保存的常用安排。 */
-  savedArrangements: SavedArrangement[];
+  templates: WorkTemplate[];
+  /** 用户自己保存的常用工作，和企业预设流程并排出现在首页。 */
+  savedFlows: SavedWorkFlow[];
   skills: EmployeeSkill[];
   works: WorkItem[];
   /**
@@ -261,10 +257,10 @@ export interface EnterpriseWorkspace {
   deleteWork: (workId: string) => Promise<void>;
   duplicateWork: (workId: string) => void;
   /** 把当前安排好的工作存成常用工作，返回是否存成功。 */
-  saveArrangement: (arrangement: Omit<SavedArrangement, 'id' | 'savedAt'>) => boolean;
-  deleteSavedArrangement: (arrangementId: string) => void;
-  /** 用已保存的安排重新打开安排工作页。 */
-  runSavedArrangement: (arrangementId: string) => void;
+  saveFlow: (flow: Omit<SavedWorkFlow, 'id' | 'savedAt'>) => boolean;
+  deleteSavedFlow: (flowId: string) => void;
+  /** 用已保存的常用工作重新安排一次：带着原步骤进安排工作页。 */
+  runSavedFlow: (flowId: string) => void;
   setPermission: (employeeId: string, permissionId: OperationPermissionId, enabled: boolean) => void;
   setPermissionScope: (employeeId: string, permissionId: OperationPermissionId, scope: string) => void;
   chooseFolder: () => Promise<string | null>;
@@ -285,8 +281,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   const [permissionOverrides, setPermissionOverrides] = useState<Record<string, OperationPermission[]>>({});
   const [activeEmployeeByWork, setActiveEmployeeByWork] = useState<Record<string, string>>({});
   const [arrangeSeed, setArrangeSeed] = useState<ArrangeSeed | null>(null);
-  const [savedArrangements, setSavedArrangements] = useState<SavedArrangement[]>(() => readSavedArrangements(enterpriseId));
-  const [arrangementPlans, setArrangementPlans] = useState<Record<string, ArrangementPlanSnapshot>>({});
+  const [savedFlows, setSavedFlows] = useState<SavedWorkFlow[]>(() => readSavedFlows(enterpriseId));
   const [reviewedAt, setReviewedAt] = useState<Record<string, number>>(() => readReviewed(enterpriseId));
   const streamingText = useRef(new Map<string, string>());
   const runtimeActivities = useRef(new Map<string, WorkActivity[]>());
@@ -306,13 +301,14 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   const myEmployees = useMemo<SiliconEmployee[]>(() => instances.map(instance => {
     const roleName = instance.template.name || '硅基员工';
     const profile = profileForRole(roleName);
-    const permissions = permissionOverrides[instance.subscriptionId] ?? defaultPermissions();
+    const permissions = permissionOverrides[instance.id] ?? defaultPermissions();
     const revoked = instance.status !== 'ACTIVE';
     return {
-      id: instance.subscriptionId,
+      id: instance.id,
       name: instance.name,
       mark: instance.template.avatar || instance.name.slice(0, 1),
       roleName,
+      department: instance.department?.name ?? null,
       availability: revoked ? 'unavailable' : permissions.some(item => item.enabled) ? 'ready' : 'needs-auth',
       assignedToMe: true,
       intro: profile.intro,
@@ -332,13 +328,12 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
       task,
       employees: myEmployees,
       messages: messagesByTask.current.get(task.id),
-      plan: arrangementPlans[task.id],
       streamingText: streamingText.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')),
       activities: runtimeActivities.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')) ?? [],
       activeEmployeeId: activeEmployeeByWork[task.id],
     }));
     return items.sort((left, right) => right.updatedAt - left.updatedAt);
-  }, [tasks, myEmployees, activeEmployeeByWork, arrangementPlans]);
+  }, [tasks, myEmployees, activeEmployeeByWork]);
 
   /** 员工是否正在处理工作，用于卡片状态。 */
   const employees = useMemo<SiliconEmployee[]>(() => {
@@ -370,7 +365,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   }), [enterpriseId, enterpriseName, myEmployees.length, works]);
 
   /** 模板的默认参与员工按职能匹配到我可用的员工上。 */
-  const templates = useMemo<ArrangementTemplate[]>(() => ARRANGEMENT_TEMPLATES.map(template => ({
+  const templates = useMemo<WorkTemplate[]>(() => WORK_TEMPLATES.map(template => ({
     ...template,
     employeeIds: template.steps.map((_, index) => myEmployees[index % Math.max(1, myEmployees.length)]?.id ?? '').filter(Boolean),
   })), [myEmployees]);
@@ -412,45 +407,28 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     let active = true;
     const api = window.electronAPI;
 
-    const loadTaskDetails = async (list: ClientTask[], prune = false) => {
-      const fetchedPlans = new Map<string, ArrangementPlanSnapshot>();
+    const loadMessages = async (list: ClientTask[]) => {
       await Promise.all(list.map(async task => {
-        const [messagesResult, planResult] = await Promise.allSettled([
-          api.getTaskMessages(task.id),
-          api.getArrangementPlan(task.id),
-        ]);
-        if (messagesResult.status === 'fulfilled' && messagesResult.value.success && messagesResult.value.messages) {
-          messagesByTask.current.set(task.id, messagesResult.value.messages);
-        }
-        if (planResult.status === 'fulfilled' && planResult.value.success && planResult.value.plan) {
-          fetchedPlans.set(task.id, planResult.value.plan);
+        try {
+          const result = await api.getTaskMessages(task.id);
+          if (result.success && result.messages) messagesByTask.current.set(task.id, result.messages);
+        } catch {
+          // 历史记录读不到时保留工作本身，不影响列表展示。
         }
       }));
-      if (!active) return;
-      setArrangementPlans(current => {
-        const next: Record<string, ArrangementPlanSnapshot> = prune
-          ? Object.fromEntries(list.flatMap(task => current[task.id] ? [[task.id, current[task.id]]] : []))
-          : { ...current };
-        fetchedPlans.forEach((plan, taskId) => { next[taskId] = plan; });
-        return next;
-      });
-      setTasks(current => [...current]);
+      if (active) setTasks(current => [...current]);
     };
 
     void api.getAllTasks().then(result => {
       if (!active || !result.success) return;
       const list = result.tasks ?? [];
       setTasks(list);
-      void loadTaskDetails(list, true);
+      void loadMessages(list);
     }).catch(() => {
       if (active) setTasks([]);
     });
 
-    const unsubscribeList = api.onTaskListUpdated(list => {
-      if (!active) return;
-      setTasks(list);
-      void loadTaskDetails(list, true);
-    });
+    const unsubscribeList = api.onTaskListUpdated(list => { if (active) setTasks(list); });
     const unsubscribeTask = api.onTaskUpdated(task => {
       if (!active) return;
       setTasks(current => {
@@ -458,7 +436,6 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
         if (index === -1) return [task, ...current];
         return current.map(item => (item.id === task.id ? task : item));
       });
-      void loadTaskDetails([task]);
     });
     const unsubscribePi = api.onPiEvent(event => {
       if (!active) return;
@@ -523,25 +500,32 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
     if (!goal) return;
     const employee = myEmployees.find(item => item.id === employeeId);
     if (!employee) { setError('请先选择一位硅基员工'); return; }
+    const meta: WorkMeta = {
+      kind: 'conversation',
+      goal,
+      steps: [],
+      participants: [employeeId],
+      sharedContext: { goal, confirmedInputs: [], previousResults: [], userNotes: [] },
+    };
     const api = window.electronAPI;
     const title = goal.length > 40 ? `${goal.slice(0, 40)}…` : goal;
     setBusy(true);
     setError(null);
     try {
-      const model = options?.model?.trim();
-      if (!model) throw new Error('请在执行设置中选择模型');
-      const draftResult = await api.createArrangementDraft({
-        mode: 'conversation', title, goal, confirmedInputs: [], sharedSkillIds: options?.skillIds ?? [],
-        conversation: { participants: [{ subscriptionId: employeeId, modelId: model }], activeSubscriptionId: employeeId },
-        nodes: [], workspace: { mode: 'shared', path: options?.workDir?.trim() || null },
-        permissions: { preset: options?.permissionPreset ?? 'read-only', allowWithoutApproval: options?.allowWithoutApproval === true }, lastPlanning: null,
-      }) as { success: boolean; draft?: { id: string; revision: number }; error?: { message?: string } };
-      if (!draftResult.success || !draftResult.draft) throw new Error(draftResult.error?.message || '创建工作失败');
-      const started = await api.confirmAndStartArrangement({ draftId: draftResult.draft.id, expectedRevision: draftResult.draft.revision, idempotencyKey: crypto.randomUUID() }) as { success: boolean; plan?: { id: string }; error?: { message?: string } };
-      if (!started.success || !started.plan) throw new Error(started.error?.message || '员工没能接单，请重试');
-      clearRuntimeState(started.plan.id);
-      setActiveEmployeeByWork(current => ({ ...current, [started.plan!.id]: employeeId }));
-      navigate({ name: 'work', workId: started.plan.id });
+      const payload = {
+        title,
+        prompt: encodeWorkPrompt(title, meta),
+        subscriptionId: employeeId,
+        // 工作空间可选。留空时由主进程按默认工作目录准备，界面上不强制用户设置。
+        ...(options?.workDir?.trim() ? { workDir: options.workDir.trim() } : {}),
+      };
+      const created = await api.createConversation(payload);
+      if (!created.success || !created.task) throw new Error(created.error?.message || '创建工作失败');
+      clearRuntimeState(created.task.id);
+      setActiveEmployeeByWork(current => ({ ...current, [created.task!.id]: employeeId }));
+      navigate({ name: 'work', workId: created.task.id });
+      const started = await api.executeTask({ taskId: created.task.id });
+      if (!started.success) throw new Error(started.error?.message || '员工没能接单，请重试');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '工作创建失败');
     } finally {
@@ -552,6 +536,7 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   const arrangeWork = useCallback(async (draft: ArrangeWorkDraft) => {
     const steps = draft.steps.filter(step => step.employeeId && step.title.trim());
     if (!steps.length) { setError('请至少安排一个工作步骤'); return; }
+    // 上面可能滤掉了没填全的步骤，指向它们的依赖要一起去掉，否则主进程会报「依赖缺失」。
     const kept = new Set(steps.map(step => step.id));
     const planned = steps.map(step => ({
       id: step.id,
@@ -561,70 +546,47 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
       output: step.output,
       dependsOn: step.dependsOn.filter(dep => kept.has(dep)),
       needsConfirm: step.needsConfirm,
-      skillIds: [...step.skillIds],
     }));
-    const goal = draft.goal.trim() || draft.title.trim();
-    const title = draft.title.trim() || goal.slice(0, 40);
-    const execution = draft.execution ?? {
-      model: '',
-      modelStrategy: 'per-employee' as const,
-      permissionPreset: 'read-only' as const,
-      allowWithoutApproval: false,
+    const meta: WorkMeta = {
+      kind: 'flow',
+      goal: draft.goal.trim() || draft.title,
+      templateId: draft.templateId,
+      steps: planned,
+      participants: [...new Set(steps.map(step => step.employeeId))],
+      sharedContext: {
+        goal: draft.goal.trim() || draft.title,
+        confirmedInputs: draft.confirmedInputs.filter(Boolean),
+        previousResults: [],
+        userNotes: [],
+      },
     };
     const api = window.electronAPI;
     setBusy(true);
     setError(null);
     try {
-      const employeeModels = new Map(myEmployees.map(employee => [employee.id, employee.allowedModels]));
-      const commonModels = planned.reduce<string[]>((common, step) => {
-        const allowed = employeeModels.get(step.employeeId) ?? [];
-        return common.length ? common.filter(model => allowed.includes(model)) : [...allowed];
-      }, []);
-      const modelIds = draft.arrangementMode === 'auto' && execution.modelStrategy === 'same-model' && commonModels.length
-        ? planned.map(() => commonModels[0]!)
-        : planned.map(step => {
-          const allowed = employeeModels.get(step.employeeId) ?? [];
-          if (execution.model && allowed.includes(execution.model)) return execution.model;
-          return allowed[0] ?? '';
-        });
-      if (modelIds.some(model => !model)) throw new Error('参与员工没有可用模型');
-
-      const draftResult = await api.createArrangementDraft({
-        mode: draft.arrangementMode ?? 'manual',
-        title,
-        goal,
-        confirmedInputs: draft.confirmedInputs.filter(Boolean),
-        sharedSkillIds: draft.sharedSkillIds.filter(Boolean),
-        conversation: null,
-        nodes: planned.map((step, index) => ({
+      const created = await api.createWorkflow({
+        title: draft.title.trim() || meta.goal.slice(0, 40),
+        prompt: encodeWorkPrompt(draft.title.trim() || meta.goal.slice(0, 40), meta),
+        workDir: draft.workDir || undefined,
+        // 步骤 id 生成时就是安全形式（见 work-graph 的 createDraftStep），这里直接透传依赖图。
+        nodes: planned.map(step => ({
           id: step.id,
           subscriptionId: step.employeeId,
-          modelId: modelIds[index]!,
-          title: step.title,
-          instruction: [step.title, step.input && '需要：' + step.input].filter(Boolean).join('\n'),
+          instruction: [step.title, step.input && `需要：${step.input}`].filter(Boolean).join('\n'),
           expectedOutput: step.output || step.title,
           dependsOn: step.dependsOn,
-          skillIds: step.skillIds,
-          requiresUserConfirmation: execution.allowWithoutApproval ? false : step.needsConfirm,
         })),
-        workspace: { mode: 'shared', path: draft.workDir.trim() || null },
-        permissions: { preset: execution.permissionPreset, allowWithoutApproval: execution.allowWithoutApproval },
-        lastPlanning: null,
-      }) as { success: boolean; draft?: { id: string; revision: number }; error?: { message?: string } };
-      if (!draftResult.success || !draftResult.draft) throw new Error(draftResult.error?.message || '创建工作失败');
-      const started = await api.confirmAndStartArrangement({
-        draftId: draftResult.draft.id,
-        expectedRevision: draftResult.draft.revision,
-        idempotencyKey: crypto.randomUUID(),
-      }) as { success: boolean; plan?: { id: string }; error?: { message?: string } };
-      if (!started.success || !started.plan) throw new Error(started.error?.message || '工作没能开始，请重试');
-      navigate({ name: 'work', workId: started.plan.id });
+      });
+      if (!created.success || !created.task) throw new Error(created.error?.message || '创建工作失败');
+      navigate({ name: 'work', workId: created.task.id });
+      const started = await api.startWorkflow(created.task.id);
+      if (!started.success) throw new Error(started.error?.message || '工作没能开始，请重试');
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '工作创建失败');
     } finally {
       setBusy(false);
     }
-  }, [myEmployees, navigate]);
+  }, [navigate]);
 
   const sendMessage = useCallback((workId: string, text: string) => {
     const prompt = text.trim();
@@ -687,49 +649,49 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
 
   // ── 常用工作 ──────────────────────────────────────────────────────────
   /** 写盘失败（无痕模式、配额满）不阻断界面：内存里仍然保留，只是下次打开会丢。 */
-  const persistArrangements = useCallback((next: SavedArrangement[]) => {
-    setSavedArrangements(next);
+  const persistFlows = useCallback((next: SavedWorkFlow[]) => {
+    setSavedFlows(next);
     try {
-      window.localStorage.setItem(savedArrangementsKey(enterpriseId), JSON.stringify(next));
+      window.localStorage.setItem(savedFlowsKey(enterpriseId), JSON.stringify(next));
       return true;
     } catch {
-      setError('常用安排已在本次使用中生效，但没能保存到本机');
+      setError('常用工作已在本次使用中生效，但没能保存到本机');
       return false;
     }
   }, [enterpriseId]);
 
-  const saveArrangement = useCallback((arrangement: Omit<SavedArrangement, 'id' | 'savedAt'>) => {
-    const name = arrangement.name.trim();
-    if (!name) { setError('请先给这个常用安排起个名字'); return false; }
-    if (!arrangement.steps.length) { setError('至少要有一个安排步骤才能保存'); return false; }
-    const entry: SavedArrangement = {
-      ...arrangement,
+  const saveFlow = useCallback((flow: Omit<SavedWorkFlow, 'id' | 'savedAt'>) => {
+    const name = flow.name.trim();
+    if (!name) { setError('请先给这个常用工作起个名字'); return false; }
+    if (!flow.steps.length) { setError('至少要有一个工作步骤才能保存'); return false; }
+    const entry: SavedWorkFlow = {
+      ...flow,
       name,
-      id: `arrangement-${Date.now().toString(36)}`,
+      id: `flow-${Date.now().toString(36)}`,
       savedAt: Date.now(),
     };
     // 同名视为覆盖，避免列表里堆出一串「客户周报」。
-    return persistArrangements([entry, ...savedArrangements.filter(item => item.name !== name)]);
-  }, [savedArrangements, persistArrangements]);
+    return persistFlows([entry, ...savedFlows.filter(item => item.name !== name)]);
+  }, [savedFlows, persistFlows]);
 
-  const deleteSavedArrangement = useCallback((arrangementId: string) => {
-    persistArrangements(savedArrangements.filter(item => item.id !== arrangementId));
-  }, [savedArrangements, persistArrangements]);
+  const deleteSavedFlow = useCallback((flowId: string) => {
+    persistFlows(savedFlows.filter(item => item.id !== flowId));
+  }, [savedFlows, persistFlows]);
 
-  const runSavedArrangement = useCallback((arrangementId: string) => {
-    const arrangement = savedArrangements.find(item => item.id === arrangementId);
-    if (!arrangement) return;
+  const runSavedFlow = useCallback((flowId: string) => {
+    const flow = savedFlows.find(item => item.id === flowId);
+    if (!flow) return;
     // 保存时的员工可能已经不归我用了，进页面前先剔掉，让用户重新指派。
     const available = new Set(myEmployees.map(employee => employee.id));
     setArrangeSeed({
-      title: arrangement.name,
-      goal: arrangement.goal,
-      confirmedInputs: arrangement.confirmedInputs,
-      sharedSkillIds: arrangement.sharedSkillIds,
-      steps: arrangement.steps.map(step => ({ ...step, employeeId: available.has(step.employeeId) ? step.employeeId : '' })),
+      title: flow.name,
+      goal: flow.goal,
+      confirmedInputs: flow.confirmedInputs,
+      sharedSkillIds: flow.sharedSkillIds,
+      steps: flow.steps.map(step => ({ ...step, employeeId: available.has(step.employeeId) ? step.employeeId : '' })),
     });
     navigate({ name: 'arrange', mode: 'manual' });
-  }, [savedArrangements, myEmployees, navigate]);
+  }, [savedFlows, myEmployees, navigate]);
 
   const chooseFolder = useCallback(async () => {
     try {
@@ -804,13 +766,13 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
   }, [patchSkill]);
 
   return {
-    overview, employees, myEmployees, templates, savedArrangements, skills, works, unreviewedWorkIds, route, error, busy,
+    overview, employees, myEmployees, templates, savedFlows, skills, works, unreviewedWorkIds, route, error, busy,
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, goBack, dismissError: () => setError(null),
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
     stopWork, retryWork, deleteWork, duplicateWork,
-    saveArrangement, deleteSavedArrangement, runSavedArrangement,
+    saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,
     createMySkillVersion, updateSkillField, saveMySkillVersion, submitSkillForReview, discardMySkillVersion,
   };
@@ -818,4 +780,3 @@ export function useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName,
 
 /** 「已完成 N 个步骤」的统一算法，供页面直接使用。 */
 export { completedStepCount };
-

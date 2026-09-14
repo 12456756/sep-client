@@ -12,7 +12,6 @@ import { RUN_PERMISSIONS, type RunPermissionId, type RunSettings } from '../../.
 
 interface Props {
   settings: RunSettings;
-  mode: 'pick' | 'chat' | 'auto' | 'manual';
   /** 这些员工被允许使用的模型的并集。空数组表示企业没有开放选择。 */
   models: string[];
   onChange: (patch: Partial<RunSettings>) => void;
@@ -20,7 +19,7 @@ interface Props {
   onClose: () => void;
 }
 
-export function RunSettingsDrawer({ settings, mode, models, onChange, onChooseFolder, onClose }: Props) {
+export function RunSettingsDrawer({ settings, models, onChange, onChooseFolder, onClose }: Props) {
   const panel = useRef<HTMLElement>(null);
 
   // 抽屉是个临时层：Esc 关掉，打开时焦点进到面板里，否则键盘用户还留在页面上。
@@ -31,7 +30,9 @@ export function RunSettingsDrawer({ settings, mode, models, onChange, onChooseFo
     return () => document.removeEventListener('keydown', key);
   }, [onClose]);
 
-  const selectPreset = (id: RunPermissionId) => onChange({ permissionPreset: id });
+  const toggle = (id: RunPermissionId, enabled: boolean) => {
+    onChange({ permissions: { ...settings.permissions, [id]: enabled } });
+  };
 
   return (
     <>
@@ -52,8 +53,8 @@ export function RunSettingsDrawer({ settings, mode, models, onChange, onChooseFo
                 id="ent-rs-dir"
                 className="ent-rs-input"
                 value={settings.workDir}
+                placeholder="默认工作目录"
                 onChange={event => onChange({ workDir: event.target.value })}
-                placeholder="输入或选择工作目录"
               />
               <button
                 type="button"
@@ -68,46 +69,49 @@ export function RunSettingsDrawer({ settings, mode, models, onChange, onChooseFo
           </div>
 
           <div className="ent-rs-field">
-            {mode !== 'auto' ? <>
-              <label htmlFor="ent-rs-model">模型</label>
-              <select id="ent-rs-model" className="ent-rs-input" value={settings.model} disabled={!models.length} onChange={event => onChange({ model: event.target.value })}>
-                <option value="">{models.length ? '请选择模型' : '暂无可选模型'}</option>
-                {models.map(model => <option key={model} value={model}>{model}</option>)}
-              </select>
-              <small>选择这次工作使用的模型。</small>
-            </> : <>
-              <span className="ent-rs-label">模型选择策略</span>
-              <div className="ent-rs-presets" role="radiogroup" aria-label="选择模型策略">
-                {([{ id: 'per-employee', label: '按员工选择', hint: '每位员工使用其允许模型列表中的首个模型' }, { id: 'same-model', label: '尽量统一模型', hint: '优先使用共同允许的模型；没有共同模型时按员工选择' }] as const).map(item => (
-                  <label className={'ent-rs-preset' + (settings.modelStrategy === item.id ? ' on' : '')} key={item.id}>
-                    <input type="radio" name="model-strategy" checked={settings.modelStrategy === item.id} onChange={() => onChange({ modelStrategy: item.id })} />
-                    <span><strong>{item.label}</strong><small>{item.hint}</small></span>
-                  </label>
-                ))}
-              </div>
-            </>}
+            <label htmlFor="ent-rs-model">模型</label>
+            <select
+              id="ent-rs-model"
+              className="ent-rs-input"
+              value={settings.model}
+              disabled={!models.length}
+              onChange={event => onChange({ model: event.target.value })}
+            >
+              <option value="">{models.length ? '由企业指定' : '企业未开放选择'}</option>
+              {models.map(model => <option key={model} value={model}>{model}</option>)}
+            </select>
+            <small>这个选择只记在这台电脑上，模型下发通道打通后才会真的生效。</small>
           </div>
 
           <div className="ent-rs-field">
             <span className="ent-rs-label">权限</span>
-            <div className="ent-rs-presets" role="radiogroup" aria-label="选择权限级别">
-              {RUN_PERMISSIONS.map(item => (
-                <label className={`ent-rs-preset${settings.permissionPreset === item.id ? ' on' : ''}`} key={item.id}>
-                  <input type="radio" name="run-permission" checked={settings.permissionPreset === item.id} onChange={() => selectPreset(item.id)} />
-                  <span><strong>{item.label}</strong><small>{item.hint}</small></span>
-                </label>
-              ))}
-            </div>
-            <small>权限级别决定员工可以访问和修改的范围。</small>
-            <label className="ent-rs-danger-option">
-              <input type="checkbox" checked={settings.allowWithoutApproval} onChange={event => onChange({ allowWithoutApproval: event.target.checked })} />
-              <span><strong>无需用户确认，自动执行高风险动作</strong><small>仅对所选权限范围内的写入、编辑和命令执行免确认，不会扩大权限范围。</small></span>
-            </label>
+            <ul className="ent-rs-perms">
+              {RUN_PERMISSIONS.map(item => {
+                const on = settings.permissions[item.id];
+                return (
+                  <li key={item.id}>
+                    <span>
+                      <strong>{item.label}</strong>
+                      <small>{item.hint}</small>
+                    </span>
+                    <label className="ent-toggle">
+                      <input
+                        type="checkbox"
+                        checked={on}
+                        onChange={event => toggle(item.id, event.target.checked)}
+                        aria-label={`${item.label}${on ? '已开启' : '已关闭'}`}
+                      />
+                      <i aria-hidden />
+                      <em>{on ? 'ON' : 'OFF'}</em>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+            <small>关掉的项目员工碰不到。开着的项目在真正动手前仍然会单独问你一次。</small>
           </div>
         </div>
       </aside>
     </>
   );
 }
-
-

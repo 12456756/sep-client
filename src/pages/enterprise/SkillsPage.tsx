@@ -384,5 +384,3 @@ function FieldRow({ field, onChange }: { field: SkillField; onChange: (value: st
     </label>
   );
 }
-
-

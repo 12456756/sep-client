@@ -4,7 +4,7 @@
  * 为什么不用 <canvas>，也不引入 react-flow：
  * DOM 节点白拿焦点、Tab 顺序、屏幕阅读器、文字渲染和现有 --ent-* 样式；
  * <canvas> 要自己写命中测试、自己画文字，无障碍为零；
- * react-flow 是新框架，而且它的默认视觉正是我们不要的工程化编排器风格。
+ * react-flow 是新框架，而且它的默认视觉正是我们不要的「工程化 Workflow Builder」风格。
  *
  * 这是一个受控组件：步骤、选中项、视图变换都由 ArrangeWorkPage 持有 ——
  * 因为「从左侧员工列表拖进画布」这个手势跨越了两个区域，坐标换算必须在同一处做。
@@ -174,6 +174,7 @@ export function WorkCanvas({
   useEffect(() => {
     if (!fitKey) return;
     fitRef.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fitKey]);
 
   /**
@@ -194,6 +195,7 @@ export function WorkCanvas({
   };
   useEffect(() => {
     nudgeIntoSight.current();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedId, reservedRight]);
 
   return (
@@ -447,5 +449,3 @@ function capabilityLine(step: WorkDraftStep, employee: SiliconEmployee | undefin
   const list = [...names].slice(0, 2);
   return list.length ? list.join(' · ') : '按工作内容自行判断';
 }
-
-

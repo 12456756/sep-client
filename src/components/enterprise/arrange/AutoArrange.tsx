@@ -5,7 +5,7 @@
  *   1. 分析工作目标   三行判断依次淡入，没有转圈的 Loading
  *   2. 匹配员工       员工池逐个被扫描，选中的亮紫并给出理由，落选的淡下去
  *   3. 汇聚           落选的收掉，选中的向中间靠拢
- *   4. 生成安排方案   目标、连线、员工卡一个一个出现
+ *   4. 生成工作流程   目标、连线、员工卡一个一个出现
  * 走完之后停在「确认并开始工作」上 —— 用户点确认之前不会有任何人开始干活。
  *
  * 时间线用一串 setTimeout 排，每一拍一个 useEffect，切阶段或离开页面时全部取消。
@@ -15,47 +15,51 @@
 import { ArrowRight, Check, Settings2, Sparkles } from 'lucide-react';
 import { Fragment, useEffect, useState } from 'react';
 import { planAutoArrange, type AutoPlan, type AutoStage } from '../../../features/enterprise/auto-arrange';
-import type { SiliconEmployee } from '../../../features/enterprise/types';
+import type { EmployeeSkill, SiliconEmployee } from '../../../features/enterprise/types';
 import { usePrefersReducedMotion } from '../../../features/enterprise/use-reduced-motion';
 import { EmployeeFace } from '../EmployeeFace';
 import { GoalComposer } from './GoalComposer';
 
-type AutoArrangeStage = 'input' | 'analyzing' | 'matching' | 'gathering' | 'arranging' | 'done';
+type Phase = 'input' | 'analyzing' | 'matching' | 'gathering' | 'flowing' | 'done';
 
 /** 顶部那条极轻的进度：三段，不是四段 —— 汇聚和匹配在用户眼里是同一件事。 */
-const STRIP = ['分析目标', '匹配员工', '生成安排'];
+const STRIP = ['分析目标', '匹配员工', '生成流程'];
 
-const TITLES: Record<AutoArrangeStage, string> = {
+const TITLES: Record<Phase, string> = {
   input: '',
   analyzing: '正在分析你的工作目标',
   matching: '正在匹配最适合完成任务的员工……',
   gathering: '正在匹配最适合完成任务的员工……',
-  arranging: '正在生成安排方案',
+  flowing: '正在安排工作流程',
   done: '自动编排完成',
 };
 
 const THINKING = ['分析任务内容', '识别需要完成的工作', '匹配员工能力'];
 
 /** 当前走到第几段。done 时返回 3，三段全部标成已完成。 */
-function stripAt(stage: AutoArrangeStage): number {
-  if (stage === 'analyzing') return 0;
-  if (stage === 'matching' || stage === 'gathering') return 1;
-  if (stage === 'arranging') return 2;
+function stripAt(phase: Phase): number {
+  if (phase === 'analyzing') return 0;
+  if (phase === 'matching' || phase === 'gathering') return 1;
+  if (phase === 'flowing') return 2;
   return 3;
 }
 
 interface Props {
   /** 现在能派活的同事。暂时不可用的员工不参与匹配。 */
   employees: SiliconEmployee[];
+  skills: EmployeeSkill[];
   busy: boolean;
+  onChooseFolder: () => Promise<string | null>;
   onOpenSettings: () => void;
-  onStart: (plan: AutoPlan) => void;
+  onStart: (plan: AutoPlan, extras: { confirmedInputs: string[]; sharedSkillIds: string[] }) => void;
 }
 
-export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props) {
+export function AutoArrange({ employees, skills, busy, onChooseFolder, onOpenSettings, onStart }: Props) {
   const [goal, setGoal] = useState('');
+  const [materials, setMaterials] = useState<string[]>([]);
+  const [skillIds, setSkillIds] = useState<string[]>([]);
   const [plan, setPlan] = useState<AutoPlan | null>(null);
-  const [stage, setStage] = useState<AutoArrangeStage>('input');
+  const [phase, setPhase] = useState<Phase>('input');
   /** 第一拍：已经出现了几行判断。 */
   const [thought, setThought] = useState(0);
   /** 第二拍：正在扫哪一张卡；已经出结果的有几张。 */
@@ -63,24 +67,24 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
   const [resolved, setResolved] = useState(0);
   /** 第三拍：落选的是否已经开始收掉。 */
   const [gathered, setGathered] = useState(false);
-  /** 第四拍：方案里已经出现了几个元素（1 是工作目标，之后每一步占连线和卡片两个）。 */
+  /** 第四拍：流程里已经出现了几个元素（1 是工作目标，之后每一步占连线 + 卡片两个）。 */
   const [rows, setRows] = useState(0);
   const reduced = usePrefersReducedMotion();
   const beat = reduced ? 0.3 : 1;
 
   useEffect(() => {
-    if (stage !== 'analyzing') return;
+    if (phase !== 'analyzing') return;
     const timers: number[] = [];
     const at = (ms: number, run: () => void) => timers.push(window.setTimeout(run, ms * beat));
     at(60, () => setThought(1));
     at(440, () => setThought(2));
     at(820, () => setThought(3));
-    at(1520, () => setStage('matching'));
+    at(1520, () => setPhase('matching'));
     return () => timers.forEach(window.clearTimeout);
-  }, [stage, beat]);
+  }, [phase, beat]);
 
   useEffect(() => {
-    if (stage !== 'matching' || !plan) return;
+    if (phase !== 'matching' || !plan) return;
     const timers: number[] = [];
     const at = (ms: number, run: () => void) => timers.push(window.setTimeout(run, ms * beat));
     // 一张一张来：先亮起「匹配中」，400ms 后出结果。用户能感觉到 AI 在逐个判断。
@@ -88,28 +92,28 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
       at(index * 560, () => setScan(index));
       at(index * 560 + 400, () => setResolved(index + 1));
     });
-    at(plan.pool.length * 560 + 220, () => { setScan(-1); setStage('gathering'); });
+    at(plan.pool.length * 560 + 220, () => { setScan(-1); setPhase('gathering'); });
     return () => timers.forEach(window.clearTimeout);
-  }, [stage, plan, beat]);
+  }, [phase, plan, beat]);
 
   useEffect(() => {
-    if (stage !== 'gathering') return;
+    if (phase !== 'gathering') return;
     setGathered(true);
-    const timer = window.setTimeout(() => setStage('arranging'), 720 * beat);
+    const timer = window.setTimeout(() => setPhase('flowing'), 720 * beat);
     return () => window.clearTimeout(timer);
-  }, [stage, beat]);
+  }, [phase, beat]);
 
   useEffect(() => {
-    if (stage !== 'arranging' || !plan) return;
+    if (phase !== 'flowing' || !plan) return;
     const total = 1 + plan.stages.length * 2;
     setRows(1);
     const timers: number[] = [];
     for (let index = 2; index <= total; index += 1) {
       timers.push(window.setTimeout(() => setRows(index), (index - 1) * 380 * beat));
     }
-    timers.push(window.setTimeout(() => setStage('done'), ((total - 1) * 380 + 360) * beat));
+    timers.push(window.setTimeout(() => setPhase('done'), ((total - 1) * 380 + 360) * beat));
     return () => timers.forEach(window.clearTimeout);
-  }, [stage, plan, beat]);
+  }, [phase, plan, beat]);
 
   const begin = () => {
     const next = planAutoArrange(goal, employees);
@@ -120,21 +124,31 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
     setResolved(0);
     setGathered(false);
     setRows(0);
-    setStage('analyzing');
+    setPhase('analyzing');
   };
 
   const restart = () => {
-    setStage('input');
+    setPhase('input');
     setPlan(null);
   };
 
-  if (stage === 'input' || !plan) {
+  if (phase === 'input' || !plan) {
     return (
       <section className="ent-arr-auto">
+        <header className="ent-arr-head">
+          <h1>自动编排</h1>
+          <p>告诉系统你想完成什么，AI 会自动选择员工并安排工作。</p>
+        </header>
         <GoalComposer
           value={goal}
           onChange={setGoal}
           placeholder="例如：帮我分析618活动的数据，并生成一份完整的复盘报告。"
+          materials={materials}
+          onMaterials={setMaterials}
+          skills={skills}
+          skillIds={skillIds}
+          onSkillIds={setSkillIds}
+          onChooseFolder={onChooseFolder}
           submitLabel="开始编排"
           submitDisabled={!goal.trim() || !employees.length}
           onSubmit={begin}
@@ -146,7 +160,7 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
     );
   }
 
-  const at = stripAt(stage);
+  const at = stripAt(phase);
   const count = plan.stages.length;
 
   return (
@@ -162,13 +176,13 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
 
       <header className="ent-aa-head">
         <h1>
-          {stage === 'done' ? <span className="ent-aa-ok" aria-hidden><Check size={12} /></span> : null}
-          {TITLES[stage]}
+          {phase === 'done' ? <span className="ent-aa-ok" aria-hidden><Check size={12} /></span> : null}
+          {TITLES[phase]}
         </h1>
-        {stage === 'done' ? <p>已为你的任务安排 {count} 名员工，并拆分为 {count} 个工作阶段。</p> : null}
+        {phase === 'done' ? <p>已为你的任务安排 {count} 名员工，并拆分为 {count} 个工作阶段。</p> : null}
       </header>
 
-      {stage === 'analyzing' ? (
+      {phase === 'analyzing' ? (
         <ul className="ent-aa-think">
           {THINKING.map((line, index) => (
             <li key={line} className={index < thought ? 'in' : undefined}>
@@ -179,7 +193,7 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
         </ul>
       ) : null}
 
-      {stage === 'matching' || stage === 'gathering' ? (
+      {phase === 'matching' || phase === 'gathering' ? (
         <div className={`ent-aa-pool${gathered ? ' gathered' : ''}`}>
           {plan.pool.map((entry, index) => {
             const out = index < resolved;
@@ -207,8 +221,8 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
         </div>
       ) : null}
 
-      {stage === 'arranging' || stage === 'done' ? (
-        <div className="ent-aa-plan">
+      {phase === 'flowing' || phase === 'done' ? (
+        <div className="ent-aa-flow">
           <article className={`ent-aa-goalnode${rows >= 1 ? ' in' : ''}`}>
             <span>工作目标</span>
             <p>{plan.title}</p>
@@ -216,13 +230,13 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
           {plan.stages.map((stage, index) => (
             <Fragment key={stage.step.id}>
               <Link shown={rows >= 2 + index * 2} />
-              <ArrangementCard shown={rows >= 3 + index * 2} no={index + 1} stage={stage} />
+              <FlowCard shown={rows >= 3 + index * 2} no={index + 1} stage={stage} />
             </Fragment>
           ))}
         </div>
       ) : null}
 
-      {stage === 'done' ? (
+      {phase === 'done' ? (
         <footer className="ent-arr-foot">
           <button type="button" className="ent-arr-second" onClick={restart}>重新编排</button>
           <span className="ent-arr-gap" />
@@ -234,7 +248,7 @@ export function AutoArrange({ employees, busy, onOpenSettings, onStart }: Props)
             type="button"
             className="ent-arr-primary"
             disabled={busy}
-            onClick={() => onStart(plan)}
+            onClick={() => onStart(plan, { confirmedInputs: materials, sharedSkillIds: skillIds })}
           >
             {busy ? '正在安排…' : '确认并开始工作'}
             <ArrowRight size={15} aria-hidden />
@@ -256,21 +270,19 @@ function Link({ shown }: { shown: boolean }) {
 }
 
 /** 最终流程里的一张卡：第几步、谁做、做什么、怎么做。 */
-function ArrangementCard({ shown, no, stage }: { shown: boolean; no: number; stage: AutoStage }) {
+function FlowCard({ shown, no, stage }: { shown: boolean; no: number; stage: AutoStage }) {
   return (
-    <article className={`ent-arrangement-card${shown ? ' in' : ''}`}>
-      <span className="ent-arrangement-card-no" aria-hidden>{String(no).padStart(2, '0')}</span>
-      <div className="ent-arrangement-card-body">
-        <span className="ent-arrangement-card-who">
+    <article className={`ent-flowcard${shown ? ' in' : ''}`}>
+      <span className="ent-flowcard-no" aria-hidden>{String(no).padStart(2, '0')}</span>
+      <div className="ent-flowcard-body">
+        <span className="ent-flowcard-who">
           <EmployeeFace seed={stage.employee.id} size="sm" round />
           <strong>{stage.employee.name}</strong>
           <small>{stage.employee.roleName}</small>
         </span>
-        <strong className="ent-arrangement-card-stage">{stage.stage}</strong>
+        <strong className="ent-flowcard-stage">{stage.stage}</strong>
         <p>{stage.step.title}</p>
       </div>
     </article>
   );
 }
-
-

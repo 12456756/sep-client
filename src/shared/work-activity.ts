@@ -82,7 +82,7 @@ export function applyRuntimeEvent(current: WorkActivity[], event: TaskExecutionE
     }))
   }
 
-  if (event.type === 'arrangement_node_started') {
+  if (event.type === 'workflow_node_started') {
     return append(current, {
       id: activityId,
       runId: event.runId,
@@ -92,11 +92,11 @@ export function applyRuntimeEvent(current: WorkActivity[], event: TaskExecutionE
     })
   }
 
-  if (event.type === 'arrangement_node_completed' || event.type === 'arrangement_node_failed') {
-    const state: WorkActivityState = event.type === 'arrangement_node_failed' ? 'failed' : 'completed'
+  if (event.type === 'workflow_node_completed' || event.type === 'workflow_node_failed') {
+    const state: WorkActivityState = event.type === 'workflow_node_failed' ? 'failed' : 'completed'
     return updateById(current, activityId, activity => ({
       ...activity,
-      text: event.type === 'arrangement_node_failed'
+      text: event.type === 'workflow_node_failed'
         ? '当前步骤执行失败'
         : `已完成：${safeLabel(stringValue(data.title) ?? nodeId ?? '当前步骤')}`,
       state,
@@ -104,11 +104,11 @@ export function applyRuntimeEvent(current: WorkActivity[], event: TaskExecutionE
     }))
   }
 
-  if (event.type === 'arrangement_state_changed') {
+  if (event.type === 'workflow_state_changed') {
     return append(current, {
       id: activityId,
       runId: event.runId,
-      text: '安排状态已更新',
+      text: '工作流程状态已更新',
       state: 'running',
       startedAt: at,
     })
@@ -191,5 +191,3 @@ function safeLabel(value: string): string {
 function safeError(value: string | undefined): string {
   return value ? safeLabel(value) : '请查看工作记录'
 }
-
-

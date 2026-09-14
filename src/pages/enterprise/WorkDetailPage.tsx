@@ -143,7 +143,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             </div>
             <div>
               <dt>工作类型</dt>
-              <dd>{work.kind === 'arrangement' ? '编排工作' : '对话工作'}</dd>
+              <dd>{work.kind === 'flow' ? '流程工作' : '对话工作'}</dd>
             </div>
             <div>
               <dt>开始时间</dt>
@@ -246,16 +246,16 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
  * 已终止的工作也在这里给「重新执行」：抬头那颗主按钮改成按工作类型给之后，
  * 它不再是「重新执行」，不放在这里就没地方重开一项已经终止的工作。
  *
- * 编排工作多给一颗「补充说明」：确认是「就这样，继续」，但有时候你要说的是
+ * 流程工作多给一颗「补充说明」：确认是「就这样，继续」，但有时候你要说的是
  * 「这里改一下再继续」，那就得开对话。对话式工作不给 —— 它抬头上那颗主按钮
  * 本来就是「继续对话」。
  */
 function NeedsYou({ work, workspace, onTalk }: { work: WorkItem; workspace: EnterpriseWorkspace; onTalk: () => void }) {
-  const talkable = work.kind === 'arrangement';
+  const talkable = work.kind === 'flow';
 
   if (work.status === 'waiting-user') {
     return (
-      <div className="ent-arrangement-action">
+      <div className="ent-flow-act">
         <AlertTriangle size={16} aria-hidden />
         <p>现在需要你：{work.nextUserAction ?? '看一下结果再决定怎么继续'}</p>
         {talkable ? (
@@ -274,7 +274,7 @@ function NeedsYou({ work, workspace, onTalk }: { work: WorkItem; workspace: Ente
 
   if (work.status === 'failed') {
     return (
-      <div className="ent-arrangement-action danger">
+      <div className="ent-flow-act danger">
         <XCircle size={16} aria-hidden />
         <p>{work.stopReason ? `中断原因：${work.stopReason}` : work.nextUserAction ?? '这项工作中断了，看一下再决定怎么继续'}</p>
         {talkable ? (
@@ -293,7 +293,7 @@ function NeedsYou({ work, workspace, onTalk }: { work: WorkItem; workspace: Ente
 
   if (work.status === 'paused') {
     return (
-      <div className="ent-arrangement-action quiet">
+      <div className="ent-flow-act quiet">
         <StopCircle size={16} aria-hidden />
         <p>这项工作已终止{work.stopReason ? `：${work.stopReason}` : ''}。已完成的动作和已产出的文件都还留着。</p>
         <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
@@ -562,5 +562,3 @@ function kindOf(name: string): string {
   const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
   return KIND[ext] ?? 'other';
 }
-
-

@@ -18,5 +18,3 @@ ReactDOM.createRoot(root).render(
     {previewRequested ? <WorkspacePreviewPage /> : <App />}
   </React.StrictMode>,
 );
-
-

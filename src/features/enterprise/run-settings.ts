@@ -1,27 +1,36 @@
-/** 工作级执行设置。权限范围与高风险动作确认策略分别配置。 */
-export type RunPermissionId = 'read-only' | 'workspace-edit' | 'full-local';
-export type ModelSelectionStrategy = 'per-employee' | 'same-model';
+/**
+ * 一项工作的执行设置：在哪做、用哪个模型、允许员工做什么。
+ *
+ * 这三样都不放在第一视觉层 —— 见「执行设置」抽屉。默认刻意保守：
+ * 只有「文件读取」开着，写入、联网、执行命令一律要用户自己打开，
+ * 和 placeholder.ts 里 defaultPermissions() 的默认一致。
+ *
+ * 这里只是用户的意愿表达，真正的拦截仍然在 pi-extension/guard.ts：
+ * 即使打开了「文件写入」，每次改写前 SDK 钩子还会单独问一次。
+ */
+
+export type RunPermissionId = 'read-files' | 'write-files' | 'browser' | 'shell';
 
 export interface RunSettings {
-  /** 留空由主进程准备默认工作目录。 */
+  /** 空表示用默认工作目录，由主进程准备。 */
   workDir: string;
-  /** 用户明确选择的模型；留空不能启动对话。 */
+  /** 空表示用企业指定的模型。 */
   model: string;
-  /** 自动编排时如何为参与员工选择允许的模型。 */
-  modelStrategy: ModelSelectionStrategy;
-  permissionPreset: RunPermissionId;
-  /** 仅跳过权限范围内的高风险动作确认，不扩大权限范围。 */
-  allowWithoutApproval: boolean;
+  permissions: Record<RunPermissionId, boolean>;
 }
 
+/** 抽屉里那四行开关。顺序按「影响范围从小到大」排。 */
 export const RUN_PERMISSIONS: { id: RunPermissionId; label: string; hint: string }[] = [
-  { id: 'read-only', label: '仅查看资料', hint: '读取和搜索资料，不允许写入文件或执行命令' },
-  { id: 'workspace-edit', label: '编辑工作目录', hint: '可以在工作目录内新建和修改文件' },
-  { id: 'full-local', label: '完整本机操作', hint: '允许本机文件操作与命令执行，影响范围更大' },
+  { id: 'read-files', label: '文件读取', hint: '读取工作目录里的资料' },
+  { id: 'write-files', label: '文件写入', hint: '在工作目录里新建和改写文件，每次改写前仍会问你一次' },
+  { id: 'browser', label: '网络访问', hint: '打开网页查资料' },
+  { id: 'shell', label: '执行命令', hint: '运行系统命令，影响范围可能超出工作目录' },
 ];
 
 export function defaultRunSettings(): RunSettings {
-  return { workDir: '', model: '', modelStrategy: 'per-employee', permissionPreset: 'read-only', allowWithoutApproval: false };
+  return {
+    workDir: '',
+    model: '',
+    permissions: { 'read-files': true, 'write-files': false, browser: false, shell: false },
+  };
 }
-
-

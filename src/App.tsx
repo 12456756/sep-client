@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { LoginPage } from './pages/LoginPage';
 import { ClientAppPage } from './pages/ClientAppPage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
-import type { Subscription, RememberedAccount } from './shared/types';
+import type { EmployeeInstanceSnapshot, RememberedAccount } from './shared/types';
 
 interface AuthState {
   user: { id: string; email: string; name: string };
@@ -19,7 +19,7 @@ const INSTANCE_LOAD_TIMEOUT_MS = 3_000;
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState | null>(null);
-  const [instances, setInstances] = useState<Subscription[]>([]);
+  const [instances, setInstances] = useState<EmployeeInstanceSnapshot[]>([]);
   const [toolApprovalRequest, setToolApprovalRequest] = useState<ToolApprovalRequest | null>(null);
   const [restoringAuth, setRestoringAuth] = useState(true);
   const [rememberedAccounts, setRememberedAccounts] = useState<RememberedAccount[]>([]);
@@ -54,7 +54,7 @@ export default function App() {
     const timeout = new Promise<never>((_resolve, reject) => {
       timeoutId = setTimeout(() => reject(new Error('加载员工团队超时，请稍后重试。')), INSTANCE_LOAD_TIMEOUT_MS);
     });
-    void Promise.race([window.electronAPI.getSubscriptions(), timeout]).then(result => {
+    void Promise.race([window.electronAPI.getInstances(), timeout]).then(result => {
       if (!active) return;
       if (!result.success || !result.data?.length) {
         setInstanceError(result.error?.message || '当前账号没有可用的硅基员工实例。');
@@ -100,4 +100,3 @@ export default function App() {
     <ToolApprovalDialog request={toolApprovalRequest} onApprove={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true }); setToolApprovalRequest(null); }} onDeny={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' }); setToolApprovalRequest(null); }} />
   </>;
 }
-

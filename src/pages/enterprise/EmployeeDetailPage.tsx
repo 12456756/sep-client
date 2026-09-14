@@ -3,7 +3,7 @@
  * 「使用范围」就是本机操作权限，由用户自己开启，开启时提醒。
  */
 
-import { ArrowLeft, GitBranch, MessageSquareText, Send, SlidersHorizontal, XCircle } from 'lucide-react';
+import { ArrowLeft, MessageSquareText, Send, SlidersHorizontal, Workflow, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { PermissionPanel } from '../../components/enterprise/PermissionPanel';
 import { AvailabilityChip, Empty, SkillStateChip } from '../../components/enterprise/atoms';
@@ -40,7 +40,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
         <EmployeeFace seed={employee.id} size="lg" />
         <div className="ent-detail-id">
           {/* 名字在顶栏（见 ClientAppPage），这张卡只补它的身份与状态。 */}
-          <p>{employee.roleName} · 员工包 {employee.version}</p>
+          <p>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''} · 员工包 {employee.version}</p>
           <div className="ent-detail-chips">
             <AvailabilityChip value={employee.availability} />
             <span className="ent-tag">上次工作 {relativeTime(employee.lastWorkedAt)}</span>
@@ -53,7 +53,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
             开始对话
           </button>
           <button type="button" className="ent-btn" onClick={() => workspace.navigate({ name: 'arrange', mode: 'chat', employeeId: employee.id })} disabled={!employee.assignedToMe}>
-            <GitBranch size={14} aria-hidden />
+            <Workflow size={14} aria-hidden />
             安排工作
           </button>
           <button type="button" className="ent-btn ghost" onClick={() => workspace.navigate({ name: 'skills' })}>
@@ -145,5 +145,3 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
     </div>
   );
 }
-
-

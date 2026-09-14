@@ -155,7 +155,8 @@ export function WorkPlanDrawer({ work, workspace, onClose }: Props) {
 }
 
 /**
- * 表单初值。没有步骤明细的历史工作按当前负责人生成一行，保证表单仍可编辑。
+ * 表单初值。旧版流程工作（[SEP_WORKFLOW_TASK]）没有留下步骤明细，
+ * 这时按「一位员工一个步骤」给一行 —— 否则表单是空的，也没法提交。
  */
 function seed(work: WorkItem): Row[] {
   if (work.steps.length) {
@@ -175,5 +176,3 @@ function seed(work: WorkItem): Row[] {
     output: '',
   }];
 }
-
-

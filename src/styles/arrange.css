@@ -190,9 +190,9 @@
 .ent-aa-card.passed { opacity: .35; }
 .ent-aa-card.gone { width: 0; margin-right: 0; margin-left: 0; padding-right: 0; padding-left: 0; border-width: 0; opacity: 0; }
 
-/* ── 自动编排：生成安排方案 ───────────────────────────────────────────── */
+/* ── 自动编排：生成流程 ──────────────────────────────────────────────── */
 
-.ent-aa-plan { display: flex; flex-direction: column; align-items: center; margin: 8px 0 0; }
+.ent-aa-flow { display: flex; flex-direction: column; align-items: center; margin: 8px 0 0; }
 
 /* 链条顶上的工作目标。它不是一位员工，所以底色浅一档、没有序号。 */
 .ent-aa-goalnode { display: flex; width: min(520px, 100%); flex-direction: column; gap: 4px; padding: 12px 16px; border: 1px dashed var(--arr-card-hover); border-radius: 12px; background: var(--ent-brand-softer); opacity: 0; transform: translateY(6px); transition: opacity 300ms ease-out, transform 300ms ease-out; }
@@ -212,21 +212,21 @@
 @keyframes arr-tip { to { opacity: 1; } }
 
 /* 最终流程卡。序号在左，员工、工作名称、工作描述在右，一共三行，不做高。 */
-.ent-arrangement-card { display: grid; width: min(520px, 100%); grid-template-columns: 34px minmax(0, 1fr); gap: 2px 4px; padding: 13px 16px 14px; border: 1px solid var(--arr-card-line); border-radius: 12px; background: var(--ent-panel); box-shadow: var(--arr-shadow); opacity: 0; transform: translateY(6px); transition: opacity 300ms ease-out, transform 300ms ease-out; }
-.ent-arrangement-card.in { opacity: 1; transform: none; }
-.ent-arrangement-card-no { color: var(--ent-ink-3); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.ent-arrangement-card-body { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
-.ent-arrangement-card-who { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
-.ent-arrangement-card-who strong { color: var(--ent-ink); font-size: 14px; font-weight: 600; }
-.ent-arrangement-card-who small { overflow: hidden; color: var(--ent-ink-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.ent-arrangement-card-stage { color: var(--ent-brand-ink); font-size: 13px; font-weight: 600; }
-.ent-arrangement-card p { margin: 0; color: var(--arr-desc); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ent-flowcard { display: grid; width: min(520px, 100%); grid-template-columns: 34px minmax(0, 1fr); gap: 2px 4px; padding: 13px 16px 14px; border: 1px solid var(--arr-card-line); border-radius: 12px; background: var(--ent-panel); box-shadow: var(--arr-shadow); opacity: 0; transform: translateY(6px); transition: opacity 300ms ease-out, transform 300ms ease-out; }
+.ent-flowcard.in { opacity: 1; transform: none; }
+.ent-flowcard-no { color: var(--ent-ink-3); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.ent-flowcard-body { display: flex; min-width: 0; flex-direction: column; gap: 5px; }
+.ent-flowcard-who { display: inline-flex; align-items: center; gap: 7px; min-width: 0; }
+.ent-flowcard-who strong { color: var(--ent-ink); font-size: 14px; font-weight: 600; }
+.ent-flowcard-who small { overflow: hidden; color: var(--ent-ink-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.ent-flowcard-stage { color: var(--ent-brand-ink); font-size: 13px; font-weight: 600; }
+.ent-flowcard p { margin: 0; color: var(--arr-desc); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 
 /* ── 自己编排 ────────────────────────────────────────────────────────── */
 
-/* 左边安排方案约 60%，右边当前步骤配置约 40%，中间一条极浅的线。 */
+/* 左边工作流程约 60%，右边当前节点配置约 40%，中间一条极浅的线。 */
 .ent-mn { display: grid; grid-template-columns: minmax(0, 6fr) minmax(0, 4fr); align-items: start; }
-.ent-mn-plan { display: flex; min-width: 0; flex-direction: column; gap: 22px; padding: 0 30px 8px 0; }
+.ent-mn-flow { display: flex; min-width: 0; flex-direction: column; gap: 22px; padding: 0 30px 8px 0; }
 .ent-mn-side { display: flex; min-width: 0; flex-direction: column; gap: 16px; padding: 0 0 8px 30px; border-left: 1px solid var(--ent-line-soft); }
 
 .ent-mn-goal { width: min(420px, 100%); padding: 10px 14px; border: 1px solid var(--arr-input-line); border-radius: 8px; background: var(--ent-panel); color: var(--arr-input-ink); font-family: inherit; font-size: 14px; transition: border-color 180ms var(--arr-ease), box-shadow 180ms var(--arr-ease); }
@@ -395,7 +395,7 @@ select.ent-rs-input { cursor: pointer; }
 @media (max-width: 1024px) {
   .ent-arr-modes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .ent-mn { grid-template-columns: minmax(0, 1fr); }
-  .ent-mn-plan { padding-right: 0; }
+  .ent-mn-flow { padding-right: 0; }
   .ent-mn-side { margin-top: 22px; padding-top: 22px; padding-left: 0; border-top: 1px solid var(--ent-line-soft); border-left: 0; }
 }
 
@@ -433,23 +433,8 @@ select.ent-rs-input { cursor: pointer; }
   .ent-rs-input, .ent-rs-pick, .ent-rs-close, .ent-toggle i, .ent-toggle i::after { transition: none; }
   .ent-mode:hover, .ent-mode:hover .ent-mode-cta svg,
   .ent-aa-card.picked, .ent-mn-item.dragging .ent-mn-node { transform: none; }
-  .ent-aa-card, .ent-aa-goalnode, .ent-arrangement-card { transform: none; transition: opacity 200ms linear, border-color 200ms linear, background 200ms linear, width 240ms linear, margin 240ms linear, padding 240ms linear; }
+  .ent-aa-card, .ent-aa-goalnode, .ent-flowcard { transform: none; transition: opacity 200ms linear, border-color 200ms linear, background 200ms linear, width 240ms linear, margin 240ms linear, padding 240ms linear; }
   .ent-aa-link path { stroke-dasharray: none; stroke-dashoffset: 0; }
   .ent-aa-link .ent-aa-link-tip { opacity: 1; }
 }
 
-
-
-/* 对话式页面使用独立的居中阅读列。 */
-.ent-arr-view:has(.ent-arr-chat) { display: flex; flex-direction: column; align-items: center; }
-.ent-arr-view:has(.ent-arr-chat) > .ent-arr-back { align-self: flex-start; width: min(780px, 100%); }
-.ent-arr-chat { margin-inline: auto; }
-.ent-rs-presets { display: flex; flex-direction: column; gap: 8px; }
-.ent-rs-preset { display: flex; align-items: flex-start; gap: 10px; padding: 10px; border: 1px solid var(--ent-line); border-radius: 8px; cursor: pointer; }
-.ent-rs-preset.on { border-color: var(--ent-brand); background: var(--ent-brand-softer); }
-.ent-rs-preset input { margin-top: 3px; accent-color: var(--ent-brand); }
-.ent-rs-preset span, .ent-rs-danger-option span { display: flex; flex-direction: column; gap: 2px; }
-.ent-rs-preset strong, .ent-rs-danger-option strong { color: var(--ent-ink); font-size: 13px; }
-.ent-rs-preset small, .ent-rs-danger-option small { color: var(--ent-ink-3); font-size: 12px; line-height: 1.5; }
-.ent-rs-danger-option { display: flex; gap: 9px; margin-top: 14px; padding: 12px; border: 1px solid var(--ent-attention); border-radius: 8px; cursor: pointer; }
-.ent-rs-danger-option input { margin-top: 3px; accent-color: var(--ent-attention); }

@@ -192,5 +192,3 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
     </div>
   );
 }
-
-

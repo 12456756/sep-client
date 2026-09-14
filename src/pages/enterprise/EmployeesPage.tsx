@@ -1,5 +1,5 @@
 /**
- * 硅基员工列表。默认展示企业全貌，可按职能和可用状态筛选。
+ * 硅基员工列表。默认展示企业全貌，可按职能、可用状态、部门筛选。
  * 员工较多时切换成紧凑列表，便于快速找人。
  */
 
@@ -27,21 +27,24 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
   const [search, setSearch] = useState('');
   const [scope, setScope] = useState<'mine' | 'all'>(initialScope ?? 'mine');
   const [role, setRole] = useState('');
+  const [department, setDepartment] = useState('');
   const [availability, setAvailability] = useState<'' | EmployeeAvailability>('');
   const [dense, setDense] = useState(false);
 
   const roles = useMemo(() => [...new Set(employees.map(item => item.roleName))].sort(), [employees]);
+  const departments = useMemo(() => [...new Set(employees.map(item => item.department).filter((item): item is string => Boolean(item)))].sort(), [employees]);
 
   const list = useMemo(() => {
     const term = search.trim().toLowerCase();
     return employees.filter(employee => {
       if (scope === 'mine' && !employee.assignedToMe) return false;
       if (role && employee.roleName !== role) return false;
+      if (department && employee.department !== department) return false;
       if (availability && employee.availability !== availability) return false;
       if (!term) return true;
-      return [employee.name, employee.roleName, ...employee.goodAt].some(field => field.toLowerCase().includes(term));
+      return [employee.name, employee.roleName, employee.department ?? '', ...employee.goodAt].some(field => field.toLowerCase().includes(term));
     });
-  }, [employees, scope, role, availability, search]);
+  }, [employees, scope, role, department, availability, search]);
 
   const open = (employeeId: string) => workspace.navigate({ name: 'employee', employeeId });
 
@@ -62,6 +65,10 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
         <select className="ent-select auto" value={role} onChange={event => setRole(event.target.value)} aria-label="按职能筛选">
           <option value="">全部职能</option>
           {roles.map(item => <option key={item} value={item}>{item}</option>)}
+        </select>
+        <select className="ent-select auto" value={department} onChange={event => setDepartment(event.target.value)} aria-label="按部门筛选">
+          <option value="">全部部门</option>
+          {departments.map(item => <option key={item} value={item}>{item}</option>)}
         </select>
         <select className="ent-select auto" value={availability} onChange={event => setAvailability(event.target.value as '' | EmployeeAvailability)} aria-label="按可用状态筛选">
           <option value="">全部状态</option>
@@ -110,5 +117,3 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
     </div>
   );
 }
-
-

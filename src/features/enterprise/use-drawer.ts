@@ -47,5 +47,3 @@ export function useDrawer(onClose: () => void): RefObject<HTMLElement> {
 
   return panel;
 }
-
-

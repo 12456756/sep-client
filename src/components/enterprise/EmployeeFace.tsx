@@ -80,5 +80,3 @@ export function EmployeeFace({ seed, size = 'md', round = false, className }: Pr
     />
   );
 }
-
-
