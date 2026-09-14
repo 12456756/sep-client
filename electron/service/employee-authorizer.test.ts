@@ -1,7 +1,7 @@
 /**
  * 员工授权的回归测试。
  *
- * C10 —— 身份变化必须丢掉平台目录的 TTL 缓存。Phase 1 的 C4 给
+ * 身份变化必须丢掉平台目录的 TTL 缓存。授权缓存与运行时准入共同依赖这一约束。
  * `GET /client/subscriptions` 加了 15 秒缓存，但只有"认证失效"这一条路径会丢掉它；
  * 登录与登出没丢。缓存不按身份分键，于是"登出后 15 秒内换账号登录"会读到
  * 上一个账号的订阅列表。
@@ -11,7 +11,7 @@
  */
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import type { EmployeeInstanceSnapshot } from '../../src/shared/types'
+import type { Subscription } from '../../src/shared/types'
 import { EmployeeDirectory } from './employee-directory'
 import {
   EmployeeAuthorizer,
@@ -21,15 +21,18 @@ import {
 
 const GATEWAY = 'http://gateway.test'
 
-function subscription(id: string, modelId = 'sep-employee'): EmployeeInstanceSnapshot {
+function subscription(id: string, modelId = 'sep-employee'): Subscription {
   return {
     id,
+    subscriptionId: id,
+    employeeId: `template-`, 
     name: `employee-${id}`,
     status: 'ACTIVE',
     templateVersion: '1.0.0',
     template: { id: `template-${id}`, name: `template-${id}`, avatar: null },
-    department: null,
     allowedModels: [modelId],
+    department: null,
+    upgradeAvailable: false,
   }
 }
 
@@ -116,3 +119,6 @@ describe('C10 — 身份变化丢弃平台目录缓存', () => {
     assert.equal(skills.prepared(), 0, '未授权的订阅不该触发技能包下载')
   })
 })
+
+
+

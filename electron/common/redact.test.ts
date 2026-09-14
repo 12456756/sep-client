@@ -71,3 +71,4 @@ describe('describeError', () => {
     assert.equal(describeError(42), '42')
   })
 })
+

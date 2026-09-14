@@ -41,7 +41,7 @@ function event(taskId: string, runId: string, type: string): TaskExecutionEvent 
 const temporaryDirectories: string[] = []
 
 async function makeDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), 'sep-client-coordinator-'))
+  const directory = await mkdtemp(join(tmpdir(), 'sep-client-runtime-parts-'))
   temporaryDirectories.push(directory)
   return directory
 }
@@ -309,3 +309,4 @@ describe('EventPipeline', () => {
     assert.deepEqual(pipeline.pendingSideEffects('run-a'), [])
   })
 })
+

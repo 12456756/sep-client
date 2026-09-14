@@ -2,7 +2,7 @@
  * 原子写与恢复语义的回归测试。
  *
  * 方案要求归并三套原子写时**保留 task-store 的 `.bak` + quarantine 语义为默认行为**
- * （第 6 章 / Phase 7）。归并最容易丢的就是这两条，所以逐条钉住。
+ * 这些行为是数据层所有 JSON 存储共同依赖的持久化约束。
  */
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
@@ -111,3 +111,4 @@ describe('readJsonWithBackup', () => {
     assert.equal((await readdir(dir)).filter(name => name.includes('.corrupt-backup-')).length, 1)
   })
 })
+

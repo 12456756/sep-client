@@ -56,3 +56,4 @@ describe('SharedPiSession', () => {
     assert.equal(sessions[1].disposed, 1)
   })
 })
+

@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { EmployeeDirectory } from './employee-directory'
-import type { ClientInstance } from '../common/platform/platform-api'
+import type { Subscription } from '../common/platform/platform-api'
 
-function instance(id: string, status: string): ClientInstance {
-  return { id, status, template: { id: `${id}-template` }, templateVersion: '1.0.0', allowedModels: ['model-a'] } as unknown as ClientInstance
+function instance(id: string, status: string): Subscription {
+  return { id, status, template: { id: `${id}-template` }, templateVersion: '1.0.0', allowedModels: ['model-a'] } as unknown as Subscription
 }
 
 describe('EmployeeDirectory', () => {

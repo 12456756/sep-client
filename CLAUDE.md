@@ -55,8 +55,8 @@ Do not skip it after touching `electron/main.ts` or anything under `electron/pi/
 
 The `electron/` tree is layered by responsibility, not by origin. **This is the structure from
 `docs/architecture/后端结构重构实施方案.md` §3.2**, which is complete — all 8 phases landed, and
-after Phase 8 a naming pass replaced the jargon-heavy file names with plain ones. Put new code
-where this tree says it belongs, not where similar code happens to sit today.
+The current tree is organized around conversations and arrangements. Put new code where this
+tree says it belongs, not where a superseded design document happens to place it.
 
 Dependencies flow one way. `runtime/` is the only layer allowed to reach `pi/sdk/`:
 
@@ -94,12 +94,12 @@ sep-client/
 │   │   ├── router.ts            table-driven registration + zod + one catch
 │   │   ├── request-context.ts   RequestContext: scope + service handles
 │   │   └── routes/              33 routes split by domain — auth, task,
-│   │                            conversation, workflow, system (+ index.ts)
+│   │                            conversation, arrangement, system (+ index.ts)
 │   ├── service/                 use cases + authorization. Touches no Pi object,
 │   │   │                        sends no IPC, builds no file paths
 │   │   ├── task-service.ts
 │   │   ├── conversation-service.ts
-│   │   ├── workflow-service.ts
+│   │   ├── arrangement-service.ts
 │   │   ├── employee-directory.ts     the only platform-directory read point
 │   │   ├── employee-authorizer.ts    pure: directory snapshot in, result out
 │   │   └── scope-guard.ts            the only scope check
@@ -112,13 +112,15 @@ sep-client/
 │   │   ├── task-event-store.ts       event log + in-memory sequence cursor
 │   │   ├── task-messages.ts          message projection (pure, no fs)
 │   │   ├── task-metadata-store.ts
-│   │   └── workflow-store.ts
+│   │   └── work-plan-store.ts
 │   ├── domain/                  pure logic, zero IO
 │   │   ├── task-state-machine.ts
-│   │   ├── workflow-graph.ts
+│   │   ├── arrangement-plan.ts
 │   │   └── conversation-context.ts
 │   ├── runtime/                 execution and scheduling; does not know IPC exists
-│   │   ├── task-execution-coordinator.ts  the orchestrator — 8 public methods, pinned
+│   │   ├── task-runtime.ts         admission, event routing and lifecycle controls
+│   │   ├── conversation-executor.ts       shared-context conversation execution
+│   │   ├── arrangement-executor.ts       dependency-aware arrangement execution
 │   │   ├── task-manager.ts      admission + state-machine execution
 │   │   ├── run-types.ts         shared vocabulary (zero-dependency type module)
 │   │   ├── run-queue.ts         runId-addressed admission queue
@@ -325,7 +327,7 @@ this is already set; do not remove it.
 ## Git commits
 
 ```
-feat(coordinator): add auto-reconnect on session drop
+feat(runtime): add auto-reconnect on session drop
 fix(guard): increase approval timeout to 60 s
 chore(poc): document API corrections in AGENTS.md
 ```
@@ -342,13 +344,13 @@ Do not bump these without a dedicated discussion and a full PoC re-run. Every sc
 
 - `pi-coding-agent@0.83.0` bundles `undici@8.5.0`, which expects Node `>=22.19.0`; Electron 33 uses Node 20.
 - Keep `import './common/undici-polyfill'` as the **first** import in `electron/main.ts`.
-- `TaskExecutionCoordinator` may only be reached through the single dynamic import inside
-  `BackendRuntime.loadTaskCoordinator()` (`electron/bootstrap/build-backend.ts`). Everywhere
+- `TaskRuntime` may only be reached through the single dynamic import inside
+  `BackendRuntime.loadTaskRuntime()` (`electron/bootstrap/build-backend.ts`). Everywhere
   else it must be `import type`.
-- Do not statically import the coordinator or the pi SDK from anywhere reachable at startup.
+- Do not statically import the task runtime or the pi SDK from anywhere reachable at startup.
   Doing so can crash startup with `markAsUncloneable is not a function`.
 - `electron/pi/sdk/sdk-boundary.test.ts` asserts all of the above at the source level; the build
-  should still emit `task-execution-coordinator-*.js` as a separate chunk.
+  should still emit `task-runtime-*.js` as a separate chunk.
 - After changing this boundary, run `npm run typecheck`, `npm run test:tasks`, `npm run build`, and all four `poc:*` scripts.
 
 ## Frontend UI reference and integration rules

@@ -20,10 +20,10 @@ describe('logger', () => {
   it('tags records with the child scope chain', () => {
     capture()
     setLogLevel('debug')
-    const log = logger.child('tasks').child('coordinator')
+    const log = logger.child('tasks').child('runtime')
     log.info('run started', { runId: 'run-a' })
     assert.equal(captured.length, 1)
-    assert.equal(captured[0]?.scope, 'tasks.coordinator')
+    assert.equal(captured[0]?.scope, 'tasks.runtime')
     assert.equal(captured[0]?.message, 'run started')
     assert.deepEqual(captured[0]?.fields, { runId: 'run-a' })
   })
@@ -64,3 +64,4 @@ describe('logger', () => {
     assert.ok(captured[0]?.timestamp > 0)
   })
 })
+

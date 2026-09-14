@@ -1,18 +1,16 @@
 /**
  * electron/errors/error-mapper.ts — unknown -> IPC 信封的唯一映射点
  *
- * 之前有三份：main.ts 的 authError()、taskError()，以及两处裸对象。三份各自决定
- * 码、文案、状态码，彼此不一致（taskError 返回的 code 是宽 string，能吐出
- * TaskErrorCode 里根本没有的码）。现在只有这一份。
+ * 所有跨边界错误都在这里统一为渲染进程可识别的错误信封，避免不同入口各自决定
+ * 错误码、文案和状态码。
  *
  * 这里需要 instanceof 才能读到各错误类的字段（AuthApiError.statusCode、
- * ConversationRecoveryError.code），所以本模块显式依赖那些类。方案第 4.2 节
- * 的安排就是"错误类留在原处、翻译集中一处"，代价即此。
+ * ConversationRecoveryError.code），所以本模块显式依赖这些错误类；错误定义仍留在
+ * 各自所属层，映射逻辑集中在这里。
  */
 import { AuthApiError } from '../common/platform/platform-api'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
 import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
-import { WorkflowGraphError } from '../domain/workflow-graph'
 import {
   InvalidTaskTransitionError,
   TaskAdmissionError,
@@ -85,7 +83,6 @@ export function toEnvelope(error: unknown, context: { authenticated?: boolean } 
   }
   if (error instanceof TaskAdmissionError) return envelope('INVALID_STATE')
   if (error instanceof InvalidTaskTransitionError) return envelope('INVALID_STATE')
-  if (error instanceof WorkflowGraphError) return envelope('INVALID_ARGUMENT')
   if (error instanceof TaskScopeError) return envelope('AUTH_REQUIRED')
   if (error instanceof TaskPersistenceError) return envelope('PERSISTENCE_ERROR')
   if (error instanceof Error && SAFE_STORAGE.test(error.message)) return envelope('STORAGE_UNAVAILABLE')
@@ -154,3 +151,5 @@ export function authFailure(code: AuthError['code'], message?: string): { succes
     },
   }
 }
+
+

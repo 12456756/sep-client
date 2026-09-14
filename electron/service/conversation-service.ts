@@ -3,7 +3,7 @@
  *
  * 对话与普通任务的差别只在两件事上：多轮追加（`continue`）与中途换员工
  * （`switchEmployee`）。建任务的公共部分下沉到 `TaskService.create()`，
- * 这里只留对话专属的编排（方案 Phase 5）。
+ * 这里只保留对话专属用例。
  */
 import type { ClientTask } from '../../src/shared/types'
 import type { TaskMetadataStore } from '../data/task-metadata-store'
@@ -60,8 +60,8 @@ export class ConversationService {
   }
 
   /**
-   * 中途换员工。先让协调器换（它会校验任务状态并落 run 记录），成功后再更新元数据里的
-   * 参与者名单——顺序反过来会在协调器拒绝时留下一份对不上的元数据。
+   * 中途换员工。先让运行时切换并落 run 记录，成功后再更新元数据里的参与者名单；
+   * 顺序反过来会在运行时拒绝时留下不一致的元数据。
    */
   async switchEmployee(taskId: string, subscriptionId: string): Promise<void> {
     if (!await this.deps.employees.authorize(subscriptionId)) {
@@ -72,10 +72,15 @@ export class ConversationService {
     const scope = requireScope(this.deps.scope)
     const metadata = await this.deps.taskMetadataStore.load(scope, taskId)
     if (metadata?.kind !== 'conversation') return
-    metadata.currentSubscriptionId = subscriptionId
-    if (!metadata.participantSubscriptionIds.includes(subscriptionId)) {
-      metadata.participantSubscriptionIds.push(subscriptionId)
-    }
-    await this.deps.taskMetadataStore.save(scope, metadata)
+    const participantSubscriptionIds = metadata.participantSubscriptionIds.includes(subscriptionId)
+      ? [...metadata.participantSubscriptionIds]
+      : [...metadata.participantSubscriptionIds, subscriptionId]
+    await this.deps.taskMetadataStore.save(scope, {
+      ...metadata,
+      currentSubscriptionId: subscriptionId,
+      participantSubscriptionIds,
+    })
   }
 }
+
+

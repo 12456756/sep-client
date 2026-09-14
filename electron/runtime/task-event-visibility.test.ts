@@ -23,8 +23,8 @@ test('streams text deltas and important execution events', () => {
     ['tool_execution_end', { toolName: 'edit', toolId: 'edit-1', success: true }, 'important'],
     ['approval_requested', { requestId: 'approval-1', toolName: 'bash' }, 'important'],
     ['approval_resolved', { requestId: 'approval-1', approved: true }, 'important'],
-    ['workflow_node_started', { nodeId: 'node-1' }, 'important'],
-    ['workflow_node_completed', { nodeId: 'node-1' }, 'important'],
+    ['arrangement_node_started', { nodeId: 'node-1' }, 'important'],
+    ['arrangement_node_completed', { nodeId: 'node-1' }, 'important'],
     ['agent_end', { willRetry: false }, 'important'],
     ['session_error', { message: 'failed' }, 'important'],
   ]
@@ -49,3 +49,4 @@ test('unknown events are fail-closed and high-risk tool events remain visible', 
   assert.equal(shouldPushTaskEvent(event('tool_execution_start', { toolName: 'write', input: { path: 'a.txt' } })), true)
   assert.equal(shouldPushTaskEvent(event('tool_execution_end', { toolName: 'bash', success: false })), true)
 })
+

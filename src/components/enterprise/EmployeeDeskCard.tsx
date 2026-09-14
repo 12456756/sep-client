@@ -57,7 +57,7 @@ export function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Pro
         <EmployeeFace seed={employee.id} size="card" />
         <span className="ent-desk-id">
           <strong title={employee.name}>{employee.name}</strong>
-          <small title={employee.department ? `${employee.roleName} · ${employee.department}` : employee.roleName}>
+          <small title={employee.roleName}>
             {employee.roleName}
           </small>
           <span className="ent-desk-state">
@@ -81,3 +81,5 @@ export function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Pro
     </article>
   );
 }
+
+

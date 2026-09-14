@@ -12,7 +12,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import * as ts from 'typescript'
@@ -88,7 +88,7 @@ function channelReferences(relativePath: string, holder: string): Set<string> {
 /**
  * `route(INVOKE_CHANNELS.X, …)` / `listener(SEND_CHANNELS.X, …)` 的第一个实参。
  *
- * Phase 6 起注册是表驱动的，`ipcMain` 只出现在 controller/router.ts。所以这里断言的
+ * 路由注册是表驱动的，`ipcMain` 只出现在 controller/router.ts。所以这里断言的
  * 对象从"main.ts 里的 ipcMain 调用"换成"routes/ 里的路由声明"——这比原来更强：
  * 它同时盯住了"第二个参数必须是 schema"（不填 schema 就注册不了）。
  */
@@ -131,7 +131,9 @@ function ipcMainReferences(): string[] {
   const listed = execFileSync('git', ['ls-files', '-z'], { cwd: repoRoot, encoding: 'utf8' }).split('\0')
   for (const path of listed) {
     if (!path.startsWith('electron/') || !path.endsWith('.ts') || path.endsWith('.test.ts')) continue
-    const hit = readFileSync(join(repoRoot, path), 'utf8').split('\n').some(line => {
+    const absolutePath = join(repoRoot, path)
+    if (!existsSync(absolutePath)) continue
+    const hit = readFileSync(absolutePath, 'utf8').split('\n').some(line => {
       const trimmed = line.trimStart()
       if (trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*')) return false
       return /\bipcMain\b/.test(line)
@@ -171,7 +173,7 @@ describe('IPC contract', () => {
 
   it('every route declares a schema', () => {
     // route() 的第二个参数是必填位置参数，所以这条在编译期就成立；
-    // 断言它是为了防有人给 route 加个"schema 可选"的重载（方案 Phase 6 的结构强制）。
+    // 断言它是为了防有人给 route 加个"schema 可选"的重载，绕过输入校验。
     assert.deepEqual(routeDeclarations().missingSchema, [])
   })
 
@@ -193,3 +195,4 @@ describe('IPC contract', () => {
     }
   })
 })
+

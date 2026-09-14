@@ -40,7 +40,9 @@ export const systemRoutes = [
 
 export const systemListeners = [
   listener(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, approvalResponse, (ctx, input) => {
-    // 协调器没加载过就没有待批的调用，直接丢掉；不能因为一条响应而触发加载。
-    ctx.backend.peekTaskCoordinator()?.respondToApproval(input)
+    // 运行时没加载过就没有待批的调用，直接丢掉；不能因为一条响应而触发加载。
+    ctx.backend.peekTaskRuntime()?.respondToApproval(input)
   }),
 ]
+
+

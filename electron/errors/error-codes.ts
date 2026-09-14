@@ -52,3 +52,5 @@ export function errorCodeSpec(code: ErrorCode): ErrorCodeSpec {
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === 'string' && value in ERROR_CODES
 }
+
+

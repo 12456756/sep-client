@@ -22,7 +22,7 @@ export const SHUTDOWN_BUDGET_MS = 5_000
 export interface ShutdownOptions {
   /** 收干净所有在跑的 run。停机唯一要做的事。 */
   stop: () => Promise<void>
-  /** 进日志的停机现场，例如协调器是否加载过、还有几个 run 在跑。 */
+  /** 进日志的停机现场，例如运行时是否加载过、还有几个 run 在跑。 */
   describeState?: () => LogFields
 }
 
@@ -55,3 +55,5 @@ export function installShutdownHandler({ stop, describeState }: ShutdownOptions)
       .finally(() => app.exit(0))
   })
 }
+
+

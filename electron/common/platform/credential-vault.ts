@@ -249,3 +249,5 @@ export function forgetRememberedAccount(email: string): void {
 export function clearCredentials(): void {
   for (const file of [RT_FILE, LEGACY_TOKENS_FILE, META_FILE]) securelyDelete(file)
 }
+
+

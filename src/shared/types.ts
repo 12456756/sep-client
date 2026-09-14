@@ -178,6 +178,65 @@ export interface TaskTimelineResult {
   error?: TaskError
 }
 
+export type ArrangementMode = 'conversation' | 'auto' | 'manual'
+export type ArrangementPermissionPreset = 'read-only' | 'workspace-edit' | 'full-local'
+export type ArrangementCommandPolicy = 'disabled' | 'restricted' | 'confirm-each'
+export type ArrangementApprovalMode = 'confirm-each' | 'auto-approve'
+
+export interface ArrangementParticipantSnapshot {
+  subscriptionId: string
+  modelId: string
+}
+
+export interface ArrangementNodeSnapshot {
+  id: string
+  subscriptionId: string
+  modelId: string
+  title: string
+  instruction: string
+  expectedOutput: string
+  dependsOn: string[]
+  skillIds: string[]
+  requiresUserConfirmation: boolean
+}
+
+export interface ArrangementPermissionSnapshot {
+  preset: ArrangementPermissionPreset
+  allowedTools: string[]
+  allowedPaths: string[]
+  deniedPaths: string[]
+  requireApprovalFor: string[]
+  commandPolicy: ArrangementCommandPolicy
+  approvalMode: ArrangementApprovalMode
+}
+
+export interface ArrangementPlanSnapshot {
+  id: string
+  schemaVersion: 1
+  sourceDraftId: string
+  sourceDraftRevision: number
+  owner: { memberId: string; enterpriseId: string }
+  mode: ArrangementMode
+  title: string
+  goal: string
+  conversation: {
+    participants: ArrangementParticipantSnapshot[]
+    activeSubscriptionId: string | null
+  } | null
+  nodes: ArrangementNodeSnapshot[]
+  workspace: { mode: 'shared'; path: string | null }
+  permissions: ArrangementPermissionSnapshot
+  confirmedInputs: string[]
+  planHash: string
+  createdAt: number
+}
+
+export interface ArrangementPlanResult {
+  success: boolean
+  plan?: ArrangementPlanSnapshot | null
+  error?: TaskError
+}
+
 export interface CreateTaskRequest {
   title: string
   prompt: string
@@ -193,25 +252,23 @@ export interface AuthSession {
 
 // ──────────────────────────── Instances ────────────────────────
 
-export type InstanceStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
+export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
 
-export interface EmployeeInstanceSnapshot {
+export interface Subscription {
   id: string
+  subscriptionId: string
+  employeeId: string
   name: string
-  status: InstanceStatus
-  startDate?: number | null
-  endDate?: number | null
+  status: SubscriptionStatus
   templateVersion: string
   template: {
     id: string
     name: string
     avatar: string | null
   }
-  department: {
-    id: string
-    name: string
-  } | null
+  department: unknown
   allowedModels: string[]
+  upgradeAvailable: boolean
 }
 
 export interface PackageRef {
@@ -229,7 +286,7 @@ export interface EmployeeInstance {
   config: Record<string, unknown>
   allowedTools: string[]
   allowedModels: string[]
-  status: InstanceStatus
+  status: SubscriptionStatus
 }
 
 // ──────────────────────────── Pi Events ────────────────────────
@@ -329,3 +386,6 @@ export interface ClientState {
   sessionState: SessionState
   lockReason?: string
 }
+
+
+

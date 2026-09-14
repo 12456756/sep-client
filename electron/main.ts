@@ -64,7 +64,7 @@ app.whenReady().then(async () => {
     registerRoutes(createRequestContext(backend, () => bridge.currentWindow()), { routes, listeners });
     installShutdownHandler({
       stop: () => backend.stopAll(),
-      describeState: () => ({ coordinatorLoaded: backend.peekTaskCoordinator() !== null }),
+      describeState: () => ({ runtimeLoaded: backend.peekTaskRuntime() !== null }),
     });
   } catch (error) {
     reportFatal('无法启动任务运行时', error, { stage: 'compose-backend' });
@@ -72,7 +72,7 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // 任务协调器延迟到首次任务执行时初始化（SDK 加载边界，见 CLAUDE.md）。
+  // 任务运行时延迟到首次任务执行时初始化（SDK 加载边界，见 AGENTS.md）。
   openMainWindow();
 
   app.on('activate', () => {
@@ -85,3 +85,5 @@ app.on('window-all-closed', () => {
     app.quit();
   }
 });
+
+

@@ -1,12 +1,7 @@
 /**
- * electron/data/scope-path.ts — 唯一的持久化路径推导
+ * 所有任务数据和默认工作区的路径推导。
  *
- * 此前有四处各自拼路径（方案 1.3 节）：`task-store.getTaskFile`、
- * `task-run-store.getPaths`、`workflow-store.file`、`task-metadata-store.file`，
- * 加上 `task-manager` 自己拼默认工作区。改一次目录布局要动五个文件。
- *
- * **目录布局是硬约束（第 11 章）**：旧数据必须能直接读。所以这里只是把已经存在的
- * 布局收成一处，一个字符都没改：
+ * 路径都从认证作用域派生，并在返回前检查仍位于该作用域目录内：
  *
  * ```
  * <userData>/
@@ -19,14 +14,13 @@
  * │       ├── agent-runs/<runId>/         pi agent 目录
  * │       ├── conversation/pi-session/    对话任务的任务级共享会话
  * │       ├── conversation/pi-agent/
- * │       ├── workflow.json               工作流图
+ * │       ├── work-plan.json              已确认的安排方案
+ * │       ├── arrangement-checkpoint.json 安排执行检查点
  * │       └── metadata.json               任务元数据
  * └── task-workspaces/v1/<ent>/<mem>/<taskId>/   workDir 未指定时的默认工作区
  * ```
  *
- * 顺带清掉了借位 runId 的路径 hack：原来想拿 `taskDir` 得先编一个假 runId
- * （`getPaths(scope, taskId, 'run-list')` / `'conversation-session'` / `'store'`），
- * 于是一个非法的 runId 会在完全无关的调用里通过校验。现在 `taskDir()` 只要 taskId。
+ * 任务目录只接收真实 taskId；run、对话会话和安排方案各自使用明确的路径方法。
  */
 import { join, resolve, sep } from 'node:path'
 
@@ -152,16 +146,12 @@ export class ScopePath {
     return join(this.taskDir(scope, taskId), 'events.jsonl')
   }
 
-  workflowFile(scope: TaskOwnerScope, taskId: string): string {
-    return join(this.taskDir(scope, taskId), 'workflow.json')
-  }
-
   workPlanFile(scope: TaskOwnerScope, taskId: string): string {
     return join(this.taskDir(scope, taskId), 'work-plan.json')
   }
 
-  workflowCheckpointFile(scope: TaskOwnerScope, taskId: string): string {
-    return join(this.taskDir(scope, taskId), 'workflow-checkpoint.json')
+  arrangementCheckpointFile(scope: TaskOwnerScope, taskId: string): string {
+    return join(this.taskDir(scope, taskId), 'arrangement-checkpoint.json')
   }
 
   metadataFile(scope: TaskOwnerScope, taskId: string): string {
@@ -228,3 +218,5 @@ export class ScopePath {
     return path
   }
 }
+
+

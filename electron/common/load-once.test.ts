@@ -1,9 +1,8 @@
 /**
  * loadOnce 的回归测试。
  *
- * 重点是**失败路径**：Phase 4 之前 main.ts 的 `ensureTaskCoordinator()` 在初始化失败时
- * 会让并发等待者拿到 undefined 而不是拒绝。下面第三个用例专门盯这件事——
- * 把旧写法放回去它立刻变红。
+ * 重点是失败路径：初始化失败时，所有并发等待者都必须收到同一个拒绝结果，下一次调用
+ * 仍然可以重试。第三个用例专门覆盖这一约束。
  */
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
@@ -77,3 +76,4 @@ describe('loadOnce', () => {
     assert.equal(lazy.peek(), 'second attempt')
   })
 })
+

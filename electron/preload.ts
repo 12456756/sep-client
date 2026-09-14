@@ -15,7 +15,7 @@ const electronAPI = {
   getRememberedPassword: email => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_REMEMBERED_PASSWORD, email),
   forgetAccount: email => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_FORGET_ACCOUNT, email),
   logout: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LOGOUT),
-  getInstances: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_INSTANCES),
+  getSubscriptions: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_INSTANCES),
   createTask: data => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CREATE, data),
   executeTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_EXECUTE, taskId),
   continueTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CONTINUE, input),
@@ -59,10 +59,8 @@ const electronAPI = {
   sendToolApprovalResponse: response => ipcRenderer.send(SEND_CHANNELS.TOOL_APPROVAL_RESPONSE, response),
   createConversation: data => ipcRenderer.invoke(INVOKE_CHANNELS.CONVERSATION_CREATE, data),
   switchConversationEmployee: data => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, data),
-  validateWorkflow: data => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_VALIDATE, data),
-  createWorkflow: data => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_CREATE, data),
-  getWorkflow: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_GET, taskId),
   getArrangementContext: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_CONTEXT),
+  getArrangementPlan: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_PLAN, taskId),
   listArrangementDrafts: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS),
   createArrangementDraft: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT, input),
   getArrangementDraft: draftId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_DRAFT, draftId),
@@ -72,10 +70,7 @@ const electronAPI = {
   preflightArrangementDraft: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PREFLIGHT_DRAFT, input),
   confirmArrangementDraft: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_DRAFT, input),
   confirmAndStartArrangement: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_AND_START, input),
-  startWorkflow: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_START, taskId),
-  retryWorkflowNode: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_RETRY_NODE, input),
-  resumeWorkflow: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_RESUME, taskId),
-  stopWorkflow: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORKFLOW_STOP, input),
 } satisfies ElectronAPI;
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
+

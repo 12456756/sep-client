@@ -1,9 +1,8 @@
 /**
  * 目录布局的回归测试。
  *
- * 方案第 11 章把"不改持久化文件格式与目录布局"列为硬约束——旧数据必须能直接读。
- * Phase 7 把四处路径拼接归并成 `ScopePath`，最容易犯的错就是在归并过程中悄悄挪一层。
- * 这里把**每一条路径逐字钉死**：改动它必须是一次有意识的决定，而不是重构的副作用。
+ * 持久化目录是兼容性边界，旧数据必须能直接读。这里把**每一条路径逐字钉死**，
+ * 改动它必须是一次有意识的决定，而不是重构的副作用。
  */
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
@@ -29,7 +28,8 @@ describe('ScopePath 的目录布局（第 11 章硬约束）', () => {
     assert.equal(normalize(paths.tasksRoot(SCOPE)), `${owner}/tasks`)
     assert.equal(normalize(paths.taskDir(SCOPE, 'task-1')), `${owner}/tasks/task-1`)
     assert.equal(normalize(paths.eventFile(SCOPE, 'task-1')), `${owner}/tasks/task-1/events.jsonl`)
-    assert.equal(normalize(paths.workflowFile(SCOPE, 'task-1')), `${owner}/tasks/task-1/workflow.json`)
+    assert.equal(normalize(paths.workPlanFile(SCOPE, 'task-1')), `${owner}/tasks/task-1/work-plan.json`)
+    assert.equal(normalize(paths.arrangementCheckpointFile(SCOPE, 'task-1')), `${owner}/tasks/task-1/arrangement-checkpoint.json`)
     assert.equal(normalize(paths.metadataFile(SCOPE, 'task-1')), `${owner}/tasks/task-1/metadata.json`)
     assert.equal(normalize(paths.runsDir(SCOPE, 'task-1')), `${owner}/tasks/task-1/runs`)
   })
@@ -65,8 +65,7 @@ describe('ScopePath 的目录布局（第 11 章硬约束）', () => {
   })
 
   it('derives the task directory from taskId alone', () => {
-    // Phase 7 之前想拿 taskDir 得先编一个假 runId（getPaths(scope, taskId, 'store')），
-    // 于是一个非法 runId 会在完全无关的调用里通过校验。
+    // taskDir 只接收真实 taskId，不允许调用方借用虚构的 runId。
     assert.equal(normalize(paths.taskDir(SCOPE, 'task-1')), `${owner}/tasks/task-1`)
   })
 })
@@ -89,3 +88,4 @@ describe('ScopePath 的越界防护', () => {
     assert.throws(() => paths.ownerRoot({ memberId: 'm', enterpriseId: '..' }), TaskScopeError)
   })
 })
+

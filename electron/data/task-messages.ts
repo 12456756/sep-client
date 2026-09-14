@@ -1,8 +1,7 @@
 /**
  * electron/data/task-messages.ts — 消息投影
  *
- * 从 `task-run-store` 拆出来的第二块（方案 Phase 7）。它不持有任何状态、不碰文件系统：
- * 把 run 记录与事件时间线投影成渲染进程要的消息列表，是一段纯粹的读侧变换。
+ * 本模块不持有状态、不碰文件系统，只把 run 记录和事件时间线投影成渲染进程需要的消息。
  *
  * 每个 run 产出至多两条消息：用户那一轮的提示，以及把该 run 全部 `text_delta`
  * 拼起来的助手回复。首个 run 的提示可能没落在 run 记录里（早期数据），
@@ -51,3 +50,5 @@ export async function projectTaskMessages(
   }
   return messages
 }
+
+

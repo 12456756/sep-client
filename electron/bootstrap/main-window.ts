@@ -69,3 +69,5 @@ export function createMainWindow({ onClosed }: MainWindowOptions): BrowserWindow
   log.info('main window created')
   return window
 }
+
+

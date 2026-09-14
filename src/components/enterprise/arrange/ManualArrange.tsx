@@ -1,5 +1,5 @@
 /**
- * 自己编排。左边是工作流程，右边是当前那一步的配置，中间一条极浅的分割线。
+ * 自己编排。左边是安排方案，右边是当前那一步的配置，中间一条极浅的分割线。
  *
  * 刻意**不做**成 n8n / Dify 那种自由连线的画布：员工之间的关系就是先后顺序，
  * 上下拖一拖就能改。要表达的只有「谁先做、谁接着做」，一条竖着的链足够，
@@ -25,7 +25,7 @@ export interface ManualDraft {
 interface Props {
   employees: SiliconEmployee[];
   busy: boolean;
-  /** 从「常用工作」「复制为新工作」或企业固定流程带进来的初始内容。 */
+  /** 从「常用工作」「复制为新工作」或企业固定安排带进来的初始内容。 */
   seed: { title?: string; goal?: string; steps: WorkDraftStep[]; confirmedInputs?: string[] } | null;
   onOpenSettings: () => void;
   onSave: (draft: ManualDraft) => void;
@@ -139,13 +139,9 @@ export function ManualArrange({ employees, busy, seed, onOpenSettings, onSave, o
 
   return (
     <section className="ent-arr-manual">
-      <header className="ent-arr-head">
-        <h1>自己编排</h1>
-        <p>自己选择员工，并决定员工之间如何协作。</p>
-      </header>
 
       <div className="ent-mn">
-        <div className="ent-mn-flow">
+        <div className="ent-mn-plan">
           <input
             className="ent-mn-goal"
             value={goal}
@@ -369,3 +365,5 @@ function StepForm({ step, employees, order, onPatch }: {
     </>
   );
 }
+
+

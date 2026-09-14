@@ -61,3 +61,5 @@ export function getDeviceFingerprint(): string {
 export function clearDeviceFingerprint(): void {
   store.delete(FINGERPRINT_KEY);
 }
+
+

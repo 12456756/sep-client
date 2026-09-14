@@ -1,8 +1,8 @@
 /**
  * electron/common/constants.ts — 跨层共享的常量
  *
- * 目前只有一件事：**有副作用的工具清单**。它此前有三份逐字复制的定义（方案第 6 章）：
- * coordinator 的 `SIDE_EFFECT_TOOLS`、`task-run-store` 里的内联数组、
+ * 目前只有一件事：**有副作用的工具清单**。
+ * 运行时的 `SIDE_EFFECT_TOOLS`、`task-run-store` 里的内联数组、
  * `pi-extension/guard.ts` 的 `APPROVAL_TOOLS`。
  *
  * 三处语义完全相同——「这个工具会改变外部状态」——但用途不同：
@@ -19,3 +19,5 @@ export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 
 export function hasSideEffects(toolName: string): boolean {
   return SIDE_EFFECT_TOOLS.has(toolName)
 }
+
+

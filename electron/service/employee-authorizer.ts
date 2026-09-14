@@ -10,9 +10,9 @@
  * B2：本文件不 import `pi/`。技能包准备经 `SkillPackageProvisioner` 端口注入，
  * 实现是 `pi/sdk/pi-skill-packages.ts` 的 `SkillPackageStore`。
  */
-import type { ClientInstance } from '../common/platform/platform-api'
+import type { Subscription } from '../common/platform/platform-api'
 // import type 会被编译擦除，所以不构成对 runtime/ 的运行时依赖；
-// EmployeeRuntimeConfig 是协调器的入参契约。定义点在 runtime/run-types.ts——
+// EmployeeRuntimeConfig 是运行时的入参契约。定义点在 runtime/run-types.ts——
 // 那是个零依赖的类型模块，import 它不会把 pi SDK 拉进服务层（B2）。
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 
@@ -24,10 +24,10 @@ export interface SessionTokens {
 
 /** 只用平台目录的这四件事。实现是 service/employee-directory.ts。 */
 export interface EmployeeDirectoryPort {
-  list(accessToken: string): Promise<ClientInstance[]>
-  refresh(accessToken: string): Promise<ClientInstance[]>
+  list(accessToken: string): Promise<Subscription[]>
+  refresh(accessToken: string): Promise<Subscription[]>
   /** 最近一次成功读取的快照，不发请求。全后端唯一的目录快照。 */
-  snapshot(): ClientInstance[]
+  snapshot(): Subscription[]
   invalidate(): void
 }
 
@@ -48,15 +48,14 @@ export interface SkillPackageProvisioner {
 
 /**
  * 从目录快照解析运行配置。纯函数：同样的入参永远得到同样的结果，不碰任何全局。
- * 这是 `resolveEmployee` 的最终形态——Phase 1 之前它读的是 main.ts 的模块级
- * `activeInstances`，返回值取决于"最后一个写它的人是谁"，那是时序耦合而非数据流（C4）。
+ * 解析只依赖传入快照，不读取进程级状态，避免授权结果依赖上一次登录或刷新顺序。
  */
 export function resolveEmployeeRuntime(
-  instances: readonly ClientInstance[],
+  instances: readonly Subscription[],
   subscriptionId: string,
   gatewayUrl: string,
 ): EmployeeRuntimeConfig | null {
-  const instance = instances.find(item => item.id === subscriptionId)
+  const instance = instances.find(item => item.subscriptionId === subscriptionId)
   const modelId = instance?.allowedModels?.[0]
   if (!instance || !modelId) return null
   return { subscriptionId, modelId, gatewayUrl }
@@ -71,11 +70,11 @@ export class EmployeeAuthorizer {
   ) {}
 
   /** 用户显式刷新：绕过 TTL，但仍与在途请求合并（C4）。只保留 ACTIVE 实例。 */
-  async refresh(): Promise<ClientInstance[]> {
+  async refresh(): Promise<Subscription[]> {
     return this.directory.refresh(await this.session.getValidAccessToken())
   }
 
-  async list(): Promise<ClientInstance[]> {
+  async list(): Promise<Subscription[]> {
     return this.directory.list(await this.session.getValidAccessToken())
   }
 
@@ -105,16 +104,17 @@ export class EmployeeAuthorizer {
   async authorize(subscriptionId: string): Promise<EmployeeRuntimeConfig | null> {
     const accessToken = await this.session.getValidAccessToken()
     const instances = await this.directory.list(accessToken)
-    const instance = instances.find(item => item.id === subscriptionId)
+    const instance = instances.find(item => item.subscriptionId === subscriptionId)
     const employee = resolveEmployeeRuntime(instances, subscriptionId, this.gatewayUrl)
-    if (!instance || !employee || !instance.template.id || !instance.templateVersion) return null
+    if (!instance || !employee || !instance.employeeId || !instance.templateVersion) return null
     const runtime = await this.skills.prepare({
       enterpriseId: this.session.getMeta()?.enterpriseId ?? '',
       subscriptionId,
-      employeeId: instance.template.id,
+      employeeId: instance.employeeId,
       templateVersion: instance.templateVersion,
       accessToken,
     })
     return { ...employee, additionalSkillPaths: runtime.skillPaths }
   }
 }
+

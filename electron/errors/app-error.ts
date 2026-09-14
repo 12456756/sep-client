@@ -40,3 +40,5 @@ export function appError(code: ErrorCode, options?: AppErrorOptions): AppError {
 export function isAppError(value: unknown): value is AppError {
   return value instanceof AppError
 }
+
+

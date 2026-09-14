@@ -1,8 +1,7 @@
 /**
  * 编排画布的图运算：依赖校验、成环判断、自动布局、并行度统计、旧数据升级。
  *
- * 这里的校验规则和主进程 electron/tasks/domain/workflow-graph.ts 的
- * validateWorkflowNodes 保持一致（重复 id、缺失依赖、自依赖、成环）。
+ * 这里的校验规则与主进程的安排节点校验保持一致：检查重复 id、缺失依赖、自依赖和成环。
  * 渲染层要自己校验一遍，是为了让用户在连线的那一刻就知道不行 ——
  * 等到点「开始工作」再由主进程报错，用户已经不知道是哪一根线的问题了。
  */
@@ -37,7 +36,7 @@ let seq = 0;
 /**
  * 新建一个步骤。id 直接生成成主进程能接受的安全形式（^[A-Za-z0-9_-]{1,128}$），
  * 这样就不需要在提交前再洗一遍 —— 洗过的两个不同 id 可能撞成同一个，
- * 而重复 id 会被 validateWorkflowNodes 直接拒绝。
+ * 重复 id 会在提交前直接拒绝。
  */
 export function createDraftStep(employeeId: string, at?: { x: number; y: number }): WorkDraftStep {
   seq += 1;
@@ -210,3 +209,5 @@ export function upgradeDraftSteps(raw: unknown): WorkDraftStep[] {
   // 一个坐标都没有说明是旧数据或模板，整体重新布局；有坐标就尊重用户摆好的位置。
   return steps.some(step => step.x || step.y) ? steps : layoutSteps(steps);
 }
+
+

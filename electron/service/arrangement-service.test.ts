@@ -26,16 +26,25 @@ function draft(): Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdA
   }
 }
 
-function employee(endDate: number | null = null, allowedModels = ['model-a']) {
+function employee(allowedModels = ['model-a']) {
   return {
-    id: 'sub-a', name: 'Employee', status: 'ACTIVE' as const, startDate: null, endDate,
+    id: 'sub-a', subscriptionId: 'sub-a', employeeId: 'employee-a', name: 'Employee', status: 'ACTIVE' as const,
     templateVersion: '1.0.0', template: { id: 'employee-a', name: 'Employee', avatar: null },
-    department: null, allowedModels,
+    department: null, allowedModels, upgradeAvailable: false,
   }
 }
 
 describe('ArrangementService', () => {
-  it('preflights subscription expiry and node model allow-list', async () => {
+  it('loads a confirmed plan from the current task scope', async () => {
+    const plan = { id: 'task-a', title: 'Report' }
+    const service = new ArrangementService(serviceDeps({
+      workPlans: { async save() {}, async get() { return plan } },
+    }))
+
+    assert.deepEqual(await service.getPlan('task-a'), plan)
+  })
+
+  it('preflights subscription availability and node model allow-list', async () => {
     let stored: ArrangementDraft | null = null
     const service = new ArrangementService(serviceDeps({
       drafts: {
@@ -45,12 +54,12 @@ describe('ArrangementService', () => {
         async update() { throw new Error('not used') },
         async delete() { return false },
       },
-      employees: { async list() { return [employee(1_000)] } } as never,
+      employees: { async list() { return [employee()] } } as never,
     }))
     await service.createDraft(draft())
     const result = await service.preflightDraft('draft-a', 1)
-    assert.equal(result.canStart, false)
-    assert.ok(result.blockingIssues.some(issue => issue.includes('expiring') || issue.includes('expired')))
+    assert.equal(result.canStart, true)
+    assert.equal(result.blockingIssues.length, 0)
   })
 
   it('reports model mismatch without trusting renderer values', async () => {
@@ -61,7 +70,7 @@ describe('ArrangementService', () => {
         async create(_scope: TaskOwnerScope, input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { stored = { ...input, id: 'draft-a', owner: scope, revision: 1, createdAt: 1, updatedAt: 1 }; return stored },
         async update() { throw new Error('not used') }, async delete() { return false },
       },
-      employees: { async list() { return [employee(null, ['model-a'])] } } as never,
+      employees: { async list() { return [employee(['model-a'])] } } as never,
     }))
     await service.createDraft({ ...draft(), nodes: [{ ...draft().nodes[0]!, modelId: 'model-b' }] })
     const result = await service.preflightDraft('draft-a', 1)
@@ -79,7 +88,7 @@ describe('ArrangementService', () => {
         async update(_scope: TaskOwnerScope, _id: string, _revision: number, patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { stored = { ...patch, id: 'draft-a', owner: scope, revision: 2, createdAt: 1, updatedAt: 2 }; return stored },
         async delete() { return false },
       },
-      employees: { async list() { return [employee(null, ['model-a'])] } },
+      employees: { async list() { return [employee(['model-a'])] } },
       taskManager: { async createTask() { createdTask = true; return { id: 'task-a', workDir: null } }, async getTask() { return { id: 'task-a', workDir: null } } },
       workPlans: { async save(_scope: TaskOwnerScope, plan: unknown) { assert.equal((plan as { id: string }).id, 'task-a') }, async get() { return null } },
     })
@@ -102,7 +111,7 @@ describe('ArrangementService', () => {
         async update(_scope: TaskOwnerScope, _id: string, revision: number, patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { stored = { ...patch, id: 'draft-a', owner: scope, revision: revision + 1, createdAt: 1, updatedAt: 2 }; return stored },
         async delete() { return false },
       },
-      employees: { async list() { return [employee(null, ['model-a'])] } },
+      employees: { async list() { return [employee(['model-a'])] } },
       taskManager: { async createTask() { return { id: 'task-a', workDir: null, status: 'pending', activeRunId: null } }, async getTask() { return { id: 'task-a', workDir: null, status: 'pending', activeRunId: starts ? 'run-a' : null } } },
       workPlans: { async save(_scope: TaskOwnerScope, plan: unknown) { savedPlan = plan }, async get() { return savedPlan } },
       execution: async () => ({ async executeTask() { starts += 1 } }),

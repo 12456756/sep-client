@@ -1,10 +1,8 @@
 /**
  * electron/controller/request-context.ts — RequestContext
  *
- * route handler 能看到的全部东西。**不含 scope**：scope 的唯一解析点是
- * `service/scope-guard.ts`（Phase 5 把它做成"服务层内部抛 AppError"），
- * 在这里再放一份就等于第二个定义点，正是方案 0.1 节原则 3 要消掉的东西。
- * 方案 3.2 节写的是"RequestContext：scope + 各服务句柄"，那份设计早于 Phase 5 的决定。
+ * route handler 能看到的全部东西。这里不暴露 scope；服务层通过 scope guard 读取它，
+ * 这样所有业务入口共享同一套认证失效语义。
  */
 import type { BrowserWindow } from 'electron'
 import type { Backend } from '../bootstrap/build-backend'
@@ -13,7 +11,6 @@ export interface RequestContext {
   /** 服务层句柄。任务类路由只该用这几个。 */
   readonly tasks: Backend['tasks']
   readonly conversations: Backend['conversations']
-  readonly workflows: Backend['workflows']
   readonly arrangements: Backend['arrangements']
   readonly employees: Backend['employees']
   /**
@@ -33,10 +30,11 @@ export function createRequestContext(
   return {
     tasks: backend.tasks,
     conversations: backend.conversations,
-    workflows: backend.workflows,
     arrangements: backend.arrangements,
     employees: backend.employees,
     backend,
     window,
   }
 }
+
+

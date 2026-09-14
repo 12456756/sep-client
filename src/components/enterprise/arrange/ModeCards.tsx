@@ -9,7 +9,7 @@
  * 再换到下一屏，避免整页硬切。
  */
 
-import { ArrowRight, MessageSquare, Sparkles, Workflow } from 'lucide-react';
+import { ArrowRight, GitBranch, MessageSquare, Sparkles } from 'lucide-react';
 import type { ArrangeMode } from '../../../features/enterprise/types';
 
 interface Props {
@@ -43,7 +43,7 @@ const MODES: {
   },
   {
     mode: 'manual',
-    icon: Workflow,
+    icon: GitBranch,
     title: '自己编排',
     desc: '自己选择员工，并决定员工之间如何协作。',
     cta: '开始',
@@ -77,3 +77,5 @@ export function ModeCards({ leaving, onPick }: Props) {
     </div>
   );
 }
+
+

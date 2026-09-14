@@ -47,3 +47,4 @@ describe('SEP gateway payload compatibility', () => {
     })
   })
 })
+

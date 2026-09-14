@@ -39,7 +39,7 @@ export interface QueuedRun {
 
   workerPrompt?: string
   degradedRecovery?: { originalSessionFile: string; mode: SessionRecoveryMode }
-  workflow?: WorkPlan
+  arrangement?: WorkPlan
 }
 
 export interface ActiveRun {
@@ -51,3 +51,5 @@ export interface ActiveRun {
   control: ControlIntent
   completion: Promise<void>
 }
+
+

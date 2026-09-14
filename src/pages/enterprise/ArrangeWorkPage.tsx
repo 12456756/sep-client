@@ -22,8 +22,8 @@ import { ModeCards } from '../../components/enterprise/arrange/ModeCards';
 import { RunSettingsDrawer } from '../../components/enterprise/arrange/RunSettingsDrawer';
 import { Empty } from '../../components/enterprise/atoms';
 import type { AutoPlan } from '../../features/enterprise/auto-arrange';
-import { defaultRunSettings, RUN_PERMISSIONS, type RunSettings } from '../../features/enterprise/run-settings';
-import type { ArrangeMode, SiliconEmployee, WorkDraftStep, WorkTemplate } from '../../features/enterprise/types';
+import { defaultRunSettings, type RunSettings } from '../../features/enterprise/run-settings';
+import type { ArrangeMode, ArrangementTemplate, SiliconEmployee, WorkDraftStep } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import { createDraftStep } from '../../features/enterprise/work-graph';
@@ -35,8 +35,8 @@ interface Props {
   mode: ArrangeMode;
 }
 
-/** 企业固定流程 → 一条线性的工作链。步骤内容由企业定义，员工和顺序用户可以改。 */
-function stepsFromTemplate(template: WorkTemplate, employees: SiliconEmployee[]): WorkDraftStep[] {
+/** 企业固定安排 → 一条线性的工作链。步骤内容由企业定义，员工和顺序用户可以改。 */
+function stepsFromTemplate(template: ArrangementTemplate, employees: SiliconEmployee[]): WorkDraftStep[] {
   const steps = template.steps.map((step, index) => ({
     ...createDraftStep(template.employeeIds[index] ?? employees[index % Math.max(1, employees.length)]?.id ?? ''),
     title: step.title,
@@ -54,6 +54,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
 
   const [settings, setSettings] = useState<RunSettings>(defaultRunSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selectedChatEmployeeId, setSelectedChatEmployeeId] = useState(employeeId ?? '');
   /** 正在淡出的目标画面。给「点了卡片但还没换页」这 200ms 用。 */
   const [leaving, setLeaving] = useState<ArrangeMode | null>(null);
   /** 从常用工作 / 复制为新工作带进来的初始内容。用过就从 workspace 里清掉。 */
@@ -89,35 +90,41 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
    * 抽屉是「这项工作怎么执行」，落地点仍然是每位员工的本机操作权限 ——
    * 客户端只有这一处权限存储，再存一份工作级的会和员工页对不上。
    */
-  const applySettings = (ids: string[]) => {
-    for (const id of ids) {
-      for (const item of RUN_PERMISSIONS) workspace.setPermission(id, item.id, settings.permissions[item.id]);
-      if (settings.workDir && settings.permissions['read-files']) {
-        workspace.setPermissionScope(id, 'read-files', settings.workDir);
-      }
-    }
-  };
-
-  const startAuto = (plan: AutoPlan, extras: { confirmedInputs: string[]; sharedSkillIds: string[] }) => {
-    applySettings([...new Set(plan.stages.map(stage => stage.employee.id))]);
+  const startAuto = (plan: AutoPlan) => {
     void workspace.arrangeWork({
       title: plan.title,
       goal: plan.goal,
       workDir: settings.workDir,
       steps: plan.stages.map(stage => stage.step),
-      confirmedInputs: extras.confirmedInputs,
-      sharedSkillIds: extras.sharedSkillIds,
+      confirmedInputs: [],
+      sharedSkillIds: [],
+      arrangementMode: 'auto',
+      execution: {
+        model: settings.model,
+        modelStrategy: settings.modelStrategy,
+        permissionPreset: settings.permissionPreset,
+        allowWithoutApproval: settings.allowWithoutApproval,
+      },
     });
   };
 
   const startManual = (draft: ManualDraft) => {
-    applySettings([...new Set(draft.steps.map(step => step.employeeId).filter(Boolean))]);
-    void workspace.arrangeWork({ ...draft, templateId: template?.id, workDir: settings.workDir, sharedSkillIds: [] });
+    void workspace.arrangeWork({
+      ...draft,
+      workDir: settings.workDir,
+      sharedSkillIds: [],
+      arrangementMode: 'manual',
+      execution: {
+        model: settings.model,
+        modelStrategy: settings.modelStrategy,
+        permissionPreset: settings.permissionPreset,
+        allowWithoutApproval: settings.allowWithoutApproval,
+      },
+    });
   };
 
   const startChat = (id: string, text: string) => {
-    applySettings([id]);
-    void workspace.startConversation(id, text, { workDir: settings.workDir });
+    void workspace.startConversation(id, text, { workDir: settings.workDir, model: settings.model, permissionPreset: settings.permissionPreset, allowWithoutApproval: settings.allowWithoutApproval });
   };
 
   if (!workspace.myEmployees.length) {
@@ -136,10 +143,6 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
     <div className="ent-arr">
       {mode === 'pick' ? (
         <div className={`ent-arr-view${leaving ? ' leaving' : ''}`}>
-          <header className="ent-arr-head">
-            <h1>安排工作</h1>
-            <p>选择一种适合你的方式开始安排工作。</p>
-          </header>
           <ModeCards leaving={leaving} onPick={go} />
         </div>
       ) : (
@@ -156,6 +159,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
               employees={employees}
               busy={workspace.busy}
               initialEmployeeId={employeeId}
+              onEmployeeChange={setSelectedChatEmployeeId}
               onOpenSettings={() => setSettingsOpen(true)}
               onStart={startChat}
             />
@@ -164,9 +168,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
           {mode === 'auto' ? (
             <AutoArrange
               employees={employees}
-              skills={workspace.skills}
               busy={workspace.busy}
-              onChooseFolder={workspace.chooseFolder}
               onOpenSettings={() => setSettingsOpen(true)}
               onStart={startAuto}
             />
@@ -180,7 +182,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
               seed={manualSeed}
               onOpenSettings={() => setSettingsOpen(true)}
               onSave={draft => {
-                workspace.saveFlow({
+              workspace.saveArrangement({
                   name: draft.title,
                   goal: draft.goal,
                   version: 2,
@@ -198,7 +200,10 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
       {settingsOpen ? (
         <RunSettingsDrawer
           settings={settings}
-          models={[...new Set(employees.flatMap(item => item.allowedModels))]}
+          mode={mode}
+          models={mode === 'chat' && selectedChatEmployeeId
+            ? (employees.find(item => item.id === selectedChatEmployeeId)?.allowedModels ?? [])
+            : [...new Set(employees.flatMap(item => item.allowedModels))]}
           onChange={patch => setSettings(current => ({ ...current, ...patch }))}
           onChooseFolder={workspace.chooseFolder}
           onClose={() => setSettingsOpen(false)}
@@ -207,3 +212,5 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
     </div>
   );
 }
+
+

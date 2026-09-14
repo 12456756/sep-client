@@ -105,3 +105,5 @@ export function reportFatal(title: string, error: unknown, context: LogFields = 
   log.error('fatal error', { ...context, title, cause: describeError(error) })
   presentFatal?.(title, message)
 }
+
+

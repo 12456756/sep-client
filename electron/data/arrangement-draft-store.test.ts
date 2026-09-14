@@ -65,3 +65,4 @@ describe('ArrangementDraftStore', () => {
     assert.equal(await store.delete(scope, created.id), false)
   })
 })
+

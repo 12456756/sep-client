@@ -15,7 +15,7 @@ import { createDraftStep } from './work-graph';
 /** 一个工作门类。 */
 interface Aspect {
   id: string;
-  /** 在工作流程里的名字。传 deliverable 是为了「生成复盘报告」这种跟着产物变的叫法。 */
+  /** 方案中的步骤名称。传入 deliverable 后可以生成与最终产物一致的名称。 */
   name: (deliverable: string) => string;
   /** 目标里出现这些说法，就认为这项工作需要这一门类。 */
   cues: string[];
@@ -228,3 +228,5 @@ export function planAutoArrange(goal: string, employees: SiliconEmployee[]): Aut
 
   return { title: titleOf(text), goal: text, pool, stages };
 }
+
+

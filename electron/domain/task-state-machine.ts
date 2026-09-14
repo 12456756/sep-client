@@ -44,3 +44,5 @@ export function isTaskTerminal(status: ClientTaskStatus): boolean {
 export function isTaskExecutionStatus(status: ClientTaskStatus): boolean {
   return status === TaskStatus.RUNNING || status === TaskStatus.WAITING_APPROVAL
 }
+
+

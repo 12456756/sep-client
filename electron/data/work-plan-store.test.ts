@@ -35,3 +35,4 @@ describe('WorkPlanStore', () => {
     assert.equal(await store.get({ memberId: 'other', enterpriseId: scope.enterpriseId }, 'task-plan-a'), null)
   })
 })
+

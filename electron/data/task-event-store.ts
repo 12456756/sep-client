@@ -1,8 +1,7 @@
 /**
  * electron/data/task-event-store.ts — 事件日志 + 内存序号分配（C6）
  *
- * 从 `task-run-store` 拆出来的第一块（方案 Phase 7）。原来那个文件捆了五件事：
- * run 记录、事件日志、消息投影、崩溃恢复、路径推导。
+ * 事件日志只负责追加、序号和运行归属校验；run 记录、消息投影和路径推导由各自模块负责。
  *
  * C6：序号由 per-(scope, task, run) 的**内存游标**分配。原来每追加一条事件都调
  * `getTimeline()` 全量读并逐行 `JSON.parse` 整个 `events.jsonl`，只为算下一个序号
@@ -136,3 +135,5 @@ export class TaskEventStore implements TaskEventStorePort {
     }
   }
 }
+
+

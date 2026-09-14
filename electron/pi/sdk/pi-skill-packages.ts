@@ -1,8 +1,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { getEmployeeSkills, getPackageInfo, type EmployeeSkill } from '../../common/platform/platform-api'
-import { config } from '../../common/config'
+import { getEmployeeSkills, getPackageInfo, previewSkill, type EmployeeSkill } from '../../common/platform/platform-api'
 
 export interface SkillPackageRequest {
   enterpriseId: string
@@ -55,18 +54,19 @@ export class SkillPackageStore {
     const skillRoot = join(base, 'skills')
     await mkdir(skillRoot, { recursive: true })
     await writeFile(join(base, 'package-manifest.json'), JSON.stringify({ version: packageInfo.version, packageRef: packageInfo.packageRef, sha256: packageInfo.sha256, installedAt: Date.now() }), { encoding: 'utf8', mode: 0o600 })
-    const skills = await getEmployeeSkills(input.employeeId, input.accessToken)
+    const skillsResponse = await getEmployeeSkills(input.employeeId, input.accessToken)
+    if (skillsResponse.subscriptionId !== input.subscriptionId) throw new Error('The employee skills response does not match the subscription.')
     const paths: string[] = []
-    for (const skill of skills) {
-      if (!skill || typeof skill !== 'object' || !APPROVED.has(skill.status) || !skill.currentVersion) continue
+    for (const skill of skillsResponse.skills) {
+      if (!skill || typeof skill !== 'object' || !APPROVED.has(skill.currentVersion.status) || !skill.currentVersion.version) continue
       const content = await this.resolveSkillContent(skill, input.accessToken)
       if (!content) continue
-      const skillName = safeSegment(skill.id || skill.name || `skill-${paths.length + 1}`)
+      const skillName = safeSegment(skill.capability.id || skill.capability.name || `skill-${paths.length + 1}`)
       const target = join(skillRoot, skillName)
       const temporary = `${target}.staging`
       await mkdir(temporary, { recursive: true })
       await writeFile(join(temporary, 'SKILL.md'), content, { encoding: 'utf8', mode: 0o600 })
-      await writeFile(join(temporary, 'manifest.json'), JSON.stringify({ id: skill.id, version: skill.currentVersion, sha256: createHash('sha256').update(content).digest('hex') }), { encoding: 'utf8', mode: 0o600 })
+      await writeFile(join(temporary, 'manifest.json'), JSON.stringify({ id: skill.capability.id, version: skill.currentVersion.version, sha256: createHash('sha256').update(content).digest('hex') }), { encoding: 'utf8', mode: 0o600 })
       await rm(target, { recursive: true, force: true })
       await rename(temporary, target)
       paths.push(target)
@@ -75,13 +75,9 @@ export class SkillPackageStore {
   }
 
   private async resolveSkillContent(skill: EmployeeSkill, accessToken: string): Promise<string | null> {
-    if (typeof skill.content === 'string' && skill.content.trim()) return skill.content
-    if (!skill.versionId) return null
-    const response = await fetch(`${config.SEP_API_BASE_URL}/enterprise/skill-versions/${encodeURIComponent(skill.versionId)}/preview`, { headers: { Authorization: `Bearer ${accessToken}` } })
-    if (!response.ok) return null
-    const payload = await response.json() as unknown
-    if (typeof payload === 'string') return payload
-    if (payload && typeof payload === 'object' && typeof (payload as { content?: unknown }).content === 'string') return (payload as { content: string }).content
-    return null
+    if (!skill.currentVersion.id) return null
+    const preview = await previewSkill(skill.currentVersion.id, accessToken)
+    return preview.content.trim() ? preview.content : null
   }
 }
+

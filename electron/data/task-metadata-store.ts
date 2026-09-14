@@ -1,13 +1,13 @@
 /**
  * electron/data/task-metadata-store.ts — 任务元数据的读写
  *
- * 元数据决定一个任务是对话还是工作流，以及参与过哪些员工。
+ * 元数据决定一个任务是对话还是安排，以及参与过哪些员工。
  * 路径走 `scope-path.ts`、写走 `atomic-file.ts`。
  */
 import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 
-export type TaskKind = 'conversation' | 'workflow'
+export type TaskKind = 'conversation' | 'arrangement'
 
 export interface TaskMetadata {
   version: 1
@@ -18,7 +18,7 @@ export interface TaskMetadata {
   createdAt: number
 }
 
-const KINDS: readonly TaskKind[] = ['conversation', 'workflow']
+const KINDS: readonly TaskKind[] = ['conversation', 'arrangement']
 
 function parseMetadata(value: unknown, taskId: string): TaskMetadata | null {
   const metadata = value as TaskMetadata | null
@@ -49,3 +49,5 @@ export class TaskMetadataStore {
     )
   }
 }
+
+

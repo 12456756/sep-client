@@ -239,10 +239,11 @@ describe('TaskManager user scope', () => {
     await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
     const created = await manager.createTask('title', 'prompt')
     await manager.admitTask(created.id, 'run-a')
-    // Mirrors TaskExecutionCoordinator.cancelTask for a run that is still queued.
+    // Mirrors TaskRuntime.cancelTask for a run that is still queued.
     assert.equal(await manager.settleTaskRun(created.id, 'run-a', TaskStatus.PENDING), true)
     const settled = await manager.getTask(created.id)
     assert.equal(settled?.status, TaskStatus.PENDING)
     assert.equal(settled?.activeRunId, null)
   })
 })
+

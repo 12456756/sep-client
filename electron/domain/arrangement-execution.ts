@@ -1,24 +1,30 @@
-import type { ArrangementNode } from '../domain/arrangement-plan'
+import type { ArrangementNode } from './arrangement-plan'
 
-export type WorkflowNodeStatus = 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
-export type WorkflowExecutionStatus = 'queued' | 'running' | 'waiting-user' | 'interrupted' | 'completed' | 'stopped' | 'failed'
+/**
+ * 已确认编排的纯状态机。
+ *
+ * 这里不读写文件，也不启动 worker，只根据节点依赖计算 ready、blocked、retry、resume
+ * 等状态，并始终返回新的快照。持久化和实际执行分别由 data/runtime 层负责。
+ */
+export type ArrangementNodeStatus = 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
+export type ArrangementExecutionStatus = 'queued' | 'running' | 'waiting-user' | 'interrupted' | 'completed' | 'stopped' | 'failed'
 
-export interface WorkflowNodeCheckpoint {
+export interface ArrangementNodeCheckpoint {
   nodeId: string
-  status: WorkflowNodeStatus
+  status: ArrangementNodeStatus
   attempt: number
   error: string | null
   output: string | null
 }
 
-export interface WorkflowRunnerState {
-  status: WorkflowExecutionStatus
-  nodes: WorkflowNodeCheckpoint[]
+export interface ArrangementExecutionState {
+  status: ArrangementExecutionStatus
+  nodes: ArrangementNodeCheckpoint[]
   failureNodeIds: string[]
   interruptionReason: 'client-exit' | 'client-crash' | 'runtime-error' | null
 }
 
-function descendants(nodes: readonly ArrangementNode[], rootId: string): Set<string> {
+function descendantNodeIds(nodes: readonly ArrangementNode[], rootId: string): Set<string> {
   const result = new Set<string>()
   let changed = true
   while (changed) {
@@ -34,11 +40,11 @@ function descendants(nodes: readonly ArrangementNode[], rootId: string): Set<str
   return result
 }
 
-function nodeMap(state: WorkflowRunnerState): Map<string, WorkflowNodeCheckpoint> {
+function nodeMap(state: ArrangementExecutionState): Map<string, ArrangementNodeCheckpoint> {
   return new Map(state.nodes.map(node => [node.nodeId, node]))
 }
 
-export function createWorkflowRunnerState(nodes: readonly ArrangementNode[]): WorkflowRunnerState {
+export function createArrangementExecutionState(nodes: readonly ArrangementNode[]): ArrangementExecutionState {
   const roots = new Set(nodes.filter(node => node.dependsOn.length === 0).map(node => node.id))
   return {
     status: 'queued',
@@ -48,7 +54,7 @@ export function createWorkflowRunnerState(nodes: readonly ArrangementNode[]): Wo
   }
 }
 
-export function markNodeRunning(state: WorkflowRunnerState, nodeId: string): WorkflowRunnerState {
+export function markArrangementNodeRunning(state: ArrangementExecutionState, nodeId: string): ArrangementExecutionState {
   if (state.status === 'waiting-user' || state.status === 'stopped' || state.status === 'failed') return state
   const nodes = state.nodes.map(node => node.nodeId === nodeId && node.status === 'ready'
     ? { ...node, status: 'running' as const, attempt: node.attempt + 1 }
@@ -56,12 +62,12 @@ export function markNodeRunning(state: WorkflowRunnerState, nodeId: string): Wor
   return { ...state, status: 'running', nodes }
 }
 
-export function markNodeCompleted(
-  state: WorkflowRunnerState,
+export function markArrangementNodeCompleted(
+  state: ArrangementExecutionState,
   planNodes: readonly ArrangementNode[],
   nodeId: string,
   output: string | null = null,
-): WorkflowRunnerState {
+): ArrangementExecutionState {
   const nextNodes = nodeMap(state)
   const current = nextNodes.get(nodeId)
   if (!current || current.status !== 'running') return state
@@ -78,15 +84,15 @@ export function markNodeCompleted(
   return { ...state, status, nodes: ordered }
 }
 
-export function markNodeFailed(
-  state: WorkflowRunnerState,
+export function markArrangementNodeFailed(
+  state: ArrangementExecutionState,
   planNodes: readonly ArrangementNode[],
   nodeId: string,
   error: string,
-): WorkflowRunnerState {
+): ArrangementExecutionState {
   const current = nodeMap(state).get(nodeId)
   if (!current || (current.status !== 'running' && current.status !== 'interrupted')) return state
-  const blocked = descendants(planNodes, nodeId)
+  const blocked = descendantNodeIds(planNodes, nodeId)
   const nodes = state.nodes.map(node => {
     if (node.nodeId === nodeId) return { ...node, status: 'failed' as const, error }
     if (blocked.has(node.nodeId) && node.status !== 'completed') return { ...node, status: 'blocked' as const }
@@ -96,15 +102,15 @@ export function markNodeFailed(
   return { ...state, status: 'waiting-user', nodes, failureNodeIds: [...new Set([...state.failureNodeIds, nodeId])] }
 }
 
-export function retryFailedNode(
-  state: WorkflowRunnerState,
+export function retryArrangementNode(
+  state: ArrangementExecutionState,
   planNodes: readonly ArrangementNode[],
   nodeId: string,
-): WorkflowRunnerState {
+): ArrangementExecutionState {
   if (state.status !== 'waiting-user') return state
   const failed = state.nodes.find(node => node.nodeId === nodeId && node.status === 'failed')
   if (!failed) return state
-  const descendantsToRelease = descendants(planNodes, nodeId)
+  const descendantsToRelease = descendantNodeIds(planNodes, nodeId)
   const nodes = state.nodes.map(node => {
     if (node.nodeId === nodeId) return { ...node, status: 'ready' as const, error: null }
     if (descendantsToRelease.has(node.nodeId) && node.status === 'blocked') return { ...node, status: 'pending' as const }
@@ -118,15 +124,15 @@ export function retryFailedNode(
   }
 }
 
-export function stopWorkflow(state: WorkflowRunnerState): WorkflowRunnerState {
+export function stopArrangement(state: ArrangementExecutionState): ArrangementExecutionState {
   if (state.status === 'completed' || state.status === 'stopped') return state
   return { ...state, status: 'stopped', nodes: state.nodes.map(node => node.status === 'completed' ? { ...node } : { ...node, status: 'stopped' as const }) }
 }
 
-export function interruptWorkflow(
-  state: WorkflowRunnerState,
-  reason: WorkflowRunnerState['interruptionReason'],
-): WorkflowRunnerState {
+export function interruptArrangement(
+  state: ArrangementExecutionState,
+  reason: ArrangementExecutionState['interruptionReason'],
+): ArrangementExecutionState {
   if (state.status === 'completed' || state.status === 'stopped') return state
   return {
     ...state,
@@ -136,7 +142,7 @@ export function interruptWorkflow(
   }
 }
 
-export function resumeInterrupted(state: WorkflowRunnerState): WorkflowRunnerState {
+export function resumeArrangement(state: ArrangementExecutionState): ArrangementExecutionState {
   if (state.status !== 'interrupted') return state
   return {
     ...state,
@@ -145,3 +151,5 @@ export function resumeInterrupted(state: WorkflowRunnerState): WorkflowRunnerSta
     nodes: state.nodes.map(node => node.status === 'interrupted' ? { ...node, status: 'ready' as const } : { ...node }),
   }
 }
+
+

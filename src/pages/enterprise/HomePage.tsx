@@ -401,3 +401,5 @@ function involves(work: WorkItem, employeeId: string): boolean {
     || work.participants.includes(employeeId)
     || work.steps.some(step => step.employeeId === employeeId);
 }
+
+

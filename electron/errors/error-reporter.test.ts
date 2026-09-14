@@ -92,3 +92,4 @@ describe('reportFatal', () => {
     assert.equal(captured.length, 1)
   })
 })
+

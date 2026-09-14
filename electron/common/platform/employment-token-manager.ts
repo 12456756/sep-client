@@ -1,19 +1,19 @@
-import { AuthApiError, getInstanceToken } from './platform-api';
+import { AuthApiError, getEmploymentToken } from './platform-api';
 import { config } from '../config';
 import { describeError } from '../redact'
 import { logger } from '../logger'
 
-const log = logger.child('instance-token-manager')
+const log = logger.child('employment-token-manager')
 
 const DEFAULT_TOKEN_TTL_SECONDS = 15 * 60;
 const RETRY_DELAY_MS = 5_000;
 
-export interface InstanceTokenManagerOptions {
+export interface EmploymentTokenManagerOptions {
   getRefreshToken: () => string;
   onAuthenticationRequired?: () => void;
 }
 
-export class InstanceTokenManager {
+export class EmploymentTokenManager {
   private employmentToken: string | null = null;
   private expiresAt = 0;
   private refreshTimer: NodeJS.Timeout | null = null;
@@ -22,7 +22,7 @@ export class InstanceTokenManager {
   private generation = 0;
   private controller: AbortController | null = null;
 
-  constructor(private readonly options: InstanceTokenManagerOptions) {}
+  constructor(private readonly options: EmploymentTokenManagerOptions) {}
 
   async initialize(subscriptionId: string): Promise<void> {
     this.stop();
@@ -36,7 +36,7 @@ export class InstanceTokenManager {
 
     if (
       !this.employmentToken ||
-      Date.now() + config.INSTANCE_TOKEN_REFRESH_BEFORE_MS >= this.expiresAt
+      Date.now() + config.EMPLOYMENT_TOKEN_REFRESH_BEFORE_MS >= this.expiresAt
     ) {
       return this.refreshNow();
     }
@@ -79,7 +79,7 @@ export class InstanceTokenManager {
     signal: AbortSignal,
   ): Promise<string> {
     try {
-      const response = await getInstanceToken({
+      const response = await getEmploymentToken({
         refreshToken: this.options.getRefreshToken(),
         subscriptionId,
       }, signal);
@@ -122,7 +122,7 @@ export class InstanceTokenManager {
   private scheduleRefresh(tokenLifetimeMs: number, generation: number, subscriptionId: string): void {
     if (this.refreshTimer) clearTimeout(this.refreshTimer);
     const refreshLeadMs = Math.min(
-      config.INSTANCE_TOKEN_REFRESH_BEFORE_MS,
+      config.EMPLOYMENT_TOKEN_REFRESH_BEFORE_MS,
       tokenLifetimeMs / 3,
     );
     const delay = Math.max(1_000, this.expiresAt - refreshLeadMs - Date.now());
@@ -146,3 +146,4 @@ export class InstanceTokenManager {
     }, Math.min(RETRY_DELAY_MS, remainingLifetime));
   }
 }
+

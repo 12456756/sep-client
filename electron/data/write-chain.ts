@@ -1,9 +1,7 @@
 /**
  * electron/data/write-chain.ts — 按 key 串行化的写链
  *
- * 数据层此前有三份几乎相同的实现：`TaskStore.save`、`TaskRunStore.enqueue`、
- * 以及 Phase 7 拆出事件存储时跟着复制的第三份。方案第 6 章要求归并
- * `enqueue`/`enqueueValue` 为一个泛型实现——这里把第三份也一起收掉。
+ * 所有需要顺序写入的数据存储共用这一条泛型写链，避免不同 store 各自维护串行逻辑。
  *
  * 语义（对应不变式 I3 / I4 / I5）：
  *   - 同一 key 上的操作严格按提交顺序执行，不并发；
@@ -30,3 +28,5 @@ export class WriteChain {
     return this.chains.size
   }
 }
+
+

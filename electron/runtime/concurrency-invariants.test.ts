@@ -5,7 +5,7 @@
  * 此文件与该方案第 2、7 章共同承担基准职责。
  *
  * 覆盖范围说明：这里断言的是"今天已经成立"的性质。每个缺陷（C1..C9）触发条件下的
- * 回归测试属于 Phase 1，与缺陷修复同一提交落地，见各测试注释里的标注。
+ * 每条回归测试都固定一个并发边界，避免运行时拆分后重新引入竞态。
  */
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
@@ -14,7 +14,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
 import { ToolApprovals } from './run-approvals'
-import { TaskExecutionCoordinator } from './task-execution-coordinator'
+import { TaskRuntime } from './task-runtime'
 import type { EmployeeRuntimeConfig } from './run-types'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
@@ -52,7 +52,7 @@ afterEach(async () => {
 interface Harness {
   manager: TaskManager
   runStore: TaskRunStore
-  coordinator: TaskExecutionCoordinator
+  runtime: TaskRuntime
   /** 每个 fake worker 启动时记录的 taskId，按启动顺序。 */
   started: string[]
   /** 已被 handleWorkerEvent 处理完的事件，按处理顺序。 */
@@ -81,7 +81,7 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
   const handled: TaskExecutionEvent[] = []
   const releases: Array<() => void> = []
 
-  const coordinator = new TaskExecutionCoordinator({
+  const runtime = new TaskRuntime({
     taskManager: manager,
     taskRunStore: runStore,
     getRefreshToken: () => 'refresh-token',
@@ -106,7 +106,7 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
   })
 
   return {
-    manager, runStore, coordinator, started, handled, userData,
+    manager, runStore, runtime, started, handled, userData,
     releaseAll: () => releases.splice(0).forEach(resolve => resolve()),
   }
 }
@@ -116,10 +116,10 @@ describe('I1 — 同一 taskId 最多一个 active run', () => {
     const harness = await makeHarness()
     const task = await harness.manager.createTask('one', 'prompt', undefined, EMPLOYEE.subscriptionId)
 
-    await harness.coordinator.executeTask(task.id)
+    await harness.runtime.executeTask(task.id)
     await waitFor(() => harness.started.length === 1)
 
-    await assert.rejects(() => harness.coordinator.executeTask(task.id))
+    await assert.rejects(() => harness.runtime.executeTask(task.id))
     assert.equal(harness.started.length, 1)
     assert.equal((await harness.manager.getTask(task.id))?.activeRunId !== null, true)
 
@@ -137,8 +137,8 @@ describe('I2 — 重叠工作目录不得同时被两个 run 持有', () => {
     const second = await harness.manager.createTask('child', 'b', child, EMPLOYEE.subscriptionId)
 
     await Promise.all([
-      harness.coordinator.executeTask(first.id),
-      harness.coordinator.executeTask(second.id),
+      harness.runtime.executeTask(first.id),
+      harness.runtime.executeTask(second.id),
     ])
     await waitFor(() => harness.started.length === 1)
     await new Promise(resolve => setTimeout(resolve, 60))
@@ -208,7 +208,7 @@ describe('I4 — 同一 taskId 的事件处理严格串行', () => {
     })
     const task = await harness.manager.createTask('burst', 'prompt', undefined, EMPLOYEE.subscriptionId)
 
-    await harness.coordinator.executeTask(task.id)
+    await harness.runtime.executeTask(task.id)
     await waitFor(async () => (await harness.manager.getTask(task.id))?.activeRunId === null)
 
     const texts = harness.handled
@@ -267,7 +267,7 @@ describe('I6 — activeRunId 非空 ⟺ run 在队列中或在 active 中', () =
     const task = await harness.manager.createTask('lifecycle', 'prompt', undefined, EMPLOYEE.subscriptionId)
 
     assert.equal((await harness.manager.getTask(task.id))?.activeRunId, null)
-    await harness.coordinator.executeTask(task.id)
+    await harness.runtime.executeTask(task.id)
     await waitFor(() => harness.started.length === 1)
     assert.notEqual((await harness.manager.getTask(task.id))?.activeRunId, null)
 
@@ -282,12 +282,12 @@ describe('I6 — activeRunId 非空 ⟺ run 在队列中或在 active 中', () =
     const blocker = await harness.manager.createTask('blocker', 'a', workspace, EMPLOYEE.subscriptionId)
     const queued = await harness.manager.createTask('queued', 'b', workspace, EMPLOYEE.subscriptionId)
 
-    await harness.coordinator.executeTask(blocker.id)
+    await harness.runtime.executeTask(blocker.id)
     await waitFor(() => harness.started.length === 1)
-    await harness.coordinator.executeTask(queued.id)
+    await harness.runtime.executeTask(queued.id)
     assert.notEqual((await harness.manager.getTask(queued.id))?.activeRunId, null)
 
-    await harness.coordinator.pauseTask(queued.id)
+    await harness.runtime.pauseTask(queued.id)
     const paused = await harness.manager.getTask(queued.id)
     assert.equal(paused?.activeRunId, null, '排队条目被移出队列后 activeRunId 仍非空')
     assert.equal(paused?.status, TaskStatus.PAUSED)
@@ -317,11 +317,11 @@ describe('I7 — 停机时每个 in-flight 副作用工具都产出一条 SIDE_E
     })
     const task = await harness.manager.createTask('shutdown', 'prompt', undefined, EMPLOYEE.subscriptionId)
 
-    await harness.coordinator.executeTask(task.id)
+    await harness.runtime.executeTask(task.id)
     await waitFor(async () => (await harness.manager.getTask(task.id))?.status === TaskStatus.RUNNING)
     await waitFor(() => harness.handled.filter(event => event.type === 'tool_execution_start').length === 2)
 
-    await harness.coordinator.stopAll()
+    await harness.runtime.stopAll()
 
     const runs = await harness.runStore.list(SCOPE, task.id)
     assert.equal(runs.length, 1)
@@ -414,3 +414,4 @@ describe('I9 — run 的终态只写一次', () => {
     assert.ok(['completed', 'failed', 'cancelled'].includes(record?.outcome ?? ''))
   })
 })
+

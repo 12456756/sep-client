@@ -71,3 +71,4 @@ describe('arrangement plan domain', () => {
     assert.deepEqual(issues, ['a:model-not-allowed'])
   })
 })
+

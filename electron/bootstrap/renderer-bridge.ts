@@ -1,8 +1,7 @@
 /**
  * electron/bootstrap/renderer-bridge.ts — main -> renderer 的唯一推送出口
  *
- * 全后端只有这一个文件调用 `webContents.send`，由 `check:boundaries` 的
- * `B1a:renderer-push-single-exit` 强制（方案 3.3 节 B1）。
+ * 全后端只有这一个文件调用 `webContents.send`，边界检查会保证推送出口不扩散。
  *
  * 它同时是当前窗口的唯一持有者。窗口在组装之后才创建、可能被关闭后重建，
  * 所以引用必须可变；把这份可变状态收在一个对象里，替掉 main.ts 原来的模块级
@@ -57,3 +56,5 @@ export class RendererBridge implements RendererPort {
     window.webContents.send(channel, ...payload)
   }
 }
+
+

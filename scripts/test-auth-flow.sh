@@ -53,14 +53,14 @@ fi
 
 echo ""
 echo "=== Step 2: Get Instances ==="
-INSTANCES=$(curl -s -X GET "$BASE_URL/client/instances" \
+SUBSCRIPTIONS=$(curl -s -X GET "$BASE_URL/client/subscriptions" \
   -H "Authorization: Bearer $ACCESS_TOKEN")
 
-echo "$INSTANCES" | jq '.'
+echo "$SUBSCRIPTIONS" | jq '.'
 
-INSTANCE_ID=$(echo "$INSTANCES" | jq -r '.[0].id // empty')
+SUBSCRIPTION_ID=$(echo "$SUBSCRIPTIONS" | jq -r '.[0].id // empty')
 
-if [[ -z "$INSTANCE_ID" ]]; then
+if [[ -z "$SUBSCRIPTION_ID" ]]; then
   echo "error: no instances returned for this account" >&2
   exit 1
 fi
@@ -69,8 +69,8 @@ echo ""
 echo "=== Step 3: Get Instance Token ==="
 TOKEN_BODY=$(jq -nc \
   --arg refreshToken "$REFRESH_TOKEN" \
-  --arg instanceId "$INSTANCE_ID" \
-  '{refreshToken: $refreshToken, instanceId: $instanceId}')
+  --arg subscriptionId "$SUBSCRIPTION_ID" \
+  '{refreshToken: $refreshToken, subscriptionId: $subscriptionId}')
 
 TOKEN_RESPONSE=$(curl -s -X POST "$BASE_URL/client/auth/token" \
   -H "Content-Type: application/json" \

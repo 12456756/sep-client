@@ -5,12 +5,12 @@
  * useEnterpriseWorkspace 里换成 IPC 调用即可，页面组件无需改动。
  *
  * 已经有真实来源的数据不在此文件内：
- * - 我可用的员工      ← GET /client/subscriptions（getInstances）
+ * - 我可用的员工      ← GET /client/subscriptions（getSubscriptions）
  * - 工作列表与状态    ← 本地 TaskManager（getAllTasks / onTaskUpdated）
  * - 员工包版本        ← GET /enterprise/subscriptions/:id/package
  */
 
-import type { EmployeeSkill, OperationPermission, SiliconEmployee, WorkTemplate } from './types';
+import type { ArrangementTemplate, EmployeeSkill, OperationPermission, SiliconEmployee } from './types';
 
 // ──────────────────── 本机操作权限（本地设置，非平台数据） ────────────────────
 
@@ -122,18 +122,16 @@ export function profileForRole(roleName: string): EmployeeProfile {
  * 首页要回答「企业共有多少名硅基员工」。订阅目录只返回我有权限的，
  * 所以这里补一份企业名册。未分配的员工只用于建立规模认知，不可直接操作。
  */
-const ENTERPRISE_ROSTER: { role: string; department: string; count: number }[] = [
-  { role: '数据分析', department: '数据部', count: 6 },
-  { role: '内容运营', department: '市场部', count: 7 },
-  { role: '审核校对', department: '质量部', count: 4 },
-  { role: '客户支持', department: '客户成功部', count: 8 },
-  { role: '资料整理', department: '行政部', count: 5 },
-  { role: '流程协调', department: '运营部', count: 6 },
+const ENTERPRISE_ROSTER: { role: string; count: number }[] = [
+  { role: '数据分析', count: 6 },
+  { role: '内容运营', count: 7 },
+  { role: '审核校对', count: 4 },
+  { role: '客户支持', count: 8 },
+  { role: '资料整理', count: 5 },
+  { role: '流程协调', count: 6 },
 ];
 
 export const ENTERPRISE_TOTAL_EMPLOYEES = ENTERPRISE_ROSTER.reduce((sum, item) => sum + item.count, 0);
-
-export const ENTERPRISE_DEPARTMENTS = ENTERPRISE_ROSTER.map(item => item.department);
 
 /**
  * 生成企业名册中未分配给当前用户的员工，用于「硅基员工」页展示企业全貌。
@@ -150,7 +148,6 @@ export function unassignedEmployees(assignedRoles: string[]): SiliconEmployee[] 
         name: `${entry.role}员工 ${String(index + 1).padStart(2, '0')}`,
         mark: entry.role.slice(0, 1),
         roleName: entry.role,
-        department: entry.department,
         availability: 'unavailable',
         assignedToMe: false,
         intro: profile.intro,
@@ -167,9 +164,9 @@ export function unassignedEmployees(assignedRoles: string[]): SiliconEmployee[] 
   return result;
 }
 
-// ────────── 固定工作流程：TODO ← GET /enterprise/work-templates（尚未开放） ──────────
+// ────────── 企业预设安排：TODO ← GET /enterprise/arrangement-templates（尚未开放） ──────────
 
-export const WORK_TEMPLATES: WorkTemplate[] = [
+export const ARRANGEMENT_TEMPLATES: ArrangementTemplate[] = [
   {
     id: 'customer-weekly',
     name: '客户周报',
@@ -335,3 +332,5 @@ export function initialSkills(): EmployeeSkill[] {
     },
   ];
 }
+
+

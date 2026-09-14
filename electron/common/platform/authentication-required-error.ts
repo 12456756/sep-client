@@ -15,3 +15,5 @@ export class AuthenticationRequiredError extends Error {
     this.name = 'AuthenticationRequiredError'
   }
 }
+
+

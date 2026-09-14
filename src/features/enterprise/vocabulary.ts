@@ -13,7 +13,6 @@ export const TERM_MAP: Record<string, string> = {
   Agent: '硅基员工',
   智能体: '硅基员工',
   任务: '工作',
-  工作流: '工作流程',
   节点: '工作步骤',
   执行记录: '工作记录',
   技能包: '员工技能',
@@ -124,3 +123,5 @@ export function stepProgressText(done: number, total: number): string {
   if (!total) return '尚未拆分步骤';
   return `已完成 ${done} / ${total} 个步骤`;
 }
+
+

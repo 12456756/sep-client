@@ -1,12 +1,8 @@
 /**
  * electron/data/task-run-store.ts — run 记录
  *
- * Phase 7 之前这个文件捆了五件事（方案 1.3 节）：run 记录、事件日志、消息投影、
- * 崩溃恢复、路径推导。现在事件在 `task-event-store.ts`、投影在
- * `task-messages.ts`、路径在 `scope-path.ts`、原子写在 `atomic-file.ts`。
- *
- * 这里留下的是 run 记录本身，加上崩溃恢复——后者必须同时读 run 记录与事件，
- * 所以本类拥有一个 `TaskEventStore` 实例并以 `events` 暴露；事件的逻辑一行都不在这里。
+ * 本模块只负责 run 记录和崩溃恢复。事件、消息投影、路径和原子 JSON 写入由独立模块
+ * 提供；恢复逻辑通过 `events` 读取事件状态。
  */
 import { mkdir, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -321,3 +317,5 @@ function pendingSideEffects(
   }
   return pending
 }
+
+

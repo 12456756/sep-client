@@ -42,3 +42,5 @@ export class WorkPlanStore implements WorkPlanStorePort {
     return readJsonWithBackup(this.paths.workPlanFile(scope, taskId), value => parsePlan(value, scope, taskId))
   }
 }
+
+

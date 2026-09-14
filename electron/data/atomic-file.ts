@@ -1,17 +1,8 @@
 /**
- * electron/data/atomic-file.ts — 唯一的原子写实现
+ * 任务数据的原子 JSON 读写。
  *
- * 此前有三套（方案 1.3 节 / 第 6 章）：`task-store` 的 tmp + `.bak` + 回滚 + `quarantine`、
- * `task-run-store` 的 tmp + rename、`workflow-store` 的 tmp + rename 什么都不做。
- * 行为细节不一致，而"哪个 store 值得保护"从来不是一个应该由文件大小决定的问题。
- *
- * 按方案要求，**`task-store` 的语义成为默认**：写之前把现有文件复制成 `.bak`，
- * 写失败时用它回滚；读不出来时先试 `.bak`，再把损坏文件隔离到
- * `<file>.corrupt-<kind>-<时间戳>-<uuid>.json`。
- *
- * 目录布局是硬约束（第 11 章），所以这里只多出 `.bak` 兄弟文件，数据文件本身的
- * 路径与格式一个字符都没动。`.bak` 与 `.corrupt-*` 都不会被 run 列表扫到：
- * 前者不以 `.json` 结尾，后者的 runId 段含点号，过不了 `SAFE_ID`。
+ * 写入使用临时文件和同目录 rename，并保留 `.bak` 以便写入失败或主文件损坏时恢复。
+ * 损坏文件会被隔离，不能阻止其他任务继续启动。
  */
 import { chmod, copyFile, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
@@ -140,3 +131,5 @@ export async function readJsonWithBackup<T>(
   await quarantineFile(file, 'store')
   return null
 }
+
+

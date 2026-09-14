@@ -3,7 +3,6 @@ import * as assert from 'node:assert/strict'
 import { AuthApiError } from '../common/platform/platform-api'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
 import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
-import { WorkflowGraphError } from '../domain/workflow-graph'
 import { InvalidTaskTransitionError, TaskAdmissionError, TaskPersistenceError, TaskScopeError } from '../runtime/task-manager'
 import { TaskStatus } from '../../src/shared/types'
 import { ERROR_CODES } from './error-codes'
@@ -13,7 +12,7 @@ import { authFailure, failure, toAuthEnvelope, toEnvelope } from './error-mapper
 const CJK = /[一-鿿]/
 
 function apiError(statusCode: number, message: string, resource?: 'package'): AuthApiError {
-  return new AuthApiError({ statusCode, message, error: message }, resource)
+  return new AuthApiError({ statusCode, message }, resource)
 }
 
 describe('error code table', () => {
@@ -43,7 +42,6 @@ describe('toEnvelope', () => {
     assert.equal(toEnvelope(new TaskAdmissionError()).code, 'INVALID_STATE')
     assert.equal(toEnvelope(new InvalidTaskTransitionError(TaskStatus.PAUSED, TaskStatus.COMPLETED)).code, 'INVALID_STATE')
     assert.equal(toEnvelope(new TaskPersistenceError()).code, 'PERSISTENCE_ERROR')
-    assert.equal(toEnvelope(new WorkflowGraphError('bad graph')).code, 'INVALID_ARGUMENT')
   })
 
   it('keeps a recovery error code that the table knows', () => {
@@ -111,3 +109,6 @@ describe('failure builders', () => {
     assert.equal(authFailure('AUTH_REQUIRED').error.code, 'AUTH_REQUIRED')
   })
 })
+
+
+

@@ -4,6 +4,7 @@ import { NO_INPUT, route } from '../router'
 import type { ArrangementDraft } from '../../domain/arrangement-plan'
 
 const draftId = z.string().min(1)
+const taskId = z.string().min(1)
 const revision = z.number().int().positive()
 const mode = z.enum(['conversation', 'auto', 'manual'])
 const permissionPreset = z.enum(['read-only', 'workspace-edit', 'full-local'])
@@ -68,6 +69,10 @@ export const arrangementRoutes = [
     success: true,
     context: await ctx.arrangements.context(),
   })),
+  route(INVOKE_CHANNELS.ARRANGE_GET_PLAN, taskId, async (ctx, id) => ({
+    success: true,
+    plan: await ctx.arrangements.getPlan(id),
+  })),
   route(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS, NO_INPUT, async ctx => ({
     success: true,
     drafts: await ctx.arrangements.listDrafts(),
@@ -113,3 +118,5 @@ export const arrangementRoutes = [
     ...(await ctx.arrangements.confirmAndStart(input.draftId, input.expectedRevision, input.idempotencyKey)),
   })),
 ]
+
+

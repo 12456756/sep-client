@@ -101,3 +101,4 @@ describe('PiTaskWorker', () => {
     assert.equal(tokenManager.stopped, true)
   })
 })
+

@@ -1,232 +1,432 @@
-/** Electron 主进程使用的 SEP 认证和订阅接口。 */
+import { config } from '../config'
+import type { Subscription } from '../../../src/shared/types'
 
-import { config } from '../config';
-import type { EmployeeInstanceSnapshot } from '../../../src/shared/types';
+export type { Subscription } from '../../../src/shared/types'
+
+export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
+
+export interface PlatformUser {
+  id: string
+  email: string
+  name: string
+  role: string
+}
+
+export interface PlatformEnterprise {
+  id: string
+  name: string
+}
+
+export interface PlatformDevice {
+  id: string
+  fingerprint: string
+  platform: string
+  lastSeenAt: string
+}
 
 export interface LoginRequest {
-  email: string;
-  password: string;
-  fingerprint: string;
-  platform: string;
-  clientVersion?: string;
+  email: string
+  password: string
+  fingerprint: string
+  platform: string
+  clientVersion?: string
 }
 
 export interface LoginResponse {
-  accessToken: string;
-  refreshToken: string;
-  accessTokenExpiresIn: number;
-  refreshTokenExpiresIn: number;
-  user: { id: string; email: string; name: string };
-  enterprise: { id: string; name: string } | null;
+  accessToken: string
+  refreshToken: string
+  accessTokenExpiresIn: number
+  refreshTokenExpiresIn: number
+  user: PlatformUser
+  enterprise: PlatformEnterprise | null
+  devices: PlatformDevice[]
 }
 
 export interface RefreshResponse {
-  accessToken: string;
-  accessTokenExpiresIn: number;
-  user: { id: string; email: string; name: string };
-  enterprise: { id: string; name: string } | null;
+  accessToken: string
+  accessTokenExpiresIn: number
+  user: PlatformUser
+  enterprise: PlatformEnterprise | null
 }
 
-export type ClientInstance = EmployeeInstanceSnapshot;
-
-export interface InstanceTokenRequest {
-  refreshToken: string;
-  subscriptionId: string;
+export interface EmploymentTokenRequest {
+  refreshToken: string
+  subscriptionId: string
 }
 
-export interface InstanceTokenResponse {
-  employmentToken: string;
-  expiresIn: number;
-  employment: { id: string; name: string; templateId: string; status: string };
+export interface EmploymentTokenResponse {
+  employmentToken: string
+  expiresIn: number
+  employment: {
+    id: string
+    name: string
+    templateId: string
+    status: SubscriptionStatus
+  }
 }
 
 export interface PackageInfo {
-  version: string;
-  packageRef: { type: 'npm' | 'git' | 'zip'; spec: string } | null;
-  zipAvailable: boolean;
-  sha256: string | null;
+  version: string
+  packageRef: {
+    type: 'npm' | 'git' | 'zip'
+    spec: string
+  } | null
+  zipAvailable: boolean
+  sha256: string | null
 }
 
 export interface EmployeeSkill {
-  id: string;
-  name: string;
-  currentVersion: string;
-  status: string;
-  versionId?: string;
-  content?: string;
+  capability: {
+    id: string
+    name: string
+    description: string
+    type: string
+  }
+  currentVersion: {
+    id: string
+    capabilityId: string
+    scope: string
+    enterpriseId: string | null
+    version: string
+    changeSummary: string
+    status: string
+    createdAt: string
+    updatedAt: string
+  }
+  versions: unknown[]
+  upgradeAvailable: boolean
+}
+
+export interface EmployeeSkillsResponse {
+  subscriptionId: string
+  canManage: boolean
+  skills: EmployeeSkill[]
+}
+
+export interface SkillPreviewResponse {
+  content: string
+  [key: string]: unknown
+}
+
+export interface KnowledgeBaseGrant {
+  id: string
+  knowledgeBase: {
+    id: string
+    name: string
+  }
+}
+
+export interface KnowledgeBaseGrantsResponse {
+  grants: KnowledgeBaseGrant[]
+}
+
+export type KnowledgeSearchStrategy = 'auto' | 'lexical' | 'vector' | 'hybrid'
+
+export interface KnowledgeBaseSearchRequest {
+  query: string
+  subscriptionId: string
+  topK?: number
+  scoreThreshold?: number
+  strategy?: KnowledgeSearchStrategy
+}
+
+export interface KnowledgeBaseSearchResult {
+  chunkId: string
+  knowledgeBaseId: string
+  source: string
+  score: number
+  content: string
+}
+
+export interface KnowledgeBaseSearchResponse {
+  query: string
+  subscriptionId: string
+  strategy: KnowledgeSearchStrategy
+  durationMs: number
+  count: number
+  results: KnowledgeBaseSearchResult[]
+}
+
+export interface Notification {
+  id: string
+  category: string
+  [key: string]: unknown
+}
+
+export interface EmployeeStatus {
+  employeeId: string
+  status: string
+}
+
+export interface UploadFile {
+  key: string
+  url?: string
+  [key: string]: unknown
+}
+
+export interface UploadInput {
+  bytes: Uint8Array
+  filename: string
+  contentType: string
+}
+
+export interface NotificationQuery {
+  limit?: number
+  offset?: number
+  category?: string
+  unreadOnly?: boolean
 }
 
 export interface ApiError {
-  statusCode: number;
-  message: string;
-  error: string;
+  statusCode: number
+  message: string
+  requestId?: string
+  timestamp?: string
+  path?: string
+}
+
+type AuthApiResource =
+  | 'package'
+  | 'subscriptions'
+  | 'employment-token'
+  | 'skills'
+  | 'knowledge'
+  | 'refresh'
+  | 'login'
+  | 'notifications'
+  | 'upload'
+
+export class AuthApiError extends Error {
+  constructor(
+    public readonly error: ApiError,
+    public readonly resource?: AuthApiResource,
+  ) {
+    super(error.message)
+    this.name = 'AuthApiError'
+  }
+
+  get statusCode(): number {
+    return this.error.statusCode
+  }
+
+  get isUnauthorized(): boolean {
+    return this.error.statusCode === 401
+  }
+
+  get isForbidden(): boolean {
+    return this.error.statusCode === 403
+  }
+
+  get isNetworkError(): boolean {
+    return this.error.statusCode === 0 || this.error.statusCode >= 500
+  }
 }
 
 async function parseError(response: Response, resource?: AuthApiResource): Promise<AuthApiError> {
-  let error: ApiError;
   try {
-    error = await response.json() as ApiError;
+    const value = await response.json() as Partial<ApiError>
+    return new AuthApiError({
+      statusCode: typeof value.statusCode === 'number' ? value.statusCode : response.status,
+      message: typeof value.message === 'string' ? value.message : response.statusText,
+      requestId: value.requestId,
+      timestamp: value.timestamp,
+      path: value.path,
+    }, resource)
   } catch {
-    error = { statusCode: response.status, message: response.statusText, error: 'Unknown Error' };
+    return new AuthApiError({ statusCode: response.status, message: response.statusText }, resource)
   }
-  return new AuthApiError(error, resource);
 }
 
-export async function login(req: LoginRequest): Promise<LoginResponse> {
-  const response = await fetch(`${config.SEP_API_BASE_URL}/client/auth/login`, {
+async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource): Promise<T> {
+  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) throw await parseError(response, resource)
+  return response.json() as Promise<T>
+}
+
+async function postJson<T>(path: string, body: unknown, accessToken: string, resource: AuthApiResource): Promise<T> {
+  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) throw await parseError(response, resource)
+  return response.json() as Promise<T>
+}
+
+export async function login(request: LoginRequest): Promise<LoginResponse> {
+  const response = await fetch(`${config.SEP_BASE_URL}/client/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  });
-  if (!response.ok) throw await parseError(response);
-  return response.json() as Promise<LoginResponse>;
+    body: JSON.stringify(request),
+  })
+  if (!response.ok) throw await parseError(response, 'login')
+  return response.json() as Promise<LoginResponse>
 }
 
 export async function refreshAccessToken(refreshToken: string): Promise<RefreshResponse> {
-  const response = await fetch(`${config.SEP_API_BASE_URL}/client/auth/refresh`, {
+  const response = await fetch(`${config.SEP_BASE_URL}/client/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
-  });
-  if (!response.ok) throw await parseError(response);
-  return response.json() as Promise<RefreshResponse>;
+  })
+  if (!response.ok) throw await parseError(response, 'refresh')
+  return response.json() as Promise<RefreshResponse>
 }
 
-interface SubscriptionPayload {
-  id: unknown;
-  subscriptionId: unknown;
-  employeeId: unknown;
-  name: unknown;
-  status: unknown;
-  templateVersion: unknown;
-  template: unknown;
-  allowedModels: unknown;
-  department: unknown;
-  startDate?: unknown;
-  endDate?: unknown;
+export function getSubscriptions(accessToken: string): Promise<Subscription[]> {
+  return getJson<Subscription[]>('/client/subscriptions', accessToken, 'subscriptions')
 }
 
-function normalizeSubscription(value: unknown): ClientInstance {
-  const item = (value && typeof value === 'object' ? value : {}) as SubscriptionPayload;
-  const id = typeof item.subscriptionId === 'string'
-    ? item.subscriptionId
-    : typeof item.id === 'string' ? item.id : '';
-  const name = typeof item.name === 'string' ? item.name : id;
-  const template = item.template && typeof item.template === 'object' ? item.template as Record<string, unknown> : {};
-  const department = item.department && typeof item.department === 'object' ? item.department as Record<string, unknown> : null;
-  const toTimestamp = (candidate: unknown): number | null => {
-    if (typeof candidate !== 'string' && typeof candidate !== 'number') return null
-    const timestamp = typeof candidate === 'number' ? candidate : Date.parse(candidate)
-    return Number.isFinite(timestamp) ? timestamp : null
-  }
-  const normalized: ClientInstance = {
-    id,
-    name,
-    status: item.status === 'ACTIVE' ? 'ACTIVE' : item.status === 'REVOKED' ? 'REVOKED' : 'PAUSED',
-    templateVersion: typeof item.templateVersion === 'string' ? item.templateVersion : '',
-    template: {
-      id: typeof item.employeeId === 'string' ? item.employeeId : typeof template.id === 'string' ? template.id : '',
-      name: typeof template.name === 'string' ? template.name : name,
-      avatar: typeof template.avatar === 'string' ? template.avatar : null,
-    },
-    department: department && typeof department.id === 'string' && typeof department.name === 'string'
-      ? { id: department.id, name: department.name }
-      : null,
-    // 旧版本地 SEP 可能不会在 /client/instances 中返回 allowedModels。
-    // 使用配置中的默认模型保持订阅可运行，最终授权仍由雇佣网关判断。
-    allowedModels: Array.isArray(item.allowedModels)
-      ? item.allowedModels.filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
-      : [config.SEP_DEFAULT_MODEL],
-  };
-  const startDate = toTimestamp(item.startDate)
-  const endDate = toTimestamp(item.endDate)
-  return {
-    ...normalized,
-    ...(startDate === null ? {} : { startDate }),
-    ...(endDate === null ? {} : { endDate }),
-  }
-}
-
-/** 获取当前成员处于 ACTIVE 状态的员工订阅。 */
-export async function getInstances(accessToken: string): Promise<ClientInstance[]> {
-  const headers = { 'Authorization': `Bearer ${accessToken}` };
-  let response = await fetch(`${config.SEP_API_BASE_URL}/client/subscriptions`, { headers });
-  if (response.status === 404) {
-    response = await fetch(`${config.SEP_API_BASE_URL}/client/instances`, { headers });
-  }
-  if (!response.ok) throw await parseError(response);
-  const payload = await response.json() as unknown;
-  if (!Array.isArray(payload)) throw new AuthApiError({ statusCode: 502, message: 'Invalid subscription response.', error: 'Bad Gateway' });
-  return payload.map(normalizeSubscription);
-}
-
-/** 使用客户端刷新令牌换取订阅范围的雇佣令牌。 */
-export async function getInstanceToken(req: InstanceTokenRequest, signal?: AbortSignal): Promise<InstanceTokenResponse> {
-  const response = await fetch(`${config.SEP_API_BASE_URL}/client/auth/token`, {
+export async function getEmploymentToken(
+  request: EmploymentTokenRequest,
+  signal?: AbortSignal,
+): Promise<EmploymentTokenResponse> {
+  const response = await fetch(`${config.SEP_BASE_URL}/client/auth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
+    body: JSON.stringify(request),
     signal,
-  });
-  if (!response.ok) throw await parseError(response);
-  return response.json() as Promise<InstanceTokenResponse>;
-}
-
-type AuthApiResource = 'package' | 'subscriptions' | 'instance-token' | 'skills' | 'refresh' | 'login';
-
-async function getJson<T>(path: string, accessToken: string, resource?: AuthApiResource): Promise<T> {
-  const response = await fetch(`${config.SEP_API_BASE_URL}${path}`, { headers: { 'Authorization': `Bearer ${accessToken}` } });
-  if (!response.ok) throw await parseError(response, resource);
-  return response.json() as Promise<T>;
+  })
+  if (!response.ok) throw await parseError(response, 'employment-token')
+  return response.json() as Promise<EmploymentTokenResponse>
 }
 
 export function getPackageInfo(subscriptionId: string, accessToken: string): Promise<PackageInfo> {
-  return getJson<unknown>(`/enterprise/subscriptions/${encodeURIComponent(subscriptionId)}/package`, accessToken, 'package').then(payload => {
-    if (!payload || typeof payload !== 'object') throw new AuthApiError({ statusCode: 502, message: 'Invalid package response.', error: 'Bad Gateway' })
-    const value = payload as Record<string, unknown>
-    const ref = value.packageRef && typeof value.packageRef === 'object' ? value.packageRef as Record<string, unknown> : null
-    const type = ref?.type
-    if (typeof value.version !== 'string' || (ref && (type !== 'npm' && type !== 'git' && type !== 'zip')) || (ref && typeof ref.spec !== 'string')) {
-      throw new AuthApiError({ statusCode: 502, message: 'Invalid package response.', error: 'Bad Gateway' })
-    }
-    return { version: value.version, packageRef: ref ? { type: type as 'npm' | 'git' | 'zip', spec: ref.spec as string } : null, zipAvailable: value.zipAvailable === true, sha256: typeof value.sha256 === 'string' ? value.sha256 : null }
-  });
+  return getJson<PackageInfo>(
+    `/enterprise/subscriptions/${encodeURIComponent(subscriptionId)}/package`,
+    accessToken,
+    'package',
+  )
 }
 
-export async function getEmployeeSkills(employeeId: string, accessToken: string): Promise<EmployeeSkill[]> {
-  const payload = await getJson<unknown>(`/enterprise/employees/${encodeURIComponent(employeeId)}/skills`, accessToken)
-  const values = Array.isArray(payload) ? payload : payload && typeof payload === 'object' && Array.isArray((payload as { skills?: unknown }).skills) ? (payload as { skills: unknown[] }).skills : []
-  return values.flatMap(value => {
-    if (!value || typeof value !== 'object') return []
-    const item = value as Record<string, unknown>
-    const version = item.currentVersion && typeof item.currentVersion === 'object' ? item.currentVersion as Record<string, unknown> : null
-    // v1 会同时返回能力元数据和选中的当前版本。
-    // 对旧版平台响应保留扁平字段兼容处理。
-    const capability = item.capability && typeof item.capability === 'object' ? item.capability as Record<string, unknown> : null
-    const id = typeof capability?.id === 'string'
-      ? capability.id
-      : typeof item.id === 'string' ? item.id : typeof item.skillId === 'string' ? item.skillId : ''
-    const currentVersion = typeof item.currentVersion === 'string' ? item.currentVersion : typeof version?.version === 'string' ? version.version : ''
-    const status = typeof version?.status === 'string' ? version.status : typeof item.status === 'string' ? item.status : ''
-    if (!id || !currentVersion) return []
-    return [{
-      id,
-      name: typeof capability?.name === 'string' ? capability.name : typeof item.name === 'string' ? item.name : id,
-      currentVersion,
-      status,
-      versionId: typeof version?.id === 'string' ? version.id : typeof item.versionId === 'string' ? item.versionId : undefined,
-      content: typeof version?.content === 'string' ? version.content : typeof item.content === 'string' ? item.content : undefined,
-    }]
-  })
-}
-
-export class AuthApiError extends Error {
-  constructor(public readonly error: ApiError, public readonly resource?: AuthApiResource) {
-    super(error.message);
-    this.name = 'AuthApiError';
+export async function downloadPackage(
+  subscriptionId: string,
+  accessToken: string,
+): Promise<{ bytes: Uint8Array; sha256: string; version: string }> {
+  const response = await fetch(
+    `${config.SEP_BASE_URL}/enterprise/subscriptions/${encodeURIComponent(subscriptionId)}/package/download`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  )
+  if (!response.ok) throw await parseError(response, 'package')
+  const sha256 = response.headers.get('X-SHA256')
+  const version = response.headers.get('X-Version')
+  if (!sha256 || !version) {
+    throw new AuthApiError({ statusCode: 502, message: 'Invalid package download response.' }, 'package')
   }
-  get statusCode(): number { return this.error.statusCode; }
-  get isUnauthorized(): boolean { return this.error.statusCode === 401; }
-  get isForbidden(): boolean { return this.error.statusCode === 403; }
-  get isNetworkError(): boolean { return this.error.statusCode === 0 || this.error.statusCode >= 500; }
+  return { bytes: new Uint8Array(await response.arrayBuffer()), sha256, version }
+}
+
+export function getEmployeeSkills(
+  employeeId: string,
+  accessToken: string,
+): Promise<EmployeeSkillsResponse> {
+  return getJson<EmployeeSkillsResponse>(
+    `/enterprise/employees/${encodeURIComponent(employeeId)}/skills`,
+    accessToken,
+    'skills',
+  )
+}
+
+export function previewSkill(versionId: string, accessToken: string): Promise<SkillPreviewResponse> {
+  return getJson<SkillPreviewResponse>(
+    `/enterprise/skill-versions/${encodeURIComponent(versionId)}/preview`,
+    accessToken,
+    'skills',
+  )
+}
+
+export function getKnowledgeBaseGrants(
+  subscriptionId: string,
+  accessToken: string,
+): Promise<KnowledgeBaseGrantsResponse> {
+  return getJson<KnowledgeBaseGrantsResponse>(
+    `/knowledge-bases/grants/by-subscription/${encodeURIComponent(subscriptionId)}`,
+    accessToken,
+    'knowledge',
+  )
+}
+
+export function searchKnowledgeBases(
+  request: KnowledgeBaseSearchRequest,
+  accessToken: string,
+): Promise<KnowledgeBaseSearchResponse> {
+  return postJson<KnowledgeBaseSearchResponse>('/knowledge-bases/search', request, accessToken, 'knowledge')
+}
+
+
+
+export function getEmployeeStatus(accessToken: string): Promise<EmployeeStatus[]> {
+  return getJson<EmployeeStatus[]>('/enterprise/employee-status', accessToken, 'subscriptions')
+}
+
+export function listNotifications(accessToken: string, params: NotificationQuery = {}): Promise<Notification[]> {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) query.set(key, String(value))
+  }
+  return getJson<Notification[]>(`/notifications${query.size ? `?${query.toString()}` : ''}`, accessToken, 'notifications')
+}
+
+export function getUnreadNotificationCount(accessToken: string): Promise<{ count: number }> {
+  return getJson<{ count: number }>('/notifications/unread-count', accessToken, 'notifications')
+}
+
+export function markNotificationRead(notificationId: string, accessToken: string): Promise<unknown> {
+  return postJson('/notifications/' + encodeURIComponent(notificationId) + '/read', {}, accessToken, 'notifications')
+}
+
+export function markAllNotificationsRead(accessToken: string): Promise<unknown> {
+  return postJson('/notifications/read-all', {}, accessToken, 'notifications')
+}
+
+export function deleteNotification(notificationId: string, accessToken: string): Promise<unknown> {
+  return deleteJson('/notifications/' + encodeURIComponent(notificationId), accessToken, 'notifications')
+}
+
+export function clearReadNotifications(accessToken: string): Promise<unknown> {
+  return deleteJson('/notifications/clear-read', accessToken, 'notifications')
+}
+
+export async function uploadFile(input: UploadInput, accessToken: string): Promise<UploadFile> {
+  const form = new FormData()
+  form.append('file', new Blob([input.bytes], { type: input.contentType }), input.filename)
+  const response = await fetch(`${config.SEP_BASE_URL}/upload/file`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  })
+  if (!response.ok) throw await parseError(response, 'upload')
+  return response.json() as Promise<UploadFile>
+}
+
+export async function uploadFiles(inputs: UploadInput[], accessToken: string): Promise<UploadFile[]> {
+  const form = new FormData()
+  for (const input of inputs) {
+    form.append('files', new Blob([input.bytes], { type: input.contentType }), input.filename)
+  }
+  const response = await fetch(`${config.SEP_BASE_URL}/upload/files`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+    body: form,
+  })
+  if (!response.ok) throw await parseError(response, 'upload')
+  return response.json() as Promise<UploadFile[]>
+}
+
+export async function refreshUploadUrl(key: string, accessToken: string): Promise<UploadFile> {
+  return postJson<UploadFile>(`/upload/refresh-url?key=${encodeURIComponent(key)}`, {}, accessToken, 'upload')
+}
+
+async function deleteJson<T>(path: string, accessToken: string, resource: AuthApiResource): Promise<T> {
+  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!response.ok) throw await parseError(response, resource)
+  return response.json() as Promise<T>
 }

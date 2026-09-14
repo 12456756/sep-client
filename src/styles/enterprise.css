@@ -310,14 +310,14 @@
 .ent-wk-more-fold > div > *:last-child { margin-bottom: 14px; }
 
 /* 需要拍板时才出现，紧贴输入框 —— 够不到的动作等于没有。 */
-.ent-flow-act { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid var(--ent-attention-line); border-radius: var(--ent-radius); background: var(--ent-attention-bg); }
-.ent-flow-act > svg { flex: 0 0 auto; color: var(--ent-attention); }
-.ent-flow-act p { min-width: 0; flex: 1 1 240px; margin: 0; color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 1.7; overflow-wrap: anywhere; }
-.ent-flow-act.danger { border-color: var(--ent-danger-line); background: var(--ent-danger-bg); }
-.ent-flow-act.danger > svg { color: var(--ent-danger); }
+.ent-arrangement-action { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 11px 14px; border: 1px solid var(--ent-attention-line); border-radius: var(--ent-radius); background: var(--ent-attention-bg); }
+.ent-arrangement-action > svg { flex: 0 0 auto; color: var(--ent-attention); }
+.ent-arrangement-action p { min-width: 0; flex: 1 1 240px; margin: 0; color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 1.7; overflow-wrap: anywhere; }
+.ent-arrangement-action.danger { border-color: var(--ent-danger-line); background: var(--ent-danger-bg); }
+.ent-arrangement-action.danger > svg { color: var(--ent-danger); }
 /* 已终止不是「出事了」，只是停了 —— 给它一档中性的底，不用红也不用黄。 */
-.ent-flow-act.quiet { border-color: var(--ent-line); background: var(--ent-panel-subtle); }
-.ent-flow-act.quiet > svg { color: var(--ent-ink-3); }
+.ent-arrangement-action.quiet { border-color: var(--ent-line); background: var(--ent-panel-subtle); }
+.ent-arrangement-action.quiet > svg { color: var(--ent-ink-3); }
 
 /* 输入框只有一件事：写字。控件全部收进框内底部那一排。 */
 .ent-ask { display: flex; flex-direction: column; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-lg); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }

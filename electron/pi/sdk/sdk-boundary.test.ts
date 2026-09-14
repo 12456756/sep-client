@@ -16,7 +16,7 @@ async function sourceFiles(directory: string): Promise<string[]> {
 }
 
 describe('Pi SDK boundary', () => {
-  it('loads the task coordinator lazily after the Electron compatibility layer', async () => {
+  it('loads the task runtime lazily after the Electron compatibility layer', async () => {
     const root = process.cwd()
     const mainSource = await readFile(join(root, 'electron', 'main.ts'), 'utf8')
     const compositionSource = await readFile(join(root, 'electron', 'bootstrap', 'build-backend.ts'), 'utf8')
@@ -31,24 +31,24 @@ describe('Pi SDK boundary', () => {
       'main.ts 的第一个 import 必须是 Electron 兼容层',
     )
 
-    // 协调器只能通过动态 import 加载，且只有组装根这一处。
+    // The runtime is loaded only after the Electron compatibility layer.
     assert.match(
       compositionSource,
-      /await import\('\.\.\/runtime\/task-execution-coordinator'\)/,
-      '协调器必须在组装根里用动态 import 加载',
+      /await import\('\.\.\/runtime\/task-runtime'\)/,
+      'TaskRuntime must be loaded dynamically by the composition root',
     )
 
     const staticImporters: string[] = []
     for (const file of await sourceFiles(join(root, 'electron'))) {
       const source = await readFile(file, 'utf8')
-      if (/import\s+(?!type\b)[^;\n]*from\s+['"][^'"]*runtime\/task-execution-coordinator['"]/.test(source)) {
+      if (/import\s+(?!type\b)[^;\n]*from\s+['"][^'"]*runtime\/task-runtime['"]/.test(source)) {
         staticImporters.push(relative(root, file).replaceAll('\\', '/'))
       }
     }
     assert.deepEqual(
       staticImporters,
       [],
-      'Any static coordinator import would load the pi SDK before the compatibility layer runs',
+      'Any static runtime import would load the pi SDK before the compatibility layer runs',
     )
   })
 
@@ -65,3 +65,4 @@ describe('Pi SDK boundary', () => {
     assert.deepEqual(importers, ['electron/pi/sdk/pi-coding-agent-adapter.ts'])
   })
 })
+

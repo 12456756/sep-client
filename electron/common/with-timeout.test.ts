@@ -51,3 +51,4 @@ describe('settleWithTimeout', () => {
     assert.equal(result.ok === false && (result.error as Error).message, 'boom')
   })
 })
+

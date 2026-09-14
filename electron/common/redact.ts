@@ -56,3 +56,5 @@ export function describeError(error: unknown): string {
   if (typeof error === 'string') return redactText(error)
   return redactText(String(error))
 }
+
+

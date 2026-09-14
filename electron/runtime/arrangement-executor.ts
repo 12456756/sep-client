@@ -1,35 +1,42 @@
+/**
+ * 编排式任务的节点执行器。
+ *
+ * 执行器读取已确认的 WorkPlan，从持久化状态中找出可运行节点；无依赖的节点并行执行，
+ * 节点完成后才释放下游节点。每个节点拥有独立的 run 和 worker，但通过提示词接收依赖
+ * 节点的文本产出；检查点、审批和运行事件都通过注入的端口交给外层处理。
+ */
 import { randomUUID } from 'node:crypto'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunStorePort } from '../data/task-run-store'
-import type { WorkflowCheckpoint, WorkflowCheckpointStorePort } from '../data/workflow-checkpoint-store'
+import type { ArrangementCheckpoint, ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import type { WorkPlan, ArrangementNode, EffectiveTaskPermissionPolicy } from '../domain/arrangement-plan'
 import type { TaskManager } from './task-manager'
 import {
-  createWorkflowRunnerState,
-  markNodeCompleted,
-  markNodeFailed,
-  markNodeRunning,
-  resumeInterrupted,
-  retryFailedNode,
-  interruptWorkflow,
-  stopWorkflow,
-  type WorkflowRunnerState,
-} from './workflow-runner'
+  createArrangementExecutionState,
+  markArrangementNodeCompleted,
+  markArrangementNodeFailed,
+  markArrangementNodeRunning,
+  resumeArrangement,
+  retryArrangementNode,
+  interruptArrangement,
+  stopArrangement,
+  type ArrangementExecutionState,
+} from '../domain/arrangement-execution'
 import type { EmployeeRuntimeConfig, TaskToolPolicy, TaskWorkerPort } from './run-types'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 
-export interface WorkflowExecutionResult {
-  status: WorkflowRunnerState['status']
-  state: WorkflowRunnerState
+export interface ArrangementExecutionResult {
+  status: ArrangementExecutionState['status']
+  state: ArrangementExecutionState
   error?: string
 }
 
-export interface WorkflowExecutionOptions {
+export interface ArrangementExecutionOptions {
   scope: TaskOwnerScope | null
   taskManager: TaskManager
   taskRunStore: TaskRunStorePort | null
-  checkpointStore: WorkflowCheckpointStorePort | null
+  checkpointStore: ArrangementCheckpointStorePort | null
   createWorker: (options: PiTaskWorkerOptions) => TaskWorkerPort
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
@@ -37,12 +44,12 @@ export interface WorkflowExecutionOptions {
   onEvent: (event: TaskExecutionEvent) => Promise<void>
   authorizeEmployee: (subscriptionId: string) => Promise<EmployeeRuntimeConfig | null>
   workspaceRoot: string
-  workflowSubscriptionId: string
+  arrangementSubscriptionId: string
 }
 
-export interface WorkflowNodeEvent {
-  type: 'workflow_node_started' | 'workflow_node_completed' | 'workflow_node_failed' | 'workflow_state_changed'
-  workflowRunId: string
+export interface ArrangementNodeEvent {
+  type: 'arrangement_node_started' | 'arrangement_node_completed' | 'arrangement_node_failed' | 'arrangement_state_changed'
+  arrangementRunId: string
   nodeId?: string
   nodeRunId?: string
   subscriptionId?: string
@@ -50,7 +57,7 @@ export interface WorkflowNodeEvent {
   data?: unknown
 }
 
-export function buildWorkflowNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output: string | null }[]): string {
+export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output: string | null }[]): string {
   const dependencyText = dependencies.length === 0
     ? 'No prerequisite node output is available.'
     : dependencies.map(({ node: dependency, output }) => [
@@ -84,12 +91,12 @@ function nodeMap(plan: WorkPlan): Map<string, ArrangementNode> {
   return new Map(plan.nodes.map(node => [node.id, node]))
 }
 
-export class WorkflowExecutionCoordinator {
+export class ArrangementExecutor {
   private readonly activeWorkers = new Map<string, TaskWorkerPort>()
   private abortRequested = false
   private stopRequested = false
 
-  constructor(private readonly options: WorkflowExecutionOptions) {}
+  constructor(private readonly options: ArrangementExecutionOptions) {}
 
   async abort(): Promise<void> {
     this.abortRequested = true
@@ -101,11 +108,11 @@ export class WorkflowExecutionCoordinator {
     await this.abort()
   }
 
-  async execute(plan: WorkPlan, taskId: string, workflowRunId: string, requestedState?: WorkflowRunnerState): Promise<WorkflowExecutionResult> {
+  async execute(plan: WorkPlan, taskId: string, arrangementRunId: string, requestedState?: ArrangementExecutionState): Promise<ArrangementExecutionResult> {
     this.abortRequested = false
     this.stopRequested = false
-    const state = await this.loadState(plan, taskId, workflowRunId, requestedState)
-    await this.persist(plan, taskId, workflowRunId, state)
+    const state = await this.loadState(plan, taskId, arrangementRunId, requestedState)
+    await this.persist(plan, taskId, arrangementRunId, state)
     if (state.status === 'completed' || state.status === 'stopped' || state.status === 'waiting-user') return { status: state.status, state }
 
     let current = state
@@ -118,79 +125,79 @@ export class WorkflowExecutionCoordinator {
       }
 
       const batch = ready.map(checkpoint => {
-        current = markNodeRunning(current, checkpoint.nodeId)
+        current = markArrangementNodeRunning(current, checkpoint.nodeId)
         return { checkpoint: current.nodes.find(node => node.nodeId === checkpoint.nodeId)!, node: nodes.get(checkpoint.nodeId)! }
       })
-      await this.persist(plan, taskId, workflowRunId, current)
-      const results = await Promise.all(batch.map(item => this.executeNode(plan, taskId, workflowRunId, item.node, item.checkpoint, current)))
+      await this.persist(plan, taskId, arrangementRunId, current)
+      const results = await Promise.all(batch.map(item => this.executeNode(plan, taskId, arrangementRunId, item.node, item.checkpoint, current)))
 
       if (this.abortRequested) {
         current = this.stopRequested
-          ? stopWorkflow(current)
-          : interruptWorkflow(current, 'client-exit')
-        await this.persist(plan, taskId, workflowRunId, current)
+          ? stopArrangement(current)
+          : interruptArrangement(current, 'client-exit')
+        await this.persist(plan, taskId, arrangementRunId, current)
         return { status: current.status, state: current }
       }
 
       for (const result of results) {
-        if (result.ok) current = markNodeCompleted(current, plan.nodes, result.nodeId, result.output)
-        else current = markNodeFailed(current, plan.nodes, result.nodeId, result.error)
-        await this.persist(plan, taskId, workflowRunId, current)
-        await this.emitStateEvent(plan, taskId, workflowRunId, current, result.nodeId)
+        if (result.ok) current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
+        else current = markArrangementNodeFailed(current, plan.nodes, result.nodeId, result.error)
+        await this.persist(plan, taskId, arrangementRunId, current)
+        await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.nodeId)
       }
       if (results.some(result => !result.ok)) return { status: current.status, state: current, error: results.find(result => !result.ok)?.error }
     }
 
     current = this.stopRequested
-      ? stopWorkflow(current)
-      : interruptWorkflow(current, 'client-exit')
-    await this.persist(plan, taskId, workflowRunId, current)
+      ? stopArrangement(current)
+      : interruptArrangement(current, 'client-exit')
+    await this.persist(plan, taskId, arrangementRunId, current)
     return { status: current.status, state: current }
   }
 
-  retry(state: WorkflowRunnerState, plan: WorkPlan, nodeId: string): WorkflowRunnerState {
-    return retryFailedNode(state, plan.nodes, nodeId)
+  retry(state: ArrangementExecutionState, plan: WorkPlan, nodeId: string): ArrangementExecutionState {
+    return retryArrangementNode(state, plan.nodes, nodeId)
   }
 
-  resume(state: WorkflowRunnerState): WorkflowRunnerState {
-    return resumeInterrupted(state)
+  resume(state: ArrangementExecutionState): ArrangementExecutionState {
+    return resumeArrangement(state)
   }
 
-  private async loadState(plan: WorkPlan, taskId: string, workflowRunId: string, requestedState?: WorkflowRunnerState): Promise<WorkflowRunnerState> {
-    if (requestedState) return requestedState.status === 'interrupted' ? resumeInterrupted(requestedState) : requestedState
+  private async loadState(plan: WorkPlan, taskId: string, arrangementRunId: string, requestedState?: ArrangementExecutionState): Promise<ArrangementExecutionState> {
+    if (requestedState) return requestedState.status === 'interrupted' ? resumeArrangement(requestedState) : requestedState
     if (this.options.scope && this.options.checkpointStore) {
       const checkpoint = await this.options.checkpointStore.get(this.options.scope, taskId)
       if (checkpoint?.planHash === plan.planHash) {
-        return checkpoint.state.status === 'interrupted' ? resumeInterrupted(checkpoint.state) : checkpoint.state
+        return checkpoint.state.status === 'interrupted' ? resumeArrangement(checkpoint.state) : checkpoint.state
       }
     }
-    void workflowRunId
-    return createWorkflowRunnerState(plan.nodes)
+    void arrangementRunId
+    return createArrangementExecutionState(plan.nodes)
   }
 
   private async executeNode(
     plan: WorkPlan,
     taskId: string,
-    workflowRunId: string,
+    arrangementRunId: string,
     node: ArrangementNode,
-    checkpoint: WorkflowRunnerState['nodes'][number],
-    state: WorkflowRunnerState,
+    checkpoint: ArrangementExecutionState['nodes'][number],
+    state: ArrangementExecutionState,
   ): Promise<{ ok: true; nodeId: string; output: string | null } | { ok: false; nodeId: string; error: string }> {
-    if (this.abortRequested) return { ok: false, nodeId: node.id, error: 'Workflow execution was interrupted.' }
+    if (this.abortRequested) return { ok: false, nodeId: node.id, error: 'Arrangement execution was interrupted.' }
     const employee = await this.options.authorizeEmployee(node.subscriptionId)
     if (!employee) return { ok: false, nodeId: node.id, error: 'The selected employee is no longer available.' }
-    if (this.abortRequested) return { ok: false, nodeId: node.id, error: 'Workflow execution was interrupted.' }
+    if (this.abortRequested) return { ok: false, nodeId: node.id, error: 'Arrangement execution was interrupted.' }
     const nodeRunId = randomUUID()
     const workspaceDir = plan.workspace.path ?? this.options.workspaceRoot
     const paths = this.options.scope && this.options.taskRunStore
       ? this.options.taskRunStore.getPaths(this.options.scope, taskId, nodeRunId)
       : null
     const dependencies = node.dependsOn.map(id => ({ node: plan.nodes.find(item => item.id === id)!, output: state.nodes.find(item => item.nodeId === id)?.output ?? null }))
-    const prompt = buildWorkflowNodePrompt(plan, node, dependencies)
+    const prompt = buildArrangementNodePrompt(plan, node, dependencies)
     let output = ''
     let worker: TaskWorkerPort | null = null
-    await this.emitNodeEvent(taskId, workflowRunId, {
-      type: 'workflow_node_started', workflowRunId, nodeId: node.id, nodeRunId,
+    await this.emitNodeEvent(taskId, arrangementRunId, {
+      type: 'arrangement_node_started', arrangementRunId, nodeId: node.id, nodeRunId,
       subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
       data: { title: node.title, modelId: node.modelId },
     })
@@ -231,8 +238,8 @@ export class WorkflowExecutionCoordinator {
       if (this.abortRequested) await worker.abort()
       await runPromise
       if (this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
-      await this.emitNodeEvent(taskId, workflowRunId, {
-        type: 'workflow_node_completed', workflowRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
+      await this.emitNodeEvent(taskId, arrangementRunId, {
+        type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
         attempt: checkpoint.attempt, data: { output: output || null },
       })
       return { ok: true, nodeId: node.id, output: output || null }
@@ -243,8 +250,8 @@ export class WorkflowExecutionCoordinator {
         await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message)
       }
       if (!interrupted) {
-        await this.emitNodeEvent(taskId, workflowRunId, {
-          type: 'workflow_node_failed', workflowRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
+        await this.emitNodeEvent(taskId, arrangementRunId, {
+          type: 'arrangement_node_failed', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
           attempt: checkpoint.attempt, data: { error: message },
         })
       }
@@ -255,26 +262,28 @@ export class WorkflowExecutionCoordinator {
     }
   }
 
-  private async persist(plan: WorkPlan, taskId: string, workflowRunId: string, state: WorkflowRunnerState): Promise<void> {
+  private async persist(plan: WorkPlan, taskId: string, arrangementRunId: string, state: ArrangementExecutionState): Promise<void> {
     if (!this.options.scope || !this.options.checkpointStore) return
-    const checkpoint: WorkflowCheckpoint = {
+    const checkpoint: ArrangementCheckpoint = {
       version: 1, taskId, owner: { ...this.options.scope }, planHash: plan.planHash,
-      activeRunId: workflowRunId, state: structuredClone(state), updatedAt: Date.now(),
+      activeRunId: arrangementRunId, state: structuredClone(state), updatedAt: Date.now(),
     }
     await this.options.checkpointStore.save(this.options.scope, checkpoint)
   }
 
-  private async emitStateEvent(plan: WorkPlan, taskId: string, workflowRunId: string, state: WorkflowRunnerState, nodeId: string): Promise<void> {
-    await this.emitNodeEvent(taskId, workflowRunId, {
-      type: 'workflow_state_changed', workflowRunId, nodeId,
+  private async emitStateEvent(plan: WorkPlan, taskId: string, arrangementRunId: string, state: ArrangementExecutionState, nodeId: string): Promise<void> {
+    await this.emitNodeEvent(taskId, arrangementRunId, {
+      type: 'arrangement_state_changed', arrangementRunId, nodeId,
       data: { status: state.status, nodeId, nodeStatus: state.nodes.find(node => node.nodeId === nodeId)?.status, planHash: plan.planHash },
     })
   }
 
-  private async emitNodeEvent(taskId: string, workflowRunId: string, event: WorkflowNodeEvent): Promise<void> {
+  private async emitNodeEvent(taskId: string, arrangementRunId: string, event: ArrangementNodeEvent): Promise<void> {
     await this.options.onEvent({
-      taskId, runId: workflowRunId, subscriptionId: this.options.workflowSubscriptionId, sequence: 0,
+      taskId, runId: arrangementRunId, subscriptionId: this.options.arrangementSubscriptionId, sequence: 0,
       type: event.type, occurredAt: Date.now(), data: { ...(event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}), nodeId: event.nodeId, nodeRunId: event.nodeRunId, attempt: event.attempt },
     })
   }
 }
+
+

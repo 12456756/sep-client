@@ -1,12 +1,11 @@
 /**
  * electron/service/task-service.ts — 任务用例编排
  *
- * 服务层的规矩（方案 3.2 / 3.3 节）：不碰 Pi 对象、不发 IPC、不拼文件路径。
+ * 服务层只负责任务用例和授权：不碰 Pi 对象、不发 IPC、不拼文件路径。
  * 执行能力经 `TaskExecutionPort` 端口注入，所以本文件不 import `runtime/` 的实现，
  * 也就不会把 pi SDK 拉进来（B2）。
  *
- * 参数校验留在控制层（Phase 6 用 zod 表驱动）；这里假定入参已经是合法类型，
- * 只负责"这件事该怎么做"以及失败时抛哪个错误码。
+ * 参数形状由控制层校验；这里负责业务前置条件和错误语义。
  */
 import type { ClientTask, ClientTaskMessage, ClientTaskStats, TaskExecutionEvent } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
@@ -20,8 +19,8 @@ import { requireScope, type ScopeSource } from './scope-guard'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 
 /**
- * 服务层用到的执行能力。实现是 `runtime/task-execution-coordinator.ts`；
- * 声明成端口是为了让服务层不依赖协调器本体——它静态 import 了 pi SDK。
+ * 服务层用到的执行能力。实现由 `runtime/task-runtime.ts` 提供；
+ * 声明成端口可以隔离运行时和 Pi SDK。
  * 词汇（`SessionRecoveryMode` 等）取自 `runtime/run-types.ts`，那是个零依赖的
  * 类型模块，import 它不会把 SDK 拉进来。
  */
@@ -36,7 +35,7 @@ export interface TaskExecutionPort {
   switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void>
   pauseTask(taskId: string): Promise<void>
   cancelTask(taskId: string): Promise<void>
-  stopWorkflow(taskId: string, reason?: string): Promise<void>
+  stopArrangement(taskId: string, reason?: string): Promise<void>
 }
 
 export interface TaskServiceDependencies {
@@ -45,7 +44,7 @@ export interface TaskServiceDependencies {
   taskRunStore: TaskRunStore
   taskMetadataStore: TaskMetadataStore
   employees: EmployeeAuthorizer
-  /** 惰性取协调器：它必须在异步边界之后才能加载（Electron 33 / undici 边界）。 */
+  /** 惰性取运行时：它必须在异步边界之后才能加载（Electron 33 / undici 边界）。 */
   execution: () => Promise<TaskExecutionPort>
 }
 
@@ -61,8 +60,6 @@ export class TaskService {
 
   /**
    * 建任务 + 落一份元数据。`task:create` 与 `conversation:create` 的公共部分
-   * （方案 Phase 5：两个 channel 保留为薄入口，渲染进程在用 `task:create`，不能删）。
-   *
    * 授权必须在建任务之前：建完再发现员工不可用，就留下一个永远跑不起来的任务。
    */
   async create(input: CreateTaskInput, kind: TaskMetadata['kind']): Promise<ClientTask> {
@@ -172,12 +169,11 @@ export class TaskService {
   }
 
   /**
-   * 员工必须当下可用才放行。授权顺带把技能包备好，结果由协调器在入队时复用（C4）。
+   * 员工必须当下可用才放行。授权顺带把技能包备好，结果由运行时在入队时复用（C4）。
    * `subscriptionId` 为空说明任务没绑定员工——那是数据问题，同样不能跑。
    *
-   * 码是 `INVALID_ARGUMENT`，照搬 Phase 4 之前 handler 里的行为（Phase 5 不改行为）。
-   * 它给用户的文案是"请求参数不合法。"，对"所选员工已不可用"其实是误导——
-   * 错误码表里有更贴切的 `EMPLOYEE_UNAVAILABLE`。换码属行为变更，留作独立提交。
+   * 当前错误码表仍使用 `INVALID_ARGUMENT` 表达无效员工选择；更细的错误码需要独立的
+   * 对外协议变更，不能在本服务内悄悄改变。
    */
   private async requireAuthorizedEmployee(subscriptionId: string | null | undefined): Promise<void> {
     if (!subscriptionId || !await this.deps.employees.authorize(subscriptionId)) {
@@ -190,3 +186,5 @@ export class TaskService {
     return metadata?.kind === 'conversation'
   }
 }
+
+

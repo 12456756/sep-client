@@ -1,5 +1,5 @@
 import type { TaskExecutionEvent, ToolAuthorizationRequest } from '../../../src/shared/types'
-import { InstanceTokenManager } from '../../common/platform/instance-token-manager'
+import { EmploymentTokenManager } from '../../common/platform/employment-token-manager'
 import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 import { PiCodingAgentAdapter } from './pi-coding-agent-adapter'
 import { SharedPiSession } from './pi-shared-session'
@@ -65,7 +65,7 @@ export class PiTaskWorker {
     this.onEvent = options.onEvent
     this.onSessionCreated = options.onSessionCreated
     this.sessionAdapter = options.sessionAdapter ?? null
-    this.tokenManager = options.createTokenManager?.() ?? new InstanceTokenManager({
+    this.tokenManager = options.createTokenManager?.() ?? new EmploymentTokenManager({
       getRefreshToken: options.getRefreshToken,
       onAuthenticationRequired: options.onAuthenticationRequired,
     })
@@ -196,3 +196,5 @@ export class PiTaskWorker {
     return operation
   }
 }
+
+

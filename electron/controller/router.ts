@@ -8,8 +8,8 @@
  *   4. catch 之后交 `error-mapper`（唯一映射点）
  *   5. 按 route 声明的形态返回信封
  *
- * **不填 schema 就注册不了**——`route()` 的第二个参数是必填位置参数。这把项目约束
- * "校验所有渲染进程传入的参数"从"靠人记得"变成结构强制（方案 Phase 6）。
+ * **不填 schema 就注册不了**——`route()` 的第二个参数是必填位置参数，所有渲染进程
+ * 输入因此都要经过同一处运行时校验。
  */
 import { ipcMain } from 'electron'
 import { z } from 'zod'
@@ -29,7 +29,7 @@ export const NO_INPUT = z.undefined()
  * 失败信封的形态。三种都是既有行为，逐通道照搬，不做统一：
  *   - `authenticated`  标准信封 + `authenticated: true`。已登录之后的 401/403 含义是
  *     "会话失效，请重新登录"，而不是登录接口上的"账号密码不对"（error-mapper 的判断）。
- *   - `auth`           窄化成渲染进程声明的 `AuthError` 码集合（Phase 2 的 toAuthEnvelope）。
+ *   - `auth`           窄化成渲染进程声明的 `AuthError` 码集合。
  *   - `ipc`            标准信封，不带 authenticated。
  *   - `reject`         **不捕获**，让 invoke 直接 reject。给的是那两个返回类型里
  *     根本没有 error 字段的通道（`RememberedAccountsResult` / `PasswordAvailabilityResult`）；
@@ -157,3 +157,5 @@ export function registerRoutes(
     send: tables.listeners.length,
   })
 }
+
+

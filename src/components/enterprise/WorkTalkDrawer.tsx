@@ -9,7 +9,7 @@
  * （员工的动作在「工作过程」里），页面底下常年空着一个对话框，
  * 反而让人以为每项工作都要在这里回话。
  *
- * 所以对话只在三个地方打开：对话式工作抬头的「继续对话」、流程工作停下来等你
+ * 所以对话只在三个地方打开：对话式工作抬头的「继续对话」、编排工作停下来等你
  * 拍板或中断时的「补充说明」、已完成工作的「查看总结」。
  */
 
@@ -116,7 +116,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
                 onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); } }}
               />
               <div className="ent-ask-bar">
-                {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
+                {/* 换人只对对话式工作有意义：编排工作的每一步都各自写了由谁来做，
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}
                 {work.kind === 'conversation' ? (
                   <label className="ent-ask-who">
@@ -152,3 +152,5 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
     </>
   );
 }
+
+

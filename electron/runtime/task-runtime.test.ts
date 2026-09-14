@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
-import { TaskExecutionCoordinator } from './task-execution-coordinator'
+import { TaskRuntime } from './task-runtime'
 import type { EmployeeRuntimeConfig } from './run-types'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
@@ -13,7 +13,7 @@ import { projectTaskMessages } from '../data/task-messages'
 const temporaryDirectories: string[] = []
 
 async function makeUserDataDir(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), 'sep-client-coordinator-tests-'))
+    const directory = await mkdtemp(join(tmpdir(), 'sep-client-runtime-tests-'))
   temporaryDirectories.push(directory)
   return directory
 }
@@ -21,7 +21,7 @@ async function makeUserDataDir(): Promise<string> {
 async function waitFor(predicate: () => boolean | Promise<boolean>, timeoutMs = 2_000): Promise<void> {
   const deadline = Date.now() + timeoutMs
   while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for coordinator state.')
+    if (Date.now() >= deadline) throw new Error('Timed out waiting for runtime state.')
     await new Promise(resolve => setTimeout(resolve, 10))
   }
 }
@@ -30,7 +30,7 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
 })
 
-describe('TaskExecutionCoordinator resource boundaries', () => {
+describe('TaskRuntime resource boundaries', () => {
   it('runs tasks for the same employee concurrently in disjoint workspaces', async () => {
     const userData = await makeUserDataDir()
     const manager = new TaskManager(userData)
@@ -41,7 +41,7 @@ describe('TaskExecutionCoordinator resource boundaries', () => {
     const started: string[] = []
     const release: Array<() => void> = []
     const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
-    const coordinator = new TaskExecutionCoordinator({
+    const runtime = new TaskRuntime({
       taskManager: manager,
       getRefreshToken: () => 'refresh-token',
       onAuthenticationRequired: () => {},
@@ -58,7 +58,7 @@ describe('TaskExecutionCoordinator resource boundaries', () => {
       }),
     })
 
-    await Promise.all([coordinator.executeTask(first.id), coordinator.executeTask(second.id)])
+    await Promise.all([runtime.executeTask(first.id), runtime.executeTask(second.id)])
     await waitFor(() => started.length === 2)
     assert.deepEqual(new Set(started), new Set([first.id, second.id]))
     release.splice(0).forEach(resolve => resolve())
@@ -79,7 +79,7 @@ describe('TaskExecutionCoordinator resource boundaries', () => {
     const started: string[] = []
     const release: Array<() => void> = []
     const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
-    const coordinator = new TaskExecutionCoordinator({
+    const runtime = new TaskRuntime({
       taskManager: manager,
       getRefreshToken: () => 'refresh-token',
       onAuthenticationRequired: () => {},
@@ -96,7 +96,7 @@ describe('TaskExecutionCoordinator resource boundaries', () => {
       }),
     })
 
-    await Promise.all([coordinator.executeTask(first.id), coordinator.executeTask(second.id)])
+    await Promise.all([runtime.executeTask(first.id), runtime.executeTask(second.id)])
     await waitFor(() => started.length === 1)
     await new Promise(resolve => setTimeout(resolve, 40))
     assert.equal(started.length, 1)
@@ -118,7 +118,7 @@ describe('conversation task lifecycle', () => {
     const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
     const sessionFiles: string[] = []
     let count = 0
-    const coordinator = new TaskExecutionCoordinator({
+    const runtime = new TaskRuntime({
       taskManager: manager,
       taskRunStore: runStore,
       getRefreshToken: () => 'refresh-token',
@@ -141,10 +141,10 @@ describe('conversation task lifecycle', () => {
       }),
     })
 
-    await coordinator.executeTask(task.id, { conversation: true })
+    await runtime.executeTask(task.id, { conversation: true })
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PENDING)
-    await coordinator.continueConversation(task.id, 'second')
+    await runtime.continueConversation(task.id, 'second')
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal(count, 2)
     assert.equal(sessionFiles[1], sessionFiles[0])
@@ -162,7 +162,7 @@ describe('conversation task lifecycle', () => {
     const task = await manager.createTask('chat', 'first', undefined, 'employee-a')
     const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
     const pushed: string[] = []
-    const coordinator = new TaskExecutionCoordinator({
+    const runtime = new TaskRuntime({
       taskManager: manager,
       taskRunStore: runStore,
       getRefreshToken: () => 'refresh-token',
@@ -184,7 +184,7 @@ describe('conversation task lifecycle', () => {
       }),
     })
 
-    await coordinator.executeTask(task.id, { conversation: true })
+    await runtime.executeTask(task.id, { conversation: true })
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.deepEqual(pushed, ['text_delta', 'tool_execution_start', 'tool_execution_end'])
     const runs = await runStore.list({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id)
@@ -202,7 +202,7 @@ describe('conversation task lifecycle', () => {
     const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
     let release!: () => void
     const started = new Promise<void>(resolve => { release = resolve })
-    const coordinator = new TaskExecutionCoordinator({
+    const runtime = new TaskRuntime({
       taskManager: manager,
       taskRunStore: runStore,
       getRefreshToken: () => 'refresh-token',
@@ -220,9 +220,9 @@ describe('conversation task lifecycle', () => {
       }),
     })
 
-    await coordinator.executeTask(task.id, { conversation: true })
+    await runtime.executeTask(task.id, { conversation: true })
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.RUNNING)
-    await coordinator.cancelTask(task.id)
+    await runtime.cancelTask(task.id)
     const settled = await manager.getTask(task.id)
     assert.equal(settled?.status, TaskStatus.PENDING)
     assert.equal(settled?.activeRunId, null)
@@ -233,7 +233,7 @@ describe('conversation task lifecycle', () => {
   })
 })
 
-// Phase 8 public-surface regression coverage.
+// Public surface regression coverage.
 const PUBLIC_SIGNATURES = [
   'async executeTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {',
   'async continueConversation(',
@@ -242,19 +242,19 @@ const PUBLIC_SIGNATURES = [
   'async pauseTask(taskId: string): Promise<void> {',
   'async cancelTask(taskId: string): Promise<void> {',
   'async stopAll(): Promise<void> {',
-  'async stopWorkflow(taskId: string, reason?: string): Promise<void> {',
+  'async stopArrangement(taskId: string, reason?: string): Promise<void> {',
   'respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {',
 ]
 
-describe('TaskExecutionCoordinator public surface', () => {
+describe('TaskRuntime public surface', () => {
   it('keeps the documented public methods, with unchanged signatures', async () => {
-    const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-execution-coordinator.ts'), 'utf8')
+    const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-runtime.ts'), 'utf8')
 
     for (const signature of PUBLIC_SIGNATURES) {
       assert.ok(source.includes(`  ${signature}`), `missing public method: ${signature}`)
     }
 
-    // Public members are intentionally limited to the documented coordinator API.
+    // Public members are intentionally limited to the documented runtime API.
     const declared = source
       .split(/\r?\n/)
       .flatMap(line => /^ {2}(?:async )?([A-Za-z_$][\w$]*)\(/.exec(line)?.slice(1, 2) ?? [])
@@ -263,22 +263,23 @@ describe('TaskExecutionCoordinator public surface', () => {
       declared.sort(),
       [
         'cancelTask', 'continueConversation', 'executeTask', 'pauseTask',
-        'respondToApproval', 'retryTask', 'stopAll', 'stopWorkflow', 'switchConversationEmployee',
+        'respondToApproval', 'retryTask', 'stopAll', 'stopArrangement', 'switchConversationEmployee',
       ],
-      'public method set changed: coordinator must expose only the documented methods',
+      'public method set changed: runtime must expose only the documented methods',
     )
   })
 
   it('delegates to the five collaborators instead of owning their state', async () => {
-    const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-execution-coordinator.ts'), 'utf8')
+    const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-runtime.ts'), 'utf8')
 
     for (const collaborator of ['RunQueue', 'WorkerRegistry', 'EventPipeline', 'WorkspaceLockManager', 'ToolApprovals']) {
-      assert.ok(source.includes(collaborator), `coordinator must delegate to ${collaborator}`)
+      assert.ok(source.includes(collaborator), `runtime must delegate to ${collaborator}`)
     }
 
     // These states moved to collaborators and must not be reintroduced here.
     for (const field of ['this.queue', 'this.activeByTask', 'this.eventChains', 'this.responseBuffers', 'this.inFlightSideEffects']) {
-      assert.ok(!source.includes(field), `${field} must stay outside the coordinator`)
+      assert.ok(!source.includes(field), `${field} must stay outside the runtime`)
     }
   })
 })
+

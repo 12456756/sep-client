@@ -1,4 +1,4 @@
-﻿import type { TaskExecutionEvent } from '../../src/shared/types'
+import type { TaskExecutionEvent } from '../../src/shared/types'
 import { hasSideEffects } from '../common/constants'
 
 export type TaskEventVisibility = 'stream' | 'important' | 'internal'
@@ -25,10 +25,10 @@ const IMPORTANT_EVENT_TYPES = new Set([
   'auto_retry_start',
   'auto_retry_end',
   'session_error',
-  'workflow_node_started',
-  'workflow_node_completed',
-  'workflow_node_failed',
-  'workflow_state_changed',
+  'arrangement_node_started',
+  'arrangement_node_completed',
+  'arrangement_node_failed',
+  'arrangement_state_changed',
   'SIDE_EFFECT_UNKNOWN',
 ])
 
@@ -59,3 +59,5 @@ function readToolName(data: unknown): string | null {
   const value = (data as { toolName?: unknown }).toolName
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
+
+

@@ -8,7 +8,7 @@
  *
  * 停机时 in-flight 副作用工具必须产出 SIDE_EFFECT_UNKNOWN 这一行为本身，
  * 由 runtime/concurrency-invariants.test.ts 的 I7 覆盖。
- * 协调器惰性加载的并发/失败语义由 common/load-once.test.ts 用运行时测试覆盖。
+ * 运行时惰性加载的并发/失败语义由 common/load-once.test.ts 用运行时测试覆盖。
  */
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
@@ -99,7 +99,7 @@ describe('startup ordering', () => {
   })
 
   it('never lets the task workspace root fall back to process.cwd()', () => {
-    // 协调器的默认值是 process.cwd()，打包后那是安装目录；这个根是 workDir 为空时
+    // 运行时的默认值是 process.cwd()，打包后那是安装目录；这个根是 workDir 为空时
     // pi 真正落文件的位置（workspaceDir / .pi-runs / .pi-sessions）。
     assert.match(
       compositionSource,
@@ -150,3 +150,4 @@ describe('renderer push has a single exit', () => {
     }
   })
 })
+

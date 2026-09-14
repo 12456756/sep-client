@@ -10,7 +10,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus } from '../../src/shared/types'
-import { TaskExecutionCoordinator } from './task-execution-coordinator'
+import { TaskRuntime } from './task-runtime'
 import type { EmployeeRuntimeConfig } from './run-types'
 import { InvalidTaskTransitionError, TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
@@ -115,7 +115,7 @@ describe('C1 — pump() 按下标 splice 队列会误删无关条目', () => {
 
     const started: string[] = []
     const workers = makeWorkerFactory(started)
-    const coordinator = new TaskExecutionCoordinator({
+    const runtime = new TaskRuntime({
       taskManager: manager,
       taskRunStore: new TaskRunStore(userData),
       getRefreshToken: () => 'refresh-token',
@@ -131,22 +131,22 @@ describe('C1 — pump() 按下标 splice 队列会误删无关条目', () => {
     })
 
     // holder 占住 shared-workspace 并阻塞。
-    await coordinator.executeTask(holder.id)
+    await runtime.executeTask(holder.id)
     await waitFor(() => started.length === 1)
 
     // blocked 入队后因锁冲突留在队首。
-    await coordinator.executeTask(blocked.id)
+    await runtime.executeTask(blocked.id)
     await new Promise(resolve => setTimeout(resolve, 40))
     assert.equal(started.length, 1, 'blocked 不该拿到锁')
 
     // victim 入队排在 blocked 之后；pump 停在 victim 的 getTask 上（下标 1）。
     manager.suspendPumpOn(victim.id)
     try {
-      await coordinator.executeTask(victim.id)
+      await runtime.executeTask(victim.id)
       await waitFor(() => manager.suspended, 2_000)
 
       // pump 挂起期间移除队首：修复前 splice(1) 打偏，victim 启动后仍留在队列里。
-      await coordinator.cancelTask(blocked.id)
+      await runtime.cancelTask(blocked.id)
       manager.release()
       await waitFor(() => started.includes(victim.id))
 
@@ -184,7 +184,7 @@ describe('C2 — 锁获取与 try/finally 之间的裸露区会永久泄漏工�
     const started: string[] = []
     const workers = makeWorkerFactory(started)
     let failNext = true
-    const coordinator = new TaskExecutionCoordinator({
+    const runtime = new TaskRuntime({
       taskManager: manager,
       taskRunStore: new TaskRunStore(userData),
       getRefreshToken: () => 'refresh-token',
@@ -205,14 +205,14 @@ describe('C2 — 锁获取与 try/finally 之间的裸露区会永久泄漏工�
       },
     })
 
-    await coordinator.executeTask(doomed.id)
+    await runtime.executeTask(doomed.id)
     await waitFor(async () => (await manager.getTask(doomed.id))?.activeRunId === null)
     assert.equal(started.length, 0, 'worker 构造失败，不该有 run 启动')
     assert.equal((await manager.getTask(doomed.id))?.status, TaskStatus.FAILED)
 
     // 修复前 releaseWorkspace 从未被调用，shared-workspace 被永久锁死，
     // 落在同一目录的后续任务会静默滞留队列。
-    await coordinator.executeTask(followUp.id)
+    await runtime.executeTask(followUp.id)
     await waitFor(() => started.includes(followUp.id), 2_000)
 
     workers.releaseAll()
@@ -236,7 +236,7 @@ describe('C4 — authorizeEmployee 在调度循环内发网络请求', () => {
     const contexts: Array<{ taskId: string; additionalSkillPaths?: string[] }> = []
     const started: string[] = []
     const workers = makeWorkerFactory(started)
-    const coordinator = new TaskExecutionCoordinator({
+    const runtime = new TaskRuntime({
       taskManager: manager,
       taskRunStore: new TaskRunStore(userData),
       getRefreshToken: () => 'refresh-token',
@@ -264,10 +264,10 @@ describe('C4 — authorizeEmployee 在调度循环内发网络请求', () => {
       },
     })
 
-    await coordinator.executeTask(holder.id)
+    await runtime.executeTask(holder.id)
     await waitFor(() => started.length === 1)
     // queued 会因锁冲突被 pump 反复看到；修复前每一轮都要打一次平台。
-    await coordinator.executeTask(queued.id)
+    await runtime.executeTask(queued.id)
     await new Promise(resolve => setTimeout(resolve, 60))
     workers.releaseTask(holder.id)
     await waitFor(() => started.includes(queued.id))
@@ -340,7 +340,7 @@ describe('C6 — 事件序号分配是 O(n^2) 文件读，且失败被静默吞�
     const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
     process.on('unhandledRejection', onUnhandled)
     try {
-      const coordinator = new TaskExecutionCoordinator({
+      const runtime = new TaskRuntime({
         taskManager: manager,
         taskRunStore: new TaskRunStore(userData),
         getRefreshToken: () => 'refresh-token',
@@ -366,7 +366,7 @@ describe('C6 — 事件序号分配是 O(n^2) 文件读，且失败被静默吞�
         }),
       })
 
-      await coordinator.executeTask(task.id)
+      await runtime.executeTask(task.id)
       await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
       await new Promise(resolve => setTimeout(resolve, 80))
 
@@ -533,3 +533,4 @@ describe('C9 — check-then-commit 会歪曲错误码，并留下竞态窗口', 
     assert.equal(stored?.logs.filter(log => log.message.includes('out/report.md')).length, 1)
   })
 })
+

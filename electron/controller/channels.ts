@@ -29,14 +29,8 @@ export const INVOKE_CHANNELS = {
   TASK_CANCEL: 'task:cancel',
   TASK_DELETE: 'task:delete',
   TASK_GET_STATS: 'task:get-stats',
-  WORKFLOW_VALIDATE: 'workflow:validate',
-  WORKFLOW_CREATE: 'workflow:create',
-  WORKFLOW_GET: 'workflow:get',
-  WORKFLOW_START: 'workflow:start',
-  WORKFLOW_RETRY_NODE: 'workflow:retry-node',
-  WORKFLOW_RESUME: 'workflow:resume',
-  WORKFLOW_STOP: 'workflow:stop',
   ARRANGE_GET_CONTEXT: 'arrange:get-context',
+  ARRANGE_GET_PLAN: 'arrange:get-plan',
   ARRANGE_LIST_DRAFTS: 'arrange:list-drafts',
   ARRANGE_CREATE_DRAFT: 'arrange:create-draft',
   ARRANGE_GET_DRAFT: 'arrange:get-draft',
@@ -74,3 +68,5 @@ export const ALL_CHANNELS: readonly IpcChannel[] = [
   ...Object.values(SEND_CHANNELS),
   ...Object.values(EVENT_CHANNELS),
 ]
+
+

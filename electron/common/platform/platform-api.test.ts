@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { getEmployeeSkills, getInstances, getPackageInfo } from './platform-api'
+import { getEmployeeSkills, getEmploymentToken, getPackageInfo, getSubscriptions, login, refreshAccessToken } from './platform-api'
 
 const originalFetch = globalThis.fetch
 
@@ -15,120 +15,70 @@ function jsonResponse(value: unknown, status = 200): Response {
   })
 }
 
-describe('SEP auth API contract', () => {
-  it('parses the v1 nested capability/currentVersion skill response', async () => {
-    const requests: string[] = []
-    globalThis.fetch = async (input) => {
-      requests.push(String(input))
+describe('SEP final platform API contract', () => {
+  it('sends the final login fields and parses devices', async () => {
+    let request: RequestInit | undefined
+    globalThis.fetch = async (_input, init) => {
+      request = init
       return jsonResponse({
-        subscriptionId: 'sub-1',
-        skills: [{
-          capability: { id: 'cap-1', name: 'Order handling' },
-          currentVersion: {
-            id: 'version-7',
-            version: '1.2.0',
-            status: 'PLATFORM_APPROVED',
-            content: '# Order handling',
-          },
-          versions: [],
-        }],
+        accessToken: 'access',
+        refreshToken: 'refresh',
+        accessTokenExpiresIn: 3600,
+        refreshTokenExpiresIn: 2592000,
+        user: { id: 'member-1', email: 'a@example.com', name: 'A', role: 'USER' },
+        enterprise: { id: 'enterprise-1', name: 'Acme' },
+        devices: [{ id: 'device-1', fingerprint: 'fp', platform: 'win32', lastSeenAt: '2026-09-11T07:00:00.000Z' }],
       })
     }
 
-    const skills = await getEmployeeSkills('employee/1', 'access-token')
-
-    assert.deepEqual(skills, [{
-      id: 'cap-1',
-      name: 'Order handling',
-      currentVersion: '1.2.0',
-      status: 'PLATFORM_APPROVED',
-      versionId: 'version-7',
-      content: '# Order handling',
-    }])
-    assert.match(requests[0], /\/enterprise\/employees\/employee%2F1\/skills$/)
+    const response = await login({ email: 'a@example.com', password: 'secret', fingerprint: 'fp', platform: 'win32', clientVersion: '0.1.0' })
+    assert.deepEqual(JSON.parse(String(request?.body)), { email: 'a@example.com', password: 'secret', fingerprint: 'fp', platform: 'win32', clientVersion: '0.1.0' })
+    assert.equal(response.devices[0]?.id, 'device-1')
   })
 
-  it('keeps compatibility with the flat skill response shape', async () => {
-    globalThis.fetch = async () => jsonResponse([{
-      id: 'legacy-skill',
-      name: 'Legacy skill',
-      currentVersion: '1.0.0',
-      status: 'APPROVED',
-      content: '# Legacy',
-    }])
-
-    assert.deepEqual(await getEmployeeSkills('employee-1', 'token'), [{
-      id: 'legacy-skill',
-      name: 'Legacy skill',
-      currentVersion: '1.0.0',
-      status: 'APPROVED',
-      versionId: undefined,
-      content: '# Legacy',
-    }])
+  it('sends refreshToken only for access-token refresh', async () => {
+    let body = ''
+    globalThis.fetch = async (_input, init) => { body = String(init?.body); return jsonResponse({ accessToken: 'access', accessTokenExpiresIn: 3600, user: { id: 'm', email: 'a', name: 'A', role: 'USER' }, enterprise: { id: 'e', name: 'E' } }) }
+    await refreshAccessToken('refresh')
+    assert.deepEqual(JSON.parse(body), { refreshToken: 'refresh' })
   })
 
-  it('uses subscriptions first and falls back to instances only on 404', async () => {
-    const requests: string[] = []
-    globalThis.fetch = async (input) => {
-      const url = String(input)
-      requests.push(url)
-      if (url.endsWith('/client/subscriptions')) return jsonResponse({ error: 'not found' }, 404)
-      return jsonResponse([{
-        id: 'sub-1',
-        employeeId: 'employee-1',
-        name: 'Commerce',
-        status: 'ACTIVE',
-        templateVersion: '1.0.0',
-        template: { name: 'Commerce', avatar: null },
-        allowedModels: ['gpt-4o-mini'],
-      }])
-    }
-
-    const instances = await getInstances('token')
-
-    assert.deepEqual(instances[0], {
-      id: 'sub-1',
-      name: 'Commerce',
-      status: 'ACTIVE',
-      templateVersion: '1.0.0',
-      template: { id: 'employee-1', name: 'Commerce', avatar: null },
-      department: null,
-      allowedModels: ['gpt-4o-mini'],
-    })
-    assert.equal(requests.length, 2)
-    assert.match(requests[0], /\/client\/subscriptions$/)
-    assert.match(requests[1], /\/client\/instances$/)
+  it('requests subscriptions as a direct array with final identifiers', async () => {
+    let url = ''
+    globalThis.fetch = async input => { url = String(input); return jsonResponse([{ id: 'row-1', subscriptionId: 'sub-1', employeeId: 'employee-1', name: 'Commerce', status: 'ACTIVE', templateVersion: '1.2.0', template: { id: 'employee-1', name: 'Commerce', avatar: null }, department: null, allowedModels: ['model-a'], upgradeAvailable: false }]) }
+    const subscriptions = await getSubscriptions('access')
+    assert.match(url, /\/client\/subscriptions$/)
+    assert.equal(subscriptions[0]?.subscriptionId, 'sub-1')
+    assert.equal(subscriptions[0]?.employeeId, 'employee-1')
   })
 
-  it('uses the configured default model for legacy instances without allowedModels', async () => {
-    globalThis.fetch = async (input) => {
-      const url = String(input)
-      if (url.endsWith('/client/subscriptions')) return jsonResponse({ error: 'not found' }, 404)
-      return jsonResponse([{
-        id: 'legacy-sub',
-        employeeId: 'employee-1',
-        name: 'Legacy employee',
-        status: 'ACTIVE',
-        templateVersion: '1.0.0',
-        template: { name: 'Legacy employee', avatar: null },
-      }])
-    }
-
-    const instances = await getInstances('token')
-
-    assert.deepEqual(instances[0].allowedModels, ['gpt-5.2'])
+  it('sends subscriptionId, never instanceId, for employment tokens', async () => {
+    let body = ''
+    globalThis.fetch = async (_input, init) => { body = String(init?.body); return jsonResponse({ employmentToken: 'employment', expiresIn: 900, employment: { id: 'sub-1', name: 'Commerce', templateId: 'employee-1', status: 'ACTIVE' } }) }
+    const response = await getEmploymentToken({ refreshToken: 'refresh', subscriptionId: 'sub-1' })
+    assert.deepEqual(JSON.parse(body), { refreshToken: 'refresh', subscriptionId: 'sub-1' })
+    assert.equal(response.employmentToken, 'employment')
+    assert.equal(body.includes('instanceId'), false)
   })
 
-  it('accepts ZIP-only employee package metadata', async () => {
-    globalThis.fetch = async () => jsonResponse({
-      version: '1.0.0',
-      packageRef: null,
-      zipAvailable: true,
-      sha256: 'abc',
-    })
+  it('keeps the nested skills response unchanged', async () => {
+    const payload = { subscriptionId: 'sub-1', canManage: false, skills: [{ capability: { id: 'cap-1', name: 'Orders', description: 'desc', type: 'SKILL' }, currentVersion: { id: 'version-1', capabilityId: 'cap-1', scope: 'PLATFORM', enterpriseId: null, version: '1.0.0', changeSummary: 'initial', status: 'PLATFORM_APPROVED', createdAt: '2026-09-11T07:00:00.000Z', updatedAt: '2026-09-11T07:00:00.000Z' }, versions: [], upgradeAvailable: false }] }
+    globalThis.fetch = async () => jsonResponse(payload)
+    assert.deepEqual(await getEmployeeSkills('employee/1', 'access'), payload)
+  })
 
-    assert.deepEqual(await getPackageInfo('sub-1', 'token'), {
-      version: '1.0.0', packageRef: null, zipAvailable: true, sha256: 'abc',
+  it('uses the final package response without reshaping it', async () => {
+    const payload = { version: '1.2.0', packageRef: { type: 'npm', spec: '@sep/employee-commerce@1.2.0' }, zipAvailable: false, sha256: null }
+    globalThis.fetch = async () => jsonResponse(payload)
+    assert.deepEqual(await getPackageInfo('sub/1', 'access'), payload)
+  })
+
+  it('preserves the platform error envelope', async () => {
+    globalThis.fetch = async () => jsonResponse({ statusCode: 401, message: 'Invalid or expired refresh token', requestId: 'req-1', timestamp: '2026-09-11T07:00:00.000Z', path: '/api/client/auth/token' }, 401)
+    await assert.rejects(() => getEmploymentToken({ refreshToken: 'refresh', subscriptionId: 'sub-1' }), error => {
+      assert.equal((error as { error: { statusCode: number; requestId?: string } }).error.statusCode, 401)
+      assert.equal((error as { error: { requestId?: string } }).error.requestId, 'req-1')
+      return true
     })
   })
 })

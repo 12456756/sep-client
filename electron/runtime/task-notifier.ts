@@ -1,11 +1,8 @@
 /**
  * electron/runtime/task-notifier.ts — 任务状态推送出口（只有接口）
  *
- * `TaskManager` 原来自己持有 `BrowserWindow` 并直接 `webContents.send`
- * （方案 1.2 节），于是一个执行层的类知道渲染进程的存在，也就没法脱离 Electron 单测。
- *
- * 这里只声明"通知"这件事。实现由 `bootstrap/renderer-bridge.ts` 注入——
- * 本文件不认识 Electron，也不认识通道名，这是 B1 允许的唯一例外（方案 3.3 节）。
+ * 这里只声明通知能力。实现由 `bootstrap/renderer-bridge.ts` 注入，运行时和任务管理器
+ * 不需要认识 Electron 或 IPC 通道名。
  */
 import type { ClientTask, TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
 
@@ -37,3 +34,5 @@ export const silentTaskNotifier: TaskNotifier = {
   taskUpdated() {},
   taskListUpdated() {},
 }
+
+

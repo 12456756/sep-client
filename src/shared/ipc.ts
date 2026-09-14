@@ -2,7 +2,7 @@ import type {
   ClientTask,
   ClientTaskStats,
   CreateTaskRequest,
-  EmployeeInstanceSnapshot,
+  Subscription,
   ForgetAccountResult,
   LoginRequest,
   LoginResult,
@@ -17,6 +17,7 @@ import type {
   TaskRunResult,
   TaskTimelineResult,
   ClientTaskMessage,
+  ArrangementPlanResult,
   ToolAuthorizationRequest,
 } from './types'
 
@@ -36,7 +37,7 @@ export interface TaskCommandResult {
 }
 
 export interface InstanceListResult extends IpcCommandResult {
-  data?: EmployeeInstanceSnapshot[]
+  data?: Subscription[]
 }
 
 export interface TaskStatsResult extends IpcCommandResult {
@@ -74,18 +75,9 @@ export interface SwitchConversationEmployeeInput {
   subscriptionId: string
 }
 
-export interface WorkflowCreateResult extends TaskResult {
-  graph?: unknown
-}
-
 export interface RetryTaskInput {
   taskId: string
   nodeId?: string
-}
-
-export interface StopWorkflowInput {
-  taskId: string
-  reason?: string
 }
 
 export interface TaskMessagesResult {
@@ -110,7 +102,7 @@ export interface ElectronAPI {
   getRememberedPassword: (email: string) => Promise<PasswordAvailabilityResult>
   forgetAccount: (email: string) => Promise<ForgetAccountResult>
   logout: () => Promise<LogoutResult>
-  getInstances: () => Promise<InstanceListResult>
+  getSubscriptions: () => Promise<InstanceListResult>
   createTask: (data: CreateTaskInput) => Promise<TaskResult>
   createConversation: (data: CreateConversationInput) => Promise<TaskResult>
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
@@ -125,14 +117,8 @@ export interface ElectronAPI {
   getTaskTimeline: (taskId: string, runId: string) => Promise<TaskTimelineResult>
   pauseTask: (taskId: string) => Promise<IpcCommandResult>
   cancelTask: (taskId: string) => Promise<IpcCommandResult>
-  createWorkflow: (data: unknown) => Promise<WorkflowCreateResult>
-  validateWorkflow: (data: unknown) => Promise<WorkflowCreateResult>
-  getWorkflow: (taskId: string) => Promise<WorkflowCreateResult>
-  startWorkflow: (taskId: string) => Promise<IpcCommandResult>
-  retryWorkflowNode: (input: RetryTaskInput) => Promise<IpcCommandResult>
-  resumeWorkflow: (taskId: string) => Promise<IpcCommandResult>
-  stopWorkflow: (input: StopWorkflowInput) => Promise<IpcCommandResult>
   getArrangementContext: () => Promise<unknown>
+  getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   listArrangementDrafts: () => Promise<unknown>
   createArrangementDraft: (input: unknown) => Promise<unknown>
   getArrangementDraft: (draftId: string) => Promise<unknown>
@@ -152,3 +138,4 @@ export interface ElectronAPI {
   onAuthenticationRequired: (callback: () => void) => () => void
   sendToolApprovalResponse: (response: ToolApprovalResponse) => void
 }
+

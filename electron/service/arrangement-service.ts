@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { ClientInstance } from '../common/platform/platform-api'
+import type { Subscription } from '../common/platform/platform-api'
 import type { ArrangementDraftStorePort } from '../data/arrangement-draft-store'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { TaskMetadataStore } from '../data/task-metadata-store'
@@ -17,6 +17,7 @@ import {
   type ArrangementNode,
   type EffectiveTaskPermissionPolicy,
   type RequestedTaskPermissionPolicy,
+  type WorkPlan,
 } from '../domain/arrangement-plan'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import { requireScope, type ScopeSource } from './scope-guard'
@@ -37,10 +38,9 @@ export interface ArrangementContext {
     subscriptionId: string
     employeeId: string
     name: string
-    status: ClientInstance['status']
+    status: Subscription['status']
     allowedModels: string[]
     templateVersion: string
-    endDate: number | null
   }>
   permissionCeiling: { presets: Array<'read-only' | 'workspace-edit' | 'full-local'>; allowedTools: string[] }
   generatedAt: number
@@ -71,13 +71,12 @@ export class ArrangementService {
     return {
       enterpriseId: scope.enterpriseId,
       employees: employees.map(employee => ({
-        subscriptionId: employee.id,
-        employeeId: employee.template.id,
+        subscriptionId: employee.subscriptionId,
+        employeeId: employee.employeeId,
         name: employee.name,
         status: employee.status,
         allowedModels: [...employee.allowedModels],
         templateVersion: employee.templateVersion,
-        endDate: employee.endDate ?? null,
       })),
       permissionCeiling: {
         presets: ['read-only', 'workspace-edit', 'full-local'],
@@ -95,6 +94,10 @@ export class ArrangementService {
     const draft = await this.deps.drafts.get(requireScope(this.deps.scope), draftId)
     if (!draft) throw new AppError('NOT_FOUND')
     return draft
+  }
+
+  async getPlan(taskId: string): Promise<WorkPlan | null> {
+    return this.deps.workPlans.get(requireScope(this.deps.scope), taskId)
   }
 
   async createDraft(input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>): Promise<ArrangementDraft> {
@@ -144,7 +147,7 @@ export class ArrangementService {
         subscriptionId,
         employeeId: employee?.employeeId,
         status: employee?.status === 'ACTIVE' ? 'ACTIVE' : employee?.status === 'PAUSED' ? 'PAUSED' : 'TERMINATED',
-        endDate: employee?.endDate ?? null,
+        endDate: null,
         allowedModels: employee?.allowedModels ?? [],
       }, checkedAt, DEFAULT_SUBSCRIPTION_THRESHOLD_MS)
     })
@@ -180,7 +183,7 @@ export class ArrangementService {
     }
   }
 
-  async confirmDraft(draftId: string, expectedRevision: number, idempotencyKey: string): Promise<{ plan: import('../domain/arrangement-plan').WorkPlan; execution: null }> {
+  async confirmDraft(draftId: string, expectedRevision: number, idempotencyKey: string): Promise<{ plan: WorkPlan; execution: null }> {
     void idempotencyKey
     const scope = requireScope(this.deps.scope)
     const draft = await this.getDraft(draftId)
@@ -217,7 +220,7 @@ export class ArrangementService {
     await this.deps.taskMetadata.save(scope, {
       version: 1,
       taskId: task.id,
-      kind: draft.mode === 'conversation' ? 'conversation' : 'workflow',
+      kind: draft.mode === 'conversation' ? 'conversation' : 'arrangement',
       participantSubscriptionIds: draft.mode === 'conversation'
         ? [...new Set(draft.conversation?.participants.map(item => item.subscriptionId) ?? [])]
         : [...new Set(draft.nodes.map(node => node.subscriptionId))],
@@ -232,7 +235,7 @@ export class ArrangementService {
     return { plan, execution: null }
   }
 
-  async confirmAndStart(draftId: string, expectedRevision: number, idempotencyKey: string): Promise<{ plan: import('../domain/arrangement-plan').WorkPlan; execution: { id: string; status: 'queued' | 'running' } }> {
+  async confirmAndStart(draftId: string, expectedRevision: number, idempotencyKey: string): Promise<{ plan: WorkPlan; execution: { id: string; status: 'queued' | 'running' } }> {
     const confirmed = await this.confirmDraft(draftId, expectedRevision, idempotencyKey)
     const task = await this.deps.taskManager.getTask(confirmed.plan.id)
     if (!task) throw new AppError('NOT_FOUND')
@@ -251,3 +254,5 @@ export class ArrangementService {
 }
 
 export type { ArrangementMode, ArrangementNode, RequestedTaskPermissionPolicy }
+
+

@@ -1,8 +1,8 @@
 /**
- * 旧数据可读性（方案 Phase 7 的额外验收项）
+ * 旧数据可读性：现有目录中的任务、run、事件和消息必须继续可读。
  *
  * 「用旧数据目录启动，确认历史任务、run、事件、消息全部可读」。手工做一次只能证明
- * 那一次；这里用**纯 fs** 按 Phase 7 之前的布局手写一棵数据树，再让每个 reader 去读它。
+ * 那一次；这里用**纯 fs**按既有布局手写一棵数据树，再让每个 reader 去读它。
  * 任何一次"归并路径"时的悄悄挪层，都会在这里变红。
  *
  * 刻意不用任何 store 的写入方法来准备数据——否则读写用同一套错误的假设，测试会一起错。
@@ -17,7 +17,6 @@ import { encodeTaskScopeSegment } from './scope-path'
 import { TaskStore } from './task-store'
 import { TaskRunStore } from './task-run-store'
 import { projectTaskMessages } from './task-messages'
-import { WorkflowStore } from './workflow-store'
 import { TaskMetadataStore } from './task-metadata-store'
 
 const SCOPE = { memberId: 'member-legacy', enterpriseId: 'enterprise-legacy' }
@@ -30,7 +29,7 @@ after(async () => {
   await Promise.all(roots.splice(0).map(dir => rm(dir, { recursive: true, force: true })))
 })
 
-/** 按 Phase 7 之前的布局手写一棵 v3 数据树。路径全部是字面量，不经过 ScopePath。 */
+/** 按既有 v3 布局手写一棵数据树。路径全部是字面量，不经过 ScopePath。 */
 async function seedLegacyTree(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'sep-legacy-'))
   roots.push(root)
@@ -91,11 +90,6 @@ async function seedLegacyTree(): Promise<string> {
   })
   await writeFile(join(taskDir, 'events.jsonl'), `${event(1, '历史')}\n${event(2, '回答')}\n`, 'utf8')
 
-  await writeFile(join(taskDir, 'workflow.json'), JSON.stringify({
-    version: 1,
-    nodes: [{ id: 'n1', subscriptionId: 'employee-legacy', dependsOn: [] }],
-  }), 'utf8')
-
   await writeFile(join(taskDir, 'metadata.json'), JSON.stringify({
     version: 1,
     taskId: TASK_ID,
@@ -109,7 +103,7 @@ async function seedLegacyTree(): Promise<string> {
 }
 
 describe('旧数据目录可读（第 11 章硬约束）', () => {
-  it('reads history written before the Phase 7 data-layer merge', async () => {
+  it('reads data written by the previous storage layout', async () => {
     const root = await seedLegacyTree()
 
     const taskStore = new TaskStore(root)
@@ -139,7 +133,6 @@ describe('旧数据目录可读（第 11 章硬约束）', () => {
       ['assistant', '历史回答'],
     ], '历史消息必须投影得出来')
 
-    assert.equal((await new WorkflowStore(root).load(SCOPE, TASK_ID))?.nodes.length, 1)
     assert.equal((await new TaskMetadataStore(root).load(SCOPE, TASK_ID))?.kind, 'conversation')
   })
 
@@ -158,3 +151,4 @@ describe('旧数据目录可读（第 11 章硬约束）', () => {
     assert.deepEqual((await reopened.load(SCOPE)).map(task => task.id), [TASK_ID, 'task-new'])
   })
 })
+

@@ -85,3 +85,5 @@ export function PermissionPanel({ employeeName, permissions, disabled = false, o
     </div>
   );
 }
+
+

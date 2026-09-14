@@ -1,9 +1,8 @@
 /**
  * electron/controller/routes/auth.routes.ts — 6 条认证路由
  *
- * 认证的用例逻辑留在控制层，不进 `service/`（Phase 5 的记录）：它依赖
- * `safeStorage` 与 `credential-vault`，后者 `import electron`，搬进服务层会让整个
- * 服务层脱不开 Electron 运行时。`credential-vault` 的解耦是第 2 章记下的下一轮工作。
+ * 认证路由保留在控制层，因为它直接使用 Electron 的 `safeStorage` 和凭据保险库；
+ * 任务、对话和安排用例则通过 service 层处理。
  */
 import { app, safeStorage } from 'electron'
 import { z } from 'zod'
@@ -134,3 +133,5 @@ export const authRoutes = [
     }
   }),
 ]
+
+

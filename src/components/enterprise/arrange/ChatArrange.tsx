@@ -17,17 +17,16 @@ import { EmployeeFace } from '../EmployeeFace';
 interface Props {
   employees: SiliconEmployee[];
   busy: boolean;
-  /** 从员工页点进来时预选那位同事。 */
+  /** 从员工详情页进入时预选对应员工；直接从安排工作入口进入时为空。 */
   initialEmployeeId?: string;
+  onEmployeeChange: (employeeId: string) => void;
   onOpenSettings: () => void;
   onStart: (employeeId: string, text: string) => void;
 }
 
-export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings, onStart }: Props) {
+export function ChatArrange({ employees, busy, initialEmployeeId, onEmployeeChange, onOpenSettings, onStart }: Props) {
   const [employeeId, setEmployeeId] = useState(
-    initialEmployeeId && employees.some(item => item.id === initialEmployeeId)
-      ? initialEmployeeId
-      : employees[0]?.id ?? '',
+    initialEmployeeId && employees.some(item => item.id === initialEmployeeId) ? initialEmployeeId : '',
   );
   const [pickOpen, setPickOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -54,23 +53,20 @@ export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings
   const found = employees.filter(item => {
     const key = query.trim();
     if (!key) return true;
-    return item.name.includes(key) || item.roleName.includes(key) || (item.department ?? '').includes(key);
+    return item.name.includes(key) || item.roleName.includes(key);
   });
 
   const send = () => { if (ready && !busy) onStart(employeeId, text); };
 
   const choose = (id: string) => {
     setEmployeeId(id);
+    onEmployeeChange(id);
     setPickOpen(false);
     setQuery('');
   };
 
   return (
     <section className="ent-arr-chat">
-      <header className="ent-arr-head">
-        <h1>对话式</h1>
-        <p>与一个员工直接沟通，边聊边完成工作。</p>
-      </header>
 
       <div className="ent-chat-who" ref={pick}>
         <button
@@ -123,7 +119,7 @@ export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings
           <div className="ent-chat-open">
             <EmployeeFace seed={employee.id} size="xl" round />
             <strong>{employee.name}</strong>
-            <small>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''}</small>
+            <small>{employee.roleName}</small>
             <p>{employee.intro}</p>
             {employee.goodAt.length ? (
               <div className="ent-chat-tips">
@@ -168,3 +164,5 @@ export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings
     </section>
   );
 }
+
+

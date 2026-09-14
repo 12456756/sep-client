@@ -3,7 +3,7 @@
  * 未分配给我的员工只显示「申请使用」，不提供开始对话或安排工作。
  */
 
-import { MessageSquareText, ShieldCheck, Sparkles, Workflow } from 'lucide-react';
+import { GitBranch, MessageSquareText, ShieldCheck, Sparkles } from 'lucide-react';
 import type { SiliconEmployee } from '../../features/enterprise/types';
 import { relativeTime } from '../../features/enterprise/vocabulary';
 import { AvailabilityChip } from './atoms';
@@ -27,7 +27,7 @@ export function EmployeeCard({ employee, onOpen, onChat, onArrange, compact = fa
         <EmployeeFace seed={employee.id} size="sm" round />
         <button type="button" className="ent-emp-row-name" onClick={() => onOpen(employee.id)}>
           <strong>{employee.name}</strong>
-          <small>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''}</small>
+          <small>{employee.roleName}</small>
         </button>
         <AvailabilityChip value={employee.availability} />
         <span className="ent-emp-row-time">{relativeTime(employee.lastWorkedAt)}</span>
@@ -46,7 +46,7 @@ export function EmployeeCard({ employee, onOpen, onChat, onArrange, compact = fa
         <EmployeeFace seed={employee.id} size="md" />
         <div className="ent-emp-card-id">
           <strong title={employee.name}>{employee.name}</strong>
-          <small>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''}</small>
+          <small>{employee.roleName}</small>
         </div>
         <AvailabilityChip value={employee.availability} />
       </header>
@@ -71,7 +71,7 @@ export function EmployeeCard({ employee, onOpen, onChat, onArrange, compact = fa
               开始对话
             </button>
             <button type="button" className="ent-btn sm" onClick={() => onArrange?.(employee.id)} disabled={!onArrange || employee.availability === 'unavailable'}>
-              <Workflow size={13} aria-hidden />
+              <GitBranch size={13} aria-hidden />
               安排工作
             </button>
             <button type="button" className="ent-btn ghost sm" onClick={() => onOpen(employee.id)}>查看技能</button>
@@ -86,3 +86,5 @@ export function EmployeeCard({ employee, onOpen, onChat, onArrange, compact = fa
     </article>
   );
 }
+
+

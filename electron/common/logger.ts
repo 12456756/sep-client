@@ -6,7 +6,7 @@
  *
  * 三条硬约定：
  *   - 结构化字段，不做字符串拼接。便于过滤，也便于后续接落盘而不用改调用点。
- *   - 每个模块用 child(模块名)，来源自带，不再手写 `[TaskExecutionCoordinator]` 前缀。
+ *   - 每个模块用 child(模块名)，来源自带，不在消息里手写模块前缀。
  *   - 全部字段过 redact。这条与安全约束绑定，不是风格问题。
  */
 import { redactValue } from './redact'
@@ -104,3 +104,5 @@ function build(scope: string, bound: LogFields): Logger {
 
 /** 根记录器。业务代码一律用 `logger.child('模块名')`，不直接用它打日志。 */
 export const logger: Logger = build('sep', {})
+
+

@@ -54,7 +54,8 @@ function loadSourceFiles(): SourceFile[] {
   const strict = new TextDecoder('utf-8', { fatal: true })
   const files: SourceFile[] = []
   for (const path of listed.split('\0')) {
-    if (!path || !isTextFile(path)) continue
+    // .agents/ 只保存本地开发技能，不属于应用源码或发布内容。
+    if (!path || path.startsWith('.agents/') || !isTextFile(path)) continue
     let bytes: Buffer
     try {
       bytes = readFileSync(path)
@@ -270,7 +271,7 @@ const layerRules: Rule[] = [
       .filter(file => !file.path.startsWith('electron/controller/'))
       .flatMap(file => matchCodeLines(
         file,
-        /\bipcMain\b|(['"`])(?:auth|task|conversation|workflow|pi|util):[a-z-]+\1/,
+        /\bipcMain\b|(['"`])(?:auth|task|conversation|arrange|pi|util):[a-z-]+\1/,
         line => `控制层之外出现 IPC 细节：${line.slice(0, 80)}`,
       )),
   },
@@ -354,8 +355,7 @@ const loggingRules: Rule[] = [
 ]
 
 /**
- * Phase 0 发现 `tasks/domain/workflow-graph.test.ts` 与 `workflow-executor.test.ts`
- * 从未被运行过——它们不在 package.json 的显式文件列表里。这条规则确保不再复发：
+ * 这条规则确保每个后端测试文件都在 package.json 的测试 glob 中，避免新增测试静默漏跑：
  * 每个 electron/ 下的测试文件都必须被 `test:tasks` 的某个 glob 命中。
  */
 function testGlobsFromPackageJson(): string[] {
