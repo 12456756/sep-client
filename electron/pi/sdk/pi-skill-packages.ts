@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { SkillVersionStore } from '../../data/skill-version-store'
+import type { SkillVersionStore } from '../../data/skill-version-store'
 import { getEmployeeSkills, getPackageInfo, previewSkill, type EmployeeSkill } from '../../common/platform/platform-api'
 
 export interface SkillPackageRequest {
