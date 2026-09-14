@@ -10,7 +10,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "package": "npm run build && electron-builder",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "lint": "eslint . --ext .ts,.tsx",
     "auth:smoke": "bash scripts/test-auth-flow.sh",
     "check:boundaries": "tsx scripts/check-boundaries.ts",

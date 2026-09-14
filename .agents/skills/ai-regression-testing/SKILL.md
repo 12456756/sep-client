@@ -226,7 +226,7 @@ Run these commands FIRST before any code review:
 ### The Workflow
 
 ```
-User: "バグチェックして" (or "/bug-check")
+User: "run the bug check" (or "/bug-check")
   │
   ├─ Step 1: npm run test
   │   ├─ FAIL → Bug found mechanically (no AI judgment needed)

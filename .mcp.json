@@ -6,9 +6,8 @@
         "code-review-graph",
         "serve",
         "--repo",
-        "D:/github/sep-client"
+        "."
       ],
-      "cwd": "D:/github/sep-client",
       "type": "stdio"
     }
   }
