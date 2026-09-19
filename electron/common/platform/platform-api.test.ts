@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { getEmployeeSkills, getEmploymentToken, getPackageInfo, getSubscriptions, login, refreshAccessToken } from './platform-api'
+import { getEmployeeSkills, getEmploymentToken, getPackageInfo, getSubscriptions, login, refreshAccessToken, saveEmployeeConversationMessage } from './platform-api'
 
 const originalFetch = globalThis.fetch
 
@@ -80,5 +80,49 @@ describe('SEP final platform API contract', () => {
       assert.equal((error as { error: { requestId?: string } }).error.requestId, 'req-1')
       return true
     })
+  })
+})
+
+describe('SEP employee conversation message contract', () => {
+  it('uploads an idempotent user or assistant message with encoded client identifiers', async () => {
+    let request: RequestInit | undefined
+    let url = ''
+    globalThis.fetch = async (input, init) => {
+      url = String(input)
+      request = init
+      return jsonResponse({ data: {
+        conversationId: 'conversation-1',
+        messageId: 'message-1',
+        clientConversationId: 'task/1',
+        clientMessageId: 'run/1-user',
+        duplicate: false,
+      } })
+    }
+
+    const result = await saveEmployeeConversationMessage('task/1', 'run/1-user', {
+      subscriptionId: 'subscription-1',
+      role: 'user',
+      content: 'hello',
+      runId: 'run/1',
+      turnId: 'run/1',
+      modelId: 'model-1',
+      createdAt: '2026-09-19T12:00:00.000Z',
+    }, 'access')
+
+    assert.match(url, /\/client\/employee-conversations\/task%2F1\/messages\/run%2F1-user$/)
+    assert.equal(request?.method, 'PUT')
+    const headers = new Headers(request?.headers)
+    assert.equal(headers.get('Authorization'), 'Bearer access')
+    assert.equal(headers.get('Content-Type'), 'application/json')
+    assert.deepEqual(JSON.parse(String(request?.body)), {
+      subscriptionId: 'subscription-1',
+      role: 'user',
+      content: 'hello',
+      runId: 'run/1',
+      turnId: 'run/1',
+      modelId: 'model-1',
+      createdAt: '2026-09-19T12:00:00.000Z',
+    })
+    assert.equal(result.data.duplicate, false)
   })
 })
