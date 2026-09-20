@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import type { TaskExecutionEvent, ToolAuthorizationRequest } from '../../../src/shared/types'
 import { EmploymentTokenManager } from '../../common/platform/employment-token-manager'
 import { MAX_RUN_AUTO_RETRIES } from './pi-agent-runtime'
@@ -7,6 +8,8 @@ import { SharedPiSession } from './pi-shared-session'
 import { logger } from '../../common/logger'
 
 const log = logger.child('pi-task-worker')
+const MAX_IDENTICAL_UNKNOWN_TOOL_TURNS = 3
+const MAX_IDENTICAL_TOOL_TURNS = 3
 
 export function createDefaultSharedPiSession(): SharedPiSession {
   return new SharedPiSession(new PiCodingAgentAdapter())
@@ -62,6 +65,11 @@ export class PiTaskWorker {
   private readonly cancellation = new Promise<void>(resolve => { this.resolveCancellation = resolve })
   private sequence = 0
   private retryCount = 0
+  private turnHasUnknownTool = false
+  private previousInvalidToolTurn: unknown = null
+  private identicalInvalidToolTurns = 0
+  private previousSuccessfulToolTurn: unknown = null
+  private identicalSuccessfulToolTurns = 0
   private finalFailure: string | null = null
   private eventChain: Promise<void> = Promise.resolve()
 
@@ -83,6 +91,11 @@ export class PiTaskWorker {
     this.checkCancellation()
     this.active = true
     this.retryCount = 0
+    this.turnHasUnknownTool = false
+    this.previousInvalidToolTurn = null
+    this.identicalInvalidToolTurns = 0
+    this.previousSuccessfulToolTurn = null
+    this.identicalSuccessfulToolTurns = 0
     this.finalFailure = null
     let stage = 'instance-token'
     const logContext = {
@@ -169,6 +182,21 @@ export class PiTaskWorker {
         return
       }
       void this.emit(event.type, event.data)
+      if (this.finalFailure) return
+      const loopReason = this.hasRepeatedUnknownToolTurn(event)
+        ? `Repeated unknown-tool loop: 模型连续 ${MAX_IDENTICAL_UNKNOWN_TOOL_TURNS} 轮返回相同的无效工具调用，且结果没有变化。工具错误已回传模型，已停止本轮以避免无限循环。`
+        : this.hasRepeatedSuccessfulToolTurn(event)
+          ? `Repeated tool loop: 模型连续 ${MAX_IDENTICAL_TOOL_TURNS} 轮返回相同的工具调用，且工具结果没有变化。已停止本轮以避免无限循环。`
+          : null
+      if (loopReason) {
+        this.finalFailure = loopReason
+        log.warn('stopped repeated tool loop', { ...logContext, reason: loopReason })
+        void this.emit('tool_loop_detected', { error: this.finalFailure })
+        // turn_end is after all parallel results have been appended to SDK context.
+        void this.abort().catch(error => {
+          log.error('tool loop cancellation failed', { ...logContext, error: String(error) })
+        })
+      }
     })
     try {
       stage = 'session-persist'
@@ -191,6 +219,61 @@ export class PiTaskWorker {
       })
       throw failure
     }
+  }
+
+  private hasRepeatedUnknownToolTurn(event: import('./pi-agent-runtime').PiAgentEvent): boolean {
+    if (event.type === 'turn_start') this.turnHasUnknownTool = false
+    if (event.type === 'tool_execution_end') {
+      const data = event.data as { success?: boolean; failureReason?: string }
+      if (data.success === false && data.failureReason === 'unknown-tool') this.turnHasUnknownTool = true
+    }
+    if (event.type !== 'turn_end') return false
+    const data = event.data as {
+      message?: { content?: Array<{ type: string; name?: string; arguments?: unknown }> }
+      toolResults?: Array<{ toolName: string; isError: boolean; content: unknown }>
+    }
+    if (!this.turnHasUnknownTool || !Array.isArray(data.message?.content) || !Array.isArray(data.toolResults)) {
+      this.previousInvalidToolTurn = null
+      this.identicalInvalidToolTurns = 0
+      return false
+    }
+    // Compare complete batches, not completion order. A successful sibling ls must not
+    // hide an identical ls + unknown-tool loop. Changed arguments/results are progress.
+    // Ignore call IDs/timestamps, which change on every provider response.
+    const signature = {
+      calls: data.message.content.filter(call => call.type === 'toolCall')
+        .map(call => ({ name: call.name, arguments: call.arguments })),
+      results: data.toolResults.map(result => ({ toolName: result.toolName, isError: result.isError, content: result.content })),
+    }
+    this.identicalInvalidToolTurns = isDeepStrictEqual(signature, this.previousInvalidToolTurn)
+      ? this.identicalInvalidToolTurns + 1 : 1
+    this.previousInvalidToolTurn = signature
+    return this.identicalInvalidToolTurns >= MAX_IDENTICAL_UNKNOWN_TOOL_TURNS
+  }
+
+  private hasRepeatedSuccessfulToolTurn(event: import('./pi-agent-runtime').PiAgentEvent): boolean {
+    if (event.type !== 'turn_end') return false
+    const data = event.data as {
+      message?: { content?: Array<{ type: string; name?: string; arguments?: unknown }> }
+      toolResults?: Array<{ toolName: string; isError: boolean; content: unknown }>
+    }
+    const calls = data.message?.content?.filter(call => call.type === 'toolCall')
+    const results = data.toolResults
+    if (!Array.isArray(calls) || calls.length === 0 || !Array.isArray(results) || results.length === 0 || results.some(result => result.isError)) {
+      this.previousSuccessfulToolTurn = null
+      this.identicalSuccessfulToolTurns = 0
+      return false
+    }
+
+    // Ignore tool-call IDs: providers normally generate a new ID for every response.
+    const signature = {
+      calls: calls.map(call => ({ name: call.name, arguments: call.arguments })),
+      results: results.map(result => ({ toolName: result.toolName, isError: result.isError, content: result.content })),
+    }
+    this.identicalSuccessfulToolTurns = isDeepStrictEqual(signature, this.previousSuccessfulToolTurn)
+      ? this.identicalSuccessfulToolTurns + 1 : 1
+    this.previousSuccessfulToolTurn = signature
+    return this.identicalSuccessfulToolTurns >= MAX_IDENTICAL_TOOL_TURNS
   }
 
   async abort(): Promise<void> {

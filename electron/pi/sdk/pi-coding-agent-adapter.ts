@@ -86,6 +86,40 @@ function toolResultText(value: unknown): string {
   return value == null ? '' : String(value)
 }
 
+function summarizeGatewayMessages(messages: unknown[]): Array<Record<string, unknown>> {
+  return messages.map((message, index) => {
+    if (!message || typeof message !== 'object') {
+      return { index, role: 'unknown' }
+    }
+
+    const current = message as Record<string, unknown>
+    const toolCalls = Array.isArray(current.tool_calls)
+      ? current.tool_calls.map(call => {
+        if (!call || typeof call !== 'object') return null
+        const record = call as Record<string, unknown>
+        const functionValue = record.function
+        const functionRecord = functionValue && typeof functionValue === 'object'
+          ? functionValue as Record<string, unknown>
+          : null
+        return {
+          id: typeof record.id === 'string' ? record.id : undefined,
+          name: typeof functionRecord?.name === 'string' ? functionRecord.name : undefined,
+        }
+      }).filter((call): call is { id: string | undefined; name: string | undefined } => call !== null)
+      : undefined
+    const contentLength = gatewayContent(current.content).length
+
+    return {
+      index,
+      role: typeof current.role === 'string' ? current.role : 'unknown',
+      toolCalls,
+      toolCallId: typeof current.tool_call_id === 'string' ? current.tool_call_id : undefined,
+      contentLength,
+      hasContent: contentLength > 0,
+    }
+  })
+}
+
 /**
  * Classify tool failures for event metadata and audit consumers.
  * Tool failures are returned to Pi as error tool results; this classification
@@ -161,6 +195,12 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
         },
       }
     case 'tool_execution_end':
+      log.debug('tool execution completed', {
+        toolId: raw.toolCallId,
+        toolName: raw.toolName,
+        success: raw.isError !== true,
+        resultLength: toolResultText(raw.result).length,
+      })
       return {
         type: event.type,
         data: {
@@ -224,6 +264,9 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
           requestId,
           model: typeof normalizedRecord.model === 'string' ? normalizedRecord.model : undefined,
           messageCount: Array.isArray(normalizedRecord.messages) ? normalizedRecord.messages.length : 0,
+          messages: Array.isArray(normalizedRecord.messages)
+            ? summarizeGatewayMessages(normalizedRecord.messages)
+            : [],
         })
         return normalized
       } catch (error) {
@@ -241,37 +284,23 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
         status: event.status,
         headers: redactValue(event.headers),
       })
+    })
 
-      // Audit unknown tools in provider response before Pi processes them
-      const raw = event as unknown as { body?: unknown }
-      const body = raw.body
-      if (body && typeof body === 'object') {
-        const choices = (body as { choices?: unknown }).choices
-        if (Array.isArray(choices)) {
-          for (const choice of choices) {
-            if (!choice || typeof choice !== 'object') continue
-            const message = (choice as { message?: unknown }).message
-            if (!message || typeof message !== 'object') continue
-            const toolCalls = (message as { tool_calls?: unknown }).tool_calls
-            if (!Array.isArray(toolCalls)) continue
-
-            for (const toolCall of toolCalls) {
-              if (!toolCall || typeof toolCall !== 'object') continue
-              const toolName = (toolCall as { function?: { name?: unknown } }).function?.name
-              if (typeof toolName !== 'string') continue
-
-              if (!config.toolPolicy) continue
-              const decision = evaluateToolCall(toolName, {}, config.toolPolicy)
-              if (!decision.allowed && decision.reason === 'unknown-tool') {
-                void config.reportPolicyEvent?.('unknown_tool_blocked', {
-                  toolName,
-                  reason: 'Provider returned unknown tool name',
-                })
-                log.warn('unknown tool blocked in provider response', { toolName })
-              }
-            }
-          }
-        }
+    // after_provider_response exposes headers only, never a JSON body (including SSE).
+    // Inspect the assembled assistant message instead, without logging content/arguments.
+    pi.on('message_end', event => {
+      if (event.message.role !== 'assistant') return
+      const calls = event.message.content.filter(part => part.type === 'toolCall')
+      if (calls.length === 0) return
+      const availableTools = pi.getActiveTools()
+      log.debug('provider tool calls assembled', {
+        toolCalls: calls.map(call => ({ toolId: call.id, toolName: call.name })),
+      })
+      const unavailable = calls.filter(call => !availableTools.includes(call.name))
+      if (unavailable.length > 0) {
+        log.warn('provider returned unavailable tool calls', {
+          toolNames: unavailable.map(call => call.name), availableTools,
+        })
       }
     })
   }

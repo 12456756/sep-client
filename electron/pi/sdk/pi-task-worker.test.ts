@@ -2,11 +2,12 @@ import { createServer, type ServerResponse } from 'node:http'
 import { PiCodingAgentAdapter } from './pi-coding-agent-adapter'
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { PiTaskWorker } from './pi-task-worker'
 import { SharedPiSession } from './pi-shared-session'
+import { setLogSink, type LogRecord } from '../../common/logger'
 import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 
 const temporaryDirectories: string[] = []
@@ -259,7 +260,7 @@ it('bounds automatic retries across successful SDK tool turns, not just consecut
     onAuthenticationRequired: () => {}, onApprovalRequest: async () => true,
     onEvent: event => { events.push(event.type) }, runtime, createTokenManager: () => new FakeTokenManager(),
   })
-  await assert.rejects(worker.run('hello'), /自动重试.*上限/)
+  await assert.rejects(worker.run('hello'), /\u81ea\u52a8\u91cd\u8bd5.*\u4e0a\u9650/)
   await worker.dispose()
   assert.equal(runtime.session.aborted, true)
   assert.ok(events.includes('retry_budget_exhausted'))
@@ -270,6 +271,64 @@ function writeChunk(response: ServerResponse, delta: Record<string, unknown>, fi
   response.write(`data: ${JSON.stringify({ id: 'chat-test', object: 'chat.completion.chunk', created: 1, model: 'model-a', choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`)
 }
 
+it('forwards successful ls results in the next model context', { timeout: 20000 }, async () => {
+  const requests: Array<{ messages: Array<Record<string, unknown>> }> = []
+  const server = createServer((request, response) => {
+    let body = ''
+    request.on('data', chunk => { body += String(chunk) })
+    request.on('end', () => {
+      requests.push(JSON.parse(body) as { messages: Array<Record<string, unknown>> })
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      if (requests.length === 1) {
+        writeChunk(response, {
+          role: 'assistant',
+          tool_calls: [{ index: 0, id: 'call-ls', type: 'function', function: { name: 'ls', arguments: '{}' } }],
+        })
+        writeChunk(response, {}, 'tool_calls')
+      } else {
+        writeChunk(response, { role: 'assistant', content: 'The directory contains known.txt.' })
+        writeChunk(response, {}, 'stop')
+      }
+      response.end('data: [DONE]\n\n')
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+  const root = await makeDirectory()
+  await writeFile(join(root, 'known.txt'), 'known file', 'utf8')
+  const worker = new PiTaskWorker({
+    context: {
+      ...context(root),
+      gatewayUrl: `http://127.0.0.1:${address.port}/v1`,
+      toolPolicy: {
+        allowedTools: ['ls'], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled',
+        approvalMode: 'confirm-each', workspaceDir: root,
+      },
+    },
+    runtime: new PiCodingAgentAdapter(), createTokenManager: () => new FakeTokenManager(),
+    getRefreshToken: () => 'test-refresh', onAuthenticationRequired: () => {},
+    onApprovalRequest: async () => { throw new Error('ls must not ask approval') }, onEvent: () => {},
+  })
+  try {
+    await worker.run('List the files in the workspace.')
+    assert.equal(requests.length, 2)
+    const messages = requests[1]!.messages
+    const assistant = messages.find(message => message.role === 'assistant' && Array.isArray(message.tool_calls))
+    assert.ok(assistant)
+    const toolCalls = assistant.tool_calls as Array<Record<string, unknown>>
+    const call = toolCalls[0]
+    assert.equal((call?.function as Record<string, unknown>)?.name, 'ls')
+    assert.equal(call?.id, 'call-ls')
+    const result = messages.find(message => message.role === 'tool' && message.tool_call_id === 'call-ls')
+    assert.ok(result, 'the successful ls result must be sent back to the model')
+    assert.match(String(result.content), /known\.txt/)
+  } finally {
+    await worker.dispose()
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
 it('streams real SDK deltas before completion and returns denied tool results with matching IDs', { timeout: 20000 }, async () => {
   const requests: Array<{ messages: Array<Record<string, unknown>> }> = []
   let release!: () => void
@@ -403,3 +462,138 @@ it('cleans a cancelled shared-session setup before admitting the next turn', asy
     assert.equal(second.disposed, false)
   } finally { await adapter.dispose() }
 })
+
+
+for (const recover of [true, false]) {
+  it(`real SDK returns unknown-tool errors to the model and ${recover ? 'allows correction' : 'stops an identical invalid batch loop'}`, { timeout: 20000 }, async () => {
+    const requests: Array<{ messages: Array<Record<string, unknown>> }> = []
+    const logs: LogRecord[] = []
+    const restoreLog = setLogSink(record => { logs.push(record) })
+    const server = createServer((request, response) => {
+      let body = ''
+      request.on('data', chunk => { body += String(chunk) })
+      request.on('end', () => {
+        requests.push(JSON.parse(body))
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        const round = requests.length
+        if ((recover && round === 2) || round > 4) {
+          writeChunk(response, { role: 'assistant', content: 'Done' })
+          writeChunk(response, {}, 'stop')
+        } else {
+          // Fragmented SSE arguments with stable indexes; two independent calls in one response.
+          writeChunk(response, { role: 'assistant', tool_calls: [
+            { index: 0, id: `ls-${round}`, type: 'function', function: { name: 'ls', arguments: '' } },
+            { index: 1, id: `unknown-${round}`, type: 'function', function: { name: 'tool', arguments: '' } },
+          ] })
+          writeChunk(response, { tool_calls: [
+            { index: 0, function: { arguments: '{}' } },
+            { index: 1, function: { arguments: '{"privateValue":"do-not-log-tool-arguments"}' } },
+          ] })
+          writeChunk(response, {}, 'tool_calls')
+        }
+        response.end('data: [DONE]\n\n')
+      })
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    const root = await makeDirectory()
+    const events: Array<{ type: string; data: unknown }> = []
+    const worker = new PiTaskWorker({
+      context: {
+        ...context(root), gatewayUrl: `http://127.0.0.1:${address.port}/v1`,
+        toolPolicy: { allowedTools: ['ls'], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'confirm-each', workspaceDir: root },
+      },
+      runtime: new PiCodingAgentAdapter(), createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'test-refresh', onAuthenticationRequired: () => {},
+      onApprovalRequest: async () => { throw new Error('Read-only ls must not ask approval') },
+      onEvent: event => { events.push(event) },
+    })
+    try {
+      if (recover) await worker.run('List files')
+      else await assert.rejects(worker.run('List files'), /Repeated unknown-tool loop/)
+      assert.equal(requests.length, recover ? 2 : 3)
+      for (let round = 1; round < requests.length; round++) {
+        const messages = requests[round]!.messages
+        const unknownResult = messages.find(message => message.tool_call_id === `unknown-${round}`)
+        assert.equal(unknownResult?.role, 'tool')
+        assert.match(String(unknownResult?.content), /Tool tool not found/)
+        assert.ok(messages.some(message => message.role === 'tool' && message.tool_call_id === `ls-${round}`))
+      }
+      const endings = events.filter(event => event.type === 'tool_execution_end').map(event => event.data as { toolName: string; success: boolean })
+      assert.ok(endings.some(event => event.toolName === 'ls' && event.success))
+      assert.ok(endings.some(event => event.toolName === 'tool' && !event.success))
+      assert.equal(events.some(event => event.type === 'auto_retry_start'), false)
+      const audit = logs.find(record => record.message === 'provider returned unavailable tool calls')
+      assert.ok(audit, 'streamed tool names must be audited after SDK assembly, not through nonexistent response.body')
+      assert.deepEqual(audit.fields['toolNames'], ['tool'])
+      assert.equal(JSON.stringify(logs).includes('do-not-log-tool-arguments'), false)
+    } finally {
+      await worker.dispose()
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      restoreLog()
+    }
+  })
+}
+
+
+it('stops a successful identical-tool loop instead of issuing unbounded provider requests', async () => {
+  const runtime = new FakeRuntime()
+  runtime.session.prompt = async () => {
+    for (let round = 0; round < 4; round += 1) {
+      const call = { type: 'toolCall', id: `ls-${round}`, name: 'ls', arguments: { path: '.' } }
+      const result = { role: 'toolResult', toolCallId: call.id, toolName: 'ls', isError: false, content: [{ type: 'text', text: 'test.txt' }] }
+      runtime.session.listener?.({ type: 'turn_start', data: {} })
+      runtime.session.listener?.({ type: 'tool_execution_end', data: { toolId: call.id, toolName: 'ls', success: true } })
+      runtime.session.listener?.({ type: 'turn_end', data: { message: { content: [call] }, toolResults: [result] } })
+    }
+  }
+  const worker = new PiTaskWorker({
+    context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
+    getRefreshToken: () => 'test-refresh', onAuthenticationRequired: () => {},
+    onApprovalRequest: async () => false, onEvent: () => {},
+  })
+  try {
+    await assert.rejects(worker.run('List files'), /Repeated tool loop/)
+    assert.equal(runtime.session.aborted, true)
+  } finally { await worker.dispose() }
+})
+
+for (const progress of ['arguments', 'results', 'valid-turn', 'ordinary-error', 'same-turn'] as const) {
+  it(`does not stop tool recovery with ${progress}`, async () => {
+    const runtime = new FakeRuntime()
+    runtime.session.prompt = async () => {
+      const roundCount = progress === 'same-turn' ? 1 : 4
+      for (let round = 0; round < roundCount; round++) {
+        const unknown = progress !== 'ordinary-error' && !(progress === 'valid-turn' && round === 2)
+        const toolName = unknown ? 'tool' : 'ls'
+        const calls = Array.from({ length: progress === 'same-turn' ? 4 : 1 }, (_, index) => ({
+          type: 'toolCall', id: `${round}-${index}`, name: toolName,
+          arguments: { path: progress === 'arguments' ? `folder-${round}` : '.' },
+        }))
+        const results = calls.map(call => ({
+          role: 'toolResult', toolCallId: call.id, toolName, isError: unknown || progress === 'ordinary-error',
+          content: [{ type: 'text', text: progress === 'results' ? `changed-${round}` : 'unchanged' }],
+        }))
+        runtime.session.listener?.({ type: 'turn_start', data: {} })
+        for (const result of results) {
+          runtime.session.listener?.({ type: 'tool_execution_end', data: {
+            toolId: result.toolCallId, toolName, success: !result.isError,
+            failureReason: unknown ? 'unknown-tool' : 'execution-failed',
+          } })
+        }
+        runtime.session.listener?.({ type: 'turn_end', data: { message: { content: calls }, toolResults: results } })
+      }
+    }
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'test-refresh', onAuthenticationRequired: () => {},
+      onApprovalRequest: async () => false, onEvent: () => {},
+    })
+    try {
+      await worker.run('Recover from errors')
+      assert.equal(runtime.session.aborted, false)
+    } finally { await worker.dispose() }
+  })
+}
