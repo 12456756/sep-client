@@ -49,6 +49,7 @@ export class TaskManager {
   private persistenceDegraded = false
   private readonly store: TaskStorePort
   private readonly runStore: TaskRunStorePort
+  private readonly onTaskChanged?: (task: Task) => void
   private mutationChain: Promise<void> = Promise.resolve()
   /**
    * scope 世代号。每次切换或清空当前用户都 +1，在途的 commit 靠它判断自己是否已经
@@ -61,11 +62,13 @@ export class TaskManager {
     notifier: TaskNotifier | null = null,
     store: TaskStorePort = new TaskStore(userDataDir),
     runStore: TaskRunStorePort = new TaskRunStore(userDataDir),
+    onTaskChanged?: (task: Task) => void,
   ) {
     this.paths = new ScopePath(userDataDir)
     this.notifier = notifier ?? silentTaskNotifier
     this.store = store
     this.runStore = runStore
+    this.onTaskChanged = onTaskChanged
   }
 
   async initialize(): Promise<void> {
@@ -86,13 +89,14 @@ export class TaskManager {
     // C8：scope 切换必须与 commit 共用同一条串行链。原来它直接改 currentUser 与 tasks，
     // 在途的 commit 恢复执行后会拿新 scope 的 tasks 去覆盖旧 scope 的文件
     // ——旧 scope 的数据被写成新 scope 的内容，新 scope 的内存状态又被回滚。
+    let loadedTasks: Task[] = []
     await this.serialize(async () => {
       this.generation += 1
       this.currentUser = null
       this.tasks.clear()
       this.notifyTaskListUpdate()
 
-      const loadedTasks = (await this.store.load(scope)).map(cloneTask)
+      loadedTasks = (await this.store.load(scope)).map(cloneTask)
       let recovered = false
       for (const task of loadedTasks) {
         if (
@@ -129,6 +133,7 @@ export class TaskManager {
       }
     })
     this.notifyTaskListUpdate()
+    for (const task of loadedTasks) this.onTaskChanged?.(cloneTask(task))
   }
 
   clearCurrentUser(): void {
@@ -433,7 +438,11 @@ export class TaskManager {
 
   private notifyTaskUpdate(taskId: string): void {
     const task = this.tasks.get(taskId)
-    if (task) this.notifier.taskUpdated(cloneTask(task))
+    if (task) {
+      const snapshot = cloneTask(task)
+      this.notifier.taskUpdated(snapshot)
+      this.onTaskChanged?.(snapshot)
+    }
   }
 
   private notifyTaskListUpdate(): void {
@@ -443,5 +452,3 @@ export class TaskManager {
     this.notifier.taskListUpdated(tasks)
   }
 }
-
-

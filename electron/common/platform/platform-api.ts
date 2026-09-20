@@ -223,6 +223,7 @@ type AuthApiResource =
   | 'organization'
   | 'overview'
   | 'conversations'
+  | 'tasks'
 
 export class AuthApiError extends Error {
   constructor(

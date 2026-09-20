@@ -35,6 +35,7 @@ import { ArrangementService } from '../service/arrangement-service'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
 import { ConversationSyncStore } from '../data/conversation-sync-store'
 import { ConversationSyncService } from '../service/conversation-sync-service'
+import { TaskCloudMirror } from '../runtime/task-cloud-mirror'
 
 const log = logger.child('build-backend')
 
@@ -69,6 +70,7 @@ class BackendRuntime {
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
   private readonly conversationSyncStore: ConversationSyncStore
   private readonly conversationSync: ConversationSyncService
+  private readonly taskCloudMirror: TaskCloudMirror
   private readonly userDataDir: string
   private readonly renderer: RendererPort
   private readonly isEncryptionAvailable: () => boolean
@@ -83,7 +85,8 @@ class BackendRuntime {
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.authSession = new AuthSessionManager()
-    this.taskManager = new TaskManager(userDataDir, renderer)
+    this.taskCloudMirror = new TaskCloudMirror(this.authSession, userDataDir)
+    this.taskManager = new TaskManager(userDataDir, renderer, undefined, undefined, task => this.taskCloudMirror.observeTask(task))
     this.taskRunStore = new TaskRunStore(userDataDir)
     this.taskMetadataStore = new TaskMetadataStore(userDataDir)
     const arrangementDrafts = new ArrangementDraftStore(userDataDir)
@@ -180,6 +183,7 @@ class BackendRuntime {
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
     await this.runtime.peek()?.stopAll()
+    this.taskCloudMirror.stop()
   }
 
   /**
@@ -261,7 +265,10 @@ class BackendRuntime {
       taskManager: this.taskManager,
       getRefreshToken: () => this.authSession.getRefreshToken(),
       onAuthenticationRequired: () => this.invalidateAuthentication(),
-      onEvent: event => this.renderer.taskEvent(event),
+      onEvent: event => {
+        this.renderer.taskEvent(event)
+        this.taskCloudMirror.observeEvent(event)
+      },
       onApprovalRequest: request => this.renderer.approvalRequest(request),
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),

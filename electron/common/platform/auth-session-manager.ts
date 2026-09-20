@@ -99,6 +99,11 @@ export class AuthSessionManager {
     return this.refreshToken
   }
 
+  invalidateAccessToken(): void {
+    this.accessToken = null
+    this.accessTokenExpiresAt = 0
+  }
+
   clear(): void {
     this.accessToken = null
     this.accessTokenExpiresAt = 0
@@ -112,4 +117,3 @@ export class AuthSessionManager {
     return !this.accessToken || Date.now() + EXPIRY_SKEW_MS >= this.accessTokenExpiresAt
   }
 }
-
