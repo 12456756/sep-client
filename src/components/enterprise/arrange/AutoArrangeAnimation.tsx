@@ -111,7 +111,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, children }: P
             const tone = ready && index < resolved ? (node ? 'picked' : 'passed') : index === scan ? 'scanning' : 'idle';
             return (
               <article key={employee.id} className={`ent-aa-card ${tone}${gathered && !node ? ' gone' : ''}`}>
-                <EmployeeFace seed={employee.id} size="md" round />
+                <EmployeeFace employee={employee} size="md" round />
                 <strong>{employee.name}</strong><small>{employee.roleName}</small>
                 <span className="ent-aa-card-state">
                   {tone === 'scanning' ? <em>匹配中…</em> : null}
@@ -135,7 +135,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, children }: P
                 <article className={`ent-flowcard${rows >= 3 + index * 2 ? ' in' : ''}`}>
                   <span className="ent-flowcard-no" aria-hidden>{String(index + 1).padStart(2, '0')}</span>
                   <div className="ent-flowcard-body">
-                    <span className="ent-flowcard-who"><EmployeeFace seed={node.subscriptionId} size="sm" round /><strong>{employee?.name ?? node.subscriptionId}</strong><small>{employee?.roleName}</small></span>
+                    <span className="ent-flowcard-who"><EmployeeFace employee={employee} size="sm" round /><strong>{employee?.name ?? node.subscriptionId}</strong><small>{employee?.roleName}</small></span>
                     <strong className="ent-flowcard-stage">{node.title}</strong><p>{node.instruction}</p>
                   </div>
                 </article>

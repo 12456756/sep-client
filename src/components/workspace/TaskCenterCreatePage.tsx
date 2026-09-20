@@ -16,6 +16,7 @@ import '@xyflow/react/dist/style.css';
 import { ArrowLeft, Bot, ChevronRight, FolderOpen, Link2, Plus, Sparkles, Trash2, UserRound } from 'lucide-react';
 import { useCallback, useMemo, useState } from 'react';
 import type { AvailableEmployee, AvailableWorkflow, DagNodeDraft, LocalWorkspaceBinding, WorkflowDraft } from '../../features/workspace/useWorkspaceDemo';
+import { WorkspaceEmployeeAvatar } from './WorkspaceEmployeeAvatar';
 
 interface Props {
   employees: AvailableEmployee[];
@@ -28,7 +29,7 @@ interface Props {
 interface EmployeeNodeData extends Record<string, unknown> {
   index: number;
   employeeName: string;
-  avatar: string;
+  employeeAvatar: AvailableEmployee | null;
   title: string;
   instruction: string;
   dependencyCount: number;
@@ -47,7 +48,7 @@ function EmployeeNode({ id, data, selected }: NodeProps<EmployeeFlowNode>) {
     <Handle className="task-dag-handle task-dag-handle-target" type="target" position={Position.Left} title="连接前置节点" />
     <header>
       <span className="task-dag-node-index">{data.index}</span>
-      <span className="workspace-avatar">{data.avatar || <UserRound size={13} />}</span>
+      <span className="workspace-avatar-host">{data.employeeAvatar ? <WorkspaceEmployeeAvatar employee={data.employeeAvatar} /> : <UserRound size={13} />}</span>
       <div><strong>{data.title}</strong><small>{data.employeeName}</small></div>
       <button className="nodrag" type="button" onClick={() => data.onRemove(id)} aria-label={`删除${data.title}`} title="删除节点"><Trash2 size={13} /></button>
     </header>
@@ -149,7 +150,7 @@ export function TaskCenterCreatePage({ employees, workflows, initialWorkflowId, 
       data: {
         index: index + 1,
         employeeName: employee?.displayName ?? '未知员工',
-        avatar: employee?.avatar ?? '',
+        employeeAvatar: employee ?? null,
         title: node.title,
         instruction: node.instruction,
         dependencyCount: node.dependsOn.length,
@@ -205,7 +206,7 @@ export function TaskCenterCreatePage({ employees, workflows, initialWorkflowId, 
 
     {mode === 'auto' ? <section className="task-auto-preview">
       <div className="task-auto-preview-heading"><div><span className="eyebrow"><Sparkles size={13} />系统自动安排</span><h2>提交后由后端选择员工并生成 DAG</h2></div><span>{employees.length} 位可用员工</span></div>
-      <div className="task-auto-employee-strip">{autoNodes.map(node => { const employee = employeeById.get(node.subscriptionId); return <span key={node.id}><span className="workspace-avatar">{employee?.avatar || <UserRound size={11} />}</span>{employee?.displayName}</span>; })}</div>
+      <div className="task-auto-employee-strip">{autoNodes.map(node => { const employee = employeeById.get(node.subscriptionId); return <span key={node.id}>{employee ? <WorkspaceEmployeeAvatar employee={employee} /> : <span className="workspace-avatar"><UserRound size={11} /></span>}{employee?.displayName}</span>; })}</div>
       <p>这里仅展示可参与安排的员工。实际节点和依赖关系由后端根据目标生成。</p>
     </section> : <section className="task-dag-editor">
       <aside className="task-dag-palette">
@@ -218,7 +219,7 @@ export function TaskCenterCreatePage({ employees, workflows, initialWorkflowId, 
           onDragEnd={() => setDraggedEmployeeId(null)}
           onClick={() => addEmployeeNode(employee.id)}
           title={`添加${employee.displayName}`}
-        ><span className="workspace-avatar">{employee.avatar || <UserRound size={12} />}</span><span><strong>{employee.displayName}</strong><small>{employee.description}</small></span><Plus size={13} /></button>)}</div>
+        ><WorkspaceEmployeeAvatar employee={employee} /><span><strong>{employee.displayName}</strong><small>{employee.description}</small></span><Plus size={13} /></button>)}</div>
       </aside>
 
       <div className="task-dag-canvas-shell">

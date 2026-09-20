@@ -444,7 +444,7 @@ function OrganizationTreeNodeView(props: TreeNodeProps) {
                 {node.member.name.slice(0, 1)}
               </span>
             ) : (
-              <EmployeeFace seed={`carbon-${node.member.id}`} size="md" round={false} />
+              <EmployeeFace name={node.member.name} size="md" round={false} />
             )}
             <span className="org-tree-copy">
               <span className="org-card-title">
@@ -531,7 +531,7 @@ function OrganizationDrawer({ member, employees, onOpenEmployee, onClose }: Orga
   return (
     <aside className="org-drawer ent-card" aria-label="成员详情">
       <header className="org-drawer-head">
-        <EmployeeFace seed={'carbon-' + member.id} size="lg" round={false} />
+        <EmployeeFace name={member.name} size="lg" variant="portrait" round={false} />
         <div className="org-drawer-id">
           <div className="org-card-title">
             <h2>{member.name}</h2>
@@ -566,7 +566,7 @@ function OrganizationDrawer({ member, employees, onOpenEmployee, onClose }: Orga
               title={employee.assignedToMe ? '查看员工详情' : '仅展示组织授权，当前账号不可操作此员工'}
               aria-label={'查看 ' + employee.name + ' 详情'}
             >
-              <EmployeeFace seed={employee.id} size="sm" round />
+              <EmployeeFace employee={employee} size="sm" round />
               <span className="org-drawer-team-copy">
                 <strong title={employee.name}>{employee.name}</strong>
 

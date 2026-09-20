@@ -111,7 +111,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           <h2>{solo ? '执行员工' : <>工作成员 <em>（{team.length} 人）</em></>}</h2>
           {solo ? (
             <div className="ent-wk-solo">
-              <EmployeeFace seed={team[0]?.id ?? work.currentEmployeeId} size="xl" />
+              <EmployeeFace employee={team[0]} name={work.currentEmployeeName} size="xl" variant="portrait" />
               <strong>{team[0]?.name ?? work.currentEmployeeName}</strong>
               <small>{team[0]?.roleName ?? '硅基员工'}</small>
               <StatusChip {...roleState(work, team[0]?.id ?? work.currentEmployeeId)} />
@@ -120,7 +120,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             <ul className="ent-wk-people">
               {team.map(member => (
                 <li key={member.id}>
-                  <EmployeeFace seed={member.id} size="sm" round />
+                  <EmployeeFace employee={member} size="sm" round />
                   <span>
                     <strong title={member.name}>{member.name}</strong>
                     <small>{member.roleName}</small>

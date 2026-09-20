@@ -117,7 +117,7 @@ export function AppSideNav({
           aria-expanded={menuOpen}
           aria-haspopup="menu"
         >
-          <EmployeeFace seed={`user-${userName}`} size="sm" round />
+          <EmployeeFace name={userName} size="sm" round />
           <span>
             <strong title={userName}>{userName}</strong>
             <small>我的账号</small>

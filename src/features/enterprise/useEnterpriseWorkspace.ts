@@ -295,7 +295,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     return {
       id: instance.subscriptionId,
       name: instance.name,
-      mark: instance.template.avatar || instance.name.slice(0, 1),
+      avatar: instance.template.avatar,
+      avatarAsset: instance.template.avatarAsset ?? null,
+      mark: instance.name.slice(0, 1),
       roleName,
       department: departmentName(instance.department),
       availability,

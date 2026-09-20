@@ -1,4 +1,4 @@
-﻿import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
+import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
 import type { OrganizationCarbonEmployee } from './organization-model';
 import type { SiliconEmployee } from './types';
 
@@ -141,7 +141,9 @@ export function mapOrganizationEmployees(
     return {
       id: employee.subscriptionId,
       name: employee.name,
-      mark: employee.avatar || employee.name.slice(0, 1),
+      avatar: employee.avatar,
+      avatarAsset: employee.avatarAsset ?? local?.avatarAsset ?? null,
+      mark: employee.name.slice(0, 1),
       roleName: employee.position,
       department: local?.department ?? null,
       availability: !employee.active ? 'unavailable' : employee.employeeStatus === 'WORKING' ? 'working' : 'ready',

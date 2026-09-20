@@ -49,7 +49,7 @@ function SkillCard({ skill, workspace }: { skill: SkillLibraryItem; workspace: E
         const employee = workspace.employees.find(item => item.id === binding.subscriptionId);
         const active = skill.versions.find(version => version.id === binding.selectedVersionId);
         const local = skill.localVersions.find(version => version.idempotencyKey === binding.selectedVersionId);
-        return <span className="skill-employee" key={binding.subscriptionId} title={`${employee?.name ?? binding.employeeId} · ${active ? skillVersionLabel(active) : local?.request.changeSummary || (local ? '个人修改版' : '版本不可用')}`}><EmployeeFace seed={binding.subscriptionId} size="sm" round /><span>{employee?.name ?? binding.employeeId}</span></span>;
+        return <span className="skill-employee" key={binding.subscriptionId} title={`${employee?.name ?? binding.employeeId} · ${active ? skillVersionLabel(active) : local?.request.changeSummary || (local ? '个人修改版' : '版本不可用')}`}><EmployeeFace employee={employee} name={employee?.name ?? binding.employeeId} size="sm" round /><span>{employee?.name ?? binding.employeeId}</span></span>;
       })}</div></div>
       <label className="skill-active-version"><span className="skill-caption">当前使用版本</span><select className="ent-select" aria-label={`${skill.capability.name}当前使用版本`} value={selected} disabled={saving} onChange={event => void select(event.target.value)}>
         {!selected ? <option value="" disabled>员工使用不同版本</option> : !skill.versions.some(version => version.id === selected) && !skill.localVersions.some(version => version.idempotencyKey === selected) ? <option value={selected} disabled>已选版本不可用，请重新选择</option> : null}

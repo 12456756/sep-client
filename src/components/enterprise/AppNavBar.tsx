@@ -122,7 +122,7 @@ export function AppNavBar({
             aria-expanded={menuOpen}
             aria-haspopup="menu"
           >
-            <EmployeeFace seed={`user-${userName}`} size="sm" round />
+            <EmployeeFace name={userName} size="sm" round />
             <strong title={userName}>{userName}</strong>
             <ChevronDown size={13} aria-hidden style={{ transform: menuOpen ? 'rotate(180deg)' : undefined }} />
           </button>

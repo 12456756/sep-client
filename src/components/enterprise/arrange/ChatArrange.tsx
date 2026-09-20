@@ -71,7 +71,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onO
           aria-expanded={pickOpen}
           aria-haspopup="listbox"
         >
-          <EmployeeFace seed={employeeId || 'sep'} size="sm" round />
+          <EmployeeFace employee={employee} name="选择一位同事" size="sm" round />
           <strong>{employee?.name ?? '选择一位同事'}</strong>
           <ChevronDown size={14} aria-hidden style={{ transform: pickOpen ? 'rotate(180deg)' : undefined }} />
         </button>
@@ -96,7 +96,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onO
                     className={item.id === employeeId ? 'on' : undefined}
                     onClick={() => choose(item.id)}
                   >
-                    <EmployeeFace seed={item.id} size="sm" round />
+                    <EmployeeFace employee={item} size="sm" round />
                     <strong>{item.name}</strong>
                   </button>
                 </li>
@@ -110,7 +110,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onO
       <div className="ent-chat-room">
         {employee ? (
           <div className="ent-chat-open">
-            <EmployeeFace seed={employee.id} size="xl" round />
+            <EmployeeFace employee={employee} size="xl" round variant="portrait" />
             <strong>{employee.name}</strong>
             <p>{employee.intro}</p>
             {employee.goodAt.length ? (

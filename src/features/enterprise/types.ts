@@ -1,3 +1,4 @@
+import type { EmployeeAvatarAsset } from '../../shared/types'
 import type { WorkActivity } from '../../shared/work-activity'
 
 /**
@@ -51,7 +52,11 @@ export interface SiliconEmployee {
   /** 等于平台的 subscriptionId。 */
   id: string;
   name: string;
-  /** 头像文字，无图时使用。 */
+  /** SEP 旧版头像 URL，兼容老接口。 */
+  avatar: string | null;
+  /** SEP 返回的带版本头像素材。 */
+  avatarAsset: EmployeeAvatarAsset | null;
+  /** 姓名首字，无图时使用。 */
   mark: string;
   /** 职能名称，例如「数据分析」。 */
   roleName: string;

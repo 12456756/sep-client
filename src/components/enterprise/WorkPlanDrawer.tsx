@@ -114,7 +114,7 @@ export function WorkPlanDrawer({ work, workspace, onClose }: Props) {
               <li key={row.id} className="ent-plan-step">
                 <span className="ent-plan-who">
                   <b>{index + 1}</b>
-                  <EmployeeFace seed={row.employeeId} size="sm" round />
+                  <EmployeeFace employee={workspace.employees.find(item => item.id === row.employeeId)} name={row.employeeName} size="sm" round />
                   <strong title={row.employeeName}>{row.employeeName}</strong>
                   {available.has(row.employeeId) ? null : <em>已不可用</em>}
                 </span>

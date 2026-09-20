@@ -37,7 +37,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
       </button>
 
       <header className="ent-detail-head ent-card pad">
-        <EmployeeFace seed={employee.id} size="lg" />
+        <EmployeeFace employee={employee} size="lg" variant="portrait" />
         <div className="ent-detail-id">
           {/* 名字在顶栏（见 ClientAppPage），这张卡只补它的身份与状态。 */}
           <p>模板版本 {employee.templateVersion}</p>

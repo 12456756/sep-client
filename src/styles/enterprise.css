@@ -526,9 +526,10 @@
 .ent-wall-arrow:hover { border-color: var(--ent-brand-border); color: var(--ent-brand); background: var(--ent-brand-tint); }
 .ent-wall-arrow:active { background: var(--ent-brand-soft); }
 
-/* DiceBear toon-head 画的半身像（见 EmployeeFace）。尺寸在这里定，组件内部只管画。 */
+/* SEP 员工头像（见 EmployeeFace）。尺寸在这里定，组件内部只管 URL 回退。 */
 .ent-face { display: block; flex: 0 0 auto; overflow: hidden; border-radius: 8px; background: var(--ent-brand-soft); }
-.ent-face > svg { display: block; width: 100%; height: 100%; }
+.ent-face > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.ent-face.placeholder { display: grid; place-items: center; color: var(--ent-brand-ink); font-size: 0.72em; font-weight: 700; }
 .ent-face.sm { width: 30px; height: 30px; border-radius: 8px; }
 .ent-face.md { width: 40px; height: 40px; border-radius: 9px; }
 .ent-face.lg { width: 52px; height: 52px; border-radius: 10px; }

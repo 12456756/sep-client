@@ -159,7 +159,7 @@ export function WorkRecordsPage({ workspace }: Props) {
                   const person = workspace.myEmployees.find(item => item.id === id);
                   return (
                     <span key={id} title={person?.name ?? '已停用的员工'}>
-                      <EmployeeFace seed={id} size="sm" round />
+                      <EmployeeFace employee={person} name={person?.name ?? "已停用的员工"} size="sm" round />
                       {person?.name ?? '已停用的员工'}
                     </span>
                   );

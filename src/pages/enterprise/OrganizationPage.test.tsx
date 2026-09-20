@@ -7,7 +7,7 @@ import type { SiliconEmployee } from '../../features/enterprise/types';
 import type { OrganizationCarbonEmployee } from '../../features/enterprise/organization-model';
 
 const employee: SiliconEmployee = {
-  id: 'subscription-1', name: 'Granted employee', mark: 'G', roleName: 'Analyst', department: 'Data',
+  id: 'subscription-1', name: 'Granted employee', avatar: null, avatarAsset: null, mark: 'G', roleName: 'Analyst', department: 'Data',
   availability: 'ready', assignedToMe: true, intro: '', goodAt: [], cannotDo: [], lastWorkedAt: null,
   allowedModels: [], skillIds: [], permissions: [], templateVersion: '1.0',
 };

@@ -172,7 +172,7 @@ export function ManualArrange({ employees, busy, seed, onOpenSettings, onSave, o
                       aria-pressed={selectedId === step.id}
                     >
                       <span className="ent-mn-no" aria-hidden>{String(index + 1).padStart(2, '0')}</span>
-                      <EmployeeFace seed={step.employeeId || 'sep'} size="md" round />
+                      <EmployeeFace employee={employee} name="还没有指定员工" size="md" round />
                       <span className="ent-mn-id">
                         <strong>{employee?.name ?? '还没有指定员工'}</strong>
                         <small>{employee?.roleName ?? '点这里选一位同事'}</small>
@@ -219,7 +219,7 @@ export function ManualArrange({ employees, busy, seed, onOpenSettings, onSave, o
                 {employees.map(employee => (
                   <li key={employee.id}>
                     <button type="button" onClick={() => add(employee.id)}>
-                      <EmployeeFace seed={employee.id} size="sm" round />
+                      <EmployeeFace employee={employee} size="sm" round />
                       <span>
                         <strong>{employee.name}</strong>
                         <small>{employee.roleName}</small>
@@ -310,7 +310,7 @@ function StepForm({ step, employees, order, onPatch }: {
   return (
     <>
       <header className="ent-mn-side-head">
-        <EmployeeFace seed={step.employeeId || 'sep'} size="md" round />
+        <EmployeeFace employee={employee} name="还没有指定员工" size="md" round />
         <span>
           <strong>{employee?.name ?? '还没有指定员工'}</strong>
           <small>{employee?.roleName ?? '在下面选一位同事'}</small>

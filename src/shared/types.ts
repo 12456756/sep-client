@@ -329,6 +329,19 @@ export interface AuthSession {
 
 // ──────────────────────────── Instances ────────────────────────
 
+export interface EmployeeAvatarAsset {
+  id: string
+  version: string | null
+  portraitUrl: string
+  faceUrl: string
+}
+
+export interface EmployeeAvatarSource {
+  name: string
+  avatar?: string | null
+  avatarAsset?: EmployeeAvatarAsset | null
+}
+
 export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
 
 export interface Subscription {
@@ -345,6 +358,7 @@ export interface Subscription {
     id: string
     name: string
     avatar: string | null
+    avatarAsset?: EmployeeAvatarAsset | null
   }
   department: unknown
   allowedModels: string[]
@@ -517,4 +531,3 @@ export interface ArrangementPlanningProgress {
     message?: string
   }
 }
-

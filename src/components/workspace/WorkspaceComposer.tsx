@@ -1,6 +1,7 @@
 import { ArrowUp, Bot, ChevronRight, FileText, FolderOpen, LoaderCircle, Paperclip, Plus, ShieldCheck, Sparkles, Wrench, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { AvailableEmployee, AvailableSkill, AvailableWorkflow, ConversationDraft, LocalWorkspaceBinding, Task } from '../../features/workspace/useWorkspaceDemo';
+import { WorkspaceEmployeeAvatar } from './WorkspaceEmployeeAvatar';
 
 interface Props {
   compact?: boolean;
@@ -133,7 +134,7 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
         if (!item) return null;
         return <span className={`composer-employee-chip ${id === employeeSelection ? 'active' : ''}`} key={id}>
           <button type="button" className="composer-chip-remove" onClick={() => removeEmployee(id)} aria-label={`移除${item.displayName}`} title={`移除${item.displayName}`}><X size={12} /></button>
-          <button type="button" className="composer-employee-chip-main" onClick={() => handleEmployeeChange(id)} title={`切换到${item.displayName}`}><span className="workspace-avatar workspace-avatar-text">{item.avatar}</span><span>{item.displayName}</span></button>
+          <button type="button" className="composer-employee-chip-main" onClick={() => handleEmployeeChange(id)} title={`切换到${item.displayName}`}><WorkspaceEmployeeAvatar employee={item} /><span>{item.displayName}</span></button>
         </span>;
       })}
     </div>}
@@ -149,7 +150,7 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
           {mode === 'conversation' && <button type="button" role="menuitem" onMouseEnter={() => setAddPanel('skills')} onFocus={() => setAddPanel('skills')} onClick={() => setAddPanel(addPanel === 'skills' ? null : 'skills')} title="添加技能"><Wrench size={15} /><span>添加技能</span><ChevronRight size={14} className={addPanel === 'skills' ? 'rotate-90' : ''} /></button>}
           {mode === 'conversation' && <button type="button" role="menuitem" onMouseEnter={() => setAddPanel('employees')} onFocus={() => setAddPanel('employees')} onClick={() => setAddPanel(addPanel === 'employees' ? null : 'employees')} title="添加硅基员工"><Bot size={15} /><span>添加硅基员工</span><ChevronRight size={14} className={addPanel === 'employees' ? 'rotate-90' : ''} /></button>}
           {addPanel === 'skills' && <div className="composer-add-submenu composer-add-submenu-side">{skills.filter(skill => skill.installed).map(skill => <button type="button" key={skill.id} onClick={() => addSkill(skill.id)} disabled={selectedSkillIds.includes(skill.id)} title={selectedSkillIds.includes(skill.id) ? '已添加' : `添加${skill.name}`}><Wrench size={13} /><span>{skill.name}</span></button>)}</div>}
-          {addPanel === 'employees' && <div className="composer-add-submenu composer-add-submenu-side">{employees.map(item => <button type="button" key={item.id} onClick={() => addEmployee(item.id)} className={employeeIds.includes(item.id) ? 'selected' : ''} title={`切换到${item.displayName}`}><span className="workspace-avatar workspace-avatar-text">{item.avatar}</span><span>{item.displayName}</span></button>)}</div>}
+          {addPanel === 'employees' && <div className="composer-add-submenu composer-add-submenu-side">{employees.map(item => <button type="button" key={item.id} onClick={() => addEmployee(item.id)} className={employeeIds.includes(item.id) ? 'selected' : ''} title={`切换到${item.displayName}`}><WorkspaceEmployeeAvatar employee={item} /><span>{item.displayName}</span></button>)}</div>}
         </div>}
       </div>
       {mode === 'conversation' && <label className="composer-model-control"><Sparkles size={14} /><span>模型</span><select value={draft.modelId} disabled={!employee} onChange={event => onDraftChange({ modelId: event.target.value })} title="选择模型"><option value="">默认</option>{employee?.modelOptions.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></label>}

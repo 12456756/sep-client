@@ -61,7 +61,7 @@ export function EmployeeWorksDrawer({ employee, works, onClose, onOpenWork }: Pr
       <div className="ent-drawer-back" role="presentation" onMouseDown={onClose} />
       <aside className="ent-drawer" role="dialog" aria-modal="true" aria-labelledby="ent-drawer-name" ref={panel}>
         <header className="ent-drawer-head">
-          <EmployeeFace seed={employee.id} size="xl" />
+          <EmployeeFace employee={employee} size="xl" variant="portrait" />
           <div className="ent-drawer-id">
             <h2 id="ent-drawer-name">{employee.name}</h2>
             <small>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''}</small>

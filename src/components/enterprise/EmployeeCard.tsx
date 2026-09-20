@@ -23,7 +23,7 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false }: Prop
   if (compact) {
     return (
       <div className="ent-emp-row">
-        <EmployeeFace seed={employee.id} size="sm" round />
+        <EmployeeFace employee={employee} size="sm" round />
         <button type="button" className="ent-emp-row-name" onClick={() => onOpen(employee.id)}>
           <strong>{employee.name}</strong>
         </button>
@@ -38,7 +38,7 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false }: Prop
   return (
     <article className={`ent-card ent-emp-card${employee.assignedToMe ? '' : ' off'}`}>
       <header>
-        <EmployeeFace seed={employee.id} size="md" />
+        <EmployeeFace employee={employee} size="md" />
         <div className="ent-emp-card-id">
           <strong title={employee.name}>{employee.name}</strong>
         </div>

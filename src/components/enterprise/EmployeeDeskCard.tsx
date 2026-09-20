@@ -54,7 +54,7 @@ export function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Pro
         onClick={() => onOpen(employee.id)}
         aria-label={`${employee.name}，${state.label}。${said ? `${said}。` : ''}查看他手上的工作`}
       >
-        <EmployeeFace seed={employee.id} size="card" />
+        <EmployeeFace employee={employee} size="card" variant="portrait" />
         <span className="ent-desk-id">
           <strong title={employee.name}>{employee.name}</strong>
           <span className="ent-desk-state">

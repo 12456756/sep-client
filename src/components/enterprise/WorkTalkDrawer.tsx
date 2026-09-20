@@ -52,7 +52,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
       <div className="ent-drawer-back" role="presentation" onMouseDown={onClose} />
       <aside className="ent-drawer wide" role="dialog" aria-modal="true" aria-labelledby="ent-talk-title" ref={panel}>
         <header className="ent-drawer-head">
-          <EmployeeFace seed={work.currentEmployeeId || 'sep'} size="xl" />
+          <EmployeeFace employee={workspace.employees.find(item => item.id === work.currentEmployeeId)} name={work.currentEmployeeName} size="xl" variant="portrait" />
           <div className="ent-drawer-id">
             <h2 id="ent-talk-title">和{work.currentEmployeeName}的对话</h2>
             <small title={work.title}>{work.title}</small>
@@ -71,7 +71,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
                 <div className={`ent-say${message.role === 'user' ? ' user' : ''}`} key={message.id}>
                   {message.role === 'employee' ? (
                     <span className="ent-say-who">
-                      <EmployeeFace seed={message.employeeId || work.currentEmployeeId} size="sm" round />
+                      <EmployeeFace employee={workspace.employees.find(item => item.id === (message.employeeId || work.currentEmployeeId))} name={message.employeeName} size="sm" round />
                       {message.employeeName}
                     </span>
                   ) : null}
@@ -122,7 +122,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}
                 {work.kind === 'conversation' ? (
                   <label className="ent-ask-who">
-                    <EmployeeFace seed={work.currentEmployeeId || 'sep'} size="sm" round />
+                    <EmployeeFace employee={workspace.employees.find(item => item.id === work.currentEmployeeId)} name={work.currentEmployeeName} size="sm" round />
                     <select
                       value={work.currentEmployeeId}
                       aria-label="换一位员工接手"

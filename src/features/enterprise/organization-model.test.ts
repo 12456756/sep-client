@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import type { OrganizationCarbonEmployee } from './organization-model';
@@ -18,7 +18,7 @@ const members: OrganizationCarbonEmployee[] = [
   { id: 'member', name: 'Member', position: 'Analyst', department: 'Data', employeeIds: ['subscription-1'], isCurrent: true, kind: 'member', parentId: 'lead' },
 ];
 const employee: SiliconEmployee = {
-  id: 'subscription-1', name: 'Analyst', mark: 'A', roleName: 'Analysis', department: 'Data',
+  id: 'subscription-1', name: 'Analyst', avatar: null, avatarAsset: null, mark: 'A', roleName: 'Analysis', department: 'Data',
   availability: 'ready', assignedToMe: true, intro: '', goodAt: [], cannotDo: [], lastWorkedAt: null,
   allowedModels: [], skillIds: [], permissions: [], templateVersion: '1.0',
 };

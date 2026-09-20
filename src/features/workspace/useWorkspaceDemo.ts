@@ -18,7 +18,8 @@ export interface AvailableEmployee {
   id: string;
   displayName: string;
   description: string;
-  avatar: string;
+  avatar: string | null;
+  avatarAsset: Subscription["template"]["avatarAsset"];
   modelOptions: AvailableModel[];
 }
 
@@ -256,7 +257,8 @@ export function useWorkspaceDemo(options: { subscriptionId?: string; employeeNam
     id: instance.subscriptionId,
     displayName: instance.name,
     description: `${instance.position || instance.functionalCategory || instance.template.name}${departmentLabel(instance.department) ? ` ? ${departmentLabel(instance.department)}` : ''}`,
-    avatar: instance.template.avatar ?? instance.name.slice(0, 1),
+    avatar: instance.template.avatar ?? null,
+    avatarAsset: instance.template.avatarAsset ?? null,
     // 旧版或当前 SEP 实例响应可能省略可选的模型列表。
     // 保留员工显示，避免登录时整个工作区崩溃。
     modelOptions: (Array.isArray(instance.allowedModels) ? instance.allowedModels : []).map((id, index) => ({ id, displayName: id, providerName: 'SEP Gateway', description: '授权模型', isDefault: index === 0, supportsTools: true })),

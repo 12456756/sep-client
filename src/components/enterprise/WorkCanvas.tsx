@@ -404,7 +404,7 @@ function Node({ step, employee, skills, selected, connecting, onSelect, onRemove
       <span className="ent-node-port in" aria-hidden />
 
       <div className="ent-node-head">
-        <EmployeeFace seed={employee?.id ?? step.id} size="sm" round />
+        <EmployeeFace employee={employee} name={employee?.name ?? step.employeeId} size="sm" round />
         <span className="ent-node-id">
           <strong>{employee?.name ?? '未指定员工'}</strong>
           <small>{employee?.roleName ?? '拖一位同事进来，或在右侧指派'}</small>

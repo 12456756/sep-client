@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -10,7 +10,7 @@ import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpris
 import type { SiliconEmployee } from '../../features/enterprise/types';
 
 const employee: SiliconEmployee = {
-  id: 'test-subscription', name: '测试员工', mark: '测', roleName: 'LEGACY_ROLE', department: 'LEGACY_DEPARTMENT',
+  id: 'test-subscription', name: '测试员工', avatar: null, avatarAsset: null, mark: '测', roleName: 'LEGACY_ROLE', department: 'LEGACY_DEPARTMENT',
   availability: 'ready', assignedToMe: true, intro: '测试员工介绍', goodAt: [], cannotDo: [], lastWorkedAt: null,
   allowedModels: [], skillIds: [], permissions: [], templateVersion: '1.0',
 };

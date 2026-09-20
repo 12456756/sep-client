@@ -147,6 +147,8 @@ export function unassignedEmployees(assignedRoles: string[]): SiliconEmployee[] 
       result.push({
         id: `roster-${entry.role}-${index}`,
         name: `${entry.role}员工 ${String(index + 1).padStart(2, '0')}`,
+        avatar: null,
+        avatarAsset: null,
         mark: entry.role.slice(0, 1),
         roleName: entry.role,
         department: entry.department,

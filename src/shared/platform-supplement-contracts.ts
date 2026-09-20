@@ -4,6 +4,13 @@ const resourceId = z.string().min(1).max(128)
 const nullableText = z.string().nullable()
 const count = z.number().int().nonnegative()
 
+export const avatarAssetSchema = z.object({
+  id: z.string().min(1),
+  version: z.string().nullable(),
+  portraitUrl: z.string().min(1),
+  faceUrl: z.string().min(1),
+}).passthrough()
+
 export const enterpriseOverviewSchema = z.object({
   enterprise: z.object({ id: z.string(), name: z.string(), logo: nullableText }).passthrough(),
   permissions: z.object({
@@ -17,7 +24,7 @@ export const enterpriseOverviewSchema = z.object({
   }).passthrough(),
   employees: z.array(z.object({
     employeeId: z.string(), subscriptionId: z.string(), name: z.string(),
-    avatar: nullableText, position: z.string(), description: z.string(),
+    avatar: nullableText, avatarAsset: avatarAssetSchema.nullable().optional(), position: z.string(), description: z.string(),
     status: z.enum(['ACTIVE', 'PAUSED', 'EXPIRED', 'TERMINATED']),
     employeeStatus: z.string(), endDate: nullableText,
     active: z.boolean(), currentUserCanUse: z.boolean(),
@@ -31,7 +38,7 @@ export const enterpriseOrganizationSchema = enterpriseOverviewSchema.extend({
   }).passthrough()),
   members: z.array(z.object({
     id: z.string(), userId: z.string(), name: z.string(),
-    departmentId: nullableText, position: nullableText, avatar: nullableText,
+    departmentId: nullableText, position: nullableText, avatar: nullableText, avatarAsset: avatarAssetSchema.nullable().optional(),
   }).passthrough()),
   grants: z.array(z.object({
     id: z.string(), subscriptionId: z.string(), memberId: nullableText,
