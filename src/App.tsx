@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { LoginPage } from './pages/LoginPage';
 import { ClientAppPage } from './pages/ClientAppPage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
-import type { EmployeeInstanceSnapshot, RememberedAccount } from './shared/types';
+import type { EmployeeStatus, Subscription, RememberedAccount } from './shared/types';
 
 interface AuthState {
   user: { id: string; email: string; name: string };
@@ -19,7 +19,8 @@ const INSTANCE_LOAD_TIMEOUT_MS = 3_000;
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState | null>(null);
-  const [instances, setInstances] = useState<EmployeeInstanceSnapshot[]>([]);
+  const [instances, setInstances] = useState<Subscription[]>([]);
+  const [employeeStatuses, setEmployeeStatuses] = useState<EmployeeStatus[]>([]);
   const [toolApprovalRequest, setToolApprovalRequest] = useState<ToolApprovalRequest | null>(null);
   const [restoringAuth, setRestoringAuth] = useState(true);
   const [rememberedAccounts, setRememberedAccounts] = useState<RememberedAccount[]>([]);
@@ -40,6 +41,7 @@ export default function App() {
   useEffect(() => window.electronAPI.onAuthenticationRequired(() => {
     setAuthState(null);
     setInstances([]);
+    setEmployeeStatuses([]);
     setLoadingInstances(false);
     setInstanceError(null);
     setToolApprovalRequest(null);
@@ -54,15 +56,20 @@ export default function App() {
     const timeout = new Promise<never>((_resolve, reject) => {
       timeoutId = setTimeout(() => reject(new Error('加载员工团队超时，请稍后重试。')), INSTANCE_LOAD_TIMEOUT_MS);
     });
-    void Promise.race([window.electronAPI.getInstances(), timeout]).then(result => {
+    void Promise.race([
+      Promise.all([window.electronAPI.getSubscriptions(), window.electronAPI.getEmployeeStatus()]),
+      timeout,
+    ]).then(result => {
       if (!active) return;
-      if (!result.success || !result.data?.length) {
-        setInstanceError(result.error?.message || '当前账号没有可用的硅基员工实例。');
+      const [subscriptions, statuses] = result;
+      if (!subscriptions.success) {
+        setInstanceError(subscriptions.error?.message || '?????????');
         return;
       }
-      setInstances(result.data);
+      setInstances(subscriptions.data ?? []);
+      setEmployeeStatuses(statuses.success ? (statuses.data ?? []) : []);
     }).catch(error => {
-      if (active) setInstanceError(error instanceof Error ? error.message : '获取员工实例失败。');
+      if (active) setInstanceError(error instanceof Error ? error.message : '?????????');
     }).finally(() => {
       if (timeoutId) clearTimeout(timeoutId);
       if (active) setLoadingInstances(false);
@@ -79,6 +86,7 @@ export default function App() {
     } finally {
       setAuthState(null);
       setInstances([]);
+      setEmployeeStatuses([]);
       setInstanceError(null);
       setToolApprovalRequest(null);
       const result = await window.electronAPI.listRememberedAccounts();
@@ -91,8 +99,8 @@ export default function App() {
     if (restoringAuth) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在恢复工作台</p></div>;
     if (!authState) return <LoginPage encryptionAvailable={encryptionAvailable} rememberedAccounts={rememberedAccounts} onAccountListChange={setRememberedAccounts} onLoginSuccess={setAuthState} />;
     if (loadingInstances) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在准备你的员工团队</p></div>;
-    if (instanceError && instances.length === 0) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={() => void handleLogout()}>退出登录</button></div>;
-    return <ClientAppPage userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={instances} onLogout={handleLogout} />;
+    if (instanceError) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={() => void handleLogout()}>退出登录</button></div>;
+    return <ClientAppPage userId={authState.user.id} userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={instances} employeeStatuses={employeeStatuses} onLogout={handleLogout} />;
   };
 
   return <>

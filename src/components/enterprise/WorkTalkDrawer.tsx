@@ -38,7 +38,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
   useEffect(() => {
     const node = body.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [work.messages.length]);
+  }, [work.messages]);
 
   const send = () => {
     const text = draft.trim();
@@ -83,6 +83,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
         </div>
 
         <div className="ent-drawer-foot">
+          {workspace.error ? <p role="alert" className="ent-hint">{workspace.error}</p> : null}
           {stopping ? (
             <div className="ent-confirm">
               <p>
@@ -95,13 +96,14 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
                 <button
                   type="button"
                   className="ent-btn danger sm"
+                  disabled={workspace.busy}
                   onClick={() => {
-                    void workspace.stopWork(work.id, reason.trim() || '用户终止了这项工作');
-                    setStopping(false);
-                    setReason('');
+                    void workspace.stopWork(work.id, reason.trim() || '用户终止了这项工作').then(ok => {
+                      if (ok) { setStopping(false); setReason(''); }
+                    });
                   }}
                 >
-                  确认终止
+                  {workspace.busy ? '正在终止…' : '确认终止'}
                 </button>
               </div>
             </div>
@@ -124,7 +126,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
                     <select
                       value={work.currentEmployeeId}
                       aria-label="换一位员工接手"
-                      disabled={workspace.busy || over}
+                      disabled={workspace.busy || work.status === 'running' || work.status === 'waiting-user'}
                       onChange={event => void workspace.switchEmployee(work.id, event.target.value)}
                     >
                       {workspace.myEmployees.map(item => (

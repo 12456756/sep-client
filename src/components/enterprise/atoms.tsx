@@ -6,9 +6,10 @@
  * 所以颜色只是加强，不是唯一信息载体。hint 走 title，读屏也念得到。
  */
 
+import * as React from 'react';
 import type { ReactNode } from 'react';
-import type { EmployeeAvailability, MySkillState, WorkStatus, WorkStepState } from '../../features/enterprise/types';
-import { EMPLOYEE_AVAILABILITY, MY_SKILL_STATE, WORK_STATUS, WORK_STEP_STATE } from '../../features/enterprise/vocabulary';
+import type { EmployeeAvailability, WorkStatus, WorkStepState } from '../../features/enterprise/types';
+import { EMPLOYEE_AVAILABILITY, WORK_STATUS, WORK_STEP_STATE } from '../../features/enterprise/vocabulary';
 
 /**
  * 语义色档位。设计稿里「工作中」和「正在进行」用的是同一支主色浅底，
@@ -16,7 +17,7 @@ import { EMPLOYEE_AVAILABILITY, MY_SKILL_STATE, WORK_STATUS, WORK_STEP_STATE } f
  */
 type Tone = 'ready' | 'busy' | 'attention' | 'danger' | 'muted';
 
-export function StatusChip({ tone, label, hint }: { tone: Tone; label: string; hint?: string }) {
+export function StatusChip({ tone, label, hint }: { tone: Tone; label: string; hint?: string }): React.JSX.Element {
   return (
     <span className={`ent-chip ${tone}`} title={hint} aria-label={hint ? `${label}：${hint}` : label}>
       {label}
@@ -24,12 +25,11 @@ export function StatusChip({ tone, label, hint }: { tone: Tone; label: string; h
   );
 }
 
-export const AvailabilityChip = ({ value }: { value: EmployeeAvailability }) => <StatusChip {...EMPLOYEE_AVAILABILITY[value]} />;
-export const WorkStatusChip = ({ value }: { value: WorkStatus }) => <StatusChip {...WORK_STATUS[value]} />;
-export const StepStateChip = ({ value }: { value: WorkStepState }) => <StatusChip {...WORK_STEP_STATE[value]} />;
-export const SkillStateChip = ({ value }: { value: MySkillState }) => <StatusChip {...MY_SKILL_STATE[value]} />;
+export const AvailabilityChip = ({ value }: { value: EmployeeAvailability }): React.JSX.Element => <StatusChip {...EMPLOYEE_AVAILABILITY[value]} />;
+export const WorkStatusChip = ({ value }: { value: WorkStatus }): React.JSX.Element => <StatusChip {...WORK_STATUS[value]} />;
+export const StepStateChip = ({ value }: { value: WorkStepState }): React.JSX.Element => <StatusChip {...WORK_STEP_STATE[value]} />;
 
-export function Empty({ title, children }: { title: string; children?: ReactNode }) {
+export function Empty({ title, children }: { title: string; children?: ReactNode }): React.JSX.Element {
   return (
     <div className="ent-empty">
       <strong>{title}</strong>

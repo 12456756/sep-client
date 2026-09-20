@@ -179,7 +179,7 @@ export function validateGraph(steps: WorkDraftStep[]): string | null {
 }
 
 /**
- * 旧数据升级。v1 的步骤是线性链（带 inheritPrevious、没有坐标、没有技能包），
+ * 旧数据升级。v1 的步骤是线性链（带 inheritPrevious、没有坐标、没有技能），
  * 按「每一步依赖上一步」还原成依赖图，再补上自动布局。
  * 不升级的话历史「常用工作」和「复制为新工作」带进画布会全部断链。
  */

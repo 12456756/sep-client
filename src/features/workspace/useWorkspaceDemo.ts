@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ClientTask, ClientTaskMessage, EmployeeInstanceSnapshot } from '../../shared/types';
+import type { ClientTask, ClientTaskMessage, Subscription } from '../../shared/types';
 
 export type TaskType = 'conversation' | 'workflow';
 export type TaskStatus = 'queued' | 'running' | 'waiting-approval' | 'completed' | 'failed' | 'cancelled' | 'stopped';
@@ -244,12 +244,18 @@ function mapClientTask(task: ClientTask, employeeName = '硅基员工', type?: T
   };
 }
 
-export function useWorkspaceDemo(options: { subscriptionId?: string; employeeName?: string; instances?: EmployeeInstanceSnapshot[] } = {}): WorkspaceDemo {
+function departmentLabel(department: unknown): string {
+  if (!department || typeof department !== 'object' || !('name' in department)) return '';
+  const name = (department as { name?: unknown }).name;
+  return typeof name === 'string' ? name : '';
+}
+
+export function useWorkspaceDemo(options: { subscriptionId?: string; employeeName?: string; instances?: Subscription[] } = {}): WorkspaceDemo {
   const [tasks, setTasks] = useState<Task[]>([]);
   const employees = useMemo<AvailableEmployee[]>(() => (options.instances ?? []).map((instance) => ({
-    id: instance.id,
+    id: instance.subscriptionId,
     displayName: instance.name,
-    description: `${instance.template.name}${instance.department ? ` · ${instance.department.name}` : ''}`,
+    description: `${instance.position || instance.functionalCategory || instance.template.name}${departmentLabel(instance.department) ? ` ? ${departmentLabel(instance.department)}` : ''}`,
     avatar: instance.template.avatar ?? instance.name.slice(0, 1),
     // 旧版或当前 SEP 实例响应可能省略可选的模型列表。
     // 保留员工显示，避免登录时整个工作区崩溃。
@@ -257,7 +263,7 @@ export function useWorkspaceDemo(options: { subscriptionId?: string; employeeNam
   })), [options.instances]);
   const [skills, setSkills] = useState(initialSkills);
   const workflows = useMemo(() => {
-    const employeeIds = (options.instances ?? []).map(instance => instance.id);
+    const employeeIds = (options.instances ?? []).map(instance => instance.subscriptionId);
     return initialWorkflows.map(workflow => ({ ...workflow, employeeIds }));
   }, [options.instances]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -273,7 +279,7 @@ export function useWorkspaceDemo(options: { subscriptionId?: string; employeeNam
   useEffect(() => {
     let active = true;
     setConversationDraft(draft => {
-      if (!draft.employeeId || (options.instances ?? []).some(instance => instance.id === draft.employeeId)) return draft;
+      if (!draft.employeeId || (options.instances ?? []).some(instance => instance.subscriptionId === draft.employeeId)) return draft;
       return { ...draft, employeeId: '', modelId: '' };
     });
     const replaceTasks = (nextTasks: ClientTask[]) => {
@@ -385,37 +391,58 @@ export function useWorkspaceDemo(options: { subscriptionId?: string; employeeNam
     });
   };
 
-  const createWorkflowTask = async (draft: WorkflowDraft) => {
-    const workflow = workflows.find((item) => item.id === draft.workflowId);
-    const employee = employees.find((item) => item.id === draft.employeeId) ?? employees[0];
-    if (!employee) return;
+  const createWorkflowTask = async (draft: WorkflowDraft): Promise<void> => {
+    const workflow = workflows.find(item => item.id === draft.workflowId);
+    const fallbackEmployee = employees.find(item => item.id === draft.employeeId) ?? employees[0];
+    if (!fallbackEmployee) return;
     setError(null);
-    const inputLines = Object.entries(draft.inputs).map(([key, value]) => `- ${key}: ${String(value)}`).join('\n');
-    const goal = draft.goal?.trim() || workflow?.description || '完成用户交代的工作';
-    const nodes = (draft.nodes ?? (draft.steps ?? []).map((step, index, steps) => ({ ...step, dependsOn: index ? [steps[index - 1].id] : [] }))).map(node => ({
-      id: node.id.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 128),
-      subscriptionId: node.subscriptionId,
-      instruction: node.instruction,
-      expectedOutput: node.expectedOutput,
-      dependsOn: node.dependsOn,
+    const rawNodes = draft.nodes ?? (draft.steps ?? []).map((step, index, steps) => ({
+      ...step,
+      dependsOn: index ? [steps[index - 1]!.id] : [],
     }));
-    if (!nodes.length) return;
-    const planText = nodes.map((node, index) => `${index + 1}. ${node.instruction}`).join('\n');
-    const prompt = `${WORKFLOW_PROMPT_MARKER}\n${workflow?.name || '自动编排工作'}\n\n工作目标：\n${goal}\n\nDAG 工作计划：\n${planText}\n\n执行参数：\n${inputLines || '- 无'}`;
+    if (!rawNodes.length) { setError('???????????'); return; }
+    const nodeByEmployee = new Map(employees.map(employee => [employee.id, employee]));
+    const nodes = rawNodes.map(node => {
+      const employee = nodeByEmployee.get(node.subscriptionId) ?? fallbackEmployee;
+      return {
+        id: node.id.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 128),
+        subscriptionId: employee.id,
+        modelId: employee.modelOptions[0]?.id ?? '',
+        title: node.title,
+        instruction: node.instruction,
+        expectedOutput: node.expectedOutput,
+        dependsOn: node.dependsOn,
+        skillIds: [],
+        requiresUserConfirmation: false,
+      };
+    });
+    if (nodes.some(node => !node.modelId)) { setError('??????????'); return; }
+    const goal = draft.goal?.trim() || workflow?.description || '?????????';
+    const confirmedInputs = Object.entries(draft.inputs).map(([key, value]) => `${key}: ${String(value)}`);
     try {
-      const result = await window.electronAPI.createWorkflow({
+      const created = await window.electronAPI.createArrangementDraft({
+        schemaVersion: 1,
+        mode: draft.mode === 'auto' ? 'auto' : 'manual',
         title: workflow?.name || goal.slice(0, 80),
-        prompt,
-        workDir: draft.workspace.path || undefined,
+        goal,
+        confirmedInputs,
+        sharedSkillIds: [],
+        conversation: null,
         nodes,
+        workspace: { mode: 'shared', path: draft.workspace.path || null },
+        permissions: { preset: draft.workspace.accessMode === 'read-write' ? 'workspace-edit' : 'read-only' },
+        lastPlanning: null,
       });
-      if (!result.success || !result.task) throw new Error(result.error?.message || '创建任务失败');
-      taskTypeById.current.set(result.task.id, 'workflow');
-      setSelectedTaskId(result.task.id); setView('tasks');
-      const execution = await window.electronAPI.startWorkflow(result.task.id);
-      if (!execution.success) throw new Error(execution.error?.message || '启动任务失败');
+      if (!created.success || !created.draft) throw new Error(created.error?.message || '????????');
+      const preflight = await window.electronAPI.preflightArrangementDraft({ draftId: created.draft.id, expectedRevision: created.draft.revision });
+      if (!preflight.success || !preflight.preflight?.canStart) throw new Error(preflight.error?.message || preflight.preflight?.blockingIssues.join('?') || '????????');
+      const started = await window.electronAPI.confirmAndStartArrangement({ draftId: created.draft.id, expectedRevision: created.draft.revision, idempotencyKey: crypto.randomUUID() });
+      if (!started.success || !started.execution) throw new Error(started.error?.message || '??????');
+      taskTypeById.current.set(started.execution.id, 'workflow');
+      setSelectedTaskId(started.execution.id);
+      setView('tasks');
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '任务启动失败');
+      setError(cause instanceof Error ? cause.message : '??????');
     }
   };
 

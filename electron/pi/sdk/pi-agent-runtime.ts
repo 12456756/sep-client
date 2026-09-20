@@ -1,3 +1,6 @@
+/** One retry budget per user turn, including retries separated by successful tool calls. */
+export const MAX_RUN_AUTO_RETRIES = 3
+
 export interface PiAgentEvent {
   type: string
   data: unknown
@@ -27,6 +30,8 @@ export interface PiAgentSessionConfig {
   reportPolicyEvent?: (type: string, data: unknown) => Promise<void> | void
   /** 任务级策略；缺省表示兼容旧的普通任务审批行为。 */
   toolPolicy?: import('../../../pi-extension/guard').ToolPolicy
+  /** Planner-only escape hatch: do not advertise any Pi tools. */
+  disableTools?: boolean
 }
 
 export interface PiAgentRuntime {

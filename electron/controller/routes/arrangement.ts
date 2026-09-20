@@ -63,6 +63,8 @@ const updateInput = z.object({
   document: draftDocument.omit({ schemaVersion: true, status: true }).extend({ schemaVersion: z.literal(1).optional() }),
 })
 const confirmInput = z.object({ draftId, expectedRevision: revision, idempotencyKey: z.string().min(1).max(256) })
+const planInput = z.object({ draftId, expectedRevision: revision })
+const cancelPlanInput = z.object({ draftId, planningId: z.string().min(1) })
 
 export const arrangementRoutes = [
   route(INVOKE_CHANNELS.ARRANGE_GET_CONTEXT, NO_INPUT, async ctx => ({
@@ -116,6 +118,14 @@ export const arrangementRoutes = [
   route(INVOKE_CHANNELS.ARRANGE_CONFIRM_AND_START, confirmInput, async (ctx, input) => ({
     success: true,
     ...(await ctx.arrangements.confirmAndStart(input.draftId, input.expectedRevision, input.idempotencyKey)),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_PLAN_DRAFT, planInput, async (ctx, input) => ({
+    success: true,
+    ...(await ctx.arrangements.startPlanning(input.draftId, input.expectedRevision)),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_CANCEL_PLAN, cancelPlanInput, async (ctx, input) => ({
+    success: true,
+    ...(await ctx.arrangements.cancelPlanning(input.draftId, input.planningId)),
   })),
 ]
 

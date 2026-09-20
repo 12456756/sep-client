@@ -139,10 +139,6 @@ export function ManualArrange({ employees, busy, seed, onOpenSettings, onSave, o
 
   return (
     <section className="ent-arr-manual">
-      <header className="ent-arr-head">
-        <h1>自己编排</h1>
-        <p>自己选择员工，并决定员工之间如何协作。</p>
-      </header>
 
       <div className="ent-mn">
         <div className="ent-mn-flow">

@@ -49,8 +49,7 @@ function envelope(code: ErrorCode, message?: string): IpcErrorEnvelope {
 
 function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
   if (error.isNetworkError && error.statusCode === 0) return envelope('NETWORK_ERROR')
-  // 技能包缺失要与"员工不存在"区分开：前者管理员发布一下就能好，后者不能。
-  if (error.resource === 'package' && error.statusCode === 404) return envelope('EMPLOYEE_PACKAGE_UNAVAILABLE')
+  // 技能缺失要与"员工不存在"区分开：前者管理员发布一下就能好，后者不能。
   if (error.statusCode === 401) return envelope('INVALID_CREDENTIALS')
   if (error.statusCode === 403) return envelope('ACCOUNT_DISABLED')
   if (error.statusCode === 404) return envelope('NOT_FOUND')

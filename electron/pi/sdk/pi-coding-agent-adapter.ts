@@ -4,6 +4,7 @@ import {
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
+  SettingsManager,
   type AgentSessionEvent,
   type BeforeProviderHeadersEvent,
   type BeforeProviderRequestEvent,
@@ -17,6 +18,7 @@ import type {
   PiAgentSession,
   PiAgentSessionConfig,
 } from './pi-agent-runtime'
+import { MAX_RUN_AUTO_RETRIES } from './pi-agent-runtime'
 import { redactText, redactValue } from '../../common/redact'
 import {
   READ_ONLY_TOOLS,
@@ -25,10 +27,23 @@ import {
   requiresToolApproval,
 } from '../../../pi-extension'
 import { logger } from '../../common/logger'
+import { WEB_SEARCH_TOOL_NAME, createWebSearchTool } from './pi-web-search'
 
 const log = logger.child('pi-gateway')
 
 let gatewayRequestSequence = 0
+
+const DEFAULT_SESSION_TOOLS = ['read', 'bash', 'edit', 'write'] as const
+
+export function sessionToolOptions(
+  toolPolicy: PiAgentSessionConfig['toolPolicy'],
+  disableTools = false,
+): { tools?: string[]; noTools?: 'all' } {
+  if (disableTools) return { noTools: 'all' }
+  const allowedTools = toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
+  if (!allowedTools.includes(WEB_SEARCH_TOOL_NAME)) allowedTools.push(WEB_SEARCH_TOOL_NAME)
+  return { tools: allowedTools }
+}
 
 function getFailure(messages: unknown): string | undefined {
   if (!Array.isArray(messages)) return undefined
@@ -59,7 +74,43 @@ function gatewayContent(value: unknown): string {
   return value == null ? '' : String(value)
 }
 
-/** 将每次提供商请求序列化为 SEP 网关要求的消息格式。 */
+function toolResultText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(toolResultText).filter(Boolean).join('\n')
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if (typeof record.text === 'string') return record.text
+    if (typeof record.error === 'string') return record.error
+    if ('content' in record) return toolResultText(record.content)
+  }
+  return value == null ? '' : String(value)
+}
+
+/**
+ * Classify tool failures for event metadata and audit consumers.
+ * Tool failures are returned to Pi as error tool results; this classification
+ * must not be used to abort or retry the agent loop.
+ * Exported for testing.
+ */
+export function classifyToolFailure(_toolName: unknown, result: unknown): 'unknown-tool' | 'policy-denied' | 'execution-failed' {
+  const resultStr = toolResultText(result)
+
+  // Pi SDK returns "Tool xxx not found" when tool is not in registry
+  if (/Tool .* not found/i.test(resultStr)) {
+    return 'unknown-tool'
+  }
+
+  // Our guard returns denial messages with "denied" or "blocked"
+  if (/denied|blocked|not allowed|policy/i.test(resultStr)) {
+    return 'policy-denied'
+  }
+
+  // Everything else is a real execution failure
+  return 'execution-failed'
+}
+
+
+/** Serialize each provider request into the SEP gateway message shape. */
 export function normalizeGatewayPayload(payload: unknown): unknown {
   if (!payload || typeof payload !== 'object' || !Array.isArray((payload as { messages?: unknown }).messages)) {
     return payload
@@ -72,37 +123,11 @@ export function normalizeGatewayPayload(payload: unknown): unknown {
       ? current.role
       : 'user'
 
-    if (role === 'assistant' && Array.isArray(current.tool_calls)) {
-      const calls = current.tool_calls.map(call => {
-        if (!call || typeof call !== 'object') return String(call)
-        const entry = call as Record<string, unknown>
-        const fn = entry.function && typeof entry.function === 'object'
-          ? entry.function as Record<string, unknown>
-          : undefined
-        const name = typeof fn?.name === 'string' ? fn.name : 'unknown'
-        const args = typeof fn?.arguments === 'string' ? fn.arguments : JSON.stringify(fn?.arguments ?? {})
-        return `[tool call: ${name}] ${args}`
-      }).join('\n')
-      const existingContent = gatewayContent(current.content)
-      const content = existingContent.trim()
-        ? `${existingContent}\n${calls}`
-        : calls
-      return { role: 'assistant', content }
-    }
-
-    if (role === 'tool') {
-      const content = gatewayContent(current.content)
-      const name = typeof current.name === 'string' ? current.name : undefined
-      return {
-        role: 'user',
-        ...(name ? { name: `tool:${name}` } : {}),
-        content: `[tool result${name ? `: ${name}` : ''}]\n${content}`,
-      }
-    }
-
     return [{
       role,
       content: gatewayContent(current.content),
+      ...(role === 'assistant' && Array.isArray(current.tool_calls) ? { tool_calls: current.tool_calls } : {}),
+      ...(role === 'tool' && typeof current.tool_call_id === 'string' ? { tool_call_id: current.tool_call_id } : {}),
       ...(typeof current.name === 'string' ? { name: current.name } : {}),
     }]
   })
@@ -143,6 +168,8 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
           toolName: raw.toolName,
           success: raw.isError !== true,
           error: raw.isError === true ? redactValue(raw.result) : undefined,
+          // Tag the failure reason for worker to classify it properly
+          failureReason: raw.isError === true ? classifyToolFailure(raw.toolName, raw.result) : undefined,
         },
       }
     case 'agent_end':
@@ -214,12 +241,49 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
         status: event.status,
         headers: redactValue(event.headers),
       })
+
+      // Audit unknown tools in provider response before Pi processes them
+      const raw = event as unknown as { body?: unknown }
+      const body = raw.body
+      if (body && typeof body === 'object') {
+        const choices = (body as { choices?: unknown }).choices
+        if (Array.isArray(choices)) {
+          for (const choice of choices) {
+            if (!choice || typeof choice !== 'object') continue
+            const message = (choice as { message?: unknown }).message
+            if (!message || typeof message !== 'object') continue
+            const toolCalls = (message as { tool_calls?: unknown }).tool_calls
+            if (!Array.isArray(toolCalls)) continue
+
+            for (const toolCall of toolCalls) {
+              if (!toolCall || typeof toolCall !== 'object') continue
+              const toolName = (toolCall as { function?: { name?: unknown } }).function?.name
+              if (typeof toolName !== 'string') continue
+
+              if (!config.toolPolicy) continue
+              const decision = evaluateToolCall(toolName, {}, config.toolPolicy)
+              if (!decision.allowed && decision.reason === 'unknown-tool') {
+                void config.reportPolicyEvent?.('unknown_tool_blocked', {
+                  toolName,
+                  reason: 'Provider returned unknown tool name',
+                })
+                log.warn('unknown tool blocked in provider response', { toolName })
+              }
+            }
+          }
+        }
+      }
     })
+  }
+
+  const webSearch: ExtensionFactory = pi => {
+    pi.registerTool(createWebSearchTool())
   }
 
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (toolName === WEB_SEARCH_TOOL_NAME) return { block: false }
       if (config.toolPolicy) {
         const decision = evaluateToolCall(toolName, event.input, config.toolPolicy)
         if (!decision.allowed) {
@@ -227,7 +291,7 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
             toolName,
             reason: decision.reason ?? 'policy-denied',
           })
-          return { block: true, reason: `Tool denied by task policy: ${toolName}` }
+          return { block: true, reason: `Tool denied by task policy: ${toolName} (${decision.reason ?? 'policy-denied'})` }
         }
         if (!decision.requiresApproval) return { block: false }
       }
@@ -254,7 +318,7 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
     })
   }
 
-  return [gatewayPayload, toolGuard, providerAuth]
+  return [gatewayPayload, webSearch, toolGuard, providerAuth]
 }
 
 class PiCodingAgentSession implements PiAgentSession {
@@ -346,6 +410,12 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       model,
       resourceLoader,
       sessionManager,
+      // Advertise only the task policy's tools so the model cannot select denied tools.
+      ...sessionToolOptions(config.toolPolicy, config.disableTools),
+      // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
+      settingsManager: SettingsManager.inMemory({
+        retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 2000, provider: { maxRetries: 0 } },
+      }),
     })
     log.info('createAgentSession completed', { sessionId: session.sessionId })
     return new PiCodingAgentSession(session)

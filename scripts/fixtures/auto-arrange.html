@@ -1,0 +1,36 @@
+<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module">
+window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;
+await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
+const React=(await import('__REACT__')).default;
+const {createRoot}=(await import('__DOM__')).default;
+const {ArrangeWorkPage}=await import('/pages/enterprise/ArrangeWorkPage.tsx');
+const {WorkDetailPage}=await import('/pages/enterprise/WorkDetailPage.tsx');
+const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseWorkspace.ts');
+const subscriptions=['调研员','报告撰写员','候补员工'].map((name,i)=>({id:['sub-a','sub-b','sub-spare'][i],subscriptionId:['sub-a','sub-b','sub-spare'][i],employeeId:'employee-'+i,name,status:'ACTIVE',templateVersion:'1.0.0',template:{id:'employee-'+i,name,avatar:null},department:null,allowedModels:['model'],upgradeAvailable:false}));
+const options={userId:'fixture-user',userName:'测试用户',enterpriseId:'fixture-enterprise',enterpriseName:'隔离测试',instances:subscriptions,employeeStatuses:[]};
+const listeners={};const subscribe=name=>cb=>{listeners[name]=cb;return ()=>{delete listeners[name];};};
+window.counts={create:0,start:0,preflight:0};window.scenario='normal';let draft;let plan;let task;let sequence=0;let timeline=[];
+const nodes=[{id:'node-a',subscriptionId:'sub-a',modelId:'model',title:'市场调研',instruction:'整理市场事实',expectedOutput:'事实清单',dependsOn:[],skillIds:[],requiresUserConfirmation:false},{id:'node-b',subscriptionId:'sub-b',modelId:'model',title:'撰写报告',instruction:'根据调研结果生成报告',expectedOutput:'最终报告',dependsOn:['node-a'],skillIds:[],requiresUserConfirmation:false}];
+window.emit=(type,data={})=>listeners.planning?.({planningId:'planning-1',draftId:draft.id,draftRevision:2,type,occurredAt:Date.now(),data});
+window.complete=()=>{draft={...draft,status:'ready',revision:3,nodes};window.emit('arrangement_employee_selected',{subscriptionId:'sub-a'});window.emit('arrangement_employee_selected',{subscriptionId:'sub-b'});window.emit('arrangement_planning_completed');};
+window.nodeEvent=(type,nodeId,nodeStatus)=>{const event={taskId:task.id,runId:'parent-run',subscriptionId:'sub-a',sequence:++sequence,type,occurredAt:Date.now(),data:{nodeId,nodeRunId:'run-'+nodeId,...(type==='arrangement_node_started'?{title:nodes.find(n=>n.id===nodeId).title,modelId:'model'}:type==='arrangement_state_changed'?{nodeStatus,status:'running',planHash:'hash'}:{output:'node result'})}};timeline.push(event);listeners.pi?.(event);};
+window.staleEvent=()=>listeners.planning?.({planningId:'old-planning',draftId:draft.id,draftRevision:2,type:'arrangement_planning_failed',occurredAt:Date.now(),data:{message:'过期事件不得显示'}});
+window.finish=()=>{window.nodeEvent('arrangement_node_completed','node-b');window.nodeEvent('arrangement_state_changed','node-b','completed');task={...task,status:'completed',completedAt:Date.now(),files:['D:/fixture/report.md']};listeners.task?.(task);listeners.pi?.({taskId:task.id,runId:'parent-run',subscriptionId:'sub-a',sequence:++sequence,type:'agent_end',occurredAt:Date.now(),data:{}});};
+window.electronAPI={
+ getEnterpriseOrganization:async()=>({success:true,data:{enterprise:{id:'fixture-enterprise',name:'隔离测试',logo:null},departments:[],members:[],grants:[],employees:[]}}),
+ listSkillLibrary:async()=>({success:true,data:[]}),
+ getAllTasks:async()=>({success:true,tasks:task?[task]:[]}),getTaskMessages:async()=>({success:true,messages:[]}),
+ getArrangementPlan:async()=>({success:true,plan}),getTaskTimeline:async()=>({success:true,events:[...timeline]}),
+ onTaskListUpdated:subscribe('list'),onTaskUpdated:subscribe('task'),onPiEvent:subscribe('pi'),onArrangementPlanningEvent:subscribe('planning'),
+ selectDirectory:async()=>({success:true,path:'D:/fixture'}),
+ createArrangementDraft:async document=>{window.counts.create++;if(window.scenario==='slow-create')await new Promise(r=>{window.resolveCreate=r;});draft={...document,id:'draft-1',revision:1,status:'editing',owner:{memberId:'fixture-user',enterpriseId:'fixture-enterprise'},createdAt:Date.now(),updatedAt:Date.now()};return {success:true,draft:structuredClone(draft)};},
+ planArrangementDraft:async()=>{if(window.scenario==='early'){window.complete();await new Promise(r=>setTimeout(r,50));}window.planResponded=true;return {success:true,planningId:'planning-1',draftId:draft.id};},
+ getArrangementDraft:async()=>({success:true,draft:structuredClone(draft)}),
+ cancelArrangementPlanning:async()=>{window.emit('arrangement_planning_cancelled');return {success:true,cancelled:true};},
+ updateArrangementDraft:async input=>{if(input.expectedRevision!==draft.revision)return {success:false,error:{message:'revision mismatch'}};draft={...draft,...input.document,revision:draft.revision+1};return {success:true,draft:structuredClone(draft)};},
+ preflightArrangementDraft:async()=>{window.counts.preflight++;const blocked=window.scenario==='preflight-retry'&&window.counts.preflight===1;return {success:true,preflight:{canStart:!blocked,blockingIssues:blocked?['测试预检失败']:[],warnings:[]}};},
+ confirmAndStartArrangement:async input=>{window.counts.start++;if(window.scenario==='slow-start')await new Promise(r=>{window.resolveStart=r;});if(input.expectedRevision!==draft.revision)return {success:false,error:{message:'revision mismatch'}};plan={...draft,id:'work-1',sourceDraftId:draft.id,sourceDraftRevision:draft.revision,planHash:'hash'};task={id:'work-1',title:draft.title,prompt:draft.goal,status:'running',workDir:'D:/fixture',createdAt:Date.now(),startedAt:Date.now(),completedAt:null,error:null,files:[],logs:[],ownerId:'fixture-user',ownerEnterpriseId:'fixture-enterprise',subscriptionId:'sub-a',activeRunId:'parent-run'};listeners.task?.(task);return {success:true,plan,execution:{id:task.id,status:'running'}};}
+};
+function App(){const workspace=useEnterpriseWorkspace(options);window.workspace=workspace;return React.createElement('div',{className:'ent-shell',style:{padding:24,minHeight:'100vh'}},workspace.route.name==='work'?React.createElement(WorkDetailPage,{workspace,workId:workspace.route.workId}):React.createElement(ArrangeWorkPage,{workspace,mode:'auto'}));}
+createRoot(document.getElementById('root')).render(React.createElement(App));
+</script></body></html>

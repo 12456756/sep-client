@@ -26,7 +26,6 @@ export const ERROR_CODES = {
   PERMISSION_DENIED: { status: 403, retryable: false, level: 'warn', message: '当前工作所需权限超过了可用权限范围。' },
   CONFLICT: { status: 409, retryable: true, level: 'warn', message: '工作目录被其他任务占用，请稍后重试。' },
   PERSISTENCE_ERROR: { status: 500, retryable: true, level: 'error', message: '数据保存失败。' },
-  EMPLOYEE_PACKAGE_UNAVAILABLE: { status: 404, retryable: false, level: 'warn', message: '所选员工的技能包不可用，请联系管理员发布已订阅的版本。' },
   EMPLOYEE_UNAVAILABLE: { status: 404, retryable: false, level: 'warn', message: '所选硅基员工已不可用。' },
   SESSION_UNRECOVERABLE: { status: 409, retryable: false, level: 'warn', message: '会话文件已损坏且无法恢复。' },
   RECOVERY_CONFIRMATION_REQUIRED: { status: 409, retryable: false, level: 'warn', message: '会话文件已损坏，确认后将依据任务历史重建对话。' },

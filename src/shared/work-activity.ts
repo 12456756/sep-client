@@ -82,7 +82,7 @@ export function applyRuntimeEvent(current: WorkActivity[], event: TaskExecutionE
     }))
   }
 
-  if (event.type === 'workflow_node_started') {
+  if (event.type === 'arrangement_node_started') {
     return append(current, {
       id: activityId,
       runId: event.runId,
@@ -92,27 +92,20 @@ export function applyRuntimeEvent(current: WorkActivity[], event: TaskExecutionE
     })
   }
 
-  if (event.type === 'workflow_node_completed' || event.type === 'workflow_node_failed') {
-    const state: WorkActivityState = event.type === 'workflow_node_failed' ? 'failed' : 'completed'
+  if (event.type === 'arrangement_node_completed' || event.type === 'arrangement_node_failed') {
+    const state: WorkActivityState = event.type === 'arrangement_node_failed' ? 'failed' : 'completed'
     return updateById(current, activityId, activity => ({
       ...activity,
-      text: event.type === 'workflow_node_failed'
+      text: event.type === 'arrangement_node_failed'
         ? '当前步骤执行失败'
-        : `已完成：${safeLabel(stringValue(data.title) ?? nodeId ?? '当前步骤')}`,
+        : `已完成：${safeLabel(stringValue(data.title) ?? activity.text.replace(/^(?:开始执行|已完成)：/, ''))}`,
       state,
       endedAt: at,
     }))
   }
 
-  if (event.type === 'workflow_state_changed') {
-    return append(current, {
-      id: activityId,
-      runId: event.runId,
-      text: '工作流程状态已更新',
-      state: 'running',
-      startedAt: at,
-    })
-  }
+  // State snapshots are not independent running activities; node events own those rows.
+  if (event.type === 'arrangement_state_changed') return current
 
   if (event.type === 'tool_call_blocked' || event.type === 'unknown_tool_blocked') {
     return append(current, {
@@ -139,11 +132,11 @@ export function applyRuntimeEvent(current: WorkActivity[], event: TaskExecutionE
   }
 
   if (event.type === 'auto_retry_start') {
-    return append(current, { id: activityId, runId: event.runId, text: '正在自动重试', state: 'running', startedAt: at })
+    return append(current, { id: `retry:${event.runId}`, runId: event.runId, text: '正在自动重试', state: 'running', startedAt: at })
   }
 
-  if (event.type === 'auto_retry_end') {
-    return updateById(current, activityId, activity => ({
+  if (event.type === 'auto_retry_end' || event.type === 'retry_budget_exhausted') {
+    return updateById(current, `retry:${event.runId}`, activity => ({
       ...activity,
       text: data.success === true ? '自动重试完成' : '自动重试未成功',
       state: data.success === true ? 'completed' : 'failed',
@@ -185,7 +178,7 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function safeLabel(value: string): string {
-  return value.replace(/[\\r\\n]+/g, ' ').slice(0, MAX_ERROR_LENGTH)
+  return value.replace(/[\r\n]+/g, ' ').slice(0, MAX_ERROR_LENGTH)
 }
 
 function safeError(value: string | undefined): string {

@@ -80,9 +80,12 @@ export function WorkRecordsPage({ workspace }: Props) {
   };
 
   const stop = (work: WorkItem) => {
-    void workspace.stopWork(work.id, stopReason.trim() || '用户在工作记录里终止了这项工作');
-    setStopping(null);
-    setStopReason('');
+    void workspace.stopWork(work.id, stopReason.trim() || '用户在工作记录里终止了这项工作').then(ok => {
+      if (ok) {
+        setStopping(null);
+        setStopReason('');
+      }
+    });
   };
 
   return (
@@ -216,7 +219,7 @@ export function WorkRecordsPage({ workspace }: Props) {
                   </label>
                   <div className="ent-confirm-foot">
                     <button type="button" className="ent-btn ghost sm" onClick={() => setStopping(null)}>先不终止</button>
-                    <button type="button" className="ent-btn danger sm" onClick={() => stop(work)}>确认终止</button>
+                    <button type="button" className="ent-btn danger sm" disabled={workspace.busy} onClick={() => stop(work)}>{workspace.busy ? '正在终止…' : '确认终止'}</button>
                   </div>
                 </div>
               ) : null}

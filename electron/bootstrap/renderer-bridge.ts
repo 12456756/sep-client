@@ -8,7 +8,7 @@
  * `mainWindow` 全局，也就不需要 `TaskManager.setMainWindow()` 这类回填接口了。
  */
 import type { BrowserWindow } from 'electron'
-import type { ClientTask, TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
+import type { ArrangementPlanningProgress, ClientTask, TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
 import { EVENT_CHANNELS, type EventChannel } from '../controller/channels'
 import type { RendererPort } from '../runtime/task-notifier'
 
@@ -35,6 +35,10 @@ export class RendererBridge implements RendererPort {
 
   taskEvent(event: TaskExecutionEvent): void {
     this.send(EVENT_CHANNELS.PI_EVENT, event)
+  }
+
+  arrangementPlanningEvent(event: ArrangementPlanningProgress): void {
+    this.send(EVENT_CHANNELS.ARRANGEMENT_PLANNING_EVENT, event)
   }
 
   approvalRequest(request: ToolAuthorizationRequest): void {

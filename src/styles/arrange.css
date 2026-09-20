@@ -108,11 +108,6 @@
 .ent-goal-input::placeholder { color: var(--arr-place); }
 
 /* 已经准备好的资料。一条一个小片，右边一个叉。 */
-.ent-goal-files { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; padding: 0; list-style: none; }
-.ent-goal-files li { display: inline-flex; max-width: 100%; align-items: center; gap: 4px; padding: 3px 4px 3px 10px; border: 1px solid var(--ent-line); border-radius: 999px; background: var(--ent-panel-subtle); color: var(--ent-ink-2); font-size: 12px; }
-.ent-goal-files li > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ent-goal-files li > button { display: grid; width: 17px; height: 17px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; color: var(--ent-ink-3); background: none; cursor: pointer; }
-.ent-goal-files li > button:hover { color: var(--ent-danger); background: var(--ent-danger-bg); }
 
 .ent-goal-bar { display: flex; align-items: center; gap: 8px; min-height: 44px; }
 .ent-goal-gap { flex: 1 1 auto; }
@@ -123,17 +118,7 @@
 .ent-goal-tool em { padding: 0 6px; border-radius: 999px; background: var(--ent-brand-soft); color: var(--ent-brand-ink); font-size: 11px; font-style: normal; font-weight: 600; }
 
 /* 知识库的浮层。向上弹出，压在输入框上沿，不把页面推开。 */
-.ent-goal-kb { position: relative; }
-.ent-goal-pop { position: absolute; z-index: 30; bottom: calc(100% + 8px); left: 0; display: flex; width: 300px; max-height: 300px; flex-direction: column; gap: 2px; padding: 10px; border: 1px solid var(--ent-line); border-radius: 12px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); overflow-y: auto; animation: arr-pop 160ms ease-out both; }
 @keyframes arr-pop { from { opacity: 0; transform: translateY(4px); } }
-.ent-goal-pop > p { margin: 0 4px 6px; color: var(--ent-ink-3); font-size: 12px; line-height: 1.6; }
-.ent-goal-pop > button { display: flex; width: 100%; align-items: flex-start; gap: 8px; padding: 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; transition: background 180ms var(--arr-ease); }
-.ent-goal-pop > button:hover { background: var(--ent-brand-softer); }
-.ent-goal-pop > button > span:last-child { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-.ent-goal-pop strong { color: var(--ent-ink); font-size: 13px; font-weight: 600; }
-.ent-goal-pop small { color: var(--ent-ink-3); font-size: 12px; line-height: 1.5; }
-.ent-goal-tick { display: grid; width: 16px; height: 16px; flex: 0 0 auto; margin-top: 1px; place-items: center; border: 1px solid var(--ent-line-strong); border-radius: 5px; color: #fff; }
-.ent-goal-tick.on { border-color: var(--ent-brand); background: var(--ent-brand); }
 
 /* ── 自动编排：过程 ──────────────────────────────────────────────────── */
 
@@ -425,7 +410,7 @@ select.ent-rs-input { cursor: pointer; }
  * 逐渐画线全部取消，只留最基本的淡入。
  */
 @media (prefers-reduced-motion: reduce) {
-  .ent-arr-view, .ent-arr-view.leaving, .ent-goal-pop, .ent-mn-pick, .ent-chat-pop,
+  .ent-arr-view, .ent-arr-view.leaving, .ent-mn-pick, .ent-chat-pop,
   .ent-rs, .ent-rs-back, .ent-aa-think li.in svg { animation: none; }
   .ent-mode, .ent-mode-cta svg, .ent-arr-primary, .ent-arr-second, .ent-arr-ghost, .ent-arr-back,
   .ent-goal, .ent-goal-tool, .ent-mn-goal, .ent-mn-node, .ent-mn-grip, .ent-mn-del, .ent-mn-input,
@@ -434,7 +419,33 @@ select.ent-rs-input { cursor: pointer; }
   .ent-mode:hover, .ent-mode:hover .ent-mode-cta svg,
   .ent-aa-card.picked, .ent-mn-item.dragging .ent-mn-node { transform: none; }
   .ent-aa-card, .ent-aa-goalnode, .ent-flowcard { transform: none; transition: opacity 200ms linear, border-color 200ms linear, background 200ms linear, width 240ms linear, margin 240ms linear, padding 240ms linear; }
+  .ent-aa-link.in .ent-aa-link-line, .ent-aa-link.in .ent-aa-link-tip { animation: none; }
   .ent-aa-link path { stroke-dasharray: none; stroke-dashoffset: 0; }
   .ent-aa-link .ent-aa-link-tip { opacity: 1; }
 }
 
+
+.ent-rs-preset { display: flex; align-items: flex-start; gap: 10px; width: 100%; cursor: pointer; }
+.ent-rs-preset input { margin-top: 4px; accent-color: var(--ent-brand); }
+.ent-rs-preset span { min-width: 0; }
+.ent-rs-risk { display: flex; align-items: center; gap: 8px; margin-top: 18px; font-size: 13px; cursor: pointer; }
+.ent-rs-risk input { accent-color: var(--ent-brand); }
+
+.ent-rs-preset strong, .ent-rs-preset small { display: block; }
+.ent-rs-preset strong { color: var(--ent-ink); font-size: 13px; font-weight: 600; }
+.ent-rs-preset small { margin-top: 4px; line-height: 1.6; }
+
+.ent-goal-directory { max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; }
+
+/* Automatic drafts reuse the existing arrangement form/panel tokens. */
+.ent-auto-plan { display: flex; flex-direction: column; gap: 16px; margin-top: 20px; color: var(--arr-input-ink); }
+.ent-auto-plan h2 { font-size: 18px; font-weight: 600; }
+.ent-auto-plan > p { color: var(--ent-ink-2); font-size: 13px; }
+.ent-auto-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 13px; }
+.ent-auto-field input, .ent-auto-field textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--arr-input-line); border-radius: 8px; background: var(--ent-panel); color: var(--arr-input-ink); font: inherit; }
+.ent-auto-field textarea { min-height: 72px; resize: vertical; }
+.ent-auto-field input:focus-visible, .ent-auto-field textarea:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.ent-auto-field input:disabled, .ent-auto-field textarea:disabled { color: var(--ent-ink-3); background: var(--arr-node-on); }
+.ent-auto-node { display: flex; flex-direction: column; gap: 12px; animation: arr-in 240ms var(--arr-ease) both; }
+.ent-auto-plan > .ent-btn { align-self: flex-start; }
+@media (prefers-reduced-motion: reduce) { .ent-auto-node { animation: none; } }

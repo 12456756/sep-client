@@ -3,10 +3,10 @@
  * 「使用范围」就是本机操作权限，由用户自己开启，开启时提醒。
  */
 
-import { ArrowLeft, MessageSquareText, Send, SlidersHorizontal, Workflow, XCircle } from 'lucide-react';
+import { ArrowLeft, MessageSquareText, Send, SlidersHorizontal, XCircle } from 'lucide-react';
 import { useState } from 'react';
 import { PermissionPanel } from '../../components/enterprise/PermissionPanel';
-import { AvailabilityChip, Empty, SkillStateChip } from '../../components/enterprise/atoms';
+import { AvailabilityChip, Empty } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { EMPLOYEE_AVAILABILITY, relativeTime } from '../../features/enterprise/vocabulary';
@@ -23,7 +23,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
     );
   }
 
-  const skills = workspace.skills.filter(skill => employee.skillIds.includes(skill.id));
+  const skills = workspace.skills.filter(skill => employee.skillIds.includes(skill.capability.id));
   const send = () => {
     if (!draft.trim()) return;
     void workspace.startConversation(employee.id, draft).then(() => setDraft(''));
@@ -40,7 +40,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
         <EmployeeFace seed={employee.id} size="lg" />
         <div className="ent-detail-id">
           {/* 名字在顶栏（见 ClientAppPage），这张卡只补它的身份与状态。 */}
-          <p>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''} · 员工包 {employee.version}</p>
+          <p>模板版本 {employee.templateVersion}</p>
           <div className="ent-detail-chips">
             <AvailabilityChip value={employee.availability} />
             <span className="ent-tag">上次工作 {relativeTime(employee.lastWorkedAt)}</span>
@@ -52,13 +52,9 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
             <MessageSquareText size={14} aria-hidden />
             开始对话
           </button>
-          <button type="button" className="ent-btn" onClick={() => workspace.navigate({ name: 'arrange', mode: 'chat', employeeId: employee.id })} disabled={!employee.assignedToMe}>
-            <Workflow size={14} aria-hidden />
-            安排工作
-          </button>
           <button type="button" className="ent-btn ghost" onClick={() => workspace.navigate({ name: 'skills' })}>
             <SlidersHorizontal size={14} aria-hidden />
-            调整我的版本
+            查看技能
           </button>
         </div>
       </header>
@@ -127,12 +123,12 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
           {skills.length ? (
             <div className="ent-skill-row">
               {skills.map(skill => (
-                <button key={skill.id} type="button" className="ent-skill-mini" onClick={() => workspace.navigate({ name: 'skills', skillId: skill.id })}>
-                  <strong>{skill.name}</strong>
-                  <small>{skill.description}</small>
+                <button key={skill.capability.id} type="button" className="ent-skill-mini" onClick={() => workspace.navigate({ name: 'skills', skillId: skill.capability.id })}>
+                  <strong>{skill.capability.name}</strong>
+                  <small>{skill.capability.description}</small>
                   <span>
-                    <SkillStateChip value={skill.my.state} />
-                    <em>企业版本 {skill.enterpriseVersion}</em>
+
+                    <em>企业版本 {skill.bindings.find(binding => binding.subscriptionId === employee.id)?.currentVersion.version}</em>
                   </span>
                 </button>
               ))}

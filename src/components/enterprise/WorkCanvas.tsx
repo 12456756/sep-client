@@ -1,3 +1,4 @@
+import type { SkillLibraryItem } from '../../shared/skill-library';
 /**
  * 编排画布。节点是绝对定位的 DOM，连线是一层 SVG，平移缩放是一个 CSS transform。
  *
@@ -12,7 +13,7 @@
 
 import { AlertTriangle, Eraser, GripVertical, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { EmployeeSkill, SiliconEmployee, WorkDraftStep } from '../../features/enterprise/types';
+import type { SiliconEmployee, WorkDraftStep } from '../../features/enterprise/types';
 import { GRID, NODE_H, NODE_W, PORT_OUT, PORT_R, stepProblems, wouldCycle } from '../../features/enterprise/work-graph';
 import { EmployeeFace } from './EmployeeFace';
 
@@ -28,7 +29,7 @@ const MAX_SCALE = 1.4;
 interface Props {
   steps: WorkDraftStep[];
   employees: SiliconEmployee[];
-  skills: EmployeeSkill[];
+  skills: SkillLibraryItem[];
   selectedId: string | null;
   view: CanvasView;
   /** 从左侧员工列表拖动时的落点提示，null 表示没有在拖。 */
@@ -361,7 +362,7 @@ function curve(x1: number, y1: number, x2: number, y2: number): string {
 function Node({ step, employee, skills, selected, connecting, onSelect, onRemove, onNudge, onDragStart, onEdgeStart, toCanvas }: {
   step: WorkDraftStep;
   employee: SiliconEmployee | undefined;
-  skills: EmployeeSkill[];
+  skills: SkillLibraryItem[];
   selected: boolean;
   connecting: boolean;
   onSelect: () => void;
@@ -438,12 +439,12 @@ function Node({ step, employee, skills, selected, connecting, onSelect, onRemove
   );
 }
 
-/** 节点最后一行的能力说明。员工自带技能 + 这一步单独加的技能包，最多列两个。 */
-function capabilityLine(step: WorkDraftStep, employee: SiliconEmployee | undefined, skills: EmployeeSkill[]): string {
+/** 节点最后一行的能力说明。员工自带技能 + 这一步单独加的技能，最多列两个。 */
+function capabilityLine(step: WorkDraftStep, employee: SiliconEmployee | undefined, skills: SkillLibraryItem[]): string {
   const names = new Set<string>();
   for (const skill of skills) {
-    if (employee && skill.employeeIds.includes(employee.id)) names.add(skill.name);
-    if (step.skillIds.includes(skill.id)) names.add(skill.name);
+    if (employee && skill.bindings.some(binding => binding.subscriptionId === employee.id)) names.add(skill.capability.name);
+    if (step.skillIds.includes(skill.capability.id)) names.add(skill.capability.name);
   }
   for (const item of employee?.goodAt ?? []) names.add(item);
   const list = [...names].slice(0, 2);

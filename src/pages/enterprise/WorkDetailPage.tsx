@@ -164,7 +164,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
               <dt>当前进度</dt>
               <dd>
                 <span className="ent-bar">
-                  <span><i style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
+                  <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
                   <b>{percent}%</b>
                 </span>
               </dd>

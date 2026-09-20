@@ -1,3 +1,5 @@
+import { SkillSubmissionStore } from '../data/skill-submission-store'
+import { SkillLibraryService } from '../service/skill-library-service'
 /**
  * 后端组合根。
  *
@@ -6,7 +8,7 @@
  */
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
-import { getSubscriptions } from '../common/platform/platform-api'
+import { getSubscriptions, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion, saveEmployeeConversationMessage } from '../common/platform/platform-api'
 import { config } from '../common/config'
 import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
@@ -17,12 +19,13 @@ import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
 import { WorkPlanStore } from '../data/work-plan-store'
 import { ArrangementCheckpointStore } from '../data/arrangement-checkpoint-store'
-import { SkillPackageStore } from '../pi/sdk/pi-skill-packages'
+import { SkillStore } from '../pi/sdk/pi-skill-packages'
 // 必须是 import type：静态加载运行时会把 pi SDK 拉到兼容层之前，
 // Electron 33 上以 `markAsUncloneable is not a function` 崩在启动路径。
 import type { TaskRuntime } from '../runtime/task-runtime'
 import { TaskManager } from '../runtime/task-manager'
 import type { RendererPort } from '../runtime/task-notifier'
+import type { ArrangementPlannerPort } from '../domain/arrangement-planner'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { EmployeeAuthorizer } from '../service/employee-authorizer'
 import { EmployeeDirectory } from '../service/employee-directory'
@@ -30,6 +33,8 @@ import { ConversationService } from '../service/conversation-service'
 import { TaskService } from '../service/task-service'
 import { ArrangementService } from '../service/arrangement-service'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
+import { ConversationSyncStore } from '../data/conversation-sync-store'
+import { ConversationSyncService } from '../service/conversation-sync-service'
 
 const log = logger.child('build-backend')
 
@@ -58,13 +63,17 @@ class BackendRuntime {
   readonly tasks: TaskService
   readonly conversations: ConversationService
   readonly arrangements: ArrangementService
+  readonly skills: SkillLibraryService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
+  private readonly conversationSyncStore: ConversationSyncStore
+  private readonly conversationSync: ConversationSyncService
   private readonly userDataDir: string
   private readonly renderer: RendererPort
   private readonly isEncryptionAvailable: () => boolean
   private readonly runtime: LazyAsync<TaskRuntime>
+  private readonly arrangementPlanner: LazyAsync<ArrangementPlannerPort>
   private authenticationCleanup: Promise<void> | null = null
 
   constructor({ userDataDir, renderer, isEncryptionAvailable = () => true }: BackendOptions) {
@@ -72,6 +81,7 @@ class BackendRuntime {
     this.renderer = renderer
     this.isEncryptionAvailable = isEncryptionAvailable
     this.runtime = loadOnce(() => this.loadTaskRuntime())
+    this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.authSession = new AuthSessionManager()
     this.taskManager = new TaskManager(userDataDir, renderer)
     this.taskRunStore = new TaskRunStore(userDataDir)
@@ -79,15 +89,45 @@ class BackendRuntime {
     const arrangementDrafts = new ArrangementDraftStore(userDataDir)
     this.workPlans = new WorkPlanStore(userDataDir)
     this.arrangementCheckpoints = new ArrangementCheckpointStore(userDataDir)
+    this.conversationSyncStore = new ConversationSyncStore(userDataDir)
+    this.conversationSync = new ConversationSyncService({
+      store: this.conversationSyncStore,
+      getScope: () => this.currentScope(),
+      upload: async item => {
+        const accessToken = await this.authSession.getValidAccessToken()
+        await saveEmployeeConversationMessage(
+          item.clientConversationId,
+          item.clientMessageId,
+          {
+            subscriptionId: item.subscriptionId,
+            role: item.role,
+            content: item.content,
+            runId: item.runId,
+            turnId: item.turnId,
+            modelId: item.modelId,
+            createdAt: new Date(item.createdAt).toISOString(),
+          },
+          accessToken,
+        )
+      },
+    })
+    const skillVersions = new SkillVersionStore(join(userDataDir, 'skill-data', 'v1'))
     this.employees = new EmployeeAuthorizer(
       this.authSession,
       // 全后端唯一的平台目录读取点：TTL 缓存 + 单飞，
       // 避免一个 run 打多次 /client/subscriptions（C4）。
       new EmployeeDirectory(getSubscriptions),
-      // 技能包准备经端口注入——B2 不允许 service/ 直接依赖 pi/。
-      new SkillPackageStore(join(userDataDir, 'runtime'), new SkillVersionStore(join(userDataDir, 'skill-data', 'v1'))),
+      // 技能准备经端口注入——B2 不允许 service/ 直接依赖 pi/。
+      new SkillStore(join(userDataDir, 'runtime'), skillVersions),
       config.SEP_GATEWAY_URL,
     )
+
+    this.skills = new SkillLibraryService({
+      scope: this, token: () => this.authSession.getValidAccessToken(),
+      subscriptions: () => this.employees.list(), versions: skillVersions,
+      submissions: new SkillSubmissionStore(userDataDir),
+      platform: { skills: getEmployeeSkills, list: listSkillVersions, preview: previewSkill, create: createPersonalSkillVersion },
+    })
 
     // 服务只拿到作用域、数据存取和执行端口；运行时实现继续由组合根延迟加载。
     const shared = {
@@ -107,6 +147,11 @@ class BackendRuntime {
       taskMetadata: this.taskMetadataStore,
       taskManager: this.taskManager,
       execution: () => this.getTaskRuntime(),
+      planner: {
+        plan: input => this.arrangementPlanner.get().then(planner => planner.plan(input)),
+        cancel: planningId => { this.arrangementPlanner.peek()?.cancel?.(planningId) },
+      },
+      onPlanningEvent: event => this.renderer.arrangementPlanningEvent(event),
     })
   }
 
@@ -197,6 +242,16 @@ class BackendRuntime {
     })()
   }
 
+  private async loadArrangementPlanner(): Promise<ArrangementPlannerPort> {
+    const { PiArrangementPlanner } = await import('../runtime/pi-arrangement-planner')
+    return new PiArrangementPlanner({
+      gatewayUrl: config.SEP_GATEWAY_URL,
+      workspaceRoot: join(this.userDataDir, 'arrangement-planning'),
+      getRefreshToken: () => this.authSession.getRefreshToken(),
+      onAuthenticationRequired: () => this.invalidateAuthentication(),
+    })
+  }
+
   private async loadTaskRuntime(): Promise<TaskRuntime> {
     if (!this.isEncryptionAvailable()) {
       log.warn('safeStorage encryption is not available on this platform')
@@ -209,7 +264,7 @@ class BackendRuntime {
       onEvent: event => this.renderer.taskEvent(event),
       onApprovalRequest: request => this.renderer.approvalRequest(request),
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
-      authorizeEmployee: subscriptionId => this.employees.authorize(subscriptionId),
+      authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),
       userDataDir: this.userDataDir,
       // 必须显式注入：运行时的默认值是 `process.cwd()`，打包后那是安装目录，
       // 而这个根被用作 workDir 为空时的兜底（workspaceDir 与 .pi-runs/.pi-sessions），
@@ -217,7 +272,12 @@ class BackendRuntime {
       getTaskWorkspaceRoot: () => join(this.userDataDir, 'task-workspaces'),
       workPlanStore: this.workPlans,
       arrangementCheckpointStore: this.arrangementCheckpoints,
+      conversationMessageSync: {
+        enqueue: message => this.conversationSync.enqueue(message),
+      },
     })
+    const scope = this.currentScope()
+    if (scope) this.conversationSync.start(scope)
     log.info('task runtime loaded')
     return runtime
   }

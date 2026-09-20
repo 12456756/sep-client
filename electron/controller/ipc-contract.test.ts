@@ -159,6 +159,12 @@ describe('IPC contract', () => {
     assert.equal(new Set(ALL_CHANNELS).size, ALL_CHANNELS.length)
   })
 
+  it('includes the auto-arrangement planning IPC contract', () => {
+    assert.equal(INVOKE_CHANNELS.ARRANGE_PLAN_DRAFT, 'arrange:plan-draft')
+    assert.equal(INVOKE_CHANNELS.ARRANGE_CANCEL_PLAN, 'arrange:cancel-plan')
+    assert.equal(EVENT_CHANNELS.ARRANGEMENT_PLANNING_EVENT, 'arrangement:planning-event')
+  })
+
   it('every invoke channel has exactly one route', () => {
     const { routes } = routeDeclarations()
     const expected = Object.keys(INVOKE_CHANNELS).map(key => `INVOKE_CHANNELS.${key}`)

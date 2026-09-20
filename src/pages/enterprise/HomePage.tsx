@@ -42,6 +42,7 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
 
   return (
     <div className="ent-page ent-home">
+      <div className="ent-home-content">
       <div className="ent-figures">
         <Figure label="公司员工总数" value={overview.totalEmployees} onClick={() => navigate({ name: 'employees', scope: 'all' })}>
           <GroupGlyph />
@@ -56,6 +57,8 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
       ) : (
         <Empty title="企业还没有给你分配硅基员工">企业管理员分配之后，你的员工会出现在这里。</Empty>
       )}
+
+      </div>
 
       {roster.length ? (
         <ArrangeBar

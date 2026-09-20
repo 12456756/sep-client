@@ -340,7 +340,10 @@ export class TaskManager {
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       // C9：准入可能在检查与删除之间发生，闭包外判断会删掉正在跑的任务。
-      if (!nextTask || nextTask.activeRunId || !isTaskTerminal(nextTask.status)) return
+      if (!nextTask || nextTask.activeRunId) return
+      const deletable = isTaskTerminal(nextTask.status)
+        || nextTask.status === TaskStatus.PAUSED || nextTask.status === TaskStatus.INTERRUPTED
+      if (!deletable) return
       nextTasks.delete(taskId)
       deleted = true
     })

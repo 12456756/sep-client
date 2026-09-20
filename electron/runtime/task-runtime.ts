@@ -23,9 +23,11 @@ import type {
   TaskWorkerPort,
   ControlIntent,
 } from './run-types'
+import { redactText } from '../common/redact'
 import { logger } from '../common/logger'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
+import type { ConversationMessageSyncPort } from '../domain/conversation-message-sync'
 import { ArrangementExecutor } from './arrangement-executor'
 import { createArrangementExecutionState, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
 import { shouldPushTaskEvent } from './task-event-visibility'
@@ -39,13 +41,14 @@ export interface TaskRuntimeOptions {
   onEvent: (event: TaskExecutionEvent) => void
   onApprovalRequest: (request: ToolAuthorizationRequest) => void
   resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
-  authorizeEmployee?: (subscriptionId: string) => Promise<EmployeeRuntimeConfig | null>
+  authorizeEmployee?: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   createWorker?: (options: PiTaskWorkerOptions) => TaskWorkerPort
   taskRunStore?: TaskRunStorePort
   userDataDir?: string
   getTaskWorkspaceRoot?: () => string
   workPlanStore?: WorkPlanStorePort
   arrangementCheckpointStore?: ArrangementCheckpointStorePort
+  conversationMessageSync?: ConversationMessageSyncPort
 }
 
 export class TaskRuntime {
@@ -54,12 +57,12 @@ export class TaskRuntime {
   private readonly onAuthenticationRequired: () => void
   private readonly onEvent: (event: TaskExecutionEvent) => void
   private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
-  private readonly authorizeEmployee: (subscriptionId: string) => Promise<EmployeeRuntimeConfig | null>
+  private readonly authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
   private readonly workPlanStore: WorkPlanStorePort | null
   private readonly arrangementCheckpointStore: ArrangementCheckpointStorePort | null
-  private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent }>()
+  private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
 
@@ -79,7 +82,10 @@ export class TaskRuntime {
     this.onAuthenticationRequired = options.onAuthenticationRequired
     this.onEvent = options.onEvent
     this.resolveEmployee = options.resolveEmployee
-    this.authorizeEmployee = options.authorizeEmployee ?? (async subscriptionId => this.resolveEmployee(subscriptionId))
+    this.authorizeEmployee = options.authorizeEmployee ?? (async (subscriptionId, modelId) => {
+      const employee = this.resolveEmployee(subscriptionId)
+      return employee && (!modelId || employee.modelId === modelId) ? employee : null
+    })
     this.createWorker = options.createWorker ?? (workerOptions => new PiTaskWorker(workerOptions))
     this.taskRunStore = options.taskRunStore ?? (options.userDataDir ? new TaskRunStore(options.userDataDir) : null)
     this.getTaskWorkspaceRoot = options.getTaskWorkspaceRoot ?? (() => process.cwd())
@@ -117,6 +123,7 @@ export class TaskRuntime {
     this.conversationExecutor = new ConversationExecutor({
       taskManager: this.taskManager,
       taskRunStore: this.taskRunStore,
+      workPlanStore: this.workPlanStore,
       createWorker: this.createWorker,
       getRefreshToken: this.getRefreshToken,
       onAuthenticationRequired: this.onAuthenticationRequired,
@@ -127,6 +134,7 @@ export class TaskRuntime {
       workers: this.workers,
       enqueue: queued => this.admission.push(queued),
       requestPump: () => { void this.pump() },
+      conversationMessageSync: options.conversationMessageSync,
     })
   }
 
@@ -166,7 +174,8 @@ export class TaskRuntime {
     }
     const subscriptionId = task.subscriptionId
     if (!subscriptionId) throw new Error('Select a silicon employee before executing the task.')
-    const employee = await this.authorizeEmployee(subscriptionId)
+    const modelId = arrangement?.conversation?.participants.find(item => item.subscriptionId === subscriptionId)?.modelId
+    const employee = await this.authorizeEmployee(subscriptionId, modelId)
     if (!employee) throw new Error('The selected employee is no longer available.')
 
     if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) {
@@ -177,7 +186,7 @@ export class TaskRuntime {
     await this.taskManager.admitTask(taskId, runId)
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
-    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: options.conversation === true })
+    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: arrangement?.mode === 'conversation' || options.conversation === true, arrangement: arrangement ?? undefined })
     void this.pump()
   }
 
@@ -309,10 +318,12 @@ export class TaskRuntime {
     await active.completion
   }
 
-  async cancelTask(taskId: string): Promise<void> {
+  async cancelTask(taskId: string, reason?: string): Promise<void> {
+    const stopReason = redactText(reason?.trim() || '用户终止了这项工作')
     const activeArrangement = this.activeArrangements.get(taskId)
     if (activeArrangement) {
       activeArrangement.control = 'cancel'
+      activeArrangement.controlReason = stopReason
       await this.enqueueEvent({
         taskId,
         runId: activeArrangement.runId,
@@ -332,12 +343,15 @@ export class TaskRuntime {
       this.removeQueuedTask(taskId)
       const task = await this.taskManager.getTask(taskId)
       if (task?.activeRunId && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED) {
-        await this.taskManager.settleTaskRun(taskId, task.activeRunId, TaskStatus.PENDING)
-        await this.taskManager.addTaskLog(taskId, 'Queued conversation run cancelled.', 'warning')
+        await this.taskManager.settleTaskRun(taskId, task.activeRunId, TaskStatus.PAUSED, stopReason)
+        await this.taskManager.addTaskLog(taskId, `工作已终止：${stopReason}`, 'warning')
+      } else if (task?.status === TaskStatus.PENDING) {
+        await this.taskManager.updateTaskStatus(taskId, TaskStatus.PAUSED, stopReason)
       }
       return
     }
     active.control = 'cancel'
+    active.controlReason = stopReason
     await this.enqueueEvent({
       taskId,
       runId: active.runId,
@@ -446,7 +460,7 @@ export class TaskRuntime {
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     releaseWorkspace: () => void,
   ): Promise<void> {
-    if (queued.arrangement) {
+    if (queued.arrangement && queued.arrangement.mode !== 'conversation') {
       await this.startArrangementRun(queued, task, releaseWorkspace)
       return
     }
@@ -510,7 +524,7 @@ export class TaskRuntime {
       await this.events.drain(taskId)
       const activeArrangement = this.activeArrangements.get(taskId)
       const control = activeArrangement?.runId === runId ? activeArrangement.control : 'none'
-      const error = result.error
+      const error = control === 'cancel' ? activeArrangement?.controlReason : result.error
       const outcome = control === 'cancel'
         ? 'cancelled'
         : control === 'interrupt'
@@ -529,7 +543,7 @@ export class TaskRuntime {
       }
       if (activeArrangement?.runId === runId) {
         const status = control === 'cancel'
-          ? TaskStatus.PENDING
+          ? TaskStatus.PAUSED
           : control === 'interrupt' || result.status === 'interrupted'
             ? TaskStatus.INTERRUPTED
             : control === 'pause' || control === 'stop' || result.status === 'stopped' || result.status === 'waiting-user'
@@ -588,11 +602,15 @@ export class TaskRuntime {
       }
       await this.taskManager.addTaskLog(event.taskId, `Executing tool: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
     } else if (event.type === 'tool_execution_end') {
-      const data = event.data as { toolId?: unknown; toolName?: unknown }
+      const data = event.data as { toolId?: unknown; toolName?: unknown; success?: boolean }
       if (typeof data.toolId === 'string') this.events.sideEffectEnded(event.runId, data.toolId)
-      await this.taskManager.addTaskLog(event.taskId, `Tool completed: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
+      await this.taskManager.addTaskLog(event.taskId, `${data.success === false ? 'Tool failed' : 'Tool completed'}: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`, data.success === false ? 'warning' : 'info')
     } else if (event.type === 'auto_retry_start') {
-      await this.taskManager.addTaskLog(event.taskId, 'Automatic retry started.', 'warning')
+      const data = event.data as { attempt?: number; maxAttempts?: number; delayMs?: number; error?: string }
+      const reason = typeof data.error === 'string' ? redactText(data.error) : '网关未返回错误详情'
+      await this.taskManager.addTaskLog(event.taskId, `自动重试 ${data.attempt ?? '?'} / ${data.maxAttempts ?? '?'}，等待 ${data.delayMs ?? 0} ms：${reason}`, 'warning')
+    } else if (event.type === 'retry_budget_exhausted') {
+      await this.taskManager.addTaskLog(event.taskId, '本轮自动重试达到上限，已停止执行。', 'error')
     }
     if (shouldPushTaskEvent(persistedEvent)) this.onEvent(persistedEvent)
   }

@@ -32,3 +32,24 @@ test('shows approval and arrangement state without exposing tool payloads', () =
   assert.equal(ended.some(activity => activity.text.includes('secret.txt')), false)
 })
 
+
+test('retains the node title when the real completion event only carries output', () => {
+  const started = applyRuntimeEvent([], event('arrangement_node_started', { nodeId: 'node-1', nodeRunId: 'node-run-1', title: 'Research\nnotes' }))
+  const completed = applyRuntimeEvent(started, event('arrangement_node_completed', { nodeId: 'node-1', nodeRunId: 'node-run-1', output: 'research result' }, 2))
+  assert.equal(completed[0]?.text, '已完成：Research notes')
+  assert.equal(completed[0]?.state, 'completed')
+  const snapshot = applyRuntimeEvent(completed, event('arrangement_state_changed', { nodeId: 'node-1', nodeStatus: 'completed' }, 3))
+  assert.deepEqual(snapshot, completed)
+})
+
+
+test('settles retry activities across distinct event sequence numbers', () => {
+  const first = applyRuntimeEvent([], event('auto_retry_start', { attempt: 1 }, 1))
+  const second = applyRuntimeEvent(first, event('auto_retry_start', { attempt: 2 }, 2))
+  assert.equal(second.filter(item => item.state === 'running').length, 1)
+  const finished = applyRuntimeEvent(second, event('auto_retry_end', { success: true }, 3))
+  assert.equal(finished.filter(item => item.state === 'running').length, 0)
+  assert.equal(finished.at(-1)?.state, 'completed')
+  const exhausted = applyRuntimeEvent(first, event('retry_budget_exhausted', {}, 4))
+  assert.equal(exhausted[0]?.state, 'failed')
+})

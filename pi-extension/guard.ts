@@ -1,11 +1,11 @@
 /**
  * Provider-neutral tool policy. SDK-specific hooks live in electron/pi/sdk.
  *
- * 副作用工具清单不在这里定义——它有三个用途（审批、停机、崩溃恢复），
- * 唯一定义点是 electron/common/constants.ts（方案第 6 章）。
- * 这个文件只负责"策略"：哪些算只读、哪些需要批准、哪些是未知工具。
+ * The side-effecting tool list has one shared definition in electron/common/constants.ts.
  */
 import { hasSideEffects } from '../electron/common/constants'
+
+export const ALWAYS_AVAILABLE_TOOLS = new Set(['web_search'])
 
 export const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
 
@@ -33,15 +33,15 @@ export function requiresToolApproval(toolName: string): boolean {
 }
 
 export function isKnownTool(toolName: string): boolean {
-  return isReadOnlyTool(toolName) || requiresToolApproval(toolName)
+  return ALWAYS_AVAILABLE_TOOLS.has(toolName) || isReadOnlyTool(toolName) || requiresToolApproval(toolName)
 }
 
 /**
- * 任务级工具策略的最后一道纯判断。它不执行工具，也不接触 Electron/IPC，
- * 由 Pi adapter 在 tool_call hook 中调用。路径策略默认收紧到共享 workspace。
+ * Final provider-neutral task policy check. It does not execute tools or touch Electron IPC.
  */
 export function evaluateToolCall(toolName: string, input: unknown, policy: ToolPolicy): ToolDecision {
   if (!isKnownTool(toolName)) return { allowed: false, requiresApproval: false, reason: 'unknown-tool' }
+  if (ALWAYS_AVAILABLE_TOOLS.has(toolName)) return { allowed: true, requiresApproval: false }
   if (!policy.allowedTools.includes(toolName)) return { allowed: false, requiresApproval: false, reason: 'tool-not-allowed' }
 
   if (toolName === 'bash') {
@@ -52,8 +52,14 @@ export function evaluateToolCall(toolName: string, input: unknown, policy: ToolP
     }
   } else if (hasSideEffects(toolName) || isReadOnlyTool(toolName)) {
     const path = readString(input, ['path', 'filePath', 'file_path', 'filename', 'target'])
-    if (!path || !isAllowedPath(path, policy)) {
-      return { allowed: false, requiresApproval: false, reason: 'path-not-allowed' }
+    const optionalPath = toolName === 'grep' || toolName === 'find' || toolName === 'ls'
+    const candidatePath = path ?? (optionalPath ? policy.workspaceDir : null)
+    if (!candidatePath || !isAllowedPath(candidatePath, policy)) {
+      return {
+        allowed: false,
+        requiresApproval: false,
+        reason: path || optionalPath ? 'path-not-allowed' : 'path-required',
+      }
     }
   }
 

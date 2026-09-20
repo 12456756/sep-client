@@ -9,12 +9,12 @@
  * 路由用受控状态而不是 URL，因为桌面端不需要地址栏，返回行为由 hook 维护的历史栈决定。
  */
 
-import { AlertTriangle, Bell, X } from 'lucide-react';
+import { AlertTriangle, Bell, LayoutGrid, Network } from 'lucide-react';
 import { useEffect, useMemo, useRef } from 'react';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
-import type { EmployeeInstanceSnapshot } from '../shared/types';
+import type { EmployeeStatus, Subscription } from '../shared/types';
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
 import { EmployeesPage } from './enterprise/EmployeesPage';
@@ -22,21 +22,24 @@ import { HomePage } from './enterprise/HomePage';
 import { SkillsPage } from './enterprise/SkillsPage';
 import { WorkDetailPage } from './enterprise/WorkDetailPage';
 import { WorkRecordsPage } from './enterprise/WorkRecordsPage';
+import { OrganizationPage } from './enterprise/OrganizationPage';
 import '../styles/enterprise.css';
 import '../styles/arrange.css';
 
 interface Props {
+  userId: string;
   userName: string;
   enterpriseId: string;
   enterpriseName: string;
-  instances: EmployeeInstanceSnapshot[];
+  instances: Subscription[];
+  employeeStatuses: EmployeeStatus[];
   onLogout: () => void | Promise<void>;
   /** 企业管理员才看到技能审核与员工权限入口。平台接口未开放，暂按 false。 */
   canManage?: boolean;
 }
 
-export function ClientAppPage({ userName, enterpriseId, enterpriseName, instances, onLogout, canManage = false }: Props) {
-  const workspace = useEnterpriseWorkspace({ userName, enterpriseId, enterpriseName, instances });
+export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, onLogout, canManage = false }: Props) {
+  const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const { route, overview } = workspace;
   const scroll = useRef<HTMLDivElement | null>(null);
 
@@ -45,25 +48,20 @@ export function ClientAppPage({ userName, enterpriseId, enterpriseName, instance
     if (scroll.current) scroll.current.scrollTop = 0;
   }, [route]);
 
-  /**
-   * 页面抬头「我在哪」。三个例外：
-   * - 工作详情页和安排工作页不要抬头：它们自己的第一行就是内容（工作名 + 状态 /
-   *   四个画面各自的抬头），外面再套一句栏目名会和它打架。
-   * - 员工详情页那一行直接写主角的名字，不写「员工详情」这类栏目名 ——
-   *   否则页面里还得再写一遍标题，同一个名字出现两次。
-   */
+  // 模块标题统一放在顶部白色标题栏；工作详情保留自身标题。
   const head = useMemo<{ title: string; subtitle?: string } | null>(() => {
     switch (route.name) {
+      case 'organization': return { title: '组织架构', subtitle: `${overview.name} · 企业成员与硅基员工关系` };
       case 'home': return { title: '首页' };
       case 'work': return null;
-      case 'arrange': return null;
+      case 'arrange': return { title: ({ pick: '安排工作', chat: '对话式', auto: '自动编排', manual: '自己编排' })[route.mode ?? 'pick'], subtitle: '选择员工与工作方式，确认后开始执行' };
       case 'employees': return { title: '硅基员工', subtitle: `企业共 ${overview.totalEmployees} 位，其中 ${overview.availableToMe} 位已分配给你` };
       case 'employee': {
         const employee = workspace.employees.find(item => item.id === route.employeeId);
         return { title: employee?.name ?? '员工详情' };
       }
       case 'records': return { title: '工作记录' };
-      case 'skills': return { title: '员工技能', subtitle: '技能决定员工怎么做事。企业标准只读，你可以在它之上建立自己的版本' };
+      case 'skills': return { title: '员工技能', subtitle: '查看技能原文、管理个人版本，选择员工使用的技能版本' };
       default: return { title: overview.name };
     }
   }, [route, overview, workspace.employees]);
@@ -85,30 +83,49 @@ export function ClientAppPage({ userName, enterpriseId, enterpriseName, instance
           title={head?.title}
           subtitle={head?.subtitle}
           actions={(
-            /* 铃铛和导航栏「工作记录」右边那个数字指的是同一批工作，点开也是同一页。
-               两处都留：数字是导航项的注解，铃铛是设计稿里那个随时都在的入口。 */
-            <button
-              type="button"
-              className="ent-top-icon"
-              onClick={() => workspace.navigate({ name: 'records', bucket: overview.needsMeCount ? 'mine' : 'all' })}
-              title={overview.needsMeCount ? `${overview.needsMeCount} 项工作等你处理` : '工作记录'}
-              aria-label={overview.needsMeCount ? `工作提醒，${overview.needsMeCount} 项等你处理` : '工作提醒，暂无待处理'}
-            >
-              <Bell size={16} aria-hidden />
-              {overview.needsMeCount ? <span className="ent-dot" aria-hidden /> : null}
-            </button>
+            <div className="ent-top-actions-group">
+              <div className="ent-view-switch" role="group" aria-label="页面切换">
+                <button
+                  type="button"
+                  className={route.name === 'organization' ? undefined : 'active'}
+                  onClick={() => workspace.navigate({ name: 'home' })}
+                  aria-pressed={route.name !== 'organization'}
+                  title="切换到工作台首页"
+                >
+                  <LayoutGrid size={14} aria-hidden />
+                  首页
+                </button>
+                <button
+                  type="button"
+                  className={route.name === 'organization' ? 'active' : undefined}
+                  onClick={() => workspace.navigate({ name: 'organization' })}
+                  aria-pressed={route.name === 'organization'}
+                  title="切换到组织架构"
+                >
+                  <Network size={14} aria-hidden />
+                  组织架构
+                </button>
+              </div>
+              <button
+                type="button"
+                className="ent-top-icon"
+                onClick={() => workspace.navigate({ name: 'records', bucket: overview.needsMeCount ? 'mine' : 'all' })}
+                title={overview.needsMeCount ? `${overview.needsMeCount} 项工作等你处理` : '工作记录'}
+                aria-label={overview.needsMeCount ? `工作提醒，${overview.needsMeCount} 项等你处理` : '工作提醒，暂无待处理'}
+              >
+                <Bell size={16} aria-hidden />
+                {overview.needsMeCount ? <span className="ent-dot" aria-hidden /> : null}
+              </button>
+            </div>
           )}
         />
         {workspace.error ? (
           <div className="ent-error-bar" role="alert">
             <AlertTriangle size={14} aria-hidden />
             {workspace.error}
-            <button type="button" className="ent-banner-close" onClick={workspace.dismissError} aria-label="关闭提示">
-              <X size={14} aria-hidden />
-            </button>
           </div>
         ) : null}
-        <div className="ent-scroll" ref={scroll}>
+        <div className={`ent-scroll${(route.name === 'organization' || route.name === 'home') ? ' ent-scroll-no-overflow' : ''}`} ref={scroll}>
           <PageBody workspace={workspace} />
         </div>
       </div>
@@ -119,6 +136,16 @@ export function ClientAppPage({ userName, enterpriseId, enterpriseName, instance
 function PageBody({ workspace }: { workspace: ReturnType<typeof useEnterpriseWorkspace> }) {
   const { route } = workspace;
   switch (route.name) {
+    case 'organization':
+      return (
+        <OrganizationPage
+          workspace={{ employees: workspace.organizationEmployees, navigate: workspace.navigate }}
+          members={workspace.organizationMembers}
+          organizationStatus={workspace.organizationStatus}
+          organizationError={workspace.organizationError}
+          onRetry={workspace.retryOrganization}
+        />
+      );
     case 'employees':
       // key 带上 scope：从首页两个指标格分别进来时要重置默认范围，否则组件不会重新初始化。
       return <EmployeesPage key={route.scope ?? 'mine'} workspace={workspace} scope={route.scope} />;

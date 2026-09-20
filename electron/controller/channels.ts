@@ -7,12 +7,22 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  SKILL_LIBRARY_LIST: 'skill-library:list',
+  SKILL_LIBRARY_PREVIEW: 'skill-library:preview',
+  SKILL_LIBRARY_SELECT: 'skill-library:select',
+  SKILL_LIBRARY_SAVE: 'skill-library:save',
+  SKILL_LIBRARY_RETRY: 'skill-library:retry',
   AUTH_LOGIN: 'auth:login',
   AUTH_LIST_REMEMBERED_ACCOUNTS: 'auth:list-remembered-accounts',
   AUTH_GET_REMEMBERED_PASSWORD: 'auth:get-remembered-password',
+  AUTH_REVEAL_REMEMBERED_PASSWORD: 'auth:reveal-remembered-password',
   AUTH_FORGET_ACCOUNT: 'auth:forget-account',
   AUTH_LOGOUT: 'auth:logout',
   AUTH_GET_INSTANCES: 'auth:get-instances',
+  AUTH_GET_EMPLOYEE_STATUS: 'auth:get-employee-status',
+  AUTH_GET_ORGANIZATION: 'auth:get-organization',
+  SUBSCRIPTION_GET_SKILLS: 'subscription:get-skills',
+  SUBSCRIPTION_PREVIEW_SKILL: 'subscription:preview-skill',
   CONVERSATION_CREATE: 'conversation:create',
   TASK_CREATE: 'task:create',
   TASK_EXECUTE: 'task:execute',
@@ -40,6 +50,8 @@ export const INVOKE_CHANNELS = {
   ARRANGE_PREFLIGHT_DRAFT: 'arrange:preflight-draft',
   ARRANGE_CONFIRM_DRAFT: 'arrange:confirm-draft',
   ARRANGE_CONFIRM_AND_START: 'arrange:confirm-and-start',
+  ARRANGE_PLAN_DRAFT: 'arrange:plan-draft',
+  ARRANGE_CANCEL_PLAN: 'arrange:cancel-plan',
   UTIL_SELECT_DIRECTORY: 'util:select-directory',
 } as const
 
@@ -55,6 +67,7 @@ export const EVENT_CHANNELS = {
   TOOL_APPROVAL_REQUEST: 'pi:tool-approval-request',
   TASK_UPDATED: 'task:updated',
   TASK_LIST_UPDATED: 'task:list-updated',
+  ARRANGEMENT_PLANNING_EVENT: 'arrangement:planning-event',
 } as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNELS)[keyof typeof INVOKE_CHANNELS]
@@ -68,5 +81,3 @@ export const ALL_CHANNELS: readonly IpcChannel[] = [
   ...Object.values(SEND_CHANNELS),
   ...Object.values(EVENT_CHANNELS),
 ]
-
-

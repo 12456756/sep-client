@@ -8,7 +8,12 @@ import { TaskRuntime } from './task-runtime'
 import type { EmployeeRuntimeConfig } from './run-types'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
+import { TaskMetadataStore } from '../data/task-metadata-store'
+import { TaskService } from '../service/task-service'
 import { projectTaskMessages } from '../data/task-messages'
+import { effectivePermissionPolicy, type WorkPlan } from '../domain/arrangement-plan'
+import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
+import { SEP_TEST_SUBSCRIPTION } from './sep-platform-fixtures'
 
 const temporaryDirectories: string[] = []
 
@@ -107,6 +112,42 @@ describe('TaskRuntime resource boundaries', () => {
   })
 })
 
+describe('SEP platform-shaped conversation fixture', () => {
+  it('runs a conversation with the platform subscription/model identifiers and real skill context', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    const runStore = new TaskRunStore(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-1', 'enterprise-1')
+    const task = await manager.createTask('????', '???????', undefined, SEP_TEST_SUBSCRIPTION.subscriptionId)
+    const seen: { subscriptionId: string; modelId: string; skillPaths?: string[] }[] = []
+    const runtime = new TaskRuntime({
+      taskManager: manager,
+      taskRunStore: runStore,
+      getRefreshToken: () => 'refresh-token',
+      onAuthenticationRequired: () => {},
+      onEvent: () => {},
+      onApprovalRequest: () => {},
+      resolveEmployee: id => id === SEP_TEST_SUBSCRIPTION.subscriptionId
+        ? { subscriptionId: SEP_TEST_SUBSCRIPTION.subscriptionId, modelId: SEP_TEST_SUBSCRIPTION.allowedModels[0]!, gatewayUrl: 'https://sep-dev.longdaoSEP.cn/api/gateway/v1', additionalSkillPaths: ['/skills/orders/v1.0.0'] }
+        : null,
+      createWorker: options => ({
+        async run() {
+          seen.push({ subscriptionId: options.context.subscriptionId, modelId: options.context.modelId, skillPaths: options.context.additionalSkillPaths })
+          await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: `??${SEP_TEST_SUBSCRIPTION.name}????` } })
+          await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 2, type: 'agent_end', occurredAt: Date.now(), data: {} })
+        },
+        async abort() {},
+        async dispose() {},
+      }),
+    })
+    await runtime.executeTask(task.id, { conversation: true })
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    assert.deepEqual(seen, [{ subscriptionId: 'sub-1', modelId: 'sep-employee', skillPaths: ['/skills/orders/v1.0.0'] }])
+    assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)
+  })
+})
+
 describe('conversation task lifecycle', () => {
   it('keeps a conversation task open and reuses its shared session file across turns', async () => {
     const userData = await makeUserDataDir()
@@ -143,7 +184,7 @@ describe('conversation task lifecycle', () => {
 
     await runtime.executeTask(task.id, { conversation: true })
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
-    assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PENDING)
+    assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)
     await runtime.continueConversation(task.id, 'second')
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal(count, 2)
@@ -151,6 +192,51 @@ describe('conversation task lifecycle', () => {
     const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
     const messages = await projectTaskMessages({ listRuns: id => runStore.list(scope, id), getTimeline: (id, runId) => runStore.events.getTimeline(scope, id, runId) }, task.id, 'legacy')
     assert.deepEqual(messages.map(message => message.content), ['first', 'answer-1', 'second', 'answer-2'])
+  })
+
+  it('preserves the selected model and permission policy on first and subsequent conversation turns', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('configured chat', 'first', undefined, 'employee-a')
+    const plan: WorkPlan = {
+      schemaVersion: 1, id: task.id, owner: { memberId: 'member-a', enterpriseId: 'enterprise-a' },
+      sourceDraftId: 'draft', sourceDraftRevision: 1, planHash: 'hash', createdAt: Date.now(),
+      mode: 'conversation', title: 'configured chat', goal: 'first', confirmedInputs: [],
+      conversation: { participants: [{ subscriptionId: 'employee-a', modelId: 'selected' }], activeSubscriptionId: 'employee-a' },
+      nodes: [], workspace: { mode: 'shared', path: null },
+      permissions: effectivePermissionPolicy({ preset: 'workspace-edit', approvalMode: 'auto-approve' }),
+    }
+    const contexts: PiTaskWorkerOptions['context'][] = []
+    const runtime = new TaskRuntime({
+      taskManager: manager, taskRunStore: new TaskRunStore(userData),
+      workPlanStore: { get: async () => plan, save: async () => {} },
+      getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+      resolveEmployee: subscriptionId => ({ subscriptionId, modelId: 'default', gatewayUrl: 'http://gateway' }),
+      authorizeEmployee: async (subscriptionId, modelId) => ({ subscriptionId, modelId: modelId ?? 'wrong-default', gatewayUrl: 'http://gateway' }),
+      createWorker: options => ({
+        async run() {
+          contexts.push(options.context)
+          await mkdir(options.context.sessionDir, { recursive: true })
+          const sessionFile = join(options.context.sessionDir, 'session.jsonl')
+          await writeFile(sessionFile, '{}\n', 'utf8')
+          await options.onSessionCreated?.({ sessionId: 'session', sessionFile })
+        },
+        async abort() {}, async dispose() {},
+      }),
+    })
+    await runtime.executeTask(task.id, { conversation: true })
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    await runtime.continueConversation(task.id, 'second')
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    assert.equal(contexts.length, 2)
+    for (const context of contexts) {
+      assert.equal(context.modelId, 'selected')
+      assert.equal(context.toolPolicy?.approvalMode, 'auto-approve')
+      assert.ok(context.toolPolicy?.allowedTools.includes('write'))
+      assert.ok(!context.toolPolicy?.allowedTools.includes('bash'))
+    }
   })
 
   it('selectively pushes renderer events while persisting the complete run timeline', async () => {
@@ -222,14 +308,31 @@ describe('conversation task lifecycle', () => {
 
     await runtime.executeTask(task.id, { conversation: true })
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.RUNNING)
-    await runtime.cancelTask(task.id)
+    const service = new TaskService({
+      scope: { currentScope: () => manager.getCurrentUserScope() },
+      taskManager: manager,
+      taskRunStore: runStore,
+      taskMetadataStore: new TaskMetadataStore(userData),
+      get employees(): never { throw new Error('Stopping/deleting must not access the employee directory') },
+      execution: async () => runtime,
+    })
+    await assert.rejects(service.delete(task.id), /任务正在执行/)
+    await service.cancel(task.id, '资料需要修正')
     const settled = await manager.getTask(task.id)
-    assert.equal(settled?.status, TaskStatus.PENDING)
+    assert.equal(settled?.status, TaskStatus.PAUSED)
+    assert.equal(settled?.error, '资料需要修正')
     assert.equal(settled?.activeRunId, null)
     const runs = await runStore.list({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id)
     assert.equal(runs[0]?.outcome, 'cancelled')
     const timeline = await runStore.events.getTimeline({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id, runs[0]!.id)
     assert.ok(timeline.some(event => event.type === 'SIDE_EFFECT_UNKNOWN'))
+    await service.delete(task.id)
+    assert.equal(await manager.getTask(task.id), null)
+    assert.deepEqual(await service.list(), [])
+    const reloaded = new TaskManager(userData)
+    await reloaded.initialize()
+    await reloaded.setCurrentUser('member-a', 'enterprise-a')
+    assert.equal(await reloaded.getTask(task.id), null, 'deletion survives application restart')
   })
 })
 
@@ -240,7 +343,7 @@ const PUBLIC_SIGNATURES = [
   'async switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void> {',
   'async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string } = {}): Promise<void> {',
   'async pauseTask(taskId: string): Promise<void> {',
-  'async cancelTask(taskId: string): Promise<void> {',
+  'async cancelTask(taskId: string, reason?: string): Promise<void> {',
   'async stopAll(): Promise<void> {',
   'async stopArrangement(taskId: string, reason?: string): Promise<void> {',
   'respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {',
@@ -282,4 +385,3 @@ describe('TaskRuntime public surface', () => {
     }
   })
 })
-

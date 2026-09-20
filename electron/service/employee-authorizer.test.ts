@@ -16,7 +16,7 @@ import { EmployeeDirectory } from './employee-directory'
 import {
   EmployeeAuthorizer,
   resolveEmployeeRuntime,
-  type SkillPackageProvisioner,
+  type SkillProvisioner,
 } from './employee-authorizer'
 
 const GATEWAY = 'http://gateway.test'
@@ -41,8 +41,8 @@ const session = {
   getMeta() { return { enterpriseId: 'enterprise-1' } },
 }
 
-/** 记下 prepare / invalidate 被调了几次，并给出固定的技能包路径。 */
-function fakeSkills(): SkillPackageProvisioner & { prepared: () => number; invalidations: () => number } {
+/** 记下 prepare / invalidate 被调了几次，并给出固定的技能路径。 */
+function fakeSkills(): SkillProvisioner & { prepared: () => number; invalidations: () => number } {
   let prepared = 0
   let invalidations = 0
   return {
@@ -95,17 +95,17 @@ describe('C10 — 身份变化丢弃平台目录缓存', () => {
     assert.equal(authorizer.resolve('sub-a'), null, '清空后不能再解析出上一个身份的员工')
     assert.equal(await authorizer.authorize('sub-b') !== null, true)
     assert.equal(fetches, 2, 'TTL 窗口内也必须重新请求——这正是 C10')
-    assert.equal(skills.invalidations(), 1, '技能包缓存也要跟着丢')
+    assert.equal(skills.invalidations(), 1, '技能缓存也要跟着丢')
   })
 
-  it('authorize carries the skill package paths, not just the resolved config', async () => {
+  it('authorize carries the skill paths, not just the resolved config', async () => {
     const directory = new EmployeeDirectory(async () => [subscription('sub-a')])
     const skills = fakeSkills()
     const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY)
 
     const authorized = await authorizer.authorize('sub-a')
 
-    // 换成 resolve() 的结果会让排队过的 run 静默丢掉技能包路径（C4 的注意事项）。
+    // 换成 resolve() 的结果会让排队过的 run 静默丢掉技能路径（C4 的注意事项）。
     assert.deepEqual(authorized?.additionalSkillPaths, ['/skills/a'])
     assert.equal(skills.prepared(), 1)
   })
@@ -116,9 +116,18 @@ describe('C10 — 身份变化丢弃平台目录缓存', () => {
     const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY)
 
     assert.equal(await authorizer.authorize('sub-missing'), null)
-    assert.equal(skills.prepared(), 0, '未授权的订阅不该触发技能包下载')
+    assert.equal(skills.prepared(), 0, '未授权的订阅不该触发技能下载')
   })
 })
 
 
 
+
+
+describe('explicit model selection', () => {
+  it('uses only a selected model that the subscription allows', () => {
+    const employee = { ...subscription('sub-a'), allowedModels: ['first', 'selected'] }
+    assert.equal(resolveEmployeeRuntime([employee], 'sub-a', GATEWAY, 'selected')?.modelId, 'selected')
+    assert.equal(resolveEmployeeRuntime([employee], 'sub-a', GATEWAY, 'forbidden'), null)
+  })
+})

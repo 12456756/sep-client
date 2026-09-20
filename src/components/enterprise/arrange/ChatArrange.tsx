@@ -17,18 +17,13 @@ import { EmployeeFace } from '../EmployeeFace';
 interface Props {
   employees: SiliconEmployee[];
   busy: boolean;
-  /** 从员工页点进来时预选那位同事。 */
-  initialEmployeeId?: string;
+  employeeId: string;
+  onEmployeeChange: (employeeId: string) => void;
   onOpenSettings: () => void;
   onStart: (employeeId: string, text: string) => void;
 }
 
-export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings, onStart }: Props) {
-  const [employeeId, setEmployeeId] = useState(
-    initialEmployeeId && employees.some(item => item.id === initialEmployeeId)
-      ? initialEmployeeId
-      : employees[0]?.id ?? '',
-  );
+export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onOpenSettings, onStart }: Props) {
   const [pickOpen, setPickOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [text, setText] = useState('');
@@ -50,27 +45,23 @@ export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings
   }, [pickOpen]);
 
   const employee = employees.find(item => item.id === employeeId);
-  const ready = Boolean(employeeId && text.trim());
+  const ready = Boolean(employee && text.trim());
   const found = employees.filter(item => {
     const key = query.trim();
     if (!key) return true;
-    return item.name.includes(key) || item.roleName.includes(key) || (item.department ?? '').includes(key);
+    return item.name.includes(key) || item.intro.includes(key);
   });
 
   const send = () => { if (ready && !busy) onStart(employeeId, text); };
 
   const choose = (id: string) => {
-    setEmployeeId(id);
+    onEmployeeChange(id);
     setPickOpen(false);
     setQuery('');
   };
 
   return (
     <section className="ent-arr-chat">
-      <header className="ent-arr-head">
-        <h1>对话式</h1>
-        <p>与一个员工直接沟通，边聊边完成工作。</p>
-      </header>
 
       <div className="ent-chat-who" ref={pick}>
         <button
@@ -82,7 +73,6 @@ export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings
         >
           <EmployeeFace seed={employeeId || 'sep'} size="sm" round />
           <strong>{employee?.name ?? '选择一位同事'}</strong>
-          <small>{employee?.roleName ?? ''}</small>
           <ChevronDown size={14} aria-hidden style={{ transform: pickOpen ? 'rotate(180deg)' : undefined }} />
         </button>
         {pickOpen ? (
@@ -108,7 +98,6 @@ export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings
                   >
                     <EmployeeFace seed={item.id} size="sm" round />
                     <strong>{item.name}</strong>
-                    <small>{item.roleName}</small>
                   </button>
                 </li>
               ))}
@@ -123,7 +112,6 @@ export function ChatArrange({ employees, busy, initialEmployeeId, onOpenSettings
           <div className="ent-chat-open">
             <EmployeeFace seed={employee.id} size="xl" round />
             <strong>{employee.name}</strong>
-            <small>{employee.roleName}{employee.department ? ` · ${employee.department}` : ''}</small>
             <p>{employee.intro}</p>
             {employee.goodAt.length ? (
               <div className="ent-chat-tips">

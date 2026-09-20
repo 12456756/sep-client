@@ -21,6 +21,7 @@ import {
 } from '../domain/arrangement-plan'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import { requireScope, type ScopeSource } from './scope-guard'
+import type { ArrangementPlannerPort, ArrangementPlanningProgress, ArrangementPlannerEmployee } from '../domain/arrangement-planner'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -30,6 +31,8 @@ export interface ArrangementServiceDependencies {
   taskMetadata: TaskMetadataStore
   taskManager: TaskManager
   execution: () => Promise<TaskExecutionPort>
+  planner?: ArrangementPlannerPort
+  onPlanningEvent?: (event: ArrangementPlanningProgress) => void
 }
 
 export interface ArrangementContext {
@@ -40,7 +43,9 @@ export interface ArrangementContext {
     name: string
     status: Subscription['status']
     allowedModels: string[]
-    templateVersion: string
+    description?: string
+    position?: string
+    functionalCategory?: string
   }>
   permissionCeiling: { presets: Array<'read-only' | 'workspace-edit' | 'full-local'>; allowedTools: string[] }
   generatedAt: number
@@ -76,7 +81,9 @@ export class ArrangementService {
         name: employee.name,
         status: employee.status,
         allowedModels: [...employee.allowedModels],
-        templateVersion: employee.templateVersion,
+        description: employee.description,
+        position: employee.position,
+        functionalCategory: employee.functionalCategory,
       })),
       permissionCeiling: {
         presets: ['read-only', 'workspace-edit', 'full-local'],
@@ -119,6 +126,96 @@ export class ArrangementService {
 
   async deleteDraft(draftId: string): Promise<boolean> {
     return this.deps.drafts.delete(requireScope(this.deps.scope), draftId)
+  }
+
+  async startPlanning(draftId: string, expectedRevision: number): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
+    const scope = requireScope(this.deps.scope)
+    const draft = await this.getDraft(draftId)
+    if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
+    if (draft.mode !== 'auto' || !this.deps.planner) throw new AppError('INVALID_STATE')
+    const planningId = randomUUID()
+    await this.deps.drafts.update(scope, draftId, expectedRevision, {
+      ...draft,
+      status: 'planning',
+      lastPlanning: { planningId, status: 'planning', message: null },
+    })
+    const controller = new AbortController()
+    this.planningControllers.set(planningId, controller)
+    this.emitPlanning({ planningId, draftId, draftRevision: expectedRevision + 1, type: 'arrangement_planning_started', occurredAt: Date.now(), data: {} })
+    void this.runPlanning(planningId, draftId, expectedRevision + 1, controller)
+    return { draftId, planningId, status: 'planning' }
+  }
+
+  async cancelPlanning(draftId: string, planningId: string): Promise<{ cancelled: boolean }> {
+    const draft = await this.getDraft(draftId)
+    if (draft.lastPlanning?.planningId !== planningId || draft.lastPlanning.status !== 'planning') return { cancelled: false }
+    this.planningControllers.get(planningId)?.abort()
+    this.deps.planner?.cancel?.(planningId)
+    return { cancelled: true }
+  }
+
+  private readonly planningControllers = new Map<string, AbortController>()
+
+  private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController): Promise<void> {
+    try {
+      const current = await this.getDraft(draftId)
+      const employees = await this.deps.employees.list()
+      const result = await this.deps.planner!.plan({
+        planningId,
+        draft: current,
+        employees: employees.map(employee => ({
+          subscriptionId: employee.subscriptionId,
+          employeeId: employee.employeeId,
+          name: employee.name,
+          description: employee.description,
+          position: employee.position,
+          functionalCategory: employee.functionalCategory,
+          allowedModels: [...employee.allowedModels],
+          status: employee.status,
+        } satisfies ArrangementPlannerEmployee)),
+        signal: controller.signal,
+        onProgress: event => this.emitPlanning(event),
+      })
+      if (controller.signal.aborted) throw new PlanningCancelledError()
+      const latest = await this.deps.drafts.get(requireScope(this.deps.scope), draftId)
+      if (!latest || latest.revision !== planningRevision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') return
+      const updated = await this.deps.drafts.update(requireScope(this.deps.scope), draftId, planningRevision, {
+        ...latest,
+        title: result.title,
+        nodes: result.nodes,
+        status: 'ready',
+        lastPlanning: { planningId, status: 'ready', message: null },
+      })
+      this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_completed', occurredAt: Date.now(), data: { title: updated.title } })
+    } catch (error) {
+      if (error instanceof PlanningCancelledError || controller.signal.aborted) {
+        await this.finishCancelled(planningId, draftId, planningRevision)
+      } else {
+        await this.finishFailed(planningId, draftId, planningRevision, error)
+      }
+    } finally {
+      this.planningControllers.delete(planningId)
+    }
+  }
+
+  private async finishCancelled(planningId: string, draftId: string, revision: number): Promise<void> {
+    const scope = requireScope(this.deps.scope)
+    const latest = await this.deps.drafts.get(scope, draftId)
+    if (!latest || latest.revision !== revision || latest.lastPlanning?.planningId !== planningId) return
+    const updated = await this.deps.drafts.update(scope, draftId, revision, { ...latest, status: 'editing', lastPlanning: { planningId, status: 'cancelled', message: null } })
+    this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_cancelled', occurredAt: Date.now(), data: {} })
+  }
+
+  private async finishFailed(planningId: string, draftId: string, revision: number, error: unknown): Promise<void> {
+    const scope = requireScope(this.deps.scope)
+    const latest = await this.deps.drafts.get(scope, draftId)
+    if (!latest || latest.revision !== revision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') return
+    const updated = await this.deps.drafts.update(scope, draftId, revision, { ...latest, status: 'planning-failed', lastPlanning: { planningId, status: 'failed', message: error instanceof AppError ? error.userMessage : 'planning failed' } })
+    this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_failed', occurredAt: Date.now(), data: { message: updated.lastPlanning?.message ?? undefined } })
+  }
+
+  private emitPlanning(event: ArrangementPlanningProgress): void {
+    this.deps.onPlanningEvent?.(event)
   }
 
   async validateDraft(draftId: string): Promise<{ valid: boolean; issues: string[]; revision: number }> {
@@ -252,6 +349,8 @@ export class ArrangementService {
     throw new AppError('INVALID_STATE')
   }
 }
+
+class PlanningCancelledError extends Error {}
 
 export type { ArrangementMode, ArrangementNode, RequestedTaskPermissionPolicy }
 

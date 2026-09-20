@@ -1,5 +1,5 @@
 /**
- * 首页员工墙上的一张卡。按设计稿：左边一张半身像，右边姓名、职能、状态，
+ * 首页员工墙上的一张卡。按设计稿：左边一张半身像，右边姓名、状态，
  * 下面一行「今日工作 x/y」，卡片最下沿一条进度条。
  *
  * 两条规则：
@@ -52,14 +52,11 @@ export function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Pro
         type="button"
         className="ent-desk-open"
         onClick={() => onOpen(employee.id)}
-        aria-label={`${employee.name}，${employee.roleName}，${state.label}。${said ? `${said}。` : ''}查看他手上的工作`}
+        aria-label={`${employee.name}，${state.label}。${said ? `${said}。` : ''}查看他手上的工作`}
       >
         <EmployeeFace seed={employee.id} size="card" />
         <span className="ent-desk-id">
           <strong title={employee.name}>{employee.name}</strong>
-          <small title={employee.department ? `${employee.roleName} · ${employee.department}` : employee.roleName}>
-            {employee.roleName}
-          </small>
           <span className="ent-desk-state">
             <StatusChip {...state} />
             {flags.map(flag => {

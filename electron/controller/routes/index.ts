@@ -5,6 +5,7 @@
  * 「每个 INVOKE / SEND 通道恰有一条 route」，所以漏填一条会在测试里立刻暴露。
  */
 import type { Listener, Route } from '../router'
+import { skillRoutes } from './skills'
 import { authRoutes } from './auth'
 import { conversationRoutes } from './conversation'
 import { systemListeners, systemRoutes } from './system'
@@ -13,6 +14,7 @@ import { arrangementRoutes } from './arrangement'
 
 export const routes: readonly Route[] = [
   ...authRoutes,
+  ...skillRoutes,
   ...taskRoutes,
   ...conversationRoutes,
   ...arrangementRoutes,

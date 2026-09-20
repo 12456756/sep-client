@@ -1,8 +1,13 @@
+import type { EnterpriseOrganization } from './platform-supplement-contracts'
+import type { SaveSkillInput, SaveSkillResult, SkillLibraryItem } from './skill-library'
 import type {
   ClientTask,
   ClientTaskStats,
   CreateTaskRequest,
   Subscription,
+  EmployeeStatus,
+  EmployeeSkillsResponse,
+  SkillPreviewResponse,
   ForgetAccountResult,
   LoginRequest,
   LoginResult,
@@ -18,6 +23,12 @@ import type {
   TaskTimelineResult,
   ClientTaskMessage,
   ArrangementPlanResult,
+  ArrangementDraftDocument,
+  ArrangementDraftListResult,
+  ArrangementDraftPreflightResult,
+  ArrangementPlanSnapshot,
+  ArrangementDraftResult,
+  ArrangementPlanningProgress,
   ToolAuthorizationRequest,
 } from './types'
 
@@ -38,6 +49,22 @@ export interface TaskCommandResult {
 
 export interface InstanceListResult extends IpcCommandResult {
   data?: Subscription[]
+}
+
+export interface EmployeeStatusResult extends IpcCommandResult {
+  data?: EmployeeStatus[]
+}
+
+export interface OrganizationResult extends IpcCommandResult {
+  data?: EnterpriseOrganization
+}
+
+export interface EmployeeSkillsResult extends IpcCommandResult {
+  data?: EmployeeSkillsResponse
+}
+
+export interface SkillPreviewResult extends IpcCommandResult {
+  data?: SkillPreviewResponse
 }
 
 export interface TaskStatsResult extends IpcCommandResult {
@@ -86,23 +113,51 @@ export interface TaskMessagesResult {
   error?: TaskError
 }
 
+export interface PlanArrangementDraftInput {
+  draftId: string
+  expectedRevision: number
+}
+
+export interface CancelArrangementPlanningInput {
+  draftId: string
+  planningId: string
+}
+
+export interface ArrangementPlanningStartResult extends IpcCommandResult {
+  draftId?: string
+  planningId?: string
+  status?: 'planning'
+}
+
+export interface ArrangementPlanningCancelResult extends IpcCommandResult {
+  cancelled?: boolean
+}
+
 export interface ToolApprovalResponse {
-  /**
-   * 必填。审批结果只按 requestId 匹配，主进程不做任何"只有一个 pending 就当它"的推断
-   * ——那样会批准错的工具调用（见后端方案 C5）。
-   */
+  /** Approval responses are matched by requestId only. */
   requestId: string
   approved: boolean
   reason?: string
 }
 
 export interface ElectronAPI {
+  listSkillLibrary: () => Promise<IpcCommandResult & { data?: SkillLibraryItem[] }>
+  previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: string }>
+  selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult>
+  savePersonalSkill: (input: SaveSkillInput) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
+  retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
   login: (credentials: LoginRequest) => Promise<LoginResult>
   listRememberedAccounts: () => Promise<RememberedAccountsResult>
   getRememberedPassword: (email: string) => Promise<PasswordAvailabilityResult>
+  /** Only invoked by an explicit password reveal gesture; never cache this response. */
+  revealRememberedPassword: (email: string) => Promise<{ password: string | null }>
   forgetAccount: (email: string) => Promise<ForgetAccountResult>
   logout: () => Promise<LogoutResult>
   getSubscriptions: () => Promise<InstanceListResult>
+  getEmployeeStatus: () => Promise<EmployeeStatusResult>
+  getEnterpriseOrganization: () => Promise<OrganizationResult>
+  getEmployeeSkills: (employeeId: string) => Promise<EmployeeSkillsResult>
+  previewSkill: (versionId: string) => Promise<SkillPreviewResult>
   createTask: (data: CreateTaskInput) => Promise<TaskResult>
   createConversation: (data: CreateConversationInput) => Promise<TaskResult>
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
@@ -116,18 +171,20 @@ export interface ElectronAPI {
   getTaskRun: (taskId: string, runId: string) => Promise<TaskRunResult>
   getTaskTimeline: (taskId: string, runId: string) => Promise<TaskTimelineResult>
   pauseTask: (taskId: string) => Promise<IpcCommandResult>
-  cancelTask: (taskId: string) => Promise<IpcCommandResult>
+  cancelTask: (taskId: string, reason?: string) => Promise<IpcCommandResult>
   getArrangementContext: () => Promise<unknown>
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
-  listArrangementDrafts: () => Promise<unknown>
-  createArrangementDraft: (input: unknown) => Promise<unknown>
-  getArrangementDraft: (draftId: string) => Promise<unknown>
-  updateArrangementDraft: (input: unknown) => Promise<unknown>
+  listArrangementDrafts: () => Promise<ArrangementDraftListResult>
+  createArrangementDraft: (input: ArrangementDraftDocument) => Promise<ArrangementDraftResult>
+  getArrangementDraft: (draftId: string) => Promise<ArrangementDraftResult>
+  updateArrangementDraft: (input: { draftId: string; expectedRevision: number; document: ArrangementDraftDocument }) => Promise<ArrangementDraftResult>
   deleteArrangementDraft: (draftId: string) => Promise<unknown>
   validateArrangementDraft: (draftId: string) => Promise<unknown>
-  preflightArrangementDraft: (input: unknown) => Promise<unknown>
-  confirmArrangementDraft: (input: unknown) => Promise<unknown>
-  confirmAndStartArrangement: (input: unknown) => Promise<unknown>
+  preflightArrangementDraft: (input: { draftId: string; expectedRevision: number }) => Promise<ArrangementDraftPreflightResult>
+  confirmArrangementDraft: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<unknown>
+  confirmAndStartArrangement: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<{ success: boolean; plan?: ArrangementPlanSnapshot; execution?: { id: string; status: 'queued' | 'running' }; error?: TaskError }>
+  planArrangementDraft: (input: PlanArrangementDraftInput) => Promise<ArrangementPlanningStartResult>
+  cancelArrangementPlanning: (input: CancelArrangementPlanningInput) => Promise<ArrangementPlanningCancelResult>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: () => Promise<SelectDirectoryResult>
@@ -136,6 +193,6 @@ export interface ElectronAPI {
   onTaskUpdated: (callback: (task: ClientTask) => void) => () => void
   onTaskListUpdated: (callback: (tasks: ClientTask[]) => void) => () => void
   onAuthenticationRequired: (callback: () => void) => () => void
+  onArrangementPlanningEvent: (callback: (event: ArrangementPlanningProgress) => void) => () => void
   sendToolApprovalResponse: (response: ToolApprovalResponse) => void
 }
-

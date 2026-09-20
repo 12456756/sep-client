@@ -8,31 +8,39 @@
 
 import { FolderOpen, X } from 'lucide-react';
 import { useEffect, useRef } from 'react';
-import { RUN_PERMISSIONS, type RunPermissionId, type RunSettings } from '../../../features/enterprise/run-settings';
+import { RUN_PERMISSIONS, type RunSettings } from '../../../features/enterprise/run-settings';
 
 interface Props {
   settings: RunSettings;
-  /** 这些员工被允许使用的模型的并集。空数组表示企业没有开放选择。 */
+  /** 对话使用所选员工的模型；多员工编排只提供共同可用模型作为统一覆盖。 */
   models: string[];
+  conversation?: boolean;
   onChange: (patch: Partial<RunSettings>) => void;
   onChooseFolder: () => Promise<string | null>;
   onClose: () => void;
 }
 
-export function RunSettingsDrawer({ settings, models, onChange, onChooseFolder, onClose }: Props) {
+export function RunSettingsDrawer({ settings, models, conversation = false, onChange, onChooseFolder, onClose }: Props) {
   const panel = useRef<HTMLElement>(null);
 
-  // 抽屉是个临时层：Esc 关掉，打开时焦点进到面板里，否则键盘用户还留在页面上。
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
   useEffect(() => {
-    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); }
+      if (event.key !== 'Tab') return;
+      const controls = panel.current?.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)');
+      if (!controls?.length) return;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
     document.addEventListener('keydown', key);
-    panel.current?.querySelector<HTMLElement>('input, select, button')?.focus();
-    return () => document.removeEventListener('keydown', key);
-  }, [onClose]);
-
-  const toggle = (id: RunPermissionId, enabled: boolean) => {
-    onChange({ permissions: { ...settings.permissions, [id]: enabled } });
-  };
+    panel.current?.querySelector<HTMLElement>('button')?.focus();
+    return () => { document.removeEventListener('keydown', key); previous?.focus(); };
+  }, []);
 
   return (
     <>
@@ -73,42 +81,38 @@ export function RunSettingsDrawer({ settings, models, onChange, onChooseFolder, 
             <select
               id="ent-rs-model"
               className="ent-rs-input"
-              value={settings.model}
+              value={models.includes(settings.modelId) ? settings.modelId : conversation ? models[0] ?? '' : ''}
               disabled={!models.length}
-              onChange={event => onChange({ model: event.target.value })}
+              onChange={event => onChange({ modelId: event.target.value })}
             >
-              <option value="">{models.length ? '由企业指定' : '企业未开放选择'}</option>
+              {!models.length ? <option value="">{conversation ? '请先选择有可用模型的员工' : '没有所有员工共用的模型'}</option> : !conversation ? <option value="">使用各员工的可用默认模型</option> : null}
               {models.map(model => <option key={model} value={model}>{model}</option>)}
             </select>
-            <small>这个选择只记在这台电脑上，模型下发通道打通后才会真的生效。</small>
+            <small>只列出平台允许使用的模型，选择会随任务保存并用于实际执行。</small>
           </div>
 
           <div className="ent-rs-field">
             <span className="ent-rs-label">权限</span>
-            <ul className="ent-rs-perms">
-              {RUN_PERMISSIONS.map(item => {
-                const on = settings.permissions[item.id];
-                return (
-                  <li key={item.id}>
-                    <span>
-                      <strong>{item.label}</strong>
-                      <small>{item.hint}</small>
-                    </span>
-                    <label className="ent-toggle">
-                      <input
-                        type="checkbox"
-                        checked={on}
-                        onChange={event => toggle(item.id, event.target.checked)}
-                        aria-label={`${item.label}${on ? '已开启' : '已关闭'}`}
-                      />
-                      <i aria-hidden />
-                      <em>{on ? 'ON' : 'OFF'}</em>
-                    </label>
-                  </li>
-                );
-              })}
+            <ul className="ent-rs-perms" role="radiogroup" aria-label="任务权限">
+              {RUN_PERMISSIONS.map(item => (
+                <li key={item.id}>
+                  <label className="ent-rs-preset">
+                    <input type="radio" name="task-permission" value={item.id}
+                      checked={settings.permissions.preset === item.id}
+                      onChange={() => onChange({ permissions: { ...settings.permissions, preset: item.id } })} />
+                    <span><strong>{item.label}</strong><small>{item.hint}</small></span>
+                  </label>
+                </li>
+              ))}
             </ul>
-            <small>关掉的项目员工碰不到。开着的项目在真正动手前仍然会单独问你一次。</small>
+            <label className="ent-rs-risk">
+              <input type="checkbox" checked={settings.permissions.approvalMode === 'auto-approve'}
+                onChange={event => onChange({ permissions: { ...settings.permissions,
+                  approvalMode: event.target.checked ? 'auto-approve' : 'confirm-each',
+                } })} />
+              忽略权限风险，不再逐次确认
+            </label>
+            <small>默认关闭。开启后，所选权限内的文件修改和命令执行将不再弹窗确认，可能造成文件丢失或系统变化；不会绕过员工授权、工具及路径限制。</small>
           </div>
         </div>
       </aside>

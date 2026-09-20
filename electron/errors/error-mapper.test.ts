@@ -11,8 +11,8 @@ import { authFailure, failure, toAuthEnvelope, toEnvelope } from './error-mapper
 
 const CJK = /[一-鿿]/
 
-function apiError(statusCode: number, message: string, resource?: 'package'): AuthApiError {
-  return new AuthApiError({ statusCode, message }, resource)
+function apiError(statusCode: number, message: string): AuthApiError {
+  return new AuthApiError({ statusCode, message })
 }
 
 describe('error code table', () => {
@@ -57,10 +57,6 @@ describe('toEnvelope', () => {
     assert.equal(toEnvelope(unauthorized, { authenticated: true }).code, 'AUTH_REQUIRED')
   })
 
-  it('singles out a missing employee package', () => {
-    const missing = apiError(404, 'not found', 'package')
-    assert.equal(toEnvelope(missing).code, 'EMPLOYEE_PACKAGE_UNAVAILABLE')
-  })
 
   it('classifies transport and server failures as retryable', () => {
     assert.deepEqual(
@@ -87,12 +83,6 @@ describe('toEnvelope', () => {
 })
 
 describe('auth channel narrowing', () => {
-  it('collapses codes the renderer contract does not declare', () => {
-    const missing = apiError(404, 'not found', 'package')
-    assert.equal(toEnvelope(missing).code, 'EMPLOYEE_PACKAGE_UNAVAILABLE')
-    assert.equal(toAuthEnvelope(missing).code, 'INTERNAL_ERROR')
-    assert.equal(toAuthEnvelope(missing).message, ERROR_CODES.INTERNAL_ERROR.message)
-  })
 
   it('passes declared codes through untouched', () => {
     assert.equal(toAuthEnvelope(apiError(401, 'unauthorized')).code, 'INVALID_CREDENTIALS')

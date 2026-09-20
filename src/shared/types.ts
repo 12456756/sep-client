@@ -231,6 +231,83 @@ export interface ArrangementPlanSnapshot {
   createdAt: number
 }
 
+export type ArrangementDraftStatus = 'editing' | 'planning' | 'planning-failed' | 'ready' | 'preflight-failed' | 'confirmed'
+
+export interface ArrangementDraftNode {
+  id: string
+  subscriptionId: string
+  modelId: string
+  title: string
+  instruction: string
+  expectedOutput: string
+  dependsOn: string[]
+  skillIds: string[]
+  requiresUserConfirmation: boolean
+}
+
+export interface ArrangementDraftDocument {
+  schemaVersion: 1
+  mode: ArrangementMode
+  title: string
+  goal: string
+  confirmedInputs: string[]
+  sharedSkillIds: string[]
+  conversation: {
+    participants: ArrangementParticipantSnapshot[]
+    activeSubscriptionId: string | null
+  } | null
+  nodes: ArrangementDraftNode[]
+  workspace: { mode: 'shared'; path: string | null }
+  permissions: {
+    preset: ArrangementPermissionPreset
+    allowedPaths?: string[]
+    deniedPaths?: string[]
+    commandPolicy?: ArrangementCommandPolicy
+    allowWithoutApproval?: boolean
+    approvalMode?: ArrangementApprovalMode
+  }
+  lastPlanning: {
+    planningId: string
+    status: 'planning' | 'ready' | 'failed' | 'cancelled'
+    message: string | null
+  } | null
+}
+
+export interface ArrangementDraft extends ArrangementDraftDocument {
+  id: string
+  revision: number
+  status: ArrangementDraftStatus
+  owner: { memberId: string; enterpriseId: string }
+  createdAt: number
+  updatedAt: number
+  confirmedWorkPlanId?: string | null
+}
+
+export interface ArrangementDraftResult {
+  success: boolean
+  draft?: ArrangementDraft
+  error?: TaskError
+}
+
+export interface ArrangementDraftListResult {
+  success: boolean
+  drafts?: ArrangementDraft[]
+  error?: TaskError
+}
+
+export interface ArrangementDraftPreflightResult {
+  success: boolean
+  preflight?: {
+    preflightId: string
+    draftId: string
+    draftRevision: number
+    valid: boolean
+    canStart: boolean
+    blockingIssues: string[]
+  }
+  error?: TaskError
+}
+
 export interface ArrangementPlanResult {
   success: boolean
   plan?: ArrangementPlanSnapshot | null
@@ -259,6 +336,9 @@ export interface Subscription {
   subscriptionId: string
   employeeId: string
   name: string
+  description?: string
+  position?: string
+  functionalCategory?: string
   status: SubscriptionStatus
   templateVersion: string
   template: {
@@ -271,27 +351,51 @@ export interface Subscription {
   upgradeAvailable: boolean
 }
 
-export interface PackageRef {
-  type: 'npm' | 'git' | 'zip'
-  spec: string          // e.g. "@sep/employee-video@1.2.0" or git URL
-}
-
-export interface EmployeeInstance {
-  subscriptionId: string
-  displayName: string
-  description?: string
-  templateId: string
-  lockedVersion: string
-  packageRef: PackageRef | null
-  config: Record<string, unknown>
-  allowedTools: string[]
-  allowedModels: string[]
-  status: SubscriptionStatus
-}
-
 // ──────────────────────────── Pi Events ────────────────────────
 
 /** Pi 事件类型（参见接口文档第 4.3 节）。 */
+export interface EmployeeStatus {
+  employeeId: string
+  status: string
+}
+
+export interface PlatformSkillCapability {
+  id: string
+  name: string
+  description: string
+  type: string
+}
+
+export interface PlatformSkillVersion {
+  id: string
+  capabilityId: string
+  scope: string
+  enterpriseId: string | null
+  version: string
+  changeSummary: string
+  status: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PlatformEmployeeSkill {
+  capability: PlatformSkillCapability
+  currentVersion: PlatformSkillVersion
+  versions: unknown[]
+  upgradeAvailable: boolean
+}
+
+export interface EmployeeSkillsResponse {
+  subscriptionId: string
+  canManage: boolean
+  skills: PlatformEmployeeSkill[]
+}
+
+export interface SkillPreviewResponse {
+  content: string
+  [key: string]: unknown
+}
+
 export type PiEventType =
   | 'text_delta'
   | 'tool_execution_start'
@@ -388,4 +492,29 @@ export interface ClientState {
 }
 
 
+
+export type ArrangementPlanningProgressType =
+  | 'arrangement_planning_started'
+  | 'arrangement_employee_considering'
+  | 'arrangement_employee_selected'
+  | 'arrangement_planning_completed'
+  | 'arrangement_planning_failed'
+  | 'arrangement_planning_cancelled'
+
+export interface ArrangementPlanningProgress {
+  planningId: string
+  draftId: string
+  draftRevision: number
+  type: ArrangementPlanningProgressType
+  occurredAt: number
+  data: {
+    subscriptionId?: string
+    employeeId?: string
+    stage?: string
+    rationale?: string
+    nodeId?: string
+    title?: string
+    message?: string
+  }
+}
 

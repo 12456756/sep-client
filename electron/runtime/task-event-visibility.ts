@@ -24,6 +24,7 @@ const IMPORTANT_EVENT_TYPES = new Set([
   'agent_end',
   'auto_retry_start',
   'auto_retry_end',
+  'retry_budget_exhausted',
   'session_error',
   'arrangement_node_started',
   'arrangement_node_completed',

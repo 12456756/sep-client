@@ -6,7 +6,7 @@
  * 后端补上工作结构后，把 encode/decode 换成真实字段读写即可，页面不受影响。
  */
 
-import type { ClientTask, ClientTaskMessage } from '../../shared/types';
+import type { ArrangementPlanSnapshot, TaskExecutionEvent, ClientTask, ClientTaskMessage } from '../../shared/types';
 import type {
   SharedContext,
   WorkActivity,
@@ -178,30 +178,42 @@ function nextUserAction(status: WorkStatus, steps: WorkStep[]): string | null {
 // ─────────────────────────────── 组装 WorkItem ───────────────────────────────
 
 interface BuildInput {
+  plan?: ArrangementPlanSnapshot;
+  arrangementEvents?: TaskExecutionEvent[];
   task: ClientTask;
   employees: SiliconEmployee[];
   messages?: ClientTaskMessage[];
   /** 正在流式输出的文本，按 taskId 传入。 */
   streamingText?: string;
+  streamingRunId?: string;
   activities?: WorkActivity[];
   /** 当前活跃员工，切换员工后由本地状态覆盖任务上的订阅。 */
   activeEmployeeId?: string;
 }
 
-export function buildWorkItem({ task, employees, messages, streamingText, activities = [], activeEmployeeId }: BuildInput): WorkItem {
-  const meta = decodeWorkMeta(task.prompt);
+export function buildWorkItem({ task, employees, messages, streamingText, streamingRunId, activities = [], activeEmployeeId, plan, arrangementEvents = [] }: BuildInput): WorkItem {
+  const legacyMeta = decodeWorkMeta(task.prompt);
+  const meta: WorkMeta | null = plan && plan.mode !== 'conversation' ? {
+    kind: 'flow', goal: plan.goal,
+    steps: plan.nodes.map(node => ({ id: node.id, employeeId: node.subscriptionId, title: node.title,
+      input: node.instruction, output: node.expectedOutput, dependsOn: [...node.dependsOn], needsConfirm: node.requiresUserConfirmation })),
+    participants: [...new Set(plan.nodes.map(node => node.subscriptionId))],
+    sharedContext: { goal: plan.goal, confirmedInputs: [...plan.confirmedInputs], previousResults: [], userNotes: [] },
+  } : legacyMeta;
   const kind: 'conversation' | 'flow' = meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
   const status = toWorkStatus(task.status);
-  const progress = task.progress ?? (status === 'completed' ? 100 : 0);
+  const legacyProgress = task.progress ?? (status === 'completed' ? 100 : 0);
   const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
 
-  const stepStates = deriveStepStates(meta?.steps.length ?? 0, status, progress);
+  const stepStates = deriveStepStates(meta?.steps.length ?? 0, status, legacyProgress);
   const steps: WorkStep[] = (meta?.steps ?? []).map((step, index) => ({
     ...step,
     employeeName: nameOf(step.employeeId),
-    state: stepStates[index],
+    state: plan && plan.mode !== 'conversation' ? arrangementStepState(step.id, status, arrangementEvents) : stepStates[index],
   }));
 
+  const progress = plan && plan.mode !== 'conversation' && steps.length
+    ? steps.filter(step => step.state === 'done').length / steps.length * 100 : legacyProgress;
   const currentEmployeeId = activeEmployeeId
     ?? steps.find(step => step.state === 'running' || step.state === 'waiting-user')?.employeeId
     ?? task.subscriptionId
@@ -229,8 +241,10 @@ export function buildWorkItem({ task, employees, messages, streamingText, activi
       note: '由员工在工作过程中产出',
     })),
     timeline: buildTimeline(task, kind, nameOf(currentEmployeeId)),
-    messages: buildMessages(task, messages, streamingText, currentEmployeeId, nameOf(currentEmployeeId)),
-    activities,
+    messages: buildMessages(task, messages, streamingText, currentEmployeeId, nameOf(currentEmployeeId), streamingRunId),
+    activities: status === 'completed' || status === 'failed' || status === 'paused'
+      ? activities.map(activity => activity.state === 'running' ? { ...activity, state: status === 'completed' ? 'completed' : 'failed', endedAt: task.completedAt ?? task.createdAt } : activity)
+      : activities,
     sharedContext: meta?.sharedContext ?? { goal: readableGoal(task.prompt), confirmedInputs: [], previousResults: [], userNotes: [] },
     /*
      * 为什么中断 / 为什么被终止，都落在 task.error 上：平台报的失败原因写在这里，
@@ -282,17 +296,20 @@ function buildMessages(
   streamingText: string | undefined,
   employeeId: string,
   employeeName: string,
+  streamingRunId?: string,
 ): WorkMessage[] {
   const source: WorkMessage[] = messages?.length
-    ? messages.map(message => ({
+    ? messages.filter(message => !(streamingText && message.role === 'assistant' && message.runId === streamingRunId)).map(message => ({
         id: message.id,
         role: message.role === 'user' ? 'user' : 'employee',
         employeeId: message.role === 'user' ? undefined : employeeId,
         employeeName: message.role === 'user' ? undefined : employeeName,
-        content: message.content,
+        content: message.role === 'user' && message.content.includes(META_MARKER)
+          ? decodeWorkMeta(message.content)?.goal ?? readableGoal(message.content)
+          : message.content,
         createdAt: message.createdAt,
       }))
-    : [{ id: `${task.id}-goal`, role: 'user', content: stripWorkMeta(task.prompt), createdAt: task.createdAt }];
+    : [{ id: `${task.id}-goal`, role: 'user', content: decodeWorkMeta(task.prompt)?.goal ?? readableGoal(task.prompt), createdAt: task.createdAt }];
 
   if (streamingText) {
     source.push({ id: `${task.id}-streaming`, role: 'employee', employeeId, employeeName, content: streamingText, createdAt: Date.now() });
@@ -301,4 +318,26 @@ function buildMessages(
     source.push({ id: `${task.id}-error`, role: 'system', content: `工作中断：${task.error}`, createdAt: task.completedAt ?? Date.now() });
   }
   return source;
+}
+
+/** Node IDs (not array position) drive parallel/out-of-order execution state. */
+function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskExecutionEvent[]): WorkStepState {
+  if (status === 'completed') return 'done';
+  let state: WorkStepState = 'pending';
+  for (const event of events) {
+    const data = event.data as { nodeId?: string; nodeStatus?: string; status?: string };
+    if (data?.nodeId !== nodeId) continue;
+    if (event.type === 'arrangement_node_started') state = 'running';
+    if (event.type === 'arrangement_node_completed') state = 'done';
+    if (event.type === 'arrangement_node_failed') state = 'failed';
+    if (event.type === 'arrangement_state_changed') {
+      if (data.nodeStatus === 'waiting-user') state = 'waiting-user';
+      if (data.nodeStatus === 'completed') state = 'done';
+      if (data.nodeStatus === 'failed') state = 'failed';
+      if (data.nodeStatus === 'pending') state = 'pending';
+    }
+  }
+  // A stopped/interrupted run must not leave an active animation behind.
+  if ((status === 'paused' || status === 'failed') && state === 'running') return 'failed';
+  return state;
 }

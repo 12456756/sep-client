@@ -6,7 +6,7 @@
  */
 import { app, safeStorage } from 'electron'
 import { z } from 'zod'
-import { AuthApiError, login } from '../../common/platform/platform-api'
+import { AuthApiError, getEmployeeSkills, getEmployeeStatus, getEnterpriseOrganization, login, previewSkill } from '../../common/platform/platform-api'
 import { AuthenticationRequiredError } from '../../common/platform/authentication-required-error'
 import { getDeviceFingerprint } from '../../common/platform/device-fingerprint'
 import {
@@ -54,7 +54,7 @@ export const authRoutes = [
       return authFailure('STORAGE_UNAVAILABLE')
     }
     const password = input.useSavedPassword ? getRememberedPassword(input.email) : input.password
-    if (!password) return authFailure('INVALID_ARGUMENT', '请重新输入密码。')
+    if (!password) return authFailure('INVALID_ARGUMENT', '请重新输入密码')
 
     try {
       const response = await login({
@@ -71,7 +71,7 @@ export const authRoutes = [
         typeof response.user.email !== 'string' || !response.enterprise ||
         typeof response.enterprise.id !== 'string' || typeof response.enterprise.name !== 'string'
       ) {
-        return authFailure('SERVICE_UNAVAILABLE', '服务返回了无法识别的响应。')
+        return authFailure('SERVICE_UNAVAILABLE', '服务返回了无法识别的响应')
       }
 
       await ctx.backend.stopAll()
@@ -94,7 +94,7 @@ export const authRoutes = [
       ctx.backend.taskManager.clearCurrentUser()
       throw error
     }
-  }, { invalidMessage: '登录请求参数不合法。', errorShape: 'auth' }),
+  }, { invalidMessage: '登录请求参数不合法', errorShape: 'auth' }),
 
   route(INVOKE_CHANNELS.AUTH_LIST_REMEMBERED_ACCOUNTS, NO_INPUT, (): RememberedAccountsResult => ({
     accounts: listRememberedAccounts(),
@@ -107,10 +107,15 @@ export const authRoutes = [
     passwordAvailable: value ? Boolean(getRememberedPassword(value)) : false,
   }), { errorShape: 'reject' }),
 
+  // Explicit reveal only. Account enumeration still exposes metadata, never credentials.
+  route(INVOKE_CHANNELS.AUTH_REVEAL_REMEMBERED_PASSWORD, email, (_ctx, value): { password: string | null } => ({
+    password: getRememberedPassword(value),
+  }), { errorShape: 'reject' }),
+
   route(INVOKE_CHANNELS.AUTH_FORGET_ACCOUNT, email, (_ctx, value): ForgetAccountResult => {
     forgetRememberedAccount(value)
     return { success: true, data: null }
-  }, { invalidMessage: '请输入有效的邮箱地址。', errorShape: 'auth' }),
+  }, { invalidMessage: '请输入有效的邮箱地址', errorShape: 'auth' }),
 
   route(INVOKE_CHANNELS.AUTH_LOGOUT, NO_INPUT, async (ctx): Promise<LogoutResult> => {
     await ctx.backend.signOut()
@@ -132,6 +137,52 @@ export const authRoutes = [
       throw error
     }
   }),
+
+  route(INVOKE_CHANNELS.AUTH_GET_ORGANIZATION, NO_INPUT, async ctx => {
+    try {
+      const accessToken = await ctx.backend.authSession.getValidAccessToken()
+      return { success: true, data: await getEnterpriseOrganization(accessToken) }
+    } catch (error) {
+      if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized)) {
+        ctx.backend.invalidateAuthentication()
+      }
+      throw error
+    }
+  }),
+
+  route(INVOKE_CHANNELS.AUTH_GET_EMPLOYEE_STATUS, NO_INPUT, async ctx => {
+    try {
+      const accessToken = await ctx.backend.authSession.getValidAccessToken()
+      return { success: true, data: await getEmployeeStatus(accessToken) }
+    } catch (error) {
+      if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized)) {
+        ctx.backend.invalidateAuthentication()
+      }
+      throw error
+    }
+  }),
+
+  route(INVOKE_CHANNELS.SUBSCRIPTION_GET_SKILLS, z.string().trim().min(1).max(256), async (ctx, employeeId) => {
+    try {
+      const accessToken = await ctx.backend.authSession.getValidAccessToken()
+      return { success: true, data: await getEmployeeSkills(employeeId, accessToken) }
+    } catch (error) {
+      if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized)) {
+        ctx.backend.invalidateAuthentication()
+      }
+      throw error
+    }
+  }),
+
+  route(INVOKE_CHANNELS.SUBSCRIPTION_PREVIEW_SKILL, z.string().trim().min(1).max(256), async (ctx, versionId) => {
+    try {
+      const accessToken = await ctx.backend.authSession.getValidAccessToken()
+      return { success: true, data: await previewSkill(versionId, accessToken) }
+    } catch (error) {
+      if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized)) {
+        ctx.backend.invalidateAuthentication()
+      }
+      throw error
+    }
+  }),
 ]
-
-

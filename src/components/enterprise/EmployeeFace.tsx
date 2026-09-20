@@ -13,6 +13,7 @@
  * 署名信息由 DiceBear 写进每张 SVG 的 <metadata> 里，随界面一起分发。
  */
 
+import * as React from 'react';
 import { createAvatar, type StyleOptions } from '@dicebear/core';
 import * as toonHead from '@dicebear/toon-head';
 import type { Options as ToonHeadOptions } from '@dicebear/toon-head';
@@ -69,7 +70,7 @@ function faceOf(seed: string): string {
   return svg;
 }
 
-export function EmployeeFace({ seed, size = 'md', round = false, className }: Props) {
+export function EmployeeFace({ seed, size = 'md', round = false, className }: Props): React.JSX.Element {
   return (
     <span
       className={`ent-face ${size}${round ? ' round' : ''}${className ? ` ${className}` : ''}`}

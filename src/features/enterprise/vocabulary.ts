@@ -5,7 +5,7 @@
  * 任何新页面需要文案时都从这里取，避免同一状态在不同页面写法不一致。
  */
 
-import type { EmployeeAvailability, MySkillState, WorkStatus, WorkStepState } from './types';
+import type { EmployeeAvailability, WorkStatus, WorkStepState } from './types';
 
 /** 技术表达 → 前端表达。仅供开发查阅与代码评审，不在界面渲染。 */
 export const TERM_MAP: Record<string, string> = {
@@ -16,7 +16,7 @@ export const TERM_MAP: Record<string, string> = {
   工作流: '工作流程',
   节点: '工作步骤',
   执行记录: '工作记录',
-  技能包: '员工技能',
+  技能: '员工技能',
   编辑技能: '调整员工能力',
 };
 
@@ -58,17 +58,6 @@ export const WORK_STEP_STATE: Record<WorkStepState, StatusPresentation> = {
   done: { label: '已完成', tone: 'ready', hint: '这一步已产出结果' },
   failed: { label: '未完成', tone: 'danger', hint: '这一步中断了' },
   skipped: { label: '已跳过', tone: 'muted', hint: '这一步被跳过' },
-};
-
-// ──────────────────────────── 个人技能版本 ────────────────────────────
-
-export const MY_SKILL_STATE: Record<MySkillState, StatusPresentation> = {
-  none: { label: '企业标准', tone: 'muted', hint: '你还没有创建个人版本' },
-  draft: { label: '我的修改', tone: 'busy', hint: '个人版本已保存，尚未提交企业' },
-  submitted: { label: '已提交', tone: 'attention', hint: '已提交给企业，等待安排审核' },
-  reviewing: { label: '待企业审核', tone: 'attention', hint: '企业正在审核你的修改' },
-  approved: { label: '企业已采纳', tone: 'ready', hint: '你的修改已纳入企业版本' },
-  rejected: { label: '已驳回', tone: 'danger', hint: '企业未采纳，可查看意见后再改' },
 };
 
 // ─────────────────────────────── 工具函数 ───────────────────────────────

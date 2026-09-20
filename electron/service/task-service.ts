@@ -34,7 +34,7 @@ export interface TaskExecutionPort {
   ): Promise<void>
   switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void>
   pauseTask(taskId: string): Promise<void>
-  cancelTask(taskId: string): Promise<void>
+  cancelTask(taskId: string, reason?: string): Promise<void>
   stopArrangement(taskId: string, reason?: string): Promise<void>
 }
 
@@ -99,8 +99,9 @@ export class TaskService {
     await (await this.deps.execution()).pauseTask(taskId)
   }
 
-  async cancel(taskId: string): Promise<void> {
-    await (await this.deps.execution()).cancelTask(taskId)
+  async cancel(taskId: string, reason?: string): Promise<void> {
+    await this.requireTask(taskId)
+    await (await this.deps.execution()).cancelTask(taskId, reason)
   }
 
   /** 删除。任务正在执行时不允许删（判断在 TaskManager 的 commit 闭包内，C9）。 */
@@ -169,7 +170,7 @@ export class TaskService {
   }
 
   /**
-   * 员工必须当下可用才放行。授权顺带把技能包备好，结果由运行时在入队时复用（C4）。
+   * 员工必须当下可用才放行。授权顺带把技能备好，结果由运行时在入队时复用（C4）。
    * `subscriptionId` 为空说明任务没绑定员工——那是数据问题，同样不能跑。
    *
    * 当前错误码表仍使用 `INVALID_ARGUMENT` 表达无效员工选择；更细的错误码需要独立的

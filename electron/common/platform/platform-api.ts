@@ -1,4 +1,18 @@
 import { config } from '../config'
+import {
+  enterpriseOrganizationSchema, enterpriseOverviewSchema, skillVersionSchema,
+  personalSkillVersionRequestSchema, idempotencyKeySchema, skillVersionQuerySchema,
+  skillVersionReviewQuerySchema, skillVersionReviewRequestSchema, skillVersionIdSchema,
+  skillVersionListSchema, skillVersionReviewPageSchema,
+} from '../../../src/shared/platform-supplement-contracts'
+import type {
+  EnterpriseOrganization, EnterpriseOverview, SkillVersion, PersonalSkillVersionRequest,
+  SkillVersionQuery, SkillVersionReviewQuery, SkillVersionReviewRequest, SkillVersionReviewPage,
+} from '../../../src/shared/platform-supplement-contracts'
+export type {
+  EnterpriseOrganization, EnterpriseOverview, SkillVersion, PersonalSkillVersionRequest,
+  SkillVersionQuery, SkillVersionReviewQuery, SkillVersionReviewRequest, SkillVersionReviewPage,
+} from '../../../src/shared/platform-supplement-contracts'
 import type { Subscription } from '../../../src/shared/types'
 
 export type { Subscription } from '../../../src/shared/types'
@@ -65,16 +79,6 @@ export interface EmploymentTokenResponse {
   }
 }
 
-export interface PackageInfo {
-  version: string
-  packageRef: {
-    type: 'npm' | 'git' | 'zip'
-    spec: string
-  } | null
-  zipAvailable: boolean
-  sha256: string | null
-}
-
 export interface EmployeeSkill {
   capability: {
     id: string
@@ -93,7 +97,8 @@ export interface EmployeeSkill {
     createdAt: string
     updatedAt: string
   }
-  versions: unknown[]
+  latestPublishedVersion?: SkillVersion | null
+  versions: SkillVersion[]
   upgradeAvailable: boolean
 }
 
@@ -207,7 +212,6 @@ export interface ConversationMessageUploadResponse {
 }
 
 type AuthApiResource =
-  | 'package'
   | 'subscriptions'
   | 'employment-token'
   | 'skills'
@@ -216,6 +220,8 @@ type AuthApiResource =
   | 'login'
   | 'notifications'
   | 'upload'
+  | 'organization'
+  | 'overview'
   | 'conversations'
 
 export class AuthApiError extends Error {
@@ -267,12 +273,16 @@ async function getJson<T>(path: string, accessToken: string, resource: AuthApiRe
   return response.json() as Promise<T>
 }
 
-async function postJson<T>(path: string, body: unknown, accessToken: string, resource: AuthApiResource): Promise<T> {
+async function postJson<T>(
+  path: string, body: unknown, accessToken: string, resource: AuthApiResource,
+  idempotencyKey?: string,
+): Promise<T> {
   const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },
     body: JSON.stringify(body),
   })
@@ -331,31 +341,6 @@ export async function getEmploymentToken(
   })
   if (!response.ok) throw await parseError(response, 'employment-token')
   return response.json() as Promise<EmploymentTokenResponse>
-}
-
-export function getPackageInfo(subscriptionId: string, accessToken: string): Promise<PackageInfo> {
-  return getJson<PackageInfo>(
-    `/enterprise/subscriptions/${encodeURIComponent(subscriptionId)}/package`,
-    accessToken,
-    'package',
-  )
-}
-
-export async function downloadPackage(
-  subscriptionId: string,
-  accessToken: string,
-): Promise<{ bytes: Uint8Array; sha256: string; version: string }> {
-  const response = await fetch(
-    `${config.SEP_BASE_URL}/enterprise/subscriptions/${encodeURIComponent(subscriptionId)}/package/download`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  )
-  if (!response.ok) throw await parseError(response, 'package')
-  const sha256 = response.headers.get('X-SHA256')
-  const version = response.headers.get('X-Version')
-  if (!sha256 || !version) {
-    throw new AuthApiError({ statusCode: 502, message: 'Invalid package download response.' }, 'package')
-  }
-  return { bytes: new Uint8Array(await response.arrayBuffer()), sha256, version }
 }
 
 export function getEmployeeSkills(
@@ -467,6 +452,56 @@ async function deleteJson<T>(path: string, accessToken: string, resource: AuthAp
   if (!response.ok) throw await parseError(response, resource)
   return response.json() as Promise<T>
 }
+
+
+/** Enterprise scope is resolved by SEP from the access token, never from caller input. */
+export async function getEnterpriseOrganization(accessToken: string): Promise<EnterpriseOrganization> {
+  return enterpriseOrganizationSchema.parse(await getJson('/enterprise/organization', accessToken, 'organization'))
+}
+
+export async function getEnterpriseOverview(accessToken: string): Promise<EnterpriseOverview> {
+  return enterpriseOverviewSchema.parse(await getJson('/enterprise/overview', accessToken, 'overview'))
+}
+
+/** One save creates and submits a version. The caller must retain this key for retries. */
+export async function createPersonalSkillVersion(
+  request: PersonalSkillVersionRequest, idempotencyKey: string, accessToken: string,
+): Promise<SkillVersion> {
+  const body = personalSkillVersionRequestSchema.parse(request)
+  const key = idempotencyKeySchema.parse(idempotencyKey)
+  return skillVersionSchema.parse(await postJson('/enterprise/skill-versions', body, accessToken, 'skills', key))
+}
+
+function platformQuery(params: object): string {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) query.set(key, String(value))
+  }
+  return query.size ? '?' + query.toString() : ''
+}
+
+/** capabilityId is required to avoid the legacy enterprise-only listing semantics. */
+export async function listSkillVersions(params: SkillVersionQuery, accessToken: string): Promise<SkillVersion[]> {
+  const query = platformQuery(skillVersionQuerySchema.parse(params))
+  return skillVersionListSchema.parse(await getJson('/enterprise/skill-versions' + query, accessToken, 'skills'))
+}
+
+export async function listSkillVersionReviews(
+  accessToken: string, params: SkillVersionReviewQuery = {},
+): Promise<SkillVersionReviewPage> {
+  const query = platformQuery(skillVersionReviewQuerySchema.parse(params))
+  return skillVersionReviewPageSchema.parse(await getJson('/enterprise/skill-version-reviews' + query, accessToken, 'skills'))
+}
+
+/** Admin-only on SEP. Never retry a review automatically after a lost response. */
+export async function reviewSkillVersion(
+  versionId: string, request: SkillVersionReviewRequest, accessToken: string,
+): Promise<SkillVersion> {
+  const id = encodeURIComponent(skillVersionIdSchema.parse(versionId))
+  const body = skillVersionReviewRequestSchema.parse(request)
+  return skillVersionSchema.parse(await postJson('/enterprise/skill-versions/' + id + '/review', body, accessToken, 'skills'))
+}
+
 
 export function saveEmployeeConversationMessage(
   clientConversationId: string,

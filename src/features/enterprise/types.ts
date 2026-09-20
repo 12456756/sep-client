@@ -69,8 +69,8 @@ export interface SiliconEmployee {
   allowedModels: string[];
   skillIds: string[];
   permissions: OperationPermission[];
-  /** 员工包版本，仅在详情页作为次要信息展示。 */
-  version: string;
+  /** 员工版本，仅在详情页作为次要信息展示。 */
+  templateVersion: string;
 }
 
 // ─────────────────────────────── 工作 ────────────────────────────────
@@ -116,7 +116,7 @@ export interface WorkDraftStep {
   output: string;
   dependsOn: string[];
   needsConfirm: boolean;
-  /** 这一步单独追加的技能包。工作级的共享技能包不在这里。 */
+  /** 这一步单独追加的技能。工作级的共享技能不在这里。 */
   skillIds: string[];
   /** 画布坐标。 */
   x: number;
@@ -179,7 +179,7 @@ export interface WorkItem {
   deliverables: WorkDeliverable[];
   timeline: WorkTimelineEntry[];
   messages: WorkMessage[];
-  /** ??????????????????????????? */
+  /** ?????????????????? */
   activities: WorkActivity[];
   sharedContext: SharedContext;
   /** 终止原因。终止后仍保留已完成动作与已产生文件。 */
@@ -233,52 +233,12 @@ export interface SavedWorkFlow {
   steps: WorkDraftStep[];
   /** 保存时已确认可以交给员工的资料说明。 */
   confirmedInputs: string[];
-  /** 整个工作共享的技能包。 */
+  /** 整个工作共享的技能。 */
   sharedSkillIds?: string[];
   savedAt: number;
 }
 
 // ─────────────────────────────── 员工技能 ───────────────────────────────
-
-/**
- * 个人技能版本状态。
- * 普通用户永远不能直接覆盖企业标准版本，只能提交个人版本供企业审核。
- */
-export type MySkillState = 'none' | 'draft' | 'submitted' | 'reviewing' | 'approved' | 'rejected';
-
-/** 用户可修改的技能字段。企业通用规则、权限范围与安全限制不在其中。 */
-export interface SkillField {
-  id: string;
-  label: string;
-  hint: string;
-  kind: 'text' | 'long-text' | 'enum';
-  options?: string[];
-  enterpriseValue: string;
-  myValue: string;
-}
-
-export interface MySkillVersion {
-  state: MySkillState;
-  updatedAt: number;
-  submittedAt: number | null;
-  /** 企业审核意见，驳回时必有。 */
-  reviewNote: string | null;
-}
-
-export interface EmployeeSkill {
-  id: string;
-  name: string;
-  description: string;
-  /** 使用该技能的员工 id。 */
-  employeeIds: string[];
-  enterpriseVersion: string;
-  /** 企业标准正文，只读展示，不执行任何脚本。 */
-  enterpriseBody: string;
-  fields: SkillField[];
-  /** 普通用户不可修改的内容，界面上需要说明原因。 */
-  lockedItems: string[];
-  my: MySkillVersion;
-}
 
 // ─────────────────────────────── 导航 ────────────────────────────────
 
@@ -293,6 +253,7 @@ export interface EmployeeSkill {
 export type ArrangeMode = 'pick' | 'chat' | 'auto' | 'manual';
 
 export type AppRoute =
+  | { name: 'organization' }
   | { name: 'home' }
   /** scope 决定员工页默认看哪一批人：首页「企业硅基员工」进来看全部，「已分配给我」进来只看自己的。 */
   | { name: 'employees'; scope?: 'mine' | 'all' }

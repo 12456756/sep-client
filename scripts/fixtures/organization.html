@@ -1,0 +1,36 @@
+<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module">
+window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;
+await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
+const React=(await import('__REACT__')).default;
+const {createRoot}=(await import('__DOM__')).default;
+const {ClientAppPage}=await import('/pages/ClientAppPage.tsx');
+const subscribe=()=>()=>{};
+window.pending=[];
+window.electronAPI={
+ getEnterpriseOrganization:()=>new Promise((resolve,reject)=>window.pending.push({resolve,reject})),
+ listSkillLibrary:async()=>({success:true,data:[]}),
+ getAllTasks:async()=>({success:true,tasks:[]}),getTaskMessages:async()=>({success:true,messages:[]}),
+ onTaskListUpdated:subscribe,onTaskUpdated:subscribe,onPiEvent:subscribe,onArrangementPlanningEvent:subscribe,
+};
+const employee=(subscriptionId,name)=>({employeeId:'employee-'+subscriptionId,subscriptionId,name,avatar:null,position:'分析师',description:'组织目录中的员工',status:'ACTIVE',employeeStatus:'READY',endDate:null,active:true,currentUserCanUse:false});
+window.organization={
+ enterprise:{id:'enterprise-1',name:'组织架构联调测试',logo:null},
+ permissions:{grantVisibility:'ENTERPRISE',departmentGrantInheritance:'DIRECT_DEPARTMENT_ONLY',personalReportingSupported:false},
+ statistics:{employeeCount:2,subscriptionCount:2,activeEmployeeCount:2,currentUserAvailableEmployeeCount:0},
+ departments:[{id:'parent',name:'研究部',parentId:null,leaderId:'member-current',sortOrder:1},{id:'child',name:'产品与跨地区联合研究超长名称团队',parentId:'parent',leaderId:null,sortOrder:1}],
+ members:[{id:'member-current',userId:'user-1',name:'测试成员甲',departmentId:'parent',position:'研究员',avatar:null},{id:'member-child',userId:'user-2',name:'测试成员乙',departmentId:'child',position:'编辑',avatar:null},{id:'member-direct',userId:'user-3',name:'无部门成员',departmentId:null,position:null,avatar:null}],
+ employees:[employee('sub-1','直接授权分析员'),employee('sub-2','部门授权分析员')],
+ grants:[{id:'direct',subscriptionId:'sub-1',memberId:'member-current',departmentId:null,expiresAt:null},{id:'department',subscriptionId:'sub-2',memberId:null,departmentId:'parent',expiresAt:null}],
+};
+window.deliver=(mode,index=window.pending.length-1)=>{
+ const pending=window.pending[index];
+ if(mode==='error')pending.resolve({success:false,error:{message:'测试：SEP 暂时不可用'}});
+ else if(mode==='reject')pending.reject(new Error('测试：网络已断开'));
+ else pending.resolve({success:true,data:mode==='empty'?{...window.organization,departments:[],members:[],grants:[]}:window.organization});
+};
+function App(){
+ const [scope,setScope]=React.useState({userId:'user-1',enterpriseId:'enterprise-1'});window.setScope=setScope;
+ return React.createElement(ClientAppPage,{...scope,userName:'测试成员甲',enterpriseName:'组织架构联调测试',instances:[],employeeStatuses:[],onLogout:async()=>{}});
+}
+createRoot(document.getElementById('root')).render(React.createElement(App));
+</script></body></html>

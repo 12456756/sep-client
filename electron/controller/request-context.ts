@@ -9,6 +9,7 @@ import type { Backend } from '../bootstrap/build-backend'
 
 export interface RequestContext {
   /** 服务层句柄。任务类路由只该用这几个。 */
+  readonly skills: Backend['skills']
   readonly tasks: Backend['tasks']
   readonly conversations: Backend['conversations']
   readonly arrangements: Backend['arrangements']
@@ -28,6 +29,7 @@ export function createRequestContext(
   window: () => BrowserWindow | null,
 ): RequestContext {
   return {
+    skills: backend.skills,
     tasks: backend.tasks,
     conversations: backend.conversations,
     arrangements: backend.arrangements,

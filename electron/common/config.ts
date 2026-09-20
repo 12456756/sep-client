@@ -1,4 +1,4 @@
-const SEP_BASE_URL = (process.env['SEP_BASE_URL'] || 'http://localhost:3001/api').replace(/\/+$/, '')
+const SEP_BASE_URL = (process.env['SEP_BASE_URL'] || 'https://sep-dev.longdaoSEP.cn/api').replace(/\/+$/, '')
 
 export const config = {
   SEP_BASE_URL,

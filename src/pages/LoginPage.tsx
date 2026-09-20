@@ -8,6 +8,7 @@ import {
   LockKeyhole,
   Trash2,
   WifiOff,
+  X,
 } from 'lucide-react';
 import type { AuthErrorCode, RememberedAccount } from '../shared/types';
 
@@ -62,14 +63,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [activeAccountIndex, setActiveAccountIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [errorKind, setErrorKind] = useState<LoginErrorKind | null>(null);
+  const [deletingEmail, setDeletingEmail] = useState<string | null>(null);
+  const [revealing, setRevealing] = useState(false);
+  const [notice, setNotice] = useState('');
+  const credentialRevision = useRef(0);
   const accountPickerRef = useRef<HTMLDivElement>(null);
   const emailInputRef = useRef<HTMLInputElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
-
-  const selectedAccount = useMemo(
-    () => rememberedAccounts.find(account => account.email === selectedEmail),
-    [rememberedAccounts, selectedEmail],
-  );
 
   const filteredAccounts = useMemo(() => {
     const query = email.trim().toLowerCase();
@@ -79,25 +79,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     );
   }, [email, rememberedAccounts, selectedEmail]);
 
-  useEffect(() => {
-    if (!selectedAccount) return;
-    const savedPasswordAvailable = encryptionAvailable && selectedAccount.hasSavedPassword;
-    setEmail(selectedAccount.email);
-    setHasSavedPassword(savedPasswordAvailable);
-    setRememberPassword(savedPasswordAvailable);
-    setPassword('');
-    setErrorKind(null);
-  }, [encryptionAvailable, selectedAccount]);
-
-  useEffect(() => {
-    if (selectedEmail || rememberedAccounts.length === 0) return;
-    const account = rememberedAccounts[0];
-    const savedPasswordAvailable = encryptionAvailable && account.hasSavedPassword;
-    setSelectedEmail(account.email);
-    setEmail(account.email);
-    setHasSavedPassword(savedPasswordAvailable);
-    setRememberPassword(savedPasswordAvailable);
-  }, [encryptionAvailable, rememberedAccounts, selectedEmail]);
+  useEffect(() => () => { credentialRevision.current += 1; }, []);
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -118,12 +100,27 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   }, [encryptionAvailable, initialAccount]);
 
   const selectAccount = (account: RememberedAccount) => {
+    if (loading || deletingEmail) return;
+    credentialRevision.current += 1;
+    setRevealing(false);
+    setEmail(account.email);
+    setPassword('');
+    setShowPassword(false);
+    setHasSavedPassword(encryptionAvailable && account.hasSavedPassword);
+    setRememberPassword(encryptionAvailable && account.hasSavedPassword);
+    setErrorKind(null);
+    setNotice('');
     setSelectedEmail(account.email);
     setAccountsOpen(false);
     setActiveAccountIndex(0);
   };
 
   const handleEmailChange = (value: string) => {
+    credentialRevision.current += 1;
+    setRevealing(false);
+    setPassword('');
+    setShowPassword(false);
+    setNotice('');
     setEmail(value);
     setSelectedEmail('');
     setHasSavedPassword(false);
@@ -154,23 +151,49 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     accountEmail: string,
   ) => {
     event.stopPropagation();
-    if (loading) return;
-
-    const result = await window.electronAPI.forgetAccount(accountEmail);
-    if (!result.success) {
-      setErrorKind('unknown');
-      return;
+    if (loading || deletingEmail) return;
+    setDeletingEmail(accountEmail);
+    setErrorKind(null);
+    try {
+      const result = await window.electronAPI.forgetAccount(accountEmail);
+      if (!result.success) throw new Error('Account could not be removed');
+      onAccountListChange(rememberedAccounts.filter(account => account.email !== accountEmail));
+      if (selectedEmail === accountEmail) {
+        handleEmailChange('');
+      }
+      setNotice('已移除此设备保存的账号和密码');
+    } catch {
+      setErrorKind('storage');
+    } finally {
+      setDeletingEmail(null);
     }
+  };
 
-    const nextAccounts = rememberedAccounts.filter(account => account.email !== accountEmail);
-    onAccountListChange(nextAccounts);
-    if (selectedEmail === accountEmail) {
-      const nextAccount = nextAccounts[0];
-      setSelectedEmail(nextAccount?.email ?? '');
-      setEmail(nextAccount?.email ?? '');
-      setPassword('');
-      setHasSavedPassword(encryptionAvailable && (nextAccount?.hasSavedPassword ?? false));
-      setRememberPassword(encryptionAvailable && (nextAccount?.hasSavedPassword ?? false));
+  const clearPassword = () => {
+    credentialRevision.current += 1;
+    setRevealing(false);
+    setPassword('');
+    setHasSavedPassword(false);
+    setShowPassword(false);
+    setErrorKind(null);
+  };
+
+  const togglePassword = async () => {
+    if (!hasSavedPassword) { setShowPassword(value => !value); return; }
+    const revision = credentialRevision.current;
+    setRevealing(true);
+    setErrorKind(null);
+    try {
+      const result = await window.electronAPI.revealRememberedPassword(email);
+      if (revision !== credentialRevision.current) return;
+      setPassword(result.password ?? '');
+      setHasSavedPassword(false);
+      setShowPassword(Boolean(result.password));
+      if (!result.password) setNotice('保存的密码已不可用，请重新输入');
+    } catch {
+      if (revision === credentialRevision.current) setErrorKind('storage');
+    } finally {
+      if (revision === credentialRevision.current) setRevealing(false);
     }
   };
 
@@ -185,6 +208,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
       return;
     }
 
+    credentialRevision.current += 1;
+    setRevealing(false);
     setLoading(true);
     try {
       const result = await window.electronAPI.login({
@@ -216,7 +241,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const canSubmit = email.trim().length > 0 && (hasSavedPassword || password.length > 0);
 
   return (
-    <main className="login-ambient-background relative h-dvh w-screen overflow-hidden text-[#262324]">
+    <main className="login-ambient-background bg-[#f7f8fc] relative h-dvh w-screen overflow-hidden text-[#262324]">
       <div className="login-ambient-layer-one" aria-hidden="true" />
       <div className="login-ambient-layer-two" aria-hidden="true" />
       <div className="electron-drag-region fixed inset-x-0 top-0 z-30 h-10" aria-hidden="true" />
@@ -227,7 +252,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             <h1 className="text-[28px] font-semibold tracking-[0.12em] text-[#332d2f]">
               硅基工作台
             </h1>
-            <span className="mx-auto mt-3 block h-[2px] w-8 rounded-full bg-[#c83a3a]" aria-hidden="true" />
+            <span className="mx-auto mt-3 block h-[2px] w-8 rounded-full bg-[#6366f1]" aria-hidden="true" />
           </header>
 
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -249,16 +274,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   onKeyDown={handleEmailKeyDown}
                   placeholder="name@company.com"
                   autoComplete="email"
-                  disabled={loading}
-                  className="h-11 w-full rounded-[8px] border border-[#ded7d8] bg-white/90 px-3.5 pr-11 text-sm text-[#292526] shadow-[0_1px_2px_rgba(72,48,52,0.04)] outline-none transition placeholder:text-[#b8afb1] focus:border-[#c83a3a] focus:ring-3 focus:ring-[#c83a3a]/10 disabled:bg-white/50"
+                  disabled={loading || deletingEmail !== null}
+                  className="h-11 w-full rounded-[8px] border border-[#ded7d8] bg-white/90 px-3.5 pr-20 text-sm text-[#292526] shadow-[0_1px_2px_rgba(72,48,52,0.04)] outline-none transition placeholder:text-[#b8afb1] focus:border-[#6366f1] focus:ring-3 focus:ring-[#6366f1]/10 disabled:bg-white/50"
                 />
                 {rememberedAccounts.length > 0 && (
                   <button
                     type="button"
                     aria-label="选择历史账号"
                     onClick={() => setAccountsOpen(open => !open)}
-                    disabled={loading}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[#9e9698] transition hover:bg-[#f8eeee] hover:text-[#b6383b] focus:outline-none focus:ring-2 focus:ring-[#c83a3a]/20"
+                    disabled={loading || deletingEmail !== null}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[#9e9698] transition hover:bg-[#eef0ff] hover:text-[#4f46e5] focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20"
                   >
                     <ChevronDown className={`h-4 w-4 transition-transform ${accountsOpen ? 'rotate-180' : ''}`} />
                   </button>
@@ -278,16 +303,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       aria-selected={selectedEmail === account.email}
                       onMouseDown={event => event.preventDefault()}
                       onClick={() => selectAccount(account)}
-                      className={`group flex h-[52px] cursor-pointer items-center gap-3 rounded-[7px] px-3 transition ${index === activeAccountIndex || selectedEmail === account.email ? 'bg-[#fff2f2]' : 'hover:bg-[#faf6f6]'}`}
+                      className={`group flex h-[52px] cursor-pointer items-center gap-3 rounded-[7px] px-3 transition ${index === activeAccountIndex || selectedEmail === account.email ? 'bg-[#eef0ff]' : 'hover:bg-[#f5f6ff]'}`}
                     >
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#f5e6e7] text-xs font-semibold text-[#a93639]">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#eef0ff] text-xs font-semibold text-[#4f46e5]">
                         {(account.displayName || account.email).slice(0, 1).toUpperCase()}
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-1.5 truncate text-xs font-medium text-[#3c3638]">
                           <span className="truncate">{account.displayName || account.email}</span>
                           {encryptionAvailable && account.hasSavedPassword && (
-                            <LockKeyhole className="h-3 w-3 shrink-0 text-[#a67a7d]" />
+                            <LockKeyhole className="h-3 w-3 shrink-0 text-[#818cf8]" />
                           )}
                         </span>
                         <span className="mt-0.5 block truncate text-[11px] text-[#958c8e]">{account.email}</span>
@@ -295,10 +320,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       <button
                         type="button"
                         aria-label={`移除 ${account.email}`}
-                        title="移除账号"
+                        title={deletingEmail === account.email ? '正在移除…' : '移除账号及保存的密码'}
                         onClick={event => void handleForgetAccount(event, account.email)}
-                        disabled={loading}
-                        className="rounded-md p-1.5 text-[#aaa2a4] opacity-0 transition hover:bg-[#f4dfe0] hover:text-[#b6383b] focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-[#c83a3a]/20 group-hover:opacity-100"
+                        disabled={loading || deletingEmail !== null}
+                        className="rounded-md p-1.5 text-[#aaa2a4] transition hover:bg-[#e0e7ff] hover:text-[#4f46e5] focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20 group-hover:opacity-100"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -316,27 +341,45 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 <input
                   id="login-password"
                   type={showPassword ? 'text' : 'password'}
-                  value={password}
+                  value={hasSavedPassword ? '••••••••' : password}
                   onChange={event => {
-                    setPassword(event.target.value);
+                    credentialRevision.current += 1;
+                    setRevealing(false);
+                    setPassword(hasSavedPassword ? event.target.value.replace('••••••••', '') : event.target.value);
+                    setHasSavedPassword(false);
                     setErrorKind(null);
                   }}
-                  placeholder={hasSavedPassword ? '********' : '请输入密码'}
+                  onFocus={event => { if (hasSavedPassword) event.target.select(); }}
+                  onKeyDown={event => {
+                    if (hasSavedPassword && (event.key === 'Backspace' || event.key === 'Delete')) {
+                      event.preventDefault();
+                      clearPassword();
+                    }
+                  }}
+                  placeholder="请输入密码"
                   autoComplete="current-password"
-                  disabled={loading}
-                  className="h-11 w-full rounded-[8px] border border-[#ded7d8] bg-white/90 px-3.5 pr-11 text-sm text-[#292526] shadow-[0_1px_2px_rgba(72,48,52,0.04)] outline-none transition placeholder:text-[#b8afb1] focus:border-[#c83a3a] focus:ring-3 focus:ring-[#c83a3a]/10 disabled:bg-white/50"
+                  disabled={loading || deletingEmail !== null}
+                  className="h-11 w-full rounded-[8px] border border-[#ded7d8] bg-white/90 px-3.5 pr-20 text-sm text-[#292526] shadow-[0_1px_2px_rgba(72,48,52,0.04)] outline-none transition placeholder:text-[#b8afb1] focus:border-[#6366f1] focus:ring-3 focus:ring-[#6366f1]/10 disabled:bg-white/50"
                 />
                 <button
                   type="button"
+                  aria-pressed={showPassword}
                   aria-label={showPassword ? '隐藏密码' : '显示密码'}
-                  onClick={() => setShowPassword(value => !value)}
-                  disabled={loading || password.length === 0}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[#9e9698] transition hover:bg-[#f8eeee] hover:text-[#7d7375] focus:outline-none focus:ring-2 focus:ring-[#c83a3a]/20 disabled:opacity-35"
+                  onClick={() => void togglePassword()}
+                  disabled={loading || revealing || (!hasSavedPassword && !password)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[#9e9698] transition hover:bg-[#eef0ff] hover:text-[#7d7375] focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20 disabled:opacity-35"
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
+                {(hasSavedPassword || password) && <button type="button" aria-label="清空密码"
+                  disabled={loading} onClick={clearPassword}
+                  className="absolute right-10 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-500 hover:bg-indigo-50 focus-visible:ring-2 focus-visible:ring-indigo-500">
+                  <X className="h-4 w-4" />
+                </button>}
               </div>
             </div>
+
+            {notice && <p role="status" className="text-xs text-indigo-600">{notice}</p>}
 
             {errorKind && (
               <div role="alert" className="flex items-center gap-2 text-xs text-[#b33437]">
@@ -352,7 +395,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   checked={rememberPassword}
                   onChange={event => setRememberPassword(event.target.checked)}
                   disabled={loading || !encryptionAvailable}
-                  className="h-4 w-4 rounded border-[#c7bec0] accent-[#c83a3a]"
+                  className="h-4 w-4 rounded border-[#c7bec0] accent-[#6366f1]"
                 />
                 记住密码
               </label>
@@ -364,8 +407,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             <button
               ref={submitButtonRef}
               type="submit"
-              disabled={loading || !canSubmit}
-              className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-[8px] bg-[#c83a3a] text-sm font-semibold text-white shadow-[0_7px_18px_rgba(200,58,58,0.2)] transition hover:bg-[#b43336] hover:shadow-[0_9px_22px_rgba(200,58,58,0.25)] focus:outline-none focus:ring-3 focus:ring-[#c83a3a]/20 active:translate-y-px disabled:cursor-not-allowed disabled:bg-[#dcb1b2] disabled:shadow-none"
+              disabled={loading || revealing || deletingEmail !== null || !canSubmit}
+              className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-[8px] bg-[#6366f1] text-sm font-semibold text-white shadow-[0_7px_18px_rgba(99,102,241,0.2)] transition hover:bg-[#4f46e5] hover:shadow-[0_9px_22px_rgba(99,102,241,0.25)] focus:outline-none focus:ring-3 focus:ring-[#6366f1]/20 active:translate-y-px disabled:cursor-not-allowed disabled:bg-[#a5b4fc] disabled:shadow-none"
             >
               {loading ? (
                 <>

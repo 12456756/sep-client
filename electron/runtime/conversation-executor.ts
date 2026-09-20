@@ -11,6 +11,7 @@ import { readFile } from 'node:fs/promises'
 import { TaskStatus } from '../../src/shared/types'
 import { ConversationContextStore, type ConversationMessage } from '../domain/conversation-context'
 import type { TaskRunStorePort } from '../data/task-run-store'
+import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { TaskManager } from './task-manager'
 import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
 import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
@@ -19,6 +20,7 @@ import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, 
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
 import type { EventPipeline } from './run-events'
 import type { ToolApprovals } from './run-approvals'
+import type { ConversationMessageSyncPort } from '../domain/conversation-message-sync'
 import { logger } from '../common/logger'
 
 const log = logger.child('conversation-executor')
@@ -26,16 +28,18 @@ const log = logger.child('conversation-executor')
 export interface ConversationExecutorOptions {
   taskManager: TaskManager
   taskRunStore: TaskRunStorePort | null
+  workPlanStore?: WorkPlanStorePort | null
   createWorker: (options: PiTaskWorkerOptions) => TaskWorkerPort
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
-  authorizeEmployee: (subscriptionId: string) => Promise<EmployeeRuntimeConfig | null>
+  authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   workspaceRoot: () => string
   approvals: Pick<ToolApprovals, 'request'>
   events: Pick<EventPipeline, 'drain' | 'enqueue' | 'forgetRun' | 'pendingSideEffects' | 'takeResponse'>
   workers: Pick<WorkerRegistry, 'forget' | 'isCurrent' | 'register'>
   enqueue: (queued: QueuedRun) => void
   requestPump: () => void
+  conversationMessageSync?: ConversationMessageSyncPort
 }
 
 export class ConversationExecutor {
@@ -96,6 +100,14 @@ export class ConversationExecutor {
           sessionDir: conversationPaths?.sessionDir ?? runPaths?.sessionDir ?? `${this.options.workspaceRoot()}/.pi-sessions/${runId}`,
           resumeSessionFile: queued.resumeSessionFile,
           additionalSkillPaths: employee.additionalSkillPaths,
+          toolPolicy: queued.arrangement ? {
+            allowedTools: [...queued.arrangement.permissions.allowedTools],
+            allowedPaths: [...queued.arrangement.permissions.allowedPaths],
+            deniedPaths: [...queued.arrangement.permissions.deniedPaths],
+            commandPolicy: queued.arrangement.permissions.commandPolicy,
+            approvalMode: queued.arrangement.permissions.approvalMode ?? 'confirm-each',
+            workspaceDir: task.workDir ?? this.options.workspaceRoot(),
+          } : undefined,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
@@ -138,9 +150,9 @@ export class ConversationExecutor {
         })
         runCreated = true
         if (queued.conversation) {
-          await this.conversationStore(scope, taskId).appendMessage(
-            this.userMessage(taskId, runId, queued.subscriptionId, employee.modelId, queued.prompt),
-          )
+          const message = this.userMessage(taskId, runId, queued.subscriptionId, employee.modelId, queued.prompt)
+          await this.conversationStore(scope, taskId).appendMessage(message)
+          this.enqueueConversationMessage(message)
         }
         if (queued.degradedRecovery) {
           await this.options.events.enqueue({
@@ -207,9 +219,11 @@ export class ConversationExecutor {
     if (!prompt.trim()) throw new Error('A message is required.')
     const employeeId = employeeOverride ?? task.subscriptionId
     if (!employeeId) throw new Error('The selected employee is no longer available.')
-    const employee = await this.options.authorizeEmployee(employeeId)
-    if (!employee) throw new Error('The selected employee is no longer available.')
     const scope = this.options.taskManager.getCurrentUserScope()
+    const arrangement = scope && this.options.workPlanStore ? await this.options.workPlanStore.get(scope, taskId) : null
+    const modelId = arrangement?.conversation?.participants.find(item => item.subscriptionId === employeeId)?.modelId
+    const employee = await this.options.authorizeEmployee(employeeId, modelId)
+    if (!employee) throw new Error('The selected employee is no longer available.')
     if (!scope || !this.options.taskRunStore) throw new Error('Conversation storage is unavailable.')
 
     const contextStore = this.conversationStore(scope, taskId)
@@ -249,6 +263,7 @@ export class ConversationExecutor {
       employee,
       prompt: prompt.trim(),
       conversation: true,
+      arrangement: arrangement ?? undefined,
       resumeSessionFile,
       workerPrompt,
       degradedRecovery,
@@ -271,7 +286,9 @@ export class ConversationExecutor {
         : active.control === 'pause'
           ? 'stopped'
           : failure ? 'failed' : 'completed'
-    const error = failure instanceof Error ? failure.message : failure ? String(failure) : undefined
+    const error = active.control === 'cancel'
+      ? active.controlReason
+      : failure instanceof Error ? failure.message : failure ? String(failure) : undefined
 
     if (active.control !== 'none' || failure) {
       for (const [toolId, tool] of this.options.events.pendingSideEffects(active.runId)) {
@@ -310,7 +327,7 @@ export class ConversationExecutor {
     }
     const response = this.options.events.takeResponse(active.runId)
     if (response && scope && queued.conversation) {
-      await this.conversationStore(scope, active.taskId).appendMessage({
+      const message: ConversationMessage = {
         id: `${active.runId}-assistant`,
         taskId: active.taskId,
         turnId: active.runId,
@@ -320,7 +337,9 @@ export class ConversationExecutor {
         role: 'assistant',
         content: response,
         createdAt: Date.now(),
-      })
+      }
+      await this.conversationStore(scope, active.taskId).appendMessage(message)
+      this.enqueueConversationMessage(message)
     }
     if (runCreated && scope && this.options.taskRunStore) {
       await this.options.taskRunStore.finish(scope, active.taskId, active.runId, outcome, error)
@@ -328,11 +347,11 @@ export class ConversationExecutor {
     if (this.options.workers.isCurrent(active)) {
       const nextStatus = active.control === 'interrupt'
         ? TaskStatus.INTERRUPTED
-        : active.control === 'pause'
+        : active.control === 'pause' || active.control === 'cancel'
           ? TaskStatus.PAUSED
-          : failure && active.control !== 'cancel'
+          : failure
             ? TaskStatus.FAILED
-            : queued.conversation ? TaskStatus.PENDING : TaskStatus.COMPLETED
+            : TaskStatus.COMPLETED
       await this.options.taskManager.settleTaskRun(active.taskId, active.runId, nextStatus, error)
     }
   }
@@ -350,6 +369,22 @@ export class ConversationExecutor {
 
   private userMessage(taskId: string, runId: string, subscriptionId: string, modelId: string, content: string): ConversationMessage {
     return { id: `${runId}-user`, taskId, turnId: runId, runId, subscriptionId, modelId, role: 'user', content, createdAt: Date.now() }
+  }
+
+  private enqueueConversationMessage(message: ConversationMessage): void {
+    if (message.role !== 'user' && message.role !== 'assistant') return
+    this.options.conversationMessageSync?.enqueue({
+      taskId: message.taskId,
+      runId: message.runId,
+      role: message.role,
+      content: message.content,
+      clientConversationId: message.taskId,
+      clientMessageId: message.id,
+      subscriptionId: message.subscriptionId,
+      modelId: message.modelId,
+      turnId: message.turnId,
+      createdAt: message.createdAt,
+    })
   }
 
   private conversationAdapter(scope: { memberId: string; enterpriseId: string }, taskId: string): SharedPiSession {

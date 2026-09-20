@@ -1,0 +1,52 @@
+<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module">
+window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;
+await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
+const React=(await import('__REACT__')).default;
+const {createRoot}=(await import('__DOM__')).default;
+const {WorkTalkDrawer}=await import('/components/enterprise/WorkTalkDrawer.tsx');
+const {WorkDetailPage}=await import('/pages/enterprise/WorkDetailPage.tsx');
+const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseWorkspace.ts');
+const subscriptions=['调研员','报告撰写员','候补员工'].map((name,i)=>({id:['sub-a','sub-b','sub-spare'][i],subscriptionId:['sub-a','sub-b','sub-spare'][i],employeeId:'employee-'+i,name,status:'ACTIVE',templateVersion:'1.0.0',template:{id:'employee-'+i,name,avatar:null},department:null,allowedModels:['model'],upgradeAvailable:false}));
+const options={userId:'fixture-user',userName:'测试用户',enterpriseId:'fixture-enterprise',enterpriseName:'隔离测试',instances:subscriptions,employeeStatuses:[]};
+const listeners={};const subscribe=name=>cb=>{listeners[name]=cb;return ()=>{delete listeners[name];};};
+
+let task; let draft; let sequence=0; let messages=[];
+window.emit=(type,data={})=>listeners.pi?.({taskId:'work-1',runId:task.activeRunId || 'run-1',subscriptionId:'sub-a',sequence:++sequence,type,occurredAt:Date.now(),data});
+window.finish=()=>{messages=[...messages,{id:'answer',role:'assistant',content:'第一段第二段',createdAt:Date.now(),runId:'run-1'}];task={...task,status:'completed',activeRunId:null,completedAt:Date.now()};listeners.task?.(task);};
+window.cancelMode='pending';window.runNumber=1;
+window.settleContinue=()=>{task={...task,status:'completed',activeRunId:null};listeners.task?.(task);};
+window.electronAPI={
+ getEnterpriseOrganization:async()=>({success:true,data:{enterprise:{id:'fixture-enterprise',name:'隔离测试',logo:null},departments:[],members:[],grants:[],employees:[]}}),
+ listSkillLibrary:async()=>({success:true,data:[]}),
+ getAllTasks:async()=>new Promise(resolve=>{window.releaseInitial=()=>resolve({success:true,tasks:[]});}),
+ getTaskMessages:async()=>{const snapshot={success:true,messages:structuredClone(messages)};if(window.deferMessages)return new Promise(resolve=>{window.releaseOldHistory=()=>resolve(snapshot);});return snapshot;},
+ getArrangementPlan:async()=>({success:true}),getTaskTimeline:async()=>({success:true,events:[]}),
+ onTaskListUpdated:subscribe('list'),onTaskUpdated:subscribe('task'),onPiEvent:subscribe('pi'),onArrangementPlanningEvent:subscribe('planning'),
+ createArrangementDraft:async document=>{draft={...document,id:'draft-1',revision:1};window.createdGoal=document.goal;return {success:true,draft};},
+ preflightArrangementDraft:async()=>({success:true,preflight:{canStart:true,blockingIssues:[],warnings:[]}}),
+ confirmAndStartArrangement:async()=>{
+  task={id:'work-1',title:draft.title,prompt:draft.goal,status:'running',workDir:null,createdAt:Date.now(),startedAt:Date.now(),completedAt:null,error:null,files:[],logs:[],ownerId:'fixture-user',ownerEnterpriseId:'fixture-enterprise',subscriptionId:'sub-a',activeRunId:'run-1'};
+  messages=[{id:'question',role:'user',content:draft.goal,createdAt:Date.now(),runId:'run-1'}];
+  listeners.task?.(task);window.emit('text_delta',{text:'第一段'});
+  await new Promise(resolve=>setTimeout(resolve,30));return {success:true,execution:{id:task.id,status:'running'}};
+ },
+ continueTask:async input=>{
+  window.continued=input;
+  return new Promise((resolve,reject)=>{
+   window.admitContinue=()=>{task={...task,status:'pending',activeRunId:'run-'+(++window.runNumber),completedAt:null};listeners.task?.(task);};
+   window.resolveContinue=ok=>{
+    if(ok===true){
+     messages=[...messages,{id:'follow-up-'+window.runNumber,role:'user',content:input.prompt,runId:task.activeRunId,createdAt:Date.now()}];
+     task={...task,status:'running'};listeners.task?.(task);listeners.list?.([task]);
+    }
+    if(ok==='throw'){reject(new Error('模拟发送异常'));return;}
+    resolve(ok?{success:true}:{success:false,error:{message:'模拟发送失败，请重试'}});
+   };
+  });
+ },
+ deleteTask:async taskId=>{window.deletedTaskId=taskId;if(task.status!=='paused'||task.activeRunId)return {success:false,error:{message:'任务正在执行，无法删除。'}};task=undefined;messages=[];listeners.list?.([]);return {success:true};},
+ cancelTask:async(taskId,reason)=>{window.cancelInput={taskId,reason};return new Promise(resolve=>{window.resolveCancel=ok=>{if(ok){task={...task,status:'paused',activeRunId:null,error:reason};listeners.task?.(task);}resolve(ok?{success:true}:{success:false,error:{message:'模拟终止失败，请重试'}});};});}
+};
+function App(){const workspace=useEnterpriseWorkspace(options);window.workspace=workspace;const work=workspace.works[0];return React.createElement('div',{className:'ent-shell'},React.createElement('output',{'data-testid':'status'},work?.status || 'empty'),work?React.createElement(WorkTalkDrawer,{workspace,work,onClose:()=>{}}):React.createElement('button',{onClick:()=>workspace.startConversation('sub-a','请整理资料')},'开始测试'));}
+createRoot(document.getElementById('root')).render(React.createElement(App));
+</script></body></html>

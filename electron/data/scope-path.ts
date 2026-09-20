@@ -127,6 +127,11 @@ export class ScopePath {
     return join(this.ownerRoot(scope), 'tasks.json')
   }
 
+  /** 对话消息同步 outbox。 */
+  conversationSyncFile(scope: TaskOwnerScope): string {
+    return join(this.ownerRoot(scope), 'conversation-sync.json')
+  }
+
   /** 所有任务目录的父目录。崩溃恢复要遍历它。 */
   tasksRoot(scope: TaskOwnerScope): string {
     return join(this.ownerRoot(scope), 'tasks')
@@ -218,5 +223,3 @@ export class ScopePath {
     return path
   }
 }
-
-

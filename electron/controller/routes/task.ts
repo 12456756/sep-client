@@ -30,6 +30,8 @@ export const CREATE_TASK_INVALID = '任务请求参数不合法。'
 const executeInput = z.union([taskId, z.object({ taskId })]).transform(
   value => (typeof value === 'string' ? value : value.taskId),
 )
+const cancelInput = z.union([taskId, z.object({ taskId, reason: z.string().trim().max(2000).optional() })])
+  .transform(value => typeof value === 'string' ? { taskId: value, reason: undefined } : value)
 const retryInput = z.union([
   taskId,
   z.object({ taskId, nodeId: z.string().min(1).optional() }),
@@ -74,8 +76,8 @@ export const taskRoutes = [
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
 
-  route(INVOKE_CHANNELS.TASK_CANCEL, taskId, async (ctx, id) => {
-    await ctx.tasks.cancel(id)
+  route(INVOKE_CHANNELS.TASK_CANCEL, cancelInput, async (ctx, input) => {
+    await ctx.tasks.cancel(input.taskId, input.reason)
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
 

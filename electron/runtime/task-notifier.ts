@@ -4,7 +4,7 @@
  * 这里只声明通知能力。实现由 `bootstrap/renderer-bridge.ts` 注入，运行时和任务管理器
  * 不需要认识 Electron 或 IPC 通道名。
  */
-import type { ClientTask, TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
+import type { ArrangementPlanningProgress, ClientTask, TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
 
 export interface TaskNotifier {
   /** 单个任务发生变化。 */
@@ -20,6 +20,8 @@ export interface TaskNotifier {
 export interface RendererPort extends TaskNotifier {
   /** run 的执行事件流。 */
   taskEvent(event: TaskExecutionEvent): void
+  /** ???????????? prompt?token ????? */
+  arrangementPlanningEvent(event: ArrangementPlanningProgress): void
   /** 高危工具调用等待用户批准。 */
   approvalRequest(request: ToolAuthorizationRequest): void
   /** 令牌已失效，需要重新登录。 */

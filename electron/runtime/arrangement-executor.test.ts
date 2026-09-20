@@ -80,6 +80,8 @@ describe('TaskRuntime arrangement integration', () => {
         contexts.push(options.context.modelId)
         const worker: TaskWorkerPort = {
           async run(prompt) {
+            assert.match(prompt, /^You are executing one node inside an orchestrated work plan\./)
+            assert.match(prompt, /No prerequisite node output is available\./)
             assert.match(prompt, /NODE INSTRUCTION:\ndo node A/)
             await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'node result' } })
           },
@@ -171,6 +173,8 @@ describe('TaskRuntime arrangement controls', () => {
             await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'A recovered' } })
             return
           }
+          assert.match(prompt, /^You are executing one node inside an orchestrated work plan\./)
+          assert.match(prompt, /PREREQUISITE OUTPUTS:\nPREREQUISITE: Node A \(node-a\)\nA recovered/)
           await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'B complete' } })
         },
         async abort() {},

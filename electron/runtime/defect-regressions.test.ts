@@ -160,7 +160,7 @@ describe('C1 — pump() 按下标 splice 队列会误删无关条目', () => {
       assert.equal(victimStarts, 1, `victim 被启动 ${victimStarts} 次，队列条目寻址打偏`)
 
       const cancelled = await manager.getTask(blocked.id)
-      assert.equal(cancelled?.status, TaskStatus.PENDING)
+      assert.equal(cancelled?.status, TaskStatus.PAUSED)
       assert.equal(cancelled?.activeRunId, null)
     } finally {
       manager.release()
@@ -245,7 +245,7 @@ describe('C4 — authorizeEmployee 在调度循环内发网络请求', () => {
       onApprovalRequest: () => {},
       // 同步快照不带 additionalSkillPaths，正如 main.ts 里的 resolveEmployee。
       resolveEmployee: id => EMPLOYEES[id] ?? null,
-      // 只有授权（含平台往返）才知道技能包路径。
+      // 只有授权（含平台往返）才知道技能路径。
       authorizeEmployee: async id => {
         authorizations.push(id)
         const employee = EMPLOYEES[id]
@@ -279,10 +279,10 @@ describe('C4 — authorizeEmployee 在调度循环内发网络请求', () => {
       ['employee-a', 'employee-a'],
       `每个 run 只应授权一次，实际 ${authorizations.length} 次`,
     )
-    // 入队前授权拿到的配置必须随条目走到 worker，否则技能包路径在排队后就丢了。
+    // 入队前授权拿到的配置必须随条目走到 worker，否则技能路径在排队后就丢了。
     assert.equal(contexts.length, 2)
     for (const context of contexts) {
-      assert.deepEqual(context.additionalSkillPaths, skillPaths, `${context.taskId} 丢了技能包路径`)
+      assert.deepEqual(context.additionalSkillPaths, skillPaths, `${context.taskId} 丢了技能路径`)
     }
   })
 })
@@ -534,3 +534,46 @@ describe('C9 — check-then-commit 会歪曲错误码，并留下竞态窗口', 
   })
 })
 
+
+
+describe('stopped task deletion', () => {
+  for (const status of [TaskStatus.PAUSED, TaskStatus.INTERRUPTED]) {
+    it(`deletes an inactive ${status} task and persists the deletion`, async () => {
+      const userData = await makeUserDataDir()
+      const manager = new TaskManager(userData)
+      await manager.initialize()
+      await manager.setCurrentUser('member-a', 'enterprise-a')
+      const task = await manager.createTask('stopped', 'prompt')
+      await manager.updateTaskStatus(task.id, status)
+
+      assert.equal(await manager.deleteTask(task.id), true)
+      assert.equal(await manager.getTask(task.id), null)
+      const reloaded = new TaskManager(userData)
+      await reloaded.initialize()
+      await reloaded.setCurrentUser('member-a', 'enterprise-a')
+      assert.equal(await reloaded.getTask(task.id), null)
+    })
+
+    it(`retains a ${status} task until its active run is released`, async () => {
+      const manager = new TaskManager(await makeUserDataDir())
+      await manager.initialize()
+      await manager.setCurrentUser('member-a', 'enterprise-a')
+      const task = await manager.createTask('stopping', 'prompt')
+      await manager.admitTask(task.id, 'active-run')
+      await manager.updateTaskStatus(task.id, status)
+
+      assert.equal(await manager.deleteTask(task.id), false)
+      assert.equal((await manager.getTask(task.id))?.activeRunId, 'active-run')
+    })
+  }
+
+  it('does not delete pending or running work', async () => {
+    const manager = new TaskManager(await makeUserDataDir())
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('active', 'prompt')
+    assert.equal(await manager.deleteTask(task.id), false)
+    await manager.updateTaskStatus(task.id, TaskStatus.RUNNING)
+    assert.equal(await manager.deleteTask(task.id), false)
+  })
+})

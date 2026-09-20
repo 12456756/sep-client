@@ -4,7 +4,7 @@ import { EmployeeDirectory } from './employee-directory'
 import type { Subscription } from '../common/platform/platform-api'
 
 function instance(id: string, status: string): Subscription {
-  return { id, status, template: { id: `${id}-template` }, templateVersion: '1.0.0', allowedModels: ['model-a'] } as unknown as Subscription
+  return { id, status, template: { id: `${id}-template` }, allowedModels: ['model-a'] } as unknown as Subscription
 }
 
 describe('EmployeeDirectory', () => {

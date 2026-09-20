@@ -7,10 +7,9 @@
  * 已经有真实来源的数据不在此文件内：
  * - 我可用的员工      ← GET /client/subscriptions（getInstances）
  * - 工作列表与状态    ← 本地 TaskManager（getAllTasks / onTaskUpdated）
- * - 员工包版本        ← GET /enterprise/subscriptions/:id/package
  */
 
-import type { EmployeeSkill, OperationPermission, SiliconEmployee, WorkTemplate } from './types';
+import type { OperationPermission, SiliconEmployee, WorkTemplate } from './types';
 
 // ──────────────────── 本机操作权限（本地设置，非平台数据） ────────────────────
 
@@ -160,7 +159,7 @@ export function unassignedEmployees(assignedRoles: string[]): SiliconEmployee[] 
         allowedModels: [],
         skillIds: [],
         permissions: defaultPermissions(),
-        version: '—',
+        templateVersion: '—',
       });
     }
   }
@@ -252,86 +251,3 @@ export const WORK_TEMPLATES: WorkTemplate[] = [
     ],
   },
 ];
-
-// ────── 员工技能：TODO ← GET /enterprise/employees/:employeeId/skills + 个人版本接口 ──────
-
-/**
- * 权限边界：fields 是普通用户可以改的；lockedItems 是必须企业审核才能变的。
- * 个人版本保存在本地，提交后由企业决定是否纳入企业标准。
- */
-export function initialSkills(): EmployeeSkill[] {
-  return [
-    {
-      id: 'report-style',
-      name: '报告撰写规范',
-      description: '决定报告的结构、措辞和详细程度。',
-      employeeIds: [],
-      enterpriseVersion: '2.1.0',
-      enterpriseBody: [
-        '## 适用场景',
-        '所有对内交付的分析报告与周报。',
-        '',
-        '## 企业统一要求',
-        '1. 结论写在最前，正文不超过三层标题。',
-        '2. 每个结论必须能追溯到具体数据来源。',
-        '3. 不确定的地方标注「待确认」，不做推测性表述。',
-        '4. 对外发送前必须经过人工确认。',
-      ].join('\n'),
-      lockedItems: ['结论先行与来源可追溯的企业规则', '对外发送前必须人工确认', '员工可使用的工具范围'],
-      fields: [
-        { id: 'tone', label: '语言风格', hint: '影响措辞，不影响结论。', kind: 'enum', options: ['正式书面', '简洁直接', '偏口语易读'], enterpriseValue: '正式书面', myValue: '正式书面' },
-        { id: 'detail', label: '结果详细程度', hint: '决定正文展开多少细节。', kind: 'enum', options: ['只要结论', '结论加要点', '完整过程'], enterpriseValue: '结论加要点', myValue: '结论加要点' },
-        { id: 'format', label: '输出格式偏好', hint: '标题层级与列表习惯。', kind: 'text', enterpriseValue: '标题 + 项目符号', myValue: '标题 + 项目符号' },
-        { id: 'rules', label: '我的常用规则', hint: '只对你自己生效的额外要求。', kind: 'long-text', enterpriseValue: '', myValue: '' },
-        { id: 'example', label: '我的示例', hint: '给出一段你认可的写法，员工会参照。', kind: 'long-text', enterpriseValue: '', myValue: '' },
-      ],
-      my: { state: 'none', updatedAt: 0, submittedAt: null, reviewNote: null },
-    },
-    {
-      id: 'data-cleaning',
-      name: '数据处理口径',
-      description: '决定异常值、空值和单位的处理方式。',
-      employeeIds: [],
-      enterpriseVersion: '1.4.2',
-      enterpriseBody: [
-        '## 适用场景',
-        '所有涉及表格与数值汇总的工作。',
-        '',
-        '## 企业统一要求',
-        '1. 空值一律保留并单独统计，不得填 0。',
-        '2. 金额统一为元，保留两位小数。',
-        '3. 发现异常值必须在结果中列出，不得自行剔除。',
-      ].join('\n'),
-      lockedItems: ['空值保留与异常值必须列出的企业规则', '金额单位与精度', '可访问的数据范围'],
-      fields: [
-        { id: 'outlier', label: '异常值提示方式', hint: '只影响提示形式，不影响是否列出。', kind: 'enum', options: ['单独列一节', '在表格中标色说明', '两者都要'], enterpriseValue: '单独列一节', myValue: '单独列一节' },
-        { id: 'rounding', label: '展示时的取整偏好', hint: '仅影响展示，底层数据不变。', kind: 'enum', options: ['保留两位小数', '保留一位小数', '取整到元'], enterpriseValue: '保留两位小数', myValue: '保留两位小数' },
-        { id: 'rules', label: '我的常用规则', hint: '例如固定忽略某些测试数据。', kind: 'long-text', enterpriseValue: '', myValue: '' },
-      ],
-      my: { state: 'none', updatedAt: 0, submittedAt: null, reviewNote: null },
-    },
-    {
-      id: 'client-tone',
-      name: '客户沟通口径',
-      description: '决定回复客户时的语气与承诺边界。',
-      employeeIds: [],
-      enterpriseVersion: '3.0.0',
-      enterpriseBody: [
-        '## 适用场景',
-        '客户邮件、消息回复初稿。',
-        '',
-        '## 企业统一要求',
-        '1. 不承诺具体交付日期与价格。',
-        '2. 不代表企业做任何法律表述。',
-        '3. 所有对客内容均为初稿，须人工确认后发送。',
-      ].join('\n'),
-      lockedItems: ['不承诺交付日期与价格', '不做法律表述', '对客内容必须人工确认后发送'],
-      fields: [
-        { id: 'tone', label: '语言风格', hint: '影响称呼与句式。', kind: 'enum', options: ['正式礼貌', '亲切自然', '简短高效'], enterpriseValue: '正式礼貌', myValue: '简短高效' },
-        { id: 'signature', label: '结尾习惯', hint: '你习惯的收尾方式。', kind: 'text', enterpriseValue: '如有疑问随时联系', myValue: '有任何问题请直接回复这封邮件' },
-        { id: 'rules', label: '我的常用规则', hint: '例如固定提醒对方确认收件人。', kind: 'long-text', enterpriseValue: '', myValue: '回复前先列出本次要回答的问题，逐条作答。' },
-      ],
-      my: { state: 'draft', updatedAt: Date.now() - 2 * 24 * 60 * 60_000, submittedAt: null, reviewNote: null },
-    },
-  ];
-}
