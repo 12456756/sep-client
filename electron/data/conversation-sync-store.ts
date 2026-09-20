@@ -1,4 +1,4 @@
-﻿import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
+import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { WriteChain } from './write-chain'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 
