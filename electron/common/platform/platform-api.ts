@@ -306,6 +306,18 @@ async function putJson<T>(
   return response.json() as Promise<T>
 }
 
+export async function patchJson<T>(
+  path: string, body: unknown, accessToken: string, resource: AuthApiResource,
+): Promise<T> {
+  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) throw await parseError(response, resource)
+  return response.json() as Promise<T>
+}
+
 export async function login(request: LoginRequest): Promise<LoginResponse> {
   const response = await fetch(`${config.SEP_BASE_URL}/client/auth/login`, {
     method: 'POST',

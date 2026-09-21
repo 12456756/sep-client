@@ -52,6 +52,19 @@ export default [
     },
   },
   {
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      // UI fixture scripts intentionally shadow Node's built-in fetch with a
+      // controlled browser-compatible implementation.
+      'no-redeclare': 'off',
+    },
+  },
+  {
     files: ['src/**/*.{ts,tsx}'],
     ...reactHooks.configs['recommended-latest'],
     languageOptions: {

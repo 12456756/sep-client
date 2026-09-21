@@ -10,11 +10,11 @@
  */
 
 import { AlertTriangle, Bell, LayoutGrid, Network } from 'lucide-react';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
-import type { EmployeeStatus, Subscription } from '../shared/types';
+import type { EmployeeStatus, RuntimeInfo, Subscription } from '../shared/types';
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
 import { EmployeesPage } from './enterprise/EmployeesPage';
@@ -42,6 +42,13 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const { route, overview } = workspace;
   const scroll = useRef<HTMLDivElement | null>(null);
+  const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
+
+  useEffect(() => {
+    void window.electronAPI.getRuntimeInfo().then(result => {
+      if (result.success && result.data) setRuntimeInfo(result.data);
+    });
+  }, []);
 
   // 换页就回到顶部。同一个滚动容器在页面之间复用，不重置的话新页面会从上一页的位置开始。
   useEffect(() => {
@@ -119,6 +126,11 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
             </div>
           )}
         />
+        {runtimeInfo ? (
+          <div style={{ padding: '6px 24px', fontSize: 11, color: '#64748b', background: '#f8fafc', borderBottom: '1px solid #e2e8f0' }}>
+            SEP Client {runtimeInfo.version} · {runtimeInfo.channel}/{runtimeInfo.environment} · API {runtimeInfo.apiBaseUrl} · 构建 {runtimeInfo.buildTime === 'development' ? '开发运行' : runtimeInfo.buildTime}
+          </div>
+        ) : null}
         {workspace.error ? (
           <div className="ent-error-bar" role="alert">
             <AlertTriangle size={14} aria-hidden />

@@ -22,6 +22,7 @@ const electronAPI = {
   revealRememberedPassword: email => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_REVEAL_REMEMBERED_PASSWORD, email),
   forgetAccount: email => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_FORGET_ACCOUNT, email),
   logout: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LOGOUT),
+  getRuntimeInfo: () => ipcRenderer.invoke(INVOKE_CHANNELS.SYSTEM_RUNTIME_INFO),
   getSubscriptions: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_INSTANCES),
   getEmployeeStatus: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_EMPLOYEE_STATUS),
   getEnterpriseOrganization: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_ORGANIZATION),

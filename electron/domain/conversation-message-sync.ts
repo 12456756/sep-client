@@ -1,4 +1,4 @@
-﻿export type ConversationSyncRole = 'user' | 'assistant'
+export type ConversationSyncRole = 'user' | 'assistant'
 
 export interface ConversationMessageToSync {
   taskId: string

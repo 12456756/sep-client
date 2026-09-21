@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
-import { LoginPage } from './pages/LoginPage';
-import { ClientAppPage } from './pages/ClientAppPage';
-import { ToolApprovalDialog } from './components/ToolApprovalDialog';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import type { EmployeeStatus, Subscription, RememberedAccount } from './shared/types';
+import { PerformanceMonitor } from './components/PerformanceMonitor';
+
+// 懒加载页面组件
+const LoginPage = lazy(() => import('./pages/LoginPage').then(m => ({ default: m.LoginPage })));
+const ClientAppPage = lazy(() => import('./pages/ClientAppPage').then(m => ({ default: m.ClientAppPage })));
+const ToolApprovalDialog = lazy(() => import('./components/ToolApprovalDialog').then(m => ({ default: m.ToolApprovalDialog })));
 
 interface AuthState {
   user: { id: string; email: string; name: string };
@@ -103,8 +106,12 @@ export default function App() {
     return <ClientAppPage userId={authState.user.id} userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={instances} employeeStatuses={employeeStatuses} onLogout={handleLogout} />;
   };
 
-  return <>
-    {renderRoute()}
-    <ToolApprovalDialog request={toolApprovalRequest} onApprove={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true }); setToolApprovalRequest(null); }} onDeny={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' }); setToolApprovalRequest(null); }} />
-  </>;
+  return (
+    <Suspense fallback={<div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在加载...</p></div>}>
+      {renderRoute()}
+      <ToolApprovalDialog request={toolApprovalRequest} onApprove={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true }); setToolApprovalRequest(null); }} onDeny={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' }); setToolApprovalRequest(null); }} />
+      {/* 性能监控 - 仅在开发环境显示 */}
+      {import.meta.env.DEV && <PerformanceMonitor position="bottom-right" />}
+    </Suspense>
+  );
 }

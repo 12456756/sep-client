@@ -1,4 +1,4 @@
-﻿/* global window, document */
+/* global window, document */
 import assert from 'node:assert/strict';
 import process from 'node:process';
 import { tmpdir } from 'node:os';

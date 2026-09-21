@@ -14,6 +14,7 @@ import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { WorkItem, WorkStatus } from '../../features/enterprise/types';
 import { clockTime, relativeTime } from '../../features/enterprise/vocabulary';
+import { useDebounce } from '../../hooks/useDebounce';
 
 /**
  * 卡片上那颗主按钮说什么。
@@ -62,11 +63,14 @@ export function WorkRecordsPage({ workspace }: Props) {
   const [stopping, setStopping] = useState<string | null>(null);
   const [stopReason, setStopReason] = useState('');
 
+  // 使用防抖优化搜索性能
+  const debouncedSearch = useDebounce(search, 300);
+
   useEffect(() => {
     if (workspace.route.name === 'records') setBucket(workspace.route.bucket ?? 'all');
   }, [workspace.route]);
 
-  const keyword = search.trim();
+  const keyword = debouncedSearch.trim();
   const matcher = BUCKETS.find(item => item.id === bucket) ?? BUCKETS[0];
   const records = workspace.works
     .filter(work => matcher.match(work))

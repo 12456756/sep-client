@@ -18,6 +18,7 @@ export const INVOKE_CHANNELS = {
   AUTH_REVEAL_REMEMBERED_PASSWORD: 'auth:reveal-remembered-password',
   AUTH_FORGET_ACCOUNT: 'auth:forget-account',
   AUTH_LOGOUT: 'auth:logout',
+  SYSTEM_RUNTIME_INFO: 'system:runtime-info',
   AUTH_GET_INSTANCES: 'auth:get-instances',
   AUTH_GET_EMPLOYEE_STATUS: 'auth:get-employee-status',
   AUTH_GET_ORGANIZATION: 'auth:get-organization',

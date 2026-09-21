@@ -1,0 +1,6 @@
+{
+  "channel": "beta",
+  "environment": "integration",
+  "sepBaseUrl": "https://sep-dev.longdaoSEP.cn/api",
+  "gatewayUrl": "https://sep-dev.longdaoSEP.cn/api/gateway/v1"
+}

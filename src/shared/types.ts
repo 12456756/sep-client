@@ -59,6 +59,15 @@ export type PasswordAvailabilityResult = { passwordAvailable: boolean }
 export type ForgetAccountResult = AuthResult<null>
 export type LogoutResult = AuthResult<null>
 
+export interface RuntimeInfo {
+  version: string
+  channel: 'beta' | 'stable'
+  environment: string
+  apiBaseUrl: string
+  gatewayUrl: string
+  buildTime: string
+}
+
 // ──────────────────────────── Tasks ────────────────────────────
 
 export const TaskStatus = {
@@ -517,4 +526,3 @@ export interface ArrangementPlanningProgress {
     message?: string
   }
 }
-

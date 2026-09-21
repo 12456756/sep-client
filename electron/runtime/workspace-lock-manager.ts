@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { dirname, resolve, normalize, relative, sep } from 'node:path'
 
 interface HeldLock {
@@ -19,12 +19,22 @@ function canonicalizePath(workDir: string | null, defaultWorkDir: string): strin
     suffix.unshift(relative(parent, current))
     current = parent
   }
-  const base = existsSync(current) ? realpathSync(current) : current
+  const base = existsSync(current) ? normalizeCase(normalize(realpathSync(current))) : current
   return normalizeCase(normalize(resolve(base, ...suffix)))
 }
 
 function normalizeCase(path: string): string {
-  return process.platform === 'win32' ? path.toLowerCase() : path
+  if (process.platform === 'win32') return path.toLowerCase()
+  const lower = path.toLowerCase()
+  if (lower === path || !existsSync(path) || !existsSync(lower)) return path
+  try {
+    const currentStat = statSync(path)
+    const lowerStat = statSync(lower)
+    if (currentStat.dev === lowerStat.dev && currentStat.ino === lowerStat.ino) return lower
+  } catch {
+    // If the filesystem cannot provide stable metadata, preserve the path.
+  }
+  return path
 }
 
 function pathsOverlap(left: string, right: string): boolean {
@@ -72,5 +82,3 @@ export class WorkspaceLockManager {
     return this.locks.size
   }
 }
-
-

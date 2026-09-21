@@ -10,6 +10,8 @@ import { Empty } from '../../components/enterprise/atoms';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeAvailability } from '../../features/enterprise/types';
 import { EMPLOYEE_AVAILABILITY } from '../../features/enterprise/vocabulary';
+import { useDebounce } from '../../hooks/useDebounce';
+import { VirtualList, VirtualGrid } from '../../components/VirtualList';
 
 interface Props {
   workspace: EnterpriseWorkspace;
@@ -29,15 +31,18 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
   const [availability, setAvailability] = useState<'' | EmployeeAvailability>('');
   const [dense, setDense] = useState(false);
 
+  // 使用防抖优化搜索性能
+  const debouncedSearch = useDebounce(search, 300);
+
   const list = useMemo(() => {
-    const term = search.trim().toLowerCase();
+    const term = debouncedSearch.trim().toLowerCase();
     return employees.filter(employee => {
       if (scope === 'mine' && !employee.assignedToMe) return false;
       if (availability && employee.availability !== availability) return false;
       if (!term) return true;
       return [employee.name, ...employee.goodAt].some(field => field.toLowerCase().includes(term));
     });
-  }, [employees, scope, availability, search]);
+  }, [employees, scope, availability, debouncedSearch]);
 
   const open = (employeeId: string) => workspace.navigate({ name: 'employee', employeeId });
 
@@ -75,28 +80,66 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
       {!list.length ? (
         <Empty title="没有符合条件的员工">换一个筛选条件，或者查看企业全部员工。</Empty>
       ) : dense ? (
-        <div className="ent-emp-list">
-          {list.map(employee => (
-            <EmployeeCard
-              key={employee.id}
-              employee={employee}
-              compact
-              onOpen={open}
-              onChat={employee.assignedToMe ? id => open(id) : undefined}
-            />
-          ))}
-        </div>
+        // 紧凑列表：当列表较长时使用虚拟滚动优化性能
+        list.length > 20 ? (
+          <VirtualList
+            items={list}
+            height="600px"
+            estimateSize={60}
+            className="ent-emp-list"
+            renderItem={(employee) => (
+              <EmployeeCard
+                key={employee.id}
+                employee={employee}
+                compact
+                onOpen={open}
+                onChat={employee.assignedToMe ? id => open(id) : undefined}
+              />
+            )}
+          />
+        ) : (
+          <div className="ent-emp-list">
+            {list.map(employee => (
+              <EmployeeCard
+                key={employee.id}
+                employee={employee}
+                compact
+                onOpen={open}
+                onChat={employee.assignedToMe ? id => open(id) : undefined}
+              />
+            ))}
+          </div>
+        )
       ) : (
-        <div className="ent-emp-grid">
-          {list.map(employee => (
-            <EmployeeCard
-              key={employee.id}
-              employee={employee}
-              onOpen={open}
-              onChat={employee.assignedToMe ? id => open(id) : undefined}
-            />
-          ))}
-        </div>
+        // 卡片网格：当卡片较多时使用虚拟网格优化性能
+        list.length > 12 ? (
+          <VirtualGrid
+            items={list}
+            height="800px"
+            columns={3}
+            estimateSize={200}
+            className="ent-emp-grid"
+            renderItem={(employee) => (
+              <EmployeeCard
+                key={employee.id}
+                employee={employee}
+                onOpen={open}
+                onChat={employee.assignedToMe ? id => open(id) : undefined}
+              />
+            )}
+          />
+        ) : (
+          <div className="ent-emp-grid">
+            {list.map(employee => (
+              <EmployeeCard
+                key={employee.id}
+                employee={employee}
+                onOpen={open}
+                onChat={employee.assignedToMe ? id => open(id) : undefined}
+              />
+            ))}
+          </div>
+        )
       )}
     </div>
   );

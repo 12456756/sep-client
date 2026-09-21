@@ -12,6 +12,7 @@
  *    要知道是哪一项，点开卡片看抽屉里的清单。
  */
 
+import { memo } from 'react';
 import { BellRing, Hourglass, XCircle } from 'lucide-react';
 import type { SiliconEmployee } from '../../features/enterprise/types';
 import { EMPLOYEE_AVAILABILITY } from '../../features/enterprise/vocabulary';
@@ -38,7 +39,7 @@ interface Props {
   onOpen: (employeeId: string) => void;
 }
 
-export function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Props) {
+export const EmployeeDeskCard = memo(function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Props) {
   const idle = employee.availability === 'unavailable';
   const percent = load.total ? Math.round((load.done / load.total) * 100) : 0;
   // 暂时不可用的人不管本地有没有工作在跑，都按「不可用」说 —— 那是更强的约束。
@@ -77,4 +78,4 @@ export function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Pro
       </span>
     </article>
   );
-}
+});

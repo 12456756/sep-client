@@ -1,4 +1,4 @@
-﻿import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
+import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
 import type { OrganizationCarbonEmployee } from './organization-model';
 import type { SiliconEmployee } from './types';
 

@@ -1,4 +1,4 @@
-﻿/* global window, document, fetch */
+/* global window, document, fetch */
 import { readFileSync } from 'node:fs';
 import { URL } from 'node:url';
 import assert from 'node:assert/strict';

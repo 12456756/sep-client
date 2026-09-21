@@ -9,6 +9,8 @@ import { z } from 'zod'
 import { appError } from '../../errors/app-error'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from '../channels'
 import { listener, NO_INPUT, route } from '../router'
+import { app } from 'electron'
+import { config } from '../../common/config'
 
 /**
  * 审批响应。`requestId` 必填（C5）——缺了就不批，不做任何推断。
@@ -22,6 +24,17 @@ const approvalResponse = z.object({
 })
 
 export const systemRoutes = [
+  route(INVOKE_CHANNELS.SYSTEM_RUNTIME_INFO, NO_INPUT, async () => ({
+    success: true,
+    data: {
+      version: app.getVersion(),
+      channel: config.RELEASE_CHANNEL,
+      environment: config.RELEASE_ENVIRONMENT,
+      apiBaseUrl: config.SEP_API_BASE_URL,
+      gatewayUrl: config.SEP_GATEWAY_URL,
+      buildTime: config.BUILD_TIME,
+    },
+  })),
   route(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, NO_INPUT, async ctx => {
     const window = ctx.window()
     if (!window) {
@@ -44,5 +57,4 @@ export const systemListeners = [
     ctx.backend.peekTaskRuntime()?.respondToApproval(input)
   }),
 ]
-
 

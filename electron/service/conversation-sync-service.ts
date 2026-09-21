@@ -1,4 +1,4 @@
-﻿import { logger } from '../common/logger'
+import { logger } from '../common/logger'
 import type { ConversationMessageToSync, ConversationMessageSyncPort } from '../domain/conversation-message-sync'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { ConversationSyncItem, ConversationSyncStorePort } from '../data/conversation-sync-store'

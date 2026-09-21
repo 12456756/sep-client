@@ -1,4 +1,4 @@
-﻿import { AppError } from '../errors/app-error'
+import { AppError } from '../errors/app-error'
 import { validateArrangementDraft, type ArrangementDraft, type ArrangementNode } from './arrangement-plan'
 
 export interface ArrangementPlannerEmployee {

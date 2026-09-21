@@ -1,4 +1,4 @@
-﻿import { afterEach, describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
