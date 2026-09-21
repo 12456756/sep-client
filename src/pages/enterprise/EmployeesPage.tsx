@@ -47,7 +47,7 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
   const open = (employeeId: string) => workspace.navigate({ name: 'employee', employeeId });
 
   return (
-    <div className="ent-page">
+    <div className="ent-employees-container">
       <div className="ent-toolbar">
         <label className="ent-find">
           <Search size={14} aria-hidden />
@@ -73,9 +73,10 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
         </div>
       </div>
 
-      <p className="ent-result-note">
-        共 {list.length} 名员工{scope === 'all' ? '（灰色卡片表示尚未分配给你，只能查看介绍）' : ''}
-      </p>
+      <div className="ent-employees-content">
+        <p className="ent-result-note">
+          共 {list.length} 名员工{scope === 'all' ? '（灰色卡片表示尚未分配给你，只能查看介绍）' : ''}
+        </p>
 
       {!list.length ? (
         <Empty title="没有符合条件的员工">换一个筛选条件，或者查看企业全部员工。</Empty>
@@ -141,6 +142,7 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
           </div>
         )
       )}
+      </div>
     </div>
   );
 }

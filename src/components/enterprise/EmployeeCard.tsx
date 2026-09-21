@@ -37,33 +37,60 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false }: Prop
 
   return (
     <article className={`ent-card ent-emp-card${employee.assignedToMe ? '' : ' off'}`}>
-      <header>
-        <EmployeeFace seed={employee.id} size="md" />
-        <div className="ent-emp-card-id">
-          <strong title={employee.name}>{employee.name}</strong>
+      <header className="ent-emp-card-header">
+        <EmployeeFace seed={employee.id} size="lg" />
+        <div className="ent-emp-card-meta-top">
+          <strong title={employee.name} className="ent-emp-card-name">{employee.name}</strong>
+          <AvailabilityChip value={employee.availability} />
         </div>
-        <AvailabilityChip value={employee.availability} />
       </header>
+
       <p className="ent-emp-card-intro">{employee.intro}</p>
+
       <div className="ent-emp-card-skills">
-        <Sparkles size={12} aria-hidden />
-        {employee.goodAt.slice(0, 2).map(item => <span key={item} className="ent-tag">{item}</span>)}
-        {employee.goodAt.length > 2 ? <span className="ent-tag">+{employee.goodAt.length - 2}</span> : null}
-      </div>
-      <div className="ent-emp-card-meta">
-        <span title="你已开启的本机操作权限数量">
-          <ShieldCheck size={12} aria-hidden />
-          已授权 {enabled} / {employee.permissions.length} 项操作
+        <span className="ent-skills-label">
+          <Sparkles size={12} aria-hidden />
+          擅长
         </span>
-        <span>上次工作 {relativeTime(employee.lastWorkedAt)}</span>
+        <div className="ent-skills-tags">
+          {employee.goodAt.slice(0, 3).map(item => (
+            <span key={item} className="ent-tag">{item}</span>
+          ))}
+          {employee.goodAt.length > 3 ? (
+            <span className="ent-tag">+{employee.goodAt.length - 3}</span>
+          ) : null}
+        </div>
       </div>
-      <footer>
-        <button type="button" className="ent-btn primary sm" onClick={() => onChat?.(employee.id)} disabled={!employee.assignedToMe || !onChat || employee.availability === 'unavailable'}>
-          <MessageSquareText size={13} aria-hidden />
-          开始对话
-        </button>
-        <button type="button" className="ent-btn ghost sm" onClick={() => onOpen(employee.id)}>查看技能</button>
-      </footer>
+
+      <div className="ent-emp-card-footer">
+        <div className="ent-emp-card-stats">
+          <span title="已授权操作数">
+            <ShieldCheck size={12} aria-hidden />
+            {enabled}/{employee.permissions.length}
+          </span>
+          <span>
+            {relativeTime(employee.lastWorkedAt)}
+          </span>
+        </div>
+        <div className="ent-emp-card-actions">
+          <button
+            type="button"
+            className="ent-btn primary sm"
+            onClick={() => onChat?.(employee.id)}
+            disabled={!employee.assignedToMe || !onChat || employee.availability === 'unavailable'}
+          >
+            <MessageSquareText size={13} aria-hidden />
+            对话
+          </button>
+          <button
+            type="button"
+            className="ent-btn ghost sm"
+            onClick={() => onOpen(employee.id)}
+          >
+            详情
+          </button>
+        </div>
+      </div>
     </article>
   );
 }
