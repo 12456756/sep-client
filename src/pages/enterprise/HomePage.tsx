@@ -44,6 +44,18 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
   return (
     <div className="ent-page ent-home">
       <div className="ent-home-content">
+      <header className="ent-home-hero">
+        <span className="ent-home-eyebrow">员工中心</span>
+        <h1 className="ent-home-title">
+          你的<em>硅基团队</em>
+        </h1>
+        <p className="ent-home-subtitle">
+          {roster.length > 0
+            ? `${usable} 位员工随时待命，开始派活吧`
+            : '分配之后，你的员工会出现在这里'}
+        </p>
+      </header>
+
       <div className="stat-cards-row">
         <StatCard
           title="公司员工总数"
@@ -56,7 +68,7 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
           title="我拥有的员工"
           value={roster.length}
           icon="👤"
-          color="primary"
+          color="accent"
           onClick={() => navigate({ name: 'employees', scope: 'mine' })}
         />
       </div>

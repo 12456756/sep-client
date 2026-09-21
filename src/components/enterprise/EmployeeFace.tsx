@@ -39,11 +39,11 @@ interface Props {
  * - randomizeIds：同一页会出现多张头像，SVG 内部的 id 不打散会互相覆盖。
  */
 const LOOK: StyleOptions<ToonHeadOptions> = {
-  backgroundColor: ['eef1f8', 'edeffa', 'f1f2f9'],
+  backgroundColor: ['f6efe7', 'f5ece4', 'f7f1ea'],
   mouth: ['smile', 'laugh'],
   eyes: ['happy', 'humble', 'wide'],
   eyebrows: ['neutral', 'raised', 'happy'],
-  clothesColor: ['151613', '545454', '0b3286', 'e8e9e6', '4b5a7a', '8d6e63'],
+  clothesColor: ['1a1714', '545454', '2f4858', 'e8e4dc', '6b5d52', '8d6e63'],
   beardProbability: 20,
   scale: 112,
   translateY: 4,

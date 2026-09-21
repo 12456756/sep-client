@@ -11,47 +11,47 @@
 
 :root {
   /*
-   * 主色蓝紫。#6366f1 是设计稿的 Primary，做实心块、进度和图形；
-   * 13px 及更小的正文一律用 --ent-brand-ink（#5b5ce2，浅紫底 4.5:1），
+   * 主色暖陶土（terracotta）。#c4612f 是新的 Primary，做实心块、进度和图形；
+   * 13px 及更小的正文一律用 --ent-brand-ink（#9a4a1e，对白底 5:1、对浅陶底 4.5:1+），
    * 不用 --ent-brand 写小字 —— 它对白底只有 4.0:1。
    */
-  --ent-brand: #6366f1;
-  --ent-brand-solid: #6366f1; --ent-brand-deep: #4f46e5;
-  --ent-brand-hover: #4f46e5;
-  --ent-brand-ink: #5b5ce2;
-  /* 浅紫三档：soft 是状态标签和气泡底，tint 是图标片底，softer 是 hover 底。 */
-  --ent-brand-soft: #eef0ff;
-  --ent-brand-tint: #f0f1ff;
-  --ent-brand-softer: #fafaff;
-  --ent-brand-border: #d9dcfb;
-  /* 第二支强调色只用在「我拥有的员工」那格的图标片上（设计稿里它比第一格偏蓝一档）。 */
-  --ent-accent: #4f6fe0;
-  --ent-accent-soft: #eaf0fe;
-  --ent-accent-ink: #2f55c8;
+  --ent-brand: #c4612f;
+  --ent-brand-solid: #c4612f; --ent-brand-deep: #a94e22;
+  --ent-brand-hover: #a94e22;
+  --ent-brand-ink: #9a4a1e;
+  /* 暖陶土三档：soft 是状态标签和气泡底，tint 是图标片底，softer 是 hover 底。 */
+  --ent-brand-soft: #f5e6da;
+  --ent-brand-tint: #f7ebe1;
+  --ent-brand-softer: #fbf4ee;
+  --ent-brand-border: #ebcdb8;
+  /* 第二支强调色只用在「我拥有的员工」那格的图标片上（暖金一档，与陶土主色同族）。 */
+  --ent-accent: #9a7b3f;
+  --ent-accent-soft: #f3ead9;
+  --ent-accent-ink: #7a5f2a;
 
   /* 最重的墨色。设计稿里没有深色面板，这一支只当文字与图标色用。 */
-  --ent-dark: #202126;
-  --ent-dark-2: #2b3044;
+  --ent-dark: #262220;
+  --ent-dark-2: #3a322c;
   --ent-dark-line: rgb(255 255 255 / 14%);
-  --ent-dark-ink: #f6f7fb;
-  --ent-dark-ink-2: #a9aec4;
+  --ent-dark-ink: #f8f5f1;
+  --ent-dark-ink-2: #bdb2a6;
 
   /* 两层底：canvas 是页面底色，panel 是卡片。 */
-  --ent-canvas: #f7f8fc;
-  --ent-shell: #f7f8fc;
+  --ent-canvas: #f7f4ef;
+  --ent-shell: #f7f4ef;
   --ent-panel: #ffffff;
-  --ent-panel-subtle: #f9fafd;
+  --ent-panel-subtle: #faf7f2;
 
   /* 分隔线三档。soft 是导航和内容之间那条几乎看不见的线，默认档是卡片描边。 */
-  --ent-line-soft: #eef0f5;
-  --ent-line: #e8eaf1;
-  --ent-line-strong: #d9dde8;
-  /* 进度条与圆环的底槽。设计稿里它比描边再浅一点点。 */
-  --ent-track: #eef0f5;
+  --ent-line-soft: #f0ebe3;
+  --ent-line: #e7e0d6;
+  --ent-line-strong: #d8cfc2;
+  /* 进度条与圆环的底槽。它比描边再浅一点点，带一点暖灰。 */
+  --ent-track: #f0ebe3;
 
-  --ent-ink: #20232b;
-  --ent-ink-2: #555b6e;
-  --ent-ink-3: #858a98;
+  --ent-ink: #262320;
+  --ent-ink-2: #5c554d;
+  --ent-ink-3: #8a8078;
 
   /*
    * 语义色。空闲与已完成走绿，工作中与进行中走主色（设计稿如此），
@@ -65,16 +65,16 @@
   --ent-ready-solid: #25a36a;
   --ent-ready-bg: #eaf8f0;
   --ent-ready-line: #cdeddd;
-  --ent-busy: #5b5ce2;
-  --ent-busy-bg: #eef0ff;
+  --ent-busy: #9a4a1e;
+  --ent-busy-bg: #f5e6da;
   --ent-attention: #8a6410;
   --ent-attention-bg: #fdf3da;
   --ent-attention-line: #eedcae;
   --ent-danger: #bf3149;
   --ent-danger-bg: #fdeaee;
   --ent-danger-line: #f2c6cf;
-  --ent-muted: #646b7f;
-  --ent-muted-bg: #eef0f5;
+  --ent-muted: #6b625a;
+  --ent-muted-bg: #f0ebe3;
 
   /** 内容区顶部让给窗口按钮的那条。titleBarOverlay 在 main.ts 里固定 44 高。 */
   --ent-drag-h: 44px;
@@ -111,17 +111,32 @@
   --ent-fs-display: 25px;
   --ent-fs-figure: 23px;
 
-  /* 阴影：冷色、大扩散、很淡。设计稿的卡只用阴影产生层级，不做装饰。 */
-  --ent-shadow: 0 2px 10px rgb(40 50 90 / 3%);
-  --ent-shadow-card: 0 1px 2px rgb(40 50 90 / 3%), 0 2px 10px rgb(40 50 90 / 4%);
-  --ent-shadow-lift: 0 2px 6px rgb(40 50 90 / 5%), 0 6px 18px rgb(40 50 90 / 8%);
-  --ent-shadow-drawer: -10px 0 30px rgb(30 40 80 / 8%);
+  /* 阴影：暖褐、大扩散、很淡。设计稿的卡只用阴影产生层级，不做装饰。 */
+  --ent-shadow: 0 2px 10px rgb(90 70 50 / 4%);
+  --ent-shadow-card: 0 1px 2px rgb(90 70 50 / 4%), 0 2px 10px rgb(90 70 50 / 5%);
+  --ent-shadow-lift: 0 2px 6px rgb(90 70 50 / 6%), 0 6px 18px rgb(90 70 50 / 10%);
+  --ent-shadow-drawer: -10px 0 30px rgb(70 50 35 / 10%);
 
   /* 光晕：只做背景装饰，永远不承载信息，关掉也不影响可读性。 */
-  --ent-glow-warm: linear-gradient(180deg, rgb(99 102 241 / 5%), rgb(255 255 255 / 0%) 70%);
-  --ent-glow-edge: radial-gradient(90% 140% at 100% 0%, rgb(99 102 241 / 7%) 0%, rgb(255 255 255 / 0%) 65%);
-  --ent-glow-ring: 0 0 0 3px rgb(99 102 241 / 18%);
+  --ent-glow-warm: linear-gradient(180deg, rgb(196 97 47 / 5%), rgb(255 255 255 / 0%) 70%);
+  --ent-glow-edge: radial-gradient(90% 140% at 100% 0%, rgb(196 97 47 / 7%) 0%, rgb(255 255 255 / 0%) 65%);
+  --ent-glow-ring: 0 0 0 3px rgb(196 97 47 / 20%);
   --ent-ease: 170ms cubic-bezier(.22, 1, .36, 1);
+
+  /*
+   * 动效时长三档与一支回弹曲线。--ent-ease 把「时长 + 曲线」绑在一起，做平移/描边
+   * 这类轻量反馈够用；进场、弹层、抽屉这类需要单独控时长的地方用下面三个 duration，
+   * spring 给「需要一点分量感」的弹层（如工具授权框）做一次轻微过冲再收住。
+   * 全部时长都落在 350ms 以内，避免桌面端显得拖沓；关掉动效时直接给终态。
+   */
+  --ent-duration-fast: 150ms;
+  --ent-duration-base: 220ms;
+  --ent-duration-slow: 320ms;
+  --ent-spring: cubic-bezier(.34, 1.4, .64, 1);
+
+  /* 排版。标题用 Fraunces（可变衬线，编辑感），正文用 Inter（人文无衬线）。 */
+  --ent-font-display: 'Fraunces', 'Playfair Display', Georgia, 'Songti SC', serif;
+  --ent-font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
 }
 
 /* ── 外壳 ───────────────────────────────────────────────────────────── */
@@ -134,7 +149,7 @@
  * 当 Electron 的窗口拖拽区、把 Windows 的窗口按钮（titleBarOverlay 画在右上角，
  * 44 高）让开 —— 不留出右边那一段的话关闭按钮会压在标题上。
  */
-.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; color: var(--ent-ink); background: var(--ent-canvas); }
+.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; color: var(--ent-ink); background: var(--ent-canvas); font-family: var(--ent-font-body); font-feature-settings: 'cv11', 'ss01'; }
 .ent-shell-main { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .ent-scroll { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; }
 .ent-page { width: min(1180px, 100%); margin: 0 auto; padding: 22px 28px 32px; }
@@ -160,7 +175,7 @@
  * hover 只给一层最浅的紫，不预演选中态 —— 否则扫一眼分不出哪个才是当前页。
  */
 .ent-nav-item { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-height: 34px; padding: 0 14px; border: 0; border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: transparent; font-size: var(--ent-fs-body); text-align: left; cursor: pointer; transition: background var(--ent-ease), color var(--ent-ease); }
-.ent-nav-item > svg { flex: 0 0 auto; color: #969bab; transition: color var(--ent-ease); }
+.ent-nav-item > svg { flex: 0 0 auto; color: #a89b8e; transition: color var(--ent-ease); }
 .ent-nav-item > span { overflow: hidden; min-width: 0; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
 .ent-nav-item:hover { color: var(--ent-ink); background: var(--ent-brand-tint); }
 .ent-nav-item:hover > svg { color: var(--ent-brand-ink); }
@@ -213,20 +228,20 @@
  */
 .ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 150px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: var(--ent-panel); }
 .ent-top-head { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
-.ent-top-title { overflow: hidden; font-size: var(--ent-fs-page); font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.ent-top-title { overflow: hidden; font-family: var(--ent-font-display); font-size: var(--ent-fs-page); font-weight: 500; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.01em; }
 .ent-top-sub { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-body); text-overflow: ellipsis; white-space: nowrap; }
 .ent-top-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-left: auto; }
 .ent-top-actions-group { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
 /* 抬头上的控件不能跟着拖窗口，否则点不动。 */
 .ent-top-actions, .ent-top button { -webkit-app-region: no-drag; }
 /* 圆形图标钮。页面抬头右侧的操作用它。 */
-.ent-top-icon { position: relative; display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: #69708a; background: var(--ent-panel); cursor: pointer; transition: background var(--ent-ease), border-color var(--ent-ease), color var(--ent-ease); }
+.ent-top-icon { position: relative; display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: #8a7f74; background: var(--ent-panel); cursor: pointer; transition: background var(--ent-ease), border-color var(--ent-ease), color var(--ent-ease); }
 .ent-top-icon:hover { border-color: var(--ent-brand-border); color: var(--ent-brand); background: var(--ent-brand-tint); }
 .ent-top-icon .ent-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border: 2px solid var(--ent-panel); border-radius: 50%; background: var(--ent-attention); }
 .ent-view-switch { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); background: var(--ent-panel-subtle); }
 .ent-view-switch button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 26px; padding: 0 9px; border: 0; border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: transparent; font: inherit; font-size: var(--ent-fs-note); white-space: nowrap; cursor: pointer; transition: background var(--ent-ease), color var(--ent-ease), box-shadow var(--ent-ease); }
 .ent-view-switch button:hover { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
-.ent-view-switch button.active { color: #fff; background: var(--ent-brand-solid); box-shadow: 0 1px 3px rgb(40 50 90 / 12%); font-weight: 600; }
+.ent-view-switch button.active { color: #fff; background: var(--ent-brand-solid); box-shadow: 0 1px 3px rgb(90 70 50 / 14%); font-weight: 600; }
 .ent-view-switch button.active:hover { color: #fff; background: var(--ent-brand-hover); }
 
 @media (max-width: 1080px) {
@@ -275,7 +290,7 @@
 .ent-shell textarea:focus-visible, .ent-shell select:focus-visible {
   outline: 2px solid var(--ent-brand) !important;
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgb(99 102 241 / 18%) !important;
+  box-shadow: 0 0 0 3px rgb(196 97 47 / 20%) !important;
 }
 /* 两个输入框由外框整体表达聚焦（描边 + 光晕），里面的文本域不再单独画一圈。 */
 .ent-shell .ent-arrangebar-input:focus-visible, .ent-shell .ent-ask-input:focus-visible {
@@ -340,9 +355,9 @@
 .ent-ask-stop { display: inline-flex; align-items: center; gap: 4px; padding: 4px 9px; border: 0; border-radius: var(--ent-radius-pill); color: var(--ent-ink-3); background: none; font-size: var(--ent-fs-body); cursor: pointer; transition: color var(--ent-ease), background var(--ent-ease); }
 .ent-ask-stop:hover { color: var(--ent-danger); background: var(--ent-danger-bg); }
 /* 发送做成圆钮：它是这一页最常按的东西，圆形 + 实心最好瞄准。 */
-.ent-ask-send { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; color: #fff; background: var(--ent-brand-solid); cursor: pointer; transition: background var(--ent-ease); }
-.ent-ask-send:hover:not(:disabled) { background: var(--ent-brand-hover); }
-.ent-ask-send:active:not(:disabled) { background: #4540d4; }
+.ent-ask-send { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; color: #fff; background: var(--ent-brand-solid); cursor: pointer; transition: background var(--ent-ease), transform var(--ent-ease); }
+.ent-ask-send:hover:not(:disabled) { background: var(--ent-brand-hover); transform: translateY(-1px); }
+.ent-ask-send:active:not(:disabled) { background: #95441d; transform: translateY(0); }
 .ent-ask-send:disabled { color: var(--ent-ink-3); background: var(--ent-muted-bg); cursor: not-allowed; }
 
 /* 步骤清单（折叠块里）。状态靠颜色 + 序号底色 + 右侧状态标签三者同时表达。 */
@@ -363,7 +378,7 @@
 /* 主按钮：实心主色 + 白字，hover 只是变深一档，不做发光也不位移。 */
 .ent-btn.primary { border-color: transparent; color: #fff; background: var(--ent-brand-solid); }
 .ent-btn.primary:hover:not(:disabled) { border-color: transparent; background: var(--ent-brand-hover); }
-.ent-btn.primary:active:not(:disabled) { background: #4540d4; }
+.ent-btn.primary:active:not(:disabled) { background: #95441d; }
 .ent-btn.ghost { border-color: transparent; background: transparent; color: var(--ent-ink-2); }
 .ent-btn.ghost:hover:not(:disabled) { border-color: var(--ent-line); color: var(--ent-ink); background: var(--ent-panel-subtle); }
 .ent-btn.danger { border-color: var(--ent-danger-line); color: var(--ent-danger); background: var(--ent-danger-bg); }
@@ -598,6 +613,17 @@
 /* 左右内边距用渐隐带的宽度，员工墙靠负 margin 顶出去（见 .ent-wall）。 */
 .ent-home { display: flex; flex-direction: column; gap: 18px; padding-inline: var(--ent-wall-fade); padding-bottom: 8px; }
 
+/*
+ * 首页抬头。编辑式（editorial）排版：一颗陶土色 eyebrow 药丸 + 大号衬线标题，
+ * 标题里「硅基团队」用斜体陶土色点亮；下面一句轻正文说明现在能派几个人。
+ * 左对齐，和下面的统计格、员工墙共用同一条左边缘。
+ */
+.ent-home-hero { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 2px; }
+.ent-home-eyebrow { display: inline-flex; align-items: center; padding: 5px 13px; border-radius: var(--ent-radius-pill); color: var(--ent-brand-ink); background: var(--ent-brand-tint); font-size: var(--ent-fs-note); font-weight: 600; letter-spacing: .02em; }
+.ent-home-title { margin: 2px 0 0; color: var(--ent-ink); font-family: var(--ent-font-display); font-size: clamp(30px, 3.4vw, 44px); font-weight: 400; line-height: 1.1; letter-spacing: -.02em; }
+.ent-home-title em { color: var(--ent-brand); font-style: italic; }
+.ent-home-subtitle { margin: 0; color: var(--ent-ink-3); font-size: var(--ent-fs-title); font-weight: 300; line-height: 1.5; }
+
 /* 统计格。整块可点，点进员工页对应的范围 —— 数字后面就该能跟到人。 */
 .ent-figures { display: flex; flex-wrap: wrap; gap: 14px; }
 .ent-figure { display: flex; width: 192px; min-height: 62px; flex: 0 0 auto; align-items: center; gap: 11px; padding: 0 16px 0 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); text-align: left; cursor: pointer; transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
@@ -607,7 +633,7 @@
 .ent-figure.alt > i { color: var(--ent-accent); background: var(--ent-accent-soft); }
 .ent-figure-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
 .ent-figure-copy small { color: #7a8090; font-size: var(--ent-fs-note); }
-.ent-figure-copy strong { color: var(--ent-ink); font-size: var(--ent-fs-figure); font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.01em; line-height: 1.25; }
+.ent-figure-copy strong { color: var(--ent-ink); font-family: var(--ent-font-display); font-size: var(--ent-fs-figure); font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: 1.25; }
 .ent-figure-copy strong em { margin-left: 4px; color: var(--ent-ink-3); font-size: var(--ent-fs-body); font-style: normal; font-weight: 500; }
 
 /*
@@ -667,7 +693,7 @@
  */
 .ent-wall-count { position: absolute; z-index: 6; right: var(--ent-wall-fade); bottom: -4px; color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-variant-numeric: tabular-nums; }
 /* 圆箭头钮：32 白底浅描边，压在渐隐带上；hover 换成浅紫底 + 主色箭头。 */
-.ent-wall-arrow { position: absolute; z-index: 5; top: 50%; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid var(--ent-line); border-radius: 50%; color: #69708a; background: var(--ent-panel); box-shadow: var(--ent-shadow); cursor: pointer; transform: translateY(-50%); transition: color var(--ent-ease), border-color var(--ent-ease), background var(--ent-ease); }
+.ent-wall-arrow { position: absolute; z-index: 5; top: 50%; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid var(--ent-line); border-radius: 50%; color: #8a7f74; background: var(--ent-panel); box-shadow: var(--ent-shadow); cursor: pointer; transform: translateY(-50%); transition: color var(--ent-ease), border-color var(--ent-ease), background var(--ent-ease); }
 .ent-wall-arrow.left { left: calc(var(--ent-wall-fade) / 2 - 16px); }
 .ent-wall-arrow.right { right: calc(var(--ent-wall-fade) / 2 - 16px); }
 .ent-wall-arrow:hover { border-color: var(--ent-brand-border); color: var(--ent-brand); background: var(--ent-brand-tint); }
@@ -681,7 +707,7 @@
 .ent-face.lg { width: 52px; height: 52px; border-radius: 10px; }
 .ent-face.xl { width: 60px; height: 60px; border-radius: 10px; }
 /* 员工卡上的那张片子：58×70 的圆角矩形，是卡片里最大的一块（设计稿如此）。 */
-.ent-face.card { width: 58px; height: 70px; border-radius: 10px; }
+.ent-face.card { width: 58px; height: 70px; border-radius: var(--ent-radius); }
 .ent-face.round { border-radius: 50%; }
 
 /*
@@ -690,15 +716,20 @@
  * 「在干活」只由那颗「工作中」标签表达 —— 不做发光、不做呼吸，全页没有一处在闪；
  * 卡片上沿也不浮任何东西，要提醒的事都收进状态旁边那几颗小图标里。
  */
-.ent-desk { display: flex; width: 100%; max-width: var(--ent-desk-w, 190px); min-height: 138px; flex-direction: column; gap: 9px; padding: 12px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease), transform var(--ent-ease); }
-.ent-desk:hover { border-color: var(--ent-brand-border); box-shadow: var(--ent-shadow-lift); transform: translateY(-2px); }
+.ent-desk { position: relative; display: flex; width: 100%; max-width: var(--ent-desk-w, 190px); min-height: 138px; flex-direction: column; gap: 9px; padding: 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-lg); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease), transform var(--ent-ease); }
+.ent-desk:hover { border-color: var(--ent-brand-border); box-shadow: var(--ent-shadow-lift); transform: translateY(-3px); }
+/* 悬停时左下角浮一抹极淡的陶土暖光，替代只靠描边变色的弱反馈。 */
+.ent-desk::after { content: ''; position: absolute; inset: 0; border-radius: inherit; background: var(--ent-glow-edge); opacity: 0; pointer-events: none; transition: opacity var(--ent-ease); }
+.ent-desk:hover::after { opacity: 1; }
+.ent-desk > * { position: relative; z-index: 1; }
 /* 暂时不可用的员工整张卡沉下去：还能点开看他手上的工作，但不再像「能派活」。 */
 .ent-desk.off { background: var(--ent-panel-subtle); box-shadow: none; }
 .ent-desk.off:hover { border-color: var(--ent-line-strong); box-shadow: none; transform: none; }
+.ent-desk.off:hover::after { opacity: 0; }
 
-.ent-desk-open { display: flex; flex: 1; align-items: flex-start; gap: 10px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
-.ent-desk-id { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 2px; }
-.ent-desk-id strong { max-width: 100%; overflow: hidden; font-size: var(--ent-fs-title); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-desk-open { display: flex; flex: 1; align-items: flex-start; gap: 11px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+.ent-desk-id { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 5px; padding-top: 1px; }
+.ent-desk-id strong { max-width: 100%; overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-title); font-weight: 600; letter-spacing: -.01em; text-overflow: ellipsis; white-space: nowrap; }
 .ent-desk-id small { max-width: 100%; overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
 .ent-desk-id .ent-desk-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 2px; }
 /*
@@ -742,45 +773,54 @@
   display: flex;
   align-items: center;
   gap: 16px;
-  padding: 24px;
+  padding: 20px 22px;
   background: var(--ent-panel);
-  border: none;
+  border: 1px solid var(--ent-line);
   border-radius: var(--ent-radius-lg);
   box-shadow: var(--ent-shadow-card);
   cursor: pointer;
-  transition: box-shadow var(--ent-ease), transform var(--ent-ease);
-  min-height: 120px;
+  transition: border-color var(--ent-ease), box-shadow var(--ent-ease), transform var(--ent-ease);
+  min-height: 104px;
 }
 
 .stat-card:hover {
+  border-color: var(--ent-brand-border);
   box-shadow: var(--ent-shadow-lift);
   transform: translateY(-2px);
 }
 
 .stat-icon {
   flex-shrink: 0;
-  font-size: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--ent-radius);
+  background: var(--ent-brand-tint);
+  font-size: 26px;
+  line-height: 1;
 }
 
 .stat-content {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 3px;
   text-align: left;
 }
 
 .stat-value {
-  font-size: 32px;
-  font-weight: 600;
+  font-family: var(--ent-font-display);
+  font-size: 34px;
+  font-weight: 500;
   color: var(--ent-ink);
   line-height: 1;
+  letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums;
 }
 
 .stat-title {
-  font-size: 14px;
+  font-size: 13px;
   color: var(--ent-ink-2);
   font-weight: 500;
 }
@@ -789,6 +829,43 @@
   font-size: 12px;
   color: var(--ent-ink-3);
 }
+
+/*
+ * 四种色彩主题。StatCard 一直会输出 stat-card-<color>，但此前没有任何对应样式，
+ * color 属性等于空设。这里给每格补上「同色系图标片 + 左侧一道强调轨」：
+ * 图标片用浅底深字（保证 13px 以下也读得清），强调轨在 hover 时由细变粗。
+ * 复用既有语义色 token —— primary 走陶土主色，success 走绿，warning 走琥珀，
+ * danger 走绛红，不引入新色板。
+ */
+.stat-card { position: relative; overflow: hidden; }
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 3px;
+  background: var(--stat-accent, var(--ent-brand));
+  opacity: .55;
+  transition: width var(--ent-ease), opacity var(--ent-ease);
+}
+.stat-card:hover::before { width: 5px; opacity: 1; }
+
+.stat-card-primary { --stat-accent: var(--ent-brand-solid); --stat-accent-bg: var(--ent-brand-tint); --stat-accent-ink: var(--ent-brand-ink); }
+.stat-card-accent  { --stat-accent: var(--ent-accent); --stat-accent-bg: var(--ent-accent-soft); --stat-accent-ink: var(--ent-accent-ink); }
+.stat-card-success { --stat-accent: var(--ent-ready-solid); --stat-accent-bg: var(--ent-ready-bg); --stat-accent-ink: var(--ent-ready); }
+.stat-card-warning { --stat-accent: #d99a1f; --stat-accent-bg: var(--ent-attention-bg); --stat-accent-ink: var(--ent-attention); }
+.stat-card-danger  { --stat-accent: var(--ent-danger); --stat-accent-bg: var(--ent-danger-bg); --stat-accent-ink: var(--ent-danger); }
+
+.stat-card-primary .stat-icon { background: var(--stat-accent-bg); color: var(--stat-accent-ink); }
+.stat-card-accent  .stat-icon { background: var(--stat-accent-bg); color: var(--stat-accent-ink); }
+.stat-card-success .stat-icon { background: var(--stat-accent-bg); color: var(--stat-accent-ink); }
+.stat-card-warning .stat-icon { background: var(--stat-accent-bg); color: var(--stat-accent-ink); }
+.stat-card-danger  .stat-icon { background: var(--stat-accent-bg); color: var(--stat-accent-ink); }
+
+.stat-card-primary:hover { border-color: var(--ent-brand-border); }
+.stat-card-accent:hover  { border-color: var(--ent-brand-border); }
+.stat-card-success:hover { border-color: var(--ent-ready-line); }
+.stat-card-warning:hover { border-color: var(--ent-attention-line); }
+.stat-card-danger:hover  { border-color: var(--ent-danger-line); }
 
 /* 统计卡片行布局 */
 .stat-cards-row {
@@ -820,13 +897,13 @@
  */
 .ent-arrangebar { position: sticky; z-index: 4; bottom: 0; padding: 12px 0 10px; background: var(--ent-canvas); }
 .ent-arrangebar::before { content: ''; position: absolute; right: 0; bottom: 100%; left: 0; height: 20px; background: linear-gradient(to top, var(--ent-canvas), rgb(247 248 252 / 0%)); pointer-events: none; }
-.ent-arrangebar-card { display: flex; flex-direction: column; gap: 10px; padding: 13px 14px 11px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-lg); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
+.ent-arrangebar-card { display: flex; flex-direction: column; gap: 11px; padding: 16px 15px 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-lg); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
 .ent-arrangebar-card:focus-within { border-color: var(--ent-brand); box-shadow: var(--ent-glow-ring); }
-.ent-arrangebar-input { width: 100%; min-height: 40px; max-height: 132px; padding: 2px; border: 0; color: var(--ent-ink); background: none; font-family: inherit; font-size: var(--ent-fs-body); line-height: 1.7; resize: none; outline: none; }
-.ent-arrangebar-input::placeholder { color: var(--ent-ink-3); }
+.ent-arrangebar-input { width: 100%; min-height: 42px; max-height: 140px; padding: 2px; border: 0; color: var(--ent-ink); background: none; font-family: inherit; font-size: var(--ent-fs-body); font-weight: 400; line-height: 1.65; resize: none; outline: none; }
+.ent-arrangebar-input::placeholder { color: var(--ent-ink-3); opacity: 0.9; }
 .ent-arrangebar-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 /* 设计稿的工具按钮是浅描边小圆角块 + 图标 + 文字，不是药丸。 */
-.ent-arrangebar-site { display: inline-flex; max-width: 260px; align-items: center; gap: 6px; min-height: 32px; padding: 0 12px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-btn); color: var(--ent-ink-2); background: var(--ent-panel); font-size: var(--ent-fs-body); cursor: pointer; transition: border-color var(--ent-ease), color var(--ent-ease), background var(--ent-ease); }
+.ent-arrangebar-site { display: inline-flex; max-width: 260px; align-items: center; gap: 6px; min-height: 33px; padding: 0 13px; border: 1px solid var(--ent-line); border-radius: 999px; color: var(--ent-ink-2); background: var(--ent-panel); font-size: var(--ent-fs-body); cursor: pointer; transition: border-color var(--ent-ease), color var(--ent-ease), background var(--ent-ease); }
 .ent-arrangebar-site:hover { border-color: var(--ent-brand-border); color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
 .ent-arrangebar-site.on { border-color: var(--ent-brand-border); color: var(--ent-brand-ink); background: var(--ent-brand-soft); font-weight: 500; }
 .ent-arrangebar-site > svg { flex: 0 0 auto; }
@@ -850,7 +927,7 @@
  * 居中弹窗会把整页盖住，用户失去「我刚点的是谁」的上下文。
  * 抽屉整体从 translateX(100%) 推到位（260ms），遮罩同时淡入（200ms）。
  */
-.ent-drawer-back { position: fixed; z-index: 60; inset: 0; background: rgb(25 30 45 / 50%); animation: ent-fade-in 200ms ease-out; }
+.ent-drawer-back { position: fixed; z-index: 60; inset: 0; background: rgb(40 30 22 / 48%); animation: ent-fade-in 200ms ease-out; }
 @keyframes ent-fade-in { from { opacity: 0; } }
 .ent-drawer { position: fixed; z-index: 61; top: 0; right: 0; bottom: 0; display: flex; width: min(400px, 94vw); flex-direction: column; background: var(--ent-panel); box-shadow: var(--ent-shadow-drawer); animation: ent-drawer-in 260ms cubic-bezier(.22, 1, .36, 1); }
 @keyframes ent-drawer-in { from { transform: translateX(100%); } }
@@ -891,6 +968,120 @@
 .ent-drawer-lead strong { color: var(--ent-ink); font-weight: 600; }
 .ent-drawer-foot { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding: 14px 18px 18px; box-shadow: inset 0 1px 0 var(--ent-line); }
 .ent-drawer-foot .ent-ask, .ent-drawer-foot .ent-confirm { min-width: 0; flex: 1; }
+
+/* ── 工具授权对话框 ─────────────────────────────────────────────────── */
+
+/*
+ * AI 请求执行 bash/write/edit 这类有副作用的工具时弹出的安全闸。它和抽屉一样是
+ * 全屏遮罩 + 居中弹层，但语气更重：标题用 Fraunces、倒计时做成一枚会随时间收紧的
+ * 环、风险提示走琥珀、允许/拒绝是并排两颗实心键。倒计时归零自动拒绝，焦点默认落在
+ * 「拒绝」上 —— 误触回车应当是安全的那一边。
+ *
+ * 遮罩与抽屉共用淡入；弹层做一次轻微过冲再收住（--ent-spring），关掉动效时直接终态。
+ */
+.ent-approve-back {
+  position: fixed; inset: 0; z-index: 70;
+  display: grid; place-items: center;
+  padding: 20px;
+  background: rgb(40 30 22 / 52%);
+  animation: ent-fade-in 200ms ease-out;
+}
+.ent-approve {
+  display: flex; flex-direction: column;
+  width: min(560px, 100%);
+  max-height: min(90vh, 720px);
+  overflow: hidden;
+  border: 1px solid var(--ent-line);
+  border-radius: var(--ent-radius-shell);
+  background: var(--ent-panel);
+  box-shadow: 0 18px 50px rgb(40 28 18 / 28%), 0 2px 8px rgb(40 28 18 / 12%);
+  animation: ent-approve-in var(--ent-duration-slow) var(--ent-spring);
+}
+@keyframes ent-approve-in { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+
+.ent-approve-head {
+  display: flex; align-items: flex-start; gap: 16px;
+  padding: 20px 22px 16px;
+  border-bottom: 1px solid var(--ent-line-soft);
+  background: var(--ent-glow-warm);
+}
+.ent-approve-head-text { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 4px; }
+.ent-approve-title {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0;
+  font-family: var(--ent-font-display);
+  font-size: var(--ent-fs-page); font-weight: 500; letter-spacing: -.01em;
+  color: var(--ent-ink);
+}
+.ent-approve-title > svg { flex: 0 0 auto; color: var(--ent-brand); }
+.ent-approve-desc { margin: 0; color: var(--ent-ink-2); font-size: var(--ent-fs-body); line-height: 1.55; }
+
+/* 倒计时：一枚会随剩余秒数收紧的环（环里只放秒数），下面一行「自动拒绝」说明。 */
+.ent-approve-count { display: flex; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 5px; }
+.ent-approve-dial { position: relative; display: grid; place-items: center; width: 56px; height: 56px; }
+.ent-approve-dial > svg { position: absolute; inset: 0; transform: rotate(-90deg); }
+.ent-approve-dial circle { fill: none; stroke-width: 3; }
+.ent-approve-dial .ent-approve-track { stroke: var(--ent-track); }
+.ent-approve-dial .ent-approve-ring { stroke: var(--ent-attention); stroke-linecap: round; transition: stroke-dashoffset 1s linear; }
+.ent-approve-count.urgent .ent-approve-ring { stroke: var(--ent-danger); }
+.ent-approve-secs { font-family: var(--ent-font-display); font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--ent-ink); line-height: 1; }
+.ent-approve-count.urgent .ent-approve-secs { color: var(--ent-danger); }
+.ent-approve-auto { color: var(--ent-ink-3); font-size: 10px; line-height: 1; white-space: nowrap; }
+
+.ent-approve-body { min-height: 0; flex: 1; overflow-y: auto; padding: 18px 22px; }
+
+/* 风险提示：琥珀底 + 图标 + 文案。 */
+.ent-approve-risk {
+  display: flex; gap: 10px;
+  margin-bottom: 18px; padding: 12px 14px;
+  border: 1px solid var(--ent-attention-line);
+  border-radius: var(--ent-radius-sm);
+  background: var(--ent-attention-bg);
+}
+.ent-approve-risk > svg { flex: 0 0 auto; margin-top: 1px; color: var(--ent-attention); }
+.ent-approve-risk-text { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.ent-approve-risk-text strong { color: var(--ent-attention); font-size: var(--ent-fs-body); font-weight: 600; }
+.ent-approve-risk-text span { color: #7a5a12; font-size: var(--ent-fs-body); line-height: 1.55; }
+
+.ent-approve-field { margin-bottom: 16px; }
+.ent-approve-field:last-child { margin-bottom: 0; }
+.ent-approve-label { display: block; margin-bottom: 7px; color: var(--ent-ink-2); font-size: var(--ent-fs-body); font-weight: 600; }
+.ent-approve-tool {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 7px 12px;
+  border: 1px solid var(--ent-brand-border);
+  border-radius: var(--ent-radius-xs);
+  background: var(--ent-brand-softer);
+  color: var(--ent-brand-ink);
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: var(--ent-fs-body); font-weight: 500;
+}
+.ent-approve-tool > svg { flex: 0 0 auto; }
+.ent-approve-pre {
+  margin: 0; padding: 12px 14px;
+  overflow-x: auto;
+  border: 1px solid var(--ent-line);
+  border-radius: var(--ent-radius-xs);
+  background: var(--ent-panel-subtle);
+  color: var(--ent-ink);
+  font-family: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+}
+
+/* 底部：两颗等宽实心键。允许走主色，拒绝走中性描边；默认焦点在拒绝上。 */
+.ent-approve-foot {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 16px 22px 18px;
+  border-top: 1px solid var(--ent-line);
+  background: var(--ent-panel-subtle);
+}
+.ent-approve-actions { display: flex; gap: 12px; }
+.ent-approve-actions .ent-btn { flex: 1; min-height: 42px; font-size: var(--ent-fs-title); }
+.ent-approve-hint { margin: 0; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-align: center; line-height: 1.5; }
+
+@media (max-width: 480px) {
+  .ent-approve-actions { flex-direction: column-reverse; }
+}
 
 /* 「改一版安排」的步骤表。员工那一行是死的，两个输入框是活的。 */
 .ent-plan-h { margin: 0 0 10px; font-size: var(--ent-fs-module); font-weight: 600; }
@@ -960,7 +1151,7 @@
 .ent-wk-back { display: inline-flex; align-self: flex-start; align-items: center; gap: 5px; padding: 0; border: 0; background: none; color: var(--ent-ink-3); font-size: var(--ent-fs-body); cursor: pointer; transition: color var(--ent-ease); }
 .ent-wk-back:hover { color: var(--ent-brand-ink); }
 .ent-wk-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.ent-wk-head h1 { margin: 0; min-width: 0; font-size: var(--ent-fs-display); font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.ent-wk-head h1 { margin: 0; min-width: 0; font-family: var(--ent-font-display); font-size: var(--ent-fs-display); font-weight: 500; line-height: 1.3; letter-spacing: -.01em; overflow-wrap: anywhere; }
 .ent-wk-head-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-left: auto; }
 .ent-wk-head-actions .ent-btn { min-height: 32px; }
 /* 抬头下面那一行：类型、开始时间、已运行多久，用竖线隔开（设计稿如此）。 */
@@ -1031,7 +1222,7 @@
 .ent-wk-facts { display: flex; flex-direction: column; gap: 10px; margin: 0; }
 .ent-wk-facts > div { display: flex; align-items: baseline; gap: 12px; }
 .ent-wk-facts dt { flex: 0 0 60px; color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
-.ent-wk-facts dd { min-width: 0; flex: 1; margin: 0; color: #343846; font-size: var(--ent-fs-body); overflow-wrap: anywhere; }
+.ent-wk-facts dd { min-width: 0; flex: 1; margin: 0; color: #3a352f; font-size: var(--ent-fs-body); overflow-wrap: anywhere; }
 .ent-wk-facts dd.mono { font-variant-numeric: tabular-nums; }
 .ent-wk-path { display: inline-flex; min-width: 0; align-items: center; gap: 6px; }
 .ent-wk-path > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1060,7 +1251,7 @@
 .ent-wk-tabs button.active { color: #fff; background: var(--ent-brand-solid); font-weight: 500; }
 .ent-wk-activity-list { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 7px; margin: 0 0 14px; padding: 0; overflow-y: auto; list-style: none; scrollbar-width: thin; scrollbar-color: var(--ent-line-strong) transparent; }
 .ent-wk-activity { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; min-height: 45px; padding: 8px 10px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius-xs); background: var(--ent-brand-softer); }
-.ent-wk-activity.running { border-color: #c9d7ff; background: #f3f6ff; }
+.ent-wk-activity.running { border-color: #f0d4bd; background: #fbf2ec; }
 .ent-wk-activity.waiting-user { border-color: #f1d7a0; background: #fff9ed; }
 .ent-wk-activity.failed { border-color: #f2c9c7; background: #fff5f4; }
 .ent-wk-activity-icon { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; color: var(--ent-brand-ink); background: #fff; }
@@ -1127,7 +1318,7 @@
 .ent-segment { display: inline-flex; padding: 2px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); background: var(--ent-panel-subtle); }
 .ent-segment button { min-height: 26px; padding: 0 12px; border: 0; border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: transparent; font-size: var(--ent-fs-body); cursor: pointer; transition: color var(--ent-ease), background var(--ent-ease); }
 .ent-segment button:hover:not(.active) { color: var(--ent-brand-ink); }
-.ent-segment button.active { color: var(--ent-brand-ink); background: var(--ent-panel); box-shadow: 0 1px 2px rgb(40 50 90 / 8%); font-weight: 600; }
+.ent-segment button.active { color: var(--ent-brand-ink); background: var(--ent-panel); box-shadow: 0 1px 2px rgb(90 70 50 / 10%); font-weight: 600; }
 .ent-segment.icon button { display: grid; width: 28px; padding: 0; place-items: center; }
 .ent-result-note { margin: 14px 0 12px; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
 
@@ -1154,10 +1345,10 @@
 .ent-switch { position: relative; flex: 0 0 38px; width: 38px; height: 22px; }
 .ent-switch input { position: absolute; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .ent-switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--ent-line-strong); transition: background 160ms ease; pointer-events: none; }
-.ent-switch span::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(23 28 61 / 25%); transition: transform 160ms cubic-bezier(.2, 0, 0, 1); }
+.ent-switch span::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(60 45 35 / 25%); transition: transform 160ms cubic-bezier(.2, 0, 0, 1); }
 .ent-switch input:checked + span { background: var(--ent-brand); }
 .ent-switch input:checked + span::after { transform: translateX(16px); }
-.ent-switch input:focus-visible + span { box-shadow: 0 0 0 3px rgb(99 102 241 / 22%); }
+.ent-switch input:focus-visible + span { box-shadow: 0 0 0 3px rgb(196 97 47 / 22%); }
 .ent-switch input:disabled + span { opacity: .5; }
 
 /* ── 详情页通用 ──────────────────────────────────────────────────────── */
@@ -1274,7 +1465,7 @@
  * 底纹是两组 1px 的重复渐变，只用来让平移看得出来在动，不承载任何信息。
  */
 /* 画布底比页面底再深一档并收一条边，否则它和页面底同色，看不出「这里是一块画布」。 */
-.ent-canvas { position: relative; overflow: hidden; min-width: 0; min-height: 0; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background-color: #edeff6; background-image: linear-gradient(rgb(90 97 120 / 8%) 1px, transparent 1px), linear-gradient(90deg, rgb(90 97 120 / 8%) 1px, transparent 1px); background-size: 24px 24px; cursor: grab; touch-action: none; }
+.ent-canvas { position: relative; overflow: hidden; min-width: 0; min-height: 0; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background-color: #f3efe8; background-image: linear-gradient(rgb(120 105 90 / 9%) 1px, transparent 1px), linear-gradient(90deg, rgb(120 105 90 / 9%) 1px, transparent 1px); background-size: 24px 24px; cursor: grab; touch-action: none; }
 .ent-canvas.dragging-pan { cursor: grabbing; }
 .ent-canvas.dragging-edge { cursor: crosshair; }
 .ent-canvas.dropping { background-color: var(--ent-brand-softer); }
@@ -1412,8 +1603,10 @@
   .ent-node, .ent-node-del, .ent-node-port, .ent-edge-line, .ent-edge-cut,
   .ent-ask, .ent-ask-who, .ent-ask-stop, .ent-ask-send,
   .ent-wall-track, .ent-wall-track.sliding { transition: none; }
+  .stat-card, .stat-card::before { transition: none; }
   .ent-btn:active:not(:disabled), .ent-node-port.out:hover,
   .ent-figure:hover, .ent-desk:hover, .ent-emp-card:hover,
+  .stat-card:hover,
   .ent-worktile:hover > svg:last-child { transform: none; }
   /*
    * 进出场和循环动画一律不做：整页、员工卡、抽屉与遮罩都直接是终态。
@@ -1421,7 +1614,10 @@
    * 在要求减少动态效果的系统上是最刺眼的两处。斜纹本身留着，只是不流动。
    */
   .ent-page, .ent-wall-flat > *, .ent-wall-track > *, .ent-drawer, .ent-drawer-back,
+  .ent-approve, .ent-approve-back, .ent-approve-dial .ent-approve-ring,
   .ent-desk-track i, .ent-bar > span > i, .ent-worktile.live > i > svg { animation: none; }
+  .ent-approve { transition: none; }
+  .ent-approve-dial .ent-approve-ring { transition: none; }
 }
 
 /* 1120 这一档：两格统计仍然并排，只是不再留额外的呼吸位。 */
@@ -1439,7 +1635,7 @@
 /* 组织页把样板图的「关系图 + 详情」结构接到当前客户端的员工模型上。 */
 .ent-organization { width: 100%; max-width: 1440px; padding-top: 20px; }
 .org-page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin-bottom: 15px; }
-.org-page-heading h1 { margin: 3px 0 4px; color: var(--ent-ink); font-size: var(--ent-fs-display); font-weight: 600; line-height: 1.25; }
+.org-page-heading h1 { margin: 3px 0 4px; color: var(--ent-ink); font-family: var(--ent-font-display); font-size: var(--ent-fs-display); font-weight: 500; line-height: 1.25; letter-spacing: -.01em; }
 .org-page-heading p { margin: 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); line-height: 1.6; }
 .org-eyebrow { display: inline-flex; align-items: center; gap: 6px; color: var(--ent-brand-ink); font-size: var(--ent-fs-note); font-weight: 600; }
 .org-demo-badge { flex: 0 0 auto; margin-top: 5px; padding: 5px 9px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: var(--ent-ink-3); background: var(--ent-panel); font-size: var(--ent-fs-note); white-space: nowrap; }
@@ -1457,7 +1653,7 @@
 .org-icon-action:hover, .org-icon-action.active { border-color: var(--ent-brand-border); color: var(--ent-brand); background: var(--ent-brand-tint); }
 .org-tree-scroll { min-height: 0; flex: 1; overflow: auto; scrollbar-color: var(--ent-line-strong) transparent; scrollbar-width: thin; }
 .org-tree { min-width: 0; padding: 24px 2px 10px; }
-.org-leader-card { display: grid; width: min(340px, 100%); grid-template-columns: 60px minmax(0, 1fr); align-items: center; gap: 12px; margin: 0 auto; padding: 12px 14px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius); background: #fbfbff; box-shadow: var(--ent-shadow-card); }
+.org-leader-card { display: grid; width: min(340px, 100%); grid-template-columns: 60px minmax(0, 1fr); align-items: center; gap: 12px; margin: 0 auto; padding: 12px 14px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius); background: #fdf8f3; box-shadow: var(--ent-shadow-card); }
 .org-leader-copy, .org-employee-copy, .org-detail-id { display: flex; min-width: 0; flex-direction: column; }
 .org-leader-copy { gap: 4px; }
 .org-card-title { display: flex; min-width: 0; align-items: center; gap: 7px; }
@@ -1645,7 +1841,7 @@
 .org-branch-empty { padding: 10px 0 8px; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-align: center; }
 
 /* 负责人卡片稍作强调，但仍与成员卡片共用交互与选中态。 */
-.org-carbon-card--leader { border-color: var(--ent-brand-border); background: #fbfbff; }
+.org-carbon-card--leader { border-color: var(--ent-brand-border); background: #fdf8f3; }
 .org-carbon-card--leader .org-carbon-copy .org-card-title strong { font-weight: 600; }/* ── 组织架构 v2：分层树 + 点选 Drawer ──────────────────────────── */
 /* 覆盖上面的旧分支样式：整页固定、只在树区域内部滚动、右侧 Drawer 按需滑入。 */
 .ent-organization {
@@ -2088,4 +2284,174 @@
     right: 16px;
     left: 16px;
   }
+}
+
+/* ── 登录页 ─────────────────────────────────────────────────────────── */
+
+/*
+ * 登录是企业外壳之前的第一屏，同样走暖陶土体系：奶油底 + 两团极淡的暖光（静态，
+ * 不承载信息，关掉也不影响可读性），中间一张白卡。标题用 Fraunces，下面一道陶土短横
+ * 取代原来的靛蓝短横。输入框、账号下拉、记住密码与提交键全部复用 ent-* token。
+ *
+ * 这一屏只在浅色下呈现（项目暂不做深色模式）。
+ */
+.ent-login {
+  position: relative;
+  display: block;
+  height: 100dvh;
+  width: 100vw;
+  overflow: hidden;
+  background: var(--ent-canvas);
+  color: var(--ent-ink);
+  font-family: var(--ent-font-body);
+}
+.ent-login-glow {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(60% 50% at 12% 8%, rgb(196 97 47 / 9%) 0%, rgb(255 255 255 / 0%) 60%),
+    radial-gradient(55% 45% at 88% 92%, rgb(154 123 63 / 8%) 0%, rgb(255 255 255 / 0%) 62%);
+}
+.ent-login-drag { position: absolute; inset-inline: 0; top: 0; z-index: 30; height: 40px; }
+.ent-login-scroll { position: relative; display: flex; height: 100%; overflow-y: auto; padding: 40px 24px; }
+
+.ent-login-card {
+  width: 100%; max-width: 400px; margin: auto;
+  padding: 34px 30px 30px;
+  border: 1px solid var(--ent-line);
+  border-radius: var(--ent-radius-shell);
+  background: var(--ent-panel);
+  box-shadow: var(--ent-shadow-lift);
+  animation: ent-approve-in var(--ent-duration-slow) var(--ent-spring);
+}
+.ent-login-head { margin-bottom: 30px; text-align: center; }
+.ent-login-title {
+  margin: 0;
+  font-family: var(--ent-font-display);
+  font-size: 28px; font-weight: 500; letter-spacing: .04em;
+  color: var(--ent-ink);
+}
+.ent-login-rule {
+  display: block; width: 32px; height: 2px; margin: 12px auto 0;
+  border-radius: 999px; background: var(--ent-brand-solid);
+}
+.ent-login-tag { margin: 10px 0 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
+
+.ent-login-form { display: flex; flex-direction: column; gap: 16px; }
+.ent-login-field { position: relative; }
+.ent-login-label { display: block; margin-bottom: 7px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); font-weight: 600; }
+.ent-login-inputwrap { position: relative; }
+.ent-login-input {
+  width: 100%; height: 44px;
+  padding: 0 44px 0 14px;
+  border: 1px solid var(--ent-line-strong);
+  border-radius: var(--ent-radius-btn);
+  background: var(--ent-panel);
+  color: var(--ent-ink);
+  font-size: var(--ent-fs-body);
+  outline: none;
+  box-shadow: var(--ent-shadow);
+  transition: border-color var(--ent-ease), box-shadow var(--ent-ease);
+}
+.ent-login-input::placeholder { color: var(--ent-ink-3); }
+.ent-login-input:focus { border-color: var(--ent-brand); box-shadow: var(--ent-glow-ring); }
+.ent-login-input:disabled { background: var(--ent-panel-subtle); color: var(--ent-ink-3); }
+
+/* 输入框右侧的内嵌图标键（账号下拉 / 显示密码 / 清空）。 */
+.ent-login-affix {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center;
+  width: 28px; height: 28px;
+  border: 0; border-radius: var(--ent-radius-xs);
+  background: transparent; color: var(--ent-ink-3);
+  cursor: pointer;
+  transition: background var(--ent-ease), color var(--ent-ease);
+}
+.ent-login-affix:hover:not(:disabled) { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
+.ent-login-affix:disabled { opacity: .4; cursor: not-allowed; }
+.ent-login-affix.caret { right: 8px; }
+.ent-login-affix.eye { right: 8px; }
+.ent-login-affix.clear { right: 38px; }
+.ent-login-affix.caret > svg { transition: transform var(--ent-ease); }
+.ent-login-affix.caret.open > svg { transform: rotate(180deg); }
+
+/* 历史账号下拉。 */
+.ent-login-accounts {
+  position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; right: 0;
+  max-height: 224px; overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--ent-line);
+  border-radius: var(--ent-radius-sm);
+  background: var(--ent-panel);
+  box-shadow: var(--ent-shadow-lift);
+}
+.ent-login-account {
+  display: flex; align-items: center; gap: 10px;
+  height: 52px; padding: 0 10px;
+  border-radius: var(--ent-radius-xs);
+  cursor: pointer;
+  transition: background var(--ent-ease);
+}
+.ent-login-account:hover { background: var(--ent-brand-softer); }
+.ent-login-account.selected, .ent-login-account.active { background: var(--ent-brand-tint); }
+.ent-login-account-avatar {
+  display: grid; place-items: center; flex: 0 0 auto;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--ent-brand-tint); color: var(--ent-brand-ink);
+  font-size: var(--ent-fs-note); font-weight: 600;
+}
+.ent-login-account-meta { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.ent-login-account-name { display: flex; align-items: center; gap: 6px; color: var(--ent-ink); font-size: var(--ent-fs-note); font-weight: 500; }
+.ent-login-account-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-login-account-name > svg { flex: 0 0 auto; color: var(--ent-brand); }
+.ent-login-account-email { overflow: hidden; color: var(--ent-ink-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.ent-login-account-del {
+  display: grid; place-items: center; flex: 0 0 auto;
+  width: 26px; height: 26px;
+  border: 0; border-radius: var(--ent-radius-xs);
+  background: transparent; color: var(--ent-ink-3);
+  opacity: 0; cursor: pointer;
+  transition: opacity var(--ent-ease), background var(--ent-ease), color var(--ent-ease);
+}
+.ent-login-account:hover .ent-login-account-del, .ent-login-account-del:focus-visible { opacity: 1; }
+.ent-login-account-del:hover:not(:disabled) { color: var(--ent-danger); background: var(--ent-danger-bg); }
+.ent-login-account-del:disabled { opacity: .5; cursor: not-allowed; }
+
+.ent-login-notice { margin: -6px 0 0; color: var(--ent-brand-ink); font-size: var(--ent-fs-note); }
+.ent-login-error { display: flex; align-items: center; gap: 7px; margin: -6px 0 0; color: var(--ent-danger); font-size: var(--ent-fs-note); }
+.ent-login-error > svg { flex: 0 0 auto; }
+
+.ent-login-remember-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 20px; }
+.ent-login-remember { display: flex; align-items: center; gap: 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); cursor: pointer; }
+.ent-login-check { width: 16px; height: 16px; accent-color: var(--ent-brand-solid); cursor: pointer; }
+.ent-login-check:disabled { cursor: not-allowed; }
+.ent-login-storage-warn { color: var(--ent-danger); font-size: 11px; }
+
+.ent-login-submit {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; height: 44px; margin-top: 4px;
+  border: 0; border-radius: var(--ent-radius-btn);
+  background: var(--ent-brand-solid); color: #fff;
+  font-size: var(--ent-fs-title); font-weight: 600;
+  box-shadow: 0 7px 18px rgb(196 97 47 / 22%);
+  cursor: pointer;
+  transition: background var(--ent-ease), box-shadow var(--ent-ease), transform var(--ent-ease);
+}
+.ent-login-submit:hover:not(:disabled) { background: var(--ent-brand-hover); box-shadow: 0 9px 22px rgb(196 97 47 / 26%); }
+.ent-login-submit:active:not(:disabled) { transform: translateY(1px); }
+.ent-login-submit:disabled { background: var(--ent-brand-border); box-shadow: none; cursor: not-allowed; }
+.ent-login-submit:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.ent-login-spinner {
+  width: 16px; height: 16px; flex: 0 0 auto;
+  border: 2px solid rgb(255 255 255 / 40%); border-top-color: #fff;
+  border-radius: 50%;
+  animation: ent-spin 700ms linear infinite;
+}
+
+/* 登录页同样尊重减少动效：进场与转圈直接终态。 */
+@media (prefers-reduced-motion: reduce) {
+  .ent-login-card { animation: none; }
+  .ent-login-input, .ent-login-affix, .ent-login-account, .ent-login-account-del,
+  .ent-login-affix.caret > svg, .ent-login-submit { transition: none; }
+  .ent-login-submit:active:not(:disabled) { transform: none; }
+  .ent-login-spinner { animation: none; }
 }

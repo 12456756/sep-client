@@ -19,8 +19,8 @@ export interface StatCardProps {
   subtitle?: string;
   /** 可选的图标或 emoji */
   icon?: ReactNode;
-  /** 卡片颜色主题：primary (蓝紫) | success (绿) | warning (琥珀) | danger (红) */
-  color?: 'primary' | 'success' | 'warning' | 'danger';
+  /** 卡片颜色主题：primary (陶土) | accent (暖金) | success (绿) | warning (琥珀) | danger (红) */
+  color?: 'primary' | 'accent' | 'success' | 'warning' | 'danger';
   /** 点击回调 */
   onClick?: () => void;
   /** 自定义 className */

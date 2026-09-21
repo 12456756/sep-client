@@ -1,3 +1,12 @@
+/**
+ * 登录页。企业外壳之前的第一屏，走暖陶土（ent-*）体系：奶油底 + 两团静态暖光 +
+ * 中间一张白卡，标题 Fraunces 衬线。保留记住密码 / 历史账号下拉 / 显示与清空密码 /
+ * 二次确认移除账号等全部逻辑。
+ *
+ * 视觉：enterprise.css 的 .ent-login-* 段。这一屏在 ClientAppPage 之前渲染，所以这里
+ * 自己 import enterprise.css（Vite 会把两个懒加载 chunk 的公共 CSS 去重，进壳后不重复）。
+ */
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
@@ -11,6 +20,7 @@ import {
   X,
 } from 'lucide-react';
 import type { AuthErrorCode, RememberedAccount } from '../shared/types';
+import '../styles/enterprise.css';
 
 interface LoginPageProps {
   encryptionAvailable: boolean;
@@ -241,26 +251,22 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const canSubmit = email.trim().length > 0 && (hasSavedPassword || password.length > 0);
 
   return (
-    <main className="login-ambient-background bg-[#f7f8fc] relative h-dvh w-screen overflow-hidden text-[#262324]">
-      <div className="login-ambient-layer-one" aria-hidden="true" />
-      <div className="login-ambient-layer-two" aria-hidden="true" />
-      <div className="electron-drag-region fixed inset-x-0 top-0 z-30 h-10" aria-hidden="true" />
+    <main className="ent-login">
+      <div className="ent-login-glow" aria-hidden="true" />
+      <div className="electron-drag-region ent-login-drag" aria-hidden="true" />
 
-      <div className="relative flex h-full overflow-y-auto px-6 py-10 sm:px-10 sm:py-12">
-        <section className="my-auto w-full max-w-[400px] mx-auto">
-          <header className="mb-9 text-center">
-            <h1 className="text-[28px] font-semibold tracking-[0.12em] text-[#332d2f]">
-              硅基工作台
-            </h1>
-            <span className="mx-auto mt-3 block h-[2px] w-8 rounded-full bg-[#6366f1]" aria-hidden="true" />
+      <div className="ent-login-scroll">
+        <section className="ent-login-card">
+          <header className="ent-login-head">
+            <h1 className="ent-login-title">硅基工作台</h1>
+            <span className="ent-login-rule" aria-hidden="true" />
+            <p className="ent-login-tag">登录你的企业，开始与硅基员工协作</p>
           </header>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div ref={accountPickerRef} className="relative">
-              <label htmlFor="login-email" className="mb-2 block text-xs font-medium text-[#655e60]">
-                邮箱
-              </label>
-              <div className="relative">
+          <form onSubmit={handleSubmit} className="ent-login-form">
+            <div ref={accountPickerRef} className="ent-login-field">
+              <label htmlFor="login-email" className="ent-login-label">邮箱</label>
+              <div className="ent-login-inputwrap">
                 <input
                   ref={emailInputRef}
                   id="login-email"
@@ -275,7 +281,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   placeholder="name@company.com"
                   autoComplete="email"
                   disabled={loading || deletingEmail !== null}
-                  className="h-11 w-full rounded-[8px] border border-[#ded7d8] bg-white/90 px-3.5 pr-20 text-sm text-[#292526] shadow-[0_1px_2px_rgba(72,48,52,0.04)] outline-none transition placeholder:text-[#b8afb1] focus:border-[#6366f1] focus:ring-3 focus:ring-[#6366f1]/10 disabled:bg-white/50"
+                  className="ent-login-input"
                 />
                 {rememberedAccounts.length > 0 && (
                   <button
@@ -283,19 +289,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     aria-label="选择历史账号"
                     onClick={() => setAccountsOpen(open => !open)}
                     disabled={loading || deletingEmail !== null}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[#9e9698] transition hover:bg-[#eef0ff] hover:text-[#4f46e5] focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20"
+                    className={`ent-login-affix caret${accountsOpen ? ' open' : ''}`}
                   >
-                    <ChevronDown className={`h-4 w-4 transition-transform ${accountsOpen ? 'rotate-180' : ''}`} />
+                    <ChevronDown size={16} aria-hidden />
                   </button>
                 )}
               </div>
 
               {accountsOpen && filteredAccounts.length > 0 && (
-                <div
-                  id="remembered-account-list"
-                  role="listbox"
-                  className="absolute z-20 mt-2 max-h-56 w-full overflow-y-auto rounded-[9px] border border-[#e3dcdd] bg-white p-1.5 shadow-[0_16px_40px_rgba(74,45,50,0.14),0_3px_10px_rgba(74,45,50,0.06)]"
-                >
+                <div id="remembered-account-list" role="listbox" className="ent-login-accounts">
                   {filteredAccounts.map((account, index) => (
                     <div
                       key={account.email}
@@ -303,19 +305,19 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       aria-selected={selectedEmail === account.email}
                       onMouseDown={event => event.preventDefault()}
                       onClick={() => selectAccount(account)}
-                      className={`group flex h-[52px] cursor-pointer items-center gap-3 rounded-[7px] px-3 transition ${index === activeAccountIndex || selectedEmail === account.email ? 'bg-[#eef0ff]' : 'hover:bg-[#f5f6ff]'}`}
+                      className={`ent-login-account${index === activeAccountIndex ? ' active' : ''}${selectedEmail === account.email ? ' selected' : ''}`}
                     >
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#eef0ff] text-xs font-semibold text-[#4f46e5]">
+                      <span className="ent-login-account-avatar" aria-hidden>
                         {(account.displayName || account.email).slice(0, 1).toUpperCase()}
                       </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5 truncate text-xs font-medium text-[#3c3638]">
-                          <span className="truncate">{account.displayName || account.email}</span>
+                      <span className="ent-login-account-meta">
+                        <span className="ent-login-account-name">
+                          <span>{account.displayName || account.email}</span>
                           {encryptionAvailable && account.hasSavedPassword && (
-                            <LockKeyhole className="h-3 w-3 shrink-0 text-[#818cf8]" />
+                            <LockKeyhole size={12} aria-hidden />
                           )}
                         </span>
-                        <span className="mt-0.5 block truncate text-[11px] text-[#958c8e]">{account.email}</span>
+                        <span className="ent-login-account-email">{account.email}</span>
                       </span>
                       <button
                         type="button"
@@ -323,9 +325,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                         title={deletingEmail === account.email ? '正在移除…' : '移除账号及保存的密码'}
                         onClick={event => void handleForgetAccount(event, account.email)}
                         disabled={loading || deletingEmail !== null}
-                        className="rounded-md p-1.5 text-[#aaa2a4] transition hover:bg-[#e0e7ff] hover:text-[#4f46e5] focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20 group-hover:opacity-100"
+                        className="ent-login-account-del"
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <Trash2 size={14} aria-hidden />
                       </button>
                     </div>
                   ))}
@@ -333,11 +335,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               )}
             </div>
 
-            <div>
-              <label htmlFor="login-password" className="mb-2 block text-xs font-medium text-[#655e60]">
-                密码
-              </label>
-              <div className="relative">
+            <div className="ent-login-field">
+              <label htmlFor="login-password" className="ent-login-label">密码</label>
+              <div className="ent-login-inputwrap">
                 <input
                   id="login-password"
                   type={showPassword ? 'text' : 'password'}
@@ -359,7 +359,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   placeholder="请输入密码"
                   autoComplete="current-password"
                   disabled={loading || deletingEmail !== null}
-                  className="h-11 w-full rounded-[8px] border border-[#ded7d8] bg-white/90 px-3.5 pr-20 text-sm text-[#292526] shadow-[0_1px_2px_rgba(72,48,52,0.04)] outline-none transition placeholder:text-[#b8afb1] focus:border-[#6366f1] focus:ring-3 focus:ring-[#6366f1]/10 disabled:bg-white/50"
+                  className="ent-login-input"
                 />
                 <button
                   type="button"
@@ -367,40 +367,46 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   aria-label={showPassword ? '隐藏密码' : '显示密码'}
                   onClick={() => void togglePassword()}
                   disabled={loading || revealing || (!hasSavedPassword && !password)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[#9e9698] transition hover:bg-[#eef0ff] hover:text-[#7d7375] focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20 disabled:opacity-35"
+                  className="ent-login-affix eye"
                 >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showPassword ? <EyeOff size={16} aria-hidden /> : <Eye size={16} aria-hidden />}
                 </button>
-                {(hasSavedPassword || password) && <button type="button" aria-label="清空密码"
-                  disabled={loading} onClick={clearPassword}
-                  className="absolute right-10 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-500 hover:bg-indigo-50 focus-visible:ring-2 focus-visible:ring-indigo-500">
-                  <X className="h-4 w-4" />
-                </button>}
+                {(hasSavedPassword || password) && (
+                  <button
+                    type="button"
+                    aria-label="清空密码"
+                    disabled={loading}
+                    onClick={clearPassword}
+                    className="ent-login-affix clear"
+                  >
+                    <X size={16} aria-hidden />
+                  </button>
+                )}
               </div>
             </div>
 
-            {notice && <p role="status" className="text-xs text-indigo-600">{notice}</p>}
+            {notice && <p role="status" className="ent-login-notice">{notice}</p>}
 
             {errorKind && (
-              <div role="alert" className="flex items-center gap-2 text-xs text-[#b33437]">
-                {errorKind === 'network' ? <WifiOff className="h-3.5 w-3.5 shrink-0" /> : <AlertCircle className="h-3.5 w-3.5 shrink-0" />}
+              <div role="alert" className="ent-login-error">
+                {errorKind === 'network' ? <WifiOff size={14} aria-hidden /> : <AlertCircle size={14} aria-hidden />}
                 <span>{errorCopy[errorKind]}</span>
               </div>
             )}
 
-            <div className="flex min-h-5 items-center justify-between gap-4 pt-1">
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-[#6f6769]">
+            <div className="ent-login-remember-row">
+              <label className="ent-login-remember">
                 <input
                   type="checkbox"
                   checked={rememberPassword}
                   onChange={event => setRememberPassword(event.target.checked)}
                   disabled={loading || !encryptionAvailable}
-                  className="h-4 w-4 rounded border-[#c7bec0] accent-[#6366f1]"
+                  className="ent-login-check"
                 />
                 记住密码
               </label>
               {!encryptionAvailable && (
-                <span className="text-[11px] text-[#9b6b6d]">系统安全存储不可用</span>
+                <span className="ent-login-storage-warn">系统安全存储不可用</span>
               )}
             </div>
 
@@ -408,16 +414,16 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               ref={submitButtonRef}
               type="submit"
               disabled={loading || revealing || deletingEmail !== null || !canSubmit}
-              className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-[8px] bg-[#6366f1] text-sm font-semibold text-white shadow-[0_7px_18px_rgba(99,102,241,0.2)] transition hover:bg-[#4f46e5] hover:shadow-[0_9px_22px_rgba(99,102,241,0.25)] focus:outline-none focus:ring-3 focus:ring-[#6366f1]/20 active:translate-y-px disabled:cursor-not-allowed disabled:bg-[#a5b4fc] disabled:shadow-none"
+              className="ent-login-submit"
             >
               {loading ? (
                 <>
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  <span className="ent-login-spinner" aria-hidden />
                   登录中
                 </>
               ) : (
                 <>
-                  <KeyRound className="h-4 w-4" />
+                  <KeyRound size={16} aria-hidden />
                   登录
                 </>
               )}

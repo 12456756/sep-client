@@ -5,10 +5,16 @@
  *   - 显示 AI 请求执行的工具名称和参数
  *   - 允许用户批准或拒绝执行
  *   - 60 秒倒计时，超时自动拒绝
+ *
+ * 视觉:
+ *   企业外壳（ent-*）那套暖陶土体系，不是 Tailwind。倒计时做成一枚会收紧的环，
+ *   标题用 Fraunces 衬线，风险提示走琥珀，允许/拒绝是并排两颗实心键。默认焦点落在
+ *   「拒绝」上、Esc 也走拒绝 —— 误触应当落在安全的那一边。
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { Button } from './ui/Button';
+import type { KeyboardEvent } from 'react';
+import { AlertTriangle, Check, ShieldCheck, Wrench, X } from 'lucide-react';
 
 interface ToolApprovalRequest {
   toolName: string;
@@ -23,7 +29,14 @@ interface ToolApprovalDialogProps {
 
 const TIMEOUT_SECONDS = 60;
 
-// 高风险工具的说明
+/** 剩余秒数低于这个阈值时，倒计时环与秒数转为绛红（urgent）。 */
+const URGENT_BELOW_SECONDS = 10;
+
+/** 倒计时环几何：r=26、stroke-width=3，画在 56×56 的 viewBox 里。 */
+const RING_RADIUS = 26;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+/** 高风险工具的说明 */
 const TOOL_DESCRIPTIONS: Record<string, { title: string; description: string; risk: string }> = {
   bash: {
     title: 'Shell 命令执行',
@@ -42,6 +55,15 @@ const TOOL_DESCRIPTIONS: Record<string, { title: string; description: string; ri
   },
 };
 
+/** 格式化输入内容以供显示。 */
+function formatInput(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (typeof input === 'object' && input !== null) {
+    return JSON.stringify(input, null, 2);
+  }
+  return String(input);
+}
+
 export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalDialogProps) {
   const [countdown, setCountdown] = useState(TIMEOUT_SECONDS);
   const denyButtonRef = useRef<HTMLButtonElement>(null);
@@ -49,14 +71,14 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
   useEffect(() => {
     if (!request) return;
 
-  // 收到新请求时重置倒计时。
+    // 收到新请求时重置倒计时。
     setCountdown(TIMEOUT_SECONDS);
 
     const timer = setInterval(() => {
       setCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(timer);
-    onDeny(); // 超时后自动拒绝。
+          onDeny(); // 超时后自动拒绝。
           return 0;
         }
         return prev - 1;
@@ -78,116 +100,121 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
     risk: '未知风险，建议拒绝',
   };
 
-  // 格式化输入内容以供显示。
-  const formatInput = (input: unknown): string => {
-    if (typeof input === 'string') return input;
-    if (typeof input === 'object' && input !== null) {
-      return JSON.stringify(input, null, 2);
-    }
-    return String(input);
-  };
-
   const inputDisplay = formatInput(request.input);
   const shouldTruncate = inputDisplay.length > 500;
+  const displayText = shouldTruncate ? `${inputDisplay.slice(0, 500)}\n\n... (已截断)` : inputDisplay;
+
+  const isUrgent = countdown < URGENT_BELOW_SECONDS;
+  const ringOffset = RING_CIRCUMFERENCE * (1 - countdown / TIMEOUT_SECONDS);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onDeny();
+    }
+  };
 
   return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" role="presentation">
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" role="dialog" aria-modal="true" aria-labelledby="tool-approval-title" aria-describedby="tool-approval-description">
+    <div className="ent-approve-back" role="presentation">
+      <div
+        className="ent-approve"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tool-approval-title"
+        aria-describedby="tool-approval-description"
+        onKeyDown={handleKeyDown}
+      >
         {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-          <div className="flex items-start justify-between">
-            <div>
-              <h2 id="tool-approval-title" className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-                🔐 工具执行授权
-              </h2>
-              <p id="tool-approval-description" className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                {toolInfo.description}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 ml-4">
-              <div className="text-right">
-                <div className="text-2xl font-mono font-bold text-orange-600 dark:text-orange-400">
-                  {countdown}s
-                </div>
-                <div className="text-xs text-gray-500 dark:text-gray-500">
-                  自动拒绝
-                </div>
-              </div>
-            </div>
+        <header className="ent-approve-head">
+          <div className="ent-approve-head-text">
+            <h2 id="tool-approval-title" className="ent-approve-title">
+              <ShieldCheck size={20} aria-hidden />
+              工具执行授权
+            </h2>
+            <p id="tool-approval-description" className="ent-approve-desc">
+              {toolInfo.description}
+            </p>
           </div>
-        </div>
+
+          {/* 倒计时环 + 自动拒绝说明 */}
+          <div
+            className={`ent-approve-count${isUrgent ? ' urgent' : ''}`}
+            role="timer"
+            aria-live="off"
+            aria-label={`${countdown} 秒后自动拒绝`}
+          >
+            <div className="ent-approve-dial">
+              <svg viewBox="0 0 56 56" width="56" height="56" aria-hidden>
+                <circle className="ent-approve-track" cx="28" cy="28" r={RING_RADIUS} />
+                <circle
+                  className="ent-approve-ring"
+                  cx="28"
+                  cy="28"
+                  r={RING_RADIUS}
+                  strokeDasharray={RING_CIRCUMFERENCE}
+                  strokeDashoffset={ringOffset}
+                />
+              </svg>
+              <span className="ent-approve-secs">{countdown}</span>
+            </div>
+            <span className="ent-approve-auto">秒后自动拒绝</span>
+          </div>
+        </header>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
+        <div className="ent-approve-body">
           {/* Risk Warning */}
-          <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg p-4 mb-4">
-            <div className="flex items-start gap-3">
-              <svg className="w-5 h-5 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-              <div>
-                <p className="text-sm font-medium text-orange-800 dark:text-orange-300">
-                  ⚠️ 风险提示
-                </p>
-                <p className="text-sm text-orange-700 dark:text-orange-400 mt-1">
-                  {toolInfo.risk}
-                </p>
-              </div>
+          <div className="ent-approve-risk">
+            <AlertTriangle size={18} aria-hidden />
+            <div className="ent-approve-risk-text">
+              <strong>风险提示</strong>
+              <span>{toolInfo.risk}</span>
             </div>
           </div>
 
           {/* Tool Name */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              工具名称
-            </label>
-            <div className="bg-gray-50 dark:bg-gray-900 px-4 py-2 rounded-md">
-              <code className="text-blue-600 dark:text-blue-400 font-mono">
-                {request.toolName}
-              </code>
-            </div>
+          <div className="ent-approve-field">
+            <span className="ent-approve-label">工具名称</span>
+            <span className="ent-approve-tool">
+              <Wrench size={14} aria-hidden />
+              {request.toolName}
+            </span>
           </div>
 
           {/* Tool Parameters */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              参数内容
-            </label>
-            <div className="bg-gray-50 dark:bg-gray-900 px-4 py-3 rounded-md overflow-x-auto">
-              <pre className="text-sm text-gray-800 dark:text-gray-200 font-mono whitespace-pre-wrap break-words">
-                {shouldTruncate ? inputDisplay.slice(0, 500) + '\n\n... (已截断)' : inputDisplay}
-              </pre>
-            </div>
+          <div className="ent-approve-field">
+            <span className="ent-approve-label">参数内容</span>
+            <pre className="ent-approve-pre">{displayText}</pre>
           </div>
         </div>
 
         {/* Actions */}
-        <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
-          <div className="flex gap-3">
-            <Button
+        <footer className="ent-approve-foot">
+          <div className="ent-approve-actions">
+            <button
               ref={denyButtonRef}
+              type="button"
+              className="ent-btn lg"
               onClick={onDeny}
-              variant="secondary"
-              className="flex-1"
               aria-label="拒绝工具执行"
               title="拒绝工具执行"
             >
-              ❌ 拒绝执行
-            </Button>
-            <Button
+              <X size={16} aria-hidden />
+              拒绝执行
+            </button>
+            <button
+              type="button"
+              className="ent-btn lg primary"
               onClick={onApprove}
-              variant="primary"
-              className="flex-1"
               aria-label="允许工具执行"
               title="允许工具执行"
             >
-              ✅ 允许执行
-            </Button>
+              <Check size={16} aria-hidden />
+              允许执行
+            </button>
           </div>
-          <p className="text-xs text-center text-gray-500 dark:text-gray-500 mt-3">
-            仅在您确认操作安全的情况下点击"允许执行"
-          </p>
-        </div>
+          <p className="ent-approve-hint">仅在您确认操作安全的情况下点击「允许执行」</p>
+        </footer>
       </div>
     </div>
   );
