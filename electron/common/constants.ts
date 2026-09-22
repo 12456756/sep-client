@@ -15,9 +15,10 @@
  */
 export const SIDE_EFFECT_TOOLS: ReadonlySet<string> = new Set(['bash', 'write', 'edit'])
 
-/** 该工具是否会改变外部状态。审批、停机、崩溃恢复三条路径共用这一个判断。 */
+/** 保守的副作用分类。MCP 执行权限另由实际注册工具白名单决定。 */
 export function hasSideEffects(toolName: string): boolean {
-  return SIDE_EFFECT_TOOLS.has(toolName)
+  // External MCP tools are conservatively tracked for interruption/recovery, not permission grants.
+  return SIDE_EFFECT_TOOLS.has(toolName) || toolName.startsWith('mcp__')
 }
 
 

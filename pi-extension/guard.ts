@@ -3,9 +3,7 @@
  *
  * The side-effecting tool list has one shared definition in electron/common/constants.ts.
  */
-import { hasSideEffects } from '../electron/common/constants'
-
-export const ALWAYS_AVAILABLE_TOOLS = new Set(['web_search'])
+import { hasSideEffects, SIDE_EFFECT_TOOLS } from '../electron/common/constants'
 
 export const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
 
@@ -18,6 +16,8 @@ export interface ToolPolicy {
   workspaceDir: string
 }
 
+export type RegisteredToolPermissions = ReadonlyMap<string, 'confirm-each' | 'auto-approve'>
+
 export interface ToolDecision {
   allowed: boolean
   requiresApproval: boolean
@@ -29,19 +29,25 @@ export function isReadOnlyTool(toolName: string): boolean {
 }
 
 export function requiresToolApproval(toolName: string): boolean {
-  return hasSideEffects(toolName)
+  return SIDE_EFFECT_TOOLS.has(toolName)
 }
 
 export function isKnownTool(toolName: string): boolean {
-  return ALWAYS_AVAILABLE_TOOLS.has(toolName) || isReadOnlyTool(toolName) || requiresToolApproval(toolName)
+  return isReadOnlyTool(toolName) || requiresToolApproval(toolName)
 }
 
 /**
  * Final provider-neutral task policy check. It does not execute tools or touch Electron IPC.
  */
-export function evaluateToolCall(toolName: string, input: unknown, policy: ToolPolicy): ToolDecision {
+export function evaluateToolCall(
+  toolName: string, input: unknown, policy: ToolPolicy, registeredTools?: RegisteredToolPermissions,
+): ToolDecision {
+  const registeredApproval = registeredTools?.get(toolName)
+  if (registeredApproval) {
+    if (!policy.allowedTools.includes(toolName)) return { allowed: false, requiresApproval: false, reason: 'tool-not-allowed' }
+    return { allowed: true, requiresApproval: registeredApproval !== 'auto-approve' }
+  }
   if (!isKnownTool(toolName)) return { allowed: false, requiresApproval: false, reason: 'unknown-tool' }
-  if (ALWAYS_AVAILABLE_TOOLS.has(toolName)) return { allowed: true, requiresApproval: false }
   if (!policy.allowedTools.includes(toolName)) return { allowed: false, requiresApproval: false, reason: 'tool-not-allowed' }
 
   if (toolName === 'bash') {

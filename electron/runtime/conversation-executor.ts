@@ -20,7 +20,6 @@ import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, 
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
 import type { EventPipeline } from './run-events'
 import type { ToolApprovals } from './run-approvals'
-import type { ConversationMessageSyncPort } from '../domain/conversation-message-sync'
 import { logger } from '../common/logger'
 
 const log = logger.child('conversation-executor')
@@ -39,7 +38,6 @@ export interface ConversationExecutorOptions {
   workers: Pick<WorkerRegistry, 'forget' | 'isCurrent' | 'register'>
   enqueue: (queued: QueuedRun) => void
   requestPump: () => void
-  conversationMessageSync?: ConversationMessageSyncPort
 }
 
 export class ConversationExecutor {
@@ -152,7 +150,6 @@ export class ConversationExecutor {
         if (queued.conversation) {
           const message = this.userMessage(taskId, runId, queued.subscriptionId, employee.modelId, queued.prompt)
           await this.conversationStore(scope, taskId).appendMessage(message)
-          this.enqueueConversationMessage(message)
         }
         if (queued.degradedRecovery) {
           await this.options.events.enqueue({
@@ -339,7 +336,6 @@ export class ConversationExecutor {
         createdAt: Date.now(),
       }
       await this.conversationStore(scope, active.taskId).appendMessage(message)
-      this.enqueueConversationMessage(message)
     }
     if (runCreated && scope && this.options.taskRunStore) {
       await this.options.taskRunStore.finish(scope, active.taskId, active.runId, outcome, error)
@@ -369,22 +365,6 @@ export class ConversationExecutor {
 
   private userMessage(taskId: string, runId: string, subscriptionId: string, modelId: string, content: string): ConversationMessage {
     return { id: `${runId}-user`, taskId, turnId: runId, runId, subscriptionId, modelId, role: 'user', content, createdAt: Date.now() }
-  }
-
-  private enqueueConversationMessage(message: ConversationMessage): void {
-    if (message.role !== 'user' && message.role !== 'assistant') return
-    this.options.conversationMessageSync?.enqueue({
-      taskId: message.taskId,
-      runId: message.runId,
-      role: message.role,
-      content: message.content,
-      clientConversationId: message.taskId,
-      clientMessageId: message.id,
-      subscriptionId: message.subscriptionId,
-      modelId: message.modelId,
-      turnId: message.turnId,
-      createdAt: message.createdAt,
-    })
   }
 
   private conversationAdapter(scope: { memberId: string; enterpriseId: string }, taskId: string): SharedPiSession {

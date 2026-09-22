@@ -8,7 +8,7 @@ import { SkillLibraryService } from '../service/skill-library-service'
  */
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
-import { getSubscriptions, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion, saveEmployeeConversationMessage } from '../common/platform/platform-api'
+import { getSubscriptions, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
 import { config } from '../common/config'
 import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
@@ -33,8 +33,6 @@ import { ConversationService } from '../service/conversation-service'
 import { TaskService } from '../service/task-service'
 import { ArrangementService } from '../service/arrangement-service'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
-import { ConversationSyncStore } from '../data/conversation-sync-store'
-import { ConversationSyncService } from '../service/conversation-sync-service'
 
 const log = logger.child('build-backend')
 
@@ -67,8 +65,6 @@ class BackendRuntime {
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
-  private readonly conversationSyncStore: ConversationSyncStore
-  private readonly conversationSync: ConversationSyncService
   private readonly userDataDir: string
   private readonly renderer: RendererPort
   private readonly isEncryptionAvailable: () => boolean
@@ -89,28 +85,6 @@ class BackendRuntime {
     const arrangementDrafts = new ArrangementDraftStore(userDataDir)
     this.workPlans = new WorkPlanStore(userDataDir)
     this.arrangementCheckpoints = new ArrangementCheckpointStore(userDataDir)
-    this.conversationSyncStore = new ConversationSyncStore(userDataDir)
-    this.conversationSync = new ConversationSyncService({
-      store: this.conversationSyncStore,
-      getScope: () => this.currentScope(),
-      upload: async item => {
-        const accessToken = await this.authSession.getValidAccessToken()
-        await saveEmployeeConversationMessage(
-          item.clientConversationId,
-          item.clientMessageId,
-          {
-            subscriptionId: item.subscriptionId,
-            role: item.role,
-            content: item.content,
-            runId: item.runId,
-            turnId: item.turnId,
-            modelId: item.modelId,
-            createdAt: new Date(item.createdAt).toISOString(),
-          },
-          accessToken,
-        )
-      },
-    })
     const skillVersions = new SkillVersionStore(join(userDataDir, 'skill-data', 'v1'))
     this.employees = new EmployeeAuthorizer(
       this.authSession,
@@ -272,12 +246,7 @@ class BackendRuntime {
       getTaskWorkspaceRoot: () => join(this.userDataDir, 'task-workspaces'),
       workPlanStore: this.workPlans,
       arrangementCheckpointStore: this.arrangementCheckpoints,
-      conversationMessageSync: {
-        enqueue: message => this.conversationSync.enqueue(message),
-      },
     })
-    const scope = this.currentScope()
-    if (scope) this.conversationSync.start(scope)
     log.info('task runtime loaded')
     return runtime
   }

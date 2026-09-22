@@ -1,4 +1,4 @@
-﻿import assert from 'node:assert/strict';
+import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
 import { mapEnterpriseOrganization, mapOrganizationEmployees } from './organization-mapping';

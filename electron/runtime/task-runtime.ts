@@ -27,7 +27,6 @@ import { redactText } from '../common/redact'
 import { logger } from '../common/logger'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
-import type { ConversationMessageSyncPort } from '../domain/conversation-message-sync'
 import { ArrangementExecutor } from './arrangement-executor'
 import { createArrangementExecutionState, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
 import { shouldPushTaskEvent } from './task-event-visibility'
@@ -48,7 +47,6 @@ export interface TaskRuntimeOptions {
   getTaskWorkspaceRoot?: () => string
   workPlanStore?: WorkPlanStorePort
   arrangementCheckpointStore?: ArrangementCheckpointStorePort
-  conversationMessageSync?: ConversationMessageSyncPort
 }
 
 export class TaskRuntime {
@@ -134,7 +132,6 @@ export class TaskRuntime {
       workers: this.workers,
       enqueue: queued => this.admission.push(queued),
       requestPump: () => { void this.pump() },
-      conversationMessageSync: options.conversationMessageSync,
     })
   }
 

@@ -27,7 +27,8 @@ import {
   requiresToolApproval,
 } from '../../../pi-extension'
 import { logger } from '../../common/logger'
-import { WEB_SEARCH_TOOL_NAME, createWebSearchTool } from './pi-web-search'
+import { createMcpRuntime, type McpRuntime } from './pi-mcp-client'
+import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES } from './pi-playwright-mcp'
 
 const log = logger.child('pi-gateway')
 
@@ -38,11 +39,14 @@ const DEFAULT_SESSION_TOOLS = ['read', 'bash', 'edit', 'write'] as const
 export function sessionToolOptions(
   toolPolicy: PiAgentSessionConfig['toolPolicy'],
   disableTools = false,
+  registeredMcpNames: readonly string[] = [],
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
   const allowedTools = toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
-  if (!allowedTools.includes(WEB_SEARCH_TOOL_NAME)) allowedTools.push(WEB_SEARCH_TOOL_NAME)
-  return { tools: allowedTools }
+  return { tools: [...new Set([
+    ...allowedTools.filter(name => !name.startsWith('mcp__') || registeredMcpNames.includes(name)),
+    ...registeredMcpNames,
+  ])] }
 }
 
 function getFailure(messages: unknown): string | undefined {
@@ -61,7 +65,7 @@ function getFailure(messages: unknown): string | undefined {
   return undefined
 }
 
-function gatewayContent(value: unknown): string {
+function gatewayContent(value: unknown): string | null {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) {
     return value.map(part => {
@@ -71,7 +75,7 @@ function gatewayContent(value: unknown): string {
       return ''
     }).filter(Boolean).join('\n')
   }
-  return value == null ? '' : String(value)
+  return value == null ? null : String(value)
 }
 
 function toolResultText(value: unknown): string {
@@ -86,10 +90,10 @@ function toolResultText(value: unknown): string {
   return value == null ? '' : String(value)
 }
 
-function summarizeGatewayMessages(messages: unknown[]): Array<Record<string, unknown>> {
+export function summarizeGatewayMessages(messages: unknown[]): Array<Record<string, unknown>> {
   return messages.map((message, index) => {
     if (!message || typeof message !== 'object') {
-      return { index, role: 'unknown' }
+      return { index, role: 'unknown', content: '' }
     }
 
     const current = message as Record<string, unknown>
@@ -103,22 +107,24 @@ function summarizeGatewayMessages(messages: unknown[]): Array<Record<string, unk
           : null
         return {
           id: typeof record.id === 'string' ? record.id : undefined,
+          type: typeof record.type === 'string' ? record.type : undefined,
           name: typeof functionRecord?.name === 'string' ? functionRecord.name : undefined,
         }
-      }).filter((call): call is { id: string | undefined; name: string | undefined } => call !== null)
+      }).filter(call => call !== null)
       : undefined
-    const contentLength = gatewayContent(current.content).length
 
     return {
       index,
       role: typeof current.role === 'string' ? current.role : 'unknown',
-      toolCalls,
-      toolCallId: typeof current.tool_call_id === 'string' ? current.tool_call_id : undefined,
-      contentLength,
-      hasContent: contentLength > 0,
+      content: gatewayContent(current.content),
+      ...(current.reasoning_content !== undefined ? { reasoning_content: current.reasoning_content } : {}),
+      ...(toolCalls ? { toolCalls } : {}),
+      ...(typeof current.tool_call_id === 'string' ? { toolCallId: current.tool_call_id } : {}),
+      ...(typeof current.name === 'string' ? { name: current.name } : {}),
     }
   })
 }
+
 
 /**
  * Classify tool failures for event metadata and audit consumers.
@@ -160,6 +166,9 @@ export function normalizeGatewayPayload(payload: unknown): unknown {
     return [{
       role,
       content: gatewayContent(current.content),
+      ...(role === 'assistant' && current.reasoning_content !== undefined
+        ? { reasoning_content: current.reasoning_content }
+        : {}),
       ...(role === 'assistant' && Array.isArray(current.tool_calls) ? { tool_calls: current.tool_calls } : {}),
       ...(role === 'tool' && typeof current.tool_call_id === 'string' ? { tool_call_id: current.tool_call_id } : {}),
       ...(typeof current.name === 'string' ? { name: current.name } : {}),
@@ -251,7 +260,12 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
   }
 }
 
-function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
+function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): ExtensionFactory[] {
+  const toolPolicy = config.toolPolicy ? {
+    ...config.toolPolicy,
+    // Only explicitly enabled and actually discovered host tools extend the local policy.
+    allowedTools: [...config.toolPolicy.allowedTools, ...mcp.permissions.keys()],
+  } : undefined
   const gatewayPayload: ExtensionFactory = pi => {
     log.debug('provider payload hook registered')
     pi.on('before_provider_request', (event: BeforeProviderRequestEvent) => {
@@ -260,13 +274,20 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
       try {
         const normalized = normalizeGatewayPayload(event.payload)
         const normalizedRecord = normalized && typeof normalized === 'object' ? normalized as { model?: unknown; messages?: unknown } : {}
-        log.debug('normalized provider request', {
-          requestId,
+        const context = {
           model: typeof normalizedRecord.model === 'string' ? normalizedRecord.model : undefined,
-          messageCount: Array.isArray(normalizedRecord.messages) ? normalizedRecord.messages.length : 0,
           messages: Array.isArray(normalizedRecord.messages)
             ? summarizeGatewayMessages(normalizedRecord.messages)
             : [],
+          tools: 'tools' in normalizedRecord ? normalizedRecord.tools : undefined,
+          temperature: 'temperature' in normalizedRecord ? normalizedRecord.temperature : undefined,
+          maxTokens: 'max_tokens' in normalizedRecord ? normalizedRecord.max_tokens : undefined,
+          stream: 'stream' in normalizedRecord ? normalizedRecord.stream : undefined,
+        }
+        log.debug('normalized provider request', {
+          requestId,
+          // Keep the complete context on one line so Electron/Node does not collapse nested values to [Object].
+          context: JSON.stringify(redactValue(context)),
         })
         return normalized
       } catch (error) {
@@ -305,16 +326,25 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
     })
   }
 
-  const webSearch: ExtensionFactory = pi => {
-    pi.registerTool(createWebSearchTool())
+  const mcpExtension: ExtensionFactory = pi => {
+    for (const tool of mcp.tools) {
+      pi.registerTool(tool.name === 'mcp__playwright__browser_snapshot'
+        ? { ...tool, promptGuidelines: PLAYWRIGHT_GUIDELINES } : tool)
+    }
+    pi.on('tool_result', event => {
+      if (!mcp.permissions.has(event.toolName)) return
+      const details: unknown = event.details
+      if (details && typeof details === 'object' && 'isError' in details && details.isError === true) {
+        return { isError: true }
+      }
+    })
   }
 
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
-      if (toolName === WEB_SEARCH_TOOL_NAME) return { block: false }
-      if (config.toolPolicy) {
-        const decision = evaluateToolCall(toolName, event.input, config.toolPolicy)
+      if (toolPolicy) {
+        const decision = evaluateToolCall(toolName, event.input, toolPolicy, mcp.permissions)
         if (!decision.allowed) {
           await config.reportPolicyEvent?.('tool_call_blocked', {
             toolName,
@@ -325,7 +355,8 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
         if (!decision.requiresApproval) return { block: false }
       }
       if (READ_ONLY_TOOLS.has(toolName)) return { block: false }
-      if (!requiresToolApproval(toolName)) {
+      if (mcp.permissions.get(toolName) === 'auto-approve') return { block: false }
+      if (!requiresToolApproval(toolName) && !mcp.permissions.has(toolName)) {
         await config.reportPolicyEvent?.('unknown_tool_blocked', {
           toolName,
           reason: 'Unknown tools are denied by default.',
@@ -347,11 +378,14 @@ function buildExtensions(config: PiAgentSessionConfig): ExtensionFactory[] {
     })
   }
 
-  return [gatewayPayload, webSearch, toolGuard, providerAuth]
+  return [gatewayPayload, ...(mcp.tools.length ? [mcpExtension] : []), toolGuard, providerAuth]
 }
 
 class PiCodingAgentSession implements PiAgentSession {
-  constructor(private readonly session: Awaited<ReturnType<typeof createAgentSession>>['session']) {}
+  constructor(
+    private readonly session: Awaited<ReturnType<typeof createAgentSession>>['session'],
+    private readonly mcp: McpRuntime,
+  ) {}
 
   get sessionId(): string {
     return this.session.sessionId
@@ -377,7 +411,11 @@ class PiCodingAgentSession implements PiAgentSession {
   }
 
   async dispose(): Promise<void> {
-    await this.session.dispose()
+    try {
+      await this.session.dispose()
+    } finally {
+      await this.mcp.dispose()
+    }
   }
 }
 
@@ -413,41 +451,50 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     const model = modelRuntime.getModel('sep-gateway', config.modelId)
     if (!model) throw new Error('Failed to resolve task model.')
 
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: config.workspaceDir,
-      agentDir: config.agentDir,
-      extensionFactories: buildExtensions(config),
-      noSkills: false,
-      noContextFiles: true,
-      additionalSkillPaths: config.additionalSkillPaths,
-    })
-    await resourceLoader.reload()
-    const extensionState = resourceLoader.getExtensions()
-    log.debug('resource loader reloaded', {
-      extensionCount: extensionState.extensions.length,
-      extensionErrors: extensionState.errors,
-      extensionPaths: extensionState.extensions.map(extension => extension.path),
-    })
+    // Execution-disabled/planner policies must not gain external tools or spawn MCP servers.
+    const canUseMcp = !config.disableTools && (!config.toolPolicy || config.toolPolicy.allowedTools.length > 0)
+    const servers = canUseMcp ? config.mcpServers ?? await loadHostMcpServers() : []
+    const mcp = await createMcpRuntime(servers, config.workspaceDir)
+    try {
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: config.workspaceDir,
+        agentDir: config.agentDir,
+        extensionFactories: buildExtensions(config, mcp),
+        noSkills: false,
+        noContextFiles: true,
+        additionalSkillPaths: config.additionalSkillPaths,
+      })
+      await resourceLoader.reload()
+      const extensionState = resourceLoader.getExtensions()
+      log.debug('resource loader reloaded', {
+        extensionCount: extensionState.extensions.length,
+        extensionErrors: extensionState.errors,
+        extensionPaths: extensionState.extensions.map(extension => extension.path),
+      })
 
-    const sessionManager = config.resumeSessionFile
-      ? SessionManager.open(config.resumeSessionFile, config.sessionDir, config.workspaceDir)
-      : SessionManager.create(config.workspaceDir, config.sessionDir, { id: config.runId })
-    const { session } = await createAgentSession({
-      cwd: config.workspaceDir,
-      agentDir: config.agentDir,
-      modelRuntime,
-      model,
-      resourceLoader,
-      sessionManager,
-      // Advertise only the task policy's tools so the model cannot select denied tools.
-      ...sessionToolOptions(config.toolPolicy, config.disableTools),
-      // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
-      settingsManager: SettingsManager.inMemory({
-        retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 2000, provider: { maxRetries: 0 } },
-      }),
-    })
-    log.info('createAgentSession completed', { sessionId: session.sessionId })
-    return new PiCodingAgentSession(session)
+      const sessionManager = config.resumeSessionFile
+        ? SessionManager.open(config.resumeSessionFile, config.sessionDir, config.workspaceDir)
+        : SessionManager.create(config.workspaceDir, config.sessionDir, { id: config.runId })
+      const { session } = await createAgentSession({
+        cwd: config.workspaceDir,
+        agentDir: config.agentDir,
+        modelRuntime,
+        model,
+        resourceLoader,
+        sessionManager,
+        // Advertise only the task policy's tools so the model cannot select denied tools.
+        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()]),
+        // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
+        settingsManager: SettingsManager.inMemory({
+          retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 2000, provider: { maxRetries: 0 } },
+        }),
+      })
+      log.info('createAgentSession completed', { sessionId: session.sessionId })
+      return new PiCodingAgentSession(session, mcp)
+    } catch (error) {
+      await mcp.dispose()
+      throw error
+    }
   }
 }
 

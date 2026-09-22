@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { normalizeGatewayPayload, sessionToolOptions, classifyToolFailure } from './pi-coding-agent-adapter'
+import { normalizeGatewayPayload, sessionToolOptions, classifyToolFailure, summarizeGatewayMessages } from './pi-coding-agent-adapter'
 
 const readOnlyPolicy = {
   allowedTools: ['read', 'grep', 'find', 'ls'],
@@ -12,21 +12,21 @@ const readOnlyPolicy = {
 }
 
 describe('task tool policy session options', () => {
-  it('advertises policy tools plus unrestricted web search', () => {
+  it('advertises policy tools without the removed web search', () => {
     assert.deepEqual(sessionToolOptions(readOnlyPolicy), {
-      tools: ['read', 'grep', 'find', 'ls', 'web_search'],
+      tools: ['read', 'grep', 'find', 'ls'],
     })
   })
 
-  it('keeps web search available for an otherwise empty policy', () => {
+  it('keeps an empty policy free of the removed web search', () => {
     assert.deepEqual(sessionToolOptions({ ...readOnlyPolicy, allowedTools: [] }), {
-      tools: ['web_search'],
+      tools: [],
     })
   })
 
-  it('advertises default tools plus web search when no task policy is present', () => {
+  it('advertises only default tools when no task policy is present', () => {
     assert.deepEqual(sessionToolOptions(undefined), {
-      tools: ['read', 'bash', 'edit', 'write', 'web_search'],
+      tools: ['read', 'bash', 'edit', 'write'],
     })
   })
 
@@ -37,6 +37,30 @@ describe('task tool policy session options', () => {
   })
 })
 
+describe('provider request context diagnostics', () => {
+  it('logs the complete redacted message context instead of content booleans', () => {
+    assert.deepEqual(summarizeGatewayMessages([
+      { role: 'user', content: 'list files' },
+      {
+        role: 'assistant',
+        content: null,
+        reasoning_content: 'Inspecting the workspace before listing files.',
+        tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'ls', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'file-a.txt\\nfile-b.txt' },
+    ]), [
+      { index: 0, role: 'user', content: 'list files' },
+      {
+        index: 1,
+        role: 'assistant',
+        content: null,
+        reasoning_content: 'Inspecting the workspace before listing files.',
+        toolCalls: [{ id: 'call-1', type: 'function', name: 'ls' }],
+      },
+      { index: 2, role: 'tool', content: 'file-a.txt\\nfile-b.txt', toolCallId: 'call-1' },
+    ])
+  })
+})
 describe('SEP gateway payload compatibility', () => {
   it('preserves tool call IDs and tool roles across gateway turns', () => {
     const result = normalizeGatewayPayload({
@@ -46,6 +70,7 @@ describe('SEP gateway payload compatibility', () => {
         {
           role: 'assistant',
           content: null,
+          reasoning_content: 'Need to inspect the workspace.',
           tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } }],
         },
         { role: 'tool', content: 'file-a.txt', tool_call_id: 'call-1' },
@@ -54,7 +79,7 @@ describe('SEP gateway payload compatibility', () => {
 
     assert.deepEqual(result.messages, [
       { role: 'user', content: 'list files' },
-      { role: 'assistant', content: '', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } }] },
+      { role: 'assistant', content: null, reasoning_content: 'Need to inspect the workspace.', tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } }] },
       { role: 'tool', content: 'file-a.txt', tool_call_id: 'call-1' },
     ])
   })
@@ -100,5 +125,17 @@ describe('tool failure classification', () => {
     assert.equal(classifyToolFailure('read', 'file not found'), 'execution-failed')
     assert.equal(classifyToolFailure('bash', 'command exited with code 1'), 'execution-failed')
     assert.equal(classifyToolFailure('grep', 'invalid regex pattern'), 'execution-failed')
+  })
+})
+
+
+describe('MCP tool advertisement', () => {
+  it('adds only registered MCP names and preserves existing tools', () => {
+    assert.deepEqual(sessionToolOptions({ ...readOnlyPolicy, allowedTools: ['ls', 'mcp__fake__search'] }, false, ['mcp__docs__search']), {
+      tools: ['ls', 'mcp__docs__search'],
+    })
+  })
+  it('noTools overrides even registered MCP tools', () => {
+    assert.deepEqual(sessionToolOptions(undefined, true, ['mcp__docs__search']), { noTools: 'all' })
   })
 })

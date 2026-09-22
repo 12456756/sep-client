@@ -15,13 +15,13 @@ const MAX_OBJECT_KEYS = 50
 const MAX_DEPTH = 5
 
 /** 抹掉字符串里的 Bearer 令牌与查询串凭据，并限制长度。 */
-export function redactText(value: string): string {
+export function redactText(value: string, maxLength: number = MAX_STRING_LENGTH): string {
   const redacted = value
     .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
     .replace(/([?&](?:token|password|secret|api[_-]?key)=)[^&\s]+/gi, '$1[redacted]')
-  return redacted.length <= MAX_STRING_LENGTH
+  return redacted.length <= maxLength
     ? redacted
-    : `${redacted.slice(0, MAX_STRING_LENGTH)}...[truncated]`
+    : `${redacted.slice(0, maxLength)}...[truncated]`
 }
 
 /** 可空文本的脱敏，空值统一成 null，便于直接落库。 */

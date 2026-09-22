@@ -148,27 +148,4 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     })
   }
 
-  it('uploads an employee conversation message with encoded client identifiers', async () => {
-    globalThis.fetch = async (input, init) => {
-      assert.equal(init?.method, 'PUT')
-      assert.match(String(input), /\/client\/employee-conversations\/task%2F1\/messages\/run%2F1-user$/)
-      const headers = new Headers(init?.headers)
-      assert.equal(headers.get('Authorization'), 'Bearer access')
-      assert.equal(headers.get('Content-Type'), 'application/json')
-      assert.deepEqual(JSON.parse(String(init?.body)), {
-        subscriptionId: 'subscription-1', role: 'user', content: 'hello', runId: 'run/1',
-        turnId: 'turn/1', modelId: 'model-1', createdAt: '2026-09-19T12:00:00.000Z',
-      })
-      return response({ data: {
-        conversationId: 'conversation-1', messageId: 'message-1', clientConversationId: 'task/1',
-        clientMessageId: 'run/1-user', duplicate: false,
-      } })
-    }
-    const result = await api.saveEmployeeConversationMessage('task/1', 'run/1-user', {
-      subscriptionId: 'subscription-1', role: 'user', content: 'hello', runId: 'run/1',
-      turnId: 'turn/1', modelId: 'model-1', createdAt: '2026-09-19T12:00:00.000Z',
-    }, 'access')
-    assert.equal(result.data.duplicate, false)
-  })
-
 })

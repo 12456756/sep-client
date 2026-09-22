@@ -1,24 +1,13 @@
-/**
- * 对话抽屉：一项工作里「你和员工说过的话」，以及说下一句的地方。
- *
- * 这就是原来钉在工作详情页最下面那个对话模块，整块搬进抽屉 —— 消息列表、
- * 输入框、换个人做、终止都还在里面，页面上其余的排版一格没动。
- *
- * 搬走的理由：一页工作报表的第一个问题永远是「干成了什么」，对话是你决定
- * 「接下来怎么办」时才要用的东西；而编排出来的工作根本没有对话可言
- * （员工的动作在「工作过程」里），页面底下常年空着一个对话框，
- * 反而让人以为每项工作都要在这里回话。
- *
- * 所以对话只在三个地方打开：对话式工作抬头的「继续对话」、流程工作停下来等你
- * 拍板或中断时的「补充说明」、已完成工作的「查看总结」。
- */
-
-import { ChevronDown, Send, StopCircle, X } from 'lucide-react';
+import { ArrowDown, ChevronDown, Send, StopCircle, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { WorkItem } from '../../features/enterprise/types';
 import { useDrawer } from '../../features/enterprise/use-drawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { EmployeeFace } from './EmployeeFace';
+import { MessageContent } from './MessageContent';
+import '../../styles/conversation.css';
+
+const FOLLOW_THRESHOLD_PX = 48;
 
 interface Props {
   work: WorkItem;
@@ -26,43 +15,88 @@ interface Props {
   onClose: () => void;
 }
 
+/** 流程工作仍使用抽屉；对话式直接复用同一消息区，不开启模态焦点锁。 */
 export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
   const panel = useDrawer(onClose);
+  return (
+    <>
+      <div className="ent-drawer-back" role="presentation" onMouseDown={onClose} />
+      <aside className="ent-drawer wide" role="dialog" aria-modal="true" aria-labelledby="ent-talk-title" ref={panel}>
+        <WorkConversation work={work} workspace={workspace} onClose={onClose} />
+      </aside>
+    </>
+  );
+}
+
+interface ConversationProps {
+  work: WorkItem;
+  workspace: EnterpriseWorkspace;
+  onClose?: () => void;
+}
+
+export function WorkConversation({ work, workspace, onClose }: ConversationProps) {
   const body = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState('');
   const [stopping, setStopping] = useState(false);
   const [reason, setReason] = useState('');
   const over = work.status === 'completed' || work.status === 'paused' || work.status === 'failed';
 
-  // 只滚抽屉自己这一栏，不用 scrollIntoView —— 那会把底下的页面也一起拉下去。
-  useEffect(() => {
+  const followsLatest = useRef(true);
+  const [hasNewContent, setHasNewContent] = useState(false);
+  const latestMessage = work.messages.at(-1);
+  const latestMessageId = latestMessage?.id;
+  const latestContent = latestMessage?.content;
+  const isReplying = work.status === 'running' || work.status === 'arranging';
+  const hasStreamingReply = work.messages.some(message => message.id === `${work.id}-streaming`);
+  const statusText = work.status === 'completed' ? '本轮回复已完成，可继续提问'
+    : work.status === 'paused' ? '工作已终止，已收到的内容仍保留'
+      : work.status === 'failed' ? '本轮回复中断，请查看提示后重试'
+        : work.status === 'waiting-user' ? '等待你的确认'
+          : hasStreamingReply ? '正在回复…' : '正在处理，请稍候…';
+
+  const scrollToLatest = () => {
+    followsLatest.current = true;
+    setHasNewContent(false);
     const node = body.current;
     if (node) node.scrollTop = node.scrollHeight;
-  }, [work.messages]);
+  };
+
+  // 只在消息实际改变时跟随；向上阅读时不因后续 token 抢走滚动位置。
+  useEffect(() => {
+    const node = body.current;
+    if (!node) return;
+    if (followsLatest.current) node.scrollTop = node.scrollHeight;
+    else setHasNewContent(true);
+  }, [latestMessageId, latestContent]);
 
   const send = () => {
     const text = draft.trim();
-    if (!text) return;
-    workspace.sendMessage(work.id, text);
+    if (!text || workspace.busy) return;
+    followsLatest.current = true;
+    setHasNewContent(false);
+    void workspace.sendMessage(work.id, text);
     setDraft('');
   };
 
   return (
     <>
-      <div className="ent-drawer-back" role="presentation" onMouseDown={onClose} />
-      <aside className="ent-drawer wide" role="dialog" aria-modal="true" aria-labelledby="ent-talk-title" ref={panel}>
         <header className="ent-drawer-head">
-          <EmployeeFace employee={workspace.employees.find(item => item.id === work.currentEmployeeId)} name={work.currentEmployeeName} size="xl" variant="portrait" />
+          <EmployeeFace employee={workspace.employees.find(item => item.id === work.currentEmployeeId)} name={work.currentEmployeeName} size={onClose ? "xl" : "sm"} variant="portrait" />
           <div className="ent-drawer-id">
             <h2 id="ent-talk-title">和{work.currentEmployeeName}的对话</h2>
-            <small title={work.title}>{work.title}</small>
+            {onClose ? <small title={work.title}>{work.title}</small> : null}
           </div>
-          <button type="button" className="ent-icon-btn" onClick={onClose} aria-label="关闭对话">
+          {onClose ? <button type="button" className="ent-icon-btn" onClick={onClose} aria-label="关闭对话">
             <X size={15} aria-hidden />
-          </button>
+          </button> : null}
         </header>
 
-        <div className="ent-drawer-body" ref={body}>
+        <div className="ent-drawer-body ent-conversation-body" ref={body} onScroll={() => {
+          const node = body.current;
+          if (!node) return;
+          followsLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < FOLLOW_THRESHOLD_PX;
+          if (followsLatest.current) setHasNewContent(false);
+        }}>
           <div className="ent-talk">
             {work.messages.map(message => (
               message.role === 'system' ? (
@@ -75,14 +109,23 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
                       {message.employeeName}
                     </span>
                   ) : null}
-                  <p>{message.content}</p>
+                  {message.role === 'user' ? <p>{message.content}</p> : <MessageContent content={message.content} />}
+                  <time className="ent-message-time" dateTime={new Date(message.createdAt).toISOString()}>
+                    {new Date(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                  </time>
                 </div>
               )
             ))}
           </div>
         </div>
 
-        <div className="ent-drawer-foot">
+        <div className="ent-drawer-foot ent-conversation-foot">
+          {hasNewContent ? <button type="button" className="ent-btn sm ent-new-content" onClick={scrollToLatest}>
+            <ArrowDown size={14} aria-hidden />有新内容，回到最新
+          </button> : null}
+          <p className="ent-conversation-status" role="status">
+            {isReplying ? <span className="ent-reply-dot" aria-hidden /> : null}{statusText}
+          </p>
           {workspace.error ? <p role="alert" className="ent-hint">{workspace.error}</p> : null}
           {stopping ? (
             <div className="ent-confirm">
@@ -150,7 +193,6 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
             </div>
           )}
         </div>
-      </aside>
     </>
   );
 }

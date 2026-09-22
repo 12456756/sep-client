@@ -190,27 +190,6 @@ export interface ApiError {
   path?: string
 }
 
-export interface ConversationMessageUpload {
-  subscriptionId: string
-  role: 'user' | 'assistant'
-  content: string
-  runId: string
-  turnId: string
-  modelId: string
-  createdAt: string
-}
-
-export interface ConversationMessageUploadResponse {
-  data: {
-    conversationId: string
-    messageId: string
-    clientConversationId: string
-    clientMessageId: string
-    duplicate: boolean
-    storedAt?: string
-  }
-}
-
 type AuthApiResource =
   | 'subscriptions'
   | 'employment-token'
@@ -222,7 +201,6 @@ type AuthApiResource =
   | 'upload'
   | 'organization'
   | 'overview'
-  | 'conversations'
 
 export class AuthApiError extends Error {
   constructor(
@@ -290,20 +268,6 @@ async function postJson<T>(
   return response.json() as Promise<T>
 }
 
-async function putJson<T>(
-  path: string, body: unknown, accessToken: string, resource: AuthApiResource,
-): Promise<T> {
-  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
-    method: 'PUT',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  })
-  if (!response.ok) throw await parseError(response, resource)
-  return response.json() as Promise<T>
-}
 
 export async function login(request: LoginRequest): Promise<LoginResponse> {
   const response = await fetch(`${config.SEP_BASE_URL}/client/auth/login`, {
@@ -500,19 +464,4 @@ export async function reviewSkillVersion(
   const id = encodeURIComponent(skillVersionIdSchema.parse(versionId))
   const body = skillVersionReviewRequestSchema.parse(request)
   return skillVersionSchema.parse(await postJson('/enterprise/skill-versions/' + id + '/review', body, accessToken, 'skills'))
-}
-
-
-export function saveEmployeeConversationMessage(
-  clientConversationId: string,
-  clientMessageId: string,
-  request: ConversationMessageUpload,
-  accessToken: string,
-): Promise<ConversationMessageUploadResponse> {
-  return putJson<ConversationMessageUploadResponse>(
-    `/client/employee-conversations/${encodeURIComponent(clientConversationId)}/messages/${encodeURIComponent(clientMessageId)}`,
-    request,
-    accessToken,
-    'conversations',
-  )
 }

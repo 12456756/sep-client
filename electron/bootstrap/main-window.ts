@@ -4,9 +4,10 @@
  * 只管窗口本身：尺寸、preload 注入、加载渲染进程、可见性兜底。
  * 不认识任何业务对象，也不持有窗口引用——引用归 renderer-bridge。
  */
-import { BrowserWindow, Menu } from 'electron'
+import { BrowserWindow, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import { logger } from '../common/logger'
+import { externalWebLink } from '../common/external-web-link'
 
 const log = logger.child('main-window')
 
@@ -39,6 +40,17 @@ export function createMainWindow({ onClosed }: MainWindowOptions): BrowserWindow
       nodeIntegration: false,
       sandbox: false, // Pi runs in main, renderer is isolated via contextBridge
     },
+  })
+
+  // 回答中的网页链接交给系统浏览器，禁止创建继承 preload 的子窗口。
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    const link = externalWebLink(url)
+    if (link) {
+      void shell.openExternal(link).catch(error => {
+        log.warn('could not open external webpage', { error })
+      })
+    }
+    return { action: 'deny' }
   })
 
   if (process.env['ELECTRON_RENDERER_URL']) {

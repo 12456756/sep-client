@@ -227,8 +227,8 @@ function sendChunk(response: ServerResponse, delta: Record<string, unknown>, fin
 }
 
 for (const invalidTools of [false, true]) {
-  it(`real SDK planner: ${invalidTools ? 'stops malformed tool loops after the first response' : 'generates a draft with web search but without execution tools'}`, { timeout: 15000 }, async () => {
-    const root = await mkdtemp(join(tmpdir(), 'sep-planner-web-search-'))
+  it(`real SDK planner: ${invalidTools ? 'stops malformed tool loops after the first response' : 'generates a draft without advertising tools'}`, { timeout: 15000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-planner-no-tools-'))
     const requests: Array<{ tools?: unknown[] }> = []
     const server = createServer((request, response) => {
       let body = ''
@@ -281,7 +281,7 @@ for (const invalidTools of [false, true]) {
         const name = (tool as { function?: { name?: unknown } }).function?.name
         return typeof name === 'string' ? name : null
       })
-      assert.deepEqual(advertisedToolNames, ['web_search'], 'planning may search the web but must not advertise execution tools')
+      assert.deepEqual(advertisedToolNames, [], 'planning must not advertise the removed web search or execution tools')
       assert.equal(approvals, 0)
     } finally {
       server.closeAllConnections()

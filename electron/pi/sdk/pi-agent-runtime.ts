@@ -16,6 +16,19 @@ export interface PiAgentSession {
   dispose(): Promise<void>
 }
 
+/** Trusted host configuration only; never supplied by the model or renderer. */
+export interface McpServerConfig {
+  name: string
+  transport:
+    | { type: 'stdio'; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
+    | { type: 'streamable-http'; url: string; headers?: Record<string, string> }
+  /** Original MCP names. Empty or omitted means no tools are enabled. */
+  enabledTools?: readonly string[]
+  /** Explicit opt-in; server annotations never grant permission. */
+  autoApproveTools?: readonly string[]
+  timeoutMs?: number
+}
+
 export interface PiAgentSessionConfig {
   runId: string
   modelId: string
@@ -25,6 +38,7 @@ export interface PiAgentSessionConfig {
   sessionDir: string
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
+  mcpServers?: readonly McpServerConfig[]
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>
   reportPolicyEvent?: (type: string, data: unknown) => Promise<void> | void

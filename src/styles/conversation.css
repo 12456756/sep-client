@@ -1,0 +1,60 @@
+/* 对话直接展示在详情页；流程工作的抽屉沿用同一内容组件。 */
+.ent-chat-panel { display: flex; flex: 0 0 auto; flex-direction: column; min-width: 0; height: max(520px, calc(100dvh - 160px)); border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); overflow: hidden; }
+.ent-chat-panel .ent-drawer-head { flex-shrink: 0; padding: 12px 18px; }
+.ent-chat-panel .ent-talk { max-height: none; margin: 0; overflow: visible; }
+.ent-conversation-body { overflow-anchor: none; }
+.ent-conversation-status { display: flex; align-items: center; gap: 7px; margin: 0 0 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); }
+.ent-reply-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ent-brand-solid); }
+.ent-new-content { display: flex; margin: 0 auto 8px; }
+.ent-message-time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-message-copy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); }
+.ent-message-copy .ent-btn { min-height: 26px; padding: 3px 8px; font-size: var(--ent-fs-note); }
+.ent-chat-details, .ent-chat-files { margin-top: 14px; }
+.ent-chat-details > summary { cursor: pointer; font-size: var(--ent-fs-body); font-weight: 600; }
+.ent-chat-details > .ent-panel { margin-top: 12px; }
+.ent-chat-files .ent-wk-files { max-height: 208px; overflow-y: auto; }
+.ent-conversation-body .ent-say { min-width: 0; }
+.ent-conversation-body .ent-say:not(.user) { max-width: 100%; }
+.ent-markdown { min-width: 0; padding: 10px 14px; border-radius: 12px; background: var(--ent-panel-subtle); color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 1.8; overflow-wrap: anywhere; }
+.ent-say .ent-markdown p { padding: 0; margin: 0 0 10px; border-radius: 0; background: none; white-space: normal; }
+.ent-say .ent-markdown > :last-child { margin-bottom: 0; }
+.ent-markdown h1, .ent-markdown h2, .ent-markdown h3, .ent-markdown h4 { margin: 16px 0 8px; font-weight: 600; line-height: 1.5; }
+.ent-markdown h1 { font-size: 1.35em; }
+.ent-markdown h2 { font-size: 1.2em; }
+.ent-markdown h3, .ent-markdown h4 { font-size: 1.1em; }
+.ent-markdown > :first-child { margin-top: 0; }
+.ent-markdown ul, .ent-markdown ol { padding-left: 24px; margin: 8px 0; }
+.ent-markdown ul { list-style: disc; }
+.ent-markdown ol { list-style: decimal; }
+.ent-markdown a { color: var(--ent-brand-ink); text-decoration: underline; text-underline-offset: 3px; }
+.ent-markdown blockquote { margin: 12px 0; padding: 0 12px; border-left: 3px solid var(--ent-line-strong); color: var(--ent-ink-2); }
+.ent-markdown code { font-family: ui-monospace, monospace; font-size: .92em; }
+.ent-markdown :not(pre) > code { padding: 2px 4px; border-radius: 4px; background: var(--ent-line); }
+.ent-code-block { min-width: 0; margin: 10px 0; border: 1px solid var(--ent-line); border-radius: 8px; overflow: hidden; }
+.ent-code-block > .ent-message-copy { padding: 6px 10px; border-bottom: 1px solid var(--ent-line); }
+.ent-code-block pre { max-width: 100%; margin: 0; padding: 12px; overflow-x: auto; white-space: pre; }
+.ent-markdown-table { max-width: 100%; margin: 10px 0; overflow-x: auto; }
+.ent-markdown table { width: 100%; border-collapse: collapse; }
+.ent-markdown th, .ent-markdown td { padding: 7px 12px; border: 1px solid var(--ent-line-strong); text-align: left; }
+.ent-markdown th { font-weight: 600; background: var(--ent-line); }
+.ent-chat-panel :focus-visible, .ent-chat-details > summary:focus-visible, .ent-markdown :focus-visible { outline: 2px solid var(--ent-brand-solid); outline-offset: 2px; }
+@media (max-width: 1080px) {
+  .ent-chat-panel .ent-drawer-id h2 { font-size: 15px; overflow-wrap: anywhere; }
+}
+
+.ent-drawer-foot.ent-conversation-foot { flex-direction: column; align-items: stretch; gap: 0; }
+.ent-conversation-foot .ent-ask, .ent-conversation-foot .ent-confirm { width: 100%; flex: none; }
+/* 消息区滚动条预留的宽度也用于输入区，长回复出现后两侧仍对齐。 */
+.ent-conversation-body, .ent-conversation-foot { scrollbar-gutter: stable; scrollbar-width: thin; }
+.ent-conversation-foot { overflow-y: auto; }
+.ent-work-process { display: flex; flex-direction: column; min-height: 0; }
+.ent-process-current { flex-shrink: 0; margin: 0 0 12px; color: var(--ent-brand-ink); font-size: var(--ent-fs-body); overflow-wrap: anywhere; }
+.ent-work-process .ent-wk-activity-list { max-height: 300px; margin-bottom: 0; overscroll-behavior-y: contain; }
+.ent-work-process .ent-wk-activity { flex-shrink: 0; }
+.ent-work-process .ent-wk-activity-copy strong { white-space: normal; overflow-wrap: anywhere; }
+.ent-work-process .ent-wk-activity-list:focus-visible { outline: 2px solid var(--ent-brand-solid); outline-offset: 2px; }
+
+.ent-conversation-foot .ent-ask-who { min-width: 0; max-width: 60%; }
+.ent-conversation-foot .ent-ask-who select { min-width: 0; text-overflow: ellipsis; }
+.ent-conversation-foot .ent-ask-who .ent-face, .ent-conversation-foot .ent-ask-who > svg { flex-shrink: 0; }
+.ent-chat-panel .ent-drawer-id h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

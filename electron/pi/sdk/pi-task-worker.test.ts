@@ -136,7 +136,10 @@ describe('PiTaskWorker', () => {
           ? (fn as Record<string, unknown>).name
           : undefined
       })
-      assert.deepEqual(names, ['read', 'grep', 'find', 'ls', 'web_search'])
+      assert.deepEqual(names.filter(name => !String(name).startsWith('mcp__')), ['read', 'grep', 'find', 'ls'])
+      assert.ok(names.includes('mcp__playwright__browser_navigate'))
+      assert.ok(names.includes('mcp__playwright__browser_snapshot'))
+      assert.ok(!names.includes('mcp__playwright__browser_evaluate'))
     } finally {
       await worker.dispose()
       server.closeAllConnections()

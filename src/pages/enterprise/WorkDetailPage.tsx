@@ -1,20 +1,4 @@
-/**
- * 工作详情页 = 一张工作报表（按设计稿复刻）。
- *
- * 抬头一行说清「什么工作、什么状态、能做什么」，中间三格分别回答
- * 「谁在做 / 在哪做 / 做到哪了」，下面两格是「过程」和「产物」。
- *
- * 多人协作和单人工作共用这一套骨架，只换中间三格的内容
- * （成员表 ↔ 执行员工、进度圆环 ↔ 完成面板）—— 两套页面各写一遍的话，改一处要改两处。
- *
- * 对话不在这一页上。它整块搬进了一个抽屉（见 WorkTalkDrawer），只在你要用的时候
- * 拉出来 —— 报表页的第一个问题永远是「干成了什么」，而编排出来的工作根本没有对话
- * 可言（员工的动作在「工作过程」里）。除了少掉这一块，页面的排版一格没动。
- *
- * 抬头右边那颗主按钮按工作类型给：对话式工作是「继续对话」，编排出来的工作是
- * 「改一版安排」。两者都不跳去「安排工作」页 —— 一个开对话抽屉，一个开一张
- * 只问「要完成什么」的表单。
- */
+/** 对话式以消息为主，安排式保留工作报表；共用现有执行操作与数据源。 */
 
 import {
   AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, LoaderCircle, MessageSquareText,
@@ -24,9 +8,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { Empty, StatusChip, StepStateChip, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { WorkPlanDrawer } from '../../components/enterprise/WorkPlanDrawer';
-import { WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
+import { WorkConversation, WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
-import type { SiliconEmployee, WorkActivity, WorkItem, WorkTimelineEntry } from '../../features/enterprise/types';
+import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
+import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import { dayTimeText, durationText, relativeTime, stampText, WORK_STATUS } from '../../features/enterprise/vocabulary';
 
@@ -55,11 +40,12 @@ type Panel = 'talk' | 'plan' | null;
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   const team = useTeam(work, workspace);
   const solo = team.length <= 1;
+  const isConversation = work.kind === 'conversation';
   const finished = work.status === 'completed';
   /** 这项工作已经不会自己往前走了。耗时、结束时间、能不能终止都按它算。 */
   const over = finished || work.status === 'paused' || work.status === 'failed';
   const percent = Math.round(work.progress);
-  const doing = work.timeline.filter(entry => entry.kind === 'employee').at(-1);
+  const doing = currentWorkOperation(work.status, work.activities);
   const next = work.steps.find(step => step.state === 'pending');
   const [panel, setPanel] = useState<Panel>(null);
 
@@ -81,12 +67,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         <WorkStatusChip value={work.status} />
         <div className="ent-wk-head-actions">
           <ShareButton work={work} />
-          {work.kind === 'conversation' ? (
-            <button type="button" className="ent-btn primary sm" onClick={() => setPanel('talk')}>
-              <MessageSquareText size={14} aria-hidden />
-              继续对话
-            </button>
-          ) : (
+          {isConversation ? null : (
             <button
               type="button"
               className="ent-btn primary sm"
@@ -106,7 +87,21 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         <span>{over ? `耗时 ${durationText(work.updatedAt - work.createdAt)}` : `已运行 ${durationText(Date.now() - work.createdAt)}`}</span>
       </div>
 
-      <div className="ent-wk-grid">
+      {isConversation ? (
+        <>
+          <NeedsYou work={work} workspace={workspace} onTalk={() => setPanel('talk')} />
+          <section className="ent-chat-panel" aria-label="工作对话">
+            <WorkConversation work={work} workspace={workspace} />
+          </section>
+          <details className="ent-chat-details ent-panel">
+            <summary>工作信息与过程</summary>
+            <p className="ent-hint">执行员工：{work.currentEmployeeName}</p>
+            <p className="ent-hint">工作目录：{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</p>
+            <Process work={work} />
+            <MoreInfo work={work} />
+          </details>
+        </>
+      ) : <div className="ent-wk-grid">
         <section className="ent-panel">
           <h2>{solo ? '执行员工' : <>工作成员 <em>（{team.length} 人）</em></>}</h2>
           {solo ? (
@@ -194,15 +189,15 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           ) : (
             <div className="ent-donut">
               <Donut percent={percent} />
-              <p>{doing?.text ?? (work.status === 'arranging' ? '已安排好，还没开工' : '员工正在处理')}</p>
+              <p>{doing}</p>
               {next ? <span className="ent-wk-next">预计下一步：{next.title}</span> : null}
             </div>
           )}
         </section>
-      </div>
+      </div>}
 
-      <div className="ent-wk-two">
-        <Process work={work} names={team.map(member => member.name)} />
+      {(!isConversation || work.deliverables.length > 0) ? <div className={isConversation ? 'ent-chat-files' : 'ent-wk-two'}>
+        {!isConversation ? <Process work={work} /> : null}
         <section className="ent-panel">
           <h2>{finished ? '产出结果' : '最终产物'} <em>（{work.deliverables.length} 个）</em></h2>
           {work.deliverables.length ? (
@@ -224,12 +219,12 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             <p className="ent-hint">员工还没有产出文件。产出之后会列在这里。</p>
           )}
         </section>
-      </div>
+      </div> : null}
 
-      {/* 这一条留在原来对话模块的位置上：对话搬进抽屉之后，页面上其余的排版一格没动。 */}
-      <NeedsYou work={work} workspace={workspace} onTalk={() => setPanel('talk')} />
-
-      <MoreInfo work={work} />
+      {!isConversation ? <>
+        <NeedsYou work={work} workspace={workspace} onTalk={() => setPanel('talk')} />
+        <MoreInfo work={work} />
+      </> : null}
 
       {panel === 'talk' ? <WorkTalkDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
       {panel === 'plan' ? <WorkPlanDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
@@ -429,48 +424,21 @@ function Donut({ percent }: { percent: number }) {
 }
 
 /** 工作过程。多人协作时上面一排页签按人筛，单人工作不出现页签。 */
-function Process({ work, names }: { work: WorkItem; names: string[] }) {
-  const [who, setWho] = useState('');
-  const rows = work.timeline.filter(entry => !who || entry.actor === who);
+/** 用户只看结构化动作；原始日志仍由后台保留，不在详情页呈现。 */
+function Process({ work }: { work: WorkItem }) {
   return (
-    <section className="ent-panel">
+    <section className="ent-panel ent-work-process">
       <h2>工作过程</h2>
+      <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities)}</p>
       {work.activities.length ? (
-        <ul className="ent-wk-activity-list" aria-live="polite" aria-label="实时工作活动">
-          {work.activities.slice(-8).map(activity => <WorkActivityRow key={activity.id} activity={activity} />)}
-        </ul>
-      ) : null}
-      {names.length > 1 ? (
-        <div className="ent-wk-tabs" role="tablist" aria-label="按员工筛选">
-          <button type="button" role="tab" aria-selected={!who} className={who ? undefined : 'active'} onClick={() => setWho('')}>全部</button>
-          {names.map(name => (
-            <button key={name} type="button" role="tab" aria-selected={who === name} className={who === name ? 'active' : undefined} onClick={() => setWho(name)}>
-              {name}
-            </button>
-          ))}
-        </div>
-      ) : null}
-      {rows.length ? (
-        <ul className="ent-wk-log">
-          {rows.map(entry => (
-            <li key={entry.id} className={dotOf(entry)}>
-              <i aria-hidden />
-              <b>{entry.actor}</b>
-              <span>{entry.text}</span>
-              <time>{hhmm(entry.at)}</time>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        // 平台的动作记录目前不带「这条是谁做的」（见 work-mapping 的 buildTimeline 注释），
-        // 所以按人筛可能一条都没有。这里把原因说清，不让用户以为界面坏了。
-        <p className="ent-hint">{who ? '这位同事的动作还没有单独上报，先看「全部」。' : '还没有动作记录。'}</p>
-      )}
+        <ol className="ent-wk-activity-list" aria-label="工作执行记录" tabIndex={0}>
+          {work.activities.map(activity => <WorkActivityRow key={`${activity.runId}:${activity.id}`} activity={activity} />)}
+        </ol>
+      ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}
     </section>
   );
 }
 
-/** 分享 = 把这项工作的摘要复制到剪贴板。没有分享通道，所以按钮只做它真做得到的事。 */
 function WorkActivityRow({ activity }: { activity: WorkActivity }) {
   const stateLabel = activity.state === 'running'
     ? '进行中'
@@ -484,7 +452,7 @@ function WorkActivityRow({ activity }: { activity: WorkActivity }) {
       <span className="ent-wk-activity-icon" aria-hidden>
         {activity.state === 'running' ? <LoaderCircle size={14} className="ent-spin" /> : activity.state === 'failed' ? <XCircle size={14} /> : activity.state === 'waiting-user' ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}
       </span>
-      <span className="ent-wk-activity-copy"><strong>{activity.text}</strong><small>{stateLabel}</small></span>
+      <span className="ent-wk-activity-copy"><strong>{processActivityLabel(activity)}</strong><small>{stateLabel}</small></span>
       <time>{hhmm(activity.endedAt ?? activity.startedAt)}</time>
     </li>
   );
@@ -538,14 +506,6 @@ async function copy(text: string): Promise<boolean> {
 function hhmm(at: number): string {
   const date = new Date(at);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
-
-/** 时间轴圆点的颜色分档：产出绿、失败红、你自己灰、员工动作蓝。 */
-function dotOf(entry: WorkTimelineEntry): string {
-  if (entry.kind === 'deliver') return 'done';
-  if (entry.kind === 'fail' || entry.kind === 'stop') return 'fail';
-  if (entry.kind === 'user' || entry.kind === 'create') return 'user';
-  return '';
 }
 
 const KIND: Record<string, string> = {

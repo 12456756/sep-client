@@ -71,10 +71,10 @@ try {
    await page.getByText('流程工作',{exact:true}).waitFor({timeout:4000});
    await page.getByText('2 位同事协作',{exact:true}).waitFor();
    await page.evaluate(()=>window.nodeEvent('arrangement_node_started','node-a'));
-   await page.getByText('开始执行：市场调研',{exact:true}).waitFor();
+   await page.getByRole('status').filter({hasText:'当前：正在市场调研'}).waitFor();
    await page.evaluate(()=>{window.nodeEvent('arrangement_node_completed','node-a');window.nodeEvent('arrangement_state_changed','node-a','completed');window.nodeEvent('arrangement_node_started','node-b');});
    await page.getByText('50%',{exact:true}).first().waitFor();
-   await page.getByText('已完成：市场调研',{exact:true}).waitFor({timeout:3000});
+   await page.getByRole('list',{name:'工作执行记录'}).locator('li.completed').filter({hasText:'市场调研'}).waitFor({timeout:3000});
    assert.deepEqual(await page.evaluate(()=>window.workspace.works[0].steps.map(s=>s.state)),['done','running']);
    await page.waitForFunction(()=>{
     const bar=document.querySelector('.ent-bar > span > i');
