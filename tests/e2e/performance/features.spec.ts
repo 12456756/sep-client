@@ -87,7 +87,7 @@ test.describe('图片优化性能测试', () => {
         formats: {} as Record<string, number>,
       };
 
-      images.forEach((img: any) => {
+      images.forEach(img => {
         if (img.srcset) metrics.withSrcset++;
         if (img.loading === 'lazy') metrics.withLazy++;
 
@@ -111,7 +111,7 @@ test.describe('图片优化性能测试', () => {
     await page.waitForLoadState('networkidle');
 
     const imageMetrics = await page.evaluate(() => {
-      const resources = performance.getEntriesByType('resource') as any[];
+      const resources = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
       const imageResources = resources.filter(r =>
         /\.(jpg|jpeg|png|webp|avif|gif)$/i.test(r.name)
       );

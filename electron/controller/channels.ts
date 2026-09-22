@@ -19,6 +19,8 @@ export const INVOKE_CHANNELS = {
   AUTH_FORGET_ACCOUNT: 'auth:forget-account',
   AUTH_LOGOUT: 'auth:logout',
   SYSTEM_RUNTIME_INFO: 'system:runtime-info',
+  SYSTEM_LOG_ERROR: 'system:log-error',
+  SYSTEM_LOG_PERFORMANCE: 'system:log-performance',
   AUTH_GET_INSTANCES: 'auth:get-instances',
   AUTH_GET_EMPLOYEE_STATUS: 'auth:get-employee-status',
   AUTH_GET_ORGANIZATION: 'auth:get-organization',

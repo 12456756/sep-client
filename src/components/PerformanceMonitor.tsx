@@ -1,15 +1,23 @@
 import { useState, useEffect } from 'react';
 
 interface PerformanceMetrics {
-  pageLoad: number;
-  domReady: number;
-  fcp: number;
-  lcp: number;
-  fid: number;
-  cls: number;
-  ttfb: number;
+  pageLoad: number | null;
+  domReady: number | null;
+  fcp: number | null;
+  lcp: number | null;
+  fid: number | null;
+  cls: number | null;
+  ttfb: number | null;
   resources: number;
-  memory: number;
+  memory: number | null;
+}
+
+interface MemoryInfo {
+  usedJSHeapSize: number;
+}
+
+interface PerformanceWithMemory extends Performance {
+  memory?: MemoryInfo;
 }
 
 interface PerformanceMonitorProps {
@@ -23,39 +31,72 @@ export function PerformanceMonitor({
 }: PerformanceMonitorProps) {
   const [metrics, setMetrics] = useState<PerformanceMetrics | null>(null);
   const [minimized, setMinimized] = useState(initialMinimized);
-  const [memory, setMemory] = useState<number>(0);
+  const [memory, setMemory] = useState<number | null>(null);
 
   useEffect(() => {
     // 获取初始性能指标
-    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming;
+    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
     const paint = performance.getEntriesByType('paint');
 
-    const fcp = paint.find(p => p.name === 'first-contentful-paint')?.startTime || 0;
-    const lcp = paint.find(p => p.name === 'largest-contentful-paint')?.startTime || 0;
+    const fcp = paint.find(p => p.name === 'first-contentful-paint')?.startTime ?? null;
+    const performanceWithMemory = performance as PerformanceWithMemory;
+    const memoryValue = performanceWithMemory.memory?.usedJSHeapSize ?? null;
 
     setMetrics({
-      pageLoad: navigation.loadEventEnd - navigation.fetchStart,
-      domReady: navigation.domContentLoadedEventEnd - navigation.fetchStart,
+      pageLoad: navigation ? navigation.loadEventEnd - navigation.fetchStart : null,
+      domReady: navigation ? navigation.domContentLoadedEventEnd - navigation.fetchStart : null,
       fcp,
-      lcp,
-      fid: 0, // First Input Delay 需要用户交互
-      cls: 0, // Cumulative Layout Shift
-      ttfb: navigation.responseStart - navigation.requestStart,
+      lcp: null,
+      fid: null,
+      cls: null,
+      ttfb: navigation ? navigation.responseStart - navigation.requestStart : null,
       resources: performance.getEntriesByType('resource').length,
-      memory: 0,
+      memory: memoryValue,
+    });
+
+    const observers: PerformanceObserver[] = [];
+    const observe = (type: string, callback: PerformanceObserverCallback): void => {
+      try {
+        const observer = new PerformanceObserver(callback);
+        observer.observe({ type, buffered: true });
+        observers.push(observer);
+      } catch {
+        // 当前 Chromium 版本不支持该指标时保持 null，避免伪造数据。
+      }
+    };
+
+    observe('largest-contentful-paint', list => {
+      const entries = list.getEntries();
+      const lastEntry = entries.at(-1);
+      if (lastEntry) setMetrics(prev => prev ? { ...prev, lcp: lastEntry.startTime } : null);
+    });
+    observe('first-input', list => {
+      const firstInput = list.getEntries()[0] as PerformanceEventTiming | undefined;
+      if (firstInput) {
+        setMetrics(prev => prev ? { ...prev, fid: firstInput.processingStart - firstInput.startTime } : null);
+      }
+    });
+    let clsValue = 0;
+    observe('layout-shift', list => {
+      for (const entry of list.getEntries()) {
+        const layoutShift = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean };
+        if (!layoutShift.hadRecentInput) clsValue += layoutShift.value ?? 0;
+      }
+      setMetrics(prev => prev ? { ...prev, cls: clsValue } : null);
     });
 
     // 内存监控
     const memoryInterval = setInterval(() => {
-      if ('memory' in performance) {
-        const mem = (performance as any).memory;
-        setMemory(mem.usedJSHeapSize);
-        setMetrics((prev: PerformanceMetrics | null) => prev ? { ...prev, memory: mem.usedJSHeapSize } : null);
+      const currentMemory = performanceWithMemory.memory?.usedJSHeapSize;
+      if (currentMemory !== undefined) {
+        setMemory(currentMemory);
+        setMetrics(prev => prev ? { ...prev, memory: currentMemory } : null);
       }
     }, 2000);
 
     return () => {
       clearInterval(memoryInterval);
+      observers.forEach(observer => observer.disconnect());
     };
   }, []);
 
@@ -68,7 +109,8 @@ export function PerformanceMonitor({
     'bottom-right': 'bottom-4 right-4',
   };
 
-  const formatBytes = (bytes: number): string => {
+  const formatBytes = (bytes: number | null): string => {
+    if (bytes === null) return 'N/A';
     if (bytes === 0) return '0 B';
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -76,7 +118,8 @@ export function PerformanceMonitor({
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
   };
 
-  const getPerformanceLevel = (metric: string, value: number): 'good' | 'needs-improvement' | 'poor' => {
+  const getPerformanceLevel = (metric: string, value: number | null): 'good' | 'needs-improvement' | 'poor' => {
+    if (value === null) return 'good';
     const thresholds = {
       fcp: { good: 1800, poor: 3000 },
       lcp: { good: 2500, poor: 4000 },
@@ -152,19 +195,19 @@ export function PerformanceMonitor({
           <div className="space-y-1.5">
             <MetricRow
               label="FCP"
-              value={`${Math.round(metrics.fcp)}ms`}
+              value={formatMetric(metrics.fcp)}
               level={getPerformanceLevel('fcp', metrics.fcp)}
               getStatusColor={getStatusColor}
             />
             <MetricRow
               label="LCP"
-              value={`${Math.round(metrics.lcp)}ms`}
+              value={formatMetric(metrics.lcp)}
               level={getPerformanceLevel('lcp', metrics.lcp)}
               getStatusColor={getStatusColor}
             />
             <MetricRow
               label="TTFB"
-              value={`${Math.round(metrics.ttfb)}ms`}
+              value={formatMetric(metrics.ttfb)}
               level={getPerformanceLevel('ttfb', metrics.ttfb)}
               getStatusColor={getStatusColor}
             />
@@ -179,13 +222,13 @@ export function PerformanceMonitor({
           <div className="space-y-1.5">
             <MetricRow
               label="页面加载"
-              value={`${Math.round(metrics.pageLoad)}ms`}
+              value={formatMetric(metrics.pageLoad)}
               level="good"
               getStatusColor={getStatusColor}
             />
             <MetricRow
               label="DOM 就绪"
-              value={`${Math.round(metrics.domReady)}ms`}
+              value={formatMetric(metrics.domReady)}
               level="good"
               getStatusColor={getStatusColor}
             />
@@ -248,4 +291,8 @@ function MetricRow({ label, value, level, getStatusColor }: MetricRowProps) {
       <span className="font-mono text-gray-900 dark:text-gray-100">{value}</span>
     </div>
   );
+}
+
+function formatMetric(value: number | null): string {
+  return value === null ? 'N/A' : `${Math.round(value)}ms`;
 }

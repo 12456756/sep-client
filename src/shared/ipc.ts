@@ -198,6 +198,6 @@ export interface ElectronAPI {
   onArrangementPlanningEvent: (callback: (event: ArrangementPlanningProgress) => void) => () => void
   sendToolApprovalResponse: (response: ToolApprovalResponse) => void
   // 性能监控和错误日志方法
-  logError?: (error: { message: string; stack?: string; componentStack?: string; timestamp?: number }) => Promise<void>
-  logPerformance?: (metrics: Record<string, number | string | undefined>) => Promise<void>
+  logError: (error: { message: string; stack?: string; componentStack?: string; timestamp?: number }) => Promise<void>
+  logPerformance: (metrics: Record<string, number | string | undefined>) => Promise<void>
 }

@@ -109,13 +109,16 @@ export function getOptimizedImageUrl(
     case 'webp':
       optimizedUrl += '.webp';
       break;
-    case 'original':
-    default:
+    case 'original': {
       // 保持原始扩展名
-      const match = baseUrl.match(/\.(jpg|jpeg|png)$/i);
+      const match = baseUrl.match(/\.(jpg|jpeg|png|webp|avif)$/i);
       if (match) {
         optimizedUrl += match[0];
       }
+      break;
+    }
+    default:
+      break;
   }
 
   return optimizedUrl;
@@ -236,6 +239,12 @@ export class ImageLazyLoader {
       img.srcset = srcset;
       delete img.dataset.srcset;
     }
+
+    const picture = img.closest('picture');
+    picture?.querySelectorAll<HTMLSourceElement>('source[data-srcset]').forEach(source => {
+      source.srcset = source.dataset.srcset ?? '';
+      delete source.dataset.srcset;
+    });
 
     img.classList.remove('lazy-loading');
     img.classList.add('lazy-loaded');

@@ -1,4 +1,44 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
+
+interface BrowserPerformanceMemory {
+  usedJSHeapSize: number;
+  totalJSHeapSize: number;
+  jsHeapSizeLimit: number;
+}
+
+interface PerformanceMetrics {
+  pageLoad: number;
+  domReady: number;
+  fcp: number;
+  lcp: number;
+  ttfb: number;
+  resources: number;
+  memory: number;
+}
+
+interface ResourceTypeMetrics {
+  count: number;
+  totalTime: number;
+}
+
+interface SlowResourceMetrics {
+  name: string;
+  duration: number;
+  size: number;
+}
+
+interface ResourceMetrics {
+  total: number;
+  byType: Record<string, ResourceTypeMetrics>;
+  slowestResources: SlowResourceMetrics[];
+}
+
+interface StabilityMetrics {
+  iteration: number;
+  fcp: number;
+  lcp: number;
+  pageLoad: number;
+}
 
 /**
  * 性能基准配置
@@ -24,12 +64,13 @@ const PERFORMANCE_THRESHOLDS = {
 /**
  * 获取性能指标
  */
-async function getPerformanceMetrics(page: any) {
+async function getPerformanceMetrics(page: Page): Promise<PerformanceMetrics> {
   return await page.evaluate(() => {
-    const navigation = performance.getEntriesByType('navigation')[0] as any;
-    const paint = performance.getEntriesByType('paint');
-    const fcp = paint.find((p: any) => p.name === 'first-contentful-paint')?.startTime || 0;
-    const lcp = paint.find((p: any) => p.name === 'largest-contentful-paint')?.startTime || 0;
+    const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    const paint = performance.getEntriesByType('paint') as PerformancePaintTiming[];
+    const fcp = paint.find(p => p.name === 'first-contentful-paint')?.startTime || 0;
+    const lcp = paint.find(p => p.name === 'largest-contentful-paint')?.startTime || 0;
+    const memory = (performance as Performance & { memory?: BrowserPerformanceMemory }).memory;
 
     return {
       pageLoad: navigation?.loadEventEnd - navigation?.fetchStart || 0,
@@ -38,7 +79,7 @@ async function getPerformanceMetrics(page: any) {
       lcp,
       ttfb: navigation?.responseStart - navigation?.requestStart || 0,
       resources: performance.getEntriesByType('resource').length,
-      memory: (performance as any).memory?.usedJSHeapSize || 0,
+      memory: memory?.usedJSHeapSize || 0,
     };
   });
 }
@@ -65,9 +106,7 @@ function assessPerformanceLevel(metric: string, value: number): 'good' | 'needs-
 
 test.describe('性能基准测试', () => {
   test('首页加载性能', async ({ page }) => {
-    const startTime = Date.now();
     await page.goto('/');
-    const navigationComplete = Date.now() - startTime;
 
     const metrics = await getPerformanceMetrics(page);
 
@@ -88,12 +127,12 @@ test.describe('性能基准测试', () => {
   test('资源加载性能', async ({ page }) => {
     await page.goto('/');
 
-    const resourceMetrics = await page.evaluate(() => {
-      const resources = performance.getEntriesByType('resource') as any[];
+    const resourceMetrics: ResourceMetrics = await page.evaluate(() => {
+      const resources = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
       const analysis = {
         total: resources.length,
-        byType: {} as Record<string, any>,
-        slowestResources: [] as any[],
+        byType: {} as Record<string, ResourceTypeMetrics>,
+        slowestResources: [] as SlowResourceMetrics[],
       };
 
       resources.forEach(resource => {
@@ -107,7 +146,7 @@ test.describe('性能基准测试', () => {
         analysis.slowestResources.push({
           name: resource.name.split('/').pop() || 'unknown',
           duration: Math.round(resource.duration),
-          size: (resource as any).transferSize || 0,
+          size: resource.transferSize || 0,
         });
       });
 
@@ -119,11 +158,11 @@ test.describe('性能基准测试', () => {
 
     console.log('\n📦 资源加载分析:');
     console.log(`  总资源数: ${resourceMetrics.total}`);
-    Object.entries(resourceMetrics.byType).forEach(([type, data]: [string, any]) => {
+    Object.entries(resourceMetrics.byType).forEach(([type, data]) => {
       console.log(`  ${type}: ${data.count} 个, 总耗时 ${Math.round(data.totalTime)}ms`);
     });
     console.log('  最慢的 5 个资源:');
-    resourceMetrics.slowestResources.forEach((r: any) => {
+    resourceMetrics.slowestResources.forEach(r => {
       console.log(`    ${r.name}: ${r.duration}ms`);
     });
 
@@ -137,7 +176,7 @@ test.describe('性能基准测试', () => {
     await page.waitForTimeout(1000);
 
     const memoryMetrics = await page.evaluate(() => {
-      const memory = (performance as any).memory || {
+      const memory = (performance as Performance & { memory?: BrowserPerformanceMemory }).memory || {
         usedJSHeapSize: 0,
         totalJSHeapSize: 0,
         jsHeapSizeLimit: 0,
@@ -230,7 +269,7 @@ test.describe('性能基准测试', () => {
 
 test.describe('性能回归检测', () => {
   test('连续加载多次检查稳定性', async ({ page }) => {
-    const results: any[] = [];
+    const results: StabilityMetrics[] = [];
 
     for (let i = 0; i < 3; i++) {
       await page.goto('/');

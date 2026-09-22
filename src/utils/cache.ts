@@ -205,18 +205,18 @@ if (typeof window !== 'undefined') {
 /**
  * React Hook 用于缓存数据
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 export function useCachedData<T>(
   key: string,
   fetcher: () => Promise<T>,
   ttl?: number
 ): { data: T | null; loading: boolean; error: Error | null; refetch: () => Promise<void> } {
-  const [data, setData] = useState<T | null>(cache.get<T>(key));
-  const [loading, setLoading] = useState(!data);
+  const [data, setData] = useState<T | null>(() => cache.get<T>(key));
+  const [loading, setLoading] = useState(() => cache.get<T>(key) === null);
   const [error, setError] = useState<Error | null>(null);
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async (): Promise<void> => {
     try {
       setLoading(true);
       setError(null);
@@ -227,13 +227,20 @@ export function useCachedData<T>(
     } finally {
       setLoading(false);
     }
-  };
+  }, [fetcher, key, ttl]);
 
   useEffect(() => {
-    if (!data) {
-      void fetchData();
+    let active = true;
+    if (cache.get<T>(key) !== null) {
+      setData(cache.get<T>(key));
+      setLoading(false);
+      return () => { active = false; };
     }
-  }, [key]);
+    void fetchData().catch(() => {
+      if (active) setLoading(false);
+    });
+    return () => { active = false; };
+  }, [fetchData, key]);
 
   return {
     data,

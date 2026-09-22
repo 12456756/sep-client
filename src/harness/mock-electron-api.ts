@@ -116,4 +116,6 @@ export const mockElectronAPI = {
   onAuthenticationRequired: noop,
   onArrangementPlanningEvent: noop,
   sendToolApprovalResponse: () => {},
+  logError: async () => {},
+  logPerformance: async () => {},
 } satisfies ElectronAPI;

@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import type { AuthErrorCode, RememberedAccount } from '../shared/types';
 import '../styles/enterprise.css';
+import loginCollaborationImg from '../assets/images/login-collaboration.jpg';
 
 interface LoginPageProps {
   encryptionAvailable: boolean;
@@ -252,15 +253,33 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   return (
     <main className="ent-login">
-      <div className="ent-login-glow" aria-hidden="true" />
       <div className="electron-drag-region ent-login-drag" aria-hidden="true" />
 
-      <div className="ent-login-scroll">
+      {/* Left brand area with gradient and illustration */}
+      <aside className="ent-login-brand" aria-hidden="true">
+        <div className="ent-login-brand-shapes">
+          <img
+            src={loginCollaborationImg}
+            alt=""
+            className="ent-login-shapes-svg"
+          />
+        </div>
+        <div className="ent-login-brand-content">
+          <h2 className="ent-login-brand-title">
+            开启<em>硅基</em>协作
+          </h2>
+          <p className="ent-login-brand-slogan">
+            让 AI 员工成为你最得力的团队成员
+          </p>
+        </div>
+      </aside>
+
+      {/* Right form panel */}
+      <div className="ent-login-form-panel">
         <section className="ent-login-card">
           <header className="ent-login-head">
-            <h1 className="ent-login-title">硅基工作台</h1>
+            <h1 className="ent-login-title">登录</h1>
             <span className="ent-login-rule" aria-hidden="true" />
-            <p className="ent-login-tag">登录你的企业，开始与硅基员工协作</p>
           </header>
 
           <form onSubmit={handleSubmit} className="ent-login-form">

@@ -78,7 +78,8 @@
 
   /** 内容区顶部让给窗口按钮的那条。titleBarOverlay 在 main.ts 里固定 44 高。 */
   --ent-drag-h: 44px;
-  --ent-side-w: 232px;
+  /* Phase 1: 移除侧边栏，改为顶部导航 */
+  --ent-top-nav-h: 56px;
   --ent-shell-gap: 12px;
   /**
    * 员工墙两侧渐隐带的宽度，同时也是首页内容的左右内边距 ——
@@ -142,18 +143,14 @@
 /* ── 外壳 ───────────────────────────────────────────────────────────── */
 
 /*
- * 外壳按设计稿：左边一条通高的白色导航，右边一整片浅冷灰的内容区，
- * 两者之间只有一条极浅的线，不用深色边框。
- *
- * 内容区顶部是一条白色的 Header（.ent-top），它同时承担三件事：写当前页面的名字、
- * 当 Electron 的窗口拖拽区、把 Windows 的窗口按钮（titleBarOverlay 画在右上角，
- * 44 高）让开 —— 不留出右边那一段的话关闭按钮会压在标题上。
+ * Phase 1 重构：移除左侧导航，改为顶部水平导航。
+ * 外壳变为纵向结构：顶部 56px 导航栏 + 下方内容区（1200px 宽度 100% 利用）。
  */
-.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; color: var(--ent-ink); background: var(--ent-canvas); font-family: var(--ent-font-body); font-feature-settings: 'cv11', 'ss01'; }
+.ent-shell { display: flex; flex-direction: column; min-width: 0; min-height: 100dvh; height: 100dvh; color: var(--ent-ink); background: var(--ent-canvas); font-family: var(--ent-font-body); font-feature-settings: 'cv11', 'ss01'; }
 .ent-shell-main { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .ent-scroll { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; }
-.ent-page { width: min(1180px, 100%); margin: 0 auto; padding: 22px 28px 32px; }
-.ent-page.wide { width: 100%; max-width: none; }
+.ent-page { width: 100%; max-width: 1200px; margin: 0 auto; padding: 22px 28px 32px; }
+.ent-page.wide { max-width: none; }
 
 /*
  * 换页时整页淡入 + 上移 6px 收住（设计稿：250~350ms）。
@@ -162,9 +159,156 @@
 @keyframes ent-page-in { from { opacity: 0; transform: translateY(6px); } }
 .ent-page { animation: ent-page-in 280ms cubic-bezier(.22, 1, .36, 1); }
 
-/* ── 左侧导航 ────────────────────────────────────────────────────────── */
+/* ── 顶部导航 (Phase 1 新增) ────────────────────────────────────────── */
 
-.ent-side { display: flex; width: var(--ent-side-w); flex: 0 0 var(--ent-side-w); flex-direction: column; min-height: 0; padding: 0 14px 12px; background: var(--ent-panel); box-shadow: inset -1px 0 0 var(--ent-line-soft); }
+.ent-top-nav {
+  display: flex;
+  align-items: center;
+  height: var(--ent-top-nav-h);
+  padding: 0 20px;
+  background: var(--ent-panel);
+  border-bottom: 1px solid var(--ent-line-soft);
+  box-shadow: var(--ent-shadow);
+}
+
+/* Logo + 企业名 (左侧 120px) */
+.ent-top-nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 120px;
+  margin-right: 24px;
+}
+
+.ent-top-nav-brand strong {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ent-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 导航项组 (中间) */
+.ent-top-nav-items {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ent-top-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--ent-top-nav-h);
+  padding: 0 20px;
+  border: 0;
+  background: transparent;
+  color: var(--ent-ink-2);
+  font-size: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 150ms cubic-bezier(.22, 1, .36, 1);
+  position: relative;
+}
+
+.ent-top-nav-item:hover {
+  color: var(--ent-ink);
+  background: rgba(196, 97, 47, 0.08);
+}
+
+.ent-top-nav-item.active {
+  color: var(--ent-brand-solid);
+  font-weight: 600;
+}
+
+.ent-top-nav-item.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--ent-brand-solid);
+}
+
+.ent-top-nav-item > svg {
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+/* 右侧操作区 */
+.ent-top-nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.ent-top-nav-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: var(--ent-radius-sm);
+  background: transparent;
+  color: var(--ent-ink-2);
+  cursor: pointer;
+  transition: all var(--ent-ease);
+}
+
+.ent-top-nav-icon:hover {
+  background: var(--ent-brand-tint);
+  color: var(--ent-brand-ink);
+}
+
+.ent-top-nav-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ent-danger);
+  border: 2px solid var(--ent-panel);
+}
+
+.ent-top-nav-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--ent-brand-soft);
+  color: var(--ent-brand-ink);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--ent-ease);
+}
+
+.ent-top-nav-avatar:hover {
+  background: var(--ent-brand-solid);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: var(--ent-shadow-card);
+}
+
+.ent-avatar-text {
+  user-select: none;
+}
+
+/* ── 左侧导航 (Phase 1 保留用于对比，后续删除) ────────────────────────── */
+
+.ent-side { display: none; /* Phase 1: 暂时隐藏，Phase 2 完全移除 */ }
 .ent-side-brand { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-width: 0; height: 60px; padding: 0 4px; }
 .ent-side-brand strong { overflow: hidden; font-size: 16px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ent-side-items { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 4px; padding-top: 14px; overflow-y: auto; scrollbar-width: none; }
@@ -2294,10 +2438,12 @@
  * 取代原来的靛蓝短横。输入框、账号下拉、记住密码与提交键全部复用 ent-* token。
  *
  * 这一屏只在浅色下呈现（项目暂不做深色模式）。
+ * 方案 A：左右分栏，左侧品牌插图区 + 右侧表单区。
  */
 .ent-login {
   position: relative;
-  display: block;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   height: 100dvh;
   width: 100vw;
   overflow: hidden;
@@ -2305,38 +2451,99 @@
   color: var(--ent-ink);
   font-family: var(--ent-font-body);
 }
-.ent-login-glow {
-  position: absolute; inset: 0; pointer-events: none;
-  background:
-    radial-gradient(60% 50% at 12% 8%, rgb(196 97 47 / 9%) 0%, rgb(255 255 255 / 0%) 60%),
-    radial-gradient(55% 45% at 88% 92%, rgb(154 123 63 / 8%) 0%, rgb(255 255 255 / 0%) 62%);
+
+/* 左侧品牌区 */
+.ent-login-brand {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 60px 50px;
+  background: linear-gradient(135deg, #c4612f 0%, #9a7b3f 100%);
+  overflow: hidden;
 }
+
+.ent-login-brand-shapes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.ent-login-shapes-svg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.5;
+}
+
+.ent-login-brand-content {
+  position: relative;
+  z-index: 1;
+  max-width: 420px;
+  text-align: center;
+}
+
+.ent-login-brand-title {
+  margin: 0 0 16px;
+  font-family: var(--ent-font-display);
+  font-size: 42px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: -.02em;
+  color: #fff;
+}
+
+.ent-login-brand-title em {
+  font-style: italic;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.ent-login-brand-slogan {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+/* 右侧表单区 */
+.ent-login-form-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: 60px 50px;
+  background: #fff;
+  overflow-y: auto;
+}
+
 .ent-login-drag { position: absolute; inset-inline: 0; top: 0; z-index: 30; height: 40px; }
-.ent-login-scroll { position: relative; display: flex; height: 100%; overflow-y: auto; padding: 40px 24px; }
 
 .ent-login-card {
-  width: 100%; max-width: 400px; margin: auto;
-  padding: 34px 30px 30px;
-  border: 1px solid var(--ent-line);
-  border-radius: var(--ent-radius-shell);
-  background: var(--ent-panel);
-  box-shadow: var(--ent-shadow-lift);
+  width: 100%; max-width: 360px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
   animation: ent-approve-in var(--ent-duration-slow) var(--ent-spring);
 }
-.ent-login-head { margin-bottom: 30px; text-align: center; }
+.ent-login-head { margin-bottom: 32px; text-align: left; }
 .ent-login-title {
   margin: 0;
   font-family: var(--ent-font-display);
-  font-size: 28px; font-weight: 500; letter-spacing: .04em;
+  font-size: 32px; font-weight: 500; letter-spacing: -.01em;
   color: var(--ent-ink);
 }
 .ent-login-rule {
-  display: block; width: 32px; height: 2px; margin: 12px auto 0;
+  display: block; width: 40px; height: 2px; margin: 14px 0 0;
   border-radius: 999px; background: var(--ent-brand-solid);
 }
-.ent-login-tag { margin: 10px 0 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
+.ent-login-tag { margin: 12px 0 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
 
-.ent-login-form { display: flex; flex-direction: column; gap: 16px; }
+.ent-login-form { display: flex; flex-direction: column; gap: 18px; }
 .ent-login-field { position: relative; }
 .ent-login-label { display: block; margin-bottom: 7px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); font-weight: 600; }
 .ent-login-inputwrap { position: relative; }
@@ -2454,4 +2661,63 @@
   .ent-login-affix.caret > svg, .ent-login-submit { transition: none; }
   .ent-login-submit:active:not(:disabled) { transform: none; }
   .ent-login-spinner { animation: none; }
+}
+/* 响应式：小于 1024px 时左侧品牌区折叠，只保留顶部窄条 logo */
+@media (max-width: 1024px) {
+  .ent-login {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .ent-login-brand {
+    padding: 20px 24px;
+    background: linear-gradient(90deg, #c4612f 0%, #9a7b3f 100%);
+  }
+
+  .ent-login-brand-shapes {
+    display: none;
+  }
+
+  .ent-login-brand-content {
+    max-width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .ent-login-brand-title {
+    font-size: 20px;
+    margin: 0;
+  }
+
+  .ent-login-brand-slogan {
+    display: none;
+  }
+
+  .ent-login-form-panel {
+    padding: 40px 24px;
+  }
+}
+
+@media (max-width: 640px) {
+  .ent-login-brand {
+    padding: 16px 20px;
+  }
+
+  .ent-login-brand-title {
+    font-size: 18px;
+  }
+
+  .ent-login-form-panel {
+    padding: 32px 20px;
+  }
+
+  .ent-login-card {
+    max-width: 100%;
+  }
+
+  .ent-login-title {
+    font-size: 26px;
+  }
 }

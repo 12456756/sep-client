@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 import { visualizer } from 'rollup-plugin-visualizer';
+import type { Plugin } from 'vite';
 
 export default defineConfig({
   main: {
@@ -36,7 +37,7 @@ export default defineConfig({
         gzipSize: true,
         brotliSize: true,
         template: 'treemap', // 可选: 'sunburst', 'treemap', 'network'
-      }) as any,
+      }) as Plugin,
     ],
     root: resolve(__dirname, 'src'),
     resolve: {

@@ -11,6 +11,22 @@ import { INVOKE_CHANNELS, SEND_CHANNELS } from '../channels'
 import { listener, NO_INPUT, route } from '../router'
 import { app } from 'electron'
 import { config } from '../../common/config'
+import { logger } from '../../common/logger'
+
+const log = logger.child('system')
+
+const errorLogInput = z.object({
+  message: z.string().trim().min(1).max(2_000),
+  stack: z.string().max(12_000).optional(),
+  componentStack: z.string().max(12_000).optional(),
+  timestamp: z.number().finite().optional(),
+})
+
+const performanceValue = z.union([z.number().finite(), z.string().max(500), z.undefined()])
+const performanceLogInput = z.record(z.string().max(80), performanceValue).refine(
+  value => Object.keys(value).length <= 100,
+  '性能指标数量不能超过 100 项',
+)
 
 /**
  * 审批响应。`requestId` 必填（C5）——缺了就不批，不做任何推断。
@@ -35,6 +51,15 @@ export const systemRoutes = [
       buildTime: config.BUILD_TIME,
     },
   })),
+  route(INVOKE_CHANNELS.SYSTEM_LOG_ERROR, errorLogInput, async (_ctx, input) => {
+    // 客户端日志接口只记录结构化字段，避免把渲染进程传入的文本当成日志模板。
+    log.error('renderer error boundary report', input)
+    return { success: true }
+  }, { errorShape: 'ipc' }),
+  route(INVOKE_CHANNELS.SYSTEM_LOG_PERFORMANCE, performanceLogInput, async (_ctx, input) => {
+    log.info('renderer performance report', { metrics: input })
+    return { success: true }
+  }, { errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, NO_INPUT, async ctx => {
     const window = ctx.window()
     if (!window) {
@@ -57,4 +82,3 @@ export const systemListeners = [
     ctx.backend.peekTaskRuntime()?.respondToApproval(input)
   }),
 ]
-

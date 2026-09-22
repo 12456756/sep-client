@@ -47,7 +47,7 @@ export function measurePageLoad(): void {
           metrics.largestContentfulPaint = lastEntry.renderTime || lastEntry.loadTime || 0;
         });
         lcpObserver.observe({ entryTypes: ['largest-contentful-paint'] });
-      } catch (e) {
+      } catch (_error) {
         // LCP 不可用
       }
 
@@ -61,7 +61,7 @@ export function measurePageLoad(): void {
           });
         });
         fidObserver.observe({ entryTypes: ['first-input'] });
-      } catch (e) {
+      } catch (_error) {
         // FID 不可用
       }
 
@@ -79,7 +79,7 @@ export function measurePageLoad(): void {
           metrics.cumulativeLayoutShift = clsValue;
         });
         clsObserver.observe({ entryTypes: ['layout-shift'] });
-      } catch (e) {
+      } catch (_error) {
         // CLS 不可用
       }
 
@@ -97,7 +97,7 @@ export function measurePageLoad(): void {
 
       // 发送到 Electron 主进程
       if (window.electronAPI?.logPerformance) {
-        window.electronAPI.logPerformance(metrics as unknown as Record<string, number | string | undefined>).catch(console.error);
+        void window.electronAPI.logPerformance(metrics as unknown as Record<string, number | string | undefined>).catch(() => undefined);
       }
     }, 0);
   });

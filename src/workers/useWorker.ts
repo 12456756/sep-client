@@ -6,6 +6,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { WorkerManager } from './WorkerManager';
 
+const DATA_PROCESSOR_WORKER_URL = new URL('./data-processor.worker.ts', import.meta.url);
+
 interface UseWorkerOptions {
   timeout?: number;
   autoTerminate?: boolean;
@@ -111,7 +113,7 @@ export function useWorker<T = unknown>(
  */
 export function useDataProcessor<T extends Record<string, unknown>>() {
   const { execute, isLoading, error, isActive } = useWorker<T[]>(
-    new URL('./data-processor.worker.ts', import.meta.url)
+    DATA_PROCESSOR_WORKER_URL
   );
 
   const sort = useCallback(

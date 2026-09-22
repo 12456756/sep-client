@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from 'react';
+import { useCallback, useEffect, useState, lazy, Suspense } from 'react';
 import type { EmployeeStatus, Subscription, RememberedAccount } from './shared/types';
 import { PerformanceMonitor } from './components/PerformanceMonitor';
 
@@ -98,6 +98,18 @@ export default function App() {
     }
   };
 
+  const handleToolApprove = useCallback(() => {
+    if (!toolApprovalRequest) return;
+    void window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true });
+    setToolApprovalRequest(null);
+  }, [toolApprovalRequest]);
+
+  const handleToolDeny = useCallback(() => {
+    if (!toolApprovalRequest) return;
+    void window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' });
+    setToolApprovalRequest(null);
+  }, [toolApprovalRequest]);
+
   const renderRoute = () => {
     if (restoringAuth) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在恢复工作台</p></div>;
     if (!authState) return <LoginPage encryptionAvailable={encryptionAvailable} rememberedAccounts={rememberedAccounts} onAccountListChange={setRememberedAccounts} onLoginSuccess={setAuthState} />;
@@ -109,7 +121,7 @@ export default function App() {
   return (
     <Suspense fallback={<div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在加载...</p></div>}>
       {renderRoute()}
-      <ToolApprovalDialog request={toolApprovalRequest} onApprove={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true }); setToolApprovalRequest(null); }} onDeny={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' }); setToolApprovalRequest(null); }} />
+      <ToolApprovalDialog request={toolApprovalRequest} onApprove={handleToolApprove} onDeny={handleToolDeny} />
       {/* 性能监控 - 仅在开发环境显示 */}
       {import.meta.env.DEV && <PerformanceMonitor position="bottom-right" />}
     </Suspense>

@@ -1,4 +1,5 @@
-import { Component, ReactNode } from 'react';
+import { Component } from 'react';
+import type { ReactNode } from 'react';
 
 interface Props {
   children: ReactNode;
@@ -26,12 +27,12 @@ export class ErrorBoundary extends Component<Props, State> {
 
     // 发送错误到 Electron 主进程进行日志记录
     if (window.electronAPI?.logError) {
-      window.electronAPI.logError({
+      void window.electronAPI.logError({
         message: error.message,
         stack: error.stack || '',
         componentStack: errorInfo.componentStack || '',
         timestamp: Date.now(),
-      }).catch(console.error);
+      }).catch(() => undefined);
     }
 
     // 调用自定义错误处理
@@ -81,7 +82,7 @@ export class ErrorBoundary extends Component<Props, State> {
                   </summary>
                   <pre className="mt-2 text-xs bg-gray-100 dark:bg-gray-900 p-3 rounded overflow-auto max-h-40">
                     {this.state.error.message}
-                    {this.state.error.stack && `\n\n${this.state.error.stack}`}
+                    {import.meta.env.DEV && this.state.error.stack && `\n\n${this.state.error.stack}`}
                   </pre>
                 </details>
               )}
@@ -91,7 +92,7 @@ export class ErrorBoundary extends Component<Props, State> {
               onClick={this.handleReset}
               className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
             >
-              重新加载
+              重试
             </button>
           </div>
         </div>

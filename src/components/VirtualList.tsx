@@ -3,7 +3,7 @@
  * 用于优化大量数据列表的渲染性能
  */
 
-import { useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 interface VirtualListProps<T> {
@@ -105,11 +105,22 @@ export function VirtualGrid<T>({
   height = '600px',
 }: VirtualGridProps<T>) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const [responsiveColumns, setResponsiveColumns] = useState(columns);
+
+  useEffect(() => {
+    const updateColumns = () => {
+      const width = window.innerWidth;
+      setResponsiveColumns(width <= 640 ? 1 : width <= 960 ? Math.min(columns, 2) : columns);
+    };
+    updateColumns();
+    window.addEventListener('resize', updateColumns);
+    return () => window.removeEventListener('resize', updateColumns);
+  }, [columns]);
 
   // 将一维数组转换为行
   const rows: T[][] = [];
-  for (let i = 0; i < items.length; i += columns) {
-    rows.push(items.slice(i, i + columns));
+  for (let i = 0; i < items.length; i += responsiveColumns) {
+    rows.push(items.slice(i, i + responsiveColumns));
   }
 
   const virtualizer = useVirtualizer({
@@ -150,12 +161,12 @@ export function VirtualGrid<T>({
             <div
               className="grid gap-4"
               style={{
-                gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+                gridTemplateColumns: `repeat(${responsiveColumns}, minmax(0, 1fr))`,
               }}
             >
               {rows[virtualRow.index].map((item: T, colIndex: number) => (
-                <div key={virtualRow.index * columns + colIndex}>
-                  {renderItem(item, virtualRow.index * columns + colIndex)}
+                <div key={virtualRow.index * responsiveColumns + colIndex}>
+                  {renderItem(item, virtualRow.index * responsiveColumns + colIndex)}
                 </div>
               ))}
             </div>

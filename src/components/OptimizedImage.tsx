@@ -3,7 +3,8 @@
  * 支持懒加载、响应式、现代格式、渐进式加载
  */
 
-import { useEffect, useRef, useState, ImgHTMLAttributes } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { ImgHTMLAttributes } from 'react';
 import {
   getOptimizedImageUrl,
   generateSrcSet,
@@ -200,12 +201,13 @@ export function Picture({
   const fallbackSrcSet = generateSrcSet(src, widths, { quality, format: 'original' });
 
   useEffect(() => {
-    if (lazy && imgRef.current) {
-      globalImageLazyLoader.observe(imgRef.current);
+    const img = imgRef.current;
+    if (!img) return;
+
+    if (lazy) {
+      globalImageLazyLoader.observe(img);
       return () => {
-        if (imgRef.current) {
-          globalImageLazyLoader.unobserve(imgRef.current);
-        }
+        globalImageLazyLoader.unobserve(img);
       };
     }
   }, [lazy]);
