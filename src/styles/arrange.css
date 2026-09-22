@@ -36,11 +36,57 @@
 /* 内容最大宽度 1280，左右自动居中。顶部留白和其他页面（.ent-page）一样。 */
 .ent-arr { width: min(1280px, 100%); margin: 0 auto; padding: 22px 32px 96px; }
 
-/* 换画面：当前这屏淡出 8px，下一屏淡入 8px。没有翻转、没有缩放。 */
-.ent-arr-view { animation: arr-in 240ms var(--arr-ease) both; }
-.ent-arr-view.leaving { animation: arr-out 200ms ease-out both; }
-@keyframes arr-in { from { opacity: 0; transform: translateY(8px); } }
-@keyframes arr-out { to { opacity: 0; transform: translateY(8px); } }
+/* Phase 4: 顶部模式轮播切换器 - 48px 高 */
+.ent-arr-carousel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  height: 48px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--ent-line);
+}
+
+.ent-arr-carousel-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: var(--ent-ink-3);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 180ms var(--arr-ease);
+}
+
+.ent-arr-carousel-item:hover {
+  color: var(--ent-ink);
+}
+
+.ent-arr-carousel-item.active {
+  color: var(--ent-brand);
+}
+
+/* 当前模式底部 terracotta 下划线 */
+.ent-arr-carousel-item.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--ent-brand);
+  border-radius: 3px 3px 0 0;
+}
+
+/* 会话界面淡入动画 */
+.ent-arr-view { animation: arr-in 300ms var(--arr-ease) both; }
+@keyframes arr-in { from { opacity: 0; transform: translateX(-8px); } }
 
 .ent-arr-head { display: flex; flex-direction: column; gap: 8px; margin: 0 0 28px; }
 .ent-arr-head h1 { margin: 0; color: var(--arr-title); font-size: 26px; font-weight: 600; line-height: 1.3; }
@@ -72,29 +118,6 @@
 /* 底栏贴着滚动区下沿，滚到哪「确认并开始工作」都在原地。 */
 .ent-arr-foot { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 28px; padding: 14px 0 16px; background: linear-gradient(to top, var(--ent-canvas) 62%, rgb(247 248 252 / 0%)); }
 .ent-arr-gap { flex: 1 1 auto; }
-
-/* ── 三个模式卡片 ────────────────────────────────────────────────────── */
-
-/*
- * 三张卡等宽、等高，横向排开。hover 只抬 2px、换个描边色、阴影稍微重一点 ——
- * 不放大、不发光、不翻转。280 是三张卡在 1024 里还能一行排开的下限。
- */
-.ent-arr-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
-.ent-arr-modes.leaving { pointer-events: none; }
-
-.ent-mode { position: relative; display: flex; min-height: 280px; flex-direction: column; align-items: flex-start; padding: 32px 24px 24px; border: 1px solid var(--arr-card-line); border-radius: 12px; background: var(--ent-panel); box-shadow: var(--arr-shadow); text-align: left; cursor: pointer; transition: border-color 200ms ease-out, box-shadow 200ms ease-out, transform 200ms ease-out; }
-.ent-mode:hover { border-color: var(--arr-card-hover); box-shadow: var(--arr-shadow-lift); transform: translateY(-2px); }
-/* 自动编排是三个里最重要的那个，只给一条极淡的顶部紫线，不放大也不换底色。 */
-.ent-mode.featured::before { content: ''; position: absolute; top: 0; right: 26px; left: 26px; height: 2px; border-radius: 0 0 2px 2px; background: linear-gradient(90deg, var(--ent-brand-border), #b4b7fa 50%, var(--ent-brand-border)); }
-
-.ent-mode-icon { display: grid; width: 48px; height: 48px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: var(--ent-brand-ink); background: var(--arr-icon-bg); }
-.ent-mode-title { margin-top: 18px; color: var(--arr-strong); font-size: 18px; font-weight: 600; }
-.ent-mode-desc { display: -webkit-box; margin-top: 10px; overflow: hidden; color: var(--arr-desc); font-size: 14px; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-/* 底部是文字按钮，不是实心块 —— 整张卡本身才是那个按钮。 */
-.ent-mode-cta { display: inline-flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 22px; color: var(--ent-brand-ink); font-size: 14px; font-weight: 500; }
-.ent-mode-cta svg { transition: transform 180ms ease-out; }
-.ent-mode:hover .ent-mode-cta { color: var(--ent-brand-hover); }
-.ent-mode:hover .ent-mode-cta svg { transform: translateX(3px); }
 
 /* ── 工作目标输入 ────────────────────────────────────────────────────── */
 
