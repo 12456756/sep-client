@@ -714,7 +714,7 @@
 }
 
 .ent-records-hero-image {
-  flex: 0 0 440px;
+  flex: 0 0 420px;
   height: 160px;
   border-radius: var(--ent-radius);
   overflow: hidden;

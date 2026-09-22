@@ -172,13 +172,13 @@
   background: var(--ent-panel);
   border: 1px solid var(--ent-line);
   border-radius: var(--ent-radius);
-  box-shadow: 0 2px 8px rgb(0 0 0 / 0.04);
+  box-shadow: var(--ent-shadow);
   transition: all 180ms ease-out;
 }
 
 .ent-skill-card:hover {
   border-color: var(--ent-brand-border);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 0.08), 0 2px 6px rgb(0 0 0 / 0.04);
+  box-shadow: var(--ent-shadow-lift);
   transform: translateY(-2px);
 }
 

@@ -23,20 +23,22 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
 
   return (
     <div className="ent-page ent-home">
-      <div className="ent-home-tabs">
+      <div className="ent-home-tabs" role="tablist" aria-label="工作台视图切换">
         <button
           type="button"
+          role="tab"
+          aria-selected={activeTab === 'overview'}
           className={`ent-home-tab${activeTab === 'overview' ? ' active' : ''}`}
           onClick={() => setActiveTab('overview')}
-          aria-current={activeTab === 'overview' ? 'page' : undefined}
         >
           员工概览
         </button>
         <button
           type="button"
+          role="tab"
+          aria-selected={activeTab === 'organization'}
           className={`ent-home-tab${activeTab === 'organization' ? ' active' : ''}`}
           onClick={() => setActiveTab('organization')}
-          aria-current={activeTab === 'organization' ? 'page' : undefined}
         >
           组织架构
         </button>
