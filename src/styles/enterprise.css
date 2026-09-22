@@ -423,7 +423,9 @@
 .ent-arrangebar-site:focus-visible, .ent-arrangebar-clear:focus-visible,
 .ent-note:focus-visible, .ent-fold-btn:focus-visible,
 .ent-ask-stop:focus-visible, .ent-ask-send:focus-visible,
-.ent-ask-who:focus-within { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.ent-ask-who:focus-within,
+.ent-home-tab:focus-visible, .ent-segment button:focus-visible,
+.ent-skills-nav-item:focus-visible, .ent-record-title:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
 
 /*
  * index.css（旧工作台那套样式）里有一条带 !important 的蓝灰聚焦环，会盖掉上面这些
@@ -725,6 +727,44 @@
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 响应式：工作记录页 */
+@media (max-width: 960px) {
+  .ent-records-hero-image {
+    flex: 0 0 320px;
+  }
+}
+
+@media (max-width: 640px) {
+  .ent-records-hero {
+    flex-direction: column;
+    height: auto;
+    padding: 24px;
+    gap: 20px;
+  }
+
+  .ent-records-hero-text {
+    text-align: center;
+  }
+
+  .ent-records-hero-image {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+
+  .ent-records-kinds {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .ent-records-filters {
+    flex-wrap: wrap;
+  }
+
+  .ent-records-filters .ent-segment {
+    flex-basis: 100%;
+  }
 }
 
 /* 第一层：工作类型筛选 */
@@ -2040,6 +2080,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ent-record, .ent-record-caret, .ent-record-filters button { transition: none; }
+  .ent-record-detail { transition: none; }
+  .ent-home-tab { transition: none; }
 }
 
 @media (max-width: 860px) {

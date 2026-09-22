@@ -287,6 +287,21 @@
   }
 }
 
+/* Reduced motion: 禁用卡片动画 */
+@media (prefers-reduced-motion: reduce) {
+  .ent-skill-card {
+    transition: none;
+  }
+
+  .ent-skill-card:hover {
+    transform: none;
+  }
+
+  .ent-skills-nav-item {
+    transition: none;
+  }
+}
+
 /* ──────────────────────────── 旧版样式保留（技能详情页） ──────────────────────────── */
 
 /* User-provided skill library reference, implemented with existing application primitives. */
