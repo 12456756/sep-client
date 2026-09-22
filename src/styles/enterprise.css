@@ -750,12 +750,89 @@
 /* ── 首页 · 员工概览 ─────────────────────────────────────────────────── */
 
 /*
- * 三段，自上而下：员工统计（两格数字）、员工卡片墙（两行、左右翻页）、派活框。
- * 尺寸按设计稿：统计格 192×68、员工卡 ≥160×130、卡片圆角 10、头像片 52×64。
- * 视觉重点是员工，不是统计 —— 所以统计格刻意做小，只占一行的一小段。
+ * Phase 2 重构：双标签页布局（员工概览 + 组织架构）
+ * 员工概览：只展示已订阅员工，单行水平自动滚动轮播
+ * 移除底部派活框
  */
+
+/* 标签页导航 */
+.ent-home-tabs {
+  display: flex;
+  gap: 32px;
+  padding: 0 32px;
+  border-bottom: 1px solid var(--ent-line-soft);
+  background: var(--ent-panel);
+}
+
+.ent-home-tab {
+  position: relative;
+  padding: 14px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ent-ink-2);
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 150ms cubic-bezier(.22, 1, .36, 1);
+}
+
+.ent-home-tab:hover {
+  color: var(--ent-ink);
+}
+
+.ent-home-tab.active {
+  color: var(--ent-brand-solid);
+  font-weight: 600;
+}
+
+.ent-home-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--ent-brand-solid);
+  border-radius: 3px 3px 0 0;
+}
+
+/* 自动滚动轮播容器 */
+.ent-auto-carousel {
+  position: relative;
+  width: 100%;
+  margin-top: 32px;
+  overflow: hidden;
+}
+
+.ent-auto-carousel-track {
+  display: flex;
+  gap: 16px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  padding: 8px 0 24px;
+}
+
+.ent-auto-carousel-track::-webkit-scrollbar {
+  display: none;
+}
+
+.ent-auto-carousel-card {
+  flex-shrink: 0;
+  width: 280px;
+}
+
+/* 内容区 */
+.ent-home-content {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 32px;
+}
+
 /* 左右内边距用渐隐带的宽度，员工墙靠负 margin 顶出去（见 .ent-wall）。 */
-.ent-home { display: flex; flex-direction: column; gap: 18px; padding-inline: var(--ent-wall-fade); padding-bottom: 8px; }
+.ent-home { display: flex; flex-direction: column; }
 
 /*
  * 首页抬头。编辑式（editorial）排版：一颗陶土色 eyebrow 药丸 + 大号衬线标题，

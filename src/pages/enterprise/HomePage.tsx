@@ -1,37 +1,74 @@
 /**
- * 首页 = 员工概览。按设计稿三段，自上而下：
- * 1. 两格统计：公司员工总数 / 我拥有的员工。刻意做小 —— 视觉重点是员工，不是数字。
- * 2. 员工卡片墙：最多两行，每行几张按容器宽度算；人多到一屏放不下就变成一个环，
- *    两侧箭头往左往右都能一直转，一次滑一列，两边各露出被裁掉的一列。
- * 3. 派活框：一句话派活，唯一的可选设置是工作场地。
+ * 首页 = 双 tab：员工概览 + 组织架构。
  *
- * 页面上没有一句解释性长文案 —— 员工卡自己会说话（状态和几颗小图标），派活框自己带例子。
+ * Phase 2 重构：
+ * - 员工概览：只展示已订阅员工，单行水平自动滚动轮播
+ * - 组织架构：复用 OrganizationPage 组件
+ * - 移除底部派活框
  */
 
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type WheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Empty } from '../../components/enterprise/atoms';
-import { ArrangeBar } from '../../components/enterprise/ArrangeBar';
 import { EmployeeDeskCard, type DeskFlag } from '../../components/enterprise/EmployeeDeskCard';
 import { EmployeeWorksDrawer } from '../../components/enterprise/EmployeeWorksDrawer';
 import { StatCard } from '../../components/enterprise/StatCard';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
-import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import type { SiliconEmployee, WorkItem } from '../../features/enterprise/types';
+import { OrganizationPage } from './OrganizationPage';
+
+type Tab = 'overview' | 'organization';
 
 export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
+  const [activeTab, setActiveTab] = useState<Tab>('overview');
+
+  return (
+    <div className="ent-page ent-home">
+      <div className="ent-home-tabs">
+        <button
+          type="button"
+          className={`ent-home-tab${activeTab === 'overview' ? ' active' : ''}`}
+          onClick={() => setActiveTab('overview')}
+          aria-current={activeTab === 'overview' ? 'page' : undefined}
+        >
+          员工概览
+        </button>
+        <button
+          type="button"
+          className={`ent-home-tab${activeTab === 'organization' ? ' active' : ''}`}
+          onClick={() => setActiveTab('organization')}
+          aria-current={activeTab === 'organization' ? 'page' : undefined}
+        >
+          组织架构
+        </button>
+      </div>
+
+      {activeTab === 'overview' ? (
+        <EmployeeOverviewTab workspace={workspace} />
+      ) : (
+        <OrganizationPage
+          workspace={{ employees: workspace.organizationEmployees, navigate: workspace.navigate }}
+          members={workspace.organizationMembers}
+          organizationStatus={workspace.organizationStatus}
+          organizationError={workspace.organizationError}
+          onRetry={workspace.retryOrganization}
+        />
+      )}
+    </div>
+  );
+}
+
+function EmployeeOverviewTab({ workspace }: { workspace: EnterpriseWorkspace }) {
   const { overview, employees, works, unreviewedWorkIds, navigate } = workspace;
 
-  const roster = useMemo(() => employees.filter(item => item.assignedToMe), [employees]);
+  // 只展示已分配给我的员工（已订阅）
+  const subscribed = useMemo(() => employees.filter(item => item.assignedToMe), [employees]);
   const desks = useMemo(
-    () => roster.map(employee => deskOf(employee, works, unreviewedWorkIds, startOfToday())),
-    [roster, works, unreviewedWorkIds],
+    () => subscribed.map(employee => deskOf(employee, works, unreviewedWorkIds, startOfToday())),
+    [subscribed, works, unreviewedWorkIds],
   );
-  /** 现在就能派活的人数。墙上放不下时写在墙的右下角，让用户知道转一圈总共有多少人。 */
-  const usable = useMemo(() => roster.filter(item => item.availability !== 'unavailable').length, [roster]);
 
   const [openId, setOpenId] = useState<string | null>(null);
-  const openEmployee = openId ? roster.find(item => item.id === openId) : undefined;
+  const openEmployee = openId ? subscribed.find(item => item.id === openId) : undefined;
   const openWorks = useMemo(
     () => (openEmployee
       ? works.filter(work => involves(work, openEmployee.id)).sort((left, right) => right.updatedAt - left.updatedAt)
@@ -42,17 +79,16 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
   const openWork = (workId: string) => { setOpenId(null); navigate({ name: 'work', workId }); };
 
   return (
-    <div className="ent-page ent-home">
-      <div className="ent-home-content">
+    <div className="ent-home-content">
       <header className="ent-home-hero">
         <span className="ent-home-eyebrow">员工中心</span>
         <h1 className="ent-home-title">
           你的<em>硅基团队</em>
         </h1>
         <p className="ent-home-subtitle">
-          {roster.length > 0
-            ? `${usable} 位员工随时待命，开始派活吧`
-            : '分配之后，你的员工会出现在这里'}
+          {subscribed.length > 0
+            ? `${subscribed.length} 位员工已订阅，随时待命`
+            : '订阅员工后，他们会出现在这里'}
         </p>
       </header>
 
@@ -65,30 +101,19 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
           onClick={() => navigate({ name: 'employees', scope: 'all' })}
         />
         <StatCard
-          title="我拥有的员工"
-          value={roster.length}
+          title="已订阅员工"
+          value={subscribed.length}
           icon="👤"
           color="accent"
           onClick={() => navigate({ name: 'employees', scope: 'mine' })}
         />
       </div>
 
-      {roster.length ? (
-        <Wall desks={desks} usable={usable} onOpen={setOpenId} />
+      {subscribed.length ? (
+        <AutoScrollCarousel desks={desks} onOpen={setOpenId} />
       ) : (
-        <Empty title="企业还没有给你分配硅基员工">企业管理员分配之后，你的员工会出现在这里。</Empty>
+        <Empty title="还没有订阅硅基员工">前往「硅基员工」页面订阅你需要的员工。</Empty>
       )}
-
-      </div>
-
-      {roster.length ? (
-        <ArrangeBar
-          employees={roster.filter(item => item.availability !== 'unavailable')}
-          busy={workspace.busy}
-          onChooseSite={workspace.chooseFolder}
-          onSend={(employeeId, text, workDir) => void workspace.startConversation(employeeId, text, { workDir })}
-        />
-      ) : null}
 
       {openEmployee ? (
         <EmployeeWorksDrawer
@@ -103,225 +128,81 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
 }
 
 /**
- * 一张员工卡最窄能读的宽度。
- *
- * 设计稿的卡是 160~175，但那上面的名字是「小夏」「阿杰」这样两三个字；真实的员工叫
- * 「运营文案助手」「财务对账助手」，六个字 14px 就要 84 —— 卡再窄名字就只能打点。
- * 所以下限取 176：扣掉 12 的内边距、58 的头像片和 10 的间距，正好留得下六个字。
+ * 自动滚动轮播 - 单行水平滚动，支持自动循环、悬停暂停、手动滚动
  */
-const CARD_MIN = 176;
-/** 一张卡最宽到这里就不再长了：再宽就不是一张卡片，而是一块板子。 */
-const CARD_MAX = 190;
-/** 卡与卡之间的横向间距。一屏装得下时就是这个数，成环时会为了铺满而算宽一点。 */
-const CARD_GAP = 14;
-/** 间距最多摊到这里。再宽就不像一排卡片了，多出来的宽度改为还给卡片本身。 */
-const GAP_MAX = 34;
-/** 为了铺满而放宽的卡片上限。只在窗口宽度没法用 CARD_MAX 整齐排满时才用到。 */
-const CARD_WIDE = 214;
-/** 最多两行（设计稿如此）。成环时一列就是「上下两位员工」，墙是由这样的列组成的。 */
-const ROWS = 2;
-/** 滑一列的时长。和抽屉、页面进场同一档，都在 250~300ms。 */
-const SLIDE_MS = 260;
-/**
- * 轨道两侧各多挂几列。
- *
- * 渐隐带里露一列，滑动时又要有一列从带子外面进来，所以每侧至少备两列 ——
- * 只备一列的话滑到一半右边会空出一块底色。
- */
-const SPARE = 2;
-
-/**
- * 一屏放几列、一张卡多宽、间距多大。
- *
- * 先按「至少 CARD_MIN 宽」定列数，再让卡片铺满这一屏：多出来的宽度先摊进间距，
- * 摊到 GAP_MAX 还有剩就把剩下的还给卡片（放宽到 CARD_WIDE）。
- * 这样第一张卡的左边缘和统计格对齐、最后一张卡的右边缘和内容区右边缘对齐，间距也均匀 ——
- * 换成 1fr 均分再居中会让每张卡往格子中间缩几像素，两头就都对不上。
- */
-function fit(inner: number): { cols: number; card: number; gap: number } {
-  const cols = Math.max(2, Math.min(6, Math.floor((inner + CARD_GAP) / (CARD_MIN + CARD_GAP))));
-  const spread = (width: number) => (cols > 1 ? (inner - cols * width) / (cols - 1) : CARD_GAP);
-  const card = Math.min(CARD_MAX, (inner - (cols - 1) * CARD_GAP) / cols);
-  const gap = spread(card);
-  if (gap <= GAP_MAX) return { cols, card, gap };
-  return { cols, card: Math.min(CARD_WIDE, (inner - (cols - 1) * GAP_MAX) / cols), gap: GAP_MAX };
-}
-
-/**
- * 员工墙。
- *
- * 人数一屏装得下就是一片普通的卡片，从左上往右填、先填满第一排，没有箭头也没有渐隐带 ——
- * 只有三五位员工时还让人左右转是没有意义的。
- *
- * 装不下就成环：一列装 ROWS 位员工，整墙是一圈列，左右两个箭头都不会走到尽头，
- * 一直按下去会绕回开头。点一次箭头整条轨道横滑一列（不是原地换一批卡），
- * 滑完把当前列挪一格、位移归零 —— 因为轨道两侧各多挂了 SPARE 列，
- * 归零那一帧的画面和滑动终点是同一张，不会闪。
- *
- * 两侧各留一条 --ent-wall-fade 宽的窄带，里面正好露出相邻那一列的一条边。
- * 这条窄带落在 .ent-home 的左右内边距上（.ent-wall 用负 margin 顶出去），
- * 所以整张的卡片和上面的统计格左边缘对齐，被裁的卡露在内容区外侧 —— 设计稿就是这样。
- */
-function Wall({ desks, usable, onOpen }: {
+function AutoScrollCarousel({ desks, onOpen }: {
   desks: Desk[];
-  usable: number;
   onOpen: (employeeId: string) => void;
 }) {
-  const frame = useRef<HTMLDivElement>(null);
-  const [box, setBox] = useState(() => fit(CARD_MAX * 4));
-  /** 当前停在第几列。只有成环时才有意义。 */
-  const [at, setAt] = useState(0);
-  /** 正在往哪边滑：0 是停着。滑完由下面那个 effect 提交。 */
-  const [slide, setSlide] = useState<0 | 1 | -1>(0);
-  const reduced = usePrefersReducedMotion();
+  const container = useRef<HTMLDivElement>(null);
+  const [isPaused, setIsPaused] = useState(false);
+  const [isManualScroll, setIsManualScroll] = useState(false);
+  const scrollSpeed = 35; // px/秒
+  const pauseAfterManual = 5000; // 手动滚动后暂停 5 秒
 
-  // 一屏的可用宽度 = 整墙减掉两侧的渐隐窄带。窄带宽度写在 CSS 变量里，这里读回来算。
+  // 自动滚动动画
   useEffect(() => {
-    const node = frame.current;
-    if (!node) return;
-    const measure = () => {
-      const fade = parseFloat(getComputedStyle(node).getPropertyValue('--ent-wall-fade')) || 0;
-      setBox(fit(node.clientWidth - fade * 2));
+    const node = container.current;
+    if (!node || isPaused || isManualScroll) return;
+
+    let animationId: number;
+    let lastTime = performance.now();
+
+    const animate = (currentTime: number) => {
+      const delta = currentTime - lastTime;
+      lastTime = currentTime;
+
+      // 滚动到末尾时无缝循环回开头
+      if (node.scrollLeft >= node.scrollWidth - node.clientWidth) {
+        node.scrollLeft = 0;
+      } else {
+        node.scrollLeft += (scrollSpeed * delta) / 1000;
+      }
+
+      animationId = requestAnimationFrame(animate);
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
 
-  const { cols, card, gap } = box;
-  const { columns, looping } = useMemo(() => buildRing(desks, cols), [desks, cols]);
+    animationId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationId);
+  }, [isPaused, isManualScroll, scrollSpeed]);
 
-  const total = columns.length;
-  // 窗口变窄之后列数变少，at 可能落在不存在的列上，绕回范围内。
-  const wrap = (index: number) => (total ? ((index % total) + total) % total : 0);
-  const here = wrap(at);
-
-  // 滑动结束：把停留的列挪一格，位移归零。用定时器而不是 transitionend ——
-  // 减少动效时根本没有过渡事件，标签页在后台时也可能收不到。
+  // 手动滚动后暂停 5 秒
   useEffect(() => {
-    if (!slide) return;
-    const commit = () => { setAt(value => value + slide); setSlide(0); };
-    if (reduced) { commit(); return; }
-    const timer = window.setTimeout(commit, SLIDE_MS);
-    return () => window.clearTimeout(timer);
-  }, [slide, reduced]);
+    if (!isManualScroll) return;
+    const timer = setTimeout(() => setIsManualScroll(false), pauseAfterManual);
+    return () => clearTimeout(timer);
+  }, [isManualScroll, pauseAfterManual]);
 
-  /** 一次只滑一列：还在滑的时候连点会让位移和数据错位。 */
-  const turn = (direction: 1 | -1) => { if (looping && !slide) setSlide(direction); };
-
-  // 横向滚（触控板两指横扫、Shift+滚轮）也能拨动。竖向滚动照常传给页面，不抢。
-  const drift = useRef(0);
-  const onWheel = (event: WheelEvent) => {
-    if (!looping || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
-    event.preventDefault();
-    drift.current += event.deltaX;
-    if (Math.abs(drift.current) < card / 2) return;
-    turn(drift.current > 0 ? 1 : -1);
-    drift.current = 0;
-  };
-
-  const style = {
-    ['--ent-wall-cols' as string]: cols,
-    ['--ent-desk-w' as string]: `${looping ? card : CARD_MAX}px`,
-    ['--ent-wall-gap' as string]: `${looping ? gap : CARD_GAP}px`,
+  const handleScroll = () => {
+    setIsManualScroll(true);
   };
 
   return (
-    <div className={`ent-wall${looping ? ' turning' : ''}`} style={style}>
-      {looping ? <span className="ent-wall-count">可用员工 {usable} 人</span> : null}
-
-      {looping ? (
-        <button type="button" className="ent-wall-arrow left" onClick={() => turn(-1)} aria-label="向右滑一列，看前面的员工">
-          <ChevronLeft size={16} aria-hidden />
-        </button>
-      ) : null}
-
-      <div className="ent-wall-frame" ref={frame} onWheel={onWheel}>
-        {looping ? (
-          <div
-            className={`ent-wall-track${slide ? ' sliding' : ''}`}
-            style={{ transform: slide ? `translateX(calc(${-slide} * (var(--ent-desk-w) + var(--ent-wall-gap))))` : undefined }}
-          >
-            {Array.from({ length: cols + SPARE * 2 }, (_, index) => {
-              const slot = columns[wrap(here - SPARE + index)] ?? [];
-              // 只有正中那 cols 列是真的露在内容区里的，其余在窄带里或干脆在画面外。
-              const shown = index >= SPARE && index < SPARE + cols;
-              return <Column key={`slot-${index}`} desks={slot} onOpen={onOpen} muted={!shown} />;
-            })}
+    <div
+      className="ent-auto-carousel"
+      onMouseEnter={() => setIsPaused(true)}
+      onMouseLeave={() => setIsPaused(false)}
+    >
+      <div
+        ref={container}
+        className="ent-auto-carousel-track"
+        onScroll={handleScroll}
+      >
+        {/* 渲染两遍实现无缝循环 */}
+        {[...desks, ...desks].map((desk, index) => (
+          <div key={`${desk.employee.id}-${index}`} className="ent-auto-carousel-card">
+            <EmployeeDeskCard
+              employee={desk.employee}
+              load={desk.load}
+              working={desk.working}
+              flags={desk.flags}
+              onOpen={onOpen}
+            />
           </div>
-        ) : (
-          <div className="ent-wall-flat">
-            {desks.map(desk => (
-              <EmployeeDeskCard
-                key={desk.employee.id}
-                employee={desk.employee}
-                load={desk.load}
-                working={desk.working}
-                flags={desk.flags}
-                onOpen={onOpen}
-              />
-            ))}
-          </div>
-        )}
+        ))}
       </div>
-
-      {looping ? (
-        <button type="button" className="ent-wall-arrow right" onClick={() => turn(1)} aria-label="向左滑一列，看后面的员工">
-          <ChevronRight size={16} aria-hidden />
-        </button>
-      ) : null}
     </div>
   );
-}
-
-/**
- * inert 让窄带里和画面外那几列彻底退出交互：既不能点，也不会被 Tab 停到 ——
- * 只把它们 aria-hidden 掉，键盘用户还是会 Tab 进一张只露出三十几像素的卡里。
- * Electron 33 = Chrome 130，原生支持；React 18 的类型里还没有这个属性，所以要绕一下。
- */
-const INERT = { inert: '' } as unknown as Record<string, string>;
-
-/** 一列（上下两位员工）。窄带里和画面外的列只是画面的一部分，不参与点击和读屏。 */
-function Column({ desks, onOpen, muted = false }: {
-  desks: Desk[];
-  onOpen: (employeeId: string) => void;
-  muted?: boolean;
-}) {
-  return (
-    <div className="ent-wall-col" {...(muted ? INERT : {})}>
-      {desks.map(desk => (
-        <EmployeeDeskCard
-          key={desk.employee.id}
-          employee={desk.employee}
-          load={desk.load}
-          working={desk.working}
-          flags={desk.flags}
-          onOpen={onOpen}
-        />
-      ))}
-    </div>
-  );
-}
-
-/**
- * 把员工切成一圈列。
- *
- * 一屏装得下就不成环，直接把整份名单交给 .ent-wall-flat 从左上往右排 ——
- * 先填满第一排，第二排有几个就是几个，两排不用一样多。
- *
- * 装不下才成环。此时最后一列不够 ROWS 位就从头接上，让每一列都是满的 ——
- * 滑动时中间空一格比重复一张脸难看得多，而那张重复的脸只会出现在被裁掉的窄带里。
- */
-function buildRing(desks: Desk[], cols: number): { columns: Desk[][]; looping: boolean } {
-  if (desks.length <= Math.max(1, cols) * ROWS) return { columns: [], looping: false };
-
-  const columns: Desk[][] = [];
-  const total = Math.ceil(desks.length / ROWS);
-  for (let index = 0; index < total; index += 1) {
-    columns.push(Array.from({ length: ROWS }, (_, row) => desks[(index * ROWS + row) % desks.length]!));
-  }
-  return { columns, looping: true };
 }
 
 interface Desk {
