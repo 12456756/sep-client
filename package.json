@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "electron-vite dev",
     "dev:preview": "vite --config vite.preview.config.ts --open /?preview=workspace",
-    "build": "electron-vite build",
+    "build": "node scripts/generate-runtime-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
     "package": "npm run build && electron-builder",
     "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.node.json --noEmit",
@@ -22,7 +22,12 @@
     "poc:02": "tsx poc/02-provider.ts",
     "poc:03": "tsx poc/03-tool-call-async.ts",
     "poc:04": "tsx poc/04-failure.ts",
-    "poc:browser": "tsx poc/playwright-mcp.ts"
+    "poc:browser": "tsx poc/playwright-mcp.ts",
+    "release:config:beta": "node scripts/generate-runtime-config.mjs beta",
+    "release:config:stable": "node scripts/generate-runtime-config.mjs stable",
+    "package:beta": "npm run release:config:beta && electron-vite build && electron-builder && node scripts/generate-checksums.mjs dist && node scripts/generate-release-notes.mjs beta",
+    "package:stable": "npm run release:config:stable && electron-vite build && electron-builder && node scripts/generate-checksums.mjs dist && node scripts/generate-release-notes.mjs stable",
+    "test:packaging": "node --test scripts/packaging.test.mjs"
   },
   "dependencies": {
     "@dicebear/core": "9.4.3",
@@ -85,13 +90,24 @@
     "mac": {
       "category": "public.app-category.business",
       "target": [
-        "dmg",
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
         "zip"
       ]
     },
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ]
     },
     "linux": {
@@ -107,7 +123,8 @@
       "node_modules/@playwright/mcp/**/*",
       "node_modules/playwright/**/*",
       "node_modules/playwright-core/**/*"
-    ]
+    ],
+    "artifactName": "SEP-Client-${version}-${os}-${arch}.${ext}"
   },
   "allowScripts": {
     "electron@33.4.11": true
