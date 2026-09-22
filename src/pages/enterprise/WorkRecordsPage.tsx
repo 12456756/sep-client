@@ -54,8 +54,18 @@ interface Props {
   workspace: EnterpriseWorkspace;
 }
 
+type WorkKind = 'all' | 'chat' | 'auto' | 'manual';
+
+const WORK_KINDS: { id: WorkKind; label: string; emoji: string; match: (work: WorkItem) => boolean }[] = [
+  { id: 'all', label: '全部', emoji: '', match: () => true },
+  { id: 'chat', label: '对话式', emoji: '💬', match: work => work.kind === 'conversation' },
+  { id: 'auto', label: '自动编排', emoji: '⚡', match: work => work.kind === 'flow' && work.steps.length > 1 },
+  { id: 'manual', label: '手动编排', emoji: '🛠️', match: work => work.kind === 'flow' && work.steps.length === 1 },
+];
+
 export function WorkRecordsPage({ workspace }: Props) {
   const [search, setSearch] = useState('');
+  const [workKind, setWorkKind] = useState<WorkKind>('all');
   const [bucket, setBucket] = useState<Bucket>(workspace.route.name === 'records' ? workspace.route.bucket ?? 'all' : 'all');
   const [openId, setOpenId] = useState<string | null>(null);
   const [panel, setPanel] = useState<'result' | 'process'>('process');
@@ -71,9 +81,11 @@ export function WorkRecordsPage({ workspace }: Props) {
   }, [workspace.route]);
 
   const keyword = debouncedSearch.trim();
-  const matcher = BUCKETS.find(item => item.id === bucket) ?? BUCKETS[0];
+  const kindMatcher = WORK_KINDS.find(item => item.id === workKind) ?? WORK_KINDS[0];
+  const statusMatcher = BUCKETS.find(item => item.id === bucket) ?? BUCKETS[0];
   const records = workspace.works
-    .filter(work => matcher.match(work))
+    .filter(work => kindMatcher.match(work))
+    .filter(work => statusMatcher.match(work))
     .filter(work => !keyword || `${work.title} ${work.goal} ${work.currentEmployeeName}`.includes(keyword))
     .slice()
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -92,12 +104,62 @@ export function WorkRecordsPage({ workspace }: Props) {
     });
   };
 
+  const getWorkKindBadge = (work: WorkItem) => {
+    if (work.kind === 'conversation') {
+      return { emoji: '💬', label: '对话式', className: 'chat' };
+    }
+    if (work.steps.length > 1) {
+      return { emoji: '⚡', label: '自动编排', className: 'auto', stepCount: work.steps.length };
+    }
+    return { emoji: '🛠️', label: '手动编排', className: 'manual', stepCount: work.steps.length };
+  };
+
   return (
-    <div className="ent-page">
-      <div className="ent-toolbar">
-        <div className="ent-record-filters" role="tablist" aria-label="按状态筛选工作记录">
-          {BUCKETS.map(item => {
+    <div className="ent-records-page">
+      {/* 简化英雄区 - 160px 高 */}
+      <div className="ent-records-hero">
+        <div className="ent-records-hero-text">
+          <span className="ent-records-eyebrow">WORK RECORDS</span>
+          <h1 className="ent-records-hero-title">
+            工作<em>记录</em>
+          </h1>
+          <p className="ent-records-hero-stats">
+            共 {workspace.works.length} 项工作，{workspace.works.filter(w => w.status === 'running' || w.status === 'arranging').length} 项进行中
+          </p>
+        </div>
+        <div className="ent-records-hero-image" aria-hidden="true">
+          {/* 工作记录照片占位 440x160px */}
+          <div className="ent-records-hero-placeholder" />
+        </div>
+      </div>
+
+      {/* 第一层：工作类型筛选 */}
+      <div className="ent-records-kinds">
+        <div className="ent-segment" role="tablist" aria-label="按工作类型筛选">
+          {WORK_KINDS.map(item => {
             const count = workspace.works.filter(work => item.match(work)).length;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={workKind === item.id}
+                className={workKind === item.id ? 'active' : undefined}
+                onClick={() => setWorkKind(item.id)}
+              >
+                {item.emoji ? `${item.emoji} ` : ''}{item.label}
+                <em>{count}</em>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 第二层：状态筛选 + 搜索 */}
+      <div className="ent-records-filters">
+        <div className="ent-segment" role="tablist" aria-label="按状态筛选工作记录">
+          {BUCKETS.map(item => {
+            const count = workspace.works.filter(work => kindMatcher.match(work) && item.match(work)).length;
             return (
               <button
                 key={item.id}
@@ -126,181 +188,192 @@ export function WorkRecordsPage({ workspace }: Props) {
         </label>
       </div>
 
-      {!records.length ? (
-        <Empty title={keyword ? `没有和「${keyword}」相关的工作` : '这里还没有工作记录'}>
-          {keyword ? '换一个关键词，或者切换上面的状态看看。' : '安排一项工作之后，它的进展、结果和过程都会记录在这里。'}
-        </Empty>
-      ) : null}
+      <div className="ent-records-content">
+        <p className="ent-result-note">
+          共 {records.length} 项工作
+        </p>
 
-      <div className="ent-records">
-        {records.map(work => {
-          const people = [...new Set([work.currentEmployeeId, ...work.participants])].filter(Boolean);
-          const expanded = openId === work.id;
-          // 已经停下来的三种：做完了、中断了、被你终止了。终止过的工作不能再终止一次。
-          const over = work.status === 'completed' || work.status === 'failed' || work.status === 'paused';
-          const lead = LEAD[work.status];
-          const LeadIcon = lead.icon;
-          const result = work.deliverables.length
-            ? work.deliverables.map(item => item.name).join('、')
-            : over
-              ? '这项工作没有留下可交付的文件'
-              : '还没有最终结果';
+        {!records.length ? (
+          <Empty title={keyword ? `没有和「${keyword}」相关的工作` : '这里还没有工作记录'}>
+            {keyword ? '换一个关键词，或者切换上面的状态看看。' : '安排一项工作之后，它的进展、结果和过程都会记录在这里。'}
+          </Empty>
+        ) : null}
 
-          return (
-            <article key={work.id} className={`ent-record${expanded ? ' open' : ''}`}>
-              <div className="ent-record-head">
-                <button type="button" className="ent-record-title" onClick={() => workspace.navigate({ name: 'work', workId: work.id })}>
-                  {work.title}
-                </button>
-                <WorkStatusChip value={work.status} />
-                <span className="ent-tag">最后更新 {relativeTime(work.updatedAt)}</span>
-              </div>
+        <div className="ent-records">
+          {records.map(work => {
+            const people = [...new Set([work.currentEmployeeId, ...work.participants])].filter(Boolean);
+            const expanded = openId === work.id;
+            // 已经停下来的三种：做完了、中断了、被你终止了。终止过的工作不能再终止一次。
+            const over = work.status === 'completed' || work.status === 'failed' || work.status === 'paused';
+            const lead = LEAD[work.status];
+            const LeadIcon = lead.icon;
+            const result = work.deliverables.length
+              ? work.deliverables.map(item => item.name).join('、')
+              : over
+                ? '这项工作没有留下可交付的文件'
+                : '还没有最终结果';
+            const kindBadge = getWorkKindBadge(work);
 
-              <p className="ent-record-goal">{work.goal}</p>
-
-              <div className="ent-record-people">
-                {people.map(id => {
-                  const person = workspace.myEmployees.find(item => item.id === id);
-                  return (
-                    <span key={id} title={person?.name ?? '已停用的员工'}>
-                      <EmployeeFace seed={id} size="sm" round />
-                      {person?.name ?? '已停用的员工'}
-                    </span>
-                  );
-                })}
-              </div>
-
-              <dl className="ent-record-meta">
-                <div><dt>最终结果</dt><dd>{result}</dd></div>
-                <div>
-                  <dt>待你处理</dt>
-                  <dd className={work.nextUserAction ? 'attention' : undefined}>
-                    {work.nextUserAction ?? '暂时没有需要你处理的事情'}
-                  </dd>
-                </div>
-              </dl>
-
-              <div className="ent-record-actions">
-                <button type="button" className="ent-btn sm primary" onClick={() => workspace.navigate({ name: 'work', workId: work.id })}>
-                  <LeadIcon size={13} aria-hidden />
-                  {lead.label}
-                </button>
-                <button type="button" className="ent-btn sm" onClick={() => open(work, 'result')}>
-                  <FileCheck2 size={13} aria-hidden />
-                  查看结果
-                </button>
-                <button type="button" className="ent-btn sm" onClick={() => open(work, 'process')}>
-                  <History size={13} aria-hidden />
-                  查看过程
-                  <ChevronDown size={13} aria-hidden className="ent-record-caret" />
-                </button>
-                <button type="button" className="ent-btn sm ghost" onClick={() => void workspace.duplicateWork(work.id)} disabled={workspace.busy}>
-                  <Copy size={13} aria-hidden />
-                  复制为新工作
-                </button>
-                {!over ? (
-                  <button type="button" className="ent-btn sm danger ghost" onClick={() => { setStopping(work.id); setStopReason(''); }} disabled={workspace.busy}>
-                    <StopCircle size={13} aria-hidden />
-                    终止当前工作
+            return (
+              <article key={work.id} className={`ent-record${expanded ? ' open' : ''}`}>
+                <div className="ent-record-head">
+                  <button type="button" className="ent-record-title" onClick={() => workspace.navigate({ name: 'work', workId: work.id })}>
+                    {work.title}
                   </button>
-                ) : null}
-                <button type="button" className="ent-btn sm danger ghost" onClick={() => setRemoving(work.id)} disabled={workspace.busy}>
-                  <Trash2 size={13} aria-hidden />
-                  删除记录
-                </button>
-              </div>
-
-              {stopping === work.id ? (
-                <div className="ent-confirm">
-                  <p>
-                    <AlertTriangle size={14} aria-hidden />
-                    终止后 {work.currentEmployeeName} 会立刻停手。
-                    <strong>已完成的动作、已产生的文件、你已确认的内容和终止原因都会保留</strong>，之后还能继续这项工作。
-                  </p>
-                  <label className="ent-field">
-                    <span>终止原因（会记录在工作过程里）</span>
-                    <input className="ent-input" value={stopReason} placeholder="例如：资料给错了，需要重新准备" onChange={event => setStopReason(event.target.value)} />
-                  </label>
-                  <div className="ent-confirm-foot">
-                    <button type="button" className="ent-btn ghost sm" onClick={() => setStopping(null)}>先不终止</button>
-                    <button type="button" className="ent-btn danger sm" disabled={workspace.busy} onClick={() => stop(work)}>{workspace.busy ? '正在终止…' : '确认终止'}</button>
-                  </div>
+                  <span className={`ent-work-kind-badge ${kindBadge.className}`}>
+                    {kindBadge.emoji} {kindBadge.label}
+                    {kindBadge.stepCount ? ` · ${kindBadge.stepCount} 步` : ''}
+                  </span>
+                  <WorkStatusChip value={work.status} />
+                  <span className="ent-tag">最后更新 {relativeTime(work.updatedAt)}</span>
                 </div>
-              ) : null}
 
-              {removing === work.id ? (
-                <div className="ent-confirm">
-                  <p>
-                    <AlertTriangle size={14} aria-hidden />
-                    删除记录后，这项工作的对话、过程和结果说明都会从列表里消失，<strong>无法恢复</strong>。
-                    已经产生的文件仍然留在工作文件夹里。
-                  </p>
-                  <div className="ent-confirm-foot">
-                    <button type="button" className="ent-btn ghost sm" onClick={() => setRemoving(null)}>先留着</button>
-                    <button
-                      type="button"
-                      className="ent-btn danger sm"
-                      onClick={() => { void workspace.deleteWork(work.id); setRemoving(null); setOpenId(null); }}
-                    >
-                      确认删除
+                <p className="ent-record-goal">{work.goal}</p>
+
+                <div className="ent-record-people">
+                  {people.map(id => {
+                    const person = workspace.myEmployees.find(item => item.id === id);
+                    return (
+                      <span key={id} title={person?.name ?? '已停用的员工'}>
+                        <EmployeeFace seed={id} size="sm" round />
+                        {person?.name ?? '已停用的员工'}
+                      </span>
+                    );
+                  })}
+                </div>
+
+                <dl className="ent-record-meta">
+                  <div><dt>最终结果</dt><dd>{result}</dd></div>
+                  <div>
+                    <dt>待你处理</dt>
+                    <dd className={work.nextUserAction ? 'attention' : undefined}>
+                      {work.nextUserAction ?? '暂时没有需要你处理的事情'}
+                    </dd>
+                  </div>
+                </dl>
+
+                <div className="ent-record-actions">
+                  <button type="button" className="ent-btn sm primary" onClick={() => workspace.navigate({ name: 'work', workId: work.id })}>
+                    <LeadIcon size={13} aria-hidden />
+                    {lead.label}
+                  </button>
+                  <button type="button" className="ent-btn sm" onClick={() => open(work, 'result')}>
+                    <FileCheck2 size={13} aria-hidden />
+                    查看结果
+                  </button>
+                  <button type="button" className="ent-btn sm" onClick={() => open(work, 'process')}>
+                    <History size={13} aria-hidden />
+                    查看过程
+                    <ChevronDown size={13} aria-hidden className="ent-record-caret" />
+                  </button>
+                  <button type="button" className="ent-btn sm ghost" onClick={() => void workspace.duplicateWork(work.id)} disabled={workspace.busy}>
+                    <Copy size={13} aria-hidden />
+                    复制为新工作
+                  </button>
+                  {!over ? (
+                    <button type="button" className="ent-btn sm danger ghost" onClick={() => { setStopping(work.id); setStopReason(''); }} disabled={workspace.busy}>
+                      <StopCircle size={13} aria-hidden />
+                      终止当前工作
                     </button>
-                  </div>
+                  ) : null}
+                  <button type="button" className="ent-btn sm danger ghost" onClick={() => setRemoving(work.id)} disabled={workspace.busy}>
+                    <Trash2 size={13} aria-hidden />
+                    删除记录
+                  </button>
                 </div>
-              ) : null}
 
-              {expanded ? (
-                <div className="ent-record-detail">
-                  {panel === 'result' ? (
-                    <>
-                      <h3>这项工作给你的结果</h3>
-                      {work.deliverables.length ? (
-                        <ul className="ent-list good">
-                          {work.deliverables.map(item => (
-                            <li key={item.id}><strong>{item.name}</strong>{item.note ? ` · ${item.note}` : ''}</li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="ent-hint">还没有可交付的结果。员工产出文件或结论后会出现在这里。</p>
-                      )}
-                      {work.stopReason ? (
-                        <>
-                          <h3>{work.status === 'failed' ? '中断原因' : '终止原因'}</h3>
-                          <p className="ent-hint">{work.stopReason}</p>
-                        </>
-                      ) : null}
-                      {work.workDir ? (
-                        <>
-                          <h3>工作文件夹</h3>
-                          <p className="ent-hint" title={work.workDir}>{work.workDir}</p>
-                        </>
-                      ) : null}
-                    </>
-                  ) : (
-                    <>
-                      <h3>工作过程</h3>
-                      {work.timeline.length ? (
-                        <ol className="ent-timeline">
-                          {work.timeline.map(entry => (
-                            <li key={entry.id} className={entry.kind}>
-                              <span className="ent-timeline-dot" aria-hidden />
-                              <span className="ent-timeline-body">
-                                <strong>{entry.actor}</strong>
-                                <span>{entry.text}</span>
-                                <small>{clockTime(entry.at)}</small>
-                              </span>
-                            </li>
-                          ))}
-                        </ol>
-                      ) : (
-                        <p className="ent-hint">还没有记录到动作。</p>
-                      )}
-                    </>
-                  )}
-                </div>
-              ) : null}
-            </article>
-          );
-        })}
+                {stopping === work.id ? (
+                  <div className="ent-confirm">
+                    <p>
+                      <AlertTriangle size={14} aria-hidden />
+                      终止后 {work.currentEmployeeName} 会立刻停手。
+                      <strong>已完成的动作、已产生的文件、你已确认的内容和终止原因都会保留</strong>，之后还能继续这项工作。
+                    </p>
+                    <label className="ent-field">
+                      <span>终止原因（会记录在工作过程里）</span>
+                      <input className="ent-input" value={stopReason} placeholder="例如：资料给错了，需要重新准备" onChange={event => setStopReason(event.target.value)} />
+                    </label>
+                    <div className="ent-confirm-foot">
+                      <button type="button" className="ent-btn ghost sm" onClick={() => setStopping(null)}>先不终止</button>
+                      <button type="button" className="ent-btn danger sm" disabled={workspace.busy} onClick={() => stop(work)}>{workspace.busy ? '正在终止…' : '确认终止'}</button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {removing === work.id ? (
+                  <div className="ent-confirm">
+                    <p>
+                      <AlertTriangle size={14} aria-hidden />
+                      删除记录后，这项工作的对话、过程和结果说明都会从列表里消失，<strong>无法恢复</strong>。
+                      已经产生的文件仍然留在工作文件夹里。
+                    </p>
+                    <div className="ent-confirm-foot">
+                      <button type="button" className="ent-btn ghost sm" onClick={() => setRemoving(null)}>先留着</button>
+                      <button
+                        type="button"
+                        className="ent-btn danger sm"
+                        onClick={() => { void workspace.deleteWork(work.id); setRemoving(null); setOpenId(null); }}
+                      >
+                        确认删除
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {expanded ? (
+                  <div className="ent-record-detail">
+                    {panel === 'result' ? (
+                      <>
+                        <h3>这项工作给你的结果</h3>
+                        {work.deliverables.length ? (
+                          <ul className="ent-list good">
+                            {work.deliverables.map(item => (
+                              <li key={item.id}><strong>{item.name}</strong>{item.note ? ` · ${item.note}` : ''}</li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="ent-hint">还没有可交付的结果。员工产出文件或结论后会出现在这里。</p>
+                        )}
+                        {work.stopReason ? (
+                          <>
+                            <h3>{work.status === 'failed' ? '中断原因' : '终止原因'}</h3>
+                            <p className="ent-hint">{work.stopReason}</p>
+                          </>
+                        ) : null}
+                        {work.workDir ? (
+                          <>
+                            <h3>工作文件夹</h3>
+                            <p className="ent-hint" title={work.workDir}>{work.workDir}</p>
+                          </>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <h3>工作过程</h3>
+                        {work.timeline.length ? (
+                          <ol className="ent-timeline">
+                            {work.timeline.map(entry => (
+                              <li key={entry.id} className={entry.kind}>
+                                <span className="ent-timeline-dot" aria-hidden />
+                                <span className="ent-timeline-body">
+                                  <strong>{entry.actor}</strong>
+                                  <span>{entry.text}</span>
+                                  <small>{clockTime(entry.at)}</small>
+                                </span>
+                              </li>
+                            ))}
+                          </ol>
+                        ) : (
+                          <p className="ent-hint">还没有记录到动作。</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : null}
+              </article>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
