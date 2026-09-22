@@ -1,6 +1,11 @@
 /**
- * 硅基员工列表。默认展示分配给我的员工，可搜索并按可用状态筛选。
- * 员工较多时切换成紧凑列表，便于快速找人。
+ * 硅基员工列表 - Phase 3 重构
+ *
+ * 关键变化：
+ * - 简化英雄区（180px 高）：眉标 + 标题 + 统计 + 右侧照片
+ * - 二级过滤栏移到页面内（范围 tabs + 状态下拉 + 搜索 + 视图切换）
+ * - 网格视图 4 列（原 3 列），单卡 280px 宽
+ * - 卡片悬停时轻微上浮 2px + 阴影加深
  */
 
 import { LayoutGrid, List, Search } from 'lucide-react';
@@ -25,7 +30,7 @@ const SCOPES = [
 ] as const;
 
 export function EmployeesPage({ workspace, scope: initialScope }: Props) {
-  const { employees } = workspace;
+  const { employees, overview } = workspace;
   const [search, setSearch] = useState('');
   const [scope, setScope] = useState<'mine' | 'all'>(initialScope ?? 'mine');
   const [availability, setAvailability] = useState<'' | EmployeeAvailability>('');
@@ -47,12 +52,26 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
   const open = (employeeId: string) => workspace.navigate({ name: 'employee', employeeId });
 
   return (
-    <div className="ent-employees-container">
-      <div className="ent-toolbar">
-        <label className="ent-find">
-          <Search size={14} aria-hidden />
-          <input type="search" value={search} placeholder="搜索员工姓名或擅长" aria-label="搜索员工" onChange={event => setSearch(event.target.value)} />
-        </label>
+    <div className="ent-employees-page">
+      {/* 简化英雄区 - 180px 高 */}
+      <div className="ent-emp-hero">
+        <div className="ent-emp-hero-text">
+          <span className="ent-emp-eyebrow">SILICON EMPLOYEES</span>
+          <h1 className="ent-emp-hero-title">
+            硅基员工<em>目录</em>
+          </h1>
+          <p className="ent-emp-hero-stats">
+            共 {overview.totalEmployees} 名员工，{overview.availableToMe} 名分配给你
+          </p>
+        </div>
+        <div className="ent-emp-hero-image" aria-hidden="true">
+          {/* 团队协作照片占位 480x180px */}
+          <div className="ent-emp-hero-placeholder" />
+        </div>
+      </div>
+
+      {/* 二级过滤栏 - 48px 高 */}
+      <div className="ent-emp-filters">
         <div className="ent-segment" role="tablist" aria-label="员工范围">
           {SCOPES.map(item => (
             <button key={item.id} type="button" role="tab" aria-selected={scope === item.id} className={scope === item.id ? 'active' : undefined} onClick={() => setScope(item.id)}>
@@ -60,13 +79,21 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
             </button>
           ))}
         </div>
+
         <select className="ent-select auto" value={availability} onChange={event => setAvailability(event.target.value as '' | EmployeeAvailability)} aria-label="按可用状态筛选">
           <option value="">全部状态</option>
           {(Object.keys(EMPLOYEE_AVAILABILITY) as EmployeeAvailability[]).map(key => (
             <option key={key} value={key}>{EMPLOYEE_AVAILABILITY[key].label}</option>
           ))}
         </select>
+
         <span className="ent-ask-spacer" />
+
+        <label className="ent-find compact">
+          <Search size={14} aria-hidden />
+          <input type="search" value={search} placeholder="搜索员工姓名或擅长" aria-label="搜索员工" onChange={event => setSearch(event.target.value)} />
+        </label>
+
         <div className="ent-segment icon" role="group" aria-label="展示方式">
           <button type="button" className={dense ? undefined : 'active'} onClick={() => setDense(false)} aria-label="卡片视图" title="卡片视图"><LayoutGrid size={14} aria-hidden /></button>
           <button type="button" className={dense ? 'active' : undefined} onClick={() => setDense(true)} aria-label="紧凑列表" title="紧凑列表"><List size={14} aria-hidden /></button>
