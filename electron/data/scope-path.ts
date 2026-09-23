@@ -158,6 +158,15 @@ export class ScopePath {
     return join(this.taskDir(scope, taskId), 'metadata.json')
   }
 
+  clientMonitorRoot(scope: TaskOwnerScope): string {
+    return join(this.ownerRoot(scope), 'client-monitor')
+  }
+
+  clientMonitorFile(scope: TaskOwnerScope, taskId: string): string {
+    assertSafeId(taskId, 'taskId')
+    return join(this.clientMonitorRoot(scope), taskId + '.json')
+  }
+
   arrangementDraftsRoot(scope: TaskOwnerScope): string {
     return join(this.ownerRoot(scope), 'arrangement-drafts')
   }

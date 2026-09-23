@@ -33,6 +33,9 @@ import { ConversationService } from '../service/conversation-service'
 import { TaskService } from '../service/task-service'
 import { ArrangementService } from '../service/arrangement-service'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
+import { ClientMonitorApi } from '../common/platform/client-monitor-api'
+import { ClientMonitorStore } from '../data/client-monitor-store'
+import { ClientMonitorService } from '../service/client-monitor-service'
 
 const log = logger.child('build-backend')
 
@@ -62,6 +65,7 @@ class BackendRuntime {
   readonly conversations: ConversationService
   readonly arrangements: ArrangementService
   readonly skills: SkillLibraryService
+  readonly clientMonitor: ClientMonitorService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -80,6 +84,15 @@ class BackendRuntime {
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.authSession = new AuthSessionManager()
     this.taskManager = new TaskManager(userDataDir, renderer)
+    this.clientMonitor = new ClientMonitorService({
+      store: new ClientMonitorStore(userDataDir),
+      api: new ClientMonitorApi({
+        getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
+        baseUrl: config.SEP_BASE_URL,
+      }),
+      scopeProvider: () => this.currentScope(),
+      clientVersion: config.CLIENT_VERSION,
+    })
     this.taskRunStore = new TaskRunStore(userDataDir)
     this.taskMetadataStore = new TaskMetadataStore(userDataDir)
     const arrangementDrafts = new ArrangementDraftStore(userDataDir)
@@ -154,6 +167,11 @@ class BackendRuntime {
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
     await this.runtime.peek()?.stopAll()
+    await this.clientMonitor.stop()
+  }
+
+  async resumeClientMonitor(): Promise<void> {
+    await this.clientMonitor.resumePending()
   }
 
   /**
@@ -246,6 +264,7 @@ class BackendRuntime {
       getTaskWorkspaceRoot: () => join(this.userDataDir, 'task-workspaces'),
       workPlanStore: this.workPlans,
       arrangementCheckpointStore: this.arrangementCheckpoints,
+      monitor: this.clientMonitor,
     })
     log.info('task runtime loaded')
     return runtime
