@@ -1,4 +1,4 @@
-﻿import { randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { readdir, rm } from 'node:fs/promises'
 import { z } from 'zod'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
