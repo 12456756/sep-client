@@ -62,7 +62,7 @@ describe('WorkspaceLockManager', () => {
     assert.ok(lockManager.acquire('run-b', join(root, 'child')))
   })
 
-  it('normalizes Windows-style case variations', async () => {
+  it('normalizes Windows-style case variations', { skip: process.platform !== 'win32' }, async () => {
     const root = await makeDirectory()
     const lockManager = new WorkspaceLockManager(root)
     const first = lockManager.acquire('run-a', root.toUpperCase())
