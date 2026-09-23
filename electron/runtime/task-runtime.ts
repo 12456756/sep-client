@@ -23,13 +23,14 @@ import type {
   TaskWorkerPort,
   ControlIntent,
 } from './run-types'
-import { redactText } from '../common/redact'
+import { describeError, redactText } from '../common/redact'
 import { logger } from '../common/logger'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor } from './arrangement-executor'
 import { createArrangementExecutionState, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
 import { shouldPushTaskEvent } from './task-event-visibility'
+import { silentTaskMonitor, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
 
 const log = logger.child('task-runtime')
 
@@ -47,6 +48,7 @@ export interface TaskRuntimeOptions {
   getTaskWorkspaceRoot?: () => string
   workPlanStore?: WorkPlanStorePort
   arrangementCheckpointStore?: ArrangementCheckpointStorePort
+  monitor?: TaskMonitorPort
 }
 
 export class TaskRuntime {
@@ -60,6 +62,7 @@ export class TaskRuntime {
   private readonly getTaskWorkspaceRoot: () => string
   private readonly workPlanStore: WorkPlanStorePort | null
   private readonly arrangementCheckpointStore: ArrangementCheckpointStorePort | null
+  private readonly monitor: TaskMonitorPort
   private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
@@ -89,6 +92,7 @@ export class TaskRuntime {
     this.getTaskWorkspaceRoot = options.getTaskWorkspaceRoot ?? (() => process.cwd())
     this.workPlanStore = options.workPlanStore ?? null
     this.arrangementCheckpointStore = options.arrangementCheckpointStore ?? null
+    this.monitor = options.monitor ?? silentTaskMonitor
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvals = new ToolApprovals({
@@ -132,6 +136,11 @@ export class TaskRuntime {
       workers: this.workers,
       enqueue: queued => this.admission.push(queued),
       requestPump: () => { void this.pump() },
+      onQueued: input => {
+        this.reportMonitorQueued(input)
+        this.reportMonitorInput({ taskId: input.taskId, runId: input.runId, content: input.prompt })
+      },
+      onOutput: input => this.reportMonitorOutput(input),
     })
   }
 
@@ -166,6 +175,8 @@ export class TaskRuntime {
       const admittedTask = await this.taskManager.getTask(taskId)
       if (!admittedTask || admittedTask.activeRunId !== runId) return
       this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: arrangement.goal, conversation: false, arrangement })
+      this.reportMonitorQueued({ taskId, runId, prompt: arrangement.goal, subscriptionId: primarySubscriptionId, title: task.title, modelId: employee.modelId, taskType: 'arrangement' })
+      this.reportMonitorInput({ taskId, runId, content: arrangement.goal })
       void this.pump()
       return
     }
@@ -183,7 +194,10 @@ export class TaskRuntime {
     await this.taskManager.admitTask(taskId, runId)
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
-    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: arrangement?.mode === 'conversation' || options.conversation === true, arrangement: arrangement ?? undefined })
+    const isConversation = arrangement?.mode === 'conversation' || options.conversation === true
+    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: isConversation, arrangement: arrangement ?? undefined })
+    this.reportMonitorQueued({ taskId, runId, prompt: task.prompt, subscriptionId, title: task.title, modelId: employee.modelId, taskType: isConversation ? 'conversation' : 'arrangement' })
+     this.reportMonitorInput({ taskId, runId, content: task.prompt })
     void this.pump()
   }
 
@@ -434,7 +448,8 @@ export class TaskRuntime {
               runId: queued.runId,
               reason: 'employee_unavailable',
             })
-            await this.taskManager.updateTaskStatus(queued.taskId, TaskStatus.FAILED, 'Selected employee is unavailable.')
+            const error = 'Selected employee is unavailable.'
+            await this.taskManager.updateTaskStatus(queued.taskId, TaskStatus.FAILED, error)
             await this.taskManager.clearTaskRun(queued.taskId, queued.runId)
             continue
           }
@@ -519,6 +534,8 @@ export class TaskRuntime {
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       const result = await arrangement.execute(plan, taskId, runId)
       await this.events.drain(taskId)
+      const arrangementOutput = this.arrangementOutput(plan, result.state)
+      if (arrangementOutput) this.reportMonitorOutput({ taskId, runId, content: arrangementOutput })
       const activeArrangement = this.activeArrangements.get(taskId)
       const control = activeArrangement?.runId === runId ? activeArrangement.control : 'none'
       const error = control === 'cancel' ? activeArrangement?.controlReason : result.error
@@ -610,6 +627,38 @@ export class TaskRuntime {
       await this.taskManager.addTaskLog(event.taskId, '本轮自动重试达到上限，已停止执行。', 'error')
     }
     if (shouldPushTaskEvent(persistedEvent)) this.onEvent(persistedEvent)
+  }
+
+  private reportMonitorQueued(input: MonitorTaskQueuedInput): void {
+    void this.monitor.taskQueued(input).catch(error => {
+      log.warn('client monitor queued report failed', { taskId: input.taskId, runId: input.runId, cause: describeError(error) })
+    })
+  }
+
+  private arrangementOutput(plan: { nodes: readonly { id: string }[] }, state: ArrangementExecutionState): string | null {
+    const outputs = plan.nodes
+      .map(node => state.nodes.find(checkpoint => checkpoint.nodeId === node.id)?.output?.trim() ?? '')
+      .filter(Boolean)
+    return outputs.length > 0 ? outputs.join('\n\n') : null
+  }
+
+  private reportMonitorInput(input: MonitorTaskContentInput): void {
+    void this.monitor.taskInput(input).catch(error => {
+      log.warn('client monitor input report failed', { taskId: input.taskId, runId: input.runId, cause: describeError(error) })
+    })
+  }
+
+  private reportMonitorOutput(input: MonitorTaskContentInput): void {
+    void this.monitor.taskOutput(input)
+      .then(() => this.monitor.taskFinished({
+        taskId: input.taskId,
+        runId: input.runId,
+        status: 'COMPLETED',
+        completedAt: Date.now(),
+      }))
+      .catch(error => {
+        log.warn('client monitor output/completion report failed', { taskId: input.taskId, runId: input.runId, cause: describeError(error) })
+      })
   }
 
   private removeQueuedTask(taskId: string): string[] {

@@ -16,6 +16,8 @@ import {
   saveRememberedAccount,
 } from '../../common/platform/credential-vault'
 import { authFailure } from '../../errors/error-mapper'
+import { logger } from '../../common/logger'
+import { describeError } from '../../common/redact'
 import type {
   ForgetAccountResult,
   LoginResult,
@@ -28,6 +30,7 @@ import { NO_INPUT, route } from '../router'
 
 /** 邮箱统一小写去空白后再校验；长度上限 254 是 RFC 5321 的地址上限。 */
 const email = z.string().trim().toLowerCase().pipe(z.string().email().max(254))
+const log = logger.child('auth-route')
 
 /**
  * 登录入参。`useSavedPassword` 与 `password` 互斥：用保存的密码时不许再带一个，
@@ -77,6 +80,11 @@ export const authRoutes = [
       await ctx.backend.stopAll()
       ctx.backend.authSession.setLogin(response)
       await ctx.backend.taskManager.setCurrentUser(response.user.id, response.enterprise.id)
+      try {
+        await ctx.backend.resumeClientMonitor()
+      } catch (error) {
+        log.warn('client monitor resume failed', { cause: describeError(error) })
+      }
       ctx.backend.employees.clear()
       saveRememberedAccount(
         {

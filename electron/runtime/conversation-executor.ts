@@ -20,6 +20,7 @@ import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, 
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
 import type { EventPipeline } from './run-events'
 import type { ToolApprovals } from './run-approvals'
+import type { MonitorTaskContentInput, MonitorTaskQueuedInput } from '../domain/task-monitor'
 import { logger } from '../common/logger'
 
 const log = logger.child('conversation-executor')
@@ -38,6 +39,8 @@ export interface ConversationExecutorOptions {
   workers: Pick<WorkerRegistry, 'forget' | 'isCurrent' | 'register'>
   enqueue: (queued: QueuedRun) => void
   requestPump: () => void
+  onQueued?: (input: MonitorTaskQueuedInput) => void
+  onOutput?: (input: MonitorTaskContentInput) => void
 }
 
 export class ConversationExecutor {
@@ -266,6 +269,15 @@ export class ConversationExecutor {
       degradedRecovery,
     }
     this.options.enqueue(queued)
+    this.options.onQueued?.({
+      taskId,
+      runId,
+      prompt: prompt.trim(),
+      subscriptionId: employee.subscriptionId,
+      title: task.title,
+      modelId: employee.modelId,
+      taskType: 'conversation',
+    })
     this.options.requestPump()
   }
 
@@ -323,6 +335,13 @@ export class ConversationExecutor {
       })
     }
     const response = this.options.events.takeResponse(active.runId)
+    if (response && queued.conversation) {
+      this.options.onOutput?.({
+        taskId: active.taskId,
+        runId: active.runId,
+        content: response,
+      })
+    }
     if (response && scope && queued.conversation) {
       const message: ConversationMessage = {
         id: `${active.runId}-assistant`,
@@ -409,5 +428,3 @@ export class ConversationExecutor {
     ].filter(Boolean).join('\n\n')
   }
 }
-
-

@@ -63,8 +63,8 @@ export class AuthSessionManager {
     return this.accessToken
   }
 
-  async getValidAccessToken(): Promise<string> {
-    if (this.accessToken && !this.isAccessTokenExpired()) return this.accessToken
+  async getValidAccessToken(forceRefresh = false): Promise<string> {
+    if (!forceRefresh && this.accessToken && !this.isAccessTokenExpired()) return this.accessToken
     if (this.refreshPromise) return this.refreshPromise
     const refreshToken = this.getRefreshToken()
     const request = refreshAccessToken(refreshToken).then(response => {
