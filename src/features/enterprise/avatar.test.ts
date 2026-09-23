@@ -8,8 +8,8 @@ const employee = {
   avatarAsset: {
     id: 'silicon:product-manager',
     version: '6facaa2a11421f41',
-    portraitUrl: 'https://sep-dev.longdaoSEP.cn/assets/employees/silicon/product-manager.webp?v=6facaa2a11421f41',
-    faceUrl: 'https://sep-dev.longdaoSEP.cn/assets/employees/silicon/product-manager-face.webp?v=6facaa2a11421f41',
+    portraitUrl: 'https://longdaosep.cn/assets/employees/silicon/product-manager.webp?v=6facaa2a11421f41',
+    faceUrl: 'https://longdaosep.cn/assets/employees/silicon/product-manager-face.webp?v=6facaa2a11421f41',
   },
 };
 

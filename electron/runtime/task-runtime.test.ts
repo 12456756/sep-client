@@ -129,7 +129,7 @@ describe('SEP platform-shaped conversation fixture', () => {
       onEvent: () => {},
       onApprovalRequest: () => {},
       resolveEmployee: id => id === SEP_TEST_SUBSCRIPTION.subscriptionId
-        ? { subscriptionId: SEP_TEST_SUBSCRIPTION.subscriptionId, modelId: SEP_TEST_SUBSCRIPTION.allowedModels[0]!, gatewayUrl: 'https://sep-dev.longdaoSEP.cn/api/gateway/v1', additionalSkillPaths: ['/skills/orders/v1.0.0'] }
+        ? { subscriptionId: SEP_TEST_SUBSCRIPTION.subscriptionId, modelId: SEP_TEST_SUBSCRIPTION.allowedModels[0]!, gatewayUrl: 'https://longdaosep.cn/api/gateway/v1', additionalSkillPaths: ['/skills/orders/v1.0.0'] }
         : null,
       createWorker: options => ({
         async run() {

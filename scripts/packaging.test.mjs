@@ -24,7 +24,7 @@ test('beta config is generated and stable requires an explicit base URL', () => 
   assert.equal(run(dir, 'generate-runtime-config.mjs', ['beta']).status, 0)
   const generated = readFileSync(resolve(dir, 'electron/common/runtime-config.generated.ts'), 'utf8')
   assert.match(generated, /"channel": "beta"/)
-  assert.match(generated, /sep-dev\.longdaoSEP\.cn/)
+  assert.match(generated, /longdaosep\.cn/)
   assert.notEqual(run(dir, 'generate-runtime-config.mjs', ['stable']).status, 0)
   assert.equal(run(dir, 'generate-runtime-config.mjs', ['stable'], { SEP_BASE_URL: 'https://example.test/api', SEP_GATEWAY_URL: 'https://example.test/api/gateway/v1' }).status, 0)
   assert.match(readFileSync(resolve(dir, 'electron/common/runtime-config.generated.ts'), 'utf8'), /example\.test/)
