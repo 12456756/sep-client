@@ -69,6 +69,13 @@ describe('MCP configuration', () => {
 })
 
 describe('MCP tool bridge', () => {
+  it('provides Chinese fallback instructions when an MCP tool has no description', async () => {
+    const server = await serve(request => request.method === 'tools/list'
+      ? { tools: [{ ...tool, description: undefined }] } : { content: [] })
+    const bridge = await runtime([config(server.url)])
+    assert.equal(bridge.tools[0]?.description, '调用 docs MCP 服务上的 search 工具。')
+  })
+
   it('preserves long snapshots and numeric refs while still redacting credentials', async () => {
     const text = 'element ref=e1 value=123\n'.repeat(700) + 'LAST_ELEMENT Bearer private-test-token'
     const server = await serve(request => request.method === 'tools/list'

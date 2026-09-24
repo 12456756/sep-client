@@ -62,8 +62,8 @@ function createTool(config: McpServerConfig, client: Client, tool: Tool) {
   const name = mcpToolName(config.name, tool.name)
   return {
     name, label: `${config.name}: ${tool.name}`,
-    description: safeText(tool.description ?? `Call ${tool.name} on MCP server ${config.name}.`, config),
-    promptSnippet: `MCP tool from ${config.name}: ${tool.name}.`,
+    description: safeText(tool.description ?? `调用 ${config.name} MCP 服务上的 ${tool.name} 工具。`, config),
+    promptSnippet: `来自 ${config.name} 的 MCP 工具：${tool.name}。`,
     parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
     // External effects are not assumed safe to run concurrently.
     executionMode: 'sequential' as const,
