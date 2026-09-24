@@ -5,6 +5,15 @@ import {
   skillVersionReviewQuerySchema, skillVersionReviewRequestSchema, skillVersionIdSchema,
   skillVersionListSchema, skillVersionReviewPageSchema,
 } from '../../../src/shared/platform-supplement-contracts'
+import {
+  computeAllowanceSchema, personalWalletSchema, walletTransactionsPageSchema,
+  computeUsageRecordsPageSchema, computeUsageBreakdownSchema,
+  computePageQuerySchema, computeUsageQuerySchema, computeBreakdownDaysSchema,
+} from '../../../src/shared/compute-credit-contracts'
+import type {
+  ComputeAllowance, PersonalWallet, WalletTransactionsPage, ComputeUsageRecordsPage,
+  ComputeUsageBreakdown, ComputePageQuery, ComputeUsageQuery,
+} from '../../../src/shared/compute-credit-contracts'
 import type {
   EnterpriseOrganization, EnterpriseOverview, SkillVersion, PersonalSkillVersionRequest,
   SkillVersionQuery, SkillVersionReviewQuery, SkillVersionReviewRequest, SkillVersionReviewPage,
@@ -201,6 +210,8 @@ type AuthApiResource =
   | 'upload'
   | 'organization'
   | 'overview'
+  | 'compute-credit'
+  | 'personal-wallet'
 
 export class AuthApiError extends Error {
   constructor(
@@ -425,6 +436,42 @@ export async function getEnterpriseOrganization(accessToken: string): Promise<En
 
 export async function getEnterpriseOverview(accessToken: string): Promise<EnterpriseOverview> {
   return enterpriseOverviewSchema.parse(await getJson('/enterprise/overview', accessToken, 'overview'))
+}
+
+export async function getMyComputeAllowance(accessToken: string): Promise<ComputeAllowance> {
+  return computeAllowanceSchema.parse(await getJson('/compute-credit/my-allowance', accessToken, 'compute-credit'))
+}
+
+export async function getPersonalWallet(accessToken: string): Promise<PersonalWallet> {
+  return personalWalletSchema.parse(await getJson('/personal-wallet', accessToken, 'personal-wallet'))
+}
+
+export async function getPersonalWalletTransactions(
+  accessToken: string, params: ComputePageQuery,
+): Promise<WalletTransactionsPage> {
+  const query = platformQuery(computePageQuerySchema.parse(params))
+  return walletTransactionsPageSchema.parse(
+    await getJson('/personal-wallet/transactions' + query, accessToken, 'personal-wallet'),
+  )
+}
+
+export async function getComputeUsageRecords(
+  accessToken: string, params: ComputeUsageQuery,
+): Promise<ComputeUsageRecordsPage> {
+  const query = platformQuery(computeUsageQuerySchema.parse(params))
+  return computeUsageRecordsPageSchema.parse(
+    await getJson('/compute-credit/usage-records' + query, accessToken, 'compute-credit'),
+  )
+}
+
+export async function getComputeUsageBreakdown(
+  accessToken: string, days: number,
+): Promise<ComputeUsageBreakdown> {
+  const validDays = computeBreakdownDaysSchema.parse(days)
+  const query = platformQuery({ days: validDays })
+  return computeUsageBreakdownSchema.parse(
+    await getJson('/compute-credit/usage-breakdown' + query, accessToken, 'compute-credit'),
+  )
 }
 
 /** One save creates and submits a version. The caller must retain this key for retries. */
