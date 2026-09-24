@@ -1,12 +1,8 @@
 /**
- * 「安排工作」的入口：三种安排方式，一眼选一个。
+ * 「安排工作」的入口：先看懂流程，再选择适合自己的方式。
  *
- * 三张卡视觉完全一致，只有内容不同 —— 差别靠图标、标题和一句说明表达，
- * 不靠大小或颜色分主次。自动编排是三者里最重要的一个，只给它一条极淡的
- * 顶部紫线作为提示，不放大、不换底色。
- *
- * 点卡片不立即跳转：先让这一屏淡出（见 ArrangeWorkPage 的 leave），
- * 再换到下一屏，避免整页硬切。
+ * 普通用户默认从对话式开始；自动编排和自己编排保留为高级入口，
+ * 但不改变它们原有的真实业务流程。
  */
 
 import { ArrowRight, MessageSquare, Sparkles, Workflow } from 'lucide-react';
@@ -24,56 +20,78 @@ const MODES: {
   title: string;
   desc: string;
   cta: string;
-  featured?: boolean;
+  badge?: string;
+  className?: string;
 }[] = [
   {
     mode: 'chat',
     icon: MessageSquare,
     title: '对话式',
-    desc: '与一个员工直接沟通，边聊边完成工作。',
+    desc: '与一个员工直接沟通，边聊边完成工作。适合第一次使用或目标还不够明确的工作。',
     cta: '开始对话',
+    badge: '推荐',
+    className: 'recommended',
   },
   {
     mode: 'auto',
     icon: Sparkles,
     title: '自动编排',
-    desc: '告诉系统你的工作目标，AI 自动选择员工并安排工作。',
-    cta: '开始',
-    featured: true,
+    desc: '告诉系统你的工作目标，AI 自动选择员工并安排工作。适合多人协作或流程较复杂的工作。',
+    cta: '开始自动编排',
+    badge: '高级模式',
+    className: 'advanced',
   },
   {
     mode: 'manual',
     icon: Workflow,
     title: '自己编排',
-    desc: '自己选择员工，并决定员工之间如何协作。',
-    cta: '开始',
+    desc: '自己选择员工，并决定员工之间如何协作。适合已经明确流程和分工的工作。',
+    cta: '自己设计流程',
+    badge: '高级模式',
+    className: 'advanced',
   },
 ];
 
 export function ModeCards({ leaving, onPick }: Props) {
   return (
-    <div className={`ent-arr-modes${leaving ? ' leaving' : ''}`}>
-      {MODES.map(item => {
-        const Icon = item.icon;
-        return (
-          <button
-            key={item.mode}
-            type="button"
-            className={`ent-mode${item.featured ? ' featured' : ''}`}
-            onClick={() => onPick(item.mode)}
-          >
-            <span className="ent-mode-icon" aria-hidden>
-              <Icon size={22} />
-            </span>
-            <strong className="ent-mode-title">{item.title}</strong>
-            <span className="ent-mode-desc">{item.desc}</span>
-            <span className="ent-mode-cta">
-              {item.cta}
-              <ArrowRight size={14} aria-hidden />
-            </span>
-          </button>
-        );
-      })}
+    <div className={`ent-arr-modes-wrap${leaving ? ' leaving' : ''}`}>
+      <header className="ent-arr-head ent-arr-mode-head">
+        <span className="ent-arr-kicker">安排工作 · 第 1 步</span>
+        <h1>先选择一种工作方式</h1>
+        <p>不确定怎么开始？选择「对话式」即可，后续仍可以在工作详情中继续推进。</p>
+      </header>
+
+      <ol className="ent-arr-steps" aria-label="安排工作流程">
+        <li className="active"><span>01</span>选择方式</li>
+        <li><span>02</span>选择员工</li>
+        <li><span>03</span>描述目标</li>
+        <li><span>04</span>确认并开始</li>
+      </ol>
+
+      <div className={`ent-arr-modes${leaving ? ' leaving' : ''}`}>
+        {MODES.map(item => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.mode}
+              type="button"
+              className={`ent-mode ${item.className ?? ''}`.trim()}
+              onClick={() => onPick(item.mode)}
+            >
+              {item.badge ? <span className="ent-mode-badge">{item.badge}</span> : null}
+              <span className="ent-mode-icon" aria-hidden>
+                <Icon size={22} />
+              </span>
+              <strong className="ent-mode-title">{item.title}</strong>
+              <span className="ent-mode-desc">{item.desc}</span>
+              <span className="ent-mode-cta">
+                {item.cta}
+                <ArrowRight size={14} aria-hidden />
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

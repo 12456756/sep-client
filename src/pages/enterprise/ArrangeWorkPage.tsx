@@ -53,7 +53,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   const template = templateId ? workspace.templates.find(item => item.id === templateId) : undefined;
 
   const [settings, setSettings] = useState<RunSettings>(defaultRunSettings);
-  const [chatEmployeeId, setChatEmployeeId] = useState('');
+  const [chatEmployeeId, setChatEmployeeId] = useState(employeeId ?? '');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [autoStartError, setAutoStartError] = useState<string | null>(null);
   /** 正在淡出的目标画面。给「点了卡片但还没换页」这 200ms 用。 */
@@ -81,7 +81,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   useEffect(() => {
     setLeaving(null);
     setAutoStartError(null);
-    setChatEmployeeId('');
+    setChatEmployeeId(employeeId ?? '');
     setSettings(current => ({ ...current, modelId: '' }));
   }, [mode, employeeId]);
 
