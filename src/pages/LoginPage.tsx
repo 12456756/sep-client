@@ -1,16 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
+  ArrowUpRight,
   ChevronDown,
   Eye,
   EyeOff,
-  KeyRound,
   LockKeyhole,
+  Mail,
+  ShieldCheck,
+  Sparkles,
   Trash2,
   WifiOff,
+  Workflow,
   X,
 } from 'lucide-react';
 import type { AuthErrorCode, RememberedAccount } from '../shared/types';
+import logoImage from '../assets/logo.png';
 
 interface LoginPageProps {
   encryptionAvailable: boolean;
@@ -241,26 +246,85 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const canSubmit = email.trim().length > 0 && (hasSavedPassword || password.length > 0);
 
   return (
-    <main className="login-ambient-background bg-[#f7f8fc] relative h-dvh w-screen overflow-hidden text-[#262324]">
-      <div className="login-ambient-layer-one" aria-hidden="true" />
-      <div className="login-ambient-layer-two" aria-hidden="true" />
+    <main className="login-page">
       <div className="electron-drag-region fixed inset-x-0 top-0 z-30 h-10" aria-hidden="true" />
 
-      <div className="relative flex h-full overflow-y-auto px-6 py-10 sm:px-10 sm:py-12">
-        <section className="my-auto w-full max-w-[400px] mx-auto">
-          <header className="mb-9 text-center">
-            <h1 className="text-[28px] font-semibold tracking-[0.12em] text-[#332d2f]">
-              硅基工作台
-            </h1>
-            <span className="mx-auto mt-3 block h-[2px] w-8 rounded-full bg-[#6366f1]" aria-hidden="true" />
+      <section className="login-brand-panel" aria-label="龙硅产品介绍">
+        <div className="login-brand-grid" aria-hidden="true" />
+        <div className="login-brand-glow login-brand-glow-primary" aria-hidden="true" />
+        <div className="login-brand-glow login-brand-glow-secondary" aria-hidden="true" />
+        <div className="login-particle-field" aria-hidden="true">
+          {Array.from({ length: 18 }, (_, index) => (
+            <span key={index} className="login-particle" />
+          ))}
+        </div>
+
+        <div className="login-brand-content">
+          <div className="login-brand-kicker">
+            <span className="login-brand-kicker-dot" aria-hidden="true" />
+            SEP / DIGITAL WORKFORCE
+          </div>
+
+          <div className="login-brand-mark">
+            <span className="login-brand-mark-ring login-brand-mark-ring-one" aria-hidden="true" />
+            <span className="login-brand-mark-ring login-brand-mark-ring-two" aria-hidden="true" />
+            <img src={logoImage} alt="龙硅" />
+          </div>
+
+          <div className="login-brand-copy">
+            <p className="login-brand-name">龙硅</p>
+            <h1>让每一位员工，<br /><em>都有一个 AI 同行者</em></h1>
+            <p className="login-brand-description">
+              数字员工平台，让团队把时间留给更有价值的创造。
+            </p>
+          </div>
+
+          <ul className="login-brand-features" aria-label="产品特点">
+            <li>
+              <span className="login-feature-icon"><Sparkles size={15} strokeWidth={1.8} /></span>
+              <span>AI 驱动</span>
+              <span className="login-feature-line" aria-hidden="true" />
+            </li>
+            <li>
+              <span className="login-feature-icon"><Workflow size={15} strokeWidth={1.8} /></span>
+              <span>智能协作</span>
+              <span className="login-feature-line" aria-hidden="true" />
+            </li>
+            <li>
+              <span className="login-feature-icon"><ShieldCheck size={15} strokeWidth={1.8} /></span>
+              <span>安全可信</span>
+            </li>
+          </ul>
+
+          <div className="login-brand-footer">
+            <span className="login-brand-footer-rule" aria-hidden="true" />
+            <span>SECURE BY DESIGN</span>
+            <span className="login-brand-footer-status"><span aria-hidden="true" /> ONLINE</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="login-form-panel">
+        <div className="login-form-shell">
+          <div className="login-mobile-brand" aria-hidden="true">
+            <img src={logoImage} alt="" />
+            <span>龙硅</span>
+          </div>
+
+          <header className="login-form-header">
+            <p className="login-form-eyebrow">欢迎回来</p>
+            <h2>登录龙硅</h2>
+            <p>进入你的数字员工工作台</p>
           </header>
 
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div ref={accountPickerRef} className="relative">
-              <label htmlFor="login-email" className="mb-2 block text-xs font-medium text-[#655e60]">
-                邮箱
-              </label>
-              <div className="relative">
+          <form onSubmit={handleSubmit} className="login-form">
+            <div ref={accountPickerRef} className="login-field login-account-field">
+              <div className="login-field-label-row">
+                <label htmlFor="login-email">邮箱</label>
+                <span>Work email</span>
+              </div>
+              <div className="login-input-wrap">
+                <Mail className="login-input-leading-icon" size={17} strokeWidth={1.8} aria-hidden="true" />
                 <input
                   ref={emailInputRef}
                   id="login-email"
@@ -275,7 +339,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   placeholder="name@company.com"
                   autoComplete="email"
                   disabled={loading || deletingEmail !== null}
-                  className="h-11 w-full rounded-[8px] border border-[#ded7d8] bg-white/90 px-3.5 pr-20 text-sm text-[#292526] shadow-[0_1px_2px_rgba(72,48,52,0.04)] outline-none transition placeholder:text-[#b8afb1] focus:border-[#6366f1] focus:ring-3 focus:ring-[#6366f1]/10 disabled:bg-white/50"
+                  className="login-input login-input-with-leading login-input-with-trailing"
                 />
                 {rememberedAccounts.length > 0 && (
                   <button
@@ -283,19 +347,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     aria-label="选择历史账号"
                     onClick={() => setAccountsOpen(open => !open)}
                     disabled={loading || deletingEmail !== null}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[#9e9698] transition hover:bg-[#eef0ff] hover:text-[#4f46e5] focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20"
+                    className="login-input-action"
                   >
-                    <ChevronDown className={`h-4 w-4 transition-transform ${accountsOpen ? 'rotate-180' : ''}`} />
+                    <ChevronDown className={accountsOpen ? 'rotate-180' : ''} size={16} />
                   </button>
                 )}
               </div>
 
               {accountsOpen && filteredAccounts.length > 0 && (
-                <div
-                  id="remembered-account-list"
-                  role="listbox"
-                  className="absolute z-20 mt-2 max-h-56 w-full overflow-y-auto rounded-[9px] border border-[#e3dcdd] bg-white p-1.5 shadow-[0_16px_40px_rgba(74,45,50,0.14),0_3px_10px_rgba(74,45,50,0.06)]"
-                >
+                <div id="remembered-account-list" role="listbox" className="login-account-menu">
                   {filteredAccounts.map((account, index) => (
                     <div
                       key={account.email}
@@ -303,19 +363,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                       aria-selected={selectedEmail === account.email}
                       onMouseDown={event => event.preventDefault()}
                       onClick={() => selectAccount(account)}
-                      className={`group flex h-[52px] cursor-pointer items-center gap-3 rounded-[7px] px-3 transition ${index === activeAccountIndex || selectedEmail === account.email ? 'bg-[#eef0ff]' : 'hover:bg-[#f5f6ff]'}`}
+                      className={`login-account-option ${index === activeAccountIndex || selectedEmail === account.email ? 'is-active' : ''}`}
                     >
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#eef0ff] text-xs font-semibold text-[#4f46e5]">
+                      <span className="login-account-avatar">
                         {(account.displayName || account.email).slice(0, 1).toUpperCase()}
                       </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-1.5 truncate text-xs font-medium text-[#3c3638]">
-                          <span className="truncate">{account.displayName || account.email}</span>
-                          {encryptionAvailable && account.hasSavedPassword && (
-                            <LockKeyhole className="h-3 w-3 shrink-0 text-[#818cf8]" />
-                          )}
+                      <span className="login-account-copy">
+                        <span className="login-account-name">
+                          <span>{account.displayName || account.email}</span>
+                          {encryptionAvailable && account.hasSavedPassword && <LockKeyhole size={12} aria-label="已保存密码" />}
                         </span>
-                        <span className="mt-0.5 block truncate text-[11px] text-[#958c8e]">{account.email}</span>
+                        <span className="login-account-email">{account.email}</span>
                       </span>
                       <button
                         type="button"
@@ -323,9 +381,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                         title={deletingEmail === account.email ? '正在移除…' : '移除账号及保存的密码'}
                         onClick={event => void handleForgetAccount(event, account.email)}
                         disabled={loading || deletingEmail !== null}
-                        className="rounded-md p-1.5 text-[#aaa2a4] transition hover:bg-[#e0e7ff] hover:text-[#4f46e5] focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20 group-hover:opacity-100"
+                        className="login-account-remove"
                       >
-                        <Trash2 className="h-3.5 w-3.5" />
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   ))}
@@ -333,11 +391,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               )}
             </div>
 
-            <div>
-              <label htmlFor="login-password" className="mb-2 block text-xs font-medium text-[#655e60]">
-                密码
-              </label>
-              <div className="relative">
+            <div className="login-field">
+              <div className="login-field-label-row">
+                <label htmlFor="login-password">密码</label>
+                <span>Password</span>
+              </div>
+              <div className="login-input-wrap">
+                <LockKeyhole className="login-input-leading-icon" size={17} strokeWidth={1.8} aria-hidden="true" />
                 <input
                   id="login-password"
                   type={showPassword ? 'text' : 'password'}
@@ -359,72 +419,74 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                   placeholder="请输入密码"
                   autoComplete="current-password"
                   disabled={loading || deletingEmail !== null}
-                  className="h-11 w-full rounded-[8px] border border-[#ded7d8] bg-white/90 px-3.5 pr-20 text-sm text-[#292526] shadow-[0_1px_2px_rgba(72,48,52,0.04)] outline-none transition placeholder:text-[#b8afb1] focus:border-[#6366f1] focus:ring-3 focus:ring-[#6366f1]/10 disabled:bg-white/50"
+                  className="login-input login-input-with-leading login-input-with-trailing"
                 />
+                {(hasSavedPassword || password) && (
+                  <button type="button" aria-label="清空密码" disabled={loading} onClick={clearPassword} className="login-input-clear">
+                    <X size={15} />
+                  </button>
+                )}
                 <button
                   type="button"
                   aria-pressed={showPassword}
                   aria-label={showPassword ? '隐藏密码' : '显示密码'}
                   onClick={() => void togglePassword()}
                   disabled={loading || revealing || (!hasSavedPassword && !password)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-[#9e9698] transition hover:bg-[#eef0ff] hover:text-[#7d7375] focus:outline-none focus:ring-2 focus:ring-[#6366f1]/20 disabled:opacity-35"
+                  className="login-input-action login-password-toggle"
                 >
-                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
-                {(hasSavedPassword || password) && <button type="button" aria-label="清空密码"
-                  disabled={loading} onClick={clearPassword}
-                  className="absolute right-10 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-slate-500 hover:bg-indigo-50 focus-visible:ring-2 focus-visible:ring-indigo-500">
-                  <X className="h-4 w-4" />
-                </button>}
               </div>
             </div>
 
-            {notice && <p role="status" className="text-xs text-indigo-600">{notice}</p>}
+            {notice && <p role="status" className="login-notice">{notice}</p>}
 
             {errorKind && (
-              <div role="alert" className="flex items-center gap-2 text-xs text-[#b33437]">
-                {errorKind === 'network' ? <WifiOff className="h-3.5 w-3.5 shrink-0" /> : <AlertCircle className="h-3.5 w-3.5 shrink-0" />}
+              <div role="alert" className="login-error">
+                {errorKind === 'network' ? <WifiOff size={15} aria-hidden="true" /> : <AlertCircle size={15} aria-hidden="true" />}
                 <span>{errorCopy[errorKind]}</span>
               </div>
             )}
 
-            <div className="flex min-h-5 items-center justify-between gap-4 pt-1">
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-[#6f6769]">
+            <div className="login-form-options">
+              <label className="login-remember-option">
                 <input
                   type="checkbox"
                   checked={rememberPassword}
                   onChange={event => setRememberPassword(event.target.checked)}
                   disabled={loading || !encryptionAvailable}
-                  className="h-4 w-4 rounded border-[#c7bec0] accent-[#6366f1]"
                 />
-                记住密码
+                <span>记住密码</span>
               </label>
-              {!encryptionAvailable && (
-                <span className="text-[11px] text-[#9b6b6d]">系统安全存储不可用</span>
-              )}
+              {!encryptionAvailable && <span className="login-storage-warning">系统安全存储不可用</span>}
             </div>
 
             <button
               ref={submitButtonRef}
               type="submit"
               disabled={loading || revealing || deletingEmail !== null || !canSubmit}
-              className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-[8px] bg-[#6366f1] text-sm font-semibold text-white shadow-[0_7px_18px_rgba(99,102,241,0.2)] transition hover:bg-[#4f46e5] hover:shadow-[0_9px_22px_rgba(99,102,241,0.25)] focus:outline-none focus:ring-3 focus:ring-[#6366f1]/20 active:translate-y-px disabled:cursor-not-allowed disabled:bg-[#a5b4fc] disabled:shadow-none"
+              className="login-submit"
             >
               {loading ? (
                 <>
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                  <span className="login-submit-spinner" />
                   登录中
                 </>
               ) : (
                 <>
-                  <KeyRound className="h-4 w-4" />
                   登录
+                  <ArrowUpRight size={17} strokeWidth={2.1} />
                 </>
               )}
             </button>
           </form>
-        </section>
-      </div>
+
+          <footer className="login-form-footer">
+            <ShieldCheck size={14} strokeWidth={1.8} aria-hidden="true" />
+            <span>你的数据将通过安全连接传输</span>
+          </footer>
+        </div>
+      </section>
     </main>
   );
 };

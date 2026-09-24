@@ -37,7 +37,8 @@ test('checksums cover installers and release notes are generated', () => {
   assert.equal(run(dir, 'generate-checksums.mjs', ['dist']).status, 0)
   assert.equal(readFileSync(resolve(dir, 'dist/SHA256SUMS.txt'), 'utf8'), createHash('sha256').update('installer').digest('hex') + '  test.exe\n')
   assert.equal(run(dir, 'generate-release-notes.mjs', ['beta']).status, 0)
-  assert.match(readFileSync(resolve(dir, 'dist/RELEASE-NOTES-beta.md'), 'utf8'), /SEP Client 0.1.0 \(beta\)/)
+  const version = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')).version
+  assert.match(readFileSync(resolve(dir, 'dist/RELEASE-NOTES-beta.md'), 'utf8'), new RegExp(`SEP Client ${version} \\(beta\\)`))
 })
 test('release scripts keep channel selection and do not force cross-platform packaging', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
