@@ -320,6 +320,18 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-chat-none { padding: 14px 8px; color: var(--ent-ink-3); font-size: 13px; text-align: center; }
 
 /* 对话区域：白底。还没开始说话，所以这里放的是「他是谁、擅长什么」。 */
+.ent-chat-head { margin-bottom: 18px; }
+.ent-chat-step-card { display: flex; min-height: 220px; align-items: center; justify-content: center; flex-direction: column; gap: 8px; padding: 28px 24px; border: 1px solid var(--arr-card-line); border-radius: 16px; color: var(--ent-ink-2); background: var(--ent-panel); text-align: center; }
+.ent-chat-step-card strong { color: var(--ent-ink); font-size: 16px; font-weight: 600; }
+.ent-chat-step-card p { max-width: 480px; margin: 0; color: var(--arr-desc); font-size: 13px; line-height: 1.7; }
+.ent-chat-step-card > svg { color: var(--ent-brand-ink); }
+.ent-chat-review-card, .ent-chat-confirm-card { align-items: flex-start; text-align: left; }
+.ent-chat-review-card .ent-arr-ghost { margin-top: 8px; }
+.ent-chat-confirm-person { display: flex; align-items: center; gap: 10px; color: var(--ent-ink); }
+.ent-chat-confirm-text { width: 100%; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--ent-line-soft); }
+.ent-chat-confirm-text span { color: var(--ent-ink-3); font-size: 12px; }
+.ent-chat-confirm-text p { margin-top: 6px; color: var(--ent-ink); white-space: pre-wrap; }
+.ent-chat-confirm-card small { color: var(--ent-ink-3); font-size: 12px; line-height: 1.6; }
 .ent-chat-room { display: flex; min-height: 220px; flex-direction: column; justify-content: center; padding: 26px 22px; border: 1px solid var(--arr-card-line); border-radius: 16px 16px 0 0; background: var(--ent-panel); }
 .ent-chat-open { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
 .ent-chat-open strong { margin-top: 10px; color: var(--ent-ink); font-size: 16px; font-weight: 600; }

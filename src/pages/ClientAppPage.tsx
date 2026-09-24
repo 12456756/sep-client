@@ -52,6 +52,9 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
     try { window.localStorage.setItem('sep.theme', darkMode ? 'dark' : 'light'); } catch { /* 无痕模式不阻断主题切换。 */ }
   }, [darkMode]);
   useEffect(() => {
+    void window.electronAPI.setWindowTheme(darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();

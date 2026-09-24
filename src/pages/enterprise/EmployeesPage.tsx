@@ -82,7 +82,7 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
               employee={employee}
               compact
               onOpen={open}
-              onChat={employee.assignedToMe ? id => open(id) : undefined}
+              onChat={employee.assignedToMe ? id => workspace.navigate({ name: 'arrange', mode: 'chat', employeeId: id }) : undefined}
             />
           ))}
         </div>
@@ -93,7 +93,7 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
               key={employee.id}
               employee={employee}
               onOpen={open}
-              onChat={employee.assignedToMe ? id => open(id) : undefined}
+              onChat={employee.assignedToMe ? id => workspace.navigate({ name: 'arrange', mode: 'chat', employeeId: id }) : undefined}
             />
           ))}
         </div>

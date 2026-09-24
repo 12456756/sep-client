@@ -53,6 +53,7 @@ export const INVOKE_CHANNELS = {
   ARRANGE_PLAN_DRAFT: 'arrange:plan-draft',
   ARRANGE_CANCEL_PLAN: 'arrange:cancel-plan',
   UTIL_SELECT_DIRECTORY: 'util:select-directory',
+  WINDOW_SET_THEME: 'window:set-theme',
 } as const
 
 /** renderer -> main，单向 `ipcRenderer.send` / `ipcMain.on`。 */

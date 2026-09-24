@@ -141,6 +141,7 @@ export interface ToolApprovalResponse {
 }
 
 export type RuntimePlatform = 'darwin' | 'win32' | 'linux' | 'unknown'
+export type WindowTheme = 'light' | 'dark'
 
 export interface WindowChromeRuntime {
   height: number
@@ -150,6 +151,7 @@ export interface WindowChromeRuntime {
 export interface ElectronAPI {
   platform: RuntimePlatform
   windowChrome: WindowChromeRuntime
+  setWindowTheme: (theme: WindowTheme) => Promise<IpcCommandResult>
   listSkillLibrary: () => Promise<IpcCommandResult & { data?: SkillLibraryItem[] }>
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: string }>
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult>

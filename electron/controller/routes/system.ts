@@ -1,7 +1,7 @@
 /**
- * electron/controller/routes/system.routes.ts — 1 条工具路由 + 1 个单向监听
+ * electron/controller/routes/system.routes.ts — 2 条工具路由 + 1 个单向监听
  *
- * 这两条都不进服务层：目录选择要的是窗口句柄（UI 能力，不是用例），
+ * 这些系统通道都不进服务层：目录选择和主题同步要的是窗口句柄（UI 能力，不是用例），
  * 审批响应是执行层的控制信号，服务层插一层只是转发。
  */
 import { dialog } from 'electron'
@@ -21,7 +21,24 @@ const approvalResponse = z.object({
   reason: z.string().optional(),
 })
 
+const windowTheme = z.enum(['light', 'dark'])
+
+const WINDOW_THEME_COLORS = {
+  light: { color: '#f7f8fc', symbolColor: '#5c6375', background: '#f7f8fc' },
+  dark: { color: '#1a1d26', symbolColor: '#c2c7d3', background: '#11131a' },
+} as const
+
 export const systemRoutes = [
+  route(INVOKE_CHANNELS.WINDOW_SET_THEME, windowTheme, async (ctx, input) => {
+    const window = ctx.window()
+    if (!window) throw appError('INTERNAL_ERROR', { details: { reason: 'main window unavailable' } })
+    const colors = WINDOW_THEME_COLORS[input]
+    if (process.platform === 'win32') {
+      window.setTitleBarOverlay({ color: colors.color, symbolColor: colors.symbolColor, height: 44 })
+    }
+    window.setBackgroundColor(colors.background)
+    return { success: true }
+  }, { errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, NO_INPUT, async ctx => {
     const window = ctx.window()
     if (!window) {
