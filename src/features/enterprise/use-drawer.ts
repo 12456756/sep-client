@@ -8,7 +8,7 @@
  * 重渲染都会重跑一遍 effect，焦点会被抢回第一个控件 —— 抽屉里有输入框时就没法打字了。
  * 所以最新的 onClose 走 ref 传给监听器。
  *
- * EmployeeWorksDrawer 早于这个 hook，自带一份等价实现；新抽屉都用这里的。
+ * 所有右侧抽屉和命令面板都用这里的规则，避免不同入口的键盘行为不一致。
  */
 
 import { useEffect, useRef, type RefObject } from 'react';
@@ -21,29 +21,40 @@ const FOCUSABLE = [
   'textarea:not(:disabled)',
   '[href]',
   '[tabindex]:not([tabindex="-1"])',
+  '[contenteditable="true"]',
 ].join(', ');
 
-export function useDrawer(onClose: () => void): RefObject<HTMLElement> {
+export function useDrawer(onClose: () => void, initialFocusSelector?: string): RefObject<HTMLElement> {
   const panel = useRef<HTMLElement>(null);
   const close = useRef(onClose);
 
   useEffect(() => { close.current = onClose; });
 
   useEffect(() => {
-    panel.current?.querySelector<HTMLElement>(FOCUSABLE)?.focus();
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const initialSelector = initialFocusSelector ? `${initialFocusSelector}, ${FOCUSABLE}` : FOCUSABLE;
+    panel.current?.querySelector<HTMLElement>(initialSelector)?.focus();
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { event.preventDefault(); close.current(); return; }
       if (event.key !== 'Tab' || !panel.current) return;
       const stops = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)];
       if (!stops.length) return;
+      if (!panel.current.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? stops[stops.length - 1] : stops[0])?.focus();
+        return;
+      }
       const first = stops[0]!;
       const last = stops[stops.length - 1]!;
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     };
     document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, []);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      if (previous?.isConnected) previous.focus();
+    };
+  }, [initialFocusSelector]);
 
   return panel;
 }

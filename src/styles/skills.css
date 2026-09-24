@@ -1,12 +1,12 @@
 /* User-provided skill library reference, implemented with existing application primitives. */
 .skill-library,.skill-detail { display:flex; flex-direction:column; gap:20px; min-width:0; }
 .skill-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px; }
-.skill-search { display:flex; align-items:center; gap:10px; flex:1; min-width:180px; max-width:460px; padding:0 14px; border:1px solid var(--ent-line-strong); border-radius:9px; background:white; color:var(--ent-ink-3); }
+.skill-search { display:flex; align-items:center; gap:10px; flex:1; min-width:180px; max-width:460px; padding:0 14px; border:1px solid var(--ent-line-strong); border-radius:9px; background:var(--ent-panel); color:var(--ent-ink-3); }
 .skill-search input { width:100%; min-width:0; border:0; background:none; padding:11px 0; outline:none; color:var(--ent-ink); }
 .skill-search:focus-within { outline:2px solid var(--ent-brand); outline-offset:2px; }
 .skill-caption { color:var(--ent-ink-3); font-size:12px; line-height:1.7; margin:0; }
 .skill-cards { display:grid; gap:18px; }
-.skill-card { padding:24px; border:1px solid var(--ent-line); border-radius:14px; background:white; box-shadow:0 3px 12px #26356805; }
+.skill-card { padding:24px; border:1px solid var(--ent-line); border-radius:14px; background:var(--ent-panel); box-shadow:0 3px 12px #26356805; }
 .skill-card-heading { display:flex; align-items:flex-start; gap:14px; }
 .skill-icon,.skill-version-icon { display:grid; place-items:center; flex-shrink:0; width:52px; height:52px; border-radius:12px; color:var(--ent-brand-ink); background:var(--ent-brand-soft); }
 .skill-card-title { flex:1; min-width:0; }
@@ -28,12 +28,12 @@
 .skill-detail-heading > div { flex:1; min-width:0; }
 .skill-detail-heading h1 { margin:0 0 5px; font-size:23px; font-weight:600; overflow-wrap:anywhere; }
 .skill-detail-heading p { margin:0; color:var(--ent-ink-3); font-size:13px; overflow-wrap:anywhere; }
-.skill-editor-panel,.skill-history { background:white; border:1px solid var(--ent-line); border-radius:12px; overflow:hidden; }
+.skill-editor-panel,.skill-history { background:var(--ent-panel); border:1px solid var(--ent-line); border-radius:12px; overflow:hidden; }
 .skill-editor-panel > header,.skill-history > header { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:16px 20px; border-bottom:1px solid var(--ent-line); }
 .skill-editor-panel h2,.skill-history h2 { display:flex; align-items:center; gap:8px; margin:0; font-size:15px; font-weight:600; }
 .skill-editor-panel h2 span { font-size:12px; font-weight:400; color:var(--ent-ink-3); }
-.skill-source { display:block; width:100%; min-height:380px; padding:22px; resize:vertical; border:0; background:#fafbfe; color:#29334a; font:13px/1.9 Consolas,'Cascadia Code',monospace; tab-size:2; }
-.skill-source.editing { background:#fff; box-shadow:inset 3px 0 var(--ent-brand); }
+.skill-source { display:block; width:100%; min-height:380px; padding:22px; resize:vertical; border:0; background:var(--ent-panel-subtle); color:var(--ent-ink); font:13px/1.9 Consolas,'Cascadia Code',monospace; tab-size:2; }
+.skill-source.editing { background:var(--ent-panel); box-shadow:inset 3px 0 var(--ent-brand); }
 .skill-source:focus-visible { outline:2px solid var(--ent-brand); outline-offset:-2px; }
 .skill-editor-panel > footer { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:14px; padding:14px 20px; border-top:1px solid var(--ent-line); }
 .skill-editor-panel > footer > div { display:flex; gap:8px; }
@@ -47,7 +47,7 @@
 .skill-version-info small { display:block; margin-top:5px; font-size:12px; color:var(--ent-ink-3); }
 .skill-current { display:flex; align-items:center; gap:4px; font-size:12px; color:var(--ent-brand-ink); }
 .skill-dialog-overlay { position:fixed; inset:0; background:#19203966; z-index:100; }
-.skill-save-dialog { position:fixed; z-index:101; top:50%; left:50%; transform:translate(-50%,-50%); width:min(460px,calc(100vw - 40px)); max-height:calc(100vh - 40px); overflow:auto; padding:28px; border-radius:16px; background:white; color:var(--ent-ink); box-shadow:0 24px 100px #101c3f33; }
+.skill-save-dialog { position:fixed; z-index:101; top:50%; left:50%; transform:translate(-50%,-50%); width:min(460px,calc(100vw - 40px)); max-height:calc(100vh - 40px); overflow:auto; padding:28px; border-radius:16px; background:var(--ent-panel); color:var(--ent-ink); box-shadow:0 24px 100px #101c3f33; }
 .skill-save-dialog h2 { margin:0; font-size:20px; font-weight:600; }
 .skill-save-dialog > p { margin:12px 0 24px; color:var(--ent-ink-2); font-size:13px; line-height:1.8; }
 .skill-save-dialog footer { display:flex; justify-content:flex-end; gap:10px; margin-top:24px; }
@@ -68,12 +68,9 @@
 .skill-state-banner > div { display: grid; gap: 2px; min-width: 0; }
 .skill-state-banner strong { margin: 0; }
 .skill-state-banner span { color: inherit; opacity: .86; }
-.skill-loading { display: grid; gap: 10px; padding: 24px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: white; color: var(--ent-ink-3); }
-.skill-skeleton { display: block; width: min(420px, 70%); height: 14px; border-radius: 999px; background: linear-gradient(90deg, var(--ent-panel-subtle), #eef0fa, var(--ent-panel-subtle)); background-size: 200% 100%; animation: skill-loading-shimmer 1.4s ease-in-out infinite; }
-.skill-skeleton + .skill-skeleton { width: min(280px, 50%); }
+.skill-loading { display: grid; gap: 10px; padding: 24px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background:var(--ent-panel); color: var(--ent-ink-3); }
 .skill-refreshing { display: inline-flex; align-items: center; gap: 7px; color: var(--ent-ink-3); font-size: 12px; }
 .skill-refreshing svg { animation: skill-refresh-spin 1s linear infinite; }
-@keyframes skill-loading-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @keyframes skill-refresh-spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .skill-skeleton, .skill-refreshing svg { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .skill-refreshing svg { animation: none; } }
 @media (max-width: 560px) { .skill-state-banner { align-items: flex-start; flex-direction: column; } }

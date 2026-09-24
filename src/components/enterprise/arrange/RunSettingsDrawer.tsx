@@ -7,7 +7,7 @@
  */
 
 import { FolderOpen, X } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useDrawer } from '../../../features/enterprise/use-drawer';
 import { RUN_PERMISSIONS, type RunSettings } from '../../../features/enterprise/run-settings';
 
 interface Props {
@@ -21,26 +21,7 @@ interface Props {
 }
 
 export function RunSettingsDrawer({ settings, models, conversation = false, onChange, onChooseFolder, onClose }: Props) {
-  const panel = useRef<HTMLElement>(null);
-
-  const closeRef = useRef(onClose);
-  useEffect(() => { closeRef.current = onClose; }, [onClose]);
-  useEffect(() => {
-    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); closeRef.current(); }
-      if (event.key !== 'Tab') return;
-      const controls = panel.current?.querySelectorAll<HTMLElement>('input:not(:disabled), select:not(:disabled), button:not(:disabled)');
-      if (!controls?.length) return;
-      const first = controls[0];
-      const last = controls[controls.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener('keydown', key);
-    panel.current?.querySelector<HTMLElement>('button')?.focus();
-    return () => { document.removeEventListener('keydown', key); previous?.focus(); };
-  }, []);
+  const panel = useDrawer(onClose);
 
   return (
     <>

@@ -426,6 +426,13 @@
 .ent-banner-close { margin-left: auto; border: 0; background: none; color: inherit; cursor: pointer; opacity: .7; }
 
 .ent-empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 44px 24px; border: 1px dashed var(--ent-line-strong); border-radius: var(--ent-radius); color: var(--ent-ink-3); background: var(--ent-panel-subtle); text-align: center; }
+
+/* 通用加载骨架：只表达“内容即将出现”，不把页面结构临时改成另一种布局。 */
+.ent-skeleton { display: block; border-radius: 999px; background: linear-gradient(90deg, var(--ent-panel-subtle), var(--ent-line-soft), var(--ent-panel-subtle)); background-size: 200% 100%; animation: ent-skeleton-shimmer 1.4s ease-in-out infinite; }
+.ent-skeleton-line { height: 14px; }
+.ent-skeleton-line.wide { width: min(420px, 70%); }
+.ent-skeleton-line.medium { width: min(280px, 50%); }
+@keyframes ent-skeleton-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 .ent-empty strong { color: var(--ent-ink); font-size: var(--ent-fs-title); }
 .ent-empty p { margin: 0; font-size: var(--ent-fs-body); line-height: 1.7; }
 
@@ -1271,6 +1278,7 @@
    * 在要求减少动态效果的系统上是最刺眼的两处。斜纹本身留着，只是不流动。
    */
   .ent-page, .ent-wall-flat > *, .ent-wall-track > *, .ent-drawer, .ent-drawer-back,
+  .ent-command-layer, .ent-command, .ent-skeleton,
   .ent-desk-track i, .ent-bar > span > i, .ent-worktile.live > i > svg { animation: none; }
 }
 

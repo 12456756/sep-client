@@ -1,6 +1,7 @@
 import { Check, Command, Moon, Search, Sun } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { AppRoute } from "../../features/enterprise/types";
+import { useDrawer } from "../../features/enterprise/use-drawer";
 
 interface CommandPaletteProps {
   darkMode: boolean;
@@ -26,7 +27,7 @@ export function CommandPalette({
 }: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const panel = useDrawer(onClose);
 
   const commands = useMemo<CommandItem[]>(
     () => [
@@ -101,21 +102,6 @@ export function CommandPalette({
   }, [commands, query]);
 
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  useEffect(() => {
     setActiveIndex((index) =>
       Math.min(index, Math.max(0, filtered.length - 1)),
     );
@@ -140,14 +126,16 @@ export function CommandPalette({
         role="dialog"
         aria-modal="true"
         aria-labelledby="ent-command-title"
+        ref={panel}
       >
         <div className="ent-command-search">
           <Search size={17} aria-hidden />
           <input
-            ref={inputRef}
             value={query}
             placeholder="搜索页面或操作…"
             aria-label="搜索页面或操作"
+            aria-controls="ent-command-list"
+            aria-activedescendant={filtered[activeIndex] ? `ent-command-option-${filtered[activeIndex].id}` : undefined}
             onChange={(event) => {
               setQuery(event.target.value);
               setActiveIndex(0);
@@ -177,7 +165,7 @@ export function CommandPalette({
           <span>快速打开页面，不替代左侧导航</span>
         </div>
 
-        <div className="ent-command-list" role="listbox" aria-label="命令列表">
+        <div id="ent-command-list" className="ent-command-list" role="listbox" aria-label="命令列表" aria-live="polite">
           {filtered.length ? (
             filtered.map((item, index) => {
               const Icon = item.icon;
@@ -186,6 +174,7 @@ export function CommandPalette({
                 <button
                   key={item.id}
                   type="button"
+                  id={`ent-command-option-${item.id}`}
                   role="option"
                   aria-selected={active}
                   className={`ent-command-item${active ? " active" : ""}`}

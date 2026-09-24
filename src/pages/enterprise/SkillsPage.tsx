@@ -21,7 +21,7 @@ export function SkillsPage({ workspace, skillId }: Props) {
   const canRetry = !workspace.skillsLoading && (!isRateLimited || workspace.skillsRetrySeconds === null || workspace.skillsRetrySeconds <= 0);
   const refreshLabel = workspace.skillsLoading ? '刷新中…' : '刷新';
   const emptyTitle = query || filter !== 'all' ? '没有匹配的技能' : '当前账号还没有已授权的员工技能';
-  return <div className="ent-page skill-library">
+  return <div className="ent-page skill-library" aria-busy={workspace.skillsLoading}>
     <div className="skill-toolbar">
       <label className="skill-search"><Search size={17} aria-hidden /><input aria-label="搜索技能" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索技能名称、描述或关键词…" /></label>
       <select className="ent-select" aria-label="版本范围" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">全部技能</option><option value="personal">有个人版本</option></select>
@@ -32,7 +32,7 @@ export function SkillsPage({ workspace, skillId }: Props) {
       <div><strong>{workspace.skillsError}</strong>{hasCachedSkills ? <span>已保留上次成功加载的技能列表。</span> : null}{isRateLimited && workspace.skillsRetrySeconds !== null && workspace.skillsRetrySeconds > 0 ? <span> 倒计时结束后可再次请求。</span> : null}</div>
       <button className="ent-btn sm" disabled={!canRetry} onClick={() => void workspace.refreshSkills()}>{isRateLimited && workspace.skillsRetrySeconds && workspace.skillsRetrySeconds > 0 ? `${workspace.skillsRetrySeconds} 秒后重试` : '重试'}</button>
     </div> : null}
-    {workspace.skillsLoading && !hasCachedSkills ? <div className="skill-loading" role="status" aria-live="polite"><span className="skill-skeleton" /><span className="skill-skeleton" /><span>正在加载技能…</span></div> : null}
+    {workspace.skillsLoading && !hasCachedSkills ? <div className="skill-loading" role="status" aria-live="polite"><span className="ent-skeleton ent-skeleton-line wide" aria-hidden /><span className="ent-skeleton ent-skeleton-line medium" aria-hidden /><span>正在加载技能…</span></div> : null}
     {workspace.skillsLoading && hasCachedSkills ? <div className="skill-refreshing" role="status" aria-live="polite"><RefreshCw size={14} aria-hidden />正在更新技能，当前列表仍可使用。</div> : null}
     {skillId && !workspace.skillsLoading && !hasError ? <div className="ent-banner info">此技能不在当前授权列表中。</div> : null}
     {!workspace.skillsLoading && !hasError && !matches.length ? <Empty title={emptyTitle}>{query || filter !== 'all' ? '请尝试调整搜索词或筛选条件。' : '企业给你的硅基员工配置技能后，会显示在这里。'}</Empty> : null}

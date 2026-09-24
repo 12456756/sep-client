@@ -9,10 +9,11 @@
  */
 
 import { ChevronRight, FileCheck2, Hourglass, Loader2, PauseCircle, Workflow, X, XCircle } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import type { SiliconEmployee, WorkItem } from '../../features/enterprise/types';
 import { dayTimeText, durationText, EMPLOYEE_AVAILABILITY, relativeTime } from '../../features/enterprise/vocabulary';
 import { EmployeeFace } from './EmployeeFace';
+import { useDrawer } from '../../features/enterprise/use-drawer';
 
 type Tab = 'live' | 'done' | 'all';
 
@@ -28,30 +29,11 @@ interface Props {
 const isLive = (work: WorkItem) => work.status !== 'completed' && work.status !== 'paused';
 
 export function EmployeeWorksDrawer({ employee, works, onClose, onOpenWork }: Props) {
-  const panel = useRef<HTMLDivElement | null>(null);
+  const panel = useDrawer(onClose, '.ent-worktile');
   const [tab, setTab] = useState<Tab>('live');
 
   const live = works.filter(isLive);
   const done = works.filter(work => !isLive(work));
-
-  // 打开时焦点落在第一张工作卡上，Esc 关闭，Tab 在抽屉内循环。
-  useEffect(() => {
-    const initialFocus = panel.current?.querySelector<HTMLElement>('.ent-worktile')
-      ?? panel.current?.querySelector<HTMLElement>('button');
-    initialFocus?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { event.preventDefault(); onClose(); return; }
-      if (event.key !== 'Tab' || !panel.current) return;
-      const focusable = [...panel.current.querySelectorAll<HTMLElement>('button:not(:disabled)')];
-      if (!focusable.length) return;
-      const first = focusable[0]!;
-      const last = focusable[focusable.length - 1]!;
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const state = EMPLOYEE_AVAILABILITY[employee.availability];
   const tone = employee.availability === 'working' ? 'work' : employee.availability === 'ready' ? '' : 'off';
