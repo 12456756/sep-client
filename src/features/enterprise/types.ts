@@ -267,6 +267,7 @@ export type AppRoute =
   | { name: 'arrange'; templateId?: string; mode?: ArrangeMode; employeeId?: string }
   | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped' }
   | { name: 'work'; workId: string }
-  | { name: 'skills'; skillId?: string };
+  | { name: 'skills'; skillId?: string }
+  | { name: 'compute-center' };
 
 export type AppRouteName = AppRoute['name'];

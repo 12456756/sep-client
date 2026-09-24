@@ -11,6 +11,7 @@ import { conversationRoutes } from './conversation'
 import { systemListeners, systemRoutes } from './system'
 import { taskRoutes } from './task'
 import { arrangementRoutes } from './arrangement'
+import { computeCreditRoutes } from './compute-credit'
 
 export const routes: readonly Route[] = [
   ...authRoutes,
@@ -18,6 +19,7 @@ export const routes: readonly Route[] = [
   ...taskRoutes,
   ...conversationRoutes,
   ...arrangementRoutes,
+  ...computeCreditRoutes,
   ...systemRoutes,
 ]
 
