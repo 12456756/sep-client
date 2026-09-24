@@ -9,8 +9,8 @@
  * 路由用受控状态而不是 URL，因为桌面端不需要地址栏，返回行为由 hook 维护的历史栈决定。
  */
 
-import { AlertTriangle, Bell, LayoutGrid, Network } from 'lucide-react';
-import { useEffect, useMemo, useRef } from 'react';
+import { AlertTriangle, Bell, LayoutGrid, Moon, Network, Sun } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
@@ -42,32 +42,39 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const { route, overview } = workspace;
   const scroll = useRef<HTMLDivElement | null>(null);
+  const [darkMode, setDarkMode] = useState(() => {
+    try { return window.localStorage.getItem('sep.theme') === 'dark'; } catch { return false; }
+  });
+
+  useEffect(() => {
+    try { window.localStorage.setItem('sep.theme', darkMode ? 'dark' : 'light'); } catch { /* 无痕模式不阻断主题切换。 */ }
+  }, [darkMode]);
 
   // 换页就回到顶部。同一个滚动容器在页面之间复用，不重置的话新页面会从上一页的位置开始。
   useEffect(() => {
     if (scroll.current) scroll.current.scrollTop = 0;
   }, [route]);
 
-  // 模块标题统一放在顶部白色标题栏；工作详情保留自身标题。
-  const head = useMemo<{ title: string; subtitle?: string } | null>(() => {
+  // 页面标题、层级路径和副标题统一放在顶部标题栏；工作详情保留自身标题。
+  const head = useMemo<{ title: string; breadcrumb?: readonly string[]; subtitle?: string } | null>(() => {
     switch (route.name) {
-      case 'organization': return { title: '组织架构', subtitle: `${overview.name} · 企业成员与硅基员工关系` };
-      case 'home': return { title: '首页' };
+      case 'organization': return { title: '企业组织', breadcrumb: ['企业'], subtitle: `${overview.name} · 企业成员与硅基员工关系` };
+      case 'home': return { title: '个人工作台', breadcrumb: ['个人'] };
       case 'work': return null;
-      case 'arrange': return { title: ({ pick: '安排工作', chat: '对话式', auto: '自动编排', manual: '自己编排' })[route.mode ?? 'pick'], subtitle: '选择员工与工作方式，确认后开始执行' };
-      case 'employees': return { title: '硅基员工', subtitle: `企业共 ${overview.totalEmployees} 位，其中 ${overview.availableToMe} 位已分配给你` };
+      case 'arrange': return { title: ({ pick: '安排工作', chat: '对话式安排', auto: '自动编排', manual: '自己编排' })[route.mode ?? 'pick'], breadcrumb: ['个人', '安排工作'], subtitle: '选择员工与工作方式，确认后开始执行' };
+      case 'employees': return { title: '硅基员工', breadcrumb: ['个人'], subtitle: `企业共 ${overview.totalEmployees} 位，其中 ${overview.availableToMe} 位已分配给你` };
       case 'employee': {
         const employee = workspace.employees.find(item => item.id === route.employeeId);
-        return { title: employee?.name ?? '员工详情' };
+        return { title: employee?.name ?? '员工详情', breadcrumb: ['个人', '硅基员工'] };
       }
-      case 'records': return { title: '工作记录' };
-      case 'skills': return { title: '员工技能', subtitle: '查看技能原文、管理个人版本，选择员工使用的技能版本' };
+      case 'records': return { title: '工作记录', breadcrumb: ['个人'], subtitle: '优先展示需要你处理的工作' };
+      case 'skills': return { title: '员工技能', breadcrumb: ['个人'], subtitle: '查看技能原文、管理个人版本，选择员工使用的技能版本' };
       default: return { title: overview.name };
     }
   }, [route, overview, workspace.employees]);
 
   return (
-    <div className="ent-shell">
+    <div className={`ent-shell${darkMode ? ' dark' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName={overview.name}
         enterpriseMark={overview.mark}
@@ -81,6 +88,7 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
       <div className="ent-shell-main">
         <AppTopBar
           title={head?.title}
+          breadcrumb={head?.breadcrumb}
           subtitle={head?.subtitle}
           actions={(
             <div className="ent-top-actions-group">
@@ -90,22 +98,31 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
                   className={route.name === 'organization' ? undefined : 'active'}
                   onClick={() => workspace.navigate({ name: 'home' })}
                   aria-pressed={route.name !== 'organization'}
-                  title="切换到工作台首页"
+                  title="切换到个人工作台"
                 >
                   <LayoutGrid size={14} aria-hidden />
-                  首页
+                  个人
                 </button>
                 <button
                   type="button"
                   className={route.name === 'organization' ? 'active' : undefined}
                   onClick={() => workspace.navigate({ name: 'organization' })}
                   aria-pressed={route.name === 'organization'}
-                  title="切换到组织架构"
+                  title="切换到企业组织"
                 >
                   <Network size={14} aria-hidden />
-                  组织架构
+                  企业
                 </button>
               </div>
+              <button
+                type="button"
+                className="ent-top-icon"
+                onClick={() => setDarkMode(value => !value)}
+                title={darkMode ? '切换到浅色主题' : '切换到深色主题'}
+                aria-label={darkMode ? '切换到浅色主题' : '切换到深色主题'}
+              >
+                {darkMode ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
+              </button>
               <button
                 type="button"
                 className="ent-top-icon"

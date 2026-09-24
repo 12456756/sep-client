@@ -15,17 +15,20 @@ import type { ReactNode } from 'react';
 interface Props {
   /** 不给就只有一条空横条：这一页的标题写在页面内容里。 */
   title?: string;
+  /** 标题上方的轻量层级路径。 */
+  breadcrumb?: readonly string[];
   /** 标题下面那一行，说明「这一页现在是什么情况」。可以不给。 */
   subtitle?: string;
   /** 本页主操作，靠右对齐。 */
   actions?: ReactNode;
 }
 
-export function AppTopBar({ title, subtitle, actions }: Props) {
+export function AppTopBar({ title, breadcrumb, subtitle, actions }: Props) {
   return (
     <header className="ent-top electron-drag-region">
       {title ? (
         <div className="ent-top-head">
+          {breadcrumb?.length ? <span className="ent-top-breadcrumb">{breadcrumb.join(' / ')}</span> : null}
           <h1 className="ent-top-title">{title}</h1>
           {subtitle ? <span className="ent-top-sub">{subtitle}</span> : null}
         </div>
