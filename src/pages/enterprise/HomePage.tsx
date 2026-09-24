@@ -1,22 +1,18 @@
 /**
- * 首页 = 员工概览。按设计稿三段，自上而下：
- * 1. 两格统计：公司员工总数 / 我拥有的员工。刻意做小 —— 视觉重点是员工，不是数字。
- * 2. 员工卡片墙：最多两行，每行几张按容器宽度算；人多到一屏放不下就变成一个环，
- *    两侧箭头往左往右都能一直转，一次滑一列，两边各露出被裁掉的一列。
- * 3. 派活框：一句话派活，唯一的可选设置是工作场地。
- *
- * 页面上没有一句解释性长文案 —— 员工卡自己会说话（状态和几颗小图标），派活框自己带例子。
+ * 个人工作台：首页先回答「现在需要我做什么」，再展示进行中的工作和已订阅员工。
+ * 安排工作是明确的次级入口，员工墙保留原有滚动能力，不制造虚构业务数据。
  */
 
-import { ChevronLeft, ChevronRight } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState, type ReactNode, type WheelEvent } from 'react';
-import { Empty } from '../../components/enterprise/atoms';
-import { ArrangeBar } from '../../components/enterprise/ArrangeBar';
+import { ArrowRight, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Plus } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type WheelEvent } from 'react';
+import { Empty, WorkStatusChip } from '../../components/enterprise/atoms';
+import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { EmployeeDeskCard, type DeskFlag } from '../../components/enterprise/EmployeeDeskCard';
 import { EmployeeWorksDrawer } from '../../components/enterprise/EmployeeWorksDrawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import type { SiliconEmployee, WorkItem } from '../../features/enterprise/types';
+import { relativeTime } from '../../features/enterprise/vocabulary';
 
 export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
   const { overview, employees, works, unreviewedWorkIds, navigate } = workspace;
@@ -26,8 +22,18 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
     () => roster.map(employee => deskOf(employee, works, unreviewedWorkIds, startOfToday())),
     [roster, works, unreviewedWorkIds],
   );
-  /** 现在就能派活的人数。墙上放不下时写在墙的右下角，让用户知道转一圈总共有多少人。 */
-  const usable = useMemo(() => roster.filter(item => item.availability !== 'unavailable').length, [roster]);
+  const needsMe = useMemo(
+    () => works
+      .filter(work => work.status === 'waiting-user' || Boolean(work.nextUserAction) || unreviewedWorkIds.has(work.id))
+      .sort((left, right) => right.updatedAt - left.updatedAt),
+    [works, unreviewedWorkIds],
+  );
+  const activeWorks = useMemo(
+    () => works
+      .filter(work => work.status === 'running' || work.status === 'arranging')
+      .sort((left, right) => right.updatedAt - left.updatedAt),
+    [works],
+  );
 
   const [openId, setOpenId] = useState<string | null>(null);
   const openEmployee = openId ? roster.find(item => item.id === openId) : undefined;
@@ -43,31 +49,72 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
   return (
     <div className="ent-page ent-home">
       <div className="ent-home-content">
-      <div className="ent-figures">
-        <Figure label="公司员工总数" value={overview.totalEmployees} onClick={() => navigate({ name: 'employees', scope: 'all' })}>
-          <GroupGlyph />
-        </Figure>
-        <Figure label="我拥有的员工" value={roster.length} alt onClick={() => navigate({ name: 'employees', scope: 'mine' })}>
-          <PersonGlyph />
-        </Figure>
-      </div>
+        <header className="ent-home-heading">
+          <div>
+            <span className="ent-home-eyebrow">个人工作台</span>
+            <h1>今天，从这里开始</h1>
+            <p>先处理需要你的事项，再查看正在推进的工作。</p>
+          </div>
+          <button type="button" className="ent-btn primary lg" onClick={() => navigate({ name: 'arrange' })}>
+            <Plus size={16} aria-hidden />
+            安排工作
+          </button>
+        </header>
 
-      {roster.length ? (
-        <Wall desks={desks} usable={usable} onOpen={setOpenId} />
-      ) : (
-        <Empty title="企业还没有给你分配硅基员工">企业管理员分配之后，你的员工会出现在这里。</Empty>
-      )}
+        <div className="ent-home-summary" aria-label="工作概览">
+          <button type="button" onClick={() => navigate({ name: 'records', bucket: 'mine' })}>
+            <strong>{needsMe.length}</strong><span>待我处理</span>
+          </button>
+          <button type="button" onClick={() => navigate({ name: 'records', bucket: 'active' })}>
+            <strong>{activeWorks.length}</strong><span>进行中</span>
+          </button>
+          <button type="button" onClick={() => navigate({ name: 'employees', scope: 'mine' })}>
+            <strong>{roster.length}</strong><span>已订阅员工</span>
+          </button>
+          <span className="ent-home-summary-note">企业共 {overview.totalEmployees} 位硅基员工</span>
+        </div>
 
-      </div>
-
-      {roster.length ? (
-        <ArrangeBar
-          employees={roster.filter(item => item.availability !== 'unavailable')}
-          busy={workspace.busy}
-          onChooseSite={workspace.chooseFolder}
-          onSend={(employeeId, text, workDir) => void workspace.startConversation(employeeId, text, { workDir })}
+        <HomeWorkSection
+          title="待我处理"
+          description="需要你确认、查看结果或决定下一步的工作"
+          count={needsMe.length}
+          works={needsMe}
+          employees={roster}
+          emptyTitle="目前没有需要你处理的工作"
+          emptyDescription="新的确认事项和交付结果会优先出现在这里。"
+          onOpen={workId => navigate({ name: 'work', workId })}
+          tone="attention"
         />
-      ) : null}
+
+        <HomeWorkSection
+          title="进行中"
+          description="正在由硅基员工推进的工作"
+          count={activeWorks.length}
+          works={activeWorks}
+          employees={roster}
+          emptyTitle="目前没有进行中的工作"
+          emptyDescription="安排一项工作后，它会在这里持续显示进展。"
+          onOpen={workId => navigate({ name: 'work', workId })}
+          tone="active"
+        />
+
+        <section className="ent-home-employees">
+          <div className="ent-section-head">
+            <div>
+              <h2>已订阅的硅基员工 <em>{roster.length}</em></h2>
+              <p>点击员工查看他正在处理和已经完成的工作</p>
+            </div>
+            <button type="button" className="link" onClick={() => navigate({ name: 'employees', scope: 'mine' })}>
+              查看全部 <ArrowRight size={14} aria-hidden />
+            </button>
+          </div>
+          {roster.length ? (
+            <Wall desks={desks} usable={roster.filter(item => item.availability !== 'unavailable').length} onOpen={setOpenId} />
+          ) : (
+            <Empty title="企业还没有给你分配硅基员工">企业管理员分配之后，你的员工会出现在这里。</Empty>
+          )}
+        </section>
+      </div>
 
       {openEmployee ? (
         <EmployeeWorksDrawer
@@ -78,6 +125,70 @@ export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
         />
       ) : null}
     </div>
+  );
+}
+
+function HomeWorkSection({
+  title,
+  description,
+  count,
+  works,
+  employees,
+  emptyTitle,
+  emptyDescription,
+  onOpen,
+  tone,
+}: {
+  title: string;
+  description: string;
+  count: number;
+  works: WorkItem[];
+  employees: SiliconEmployee[];
+  emptyTitle: string;
+  emptyDescription: string;
+  onOpen: (workId: string) => void;
+  tone: 'attention' | 'active';
+}) {
+  return (
+    <section className={`ent-home-work-section ${tone}`}>
+      <div className="ent-section-head">
+        <div>
+          <h2>{title} <em>{count}</em></h2>
+          <p>{description}</p>
+        </div>
+        {count ? <span className="ent-home-section-status"><CircleDot size={13} aria-hidden />实时更新</span> : null}
+      </div>
+      {works.length ? (
+        <div className="ent-home-work-grid">
+          {works.slice(0, 4).map(work => (
+            <HomeWorkCard key={work.id} work={work} employee={employees.find(item => item.id === work.currentEmployeeId)} onOpen={onOpen} />
+          ))}
+        </div>
+      ) : (
+        <div className="ent-home-inline-empty">
+          <CheckCircle2 size={17} aria-hidden />
+          <span><strong>{emptyTitle}</strong><small>{emptyDescription}</small></span>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function HomeWorkCard({ work, employee, onOpen }: { work: WorkItem; employee?: SiliconEmployee; onOpen: (workId: string) => void }) {
+  return (
+    <button type="button" className="ent-home-work-card" onClick={() => onOpen(work.id)}>
+      <div className="ent-home-work-card-head">
+        <WorkStatusChip value={work.status} />
+        <span>{relativeTime(work.updatedAt)}</span>
+      </div>
+      <strong className="ent-home-work-title">{work.title}</strong>
+      <p>{work.nextUserAction ?? work.goal}</p>
+      <div className="ent-home-work-person">
+        <EmployeeFace employee={employee} name={work.currentEmployeeName} size="sm" round />
+        <span>{work.currentEmployeeName}</span>
+        <ArrowRight size={14} aria-hidden />
+      </div>
+    </button>
   );
 }
 
@@ -303,54 +414,6 @@ function buildRing(desks: Desk[], cols: number): { columns: Desk[][]; looping: b
   return { columns, looping: true };
 }
 
-/** 一格统计。整块可点，点进员工页对应的范围 —— 数字后面就该能跟到人。 */
-function Figure({ label, value, onClick, alt = false, children }: {
-  label: string;
-  value: number;
-  onClick: () => void;
-  /** 第二格的图标片偏蓝一档（设计稿如此）。 */
-  alt?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <button type="button" className={`ent-figure${alt ? ' alt' : ''}`} onClick={onClick}>
-      <i aria-hidden>{children}</i>
-      <span className="ent-figure-copy">
-        <small>{label}</small>
-        <strong>{value}<em>人</em></strong>
-      </span>
-    </button>
-  );
-}
-
-/*
- * 统计格的两个小图标手写成实心图形，没有用 lucide ——
- * 设计稿这两枚是填充的剪影，描边图标放在 36 见方的浅色片里明显轻一档，压不住旁边那个大数字。
- */
-
-/** 两个人：公司员工总数。后面那位小一点、浅一点，靠深浅分出前后。 */
-function GroupGlyph() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden focusable="false">
-      <g opacity=".45">
-        <circle cx="16.5" cy="8.4" r="3.1" />
-        <path d="M16.5 12.7c2.9 0 5.2 1.7 5.5 3.9.1.6-.4 1.1-1 1.1h-9c-.6 0-1.1-.5-1-1.1.3-2.2 2.6-3.9 5.5-3.9z" />
-      </g>
-      <circle cx="9.4" cy="7.6" r="3.8" />
-      <path d="M9.4 12.6c3.7 0 6.7 2.1 7.1 4.8.1.8-.5 1.5-1.3 1.5H3.6c-.8 0-1.4-.7-1.3-1.5.4-2.7 3.4-4.8 7.1-4.8z" />
-    </svg>
-  );
-}
-
-/** 一个人：我拥有的员工。 */
-function PersonGlyph() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" aria-hidden focusable="false">
-      <circle cx="12" cy="7.8" r="4" />
-      <path d="M12 13.2c3.9 0 7.1 2.2 7.5 5.1.1.8-.5 1.5-1.3 1.5H5.8c-.8 0-1.4-.7-1.3-1.5.4-2.9 3.6-5.1 7.5-5.1z" />
-    </svg>
-  );
-}
 
 interface Desk {
   employee: SiliconEmployee;

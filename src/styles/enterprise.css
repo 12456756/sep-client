@@ -451,6 +451,43 @@
  * 视觉重点是员工，不是统计 —— 所以统计格刻意做小，只占一行的一小段。
  */
 /* 左右内边距用渐隐带的宽度，员工墙靠负 margin 顶出去（见 .ent-wall）。 */
+/* ── 个人工作台首页 ───────────────────────────────────────────────────── */
+.ent-home-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding: 4px 0 2px; }
+.ent-home-eyebrow { display: block; margin-bottom: 6px; color: var(--ent-brand-ink); font-size: var(--ent-fs-note); font-weight: 600; }
+.ent-home-heading h1 { margin: 0; color: var(--ent-ink); font-size: var(--ent-fs-display); font-weight: 600; line-height: 1.25; }
+.ent-home-heading p { margin: 7px 0 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
+.ent-home-summary { display: flex; align-items: stretch; gap: 10px; }
+.ent-home-summary button { display: flex; min-width: 136px; flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 15px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); text-align: left; cursor: pointer; transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
+.ent-home-summary button:hover { border-color: var(--ent-brand-border); box-shadow: var(--ent-shadow-lift); }
+.ent-home-summary button strong { color: var(--ent-ink); font-size: 21px; font-weight: 600; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.ent-home-summary button span { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-home-summary button:first-child strong { color: var(--ent-attention); }
+.ent-home-summary button:nth-child(2) strong { color: var(--ent-brand-ink); }
+.ent-home-summary button:nth-child(3) strong { color: var(--ent-accent-ink); }
+.ent-home-summary-note { align-self: center; margin-left: auto; color: var(--ent-ink-3); font-size: var(--ent-fs-note); white-space: nowrap; }
+.ent-home-work-section { padding: 16px 18px 18px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-lg); background: var(--ent-panel); box-shadow: var(--ent-shadow); }
+.ent-home-work-section.attention { border-color: var(--ent-attention-line); }
+.ent-home-work-section .ent-section-head { margin-bottom: 13px; }
+.ent-section-head h2 em { margin-left: 5px; color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-style: normal; font-weight: 500; }
+.ent-home-section-status { display: inline-flex; align-items: center; gap: 5px; color: var(--ent-ready); font-size: var(--ent-fs-note); white-space: nowrap; }
+.ent-home-section-status svg { color: var(--ent-ready-solid); }
+.ent-home-work-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.ent-home-work-card { display: flex; min-width: 0; min-height: 148px; flex-direction: column; align-items: stretch; padding: 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel-subtle); color: inherit; text-align: left; cursor: pointer; transition: border-color var(--ent-ease), background var(--ent-ease), transform var(--ent-ease); }
+.ent-home-work-card:hover { border-color: var(--ent-brand-border); background: var(--ent-brand-softer); transform: translateY(-1px); }
+.ent-home-work-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ent-home-work-card-head > span { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
+.ent-home-work-title { display: block; margin-top: 13px; overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-title); font-weight: 600; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+.ent-home-work-card p { display: -webkit-box; min-height: 37px; margin: 5px 0 12px; overflow: hidden; color: var(--ent-ink-2); font-size: var(--ent-fs-body); line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.ent-home-work-person { display: flex; align-items: center; gap: 7px; margin-top: auto; color: var(--ent-ink-2); font-size: var(--ent-fs-note); }
+.ent-home-work-person span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-home-work-person svg { margin-left: auto; color: var(--ent-ink-3); }
+.ent-home-inline-empty { display: flex; min-height: 62px; align-items: center; gap: 10px; padding: 0 12px; border: 1px dashed var(--ent-line-strong); border-radius: var(--ent-radius); color: var(--ent-ready); background: var(--ent-panel-subtle); }
+.ent-home-inline-empty > span { display: flex; flex-direction: column; gap: 2px; }
+.ent-home-inline-empty strong { color: var(--ent-ink-2); font-size: var(--ent-fs-body); font-weight: 500; }
+.ent-home-inline-empty small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-home-employees { min-width: 0; }
+.ent-home-employees .ent-section-head { margin-bottom: 12px; }
+
 .ent-home { display: flex; flex-direction: column; gap: 18px; padding-inline: var(--ent-wall-fade); padding-bottom: 8px; }
 
 /* 统计格。整块可点，点进员工页对应的范围 —— 数字后面就该能跟到人。 */
@@ -1150,6 +1187,19 @@
 .ent-record-detail h3 + * + h3, .ent-record-detail ol + h3, .ent-record-detail ul + h3, .ent-record-detail p + h3 { margin-top: 15px; }
 .ent-record-detail .ent-hint { margin: 0; }
 .ent-record .ent-confirm { margin-top: 14px; }
+
+@media (max-width: 980px) {
+  .ent-home-work-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ent-home-summary-note { display: none; }
+}
+
+@media (max-width: 680px) {
+  .ent-home-heading { align-items: flex-start; flex-direction: column; }
+  .ent-home-heading .ent-btn { width: 100%; }
+  .ent-home-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ent-home-summary button { min-width: 0; padding-inline: 11px; }
+  .ent-home-work-grid { grid-template-columns: 1fr; }
+}
 
 @media (prefers-reduced-motion: reduce) {
   .ent-record, .ent-record-caret, .ent-record-filters button { transition: none; }

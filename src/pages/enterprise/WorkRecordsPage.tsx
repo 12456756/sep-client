@@ -55,7 +55,7 @@ interface Props {
 
 export function WorkRecordsPage({ workspace }: Props) {
   const [search, setSearch] = useState('');
-  const [bucket, setBucket] = useState<Bucket>(workspace.route.name === 'records' ? workspace.route.bucket ?? 'all' : 'all');
+  const [bucket, setBucket] = useState<Bucket>(workspace.route.name === 'records' ? workspace.route.bucket ?? 'mine' : 'mine');
   const [openId, setOpenId] = useState<string | null>(null);
   const [panel, setPanel] = useState<'result' | 'process'>('process');
   const [removing, setRemoving] = useState<string | null>(null);
@@ -63,7 +63,7 @@ export function WorkRecordsPage({ workspace }: Props) {
   const [stopReason, setStopReason] = useState('');
 
   useEffect(() => {
-    if (workspace.route.name === 'records') setBucket(workspace.route.bucket ?? 'all');
+    if (workspace.route.name === 'records') setBucket(workspace.route.bucket ?? 'mine');
   }, [workspace.route]);
 
   const keyword = search.trim();
