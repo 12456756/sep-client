@@ -418,13 +418,13 @@ export class ConversationExecutor {
   private buildRecoveryPrompt(messages: ConversationMessage[], prompt: string): string {
     const transcript = messages
       .filter(message => message.role === 'user' || message.role === 'assistant')
-      .map(message => `${message.role === 'user' ? 'USER' : 'ASSISTANT'}:\n${message.content}`)
+      .map(message => `${message.role === 'user' ? '用户' : '助手'}:\n${message.content}`)
       .join('\n\n')
     return [
-      'The previous Pi session file is unavailable. Continue from the persisted conversation transcript below.',
-      'The transcript contains messages only. Do not infer, repeat, or replay tool operations from it.',
+      '之前的 Pi 会话文件不可用。请根据下面持久化的对话记录继续工作。',
+      '对话记录只包含消息内容。不要从中推断、重复或重放任何工具操作。',
       transcript,
-      `NEW USER MESSAGE:\n${prompt}`,
+      `新的用户消息：\n${prompt}`,
     ].filter(Boolean).join('\n\n')
   }
 }
