@@ -140,7 +140,16 @@ export interface ToolApprovalResponse {
   reason?: string
 }
 
+export type RuntimePlatform = 'darwin' | 'win32' | 'linux' | 'unknown'
+
+export interface WindowChromeRuntime {
+  height: number
+  rightInset: number
+}
+
 export interface ElectronAPI {
+  platform: RuntimePlatform
+  windowChrome: WindowChromeRuntime
   listSkillLibrary: () => Promise<IpcCommandResult & { data?: SkillLibraryItem[] }>
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: string }>
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult>

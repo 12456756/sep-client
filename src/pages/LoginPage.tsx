@@ -247,8 +247,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   return (
     <main className="login-page">
-      <div className="electron-drag-region fixed inset-x-0 top-0 z-30 h-10" aria-hidden="true" />
-
       <section className="login-brand-panel" aria-label="龙硅产品介绍">
         <div className="login-brand-grid" aria-hidden="true" />
         <div className="login-brand-glow login-brand-glow-primary" aria-hidden="true" />

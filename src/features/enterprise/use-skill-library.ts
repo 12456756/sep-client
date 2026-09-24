@@ -1,33 +1,96 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PersonalSkillVersionRequest } from '../../shared/platform-supplement-contracts';
 import type { SaveSkillResult, SkillLibraryItem } from '../../shared/skill-library';
+import { classifySkillLoadError, formatSkillRateLimitMessage, type SkillLoadError, type SkillLoadErrorKind } from './skill-load-state';
+
+const FOCUS_REFRESH_COOLDOWN_MS = 30_000;
 
 /** Server metadata and durable local versions only. No browser-side skill copies. */
 export function useSkillLibrary(scopeKey: string) {
   const [skills, setSkills] = useState<SkillLibraryItem[]>([]);
   const [skillsLoading, setLoading] = useState(true);
-  const [skillsError, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<SkillLoadError | null>(null);
+  const [clock, setClock] = useState(() => Date.now());
   const generation = useRef(0);
-  const refreshSkills = useCallback(async (): Promise<void> => {
+  const loadErrorRef = useRef<SkillLoadError | null>(null);
+  const inFlight = useRef<Promise<void> | null>(null);
+  const inFlightRequest = useRef<number | null>(null);
+  const lastRefreshAt = useRef(0);
+
+  const refreshSkills = useCallback(async (force = true): Promise<void> => {
+    const now = Date.now();
+    const currentError = loadErrorRef.current;
+    const retryAt = currentError?.retryAfterSeconds && currentError.kind === 'rate-limited'
+      ? lastRefreshAt.current + currentError.retryAfterSeconds * 1000
+      : 0;
+    if (retryAt > now) return;
+    if (!force && now - lastRefreshAt.current < FOCUS_REFRESH_COOLDOWN_MS) return;
+    if (inFlight.current) return inFlight.current;
+
     const request = ++generation.current;
+    lastRefreshAt.current = now;
     setLoading(true);
-    try {
-      const result = await window.electronAPI.listSkillLibrary();
-      if (!result.success || !result.data) throw new Error(result.error?.message || '技能加载失败');
-      if (generation.current === request) { setSkills(result.data); setError(null); }
-    } catch (error) {
-      if (generation.current === request) setError(error instanceof Error ? error.message : '技能加载失败');
-    } finally {
-      if (generation.current === request) setLoading(false);
-    }
+    inFlightRequest.current = request;
+    const requestPromise = Promise.resolve().then(async () => {
+      try {
+        const result = await window.electronAPI.listSkillLibrary();
+        if (!result.success || !result.data) {
+          throw classifySkillLoadError(result.error);
+        }
+        if (generation.current === request) {
+          setSkills(result.data);
+          loadErrorRef.current = null;
+          setLoadError(null);
+        }
+      } catch (error) {
+        if (generation.current === request) {
+          const failure = error && typeof error === 'object' && 'kind' in error
+            ? error as SkillLoadError
+            : classifySkillLoadError(error);
+          loadErrorRef.current = failure;
+          setLoadError(failure);
+        }
+      } finally {
+        if (generation.current === request) setLoading(false);
+        if (inFlightRequest.current === request) {
+          inFlight.current = null;
+          inFlightRequest.current = null;
+        }
+      }
+    });
+    inFlight.current = requestPromise;
+    return requestPromise;
   }, []);
+
   useEffect(() => {
     setSkills([]);
+    loadErrorRef.current = null;
+    setLoadError(null);
+    inFlight.current = null;
+    inFlightRequest.current = null;
     void refreshSkills();
-    const refresh = () => { void refreshSkills(); };
+    const refresh = () => { void refreshSkills(false); };
     window.addEventListener('focus', refresh);
-    return () => { generation.current += 1; window.removeEventListener('focus', refresh); };
+    return () => {
+      generation.current += 1;
+      inFlight.current = null;
+      inFlightRequest.current = null;
+      window.removeEventListener('focus', refresh);
+    };
   }, [scopeKey, refreshSkills]);
+
+  useEffect(() => {
+    if (loadError?.kind !== 'rate-limited' || !loadError.retryAfterSeconds) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [loadError]);
+
+  const skillsRetrySeconds = loadError?.kind === 'rate-limited' && loadError.retryAfterSeconds
+    ? Math.max(0, Math.ceil((lastRefreshAt.current + loadError.retryAfterSeconds * 1000 - clock) / 1000))
+    : null;
+  const skillsError = loadError?.kind === 'rate-limited' && skillsRetrySeconds !== null
+    ? skillsRetrySeconds > 0 ? formatSkillRateLimitMessage(skillsRetrySeconds) : '技能服务请求较多，现在可以重试。'
+    : loadError?.message ?? null;
 
   const previewSkillSource = useCallback(async (capabilityId: string, versionId: string): Promise<string> => {
     const result = await window.electronAPI.previewLibrarySkill({ capabilityId, versionId });
@@ -69,6 +132,17 @@ export function useSkillLibrary(scopeKey: string) {
     await refreshSkills();
     return result.data;
   }, [refreshSkills]);
-  return { skills, skillsLoading, skillsError, refreshSkills, previewSkillSource, selectSkillVersion, saveSkillSource, retrySkillUpload };
+  return {
+    skills,
+    skillsLoading,
+    skillsError,
+    skillsErrorKind: (loadError?.kind ?? null) as SkillLoadErrorKind | null,
+    skillsRetrySeconds,
+    refreshSkills,
+    previewSkillSource,
+    selectSkillVersion,
+    saveSkillSource,
+    retrySkillUpload,
+  };
 }
 export type SkillLibraryWorkspace = ReturnType<typeof useSkillLibrary>;

@@ -104,6 +104,7 @@ export default function App() {
   };
 
   return <>
+    <div className="electron-window-chrome electron-drag-region" aria-hidden="true" />
     {renderRoute()}
     <ToolApprovalDialog request={toolApprovalRequest} onApprove={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: true }); setToolApprovalRequest(null); }} onDeny={() => { if (toolApprovalRequest) window.electronAPI.sendToolApprovalResponse({ requestId: toolApprovalRequest.requestId, approved: false, reason: 'User denied' }); setToolApprovalRequest(null); }} />
   </>;

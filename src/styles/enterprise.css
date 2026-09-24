@@ -77,7 +77,7 @@
   --ent-muted-bg: #eef0f5;
 
   /** 内容区顶部让给窗口按钮的那条。titleBarOverlay 在 main.ts 里固定 44 高。 */
-  --ent-drag-h: 44px;
+  --ent-drag-h: var(--window-chrome-height);
   --ent-side-w: 232px;
   --ent-shell-gap: 12px;
   /**
@@ -134,7 +134,7 @@
  * 当 Electron 的窗口拖拽区、把 Windows 的窗口按钮（titleBarOverlay 画在右上角，
  * 44 高）让开 —— 不留出右边那一段的话关闭按钮会压在标题上。
  */
-.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; color: var(--ent-ink); background: var(--ent-canvas); }
+.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: var(--ent-canvas); }
 .ent-shell-main { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .ent-scroll { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; }
 .ent-page { width: min(1180px, 100%); margin: 0 auto; padding: 22px 28px 32px; }
@@ -211,7 +211,9 @@
  * 那三颗按钮由 titleBarOverlay 画在右上角，任何内容压过去都会被它盖住。
  * 首页、工作详情、安排工作不写标题（它们的第一行就是内容），这条横条仍然在。
  */
-.ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 150px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: var(--ent-panel); }
+.ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 28px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: var(--ent-panel); }
+[data-platform='win32'] .ent-top { padding-right: calc(28px + var(--window-controls-inset)); }
+
 .ent-top-head { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .ent-top-title { overflow: hidden; font-size: var(--ent-fs-page); font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
 .ent-top-sub { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-body); text-overflow: ellipsis; white-space: nowrap; }

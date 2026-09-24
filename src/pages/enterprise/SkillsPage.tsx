@@ -15,17 +15,27 @@ export function SkillsPage({ workspace, skillId }: Props) {
   const skill = workspace.skills.find(item => item.capability.id === skillId);
   if (skill) return <SkillDetail key={skill.capability.id} workspace={workspace} skill={skill} />;
   const matches = workspace.skills.filter(item => `${item.capability.name} ${item.capability.description}`.toLowerCase().includes(query.trim().toLowerCase()) && (filter !== 'personal' || item.versions.some(version => version.scope === 'PERSONAL') || item.localVersions.length));
+  const hasError = Boolean(workspace.skillsError);
+  const hasCachedSkills = workspace.skills.length > 0;
+  const isRateLimited = workspace.skillsErrorKind === 'rate-limited';
+  const canRetry = !workspace.skillsLoading && (!isRateLimited || workspace.skillsRetrySeconds === null || workspace.skillsRetrySeconds <= 0);
+  const refreshLabel = workspace.skillsLoading ? '刷新中…' : '刷新';
+  const emptyTitle = query || filter !== 'all' ? '没有匹配的技能' : '当前账号还没有已授权的员工技能';
   return <div className="ent-page skill-library">
     <div className="skill-toolbar">
       <label className="skill-search"><Search size={17} aria-hidden /><input aria-label="搜索技能" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索技能名称、描述或关键词…" /></label>
       <select className="ent-select" aria-label="版本范围" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">全部技能</option><option value="personal">有个人版本</option></select>
-      <button className="ent-btn" disabled={workspace.skillsLoading} onClick={() => void workspace.refreshSkills()}><RefreshCw size={15} aria-hidden />刷新</button>
+      <button className="ent-btn" disabled={workspace.skillsLoading || !canRetry} onClick={() => void workspace.refreshSkills()}><RefreshCw size={15} aria-hidden />{refreshLabel}</button>
     </div>
-    <p className="skill-caption">共 {workspace.skills.length} 个技能 · 修改保存为个人版本，不覆盖企业发布版</p>
-    {workspace.skillsError ? <div className="ent-banner danger" role="alert">{workspace.skillsError}，请点击刷新重试。</div> : null}
-    {workspace.skillsLoading && !workspace.skills.length ? <div role="status">正在加载技能…</div> : null}
-    {skillId && !workspace.skillsLoading ? <div className="ent-banner info">此技能不在当前授权列表中。</div> : null}
-    {!workspace.skillsLoading && !matches.length && !workspace.skillsError ? <Empty title={query || filter !== 'all' ? '没有匹配的技能' : '暂无可用技能'}>企业给你的硅基员工配置技能后，会显示在这里。</Empty> : null}
+    {hasCachedSkills ? <p className="skill-caption">共 {workspace.skills.length} 个技能 · 修改保存为个人版本，不覆盖企业发布版</p> : null}
+    {hasError ? <div className="ent-banner danger skill-state-banner" role="alert">
+      <div><strong>{workspace.skillsError}</strong>{hasCachedSkills ? <span>已保留上次成功加载的技能列表。</span> : null}{isRateLimited && workspace.skillsRetrySeconds !== null && workspace.skillsRetrySeconds > 0 ? <span> 倒计时结束后可再次请求。</span> : null}</div>
+      <button className="ent-btn sm" disabled={!canRetry} onClick={() => void workspace.refreshSkills()}>{isRateLimited && workspace.skillsRetrySeconds && workspace.skillsRetrySeconds > 0 ? `${workspace.skillsRetrySeconds} 秒后重试` : '重试'}</button>
+    </div> : null}
+    {workspace.skillsLoading && !hasCachedSkills ? <div className="skill-loading" role="status" aria-live="polite"><span className="skill-skeleton" /><span className="skill-skeleton" /><span>正在加载技能…</span></div> : null}
+    {workspace.skillsLoading && hasCachedSkills ? <div className="skill-refreshing" role="status" aria-live="polite"><RefreshCw size={14} aria-hidden />正在更新技能，当前列表仍可使用。</div> : null}
+    {skillId && !workspace.skillsLoading && !hasError ? <div className="ent-banner info">此技能不在当前授权列表中。</div> : null}
+    {!workspace.skillsLoading && !hasError && !matches.length ? <Empty title={emptyTitle}>{query || filter !== 'all' ? '请尝试调整搜索词或筛选条件。' : '企业给你的硅基员工配置技能后，会显示在这里。'}</Empty> : null}
     <div className="skill-cards">{matches.map(item => <SkillCard key={item.capability.id} skill={item} workspace={workspace} />)}</div>
   </div>;
 }

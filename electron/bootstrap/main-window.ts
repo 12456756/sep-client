@@ -8,6 +8,7 @@ import { BrowserWindow, Menu, shell } from 'electron'
 import { join } from 'node:path'
 import { logger } from '../common/logger'
 import { externalWebLink } from '../common/external-web-link'
+import { getWindowChromeConfig } from '../common/window-layout'
 
 const log = logger.child('main-window')
 
@@ -19,6 +20,7 @@ export interface MainWindowOptions {
 export function createMainWindow({ onClosed }: MainWindowOptions): BrowserWindow {
   Menu.setApplicationMenu(null)
 
+  const windowChrome = getWindowChromeConfig(process.platform)
   const window = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -27,14 +29,11 @@ export function createMainWindow({ onClosed }: MainWindowOptions): BrowserWindow
     center: true,
     show: false,
     title: '龙硅',
-    backgroundColor: '#fffafa',
+    backgroundColor: '#f7f8fc',
     autoHideMenuBar: true,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: '#f1f1f0',
-      symbolColor: '#6f6567',
-      height: 44,
-    },
+    titleBarStyle: windowChrome.titleBarStyle,
+    ...(windowChrome.trafficLightPosition ? { trafficLightPosition: windowChrome.trafficLightPosition } : {}),
+    ...(windowChrome.titleBarOverlay ? { titleBarOverlay: windowChrome.titleBarOverlay } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,

@@ -7,10 +7,16 @@ import type {
   ToolAuthorizationRequest,
 } from '../src/shared/types';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
+import { getWindowChromeConfig } from './common/window-layout';
 
 export type { ElectronAPI } from '../src/shared/ipc';
 
+const runtimePlatform = process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux' ? process.platform : 'unknown';
+const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
+
 const electronAPI = {
+  platform: runtimePlatform,
+  windowChrome: { height: windowChromeConfig.contentTop, rightInset: windowChromeConfig.windowsRightInset },
   listSkillLibrary: () => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_LIST),
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_PREVIEW, input),
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SELECT, input),

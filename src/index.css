@@ -3,7 +3,7 @@
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { width: 100%; min-width: 0; min-height: 100%; margin: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif; -webkit-font-smoothing: antialiased; background: #f4f4f3; color: #272424; overflow-x: hidden; }
-.app-loading-screen, .app-empty-screen { display: flex; min-height: 100dvh; align-items: center; justify-content: center; flex-direction: column; gap: 12px; padding: 24px; color: #625c5c; background: #f4f4f3; text-align: center; }.app-loading-screen p, .app-empty-screen p { margin: 0; font-size: 13px; }.app-empty-screen h1 { margin: 0; color: #272424; font-size: 20px; }.app-loading-spinner { width: 24px; height: 24px; border: 2px solid #ead0d0; border-top-color: #b93636; border-radius: 50%; animation: workspace-spin .8s linear infinite; }
+.app-loading-screen, .app-empty-screen { display: flex; min-height: 100dvh; box-sizing: border-box; align-items: center; justify-content: center; flex-direction: column; gap: 12px; padding: calc(24px + var(--window-chrome-height, 44px)) 24px 24px; color: #625c5c; background: #f4f4f3; text-align: center; }.app-loading-screen p, .app-empty-screen p { margin: 0; font-size: 13px; }.app-empty-screen h1 { margin: 0; color: #272424; font-size: 20px; }.app-loading-spinner { width: 24px; height: 24px; border: 2px solid #ead0d0; border-top-color: #b93636; border-radius: 50%; animation: workspace-spin .8s linear infinite; }
 button, input, textarea, select { font: inherit; }
 button:disabled { opacity: .5; cursor: not-allowed; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
@@ -11,7 +11,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
   outline-offset: 2px;
 }
 button, input, textarea, select, label { -webkit-app-region: no-drag; }
+:root {
+  --window-chrome-height: 44px;
+  --window-controls-inset: 0px;
+}
+
 .electron-drag-region { -webkit-app-region: drag; }
+
+/* Electron window chrome is a dedicated 44px hit area. Each route reserves the same
+   space in its own layout, so native controls never share a hit area with UI. */
+.electron-window-chrome {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: var(--window-chrome-height);
+  background: transparent;
+  pointer-events: auto;
+}
+/* Windows paints the native overlay with this color; match it without forcing a
+   light strip over the dark brand panel on macOS. */
+[data-platform='win32'] .electron-window-chrome { background: #f7f8fc; }
+
 
 @keyframes workspace-spin { to { transform: rotate(360deg); } }
 @keyframes workspace-pulse { 50% { opacity: .25; transform: scale(.75); } }
@@ -1716,16 +1738,19 @@ select:focus-visible {
 .login-page {
   position: relative;
   display: grid;
+  height: 100dvh;
   min-height: 100dvh;
+  box-sizing: border-box;
   width: 100%;
-  overflow: hidden;
+  padding-top: var(--window-chrome-height);
+  overflow: auto;
   color: #1b1b1f;
   background: #f6f7fa;
 }
 .login-brand-panel {
   position: relative;
   display: flex;
-  min-height: 100dvh;
+  min-height: 0;
   overflow: hidden;
   align-items: center;
   background: linear-gradient(140deg, #05070c 0%, #0a0e16 46%, #111923 100%);
@@ -1923,7 +1948,7 @@ select:focus-visible {
 .login-particle:nth-child(18) { top: 88%; left: 52%; width: 2px; height: 2px; animation-delay: -4s; }
 .login-form-panel {
   display: flex;
-  min-height: 100dvh;
+  min-height: 0;
   align-items: center;
   justify-content: center;
   padding: 80px 64px 48px;
