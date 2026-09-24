@@ -9,10 +9,11 @@
  * 路由用受控状态而不是 URL，因为桌面端不需要地址栏，返回行为由 hook 维护的历史栈决定。
  */
 
-import { AlertTriangle, Bell, LayoutGrid, Moon, Network, Sun } from 'lucide-react';
+import { AlertTriangle, Bell, Command, LayoutGrid, Moon, Network, Sun } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
+import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeStatus, Subscription } from '../shared/types';
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
@@ -42,6 +43,7 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const { route, overview } = workspace;
   const scroll = useRef<HTMLDivElement | null>(null);
+  const [commandOpen, setCommandOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
     try { return window.localStorage.getItem('sep.theme') === 'dark'; } catch { return false; }
   });
@@ -49,6 +51,16 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   useEffect(() => {
     try { window.localStorage.setItem('sep.theme', darkMode ? 'dark' : 'light'); } catch { /* 无痕模式不阻断主题切换。 */ }
   }, [darkMode]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setCommandOpen(true);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   // 换页就回到顶部。同一个滚动容器在页面之间复用，不重置的话新页面会从上一页的位置开始。
   useEffect(() => {
@@ -116,6 +128,16 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
               </div>
               <button
                 type="button"
+                className="ent-top-command"
+                onClick={() => setCommandOpen(true)}
+                title="打开命令入口（⌘K / Ctrl+K）"
+                aria-label="打开命令入口"
+              >
+                <Command size={14} aria-hidden />
+                <span>⌘K</span>
+              </button>
+              <button
+                type="button"
                 className="ent-top-icon"
                 onClick={() => setDarkMode(value => !value)}
                 title={darkMode ? '切换到浅色主题' : '切换到深色主题'}
@@ -145,6 +167,14 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
         <div className={`ent-scroll${(route.name === 'organization' || route.name === 'home') ? ' ent-scroll-no-overflow' : ''}`} ref={scroll}>
           <PageBody workspace={workspace} />
         </div>
+        {commandOpen ? (
+          <CommandPalette
+            darkMode={darkMode}
+            onClose={() => setCommandOpen(false)}
+            onNavigate={routeToOpen => { workspace.navigate(routeToOpen); setCommandOpen(false); }}
+            onToggleTheme={() => setDarkMode(value => !value)}
+          />
+        ) : null}
       </div>
     </div>
   );

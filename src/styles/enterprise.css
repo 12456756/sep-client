@@ -1908,3 +1908,38 @@
 .ent-home-content { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 18px; padding: 2px var(--ent-wall-fade) 12px; margin-inline: calc(-1 * var(--ent-wall-fade)); }
 .ent-home-content > * { flex-shrink: 0; }
 .ent-home > .ent-arrangebar { flex-shrink: 0; margin-top: auto; }
+
+/* ── 命令入口：快捷方式是导航增强，不替代左侧主导航 ───────────────────── */
+.ent-top-command { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 8px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-sm); color: var(--ent-ink-2); background: var(--ent-panel-subtle); font: inherit; font-size: var(--ent-fs-note); cursor: pointer; transition: border-color var(--ent-ease), color var(--ent-ease), background var(--ent-ease); }
+.ent-top-command:hover { border-color: var(--ent-brand-border); color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
+.ent-top-command span { font-size: 11px; font-variant-numeric: tabular-nums; }
+.ent-command-layer { position: fixed; z-index: 80; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding: max(88px, 12vh) 24px 24px; background: rgb(20 24 40 / 28%); backdrop-filter: blur(2px); }
+.ent-command { width: min(600px, 100%); overflow: hidden; border: 1px solid var(--ent-line); border-radius: 14px; background: var(--ent-panel); box-shadow: 0 18px 50px rgb(24 30 60 / 22%); }
+.ent-command-search { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--ent-line-soft); color: var(--ent-brand-ink); }
+.ent-command-search input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--ent-ink); background: transparent; font: inherit; font-size: 16px; }
+.ent-command-search input::placeholder { color: var(--ent-ink-3); }
+.ent-command kbd, .ent-top-command kbd { padding: 2px 6px; border: 1px solid var(--ent-line); border-radius: 5px; color: var(--ent-ink-3); background: var(--ent-panel-subtle); font-family: inherit; font-size: 11px; }
+.ent-command-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 12px 18px 8px; }
+.ent-command-heading strong { color: var(--ent-ink); font-size: var(--ent-fs-body); }
+.ent-command-heading span { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-command-list { max-height: min(430px, 50vh); padding: 4px 8px 8px; overflow-y: auto; }
+.ent-command-item { display: flex; width: 100%; align-items: center; gap: 10px; min-height: 52px; padding: 7px 10px; border: 0; border-radius: 8px; color: var(--ent-ink); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.ent-command-item:hover, .ent-command-item.active { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
+.ent-command-icon { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border-radius: 7px; color: var(--ent-brand-ink); background: var(--ent-brand-soft); }
+.ent-command-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.ent-command-copy strong { overflow: hidden; color: inherit; font-size: var(--ent-fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-command-copy small { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
+.ent-command-item > svg { flex: 0 0 auto; color: var(--ent-brand); }
+.ent-command-empty { margin: 0; padding: 28px 10px; color: var(--ent-ink-3); font-size: var(--ent-fs-body); text-align: center; }
+.ent-command-foot { display: flex; flex-wrap: wrap; gap: 14px; padding: 10px 18px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-command-foot span { display: inline-flex; align-items: center; gap: 5px; }
+.ent-command-foot kbd + kbd { margin-left: 2px; }
+@media (max-width: 720px) {
+  .ent-top-command { padding: 0 7px; }
+  .ent-top-command span { display: none; }
+  .ent-command-layer { padding-right: 14px; padding-left: 14px; }
+  .ent-command-heading span { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ent-top-command, .ent-command-item { transition: none; }
+}
