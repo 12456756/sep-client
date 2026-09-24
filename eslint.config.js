@@ -17,6 +17,19 @@ export default [
   eslint.configs.recommended,
   ...tseslint.configs['flat/recommended'],
   {
+    files: ['**/*.{js,mjs,cjs}'],
+    languageOptions: {
+      globals: {
+        ...globals.es2022,
+        ...globals.node,
+      },
+    },
+    rules: {
+      'no-console': 'off',
+      'no-redeclare': ['error', { builtinGlobals: false }],
+    },
+  },
+  {
     files: ['**/*.{ts,tsx}'],
     languageOptions: {
       parser: tsParser,
