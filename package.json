@@ -1,7 +1,7 @@
 {
-  "name": "sep-client",
-  "version": "0.1.0",
-  "description": "SEP Enterprise Client — Electron shell for the Silicon Employee Platform",
+  "name": "longsilicon",
+  "version": "0.1.1",
+  "description": "龙硅 — 龙道集团硅基员工平台客户端",
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
@@ -47,9 +47,9 @@
     "lucide-react": "^0.462.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-markdown": "10.1.0",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^7.18.2",
-    "remark-gfm": "4.0.1",
+    "remark-gfm": "^4.0.1",
     "tailwind-merge": "^2.5.4",
     "typebox": "1.3.7",
     "zod": "4.5.4",
@@ -81,9 +81,9 @@
     "undici": "6.20.1"
   },
   "build": {
-    "appId": "com.sep.client",
-    "productName": "SEP Client",
-    "copyright": "Copyright © 2026 Silicon Employee Platform",
+    "appId": "cn.longdao.longsilicon",
+    "productName": "龙硅",
+    "copyright": "Copyright © 2026 龙道集团",
     "directories": {
       "output": "dist"
     },

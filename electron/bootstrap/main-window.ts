@@ -26,6 +26,7 @@ export function createMainWindow({ onClosed }: MainWindowOptions): BrowserWindow
     minHeight: 640,
     center: true,
     show: false,
+    title: '龙硅',
     backgroundColor: '#fffafa',
     autoHideMenuBar: true,
     titleBarStyle: 'hidden',
