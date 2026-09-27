@@ -8,10 +8,8 @@ import {
   LockKeyhole,
   Mail,
   ShieldCheck,
-  Sparkles,
   Trash2,
   WifiOff,
-  Workflow,
   X,
 } from 'lucide-react';
 import type { AuthErrorCode, RememberedAccount } from '../shared/types';
@@ -248,24 +246,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   return (
     <main className="login-page">
       <section className="login-brand-panel" aria-label="龙硅产品介绍">
-        <div className="login-brand-grid" aria-hidden="true" />
         <div className="login-brand-glow login-brand-glow-primary" aria-hidden="true" />
         <div className="login-brand-glow login-brand-glow-secondary" aria-hidden="true" />
-        <div className="login-particle-field" aria-hidden="true">
-          {Array.from({ length: 18 }, (_, index) => (
-            <span key={index} className="login-particle" />
-          ))}
-        </div>
 
         <div className="login-brand-content">
-          <div className="login-brand-kicker">
-            <span className="login-brand-kicker-dot" aria-hidden="true" />
-            SEP / DIGITAL WORKFORCE
-          </div>
-
           <div className="login-brand-mark">
-            <span className="login-brand-mark-ring login-brand-mark-ring-one" aria-hidden="true" />
-            <span className="login-brand-mark-ring login-brand-mark-ring-two" aria-hidden="true" />
             <img src={logoImage} alt="龙硅" />
           </div>
 
@@ -277,28 +262,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             </p>
           </div>
 
-          <ul className="login-brand-features" aria-label="产品特点">
-            <li>
-              <span className="login-feature-icon"><Sparkles size={15} strokeWidth={1.8} /></span>
-              <span>AI 驱动</span>
-              <span className="login-feature-line" aria-hidden="true" />
-            </li>
-            <li>
-              <span className="login-feature-icon"><Workflow size={15} strokeWidth={1.8} /></span>
-              <span>智能协作</span>
-              <span className="login-feature-line" aria-hidden="true" />
-            </li>
-            <li>
-              <span className="login-feature-icon"><ShieldCheck size={15} strokeWidth={1.8} /></span>
-              <span>安全可信</span>
-            </li>
-          </ul>
-
-          <div className="login-brand-footer">
-            <span className="login-brand-footer-rule" aria-hidden="true" />
-            <span>SECURE BY DESIGN</span>
-            <span className="login-brand-footer-status"><span aria-hidden="true" /> ONLINE</span>
-          </div>
+          <p className="login-brand-values" aria-label="产品特点">
+            <span>AI 驱动</span>
+            <i aria-hidden="true">·</i>
+            <span>智能协作</span>
+            <i aria-hidden="true">·</i>
+            <span>安全可信</span>
+          </p>
         </div>
       </section>
 

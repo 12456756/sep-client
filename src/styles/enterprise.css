@@ -2,7 +2,7 @@
  * 企业客户端视觉体系。取色、圆角、间距与图表样式全部按设计稿复刻。
  *
  * 设计决定（与 index.css 的旧工作台样式并存，不互相覆盖）：
- * 1. 主色是蓝紫。它同时充当「正在进行」的语义色 —— 设计稿里「工作中 / 进行中」
+ * 1. 主色是龙硅红。它同时充当「正在进行」的语义色 —— 设计稿里「工作中 / 进行中」
  *    用的就是主色的浅底版本，所以这两者不再另分一支颜色。
  * 2. 状态一律「颜色 + 图标 + 文字」三者同时表达，不依赖单一颜色。
  * 3. 底是浅灰蓝，卡是纯白，卡与卡之间靠圆角 + 间距 + 一层极淡的冷色阴影分开。
@@ -11,23 +11,23 @@
 
 :root {
   /*
-   * 主色蓝紫。#6366f1 是设计稿的 Primary，做实心块、进度和图形；
-   * 13px 及更小的正文一律用 --ent-brand-ink（#5b5ce2，浅紫底 4.5:1），
+   * 主色龙硅红。#d94b52 是设计稿的 Primary，做实心块、进度和图形；
+   * 13px 及更小的正文一律用 --ent-brand-ink（#b63f47，浅红底 4.5:1），
    * 不用 --ent-brand 写小字 —— 它对白底只有 4.0:1。
    */
-  --ent-brand: #6366f1;
-  --ent-brand-solid: #6366f1; --ent-brand-deep: #4f46e5;
-  --ent-brand-hover: #4f46e5;
-  --ent-brand-ink: #5b5ce2;
-  /* 浅紫三档：soft 是状态标签和气泡底，tint 是图标片底，softer 是 hover 底。 */
-  --ent-brand-soft: #eef0ff;
-  --ent-brand-tint: #f0f1ff;
-  --ent-brand-softer: #fafaff;
-  --ent-brand-border: #d9dcfb;
-  /* 第二支强调色只用在「我拥有的员工」那格的图标片上（设计稿里它比第一格偏蓝一档）。 */
-  --ent-accent: #4f6fe0;
-  --ent-accent-soft: #eaf0fe;
-  --ent-accent-ink: #2f55c8;
+  --ent-brand: #d94b52;
+  --ent-brand-solid: #d94b52; --ent-brand-deep: #b9363f;
+  --ent-brand-hover: #b9363f;
+  --ent-brand-ink: #b63f47;
+  /* 浅红三档：soft 是状态标签和气泡底，tint 是图标片底，softer 是 hover 底。 */
+  --ent-brand-soft: #fff0f1;
+  --ent-brand-tint: #fff5f5;
+  --ent-brand-softer: #fffafa;
+  --ent-brand-border: #f3c7cb;
+  /* 第二支强调色只用在「我拥有的员工」那格的图标片上（设计稿里它比第一格偏红一档）。 */
+  --ent-accent: #c25a63;
+  --ent-accent-soft: #fff0f1;
+  --ent-accent-ink: #a83d47;
 
   /* 最重的墨色。设计稿里没有深色面板，这一支只当文字与图标色用。 */
   --ent-dark: #202126;
@@ -65,8 +65,8 @@
   --ent-ready-solid: #25a36a;
   --ent-ready-bg: #eaf8f0;
   --ent-ready-line: #cdeddd;
-  --ent-busy: #5b5ce2;
-  --ent-busy-bg: #eef0ff;
+  --ent-busy: #b63f47;
+  --ent-busy-bg: #fff0f1;
   --ent-attention: #8a6410;
   --ent-attention-bg: #fdf3da;
   --ent-attention-line: #eedcae;
@@ -118,9 +118,9 @@
   --ent-shadow-drawer: -10px 0 30px rgb(30 40 80 / 8%);
 
   /* 光晕：只做背景装饰，永远不承载信息，关掉也不影响可读性。 */
-  --ent-glow-warm: linear-gradient(180deg, rgb(99 102 241 / 5%), rgb(255 255 255 / 0%) 70%);
-  --ent-glow-edge: radial-gradient(90% 140% at 100% 0%, rgb(99 102 241 / 7%) 0%, rgb(255 255 255 / 0%) 65%);
-  --ent-glow-ring: 0 0 0 3px rgb(99 102 241 / 18%);
+  --ent-glow-warm: linear-gradient(180deg, rgb(217 75 82 / 5%), rgb(255 255 255 / 0%) 70%);
+  --ent-glow-edge: radial-gradient(90% 140% at 100% 0%, rgb(217 75 82 / 7%) 0%, rgb(255 255 255 / 0%) 65%);
+  --ent-glow-ring: 0 0 0 3px rgb(217 75 82 / 18%);
   --ent-ease: 170ms cubic-bezier(.22, 1, .36, 1);
 }
 
@@ -137,10 +137,10 @@
   --ent-ink: #f2f4f8;
   --ent-ink-2: #c2c7d3;
   --ent-ink-3: #929aaa;
-  --ent-brand-soft: #292b52;
-  --ent-brand-tint: #252848;
-  --ent-brand-softer: #222531;
-  --ent-brand-border: #454887;
+  --ent-brand-soft: #45262b;
+  --ent-brand-tint: #382428;
+  --ent-brand-softer: #2d2024;
+  --ent-brand-border: #704047;
   --ent-accent-soft: #263452;
   --ent-ready-bg: #193729;
   --ent-ready-line: #2e6249;
@@ -149,7 +149,7 @@
   --ent-danger-bg: #45232d;
   --ent-danger-line: #743646;
   --ent-muted-bg: #2b303d;
-  --ent-glow-ring: 0 0 0 3px rgb(129 140 248 / 22%);
+  --ent-glow-ring: 0 0 0 3px rgb(240 82 92 / 22%);
 }
 .ent-shell.dark .ent-top,
 .ent-shell.dark .ent-side { background: var(--ent-panel); }
@@ -190,7 +190,7 @@
 
 /*
  * 菜单项按设计稿是一颗药丸：平时透明底 + 中灰字，选中整颗填实主色、字反白。
- * hover 只给一层最浅的紫，不预演选中态 —— 否则扫一眼分不出哪个才是当前页。
+ * hover 只给一层最浅的红，不预演选中态 —— 否则扫一眼分不出哪个才是当前页。
  */
 .ent-nav-item { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-height: 34px; padding: 0 14px; border: 0; border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: transparent; font-size: var(--ent-fs-body); text-align: left; cursor: pointer; transition: background var(--ent-ease), color var(--ent-ease); }
 .ent-nav-item > svg { flex: 0 0 auto; color: #969bab; transition: color var(--ent-ease); }
@@ -290,7 +290,7 @@
 .ent-tag { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border: 1px solid var(--ent-line); border-radius: 999px; color: var(--ent-ink-2); background: var(--ent-panel); font-size: var(--ent-fs-note); white-space: nowrap; }
 
 /*
- * 按钮按设计稿分两支：普通按钮白底 + 淡紫描边 + 紫字，主按钮实心主色 + 白字。
+ * 按钮按设计稿分两支：普通按钮白底 + 淡红色描边 + 红色字，主按钮实心主色 + 白字。
  * 圆角 8，高度 34（sm 30 / lg 40），阴影只有主按钮有一层很淡的，不做发光。
  */
 .ent-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 14px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius-btn); color: var(--ent-brand-ink); background: var(--ent-panel); font-size: var(--ent-fs-body); font-weight: 500; white-space: nowrap; cursor: pointer; transition: background var(--ent-ease), border-color var(--ent-ease), color var(--ent-ease); }
@@ -311,7 +311,7 @@
 .ent-shell textarea:focus-visible, .ent-shell select:focus-visible {
   outline: 2px solid var(--ent-brand) !important;
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgb(99 102 241 / 18%) !important;
+  box-shadow: 0 0 0 3px rgb(217 75 82 / 18%) !important;
 }
 /* 两个输入框由外框整体表达聚焦（描边 + 光晕），里面的文本域不再单独画一圈。 */
 .ent-shell .ent-arrangebar-input:focus-visible, .ent-shell .ent-ask-input:focus-visible {
@@ -322,7 +322,7 @@
 
 /*
  * ── 工作详情页里的对话 ─────────────────────────────────────────────────
- * 你说的话靠右、浅紫气泡；员工说的话靠左、浅灰气泡 + 头像（设计稿如此）。
+ * 你说的话靠右、浅红气泡；员工说的话靠左、浅灰气泡 + 头像（设计稿如此）。
  * 两边的圆角都是 12，说话的那一侧收一个角，指向说话的人。
  */
 .ent-talk { display: flex; max-height: 400px; flex-direction: column; gap: 14px; margin-bottom: 12px; overflow-y: auto; }
@@ -394,7 +394,7 @@
 .ent-work-steps small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); overflow-wrap: anywhere; }
 
 
-.ent-btn:hover:not(:disabled) { border-color: #c8ccf8; background: var(--ent-brand-tint); }
+.ent-btn:hover:not(:disabled) { border-color: #f1b9be; background: var(--ent-brand-tint); }
 .ent-btn:active:not(:disabled) { background: var(--ent-brand-soft); }
 /* 主按钮：实心主色 + 白字，hover 只是变深一档，不做发光也不位移。 */
 .ent-btn.primary { border-color: transparent; color: #fff; background: var(--ent-brand-solid); }
@@ -535,7 +535,7 @@
 .ent-figures { display: flex; flex-wrap: wrap; gap: 14px; }
 .ent-figure { display: flex; width: 192px; min-height: 62px; flex: 0 0 auto; align-items: center; gap: 11px; padding: 0 16px 0 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); text-align: left; cursor: pointer; transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
 .ent-figure:hover { border-color: var(--ent-brand-border); box-shadow: var(--ent-shadow-lift); }
-/* 图标片：浅紫底 + 实心剪影，第二格偏蓝一档（设计稿如此），不做渐变。 */
+/* 图标片：浅红底 + 实心剪影，第二格偏红一档（设计稿如此），不做渐变。 */
 .ent-figure > i { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border-radius: 9px; color: var(--ent-brand); background: var(--ent-brand-soft); }
 .ent-figure.alt > i { color: var(--ent-accent); background: var(--ent-accent-soft); }
 .ent-figure-copy { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
@@ -599,7 +599,7 @@
  * 放在墙的右下角而不是右上角 —— 上沿是提醒气泡的地方，窗口一窄两者就会叠在一起。
  */
 .ent-wall-count { position: absolute; z-index: 6; right: var(--ent-wall-fade); bottom: -4px; color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-variant-numeric: tabular-nums; }
-/* 圆箭头钮：32 白底浅描边，压在渐隐带上；hover 换成浅紫底 + 主色箭头。 */
+/* 圆箭头钮：32 白底浅描边，压在渐隐带上；hover 换成浅红底 + 主色箭头。 */
 .ent-wall-arrow { position: absolute; z-index: 5; top: 50%; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid var(--ent-line); border-radius: 50%; color: #69708a; background: var(--ent-panel); box-shadow: var(--ent-shadow); cursor: pointer; transform: translateY(-50%); transition: color var(--ent-ease), border-color var(--ent-ease), background var(--ent-ease); }
 .ent-wall-arrow.left { left: calc(var(--ent-wall-fade) / 2 - 16px); }
 .ent-wall-arrow.right { right: calc(var(--ent-wall-fade) / 2 - 16px); }
@@ -760,7 +760,7 @@
 
 /*
  * 一张工作卡：图标片 + 标题 + 一行进度或完成说明 + 右侧箭头。
- * hover 时底色转成最浅的紫、描边转淡紫、箭头右移 2px —— 三样都很轻，150ms。
+ * hover 时底色转成最浅的红、描边转淡红、箭头右移 2px —— 三样都很轻，150ms。
  */
 .ent-worktile { display: grid; width: 100%; min-height: 84px; grid-template-columns: 34px minmax(0, 1fr) 14px; align-items: start; gap: 11px; padding: 11px 12px; border: 1px solid #e8ebf2; border-radius: var(--ent-radius); background: var(--ent-panel); text-align: left; cursor: pointer; transition: border-color 150ms ease-out, background 150ms ease-out; }
 .ent-worktile:hover { border-color: var(--ent-brand-border); background: var(--ent-brand-softer); }
@@ -955,7 +955,7 @@
 .ent-wk-kind.pdf { color: #c0392f; background: #fdeceb; }
 .ent-wk-kind.sheet { color: #1a7f52; background: #eaf8f0; }
 .ent-wk-kind.slide { color: #b5651b; background: #fdf2e6; }
-.ent-wk-kind.doc { color: #2f55c8; background: #eaf0fe; }
+.ent-wk-kind.doc { color: #a83d47; background: #fff0f1; }
 .ent-wk-kind.other { color: #5d6478; background: #eef0f5; }
 
 /* ── 筛选工具条 ──────────────────────────────────────────────────────── */
@@ -1001,7 +1001,7 @@
 .ent-switch span::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(23 28 61 / 25%); transition: transform 160ms cubic-bezier(.2, 0, 0, 1); }
 .ent-switch input:checked + span { background: var(--ent-brand); }
 .ent-switch input:checked + span::after { transform: translateX(16px); }
-.ent-switch input:focus-visible + span { box-shadow: 0 0 0 3px rgb(99 102 241 / 22%); }
+.ent-switch input:focus-visible + span { box-shadow: 0 0 0 3px rgb(217 75 82 / 22%); }
 .ent-switch input:disabled + span { opacity: .5; }
 
 /* ── 详情页通用 ──────────────────────────────────────────────────────── */
@@ -1128,7 +1128,7 @@
 .ent-canvas-empty { position: absolute; top: 50%; left: 50%; display: flex; width: min(420px, 80%); flex-direction: column; gap: 7px; text-align: center; transform: translate(-50%, -50%); pointer-events: none; }
 .ent-canvas-empty strong { font-size: var(--ent-fs-title); font-weight: 600; }
 .ent-canvas-empty span { color: var(--ent-ink-2); font-size: var(--ent-fs-body); line-height: 1.75; }
-.ent-canvas-ghost { position: absolute; top: 0; left: 0; display: grid; width: 248px; height: 128px; place-items: center; border: 1.5px dashed var(--ent-brand); border-radius: var(--ent-radius); background: rgb(237 238 252 / 70%); color: var(--ent-brand-ink); font-size: var(--ent-fs-body); pointer-events: none; }
+.ent-canvas-ghost { position: absolute; top: 0; left: 0; display: grid; width: 248px; height: 128px; place-items: center; border: 1.5px dashed var(--ent-brand); border-radius: var(--ent-radius); background: rgb(255 240 241 / 70%); color: var(--ent-brand-ink); font-size: var(--ent-fs-body); pointer-events: none; }
 
 .ent-canvas-tools { position: absolute; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--ent-line); border-radius: 999px; background: var(--ent-panel); box-shadow: var(--ent-shadow); }
 .ent-canvas-tools button { min-width: 26px; height: 26px; padding: 0 9px; border: 0; border-radius: 999px; background: none; color: var(--ent-ink-2); font-size: var(--ent-fs-body); cursor: pointer; }

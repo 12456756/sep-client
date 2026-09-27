@@ -1734,18 +1734,18 @@ select:focus-visible {
   .task-run-step-error { align-items: flex-start; flex-wrap: wrap; }
 }
 
-/* Login experience — split-brand layout */
+/* Login experience — quiet brand / focused form */
 .login-page {
   position: relative;
   display: grid;
+  width: 100%;
   height: 100dvh;
   min-height: 100dvh;
   box-sizing: border-box;
-  width: 100%;
   padding-top: var(--window-chrome-height);
   overflow: auto;
   color: #1b1b1f;
-  background: #f6f7fa;
+  background: #f7f8fb;
 }
 .login-brand-panel {
   position: relative;
@@ -1753,104 +1753,67 @@ select:focus-visible {
   min-height: 0;
   overflow: hidden;
   align-items: center;
-  background: linear-gradient(140deg, #05070c 0%, #0a0e16 46%, #111923 100%);
+  background:
+    radial-gradient(circle at 34% 34%, rgb(217 75 82 / 12%), transparent 34%),
+    linear-gradient(145deg, #07090f 0%, #0b1019 58%, #111b29 100%);
   color: #f5f7fb;
 }
-.login-brand-grid {
+.login-brand-panel::after {
   position: absolute;
-  inset: 0;
-  opacity: .28;
-  background-image: linear-gradient(rgb(255 255 255 / 3%) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / 3%) 1px, transparent 1px);
-  background-size: 46px 46px;
-  mask-image: linear-gradient(to bottom, transparent, black 18%, black 82%, transparent);
+  right: 8%;
+  bottom: 8%;
+  width: 34%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 16%));
+  content: '';
 }
 .login-brand-glow {
   position: absolute;
   border-radius: 50%;
   pointer-events: none;
-  filter: blur(1px);
+  filter: blur(14px);
 }
 .login-brand-glow-primary {
   top: 12%;
-  left: -18%;
+  left: -22%;
   width: 520px;
   height: 520px;
-  background: radial-gradient(circle, rgb(255 44 51 / 18%), transparent 68%);
+  background: radial-gradient(circle, rgb(217 75 82 / 14%), transparent 68%);
 }
 .login-brand-glow-secondary {
-  right: -25%;
-  bottom: -20%;
+  right: -30%;
+  bottom: -25%;
   width: 500px;
   height: 500px;
-  background: radial-gradient(circle, rgb(57 111 190 / 17%), transparent 70%);
+  background: radial-gradient(circle, rgb(56 100 150 / 12%), transparent 70%);
 }
 .login-brand-content {
   position: relative;
   z-index: 2;
   width: min(100%, 540px);
   margin: 0 auto;
-  padding: 88px 56px 52px;
-}
-.login-brand-kicker {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: rgb(206 215 229 / 65%);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .2em;
-}
-.login-brand-kicker-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: #ff3b43;
-  box-shadow: 0 0 0 4px rgb(255 59 67 / 12%), 0 0 18px rgb(255 59 67 / 75%);
+  padding: 72px 56px 60px;
 }
 .login-brand-mark {
-  position: relative;
   display: grid;
-  width: 178px;
-  height: 178px;
-  margin: 68px 0 34px -14px;
+  width: 132px;
+  height: 132px;
+  margin: 0 0 34px -8px;
   place-items: center;
 }
 .login-brand-mark img {
-  position: relative;
-  z-index: 2;
-  width: 178px;
-  height: 178px;
+  width: 132px;
+  height: 132px;
   object-fit: contain;
-  filter: drop-shadow(0 0 20px rgb(255 31 39 / 18%));
-}
-.login-brand-mark-ring {
-  position: absolute;
-  border: 1px solid rgb(255 255 255 / 9%);
-  border-radius: 50%;
-  transform: rotate(-24deg);
-}
-.login-brand-mark-ring-one {
-  width: 258px;
-  height: 90px;
-  border-left-color: rgb(255 68 74 / 70%);
-  border-right-color: transparent;
-  animation: login-orbit 12s linear infinite;
-}
-.login-brand-mark-ring-two {
-  width: 214px;
-  height: 214px;
-  border-top-color: rgb(255 255 255 / 17%);
-  border-bottom-color: transparent;
-  transform: rotate(34deg);
-  animation: login-orbit-reverse 18s linear infinite;
+  filter: drop-shadow(0 14px 24px rgb(217 75 82 / 20%));
 }
 .login-brand-copy { max-width: 420px; }
 .login-brand-name {
   margin: 0 0 14px;
-  color: #ff565d;
+  color: #f0525c;
   font-size: 14px;
   font-weight: 700;
-  letter-spacing: .32em;
+  letter-spacing: .26em;
 }
 .login-brand-copy h1 {
   margin: 0;
@@ -1862,7 +1825,7 @@ select:focus-visible {
   line-height: 1.2;
 }
 .login-brand-copy h1 em {
-  color: #ff565d;
+  color: #f0525c;
   font-style: normal;
 }
 .login-brand-description {
@@ -1872,80 +1835,19 @@ select:focus-visible {
   font-size: 14px;
   line-height: 1.9;
 }
-.login-brand-features {
+.login-brand-values {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   margin: 42px 0 0;
-  padding: 0;
-  color: rgb(241 244 249 / 84%);
-  list-style: none;
-}
-.login-brand-features li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  white-space: nowrap;
+  color: rgb(241 244 249 / 72%);
   font-size: 12px;
-  letter-spacing: .04em;
+  letter-spacing: .08em;
 }
-.login-feature-icon {
-  display: grid;
-  width: 28px;
-  height: 28px;
-  place-items: center;
-  border: 1px solid rgb(255 255 255 / 12%);
-  border-radius: 9px;
-  color: #ff6268;
-  background: rgb(255 255 255 / 5%);
+.login-brand-values i {
+  color: rgb(240 82 92 / 72%);
+  font-style: normal;
 }
-.login-feature-line {
-  width: 20px;
-  height: 1px;
-  margin-left: 6px;
-  background: rgb(255 255 255 / 14%);
-}
-.login-brand-footer {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 76px;
-  color: rgb(206 215 229 / 37%);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: .16em;
-}
-.login-brand-footer-rule { width: 34px; height: 1px; background: rgb(255 255 255 / 22%); }
-.login-brand-footer-status { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; color: rgb(206 215 229 / 55%); }
-.login-brand-footer-status span { width: 5px; height: 5px; border-radius: 50%; background: #6ee7b7; box-shadow: 0 0 10px rgb(110 231 183 / 75%); }
-.login-particle-field { position: absolute; inset: 0; overflow: hidden; opacity: .86; pointer-events: none; }
-.login-particle {
-  position: absolute;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: #ff5960;
-  box-shadow: 0 0 12px 2px rgb(255 72 80 / 55%);
-  animation: login-particle-float 9s ease-in-out infinite;
-}
-.login-particle:nth-child(1) { top: 15%; left: 74%; animation-delay: -1s; animation-duration: 11s; }
-.login-particle:nth-child(2) { top: 23%; left: 56%; animation-delay: -5s; }
-.login-particle:nth-child(3) { top: 31%; left: 84%; animation-delay: -7s; animation-duration: 12s; }
-.login-particle:nth-child(4) { top: 40%; left: 68%; animation-delay: -2s; }
-.login-particle:nth-child(5) { top: 54%; left: 91%; animation-delay: -8s; animation-duration: 12s; }
-.login-particle:nth-child(6) { top: 62%; left: 56%; animation-delay: -4s; }
-.login-particle:nth-child(7) { top: 76%; left: 80%; animation-delay: -6s; animation-duration: 10s; }
-.login-particle:nth-child(8) { top: 84%; left: 64%; animation-delay: -3s; }
-.login-particle:nth-child(9) { top: 19%; left: 88%; width: 2px; height: 2px; animation-delay: -4s; }
-.login-particle:nth-child(10) { top: 47%; left: 50%; width: 2px; height: 2px; animation-delay: -8s; }
-.login-particle:nth-child(11) { top: 69%; left: 72%; width: 2px; height: 2px; animation-delay: -1s; }
-.login-particle:nth-child(12) { top: 28%; left: 95%; width: 2px; height: 2px; animation-delay: -6s; }
-.login-particle:nth-child(13) { top: 91%; left: 85%; width: 2px; height: 2px; animation-delay: -7s; }
-.login-particle:nth-child(14) { top: 9%; left: 61%; width: 2px; height: 2px; animation-delay: -3s; }
-.login-particle:nth-child(15) { top: 58%; left: 78%; width: 2px; height: 2px; animation-delay: -5s; }
-.login-particle:nth-child(16) { top: 73%; left: 94%; width: 2px; height: 2px; animation-delay: -2s; }
-.login-particle:nth-child(17) { top: 35%; left: 44%; width: 2px; height: 2px; animation-delay: -9s; }
-.login-particle:nth-child(18) { top: 88%; left: 52%; width: 2px; height: 2px; animation-delay: -4s; }
 .login-form-panel {
   display: flex;
   min-height: 0;
@@ -2072,39 +1974,29 @@ select:focus-visible {
 .login-form-footer { display: flex; align-items: center; justify-content: center; gap: 7px; margin-top: 40px; color: #a1a8b2; font-size: 10px; }
 .login-form-footer svg { color: #c7a3a6; }
 .login-mobile-brand { display: none; }
-@keyframes login-particle-float { 0%, 100% { opacity: .25; transform: translate3d(0, 12px, 0) scale(.75); } 50% { opacity: .9; transform: translate3d(-24px, -20px, 0) scale(1.2); } }
-@keyframes login-orbit { to { transform: rotate(336deg); } }
-@keyframes login-orbit-reverse { to { transform: rotate(-326deg); } }
-
-@media (min-width: 900px) { .login-page { grid-template-columns: minmax(360px, 40fr) minmax(520px, 60fr); } }
+@media (min-width: 900px) {
+  .login-page { grid-template-columns: minmax(360px, 40fr) minmax(520px, 60fr); }
+}
 @media (max-width: 899px) {
-  .login-page { grid-template-rows: minmax(310px, 42dvh) minmax(0, 1fr); overflow: auto; }
-  .login-brand-panel { min-height: 310px; }
-  .login-brand-content { padding: 58px 34px 30px; }
-  .login-brand-mark { width: 108px; height: 108px; margin: 28px 0 15px -8px; }
-  .login-brand-mark img { width: 108px; height: 108px; }
-  .login-brand-mark-ring-one { width: 160px; height: 58px; }
-  .login-brand-mark-ring-two { width: 132px; height: 132px; }
+  .login-page { grid-template-rows: minmax(280px, 38dvh) minmax(0, 1fr); overflow: auto; }
+  .login-brand-panel { min-height: 280px; align-items: flex-start; }
+  .login-brand-content { padding: 48px 34px 30px; }
+  .login-brand-mark { width: 86px; height: 86px; margin: 0 0 18px -6px; }
+  .login-brand-mark img { width: 86px; height: 86px; }
   .login-brand-copy h1 { font-size: 28px; }
-  .login-brand-description, .login-brand-footer { display: none; }
-  .login-brand-features { margin-top: 21px; }
-  .login-form-panel { min-height: 58dvh; padding: 42px 28px 50px; }
+  .login-brand-description { margin-top: 14px; font-size: 13px; }
+  .login-brand-values { margin-top: 22px; }
+  .login-form-panel { min-height: 62dvh; padding: 42px 28px 50px; }
 }
 @media (max-width: 560px) {
-  .login-brand-panel { min-height: 288px; }
-  .login-brand-content { padding: 51px 24px 24px; }
-  .login-brand-kicker { font-size: 8px; }
-  .login-brand-mark { position: absolute; top: 74px; right: 22px; width: 96px; height: 96px; margin: 0; opacity: .9; }
-  .login-brand-mark img { width: 96px; height: 96px; }
-  .login-brand-mark-ring-one { width: 144px; height: 50px; }
-  .login-brand-mark-ring-two { width: 120px; height: 120px; }
-  .login-brand-copy { padding-right: 105px; }
+  .login-brand-panel { min-height: 260px; }
+  .login-brand-content { padding: 38px 24px 24px; }
+  .login-brand-mark { width: 72px; height: 72px; margin-bottom: 14px; }
+  .login-brand-mark img { width: 72px; height: 72px; }
   .login-brand-name { margin-bottom: 8px; font-size: 11px; }
   .login-brand-copy h1 { font-size: 25px; }
-  .login-brand-features { gap: 9px; margin-top: 21px; }
-  .login-brand-features li { gap: 5px; font-size: 10px; }
-  .login-feature-icon { width: 24px; height: 24px; border-radius: 7px; }
-  .login-feature-line { width: 8px; margin-left: 2px; }
+  .login-brand-description { max-width: 260px; font-size: 12px; }
+  .login-brand-values { gap: 8px; margin-top: 18px; font-size: 10px; }
   .login-form-panel { padding: 34px 22px 42px; align-items: flex-start; }
   .login-form-shell { width: min(100%, 414px); }
   .login-mobile-brand { display: flex; align-items: center; gap: 8px; margin-bottom: 36px; color: #252a32; font-size: 15px; font-weight: 750; letter-spacing: .08em; }
@@ -2112,7 +2004,4 @@ select:focus-visible {
   .login-form-header { margin-bottom: 30px; }
   .login-form-header h2 { font-size: 27px; }
   .login-form { gap: 18px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .login-particle, .login-brand-mark-ring-one, .login-brand-mark-ring-two { animation: none; }
 }

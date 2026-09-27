@@ -17,14 +17,14 @@
   --arr-strong: #20232b;
   --arr-desc: #858a98;
   --arr-card-line: #e8eaf1;
-  --arr-card-hover: #d9dcfb;
-  --arr-icon-bg: #f0f1ff;
+  --arr-card-hover: #f3c7cb;
+  --arr-icon-bg: #fff5f5;
   --arr-input-line: #e8eaf1;
   --arr-input-ink: #20232b;
   --arr-place: #a4a5ae;
   --arr-emp-line: #e8eaf1;
   --arr-node-line: #e8eaf1;
-  --arr-node-on: #fafaff;
+  --arr-node-on: #fffafa;
   --arr-ok: #25a36a;
   --arr-shadow: 0 2px 10px rgb(40 50 90 / 3%);
   --arr-shadow-lift: 0 4px 16px rgb(40 50 90 / 8%);
@@ -62,7 +62,7 @@
 .ent-arr-note { margin: 18px 0 0; color: var(--ent-ink-3); font-size: 13px; line-height: 1.7; }
 .ent-arr-problem { color: var(--ent-attention); font-size: 13px; }
 
-/* ── 三种按钮。整页只有一个实心紫按钮，就是「往下走」的那个。 ──────────── */
+/* ── 三种按钮。整页只有一个实心红色按钮，就是「往下走」的那个。 ──────────── */
 
 .ent-arr-primary, .ent-arr-second, .ent-arr-ghost {
   display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 6px;
@@ -98,8 +98,8 @@
 .ent-mode.recommended .ent-mode-badge { color: var(--ent-brand-ink); background: var(--ent-brand-soft); }
 .ent-mode.advanced .ent-mode-badge { color: var(--ent-ink-3); }
 .ent-mode:hover { border-color: var(--arr-card-hover); box-shadow: var(--arr-shadow-lift); transform: translateY(-2px); }
-/* 自动编排是三个里最重要的那个，只给一条极淡的顶部紫线，不放大也不换底色。 */
-.ent-mode.featured::before { content: ''; position: absolute; top: 0; right: 26px; left: 26px; height: 2px; border-radius: 0 0 2px 2px; background: linear-gradient(90deg, var(--ent-brand-border), #b4b7fa 50%, var(--ent-brand-border)); }
+/* 自动编排是三个里最重要的那个，只给一条极淡的顶部红色线，不放大也不换底色。 */
+.ent-mode.featured::before { content: ''; position: absolute; top: 0; right: 26px; left: 26px; height: 2px; border-radius: 0 0 2px 2px; background: linear-gradient(90deg, var(--ent-brand-border), #efa6ad 50%, var(--ent-brand-border)); }
 
 .ent-mode-icon { display: grid; width: 48px; height: 48px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: var(--ent-brand-ink); background: var(--arr-icon-bg); }
 .ent-mode-title { margin-top: 18px; color: var(--arr-strong); font-size: 18px; font-weight: 600; }
@@ -138,7 +138,7 @@
 
 .ent-arr-auto { display: flex; flex-direction: column; }
 
-/* 顶上那条进度。做完的淡紫 + ✓，正在做的紫，还没到的浅灰。 */
+/* 顶上那条进度。做完的淡红 + ✓，正在做的红，还没到的浅灰。 */
 .ent-aa-strip { display: flex; flex-wrap: wrap; justify-content: center; gap: 0; margin: 0 0 26px; padding: 0; list-style: none; }
 .ent-aa-strip li { display: inline-flex; align-items: center; gap: 5px; color: var(--ent-ink-3); font-size: 13px; transition: color 300ms ease-out, opacity 300ms ease-out; }
 .ent-aa-strip li:not(:first-child)::before { content: '→'; margin: 0 14px; color: var(--ent-line-strong); }
@@ -183,8 +183,8 @@
 .ent-aa-card-state b { display: inline-flex; align-items: center; gap: 3px; color: var(--ent-brand-ink); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .ent-aa-card-state i { max-width: 100%; overflow: hidden; color: var(--ent-ink-2); font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
 
-.ent-aa-card.scanning { border-color: var(--arr-card-hover); box-shadow: 0 0 0 3px rgb(108 99 255 / 8%); }
-/* 选中：紫描边、极浅紫底、放大 1.03。再大就变成弹窗了。 */
+.ent-aa-card.scanning { border-color: var(--arr-card-hover); box-shadow: 0 0 0 3px rgb(217 75 82 / 8%); }
+/* 选中：红色描边、极浅红底、放大 1.03。再大就变成弹窗了。 */
 .ent-aa-card.picked { border-color: var(--ent-brand); background: var(--ent-brand-softer); transform: scale(1.03); }
 .ent-aa-card.passed { opacity: .35; }
 .ent-aa-card.gone { width: 0; margin-right: 0; margin-left: 0; padding-right: 0; padding-left: 0; border-width: 0; opacity: 0; }
@@ -244,7 +244,7 @@
 
 .ent-mn-node { display: grid; width: 100%; height: 104px; grid-template-columns: 40px minmax(0, 1fr); align-content: center; gap: 6px 0; padding: 10px 14px; border: 1px solid var(--arr-node-line); border-radius: 12px; background: var(--ent-panel); text-align: left; cursor: pointer; transition: border-color 180ms var(--arr-ease), background 180ms var(--arr-ease), box-shadow 180ms var(--arr-ease), opacity 180ms var(--arr-ease); }
 .ent-mn-node:hover { border-color: var(--arr-card-hover); }
-.ent-mn-node.on { border-color: var(--ent-brand); background: var(--arr-node-on); box-shadow: 0 2px 10px rgb(108 99 255 / 12%); }
+.ent-mn-node.on { border-color: var(--ent-brand); background: var(--arr-node-on); box-shadow: 0 2px 10px rgb(217 75 82 / 12%); }
 .ent-mn-no { grid-column: 1 / -1; color: var(--ent-ink-3); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .ent-mn-id { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
 .ent-mn-id strong { overflow: hidden; color: var(--ent-ink); font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -382,7 +382,7 @@ select.ent-rs-input { cursor: pointer; }
 .ent-rs-perms strong { color: var(--ent-ink); font-size: 13px; font-weight: 500; }
 .ent-rs-perms small { color: var(--ent-ink-3); font-size: 12px; line-height: 1.5; }
 
-/* 开关只有紫（开）和浅灰（关）两种。关掉不是错误，所以永远不用红色。 */
+/* 开关只有红色（开）和浅灰（关）两种。关掉不是错误，所以永远不用红色。 */
 .ent-toggle { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; gap: 8px; cursor: pointer; }
 .ent-toggle input { position: absolute; width: 40px; height: 22px; margin: 0; opacity: 0; cursor: pointer; }
 .ent-toggle i { position: relative; display: block; width: 40px; height: 22px; flex: 0 0 auto; border-radius: 999px; background: #dededf; transition: background 180ms var(--arr-ease); }
