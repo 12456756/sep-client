@@ -1,4 +1,4 @@
-import { ArrowRight, Pencil, X } from 'lucide-react';
+import { ArrowRight, Pencil, Workflow, X } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import type { ArrangementDraft, ArrangementDraftDocument } from '../../../shared/types';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
@@ -36,6 +36,7 @@ function toDocument(draft: ArrangementDraft): ArrangementDraftDocument {
 export function AutoArrange({ employees, busy, onStart, settings, models, onSettingsChange, onChooseFolder }: Props) {
   const [starting, setStarting] = useState(false);
   const [goal, setGoal] = useState('');
+  const [submitted, setSubmitted] = useState(false);
   const { draft, setDraft, planning, cancellable, error, setError, start, cancel } = useAutoPlanning();
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -70,12 +71,23 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
     }
   };
 
+  const submitGoal = () => {
+    setSubmitted(true);
+    void start(goal, settings.workDir);
+  };
+
   const employeeById = useMemo(() => new Map(employees.map(employee => [employee.id, employee])), [employees]);
 
   return (
     <div className="ent-auto-arrange">
       {!draft ? (
         <section className="ent-arr-auto">
+        {!submitted && !planning ? (
+          <div className="ent-arr-empty-state" aria-hidden="true">
+            <span className="ent-arr-empty-icon"><Workflow size={24} strokeWidth={1.8} /></span>
+            <p>描述一个目标，开始编排</p>
+          </div>
+        ) : null}
         <GoalComposer
           value={goal}
           onChange={setGoal}
@@ -87,7 +99,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
           onChooseFolder={onChooseFolder}
           submitDisabled={busy || planning || !goal.trim() || !employees.length}
           conversation={false}
-          onSubmit={() => void start(goal, settings.workDir)}
+          onSubmit={submitGoal}
         />
         </section>
       ) : null}

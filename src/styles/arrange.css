@@ -709,3 +709,54 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   margin-top: 0;
   margin-bottom: 0;
 }
+
+/* 空工作台只保留一个轻量的起始提示；开始发送后让位给真实内容。 */
+.ent-arr-chat,
+.ent-arr-auto {
+  position: relative;
+}
+.ent-arr-empty-state {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  padding-bottom: 112px;
+  color: var(--ent-ink-3);
+  pointer-events: none;
+  animation: arr-empty-in 260ms var(--arr-ease) both;
+}
+.ent-arr-empty-icon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  border: 1px solid var(--ent-line);
+  border-radius: 16px;
+  color: var(--ent-ink-3);
+  background: var(--ent-panel);
+  box-shadow: 0 8px 24px rgb(32 35 43 / 5%);
+}
+.ent-arr-empty-state p {
+  margin: 0;
+  color: var(--ent-ink-3);
+  font-size: 14px;
+}
+@keyframes arr-empty-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+.ent-arr-chat > .ent-rs-directory,
+.ent-arr-chat > .ent-chat-ask,
+.ent-arr-auto > .ent-goal-stack {
+  position: relative;
+  z-index: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ent-arr-empty-state { animation: none; }
+}
+@media (max-width: 760px) {
+  .ent-arr-empty-state { padding-bottom: 96px; }
+}

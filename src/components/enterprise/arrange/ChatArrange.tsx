@@ -3,7 +3,7 @@
  * 页面主体保持安静，不用额外说明文字占据首屏。
  */
 
-import { ArrowUp, ChevronDown, Search } from 'lucide-react';
+import { ArrowUp, ChevronDown, MessageSquare, Search } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
@@ -26,6 +26,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const [pickOpen, setPickOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [text, setText] = useState('');
+  const [submitted, setSubmitted] = useState(false);
   const pick = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const employee = employees.find(item => item.id === employeeId);
@@ -57,11 +58,20 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   };
 
   const start = () => {
-    if (ready && !busy) onStart(employeeId, text.trim());
+    if (ready && !busy) {
+      setSubmitted(true);
+      onStart(employeeId, text.trim());
+    }
   };
 
   return (
     <section className="ent-arr-chat">
+      {!submitted && !busy ? (
+        <div className="ent-arr-empty-state" aria-hidden="true">
+          <span className="ent-arr-empty-icon"><MessageSquare size={24} strokeWidth={1.8} /></span>
+          <p>选择一位同事，开始协作</p>
+        </div>
+      ) : null}
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-chat-ask">
         <textarea
