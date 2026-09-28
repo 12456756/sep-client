@@ -1,584 +1,508 @@
 import {
+  ArrowRight,
   Building2,
   ChevronDown,
   ChevronRight,
-  Maximize2,
-  Minimize2,
-  Plus,
   Search,
-  Users,
-  X,
-  ZoomIn,
-  ZoomOut,
-} from 'lucide-react';
-import * as React from 'react';
+} from "lucide-react";
+import * as React from "react";
+import { useMemo, useState } from "react";
+import { AvailabilityChip, Empty } from "../../components/enterprise/atoms";
+import { EmployeeFace } from "../../components/enterprise/EmployeeFace";
+import type { EnterpriseWorkspace } from "../../features/enterprise/useEnterpriseWorkspace";
+import type { OrganizationCarbonEmployee } from "../../features/enterprise/organization-model";
+import { usableSiliconEmployeesForMember } from "../../features/enterprise/organization-model";
 import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
-} from 'react';
-import { AvailabilityChip, Empty } from '../../components/enterprise/atoms';
-import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
-import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
-import {
-  buildOrganizationTree,
-  filterOrganizationTree,
-  getOrganizationDepartments,
-  usableSiliconEmployeesForMember,
-  type FilteredOrganizationNode,
-  type OrganizationCarbonEmployee,
-} from '../../features/enterprise/organization-model';
-import { OrganizationEmptyState } from './OrganizationEmptyState';
-import type { SiliconEmployee } from '../../features/enterprise/types';
+  buildOrganizationRelation,
+  filterOrganizationRelation,
+  type OrganizationRelationDepartment,
+} from "../../features/enterprise/organization-map-model";
+import { OrganizationEmptyState } from "./OrganizationEmptyState";
+import type { SiliconEmployee } from "../../features/enterprise/types";
+
+const UNASSIGNED_DEPARTMENT_ID = "__unassigned__";
+
+type OrganizationStatus = "loading" | "ready" | "empty" | "error";
 
 interface Props {
-  workspace: Pick<EnterpriseWorkspace, 'employees' | 'navigate'>;
+  workspace: Pick<EnterpriseWorkspace, "employees" | "navigate">;
   members?: readonly OrganizationCarbonEmployee[];
-  organizationStatus?: 'loading' | 'ready' | 'empty' | 'error';
+  organizationStatus?: OrganizationStatus;
   organizationError?: string | null;
   onRetry?: () => void;
-}
-
-const MIN_ZOOM = 0.7;
-const MAX_ZOOM = 1.2;
-const ZOOM_STEP = 0.1;
-const DEFAULT_ZOOM = 1;
-const MEMBERS_PER_PAGE = 6;
-const WHEEL_ZOOM_FACTOR = 1.1;
-const PAN_THRESHOLD_PX = 4;
-
-/** 部门筛选是“保留部门分支”，搜索才是“高亮命中的那个员工”。 */
-function nodeIsHighlighted(node: FilteredOrganizationNode): boolean {
-  return node.matched;
-}
-
-function clampZoom(value: number): number {
-  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Number(value.toFixed(2))));
-}
-
-interface PanState {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  scrollLeft: number;
-  scrollTop: number;
-  moved: boolean;
 }
 
 export function OrganizationPage({
   workspace,
   members,
-  organizationStatus = members === undefined ? 'empty' : 'ready',
+  organizationStatus = members === undefined ? "empty" : "ready",
   organizationError,
   onRetry,
 }: Props): React.JSX.Element {
-  if (organizationStatus === 'loading') {
+  if (organizationStatus === "loading") {
     return (
       <div className="ent-page ent-organization" role="status">
-        <Empty title="正在加载组织架构">正在从 SEP 获取企业成员、部门和员工授权关系。</Empty>
+        <Empty title="正在加载组织架构">
+          正在从 SEP 获取企业成员、部门和员工授权关系。
+        </Empty>
       </div>
     );
   }
-
-  if (organizationStatus === 'error') {
+  if (organizationStatus === "error") {
     return (
       <div className="ent-page ent-organization" role="alert">
-        <Empty title="组织架构加载失败">{organizationError ?? '暂时无法获取组织架构数据，请稍后重试。'}</Empty>
-        {onRetry ? <button type="button" className="workspace-primary-button" onClick={onRetry}>重新加载</button> : null}
+        <Empty title="组织架构加载失败">
+          {organizationError ?? "暂时无法获取组织架构数据，请稍后重试。"}
+        </Empty>
+        {onRetry ? (
+          <button
+            type="button"
+            className="workspace-primary-button"
+            onClick={onRetry}
+          >
+            重新加载
+          </button>
+        ) : null}
       </div>
     );
   }
-
-  if (organizationStatus === 'empty' || !members?.length) return <OrganizationEmptyState onRetry={onRetry} />;
+  if (organizationStatus === "empty" || !members?.length)
+    return <OrganizationEmptyState onRetry={onRetry} />;
   return <OrganizationTreeView workspace={workspace} members={members} />;
 }
 
-interface TreeViewProps {
-  workspace: Pick<EnterpriseWorkspace, 'employees' | 'navigate'>;
+function OrganizationTreeView({
+  workspace,
+  members,
+}: {
+  workspace: Pick<EnterpriseWorkspace, "employees" | "navigate">;
   members: readonly OrganizationCarbonEmployee[];
-}
-
-function OrganizationTreeView({ workspace, members }: TreeViewProps): React.JSX.Element {
-  const { employees, navigate } = workspace;
-  const [search, setSearch] = useState('');
-  const [department, setDepartment] = useState('');
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [zoom, setZoom] = useState(DEFAULT_ZOOM);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set(members.filter(member => member.parentId === null).map(member => member.id)));
-  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
-  const treeScrollRef = useRef<HTMLDivElement | null>(null);
-  const zoomRef = useRef(zoom);
-  const pendingZoomAnchor = useRef<{ left: number; top: number } | null>(null);
-  const panRef = useRef<PanState | null>(null);
-  const didPanRef = useRef(false);
-  const [isPanning, setIsPanning] = useState(false);
-
-  const fitToScreen = useCallback(() => {
-    const scroller = treeScrollRef.current;
-    const tree = scroller?.querySelector<HTMLElement>('.org-tree');
-    if (!scroller || !tree) return;
-    const available = scroller.clientWidth;
-    const content = tree.scrollWidth;
-    if (available <= 0 || content <= 0) return;
-    const fit = available / content;
-    setZoom(clampZoom(fit));
-  }, []);
-
-  const carbonEmployees = members;
-  const departments = useMemo(() => getOrganizationDepartments(carbonEmployees), [carbonEmployees]);
-  const treeRoots = useMemo(() => buildOrganizationTree(carbonEmployees), [carbonEmployees]);
-  const filteredRoots = useMemo(
-    () => filterOrganizationTree(treeRoots, search, department),
-    [department, search, treeRoots],
+}): React.JSX.Element {
+  const [query, setQuery] = useState("");
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState<
+    string | null
+  >(null);
+  const [selectedMemberId, setSelectedMemberId] = useState<string | null>(null);
+  const [expandedDepartmentIdsState, setExpandedDepartmentIdsState] =
+    useState<Set<string> | null>(null);
+  const [expandedMemberIdsState, setExpandedMemberIdsState] =
+    useState<Set<string> | null>(null);
+  const organization = useMemo(
+    () => buildOrganizationRelation(members),
+    [members],
   );
-
-  // 搜索 / 部门筛选时自动展开命中分支，让用户看清这个人在公司的哪一层。
-  useEffect(() => {
-    if (!search.trim() && !department) return;
-    setExpandedIds(current => {
-      const ids = new Set(current);
-      const addPath = (node: FilteredOrganizationNode, ancestors: string[]) => {
-        const ownPath = [...ancestors, node.member.id];
-        if (node.containsMatch || node.matched) {
-          ancestors.forEach(id => ids.add(id));
-        }
-        node.children.forEach(child => addPath(child, ownPath));
-      };
-      filteredRoots.forEach(root => {
-        ids.add(root.member.id);
-        addPath(root, []);
+  const visibleOrganization = useMemo(
+    () => filterOrganizationRelation(organization, query),
+    [organization, query],
+  );
+  const departmentGroups = useMemo(() => {
+    const groups = [...visibleOrganization.rootDepartments];
+    if (visibleOrganization.unassignedMembers.length) {
+      groups.push({
+        member: {
+          id: UNASSIGNED_DEPARTMENT_ID,
+          name: "未归属部门",
+          position: "部门",
+          department: "",
+          employeeIds: [],
+          isCurrent: false,
+          kind: "department",
+          parentId: visibleOrganization.enterprise?.id ?? null,
+        },
+        depth: 0,
+        parentDepartmentId: null,
+        members: visibleOrganization.unassignedMembers,
+        children: [],
       });
-      return ids;
-    });
-  }, [department, filteredRoots, search]);
-
-  // 首次进入自动“适应屏幕”，让主干完整落在可视区域内。
-  useLayoutEffect(() => {
-    fitToScreen();
-  }, [fitToScreen]);
-
-  // 保持 zoomRef 与最新缩放同步，供原生滚轮监听器读取。
-  useEffect(() => {
-    zoomRef.current = zoom;
-  }, [zoom]);
-
-  const applyWheelZoom = useCallback((deltaY: number, clientX: number, clientY: number) => {
-    const scroller = treeScrollRef.current;
-    if (!scroller) return;
-    const rect = scroller.getBoundingClientRect();
-    const pointerX = clientX - rect.left;
-    const pointerY = clientY - rect.top;
-    const oldZoom = zoomRef.current;
-    const factor = deltaY < 0 ? WHEEL_ZOOM_FACTOR : 1 / WHEEL_ZOOM_FACTOR;
-    const nextZoom = clampZoom(oldZoom * factor);
-    if (nextZoom === oldZoom) return;
-    const scale = nextZoom / oldZoom;
-    pendingZoomAnchor.current = {
-      left: (pointerX + scroller.scrollLeft) * scale - pointerX,
-      top: (pointerY + scroller.scrollTop) * scale - pointerY,
-    };
-    zoomRef.current = nextZoom;
-    setZoom(nextZoom);
-  }, []);
-
-  // 用原生非被动监听，确保能阻止浏览器默认滚动行为。
-  useEffect(() => {
-    const scroller = treeScrollRef.current;
-    if (!scroller) return;
-    const onWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      applyWheelZoom(event.deltaY, event.clientX, event.clientY);
-    };
-    scroller.addEventListener('wheel', onWheel, { passive: false });
-    return () => scroller.removeEventListener('wheel', onWheel);
-  }, [applyWheelZoom]);
-
-  // 滚轮缩放后校正滚动位置，让指针下方的节点保持不动。
-  useLayoutEffect(() => {
-    const anchor = pendingZoomAnchor.current;
-    const scroller = treeScrollRef.current;
-    if (!anchor || !scroller) return;
-    pendingZoomAnchor.current = null;
-    scroller.scrollLeft = anchor.left;
-    scroller.scrollTop = anchor.top;
-  }, [zoom]);
-
-  const selectedMember = selectedId
-    ? carbonEmployees.find(member => member.id === selectedId) ?? null
+    }
+    return groups;
+  }, [visibleOrganization]);
+  const defaultDepartmentId = useMemo(() => {
+    const currentDepartment = visibleOrganization.departments.find((group) =>
+      group.members.some((member) => member.isCurrent),
+    );
+    return currentDepartment?.member.id ?? departmentGroups[0]?.member.id ?? null;
+  }, [departmentGroups, visibleOrganization.departments]);
+  const defaultMemberId =
+    [...visibleOrganization.departments.flatMap((group) => group.members), ...visibleOrganization.unassignedMembers]
+      .find((member) => member.isCurrent)?.id ?? null;
+  const defaultExpandedDepartmentIds = useMemo(() => {
+    if (query.trim())
+      return new Set(visibleOrganization.departments.map((group) => group.member.id));
+    const expanded = new Set<string>();
+    let currentId = defaultDepartmentId;
+    const byId = new Map(visibleOrganization.departments.map((group) => [group.member.id, group]));
+    while (currentId) {
+      if (expanded.has(currentId)) break;
+      expanded.add(currentId);
+      currentId = byId.get(currentId)?.parentDepartmentId ?? "";
+    }
+    return expanded;
+  }, [defaultDepartmentId, query, visibleOrganization.departments]);
+  const defaultExpandedMemberIds = useMemo(() => {
+    if (query.trim())
+      return new Set(
+        [...visibleOrganization.departments.flatMap((group) =>
+          group.members.map((member) => member.id),
+        ), ...visibleOrganization.unassignedMembers.map((member) => member.id)],
+      );
+    return defaultMemberId ? new Set([defaultMemberId]) : new Set<string>();
+  }, [defaultMemberId, query, visibleOrganization.departments, visibleOrganization.unassignedMembers]);
+  const expandedDepartmentIds =
+    expandedDepartmentIdsState ?? defaultExpandedDepartmentIds;
+  const expandedMemberIds = expandedMemberIdsState ?? defaultExpandedMemberIds;
+  const activeMemberId = selectedMemberId ?? defaultMemberId;
+  const activeMember = activeMemberId
+    ? (members.find((member) => member.id === activeMemberId) ?? null)
     : null;
-
-  const toggleExpanded = (id: string) => {
-    setExpandedIds(current => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+  const openEmployee = (employeeId: string) =>
+    workspace.navigate({ name: "employee", employeeId });
+  const toggleDepartment = (departmentId: string) => {
+    setExpandedDepartmentIdsState((current) => {
+      const next = new Set(current ?? defaultExpandedDepartmentIds);
+      if (next.has(departmentId)) next.delete(departmentId);
+      else next.add(departmentId);
       return next;
     });
   };
 
-  const changeZoom = (delta: number) => {
-    setZoom(value => clampZoom(value + delta));
-  };
-
-  const handleClose = () => setSelectedId(null);
-  const handleOpenEmployee = (employeeId: string) => navigate({ name: 'employee', employeeId });
-
-  const handlePanStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.pointerType === 'mouse' && event.button !== 0) return;
-    const scroller = treeScrollRef.current;
-    if (!scroller) return;
-    panRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      scrollLeft: scroller.scrollLeft,
-      scrollTop: scroller.scrollTop,
-      moved: false,
-    };
-    didPanRef.current = false;
-  };
-
-  const handlePanMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const pan = panRef.current;
-    const scroller = treeScrollRef.current;
-    if (!pan || !scroller || pan.pointerId !== event.pointerId) return;
-    const dx = event.clientX - pan.startX;
-    const dy = event.clientY - pan.startY;
-    if (!pan.moved && Math.hypot(dx, dy) < PAN_THRESHOLD_PX) return;
-    pan.moved = true;
-    didPanRef.current = true;
-    setIsPanning(true);
-    scroller.scrollLeft = pan.scrollLeft - dx;
-    scroller.scrollTop = pan.scrollTop - dy;
-  };
-
-  const handlePanEnd = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (panRef.current?.pointerId !== event.pointerId) return;
-    panRef.current = null;
-    setIsPanning(false);
-  };
-
-  // 拖拽结束后若发生了移动，则吞掉这次 click，避免误触员工选中。
-  const handleTreeClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (!didPanRef.current) return;
-    event.preventDefault();
-    event.stopPropagation();
-    didPanRef.current = false;
-  };
-
-  useEffect(() => {
-    if (!selectedId) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setSelectedId(null);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId]);
-
-  const zoomStyle = { '--org-zoom': zoom } as CSSProperties;
-
   return (
-    <div className="ent-page ent-organization">
-      <div className="org-page-intro">
-        <div className="org-page-title">
-          <span className="org-eyebrow"><Building2 size={14} aria-hidden /> 碳基员工组织架构</span>
-          <p>查看企业成员组成；点击任意成员，在右侧查看他可以使用哪些硅基员工。</p>
+    <div className="ent-page ent-organization org-tree-page">
+      <section className="org-tree-view" aria-label="企业组织架构树">
+        <div className="org-tree-toolbar">
+          <label className="org-tree-search">
+            <Search size={15} aria-hidden />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索部门、姓名或职位"
+              aria-label="搜索部门、姓名或职位"
+            />
+          </label>
         </div>
 
-      </div>
+        <div className="org-tree-scroll">
+          {departmentGroups.length ? (
+            <div className="org-tree-shell">
+              <div className="org-tree-company-column">
+                <div className="org-tree-company-node">
+                  <span className="org-tree-node-icon">
+                    <Building2 size={20} aria-hidden />
+                  </span>
+                  <span className="org-tree-node-copy">
+                    <strong>
+                      {visibleOrganization.enterprise?.name ?? "企业组织"}
+                    </strong>
+                    <small>公司</small>
+                  </span>
+                </div>
+                <div className="org-tree-company-meta">
+                  <span className="org-tree-status-dot" aria-hidden />
+                  <span>
+                    {
+                      members.filter(
+                        (member) =>
+                          member.kind !== "root" &&
+                          member.kind !== "department",
+                      ).length
+                    }{" "}
+                    位碳基员工
+                  </span>
+                </div>
+              </div>
 
-      <div className={`org-workbench${selectedMember ? ' has-drawer' : ''}`}>
-        <section className="org-tree-panel ent-card" aria-label="企业组织关系图">
-          <div className="org-panel-toolbar">
-            <label className="org-search">
-              <Search size={14} aria-hidden />
-              <input
-                type="search"
-                value={search}
-                placeholder="搜索员工姓名、部门或职位"
-                aria-label="搜索员工"
-                onChange={event => setSearch(event.target.value)}
-              />
-            </label>
-            <select
-              className="ent-select org-filter"
-              value={department}
-              onChange={event => setDepartment(event.target.value)}
-              aria-label="按部门筛选"
-            >
-              <option value="">全部部门</option>
-              {departments.map(item => <option key={item} value={item}>{item}</option>)}
-            </select>
-            <div className="org-zoom-controls" aria-label="组织架构缩放">
-              <button
-                type="button"
-                className="org-icon-action"
-                onClick={() => changeZoom(-ZOOM_STEP)}
-                disabled={zoom <= MIN_ZOOM}
-                aria-label="缩小组织架构"
-                title="缩小"
-              >
-                <ZoomOut size={15} aria-hidden />
-              </button>
-              <button
-                type="button"
-                className="org-zoom-value"
-                onClick={() => setZoom(DEFAULT_ZOOM)}
-                aria-label={`当前缩放 ${Math.round(zoom * 100)}%，点击恢复 100%`}
-                title="恢复 100%"
-              >
-                {Math.round(zoom * 100)}%
-              </button>
-              <button
-                type="button"
-                className="org-icon-action"
-                onClick={() => changeZoom(ZOOM_STEP)}
-                disabled={zoom >= MAX_ZOOM}
-                aria-label="放大组织架构"
-                title="放大"
-              >
-                <ZoomIn size={15} aria-hidden />
-              </button>
-              <button
-                type="button"
-                className="org-icon-action"
-                onClick={fitToScreen}
-                aria-label="适应屏幕"
-                title="适应屏幕"
-              >
-                <Maximize2 size={15} aria-hidden />
-              </button>
+              <div className="org-tree-track">
+                {departmentGroups.map((department) => (
+                  <DepartmentBranch
+                    key={department.member.id}
+                    department={department}
+                    selectedDepartmentId={selectedDepartmentId}
+                    selectedMemberId={activeMemberId}
+                    siliconEmployees={workspace.employees}
+                    expanded={expandedDepartmentIds.has(department.member.id)}
+                    onToggle={() => toggleDepartment(department.member.id)}
+                    expandedDepartmentIds={expandedDepartmentIds}
+                    onToggleDepartment={toggleDepartment}
+                    onDepartmentSelect={(departmentId) => {
+                      setSelectedDepartmentId(departmentId);
+                      setSelectedMemberId(null);
+                    }}
+                    expandedMemberIds={expandedMemberIds}
+                    onToggleMember={(memberId) => {
+                      setExpandedMemberIdsState((current) => {
+                        const next = new Set(
+                          current ?? defaultExpandedMemberIds,
+                        );
+                        if (next.has(memberId)) next.delete(memberId);
+                        else next.add(memberId);
+                        return next;
+                      });
+                    }}
+                    onMemberSelect={(member) => {
+                      setSelectedDepartmentId(member.parentId);
+                      setSelectedMemberId(member.id);
+                    }}
+                    onOpenEmployee={openEmployee}
+                  />
+                ))}
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="org-tree-no-results">
+              <Empty title="没有找到匹配的组织成员">
+                试试部门名称、姓名或职位。
+              </Empty>
+            </div>
+          )}
+        </div>
 
-          <div
-            className={`org-tree-scroll${isPanning ? ' is-panning' : ''}`}
-            ref={treeScrollRef}
-            onPointerDown={handlePanStart}
-            onPointerMove={handlePanMove}
-            onPointerUp={handlePanEnd}
-            onPointerCancel={handlePanEnd}
-            onClickCapture={handleTreeClickCapture}
+        {activeMember ? (
+          <div className="org-tree-selection-note" aria-live="polite">
+            <span>当前关系</span>
+            <strong>{activeMember.name}</strong>
+            <ArrowRight size={14} aria-hidden />
+            <span>
+              {
+                usableSiliconEmployeesForMember(
+                  activeMember,
+                  workspace.employees,
+                ).length
+              }{" "}
+              位硅基员工
+            </span>
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function DepartmentBranch({
+  department,
+  selectedDepartmentId,
+  selectedMemberId,
+  siliconEmployees,
+  expanded,
+  onToggle,
+  expandedDepartmentIds,
+  onToggleDepartment,
+  onDepartmentSelect,
+  expandedMemberIds,
+  onToggleMember,
+  onMemberSelect,
+  onOpenEmployee,
+}: {
+  department: OrganizationRelationDepartment;
+  selectedDepartmentId: string | null;
+  selectedMemberId: string | null;
+  siliconEmployees: readonly SiliconEmployee[];
+  expanded: boolean;
+  onToggle: () => void;
+  expandedDepartmentIds: ReadonlySet<string>;
+  onToggleDepartment: (departmentId: string) => void;
+  onDepartmentSelect: (departmentId: string) => void;
+  expandedMemberIds: ReadonlySet<string>;
+  onToggleMember: (memberId: string) => void;
+  onMemberSelect: (member: OrganizationCarbonEmployee) => void;
+  onOpenEmployee: (employeeId: string) => void;
+}): React.JSX.Element {
+  const selected = selectedDepartmentId === department.member.id;
+  const hasChildren = department.children.length > 0;
+  const hasContent = department.members.length > 0 || hasChildren;
+
+  return (
+    <section
+      className={`org-tree-branch${selected ? " selected" : ""}${department.parentDepartmentId ? " nested" : ""}`}
+      aria-label={`${department.member.name}组织分支`}
+      data-department-id={department.member.id}
+      data-parent-department-id={department.parentDepartmentId ?? undefined}
+    >
+      <div className="org-tree-branch-grid">
+        <div className="org-tree-department-slot">
+          <button
+            type="button"
+            className={`org-tree-node org-tree-department-node${selected ? " selected" : ""}`}
+            style={{ "--org-depth": department.depth } as React.CSSProperties}
+            onClick={() => {
+              onDepartmentSelect(department.member.id);
+              if (hasContent) onToggle();
+            }}
+            aria-pressed={selected}
+            aria-expanded={hasContent ? expanded : undefined}
+            aria-label={`${department.member.name}${hasContent ? (expanded ? "，收起下级" : "，展开下级") : ""}`}
           >
-            <div className="org-tree-zoom" style={zoomStyle}>
-              {filteredRoots.length ? (
-                <div className="org-tree">
-                  {filteredRoots.map(root => (
-                    <OrganizationTreeNodeView
-                      key={root.member.id}
-                      node={root}
-                      level={0}
-                      selectedId={selectedId}
-                      expandedIds={expandedIds}
-                      visibleCounts={visibleCounts}
-                      onSelect={setSelectedId}
-                      onToggleExpanded={toggleExpanded}
-                      onMore={id => setVisibleCounts(current => ({
-                        ...current,
-                        [id]: (current[id] ?? MEMBERS_PER_PAGE) + MEMBERS_PER_PAGE,
-                      }))}
+            <span className="org-tree-node-icon">
+              <Building2 size={17} aria-hidden />
+            </span>
+            <span className="org-tree-node-copy">
+              <strong title={department.member.name}>{department.member.name}</strong>
+              <small>{department.members.length} 位成员{hasChildren ? ` · ${department.children.length} 个下级部门` : ""}</small>
+            </span>
+            {hasContent ? (expanded ? <ChevronDown size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />) : null}
+          </button>
+        </div>
+
+        <div className={`org-tree-branch-outlet${expanded ? "" : " collapsed"}`}>
+          {expanded ? (
+            <>
+              {department.members.length ? (
+                <div className="org-tree-member-flow">
+                  {department.members.map((member) => (
+                    <MemberRelationRow
+                      key={member.id}
+                      member={member}
+                      selected={selectedMemberId === member.id}
+                      siliconEmployees={siliconEmployees}
+                      siliconExpanded={expandedMemberIds.has(member.id)}
+                      onToggleSilicon={() => onToggleMember(member.id)}
+                      onSelect={() => onMemberSelect(member)}
+                      onOpenEmployee={onOpenEmployee}
                     />
                   ))}
                 </div>
-              ) : (
-                <Empty title="没有匹配的成员">换个关键词或部门试试，组织树会保留命中成员的上级路径。</Empty>
-              )}
-            </div>
-          </div>
-        </section>
-
-        <OrganizationDrawer
-          member={selectedMember}
-          employees={employees}
-          onOpenEmployee={handleOpenEmployee}
-          onClose={handleClose}
-        />
-      </div>
-    </div>
-  );
-}
-
-interface TreeNodeProps {
-  node: FilteredOrganizationNode;
-  level: number;
-  selectedId: string | null;
-  expandedIds: Set<string>;
-  visibleCounts: Record<string, number>;
-  onSelect: (id: string) => void;
-  onToggleExpanded: (id: string) => void;
-  onMore: (id: string) => void;
-}
-
-function OrganizationTreeNodeView(props: TreeNodeProps) {
-  const { node, level, selectedId, expandedIds, visibleCounts, onSelect, onToggleExpanded, onMore } = props;
-  const isRoot = node.member.kind === 'root';
-  const hasChildren = node.children.length > 0;
-  const expanded = expandedIds.has(node.member.id);
-  const highlighted = nodeIsHighlighted(node);
-  const reserve = node.member.isCurrent ? 1 : 0;
-  const pageCount = Math.max(1, node.children.length - reserve);
-  const visible = Math.min(pageCount, visibleCounts[node.member.id] ?? MEMBERS_PER_PAGE);
-  const memberCount = node.children.length;
-  const hiddenCount = memberCount - visible;
-
-  const childrenToShow = node.children.slice(0, visible);
-
-  return (
-    <div className="org-tree-node">
-      <div className={`org-tree-card${isRoot ? ' root' : ''}${highlighted ? ' match' : ''}${node.member.id === selectedId ? ' selected' : ''}`}>
-        <div className="org-tree-card-body">
-          <button
-            type="button"
-            className="org-tree-card-main"
-            onClick={() => onSelect(node.member.id)}
-            aria-pressed={node.member.id === selectedId}
-          >
-            {isRoot ? (
-              <span className="org-enterprise-mark" aria-hidden>
-                {node.member.name.slice(0, 1)}
-              </span>
-            ) : (
-              <EmployeeFace name={node.member.name} size="md" round={false} />
-            )}
-            <span className="org-tree-copy">
-              <span className="org-card-title">
-                <strong title={node.member.name}>{node.member.name}</strong>
-                <MemberTone member={node.member} />
-              </span>
-              <small>{node.member.position}</small>
-              <small className="org-tree-meta">{isRoot ? '企业组织' : node.member.department}</small>
-              {hasChildren ? (
-                <span className="org-tree-count">
-                  <Users size={11} aria-hidden />
-                  下级节点 {memberCount} 项
-                </span>
               ) : null}
-            </span>
-          </button>
-          {!isRoot && hasChildren ? (
+
+              {hasChildren ? (
+                <div className="org-tree-subbranches" aria-label={`${department.member.name}下级部门`}>
+                  {department.children.map((child) => (
+                    <DepartmentBranch
+                      key={child.member.id}
+                      department={child}
+                      selectedDepartmentId={selectedDepartmentId}
+                      selectedMemberId={selectedMemberId}
+                      siliconEmployees={siliconEmployees}
+                      expanded={expandedDepartmentIds.has(child.member.id)}
+                      onToggle={() => onToggleDepartment(child.member.id)}
+                      expandedDepartmentIds={expandedDepartmentIds}
+                      onToggleDepartment={onToggleDepartment}
+                      onDepartmentSelect={() => onDepartmentSelect(child.member.id)}
+                      expandedMemberIds={expandedMemberIds}
+                      onToggleMember={onToggleMember}
+                      onMemberSelect={onMemberSelect}
+                      onOpenEmployee={onOpenEmployee}
+                    />
+                  ))}
+                </div>
+              ) : null}
+
+              {!department.members.length && !hasChildren ? (
+                <div className="org-tree-branch-empty">该部门暂未分配直属成员</div>
+              ) : null}
+            </>
+          ) : (
             <button
               type="button"
-              className={`org-tree-toggle${expanded ? ' open' : ''}`}
-              onClick={() => onToggleExpanded(node.member.id)}
-              aria-expanded={expanded}
-              aria-label={expanded ? '收起下属成员' : '展开下属成员'}
+              className="org-tree-collapsed-summary"
+              onClick={onToggle}
+              aria-expanded={false}
+              aria-label={`展开${department.member.name}下级`}
             >
-              {expanded ? <Minimize2 size={13} aria-hidden /> : <Plus size={13} aria-hidden />}
-              {expanded ? '收起成员' : '展开成员'}
-            </button>
-          ) : null}
-        </div>
-      </div>
-
-      {hasChildren && expanded ? (
-        <div className="org-tree-children">
-          <div className="org-tree-branch-line" aria-hidden />
-          <div className="org-tree-children-list">
-            {childrenToShow.map((child, index) => (
-              <div key={child.member.id} className="org-tree-child">
-                <span className="org-tree-child-connector" aria-hidden style={{ '--child-index': index } as CSSProperties} />
-                <OrganizationTreeNodeView
-                  node={child}
-                  level={level + 1}
-                  selectedId={selectedId}
-                  expandedIds={expandedIds}
-                  visibleCounts={visibleCounts}
-                  onSelect={onSelect}
-                  onToggleExpanded={onToggleExpanded}
-                  onMore={onMore}
-                />
-              </div>
-            ))}
-            {hiddenCount > 0 ? (
-              <button type="button" className="org-tree-more" onClick={() => onMore(node.member.id)}>
-                查看更多 {hiddenCount} 人
-                <ChevronDown size={13} aria-hidden />
-              </button>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function MemberTone({ member }: { member: OrganizationCarbonEmployee }) {
-  if (member.kind === 'root') return <span className="org-type-chip">企业</span>;
-  if (member.kind === 'department') return <span className="org-type-chip">部门</span>;
-  if (member.isCurrent) return <span className="org-type-chip human">当前成员</span>;
-  if (member.kind === 'leader') return <span className="org-type-chip">部门负责人</span>;
-  return <span className="org-type-chip neutral">碳基员工</span>;
-}
-
-interface OrganizationDrawerProps {
-  member: OrganizationCarbonEmployee | null;
-  employees: readonly SiliconEmployee[];
-  onOpenEmployee: (employeeId: string) => void;
-  onClose: () => void;
-}
-
-function OrganizationDrawer({ member, employees, onOpenEmployee, onClose }: OrganizationDrawerProps): React.JSX.Element | null {
-  if (!member) return null;
-
-  const usable = usableSiliconEmployeesForMember(member, employees);
-
-  return (
-    <aside className="org-drawer ent-card" aria-label="成员详情">
-      <header className="org-drawer-head">
-        <EmployeeFace name={member.name} size="lg" variant="portrait" round={false} />
-        <div className="org-drawer-id">
-          <div className="org-card-title">
-            <h2>{member.name}</h2>
-            <MemberTone member={member} />
-          </div>
-          <p>{member.position}</p>
-          <small>{member.department}</small>
-        </div>
-        <button type="button" className="org-icon-action" onClick={onClose} aria-label="关闭成员详情" title="关闭">
-          <X size={14} aria-hidden />
-        </button>
-      </header>
-
-      <div className="org-drawer-stats">
-        <div><dt>所属部门</dt><dd>{member.department || '企业直属'}</dd></div>
-        <div><dt>可使用硅基员工</dt><dd>{usable.length} 人</dd></div>
-      </div>
-
-      <div className="org-detail-section-head">
-        <h3>他可使用的硅基员工</h3>
-        <span>{usable.length}</span>
-      </div>
-      {usable.length ? (
-        <div className="org-drawer-team">
-          {usable.map(employee => (
-            <button
-              key={employee.id}
-              type="button"
-              className="org-drawer-team-row"
-              onClick={() => onOpenEmployee(employee.id)}
-              disabled={!employee.assignedToMe}
-              title={employee.assignedToMe ? '查看员工详情' : '仅展示组织授权，当前账号不可操作此员工'}
-              aria-label={'查看 ' + employee.name + ' 详情'}
-            >
-              <EmployeeFace employee={employee} size="sm" round />
-              <span className="org-drawer-team-copy">
-                <strong title={employee.name}>{employee.name}</strong>
-
+              <span className="org-tree-collapsed-counts" aria-hidden="true">
+                {department.members.length ? <span><strong>{department.members.length}</strong> 成员</span> : null}
+                {hasChildren ? <span><strong>{department.children.length}</strong> 部门</span> : null}
+                {!hasContent ? <span>暂无成员</span> : null}
               </span>
-              <AvailabilityChip value={employee.availability} />
               <ChevronRight size={14} aria-hidden />
             </button>
-          ))}
+          )}
         </div>
-      ) : (
-        <Empty title="暂未配置可用的硅基员工">平台返回授权关系后，这里会显示该成员可以使用的员工。</Empty>
-      )}
-    </aside>
+      </div>
+    </section>
+  );
+}
+
+function MemberRelationRow({
+  member,
+  selected,
+  siliconEmployees,
+  siliconExpanded,
+  onToggleSilicon,
+  onSelect,
+  onOpenEmployee,
+}: {
+  member: OrganizationCarbonEmployee;
+  selected: boolean;
+  siliconEmployees: readonly SiliconEmployee[];
+  siliconExpanded: boolean;
+  onToggleSilicon: () => void;
+  onSelect: () => void;
+  onOpenEmployee: (employeeId: string) => void;
+}): React.JSX.Element {
+  const usableEmployees = usableSiliconEmployeesForMember(
+    member,
+    siliconEmployees,
+  );
+
+  return (
+    <div className={`org-tree-member-row${selected ? " selected" : ""}`}>
+      <div className="org-tree-carbon-column">
+        <button
+          type="button"
+          className={`org-tree-node org-tree-carbon-node${selected ? " selected" : ""}${member.isCurrent ? " current" : ""}`}
+          onClick={() => {
+            onSelect();
+            if (usableEmployees.length) onToggleSilicon();
+          }}
+          aria-pressed={selected}
+          aria-expanded={usableEmployees.length ? siliconExpanded : undefined}
+          aria-label={`${member.name}${usableEmployees.length ? (siliconExpanded ? "，收起硅基员工" : "，展开硅基员工") : ""}`}
+        >
+          <EmployeeFace name={member.name} size="sm" round />
+          <span className="org-tree-node-copy">
+            <strong>
+              {member.name}
+              {member.isCurrent ? <em>我</em> : null}
+            </strong>
+            <small>{member.position || "碳基员工"}</small>
+          </span>
+          {usableEmployees.length ? (
+            siliconExpanded ? <ChevronDown size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />
+          ) : null}
+        </button>
+      </div>
+
+      <div
+        className={`org-tree-silicon-flow${siliconExpanded ? "" : " collapsed"}`}
+      >
+        {siliconExpanded ? (
+          usableEmployees.length ? (
+            usableEmployees.map((employee) => (
+              <button
+                key={employee.id}
+                type="button"
+                className="org-tree-silicon-node"
+                onClick={() => onOpenEmployee(employee.id)}
+                disabled={!employee.assignedToMe}
+                title={
+                  employee.assignedToMe
+                    ? "查看员工详情"
+                    : "仅展示组织授权，当前账号不可操作此员工"
+                }
+              >
+                <EmployeeFace employee={employee} size="sm" round />
+                <span className="org-tree-node-copy">
+                  <strong>{employee.name}</strong>
+                  <small>{employee.roleName || "硅基员工"}</small>
+                </span>
+                <AvailabilityChip value={employee.availability} />
+                <ChevronRight size={14} aria-hidden />
+              </button>
+            ))
+          ) : (
+            <div className="org-tree-silicon-empty">暂未配置可用的硅基员工</div>
+          )
+        ) : usableEmployees.length ? (
+          <div className="org-tree-silicon-collapsed" aria-live="polite">
+            <span className="org-tree-silicon-count" aria-hidden="true">
+              <strong>{usableEmployees.length}</strong> 位硅基员工
+            </span>
+            <ChevronRight size={14} aria-hidden />
+          </div>
+        ) : (
+          <div className="org-tree-silicon-empty">暂未配置可用的硅基员工</div>
+        )}
+      </div>
+    </div>
   );
 }
