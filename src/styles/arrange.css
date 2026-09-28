@@ -141,6 +141,7 @@
 
 /* 知识库的浮层。向上弹出，压在输入框上沿，不把页面推开。 */
 @keyframes arr-pop { from { opacity: 0; transform: translateY(4px); } }
+@keyframes arr-pop-up { from { opacity: 0; transform: translateY(4px); } }
 
 /* ── 自动编排：过程 ──────────────────────────────────────────────────── */
 
@@ -314,12 +315,12 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-chat-whobtn small { overflow: hidden; color: var(--ent-ink-3); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .ent-chat-whobtn > svg { flex: 0 0 auto; color: var(--ent-ink-3); transition: transform 180ms var(--arr-ease); }
 
-.ent-chat-pop { position: absolute; z-index: 30; top: calc(100% + 8px); left: 0; display: flex; width: 300px; max-height: 320px; flex-direction: column; padding: 8px; border: 1px solid var(--ent-line); border-radius: 12px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); animation: arr-pop 160ms ease-out both; }
-.ent-chat-find { display: flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: 8px; color: var(--ent-ink-3); }
+.ent-chat-pop { position: absolute; z-index: 30; bottom: calc(100% + 10px); left: 0; display: flex; box-sizing: border-box; width: min(360px, calc(100vw - 32px)); max-height: min(420px, calc(100vh - 180px)); flex-direction: column; padding: 10px; overflow: hidden; border: 1px solid var(--ent-line); border-radius: 14px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); animation: arr-pop-up 160ms ease-out both; }
+.ent-chat-find { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: 8px; color: var(--ent-ink-3); }
 .ent-chat-find:focus-within { border-color: var(--ent-brand); }
 .ent-chat-find input { width: 100%; min-height: 32px; border: 0; background: none; color: var(--ent-ink); font-family: inherit; font-size: 13px; outline: none; }
 .ent-chat-find input::placeholder { color: var(--arr-place); }
-.ent-chat-pop ul { display: flex; flex-direction: column; gap: 2px; margin: 6px 0 0; padding: 0; list-style: none; overflow-y: auto; }
+.ent-chat-pop ul { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; margin: 6px -2px 0 0; padding: 0 2px 0 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; }
 .ent-chat-pop li > button { display: flex; width: 100%; align-items: center; gap: 9px; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; transition: background 180ms var(--arr-ease); }
 .ent-chat-pop li > button:hover { background: var(--ent-brand-softer); }
 .ent-chat-pop li > button.on { background: var(--ent-brand-soft); }
@@ -666,7 +667,9 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   overflow: hidden;
 }
 .ent-scroll-arrange > .ent-arr {
+  box-sizing: border-box;
   width: 100%;
+  padding-bottom: 24px;
 }
 .ent-arr-view {
   overflow: hidden;
@@ -683,11 +686,12 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 }
 .ent-chat-ask,
 .ent-goal {
-  min-height: 214px;
+  /* 输入内容决定卡片高度，不再用固定最小高度把工具栏以下撑出大片空白。 */
+  min-height: 0;
 }
 .ent-chat-input,
 .ent-goal-input {
-  min-height: 104px;
+  min-height: 88px;
 }
 
 /*
@@ -698,7 +702,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-arr-chat,
 .ent-arr-auto {
   box-sizing: border-box;
-  padding-bottom: 54px;
+  padding-bottom: 16px;
 }
 .ent-arr-auto .ent-goal-stack,
 .ent-arr-auto .ent-goal {

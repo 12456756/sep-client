@@ -37,6 +37,7 @@ function stepsFromTemplate(template: WorkTemplate, employees: SiliconEmployee[])
 export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Props) {
   /** 只有现在能派活的同事参与安排。暂时不可用的员工选了也开不了工。 */
   const employees = workspace.myEmployees.filter(item => item.availability !== 'unavailable');
+  const availableModels = Array.from(new Set(employees.flatMap(item => item.allowedModels)));
   const template = templateId ? workspace.templates.find(item => item.id === templateId) : undefined;
 
   const [settings, setSettings] = useState<RunSettings>(defaultRunSettings);
@@ -168,11 +169,10 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
             employeeId={chatEmployeeId}
             onEmployeeChange={id => {
               setChatEmployeeId(id);
-              setSettings(current => ({ ...current, modelId: employees.find(item => item.id === id)?.allowedModels[0] ?? '' }));
             }}
             onStart={startChat}
             settings={settings}
-            models={employees.find(item => item.id === chatEmployeeId)?.allowedModels ?? []}
+            models={availableModels}
             onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
             onChooseFolder={workspace.chooseFolder}
           />
