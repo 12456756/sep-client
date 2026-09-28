@@ -263,7 +263,11 @@ describe('conversation task lifecycle', () => {
           await options.onEvent({ ...base, sequence: 2, type: 'text_delta', data: { text: 'answer' } })
           await options.onEvent({ ...base, sequence: 3, type: 'tool_execution_start', data: { toolId: 'tool-1', toolName: 'write', input: { path: 'secret.txt' } } })
           await options.onEvent({ ...base, sequence: 4, type: 'tool_execution_end', data: { toolId: 'tool-1', toolName: 'write', success: true } })
-          await options.onEvent({ ...base, sequence: 5, type: 'agent_settled', data: {} })
+          await options.onEvent({ ...base, sequence: 5, type: 'tool_execution_start', data: { toolId: 'tool-2', toolName: 'edit', input: { path: 'failed.txt' } } })
+          await options.onEvent({ ...base, sequence: 6, type: 'tool_execution_end', data: { toolId: 'tool-2', toolName: 'edit', success: false } })
+          await options.onEvent({ ...base, sequence: 7, type: 'tool_execution_start', data: { toolId: 'tool-3', toolName: 'edit', input: { path: 'updated.md' } } })
+          await options.onEvent({ ...base, sequence: 8, type: 'tool_execution_end', data: { toolId: 'tool-3', toolName: 'edit', success: true } })
+          await options.onEvent({ ...base, sequence: 9, type: 'agent_settled', data: {} })
         },
         async abort() {},
         async dispose() {},
@@ -272,10 +276,11 @@ describe('conversation task lifecycle', () => {
 
     await runtime.executeTask(task.id, { conversation: true })
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
-    assert.deepEqual(pushed, ['text_delta', 'tool_execution_start', 'tool_execution_end'])
+    assert.deepEqual((await manager.getTask(task.id))?.files, ['secret.txt', 'updated.md'])
+    assert.deepEqual(pushed, ['text_delta', 'tool_execution_start', 'tool_execution_end', 'tool_execution_start', 'tool_execution_end', 'tool_execution_start', 'tool_execution_end'])
     const runs = await runStore.list({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id)
     const timeline = await runStore.events.getTimeline({ memberId: 'member-a', enterpriseId: 'enterprise-a' }, task.id, runs[0]!.id)
-    assert.deepEqual(timeline.map(event => event.type), ['agent_start', 'text_delta', 'tool_execution_start', 'tool_execution_end', 'agent_settled', 'run_completed'])
+    assert.deepEqual(timeline.map(event => event.type), ['agent_start', 'text_delta', 'tool_execution_start', 'tool_execution_end', 'tool_execution_start', 'tool_execution_end', 'tool_execution_start', 'tool_execution_end', 'agent_settled', 'run_completed'])
   })
 
   it('cancels an active conversation run while preserving its timeline', async () => {
