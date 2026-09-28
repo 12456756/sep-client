@@ -15,7 +15,7 @@ import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
-import type { EmployeeStatus, Subscription } from '../shared/types';
+import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
 import { EmployeesPage } from './enterprise/EmployeesPage';
@@ -32,6 +32,7 @@ interface Props {
   userName: string;
   enterpriseId: string;
   enterpriseName: string;
+  userAvatar?: EmployeeAvatarSource | null;
   instances: Subscription[];
   employeeStatuses: EmployeeStatus[];
   onLogout: () => void | Promise<void>;
@@ -39,9 +40,10 @@ interface Props {
   canManage?: boolean;
 }
 
-export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses, onLogout, canManage = false }: Props) {
+export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const { route, overview } = workspace;
+  const userAvatar = workspace.currentUserAvatar ?? initialUserAvatar ?? null;
   const scroll = useRef<HTMLDivElement | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
@@ -76,7 +78,7 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
       case 'organization': return { title: '企业组织', breadcrumb: ['企业'], subtitle: `${overview.name} · 企业成员与硅基员工关系` };
       case 'home': return { title: '个人工作台', breadcrumb: ['个人'] };
       case 'work': return null;
-      case 'arrange': return { title: ({ pick: '安排工作', chat: '对话式安排', auto: '自动编排', manual: '自己编排' })[route.mode ?? 'pick'], breadcrumb: ['个人', '安排工作'], subtitle: '选择员工与工作方式，确认后开始执行' };
+      case 'arrange': return { title: '安排工作', breadcrumb: ['个人', '安排工作'] };
       case 'employees': return { title: '硅基员工', breadcrumb: ['个人'], subtitle: `企业共 ${overview.totalEmployees} 位，其中 ${overview.availableToMe} 位已分配给你` };
       case 'employee': {
         const employee = workspace.employees.find(item => item.id === route.employeeId);
@@ -93,10 +95,12 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
       <AppSideNav
         enterpriseName={overview.name}
         enterpriseMark={overview.mark}
+        enterpriseLogo={overview.logo}
         current={route.name}
         needsMeCount={overview.needsMeCount}
         canManage={canManage}
         userName={userName}
+        userAvatar={userAvatar}
         onNavigate={workspace.navigate}
         onLogout={() => { void onLogout(); }}
       />
@@ -167,7 +171,10 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
             {workspace.error}
           </div>
         ) : null}
-        <div className={`ent-scroll${(route.name === 'organization' || route.name === 'home') ? ' ent-scroll-no-overflow' : ''}`} ref={scroll}>
+        <div
+          className={`ent-scroll${(route.name === 'organization' || route.name === 'home') ? ' ent-scroll-no-overflow' : ''}${route.name === 'arrange' ? ' ent-scroll-arrange' : ''}`}
+          ref={scroll}
+        >
           <PageBody workspace={workspace} />
         </div>
         {commandOpen ? (

@@ -9,9 +9,11 @@
  * 但键盘一定要能用：把手上按 ↑ ↓ 就是上移下移。
  */
 
-import { ArrowRight, BookmarkPlus, GripVertical, Plus, Settings2, X } from 'lucide-react';
+import { ArrowRight, BookmarkPlus, GripVertical, Plus, X } from 'lucide-react';
 import { useRef, useState } from 'react';
 import type { SiliconEmployee, WorkDraftStep } from '../../../features/enterprise/types';
+import type { RunSettings } from '../../../features/enterprise/run-settings';
+import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { createDraftStep, validateGraph } from '../../../features/enterprise/work-graph';
 import { EmployeeFace } from '../EmployeeFace';
 
@@ -27,9 +29,12 @@ interface Props {
   busy: boolean;
   /** 从「常用工作」「复制为新工作」或企业固定流程带进来的初始内容。 */
   seed: { title?: string; goal?: string; steps: WorkDraftStep[]; confirmedInputs?: string[] } | null;
-  onOpenSettings: () => void;
   onSave: (draft: ManualDraft) => void;
   onStart: (draft: ManualDraft) => void;
+  settings: RunSettings;
+  models: string[];
+  onSettingsChange: (patch: Partial<RunSettings>) => void;
+  onChooseFolder: () => Promise<string | null>;
 }
 
 /** 一条链：每一步都依赖上一步。加人、删人、换顺序之后都要重新串一遍。 */
@@ -45,7 +50,7 @@ function move<T>(list: T[], from: number, to: number): T[] {
   return next;
 }
 
-export function ManualArrange({ employees, busy, seed, onOpenSettings, onSave, onStart }: Props) {
+export function ManualArrange({ employees, busy, seed, onSave, onStart, settings, models, onSettingsChange, onChooseFolder }: Props) {
   const [title, setTitle] = useState(seed?.title ?? '');
   const [goal, setGoal] = useState(seed?.goal ?? '');
   const [materials, setMaterials] = useState((seed?.confirmedInputs ?? []).join('\n'));
@@ -268,7 +273,15 @@ export function ManualArrange({ employees, busy, seed, onOpenSettings, onSave, o
         </aside>
       </div>
 
-      <footer className="ent-arr-foot">
+      <footer className="ent-arr-foot ent-mn-foot">
+        <div className="ent-mn-inline-settings">
+          <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
+          <RunSettingsBar
+            settings={settings}
+            models={models}
+            onChange={onSettingsChange}
+          />
+        </div>
         <button
           type="button"
           className="ent-arr-second"
@@ -280,10 +293,6 @@ export function ManualArrange({ employees, busy, seed, onOpenSettings, onSave, o
         </button>
         <span className="ent-arr-gap" />
         {problem ? <span className="ent-arr-problem">{problem}</span> : null}
-        <button type="button" className="ent-arr-ghost" onClick={onOpenSettings}>
-          <Settings2 size={14} aria-hidden />
-          执行设置
-        </button>
         <button
           type="button"
           className="ent-arr-primary"

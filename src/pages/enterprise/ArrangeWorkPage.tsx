@@ -1,26 +1,13 @@
 /**
- * 安排工作。四个画面，一条主线：
- *
- *   安排工作（选方式）
- *        ├── 对话式    一位同事，边聊边做
- *        ├── 自动编排  说清目标，系统自己选人并排出流程
- *        └── 自己编排  自己选人、自己决定先后
- *
- * 这一层只负责三件事：在四个画面之间切换（带一层很轻的淡出淡入）、
- * 收着「执行设置」这个抽屉、把三种方式最后的结果交给 workspace 去真的开工。
- * 具体的界面在 components/enterprise/arrange/ 下面各自一个文件。
- *
- * 运行设置共享同一状态；自动编排也可从输入栏选择工作目录。
+ * 安排工作工作台：顶层只保留「会话 / 编排」两个模式。
+ * 编排内部再切换「自动 / 手动」，运行设置嵌入各自输入/操作区。
  */
 
-import { ChevronLeft } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import type { ArrangementDraft } from '../../shared/types';
 import { AutoArrange } from '../../components/enterprise/arrange/AutoArrange';
 import { ChatArrange } from '../../components/enterprise/arrange/ChatArrange';
 import { ManualArrange, type ManualDraft } from '../../components/enterprise/arrange/ManualArrange';
-import { ModeCards } from '../../components/enterprise/arrange/ModeCards';
-import { RunSettingsDrawer } from '../../components/enterprise/arrange/RunSettingsDrawer';
 import { Empty } from '../../components/enterprise/atoms';
 import { defaultRunSettings, type RunSettings } from '../../features/enterprise/run-settings';
 import type { ArrangeMode, SiliconEmployee, WorkDraftStep, WorkTemplate } from '../../features/enterprise/types';
@@ -54,7 +41,8 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
 
   const [settings, setSettings] = useState<RunSettings>(defaultRunSettings);
   const [chatEmployeeId, setChatEmployeeId] = useState(employeeId ?? '');
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const activeMode = mode === 'pick' ? 'chat' : mode;
+  const isOrchestration = activeMode === 'auto' || activeMode === 'manual';
   const [autoStartError, setAutoStartError] = useState<string | null>(null);
   /** 正在淡出的目标画面。给「点了卡片但还没换页」这 200ms 用。 */
   const [leaving, setLeaving] = useState<ArrangeMode | null>(null);
@@ -141,83 +129,92 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
     : null);
 
   return (
-    <div className="ent-arr">
-      {autoStartError ? <div role="alert" className="workspace-inline-error">{autoStartError}</div> : null}
-      {mode === 'pick' ? (
-        <div className={`ent-arr-view${leaving ? ' leaving' : ''}`}>
-          <ModeCards leaving={leaving} onPick={go} />
-        </div>
-      ) : (
-        // key 带上 employeeId：从员工页点进「对话式」时 mode 没变，
-        // 不带上的话组件不会重挂，预选的同事就换不过去。
-        <div className="ent-arr-view" key={`${mode}-${employeeId ?? ''}`}>
-          <button type="button" className="ent-arr-back" onClick={() => workspace.navigate({ name: 'arrange' })}>
-            <ChevronLeft size={14} aria-hidden />
-            安排工作
+    <div className={`ent-arr ent-arr-mode-${activeMode}`}>
+      <div className="ent-arr-workbench-head">
+        <div className="ent-arr-mode-switch" role="tablist" aria-label="安排工作模式">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={!isOrchestration}
+            className={!isOrchestration ? 'active' : undefined}
+            onClick={() => go('chat')}
+          >
+            会话
           </button>
-
-          {mode === 'chat' ? (
-            <ChatArrange
-              employees={employees}
-              busy={workspace.busy}
-              employeeId={chatEmployeeId}
-              onEmployeeChange={id => {
-                setChatEmployeeId(id);
-                setSettings(current => ({ ...current, modelId: employees.find(item => item.id === id)?.allowedModels[0] ?? '' }));
-              }}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onStart={startChat}
-            />
-          ) : null}
-
-          {mode === 'auto' ? (
-            <AutoArrange
-              employees={employees}
-              workDir={settings.workDir}
-              busy={workspace.busy}
-              onChooseFolder={async () => {
-                const path = await workspace.chooseFolder();
-                if (path) setSettings(current => ({ ...current, workDir: path }));
-                return path;
-              }}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onStart={startAuto}
-            />
-          ) : null}
-
-          {mode === 'manual' ? (
-            <ManualArrange
-              key={`${templateId ?? 'blank'}-${seedNo}`}
-              employees={employees}
-              busy={workspace.busy}
-              seed={manualSeed}
-              onOpenSettings={() => setSettingsOpen(true)}
-              onSave={draft => {
-                workspace.saveFlow({
-                  name: draft.title,
-                  goal: draft.goal,
-                  version: 2,
-                  steps: draft.steps,
-                  confirmedInputs: draft.confirmedInputs,
-                  sharedSkillIds: [],
-                });
-              }}
-              onStart={startManual}
-            />
-          ) : null}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={isOrchestration}
+            className={isOrchestration ? 'active' : undefined}
+            onClick={() => go(activeMode === 'manual' ? 'manual' : 'auto')}
+          >
+            编排
+          </button>
         </div>
-      )}
+        {isOrchestration ? (
+          <div className="ent-arr-submode" role="tablist" aria-label="编排方式">
+            <button type="button" role="tab" aria-selected={activeMode === 'auto'} className={activeMode === 'auto' ? 'active' : undefined} onClick={() => go('auto')}>自动</button>
+            <button type="button" role="tab" aria-selected={activeMode === 'manual'} className={activeMode === 'manual' ? 'active' : undefined} onClick={() => go('manual')}>手动</button>
+          </div>
+        ) : null}
+      </div>
 
-      {settingsOpen ? (
-        <RunSettingsDrawer
-          settings={settings}
-          conversation={mode === 'chat'}
-          models={mode === 'chat' ? employees.find(item => item.id === chatEmployeeId)?.allowedModels ?? [] : (employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)))}
-          onChange={patch => setSettings(current => ({ ...current, ...patch }))}
-          onChooseFolder={workspace.chooseFolder}
-          onClose={() => setSettingsOpen(false)}
-        />
-      ) : null}
+      {autoStartError ? <div role="alert" className="workspace-inline-error">{autoStartError}</div> : null}
+      <div className={`ent-arr-view${leaving ? ' leaving' : ''}`} key={`${activeMode}-${employeeId ?? ''}`}>
+        {activeMode === 'chat' ? (
+          <ChatArrange
+            employees={employees}
+            busy={workspace.busy}
+            employeeId={chatEmployeeId}
+            onEmployeeChange={id => {
+              setChatEmployeeId(id);
+              setSettings(current => ({ ...current, modelId: employees.find(item => item.id === id)?.allowedModels[0] ?? '' }));
+            }}
+            onStart={startChat}
+            settings={settings}
+            models={employees.find(item => item.id === chatEmployeeId)?.allowedModels ?? []}
+            onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
+            onChooseFolder={workspace.chooseFolder}
+          />
+        ) : null}
+
+        {activeMode === 'auto' ? (
+          <AutoArrange
+            employees={employees}
+            busy={workspace.busy}
+            onStart={startAuto}
+            settings={settings}
+            models={(employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)))}
+            onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
+            onChooseFolder={workspace.chooseFolder}
+          />
+        ) : null}
+
+        {activeMode === 'manual' ? (
+          <ManualArrange
+            key={`${templateId ?? 'blank'}-${seedNo}`}
+            employees={employees}
+            busy={workspace.busy}
+            seed={manualSeed}
+            onSave={draft => {
+              workspace.saveFlow({
+                name: draft.title,
+                goal: draft.goal,
+                version: 2,
+                steps: draft.steps,
+                confirmedInputs: draft.confirmedInputs,
+                sharedSkillIds: [],
+              });
+            }}
+            onStart={startManual}
+            settings={settings}
+            models={(employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)))}
+            onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
+            onChooseFolder={workspace.chooseFolder}
+          />
+        ) : null}
+      </div>
+
     </div>
   );
 }

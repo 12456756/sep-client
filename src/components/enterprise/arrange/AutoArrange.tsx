@@ -1,18 +1,20 @@
-import { ArrowRight, Pencil, Settings2, X } from 'lucide-react';
+import { ArrowRight, Pencil, X } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import type { ArrangementDraft, ArrangementDraftDocument } from '../../../shared/types';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
+import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { AutoArrangeAnimation } from './AutoArrangeAnimation';
 import { useAutoPlanning } from '../../../features/enterprise/use-auto-planning';
 import { GoalComposer } from './GoalComposer';
 
 type Props = {
   employees: SiliconEmployee[];
-  workDir: string;
   busy: boolean;
-  onChooseFolder: () => Promise<string | null>;
-  onOpenSettings: () => void;
   onStart: (draft: ArrangementDraft) => Promise<ArrangementDraft>;
+  settings: RunSettings;
+  models: string[];
+  onSettingsChange: (patch: Partial<RunSettings>) => void;
+  onChooseFolder: () => Promise<string | null>;
 };
 
 function toDocument(draft: ArrangementDraft): ArrangementDraftDocument {
@@ -31,7 +33,7 @@ function toDocument(draft: ArrangementDraft): ArrangementDraftDocument {
   };
 }
 
-export function AutoArrange({ employees, workDir, busy, onChooseFolder, onOpenSettings, onStart }: Props) {
+export function AutoArrange({ employees, busy, onStart, settings, models, onSettingsChange, onChooseFolder }: Props) {
   const [starting, setStarting] = useState(false);
   const [goal, setGoal] = useState('');
   const { draft, setDraft, planning, cancellable, error, setError, start, cancel } = useAutoPlanning();
@@ -74,22 +76,19 @@ export function AutoArrange({ employees, workDir, busy, onChooseFolder, onOpenSe
     <div className="ent-auto-arrange">
       {!draft ? (
         <section className="ent-arr-auto">
-          <header className="ent-arr-head">
-            <h1>自动编排</h1>
-            <p>告诉系统你想完成什么，AI 会自动选择员工并安排工作。</p>
-          </header>
         <GoalComposer
           value={goal}
           onChange={setGoal}
-          placeholder="描述你想完成的工作，系统会逐步挑选合适的员工并生成编排草稿"
-          workDir={workDir}
-          onOpenSettings={onOpenSettings}
-          onChooseFolder={onChooseFolder}
+          placeholder="随心输入"
           submitLabel="开始自动编排"
+          settings={settings}
+          models={models}
+          onSettingsChange={onSettingsChange}
+          onChooseFolder={onChooseFolder}
           submitDisabled={busy || planning || !goal.trim() || !employees.length}
-          onSubmit={() => void start(goal, workDir)}
+          conversation={false}
+          onSubmit={() => void start(goal, settings.workDir)}
         />
-          <p className="ent-arr-note">现在可以派活的同事 {employees.length} 位。编排完成后你可以确认或者重新编排，确认之前不会有人开始干活。</p>
         </section>
       ) : null}
       {error ? <div role="alert" className="workspace-inline-error">{error}</div> : null}
@@ -98,7 +97,6 @@ export function AutoArrange({ employees, workDir, busy, onChooseFolder, onOpenSe
           <footer className="ent-arr-foot">
             <button type="button" className="ent-arr-second" disabled={starting || saving || busy} onClick={() => { setDraft(null); setError(null); }}>重新编排</button>
             <span className="ent-arr-gap" />
-            <button type="button" className="ent-arr-ghost" disabled={starting || saving} onClick={onOpenSettings}><Settings2 size={14} aria-hidden />执行设置</button>
             {draft.nodes.length > 0 && draft.status !== 'confirmed' ? <button type="button" className="ent-arr-primary" disabled={starting || busy || saving} onClick={() => void confirmAndStart()}>{starting ? '正在启动…' : '确认并开始工作'}<ArrowRight size={15} aria-hidden /></button> : null}
           </footer>
           <details className="ent-auto-plan">
