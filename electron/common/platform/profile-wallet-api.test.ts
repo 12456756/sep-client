@@ -1,4 +1,4 @@
-﻿import { afterEach, describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import * as api from './platform-api'
 
