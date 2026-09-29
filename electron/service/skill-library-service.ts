@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { EmployeeSkill, PersonalSkillVersionRequest, SkillVersion } from '../common/platform/platform-api'
+import { AuthApiError, type EmployeeSkill, type PersonalSkillVersionRequest, type SkillVersion } from '../common/platform/platform-api'
 import { canUseSkillVersion } from '../common/platform/skill-version-policy'
 import { logger } from '../common/logger'
 import { requireScope, type ScopeSource } from './scope-guard'
@@ -136,6 +136,7 @@ export class SkillLibraryService {
       version = await this.options.platform.create(record.request, record.idempotencyKey, token)
     } catch (error) {
       this.checkScope(scope)
+      if (error instanceof AuthApiError && !error.isNetworkError) throw error
       log.warn('Personal skill upload failed; durable retry retained', { errorType: error instanceof Error ? error.name : 'UnknownError' })
       return { idempotencyKey: record.idempotencyKey, uploaded: false }
     }
