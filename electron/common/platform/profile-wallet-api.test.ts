@@ -65,4 +65,3 @@ describe('profile and personal recharge platform APIs', () => {
     assert.equal(calls, 0)
   })
 })
-
