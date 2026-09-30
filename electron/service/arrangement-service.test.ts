@@ -6,9 +6,11 @@ import type {
   ArrangementPlannerPort,
   ArrangementPlanningProgress,
   ArrangementPlanningResult,
+  ArrangementPlannerEmployee,
 } from '../domain/arrangement-planner'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
+import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
@@ -77,6 +79,8 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
   let taskCreates = 0
   const updates: ArrangementDraft[] = []
   const events: ArrangementPlanningProgress[] = []
+  let candidates: ArrangementPlannerEmployee[] = []
+  let platformCandidates: ArrangementPlannerEmployee[] = []
   const planner: ArrangementPlannerPort = {
     async plan(input) {
       plannerCalls += 1
@@ -104,6 +108,7 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
   const service = new ArrangementService(serviceDeps({
     drafts,
     employees: { async list() { return [employee()] } },
+    candidateEmployees: { async listEnterprise() { return candidates }, async listPlatform() { return platformCandidates } },
     planner,
     onPlanningEvent(event: ArrangementPlanningProgress) { events.push(event) },
     taskManager: {
@@ -113,6 +118,8 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
   }))
   return {
     service,
+    addCandidates(next: ArrangementPlannerEmployee[]) { candidates = next },
+    addPlatformCandidates(next: ArrangementPlannerEmployee[]) { platformCandidates = next },
     get stored() { return stored },
     setStored(next: ArrangementDraft | null) { stored = next },
     plannerCalls: () => plannerCalls,
@@ -125,6 +132,30 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
 const plannedNode = {
   id: 'planned-1', subscriptionId: 'sub-a', modelId: 'model-a', title: 'Collect data',
   instruction: 'Collect data', expectedOutput: 'data', dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+}
+
+function awaitingEmployeeDraft(): ArrangementDraft {
+  return persisted({
+    ...autoDraft(),
+    status: 'awaiting-employee',
+    intentAnalysis: {
+      summary: '整理客户反馈',
+      steps: [{ id: 'step-1', title: '分析反馈', requiredCapabilities: ['客户分析'], dependsOn: [] }],
+    },
+    unresolvedSteps: [{ stepId: 'step-1', reason: '缺少客户分析能力', requiredCapabilities: ['客户分析'] }],
+    candidateMatches: [{
+      stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'sub-enterprise',
+      source: 'enterprise', name: '企业分析员工', rationale: '具备客户分析能力', canExecute: false, canApply: true,
+    }],
+  })
+}
+
+function accessRequest(status: EmployeeAccessRequest['status'] = 'PENDING'): EmployeeAccessRequest {
+  return {
+    requestId: 'request-a', status, targetType: 'ENTERPRISE_SUBSCRIPTION',
+    employee: { employeeId: 'employee-enterprise', subscriptionId: 'sub-enterprise', name: '企业分析员工' },
+    requestedCapabilities: ['客户分析'], createdAt: '2026-09-29T00:00:00.000Z', updatedAt: '2026-09-29T00:00:00.000Z',
+  }
 }
 
 describe('ArrangementService', () => {
@@ -161,7 +192,7 @@ describe('ArrangementService', () => {
       drafts: {
         async list() { return [] }, async get() { return stored },
         async create(_scope: TaskOwnerScope, input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { stored = { ...input, id: 'draft-a', owner: scope, revision: 1, createdAt: 1, updatedAt: 1 }; return stored },
-        async update() { throw new Error('not used') }, async delete() { return false },
+        async update(_scope: TaskOwnerScope, _draftId: string, expectedRevision: number, patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { return { ...patch, id: 'draft-a', owner: scope, revision: expectedRevision + 1, createdAt: 1, updatedAt: expectedRevision + 1 } }, async delete() { return false },
       },
       employees: { async list() { return [employee(['model-a'])] } } as never,
     }))
@@ -219,6 +250,100 @@ describe('ArrangementService', () => {
     assert.equal(starts, 1)
   })
 
+  it('creates an idempotent employee access request and keeps the draft paused', async () => {
+    let stored = awaitingEmployeeDraft()
+    const created: Array<{ input: EmployeeAccessRequestInput; key: string }> = []
+    let gets = 0
+    const deps = serviceDeps({
+      drafts: {
+        async list() { return [structuredClone(stored)] },
+        async get() { return structuredClone(stored) },
+        async create() { return structuredClone(stored) },
+        async update(_scope: TaskOwnerScope, _draftId: string, expectedRevision: number, patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) {
+          assert.equal(stored.revision, expectedRevision)
+          stored = persisted(patch, expectedRevision + 1)
+          return structuredClone(stored)
+        },
+        async delete() { return false },
+      },
+      employees: { async list() { return [employee()] }, async refresh() {} },
+      employeeAccessRequests: {
+        async create(input: EmployeeAccessRequestInput, key: string) {
+          created.push({ input, key })
+          return accessRequest()
+        },
+        async get() { gets += 1; return accessRequest() },
+      },
+    })
+    const service = new ArrangementService(deps)
+
+    const first = await service.requestEmployeeAccess('draft-a', 1, 'step-1', 'employee-enterprise')
+    const second = await service.requestEmployeeAccess('draft-a', 2, 'step-1', 'employee-enterprise')
+
+    assert.equal(first.status, 'awaiting-employee')
+    assert.equal(second.status, 'awaiting-employee')
+    assert.equal(created.length, 1)
+    assert.match(created[0]!.key, /^[a-f0-9]{64}$/)
+    assert.equal(created[0]!.input.targetType, 'ENTERPRISE_SUBSCRIPTION')
+    assert.equal(created[0]!.input.subscriptionId, 'sub-enterprise')
+    assert.equal(gets, 1)
+    assert.equal(second.employeeAccessRequests?.[0]?.requestId, 'request-a')
+  })
+
+  it('rejects access requests for a step or employee that is not a candidate', async () => {
+    const stored: ArrangementDraft = {
+      ...awaitingEmployeeDraft(),
+      employeeAccessRequests: [{
+        requestId: 'request-a', stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'sub-enterprise',
+        source: 'enterprise', name: '企业分析员工', status: 'PENDING', requestedCapabilities: ['客户分析'],
+        createdAt: '2026-09-29T00:00:00.000Z', updatedAt: '2026-09-29T00:00:00.000Z',
+      }],
+    }
+    const service = new ArrangementService(serviceDeps({
+      drafts: {
+        async list() { return [stored] }, async get() { return stored }, async create() { return stored },
+        async update(_scope: TaskOwnerScope, _draftId: string, expectedRevision: number, patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { return { ...patch, id: 'draft-a', owner: scope, revision: expectedRevision + 1, createdAt: 1, updatedAt: expectedRevision + 1 } }, async delete() { return false },
+      },
+      employeeAccessRequests: { async create() { return accessRequest() }, async get() { return accessRequest() } },
+    }))
+
+    await assert.rejects(
+      () => service.requestEmployeeAccess('draft-a', 1, 'step-1', 'not-a-candidate'),
+      (error: unknown) => error instanceof AppError && error.code === 'INVALID_ARGUMENT',
+    )
+    await assert.rejects(
+      () => service.requestEmployeeAccess('draft-a', 1, 'missing-step', 'employee-enterprise'),
+      (error: unknown) => error instanceof AppError && error.code === 'INVALID_ARGUMENT',
+    )
+  })
+
+  it('refreshes authorized employees after approval without starting planning', async () => {
+    const stored: ArrangementDraft = {
+      ...awaitingEmployeeDraft(),
+      employeeAccessRequests: [{
+        requestId: 'request-a', stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'sub-enterprise',
+        source: 'enterprise', name: '企业分析员工', status: 'PENDING', requestedCapabilities: ['客户分析'],
+        createdAt: '2026-09-29T00:00:00.000Z', updatedAt: '2026-09-29T00:00:00.000Z',
+      }],
+    }
+    let refreshes = 0
+    let planningCalls = 0
+    const service = new ArrangementService(serviceDeps({
+      drafts: {
+        async list() { return [stored] }, async get() { return structuredClone(stored) }, async create() { return stored },
+        async update(_scope: TaskOwnerScope, _draftId: string, expectedRevision: number, patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { return { ...patch, id: 'draft-a', owner: scope, revision: expectedRevision + 1, createdAt: 1, updatedAt: expectedRevision + 1 } }, async delete() { return false },
+      },
+      employees: { async list() { return [employee()] }, async refresh() { refreshes += 1 } },
+      planner: { async plan() { planningCalls += 1; return { title: 'unused', nodes: [] } } },
+      employeeAccessRequests: { async create() { return accessRequest() }, async get() { return accessRequest('APPROVED') } },
+    }))
+
+    await service.getEmployeeAccessRequest('draft-a', 'request-a')
+
+    assert.equal(refreshes, 1)
+    assert.equal(planningCalls, 0)
+  })
+
   it('starts auto planning, emits progress, and creates no Task before confirmation', async () => {
     const gate = deferred<ArrangementPlanningResult>()
     const harness = planningHarness(async () => gate.promise)
@@ -233,6 +358,50 @@ describe('ArrangementService', () => {
 
     gate.resolve({ title: 'Planned report', nodes: [plannedNode] })
     await eventually(() => harness.stored?.status === 'ready')
+  })
+
+  it('preserves nodes from all matching passes', async () => {
+    let calls = 0
+    const intentAnalysis = {
+      summary: 'multi-stage analysis',
+      steps: [
+        { id: 'step-1', title: 'authorized step', requiredCapabilities: ['basic analysis'], dependsOn: [] },
+        { id: 'step-2', title: 'enterprise step', requiredCapabilities: ['industry analysis'], dependsOn: ['step-1'] },
+        { id: 'step-3', title: 'platform step', requiredCapabilities: ['advanced analysis'], dependsOn: ['step-2'] },
+      ],
+    }
+    const authorizedNode = { ...plannedNode, id: 'authorized-node', stepId: 'step-1' }
+    const enterpriseNode = { ...plannedNode, id: 'enterprise-node', stepId: 'step-2', subscriptionId: 'sub-enterprise' }
+    const platformNode = { ...plannedNode, id: 'platform-node', stepId: 'step-3', subscriptionId: 'sub-platform' }
+    const harness = planningHarness(async input => {
+      calls += 1
+      if (calls === 1) {
+        return {
+          title: 'multi-stage analysis', nodes: [authorizedNode], intentAnalysis,
+          unresolvedSteps: [
+            { stepId: 'step-2', reason: 'missing enterprise employee', requiredCapabilities: ['industry analysis'] },
+            { stepId: 'step-3', reason: 'missing platform employee', requiredCapabilities: ['advanced analysis'] },
+          ],
+        }
+      }
+      if (calls === 2) {
+        assert.deepEqual(input.draft.nodes.map(node => node.id), ['authorized-node'])
+        return {
+          title: 'multi-stage analysis', nodes: [enterpriseNode], intentAnalysis,
+          unresolvedSteps: [{ stepId: 'step-3', reason: 'missing platform employee', requiredCapabilities: ['advanced analysis'] }],
+        }
+      }
+      assert.deepEqual(input.draft.nodes.map(node => node.id), ['authorized-node', 'enterprise-node'])
+      return { title: 'multi-stage analysis', nodes: [platformNode], intentAnalysis, unresolvedSteps: [] }
+    })
+    harness.addCandidates([{ subscriptionId: 'sub-enterprise', employeeId: 'emp-enterprise', name: 'Enterprise', status: 'ACTIVE', allowedModels: [], source: 'enterprise', canExecute: false }])
+    harness.addPlatformCandidates([{ subscriptionId: 'sub-platform', employeeId: 'emp-platform', name: 'Platform', status: 'APPROVED', allowedModels: [], source: 'platform', canExecute: false, canApply: true }])
+
+    await harness.service.startPlanning('draft-a', 1)
+    await eventually(() => harness.stored?.status === 'ready')
+
+    assert.deepEqual(harness.stored?.nodes.map(node => node.id), ['authorized-node', 'enterprise-node', 'platform-node'])
+    assert.deepEqual(harness.stored?.unresolvedSteps, [])
   })
 
   it('writes the auto-planning result back as a ready draft', async () => {

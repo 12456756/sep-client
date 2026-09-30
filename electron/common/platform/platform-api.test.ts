@@ -36,6 +36,41 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.match(urls[1]!, /\/enterprise\/overview$/)
   })
 
+  it('reads platform candidates and preserves access request contracts', async () => {
+    const calls: Array<{ url: string; method: string; body?: unknown; authorization: string | null }> = []
+    const platformPage = {
+      items: [{
+        employeeId: 'platform-employee-1', name: 'Data Analyst', position: 'Analyst', description: 'Analyzes data',
+        functionalCategory: 'TECH', employeeStatus: 'APPROVED', availability: 'AVAILABLE', canApply: true,
+        capabilities: [{ id: 'cap-data', name: 'Data analysis', description: 'Analyzes data', type: 'SKILL' }],
+        updatedAt: '2026-09-29T08:00:00.000Z',
+      }], page: 1, pageSize: 20, total: 1, hasNextPage: false,
+    }
+    const accessRequest = {
+      requestId: 'request-1', status: 'PENDING', targetType: 'PLATFORM_EMPLOYEE',
+      employee: { employeeId: 'platform-employee-1', subscriptionId: null, name: 'Data Analyst' },
+      requestedCapabilities: ['cap-data'], createdAt: '2026-09-29T08:00:00.000Z', updatedAt: '2026-09-29T08:00:00.000Z',
+    }
+    globalThis.fetch = async (input, init) => {
+      calls.push({ url: String(input), method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined, authorization: new Headers(init?.headers).get('Authorization') })
+      return response(String(input).includes('/platform-employees') ? platformPage : accessRequest, 200)
+    }
+    const page = await api.getPlatformEmployees('access', { keyword: 'data analysis', page: 1, pageSize: 20, sort: 'updatedAt_desc' })
+    assert.equal(page.items[0]?.employeeId, 'platform-employee-1')
+    const created = await api.createEmployeeAccessRequest({ targetType: 'PLATFORM_EMPLOYEE', employeeId: 'platform-employee-1', reason: 'Need data analysis', requestedCapabilities: ['cap-data'] }, 'employee-request-key-1234', 'access')
+    assert.equal(created.requestId, 'request-1')
+    assert.equal((await api.getEmployeeAccessRequest('request-1', 'access')).status, 'PENDING')
+    const listUrl = new URL(calls[0]!.url)
+    assert.equal(listUrl.searchParams.get('sort'), 'updatedAt_desc')
+    const requestBody = calls[1]?.body as Record<string, unknown> | undefined
+    assert.equal(calls[1]?.method, 'POST')
+    assert.equal(requestBody?.targetType, 'PLATFORM_EMPLOYEE')
+    assert.equal(requestBody?.employeeId, 'platform-employee-1')
+    assert.equal(requestBody?.subscriptionId, undefined)
+    assert.equal(calls[0]?.authorization, 'Bearer access')
+    assert.equal(calls[1]?.authorization, 'Bearer access')
+    assert.equal(calls[2]?.authorization, 'Bearer access')
+  })
   it('uploads full source and reuses caller-owned idempotency key unchanged', async () => {
     const request = { capabilityId: 'cap-1', parentVersionId: 'published-1', content: '---\r\nname: skill\r\n---\r\n\r\n# Source  \r\n\t', changeSummary: 'Update' }
     const key = '902a70ec-b23d-4ec0-82c8-73450fe778a9'

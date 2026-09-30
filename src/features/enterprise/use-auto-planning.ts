@@ -7,6 +7,10 @@ interface PlanningAttempt {
   terminal: boolean;
 }
 
+function errorMessage(result: { success: boolean; error?: { message?: string } }, fallback: string): string {
+  return result.error?.message || fallback
+}
+
 /** IPC progress may arrive before invoke resolves. Keep one attempt until its terminal event. */
 export function useAutoPlanning() {
   const [draft, setDraft] = useState<ArrangementDraft | null>(null);
@@ -22,7 +26,6 @@ export function useAutoPlanning() {
     attempt.current = null;
     setPlanning(false);
     setCancellable(false);
-    setDraft(null);
     setError(message);
   };
 
@@ -114,5 +117,64 @@ export function useAutoPlanning() {
     }
   };
 
-  return { draft, setDraft, events, planning, cancellable, error, setError, start, cancel };
+  const requestEmployeeAccess = async (stepId: string, employeeId: string): Promise<void> => {
+    if (!draft || planning) return;
+    setError(null);
+    const result = await window.electronAPI.requestEmployeeAccess({
+      draftId: draft.id,
+      expectedRevision: draft.revision,
+      stepId,
+      employeeId,
+    });
+    if (!result.success || !result.draft) {
+      throw new Error(errorMessage(result, '申请员工失败，请稍后重试'));
+    }
+    setDraft(result.draft);
+  };
+
+  const refreshEmployeeAccess = async (requestId: string): Promise<void> => {
+    if (!draft || planning) return;
+    setError(null);
+    const result = await window.electronAPI.getEmployeeAccessRequest({ draftId: draft.id, requestId });
+    if (!result.success || !result.draft) {
+      throw new Error(errorMessage(result, '查询员工申请状态失败，请稍后重试'));
+    }
+    setDraft(result.draft);
+  };
+
+  const recheck = async (): Promise<void> => {
+    if (!draft || planning) return;
+    const current: PlanningAttempt = { draftId: draft.id, planningId: null, terminal: false };
+    attempt.current = current;
+    setPlanning(true);
+    setCancellable(false);
+    setEvents([]);
+    setError(null);
+    try {
+      const planned = await window.electronAPI.planArrangementDraft({ draftId: draft.id, expectedRevision: draft.revision });
+      if (attempt.current !== current) return;
+      if (!planned.success || !planned.planningId) {
+        throw new Error(errorMessage(planned, '重新检查未能启动'));
+      }
+      current.planningId = planned.planningId;
+      setCancellable(true);
+    } catch (cause) {
+      if (!current.terminal) fail(current, cause instanceof Error ? cause.message : '重新检查失败');
+    }
+  };
+
+  return {
+    draft,
+    setDraft,
+    events,
+    planning,
+    cancellable,
+    error,
+    setError,
+    start,
+    cancel,
+    requestEmployeeAccess,
+    refreshEmployeeAccess,
+    recheck,
+  };
 }

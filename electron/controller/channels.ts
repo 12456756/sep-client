@@ -21,6 +21,12 @@ export const INVOKE_CHANNELS = {
   AUTH_GET_INSTANCES: 'auth:get-instances',
   AUTH_GET_EMPLOYEE_STATUS: 'auth:get-employee-status',
   AUTH_GET_ORGANIZATION: 'auth:get-organization',
+  PROFILE_GET: 'profile:get',
+  PROFILE_UPLOAD_AVATAR: 'profile:upload-avatar',
+  PROFILE_UPLOAD_ENTERPRISE_LOGO: 'profile:upload-enterprise-logo',
+  WALLET_CREATE_RECHARGE: 'wallet:create-recharge',
+  WALLET_GET_RECHARGE: 'wallet:get-recharge',
+  WALLET_RECONCILE_RECHARGE: 'wallet:reconcile-recharge',
   COMPUTE_CENTER_GET_OVERVIEW: 'compute-center:get-overview',
   COMPUTE_CENTER_GET_TRANSACTIONS: 'compute-center:get-transactions',
   COMPUTE_CENTER_GET_USAGE_RECORDS: 'compute-center:get-usage-records',
@@ -56,6 +62,8 @@ export const INVOKE_CHANNELS = {
   ARRANGE_CONFIRM_AND_START: 'arrange:confirm-and-start',
   ARRANGE_PLAN_DRAFT: 'arrange:plan-draft',
   ARRANGE_CANCEL_PLAN: 'arrange:cancel-plan',
+  ARRANGE_REQUEST_EMPLOYEE_ACCESS: 'arrange:request-employee-access',
+  ARRANGE_GET_EMPLOYEE_ACCESS_REQUEST: 'arrange:get-employee-access-request',
   UTIL_SELECT_DIRECTORY: 'util:select-directory',
 } as const
 

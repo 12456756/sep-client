@@ -11,6 +11,15 @@ import type {
 } from './compute-credit-contracts'
 import type { SaveSkillInput, SaveSkillResult, SkillLibraryItem } from './skill-library'
 import type {
+  ClientProfile,
+  EnterpriseLogoUploadResponse,
+  PersonalRechargeOrder,
+  PersonalRechargeRequest,
+  PersonalRechargeReconcileResult,
+  PersonalRechargeStatusResponse,
+  UserAvatarUploadResponse,
+} from './profile-wallet-contracts'
+import type {
   ClientTask,
   ClientTaskStats,
   CreateTaskRequest,
@@ -50,6 +59,36 @@ export interface IpcError {
 export interface IpcCommandResult {
   success: boolean
   error?: IpcError
+}
+
+export interface UploadInput {
+  bytes: Uint8Array
+  filename: string
+  contentType: string
+}
+
+export interface ClientProfileResult extends IpcCommandResult {
+  data?: ClientProfile
+}
+
+export interface UserAvatarUploadResult extends IpcCommandResult {
+  data?: UserAvatarUploadResponse
+}
+
+export interface EnterpriseLogoUploadResult extends IpcCommandResult {
+  data?: EnterpriseLogoUploadResponse
+}
+
+export interface PersonalRechargeOrderResult extends IpcCommandResult {
+  data?: PersonalRechargeOrder
+}
+
+export interface PersonalRechargeStatusResult extends IpcCommandResult {
+  data?: PersonalRechargeStatusResponse
+}
+
+export interface PersonalRechargeReconcileIpcResult extends IpcCommandResult {
+  data?: PersonalRechargeReconcileResult
 }
 
 export interface TaskCommandResult {
@@ -155,6 +194,18 @@ export interface CancelArrangementPlanningInput {
   planningId: string
 }
 
+export interface RequestEmployeeAccessInput {
+  draftId: string
+  expectedRevision: number
+  stepId: string
+  employeeId: string
+}
+
+export interface GetEmployeeAccessRequestInput {
+  draftId: string
+  requestId: string
+}
+
 export interface ArrangementPlanningStartResult extends IpcCommandResult {
   draftId?: string
   planningId?: string
@@ -188,6 +239,12 @@ export interface ElectronAPI {
   getSubscriptions: () => Promise<InstanceListResult>
   getEmployeeStatus: () => Promise<EmployeeStatusResult>
   getEnterpriseOrganization: () => Promise<OrganizationResult>
+  getClientProfile: () => Promise<ClientProfileResult>
+  uploadUserAvatar: (input: UploadInput) => Promise<UserAvatarUploadResult>
+  uploadEnterpriseLogo: (input: UploadInput) => Promise<EnterpriseLogoUploadResult>
+  createPersonalRecharge: (input: PersonalRechargeRequest) => Promise<PersonalRechargeOrderResult>
+  getPersonalRecharge: (orderNo: string) => Promise<PersonalRechargeStatusResult>
+  reconcilePersonalRecharge: (orderNo: string) => Promise<PersonalRechargeReconcileIpcResult>
   getComputeCenterOverview: () => Promise<ComputeCenterOverviewResult>
   getPersonalWalletTransactions: (query: ComputePageQuery) => Promise<WalletTransactionsResult>
   getComputeUsageRecords: (query: ComputeUsageQuery) => Promise<ComputeUsageRecordsResult>
@@ -221,6 +278,8 @@ export interface ElectronAPI {
   confirmAndStartArrangement: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<{ success: boolean; plan?: ArrangementPlanSnapshot; execution?: { id: string; status: 'queued' | 'running' }; error?: TaskError }>
   planArrangementDraft: (input: PlanArrangementDraftInput) => Promise<ArrangementPlanningStartResult>
   cancelArrangementPlanning: (input: CancelArrangementPlanningInput) => Promise<ArrangementPlanningCancelResult>
+  requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>
+  getEmployeeAccessRequest: (input: GetEmployeeAccessRequestInput) => Promise<ArrangementDraftResult>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: () => Promise<SelectDirectoryResult>

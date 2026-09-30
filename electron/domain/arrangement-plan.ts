@@ -1,7 +1,7 @@
 import { AppError } from '../errors/app-error'
 
 export type ArrangementMode = 'conversation' | 'auto' | 'manual'
-export type DraftStatus = 'editing' | 'planning' | 'planning-failed' | 'ready' | 'preflight-failed' | 'confirmed'
+export type DraftStatus = 'editing' | 'planning' | 'planning-failed' | 'awaiting-employee' | 'ready' | 'preflight-failed' | 'confirmed'
 export type PermissionPreset = 'read-only' | 'workspace-edit' | 'full-local'
 export type CommandPolicy = 'disabled' | 'restricted' | 'confirm-each'
 /** 工具调用的用户确认策略。默认逐次确认；自动放行只取消交互确认，不绕过安全检查。 */
@@ -17,6 +17,51 @@ export interface ConversationArrangement {
   activeSubscriptionId: string | null
 }
 
+export interface ArrangementIntentStep {
+  id: string
+  title: string
+  requiredCapabilities: string[]
+  dependsOn: string[]
+}
+
+export interface ArrangementIntentAnalysis {
+  summary: string
+  steps: ArrangementIntentStep[]
+}
+
+export interface ArrangementUnresolvedStep {
+  stepId: string
+  reason: string
+  requiredCapabilities: string[]
+}
+
+export type EmployeeAccessRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'
+
+export interface ArrangementEmployeeAccessRequest {
+  requestId: string
+  stepId: string
+  employeeId: string
+  subscriptionId: string | null
+  source: 'enterprise' | 'platform'
+  name: string
+  status: EmployeeAccessRequestStatus
+  requestedCapabilities: string[]
+  createdAt: string
+  updatedAt: string
+  message?: string
+}
+
+export interface ArrangementCandidateMatch {
+  stepId: string
+  employeeId: string
+  subscriptionId: string | null
+  source: 'enterprise' | 'platform'
+  name: string
+  rationale: string
+  canExecute: false
+  canApply: true
+}
+
 export interface ArrangementNode {
   id: string
   subscriptionId: string
@@ -27,6 +72,7 @@ export interface ArrangementNode {
   dependsOn: string[]
   skillIds: string[]
   requiresUserConfirmation: boolean
+  stepId?: string
 }
 
 export interface SharedWorkspace {
@@ -68,6 +114,10 @@ export interface ArrangementDraft {
   sharedSkillIds: string[]
   conversation: ConversationArrangement | null
   nodes: ArrangementNode[]
+  intentAnalysis?: ArrangementIntentAnalysis | null
+  unresolvedSteps?: ArrangementUnresolvedStep[]
+  candidateMatches?: ArrangementCandidateMatch[]
+  employeeAccessRequests?: ArrangementEmployeeAccessRequest[]
   workspace: SharedWorkspace
   permissions: RequestedTaskPermissionPolicy
   createdAt: number
@@ -152,7 +202,10 @@ export function validateArrangementDraft(draft: ArrangementDraft): void {
     }
     return
   }
-  if (draft.nodes.length === 0 && draft.mode === 'auto' && (draft.status === 'editing' || draft.status === 'planning' || draft.status === 'planning-failed')) return
+  if (draft.nodes.length === 0 && draft.mode === 'auto' && (draft.status === 'editing' || draft.status === 'planning' || draft.status === 'planning-failed' || draft.status === 'awaiting-employee')) {
+    if (draft.status === 'awaiting-employee' && !draft.unresolvedSteps?.length) throw new AppError('INVALID_ARGUMENT')
+    return
+  }
   if (draft.nodes.length === 0) throw new AppError('INVALID_ARGUMENT')
   validateArrangementNodes(draft.nodes)
 }

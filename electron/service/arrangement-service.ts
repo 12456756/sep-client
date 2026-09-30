@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { Subscription } from '../common/platform/platform-api'
 import type { ArrangementDraftStorePort } from '../data/arrangement-draft-store'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
@@ -21,7 +21,9 @@ import {
 } from '../domain/arrangement-plan'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import { requireScope, type ScopeSource } from './scope-guard'
-import type { ArrangementPlannerPort, ArrangementPlanningProgress, ArrangementPlannerEmployee } from '../domain/arrangement-planner'
+import type { ArrangementCandidateDirectory, ArrangementPlannerPort, ArrangementPlanningProgress, ArrangementPlannerEmployee } from '../domain/arrangement-planner'
+import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementEmployeeAccessRequest } from '../domain/arrangement-plan'
+import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -32,7 +34,12 @@ export interface ArrangementServiceDependencies {
   taskManager: TaskManager
   execution: () => Promise<TaskExecutionPort>
   planner?: ArrangementPlannerPort
+  candidateEmployees?: ArrangementCandidateDirectory
   onPlanningEvent?: (event: ArrangementPlanningProgress) => void
+  employeeAccessRequests?: {
+    create(input: EmployeeAccessRequestInput, idempotencyKey: string): Promise<EmployeeAccessRequest>
+    get(requestId: string): Promise<EmployeeAccessRequest>
+  }
 }
 
 export interface ArrangementContext {
@@ -154,36 +161,114 @@ export class ArrangementService {
     return { cancelled: true }
   }
 
+  async requestEmployeeAccess(draftId: string, expectedRevision: number, stepId: string, employeeId: string): Promise<ArrangementDraft> {
+    if (!this.deps.employeeAccessRequests) throw new AppError('INVALID_STATE')
+    const scope = requireScope(this.deps.scope)
+    const draft = await this.getDraft(draftId)
+    if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
+    if (draft.mode !== 'auto' || draft.status !== 'awaiting-employee') throw new AppError('INVALID_STATE')
+    if (!(draft.unresolvedSteps ?? []).some(step => step.stepId === stepId)) throw new AppError('INVALID_ARGUMENT')
+    const candidate = (draft.candidateMatches ?? []).find(match => match.stepId === stepId && match.employeeId === employeeId)
+    if (!candidate) throw new AppError('INVALID_ARGUMENT')
+    const existing = draft.employeeAccessRequests?.find(request => request.stepId === stepId && request.employeeId === employeeId)
+    const latest = existing ? await this.deps.employeeAccessRequests.get(existing.requestId) : await this.deps.employeeAccessRequests.create({
+      targetType: candidate.source === 'enterprise' ? 'ENTERPRISE_SUBSCRIPTION' : 'PLATFORM_EMPLOYEE',
+      subscriptionId: candidate.source === 'enterprise' ? candidate.subscriptionId : null,
+      employeeId: candidate.source === 'platform' ? candidate.employeeId : null,
+      reason: buildAccessRequestReason(draft, stepId, candidate),
+      requestedCapabilities: draft.intentAnalysis?.steps.find(step => step.id === stepId)?.requiredCapabilities ?? [],
+    }, accessRequestIdempotencyKey(draft.id, stepId, employeeId))
+    const record = toArrangementAccessRequest(latest, candidate, stepId)
+    const requests = [...(draft.employeeAccessRequests ?? []).filter(request => request.requestId !== record.requestId && !(request.stepId === stepId && request.employeeId === employeeId)), record]
+    return this.deps.drafts.update(scope, draftId, expectedRevision, { ...draft, employeeAccessRequests: requests })
+  }
+
+  async getEmployeeAccessRequest(draftId: string, requestId: string): Promise<ArrangementDraft> {
+    if (!this.deps.employeeAccessRequests) throw new AppError('INVALID_STATE')
+    const scope = requireScope(this.deps.scope)
+    const draft = await this.getDraft(draftId)
+    const existing = draft.employeeAccessRequests?.find(request => request.requestId === requestId)
+    if (!existing) throw new AppError('NOT_FOUND')
+    const latest = await this.deps.employeeAccessRequests.get(requestId)
+    const candidate = (draft.candidateMatches ?? []).find(match => match.stepId === existing.stepId && match.employeeId === existing.employeeId)
+    if (!candidate) throw new AppError('INVALID_STATE')
+    const record = toArrangementAccessRequest(latest, candidate, existing.stepId)
+    const requests = [...(draft.employeeAccessRequests ?? []).filter(request => request.requestId !== requestId), record]
+    if (record.status === 'APPROVED') await this.deps.employees.refresh()
+    return this.deps.drafts.update(scope, draftId, draft.revision, { ...draft, employeeAccessRequests: requests })
+  }
+
   private readonly planningControllers = new Map<string, AbortController>()
 
   private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController): Promise<void> {
     try {
       const current = await this.getDraft(draftId)
-      const employees = await this.deps.employees.list()
-      const result = await this.deps.planner!.plan({
-        planningId,
-        draft: current,
-        employees: employees.map(employee => ({
-          subscriptionId: employee.subscriptionId,
-          employeeId: employee.employeeId,
-          name: employee.name,
-          description: employee.description,
-          position: employee.position,
-          functionalCategory: employee.functionalCategory,
-          allowedModels: [...employee.allowedModels],
-          status: employee.status,
-        } satisfies ArrangementPlannerEmployee)),
-        signal: controller.signal,
+      const authorized = (await this.deps.employees.list()).map(employee => ({
+        subscriptionId: employee.subscriptionId,
+        employeeId: employee.employeeId,
+        name: employee.name,
+        description: employee.description,
+        position: employee.position,
+        functionalCategory: employee.functionalCategory,
+        allowedModels: [...employee.allowedModels],
+        status: employee.status,
+        source: 'authorized' as const,
+        canExecute: true,
+        canApply: false,
+      } satisfies ArrangementPlannerEmployee))
+      let planningDraft = current
+      let employees: ArrangementPlannerEmployee[] = authorized
+      const plannerEmployees: ArrangementPlannerEmployee[] = authorized
+      let result = await this.deps.planner!.plan({
+        planningId, draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
         onProgress: event => this.emitPlanning(event),
       })
+      const intentAnalysis = result.intentAnalysis ?? current.intentAnalysis ?? undefined
+      let unresolvedSteps = result.unresolvedSteps ?? []
+      let candidateMatches = result.candidateMatches ?? []
+      let executableNodes = mergeExecutableNodes([], result.nodes)
+
+      if (unresolvedSteps.length && this.deps.candidateEmployees) {
+        const enterprise = await this.deps.candidateEmployees.listEnterprise()
+        if (enterprise.length) {
+          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
+          employees = enterprise
+          result = await this.deps.planner!.plan({
+            planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            onProgress: event => this.emitPlanning(event),
+          })
+          executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
+          unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
+          candidateMatches = mergeCandidateMatches(candidateMatches, result.candidateMatches ?? [])
+        }
+      }
+
+      if (unresolvedSteps.length && this.deps.candidateEmployees) {
+        const steps = unresolvedSteps
+        const platform = await this.deps.candidateEmployees.listPlatform({ keywords: extractPlanningKeywords(steps) })
+        if (platform.length) {
+          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
+          employees = platform
+          result = await this.deps.planner!.plan({
+            planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            onProgress: event => this.emitPlanning(event),
+          })
+          executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
+          unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
+          candidateMatches = mergeCandidateMatches(candidateMatches, result.candidateMatches ?? [])
+        }
+      }
       if (controller.signal.aborted) throw new PlanningCancelledError()
       const latest = await this.deps.drafts.get(requireScope(this.deps.scope), draftId)
       if (!latest || latest.revision !== planningRevision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') return
       const updated = await this.deps.drafts.update(requireScope(this.deps.scope), draftId, planningRevision, {
         ...latest,
         title: result.title,
-        nodes: result.nodes,
-        status: 'ready',
+        nodes: executableNodes,
+        intentAnalysis: result.intentAnalysis ?? intentAnalysis ?? null,
+        unresolvedSteps,
+        candidateMatches,
+        status: unresolvedSteps.length ? 'awaiting-employee' : 'ready',
         lastPlanning: { planningId, status: 'ready', message: null },
       })
       this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_completed', occurredAt: Date.now(), data: { title: updated.title } })
@@ -350,8 +435,69 @@ export class ArrangementService {
   }
 }
 
+function mergeCandidateMatches(
+  existing: readonly ArrangementCandidateMatch[],
+  added: readonly ArrangementCandidateMatch[],
+): ArrangementCandidateMatch[] {
+  const byCandidate = new Map(existing.map(match => [`${match.stepId}:${match.employeeId}`, match]))
+  for (const match of added) {
+    byCandidate.set(`${match.stepId}:${match.employeeId}`, match)
+  }
+  return [...byCandidate.values()]
+}
+
+function mergeExecutableNodes(
+  existing: readonly ArrangementNode[],
+  added: readonly ArrangementNode[],
+): ArrangementNode[] {
+  const byStep = new Map<string, ArrangementNode>()
+  const order: string[] = []
+  for (const node of [...existing, ...added]) {
+    const key = node.stepId ?? node.id
+    if (!byStep.has(key)) order.push(key)
+    byStep.set(key, node)
+  }
+  return order.map(key => byStep.get(key)!).filter(Boolean)
+}
+
+function extractPlanningKeywords(steps: readonly ArrangementUnresolvedStep[]): string[] {
+  return [...new Set(steps.flatMap(step => step.requiredCapabilities).map(value => value.trim()).filter(Boolean))].slice(0, 10)
+}
+
+function accessRequestIdempotencyKey(draftId: string, stepId: string, employeeId: string): string {
+  return createHash('sha256').update(`${draftId}:${stepId}:${employeeId}`).digest('hex')
+}
+
+function buildAccessRequestReason(draft: ArrangementDraft, stepId: string, candidate: ArrangementCandidateMatch): string {
+  const step = draft.intentAnalysis?.steps.find(item => item.id === stepId)
+  const capabilities = step?.requiredCapabilities.join('、') || '未指定能力'
+  return `任务目标：${draft.goal}
+所需步骤：${step?.title ?? stepId}
+所需能力：${capabilities}
+候选员工：${candidate.name}
+匹配说明：${candidate.rationale}`.slice(0, 2000)
+}
+
+function toArrangementAccessRequest(
+  request: EmployeeAccessRequest,
+  candidate: ArrangementCandidateMatch,
+  stepId: string,
+): ArrangementEmployeeAccessRequest {
+  return {
+    requestId: request.requestId,
+    stepId,
+    employeeId: request.employee.employeeId,
+    subscriptionId: request.employee.subscriptionId ?? candidate.subscriptionId,
+    source: candidate.source,
+    name: request.employee.name,
+    status: request.status,
+    requestedCapabilities: [...request.requestedCapabilities],
+    createdAt: request.createdAt,
+    updatedAt: request.updatedAt,
+    ...(request.message ? { message: request.message } : {}),
+  }
+}
+
 class PlanningCancelledError extends Error {}
 
 export type { ArrangementMode, ArrangementNode, RequestedTaskPermissionPolicy }
-
-

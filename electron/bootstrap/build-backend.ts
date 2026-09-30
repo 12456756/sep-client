@@ -8,7 +8,7 @@ import { SkillLibraryService } from '../service/skill-library-service'
  */
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
-import { getSubscriptions, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
+import { getSubscriptions, getEnterpriseOverview, getPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
 import { config } from '../common/config'
 import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
@@ -126,6 +126,7 @@ class BackendRuntime {
     }
     this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks })
+    const platformSession = this.authSession
     this.arrangements = new ArrangementService({
       scope: this,
       drafts: arrangementDrafts,
@@ -139,6 +140,58 @@ class BackendRuntime {
         cancel: planningId => { this.arrangementPlanner.peek()?.cancel?.(planningId) },
       },
       onPlanningEvent: event => this.renderer.arrangementPlanningEvent(event),
+      employeeAccessRequests: {
+        async create(input, idempotencyKey) {
+          const accessToken = await platformSession.getValidAccessToken()
+          return createEmployeeAccessRequest(input, idempotencyKey, accessToken)
+        },
+        async get(requestId) {
+          const accessToken = await platformSession.getValidAccessToken()
+          return getEmployeeAccessRequest(requestId, accessToken)
+        },
+      },
+      candidateEmployees: {
+        async listEnterprise() {
+          const accessToken = await platformSession.getValidAccessToken()
+          const overview = await getEnterpriseOverview(accessToken)
+          return overview.employees
+            .filter(employee => employee.status === 'ACTIVE' && employee.active && !employee.currentUserCanUse)
+            .map(employee => ({
+              subscriptionId: employee.subscriptionId,
+              employeeId: employee.employeeId,
+              name: employee.name,
+              description: employee.description,
+              position: employee.position,
+              allowedModels: [],
+              status: employee.status,
+              source: 'enterprise' as const,
+              canExecute: false,
+              canApply: true,
+            }))
+        },
+        async listPlatform({ keywords }) {
+          const accessToken = await platformSession.getValidAccessToken()
+          const page = await getPlatformEmployees(accessToken, {
+            keyword: keywords.join(' '), page: 1, pageSize: 100, sort: 'updatedAt_desc',
+          })
+          return page.items
+            .filter(employee => employee.employeeStatus === 'APPROVED' && employee.canApply && employee.availability === 'AVAILABLE')
+            .map(employee => ({
+              subscriptionId: `platform:${employee.employeeId}`,
+              employeeId: employee.employeeId,
+              name: employee.name,
+              description: employee.description,
+              position: employee.position,
+              functionalCategory: employee.functionalCategory ?? undefined,
+              capabilities: employee.capabilities,
+              allowedModels: [],
+              status: employee.employeeStatus,
+              source: 'platform' as const,
+              canExecute: false,
+              canApply: employee.canApply,
+            }))
+        },
+      },
     })
   }
 
