@@ -1,4 +1,6 @@
 import { AuthApiError, getEmploymentToken } from './platform-api';
+import { AuthenticationRequiredError } from './authentication-required-error'
+import { runSharedRefreshTokenRotation } from './refresh-token-rotation'
 import { config } from '../config';
 import { describeError } from '../redact'
 import { logger } from '../logger'
@@ -79,10 +81,9 @@ export class EmploymentTokenManager {
     signal: AbortSignal,
   ): Promise<string> {
     try {
-      const response = await getEmploymentToken({
-        refreshToken: this.options.getRefreshToken(),
-        subscriptionId,
-      }, signal);
+      const response = await runSharedRefreshTokenRotation(
+        refreshToken => getEmploymentToken({ refreshToken, subscriptionId }, signal),
+      );
 
       if (!this.isCurrent(generation, subscriptionId, signal)) {
         throw new DOMException('Stale instance token request', 'AbortError');
@@ -98,7 +99,7 @@ export class EmploymentTokenManager {
     } catch (error) {
       if (this.isAbort(error) || !this.isCurrent(generation, subscriptionId, signal)) throw error;
 
-      if (error instanceof AuthApiError && error.isUnauthorized) {
+      if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized)) {
         this.stop();
         this.options.onAuthenticationRequired?.();
       } else if (this.employmentToken && Date.now() < this.expiresAt) {

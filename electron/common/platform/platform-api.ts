@@ -81,6 +81,7 @@ export interface LoginResponse {
 
 export interface RefreshResponse {
   accessToken: string
+  refreshToken: string
   accessTokenExpiresIn: number
   user: PlatformUser
   enterprise: PlatformEnterprise | null
@@ -93,6 +94,7 @@ export interface EmploymentTokenRequest {
 
 export interface EmploymentTokenResponse {
   employmentToken: string
+  refreshToken: string
   expiresIn: number
   employment: {
     id: string
