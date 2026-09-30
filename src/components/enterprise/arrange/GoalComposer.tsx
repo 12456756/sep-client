@@ -53,6 +53,7 @@ export function GoalComposer({
             conversation={conversation}
             onChange={onSettingsChange}
           />
+          <span className="ent-arr-gap" aria-hidden="true" />
           <button
             type="button"
             className="ent-goal-send"

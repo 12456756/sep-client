@@ -2015,15 +2015,18 @@
 
 /* ── 企业组织横向树：公司 → 部门 → 碳基员工 → 硅基员工 ──────── */
 .ent-organization.org-tree-page { width: 100%; max-width: none; height: 100%; min-height: 0; padding: 18px 22px 22px; overflow: hidden; }
-.org-tree-view { display: flex; min-width: 0; min-height: 0; height: 100%; flex-direction: column; gap: 10px; }
+.org-tree-view { --org-tree-connector: color-mix(in srgb, var(--ent-line-strong) 78%, var(--ent-brand-border)); display: flex; min-width: 0; min-height: 0; height: 100%; flex-direction: column; gap: 10px; }
 .org-tree-toolbar { display: flex; flex: 0 0 auto; justify-content: flex-end; min-height: 38px; }
 .org-tree-search { display: flex; width: min(280px, 34vw); min-width: 210px; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-btn); color: var(--ent-ink-3); background: var(--ent-panel); box-shadow: 0 3px 12px rgb(32 35 43 / 3%); transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
 .org-tree-search:focus-within { border-color: var(--ent-brand); box-shadow: var(--ent-glow-ring); }
 .org-tree-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ent-ink); background: transparent; font: inherit; font-size: var(--ent-fs-note); }
 .org-tree-search input::placeholder { color: var(--ent-ink-3); }
-.org-tree-scroll { min-width: 0; min-height: 0; flex: 1; overflow: auto; padding: 8px 8px 18px 4px; scrollbar-color: var(--ent-line-strong) transparent; scrollbar-width: thin; }
+.org-tree-scroll { min-width: 0; min-height: 0; flex: 1; overflow: hidden; padding: 8px 8px 18px 4px; cursor: grab; touch-action: none; overscroll-behavior: none; scrollbar-width: none; }
+.org-tree-scroll::-webkit-scrollbar { display: none; }
+.org-tree-scroll:focus-visible { outline: 2px solid var(--ent-brand-border); outline-offset: -2px; }
+.org-tree-scroll.is-panning { cursor: grabbing; }
 .org-tree-shell { display: grid; min-width: 980px; min-height: 100%; grid-template-columns: 190px minmax(770px, 1fr); align-items: stretch; column-gap: 22px; }
-.org-tree-company-column { position: sticky; left: 0; z-index: 3; display: flex; min-height: 360px; flex-direction: column; justify-content: center; align-self: stretch; }
+.org-tree-company-column { position: relative; z-index: 3; display: flex; min-height: 360px; flex-direction: column; justify-content: center; align-self: stretch; }
 .org-tree-company-column::after { position: absolute; top: 50%; right: -28px; width: 28px; height: 1px; background: var(--ent-line-strong); content: ''; }
 .org-tree-company-node { display: grid; grid-template-columns: 42px minmax(0, 1fr); align-items: center; gap: 11px; padding: 16px 14px; border: 1px solid var(--ent-brand-border); border-radius: 14px; background: linear-gradient(135deg, var(--ent-brand-softer), var(--ent-panel) 76%); box-shadow: var(--ent-shadow-card); }
 .org-tree-node-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: var(--ent-brand-ink); background: var(--ent-brand-tint); }
@@ -2038,10 +2041,10 @@
 .org-tree-track { position: relative; display: flex; min-height: 100%; flex-direction: column; justify-content: center; gap: 12px; padding: 16px 0; }
 .org-tree-track::before { position: absolute; top: 42px; bottom: 42px; left: 0; width: 1px; background: var(--ent-line-strong); content: ''; }
 .org-tree-branch { position: relative; min-width: 0; padding: 8px 0; }
-.org-tree-branch::before { position: absolute; top: 50%; left: 0; width: 24px; height: 1px; background: var(--ent-line-strong); content: ''; }
+.org-tree-branch::before { position: absolute; top: 50%; left: 0; width: 34px; height: 1px; background: var(--org-tree-connector); content: ''; }
 .org-tree-branch-grid { display: grid; min-width: 0; grid-template-columns: 250px minmax(0, 1fr); align-items: center; }
 .org-tree-department-slot { position: relative; min-width: 0; padding-left: 34px; padding-right: 18px; }
-.org-tree-department-slot::after { position: absolute; top: 50%; right: 0; width: 18px; height: 1px; background: var(--ent-line-strong); content: ''; }
+.org-tree-department-slot::after { position: absolute; top: 50%; right: -22px; width: 40px; height: 1px; background: var(--org-tree-connector); content: ''; }
 .org-tree-node { display: grid; min-width: 0; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 9px; width: 100%; padding: 10px; border: 1px solid transparent; border-radius: 11px; color: var(--ent-ink); background: transparent; font: inherit; text-align: left; cursor: pointer; transition: border-color var(--ent-ease), background var(--ent-ease), transform var(--ent-ease); }
 .org-tree-node:hover, .org-tree-node.selected { border-color: var(--ent-brand-border); background: var(--ent-brand-softer); }
 .org-tree-node:hover { transform: translateX(1px); }
@@ -2125,7 +2128,7 @@
   padding-left: 0;
 }
 .org-tree-subbranches .org-tree-department-slot::after {
-  right: 0;
+  right: -22px;
 }
 .org-tree-carbon-column {
   grid-template-columns: minmax(0, 1fr);
@@ -2160,10 +2163,10 @@
 .org-tree-silicon-flow::before,
 .org-tree-subbranches::before,
 .org-tree-company-column::after {
-  background: color-mix(in srgb, var(--ent-line-strong) 72%, transparent);
+  background: var(--org-tree-connector);
 }
 .org-tree-subbranches {
-  border-left-color: color-mix(in srgb, var(--ent-line-strong) 72%, transparent);
+  border-left-color: var(--org-tree-connector);
 }
 .org-tree-collapsed-summary,
 .org-tree-silicon-collapsed {

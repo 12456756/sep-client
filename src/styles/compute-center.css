@@ -27,8 +27,9 @@
 .compute-card-icon.green { color: var(--ent-ready); background: var(--ent-ready-bg); }
 .compute-progress-row { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 23px; }
 .compute-progress { height: 8px; flex: 1; overflow: hidden; border-radius: 99px; background: var(--ent-track); }
-.compute-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--ent-brand), #8890ff); }
-.compute-progress-row strong { min-width: 43px; color: var(--ent-brand-deep); text-align: right; font-size: 12px; }
+.compute-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--ent-ready-solid), var(--ent-ready)); box-shadow: 0 1px 3px rgb(26 127 82 / 22%); transition: width .3s ease; }
+.compute-progress.is-unlimited span { background: repeating-linear-gradient(135deg, var(--ent-ready-solid) 0 8px, var(--ent-ready) 8px 16px); opacity: .78; }
+.compute-progress-row strong { min-width: 74px; color: var(--ent-ready); text-align: right; font-size: 12px; }
 .compute-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-3); font-size: 11px; }
 .compute-link { display: inline-flex; align-items: center; gap: 2px; border: 0; padding: 0; background: transparent; color: var(--ent-brand-deep); cursor: pointer; font-size: 12px; white-space: nowrap; }
 .compute-link:hover { text-decoration: underline; }

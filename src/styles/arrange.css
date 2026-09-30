@@ -612,7 +612,8 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   border-color: var(--ent-line);
   background: var(--ent-panel-subtle);
 }
-.ent-rs-model select { max-width: 150px; }
+.ent-rs-model { min-width: 0; max-width: min(280px, 40vw); }
+.ent-rs-model select { width: max-content; max-width: 100%; }
 
 .ent-goal-stack {
   display: flex;

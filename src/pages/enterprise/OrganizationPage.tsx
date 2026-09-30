@@ -87,6 +87,22 @@ function OrganizationTreeView({
     useState<Set<string> | null>(null);
   const [expandedMemberIdsState, setExpandedMemberIdsState] =
     useState<Set<string> | null>(null);
+  const orgCanvasRef = React.useRef<HTMLDivElement | null>(null);
+  const panRef = React.useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+    moved: boolean;
+  } | null>(null);
+  const panListenersRef = React.useRef<{
+    move: (event: PointerEvent) => void;
+    finish: (event: PointerEvent) => void;
+  } | null>(null);
+  const suppressClickRef = React.useRef(false);
+  const suppressClickTimerRef = React.useRef<number | null>(null);
+  const [isPanning, setIsPanning] = useState(false);
   const organization = useMemo(
     () => buildOrganizationRelation(members),
     [members],
@@ -157,6 +173,98 @@ function OrganizationTreeView({
     : null;
   const openEmployee = (employeeId: string) =>
     workspace.navigate({ name: "employee", employeeId });
+  const startCanvasPan = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    if ((event.target as HTMLElement).closest("input, textarea, select")) return;
+    const canvas = orgCanvasRef.current;
+    if (!canvas) return;
+
+    if (suppressClickTimerRef.current !== null) {
+      window.clearTimeout(suppressClickTimerRef.current);
+      suppressClickTimerRef.current = null;
+    }
+    suppressClickRef.current = false;
+    panRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startScrollLeft: canvas.scrollLeft,
+      startScrollTop: canvas.scrollTop,
+      moved: false,
+    };
+
+    const move = (pointerEvent: PointerEvent) => {
+      const pan = panRef.current;
+      if (!pan || pointerEvent.pointerId !== pan.pointerId) return;
+      const deltaX = pointerEvent.clientX - pan.startX;
+      const deltaY = pointerEvent.clientY - pan.startY;
+      if (!pan.moved && Math.hypot(deltaX, deltaY) > 5) {
+        pan.moved = true;
+        setIsPanning(true);
+      }
+      if (!pan.moved) return;
+      if (pointerEvent.cancelable) pointerEvent.preventDefault();
+      canvas.scrollLeft = pan.startScrollLeft - deltaX;
+      canvas.scrollTop = pan.startScrollTop - deltaY;
+    };
+    const finish = (pointerEvent: PointerEvent) => {
+      const pan = panRef.current;
+      if (!pan || pointerEvent.pointerId !== pan.pointerId) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      panListenersRef.current = null;
+      panRef.current = null;
+      setIsPanning(false);
+      if (pan.moved) {
+        suppressClickRef.current = true;
+        suppressClickTimerRef.current = window.setTimeout(() => {
+          suppressClickRef.current = false;
+          suppressClickTimerRef.current = null;
+        }, 400);
+      }
+    };
+    panListenersRef.current = { move, finish };
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  };
+  const handleCanvasClickCapture = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!suppressClickRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    suppressClickRef.current = false;
+    if (suppressClickTimerRef.current !== null) {
+      window.clearTimeout(suppressClickTimerRef.current);
+      suppressClickTimerRef.current = null;
+    }
+  };
+  const panCanvasWithKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    const distance = event.shiftKey ? 220 : 90;
+    const movement = {
+      ArrowLeft: [-distance, 0],
+      ArrowRight: [distance, 0],
+      ArrowUp: [0, -distance],
+      ArrowDown: [0, distance],
+    }[event.key];
+    if (!movement || !orgCanvasRef.current) return;
+    event.preventDefault();
+    orgCanvasRef.current.scrollLeft += movement[0];
+    orgCanvasRef.current.scrollTop += movement[1];
+  };
+
+  React.useEffect(() => () => {
+    const listeners = panListenersRef.current;
+    if (listeners) {
+      window.removeEventListener("pointermove", listeners.move);
+      window.removeEventListener("pointerup", listeners.finish);
+      window.removeEventListener("pointercancel", listeners.finish);
+    }
+    if (suppressClickTimerRef.current !== null) {
+      window.clearTimeout(suppressClickTimerRef.current);
+    }
+  }, []);
   const toggleDepartment = (departmentId: string) => {
     setExpandedDepartmentIdsState((current) => {
       const next = new Set(current ?? defaultExpandedDepartmentIds);
@@ -182,7 +290,16 @@ function OrganizationTreeView({
           </label>
         </div>
 
-        <div className="org-tree-scroll">
+        <div
+          ref={orgCanvasRef}
+          className={`org-tree-scroll${isPanning ? " is-panning" : ""}`}
+          role="region"
+          aria-label="企业组织关系画布，可拖拽平移；聚焦后可使用方向键移动"
+          tabIndex={0}
+          onPointerDown={startCanvasPan}
+          onClickCapture={handleCanvasClickCapture}
+          onKeyDown={panCanvasWithKeyboard}
+        >
           {departmentGroups.length ? (
             <div className="org-tree-shell">
               <div className="org-tree-company-column">

@@ -245,17 +245,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   return (
     <main className="login-page">
-      <section className="login-brand-panel" aria-label="龙硅产品介绍">
+      <section className="login-brand-panel" aria-label="硅基员工平台产品介绍">
         <div className="login-brand-glow login-brand-glow-primary" aria-hidden="true" />
         <div className="login-brand-glow login-brand-glow-secondary" aria-hidden="true" />
 
         <div className="login-brand-content">
           <div className="login-brand-mark">
-            <img src={logoImage} alt="龙硅" />
+            <img src={logoImage} alt="硅基员工平台" />
           </div>
 
           <div className="login-brand-copy">
-            <p className="login-brand-name">龙硅</p>
+            <p className="login-brand-name">硅基员工平台</p>
             <h1>让每一位员工，<br /><em>都有一个 AI 同行者</em></h1>
             <p className="login-brand-description">
               数字员工平台，让团队把时间留给更有价值的创造。
@@ -276,12 +276,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         <div className="login-form-shell">
           <div className="login-mobile-brand" aria-hidden="true">
             <img src={logoImage} alt="" />
-            <span>龙硅</span>
+            <span>硅基员工平台</span>
           </div>
 
           <header className="login-form-header">
             <p className="login-form-eyebrow">欢迎回来</p>
-            <h2>登录龙硅</h2>
+            <h2>登录硅基员工平台</h2>
             <p>进入你的数字员工工作台</p>
           </header>
 

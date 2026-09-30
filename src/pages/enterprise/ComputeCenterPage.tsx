@@ -1,6 +1,6 @@
 import { AlertCircle, ArrowDownLeft, ArrowUpRight, ChevronRight, Coins, CreditCard, Gauge, RefreshCw, Wallet, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { formatAllowanceValue, formatComputeAmount, formatComputePercent } from '../../features/enterprise/compute-center-model'
+import { formatAllowanceValue, formatComputeAmount, formatRemainingPercent, selectComputeBreakdown } from '../../features/enterprise/compute-center-model'
 import { useComputeCenter, type ComputeCenterTab } from '../../features/enterprise/use-compute-center'
 import type { ComputeUsageRecord, WalletTransaction } from '../../shared/compute-credit-contracts'
 
@@ -73,19 +73,27 @@ function DetailRows({ entries }: { entries: Array<[string, string]> }): React.JS
   return <dl className="compute-detail-list">{entries.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
 }
 
-function OverviewTab({ state, days, onDrawer }: { state: ReturnType<typeof useComputeCenter>; days: 7 | 30 | 90; onDrawer: (drawer: DrawerState) => void }): React.JSX.Element {
+function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTrend, onDrawer }: {
+  state: ReturnType<typeof useComputeCenter>
+  days: 7 | 30 | 90
+  trend: ReturnType<typeof selectComputeBreakdown>
+  trendLoading: boolean
+  trendError: string | null
+  onRetryTrend: () => void
+  onDrawer: (drawer: DrawerState) => void
+}): React.JSX.Element {
   const data = state.overview.data
   if (state.overview.loading && !data) return <LoadingBlock />
   if (state.overview.error && !data) return <ErrorBlock message={state.overview.error} onRetry={state.refresh} />
   if (!data) return <div className="compute-empty">暂无算力数据</div>
-  const { allowance, wallet, breakdown } = data
-  const percent = formatComputePercent(allowance.usedPct)
+  const { allowance, wallet } = data
+  const remainingPercent = formatRemainingPercent(allowance.limitCNY, allowance.remainingCNY)
   const remaining = formatAllowanceValue(allowance.remainingCNY)
   return (
     <div className="compute-overview-grid">
       <section className="compute-card compute-allowance-card">
         <div className="compute-card-head"><div><span className="compute-eyebrow">企业额度</span><h2>{remaining}</h2><p>{allowance.periodLabel ?? allowance.period}额度 · 已使用 {formatComputeAmount(allowance.usedCNY)}</p></div><span className="compute-card-icon purple"><Gauge size={20} /></span></div>
-        <div className="compute-progress-row"><div className="compute-progress"><span style={{ width: `${percent}%` }} /></div><strong>{allowance.usedPct === null ? '不限额' : `${percent.toFixed(1)}%`}</strong></div>
+        <div className="compute-progress-row"><div className={`compute-progress${remainingPercent === null ? ' is-unlimited' : ''}`} role="progressbar" aria-label={remainingPercent === null ? '剩余额度不限额' : `剩余额度 ${remainingPercent.toFixed(1)}%`} aria-valuemin={remainingPercent === null ? undefined : 0} aria-valuemax={remainingPercent === null ? undefined : 100} aria-valuenow={remainingPercent === null ? undefined : remainingPercent}><span style={{ width: `${remainingPercent ?? 100}%` }} /></div><strong>{remainingPercent === null ? '不限额' : `剩余 ${remainingPercent.toFixed(1)}%`}</strong></div>
         <div className="compute-card-foot"><span>追加余额 {formatComputeAmount(allowance.topUpRemainingCNY)}</span><button type="button" className="compute-link" onClick={() => onDrawer({ title: '企业额度详情', children: <DetailRows entries={[
           ['额度上限', formatAllowanceValue(allowance.limitCNY)], ['已使用', formatComputeAmount(allowance.usedCNY)], ['可用额度', remaining], ['追加余额', formatComputeAmount(allowance.topUpRemainingCNY)], ['日额度', formatAllowanceValue(allowance.dailyLimitCNY)], ['月额度', formatAllowanceValue(allowance.monthlyLimitCNY)],
         ]} /> })}>查看详情 <ChevronRight size={14} /></button></div>
@@ -95,7 +103,7 @@ function OverviewTab({ state, days, onDrawer }: { state: ReturnType<typeof useCo
         <div className="compute-wallet-stats"><div><span>累计充值</span><strong>{formatComputeAmount(wallet.totalDepositCNY)}</strong></div><div><span>累计消费</span><strong>{formatComputeAmount(wallet.totalConsumeCNY)}</strong></div></div>
         <div className="compute-card-foot"><button type="button" className="compute-link" onClick={() => onDrawer({ title: '个人钱包说明', children: <p className="compute-drawer-note">个人钱包用于企业额度不足时的个人自费扣费。充值与支付闭环暂未在客户端开放，钱包流水可在“个人钱包”页查看。</p> })}>了解更多 <ChevronRight size={14} /></button></div>
       </section>
-      <section className="compute-card compute-trend-card"><div className="compute-card-head"><div><span className="compute-eyebrow">近 {days} 天消费</span><h2>{formatComputeAmount(valueText(asRecord(breakdown).totals && asRecord(asRecord(breakdown).totals).costCNY, '0'))}</h2></div><span className="compute-card-icon green"><Coins size={20} /></span></div><TrendChart data={breakdown} /></section>
+      <section className="compute-card compute-trend-card"><div className="compute-card-head"><div><span className="compute-eyebrow">近 {days} 天消费</span><h2>{trend ? formatComputeAmount(valueText(asRecord(trend).totals && asRecord(asRecord(trend).totals).costCNY)) : '—'}</h2></div><span className="compute-card-icon green"><Coins size={20} /></span></div>{trendLoading ? <LoadingBlock /> : trendError ? <ErrorBlock message={trendError} onRetry={onRetryTrend} /> : <TrendChart data={trend} />}</section>
       <section className="compute-note-card"><div className="compute-note-icon"><CreditCard size={18} /></div><div><strong>额度分开计算</strong><p>企业额度、管理员追加余额和个人钱包分别展示。这里的余额不是下一次调用成功的承诺，最终以 SEP 平台扣费结果为准。</p></div></section>
     </div>
   )
@@ -136,7 +144,9 @@ export function ComputeCenterPage(): React.JSX.Element {
   const [drawer, setDrawer] = useState<DrawerState>(null)
   const state = useComputeCenter(tab)
   const [days, setDays] = useState<7 | 30 | 90>(30)
-  const trend = useMemo(() => (days === 30 ? state.overview.data?.breakdown ?? state.breakdown.data : state.breakdown.data ?? state.overview.data?.breakdown), [days, state.breakdown.data, state.overview.data?.breakdown])
-  const content = tab === 'overview' ? <OverviewTab state={{ ...state, overview: { ...state.overview, data: state.overview.data ? { ...state.overview.data, breakdown: trend ?? state.overview.data.breakdown } : null } }} days={days} onDrawer={setDrawer} /> : tab === 'usage' ? <UsageTab state={state} onDrawer={setDrawer} /> : <WalletTab state={state} onDrawer={setDrawer} />
+  const trend = useMemo(() => selectComputeBreakdown(days, state.overview.data?.breakdown, state.breakdown.data), [days, state.breakdown.data, state.overview.data?.breakdown])
+  const trendLoading = days === 30 ? state.overview.loading && !state.overview.data : state.breakdown.loading
+  const trendError = days === 30 ? state.overview.error : state.breakdown.error
+  const content = tab === 'overview' ? <OverviewTab state={state} days={days} trend={trend} trendLoading={trendLoading} trendError={trendError} onRetryTrend={() => days === 30 ? state.refresh() : state.loadBreakdown(days)} onDrawer={setDrawer} /> : tab === 'usage' ? <UsageTab state={state} onDrawer={setDrawer} /> : <WalletTab state={state} onDrawer={setDrawer} />
   return <div className="compute-page"><div className="compute-section-head"><div className="compute-tabs" role="tablist" aria-label="算力中心分区"><button type="button" role="tab" aria-selected={tab === 'overview'} className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button type="button" role="tab" aria-selected={tab === 'usage'} className={tab === 'usage' ? 'active' : ''} onClick={() => setTab('usage')}>消费明细</button><button type="button" role="tab" aria-selected={tab === 'wallet'} className={tab === 'wallet' ? 'active' : ''} onClick={() => setTab('wallet')}>个人钱包</button></div>{tab === 'overview' ? <button type="button" className="compute-refresh-button" onClick={() => { state.refresh(); if (days !== 30) state.loadBreakdown(days) }}><RefreshCw size={15} />刷新</button> : null}</div>{tab === 'overview' ? <div className="compute-range">{([7, 30, 90] as const).map(option => <button type="button" key={option} className={days === option ? 'active' : ''} onClick={() => { setDays(option); if (option !== 30) state.loadBreakdown(option) }}>{option} 天</button>)}</div> : null}{content}<DetailDrawer drawer={drawer} onClose={() => setDrawer(null)} /></div>
 }
