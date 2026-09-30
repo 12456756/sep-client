@@ -95,6 +95,8 @@ export function mapEnterpriseOrganization(
     nodes.push({
       id: departmentNodeId(department.id),
       name: department.name,
+      avatar: null,
+      avatarAsset: null,
       position: '部门',
       department: department.name,
       employeeIds: departmentSubscriptions,
@@ -114,6 +116,8 @@ export function mapEnterpriseOrganization(
     nodes.push({
       id: memberNodeId(member.id),
       name: member.name,
+      avatar: member.avatar,
+      avatarAsset: member.avatarAsset ?? null,
       position: member.position ?? '企业成员',
       department: member.departmentId ? (namesByDepartmentId.get(member.departmentId) ?? '') : '',
       employeeIds: [...memberSubscriptions],

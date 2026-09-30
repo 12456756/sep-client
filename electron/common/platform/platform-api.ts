@@ -289,8 +289,9 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
   return response.json() as Promise<RefreshResponse>
 }
 
-export function getSubscriptions(accessToken: string): Promise<Subscription[]> {
-  return getJson<Subscription[]>('/client/subscriptions', accessToken, 'subscriptions')
+export async function getSubscriptions(accessToken: string): Promise<Subscription[]> {
+  const data = await getJson<Subscription[]>('/client/subscriptions', accessToken, 'subscriptions')
+  return normalizeSubscriptions(data)
 }
 
 export async function getEmploymentToken(
@@ -418,13 +419,93 @@ async function deleteJson<T>(path: string, accessToken: string, resource: AuthAp
 }
 
 
+/**
+ * Web pages resolve root-relative image paths against their own origin. The Electron
+ * renderer is loaded from file://, so resolve platform-provided asset paths here,
+ * before the data crosses the IPC boundary. The platform currently stores user and
+ * enterprise images as paths such as /api/users/avatars/... and /api/enterprise/logos/....
+ */
+export function resolvePlatformAssetUrl(value: string | null | undefined): string | null | undefined {
+  if (value == null || value.length === 0) return value
+  try {
+    const baseUrl = value.startsWith('/assets/') ? config.SEP_ASSET_BASE_URL : config.SEP_BASE_URL
+    const resolved = new URL(value, baseUrl)
+    if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') return value
+    return resolved.href
+  } catch {
+    return value
+  }
+}
+
+type PlatformAvatarAsset = NonNullable<EnterpriseOverview['employees'][number]['avatarAsset']>
+type PlatformSubscriptionAvatarAsset = NonNullable<Subscription['template']['avatarAsset']>
+
+function normalizeAvatarAsset<T extends PlatformAvatarAsset | PlatformSubscriptionAvatarAsset>(asset: T | null | undefined): T | null | undefined {
+  if (asset == null) return asset
+  return {
+    ...asset,
+    portraitUrl: resolvePlatformAssetUrl(asset.portraitUrl) ?? asset.portraitUrl,
+    faceUrl: resolvePlatformAssetUrl(asset.faceUrl) ?? asset.faceUrl,
+  }
+}
+
+function normalizeEnterpriseOrganization(data: EnterpriseOrganization): EnterpriseOrganization {
+  return {
+    ...data,
+    enterprise: {
+      ...data.enterprise,
+      logo: resolvePlatformAssetUrl(data.enterprise.logo) ?? null,
+    },
+    employees: data.employees.map(employee => ({
+      ...employee,
+      avatar: resolvePlatformAssetUrl(employee.avatar) ?? null,
+      ...(employee.avatarAsset === undefined ? {} : { avatarAsset: normalizeAvatarAsset(employee.avatarAsset) }),
+    })),
+    members: data.members.map(member => ({
+      ...member,
+      avatar: resolvePlatformAssetUrl(member.avatar) ?? null,
+      ...(member.avatarAsset === undefined ? {} : { avatarAsset: normalizeAvatarAsset(member.avatarAsset) }),
+    })),
+  }
+}
+
+function normalizeEnterpriseOverview(data: EnterpriseOverview): EnterpriseOverview {
+  return {
+    ...data,
+    enterprise: {
+      ...data.enterprise,
+      logo: resolvePlatformAssetUrl(data.enterprise.logo) ?? null,
+    },
+    employees: data.employees.map(employee => ({
+      ...employee,
+      avatar: resolvePlatformAssetUrl(employee.avatar) ?? null,
+      ...(employee.avatarAsset === undefined ? {} : { avatarAsset: normalizeAvatarAsset(employee.avatarAsset) }),
+    })),
+  }
+}
+
+function normalizeSubscriptions(data: Subscription[]): Subscription[] {
+  return data.map(subscription => ({
+    ...subscription,
+    template: {
+      ...subscription.template,
+      avatar: resolvePlatformAssetUrl(subscription.template.avatar) ?? null,
+      ...(subscription.template.avatarAsset === undefined
+        ? {}
+        : { avatarAsset: normalizeAvatarAsset(subscription.template.avatarAsset) }),
+    },
+  }))
+}
+
 /** Enterprise scope is resolved by SEP from the access token, never from caller input. */
 export async function getEnterpriseOrganization(accessToken: string): Promise<EnterpriseOrganization> {
-  return enterpriseOrganizationSchema.parse(await getJson('/enterprise/organization', accessToken, 'organization'))
+  const data = enterpriseOrganizationSchema.parse(await getJson('/enterprise/organization', accessToken, 'organization'))
+  return normalizeEnterpriseOrganization(data)
 }
 
 export async function getEnterpriseOverview(accessToken: string): Promise<EnterpriseOverview> {
-  return enterpriseOverviewSchema.parse(await getJson('/enterprise/overview', accessToken, 'overview'))
+  const data = enterpriseOverviewSchema.parse(await getJson('/enterprise/overview', accessToken, 'overview'))
+  return normalizeEnterpriseOverview(data)
 }
 
 /** One save creates and submits a version. The caller must retain this key for retries. */

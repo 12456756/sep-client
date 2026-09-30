@@ -9,7 +9,7 @@
  * 但键盘一定要能用：把手上按 ↑ ↓ 就是上移下移。
  */
 
-import { ArrowRight, BookmarkPlus, GripVertical, Plus, X } from 'lucide-react';
+import { ArrowRight, BookmarkPlus, GripVertical, ListPlus, Plus, X } from 'lucide-react';
 import { useRef, useState } from 'react';
 import type { SiliconEmployee, WorkDraftStep } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
@@ -147,14 +147,6 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
 
       <div className="ent-mn">
         <div className="ent-mn-flow">
-          <input
-            className="ent-mn-goal"
-            value={goal}
-            placeholder="一句话说明这项工作要完成什么"
-            aria-label="工作目标"
-            onChange={event => { setGoal(event.target.value); setSaved(false); }}
-          />
-
           {steps.length ? (
             <ul className={`ent-mn-list${drag ? ' busy' : ''}`} ref={list}>
               {steps.map((step, index) => {
@@ -211,7 +203,10 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
               })}
             </ul>
           ) : (
-            <p className="ent-mn-blank">还没有员工。点下面的「添加员工」，选中的人会按先后顺序接着做。</p>
+            <div className="ent-mn-empty-state" aria-hidden="true">
+              <span className="ent-mn-empty-icon"><ListPlus size={22} strokeWidth={1.8} /></span>
+              <span>添加员工，开始编排</span>
+            </div>
           )}
 
           <div className="ent-mn-add">
@@ -247,8 +242,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
             />
           ) : (
             <>
-              <h2>这项工作</h2>
-              <p className="ent-mn-side-hint">点左边任意一位员工，这里就变成他那一步的配置。</p>
+              <h2>工作设置</h2>
               <label className="ent-mn-field">
                 <span>工作名称</span>
                 <input
@@ -266,43 +260,51 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
                   placeholder={'一行写一项，例如：\n客户资料在「客户/2026」文件夹\n上季度周报可以作为格式参考'}
                   onChange={event => { setMaterials(event.target.value); setSaved(false); }}
                 />
-                <small>写在这里的内容表示你确认可以交给员工使用，参与这项工作的每一位同事都能看到。</small>
               </label>
             </>
           )}
         </aside>
       </div>
 
-      <footer className="ent-arr-foot ent-mn-foot">
-        <div className="ent-mn-inline-settings">
-          <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
-          <RunSettingsBar
-            settings={settings}
-            models={models}
-            onChange={onSettingsChange}
-          />
+      <footer className="ent-mn-composer">
+        <input
+          className="ent-mn-goal"
+          value={goal}
+          placeholder="描述这项工作"
+          aria-label="工作目标"
+          onChange={event => { setGoal(event.target.value); setSaved(false); }}
+        />
+        <div className="ent-mn-composer-bar">
+          <div className="ent-mn-inline-settings">
+            <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
+            <RunSettingsBar
+              settings={settings}
+              models={models}
+              onChange={onSettingsChange}
+            />
+          </div>
+          <button
+            type="button"
+            className="ent-arr-second"
+            disabled={!steps.length || saved}
+            onClick={() => { onSave(draft()); setSaved(true); }}
+          >
+            <BookmarkPlus size={14} aria-hidden />
+            {saved ? '已保存' : '保存'}
+          </button>
+          <span className="ent-arr-gap" />
+          {problem ? <span className="ent-arr-problem">{problem}</span> : null}
+          <button
+            type="button"
+            className="ent-arr-primary"
+            disabled={busy || Boolean(problem)}
+            title={problem ?? undefined}
+            onClick={() => onStart(draft())}
+          >
+            {busy ? '安排中…' : '开始'}
+            <ArrowRight size={15} aria-hidden />
+          </button>
         </div>
-        <button
-          type="button"
-          className="ent-arr-second"
-          disabled={!steps.length || saved}
-          onClick={() => { onSave(draft()); setSaved(true); }}
-        >
-          <BookmarkPlus size={14} aria-hidden />
-          {saved ? '已存为常用' : '保存为常用'}
-        </button>
-        <span className="ent-arr-gap" />
-        {problem ? <span className="ent-arr-problem">{problem}</span> : null}
-        <button
-          type="button"
-          className="ent-arr-primary"
-          disabled={busy || Boolean(problem)}
-          title={problem ?? undefined}
-          onClick={() => onStart(draft())}
-        >
-          {busy ? '正在安排…' : '开始工作'}
-          <ArrowRight size={15} aria-hidden />
-        </button>
       </footer>
     </section>
   );
@@ -322,7 +324,7 @@ function StepForm({ step, employees, order, onPatch }: {
         <EmployeeFace employee={employee} name="还没有指定员工" size="md" round />
         <span>
           <strong>{employee?.name ?? '还没有指定员工'}</strong>
-          <small>{employee?.roleName ?? '在下面选一位同事'}</small>
+          <small>{employee?.roleName ?? '未指定'}</small>
         </span>
         <em>第 {order} 步</em>
       </header>
@@ -335,7 +337,6 @@ function StepForm({ step, employees, order, onPatch }: {
           placeholder="例如：整理 618 活动的销售数据"
           onChange={event => onPatch({ title: event.target.value })}
         />
-        <small>写清「要完成什么」，员工按这句话干活。</small>
       </label>
 
       <div className="ent-mn-pair">

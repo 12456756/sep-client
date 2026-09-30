@@ -13,7 +13,7 @@ import { conversationDocument } from './run-settings';
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ArrangementDraftDocument, ClientTask, ClientTaskMessage, EmployeeStatus, Subscription } from '../../shared/types';
+import type { ArrangementDraftDocument, ClientTask, ClientTaskMessage, EmployeeAvatarSource, EmployeeStatus, Subscription } from '../../shared/types';
 import {
   WORK_TEMPLATES,
   defaultPermissions,
@@ -210,6 +210,8 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   organizationEmployees: SiliconEmployee[];
   organizationStatus: 'loading' | 'ready' | 'empty' | 'error';
   organizationError: string | null;
+  /** Current human member's SEP avatar, if the organization endpoint provides it. */
+  currentUserAvatar: EmployeeAvatarSource | null;
   retryOrganization: () => void;
 
 }
@@ -358,16 +360,22 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const organizationEmployees = useMemo(() => organizationData
     ? mapOrganizationEmployees(organizationData, employees) : [], [organizationData, employees]);
 
+  const currentUserAvatar = useMemo(() => {
+    const member = organizationData?.members.find(item => item.userId === userId);
+    return member ? { name: member.name, avatar: member.avatar, avatarAsset: member.avatarAsset ?? null } : null;
+  }, [organizationData, userId]);
+
   const overview = useMemo<EnterpriseOverview>(() => ({
     id: enterpriseId,
-    name: enterpriseName,
-    mark: enterpriseName.slice(0, 1) || '企',
+    name: organizationData?.enterprise.name ?? enterpriseName,
+    logo: organizationData?.enterprise.logo ?? null,
+    mark: (organizationData?.enterprise.name ?? enterpriseName).slice(0, 1) || '企',
     // TODO 平台接口未开放：企业员工总数。至少不小于我可用的数量。
     totalEmployees: myEmployees.length,
     availableToMe: myEmployees.length,
     activeWorkCount: works.filter(work => work.status === 'running' || work.status === 'arranging').length,
     needsMeCount: works.filter(work => work.status === 'waiting-user' || work.status === 'failed').length,
-  }), [enterpriseId, enterpriseName, myEmployees.length, works]);
+  }), [enterpriseId, enterpriseName, organizationData, myEmployees.length, works]);
 
   /** 模板的默认参与员工按职能匹配到我可用的员工上。 */
   const templates = useMemo<WorkTemplate[]>(() => WORK_TEMPLATES.map(template => ({
@@ -771,7 +779,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     stopWork, retryWork, deleteWork, duplicateWork,
     saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,
-    organizationMembers, organizationEmployees, organizationStatus, organizationError,
+    organizationMembers, organizationEmployees, organizationStatus, organizationError, currentUserAvatar,
     retryOrganization: () => setOrganizationRetryKey(value => value + 1),
   };
 }

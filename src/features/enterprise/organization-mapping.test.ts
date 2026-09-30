@@ -89,6 +89,21 @@ describe('mapEnterpriseOrganization', () => {
 });
 
 
+it('preserves SEP human member avatar sources in the tree model', () => {
+    const source = fixture({
+      members: [{
+        id: 'member-current', userId: 'user-current', name: 'Current User', departmentId: 'dept-parent', position: 'Lead',
+        avatar: 'https://cdn.example.com/current.jpg',
+        avatarAsset: { id: 'asset-1', version: 'v1', portraitUrl: 'https://cdn.example.com/portrait.jpg', faceUrl: 'https://cdn.example.com/face.jpg' },
+      }],
+    });
+    const current = mapEnterpriseOrganization(source, 'user-current').find(item => item.id === 'member:member-current');
+
+    assert.equal(current?.avatar, 'https://cdn.example.com/current.jpg');
+    assert.deepEqual(current?.avatarAsset, source.members[0].avatarAsset);
+  });
+
+
 describe('organization directory display', () => {
   it('uses platform employees even if they are absent from the local subscription directory', () => {
     const employees = mapOrganizationEmployees(fixture(), []);

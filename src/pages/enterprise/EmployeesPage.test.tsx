@@ -42,9 +42,10 @@ it('employee detail retains chat and skills without organization metadata or arr
   assert.match(html, /模板版本 1.0/);
 });
 
-it('home employee card does not expose role or department in text or accessible labels', () => {
+it('home employee card exposes the employee role without organization hierarchy metadata', () => {
   const html = renderToStaticMarkup(createElement(EmployeeDeskCard, { employee, load: { done: 0, total: 0 }, working: false, flags: [], onOpen: () => undefined }));
-  assertNoEmployeeOrganization(html);
+  assert.match(html, /LEGACY_ROLE/);
+  assert.doesNotMatch(html, /LEGACY_DEPARTMENT/);
 });
 
 for (const compact of [false, true]) {

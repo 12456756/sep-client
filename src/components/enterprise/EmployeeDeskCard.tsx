@@ -12,9 +12,9 @@
  *    要知道是哪一项，点开卡片看抽屉里的清单。
  */
 
-import { BellRing, Hourglass, XCircle } from 'lucide-react';
+import { BellRing, BriefcaseBusiness, Clock3, Hourglass, Sparkles, XCircle } from 'lucide-react';
 import type { SiliconEmployee } from '../../features/enterprise/types';
-import { EMPLOYEE_AVAILABILITY } from '../../features/enterprise/vocabulary';
+import { EMPLOYEE_AVAILABILITY, relativeTime } from '../../features/enterprise/vocabulary';
 import { StatusChip } from './atoms';
 import { EmployeeFace } from './EmployeeFace';
 
@@ -57,6 +57,12 @@ export function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Pro
         <EmployeeFace employee={employee} size="card" variant="portrait" />
         <span className="ent-desk-id">
           <strong title={employee.name}>{employee.name}</strong>
+          {employee.roleName ? (
+            <span className="ent-desk-role" title={employee.roleName}>
+              <BriefcaseBusiness size={12} aria-hidden />
+              {employee.roleName}
+            </span>
+          ) : null}
           <span className="ent-desk-state">
             <StatusChip {...state} />
             {flags.map(flag => {
@@ -68,9 +74,13 @@ export function EmployeeDeskCard({ employee, load, working, flags, onOpen }: Pro
       </button>
 
       <div className="ent-desk-load">
-        今日工作
+        <span className="ent-desk-load-label"><Clock3 size={12} aria-hidden />今日工作</span>
         <b>{load.total ? `${load.done} / ${load.total}` : '暂无'}</b>
+        {employee.skillIds.length ? (
+          <span className="ent-desk-skill-count" title={`已配置 ${employee.skillIds.length} 项技能`}><Sparkles size={12} aria-hidden />{employee.skillIds.length}</span>
+        ) : null}
       </div>
+      <span className="ent-desk-last-worked">{employee.lastWorkedAt ? `最近工作 ${relativeTime(employee.lastWorkedAt)}` : '准备接受新工作'}</span>
       <span className="ent-desk-track" role="img" aria-label={load.total ? `今日已完成 ${load.done} / ${load.total} 项工作` : '今天还没有派活'}>
         {/* full：今天的活全做完了，斜纹就停下 —— 到头了还在流动等于说还在推进。 */}
         <i className={percent >= 100 ? 'full' : undefined} style={{ width: `${percent}%` }} />

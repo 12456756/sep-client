@@ -614,6 +614,8 @@
 .ent-desk-open { display: flex; flex: 1; align-items: flex-start; gap: 10px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
 .ent-desk-id { display: flex; min-width: 0; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 2px; }
 .ent-desk-id strong { max-width: 100%; overflow: hidden; font-size: var(--ent-fs-title); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-desk-role { display: inline-flex; max-width: 100%; align-items: center; gap: 4px; overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
+.ent-desk-role svg { flex: 0 0 auto; color: var(--ent-brand-ink); }
 .ent-desk-id small { max-width: 100%; overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
 .ent-desk-id .ent-desk-state { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 2px; }
 /*
@@ -631,6 +633,9 @@
 /* 今日工作一行 + 贴着卡片下沿的进度条，和设计稿一样。 */
 .ent-desk-load { display: flex; align-items: baseline; gap: 8px; padding-top: 8px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-desk-load b { margin-left: auto; color: var(--ent-ink-2); font-weight: 600; font-variant-numeric: tabular-nums; }
+.ent-desk-load-label, .ent-desk-skill-count { display: inline-flex; align-items: center; gap: 4px; }
+.ent-desk-skill-count { color: var(--ent-brand-ink); }
+.ent-desk-last-worked { overflow: hidden; color: var(--ent-ink-3); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .ent-desk-track { display: block; height: 5px; border-radius: 999px; background: var(--ent-track); overflow: hidden; }
 /* 填充的配色与流动在下面的 .ent-bar 那一段里，两条进度条共用同一套。 */
 .ent-desk-track i { display: block; height: 100%; border-radius: inherit; transition: width var(--ent-ease); }
@@ -1968,6 +1973,8 @@
 .ent-home-employee-row .ent-desk-id small { font-size: 10px; }
 .ent-home-employee-row .ent-desk-id .ent-desk-state { margin-top: 0; }
 .ent-home-employee-row .ent-desk-load { padding-top: 5px; font-size: 10px; }
+.ent-home-employee-row .ent-desk-last-worked { margin-top: -4px; }
+.ent-home-employee-row .ent-desk-load-label { min-width: 0; }
 .ent-home-employee-row .ent-desk-track { height: 4px; }
 .ent-home-roster-empty { display: flex; min-height: 54px; align-items: center; gap: 8px; padding: 0 12px; border: 1px dashed var(--ent-line-strong); border-radius: var(--ent-radius); color: var(--ent-ink-2); background: var(--ent-panel); font-size: var(--ent-fs-note); }
 .ent-home-roster-empty svg { color: var(--ent-ink-3); }
@@ -2198,4 +2205,315 @@
   .org-tree-collapsed-summary,
   .org-tree-silicon-node,
   .org-tree-silicon-collapsed { animation: none; }
+}
+
+/* ── 首页新工作台布局：欢迎区 + 统计卡 + 单排员工墙 + 快速派活 ─────── */
+.ent-home-welcome { min-width: 0; }
+.ent-home-welcome h1 { display: flex; align-items: center; gap: 6px; }
+.ent-home-welcome h1 span { display: inline-block; font-size: .82em; transform: translateY(1px); }
+.ent-home-welcome p { margin-top: 5px; }
+
+.ent-home-summary { display: grid; width: min(100%, 500px); grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ent-home-summary button { min-height: 74px; display: flex; flex-direction: row; align-items: center; gap: 11px; padding: 12px 14px; }
+.ent-home-summary-icon { display: grid; width: 38px; height: 38px; flex: 0 0 38px; place-items: center; border-radius: 11px; }
+.ent-home-summary-icon.employees { color: var(--ent-brand-ink); background: var(--ent-brand-soft); }
+.ent-home-summary-icon.mine { color: var(--ent-accent-ink); background: var(--ent-accent-soft); }
+.ent-home-summary-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 3px; }
+.ent-home-summary-copy strong { font-size: 21px; line-height: 1; }
+.ent-home-summary-copy span { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-home-summary button > svg { margin-left: auto; }
+.ent-home-summary button:first-child strong { color: var(--ent-brand-ink); }
+.ent-home-summary button:nth-child(2) strong { color: var(--ent-accent-ink); }
+
+.ent-home-employees-title > svg { color: var(--ent-brand-ink); }
+.ent-home-employee-row { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.ent-home-employee-row .ent-desk { min-height: 164px; gap: 10px; padding: 13px; border-radius: 12px; box-shadow: var(--ent-shadow-card); }
+.ent-home-employee-row .ent-desk-open { gap: 11px; }
+.ent-home-employee-row .ent-face { width: 58px; height: 70px; border-radius: 12px; }
+.ent-home-employee-row .ent-desk-id { gap: 5px; padding-top: 3px; }
+.ent-home-employee-row .ent-desk-id strong { font-size: 14px; }
+.ent-home-employee-row .ent-desk-id small { font-size: 11px; }
+.ent-home-employee-row .ent-desk-id .ent-desk-state { margin-top: 1px; gap: 5px; }
+.ent-home-employee-row .ent-desk-load { align-items: center; gap: 7px; padding-top: 9px; font-size: 11px; }
+.ent-home-employee-row .ent-desk-track { height: 5px; }
+
+.ent-home > .ent-arrangebar { margin-top: auto; }
+.ent-home .ent-arrangebar-card { box-shadow: 0 8px 24px rgb(40 50 90 / 7%); }
+
+@media (max-width: 920px) {
+  .ent-home-employee-row { gap: 8px; }
+  .ent-home-employee-row .ent-desk { padding: 10px; }
+  .ent-home-employee-row .ent-face { width: 48px; height: 59px; }
+}
+@media (max-width: 680px) {
+  .ent-home-summary { width: 100%; }
+  .ent-home-employee-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ent-home-employee-row .ent-face { width: 44px; height: 54px; }
+}
+.ent-home-content { height: auto; flex: 1 1 auto; grid-template-rows: auto auto minmax(0, 1fr); }
+
+/* ── 首页布局修正：顶部信息同层，内容按自然高度收束 ─────────────────────
+ * 之前首页用「三行撑满 + 派活框贴底」的固定首屏布局，欢迎区、统计卡和员工墙
+ * 被推到不同的视觉层级，员工卡下面也会留下无法解释的空白。这里改成工作台式
+ * 的自然流：顶部欢迎与统计同层，员工墙紧跟其后，派活框与员工墙保持同一节奏。
+ */
+.ent-scroll:has(.ent-home) {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+.ent-page.ent-home {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+  padding: 18px 28px 20px;
+}
+.ent-home-content {
+  display: grid;
+  height: auto;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  grid-template-rows: auto auto;
+  grid-template-areas:
+    'heading summary'
+    'main main';
+  align-items: start;
+  gap: 20px 28px;
+  overflow: visible;
+}
+.ent-home-heading {
+  grid-area: heading;
+  align-items: flex-start;
+  justify-content: flex-start;
+  min-height: 76px;
+  padding: 4px 0 0;
+}
+.ent-home-summary {
+  grid-area: summary;
+  width: auto;
+  align-self: stretch;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.ent-home-summary button {
+  min-height: 76px;
+}
+.ent-home-main {
+  grid-area: main;
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  gap: 18px;
+  overflow: visible;
+}
+.ent-home-employees {
+  flex: 0 0 auto;
+  gap: 10px;
+}
+.ent-home-employee-row {
+  flex: 0 0 auto;
+}
+.ent-home > .ent-arrangebar {
+  position: static;
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 0;
+  background: transparent;
+}
+.ent-home > .ent-arrangebar::before {
+  display: none;
+}
+.ent-home .ent-arrangebar-card {
+  box-shadow: var(--ent-shadow-card);
+}
+
+@media (max-width: 860px) {
+  .ent-page.ent-home {
+    padding: 16px 20px 20px;
+  }
+  .ent-home-content {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      'heading'
+      'summary'
+      'main';
+    gap: 14px;
+  }
+  .ent-home-heading {
+    min-height: 0;
+  }
+  .ent-home-summary {
+    width: min(100%, 520px);
+  }
+}
+
+@media (max-width: 520px) {
+  .ent-page.ent-home {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+  .ent-home-content {
+    gap: 12px;
+  }
+  .ent-home-summary {
+    width: 100%;
+  }
+  .ent-home-summary button {
+    min-height: 68px;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+}
+
+/* 首页最终收束：所有模块按内容高度排列，禁止 flex/grid 把员工区撑成大空白。 */
+.ent-home-content {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: stretch;
+  gap: clamp(14px, 2.2vh, 22px);
+  align-content: flex-start;
+}
+.ent-home-heading,
+.ent-home-summary,
+.ent-home-main {
+  width: 100%;
+  grid-area: auto;
+}
+.ent-home-heading {
+  min-height: 0;
+}
+.ent-home-summary {
+  width: min(100%, 520px);
+  align-self: flex-start;
+}
+.ent-home-main {
+  gap: clamp(14px, 2vh, 18px);
+}
+.ent-home-employees {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 860px) {
+  .ent-home-summary { width: min(100%, 520px); }
+}
+@media (max-width: 520px) {
+  .ent-home-summary { width: 100%; }
+}
+
+/* 首页会话区复用“安排工作 · 会话”的同一套 Composer，不再与员工墙贴成一块。 */
+.ent-home-composer {
+  width: min(820px, 100%);
+  min-width: 0;
+  margin: 26px auto 0;
+  padding-top: 22px;
+  border-top: 1px solid var(--ent-line-soft);
+}
+.ent-home-composer .ent-arr-chat {
+  width: 100%;
+  flex: 0 0 auto;
+  align-self: stretch;
+  padding-bottom: 0;
+}
+.ent-home-composer .ent-arr-empty-state {
+  display: none;
+}
+.ent-home-composer .ent-chat-ask {
+  width: 100%;
+  box-shadow: 0 10px 30px rgb(35 45 75 / 7%);
+}
+.ent-home-composer .ent-rs-directory {
+  margin-bottom: 10px;
+}
+
+@media (max-width: 760px) {
+  .ent-home-composer {
+    margin-top: 20px;
+    padding-top: 16px;
+  }
+}
+
+/* 首页员工墙：完整列表在同一条轨道内浏览，轨道外的按钮不改变内容对齐线。 */
+.ent-home-employee-carousel {
+  position: relative;
+  min-width: 0;
+  padding: 0 22px;
+}
+.ent-home-employee-viewport {
+  min-width: 0;
+  overflow: hidden;
+}
+.ent-home-employee-row {
+  display: flex;
+  min-width: 0;
+  gap: 12px;
+  padding: 3px 2px 9px;
+  overflow-x: auto;
+  scroll-behavior: smooth;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  touch-action: pan-x;
+  cursor: grab;
+}
+.ent-home-employee-row::-webkit-scrollbar { display: none; }
+.ent-home-employee-carousel.is-dragging .ent-home-employee-row {
+  scroll-behavior: auto;
+  cursor: grabbing;
+  user-select: none;
+}
+.ent-home-employee-slide {
+  flex: 0 0 calc((100% - 36px) / 4);
+  min-width: 0;
+  scroll-snap-align: start;
+}
+.ent-home-employee-slide .ent-desk { height: 100%; }
+.ent-home-carousel-arrow {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  color: var(--ent-ink-2);
+  border: 1px solid var(--ent-line);
+  border-radius: 50%;
+  background: var(--ent-panel);
+  box-shadow: 0 4px 12px rgb(32 35 43 / 8%);
+  transform: translateY(-50%);
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease, opacity 160ms ease;
+}
+.ent-home-carousel-arrow:hover:not(:disabled) {
+  color: var(--ent-brand-ink);
+  border-color: var(--ent-brand-border);
+  background: var(--ent-brand-softer);
+}
+.ent-home-carousel-arrow:disabled {
+  cursor: default;
+  opacity: .35;
+}
+.ent-home-carousel-arrow.left { left: 0; }
+.ent-home-carousel-arrow.right { right: 0; }
+
+/* 会话 Composer 与员工墙共用首页内容宽度，避免底部形成另一条视觉边界。 */
+.ent-home-composer {
+  width: 100%;
+  max-width: none;
+  margin: 26px 0 0;
+}
+.ent-home-composer .ent-arr-chat,
+.ent-home-composer .ent-chat-ask { width: 100%; }
+
+@media (max-width: 1100px) {
+  .ent-home-employee-slide { flex-basis: calc((100% - 24px) / 3); }
+}
+@media (max-width: 760px) {
+  .ent-home-employee-carousel { padding: 0 18px; }
+  .ent-home-employee-row { gap: 10px; }
+  .ent-home-employee-slide { flex-basis: calc((100% - 12px) / 2); }
+  .ent-home-carousel-arrow { width: 29px; height: 29px; }
+  .ent-home-composer { margin-top: 20px; }
+}
+@media (max-width: 430px) {
+  .ent-home-employee-slide { flex-basis: 82%; }
 }

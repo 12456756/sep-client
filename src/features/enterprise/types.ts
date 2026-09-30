@@ -13,6 +13,8 @@ import type { WorkActivity } from '../../shared/work-activity'
 export interface EnterpriseOverview {
   id: string;
   name: string;
+  /** 企业 Logo URL，来自 SEP 组织接口；无图时使用 mark。 */
+  logo: string | null;
   /** 企业标识文字，取企业名首字，用于顶栏方形标记。 */
   mark: string;
   /** 企业硅基员工总数。平台接口未开放，暂由占位数据提供。 */

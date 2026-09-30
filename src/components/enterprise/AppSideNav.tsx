@@ -14,17 +14,20 @@
 import { Building2, ChevronUp, ClipboardList, GraduationCap, LayoutGrid, ListTodo, LogOut, Settings, ShieldCheck, Users } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { AppRoute, AppRouteName } from '../../features/enterprise/types';
+import type { EmployeeAvatarSource } from '../../shared/types';
 import { EmployeeFace } from './EmployeeFace';
 
 interface Props {
   enterpriseName: string;
   enterpriseMark: string;
+  enterpriseLogo?: string | null;
   current: AppRouteName;
   /** 待我确认或需要重试的工作数量，挂在「工作记录」右侧。 */
   needsMeCount: number;
   /** 是否为企业管理员。普通成员看不到管理入口。 */
   canManage: boolean;
   userName: string;
+  userAvatar?: EmployeeAvatarSource | null;
   onNavigate: (route: AppRoute) => void;
   onLogout: () => void;
 }
@@ -46,10 +49,13 @@ function isActive(item: AppRouteName, current: AppRouteName): boolean {
 }
 
 export function AppSideNav({
-  enterpriseName, enterpriseMark, current, needsMeCount, canManage, userName, onNavigate, onLogout,
+  enterpriseName, enterpriseMark, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, onNavigate, onLogout,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [logoFailed, setLogoFailed] = useState(false);
   const account = useRef<HTMLDivElement>(null);
+
+  useEffect(() => setLogoFailed(false), [enterpriseLogo]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -68,7 +74,15 @@ export function AppSideNav({
   return (
     <nav className="ent-side" aria-label="主导航">
       <div className="ent-side-brand electron-drag-region">
-        <span className="ent-mark" aria-hidden>{enterpriseMark}</span>
+        {enterpriseLogo && !logoFailed ? (
+          <img
+            className="ent-enterprise-logo"
+            src={enterpriseLogo}
+            alt=""
+            aria-hidden
+            onError={() => setLogoFailed(true)}
+          />
+        ) : <span className="ent-mark" aria-hidden>{enterpriseMark}</span>}
         <strong title={enterpriseName}>{enterpriseName}</strong>
       </div>
 
@@ -117,7 +131,7 @@ export function AppSideNav({
           aria-expanded={menuOpen}
           aria-haspopup="menu"
         >
-          <EmployeeFace name={userName} size="sm" round />
+          <EmployeeFace employee={userAvatar} name={userName} size="sm" round />
           <span>
             <strong title={userName}>{userName}</strong>
             <small>我的账号</small>

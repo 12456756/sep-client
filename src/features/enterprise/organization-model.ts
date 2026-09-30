@@ -1,3 +1,4 @@
+import type { EmployeeAvatarAsset } from '../../shared/types';
 import type { EmployeeAvailability, SiliconEmployee } from './types';
 
 export type OrganizationAvailabilityFilter = '' | EmployeeAvailability;
@@ -7,6 +8,9 @@ export type OrganizationCarbonKind = 'root' | 'department' | 'leader' | 'member'
 export interface OrganizationCarbonEmployee {
   id: string;
   name: string;
+  /** SEP-provided human member avatar; absent for enterprise/department nodes. */
+  avatar?: string | null;
+  avatarAsset?: EmployeeAvatarAsset | null;
   position: string;
   department: string;
   employeeIds: string[];

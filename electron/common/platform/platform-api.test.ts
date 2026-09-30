@@ -36,6 +36,53 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.match(urls[1]!, /\/enterprise\/overview$/)
   })
 
+  it('resolves web root-relative enterprise and member assets for the Electron renderer', async () => {
+    const organization = {
+      ...overview,
+      enterprise: { ...overview.enterprise, logo: '/api/enterprise/logos/company.png' },
+      employees: [{
+        ...overview.employees[0]!,
+        avatar: '/api/employees/employee.png',
+        avatarAsset: {
+          id: 'employee:employee-1:default', version: 'v1',
+          portraitUrl: '/assets/employees/employee.webp', faceUrl: '/assets/employees/employee-face.webp',
+        },
+      }],
+      departments: [],
+      members: [{
+        id: 'member-1', userId: 'user-1', name: 'Member', departmentId: null, position: null,
+        avatar: '/api/users/avatars/member.png', avatarAsset: null,
+      }],
+      grants: [],
+    }
+    globalThis.fetch = async () => response(organization)
+
+    const result = await api.getEnterpriseOrganization('access')
+    assert.equal(result.enterprise.logo, 'https://longdaosep.cn/api/enterprise/logos/company.png')
+    assert.equal(result.employees[0]?.avatar, 'https://longdaosep.cn/api/employees/employee.png')
+    assert.equal(result.employees[0]?.avatarAsset?.faceUrl, 'https://longdaosep.cn/assets/employees/employee-face.webp')
+    assert.equal(result.members[0]?.avatar, 'https://longdaosep.cn/api/users/avatars/member.png')
+  })
+
+  it('resolves subscription employee assets before they reach the renderer', async () => {
+    const subscriptions = [{
+      id: 'sub-1', subscriptionId: 'sub-1', employeeId: 'employee-1', name: 'Employee', status: 'ACTIVE',
+      templateVersion: 'v1', department: null, allowedModels: [], upgradeAvailable: false,
+      template: {
+        id: 'employee-1', name: 'Employee', avatar: '/assets/employees/employee.webp',
+        avatarAsset: {
+          id: 'employee:employee-1:default', version: 'v1',
+          portraitUrl: '/assets/employees/employee.webp', faceUrl: '/assets/employees/employee-face.webp',
+        },
+      },
+    }]
+    globalThis.fetch = async () => response(subscriptions)
+
+    const result = await api.getSubscriptions('access')
+    assert.equal(result[0]?.template.avatar, 'https://longdaosep.cn/assets/employees/employee.webp')
+    assert.equal(result[0]?.template.avatarAsset?.faceUrl, 'https://longdaosep.cn/assets/employees/employee-face.webp')
+  })
+
   it('uploads full source and reuses caller-owned idempotency key unchanged', async () => {
     const request = { capabilityId: 'cap-1', parentVersionId: 'published-1', content: '---\r\nname: skill\r\n---\r\n\r\n# Source  \r\n\t', changeSummary: 'Update' }
     const key = '902a70ec-b23d-4ec0-82c8-73450fe778a9'

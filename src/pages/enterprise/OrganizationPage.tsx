@@ -448,7 +448,7 @@ function MemberRelationRow({
           aria-expanded={usableEmployees.length ? siliconExpanded : undefined}
           aria-label={`${member.name}${usableEmployees.length ? (siliconExpanded ? "，收起硅基员工" : "，展开硅基员工") : ""}`}
         >
-          <EmployeeFace name={member.name} size="sm" round />
+          <EmployeeFace employee={member} name={member.name} size="sm" round />
           <span className="org-tree-node-copy">
             <strong>
               {member.name}

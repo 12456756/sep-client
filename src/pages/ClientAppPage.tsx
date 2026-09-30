@@ -76,7 +76,7 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   const head = useMemo<{ title: string; breadcrumb?: readonly string[]; subtitle?: string } | null>(() => {
     switch (route.name) {
       case 'organization': return { title: '企业组织', breadcrumb: ['企业'], subtitle: `${overview.name} · 企业成员与硅基员工关系` };
-      case 'home': return { title: '个人工作台', breadcrumb: ['个人'] };
+      case 'home': return null;
       case 'work': return null;
       case 'arrange': return { title: '安排工作', breadcrumb: ['个人', '安排工作'] };
       case 'employees': return { title: '硅基员工', breadcrumb: ['个人'], subtitle: `企业共 ${overview.totalEmployees} 位，其中 ${overview.availableToMe} 位已分配给你` };
