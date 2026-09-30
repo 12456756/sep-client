@@ -4,7 +4,7 @@ export const clientProfileSchema = z.object({
   user: z.object({
     id: z.string(),
     email: z.string(),
-    name: z.string(),
+    name: z.string().nullable(),
     avatar: z.string().nullable(),
     role: z.string(),
   }).passthrough(),

@@ -14,6 +14,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
+import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
+import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
@@ -44,8 +46,16 @@ interface Props {
 
 export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
+  const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
-  const userAvatar = workspace.currentUserAvatar ?? initialUserAvatar ?? null;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const profile = profileWorkspace.profile;
+  const userAvatar = profile
+    ? { name: profile.user.name || userName, avatar: profile.user.avatar }
+    : workspace.currentUserAvatar ?? initialUserAvatar ?? null;
+  const displayUserName = profile?.user.name || userName;
+  const displayEnterpriseName = profile ? profile.enterprise?.name || '我的企业' : overview.name;
+  const displayEnterpriseLogo = profile ? profile.enterprise?.logo ?? null : overview.logo;
   const scroll = useRef<HTMLDivElement | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
@@ -96,15 +106,16 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   return (
     <div className={`ent-shell${darkMode ? ' dark' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
-        enterpriseName={overview.name}
-        enterpriseMark={overview.mark}
-        enterpriseLogo={overview.logo}
+        enterpriseName={displayEnterpriseName}
+        enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
+        enterpriseLogo={displayEnterpriseLogo}
         current={route.name}
         needsMeCount={overview.needsMeCount}
         canManage={canManage}
-        userName={userName}
+        userName={displayUserName}
         userAvatar={userAvatar}
         onNavigate={workspace.navigate}
+        onOpenSettings={() => setSettingsOpen(true)}
         onLogout={() => { void onLogout(); }}
       />
       <div className="ent-shell-main">
@@ -189,6 +200,19 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
           />
         ) : null}
       </div>
+      {settingsOpen ? (
+        <ProfileSettingsDialog
+          profile={profile}
+          userName={userName}
+          canManage={canManage}
+          uploading={profileWorkspace.uploading}
+          error={profileWorkspace.error}
+          onUploadAvatar={profileWorkspace.uploadAvatar}
+          onUploadLogo={profileWorkspace.uploadLogo}
+          onRefresh={profileWorkspace.refresh}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }

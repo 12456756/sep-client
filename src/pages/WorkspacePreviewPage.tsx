@@ -36,6 +36,7 @@ export function WorkspacePreviewPage(): JSX.Element {
         canManage={false}
         userName="未登录"
         onNavigate={setRoute}
+        onOpenSettings={() => undefined}
         onLogout={() => setRoute({ name: 'home' })}
       />
       <div className="ent-shell-main">

@@ -29,6 +29,7 @@ interface Props {
   userName: string;
   userAvatar?: EmployeeAvatarSource | null;
   onNavigate: (route: AppRoute) => void;
+  onOpenSettings: () => void;
   onLogout: () => void;
 }
 
@@ -50,7 +51,7 @@ function isActive(item: AppRouteName, current: AppRouteName): boolean {
 }
 
 export function AppSideNav({
-  enterpriseName, enterpriseMark, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, onNavigate, onLogout,
+  enterpriseName, enterpriseMark, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, onNavigate, onOpenSettings, onLogout,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
@@ -141,7 +142,7 @@ export function AppSideNav({
         </button>
         {menuOpen ? (
           <div className="ent-side-menu" role="menu">
-            <button type="button" role="menuitem" onClick={() => setMenuOpen(false)}>
+            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onOpenSettings(); }}>
               <Settings size={13} aria-hidden />
               设置
             </button>
