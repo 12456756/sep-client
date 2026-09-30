@@ -1,6 +1,6 @@
 import { config } from '../config'
 import {
-  enterpriseOrganizationSchema, enterpriseOverviewSchema, skillVersionSchema,
+  enterpriseOrganizationSchema, enterpriseOverviewSchema, platformEmployeePageSchema, employeeAccessRequestSchema, employeeAccessRequestInputSchema, skillVersionSchema,
   personalSkillVersionRequestSchema, idempotencyKeySchema, skillVersionQuerySchema,
   skillVersionReviewQuerySchema, skillVersionReviewRequestSchema, skillVersionIdSchema,
   skillVersionListSchema, skillVersionReviewPageSchema,
@@ -21,7 +21,7 @@ import type {
   ComputeUsageBreakdown, ComputePageQuery, ComputeUsageQuery,
 } from '../../../src/shared/compute-credit-contracts'
 import type {
-  EnterpriseOrganization, EnterpriseOverview, SkillVersion, PersonalSkillVersionRequest,
+  EnterpriseOrganization, EnterpriseOverview, PlatformEmployeePage, EmployeeAccessRequest, EmployeeAccessRequestInput, SkillVersion, PersonalSkillVersionRequest,
   SkillVersionQuery, SkillVersionReviewQuery, SkillVersionReviewRequest, SkillVersionReviewPage,
 } from '../../../src/shared/platform-supplement-contracts'
 import type {
@@ -29,7 +29,7 @@ import type {
   PersonalRechargeRequest, PersonalRechargeStatusResponse, UserAvatarUploadResponse,
 } from '../../../src/shared/profile-wallet-contracts'
 export type {
-  EnterpriseOrganization, EnterpriseOverview, SkillVersion, PersonalSkillVersionRequest,
+  EnterpriseOrganization, EnterpriseOverview, PlatformEmployeePage, EmployeeAccessRequest, EmployeeAccessRequestInput, SkillVersion, PersonalSkillVersionRequest,
   SkillVersionQuery, SkillVersionReviewQuery, SkillVersionReviewRequest, SkillVersionReviewPage,
 } from '../../../src/shared/platform-supplement-contracts'
 export type {
@@ -227,6 +227,8 @@ type AuthApiResource =
   | 'compute-credit'
   | 'personal-wallet'
   | 'profile'
+  | 'employee-directory'
+  | 'employee-access-requests'
 
 export class AuthApiError extends Error {
   constructor(
@@ -475,6 +477,28 @@ async function deleteJson<T>(path: string, accessToken: string, resource: AuthAp
 /** Enterprise scope is resolved by SEP from the access token, never from caller input. */
 export async function getEnterpriseOrganization(accessToken: string): Promise<EnterpriseOrganization> {
   return enterpriseOrganizationSchema.parse(await getJson('/enterprise/organization', accessToken, 'organization'))
+}
+
+export async function getPlatformEmployees(
+  accessToken: string,
+  params: { keyword?: string; capabilityId?: string; functionalCategory?: string; page?: number; pageSize?: number; sort?: 'updatedAt_desc' | 'createdAt_desc' | 'name_asc' } = {},
+): Promise<PlatformEmployeePage> {
+  const query = platformQuery(params)
+  return platformEmployeePageSchema.parse(await getJson('/client/platform-employees' + query, accessToken, 'employee-directory'))
+}
+
+export async function createEmployeeAccessRequest(
+  request: EmployeeAccessRequestInput,
+  idempotencyKey: string,
+  accessToken: string,
+): Promise<EmployeeAccessRequest> {
+  const body = employeeAccessRequestInputSchema.parse(request)
+  const key = idempotencyKeySchema.parse(idempotencyKey)
+  return employeeAccessRequestSchema.parse(await postJson('/client/employee-access-requests', body, accessToken, 'employee-access-requests', key))
+}
+
+export async function getEmployeeAccessRequest(requestId: string, accessToken: string): Promise<EmployeeAccessRequest> {
+  return employeeAccessRequestSchema.parse(await getJson('/client/employee-access-requests/' + encodeURIComponent(requestId), accessToken, 'employee-access-requests'))
 }
 
 export async function getEnterpriseOverview(accessToken: string): Promise<EnterpriseOverview> {

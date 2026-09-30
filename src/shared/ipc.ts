@@ -194,6 +194,18 @@ export interface CancelArrangementPlanningInput {
   planningId: string
 }
 
+export interface RequestEmployeeAccessInput {
+  draftId: string
+  expectedRevision: number
+  stepId: string
+  employeeId: string
+}
+
+export interface GetEmployeeAccessRequestInput {
+  draftId: string
+  requestId: string
+}
+
 export interface ArrangementPlanningStartResult extends IpcCommandResult {
   draftId?: string
   planningId?: string
@@ -266,6 +278,8 @@ export interface ElectronAPI {
   confirmAndStartArrangement: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<{ success: boolean; plan?: ArrangementPlanSnapshot; execution?: { id: string; status: 'queued' | 'running' }; error?: TaskError }>
   planArrangementDraft: (input: PlanArrangementDraftInput) => Promise<ArrangementPlanningStartResult>
   cancelArrangementPlanning: (input: CancelArrangementPlanningInput) => Promise<ArrangementPlanningCancelResult>
+  requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>
+  getEmployeeAccessRequest: (input: GetEmployeeAccessRequestInput) => Promise<ArrangementDraftResult>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: () => Promise<SelectDirectoryResult>

@@ -98,6 +98,8 @@ const electronAPI = {
   confirmAndStartArrangement: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_AND_START, input),
   planArrangementDraft: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PLAN_DRAFT, input),
   cancelArrangementPlanning: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CANCEL_PLAN, input),
+  requestEmployeeAccess: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_REQUEST_EMPLOYEE_ACCESS, input),
+  getEmployeeAccessRequest: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_EMPLOYEE_ACCESS_REQUEST, input),
 } satisfies ElectronAPI;
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

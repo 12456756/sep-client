@@ -14,6 +14,7 @@ const approvalMode = z.enum(['confirm-each', 'auto-approve'])
 const participant = z.object({ subscriptionId: z.string().min(1), modelId: z.string().min(1) })
 const node = z.object({
   id: z.string().min(1),
+  stepId: z.string().min(1).optional(),
   subscriptionId: z.string().min(1),
   modelId: z.string().min(1),
   title: z.string(),
@@ -35,7 +36,7 @@ const permissions = z.object({
 const draftDocument = z.object({
   schemaVersion: z.literal(1),
   mode,
-  status: z.enum(['editing', 'planning', 'planning-failed', 'ready', 'preflight-failed', 'confirmed']),
+  status: z.enum(['editing', 'planning', 'planning-failed', 'awaiting-employee', 'ready', 'preflight-failed', 'confirmed']),
   title: z.string(),
   goal: z.string(),
   confirmedInputs: z.array(z.string()),
@@ -45,6 +46,26 @@ const draftDocument = z.object({
     activeSubscriptionId: z.string().nullable(),
   }).nullable(),
   nodes: z.array(node),
+  intentAnalysis: z.object({
+    summary: z.string(),
+    steps: z.array(z.object({
+      id: z.string().min(1), title: z.string(), requiredCapabilities: z.array(z.string()), dependsOn: z.array(z.string()),
+    })),
+  }).nullable().optional(),
+  unresolvedSteps: z.array(z.object({
+    stepId: z.string().min(1), reason: z.string(), requiredCapabilities: z.array(z.string()),
+  })).optional(),
+  candidateMatches: z.array(z.object({
+    stepId: z.string().min(1), employeeId: z.string().min(1), subscriptionId: z.string().nullable(),
+    source: z.enum(['enterprise', 'platform']), name: z.string(), rationale: z.string(),
+    canExecute: z.literal(false), canApply: z.literal(true),
+  })).optional(),
+  employeeAccessRequests: z.array(z.object({
+    requestId: z.string().min(1), stepId: z.string().min(1), employeeId: z.string().min(1),
+    subscriptionId: z.string().nullable(), source: z.enum(['enterprise', 'platform']), name: z.string(),
+    status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']), requestedCapabilities: z.array(z.string()),
+    createdAt: z.string(), updatedAt: z.string(), message: z.string().optional(),
+  })).optional(),
   workspace,
   permissions,
   lastPlanning: z.object({
@@ -65,6 +86,8 @@ const updateInput = z.object({
 const confirmInput = z.object({ draftId, expectedRevision: revision, idempotencyKey: z.string().min(1).max(256) })
 const planInput = z.object({ draftId, expectedRevision: revision })
 const cancelPlanInput = z.object({ draftId, planningId: z.string().min(1) })
+const requestEmployeeAccessInput = z.object({ draftId, expectedRevision: revision, stepId: z.string().min(1), employeeId: z.string().min(1) })
+const getEmployeeAccessRequestInput = z.object({ draftId, requestId: z.string().min(1) })
 
 export const arrangementRoutes = [
   route(INVOKE_CHANNELS.ARRANGE_GET_CONTEXT, NO_INPUT, async ctx => ({
@@ -126,6 +149,14 @@ export const arrangementRoutes = [
   route(INVOKE_CHANNELS.ARRANGE_CANCEL_PLAN, cancelPlanInput, async (ctx, input) => ({
     success: true,
     ...(await ctx.arrangements.cancelPlanning(input.draftId, input.planningId)),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_REQUEST_EMPLOYEE_ACCESS, requestEmployeeAccessInput, async (ctx, input) => ({
+    success: true,
+    draft: await ctx.arrangements.requestEmployeeAccess(input.draftId, input.expectedRevision, input.stepId, input.employeeId),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_GET_EMPLOYEE_ACCESS_REQUEST, getEmployeeAccessRequestInput, async (ctx, input) => ({
+    success: true,
+    draft: await ctx.arrangements.getEmployeeAccessRequest(input.draftId, input.requestId),
   })),
 ]
 
