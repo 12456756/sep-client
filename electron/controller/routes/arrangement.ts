@@ -49,11 +49,11 @@ const draftDocument = z.object({
   intentAnalysis: z.object({
     summary: z.string(),
     steps: z.array(z.object({
-      id: z.string().min(1), title: z.string(), requiredCapabilities: z.array(z.string()), dependsOn: z.array(z.string()),
+      id: z.string().min(1), title: z.string(), requiredCapabilities: z.array(z.string()), requiredCapabilityIds: z.array(z.string()).optional(), dependsOn: z.array(z.string()),
     })),
   }).nullable().optional(),
   unresolvedSteps: z.array(z.object({
-    stepId: z.string().min(1), reason: z.string(), requiredCapabilities: z.array(z.string()),
+    stepId: z.string().min(1), reason: z.string(), requiredCapabilities: z.array(z.string()), requiredCapabilityIds: z.array(z.string()).optional(),
   })).optional(),
   candidateMatches: z.array(z.object({
     stepId: z.string().min(1), employeeId: z.string().min(1), subscriptionId: z.string().nullable(),
@@ -159,4 +159,3 @@ export const arrangementRoutes = [
     draft: await ctx.arrangements.getEmployeeAccessRequest(input.draftId, input.requestId),
   })),
 ]
-

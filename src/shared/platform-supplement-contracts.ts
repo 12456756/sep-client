@@ -4,6 +4,10 @@ const resourceId = z.string().min(1).max(128)
 const nullableText = z.string().nullable()
 const count = z.number().int().nonnegative()
 
+export const platformEmployeeCapabilitySchema = z.object({
+  id: resourceId, name: z.string(), description: z.string(), type: z.string().optional(),
+}).passthrough()
+
 export const avatarAssetSchema = z.object({
   id: z.string().min(1),
   version: z.string().nullable(),
@@ -28,11 +32,8 @@ export const enterpriseOverviewSchema = z.object({
     status: z.enum(['ACTIVE', 'PAUSED', 'EXPIRED', 'TERMINATED']),
     employeeStatus: z.string(), endDate: nullableText,
     active: z.boolean(), currentUserCanUse: z.boolean(),
+    capabilities: z.array(platformEmployeeCapabilitySchema).optional(),
   }).passthrough()),
-}).passthrough()
-
-export const platformEmployeeCapabilitySchema = z.object({
-  id: resourceId, name: z.string(), description: z.string(), type: z.string().optional(),
 }).passthrough()
 
 export const platformEmployeeSchema = z.object({

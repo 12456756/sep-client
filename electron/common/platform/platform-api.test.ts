@@ -102,13 +102,14 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
       calls.push({ url: String(input), method: init?.method ?? 'GET', body: init?.body ? JSON.parse(String(init.body)) : undefined, authorization: new Headers(init?.headers).get('Authorization') })
       return response(String(input).includes('/platform-employees') ? platformPage : accessRequest, 200)
     }
-    const page = await api.getPlatformEmployees('access', { keyword: 'data analysis', page: 1, pageSize: 20, sort: 'updatedAt_desc' })
+    const page = await api.getPlatformEmployees('access', { keyword: 'data analysis', capabilityId: 'cap-data', page: 1, pageSize: 20, sort: 'updatedAt_desc' })
     assert.equal(page.items[0]?.employeeId, 'platform-employee-1')
     const created = await api.createEmployeeAccessRequest({ targetType: 'PLATFORM_EMPLOYEE', employeeId: 'platform-employee-1', reason: 'Need data analysis', requestedCapabilities: ['cap-data'] }, 'employee-request-key-1234', 'access')
     assert.equal(created.requestId, 'request-1')
     assert.equal((await api.getEmployeeAccessRequest('request-1', 'access')).status, 'PENDING')
     const listUrl = new URL(calls[0]!.url)
     assert.equal(listUrl.searchParams.get('sort'), 'updatedAt_desc')
+    assert.equal(listUrl.searchParams.get('capabilityId'), 'cap-data')
     const requestBody = calls[1]?.body as Record<string, unknown> | undefined
     assert.equal(calls[1]?.method, 'POST')
     assert.equal(requestBody?.targetType, 'PLATFORM_EMPLOYEE')

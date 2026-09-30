@@ -249,13 +249,14 @@ export type ArrangementEmployeeAccessRequestStatus = 'PENDING' | 'APPROVED' | 'R
 
 export interface ArrangementIntentAnalysis {
   summary: string
-  steps: Array<{ id: string; title: string; requiredCapabilities: string[]; dependsOn: string[] }>
+  steps: Array<{ id: string; title: string; requiredCapabilities: string[]; requiredCapabilityIds?: string[]; dependsOn: string[] }>
 }
 
 export interface ArrangementUnresolvedStep {
   stepId: string
   reason: string
   requiredCapabilities: string[]
+  requiredCapabilityIds?: string[]
 }
 
 export interface ArrangementCandidateMatch {

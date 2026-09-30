@@ -52,7 +52,11 @@ export interface ArrangementPlanningResult {
 
 export interface ArrangementCandidateDirectory {
   listEnterprise(): Promise<ArrangementPlannerEmployee[]>
-  listPlatform(input: { keywords: readonly string[] }): Promise<ArrangementPlannerEmployee[]>
+  listPlatform(input: { keywords: readonly string[]; capabilityIds?: readonly string[] }): Promise<ArrangementPlannerEmployee[]>
+}
+
+export interface ArrangementEmployeeCapabilityDirectory {
+  list(employeeId: string): Promise<ArrangementPlannerCapability[]>
 }
 
 export interface ArrangementPlannerPort {
@@ -101,7 +105,7 @@ export function buildArrangementPlannerPrompt(
     `待解决步骤：${JSON.stringify(draft.unresolvedSteps ?? [])}`,
     `已有执行节点（只需补充新节点）：${JSON.stringify(draft.nodes.map(node => ({ id: node.id, stepId: node.stepId, title: node.title, dependsOn: node.dependsOn })))}`,
     `employeeCatalog：${JSON.stringify(catalog)}`,
-    'JSON 格式：{"title":"...","intentAnalysis":{"summary":"...","steps":[{"id":"step-1","title":"...","requiredCapabilities":["..."],"dependsOn":[]}]},"unresolvedSteps":[{"stepId":"step-1","reason":"...","requiredCapabilities":["..."]}],"candidateMatches":[{"stepId":"step-1","employeeId":"...","rationale":"..."}],"nodes":[{"id":"node-1","stepId":"step-1","subscriptionId":"...","modelId":"...","title":"...","instruction":"...","expectedOutput":"...","dependsOn":[],"skillIds":[],"requiresUserConfirmation":false}]}',
+    'JSON 格式：{"title":"...","intentAnalysis":{"summary":"...","steps":[{"id":"step-1","title":"...","requiredCapabilities":["能力名称"],"requiredCapabilityIds":["capability-id"],"dependsOn":[]}]},"unresolvedSteps":[{"stepId":"step-1","reason":"...","requiredCapabilities":["能力名称"],"requiredCapabilityIds":["capability-id"]}],"candidateMatches":[{"stepId":"step-1","employeeId":"...","rationale":"..."}],"nodes":[{"id":"node-1","stepId":"step-1","subscriptionId":"...","modelId":"...","title":"...","instruction":"...","expectedOutput":"...","dependsOn":[],"skillIds":[],"requiresUserConfirmation":false}]}',
   ].join('\n')
 }
 
@@ -176,7 +180,8 @@ function parseIntentAnalysis(value: unknown): ArrangementIntentAnalysis | undefi
     const id = stringField(item.id)
     const title = stringField(item.title)
     if (!id || !title) throw new AppError('PLANNING_FAILED')
-    return { id, title, requiredCapabilities: stringArray(item.requiredCapabilities), dependsOn: stringArray(item.dependsOn) }
+    const requiredCapabilityIds = stringArray(item.requiredCapabilityIds)
+    return { id, title, requiredCapabilities: stringArray(item.requiredCapabilities), ...(requiredCapabilityIds.length ? { requiredCapabilityIds } : {}), dependsOn: stringArray(item.dependsOn) }
   })
   if (new Set(steps.map(step => step.id)).size !== steps.length) throw new AppError('PLANNING_FAILED')
   return { summary: record.summary.trim(), steps }
@@ -191,7 +196,8 @@ function parseUnresolvedSteps(value: unknown): ArrangementUnresolvedStep[] {
     const stepId = stringField(item.stepId)
     const reason = stringField(item.reason)
     if (!stepId || !reason) throw new AppError('PLANNING_FAILED')
-    return { stepId, reason, requiredCapabilities: stringArray(item.requiredCapabilities) }
+    const requiredCapabilityIds = stringArray(item.requiredCapabilityIds)
+    return { stepId, reason, requiredCapabilities: stringArray(item.requiredCapabilities), ...(requiredCapabilityIds.length ? { requiredCapabilityIds } : {}) }
   })
 }
 

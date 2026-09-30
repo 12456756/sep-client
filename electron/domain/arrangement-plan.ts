@@ -21,6 +21,7 @@ export interface ArrangementIntentStep {
   id: string
   title: string
   requiredCapabilities: string[]
+  requiredCapabilityIds?: string[]
   dependsOn: string[]
 }
 
@@ -33,6 +34,7 @@ export interface ArrangementUnresolvedStep {
   stepId: string
   reason: string
   requiredCapabilities: string[]
+  requiredCapabilityIds?: string[]
 }
 
 export type EmployeeAccessRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'
@@ -279,5 +281,4 @@ export function validateNodeModels(nodes: readonly ArrangementNode[], subscripti
   }
   return issues
 }
-
 

@@ -150,31 +150,73 @@ class BackendRuntime {
           return getEmployeeAccessRequest(requestId, accessToken)
         },
       },
+      employeeCapabilities: {
+        async list(employeeId) {
+          const accessToken = await platformSession.getValidAccessToken()
+          const response = await getEmployeeSkills(employeeId, accessToken)
+          return response.skills.map(skill => ({
+            id: skill.capability.id,
+            name: skill.capability.name,
+            description: skill.capability.description,
+            type: skill.capability.type,
+          }))
+        },
+      },
       candidateEmployees: {
         async listEnterprise() {
           const accessToken = await platformSession.getValidAccessToken()
           const overview = await getEnterpriseOverview(accessToken)
-          return overview.employees
+          const candidates = overview.employees
             .filter(employee => employee.status === 'ACTIVE' && employee.active && !employee.currentUserCanUse)
-            .map(employee => ({
+          return Promise.all(candidates.map(async employee => {
+            let capabilities = employee.capabilities?.map(capability => ({ ...capability })) ?? []
+            if (!employee.capabilities) {
+              try {
+                const response = await getEmployeeSkills(employee.employeeId, accessToken)
+                capabilities = response.skills.map(skill => ({
+                  id: skill.capability.id,
+                  name: skill.capability.name,
+                  description: skill.capability.description,
+                  type: skill.capability.type,
+                }))
+              } catch (error) {
+                log.warn('enterprise candidate capability summary unavailable', {
+                  employeeId: employee.employeeId,
+                  errorType: describeError(error).slice(0, 120),
+                })
+              }
+            }
+            return {
               subscriptionId: employee.subscriptionId,
               employeeId: employee.employeeId,
               name: employee.name,
               description: employee.description,
               position: employee.position,
+              capabilities,
               allowedModels: [],
               status: employee.status,
               source: 'enterprise' as const,
               canExecute: false,
               canApply: true,
-            }))
+            }
+          }))
         },
-        async listPlatform({ keywords }) {
+        async listPlatform({ keywords, capabilityIds = [] }) {
           const accessToken = await platformSession.getValidAccessToken()
-          const page = await getPlatformEmployees(accessToken, {
-            keyword: keywords.join(' '), page: 1, pageSize: 100, sort: 'updatedAt_desc',
-          })
-          return page.items
+          const queries = [
+            ...capabilityIds.map(capabilityId => getPlatformEmployees(accessToken, {
+              capabilityId, page: 1, pageSize: 100, sort: 'updatedAt_desc',
+            })),
+            ...keywords.map(keyword => getPlatformEmployees(accessToken, {
+              keyword, page: 1, pageSize: 100, sort: 'updatedAt_desc',
+            })),
+            ...(!capabilityIds.length && !keywords.length ? [getPlatformEmployees(accessToken, {
+              page: 1, pageSize: 100, sort: 'updatedAt_desc',
+            })] : []),
+          ]
+          const pages = await Promise.all(queries)
+          const items = new Map(pages.flatMap(page => page.items).map(employee => [employee.employeeId, employee]))
+          return [...items.values()]
             .filter(employee => employee.employeeStatus === 'APPROVED' && employee.canApply && employee.availability === 'AVAILABLE')
             .map(employee => ({
               subscriptionId: `platform:${employee.employeeId}`,

@@ -111,6 +111,7 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
     drafts,
     employees: { async list() { return [employee()] } },
     candidateEmployees: { async listEnterprise() { return candidates }, async listPlatform() { return platformCandidates } },
+    employeeCapabilities: { async list() { return [] } },
     planner,
     onPlanningEvent(event: ArrangementPlanningProgress) { events.push(event) },
     taskManager: {
@@ -361,6 +362,61 @@ describe('ArrangementService', () => {
 
     gate.resolve({ title: 'Planned report', nodes: [plannedNode] })
     await eventually(() => harness.stored?.status === 'ready')
+  })
+
+  it('loads authorized employee capability summaries into the planner catalog', async () => {
+    let seenCapabilities: unknown = null
+    const harness = planningHarness(async input => {
+      seenCapabilities = input.employees[0]?.capabilities
+      return { title: 'Planned report', nodes: [plannedNode] }
+    })
+    const service = new ArrangementService(serviceDeps({
+      scope: { currentScope: () => scope },
+      drafts: {
+        async get() { return harness.stored ? structuredClone(harness.stored) : null },
+        async update(_scope: TaskOwnerScope, _draftId: string, expectedRevision: number, patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) {
+          return { ...patch, id: 'draft-a', owner: scope, revision: expectedRevision + 1, createdAt: 1, updatedAt: expectedRevision + 1 }
+        },
+      },
+      employees: { async list() { return [employee()] } },
+      employeeCapabilities: { async list() { return [{ id: 'cap-search', name: '联网搜索', description: '检索公开网页信息', type: 'SKILL' }] } },
+      planner: { async plan(input: PlannerInput) { return (seenCapabilities = input.employees[0]?.capabilities, { title: 'Planned report', nodes: [plannedNode] }) } },
+    }))
+
+    await service.startPlanning('draft-a', 1)
+    await eventually(() => Array.isArray(seenCapabilities))
+    assert.deepEqual(seenCapabilities, [{ id: 'cap-search', name: '联网搜索', description: '检索公开网页信息', type: 'SKILL' }])
+  })
+
+  it('adds deterministic enterprise candidates and does not fall through to platform when enterprise coverage exists', async () => {
+    let calls = 0
+    const intentAnalysis = {
+      summary: 'search current AI news',
+      steps: [{ id: 'step-1', title: 'Search news', requiredCapabilities: ['联网搜索'], requiredCapabilityIds: ['cap-search'], dependsOn: [] }],
+    }
+    const harness = planningHarness(async () => {
+      calls += 1
+      return {
+        title: 'AI news', nodes: [], intentAnalysis,
+        unresolvedSteps: [{ stepId: 'step-1', reason: 'missing authorized employee', requiredCapabilities: ['联网搜索'], requiredCapabilityIds: ['cap-search'] }],
+      }
+    })
+    harness.addCandidates([{
+      subscriptionId: 'sub-enterprise', employeeId: 'emp-enterprise', name: '企业检索员工', status: 'ACTIVE', allowedModels: [],
+      source: 'enterprise', canExecute: false, canApply: true,
+      capabilities: [{ id: 'cap-search', name: '联网搜索', description: '检索公开网页信息' }],
+    }])
+    harness.addPlatformCandidates([{
+      subscriptionId: 'platform:emp-market', employeeId: 'emp-market', name: '市场检索员工', status: 'APPROVED', allowedModels: [],
+      source: 'platform', canExecute: false, canApply: true,
+      capabilities: [{ id: 'cap-search', name: '联网搜索', description: '检索公开网页信息' }],
+    }])
+
+    await harness.service.startPlanning('draft-a', 1)
+    await eventually(() => harness.stored?.status === 'awaiting-employee')
+
+    assert.equal(calls, 2)
+    assert.deepEqual(harness.stored?.candidateMatches?.map(match => [match.source, match.employeeId]), [['enterprise', 'emp-enterprise']])
   })
 
   it('preserves nodes from all matching passes', async () => {
