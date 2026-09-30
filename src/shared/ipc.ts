@@ -187,6 +187,7 @@ export interface TaskMessagesResult {
 export interface PlanArrangementDraftInput {
   draftId: string
   expectedRevision: number
+  modelId: string
 }
 
 export interface CancelArrangementPlanningInput {

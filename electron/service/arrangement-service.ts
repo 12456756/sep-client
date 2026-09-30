@@ -135,7 +135,7 @@ export class ArrangementService {
     return this.deps.drafts.delete(requireScope(this.deps.scope), draftId)
   }
 
-  async startPlanning(draftId: string, expectedRevision: number): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
+  async startPlanning(draftId: string, expectedRevision: number, modelId: string): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
     const scope = requireScope(this.deps.scope)
     const draft = await this.getDraft(draftId)
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
@@ -149,7 +149,7 @@ export class ArrangementService {
     const controller = new AbortController()
     this.planningControllers.set(planningId, controller)
     this.emitPlanning({ planningId, draftId, draftRevision: expectedRevision + 1, type: 'arrangement_planning_started', occurredAt: Date.now(), data: {} })
-    void this.runPlanning(planningId, draftId, expectedRevision + 1, controller)
+    void this.runPlanning(planningId, draftId, expectedRevision + 1, controller, modelId)
     return { draftId, planningId, status: 'planning' }
   }
 
@@ -200,7 +200,7 @@ export class ArrangementService {
 
   private readonly planningControllers = new Map<string, AbortController>()
 
-  private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController): Promise<void> {
+  private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController, modelId: string): Promise<void> {
     try {
       const current = await this.getDraft(draftId)
       const authorized = (await this.deps.employees.list()).map(employee => ({
@@ -220,7 +220,7 @@ export class ArrangementService {
       let employees: ArrangementPlannerEmployee[] = authorized
       const plannerEmployees: ArrangementPlannerEmployee[] = authorized
       let result = await this.deps.planner!.plan({
-        planningId, draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
+        planningId, modelId, draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
         onProgress: event => this.emitPlanning(event),
       })
       const intentAnalysis = result.intentAnalysis ?? current.intentAnalysis ?? undefined
@@ -234,7 +234,7 @@ export class ArrangementService {
           planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
           employees = enterprise
           result = await this.deps.planner!.plan({
-            planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            planningId, modelId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
             onProgress: event => this.emitPlanning(event),
           })
           executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
@@ -250,7 +250,7 @@ export class ArrangementService {
           planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
           employees = platform
           result = await this.deps.planner!.plan({
-            planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            planningId, modelId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
             onProgress: event => this.emitPlanning(event),
           })
           executableNodes = mergeExecutableNodes(executableNodes, result.nodes)

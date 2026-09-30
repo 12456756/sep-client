@@ -58,6 +58,7 @@ export interface ArrangementCandidateDirectory {
 export interface ArrangementPlannerPort {
   plan(input: {
     planningId: string
+    modelId: string
     draft: ArrangementDraft
     employees: readonly ArrangementPlannerEmployee[]
     plannerEmployees?: readonly ArrangementPlannerEmployee[]

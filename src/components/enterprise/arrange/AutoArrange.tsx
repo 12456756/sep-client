@@ -94,7 +94,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
 
   const submitGoal = () => {
     setSubmitted(true);
-    void start(goal, settings.workDir);
+    void start(goal, settings.workDir, settings.modelId);
   };
 
   const requestAccess = async (stepId: string, employeeId: string): Promise<void> => {
@@ -144,7 +144,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
           models={models}
           onSettingsChange={onSettingsChange}
           onChooseFolder={onChooseFolder}
-          submitDisabled={busy || planning || !goal.trim() || !employees.length}
+          submitDisabled={busy || planning || !goal.trim() || !settings.modelId || !employees.length}
           conversation={false}
           onSubmit={submitGoal}
         />

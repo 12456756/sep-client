@@ -60,7 +60,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
   }
 
   async plan(input: Parameters<ArrangementPlannerPort['plan']>[0]): Promise<ArrangementPlanningResult> {
-    const { planningId, draft, employees, plannerEmployees, signal, onProgress } = input
+    const { planningId, modelId, draft, employees, plannerEmployees, signal, onProgress } = input
     const controller = new AbortController()
     const externalAbortHandler = (): void => controller.abort()
     this.planningControllers.set(planningId, controller)
@@ -72,7 +72,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     try {
       const planningSignal = controller.signal
       throwIfAborted(planningSignal)
-      const plannerEmployee = selectPlannerEmployee(plannerEmployees ?? employees, this.options)
+      const plannerEmployee = selectPlannerEmployee(plannerEmployees ?? employees, this.options, modelId)
       const prompt = buildArrangementPlannerPrompt(draft, employees)
       const workerEvents: TaskExecutionEvent[] = []
 
@@ -80,7 +80,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       // must not turn unexpected tool calls into an unbounded agent loop.
       let rejectToolCall!: (error: AppError) => void
       const invalidToolCall = new Promise<never>((_resolve, reject) => { rejectToolCall = reject })
-      const worker = this.createWorker(planningId, plannerEmployee, event => {
+      const worker = this.createWorker(planningId, plannerEmployee, modelId, event => {
         if (event.type === 'tool_execution_start') {
           rejectToolCall(new AppError('PLANNING_FAILED', {
             message: '自动编排模型返回了异常工具调用，已停止规划，请重试。',
@@ -175,6 +175,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
   private createWorker(
     planningId: string,
     plannerEmployee: ArrangementPlannerEmployee,
+    modelId: string,
     onEvent: PiTaskWorkerOptions['onEvent'],
   ): TaskWorkerPort {
     const workspaceDir = this.options.workspaceRoot
@@ -182,7 +183,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       taskId: planningId,
       runId: planningId,
       subscriptionId: plannerEmployee.subscriptionId,
-      modelId: this.options.plannerModelId ?? plannerEmployee.allowedModels[0] ?? '',
+      modelId,
       gatewayUrl: this.options.gatewayUrl,
       workspaceDir,
       agentDir: this.options.getAgentDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'agent'),
@@ -214,15 +215,13 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
 function selectPlannerEmployee(
   employees: readonly ArrangementPlannerEmployee[],
   options: ArrangementPlannerRuntimeOptions,
+  modelId: string,
 ): ArrangementPlannerEmployee {
   const candidate = options.plannerSubscriptionId
     ? employees.find(employee => employee.subscriptionId === options.plannerSubscriptionId)
-    : employees.find(employee => employee.status === 'ACTIVE' && employee.allowedModels.length > 0)
-  if (!candidate || candidate.status !== 'ACTIVE' || candidate.allowedModels.length === 0) {
+    : employees.find(employee => employee.status === 'ACTIVE' && employee.allowedModels.includes(modelId))
+  if (!candidate || candidate.status !== 'ACTIVE' || !modelId || !candidate.allowedModels.includes(modelId)) {
     throw new Error('No active silicon employee with an allowed model is available for arrangement planning.')
-  }
-  if (options.plannerModelId && !candidate.allowedModels.includes(options.plannerModelId)) {
-    throw new Error('The arrangement planner model is not allowed for the selected employee.')
   }
   return candidate
 }

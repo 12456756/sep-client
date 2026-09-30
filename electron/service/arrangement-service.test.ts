@@ -348,7 +348,7 @@ describe('ArrangementService', () => {
     const gate = deferred<ArrangementPlanningResult>()
     const harness = planningHarness(async () => gate.promise)
 
-    const started = await harness.service.startPlanning('draft-a', 1)
+    const started = await harness.service.startPlanning('draft-a', 1, 'model-a')
     assert.equal(started.status, 'planning')
     assert.equal(harness.stored?.status, 'planning')
     assert.equal(harness.plannerCalls(), 0)
@@ -375,6 +375,7 @@ describe('ArrangementService', () => {
     const platformNode = { ...plannedNode, id: 'platform-node', stepId: 'step-3', subscriptionId: 'sub-platform' }
     const harness = planningHarness(async input => {
       calls += 1
+      assert.equal(input.modelId, 'model-a')
       if (calls === 1) {
         return {
           title: 'multi-stage analysis', nodes: [authorizedNode], intentAnalysis,
@@ -397,7 +398,7 @@ describe('ArrangementService', () => {
     harness.addCandidates([{ subscriptionId: 'sub-enterprise', employeeId: 'emp-enterprise', name: 'Enterprise', status: 'ACTIVE', allowedModels: [], source: 'enterprise', canExecute: false }])
     harness.addPlatformCandidates([{ subscriptionId: 'sub-platform', employeeId: 'emp-platform', name: 'Platform', status: 'APPROVED', allowedModels: [], source: 'platform', canExecute: false, canApply: true }])
 
-    await harness.service.startPlanning('draft-a', 1)
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
     await eventually(() => harness.stored?.status === 'ready')
 
     assert.deepEqual(harness.stored?.nodes.map(node => node.id), ['authorized-node', 'enterprise-node', 'platform-node'])
@@ -407,7 +408,7 @@ describe('ArrangementService', () => {
   it('writes the auto-planning result back as a ready draft', async () => {
     const harness = planningHarness(async () => ({ title: 'Planned report', nodes: [plannedNode] }))
 
-    const result = await harness.service.startPlanning('draft-a', 1)
+    const result = await harness.service.startPlanning('draft-a', 1, 'model-a')
     await eventually(() => harness.stored?.status === 'ready')
 
     assert.equal(harness.stored?.revision, 3)
@@ -423,7 +424,7 @@ describe('ArrangementService', () => {
   it('does not overwrite a newer draft revision with a late planning result', async () => {
     const gate = deferred<ArrangementPlanningResult>()
     const harness = planningHarness(async () => gate.promise)
-    await harness.service.startPlanning('draft-a', 1)
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
     await eventually(() => harness.plannerCalls() === 1)
 
     const newerDraft = persisted({ ...autoDraft(), title: 'User edited title', status: 'editing' }, 3)
@@ -439,7 +440,7 @@ describe('ArrangementService', () => {
   it('ignores a late planning result after the draft was deleted', async () => {
     const gate = deferred<ArrangementPlanningResult>()
     const harness = planningHarness(async () => gate.promise)
-    await harness.service.startPlanning('draft-a', 1)
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
     await eventually(() => harness.plannerCalls() === 1)
 
     harness.setStored(null)
@@ -454,7 +455,7 @@ describe('ArrangementService', () => {
   it('keeps the draft editable when a cancelled planner returns late', async () => {
     const gate = deferred<ArrangementPlanningResult>()
     const harness = planningHarness(async () => gate.promise)
-    const started = await harness.service.startPlanning('draft-a', 1)
+    const started = await harness.service.startPlanning('draft-a', 1, 'model-a')
     await eventually(() => harness.plannerCalls() === 1)
 
     const cancelled = await harness.service.cancelPlanning('draft-a', started.planningId)
@@ -472,7 +473,7 @@ describe('ArrangementService', () => {
   it('marks the draft as planning-failed when the planner rejects', async () => {
     const harness = planningHarness(async () => { throw new Error('provider unavailable') })
 
-    await harness.service.startPlanning('draft-a', 1)
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
     await eventually(() => harness.stored?.status === 'planning-failed')
 
     assert.deepEqual(harness.stored?.lastPlanning?.status, 'failed')
@@ -483,7 +484,7 @@ describe('ArrangementService', () => {
   it('reports a planner tool-loop failure to the UI instead of leaving the draft planning', async () => {
     const message = '自动编排模型返回了异常工具调用，已停止规划，请重试。'
     const harness = planningHarness(async () => { throw new AppError('PLANNING_FAILED', { message }) })
-    await harness.service.startPlanning('draft-a', 1)
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
     await eventually(() => harness.stored?.status === 'planning-failed')
     assert.equal(harness.stored?.lastPlanning?.message, message)
     assert.equal(harness.events.at(-1)?.type, 'arrangement_planning_failed')
@@ -509,7 +510,7 @@ describe('ArrangementService', () => {
     }))
 
     await assert.rejects(
-      () => service.startPlanning('draft-a', 1),
+      () => service.startPlanning('draft-a', 1, 'model-a'),
       (error: unknown) => error instanceof AppError && error.code === 'INVALID_STATE',
     )
     assert.deepEqual(stored, persisted(draft()))
