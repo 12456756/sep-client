@@ -31,6 +31,16 @@ const electronAPI = {
   getSubscriptions: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_INSTANCES),
   getEmployeeStatus: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_EMPLOYEE_STATUS),
   getEnterpriseOrganization: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_ORGANIZATION),
+  getClientProfile: () => ipcRenderer.invoke(INVOKE_CHANNELS.PROFILE_GET),
+  uploadUserAvatar: input => ipcRenderer.invoke(INVOKE_CHANNELS.PROFILE_UPLOAD_AVATAR, input),
+  uploadEnterpriseLogo: input => ipcRenderer.invoke(INVOKE_CHANNELS.PROFILE_UPLOAD_ENTERPRISE_LOGO, input),
+  createPersonalRecharge: input => ipcRenderer.invoke(INVOKE_CHANNELS.WALLET_CREATE_RECHARGE, input),
+  getPersonalRecharge: orderNo => ipcRenderer.invoke(INVOKE_CHANNELS.WALLET_GET_RECHARGE, orderNo),
+  reconcilePersonalRecharge: orderNo => ipcRenderer.invoke(INVOKE_CHANNELS.WALLET_RECONCILE_RECHARGE, orderNo),
+  getComputeCenterOverview: () => ipcRenderer.invoke(INVOKE_CHANNELS.COMPUTE_CENTER_GET_OVERVIEW),
+  getPersonalWalletTransactions: query => ipcRenderer.invoke(INVOKE_CHANNELS.COMPUTE_CENTER_GET_TRANSACTIONS, query),
+  getComputeUsageRecords: query => ipcRenderer.invoke(INVOKE_CHANNELS.COMPUTE_CENTER_GET_USAGE_RECORDS, query),
+  getComputeUsageBreakdown: days => ipcRenderer.invoke(INVOKE_CHANNELS.COMPUTE_CENTER_GET_BREAKDOWN, { days }),
   getEmployeeSkills: employeeId => ipcRenderer.invoke(INVOKE_CHANNELS.SUBSCRIPTION_GET_SKILLS, employeeId),
   previewSkill: versionId => ipcRenderer.invoke(INVOKE_CHANNELS.SUBSCRIPTION_PREVIEW_SKILL, versionId),
   createTask: data => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CREATE, data),
@@ -95,6 +105,8 @@ const electronAPI = {
   confirmAndStartArrangement: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_AND_START, input),
   planArrangementDraft: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PLAN_DRAFT, input),
   cancelArrangementPlanning: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CANCEL_PLAN, input),
+  requestEmployeeAccess: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_REQUEST_EMPLOYEE_ACCESS, input),
+  getEmployeeAccessRequest: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_EMPLOYEE_ACCESS_REQUEST, input),
 } satisfies ElectronAPI;
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

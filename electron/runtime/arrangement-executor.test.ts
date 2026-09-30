@@ -80,9 +80,9 @@ describe('TaskRuntime arrangement integration', () => {
         contexts.push(options.context.modelId)
         const worker: TaskWorkerPort = {
           async run(prompt) {
-            assert.match(prompt, /^You are executing one node inside an orchestrated work plan\./)
-            assert.match(prompt, /No prerequisite node output is available\./)
-            assert.match(prompt, /NODE INSTRUCTION:\ndo node A/)
+            assert.match(prompt, /^你正在执行编排工作计划中的一个节点。/)
+            assert.match(prompt, /没有可用的前置节点输出。/)
+            assert.match(prompt, /节点执行指令：\ndo node A/)
             await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'node result' } })
           },
           async abort() {},
@@ -165,16 +165,16 @@ describe('TaskRuntime arrangement controls', () => {
       executedModels.push(options.context.modelId)
       return {
         async run(prompt) {
-          const nodeId = /CURRENT NODE:\n([^ ]+)/.exec(prompt)?.[1] ?? 'unknown'
+          const nodeId = /当前节点：\n([^（]+)/.exec(prompt)?.[1]?.trim() ?? 'unknown'
           const attempt = (attempts.get(nodeId) ?? 0) + 1
           attempts.set(nodeId, attempt)
-          if (nodeId === 'Node' || prompt.includes('Node A')) {
+          if (nodeId === 'Node A') {
             if (attempt === 1) throw new Error('node-a failed')
             await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'A recovered' } })
             return
           }
-          assert.match(prompt, /^You are executing one node inside an orchestrated work plan\./)
-          assert.match(prompt, /PREREQUISITE OUTPUTS:\nPREREQUISITE: Node A \(node-a\)\nA recovered/)
+          assert.match(prompt, /^你正在执行编排工作计划中的一个节点。/)
+          assert.match(prompt, /前置节点输出：\n前置节点：Node A（node-a）\nA recovered/)
           await options.onEvent({ taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'B complete' } })
         },
         async abort() {},
@@ -253,4 +253,3 @@ describe('TaskRuntime arrangement controls', () => {
     await assert.rejects(() => arrangementRetryApi(runtime).retryTask(task.id, { conversation: false, nodeId: 'node-a' }))
   })
 })
-

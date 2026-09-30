@@ -34,6 +34,25 @@ import { silentTaskMonitor, type MonitorTaskContentInput, type MonitorTaskQueued
 
 const log = logger.child('task-runtime')
 
+type FileToolName = 'write' | 'edit'
+
+interface ToolExecutionData {
+  toolId?: unknown
+  toolName?: unknown
+  input?: unknown
+  success?: unknown
+}
+
+function isFileToolName(value: unknown): value is FileToolName {
+  return value === 'write' || value === 'edit'
+}
+
+function filePathFromInput(input: unknown): string | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const path = (input as { path?: unknown }).path
+  return typeof path === 'string' && path.trim() ? path : null
+}
+
 export interface TaskRuntimeOptions {
   taskManager: TaskManager
   getRefreshToken: () => string
@@ -76,6 +95,7 @@ export class TaskRuntime {
   private readonly events: EventPipeline
   private readonly createWorker: (options: PiTaskWorkerOptions) => TaskWorkerPort
   private readonly conversationExecutor: ConversationExecutor
+  private readonly pendingFileTools = new Map<string, Map<string, string>>()
 
   constructor(options: TaskRuntimeOptions) {
     this.taskManager = options.taskManager
@@ -472,11 +492,15 @@ export class TaskRuntime {
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     releaseWorkspace: () => void,
   ): Promise<void> {
-    if (queued.arrangement && queued.arrangement.mode !== 'conversation') {
-      await this.startArrangementRun(queued, task, releaseWorkspace)
-      return
+    try {
+      if (queued.arrangement && queued.arrangement.mode !== 'conversation') {
+        await this.startArrangementRun(queued, task, releaseWorkspace)
+        return
+      }
+      await this.conversationExecutor.execute(queued, task, releaseWorkspace)
+    } finally {
+      this.pendingFileTools.delete(queued.runId)
     }
-    await this.conversationExecutor.execute(queued, task, releaseWorkspace)
   }
 
   private async startArrangementRun(
@@ -610,14 +634,25 @@ export class TaskRuntime {
     } else if (event.type === 'approval_resolved') {
       await this.taskManager.updateTaskStatus(event.taskId, TaskStatus.RUNNING)
     } else if (event.type === 'tool_execution_start') {
-      const data = event.data as { toolId?: unknown; toolName?: unknown }
+      const data = event.data as ToolExecutionData
       if (typeof data.toolId === 'string' && typeof data.toolName === 'string') {
         this.events.sideEffectStarted(event.runId, data.toolId, data.toolName, event.occurredAt)
+        const filePath = isFileToolName(data.toolName) ? filePathFromInput(data.input) : null
+        if (filePath) {
+          const pending = this.pendingFileTools.get(event.runId) ?? new Map<string, string>()
+          pending.set(data.toolId, filePath)
+          this.pendingFileTools.set(event.runId, pending)
+        }
       }
       await this.taskManager.addTaskLog(event.taskId, `Executing tool: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`)
     } else if (event.type === 'tool_execution_end') {
-      const data = event.data as { toolId?: unknown; toolName?: unknown; success?: boolean }
+      const data = event.data as ToolExecutionData
       if (typeof data.toolId === 'string') this.events.sideEffectEnded(event.runId, data.toolId)
+      const pending = this.pendingFileTools.get(event.runId)
+      const filePath = typeof data.toolId === 'string' ? pending?.get(data.toolId) : undefined
+      if (data.success === true && filePath) await this.taskManager.addTaskFile(event.taskId, filePath)
+      if (typeof data.toolId === 'string') pending?.delete(data.toolId)
+      if (pending?.size === 0) this.pendingFileTools.delete(event.runId)
       await this.taskManager.addTaskLog(event.taskId, `${data.success === false ? 'Tool failed' : 'Tool completed'}: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`, data.success === false ? 'warning' : 'info')
     } else if (event.type === 'auto_retry_start') {
       const data = event.data as { attempt?: number; maxAttempts?: number; delayMs?: number; error?: string }

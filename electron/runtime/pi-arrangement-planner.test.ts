@@ -78,6 +78,7 @@ class FakeWorker implements TaskWorkerPort {
       data: {
         text: JSON.stringify({
           title: 'Market report',
+          intentAnalysis: { summary: 'Plan the report', steps: [{ id: 'step-research', title: 'Research and write', requiredCapabilities: ['research'], dependsOn: [] }] },
           nodes: [
             {
               id: 'node-research',
@@ -117,6 +118,39 @@ class FakeWorker implements TaskWorkerPort {
 }
 
 describe('PiArrangementPlanner', () => {
+  it('parses the assistant message when the adapter only emits message_end', async () => {
+    let worker: TaskWorkerPort | undefined
+    const output = JSON.stringify({
+      title: 'Message-end report',
+      nodes: [{
+        id: 'node-research', subscriptionId: 'sub-research', modelId: 'model-research',
+        title: 'Research market', instruction: 'Collect relevant market facts.', expectedOutput: 'Facts',
+        dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+      }],
+    })
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {},
+      createWorker: options => {
+        worker = {
+          async run() {
+            await options.onEvent({
+              taskId: 'planning-a', runId: 'planning-a', subscriptionId: 'sub-research', sequence: 1,
+              type: 'message_end', occurredAt: Date.now(),
+              data: { message: { role: 'assistant', content: [{ type: 'text', text: output }] } },
+            })
+          },
+          async abort() {},
+          async dispose() {},
+        }
+        return worker
+      },
+    })
+
+    const result = await planner.plan({ planningId: 'planning-a', draft, employees, onProgress: () => {} })
+    assert.equal(result.title, 'Message-end report')
+    assert.equal(result.nodes.length, 1)
+  })
   it('runs one independent worker and emits progressive employee selection', async () => {
     const progress: ArrangementPlanningProgress[] = []
     let capturedOptions: PiTaskWorkerOptions | undefined
@@ -143,6 +177,7 @@ describe('PiArrangementPlanner', () => {
     assert.equal(result.title, 'Market report')
     assert.deepEqual(result.nodes.map(node => node.subscriptionId), ['sub-research', 'sub-writer'])
     assert.deepEqual(progress.map(event => [event.type, event.data.subscriptionId]), [
+      ['arrangement_plan_ready', undefined],
       ['arrangement_employee_considering', 'sub-research'],
       ['arrangement_employee_considering', 'sub-writer'],
       ['arrangement_employee_selected', 'sub-research'],

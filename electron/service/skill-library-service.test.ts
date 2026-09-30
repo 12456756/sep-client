@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { SkillLibraryService } from './skill-library-service'
 import { SkillVersionStore } from '../data/skill-version-store'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
-import type { SkillVersion } from '../common/platform/platform-api'
+import { AuthApiError, type SkillVersion } from '../common/platform/platform-api'
 
 const scope = { enterpriseId: 'ent', memberId: 'user' }
 const published: SkillVersion = { id: 'v1', capabilityId: 'cap', scope: 'PLATFORM', version: '1.0', status: 'PLATFORM_APPROVED' }
@@ -17,6 +17,7 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
   const submissions = new SkillSubmissionStore(root)
   let personal: SkillVersion | null = null
   let failUpload = false
+  let uploadError: unknown = null
   let offline = false
   let currentScope = scope
   const uploads: string[] = []
@@ -31,12 +32,13 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
         assert.equal(request.content, content)
         uploads.push(key)
         if (failUpload) throw new Error('offline')
+        if (uploadError) throw uploadError
         personal = { ...published, id: 'personal-v1', scope: 'PERSONAL', ownerId: 'user', status: uploadStatus, content: request.content }
         return personal
       },
     },
   })
-  return { service, versions, submissions, uploads, switchUser: () => { currentScope = { ...scope, memberId: "other" } }, offline: () => { offline = true }, fail: (value: boolean) => { failUpload = value }, reject: () => { personal = { ...personal!, status: 'ENTERPRISE_REJECTED' } }, approve: () => { personal = { ...personal!, status: 'ENTERPRISE_APPROVED' } } }
+  return { service, versions, submissions, uploads, setUploadError: (error: unknown) => { uploadError = error }, switchUser: () => { currentScope = { ...scope, memberId: "other" } }, offline: () => { offline = true }, fail: (value: boolean) => { failUpload = value }, reject: () => { personal = { ...personal!, status: 'ENTERPRISE_REJECTED' } }, approve: () => { personal = { ...personal!, status: 'ENTERPRISE_APPROVED' } } }
 }
 
 describe('SkillLibraryService', () => {
@@ -108,6 +110,22 @@ describe('SkillLibraryService', () => {
     await assert.rejects(() => f.service.preview({ capabilityId: 'other', versionId: 'v1' }))
     assert.equal((await f.submissions.list({ ...scope, memberId: 'other' }, 'cap')).length, 0)
   })
+  for (const status of [403, 409]) {
+    it(`surfaces platform ${status} errors instead of treating them as retryable upload failures`, async () => {
+      const f = await fixture()
+      const input = { request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: `test-platform-error-${status}` }
+      f.setUploadError(new AuthApiError({ statusCode: status, message: 'platform rejection' }, 'skills'))
+
+      await assert.rejects(() => f.service.save(input), error => {
+        assert.ok(error instanceof AuthApiError)
+        assert.equal(error.statusCode, status)
+        return true
+      })
+      const saved = await f.submissions.list(scope, 'cap')
+      assert.equal(saved.length, 1)
+      assert.equal(saved[0]?.request.content, content)
+    })
+  }
   it('keeps an opened skill edit durable even when the network fails before token refresh', async () => {
     const f = await fixture()
     await f.service.list()

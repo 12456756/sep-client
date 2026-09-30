@@ -1,15 +1,16 @@
 import { Check, Sparkles } from 'lucide-react';
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
-import type { ArrangementDraft } from '../../../shared/types';
+import type { ArrangementDraft, ArrangementPlanningProgress } from '../../../shared/types';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
 import { usePrefersReducedMotion } from '../../../features/enterprise/use-reduced-motion';
 import { EmployeeFace } from '../EmployeeFace';
 
-type Phase = 'analyzing' | 'matching' | 'gathering' | 'flowing' | 'done';
-const STRIP = ['分析目标', '匹配员工', '生成流程'];
+type Phase = 'analyzing' | 'planning' | 'matching' | 'gathering' | 'flowing' | 'done';
+const STRIP = ['分析目标', '制定计划', '匹配员工', '生成流程'];
 const THINKING = ['分析任务内容', '识别需要完成的工作', '匹配员工能力'];
 const TITLES: Record<Phase, string> = {
   analyzing: '正在分析你的工作目标',
+  planning: '正在制定执行计划',
   matching: '正在匹配最适合完成任务的员工……',
   gathering: '正在匹配最适合完成任务的员工……',
   flowing: '正在安排工作流程',
@@ -20,11 +21,12 @@ interface Props {
   draft: ArrangementDraft;
   employees: SiliconEmployee[];
   planning: boolean;
+  planningEvents: ArrangementPlanningProgress[];
   children: ReactNode;
 }
 
 /** 恢复原版四拍动效。计时器只控制展示，入选结果与流程始终来自后端草稿。 */
-export function AutoArrangeAnimation({ draft, employees, planning, children }: Props): JSX.Element {
+export function AutoArrangeAnimation({ draft, employees, planning, planningEvents, children }: Props): JSX.Element {
   const [phase, setPhase] = useState<Phase>('analyzing');
   const [thought, setThought] = useState(0);
   const [scan, setScan] = useState(-1);
@@ -37,6 +39,8 @@ export function AutoArrangeAnimation({ draft, employees, planning, children }: P
   const beat = reduced ? 0.3 : 1;
   const ready = !planning && draft.nodes.length > 0;
   const nodeCount = draft.nodes.length;
+  const planEvent = planningEvents.find(event => event.type === 'arrangement_plan_ready');
+  const hasConsideringEvent = planningEvents.some(event => event.type === 'arrangement_employee_considering');
 
   useEffect(() => {
     if (phase !== 'analyzing') return;
@@ -44,10 +48,14 @@ export function AutoArrangeAnimation({ draft, employees, planning, children }: P
       window.setTimeout(() => setThought(1), 60 * beat),
       window.setTimeout(() => setThought(2), 440 * beat),
       window.setTimeout(() => setThought(3), 820 * beat),
-      window.setTimeout(() => setPhase('matching'), 1520 * beat),
     ];
     return () => timers.forEach(window.clearTimeout);
   }, [phase, beat]);
+
+  useEffect(() => {
+    if (phase === 'analyzing' && planEvent) setPhase('planning');
+    if (phase === 'planning' && hasConsideringEvent) setPhase('matching');
+  }, [phase, planEvent, hasConsideringEvent]);
 
   useEffect(() => {
     if (phase !== 'matching') return;
@@ -84,8 +92,19 @@ export function AutoArrangeAnimation({ draft, employees, planning, children }: P
     return () => timers.forEach(window.clearTimeout);
   }, [phase, nodeCount, beat]);
 
-  const at = phase === 'analyzing' ? 0 : phase === 'matching' || phase === 'gathering' ? 1 : phase === 'flowing' ? 2 : 3;
+  const at = phase === 'analyzing' ? 0 : phase === 'planning' ? 1 : phase === 'matching' || phase === 'gathering' ? 2 : 3;
   const selectedCount = new Set(draft.nodes.map(node => node.subscriptionId)).size;
+  if (draft.status === 'awaiting-employee') {
+    return (
+      <section className="ent-arr-auto" aria-busy={planning}>
+        <header className="ent-aa-head" aria-live="polite">
+          <h1>还缺少员工，当前编排已暂停</h1>
+          <p>员工申请是异步处理的，不会阻塞客户端其他功能。</p>
+        </header>
+        {children}
+      </section>
+    );
+  }
   return (
     <section className="ent-arr-auto" aria-busy={phase !== 'done'}>
       <ol className="ent-aa-strip">
@@ -103,6 +122,15 @@ export function AutoArrangeAnimation({ draft, employees, planning, children }: P
         <ul className="ent-aa-think">{THINKING.map((line, index) => (
           <li key={line} className={index < thought ? 'in' : undefined}><Sparkles size={13} aria-hidden />{line}</li>
         ))}</ul>
+      ) : null}
+      {phase === 'planning' ? (
+        <article className="ent-aa-plan" aria-live="polite">
+          <strong>已制定执行计划</strong>
+          {planEvent?.data.planSummary ? <p>{planEvent.data.planSummary}</p> : null}
+          {planEvent?.data.planSteps?.length ? (
+            <ol>{planEvent.data.planSteps.map((step, index) => <li key={step.id}><span>{String(index + 1).padStart(2, '0')}</span>{step.title}</li>)}</ol>
+          ) : null}
+        </article>
       ) : null}
       {phase === 'matching' || phase === 'gathering' ? (
         <div className={`ent-aa-pool${gathered ? ' gathered' : ''}`}>

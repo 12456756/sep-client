@@ -23,6 +23,28 @@ function cloneDraft(draft: ArrangementDraft): ArrangementDraft {
   return structuredClone(draft)
 }
 
+function isArrangementEmployeeAccessRequest(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false
+  const request = value as Record<string, unknown>
+  return (
+    typeof request.requestId === 'string' &&
+    typeof request.stepId === 'string' &&
+    typeof request.employeeId === 'string' &&
+    (typeof request.subscriptionId === 'string' || request.subscriptionId === null) &&
+    (request.source === 'enterprise' || request.source === 'platform') &&
+    typeof request.name === 'string' &&
+    (request.status === 'PENDING' ||
+      request.status === 'APPROVED' ||
+      request.status === 'REJECTED' ||
+      request.status === 'CANCELLED') &&
+    Array.isArray(request.requestedCapabilities) &&
+    request.requestedCapabilities.every(item => typeof item === 'string') &&
+    typeof request.createdAt === 'string' &&
+    typeof request.updatedAt === 'string' &&
+    (request.message === undefined || typeof request.message === 'string')
+  )
+}
+
 function parseDraft(value: unknown, scope: TaskOwnerScope, draftId: string): ArrangementDraft | null {
   if (!value || typeof value !== 'object') return null
   const draft = value as Partial<ArrangementDraft>
@@ -34,7 +56,8 @@ function parseDraft(value: unknown, scope: TaskOwnerScope, draftId: string): Arr
     typeof draft.title !== 'string' || typeof draft.goal !== 'string' ||
     !Array.isArray(draft.confirmedInputs) || !draft.confirmedInputs.every(item => typeof item === 'string') ||
     !Array.isArray(draft.sharedSkillIds) || !draft.sharedSkillIds.every(item => typeof item === 'string') ||
-    !Array.isArray(draft.nodes) || !draft.workspace || draft.workspace.mode !== 'shared' ||
+    !Array.isArray(draft.nodes) || (draft.intentAnalysis !== undefined && draft.intentAnalysis !== null && (typeof draft.intentAnalysis.summary !== 'string' || !Array.isArray(draft.intentAnalysis.steps))) || (draft.unresolvedSteps !== undefined && !Array.isArray(draft.unresolvedSteps)) || (draft.candidateMatches !== undefined && !Array.isArray(draft.candidateMatches)) || (draft.employeeAccessRequests !== undefined &&
+      (!Array.isArray(draft.employeeAccessRequests) || !draft.employeeAccessRequests.every(isArrangementEmployeeAccessRequest))) || !draft.workspace || draft.workspace.mode !== 'shared' ||
     !draft.permissions || typeof draft.createdAt !== 'number' || typeof draft.updatedAt !== 'number'
   ) return null
   const result = cloneDraft(draft as ArrangementDraft)

@@ -60,7 +60,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
   }
 
   async plan(input: Parameters<ArrangementPlannerPort['plan']>[0]): Promise<ArrangementPlanningResult> {
-    const { planningId, draft, employees, signal, onProgress } = input
+    const { planningId, draft, employees, plannerEmployees, signal, onProgress } = input
     const controller = new AbortController()
     const externalAbortHandler = (): void => controller.abort()
     this.planningControllers.set(planningId, controller)
@@ -72,17 +72,9 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     try {
       const planningSignal = controller.signal
       throwIfAborted(planningSignal)
-      const plannerEmployee = selectPlannerEmployee(employees, this.options)
+      const plannerEmployee = selectPlannerEmployee(plannerEmployees ?? employees, this.options)
       const prompt = buildArrangementPlannerPrompt(draft, employees)
       const workerEvents: TaskExecutionEvent[] = []
-      const activeEmployees = employees.filter(employee => employee.status === 'ACTIVE')
-
-      for (const employee of activeEmployees) {
-        throwIfAborted(planningSignal)
-        onProgress(progressEvent(planningId, draft.id, draft.revision, 'arrangement_employee_considering', employee, {
-          stage: 'considering',
-        }))
-      }
 
       // A planner returns JSON, never executes tools. Even a non-compliant gateway
       // must not turn unexpected tool calls into an unbounded agent loop.
@@ -120,12 +112,40 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       try {
         await Promise.race([runPromise, abortPromise, invalidToolCall])
         throwIfAborted(planningSignal)
-        const text = workerEvents
+        const deltas = workerEvents
           .filter(event => event.type === 'text_delta')
           .map(event => readTextDelta(event.data))
           .filter((value): value is string => value !== null)
           .join('')
+        const messageText = workerEvents
+          .filter(event => event.type === 'message_end')
+          .map(event => readMessageText(event.data))
+          .filter((value): value is string => value !== null)
+          .join('')
+        const text = deltas || messageText
         const result = parseArrangementPlannerOutput(text, draft, employees)
+        if (result.intentAnalysis) {
+          onProgress({
+            planningId,
+            draftId: draft.id,
+            draftRevision: draft.revision,
+            type: 'arrangement_plan_ready',
+            occurredAt: Date.now(),
+            data: {
+              stage: 'planning',
+              planSummary: result.intentAnalysis.summary,
+              planSteps: result.intentAnalysis.steps.map(step => ({ id: step.id, title: step.title })),
+            },
+          })
+        }
+
+        const activeEmployees = employees.filter(employee => employee.status === 'ACTIVE')
+        for (const employee of activeEmployees) {
+          throwIfAborted(planningSignal)
+          onProgress(progressEvent(planningId, draft.id, draft.revision, 'arrangement_employee_considering', employee, {
+            stage: 'considering',
+          }))
+        }
 
         const selected = new Set<string>()
         for (const node of result.nodes) {
@@ -233,6 +253,20 @@ function readTextDelta(data: unknown): string | null {
   if (!data || typeof data !== 'object') return null
   const text = (data as { text?: unknown }).text
   return typeof text === 'string' ? text : null
+}
+
+function readMessageText(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null
+  const message = (data as { message?: unknown }).message
+  if (!message || typeof message !== 'object') return null
+  const content = (message as { content?: unknown }).content
+  if (!Array.isArray(content)) return null
+  const text = content
+    .filter((part): part is { type?: unknown; text?: unknown } => Boolean(part) && typeof part === 'object')
+    .filter(part => part.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text as string)
+    .join('')
+  return text || null
 }
 
 

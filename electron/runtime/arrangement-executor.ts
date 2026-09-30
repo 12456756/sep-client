@@ -59,20 +59,20 @@ export interface ArrangementNodeEvent {
 
 export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output: string | null }[]): string {
   const dependencyText = dependencies.length === 0
-    ? 'No prerequisite node output is available.'
+    ? '没有可用的前置节点输出。'
     : dependencies.map(({ node: dependency, output }) => [
-      `PREREQUISITE: ${dependency.title} (${dependency.id})`,
-      output?.trim() || '(The prerequisite completed without a textual output.)',
+      `前置节点：${dependency.title}（${dependency.id}）`,
+      output?.trim() || '（前置节点完成时没有产生文本输出。）',
     ].join('\n')).join('\n\n')
   return [
-    'You are executing one node inside an orchestrated work plan.',
-    `OVERALL GOAL:\n${plan.goal}`,
-    `CURRENT NODE:\n${node.title} (${node.id})`,
-    `NODE INSTRUCTION:\n${node.instruction}`,
-    `EXPECTED OUTPUT:\n${node.expectedOutput}`,
-    `PREREQUISITE OUTPUTS:\n${dependencyText}`,
-    'SHARED WORKSPACE:\nUse only the assigned shared workspace and do not replay or invent prerequisite tool calls.',
-    'Return a concise result that can be consumed by downstream nodes. Do not reveal hidden reasoning.',
+    '你正在执行编排工作计划中的一个节点。',
+    `总体目标：\n${plan.goal}`,
+    `当前节点：\n${node.title}（${node.id}）`,
+    `节点执行指令：\n${node.instruction}`,
+    `预期输出：\n${node.expectedOutput}`,
+    `前置节点输出：\n${dependencyText}`,
+    '共享工作区：\n只能使用分配的共享工作区，不要重放或虚构前置节点的工具调用。',
+    '请返回可供后续节点使用的简洁结果，不要透露隐藏的推理过程。',
   ].join('\n\n')
 }
 

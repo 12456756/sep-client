@@ -231,7 +231,7 @@ export interface ArrangementPlanSnapshot {
   createdAt: number
 }
 
-export type ArrangementDraftStatus = 'editing' | 'planning' | 'planning-failed' | 'ready' | 'preflight-failed' | 'confirmed'
+export type ArrangementDraftStatus = 'editing' | 'planning' | 'planning-failed' | 'awaiting-employee' | 'ready' | 'preflight-failed' | 'confirmed'
 
 export interface ArrangementDraftNode {
   id: string
@@ -243,6 +243,44 @@ export interface ArrangementDraftNode {
   dependsOn: string[]
   skillIds: string[]
   requiresUserConfirmation: boolean
+}
+
+export type ArrangementEmployeeAccessRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'
+
+export interface ArrangementIntentAnalysis {
+  summary: string
+  steps: Array<{ id: string; title: string; requiredCapabilities: string[]; dependsOn: string[] }>
+}
+
+export interface ArrangementUnresolvedStep {
+  stepId: string
+  reason: string
+  requiredCapabilities: string[]
+}
+
+export interface ArrangementCandidateMatch {
+  stepId: string
+  employeeId: string
+  subscriptionId: string | null
+  source: 'enterprise' | 'platform'
+  name: string
+  rationale: string
+  canExecute: false
+  canApply: true
+}
+
+export interface ArrangementEmployeeAccessRequest {
+  requestId: string
+  stepId: string
+  employeeId: string
+  subscriptionId: string | null
+  source: 'enterprise' | 'platform'
+  name: string
+  status: ArrangementEmployeeAccessRequestStatus
+  requestedCapabilities: string[]
+  createdAt: string
+  updatedAt: string
+  message?: string
 }
 
 export interface ArrangementDraftDocument {
@@ -257,6 +295,10 @@ export interface ArrangementDraftDocument {
     activeSubscriptionId: string | null
   } | null
   nodes: ArrangementDraftNode[]
+  intentAnalysis?: ArrangementIntentAnalysis | null
+  unresolvedSteps?: ArrangementUnresolvedStep[]
+  candidateMatches?: ArrangementCandidateMatch[]
+  employeeAccessRequests?: ArrangementEmployeeAccessRequest[]
   workspace: { mode: 'shared'; path: string | null }
   permissions: {
     preset: ArrangementPermissionPreset
@@ -509,6 +551,7 @@ export interface ClientState {
 
 export type ArrangementPlanningProgressType =
   | 'arrangement_planning_started'
+  | 'arrangement_plan_ready'
   | 'arrangement_employee_considering'
   | 'arrangement_employee_selected'
   | 'arrangement_planning_completed'
@@ -529,5 +572,7 @@ export interface ArrangementPlanningProgress {
     nodeId?: string
     title?: string
     message?: string
+    planSummary?: string
+    planSteps?: Array<{ id: string; title: string }>
   }
 }

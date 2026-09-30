@@ -31,6 +31,44 @@ export const enterpriseOverviewSchema = z.object({
   }).passthrough()),
 }).passthrough()
 
+export const platformEmployeeCapabilitySchema = z.object({
+  id: resourceId, name: z.string(), description: z.string(), type: z.string().optional(),
+}).passthrough()
+
+export const platformEmployeeSchema = z.object({
+  employeeId: resourceId, name: z.string(), position: z.string(), description: z.string(),
+  functionalCategory: z.string().nullable().optional(), employeeStatus: z.string(),
+  availability: z.string(), canApply: z.boolean(), capabilities: z.array(platformEmployeeCapabilitySchema),
+  updatedAt: z.string(),
+}).passthrough()
+
+export const platformEmployeePageSchema = z.object({
+  items: z.array(platformEmployeeSchema), page: z.number().int().min(1),
+  pageSize: z.number().int().positive(), total: count, hasNextPage: z.boolean(),
+}).passthrough()
+
+export const employeeAccessRequestSchema = z.object({
+  requestId: resourceId, status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'CANCELLED']),
+  targetType: z.enum(['ENTERPRISE_SUBSCRIPTION', 'PLATFORM_EMPLOYEE']),
+  employee: z.object({ employeeId: resourceId, subscriptionId: resourceId.nullable(), name: z.string() }).passthrough(),
+  requestedCapabilities: z.array(resourceId), createdAt: z.string(), updatedAt: z.string(), message: z.string().optional(),
+}).passthrough()
+
+export const employeeAccessRequestInputSchema = z.object({
+  targetType: z.enum(['ENTERPRISE_SUBSCRIPTION', 'PLATFORM_EMPLOYEE']),
+  subscriptionId: resourceId.nullable().optional(), employeeId: resourceId.nullable().optional(),
+  reason: z.string().min(1).max(2_000), requestedCapabilities: z.array(resourceId).max(32).optional(),
+}).strict().superRefine((value, context) => {
+  if (value.targetType === 'ENTERPRISE_SUBSCRIPTION' && !value.subscriptionId) context.addIssue({ code: z.ZodIssueCode.custom, path: ['subscriptionId'], message: 'subscriptionId is required' })
+  if (value.targetType === 'PLATFORM_EMPLOYEE' && !value.employeeId) context.addIssue({ code: z.ZodIssueCode.custom, path: ['employeeId'], message: 'employeeId is required' })
+})
+
+export type PlatformEmployeeCapability = z.infer<typeof platformEmployeeCapabilitySchema>
+export type PlatformEmployee = z.infer<typeof platformEmployeeSchema>
+export type PlatformEmployeePage = z.infer<typeof platformEmployeePageSchema>
+export type EmployeeAccessRequest = z.infer<typeof employeeAccessRequestSchema>
+export type EmployeeAccessRequestInput = z.infer<typeof employeeAccessRequestInputSchema>
+
 export const enterpriseOrganizationSchema = enterpriseOverviewSchema.extend({
   departments: z.array(z.object({
     id: z.string(), name: z.string(), parentId: nullableText,
