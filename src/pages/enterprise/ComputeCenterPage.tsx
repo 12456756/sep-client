@@ -1,6 +1,6 @@
 import { AlertCircle, ArrowDownLeft, ArrowUpRight, ChevronRight, Coins, CreditCard, Gauge, RefreshCw, Wallet, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { formatAllowanceValue, formatComputeAmount, formatRemainingPercent, selectComputeBreakdown } from '../../features/enterprise/compute-center-model'
+import { formatAllowanceValue, formatComputeAmount, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, selectComputeBreakdown } from '../../features/enterprise/compute-center-model'
 import { useComputeCenter, type ComputeCenterTab } from '../../features/enterprise/use-compute-center'
 import type { ComputeUsageRecord, WalletTransaction } from '../../shared/compute-credit-contracts'
 
@@ -73,6 +73,31 @@ function DetailRows({ entries }: { entries: Array<[string, string]> }): React.JS
   return <dl className="compute-detail-list">{entries.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
 }
 
+type AllowanceProgressTone = 'recharge' | 'monthly' | 'daily'
+
+function AllowanceProgress({ label, limit, used, remaining, tone, unlimited = false }: {
+  label: string
+  limit: string | null | undefined
+  used: string | undefined
+  remaining: string | null | undefined
+  tone: AllowanceProgressTone
+  unlimited?: boolean
+}): React.JSX.Element {
+  const configured = unlimited || typeof limit === 'string'
+  const percent = unlimited ? null : formatRemainingPercent(limit, remaining)
+  const progressWidth = unlimited ? 100 : percent ?? 0
+  const limitText = unlimited ? '不限额' : formatConfiguredLimit(limit)
+  const remainingText = unlimited ? '不限额' : formatOptionalComputeAmount(remaining)
+  const statusText = !configured ? '未设置' : unlimited ? '不限额' : percent === null ? '—' : `剩余 ${percent.toFixed(1)}%`
+  return (
+    <div className={`compute-allowance-progress ${tone}${configured ? '' : ' is-unconfigured'}`}>
+      <div className="compute-allowance-progress-head"><span>{label}</span><strong>{remainingText} <em>/ {limitText}</em></strong></div>
+      <div className={`compute-progress ${tone}${unlimited ? ' is-unlimited' : ''}`} role="progressbar" aria-label={`${label}${!configured ? '未设置' : `，${statusText}`}`} aria-valuemin={configured && !unlimited ? 0 : undefined} aria-valuemax={configured && !unlimited ? 100 : undefined} aria-valuenow={configured && !unlimited ? percent ?? 0 : undefined}><span style={{ width: `${progressWidth}%` }} /></div>
+      <div className="compute-allowance-progress-foot"><span>已用 {formatOptionalComputeAmount(used)}</span><strong>{statusText}</strong></div>
+    </div>
+  )
+}
+
 function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTrend, onDrawer }: {
   state: ReturnType<typeof useComputeCenter>
   days: 7 | 30 | 90
@@ -87,15 +112,22 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
   if (state.overview.error && !data) return <ErrorBlock message={state.overview.error} onRetry={state.refresh} />
   if (!data) return <div className="compute-empty">暂无算力数据</div>
   const { allowance, wallet } = data
-  const remainingPercent = formatRemainingPercent(allowance.limitCNY, allowance.remainingCNY)
   const remaining = formatAllowanceValue(allowance.remainingCNY)
+  const monthlyLimit = allowance.monthlyLimitCNY !== undefined ? allowance.monthlyLimitCNY : allowance.period === 'MONTH' ? allowance.limitCNY : undefined
+  const monthlyUsed = allowance.monthlyUsedCNY !== undefined ? allowance.monthlyUsedCNY : allowance.period === 'MONTH' ? allowance.usedCNY : undefined
+  const monthlyRemaining = allowance.monthlyRemainingCNY !== undefined ? allowance.monthlyRemainingCNY : allowance.period === 'MONTH' ? allowance.remainingCNY : undefined
+  const monthlyIsCurrentPeriod = allowance.period === 'MONTH' && allowance.monthlyLimitCNY === undefined
   return (
     <div className="compute-overview-grid">
       <section className="compute-card compute-allowance-card">
-        <div className="compute-card-head"><div><span className="compute-eyebrow">企业额度</span><h2>{remaining}</h2><p>{allowance.periodLabel ?? allowance.period}额度 · 已使用 {formatComputeAmount(allowance.usedCNY)}</p></div><span className="compute-card-icon purple"><Gauge size={20} /></span></div>
-        <div className="compute-progress-row"><div className={`compute-progress${remainingPercent === null ? ' is-unlimited' : ''}`} role="progressbar" aria-label={remainingPercent === null ? '剩余额度不限额' : `剩余额度 ${remainingPercent.toFixed(1)}%`} aria-valuemin={remainingPercent === null ? undefined : 0} aria-valuemax={remainingPercent === null ? undefined : 100} aria-valuenow={remainingPercent === null ? undefined : remainingPercent}><span style={{ width: `${remainingPercent ?? 100}%` }} /></div><strong>{remainingPercent === null ? '不限额' : `剩余 ${remainingPercent.toFixed(1)}%`}</strong></div>
-        <div className="compute-card-foot"><span>追加余额 {formatComputeAmount(allowance.topUpRemainingCNY)}</span><button type="button" className="compute-link" onClick={() => onDrawer({ title: '企业额度详情', children: <DetailRows entries={[
-          ['额度上限', formatAllowanceValue(allowance.limitCNY)], ['已使用', formatComputeAmount(allowance.usedCNY)], ['可用额度', remaining], ['追加余额', formatComputeAmount(allowance.topUpRemainingCNY)], ['日额度', formatAllowanceValue(allowance.dailyLimitCNY)], ['月额度', formatAllowanceValue(allowance.monthlyLimitCNY)],
+        <div className="compute-card-head"><div><span className="compute-eyebrow">企业充值余额</span><h2>{formatComputeAmount(allowance.topUpRemainingCNY)}</h2><p>跨周期保留 · 当前周期剩余 {remaining}</p></div><span className="compute-card-icon purple"><Gauge size={20} /></span></div>
+        <div className="compute-allowance-progress-list" aria-label="企业额度进度">
+          <AllowanceProgress label="企业充值余额" tone="recharge" limit={allowance.topUpAmountCNY} used={allowance.topUpConsumedCNY} remaining={allowance.topUpRemainingCNY} />
+          <AllowanceProgress label="每月限额" tone="monthly" limit={monthlyLimit} used={monthlyUsed} remaining={monthlyRemaining} unlimited={monthlyIsCurrentPeriod && monthlyLimit === null} />
+          <AllowanceProgress label="每日限额" tone="daily" limit={allowance.dailyLimitCNY} used={allowance.dailyUsedCNY} remaining={allowance.dailyRemainingCNY} />
+        </div>
+        <div className="compute-card-foot"><span>企业额度与充值余额分开计算</span><button type="button" className="compute-link" onClick={() => onDrawer({ title: '企业额度详情', children: <DetailRows entries={[
+          ['额度上限', formatAllowanceValue(allowance.limitCNY)], ['已使用', formatComputeAmount(allowance.usedCNY)], ['可用额度', remaining], ['企业充值余额', formatComputeAmount(allowance.topUpRemainingCNY)], ['充值总额', formatOptionalComputeAmount(allowance.topUpAmountCNY)], ['充值已用', formatOptionalComputeAmount(allowance.topUpConsumedCNY)], ['每日限额', formatConfiguredLimit(allowance.dailyLimitCNY)], ['每日已用', formatOptionalComputeAmount(allowance.dailyUsedCNY)], ['每日剩余', formatOptionalComputeAmount(allowance.dailyRemainingCNY)], ['每月限额', formatConfiguredLimit(monthlyLimit)], ['每月已用', formatOptionalComputeAmount(monthlyUsed)], ['每月剩余', formatOptionalComputeAmount(monthlyRemaining)],
         ]} /> })}>查看详情 <ChevronRight size={14} /></button></div>
       </section>
       <section className="compute-card compute-wallet-card">

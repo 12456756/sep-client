@@ -25,11 +25,23 @@
 .compute-card-icon.purple { color: var(--ent-brand-deep); background: var(--ent-brand-soft); }
 .compute-card-icon.blue { color: var(--ent-accent-ink); background: var(--ent-accent-soft); }
 .compute-card-icon.green { color: var(--ent-ready); background: var(--ent-ready-bg); }
-.compute-progress-row { display: flex; align-items: center; gap: 10px; margin-top: auto; padding-top: 23px; }
-.compute-progress { height: 8px; flex: 1; overflow: hidden; border-radius: 99px; background: var(--ent-track); }
-.compute-progress span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--ent-ready-solid), var(--ent-ready)); box-shadow: 0 1px 3px rgb(26 127 82 / 22%); transition: width .3s ease; }
+.compute-allowance-progress-list { display: grid; gap: 15px; margin-top: 22px; }
+.compute-allowance-progress { display: grid; gap: 6px; }
+.compute-allowance-progress-head, .compute-allowance-progress-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--ent-ink-3); font-size: 11px; }
+.compute-allowance-progress-head strong { color: var(--ent-ink); font-size: 12px; font-variant-numeric: tabular-nums; }
+.compute-allowance-progress-head em { color: var(--ent-ink-3); font-size: 10px; font-style: normal; font-weight: 400; }
+.compute-allowance-progress-foot strong { font-size: 10px; font-weight: 600; }
+.compute-allowance-progress.recharge .compute-allowance-progress-foot strong { color: var(--ent-brand-ink); }
+.compute-allowance-progress.monthly .compute-allowance-progress-foot strong { color: var(--ent-ready); }
+.compute-allowance-progress.daily .compute-allowance-progress-foot strong { color: var(--ent-attention); }
+.compute-progress { height: 8px; overflow: hidden; border-radius: 99px; background: var(--ent-track); }
+.compute-progress span { display: block; height: 100%; min-width: 0; border-radius: inherit; box-shadow: 0 1px 3px rgb(26 127 82 / 22%); transition: width .3s ease; }
+.compute-progress.recharge span { background: linear-gradient(90deg, var(--ent-brand-solid), var(--ent-brand-deep)); box-shadow: 0 1px 3px rgb(185 54 63 / 22%); }
+.compute-progress.monthly span { background: linear-gradient(90deg, var(--ent-ready-solid), var(--ent-ready)); }
+.compute-progress.daily span { background: linear-gradient(90deg, #e2a248, var(--ent-attention)); box-shadow: 0 1px 3px rgb(138 100 16 / 20%); }
 .compute-progress.is-unlimited span { background: repeating-linear-gradient(135deg, var(--ent-ready-solid) 0 8px, var(--ent-ready) 8px 16px); opacity: .78; }
-.compute-progress-row strong { min-width: 74px; color: var(--ent-ready); text-align: right; font-size: 12px; }
+.compute-allowance-progress.is-unconfigured .compute-progress { background: repeating-linear-gradient(135deg, var(--ent-line-soft) 0 7px, var(--ent-track) 7px 14px); }
+.compute-allowance-progress.is-unconfigured .compute-progress span { background: transparent; box-shadow: none; }
 .compute-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-3); font-size: 11px; }
 .compute-link { display: inline-flex; align-items: center; gap: 2px; border: 0; padding: 0; background: transparent; color: var(--ent-brand-deep); cursor: pointer; font-size: 12px; white-space: nowrap; }
 .compute-link:hover { text-decoration: underline; }
@@ -79,4 +91,4 @@
 @keyframes compute-drawer-in { from { transform: translateX(20px); opacity: .4; } to { transform: translateX(0); opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .compute-drawer, .compute-loading span { animation: none; } }
 @media (max-width: 960px) { .compute-page { padding: 24px 22px 40px; } .compute-overview-grid { grid-template-columns: 1fr; } .compute-trend-card, .compute-note-card { grid-column: auto; } }
-@media (max-width: 640px) { .compute-section-head { align-items: flex-start; } .compute-table th, .compute-table td { padding-left: 14px; padding-right: 14px; } .compute-card-foot { align-items: flex-start; flex-direction: column; } }
+@media (max-width: 640px) { .compute-section-head { align-items: flex-start; } .compute-table th, .compute-table td { padding-left: 14px; padding-right: 14px; } .compute-allowance-metrics { grid-template-columns: 1fr; } .compute-allowance-metric + .compute-allowance-metric { padding-left: 0; padding-top: 12px; border-top: 1px solid var(--ent-line-soft); border-left: 0; } .compute-card-foot { align-items: flex-start; flex-direction: column; } }
