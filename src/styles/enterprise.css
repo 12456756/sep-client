@@ -314,8 +314,9 @@
   outline-offset: 2px;
   box-shadow: 0 0 0 3px rgb(217 75 82 / 18%) !important;
 }
-/* 两个输入框由外框整体表达聚焦（描边 + 光晕），里面的文本域不再单独画一圈。 */
-.ent-shell .ent-arrangebar-input:focus-visible, .ent-shell .ent-ask-input:focus-visible {
+/* 会话与编排输入区由外框表达聚焦，内部文本框不再单独显示焦点环。 */
+.ent-shell .ent-arrangebar-input:focus-visible, .ent-shell .ent-ask-input:focus-visible,
+.ent-shell .ent-chat-input:focus-visible, .ent-shell .ent-goal-input:focus-visible {
   outline: none !important;
   box-shadow: none !important;
 }

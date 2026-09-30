@@ -201,22 +201,22 @@ function parseCandidateMatches(
   intentAnalysis: ArrangementIntentAnalysis | undefined,
   unresolvedSteps: readonly ArrangementUnresolvedStep[],
 ): ArrangementCandidateMatch[] {
-  if (value === undefined) return []
-  if (!Array.isArray(value)) throw new AppError('PLANNING_FAILED')
+  if (!Array.isArray(value)) return []
   const employeeById = new Map(employees.map(employee => [employee.employeeId, employee]))
   const stepIds = new Set([
     ...(intentAnalysis?.steps.map(step => step.id) ?? []),
     ...unresolvedSteps.map(step => step.stepId),
   ])
-  return value.map(candidate => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new AppError('PLANNING_FAILED')
+  // Candidate matches are advisory. Invalid suggestions must not discard a valid plan.
+  return value.flatMap(candidate => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return []
     const item = candidate as Record<string, unknown>
     const stepId = stringField(item.stepId)
     const employeeId = stringField(item.employeeId)
     const rationale = stringField(item.rationale)
-    if (!stepId || !employeeId || !rationale || !stepIds.has(stepId)) throw new AppError('PLANNING_FAILED')
+    if (!stepId || !employeeId || !rationale || !stepIds.has(stepId)) return []
     const employee = employeeById.get(employeeId)
-    if (!employee || (employee.source !== 'enterprise' && employee.source !== 'platform') || employee.canExecute !== false || employee.canApply === false) throw new AppError('PLANNING_FAILED')
+    if (!employee || (employee.source !== 'enterprise' && employee.source !== 'platform') || employee.canExecute !== false || employee.canApply === false) return []
     return {
       stepId,
       employeeId,

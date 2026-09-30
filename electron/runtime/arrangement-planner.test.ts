@@ -52,6 +52,25 @@ describe('arrangement planner', () => {
     assert.equal(result.nodes.length, 0)
   })
 
+  it('ignores non-applicable employee suggestions while preserving unresolved steps', () => {
+    const result = parseArrangementPlannerOutput(JSON.stringify({
+      title: 'AI news report',
+      intentAnalysis: {
+        summary: 'Search for current AI news and prepare a report',
+        steps: [
+          { id: 'step-1', title: 'Search AI news', requiredCapabilities: ['web-search'], dependsOn: [] },
+        ],
+      },
+      unresolvedSteps: [{ stepId: 'step-1', reason: 'No employee has web search access', requiredCapabilities: ['web-search'] }],
+      candidateMatches: [{ stepId: 'step-1', employeeId: 'emp-a', rationale: 'Can summarize news' }],
+      nodes: [],
+    }), draft, [{ ...employees[0]!, source: 'authorized', canExecute: true, canApply: false }])
+
+    assert.deepEqual(result.unresolvedSteps?.map(step => step.stepId), ['step-1'])
+    assert.deepEqual(result.candidateMatches ?? [], [])
+    assert.deepEqual(result.nodes, [])
+  })
+
   it('keeps the intent snapshot and unresolved capability steps for later matching', () => {
     const result = parseArrangementPlannerOutput(JSON.stringify({
       title: 'Report',

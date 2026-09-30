@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { formatComputeAmount, formatComputePercent, formatAllowanceValue, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown } from './compute-center-model'
+import { formatComputeAmount, formatComputePercent, formatAllowanceValue, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown, sumComputeAmounts } from './compute-center-model'
 
 describe('compute center display model', () => {
   it('formats decimal strings for display without merging enterprise and wallet balances', () => {
@@ -52,5 +52,10 @@ describe('compute center display model', () => {
   it('keeps compatibility with the legacy nested trend response', () => {
     assert.deepEqual(getComputeTrendPoints({ totals: { costCNY: '1.00' }, series: [{ label: '昨天', value: '1.00' }] }), [{ label: '昨天', value: 1 }])
     assert.equal(getComputeTrendTotal({ totals: { costCNY: '1.00' } }), '1.00')
+  })
+
+  it('sums all enterprise funding sources separately from personal and unpaid amounts', () => {
+    assert.equal(sumComputeAmounts(['0.1200', '0.2300', '0.0500']), '0.4000')
+    assert.equal(sumComputeAmounts([undefined, null]), undefined)
   })
 })

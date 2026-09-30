@@ -1,6 +1,6 @@
 import { AlertCircle, ArrowDownLeft, ArrowUpRight, ChevronRight, Coins, CreditCard, Gauge, RefreshCw, Wallet, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { formatAllowanceValue, formatComputeAmount, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown } from '../../features/enterprise/compute-center-model'
+import { formatAllowanceValue, formatComputeAmount, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown, sumComputeAmounts } from '../../features/enterprise/compute-center-model'
 import { useComputeCenter, type ComputeCenterTab } from '../../features/enterprise/use-compute-center'
 import type { ComputeUsageRecord, WalletTransaction } from '../../shared/compute-credit-contracts'
 
@@ -108,7 +108,7 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
   return (
     <div className="compute-overview-grid">
       <section className="compute-card compute-allowance-card">
-        <div className="compute-card-head"><div><span className="compute-eyebrow">企业充值余额</span><h2>{formatComputeAmount(allowance.topUpRemainingCNY)}</h2><p>跨周期保留 · 当前周期剩余 {remaining}</p></div><span className="compute-card-icon purple"><Gauge size={20} /></span></div>
+        <div className="compute-card-head"><div><span className="compute-eyebrow">企业充值余额</span><h2>{formatComputeAmount(allowance.topUpRemainingCNY)}</h2><p>当前成员 {allowance.name} · 跨周期保留 · 当前周期剩余 {remaining}</p></div><span className="compute-card-icon purple"><Gauge size={20} /></span></div>
         <div className="compute-allowance-progress-list" aria-label="企业额度进度">
           <AllowanceProgress label="企业充值余额" tone="recharge" limit={allowance.topUpAmountCNY} used={allowance.topUpConsumedCNY} remaining={allowance.topUpRemainingCNY} />
           <AllowanceProgress label="每月限额" tone="monthly" limit={monthlyLimit} used={monthlyUsed} remaining={monthlyRemaining} unlimited={monthlyIsCurrentPeriod && monthlyLimit === null} />
@@ -123,7 +123,7 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
         <div className="compute-wallet-stats"><div><span>累计充值</span><strong>{formatComputeAmount(wallet.totalDepositCNY)}</strong></div><div><span>累计消费</span><strong>{formatComputeAmount(wallet.totalConsumeCNY)}</strong></div></div>
         <div className="compute-card-foot"><button type="button" className="compute-link" onClick={() => onDrawer({ title: '个人钱包说明', children: <p className="compute-drawer-note">个人钱包用于企业额度不足时的个人自费扣费。充值与支付闭环暂未在客户端开放，钱包流水可在“个人钱包”页查看。</p> })}>了解更多 <ChevronRight size={14} /></button></div>
       </section>
-      <section className="compute-card compute-trend-card"><div className="compute-card-head"><div><span className="compute-eyebrow">近 {days} 天消费</span><h2>{trend ? formatComputeAmount(getComputeTrendTotal(trend)) : '—'}</h2></div><span className="compute-card-icon green"><Coins size={20} /></span></div>{trendLoading ? <LoadingBlock /> : trendError ? <ErrorBlock message={trendError} onRetry={onRetryTrend} /> : <TrendChart data={trend} />}</section>
+      <section className="compute-card compute-trend-card"><div className="compute-card-head"><div><span className="compute-eyebrow">近 {days} 天消费总额</span><h2>{trend ? formatComputeAmount(getComputeTrendTotal(trend)) : '—'}</h2><p>管理员按企业账单统计，成员仅统计本人；额度已用只计企业承担</p></div><span className="compute-card-icon green"><Coins size={20} /></span></div>{trendLoading ? <LoadingBlock /> : trendError ? <ErrorBlock message={trendError} onRetry={onRetryTrend} /> : <TrendChart data={trend} />}</section>
       <section className="compute-note-card"><div className="compute-note-icon"><CreditCard size={18} /></div><div><strong>额度分开计算</strong><p>企业额度、管理员追加余额和个人钱包分别展示。这里的余额不是下一次调用成功的承诺，最终以 SEP 平台扣费结果为准。</p></div></section>
     </div>
   )
@@ -134,14 +134,15 @@ function UsageTab({ state, onDrawer }: { state: ReturnType<typeof useComputeCent
   if (state.usageRecords.loading && !page) return <LoadingBlock />
   if (state.usageRecords.error && !page) return <ErrorBlock message={state.usageRecords.error} onRetry={() => state.loadUsageRecords()} />
   const records = page?.records ?? []
-  return <section className="compute-list-card"><div className="compute-list-head"><div><span className="compute-eyebrow">用量账单</span><h2>消费明细</h2></div><button type="button" className="compute-icon-button" onClick={() => state.loadUsageRecords()} aria-label="刷新消费明细"><RefreshCw size={16} /></button></div>{records.length ? <div className="compute-table-wrap"><table className="compute-table"><thead><tr><th>时间</th><th>员工 / 模型</th><th>企业额度</th><th>个人钱包</th><th>总消费</th><th /></tr></thead><tbody>{records.map((record, index) => <UsageRow key={valueText(record.id, String(index))} record={record} onOpen={() => onDrawer({ title: '消费记录详情', children: <DetailRows entries={[
-    ['时间', valueText(record.createdAt)], ['员工', valueText(asRecord(record).employeeName ?? asRecord(record).employeeId)], ['模型', valueText(asRecord(record).modelName ?? asRecord(record).modelId)], ['总消费', formatComputeAmount(record.costCNY ?? null)], ['企业额度承担', formatComputeAmount(record.creditPaidCNY ?? null)], ['个人钱包承担', formatComputeAmount(record.personalPaidCNY ?? record.walletPaidCNY ?? null)],
+  return <section className="compute-list-card"><div className="compute-list-head"><div><span className="compute-eyebrow">用量账单</span><h2>消费明细</h2></div><button type="button" className="compute-icon-button" onClick={() => state.loadUsageRecords()} aria-label="刷新消费明细"><RefreshCw size={16} /></button></div>{records.length ? <div className="compute-table-wrap"><table className="compute-table"><thead><tr><th>时间</th><th>成员 / 员工 / 模型</th><th>企业承担</th><th>个人钱包</th><th>欠费</th><th>总消费</th><th /></tr></thead><tbody>{records.map((record, index) => <UsageRow key={valueText(record.id, String(index))} record={record} onOpen={() => onDrawer({ title: '消费记录详情', children: <DetailRows entries={[
+    ['时间', valueText(record.createdAt)], ['成员', valueText(asRecord(record).memberName ?? asRecord(record).memberId, '当前成员')], ['硅基员工', valueText(asRecord(record).employeeName ?? asRecord(record).employeeId)], ['模型', valueText(asRecord(record).modelName ?? asRecord(record).modelId)], ['总消费', formatComputeAmount(record.costCNY ?? null)], ['企业赠送额度承担', formatComputeAmount(record.creditPaidCNY ?? null)], ['成员企业充值承担', formatComputeAmount(record.memberWalletPaidCNY ?? null)], ['企业公共钱包承担', formatComputeAmount(record.walletPaidCNY ?? null)], ['个人钱包承担', formatComputeAmount(record.personalPaidCNY ?? null)], ['欠费', formatComputeAmount(record.unpaidCNY ?? null)],
   ]} /> })} />)}</tbody></table></div> : <div className="compute-empty">暂无消费记录</div>}</section>
 }
 
 function UsageRow({ record, onOpen }: { record: ComputeUsageRecord; onOpen: () => void }): React.JSX.Element {
   const raw = asRecord(record)
-  return <tr><td>{valueText(record.createdAt)}</td><td><strong>{valueText(raw.employeeName ?? raw.employeeId, '算力调用')}</strong><small>{valueText(raw.modelName ?? raw.modelId, '')}</small></td><td>{formatComputeAmount(record.creditPaidCNY ?? null)}</td><td>{formatComputeAmount(record.personalPaidCNY ?? record.walletPaidCNY ?? null)}</td><td><strong>{formatComputeAmount(record.costCNY ?? null)}</strong></td><td><button type="button" className="compute-link" onClick={onOpen}>详情</button></td></tr>
+  const enterprisePaid = sumComputeAmounts([record.creditPaidCNY, record.memberWalletPaidCNY, record.walletPaidCNY])
+  return <tr><td>{valueText(record.createdAt)}</td><td><strong>{valueText(raw.memberName ?? raw.memberId, '当前成员')}</strong><small>{valueText(raw.employeeName ?? raw.employeeId, '算力调用')} · {valueText(raw.modelName ?? raw.modelId, '')}</small></td><td>{formatComputeAmount(enterprisePaid)}</td><td>{formatComputeAmount(record.personalPaidCNY ?? null)}</td><td>{formatComputeAmount(record.unpaidCNY ?? null)}</td><td><strong>{formatComputeAmount(record.costCNY ?? null)}</strong></td><td><button type="button" className="compute-link" onClick={onOpen}>详情</button></td></tr>
 }
 
 function WalletTab({ state, onDrawer }: { state: ReturnType<typeof useComputeCenter>; onDrawer: (drawer: DrawerState) => void }): React.JSX.Element {

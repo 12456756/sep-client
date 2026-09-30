@@ -25,6 +25,15 @@ export function formatOptionalComputeAmount(value: string | null | undefined): s
   return value === null || value === undefined ? '—' : formatComputeAmount(value)
 }
 
+/** Add optional monetary fields without losing sub-cent precision before display rounding. */
+export function sumComputeAmounts(values: Array<string | null | undefined>): string | undefined {
+  const numbers = values
+    .filter((value): value is string => value !== null && value !== undefined)
+    .map(Number)
+    .filter(Number.isFinite)
+  return numbers.length ? numbers.reduce((sum, value) => sum + value, 0).toFixed(4) : undefined
+}
+
 export function formatComputePercent(value: number | null): number {
   if (value === null || !Number.isFinite(value)) return 0
   return Math.min(100, Math.max(0, value))
