@@ -72,7 +72,9 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     try {
       const planningSignal = controller.signal
       throwIfAborted(planningSignal)
-      const plannerEmployee = selectPlannerEmployee(plannerEmployees ?? employees, this.options)
+      const modelId = input.plannerModelId ?? this.options.plannerModelId
+      const plannerEmployee = selectPlannerEmployee(plannerEmployees ?? employees, this.options, modelId)
+      const plannerModelId = modelId ?? plannerEmployee.allowedModels[0] ?? ''
       const prompt = buildArrangementPlannerPrompt(draft, employees)
       const workerEvents: TaskExecutionEvent[] = []
 
@@ -80,7 +82,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       // must not turn unexpected tool calls into an unbounded agent loop.
       let rejectToolCall!: (error: AppError) => void
       const invalidToolCall = new Promise<never>((_resolve, reject) => { rejectToolCall = reject })
-      const worker = this.createWorker(planningId, plannerEmployee, event => {
+      const worker = this.createWorker(planningId, plannerEmployee, plannerModelId, event => {
         if (event.type === 'tool_execution_start') {
           rejectToolCall(new AppError('PLANNING_FAILED', {
             message: '自动编排模型返回了异常工具调用，已停止规划，请重试。',
@@ -162,6 +164,14 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
         }
 
         return result
+      } catch (error) {
+        if (isUnsupportedModelError(error)) {
+          throw new AppError('PLANNING_FAILED', {
+            message: '当前选择的模型未配置在服务端账号组中。请管理员同步可用模型，或选择其他模型后重试。',
+            cause: error,
+          })
+        }
+        throw error
       } finally {
         if (abortHandler) planningSignal.removeEventListener('abort', abortHandler)
         await worker.dispose()
@@ -175,6 +185,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
   private createWorker(
     planningId: string,
     plannerEmployee: ArrangementPlannerEmployee,
+    modelId: string,
     onEvent: PiTaskWorkerOptions['onEvent'],
   ): TaskWorkerPort {
     const workspaceDir = this.options.workspaceRoot
@@ -182,7 +193,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       taskId: planningId,
       runId: planningId,
       subscriptionId: plannerEmployee.subscriptionId,
-      modelId: this.options.plannerModelId ?? plannerEmployee.allowedModels[0] ?? '',
+      modelId,
       gatewayUrl: this.options.gatewayUrl,
       workspaceDir,
       agentDir: this.options.getAgentDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'agent'),
@@ -214,17 +225,43 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
 function selectPlannerEmployee(
   employees: readonly ArrangementPlannerEmployee[],
   options: ArrangementPlannerRuntimeOptions,
+  modelId?: string,
 ): ArrangementPlannerEmployee {
   const candidate = options.plannerSubscriptionId
     ? employees.find(employee => employee.subscriptionId === options.plannerSubscriptionId)
-    : employees.find(employee => employee.status === 'ACTIVE' && employee.allowedModels.length > 0)
+    : employees.find(employee => employee.status === 'ACTIVE' && employee.allowedModels.length > 0 && (!modelId || employee.allowedModels.includes(modelId)))
   if (!candidate || candidate.status !== 'ACTIVE' || candidate.allowedModels.length === 0) {
+    if (modelId) {
+      throw new AppError('MODEL_NOT_ALLOWED', {
+        message: '当前选择的模型不属于可用于自动编排的员工，请刷新员工列表后重新选择。',
+      })
+    }
     throw new Error('No active silicon employee with an allowed model is available for arrangement planning.')
   }
-  if (options.plannerModelId && !candidate.allowedModels.includes(options.plannerModelId)) {
-    throw new Error('The arrangement planner model is not allowed for the selected employee.')
+  if (modelId && !candidate.allowedModels.includes(modelId)) {
+    throw new AppError('MODEL_NOT_ALLOWED', {
+      message: '当前选择的模型不属于可用于自动编排的员工，请刷新员工列表后重新选择。',
+    })
   }
   return candidate
+}
+
+function isUnsupportedModelError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const message = error.message
+  const jsonStart = message.indexOf('{')
+  if (jsonStart >= 0) {
+    try {
+      const body = JSON.parse(message.slice(jsonStart)) as unknown
+      if (body && typeof body === 'object' && !Array.isArray(body)) {
+        const value = body as Record<string, unknown>
+        if (value.type === 'model_not_found') return true
+      }
+    } catch {
+      return /model_not_found/i.test(message)
+    }
+  }
+  return /model_not_found/i.test(message)
 }
 
 function progressEvent(

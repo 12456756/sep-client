@@ -1,10 +1,9 @@
 import { AlertCircle, ArrowDownLeft, ArrowUpRight, ChevronRight, Coins, CreditCard, Gauge, RefreshCw, Wallet, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { formatAllowanceValue, formatComputeAmount, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, selectComputeBreakdown } from '../../features/enterprise/compute-center-model'
+import { formatAllowanceValue, formatComputeAmount, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown } from '../../features/enterprise/compute-center-model'
 import { useComputeCenter, type ComputeCenterTab } from '../../features/enterprise/use-compute-center'
 import type { ComputeUsageRecord, WalletTransaction } from '../../shared/compute-credit-contracts'
 
-interface TrendPoint { label: string; value: number }
 type DrawerState = { title: string; children: React.ReactNode } | null
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -17,19 +16,8 @@ function valueText(value: unknown, fallback = '—'): string {
   return fallback
 }
 
-function trendPoints(value: unknown): TrendPoint[] {
-  const source = asRecord(value)
-  const rows = Array.isArray(source.series) ? source.series : Array.isArray(source.daily) ? source.daily : []
-  return rows.flatMap((row, index) => {
-    const item = asRecord(row)
-    const raw = item.costCNY ?? item.amountCNY ?? item.value ?? item.totalCNY
-    const number = typeof raw === 'string' || typeof raw === 'number' ? Number(raw) : Number.NaN
-    return Number.isFinite(number) ? [{ label: valueText(item.date ?? item.label, `${index + 1}`), value: number }] : []
-  })
-}
-
 function TrendChart({ data }: { data: unknown }): React.JSX.Element {
-  const points = trendPoints(data)
+  const points = getComputeTrendPoints(data)
   if (!points.length) return <div className="compute-empty-chart">暂无趋势数据</div>
   const max = Math.max(...points.map(point => point.value), 1)
   const coords = points.map((point, index) => `${(index / Math.max(1, points.length - 1)) * 100},${40 - (point.value / max) * 34}`).join(' ')
@@ -135,7 +123,7 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
         <div className="compute-wallet-stats"><div><span>累计充值</span><strong>{formatComputeAmount(wallet.totalDepositCNY)}</strong></div><div><span>累计消费</span><strong>{formatComputeAmount(wallet.totalConsumeCNY)}</strong></div></div>
         <div className="compute-card-foot"><button type="button" className="compute-link" onClick={() => onDrawer({ title: '个人钱包说明', children: <p className="compute-drawer-note">个人钱包用于企业额度不足时的个人自费扣费。充值与支付闭环暂未在客户端开放，钱包流水可在“个人钱包”页查看。</p> })}>了解更多 <ChevronRight size={14} /></button></div>
       </section>
-      <section className="compute-card compute-trend-card"><div className="compute-card-head"><div><span className="compute-eyebrow">近 {days} 天消费</span><h2>{trend ? formatComputeAmount(valueText(asRecord(trend).totals && asRecord(asRecord(trend).totals).costCNY)) : '—'}</h2></div><span className="compute-card-icon green"><Coins size={20} /></span></div>{trendLoading ? <LoadingBlock /> : trendError ? <ErrorBlock message={trendError} onRetry={onRetryTrend} /> : <TrendChart data={trend} />}</section>
+      <section className="compute-card compute-trend-card"><div className="compute-card-head"><div><span className="compute-eyebrow">近 {days} 天消费</span><h2>{trend ? formatComputeAmount(getComputeTrendTotal(trend)) : '—'}</h2></div><span className="compute-card-icon green"><Coins size={20} /></span></div>{trendLoading ? <LoadingBlock /> : trendError ? <ErrorBlock message={trendError} onRetry={onRetryTrend} /> : <TrendChart data={trend} />}</section>
       <section className="compute-note-card"><div className="compute-note-icon"><CreditCard size={18} /></div><div><strong>额度分开计算</strong><p>企业额度、管理员追加余额和个人钱包分别展示。这里的余额不是下一次调用成功的承诺，最终以 SEP 平台扣费结果为准。</p></div></section>
     </div>
   )

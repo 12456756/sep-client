@@ -94,7 +94,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
 
   const submitGoal = () => {
     setSubmitted(true);
-    void start(goal, settings.workDir);
+    void start(goal, settings.workDir, settings.modelId || undefined);
   };
 
   const requestAccess = async (stepId: string, employeeId: string): Promise<void> => {
@@ -160,7 +160,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
                   <h2>还缺少员工，当前编排已暂停</h2>
                   <p>申请员工不会阻塞客户端。申请通过后点击“重新检查”，系统会复用当前草稿继续匹配。</p>
                 </div>
-                <button type="button" className="ent-arr-primary" disabled={planning || requestingKey !== null || refreshingRequestId !== null} onClick={() => void recheck()}>
+                <button type="button" className="ent-arr-primary" disabled={planning || requestingKey !== null || refreshingRequestId !== null} onClick={() => void recheck(settings.modelId || undefined)}>
                   <RefreshCw size={14} aria-hidden />重新检查
                 </button>
               </div>

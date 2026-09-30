@@ -66,7 +66,7 @@ export function useAutoPlanning() {
     };
   }, []);
 
-  const start = async (goal: string, workDir: string): Promise<void> => {
+  const start = async (goal: string, workDir: string, plannerModelId?: string): Promise<void> => {
     if (!goal.trim() || attempt.current && !attempt.current.terminal) return;
     const current: PlanningAttempt = { draftId: null, planningId: null, terminal: false };
     attempt.current = current;
@@ -85,7 +85,7 @@ export function useAutoPlanning() {
       if (!created.success || !created.draft) throw new Error(created.error?.message || '自动编排草稿创建失败');
       current.draftId = created.draft.id;
       setDraft(created.draft);
-      const planned = await window.electronAPI.planArrangementDraft({ draftId: created.draft.id, expectedRevision: created.draft.revision });
+      const planned = await window.electronAPI.planArrangementDraft({ draftId: created.draft.id, expectedRevision: created.draft.revision, plannerModelId });
       if (current.terminal) return;
       if (!planned.success || !planned.planningId) throw new Error(planned.error?.message || '自动编排未能启动');
       if (attempt.current !== current) {
@@ -142,7 +142,7 @@ export function useAutoPlanning() {
     setDraft(result.draft);
   };
 
-  const recheck = async (): Promise<void> => {
+  const recheck = async (plannerModelId?: string): Promise<void> => {
     if (!draft || planning) return;
     const current: PlanningAttempt = { draftId: draft.id, planningId: null, terminal: false };
     attempt.current = current;
@@ -151,7 +151,7 @@ export function useAutoPlanning() {
     setEvents([]);
     setError(null);
     try {
-      const planned = await window.electronAPI.planArrangementDraft({ draftId: draft.id, expectedRevision: draft.revision });
+      const planned = await window.electronAPI.planArrangementDraft({ draftId: draft.id, expectedRevision: draft.revision, plannerModelId });
       if (attempt.current !== current) return;
       if (!planned.success || !planned.planningId) {
         throw new Error(errorMessage(planned, '重新检查未能启动'));

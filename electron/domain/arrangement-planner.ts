@@ -61,6 +61,7 @@ export interface ArrangementPlannerPort {
     draft: ArrangementDraft
     employees: readonly ArrangementPlannerEmployee[]
     plannerEmployees?: readonly ArrangementPlannerEmployee[]
+    plannerModelId?: string
     signal?: AbortSignal
     onProgress: (event: ArrangementPlanningProgress) => void
   }): Promise<ArrangementPlanningResult>

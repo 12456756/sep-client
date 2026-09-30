@@ -7,6 +7,8 @@ import type { TaskManager } from '../runtime/task-manager'
 import type { TaskExecutionPort } from './task-service'
 import { TaskStatus } from '../../src/shared/types'
 import { AppError } from '../errors/app-error'
+import { logger } from '../common/logger'
+import { describeError } from '../common/redact'
 import {
   effectivePermissionPolicy,
   preflightSubscription,
@@ -73,6 +75,7 @@ export interface DraftPreflight {
 }
 
 const DEFAULT_SUBSCRIPTION_THRESHOLD_MS = 15 * 60 * 1000
+const log = logger.child('arrangement-service')
 
 export class ArrangementService {
   constructor(private readonly deps: ArrangementServiceDependencies) {}
@@ -135,7 +138,7 @@ export class ArrangementService {
     return this.deps.drafts.delete(requireScope(this.deps.scope), draftId)
   }
 
-  async startPlanning(draftId: string, expectedRevision: number): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
+  async startPlanning(draftId: string, expectedRevision: number, plannerModelId?: string): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
     const scope = requireScope(this.deps.scope)
     const draft = await this.getDraft(draftId)
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
@@ -149,12 +152,25 @@ export class ArrangementService {
     const controller = new AbortController()
     this.planningControllers.set(planningId, controller)
     this.emitPlanning({ planningId, draftId, draftRevision: expectedRevision + 1, type: 'arrangement_planning_started', occurredAt: Date.now(), data: {} })
-    void this.runPlanning(planningId, draftId, expectedRevision + 1, controller)
+    void this.runPlanning(planningId, draftId, expectedRevision + 1, controller, plannerModelId).catch(error => {
+      log.error('background planning failed', {
+        planningId,
+        draftId,
+        cause: describeError(error),
+      })
+    })
     return { draftId, planningId, status: 'planning' }
   }
 
   async cancelPlanning(draftId: string, planningId: string): Promise<{ cancelled: boolean }> {
-    const draft = await this.getDraft(draftId)
+    if (!this.deps.scope.currentScope()) return { cancelled: false }
+    let draft: ArrangementDraft
+    try {
+      draft = await this.getDraft(draftId)
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'AUTH_REQUIRED') return { cancelled: false }
+      throw error
+    }
     if (draft.lastPlanning?.planningId !== planningId || draft.lastPlanning.status !== 'planning') return { cancelled: false }
     this.planningControllers.get(planningId)?.abort()
     this.deps.planner?.cancel?.(planningId)
@@ -200,7 +216,7 @@ export class ArrangementService {
 
   private readonly planningControllers = new Map<string, AbortController>()
 
-  private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController): Promise<void> {
+  private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController, plannerModelId?: string): Promise<void> {
     try {
       const current = await this.getDraft(draftId)
       const authorized = (await this.deps.employees.list()).map(employee => ({
@@ -221,6 +237,7 @@ export class ArrangementService {
       const plannerEmployees: ArrangementPlannerEmployee[] = authorized
       let result = await this.deps.planner!.plan({
         planningId, draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
+        plannerModelId,
         onProgress: event => this.emitPlanning(event),
       })
       const intentAnalysis = result.intentAnalysis ?? current.intentAnalysis ?? undefined
@@ -235,6 +252,7 @@ export class ArrangementService {
           employees = enterprise
           result = await this.deps.planner!.plan({
             planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            plannerModelId,
             onProgress: event => this.emitPlanning(event),
           })
           executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
@@ -251,6 +269,7 @@ export class ArrangementService {
           employees = platform
           result = await this.deps.planner!.plan({
             planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            plannerModelId,
             onProgress: event => this.emitPlanning(event),
           })
           executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
@@ -284,7 +303,10 @@ export class ArrangementService {
   }
 
   private async finishCancelled(planningId: string, draftId: string, revision: number): Promise<void> {
-    const scope = requireScope(this.deps.scope)
+    // Authentication invalidation clears the scope before the detached planner settles.
+    // There is no owner-safe draft transition left to write in that state.
+    const scope = this.deps.scope.currentScope()
+    if (!scope) return
     const latest = await this.deps.drafts.get(scope, draftId)
     if (!latest || latest.revision !== revision || latest.lastPlanning?.planningId !== planningId) return
     const updated = await this.deps.drafts.update(scope, draftId, revision, { ...latest, status: 'editing', lastPlanning: { planningId, status: 'cancelled', message: null } })
@@ -292,10 +314,14 @@ export class ArrangementService {
   }
 
   private async finishFailed(planningId: string, draftId: string, revision: number, error: unknown): Promise<void> {
-    const scope = requireScope(this.deps.scope)
+    // The planner can fail after authentication cleanup has already removed the scope.
+    // Treat that cleanup race as terminal rather than throwing a second auth error.
+    const scope = this.deps.scope.currentScope()
+    if (!scope) return
     const latest = await this.deps.drafts.get(scope, draftId)
     if (!latest || latest.revision !== revision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') return
-    const updated = await this.deps.drafts.update(scope, draftId, revision, { ...latest, status: 'planning-failed', lastPlanning: { planningId, status: 'failed', message: error instanceof AppError ? error.userMessage : 'planning failed' } })
+    const message = error instanceof AppError ? error.userMessage : new AppError('PLANNING_FAILED').userMessage
+    const updated = await this.deps.drafts.update(scope, draftId, revision, { ...latest, status: 'planning-failed', lastPlanning: { planningId, status: 'failed', message } })
     this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_failed', occurredAt: Date.now(), data: { message: updated.lastPlanning?.message ?? undefined } })
   }
 

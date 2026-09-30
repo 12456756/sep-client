@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { formatComputeAmount, formatComputePercent, formatAllowanceValue, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, selectComputeBreakdown } from './compute-center-model'
+import { formatComputeAmount, formatComputePercent, formatAllowanceValue, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown } from './compute-center-model'
 
 describe('compute center display model', () => {
   it('formats decimal strings for display without merging enterprise and wallet balances', () => {
@@ -31,5 +31,26 @@ describe('compute center display model', () => {
     assert.equal(selectComputeBreakdown(30, overview, requested), overview)
     assert.equal(selectComputeBreakdown(7, overview, null), null)
     assert.equal(selectComputeBreakdown(7, overview, requested), requested)
+  })
+
+  it('reads the platform trend response and total amount', () => {
+    const breakdown = {
+      rangeDays: 30,
+      totalCNY: '0.4200',
+      trend: [
+        { date: '2026-09-29', costCNY: '0.1200' },
+        { date: '2026-09-30', costCNY: '0.3000' },
+      ],
+    }
+    assert.deepEqual(getComputeTrendPoints(breakdown), [
+      { label: '2026-09-29', value: 0.12 },
+      { label: '2026-09-30', value: 0.3 },
+    ])
+    assert.equal(getComputeTrendTotal(breakdown), '0.4200')
+  })
+
+  it('keeps compatibility with the legacy nested trend response', () => {
+    assert.deepEqual(getComputeTrendPoints({ totals: { costCNY: '1.00' }, series: [{ label: '昨天', value: '1.00' }] }), [{ label: '昨天', value: 1 }])
+    assert.equal(getComputeTrendTotal({ totals: { costCNY: '1.00' } }), '1.00')
   })
 })

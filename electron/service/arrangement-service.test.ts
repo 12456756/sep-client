@@ -74,6 +74,7 @@ function deferred<T>() {
 type PlannerInput = Parameters<ArrangementPlannerPort['plan']>[0]
 
 function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlanningResult>) {
+  let currentScope: TaskOwnerScope | null = scope
   let stored: ArrangementDraft | null = persisted(autoDraft())
   let plannerCalls = 0
   let taskCreates = 0
@@ -106,6 +107,7 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
     },
   }
   const service = new ArrangementService(serviceDeps({
+    scope: { currentScope: () => currentScope },
     drafts,
     employees: { async list() { return [employee()] } },
     candidateEmployees: { async listEnterprise() { return candidates }, async listPlatform() { return platformCandidates } },
@@ -122,6 +124,7 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
     addPlatformCandidates(next: ArrangementPlannerEmployee[]) { platformCandidates = next },
     get stored() { return stored },
     setStored(next: ArrangementDraft | null) { stored = next },
+    setScope(next: TaskOwnerScope | null) { currentScope = next },
     plannerCalls: () => plannerCalls,
     taskCreates: () => taskCreates,
     updates,
@@ -476,8 +479,43 @@ describe('ArrangementService', () => {
     await eventually(() => harness.stored?.status === 'planning-failed')
 
     assert.deepEqual(harness.stored?.lastPlanning?.status, 'failed')
-    assert.equal(harness.stored?.lastPlanning?.message, 'planning failed')
+    assert.equal(harness.stored?.lastPlanning?.message, '自动编排暂时未能完成，请稍后重试。')
     assert.equal(harness.events.at(-1)?.type, 'arrangement_planning_failed')
+  })
+
+  it('passes the selected planner model to the planning runtime', async () => {
+    let receivedPlannerModelId: string | undefined
+    const harness = planningHarness(async input => {
+      receivedPlannerModelId = input.plannerModelId
+      return { title: 'Planned report', nodes: [plannedNode] }
+    })
+
+    await harness.service.startPlanning('draft-a', 1, 'deepseek-v4.1-flash')
+    await eventually(() => harness.stored?.status === 'ready')
+
+    assert.equal(receivedPlannerModelId, 'deepseek-v4.1-flash')
+  })
+
+  it('does not reject the detached planning task after authentication is invalidated', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason) }
+    const harness = planningHarness(async () => {
+      harness.setScope(null)
+      throw new AppError('AUTH_REQUIRED')
+    })
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      await harness.service.startPlanning('draft-a', 1)
+      await eventually(() => harness.plannerCalls() === 1)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      await new Promise<void>(resolve => setImmediate(resolve))
+
+      assert.deepEqual(unhandled, [])
+      assert.equal(harness.stored?.status, 'planning')
+      assert.equal(harness.events.some(event => event.type === 'arrangement_planning_failed'), false)
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled)
+    }
   })
 
   it('reports a planner tool-loop failure to the UI instead of leaving the draft planning', async () => {

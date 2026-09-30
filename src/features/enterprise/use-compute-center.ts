@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   ComputeCenterOverview,
   ComputeUsageBreakdownResult,
@@ -38,6 +38,7 @@ export function useComputeCenter(activeTab: ComputeCenterTab): ComputeCenterStat
   const [walletTransactions, setWalletTransactions] = useState<ComputeCenterState['walletTransactions']>({ data: null, loading: false, error: null })
   const [usageRecords, setUsageRecords] = useState<ComputeCenterState['usageRecords']>({ data: null, loading: false, error: null })
   const [breakdown, setBreakdown] = useState<ComputeCenterState['breakdown']>({ data: null, loading: false, error: null })
+  const breakdownRequest = useRef(0)
 
   const loadOverview = useCallback(() => {
     setOverview(current => ({ ...current, loading: true, error: null }))
@@ -64,11 +65,17 @@ export function useComputeCenter(activeTab: ComputeCenterTab): ComputeCenterStat
   }, [])
 
   const loadBreakdown = useCallback((days: ComputeBreakdownDays) => {
+    const requestId = ++breakdownRequest.current
     setBreakdown({ data: null, loading: true, error: null })
     void window.electronAPI.getComputeUsageBreakdown(days).then(result => {
+      if (requestId !== breakdownRequest.current) return
       const error = failureMessage(result)
       setBreakdown({ data: result.success ? result.data ?? null : null, loading: false, error })
-    }).catch(() => setBreakdown({ data: null, loading: false, error: '消费趋势加载失败，请稍后重试。' }))
+    }).catch(() => {
+      if (requestId === breakdownRequest.current) {
+        setBreakdown({ data: null, loading: false, error: '消费趋势加载失败，请稍后重试。' })
+      }
+    })
   }, [])
 
   useEffect(() => { loadOverview() }, [loadOverview])

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { computeAllowanceSchema, personalWalletSchema, walletTransactionsPageSchema } from './compute-credit-contracts'
+import { computeAllowanceSchema, computeUsageBreakdownSchema, personalWalletSchema, walletTransactionsPageSchema } from './compute-credit-contracts'
 
 const allowance = {
   userId: 'user-1', name: '测试用户', email: 'user@example.com', departmentName: '研发部',
@@ -45,5 +45,16 @@ describe('compute credit contracts', () => {
   it('rejects malformed pagination and invalid money', () => {
     assert.throws(() => walletTransactionsPageSchema.parse({ total: 0, page: 0, pageSize: 20, totalPages: 0, records: [] }))
     assert.throws(() => personalWalletSchema.parse({ balanceCNY: 0, totalDepositCNY: '1', totalConsumeCNY: '0' }))
+  })
+
+  it('parses the platform usage breakdown trend shape', () => {
+    const result = computeUsageBreakdownSchema.parse({
+      rangeDays: 30,
+      totalCNY: '0.4200',
+      trend: [{ date: '2026-09-30', costCNY: '0.4200' }],
+    })
+    assert.equal(result.rangeDays, 30)
+    assert.equal(result.totalCNY, '0.4200')
+    assert.deepEqual(result.trend, [{ date: '2026-09-30', costCNY: '0.4200' }])
   })
 })

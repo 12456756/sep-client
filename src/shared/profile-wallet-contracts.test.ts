@@ -24,6 +24,7 @@ describe('profile and personal wallet contracts', () => {
     for (const amount of [0, -1, 100000.01, 1.001]) {
       assert.throws(() => personalRechargeRequestSchema.parse({ amountCNY: amount }))
     }
+    assert.throws(() => personalRechargeRequestSchema.parse({ amountCNY: 10, userId: 'another-user' }))
     assert.throws(() => clientProfileSchema.parse({ user: { id: 'u1' }, enterprise: null }))
   })
 })

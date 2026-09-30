@@ -26,7 +26,7 @@ const decimalAmount = z.number().finite().positive().max(100000).refine(
 export const personalRechargeRequestSchema = z.object({
   amountCNY: decimalAmount,
   returnUrl: z.string().url().max(2048).optional(),
-}).passthrough()
+}).strict()
 
 export const personalRechargeStatusSchema = z.enum(['PENDING', 'PAID', 'CLOSED'])
 

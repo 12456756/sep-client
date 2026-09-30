@@ -11,13 +11,17 @@ function response(value: unknown, status = 200): Response {
 
 describe('profile and personal recharge platform APIs', () => {
   it('gets the current profile and validates the response', async () => {
-    const profile = { user: { id: 'u1', email: 'u@example.com', name: 'User', avatar: null, role: 'USER' }, enterprise: null }
+    const profile = { user: { id: 'u1', email: 'u@example.com', name: 'User', avatar: '/api/users/avatars/u.png', role: 'USER' }, enterprise: { id: 'e1', name: 'Enterprise', logo: '/api/enterprise/logos/e.png' } }
     globalThis.fetch = async (input, init) => {
       assert.match(String(input), /\/client\/profile$/)
       assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access')
       return response(profile)
     }
-    assert.deepEqual(await api.getClientProfile('access'), profile)
+    assert.deepEqual(await api.getClientProfile('access'), {
+      ...profile,
+      user: { ...profile.user, avatar: 'https://longdaosep.cn/api/users/avatars/u.png' },
+      enterprise: { ...profile.enterprise, logo: 'https://longdaosep.cn/api/enterprise/logos/e.png' },
+    })
   })
 
   it('uploads avatar and enterprise logo as multipart file fields', async () => {
@@ -33,8 +37,8 @@ describe('profile and personal recharge platform APIs', () => {
       assert.equal(file && 'name' in file ? file.name : undefined, 'avatar.png')
       return response(calls.length === 1 ? { avatar: '/api/users/avatars/a.png' } : { logo: '/api/enterprise/logos/l.png' }, 201)
     }
-    assert.equal((await api.uploadUserAvatar({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).avatar, '/api/users/avatars/a.png')
-    assert.equal((await api.uploadEnterpriseLogo({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).logo, '/api/enterprise/logos/l.png')
+    assert.equal((await api.uploadUserAvatar({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).avatar, 'https://longdaosep.cn/api/users/avatars/a.png')
+    assert.equal((await api.uploadEnterpriseLogo({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).logo, 'https://longdaosep.cn/api/enterprise/logos/l.png')
     assert.match(calls[0]!, /\/users\/me\/avatar$/)
     assert.match(calls[1]!, /\/enterprise\/logo$/)
   })

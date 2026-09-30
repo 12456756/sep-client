@@ -554,6 +554,27 @@ function normalizeSubscriptions(data: Subscription[]): Subscription[] {
   }))
 }
 
+function normalizeClientProfile(data: ClientProfile): ClientProfile {
+  return {
+    ...data,
+    user: {
+      ...data.user,
+      avatar: resolvePlatformAssetUrl(data.user.avatar) ?? null,
+    },
+    enterprise: data.enterprise
+      ? { ...data.enterprise, logo: resolvePlatformAssetUrl(data.enterprise.logo) ?? null }
+      : null,
+  }
+}
+
+function normalizeUserAvatarUpload(data: UserAvatarUploadResponse): UserAvatarUploadResponse {
+  return { ...data, avatar: resolvePlatformAssetUrl(data.avatar) ?? data.avatar }
+}
+
+function normalizeEnterpriseLogoUpload(data: EnterpriseLogoUploadResponse): EnterpriseLogoUploadResponse {
+  return { ...data, logo: resolvePlatformAssetUrl(data.logo) ?? data.logo }
+}
+
 /** Enterprise scope is resolved by SEP from the access token, never from caller input. */
 export async function getEnterpriseOrganization(accessToken: string): Promise<EnterpriseOrganization> {
   const data = enterpriseOrganizationSchema.parse(await getJson('/enterprise/organization', accessToken, 'organization'))
@@ -588,15 +609,15 @@ export async function getEnterpriseOverview(accessToken: string): Promise<Enterp
 }
 
 export async function getClientProfile(accessToken: string): Promise<ClientProfile> {
-  return clientProfileSchema.parse(await getJson('/client/profile', accessToken, 'profile'))
+  return normalizeClientProfile(clientProfileSchema.parse(await getJson('/client/profile', accessToken, 'profile')))
 }
 
 export async function uploadUserAvatar(input: UploadInput, accessToken: string): Promise<UserAvatarUploadResponse> {
-  return userAvatarUploadResponseSchema.parse(await postMultipart('/users/me/avatar', validateImageInput(input), accessToken, 'profile'))
+  return normalizeUserAvatarUpload(userAvatarUploadResponseSchema.parse(await postMultipart('/users/me/avatar', validateImageInput(input), accessToken, 'profile')))
 }
 
 export async function uploadEnterpriseLogo(input: UploadInput, accessToken: string): Promise<EnterpriseLogoUploadResponse> {
-  return enterpriseLogoUploadResponseSchema.parse(await postMultipart('/enterprise/logo', validateImageInput(input), accessToken, 'profile'))
+  return normalizeEnterpriseLogoUpload(enterpriseLogoUploadResponseSchema.parse(await postMultipart('/enterprise/logo', validateImageInput(input), accessToken, 'profile')))
 }
 
 export async function createPersonalRecharge(

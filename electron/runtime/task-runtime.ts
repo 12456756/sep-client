@@ -43,6 +43,12 @@ interface ToolExecutionData {
   success?: unknown
 }
 
+interface PendingFileToolState {
+  taskId: string
+  parentRunId: string
+  files: Map<string, string>
+}
+
 function isFileToolName(value: unknown): value is FileToolName {
   return value === 'write' || value === 'edit'
 }
@@ -95,7 +101,7 @@ export class TaskRuntime {
   private readonly events: EventPipeline
   private readonly createWorker: (options: PiTaskWorkerOptions) => TaskWorkerPort
   private readonly conversationExecutor: ConversationExecutor
-  private readonly pendingFileTools = new Map<string, Map<string, string>>()
+  private readonly pendingFileTools = new Map<string, PendingFileToolState>()
 
   constructor(options: TaskRuntimeOptions) {
     this.taskManager = options.taskManager
@@ -499,7 +505,7 @@ export class TaskRuntime {
       }
       await this.conversationExecutor.execute(queued, task, releaseWorkspace)
     } finally {
-      this.pendingFileTools.delete(queued.runId)
+      this.clearPendingFileTools(queued.taskId, queued.runId)
     }
   }
 
@@ -639,8 +645,12 @@ export class TaskRuntime {
         this.events.sideEffectStarted(event.runId, data.toolId, data.toolName, event.occurredAt)
         const filePath = isFileToolName(data.toolName) ? filePathFromInput(data.input) : null
         if (filePath) {
-          const pending = this.pendingFileTools.get(event.runId) ?? new Map<string, string>()
-          pending.set(data.toolId, filePath)
+          const pending = this.pendingFileTools.get(event.runId) ?? {
+            taskId: event.taskId,
+            parentRunId: this.activeArrangements.get(event.taskId)?.runId ?? event.runId,
+            files: new Map<string, string>(),
+          }
+          pending.files.set(data.toolId, filePath)
           this.pendingFileTools.set(event.runId, pending)
         }
       }
@@ -649,10 +659,10 @@ export class TaskRuntime {
       const data = event.data as ToolExecutionData
       if (typeof data.toolId === 'string') this.events.sideEffectEnded(event.runId, data.toolId)
       const pending = this.pendingFileTools.get(event.runId)
-      const filePath = typeof data.toolId === 'string' ? pending?.get(data.toolId) : undefined
+      const filePath = typeof data.toolId === 'string' ? pending?.files.get(data.toolId) : undefined
       if (data.success === true && filePath) await this.taskManager.addTaskFile(event.taskId, filePath)
-      if (typeof data.toolId === 'string') pending?.delete(data.toolId)
-      if (pending?.size === 0) this.pendingFileTools.delete(event.runId)
+      if (typeof data.toolId === 'string') pending?.files.delete(data.toolId)
+      if (pending?.files.size === 0) this.pendingFileTools.delete(event.runId)
       await this.taskManager.addTaskLog(event.taskId, `${data.success === false ? 'Tool failed' : 'Tool completed'}: ${typeof data.toolName === 'string' ? data.toolName : 'unknown'}`, data.success === false ? 'warning' : 'info')
     } else if (event.type === 'auto_retry_start') {
       const data = event.data as { attempt?: number; maxAttempts?: number; delayMs?: number; error?: string }
@@ -708,6 +718,10 @@ export class TaskRuntime {
     return removed
   }
 
+  private clearPendingFileTools(taskId: string, parentRunId: string): void {
+    for (const [runId, pending] of this.pendingFileTools) {
+      if (pending.taskId === taskId && pending.parentRunId === parentRunId) this.pendingFileTools.delete(runId)
+    }
+  }
+
 }
-
-

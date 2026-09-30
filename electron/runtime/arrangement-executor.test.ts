@@ -239,17 +239,30 @@ describe('TaskRuntime arrangement controls', () => {
     const arrangement = plan(task.id)
     const checkpoints = new MemoryCheckpointStore()
     let release: (() => void) | null = null
-    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, _options => ({
-      async run() { await new Promise<void>(resolve => { release = resolve }) },
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+      async run() {
+        await options.onEvent({
+          taskId: options.context.taskId,
+          runId: options.context.runId,
+          subscriptionId: options.context.subscriptionId,
+          sequence: 1,
+          type: 'tool_execution_start',
+          occurredAt: Date.now(),
+          data: { toolId: 'tool-1', toolName: 'write', input: { path: 'unfinished.txt' } },
+        })
+        await new Promise<void>(resolve => { release = resolve })
+      },
       async abort() { release?.(); release = null },
       async dispose() {},
     }))
 
     await runtime.executeTask(task.id)
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.RUNNING)
+    await waitFor(() => ((runtime as unknown as { pendingFileTools: Map<string, unknown> }).pendingFileTools.size === 1))
     await runtime.stopArrangement(task.id, 'user stopped')
     assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
     assert.equal(checkpoints.value?.state.status, 'stopped')
+    assert.equal((runtime as unknown as { pendingFileTools: Map<string, unknown> }).pendingFileTools.size, 0)
     await assert.rejects(() => arrangementRetryApi(runtime).retryTask(task.id, { conversation: false, nodeId: 'node-a' }))
   })
 })

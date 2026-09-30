@@ -6,6 +6,7 @@ import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import type { ArrangementDraft } from '../domain/arrangement-plan'
 import type { ArrangementPlannerEmployee, ArrangementPlanningProgress } from '../domain/arrangement-planner'
+import { AppError } from '../errors/app-error'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import type { TaskWorkerPort } from './run-types'
 import { PiArrangementPlanner } from './pi-arrangement-planner'
@@ -199,6 +200,54 @@ describe('PiArrangementPlanner', () => {
     const controller = new AbortController()
     controller.abort()
     assert.equal(worker?.abortCalls.length, 0)
+  })
+
+  it('uses the selected model for the planning worker', async () => {
+    let capturedOptions: PiTaskWorkerOptions | undefined
+    const planningEmployees = employees.map((employee, index) => index === 0
+      ? { ...employee, allowedModels: [...employee.allowedModels, 'deepseek-v4.1-flash'] }
+      : employee)
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {},
+      createWorker: options => {
+        capturedOptions = options
+        return new FakeWorker(options.onEvent)
+      },
+    })
+
+    await planner.plan({
+      planningId: 'planning-selected-model', draft, employees: planningEmployees,
+      plannerModelId: 'deepseek-v4.1-flash', onProgress: () => {},
+    })
+
+    assert.equal(capturedOptions?.context.modelId, 'deepseek-v4.1-flash')
+  })
+
+  it('reports when the selected planner model is not configured by the gateway', async () => {
+    const providerError = new Error('404: {"message":"Model \\"deepseek-v4.1-flash\\" is not supported by any configured account in this group","type":"model_not_found"}')
+    let disposeCalls = 0
+    const planningEmployees = [{ ...employees[0]!, allowedModels: ['deepseek-v4.1-flash'] }]
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {},
+      createWorker: () => ({
+        async run() { throw providerError },
+        async abort() {},
+        async dispose() { disposeCalls += 1 },
+      }),
+    })
+
+    await assert.rejects(
+      planner.plan({
+        planningId: 'planning-unsupported-model', draft, employees: planningEmployees,
+        plannerModelId: 'deepseek-v4.1-flash', onProgress: () => {},
+      }),
+      error => error instanceof AppError &&
+        error.message === '当前选择的模型未配置在服务端账号组中。请管理员同步可用模型，或选择其他模型后重试。' &&
+        error.cause === providerError,
+    )
+    assert.equal(disposeCalls, 1)
   })
 
   it('cancels the independent worker through the planner port', async () => {

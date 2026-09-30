@@ -5,6 +5,10 @@ export const moneyStringSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/, 'money mu
 
 const nullableMoney = moneyStringSchema.nullable()
 const nullableNumber = z.number().finite().nullable()
+const computeTrendPointSchema = z.object({
+  date: z.string(),
+  costCNY: moneyStringSchema,
+}).passthrough()
 
 export const computeAllowanceSchema = z.object({
   userId: z.string(),
@@ -83,9 +87,17 @@ export const computeUsageRecordsPageSchema = z.object({
 
 export const computeUsageBreakdownSchema = z.object({
   days: z.number().int().positive().optional(),
+  rangeDays: z.number().int().positive().optional(),
+  totalCNY: moneyStringSchema.optional(),
+  prevTotalCNY: moneyStringSchema.optional(),
+  deltaPct: nullableNumber.optional(),
+  callCount: z.number().int().nonnegative().optional(),
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
   totals: z.record(z.string(), z.unknown()).optional(),
   series: z.array(z.unknown()).optional(),
   daily: z.array(z.unknown()).optional(),
+  trend: z.array(computeTrendPointSchema).optional(),
 }).passthrough()
 
 export const computePageQuerySchema = z.object({
