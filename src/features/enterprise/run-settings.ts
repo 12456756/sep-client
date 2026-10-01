@@ -10,7 +10,7 @@ export interface RunSettings {
 export const RUN_PERMISSIONS: { id: ArrangementPermissionPreset; label: string; hint: string }[] = [
   { id: 'read-only', label: '只读', hint: '读取、搜索文件，不允许修改文件或执行命令。' },
   { id: 'workspace-edit', label: '工作区编辑', hint: '允许读取和修改工作目录中的文件，不允许执行命令。' },
-  { id: 'full-local', label: '完整本地权限', hint: '允许读写文件及执行系统命令；仍受路径和工具安全检查约束。' },
+  { id: 'full-local', label: '完整本地权限', hint: '允许读写文件及执行系统命令；开启“忽略权限风险”后，已注册工具会直接运行并绕过路径、命令和逐次确认限制。' },
 ];
 
 export function defaultRunSettings(): RunSettings {

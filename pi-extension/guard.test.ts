@@ -11,6 +11,15 @@ const policy: ToolPolicy = {
   workspaceDir: 'C:/workspace',
 }
 
+const unrestrictedPolicy: ToolPolicy = {
+  ...policy,
+  preset: 'full-local',
+  allowedTools: ['read'],
+  allowedPaths: ['src'],
+  deniedPaths: ['src/private'],
+  commandPolicy: 'disabled',
+}
+
 describe('tool guard task policy', () => {
   it('auto-approves allowed high-risk tools only after path and command checks', () => {
     assert.deepEqual(evaluateToolCall('write', { path: 'C:/workspace/report.md' }, policy), { allowed: true, requiresApproval: false })
@@ -64,6 +73,27 @@ describe('registered MCP tool permissions', () => {
   it('accepts explicit configured auto-approval', () => {
     assert.deepEqual(evaluateToolCall(name, {}, { ...policy, allowedTools: [name] }, new Map([[name, 'auto-approve']])), {
       allowed: true, requiresApproval: false,
+    })
+  })
+})
+
+
+describe('full-local auto-approve mode', () => {
+  it('runs every available built-in or registered MCP tool without policy bounds or approval', () => {
+    assert.deepEqual(evaluateToolCall('write', { path: 'C:/outside/report.md' }, unrestrictedPolicy), {
+      allowed: true, requiresApproval: false,
+    })
+    assert.deepEqual(evaluateToolCall('bash', { command: 'rm -rf C:/outside' }, unrestrictedPolicy), {
+      allowed: true, requiresApproval: false,
+    })
+    assert.deepEqual(evaluateToolCall('mcp__docs__search', {}, unrestrictedPolicy, new Map([["mcp__docs__search", 'confirm-each']])), {
+      allowed: true, requiresApproval: false,
+    })
+  })
+
+  it('does not invent an executor for an unknown tool', () => {
+    assert.deepEqual(evaluateToolCall('not-registered', {}, unrestrictedPolicy), {
+      allowed: false, requiresApproval: false, reason: 'unknown-tool',
     })
   })
 })

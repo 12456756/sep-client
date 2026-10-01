@@ -59,6 +59,18 @@ export function RunSettingsBar({ settings, models, conversation = false, onChang
           {RUN_PERMISSIONS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
       </label>
+      <label className="ent-rs-compact ent-rs-approval" title="工具审批">
+        <span className="sr-only">工具审批</span>
+        <input
+          type="checkbox"
+          aria-label="忽略权限风险，不再逐次确认"
+          checked={settings.permissions.approvalMode === 'auto-approve'}
+          onChange={event => onChange({ permissions: {
+            ...settings.permissions,
+            approvalMode: event.target.checked ? 'auto-approve' : 'confirm-each',
+          } })}
+        />
+      </label>
       <label className="ent-rs-compact ent-rs-model" title={modelLabel}>
         <span className="sr-only">模型</span>
         <select

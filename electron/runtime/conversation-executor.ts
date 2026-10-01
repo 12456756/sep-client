@@ -102,6 +102,7 @@ export class ConversationExecutor {
           resumeSessionFile: queued.resumeSessionFile,
           additionalSkillPaths: employee.additionalSkillPaths,
           toolPolicy: queued.arrangement ? {
+            preset: queued.arrangement.permissions.preset,
             allowedTools: [...queued.arrangement.permissions.allowedTools],
             allowedPaths: [...queued.arrangement.permissions.allowedPaths],
             deniedPaths: [...queued.arrangement.permissions.deniedPaths],

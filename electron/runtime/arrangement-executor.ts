@@ -78,6 +78,7 @@ export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode
 
 function toToolPolicy(policy: EffectiveTaskPermissionPolicy, workspaceDir: string): TaskToolPolicy {
   return {
+    preset: policy.preset,
     allowedTools: [...policy.allowedTools],
     allowedPaths: [...policy.allowedPaths],
     deniedPaths: [...policy.deniedPaths],

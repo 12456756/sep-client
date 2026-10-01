@@ -6,8 +6,12 @@
 import { hasSideEffects, SIDE_EFFECT_TOOLS } from '../electron/common/constants'
 
 export const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
+export const BUILTIN_TOOL_NAMES = ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash'] as const
+export type ToolPermissionPreset = 'read-only' | 'workspace-edit' | 'full-local'
 
 export interface ToolPolicy {
+  /** Persisted permission preset. Full-local + auto-approve is the unrestricted mode. */
+  preset?: ToolPermissionPreset
   allowedTools: readonly string[]
   allowedPaths: readonly string[]
   deniedPaths: readonly string[]
@@ -22,6 +26,12 @@ export interface ToolDecision {
   allowed: boolean
   requiresApproval: boolean
   reason?: string
+}
+
+export function isUnrestrictedToolPolicy(
+  policy: Pick<ToolPolicy, 'preset' | 'approvalMode'> | undefined,
+): boolean {
+  return policy?.preset === 'full-local' && policy.approvalMode === 'auto-approve'
 }
 
 export function isReadOnlyTool(toolName: string): boolean {
@@ -42,6 +52,13 @@ export function isKnownTool(toolName: string): boolean {
 export function evaluateToolCall(
   toolName: string, input: unknown, policy: ToolPolicy, registeredTools?: RegisteredToolPermissions,
 ): ToolDecision {
+  if (isUnrestrictedToolPolicy(policy)) {
+    if (isKnownTool(toolName) || registeredTools?.has(toolName)) {
+      return { allowed: true, requiresApproval: false }
+    }
+    return { allowed: false, requiresApproval: false, reason: 'unknown-tool' }
+  }
+
   const registeredApproval = registeredTools?.get(toolName)
   if (registeredApproval) {
     if (!policy.allowedTools.includes(toolName)) return { allowed: false, requiresApproval: false, reason: 'tool-not-allowed' }

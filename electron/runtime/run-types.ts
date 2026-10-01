@@ -1,6 +1,8 @@
 import type { WorkPlan } from '../domain/arrangement-plan'
 
 export interface TaskToolPolicy {
+  /** Persisted preset; full-local + auto-approve is the unrestricted mode. */
+  preset?: 'read-only' | 'workspace-edit' | 'full-local'
   allowedTools: readonly string[]
   allowedPaths: readonly string[]
   deniedPaths: readonly string[]

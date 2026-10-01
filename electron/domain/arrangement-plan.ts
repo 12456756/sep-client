@@ -4,7 +4,10 @@ export type ArrangementMode = 'conversation' | 'auto' | 'manual'
 export type DraftStatus = 'editing' | 'planning' | 'planning-failed' | 'awaiting-employee' | 'ready' | 'preflight-failed' | 'confirmed'
 export type PermissionPreset = 'read-only' | 'workspace-edit' | 'full-local'
 export type CommandPolicy = 'disabled' | 'restricted' | 'confirm-each'
-/** 工具调用的用户确认策略。默认逐次确认；自动放行只取消交互确认，不绕过安全检查。 */
+/**
+ * 工具调用的用户确认策略。普通权限模式下，自动放行只取消交互确认，仍受工具、路径和命令检查；
+ * 仅 full-local + auto-approve 才绕过这些策略限制，但仍只允许真实注册且可执行的工具。
+ */
 export type ApprovalMode = 'confirm-each' | 'auto-approve'
 
 export interface ConversationParticipant {

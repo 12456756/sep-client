@@ -139,3 +139,20 @@ describe('MCP tool advertisement', () => {
     assert.deepEqual(sessionToolOptions(undefined, true, ['mcp__docs__search']), { noTools: 'all' })
   })
 })
+
+
+describe('unrestricted full-local session options', () => {
+  it('advertises all built-in tools and registered MCP tools', () => {
+    assert.deepEqual(sessionToolOptions({
+      ...readOnlyPolicy,
+      preset: 'full-local',
+      allowedTools: ['read'],
+      allowedPaths: ['src'],
+      deniedPaths: ['src/private'],
+      commandPolicy: 'disabled',
+      approvalMode: 'auto-approve',
+    }, false, ['mcp__docs__search']), {
+      tools: ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash', 'mcp__docs__search'],
+    })
+  })
+})

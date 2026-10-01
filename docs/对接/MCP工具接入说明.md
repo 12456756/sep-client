@@ -96,9 +96,10 @@ URL、凭据和 `search` 都是占位示例，须替换为服务端实际 endpoi
 - `enabledTools` 填 **MCP 工具原名**。省略或空数组表示不启用任何工具，也不连接该服务。
 - 只有显式启用且 `tools/list` 确实返回的工具才注册；配置了不存在的工具会报初始化错误。
 - 主机配置的 enabledTools 是 MCP 的独立白名单，加入本轮可见工具和有效审批策略；不要求修改前端内置工具权限档位。
-- 默认每次执行都走现有审批。内置工具的 `auto-approve` 不会自动放行 MCP。
-- `autoApproveTools` 必须是 enabledTools 的子集，只有明确列出的工具免审批。不要给浏览器点击、文件写入、命令执行等工具轻率配置免审批。
-- Server 声称工具只读（`readOnlyHint`）不构成免审批授权，未注册的 `mcp__*` 名称仍拒绝。
+- 默认每次执行都走现有审批。MCP 自身的 `autoApproveTools` 仍可作为单独的免审批配置。
+- 当任务全局同时处于 `full-local + auto-approve` 时，已实际注册且被 Pi active tool registry 接纳的 MCP 工具无需逐次确认，也不要求额外配置 `autoApproveTools`。这是高风险设置，会绕过本地路径、命令和逐次确认限制；MCP Server 本身仍必须正确配置并且可信。
+- `autoApproveTools` 必须是 enabledTools 的子集；在普通权限模式下，只有明确列出的工具免审批。不要给浏览器点击、文件写入、命令执行等工具轻率配置免审批。
+- Server 声称工具只读（`readOnlyHint`）不构成免审批授权。未注册、未被 Pi active tool registry 接纳或没有实际执行器的 `mcp__*` 名称仍拒绝。
 - MCP 工具不自动继承本地文件工具的工作目录路径限制；浏览器/远端系统有自己的资源范围，应通过 Server 配置与审批约束。内置工具“只读”不代表配置的外部 MCP Server 也是只读。
 - `disableTools` 或 planner 空工具策略不会连接/启动 MCP。
 

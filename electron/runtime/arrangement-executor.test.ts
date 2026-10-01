@@ -67,17 +67,25 @@ describe('TaskRuntime arrangement integration', () => {
     await manager.initialize()
     await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
     const task = await manager.createTask('arrangement', 'ignored task prompt', undefined, employee.subscriptionId)
-    const arrangement = plan(task.id)
+    const arrangement = {
+      ...plan(task.id),
+      permissions: {
+        ...plan(task.id).permissions,
+        preset: 'full-local' as const,
+        allowedTools: ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash'],
+        commandPolicy: 'confirm-each' as const,
+      },
+    }
     const checkpoints = new MemoryCheckpointStore()
     const events: TaskExecutionEvent[] = []
-    const contexts: string[] = []
+    const contexts: Array<Parameters<NonNullable<ConstructorParameters<typeof TaskRuntime>[0]['createWorker']>>[0]['context']> = []
 
     const runtime = new TaskRuntime({
       taskManager: manager, taskRunStore: runStore, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
       getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: event => events.push(event), onApprovalRequest: () => {},
       resolveEmployee: id => id === employee.subscriptionId ? employee : null,
       createWorker: options => {
-        contexts.push(options.context.modelId)
+        contexts.push(options.context)
         const worker: TaskWorkerPort = {
           async run(prompt) {
             assert.match(prompt, /^你正在执行编排工作计划中的一个节点。/)
@@ -95,7 +103,8 @@ describe('TaskRuntime arrangement integration', () => {
     await runtime.executeTask(task.id)
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
 
-    assert.deepEqual(contexts, ['node-model'])
+    assert.deepEqual(contexts.map(context => context.modelId), ['node-model'])
+    assert.equal(contexts[0]?.toolPolicy?.preset, 'full-local')
     assert.ok(events.some(event => event.type === 'arrangement_node_started'))
     assert.ok(events.some(event => event.type === 'arrangement_node_completed'))
     const runs = await runStore.list(scope, task.id)

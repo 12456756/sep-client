@@ -13,7 +13,7 @@ function chunk(response: ServerResponse, delta: unknown, finishReason: string | 
 }
 
 describe('MCP extension with real Pi session', () => {
-  for (const scenario of ['success', 'business-error', 'denied', 'auto-approve', 'disabled', 'planner', 'host-config'] as const) {
+  for (const scenario of ['success', 'business-error', 'denied', 'auto-approve', 'global-auto-approve', 'disabled', 'planner', 'host-config'] as const) {
     it(`${scenario}: advertisements, approval and subsequent model context`, { timeout: 15_000 }, async () => {
       const root = await mkdtemp(join(tmpdir(), 'sep-pi-mcp-'))
       const requests: Array<{ tools?: Array<{ function: { name: string } }>; messages: Array<Record<string, unknown>> }> = []
@@ -70,7 +70,11 @@ describe('MCP extension with real Pi session', () => {
         runId: `mcp-${scenario}`, workspaceDir: root, agentDir: join(root, 'agent'), sessionDir: join(root, 'sessions'),
         modelId: 'test', gatewayUrl: `${base}/v1`, getAccessToken: async () => 'fake-token',
         authorizeTool: async request => { approvals++; assert.equal(request.toolName, name); return scenario !== 'denied' },
-        toolPolicy: { allowedTools: scenario === 'planner' ? [] : ['ls'], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'auto-approve', workspaceDir: root },
+        toolPolicy: {
+          preset: scenario === 'global-auto-approve' ? 'full-local' : undefined,
+          allowedTools: scenario === 'planner' ? [] : ['ls'], allowedPaths: [], deniedPaths: [],
+          commandPolicy: 'disabled', approvalMode: scenario === 'denied' ? 'confirm-each' : 'auto-approve', workspaceDir: root,
+        },
         disableTools: scenario === 'disabled',
         mcpServers: [{ name: 'docs', transport: { type: 'streamable-http', url: `${base}/mcp` }, enabledTools: ['search'], autoApproveTools: scenario === 'auto-approve' ? ['search'] : [] }],
       }
@@ -108,8 +112,10 @@ describe('MCP extension with real Pi session', () => {
           assert.equal(initialized, 0)
           assert.equal(calls, 0)
         } else {
-          assert.deepEqual(names, ['ls', name])
-          assert.equal(approvals, scenario === 'auto-approve' ? 0 : 1)
+          assert.deepEqual(names, scenario === 'global-auto-approve'
+            ? ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash', name]
+            : ['ls', name])
+          assert.equal(approvals, scenario === 'auto-approve' || scenario === 'global-auto-approve' ? 0 : 1)
           assert.equal(calls, scenario === 'denied' ? 0 : 1)
           assert.equal(requests.length, 2)
           const result = requests[1]!.messages.find(message => message.role === 'tool')

@@ -21,9 +21,11 @@ import type {
 import { MAX_RUN_AUTO_RETRIES } from './pi-agent-runtime'
 import { redactText, redactValue } from '../../common/redact'
 import {
+  BUILTIN_TOOL_NAMES,
   READ_ONLY_TOOLS,
   buildBearerAuthorizationHeader,
   evaluateToolCall,
+  isUnrestrictedToolPolicy,
   requiresToolApproval,
 } from '../../../pi-extension'
 import { logger } from '../../common/logger'
@@ -42,7 +44,9 @@ export function sessionToolOptions(
   registeredMcpNames: readonly string[] = [],
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
-  const allowedTools = toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
+  const allowedTools = toolPolicy && isUnrestrictedToolPolicy(toolPolicy)
+    ? [...BUILTIN_TOOL_NAMES]
+    : toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
   return { tools: [...new Set([
     ...allowedTools.filter(name => !name.startsWith('mcp__') || registeredMcpNames.includes(name)),
     ...registeredMcpNames,
@@ -343,6 +347,17 @@ function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): Extensi
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (toolPolicy && isUnrestrictedToolPolicy(toolPolicy)) {
+        // In the explicit highest-permission mode, the policy is no longer a
+        // path/command/approval gate. Pi still remains the source of truth for
+        // what can execute: an unknown provider name is not an executor.
+        if (pi.getActiveTools().includes(toolName)) return { block: false }
+        await config.reportPolicyEvent?.('unknown_tool_blocked', {
+          toolName,
+          reason: 'Unknown tools are denied by default.',
+        })
+        return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
+      }
       if (toolPolicy) {
         const decision = evaluateToolCall(toolName, event.input, toolPolicy, mcp.permissions)
         if (!decision.allowed) {
@@ -452,7 +467,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     if (!model) throw new Error('Failed to resolve task model.')
 
     // Execution-disabled/planner policies must not gain external tools or spawn MCP servers.
-    const canUseMcp = !config.disableTools && (!config.toolPolicy || config.toolPolicy.allowedTools.length > 0)
+    const canUseMcp = !config.disableTools && (!config.toolPolicy || config.toolPolicy.allowedTools.length > 0 || isUnrestrictedToolPolicy(config.toolPolicy))
     const servers = canUseMcp ? config.mcpServers ?? await loadHostMcpServers() : []
     const mcp = await createMcpRuntime(servers, config.workspaceDir)
     try {

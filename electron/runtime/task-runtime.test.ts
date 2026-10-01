@@ -233,6 +233,7 @@ describe('conversation task lifecycle', () => {
     assert.equal(contexts.length, 2)
     for (const context of contexts) {
       assert.equal(context.modelId, 'selected')
+      assert.equal(context.toolPolicy?.preset, 'workspace-edit')
       assert.equal(context.toolPolicy?.approvalMode, 'auto-approve')
       assert.ok(context.toolPolicy?.allowedTools.includes('write'))
       assert.ok(!context.toolPolicy?.allowedTools.includes('bash'))
