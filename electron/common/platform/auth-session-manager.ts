@@ -1,5 +1,6 @@
 import { AuthenticationRequiredError } from './authentication-required-error'
 import { refreshAccessToken, type LoginResponse } from './platform-api'
+import { RefreshTokenRotationQueue, registerSharedRefreshTokenRotation } from './refresh-token-rotation'
 import {
   clearCredentials,
   getAuthMeta,
@@ -17,6 +18,18 @@ export class AuthSessionManager {
   private refreshToken: string | null = null
   private meta: AuthMeta | null = null
   private refreshPromise: Promise<string> | null = null
+  private readonly refreshTokenRotation: RefreshTokenRotationQueue
+
+  constructor() {
+    this.refreshTokenRotation = new RefreshTokenRotationQueue(
+      () => this.getRefreshToken(),
+      refreshToken => {
+        saveRefreshToken(refreshToken)
+        this.refreshToken = refreshToken
+      },
+    )
+    registerSharedRefreshTokenRotation(this.refreshTokenRotation)
+  }
 
   setLogin(response: LoginResponse): AuthMeta {
     if (!response.enterprise) {
@@ -41,6 +54,7 @@ export class AuthSessionManager {
     try {
       saveRefreshToken(response.refreshToken)
       saveAuthMeta(this.meta)
+      this.refreshTokenRotation.reset()
     } catch (error) {
       this.clear()
       throw error
@@ -66,8 +80,9 @@ export class AuthSessionManager {
   async getValidAccessToken(forceRefresh = false): Promise<string> {
     if (!forceRefresh && this.accessToken && !this.isAccessTokenExpired()) return this.accessToken
     if (this.refreshPromise) return this.refreshPromise
-    const refreshToken = this.getRefreshToken()
-    const request = refreshAccessToken(refreshToken).then(response => {
+    const request = this.refreshTokenRotation.run(
+      refreshToken => refreshAccessToken(refreshToken),
+    ).then(response => {
       if (!response.accessToken || !response.enterprise) throw new AuthenticationRequiredError()
       this.accessToken = response.accessToken
       this.accessTokenExpiresAt = Date.now() + (response.accessTokenExpiresIn > 0 ? response.accessTokenExpiresIn : 3600) * 1000
@@ -92,7 +107,7 @@ export class AuthSessionManager {
   }
 
   getRefreshToken(): string {
-    if (!this.refreshToken) this.refreshToken = getRefreshToken()
+    this.refreshToken = getRefreshToken()
     if (!this.refreshToken) {
       throw new AuthenticationRequiredError()
     }
@@ -105,6 +120,7 @@ export class AuthSessionManager {
     this.refreshToken = null
     this.meta = null
     this.refreshPromise = null
+    this.refreshTokenRotation.invalidate()
     clearCredentials()
   }
 

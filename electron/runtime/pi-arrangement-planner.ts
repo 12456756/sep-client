@@ -72,9 +72,9 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     try {
       const planningSignal = controller.signal
       throwIfAborted(planningSignal)
-      const modelId = input.plannerModelId ?? this.options.plannerModelId
-      const plannerEmployee = selectPlannerEmployee(plannerEmployees ?? employees, this.options, modelId)
-      const plannerModelId = modelId ?? plannerEmployee.allowedModels[0] ?? ''
+      const selectedModelId = input.modelId ?? input.plannerModelId ?? this.options.plannerModelId
+      const plannerEmployee = selectPlannerEmployee(plannerEmployees ?? employees, this.options, selectedModelId)
+      const plannerModelId = selectedModelId ?? plannerEmployee.allowedModels[0] ?? ''
       const prompt = buildArrangementPlannerPrompt(draft, employees)
       const workerEvents: TaskExecutionEvent[] = []
 

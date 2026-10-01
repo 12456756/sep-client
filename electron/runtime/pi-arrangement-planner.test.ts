@@ -148,7 +148,7 @@ describe('PiArrangementPlanner', () => {
       },
     })
 
-    const result = await planner.plan({ planningId: 'planning-a', draft, employees, onProgress: () => {} })
+    const result = await planner.plan({ planningId: 'planning-a', modelId: 'model-research', draft, employees, onProgress: () => {} })
     assert.equal(result.title, 'Message-end report')
     assert.equal(result.nodes.length, 1)
   })
@@ -170,6 +170,7 @@ describe('PiArrangementPlanner', () => {
 
     const result = await planner.plan({
       planningId: 'planning-a',
+      modelId: 'model-writer',
       draft,
       employees,
       onProgress: event => progress.push(event),
@@ -189,8 +190,8 @@ describe('PiArrangementPlanner', () => {
     assert.match(worker?.prompts[0] ?? '', /不调用任何工具/)
     assert.equal(capturedOptions?.context.taskId, 'planning-a')
     assert.equal(capturedOptions?.context.runId, 'planning-a')
-    assert.equal(capturedOptions?.context.subscriptionId, 'sub-research')
-    assert.equal(capturedOptions?.context.modelId, 'model-research')
+    assert.equal(capturedOptions?.context.subscriptionId, 'sub-writer')
+    assert.equal(capturedOptions?.context.modelId, 'model-writer')
     assert.equal(capturedOptions?.context.resumeSessionFile, undefined)
     assert.deepEqual(capturedOptions?.context.toolPolicy?.allowedTools, [])
     assert.equal(capturedOptions?.context.toolPolicy?.commandPolicy, 'disabled')
@@ -264,7 +265,7 @@ describe('PiArrangementPlanner', () => {
         return worker
       },
     })
-    const planning = planner.plan({ planningId: 'planning-port-cancel', draft, employees, onProgress: () => {} })
+    const planning = planner.plan({ planningId: 'planning-port-cancel', modelId: 'model-research', draft, employees, onProgress: () => {} })
     await new Promise<void>(resolve => setImmediate(resolve))
     planner.cancel('planning-port-cancel')
     releaseRun?.()
@@ -291,6 +292,7 @@ describe('PiArrangementPlanner', () => {
     const controller = new AbortController()
     const planning = planner.plan({
       planningId: 'planning-a',
+      modelId: 'model-research',
       draft,
       employees,
       signal: controller.signal,
@@ -352,7 +354,7 @@ for (const invalidTools of [false, true]) {
       }),
     })
     try {
-      const result = planner.plan({ planningId: 'planning-sdk-test', draft, employees, onProgress: event => progress.push(event) })
+      const result = planner.plan({ planningId: 'planning-sdk-test', modelId: 'model-research', draft, employees, onProgress: event => progress.push(event) })
       if (invalidTools) {
         await assert.rejects(result, error => error instanceof Error && /工具调用/.test(error.message))
         assert.equal(progress.some(event => event.type === 'arrangement_employee_selected'), false)

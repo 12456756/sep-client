@@ -4,6 +4,7 @@ import type { ArrangementDraft, ArrangementPlanningProgress } from '../../shared
 interface PlanningAttempt {
   draftId: string | null;
   planningId: string | null;
+  modelId: string;
   terminal: boolean;
 }
 
@@ -19,6 +20,7 @@ export function useAutoPlanning() {
   const [cancellable, setCancellable] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const attempt = useRef<PlanningAttempt | null>(null);
+  const planningModelId = useRef<string | null>(null);
 
   const fail = (current: PlanningAttempt, message: string): void => {
     if (attempt.current !== current) return;
@@ -66,9 +68,10 @@ export function useAutoPlanning() {
     };
   }, []);
 
-  const start = async (goal: string, workDir: string, plannerModelId?: string): Promise<void> => {
-    if (!goal.trim() || attempt.current && !attempt.current.terminal) return;
-    const current: PlanningAttempt = { draftId: null, planningId: null, terminal: false };
+  const start = async (goal: string, workDir: string, modelId: string): Promise<void> => {
+    if (!goal.trim() || !modelId || attempt.current && !attempt.current.terminal) return;
+    planningModelId.current = modelId;
+    const current: PlanningAttempt = { draftId: null, planningId: null, modelId, terminal: false };
     attempt.current = current;
     setPlanning(true);
     setCancellable(false);
@@ -85,7 +88,7 @@ export function useAutoPlanning() {
       if (!created.success || !created.draft) throw new Error(created.error?.message || '自动编排草稿创建失败');
       current.draftId = created.draft.id;
       setDraft(created.draft);
-      const planned = await window.electronAPI.planArrangementDraft({ draftId: created.draft.id, expectedRevision: created.draft.revision, plannerModelId });
+      const planned = await window.electronAPI.planArrangementDraft({ draftId: created.draft.id, expectedRevision: created.draft.revision, modelId });
       if (current.terminal) return;
       if (!planned.success || !planned.planningId) throw new Error(planned.error?.message || '自动编排未能启动');
       if (attempt.current !== current) {
@@ -142,16 +145,17 @@ export function useAutoPlanning() {
     setDraft(result.draft);
   };
 
-  const recheck = async (plannerModelId?: string): Promise<void> => {
-    if (!draft || planning) return;
-    const current: PlanningAttempt = { draftId: draft.id, planningId: null, terminal: false };
+  const recheck = async (): Promise<void> => {
+    const modelId = planningModelId.current;
+    if (!draft || planning || !modelId) return;
+    const current: PlanningAttempt = { draftId: draft.id, planningId: null, modelId, terminal: false };
     attempt.current = current;
     setPlanning(true);
     setCancellable(false);
     setEvents([]);
     setError(null);
     try {
-      const planned = await window.electronAPI.planArrangementDraft({ draftId: draft.id, expectedRevision: draft.revision, plannerModelId });
+      const planned = await window.electronAPI.planArrangementDraft({ draftId: draft.id, expectedRevision: draft.revision, modelId });
       if (attempt.current !== current) return;
       if (!planned.success || !planned.planningId) {
         throw new Error(errorMessage(planned, '重新检查未能启动'));
