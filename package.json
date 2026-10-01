@@ -1,6 +1,6 @@
 {
   "name": "longsilicon",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "龙硅 — 龙道集团硅基员工平台客户端",
   "type": "module",
   "main": "out/main/index.js",
@@ -89,6 +89,7 @@
     },
     "mac": {
       "category": "public.app-category.business",
+      "icon": "build/icon.icns",
       "target": [
         {
           "target": "dmg",
@@ -101,6 +102,7 @@
       ]
     },
     "win": {
+      "icon": "build/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -111,6 +113,7 @@
       ]
     },
     "linux": {
+      "icon": "build/icon.png",
       "target": [
         "AppImage"
       ]
