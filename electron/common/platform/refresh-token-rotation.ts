@@ -32,16 +32,17 @@ export class RefreshTokenRotationQueue {
     this.queue = new Promise<void>(resolve => { releaseRotation = resolve })
 
     await previousRotation
+    let requestGeneration: number | null = null
     try {
       if (this.requiresAuthentication) throw new AuthenticationRequiredError()
-      const generation = this.generation
+      requestGeneration = this.generation
       const currentRefreshToken = this.getCurrentRefreshToken()
       const response = await request(currentRefreshToken)
       const nextRefreshToken: unknown = response && response.refreshToken
       if (typeof nextRefreshToken !== 'string' || nextRefreshToken.trim().length === 0) {
         throw new AuthenticationRequiredError()
       }
-      if (generation !== this.generation || this.requiresAuthentication) {
+      if (requestGeneration !== this.generation || this.requiresAuthentication) {
         throw new AuthenticationRequiredError()
       }
 
@@ -52,7 +53,7 @@ export class RefreshTokenRotationQueue {
       }
       return response
     } catch (error) {
-      if (isUnauthorized(error)) this.invalidate()
+      if (requestGeneration === this.generation && isUnauthorized(error)) this.invalidate()
       throw error
     } finally {
       releaseRotation()

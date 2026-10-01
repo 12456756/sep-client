@@ -117,4 +117,32 @@ describe('refresh token rotation', () => {
     })
   })
 
+  it('does not invalidate a new login when an old refresh request returns unauthorized', async () => {
+    let currentToken = 'refresh-before-login'
+    const started = gate<void>()
+    const finishOldRequest = gate<void>()
+    const rotation = new RefreshTokenRotationQueue(
+      () => currentToken,
+      refreshToken => { currentToken = refreshToken },
+    )
+
+    const oldRequest = rotation.run(async () => {
+      started.resolve()
+      await finishOldRequest.promise
+      throw Object.assign(new Error('old token expired'), { statusCode: 401 })
+    })
+    await started.promise
+
+    currentToken = 'refresh-after-login'
+    rotation.reset()
+    finishOldRequest.resolve()
+    await assert.rejects(oldRequest, /old token expired/)
+
+    await rotation.run(async refreshToken => {
+      assert.equal(refreshToken, 'refresh-after-login')
+      return { refreshToken: 'refresh-after-login-rotated' }
+    })
+    assert.equal(currentToken, 'refresh-after-login-rotated')
+  })
+
 })
