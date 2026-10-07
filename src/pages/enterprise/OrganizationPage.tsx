@@ -1,9 +1,20 @@
 import {
   ArrowRight,
+  Bot,
+  Boxes,
   Building2,
   ChevronDown,
   ChevronRight,
+  Code2,
+  Handshake,
+  Headphones,
+  Megaphone,
+  Palette,
   Search,
+  Settings2,
+  Users,
+  Wallet,
+  type LucideIcon,
 } from "lucide-react";
 import * as React from "react";
 import { useMemo, useState } from "react";
@@ -21,6 +32,38 @@ import { OrganizationEmptyState } from "./OrganizationEmptyState";
 import type { SiliconEmployee } from "../../features/enterprise/types";
 
 const UNASSIGNED_DEPARTMENT_ID = "__unassigned__";
+
+/**
+ * 部门图标：按部门名称里的关键词匹配。
+ * 组织架构里有几十个部门，靠关键词命中比在数据层新增字段更稳——
+ * 平台不会为「研发组」单独给出一个图标 ID，但名称里一定带「研发」。
+ *
+ * 这里刻意不给每个部门配颜色。身份由「图标形状 + 部门名」表达就够了，
+ * 颜色留给状态（选中 / 有可用硅基员工），一个通道只表达一件事，
+ * 否则「选中了」和「这是个蓝色的部门」会互相干扰。
+ */
+const DEPARTMENT_ICONS: readonly {
+  keywords: readonly string[];
+  icon: LucideIcon;
+}[] = [
+  { keywords: ["技术", "研发", "开发", "架构"], icon: Code2 },
+  { keywords: ["测试", "质量", "QA"], icon: Boxes },
+  { keywords: ["运维", "基础设施", "IT"], icon: Settings2 },
+  { keywords: ["产品", "设计", "UI", "交互"], icon: Palette },
+  { keywords: ["市场", "品牌", "增长", "运营"], icon: Megaphone },
+  { keywords: ["销售", "商务", "客户", "渠道"], icon: Handshake },
+  { keywords: ["财务", "人事", "人力", "行政"], icon: Wallet },
+  { keywords: ["客服", "服务", "支持"], icon: Headphones },
+];
+
+function departmentIcon(name: string): LucideIcon {
+  for (const entry of DEPARTMENT_ICONS) {
+    if (entry.keywords.some(keyword => name.includes(keyword))) {
+      return entry.icon;
+    }
+  }
+  return Building2;
+}
 
 type OrganizationStatus = "loading" | "ready" | "empty" | "error";
 
@@ -427,6 +470,10 @@ function DepartmentBranch({
   const selected = selectedDepartmentId === department.member.id;
   const hasChildren = department.children.length > 0;
   const hasContent = department.members.length > 0 || hasChildren;
+  // 图标形状区分部门类型；颜色不参与身份表达。
+  const visual = departmentIcon(department.member.name);
+  const DepartmentIcon = department.member.id === UNASSIGNED_DEPARTMENT_ID ? Users : visual;
+  const memberFaces = department.members.slice(0, 4);
 
   return (
     <section
@@ -450,12 +497,37 @@ function DepartmentBranch({
             aria-label={`${department.member.name}${hasContent ? (expanded ? "，收起下级" : "，展开下级") : ""}`}
           >
             <span className="org-tree-node-icon">
-              <Building2 size={17} aria-hidden />
+              <DepartmentIcon size={17} aria-hidden />
             </span>
             <span className="org-tree-node-copy">
               <strong title={department.member.name}>{department.member.name}</strong>
               <small>{department.members.length} 位成员{hasChildren ? ` · ${department.children.length} 个下级部门` : ""}</small>
             </span>
+            {/* 成员头像叠放：不展开也能看出这个部门有谁 */}
+            {memberFaces.length ? (
+              <span className="org-tree-dept-faces" aria-hidden>
+                {memberFaces.map((member) => (
+                  <EmployeeFace key={member.id} employee={member} name={member.name} size="sm" round />
+                ))}
+                {department.members.length > memberFaces.length ? (
+                  <span className="org-tree-dept-faces-more">+{department.members.length - memberFaces.length}</span>
+                ) : null}
+              </span>
+            ) : null}
+            {/* 可用硅基员工数：全屏唯一持续有色的元素，把视线引到产品卖点上 */}
+            {(() => {
+              const count = new Set(
+                department.members.flatMap((member) =>
+                  usableSiliconEmployeesForMember(member, siliconEmployees).map((employee) => employee.id),
+                ),
+              ).size;
+              return count ? (
+                <span className="org-tree-dept-silicon" title={`${count} 位可用硅基员工`}>
+                  <Bot size={12} aria-hidden />
+                  {count}
+                </span>
+              ) : null;
+            })()}
             {hasContent ? (expanded ? <ChevronDown size={15} aria-hidden /> : <ChevronRight size={15} aria-hidden />) : null}
           </button>
         </div>

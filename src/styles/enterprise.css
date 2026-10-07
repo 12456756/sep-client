@@ -2749,3 +2749,219 @@
 @media (max-width: 430px) {
   .ent-home-employee-slide { flex-basis: 82%; }
 }
+
+/* ── 组织架构可视化增强 ──────────────────────────────────────────────
+ *
+ * 1. 连线：原实现用一条固定的 .org-tree-track::before 竖线当主干，
+ *    而轨道是 min-height:100% + justify-content:center，内容比轨道短时
+ *    竖线两端就会伸出第一个/最后一个部门之外，看上去像多余的线头。
+ *    这里改成每个一级分支自绘「上半段 + 下半段」，首尾分支各裁掉一半，
+ *    于是整条树干的范围严格等于部门列表的范围。
+ * 2. 部门：按部门名称匹配图标（形状区分类型，不用颜色），并叠放成员头像、
+ *    标注可用硅基员工数。全屏只有品牌红一种强调色，只表达状态：
+ *    选中 / 悬停 / 有可用硅基员工。身份交给图标形状和部门名。
+ */
+
+/* —— 连线：按分支分段绘制，范围贴合内容 —— */
+
+.org-tree-track::before { content: none; }
+
+.org-tree-track > .org-tree-branch {
+  position: relative;
+  padding-left: 22px;
+}
+
+/* 每个分支的横线：从树干连到部门卡片 */
+.org-tree-track > .org-tree-branch::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 22px;
+  height: 1px;
+  background: var(--org-tree-connector);
+  content: '';
+}
+
+/* 每个分支的竖线：用一次绘制同时表达上半段与下半段，首尾分支各裁掉一半，
+ * 拼起来正好是一条贴合部门列表范围的树干（中间分支两段都有）。
+ * 用渐变而不是两条规则，避免同一条 ::after 被覆盖。 */
+.org-tree-track > .org-tree-branch::after {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0 50%,
+    var(--org-tree-connector) 50% 100%
+  );
+  content: '';
+}
+
+/* 非首个分支补上上半段（首个分支上半段保持透明） */
+.org-tree-track > .org-tree-branch:not(:first-child)::after {
+  background: linear-gradient(
+    to bottom,
+    var(--org-tree-connector) 0 50%,
+    transparent 50% 100%
+  );
+}
+
+/* 中间分支上下两段都要 */
+.org-tree-track > .org-tree-branch:not(:first-child):not(:last-child)::after {
+  background: var(--org-tree-connector);
+}
+
+/* 只有一个分支时不需要树干 */
+.org-tree-track > .org-tree-branch:first-child:last-child::after { content: none; }
+
+/* 公司那一侧伸出的横线，对齐树干起点 */
+.org-tree-company-column::after {
+  right: -22px;
+  width: 22px;
+}
+
+/* —— 部门节点：图标配色 —— */
+
+/* 图标默认中性：身份由形状表达，不占用颜色通道。 */
+.org-tree-department-node .org-tree-node-icon {
+  color: var(--ent-ink-2);
+  background: var(--ent-panel-subtle);
+  box-shadow: inset 0 0 0 1px var(--ent-line);
+  transition: color var(--ent-ease), background var(--ent-ease), box-shadow var(--ent-ease);
+}
+
+/* 颜色只留给状态：选中或悬停时才染品牌色。 */
+.org-tree-department-node:hover .org-tree-node-icon,
+.org-tree-department-node.selected .org-tree-node-icon {
+  color: #fff;
+  background: var(--ent-brand);
+  box-shadow: 0 3px 10px rgb(185 54 63 / 22%);
+}
+
+/* 部门卡片左沿一条主题色，扫一眼就能区分部门 */
+.org-tree-department-node {
+  position: relative;
+  overflow: hidden;
+}
+.org-tree-department-node::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--ent-brand);
+  opacity: 0;
+  content: '';
+  transition: opacity var(--ent-ease);
+}
+.org-tree-department-node:hover::before,
+.org-tree-department-node.selected::before { opacity: 1; }
+
+/* 下级部门（嵌套分支）用更轻的图标底，避免和一级部门抢 */
+/* 下级部门更轻：无边框底，靠层级缩进和字号退让。 */
+.org-tree-branch.nested .org-tree-department-node .org-tree-node-icon {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* —— 部门节点：成员头像叠放 —— */
+
+.org-tree-dept-faces {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding-left: 6px;
+}
+
+.org-tree-dept-faces .ent-face {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--ent-panel);
+  margin-left: -8px;
+}
+.org-tree-dept-faces .ent-face:first-child { margin-left: 0; }
+
+.org-tree-dept-faces-more {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  margin-left: -8px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--ent-ink-3);
+  background: var(--ent-panel-subtle);
+  box-shadow: 0 0 0 2px var(--ent-panel);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* —— 部门节点：可用硅基员工数 —— */
+
+/* 全屏唯一持续有色的元素：把视线引到「这个部门有几个 AI 同事」。
+ * 部门没有可用硅基员工时整个徽标不渲染，所以有色 = 有 AI。 */
+.org-tree-dept-silicon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: var(--ent-radius-pill);
+  color: var(--ent-brand-ink);
+  background: var(--ent-brand-soft);
+  box-shadow: inset 0 0 0 1px var(--ent-brand-border);
+  font-size: 10px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  transition: background var(--ent-ease), color var(--ent-ease);
+}
+
+.org-tree-department-node:hover .org-tree-dept-silicon {
+  color: #fff;
+  background: var(--ent-brand);
+  box-shadow: none;
+}
+
+/* —— 公司节点：整棵树里唯一实心品牌色，作为视觉锚点 —— */
+
+.org-tree-company-node {
+  border-width: 1px;
+  border-color: var(--ent-brand-border);
+  background: var(--ent-brand-softer);
+}
+.org-tree-company-node .org-tree-node-icon {
+  color: #fff;
+  background: var(--ent-brand);
+  box-shadow: 0 3px 10px rgb(185 54 63 / 22%);
+}
+
+/* —— 成员与硅基员工行：用主题色统一连线，弱化底纹 —— */
+
+.org-tree-member-flow::before,
+.org-tree-member-row::before,
+.org-tree-silicon-flow::before,
+.org-tree-subbranches,
+.org-tree-subbranches::before {
+  background: none;
+  border-color: transparent;
+}
+.org-tree-member-flow::before,
+.org-tree-member-row::before,
+.org-tree-silicon-flow::before {
+  background: var(--org-tree-connector);
+}
+.org-tree-subbranches {
+  border-left: 1px solid var(--org-tree-connector);
+}
+.org-tree-subbranches::before {
+  background: var(--org-tree-connector);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .org-tree-department-node .org-tree-node-icon,
+  .org-tree-department-node::before,
+  .org-tree-dept-silicon { transition: none; }
+}
