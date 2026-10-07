@@ -391,12 +391,44 @@
   border: 1px solid #fcd34d;
 }
 
-/* ── 空闲中的员工卡片 ────────────────────────────────────────────────────────── */
+/* ── 空闲中的员工卡片（横向滚动布局） ────────────────────────────────────────────────────────── */
+
+.employee-grid.idle {
+  display: flex !important;
+  flex-direction: row !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 16px;
+  padding-bottom: 8px;
+  scroll-behavior: smooth;
+}
+
+/* 自定义滚动条样式 */
+.employee-grid.idle::-webkit-scrollbar {
+  height: 6px;
+}
+
+.employee-grid.idle::-webkit-scrollbar-track {
+  background: rgba(204, 93, 64, 0.08);
+  border-radius: 3px;
+}
+
+.employee-grid.idle::-webkit-scrollbar-thumb {
+  background: rgba(204, 93, 64, 0.3);
+  border-radius: 3px;
+  transition: background 0.2s ease;
+}
+
+.employee-grid.idle::-webkit-scrollbar-thumb:hover {
+  background: var(--ent-brand);
+}
 
 .employee-card.idle {
+  flex: 0 0 auto;
+  min-width: 160px;
   align-items: flex-start;
   gap: 10px;
-  padding: 14px;
+  padding: 16px;
   position: relative;
   overflow: hidden;
 }
@@ -423,8 +455,8 @@
 }
 
 .employee-card.idle .avatar-container img {
-  width: 64px;
-  height: 64px;
+  width: 72px;
+  height: 72px;
   border-radius: 50%;
   object-fit: cover;
   border: 2px solid var(--ent-line);
