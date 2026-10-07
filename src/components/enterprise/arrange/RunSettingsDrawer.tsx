@@ -3,7 +3,7 @@
  * 视觉上嵌入 Codex/Claude 风格的输入框，不再单独显示“运行设置”标题或右侧抽屉。
  */
 
-import { FolderOpen } from 'lucide-react';
+import { FolderOpen, ShieldCheck } from 'lucide-react';
 import { RUN_PERMISSIONS, type RunSettings } from '../../../features/enterprise/run-settings';
 
 interface SharedProps {
@@ -29,28 +29,32 @@ function directoryLabel(workDir: string): string {
   return workDir.trim() ? workDir.split(/[\\/]/).filter(Boolean).at(-1) ?? '选择目录' : '选择目录';
 }
 
+/**
+ * 目录按钮旁的下拉：本次工作的运行环境。
+ *
+ * 权限预设与审批开关原先挤在输入框底栏，与模型选择并排。它们在界面上表现为
+ * 一个「只读」下拉和一个无可见文字的空方框（审批开关只有 sr-only 标签），
+ * 既占位又读不懂。这里把两者移到目录行——语义上它们和「选哪个目录」同属
+ * 「这次工作在什么环境下跑」，放在一起才讲得通。
+ */
 export function RunSettingsDirectory({ settings, onChange, onChooseFolder }: DirectoryProps) {
-  return (
-    <button
-      type="button"
-      className="ent-rs-directory"
-      title={settings.workDir || '选择本次工作的目录'}
-      onClick={() => void onChooseFolder().then(path => { if (path) onChange({ workDir: path }); })}
-    >
-      <FolderOpen size={16} aria-hidden />
-      <span>{directoryLabel(settings.workDir)}</span>
-    </button>
-  );
-}
-
-export function RunSettingsBar({ settings, models, conversation = false, onChange }: SharedProps) {
-  const modelLabel = settings.modelId || (conversation ? models[0] : '') || '模型';
   const permission = RUN_PERMISSIONS.find(item => item.id === settings.permissions.preset);
+  const autoApprove = settings.permissions.approvalMode === 'auto-approve';
 
   return (
-    <div className="ent-rs-inline">
-      <label className="ent-rs-compact ent-rs-permission" title="访问权限">
-        <span className="sr-only">访问权限</span>
+    <div className="ent-rs-env">
+      <button
+        type="button"
+        className="ent-rs-directory"
+        title={settings.workDir || '选择本次工作的目录'}
+        onClick={() => void onChooseFolder().then(path => { if (path) onChange({ workDir: path }); })}
+      >
+        <FolderOpen size={16} aria-hidden />
+        <span>{directoryLabel(settings.workDir)}</span>
+      </button>
+
+      <label className="ent-rs-compact ent-rs-permission" title={permission?.hint ?? '访问权限'}>
+        <ShieldCheck size={14} aria-hidden />
         <select
           aria-label="访问权限"
           value={settings.permissions.preset}
@@ -59,18 +63,28 @@ export function RunSettingsBar({ settings, models, conversation = false, onChang
           {RUN_PERMISSIONS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
       </label>
-      <label className="ent-rs-compact ent-rs-approval" title="工具审批">
-        <span className="sr-only">工具审批</span>
+
+      {/* 审批开关带可见文字：原先只靠 sr-only 标签，渲染出来是个没有说明的空方框 */}
+      <label className="ent-rs-compact ent-rs-approval" title="开启后，本次工作中的工具调用不再逐次向你确认">
         <input
           type="checkbox"
-          aria-label="忽略权限风险，不再逐次确认"
-          checked={settings.permissions.approvalMode === 'auto-approve'}
+          checked={autoApprove}
           onChange={event => onChange({ permissions: {
             ...settings.permissions,
             approvalMode: event.target.checked ? 'auto-approve' : 'confirm-each',
           } })}
         />
+        <span>自动放行</span>
       </label>
+    </div>
+  );
+}
+
+export function RunSettingsBar({ settings, models, conversation = false, onChange }: SharedProps) {
+  const modelLabel = settings.modelId || (conversation ? models[0] : '') || '模型';
+
+  return (
+    <div className="ent-rs-inline">
       <label className="ent-rs-compact ent-rs-model" title={modelLabel}>
         <span className="sr-only">模型</span>
         <select
@@ -83,7 +97,6 @@ export function RunSettingsBar({ settings, models, conversation = false, onChang
           {models.map(model => <option key={model} value={model}>{model}</option>)}
         </select>
       </label>
-      <span className="sr-only">当前权限：{permission?.label ?? '只读'}</span>
     </div>
   );
 }

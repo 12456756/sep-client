@@ -297,8 +297,8 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
           <button
             type="button"
             className="ent-arr-primary"
-            disabled={busy || Boolean(problem)}
-            title={problem ?? undefined}
+            disabled={busy || !steps.length || Boolean(problem)}
+            title={problem ?? (steps.length ? undefined : '先把一位同事拖进来')}
             onClick={() => onStart(draft())}
           >
             {busy ? '安排中…' : '开始'}

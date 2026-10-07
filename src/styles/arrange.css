@@ -525,10 +525,19 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   gap: 8px;
   padding-bottom: 0;
 }
-.ent-arr-chat > .ent-rs-directory,
-.ent-goal-stack > .ent-rs-directory {
+.ent-arr-chat > .ent-rs-env,
+.ent-goal-stack > .ent-rs-env {
   align-self: flex-start;
   margin: 0 0 2px 4px;
+}
+
+/* 运行环境行：目录 + 访问权限 + 自动放行，同一行左对齐。
+ * 这三项都属于「这次工作在什么环境下跑」，放在一起才讲得通。 */
+.ent-rs-env {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 2px;
 }
 .ent-rs-directory {
   display: inline-flex;
@@ -615,6 +624,26 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-rs-model { min-width: 0; max-width: min(280px, 40vw); }
 .ent-rs-model select { width: max-content; max-width: 100%; }
 
+/* 权限下拉带盾牌图标，和目录按钮同一行的视觉重量 */
+.ent-rs-permission { gap: 4px; padding-left: 4px; color: var(--ent-ink-3); }
+.ent-rs-permission svg { flex: 0 0 auto; }
+.ent-rs-permission select { max-width: 116px; padding-left: 2px; }
+
+/* 自动放行：带可见文字，不再是一个没有说明的空方框 */
+.ent-rs-approval {
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 9px;
+  border-radius: 8px;
+  color: var(--ent-ink-3);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 160ms var(--arr-ease), background 160ms var(--arr-ease);
+}
+.ent-rs-approval:hover { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
+.ent-rs-approval input { width: 14px; height: 14px; margin: 0; accent-color: var(--ent-brand); cursor: pointer; }
+.ent-rs-approval span { white-space: nowrap; }
+
 .ent-goal-stack {
   display: flex;
   width: min(820px, 100%);
@@ -700,8 +729,8 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-.ent-arr-chat > .ent-rs-directory,
-.ent-goal-stack > .ent-rs-directory {
+.ent-arr-chat > .ent-rs-env,
+.ent-goal-stack > .ent-rs-env {
   width: fit-content;
   max-width: 100%;
 }
@@ -769,7 +798,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 @keyframes arr-empty-in {
   from { opacity: 0; transform: translateY(6px); }
 }
-.ent-arr-chat > .ent-rs-directory,
+.ent-arr-chat > .ent-rs-env,
 .ent-arr-chat > .ent-chat-ask,
 .ent-arr-auto > .ent-goal-stack {
   position: relative;

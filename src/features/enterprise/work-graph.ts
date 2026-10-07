@@ -140,9 +140,13 @@ export function stepProblems(step: WorkDraftStep): string[] {
 /**
  * 整张图能不能开工。返回第一条人话错误，null 表示可以。
  * 顺序刻意和用户的注意力一致：先说「有没有步骤」，再说「步骤填全了吗」，最后才说结构问题。
+ *
+ * 空步骤（还没拖人进来）返回 null：那是初始态，不是错误。界面上「添加员工」
+ * 按钮和引导区已经在说明下一步该做什么，再弹一句校验文案是重复的。
+ * 调用方要区分「初始态」和「可以开工」，用 steps.length 判断，不要靠这句话。
  */
 export function validateGraph(steps: WorkDraftStep[]): string | null {
-  if (!steps.length) return '还没有工作步骤。从左边把一位同事拖进来就是第一步。';
+  if (!steps.length) return null;
 
   const ids = new Set<string>();
   for (const step of steps) {
