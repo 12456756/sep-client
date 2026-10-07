@@ -1,94 +1,238 @@
+/**
+ * 算力中心视觉体系。
+ *
+ * 三条规则：
+ * 1. 层次靠字号和留白，不靠颜色。全页只有一种强调色（品牌红），
+ *    其余色彩只出现在进度条上表达「用了多少」这一件事。
+ * 2. 解释性口径（分开计算、以平台扣费为准等）收进 info 提示和抽屉，
+ *    不常驻界面，避免界面被免责声明占满。
+ * 3. 卡片分两级：结论层（总览，通栏）与明细层（左右分栏），
+ *    二级标题统一 13px，不再用大写字母间距的眉标。
+ */
+
 .compute-page { max-width: 1120px; margin: 0 auto; padding: 30px 36px 48px; color: var(--ent-ink); }
-.compute-section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--ent-line); margin-bottom: 14px; }
-.compute-page-head h1 { margin: 4px 0 6px; font-size: 28px; letter-spacing: -.03em; }
-.compute-page-head p { margin: 0; color: var(--ent-ink-3); font-size: 13px; }
-.compute-eyebrow { color: var(--ent-ink-3); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-.compute-refresh-button, .compute-icon-button { border: 1px solid var(--ent-line); background: var(--ent-panel); color: var(--ent-ink-2); border-radius: var(--ent-radius-btn); display: inline-flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; transition: .18s ease; }
-.compute-refresh-button { padding: 9px 13px; font-size: 12px; }
-.compute-icon-button { width: 32px; height: 32px; }
-.compute-refresh-button:hover, .compute-icon-button:hover { border-color: var(--ent-brand-border); background: var(--ent-brand-softer); color: var(--ent-brand-deep); }
-.compute-tabs { display: flex; gap: 5px; }
-.compute-tabs button, .compute-range button { border: 0; background: transparent; color: var(--ent-ink-3); cursor: pointer; font-size: 13px; }
-.compute-tabs button { padding: 10px 14px; border-bottom: 2px solid transparent; }
+
+/* ── 顶部：分区与工具条 ───────────────────────────────────────────── */
+
+.compute-section-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--ent-line); }
+.compute-tabs { display: flex; gap: 4px; }
+.compute-tabs button { padding: 11px 15px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--ent-ink-3); cursor: pointer; font-size: 14px; transition: color var(--ent-ease); }
 .compute-tabs button:hover { color: var(--ent-brand-deep); }
-.compute-tabs button.active { color: var(--ent-brand-deep); border-bottom-color: var(--ent-brand); font-weight: 700; }
-.compute-range { display: flex; align-items: center; gap: 4px; justify-content: flex-end; margin: 10px 0 16px; color: var(--ent-ink-3); font-size: 12px; }
-.compute-range button { padding: 5px 9px; border-radius: 999px; }
-.compute-range button.active { color: var(--ent-brand-deep); background: var(--ent-brand-soft); font-weight: 700; }
-.compute-overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.compute-card, .compute-list-card, .compute-note-card { background: var(--ent-panel); border: 1px solid var(--ent-line); border-radius: var(--ent-radius-lg); box-shadow: 0 4px 16px rgb(34 46 88 / 4%); }
-.compute-card { min-height: 190px; padding: 20px; display: flex; flex-direction: column; }
-.compute-card-head, .compute-list-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.compute-card h2, .compute-list-head h2 { margin: 8px 0 5px; font-size: 25px; letter-spacing: -.035em; }
-.compute-card p { margin: 0; color: var(--ent-ink-3); font-size: 12px; line-height: 1.55; }
-.compute-card-icon { width: 40px; height: 40px; border-radius: 12px; display: inline-flex; align-items: center; justify-content: center; }
-.compute-card-icon.purple { color: var(--ent-brand-deep); background: var(--ent-brand-soft); }
-.compute-card-icon.blue { color: var(--ent-accent-ink); background: var(--ent-accent-soft); }
-.compute-card-icon.green { color: var(--ent-ready); background: var(--ent-ready-bg); }
-.compute-allowance-progress-list { display: grid; gap: 15px; margin-top: 22px; }
-.compute-allowance-progress { display: grid; gap: 6px; }
-.compute-allowance-progress-head, .compute-allowance-progress-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--ent-ink-3); font-size: 11px; }
-.compute-allowance-progress-head strong { color: var(--ent-ink); font-size: 12px; font-variant-numeric: tabular-nums; }
-.compute-allowance-progress-head em { color: var(--ent-ink-3); font-size: 10px; font-style: normal; font-weight: 400; }
-.compute-allowance-progress-foot strong { font-size: 10px; font-weight: 600; }
-.compute-allowance-progress.recharge .compute-allowance-progress-foot strong { color: var(--ent-brand-ink); }
-.compute-allowance-progress.monthly .compute-allowance-progress-foot strong { color: var(--ent-ready); }
-.compute-allowance-progress.daily .compute-allowance-progress-foot strong { color: var(--ent-attention); }
-.compute-progress { height: 8px; overflow: hidden; border-radius: 99px; background: var(--ent-track); }
-.compute-progress span { display: block; height: 100%; min-width: 0; border-radius: inherit; box-shadow: 0 1px 3px rgb(26 127 82 / 22%); transition: width .3s ease; }
-.compute-progress.recharge span { background: linear-gradient(90deg, var(--ent-brand-solid), var(--ent-brand-deep)); box-shadow: 0 1px 3px rgb(185 54 63 / 22%); }
-.compute-progress.monthly span { background: linear-gradient(90deg, var(--ent-ready-solid), var(--ent-ready)); }
-.compute-progress.daily span { background: linear-gradient(90deg, #e2a248, var(--ent-attention)); box-shadow: 0 1px 3px rgb(138 100 16 / 20%); }
-.compute-progress.is-unlimited span { background: repeating-linear-gradient(135deg, var(--ent-ready-solid) 0 8px, var(--ent-ready) 8px 16px); opacity: .78; }
-.compute-allowance-progress.is-unconfigured .compute-progress { background: repeating-linear-gradient(135deg, var(--ent-line-soft) 0 7px, var(--ent-track) 7px 14px); }
-.compute-allowance-progress.is-unconfigured .compute-progress span { background: transparent; box-shadow: none; }
-.compute-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 18px; padding-top: 13px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-3); font-size: 11px; }
-.compute-link { display: inline-flex; align-items: center; gap: 2px; border: 0; padding: 0; background: transparent; color: var(--ent-brand-deep); cursor: pointer; font-size: 12px; white-space: nowrap; }
-.compute-link:hover { text-decoration: underline; }
-.compute-wallet-stats { display: flex; gap: 35px; margin-top: auto; padding-top: 20px; }
-.compute-wallet-stats div { display: grid; gap: 4px; }
-.compute-wallet-stats span { color: var(--ent-ink-3); font-size: 11px; }
-.compute-wallet-stats strong { font-size: 14px; }
-.compute-trend-card { grid-column: span 2; min-height: 220px; }
-.compute-trend-wrap { margin-top: auto; padding-top: 15px; }
-.compute-trend { display: block; width: 100%; height: 92px; overflow: visible; }
+.compute-tabs button.active { color: var(--ent-brand-deep); border-bottom-color: var(--ent-brand); font-weight: 650; }
+
+.compute-refresh-button,
+.compute-icon-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  border: 1px solid var(--ent-line); border-radius: var(--ent-radius-btn);
+  background: var(--ent-panel); color: var(--ent-ink-2); cursor: pointer;
+  transition: border-color var(--ent-ease), background var(--ent-ease), color var(--ent-ease);
+}
+.compute-refresh-button { padding: 9px 13px; font-size: 13px; }
+.compute-icon-button { width: 32px; height: 32px; }
+.compute-refresh-button:hover,
+.compute-icon-button:hover { border-color: var(--ent-brand-border); background: var(--ent-brand-softer); color: var(--ent-brand-deep); }
+
+/* 趋势区间选择：贴着明细区右上方，不单独占一行 */
+.compute-range { display: flex; align-items: center; gap: 4px; justify-content: flex-end; margin: 16px 0 12px; }
+.compute-range button { padding: 5px 11px; border: 0; border-radius: var(--ent-radius-pill); background: transparent; color: var(--ent-ink-3); cursor: pointer; font-size: 12px; transition: color var(--ent-ease), background var(--ent-ease); }
+.compute-range button:hover { color: var(--ent-brand-deep); }
+.compute-range button.active { color: var(--ent-brand-deep); background: var(--ent-brand-soft); font-weight: 650; }
+
+/* ── 结论层：总览 ─────────────────────────────────────────────────── */
+
+.compute-overview { display: flex; flex-direction: column; gap: 16px; }
+
+.compute-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--ent-line);
+  border-radius: var(--ent-radius-lg);
+  background: var(--ent-panel);
+  box-shadow: var(--ent-shadow-card);
+  overflow: hidden;
+}
+
+.compute-summary-item {
+  display: flex; min-width: 0; flex-direction: column; gap: 6px;
+  padding: 20px 24px;
+}
+/* 分隔用一条内描边，比给每项加边框更干净 */
+.compute-summary-item + .compute-summary-item { border-left: 1px solid var(--ent-line-soft); }
+
+.compute-summary-label {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--ent-ink-3); font-size: 12px; font-weight: 600;
+}
+.compute-summary-label svg { color: var(--ent-brand); flex: 0 0 auto; }
+
+/* 结论数字是整页最大的字号，和明细区的 13px 标题拉开层级 */
+.compute-summary-value {
+  color: var(--ent-ink);
+  font-size: 30px; font-weight: 680; line-height: 1.1;
+  letter-spacing: -.04em;
+  font-variant-numeric: tabular-nums;
+}
+
+.compute-summary-note {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--ent-ink-3); font-size: 11px; line-height: 1.5;
+}
+
+/* ── 明细层：左右分栏 ─────────────────────────────────────────────── */
+
+.compute-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
+
+.compute-card {
+  display: flex; flex-direction: column; gap: 18px;
+  padding: 20px 22px;
+  border: 1px solid var(--ent-line);
+  border-radius: var(--ent-radius-lg);
+  background: var(--ent-panel);
+  box-shadow: var(--ent-shadow-card);
+}
+
+.compute-card-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+
+.compute-card-title { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.compute-card-title h3 { margin: 0; color: var(--ent-ink); font-size: 14px; font-weight: 650; }
+
+/* 表格与卡片里的文字动作。用品牌色但不着重号，避免和结论数字抢。 */
+.compute-link {
+  display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px;
+  padding: 0; border: 0; background: transparent;
+  color: var(--ent-brand-deep); cursor: pointer; font-size: 12px; white-space: nowrap;
+  transition: color var(--ent-ease);
+}
+.compute-link:hover { color: var(--ent-brand); text-decoration: underline; }
+.compute-link:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; border-radius: 3px; }
+
+/* ── 解释性口径：收进 info 提示 ───────────────────────────────────── */
+
+.compute-hint {
+  display: inline-grid; place-items: center;
+  width: 16px; height: 16px; flex: 0 0 auto;
+  border-radius: 50%; color: var(--ent-ink-3); cursor: help;
+  transition: color var(--ent-ease), background var(--ent-ease);
+}
+.compute-hint:hover, .compute-hint:focus-visible { color: var(--ent-brand-deep); background: var(--ent-brand-soft); outline: none; }
+
+/* ── 额度进度 ─────────────────────────────────────────────────────── */
+
+.compute-allowance-progress-list { display: grid; gap: 18px; }
+.compute-allowance-progress { display: grid; gap: 7px; }
+
+.compute-allowance-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; color: var(--ent-ink-2); font-size: 12px; }
+.compute-allowance-progress-head > span { color: var(--ent-ink-2); }
+.compute-allowance-progress-head strong { color: var(--ent-ink); font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; }
+/* 剩余比例跟随该行语义色：条形几乎为空时，颜色信息由这里承载。
+ * 这三个 token 是浅色主题的值（深红/深绿/深琥珀），深色底上对比度不足，
+ * 所以下面在深色主题里换成对应的浅色档。 */
+.compute-allowance-progress.recharge .compute-allowance-progress-head strong { color: var(--ent-brand-ink); }
+.compute-allowance-progress.monthly .compute-allowance-progress-head strong { color: var(--ent-ready); }
+.compute-allowance-progress.daily .compute-allowance-progress-head strong { color: var(--ent-attention); }
+.ent-shell.dark .compute-allowance-progress.recharge .compute-allowance-progress-head strong { color: #f09199; }
+.ent-shell.dark .compute-allowance-progress.monthly .compute-allowance-progress-head strong { color: #6fd39b; }
+.ent-shell.dark .compute-allowance-progress.daily .compute-allowance-progress-head strong { color: #e0b45c; }
+
+/* 三条额度各有语义色：充值=品牌红（企业的钱）、每月=可用绿、每日=提醒琥珀。
+ * 槽底也取该行的淡色而不是统一灰 —— 用量接近 0 时填充几乎不可见，
+ * 槽底带色才能让这一行「代表什么额度」始终读得出来。
+ * 填充长度严格等于已用比例，不为了好看虚增长度。 */
+.compute-progress {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--ent-track);
+  box-shadow: inset 0 0 0 1px transparent;
+}
+.compute-progress span { display: block; height: 100%; min-width: 0; border-radius: inherit; transition: width var(--motion-moderate, .3s) ease; }
+
+.compute-progress.recharge { background: var(--ent-brand-soft); box-shadow: inset 0 0 0 1px var(--ent-brand-border); }
+.compute-progress.recharge span { background: var(--ent-brand); }
+
+.compute-progress.monthly { background: var(--ent-ready-bg); box-shadow: inset 0 0 0 1px var(--ent-ready-line); }
+.compute-progress.monthly span { background: var(--ent-ready-solid); }
+
+.compute-progress.daily { background: var(--ent-attention-bg); box-shadow: inset 0 0 0 1px var(--ent-attention-line); }
+.compute-progress.daily span { background: var(--ent-attention); }
+
+.compute-progress.is-unlimited span { background: repeating-linear-gradient(135deg, var(--ent-ready-solid) 0 6px, var(--ent-ready) 6px 12px); opacity: .8; }
+
+/* 未设置额度时不借用语义色，避免看着像「有额度」 */
+.compute-allowance-progress.is-unconfigured .compute-progress { background: repeating-linear-gradient(135deg, var(--ent-line-soft) 0 6px, var(--ent-track) 6px 12px); box-shadow: none; }
+.compute-allowance-progress.is-unconfigured .compute-progress span { background: transparent; }
+.compute-allowance-progress.is-unconfigured .compute-allowance-progress-head strong { color: var(--ent-ink-3); font-weight: 400; }
+
+/* ── 趋势 ─────────────────────────────────────────────────────────── */
+
+.compute-trend-total { color: var(--ent-ink); font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+.compute-trend-wrap { margin-top: auto; padding-top: 4px; }
+.compute-trend { display: block; width: 100%; height: 108px; overflow: visible; }
 .compute-chart-grid { stroke: var(--ent-line); stroke-width: .5; }
-.compute-chart-line { fill: none; stroke: var(--ent-brand); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
-.compute-chart-dot { fill: var(--ent-panel); stroke: var(--ent-brand); stroke-width: 1.2; }
-.compute-chart-labels { display: flex; justify-content: space-between; color: var(--ent-ink-3); font-size: 10px; }
-.compute-empty-chart { height: 92px; display: grid; place-items: center; color: var(--ent-ink-3); font-size: 12px; }
-.compute-note-card { grid-column: span 2; display: flex; gap: 12px; padding: 15px 18px; background: var(--ent-panel-subtle); box-shadow: none; }
-.compute-note-card p { margin: 4px 0 0; color: var(--ent-ink-3); font-size: 12px; line-height: 1.6; }
-.compute-note-icon { width: 32px; height: 32px; flex: 0 0 auto; display: grid; place-items: center; color: var(--ent-brand-deep); background: var(--ent-brand-soft); border-radius: 9px; }
-.compute-list-card { overflow: hidden; }
-.compute-list-head { padding: 20px 22px 14px; align-items: center; }
+.compute-chart-line { fill: none; stroke: var(--ent-brand); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.compute-chart-dot { fill: var(--ent-panel); stroke: var(--ent-brand); stroke-width: 1.1; }
+.compute-chart-labels { display: flex; justify-content: space-between; margin-top: 6px; color: var(--ent-ink-3); font-size: 10px; }
+.compute-empty-chart { display: grid; min-height: 108px; place-items: center; color: var(--ent-ink-3); font-size: 12px; }
+
+/* ── 列表页 ───────────────────────────────────────────────────────── */
+
+.compute-list-card { overflow: hidden; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-lg); background: var(--ent-panel); box-shadow: var(--ent-shadow-card); }
+.compute-list-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 22px 14px; border-bottom: 1px solid var(--ent-line-soft); }
+.compute-list-head h3 { margin: 0; font-size: 14px; font-weight: 650; }
+
 .compute-table-wrap { overflow-x: auto; }
 .compute-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
 .compute-table th { padding: 10px 22px; color: var(--ent-ink-3); background: var(--ent-panel-subtle); font-size: 11px; font-weight: 600; white-space: nowrap; }
-.compute-table td { padding: 14px 22px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-2); white-space: nowrap; }
+.compute-table td { padding: 13px 22px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .compute-table tbody tr:hover { background: var(--ent-brand-softer); }
 .compute-table td strong { display: block; color: var(--ent-ink); font-weight: 600; }
 .compute-table td small { display: block; margin-top: 3px; color: var(--ent-ink-3); }
+
 .compute-type { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
 .compute-type.positive, .compute-money-positive { color: var(--ent-ready); }
 .compute-type.negative, .compute-money-negative { color: var(--ent-danger); }
-.compute-empty, .compute-error { min-height: 170px; display: flex; align-items: center; justify-content: center; gap: 9px; color: var(--ent-ink-3); font-size: 13px; }
-.compute-error { color: var(--ent-danger); flex-direction: column; }
-.compute-error button { border: 0; background: transparent; color: var(--ent-brand-deep); cursor: pointer; }
-.compute-loading { min-height: 230px; display: grid; align-content: center; gap: 12px; }
-.compute-loading span { width: 100%; height: 14px; display: block; border-radius: 5px; background: linear-gradient(90deg, var(--ent-line-soft), #fff, var(--ent-line-soft)); background-size: 200% 100%; animation: compute-shimmer 1.2s ease-in-out infinite; }
-.compute-loading span:nth-child(2) { width: 75%; } .compute-loading span:nth-child(3) { width: 52%; }
+
+/* ── 状态 ─────────────────────────────────────────────────────────── */
+
+.compute-empty, .compute-error { display: flex; min-height: 170px; align-items: center; justify-content: center; gap: 9px; color: var(--ent-ink-3); font-size: 13px; }
+.compute-error { flex-direction: column; color: var(--ent-danger); }
+.compute-error button { border: 0; background: transparent; color: var(--ent-brand-deep); cursor: pointer; font-size: 13px; }
+
+.compute-loading { display: grid; min-height: 200px; align-content: center; gap: 12px; }
+.compute-loading span { display: block; width: 100%; height: 14px; border-radius: 5px; background: linear-gradient(90deg, var(--ent-line-soft), var(--ent-panel), var(--ent-line-soft)); background-size: 200% 100%; animation: compute-shimmer 1.2s ease-in-out infinite; }
+.compute-loading span:nth-child(2) { width: 75%; }
+.compute-loading span:nth-child(3) { width: 52%; }
 @keyframes compute-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+/* ── 抽屉 ─────────────────────────────────────────────────────────── */
+
 .compute-drawer-backdrop { position: fixed; inset: 0; z-index: 20; display: flex; justify-content: flex-end; background: rgb(22 28 50 / 26%); }
 .compute-drawer { width: min(390px, 92vw); height: 100%; padding: 22px; overflow: auto; background: var(--ent-panel); box-shadow: -12px 0 40px rgb(25 32 65 / 14%); animation: compute-drawer-in .2s ease-out; }
-.compute-drawer-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; padding-bottom: 18px; border-bottom: 1px solid var(--ent-line); }
-.compute-drawer-head h2 { margin: 7px 0 0; font-size: 20px; }
-.compute-drawer-body { padding-top: 20px; }
+.compute-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 18px; border-bottom: 1px solid var(--ent-line); }
+.compute-drawer-head h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.compute-drawer-body { padding-top: 18px; }
 .compute-detail-list { margin: 0; }
 .compute-detail-list > div { display: flex; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--ent-line-soft); }
-.compute-detail-list dt { color: var(--ent-ink-3); font-size: 12px; } .compute-detail-list dd { max-width: 220px; margin: 0; color: var(--ent-ink); font-size: 12px; text-align: right; overflow-wrap: anywhere; }
-.compute-drawer-note { margin: 0; color: var(--ent-ink-2); font-size: 13px; line-height: 1.8; }
+.compute-detail-list dt { color: var(--ent-ink-3); font-size: 12px; }
+.compute-detail-list dd { max-width: 220px; margin: 0; color: var(--ent-ink); font-size: 12px; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 @keyframes compute-drawer-in { from { transform: translateX(20px); opacity: .4; } to { transform: translateX(0); opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .compute-drawer, .compute-loading span { animation: none; } }
-@media (max-width: 960px) { .compute-page { padding: 24px 22px 40px; } .compute-overview-grid { grid-template-columns: 1fr; } .compute-trend-card, .compute-note-card { grid-column: auto; } }
-@media (max-width: 640px) { .compute-section-head { align-items: flex-start; } .compute-table th, .compute-table td { padding-left: 14px; padding-right: 14px; } .compute-allowance-metrics { grid-template-columns: 1fr; } .compute-allowance-metric + .compute-allowance-metric { padding-left: 0; padding-top: 12px; border-top: 1px solid var(--ent-line-soft); border-left: 0; } .compute-card-foot { align-items: flex-start; flex-direction: column; } }
+
+/* ── 响应式 ───────────────────────────────────────────────────────── */
+
+@media (max-width: 960px) {
+  .compute-page { padding: 24px 22px 40px; }
+  .compute-summary { grid-template-columns: 1fr; }
+  .compute-summary-item + .compute-summary-item { border-top: 1px solid var(--ent-line-soft); border-left: 0; }
+  .compute-detail-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .compute-section-head { flex-direction: column; align-items: stretch; }
+  .compute-tabs { overflow-x: auto; }
+  .compute-table th, .compute-table td { padding-right: 14px; padding-left: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compute-drawer, .compute-loading span { animation: none; }
+}
