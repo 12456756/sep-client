@@ -1,0 +1,534 @@
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ * 首页重新设计 - 拟人化硅基员工展示
+ * ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+
+/* ── 首页头部 ────────────────────────────────────────────────────────── */
+
+.ent-home-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0;
+}
+
+.ent-home-welcome h1 {
+  margin: 0;
+  color: var(--ent-ink);
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.ent-home-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 6px 12px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--ent-attention-bg) 20%, transparent);
+  border: 1px solid var(--ent-attention-line);
+  font-size: 13px;
+  color: var(--ent-ink-2);
+}
+
+.ent-home-alert-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--ent-attention);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.link-sm {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--ent-brand-ink);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color var(--ent-ease);
+}
+
+.link-sm:hover {
+  color: var(--ent-brand-ink-hover);
+}
+
+/* ── 数据概览卡片 ────────────────────────────────────────────────────────── */
+
+.ent-home-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.ent-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: var(--ent-radius);
+  background: var(--ent-panel);
+  border: 1px solid var(--ent-line);
+  box-shadow: 0 2px 8px rgba(43, 31, 19, 0.04);
+  transition: all var(--ent-ease);
+}
+
+.ent-stat-card:hover {
+  border-color: var(--ent-line-strong);
+  box-shadow: 0 4px 16px rgba(43, 31, 19, 0.08);
+  transform: translateY(-1px);
+}
+
+.ent-stat-icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  font-size: 22px;
+}
+
+.ent-stat-card.total .ent-stat-icon {
+  background: linear-gradient(135deg, #f8f3eb 0%, #f0ebe2 100%);
+  color: var(--ent-ink-2);
+}
+
+.ent-stat-card.working .ent-stat-icon {
+  background: linear-gradient(135deg, #fff5f0 0%, #ffe8dd 100%);
+}
+
+.ent-stat-card.idle .ent-stat-icon {
+  background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
+}
+
+.ent-stat-card.completed .ent-stat-icon {
+  background: linear-gradient(135deg, #f0f9f4 0%, #e0f2e9 100%);
+  color: #10b981;
+}
+
+.ent-stat-pulse {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 8px;
+  height: 8px;
+  background: var(--ent-brand);
+  border-radius: 50%;
+  animation: stat-pulse 2s ease-in-out infinite;
+}
+
+@keyframes stat-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: translate(-50%, -50%) scale(1.5);
+  }
+}
+
+.ent-stat-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.ent-stat-value {
+  color: var(--ent-ink);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.ent-stat-label {
+  color: var(--ent-ink-3);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* ── 状态分组区域 ────────────────────────────────────────────────────────── */
+
+.ent-home-section {
+  margin-top: 32px;
+}
+
+.ent-home-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.ent-home-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ent-home-section-icon {
+  font-size: 20px;
+}
+
+.ent-home-section-title h2 {
+  margin: 0;
+  color: var(--ent-ink);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.ent-home-section-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 12px;
+  background: var(--ent-line);
+  color: var(--ent-ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 需要关注列表 ────────────────────────────────────────────────────────── */
+
+.ent-home-attention-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ent-home-attention-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--ent-radius);
+  background: var(--ent-panel);
+  border: 1px solid var(--ent-attention-line);
+  background: color-mix(in srgb, var(--ent-attention-bg) 15%, var(--ent-panel));
+  cursor: pointer;
+  transition: all var(--ent-ease);
+}
+
+.ent-home-attention-item:hover {
+  border-color: var(--ent-attention);
+  box-shadow: 0 4px 12px rgba(204, 93, 64, 0.12);
+  transform: translateX(2px);
+}
+
+.ent-home-avatar-sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--ent-line);
+}
+
+.ent-home-attention-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ent-home-attention-info strong {
+  color: var(--ent-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ent-home-attention-reason {
+  color: var(--ent-ink-3);
+  font-size: 12px;
+}
+
+/* ── 工作中员工列表 ────────────────────────────────────────────────────────── */
+
+.ent-home-working-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+}
+
+.ent-home-working-item {
+  display: flex;
+  gap: 16px;
+  padding: 20px;
+  border-radius: var(--ent-radius);
+  background: var(--ent-panel);
+  border: 1px solid var(--ent-line);
+  box-shadow: 0 2px 8px rgba(43, 31, 19, 0.04);
+  cursor: pointer;
+  transition: all var(--ent-ease);
+}
+
+.ent-home-working-item:hover {
+  border-color: var(--ent-brand-border);
+  box-shadow: 0 6px 20px rgba(204, 93, 64, 0.12);
+  transform: translateY(-2px);
+}
+
+.ent-home-working-avatar {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.ent-home-working-avatar img {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--ent-brand-border);
+}
+
+.ent-home-working-pulse {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  background: var(--ent-brand);
+  border: 3px solid var(--ent-panel);
+  border-radius: 50%;
+  animation: working-pulse 2s ease-in-out infinite;
+}
+
+@keyframes working-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.1);
+  }
+}
+
+.ent-home-working-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.ent-home-working-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ent-home-working-header strong {
+  color: var(--ent-ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ent-home-working-role {
+  color: var(--ent-ink-3);
+  font-size: 12px;
+}
+
+.ent-home-working-task {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ent-home-working-status {
+  color: var(--ent-ink-2);
+  font-size: 13px;
+}
+
+.ent-home-working-duration {
+  color: var(--ent-ink-3);
+  font-size: 12px;
+}
+
+.ent-home-working-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ent-home-progress-bar {
+  flex: 1;
+  height: 6px;
+  background: var(--ent-line);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.ent-home-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--ent-brand) 0%, var(--ent-brand-hover) 100%);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.ent-home-progress-text {
+  color: var(--ent-ink-2);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  min-width: 38px;
+  text-align: right;
+}
+
+/* ── 空闲员工网格 ────────────────────────────────────────────────────────── */
+
+.ent-home-idle-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 16px;
+}
+
+.ent-home-idle-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  border-radius: var(--ent-radius);
+  background: var(--ent-panel);
+  border: 1px solid var(--ent-line);
+  cursor: pointer;
+  transition: all var(--ent-ease);
+}
+
+.ent-home-idle-item:hover {
+  border-color: var(--ent-line-strong);
+  box-shadow: 0 4px 12px rgba(43, 31, 19, 0.08);
+  transform: translateY(-2px);
+}
+
+.ent-home-idle-item img {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--ent-line);
+  filter: grayscale(20%);
+  opacity: 0.85;
+  transition: all var(--ent-ease);
+}
+
+.ent-home-idle-item:hover img {
+  filter: grayscale(0%);
+  opacity: 1;
+  border-color: var(--ent-line-strong);
+}
+
+.ent-home-idle-name {
+  color: var(--ent-ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.ent-home-idle-role {
+  color: var(--ent-ink-3);
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* ── 空状态 ────────────────────────────────────────────────────────── */
+
+.ent-home-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 64px 32px;
+  text-align: center;
+}
+
+.ent-home-empty-icon {
+  color: var(--ent-ink-3);
+  opacity: 0.5;
+}
+
+.ent-home-empty h3 {
+  margin: 0;
+  color: var(--ent-ink);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.ent-home-empty p {
+  margin: 0;
+  color: var(--ent-ink-3);
+  font-size: 14px;
+}
+
+/* ── 响应式适配 ────────────────────────────────────────────────────────── */
+
+@media (max-width: 1279px) {
+  .ent-home-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .ent-home-working-list {
+    grid-template-columns: 1fr;
+  }
+
+  .ent-home-idle-grid {
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .ent-home-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .ent-home-section {
+    margin-top: 24px;
+  }
+
+  .ent-stat-card {
+    padding: 14px 16px;
+  }
+
+  .ent-stat-icon {
+    width: 40px;
+    height: 40px;
+    font-size: 18px;
+  }
+
+  .ent-stat-value {
+    font-size: 24px;
+  }
+}

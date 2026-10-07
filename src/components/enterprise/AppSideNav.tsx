@@ -11,7 +11,7 @@
  * titleBarOverlay 画在右上角，那一侧的留白见 enterprise.css 的 .ent-top）。
  */
 
-import { Building2, ChevronUp, ClipboardList, Gauge, GraduationCap, LayoutGrid, ListTodo, LogOut, Settings, ShieldCheck, Users } from 'lucide-react';
+import { Building2, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, Gauge, GraduationCap, LayoutGrid, ListTodo, LogOut, Settings, ShieldCheck, Users } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { AppRoute, AppRouteName } from '../../features/enterprise/types';
 import type { EmployeeAvatarSource } from '../../shared/types';
@@ -28,6 +28,8 @@ interface Props {
   canManage: boolean;
   userName: string;
   userAvatar?: EmployeeAvatarSource | null;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
   onNavigate: (route: AppRoute) => void;
   onOpenSettings: () => void;
   onLogout: () => void;
@@ -51,7 +53,7 @@ function isActive(item: AppRouteName, current: AppRouteName): boolean {
 }
 
 export function AppSideNav({
-  enterpriseName, enterpriseMark, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, onNavigate, onOpenSettings, onLogout,
+  enterpriseName, enterpriseMark, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, collapsed, onToggleCollapse, onNavigate, onOpenSettings, onLogout,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
@@ -74,7 +76,17 @@ export function AppSideNav({
   }, [menuOpen]);
 
   return (
-    <nav className="ent-side" aria-label="主导航">
+    <nav className={`ent-side${collapsed ? ' collapsed' : ''}`} aria-label="主导航">
+      <button
+        type="button"
+        className="ent-side-toggle"
+        onClick={onToggleCollapse}
+        aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
+        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+      >
+        {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+      </button>
+
       <div className="ent-side-brand electron-drag-region">
         {enterpriseLogo && !logoFailed ? (
           <img
@@ -85,7 +97,7 @@ export function AppSideNav({
             onError={() => setLogoFailed(true)}
           />
         ) : <span className="ent-mark" aria-hidden>{enterpriseMark}</span>}
-        <strong title={enterpriseName}>{enterpriseName}</strong>
+        {!collapsed && <strong title={enterpriseName}>{enterpriseName}</strong>}
       </div>
 
       <div className="ent-side-items">
@@ -102,15 +114,15 @@ export function AppSideNav({
               title={item.label}
             >
               <Icon size={17} aria-hidden />
-              <span>{item.label}</span>
-              {item.name === 'records' && needsMeCount ? (
+              {!collapsed && <span>{item.label}</span>}
+              {!collapsed && item.name === 'records' && needsMeCount ? (
                 <em className="ent-nav-count" title={`${needsMeCount} 项工作等你处理`}>{needsMeCount}</em>
               ) : null}
             </button>
           );
         })}
 
-        {canManage ? (
+        {canManage && !collapsed ? (
           <>
             <div className="ent-nav-group">企业管理</div>
             <button type="button" className="ent-nav-item" onClick={() => onNavigate({ name: 'skills' })} title="技能审核">
@@ -132,13 +144,16 @@ export function AppSideNav({
           onClick={() => setMenuOpen(value => !value)}
           aria-expanded={menuOpen}
           aria-haspopup="menu"
+          title={collapsed ? userName : undefined}
         >
           <EmployeeFace employee={userAvatar} name={userName} size="sm" round />
-          <span>
-            <strong title={userName}>{userName}</strong>
-            <small>我的账号</small>
-          </span>
-          <ChevronUp size={14} aria-hidden style={{ transform: menuOpen ? 'rotate(180deg)' : undefined }} />
+          {!collapsed && (
+            <span>
+              <strong title={userName}>{userName}</strong>
+              <small>我的账号</small>
+            </span>
+          )}
+          {!collapsed && <ChevronUp size={14} aria-hidden style={{ transform: menuOpen ? 'rotate(180deg)' : undefined }} />}
         </button>
         {menuOpen ? (
           <div className="ent-side-menu" role="menu">

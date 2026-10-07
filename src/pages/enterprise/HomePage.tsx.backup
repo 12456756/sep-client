@@ -1,0 +1,322 @@
+/**
+ * 个人工作台：一个视口内呈现待处理、进行中和已订阅员工的可执行摘要。
+ * 首页用横向员工墙承载完整订阅列表，员工数量较多时通过轨道滑动查看，不让整页被数据撑长。
+ */
+
+import { ArrowRight, CheckCircle2, UsersRound } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { defaultRunSettings, type RunSettings } from '../../features/enterprise/run-settings';
+import { ChatArrange } from '../../components/enterprise/arrange/ChatArrange';
+import { EmployeeWorksDrawer } from '../../components/enterprise/EmployeeWorksDrawer';
+import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
+import type { SiliconEmployee, WorkItem } from '../../features/enterprise/types';
+import type { DeskFlag } from '../../components/enterprise/EmployeeDeskCard';
+import '../../styles/home-redesign.css';
+
+
+export function HomePage({ workspace }: { workspace: EnterpriseWorkspace }) {
+  const { employees, works, unreviewedWorkIds, navigate } = workspace;
+
+  const roster = useMemo(() => employees.filter(item => item.assignedToMe), [employees]);
+  const desks = useMemo(
+    () => roster.map(employee => deskOf(employee, works, unreviewedWorkIds, startOfToday())),
+    [roster, works, unreviewedWorkIds],
+  );
+  const needsMe = useMemo(
+    () => works
+      .filter(work => work.status === 'waiting-user' || Boolean(work.nextUserAction) || unreviewedWorkIds.has(work.id))
+      .sort((left, right) => right.updatedAt - left.updatedAt),
+    [works, unreviewedWorkIds],
+  );
+
+  // 按工作状态分组员工
+  const groupedDesks = useMemo(() => {
+    const working = desks.filter(d => d.working);
+    const idle = desks.filter(d => !d.working && d.flags.length === 0);
+    const needsAttention = desks.filter(d => !d.working && d.flags.length > 0);
+    return { working, idle, needsAttention };
+  }, [desks]);
+
+  // 今日完成任务数
+  const todayCompleted = useMemo(() => {
+    const today = startOfToday();
+    return works.filter(w => w.status === 'completed' && w.updatedAt >= today).length;
+  }, [works]);
+
+  const [openId, setOpenId] = useState<string | null>(null);
+  const openEmployee = openId ? roster.find(item => item.id === openId) : undefined;
+  const openWorks = useMemo(
+    () => (openEmployee
+      ? works.filter(work => involves(work, openEmployee.id)).sort((left, right) => right.updatedAt - left.updatedAt)
+      : []),
+    [openEmployee, works],
+  );
+
+  const openWork = (workId: string) => { setOpenId(null); navigate({ name: 'work', workId }); };
+
+  return (
+    <div className="ent-page ent-home">
+      <div className="ent-home-content">
+        <header className="ent-home-heading">
+          <div className="ent-home-welcome">
+            <h1>👋 欢迎回来，{workspace.userName}</h1>
+            {needsMe.length > 0 && (
+              <div className="ent-home-alert">
+                <span className="ent-home-alert-badge">{needsMe.length}</span>
+                <span>待处理事项</span>
+                <button type="button" className="link-sm" onClick={() => navigate({ name: 'records', bucket: 'mine' })}>
+                  立即查看 <ArrowRight size={12} aria-hidden />
+                </button>
+              </div>
+            )}
+          </div>
+        </header>
+
+        {/* 数据概览 */}
+        <section className="ent-home-stats" aria-label="团队状态概览">
+          <div className="ent-stat-card total">
+            <div className="ent-stat-icon">
+              <UsersRound size={20} />
+            </div>
+            <div className="ent-stat-content">
+              <div className="ent-stat-value">{roster.length}</div>
+              <div className="ent-stat-label">团队员工</div>
+            </div>
+          </div>
+          <div className="ent-stat-card working">
+            <div className="ent-stat-icon">
+              <span className="ent-stat-pulse" />
+              ⚡
+            </div>
+            <div className="ent-stat-content">
+              <div className="ent-stat-value">{groupedDesks.working.length}</div>
+              <div className="ent-stat-label">工作中</div>
+            </div>
+          </div>
+          <div className="ent-stat-card idle">
+            <div className="ent-stat-icon">💤</div>
+            <div className="ent-stat-content">
+              <div className="ent-stat-value">{groupedDesks.idle.length}</div>
+              <div className="ent-stat-label">空闲中</div>
+            </div>
+          </div>
+          <div className="ent-stat-card completed">
+            <div className="ent-stat-icon">
+              <CheckCircle2 size={20} />
+            </div>
+            <div className="ent-stat-content">
+              <div className="ent-stat-value">{todayCompleted}</div>
+              <div className="ent-stat-label">今日完成</div>
+            </div>
+          </div>
+        </section>
+
+        <div className="ent-home-main">
+          {/* 需要关注的员工 */}
+          {groupedDesks.needsAttention.length > 0 && (
+            <section className="ent-home-section attention">
+              <div className="ent-home-section-header">
+                <div className="ent-home-section-title">
+                  <span className="ent-home-section-icon">⚠️</span>
+                  <h2>需要关注</h2>
+                  <span className="ent-home-section-count">{groupedDesks.needsAttention.length}</span>
+                </div>
+              </div>
+              <div className="ent-home-attention-list">
+                {groupedDesks.needsAttention.map(desk => (
+                  <div key={desk.employee.id} className="ent-home-attention-item" onClick={() => setOpenId(desk.employee.id)}>
+                    <img src={desk.employee.avatar} alt="" className="ent-home-avatar-sm" />
+                    <div className="ent-home-attention-info">
+                      <strong>{desk.employee.displayName}</strong>
+                      <span className="ent-home-attention-reason">
+                        {desk.flags.includes('stale') ? '暂无工作已' : '异常状态：'}
+                        {desk.flags.join(', ')}
+                      </span>
+                    </div>
+                    <ArrowRight size={14} aria-hidden />
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* 工作中的员工 */}
+          {groupedDesks.working.length > 0 && (
+            <section className="ent-home-section working">
+              <div className="ent-home-section-header">
+                <div className="ent-home-section-title">
+                  <span className="ent-home-section-icon">⚡</span>
+                  <h2>工作中</h2>
+                  <span className="ent-home-section-count">{groupedDesks.working.length}</span>
+                </div>
+              </div>
+              <div className="ent-home-working-list">
+                {groupedDesks.working.map(desk => (
+                  <div key={desk.employee.id} className="ent-home-working-item" onClick={() => setOpenId(desk.employee.id)}>
+                    <div className="ent-home-working-avatar">
+                      <img src={desk.employee.avatar} alt={desk.employee.displayName} />
+                      <span className="ent-home-working-pulse" />
+                    </div>
+                    <div className="ent-home-working-info">
+                      <div className="ent-home-working-header">
+                        <strong>{desk.employee.displayName}</strong>
+                        <span className="ent-home-working-role">{desk.employee.role}</span>
+                      </div>
+                      <div className="ent-home-working-task">
+                        <span className="ent-home-working-status">🔄 正在执行任务</span>
+                        {desk.load > 0 && (
+                          <span className="ent-home-working-duration">已运行 {formatDuration(desk.load)}</span>
+                        )}
+                      </div>
+                      <div className="ent-home-working-progress">
+                        <div className="ent-home-progress-bar">
+                          <div
+                            className="ent-home-progress-fill"
+                            style={{ width: `${Math.min(desk.load * 10, 100)}%` }}
+                          />
+                        </div>
+                        <span className="ent-home-progress-text">
+                          {Math.min(Math.floor(desk.load * 10), 100)}%
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* 空闲中的员工 */}
+          {groupedDesks.idle.length > 0 && (
+            <section className="ent-home-section idle">
+              <div className="ent-home-section-header">
+                <div className="ent-home-section-title">
+                  <span className="ent-home-section-icon">💤</span>
+                  <h2>空闲中</h2>
+                  <span className="ent-home-section-count">{groupedDesks.idle.length}</span>
+                </div>
+                <button type="button" className="link" onClick={() => navigate({ name: 'employees', scope: 'mine' })}>
+                  查看全部 <ArrowRight size={14} aria-hidden />
+                </button>
+              </div>
+              <div className="ent-home-idle-grid">
+                {groupedDesks.idle.map(desk => (
+                  <div
+                    key={desk.employee.id}
+                    className="ent-home-idle-item"
+                    onClick={() => setOpenId(desk.employee.id)}
+                    title={`${desk.employee.displayName} - ${desk.employee.role}`}
+                  >
+                    <img src={desk.employee.avatar} alt={desk.employee.displayName} />
+                    <div className="ent-home-idle-name">{desk.employee.displayName}</div>
+                    <div className="ent-home-idle-role">{desk.employee.role}</div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* 空状态 */}
+          {desks.length === 0 && (
+            <div className="ent-home-empty">
+              <div className="ent-home-empty-icon">
+                <UsersRound size={48} />
+              </div>
+              <h3>还没有硅基员工</h3>
+              <p>联系管理员为你分配团队成员</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <section className="ent-home-composer" aria-label="开始会话">
+        <ChatArrange
+          employees={roster}
+          busy={workspace.busy}
+          employeeId={chatEmployeeId}
+          onEmployeeChange={setChatEmployeeId}
+          onStart={(employeeId, text) => {
+            void workspace.startConversation(employeeId, text, {
+              workDir: chatSettings.workDir,
+              modelId: chatSettings.modelId,
+              permissions: chatSettings.permissions,
+            });
+          }}
+          settings={chatSettings}
+          models={availableModels}
+          onSettingsChange={patch => setChatSettings(current => ({ ...current, ...patch }))}
+          onChooseFolder={workspace.chooseFolder}
+        />
+      </section>
+
+      {openEmployee ? (
+        <EmployeeWorksDrawer
+          employee={openEmployee}
+          works={openWorks}
+          onClose={() => setOpenId(null)}
+          onOpenWork={openWork}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+
+interface Desk {
+  employee: SiliconEmployee;
+  load: { done: number; total: number };
+  working: boolean;
+  /** 做完了等你查阅 / 等你拍板 / 中断了 —— 都只在状态旁边点一颗图标。 */
+  flags: DeskFlag[];
+}
+
+function startOfToday(now = new Date()): number {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+function formatDuration(days: number): string {
+  if (days < 1) return '不到1天';
+  if (days === 1) return '1天';
+  return `${Math.floor(days)}天`;
+}
+
+/**
+ * 一位员工今天的情形。
+ *
+ * 「工作中」的口径：他名下有一项工作正在跑。两个信号取并集 —— 平台报的状态，
+ * 和本地真的有一项与他有关的工作在跑。只看平台会漏掉状态没跟上的人，
+ * 只看当前负责人会漏掉在同一项流程里协作的人。和 useEnterpriseWorkspace 的
+ * busyIds 是同一套口径，两处改要一起改。
+ *
+ * 「等你拍板」和「中断了」不算在里面：那两种工作已经不在推进了，他现在确实能接新活。
+ *
+ * 图标按「先说结果，再说卡住」排：做完了等你查阅 → 等你拍板 → 中断了。
+ * 三件事同时有就点三颗，各自都有 title；具体是哪一项点开卡片看抽屉。
+ */
+function deskOf(
+  employee: SiliconEmployee,
+  works: WorkItem[],
+  unreviewed: ReadonlySet<string>,
+  dayStart: number,
+): Desk {
+  const mine = works.filter(work => involves(work, employee.id));
+  const today = mine.filter(work => work.createdAt >= dayStart);
+  const flags: DeskFlag[] = [];
+  if (mine.some(work => unreviewed.has(work.id))) flags.push('done');
+  if (mine.some(work => work.status === 'waiting-user')) flags.push('call');
+  if (mine.some(work => work.status === 'failed')) flags.push('stop');
+
+  return {
+    employee,
+    load: { done: today.filter(work => work.status === 'completed').length, total: today.length },
+    working: employee.availability === 'working' || mine.some(work => work.status === 'running'),
+    flags,
+  };
+}
+
+/** 这项工作和这位员工有关：他是当前负责人、参与者，或者某一步派给了他。 */
+function involves(work: WorkItem, employeeId: string): boolean {
+  return work.currentEmployeeId === employeeId
+    || work.participants.includes(employeeId)
+    || work.steps.some(step => step.employeeId === employeeId);
+}

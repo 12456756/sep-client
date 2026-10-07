@@ -1,7 +1,7 @@
 {
   "name": "longsilicon",
   "version": "0.1.2",
-  "description": "龙硅 — 龙道集团硅基员工平台客户端",
+  "description": "硅基员工平台客户端",
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
@@ -82,7 +82,7 @@
   },
   "build": {
     "appId": "cn.longdao.longsilicon",
-    "productName": "龙硅",
+    "productName": "硅基员工平台",
     "copyright": "Copyright © 2026 龙道集团",
     "directories": {
       "output": "dist"

@@ -245,48 +245,24 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   return (
     <main className="login-page">
-      <section className="login-brand-panel" aria-label="硅基员工平台产品介绍">
-        <div className="login-brand-glow login-brand-glow-primary" aria-hidden="true" />
-        <div className="login-brand-glow login-brand-glow-secondary" aria-hidden="true" />
+      <div className="login-background">
+        <div className="login-glow login-glow-1" aria-hidden="true" />
+        <div className="login-glow login-glow-2" aria-hidden="true" />
+        <div className="login-glow login-glow-3" aria-hidden="true" />
+      </div>
 
-        <div className="login-brand-content">
-          <div className="login-brand-mark">
-            <img src={logoImage} alt="硅基员工平台" />
+      <div className="login-container">
+        <div className="login-card">
+          <div className="login-card-header">
+            <div className="login-logo">
+              <img src={logoImage} alt="硅基员工平台" />
+            </div>
+            <h1 className="login-title">硅基员工平台</h1>
+            <p className="login-subtitle">数字员工 AI 工作台</p>
           </div>
-
-          <div className="login-brand-copy">
-            <p className="login-brand-name">硅基员工平台</p>
-            <h1>让每一位员工，<br /><em>都有一个 AI 同行者</em></h1>
-            <p className="login-brand-description">
-              数字员工平台，让团队把时间留给更有价值的创造。
-            </p>
-          </div>
-
-          <p className="login-brand-values" aria-label="产品特点">
-            <span>AI 驱动</span>
-            <i aria-hidden="true">·</i>
-            <span>智能协作</span>
-            <i aria-hidden="true">·</i>
-            <span>安全可信</span>
-          </p>
-        </div>
-      </section>
-
-      <section className="login-form-panel">
-        <div className="login-form-shell">
-          <div className="login-mobile-brand" aria-hidden="true">
-            <img src={logoImage} alt="" />
-            <span>硅基员工平台</span>
-          </div>
-
-          <header className="login-form-header">
-            <p className="login-form-eyebrow">欢迎回来</p>
-            <h2>登录硅基员工平台</h2>
-            <p>进入你的数字员工工作台</p>
-          </header>
 
           <form onSubmit={handleSubmit} className="login-form">
-            <div ref={accountPickerRef} className="login-field login-account-field">
+            <div ref={accountPickerRef} className="login-field">
               <div className="login-field-label-row">
                 <label htmlFor="login-email">邮箱</label>
                 <span>Work email</span>
@@ -454,7 +430,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
             <span>你的数据将通过安全连接传输</span>
           </footer>
         </div>
-      </section>
+      </div>
     </main>
   );
 };

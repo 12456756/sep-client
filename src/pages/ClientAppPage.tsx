@@ -21,7 +21,7 @@ import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shar
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
 import { EmployeesPage } from './enterprise/EmployeesPage';
-import { HomePage } from './enterprise/HomePage';
+import { HomePageRedesign as HomePage } from './enterprise/HomePageRedesign';
 import { SkillsPage } from './enterprise/SkillsPage';
 import { WorkDetailPage } from './enterprise/WorkDetailPage';
 import { WorkRecordsPage } from './enterprise/WorkRecordsPage';
@@ -61,10 +61,22 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   const [darkMode, setDarkMode] = useState(() => {
     try { return window.localStorage.getItem('sep.theme') === 'dark'; } catch { return false; }
   });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      const saved = window.localStorage.getItem('sep.sidebar.collapsed');
+      return saved === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     try { window.localStorage.setItem('sep.theme', darkMode ? 'dark' : 'light'); } catch { /* 无痕模式不阻断主题切换。 */ }
   }, [darkMode]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem('sep.sidebar.collapsed', sidebarCollapsed ? 'true' : 'false'); } catch { /* 无痕模式不阻断侧边栏状态保存。 */ }
+  }, [sidebarCollapsed]);
   useEffect(() => {
     void window.electronAPI.setWindowTheme(darkMode ? 'dark' : 'light');
   }, [darkMode]);
@@ -104,7 +116,7 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   }, [route, overview, workspace.employees]);
 
   return (
-    <div className={`ent-shell${darkMode ? ' dark' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
+    <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
@@ -114,6 +126,8 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
         canManage={canManage}
         userName={displayUserName}
         userAvatar={userAvatar}
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
         onNavigate={workspace.navigate}
         onOpenSettings={() => setSettingsOpen(true)}
         onLogout={() => { void onLogout(); }}

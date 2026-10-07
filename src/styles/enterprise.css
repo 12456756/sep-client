@@ -11,23 +11,23 @@
 
 :root {
   /*
-   * 主色龙硅红。#d94b52 是设计稿的 Primary，做实心块、进度和图形；
-   * 13px 及更小的正文一律用 --ent-brand-ink（#b63f47，浅红底 4.5:1），
-   * 不用 --ent-brand 写小字 —— 它对白底只有 4.0:1。
+   * 主色系统 - 与登录页保持一致的温暖橙红色
+   * 登录页主色 #cc5d40 / #b93636，这里沿用相同色系
    */
-  --ent-brand: #d94b52;
-  --ent-brand-solid: #d94b52; --ent-brand-deep: #b9363f;
-  --ent-brand-hover: #b9363f;
+  --ent-brand: #cc5d40;
+  --ent-brand-solid: #cc5d40;
+  --ent-brand-deep: #b93636;
+  --ent-brand-hover: #b93636;
   --ent-brand-ink: #b63f47;
   /* 浅红三档：soft 是状态标签和气泡底，tint 是图标片底，softer 是 hover 底。 */
-  --ent-brand-soft: #fff0f1;
-  --ent-brand-tint: #fff5f5;
-  --ent-brand-softer: #fffafa;
-  --ent-brand-border: #f3c7cb;
+  --ent-brand-soft: #fef6f0;
+  --ent-brand-tint: #fdeee4;
+  --ent-brand-softer: #fffaf7;
+  --ent-brand-border: #f3d4c7;
   /* 第二支强调色只用在「我拥有的员工」那格的图标片上（设计稿里它比第一格偏红一档）。 */
-  --ent-accent: #c25a63;
-  --ent-accent-soft: #fff0f1;
-  --ent-accent-ink: #a83d47;
+  --ent-accent: #d66648;
+  --ent-accent-soft: #fef6f0;
+  --ent-accent-ink: #b93636;
 
   /* 最重的墨色。设计稿里没有深色面板，这一支只当文字与图标色用。 */
   --ent-dark: #202126;
@@ -36,49 +36,47 @@
   --ent-dark-ink: #f6f7fb;
   --ent-dark-ink-2: #a9aec4;
 
-  /* 两层底：canvas 是页面底色，panel 是卡片。 */
-  --ent-canvas: #f7f8fc;
-  --ent-shell: #f7f8fc;
+  /* 温暖的米色底色系统 - 与登录页保持一致 */
+  --ent-canvas: #f5efe7;
+  --ent-shell: #f5efe7;
   --ent-panel: #ffffff;
-  --ent-panel-subtle: #f9fafd;
+  --ent-panel-subtle: #fdfbf7;
 
-  /* 分隔线三档。soft 是导航和内容之间那条几乎看不见的线，默认档是卡片描边。 */
-  --ent-line-soft: #eef0f5;
-  --ent-line: #e8eaf1;
-  --ent-line-strong: #d9dde8;
-  /* 进度条与圆环的底槽。设计稿里它比描边再浅一点点。 */
-  --ent-track: #eef0f5;
+  /* 分隔线三档 - 调整为温暖色调 */
+  --ent-line-soft: #f0ebe2;
+  --ent-line: #e8e0d5;
+  --ent-line-strong: #d9cbb8;
+  /* 进度条与圆环的底槽 */
+  --ent-track: #f0ebe2;
 
-  --ent-ink: #20232b;
-  --ent-ink-2: #555b6e;
-  --ent-ink-3: #858a98;
+  /* 文字颜色 - 使用深棕色系 */
+  --ent-ink: #2b1f13;
+  --ent-ink-2: #5c5553;
+  --ent-ink-3: #7a6a5a;
 
   /*
    * 语义色。空闲与已完成走绿，工作中与进行中走主色（设计稿如此），
    * 等你确认走琥珀，中断走绛红 —— 后两者都比主色暗，不会和主色抢。
-   *
-   * 绿有两支：--ent-ready-solid 是设计稿的 #25a36a，只画图标、圆点、圆环这类图形
-   * （对白底 3.4:1，图形够用）；--ent-ready 深一档，专门给浅绿底上的小字用 ——
-   * 设计稿标注的 #2fa66a 配 #eaf8f0 只有 2.9:1，11px 的字读不出来。
    */
   --ent-ready: #1a7f52;
   --ent-ready-solid: #25a36a;
   --ent-ready-bg: #eaf8f0;
   --ent-ready-line: #cdeddd;
   --ent-busy: #b63f47;
-  --ent-busy-bg: #fff0f1;
+  --ent-busy-bg: #fef6f0;
   --ent-attention: #8a6410;
   --ent-attention-bg: #fdf3da;
   --ent-attention-line: #eedcae;
   --ent-danger: #bf3149;
   --ent-danger-bg: #fdeaee;
   --ent-danger-line: #f2c6cf;
-  --ent-muted: #646b7f;
-  --ent-muted-bg: #eef0f5;
+  --ent-muted: #7a6a5a;
+  --ent-muted-bg: #f0ebe2;
 
   /** 内容区顶部让给窗口按钮的那条。titleBarOverlay 在 main.ts 里固定 44 高。 */
   --ent-drag-h: var(--window-chrome-height);
   --ent-side-w: 232px;
+  --ent-side-w-collapsed: 64px;
   --ent-shell-gap: 12px;
   /**
    * 员工墙两侧渐隐带的宽度，同时也是首页内容的左右内边距 ——
@@ -111,17 +109,36 @@
   --ent-fs-display: 25px;
   --ent-fs-figure: 23px;
 
-  /* 阴影：冷色、大扩散、很淡。设计稿的卡只用阴影产生层级，不做装饰。 */
-  --ent-shadow: 0 2px 10px rgb(40 50 90 / 3%);
-  --ent-shadow-card: 0 1px 2px rgb(40 50 90 / 3%), 0 2px 10px rgb(40 50 90 / 4%);
-  --ent-shadow-lift: 0 2px 6px rgb(40 50 90 / 5%), 0 6px 18px rgb(40 50 90 / 8%);
-  --ent-shadow-drawer: -10px 0 30px rgb(30 40 80 / 8%);
+  /* 阴影：温暖色调、柔和扩散 */
+  --ent-shadow: 0 2px 10px rgba(43, 31, 19, 0.04);
+  --ent-shadow-card: 0 1px 2px rgba(43, 31, 19, 0.04), 0 2px 10px rgba(43, 31, 19, 0.05);
+  --ent-shadow-lift: 0 2px 6px rgba(43, 31, 19, 0.06), 0 6px 18px rgba(43, 31, 19, 0.08);
+  --ent-shadow-drawer: -10px 0 30px rgba(43, 31, 19, 0.08);
 
-  /* 光晕：只做背景装饰，永远不承载信息，关掉也不影响可读性。 */
-  --ent-glow-warm: linear-gradient(180deg, rgb(217 75 82 / 5%), rgb(255 255 255 / 0%) 70%);
-  --ent-glow-edge: radial-gradient(90% 140% at 100% 0%, rgb(217 75 82 / 7%) 0%, rgb(255 255 255 / 0%) 65%);
-  --ent-glow-ring: 0 0 0 3px rgb(217 75 82 / 18%);
+  /* 光晕：温暖橙红色系 */
+  --ent-glow-warm: linear-gradient(180deg, rgba(204, 93, 64, 0.04), rgba(255, 255, 255, 0) 70%);
+  --ent-glow-edge: radial-gradient(90% 140% at 100% 0%, rgba(204, 93, 64, 0.05) 0%, rgba(255, 255, 255, 0) 65%);
+  --ent-glow-ring: 0 0 0 3px rgba(204, 93, 64, 0.15);
   --ent-ease: 170ms cubic-bezier(.22, 1, .36, 1);
+
+  /* 间距系统 */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  --spacing-2xl: 48px;
+
+  /* 断点系统 */
+  --breakpoint-sm: 1280px;
+  --breakpoint-md: 1440px;
+  --breakpoint-lg: 1920px;
+  --breakpoint-xl: 2560px;
+
+  /* 动画时长 */
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
 }
 
 /* 深色主题只覆盖语义令牌，页面组件不需要分别维护两套颜色。 */
@@ -168,7 +185,49 @@
  */
 .ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: var(--ent-canvas); }
 .ent-shell-main { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
-.ent-scroll { min-height: 0; flex: 1; overflow-y: auto; overflow-x: hidden; }
+
+/* 内容区域滚动容器 - 添加最大宽度约束 */
+.ent-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  max-width: 1600px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+/* 首页需要更宽的空间展示员工墙 */
+.ent-scroll-home {
+  max-width: 1800px;
+}
+
+/* 不需要约束的页面（全宽展示）*/
+.ent-scroll-no-overflow {
+  max-width: none;
+}
+
+/* 安排工作页面保持原有布局 */
+.ent-scroll-arrange {
+  max-width: none;
+}
+
+/* 详情页使用较窄的阅读宽度 */
+.ent-scroll-detail {
+  max-width: 1200px;
+}
+
+/* 超宽屏优化 */
+@media (min-width: 2560px) {
+  .ent-scroll {
+    max-width: 1800px;
+  }
+
+  .ent-scroll-home {
+    max-width: 2000px;
+  }
+}
+
 .ent-page { width: min(1180px, 100%); margin: 0 auto; padding: 22px 28px 32px; }
 .ent-page.wide { width: 100%; max-width: none; }
 
@@ -181,24 +240,169 @@
 
 /* ── 左侧导航 ────────────────────────────────────────────────────────── */
 
-.ent-side { display: flex; width: var(--ent-side-w); flex: 0 0 var(--ent-side-w); flex-direction: column; min-height: 0; padding: 0 14px 12px; background: var(--ent-panel); box-shadow: inset -1px 0 0 var(--ent-line-soft); }
-.ent-side-brand { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-width: 0; height: 60px; padding: 0 4px; }
-.ent-side-brand strong { overflow: hidden; font-size: 16px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.ent-side-items { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 4px; padding-top: 14px; overflow-y: auto; scrollbar-width: none; }
-.ent-side-items::-webkit-scrollbar { display: none; }
+.ent-side {
+  position: relative;
+  display: flex;
+  width: var(--ent-side-w);
+  flex: 0 0 var(--ent-side-w);
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 14px 12px;
+  background: var(--ent-panel);
+  box-shadow: inset -1px 0 0 var(--ent-line-soft);
+  transition: width var(--duration-normal) var(--ent-ease);
+}
+
+.ent-side.collapsed {
+  width: var(--ent-side-w-collapsed);
+  flex: 0 0 var(--ent-side-w-collapsed);
+  padding: 0 8px 12px;
+}
+
+/* 折叠切换按钮 */
+.ent-side-toggle {
+  position: absolute;
+  top: 72px;
+  right: -12px;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--ent-line);
+  border-radius: 50%;
+  background: var(--ent-panel);
+  color: var(--ent-ink-2);
+  cursor: pointer;
+  box-shadow: var(--ent-shadow);
+  transition: all var(--duration-fast) var(--ent-ease);
+}
+
+.ent-side-toggle:hover {
+  background: var(--ent-brand-tint);
+  color: var(--ent-brand);
+  border-color: var(--ent-brand-border);
+  box-shadow: var(--ent-shadow-lift);
+}
+
+.ent-side.collapsed .ent-side-toggle {
+  right: -12px;
+}
+
+.ent-side-brand {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 60px;
+  padding: 0 4px;
+  transition: gap var(--duration-normal) var(--ent-ease);
+}
+
+.ent-side.collapsed .ent-side-brand {
+  justify-content: center;
+  gap: 0;
+}
+
+.ent-side-brand strong {
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity var(--duration-fast) var(--ent-ease);
+}
+
+.ent-side.collapsed .ent-side-brand strong {
+  opacity: 0;
+  width: 0;
+}
+
+.ent-side-items {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 14px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.ent-side-items::-webkit-scrollbar {
+  display: none;
+}
 
 /*
  * 菜单项按设计稿是一颗药丸：平时透明底 + 中灰字，选中整颗填实主色、字反白。
  * hover 只给一层最浅的红，不预演选中态 —— 否则扫一眼分不出哪个才是当前页。
  */
-.ent-nav-item { position: relative; display: flex; flex: 0 0 auto; align-items: center; gap: 10px; min-height: 34px; padding: 0 14px; border: 0; border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: transparent; font-size: var(--ent-fs-body); text-align: left; cursor: pointer; transition: background var(--ent-ease), color var(--ent-ease); }
-.ent-nav-item > svg { flex: 0 0 auto; color: #969bab; transition: color var(--ent-ease); }
-.ent-nav-item > span { overflow: hidden; min-width: 0; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
-.ent-nav-item:hover { color: var(--ent-ink); background: var(--ent-brand-tint); }
-.ent-nav-item:hover > svg { color: var(--ent-brand-ink); }
-.ent-nav-item.active { color: #fff; background: var(--ent-brand-solid); font-weight: 500; }
-.ent-nav-item.active > svg { color: #fff; }
-.ent-nav-item.active:hover { background: var(--ent-brand-hover); }
+.ent-nav-item {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: var(--ent-radius-pill);
+  color: var(--ent-ink-2);
+  background: transparent;
+  font-size: var(--ent-fs-body);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--ent-ease), color var(--ent-ease);
+}
+
+.ent-side.collapsed .ent-nav-item {
+  justify-content: center;
+  padding: 0 10px;
+}
+
+.ent-nav-item > svg {
+  flex: 0 0 auto;
+  color: #969bab;
+  transition: color var(--ent-ease);
+}
+
+.ent-nav-item > span {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity var(--duration-fast) var(--ent-ease);
+}
+
+.ent-side.collapsed .ent-nav-item > span {
+  opacity: 0;
+  width: 0;
+}
+
+.ent-nav-item:hover {
+  color: var(--ent-ink);
+  background: var(--ent-brand-tint);
+}
+
+.ent-nav-item:hover > svg {
+  color: var(--ent-brand-ink);
+}
+
+.ent-nav-item.active {
+  color: #fff;
+  background: var(--ent-brand-solid);
+  font-weight: 500;
+}
+
+.ent-nav-item.active > svg {
+  color: #fff;
+}
+
+.ent-nav-item.active:hover {
+  background: var(--ent-brand-hover);
+}
 .ent-nav-count { flex: 0 0 auto; padding: 1px 7px; border-radius: 999px; background: var(--ent-danger-bg); color: var(--ent-danger); font-size: var(--ent-fs-note); font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums; }
 .ent-nav-item.active .ent-nav-count { background: rgb(255 255 255 / 24%); color: #fff; }
 .ent-nav-group { margin: 16px 14px 2px; color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
