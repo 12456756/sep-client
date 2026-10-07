@@ -34,13 +34,12 @@ import type { SiliconEmployee } from "../../features/enterprise/types";
 const UNASSIGNED_DEPARTMENT_ID = "__unassigned__";
 
 /**
- * 部门图标：按部门名称里的关键词匹配。
+ * 部门图标：按部门名称里的关键词匹配形状。
  * 组织架构里有几十个部门，靠关键词命中比在数据层新增字段更稳——
  * 平台不会为「研发组」单独给出一个图标 ID，但名称里一定带「研发」。
  *
- * 这里刻意不给每个部门配颜色。身份由「图标形状 + 部门名」表达就够了，
- * 颜色留给状态（选中 / 有可用硅基员工），一个通道只表达一件事，
- * 否则「选中了」和「这是个蓝色的部门」会互相干扰。
+ * 形状和颜色是两套独立的编码：形状表达「这是什么职能」，颜色表达
+ * 「这是哪个部门」。两套并存，任一通道失效（灰度打印、色盲）都还读得出来。
  */
 const DEPARTMENT_ICONS: readonly {
   keywords: readonly string[];
@@ -63,6 +62,62 @@ function departmentIcon(name: string): LucideIcon {
     }
   }
   return Building2;
+}
+
+/**
+ * 一级部门的识别色。
+ *
+ * 刻意不含品牌红：红只用于「选中 / 悬停 / 有可用硅基员工」这几种状态。
+ * 如果某个部门本身是红的，「这个部门是红的」和「这个部门被选中了」
+ * 就会互相干扰 —— 一个通道只能表达一件事。
+ *
+ * 也不含灰阶：留给下级部门，让「彩色 = 一级」「灰 = 下级」成为稳定的层级信号。
+ */
+const DEPARTMENT_HUES = [
+  "#3b82f6", // 蓝
+  "#14b8a6", // 青绿
+  "#8b5cf6", // 紫
+  "#f59e0b", // 琥珀
+  "#ec4899", // 玫红
+  "#10b981", // 绿
+  "#f97316", // 橙
+] as const;
+
+/**
+ * 按 id 取色，而不是按名称或列表下标。
+ * 下标会随排序变化导致同一个部门换色；名称会因改名而换色。
+ * id 稳定，所以颜色也稳定 —— 用户能靠颜色记住「蓝的是技术部」。
+ */
+function departmentHue(id: string): string {
+  let hash = 0;
+  for (let index = 0; index < id.length; index += 1) {
+    hash = (hash * 31 + id.charCodeAt(index)) >>> 0;
+  }
+  return DEPARTMENT_HUES[hash % DEPARTMENT_HUES.length];
+}
+
+/**
+ * 为一批部门分配互不相同的识别色。
+ *
+ * 纯哈希会撞色（7 个色相配 6 个部门，按生日悖论约一半概率重复），
+ * 相邻部门同色看起来像缺陷。这里以哈希值为起点顺序探测，
+ * 既保留「同一个部门颜色稳定」，又保证同屏可见的部门两两不同。
+ */
+function assignDepartmentHues(ids: readonly string[]): Map<string, string> {
+  const taken = new Set<string>();
+  const result = new Map<string, string>();
+  for (const id of ids) {
+    const start = DEPARTMENT_HUES.indexOf(departmentHue(id) as typeof DEPARTMENT_HUES[number]);
+    for (let step = 0; step < DEPARTMENT_HUES.length; step += 1) {
+      const candidate = DEPARTMENT_HUES[(start + step) % DEPARTMENT_HUES.length];
+      if (!taken.has(candidate)) {
+        taken.add(candidate);
+        result.set(id, candidate);
+        break;
+      }
+    }
+  }
+  return result;
 }
 
 type OrganizationStatus = "loading" | "ready" | "empty" | "error";
@@ -176,6 +231,13 @@ function OrganizationTreeView({
     }
     return groups;
   }, [visibleOrganization]);
+
+  // 一级部门的识别色：同屏内两两不同，且随部门 id 稳定。
+  const departmentHues = useMemo(
+    () => assignDepartmentHues(departmentGroups.map((group) => group.member.id)),
+    [departmentGroups],
+  );
+
   const defaultDepartmentId = useMemo(() => {
     const currentDepartment = visibleOrganization.departments.find((group) =>
       group.members.some((member) => member.isCurrent),
@@ -377,6 +439,7 @@ function OrganizationTreeView({
                   <DepartmentBranch
                     key={department.member.id}
                     department={department}
+                    departmentHues={departmentHues}
                     selectedDepartmentId={selectedDepartmentId}
                     selectedMemberId={activeMemberId}
                     siliconEmployees={workspace.employees}
@@ -440,6 +503,7 @@ function OrganizationTreeView({
 
 function DepartmentBranch({
   department,
+  departmentHues,
   selectedDepartmentId,
   selectedMemberId,
   siliconEmployees,
@@ -454,6 +518,8 @@ function DepartmentBranch({
   onOpenEmployee,
 }: {
   department: OrganizationRelationDepartment;
+  /** 一级部门的识别色分配表，递归传递，下钻层级后颜色保持一致。 */
+  departmentHues: ReadonlyMap<string, string>;
   selectedDepartmentId: string | null;
   selectedMemberId: string | null;
   siliconEmployees: readonly SiliconEmployee[];
@@ -470,17 +536,20 @@ function DepartmentBranch({
   const selected = selectedDepartmentId === department.member.id;
   const hasChildren = department.children.length > 0;
   const hasContent = department.members.length > 0 || hasChildren;
-  // 图标形状区分部门类型；颜色不参与身份表达。
+  // 形状表达职能，颜色表达部门身份（仅一级部门着色，下级部门留中性灰）。
   const visual = departmentIcon(department.member.name);
   const DepartmentIcon = department.member.id === UNASSIGNED_DEPARTMENT_ID ? Users : visual;
+  const isTopLevel = !department.parentDepartmentId;
+  const hue = isTopLevel ? departmentHues.get(department.member.id) : undefined;
   const memberFaces = department.members.slice(0, 4);
 
   return (
     <section
-      className={`org-tree-branch${selected ? " selected" : ""}${department.parentDepartmentId ? " nested" : ""}`}
+      className={`org-tree-branch${selected ? " selected" : ""}${isTopLevel ? "" : " nested"}`}
       aria-label={`${department.member.name}组织分支`}
       data-department-id={department.member.id}
       data-parent-department-id={department.parentDepartmentId ?? undefined}
+      style={hue ? ({ "--dept-hue": hue } as React.CSSProperties) : undefined}
     >
       <div className="org-tree-branch-grid">
         <div className="org-tree-department-slot">
@@ -558,6 +627,7 @@ function DepartmentBranch({
                     <DepartmentBranch
                       key={child.member.id}
                       department={child}
+                      departmentHues={departmentHues}
                       selectedDepartmentId={selectedDepartmentId}
                       selectedMemberId={selectedMemberId}
                       siliconEmployees={siliconEmployees}

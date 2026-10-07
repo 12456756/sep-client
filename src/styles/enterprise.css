@@ -2757,9 +2757,11 @@
  *    竖线两端就会伸出第一个/最后一个部门之外，看上去像多余的线头。
  *    这里改成每个一级分支自绘「上半段 + 下半段」，首尾分支各裁掉一半，
  *    于是整条树干的范围严格等于部门列表的范围。
- * 2. 部门：按部门名称匹配图标（形状区分类型，不用颜色），并叠放成员头像、
- *    标注可用硅基员工数。全屏只有品牌红一种强调色，只表达状态：
- *    选中 / 悬停 / 有可用硅基员工。身份交给图标形状和部门名。
+ * 2. 部门：形状与颜色两套编码并行 —— 图标形状表达「什么职能」，
+ *    颜色表达「哪个部门」。颜色只给一级部门（一屏约 5 种，是舒适范围），
+ *    下级部门留中性灰，于是「彩色 = 一级、灰 = 下级」成为稳定的层级信号。
+ * 3. 品牌红是保留状态色，任何部门都不会拿到它，避免
+ *    「这个部门是红的」和「这个部门被选中」互相干扰。
  */
 
 /* —— 连线：按分支分段绘制，范围贴合内容 —— */
@@ -2771,14 +2773,17 @@
   padding-left: 22px;
 }
 
-/* 每个分支的横线：从树干连到部门卡片 */
+/* 每个分支的横线：从树干连到部门卡片。
+ * 取该部门的识别色，于是「树干分叉出彩色横线」这件事本身构成了组织架构的色彩，
+ * 不需要任何大色块。未着色的下级分支回落到中性连接色。 */
 .org-tree-track > .org-tree-branch::before {
   position: absolute;
   top: 50%;
   left: 0;
   width: 22px;
   height: 1px;
-  background: var(--org-tree-connector);
+  background: var(--dept-hue, var(--org-tree-connector));
+  opacity: .65;
   content: '';
 }
 
@@ -2824,15 +2829,15 @@
 
 /* —— 部门节点：图标配色 —— */
 
-/* 图标默认中性：身份由形状表达，不占用颜色通道。 */
+/* 一级部门图标取识别色；未着色的下级部门回落中性灰。 */
 .org-tree-department-node .org-tree-node-icon {
-  color: var(--ent-ink-2);
-  background: var(--ent-panel-subtle);
-  box-shadow: inset 0 0 0 1px var(--ent-line);
+  color: var(--dept-hue, var(--ent-ink-2));
+  background: color-mix(in srgb, var(--dept-hue, var(--ent-line)) 10%, var(--ent-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dept-hue, var(--ent-line)) 26%, transparent);
   transition: color var(--ent-ease), background var(--ent-ease), box-shadow var(--ent-ease);
 }
 
-/* 颜色只留给状态：选中或悬停时才染品牌色。 */
+/* 选中/悬停统一染品牌红：红只表达状态，所以和部门色永远不冲突。 */
 .org-tree-department-node:hover .org-tree-node-icon,
 .org-tree-department-node.selected .org-tree-node-icon {
   color: #fff;
@@ -2852,7 +2857,7 @@
   left: 0;
   width: 3px;
   border-radius: 0 3px 3px 0;
-  background: var(--ent-brand);
+  background: var(--dept-hue, var(--ent-brand));
   opacity: 0;
   content: '';
   transition: opacity var(--ent-ease);
@@ -2861,8 +2866,10 @@
 .org-tree-department-node.selected::before { opacity: 1; }
 
 /* 下级部门（嵌套分支）用更轻的图标底，避免和一级部门抢 */
-/* 下级部门更轻：无边框底，靠层级缩进和字号退让。 */
+/* 下级部门保持中性：既不上色，也不继承父级色相。
+ * 「彩色 = 一级、灰 = 下级」是稳定的层级信号，混色会破坏它。 */
 .org-tree-branch.nested .org-tree-department-node .org-tree-node-icon {
+  color: var(--ent-ink-3);
   background: transparent;
   box-shadow: none;
 }
@@ -2901,8 +2908,8 @@
 
 /* —— 部门节点：可用硅基员工数 —— */
 
-/* 全屏唯一持续有色的元素：把视线引到「这个部门有几个 AI 同事」。
- * 部门没有可用硅基员工时整个徽标不渲染，所以有色 = 有 AI。 */
+/* 徽标取部门色，和该行的图标、连线、色条同色，读起来是「同一件事」。
+ * 部门没有可用硅基员工时整个徽标不渲染，所以有色徽标 = 有 AI 同事。 */
 .org-tree-dept-silicon {
   display: inline-flex;
   flex: 0 0 auto;
@@ -2910,15 +2917,16 @@
   gap: 3px;
   padding: 2px 7px;
   border-radius: var(--ent-radius-pill);
-  color: var(--ent-brand-ink);
-  background: var(--ent-brand-soft);
-  box-shadow: inset 0 0 0 1px var(--ent-brand-border);
+  color: var(--dept-hue, var(--ent-brand-ink));
+  background: color-mix(in srgb, var(--dept-hue, var(--ent-brand)) 10%, var(--ent-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dept-hue, var(--ent-brand)) 26%, transparent);
   font-size: 10px;
   font-weight: 650;
   font-variant-numeric: tabular-nums;
   transition: background var(--ent-ease), color var(--ent-ease);
 }
 
+/* 悬停时统一品牌红，和图标保持一致的状态语义 */
 .org-tree-department-node:hover .org-tree-dept-silicon {
   color: #fff;
   background: var(--ent-brand);
@@ -2958,6 +2966,17 @@
 }
 .org-tree-subbranches::before {
   background: var(--org-tree-connector);
+}
+
+/* 深色主题下部门色需要更高的混入比例：
+ * 10% 的色相混进深色底几乎不可见，26% 才能读出「这是哪个部门」。 */
+.ent-shell.dark .org-tree-department-node .org-tree-node-icon {
+  background: color-mix(in srgb, var(--dept-hue, var(--ent-line)) 26%, var(--ent-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dept-hue, var(--ent-line)) 42%, transparent);
+}
+.ent-shell.dark .org-tree-dept-silicon {
+  background: color-mix(in srgb, var(--dept-hue, var(--ent-brand)) 26%, var(--ent-panel));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--dept-hue, var(--ent-brand)) 42%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
