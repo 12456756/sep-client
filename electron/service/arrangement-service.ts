@@ -7,8 +7,8 @@ import type { TaskManager } from '../runtime/task-manager'
 import type { TaskExecutionPort } from './task-service'
 import { TaskStatus } from '../../src/shared/types'
 import { AppError } from '../errors/app-error'
-import { logger } from '../common/logger'
-import { describeError } from '../common/redact'
+import { logger, type LogFields } from '../common/logger'
+import { planningErrorFields, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
 import {
   effectivePermissionPolicy,
   preflightSubscription,
@@ -156,8 +156,9 @@ export class ArrangementService {
     void this.runPlanning(planningId, draftId, expectedRevision + 1, controller, modelId).catch(error => {
       log.error('background planning failed', {
         planningId,
+        runId: planningId,
         draftId,
-        cause: describeError(error),
+        ...planningErrorFields(error),
       })
     })
     return { draftId, planningId, status: 'planning' }
@@ -218,35 +219,61 @@ export class ArrangementService {
   private readonly planningControllers = new Map<string, AbortController>()
 
   private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController, modelId?: string): Promise<void> {
+    const context: LogFields = { planningId, runId: planningId, draftId, draftRevision: planningRevision, modelId, completedNodeCount: 0, unresolvedStepCount: 0 }
+    let diagnosticContext: PlanningDiagnosticContext = { round: 1, employeeScope: 'authorized' }
+    let phase: PlanningPhase = 'initialization'
+    let phaseStartedAt = Date.now()
+    const nextPhase = (next: PlanningPhase, nextContext = diagnosticContext): void => {
+      log.info('planning phase completed', { ...context, ...diagnosticContext, phase, elapsedMs: Date.now() - phaseStartedAt })
+      phase = next
+      diagnosticContext = nextContext
+      phaseStartedAt = Date.now()
+      log.info('planning phase started', { ...context, ...diagnosticContext, phase })
+    }
+    log.info('planning phase started', { ...context, ...diagnosticContext, phase })
     try {
       const current = await this.getDraft(draftId)
-      const authorized = await this.loadAuthorizedPlannerEmployees()
+      context.completedNodeCount = current.nodes.length
+      context.unresolvedStepCount = current.unresolvedSteps?.length ?? 0
+      nextPhase('employee-loading')
+      const authorized = await this.loadAuthorizedPlannerEmployees({ ...context, ...diagnosticContext })
+      context.employeeCount = authorized.length
       let planningDraft = current
       let employees: ArrangementPlannerEmployee[] = authorized
       const plannerEmployees: ArrangementPlannerEmployee[] = authorized
+      nextPhase('round-1')
       let result = await this.deps.planner!.plan({
         planningId, draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
         modelId, plannerModelId: modelId,
+        diagnosticContext,
         onProgress: event => this.emitPlanning(event),
       })
       const intentAnalysis = result.intentAnalysis ?? current.intentAnalysis ?? undefined
       let unresolvedSteps = result.unresolvedSteps ?? []
       let candidateMatches = result.candidateMatches ?? []
       let executableNodes = mergeExecutableNodes([], result.nodes)
+      context.completedNodeCount = executableNodes.length
+      context.unresolvedStepCount = unresolvedSteps.length
       let enterpriseCandidates: ArrangementPlannerEmployee[] = []
 
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
+        nextPhase('employee-loading', { round: 2, employeeScope: 'enterprise' })
         enterpriseCandidates = await this.deps.candidateEmployees.listEnterprise()
+        context.employeeCount = enterpriseCandidates.length
         if (enterpriseCandidates.length) {
           planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
           employees = enterpriseCandidates
+          nextPhase('round-2')
           result = await this.deps.planner!.plan({
             planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
             modelId, plannerModelId: modelId,
+            diagnosticContext,
             onProgress: event => this.emitPlanning(event),
           })
           executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
           unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
+          context.completedNodeCount = executableNodes.length
+          context.unresolvedStepCount = unresolvedSteps.length
           const enterpriseMatches = matchCandidateEmployees(unresolvedSteps, enterpriseCandidates)
           candidateMatches = mergeCandidateMatches(
             mergeCandidateMatches(candidateMatches, result.candidateMatches ?? []),
@@ -258,20 +285,26 @@ export class ArrangementService {
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
         const steps = unresolvedSteps.filter(step => !enterpriseCandidates.some(employee => coversStep(step, employee)))
         if (steps.length) {
+          nextPhase('employee-loading', { round: 3, employeeScope: 'platform' })
           const platform = await this.deps.candidateEmployees.listPlatform({
             keywords: extractPlanningKeywords(steps),
             capabilityIds: extractCapabilityIds(steps),
           })
+          context.employeeCount = platform.length
           if (platform.length) {
             planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
             employees = platform
+            nextPhase('round-3')
             result = await this.deps.planner!.plan({
               planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
               modelId, plannerModelId: modelId,
+              diagnosticContext,
               onProgress: event => this.emitPlanning(event),
             })
             executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
             unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
+            context.completedNodeCount = executableNodes.length
+            context.unresolvedStepCount = unresolvedSteps.length
             candidateMatches = mergeCandidateMatches(
               mergeCandidateMatches(candidateMatches, result.candidateMatches ?? []),
               matchCandidateEmployees(unresolvedSteps, platform),
@@ -280,8 +313,12 @@ export class ArrangementService {
         }
       }
       if (controller.signal.aborted) throw new PlanningCancelledError()
+      nextPhase('finalization')
       const latest = await this.deps.drafts.get(requireScope(this.deps.scope), draftId)
-      if (!latest || latest.revision !== planningRevision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') return
+      if (!latest || latest.revision !== planningRevision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') {
+        log.info('planning result discarded', { ...context, ...diagnosticContext, phase, reason: 'draft-no-longer-current' })
+        return
+      }
       const updated = await this.deps.drafts.update(requireScope(this.deps.scope), draftId, planningRevision, {
         ...latest,
         title: result.title,
@@ -292,19 +329,21 @@ export class ArrangementService {
         status: unresolvedSteps.length ? 'awaiting-employee' : 'ready',
         lastPlanning: { planningId, status: 'ready', message: null },
       })
+      log.info('planning completed', { ...context, ...diagnosticContext, phase, status: updated.status, elapsedMs: Date.now() - phaseStartedAt })
       this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_completed', occurredAt: Date.now(), data: { title: updated.title } })
     } catch (error) {
       if (error instanceof PlanningCancelledError || controller.signal.aborted) {
+        log.info('planning cancelled', { ...context, ...diagnosticContext, phase })
         await this.finishCancelled(planningId, draftId, planningRevision)
       } else {
-        await this.finishFailed(planningId, draftId, planningRevision, error)
+        await this.finishFailed(planningId, draftId, planningRevision, error, { ...context, ...diagnosticContext, phase })
       }
     } finally {
       this.planningControllers.delete(planningId)
     }
   }
 
-  private async loadAuthorizedPlannerEmployees(): Promise<ArrangementPlannerEmployee[]> {
+  private async loadAuthorizedPlannerEmployees(context: LogFields): Promise<ArrangementPlannerEmployee[]> {
     const employees = await this.deps.employees.list()
     return Promise.all(employees.map(async employee => {
       let capabilities: ArrangementPlannerEmployee['capabilities'] = []
@@ -313,8 +352,9 @@ export class ArrangementService {
           capabilities = await this.deps.employeeCapabilities.list(employee.employeeId)
         } catch (error) {
           log.warn('employee capability summary unavailable during planning', {
+            ...context,
             employeeId: employee.employeeId,
-            errorType: describeError(error).slice(0, 120),
+            ...planningErrorFields(error),
           })
         }
       }
@@ -346,7 +386,9 @@ export class ArrangementService {
     this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_cancelled', occurredAt: Date.now(), data: {} })
   }
 
-  private async finishFailed(planningId: string, draftId: string, revision: number, error: unknown): Promise<void> {
+  private async finishFailed(planningId: string, draftId: string, revision: number, error: unknown, context: LogFields): Promise<void> {
+    const fields = planningErrorFields(error)
+    log.error('planning failed', { ...context, ...fields, phase: fields.phase ?? context.phase })
     // The planner can fail after authentication cleanup has already removed the scope.
     // Treat that cleanup race as terminal rather than throwing a second auth error.
     const scope = this.deps.scope.currentScope()

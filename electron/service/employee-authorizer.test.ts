@@ -110,6 +110,30 @@ describe('C10 — 身份变化丢弃平台目录缓存', () => {
     assert.equal(skills.prepared(), 1)
   })
 
+  it('prepares skills using the selected employee identity and subscription', async () => {
+    const selectedEmployees = [
+      { ...subscription('sub-a'), employeeId: 'employee-a' },
+      { ...subscription('sub-b'), employeeId: 'employee-b' },
+    ]
+    const directory = new EmployeeDirectory(async () => selectedEmployees)
+    const requests: Array<Parameters<SkillProvisioner['prepare']>[0]> = []
+    const skills: SkillProvisioner = {
+      async prepare(input) {
+        requests.push(input)
+        return { skillPaths: [`/skills/${input.subscriptionId}/${input.employeeId}`] }
+      },
+      invalidate() {},
+    }
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY)
+
+    assert.deepEqual((await authorizer.authorize('sub-a'))?.additionalSkillPaths, ['/skills/sub-a/employee-a'])
+    assert.deepEqual((await authorizer.authorize('sub-b'))?.additionalSkillPaths, ['/skills/sub-b/employee-b'])
+    assert.deepEqual(requests.map(request => ({ subscriptionId: request.subscriptionId, employeeId: request.employeeId })), [
+      { subscriptionId: 'sub-a', employeeId: 'employee-a' },
+      { subscriptionId: 'sub-b', employeeId: 'employee-b' },
+    ])
+  })
+
   it('returns null without preparing skills when the subscription is unknown', async () => {
     const directory = new EmployeeDirectory(async () => [subscription('sub-a')])
     const skills = fakeSkills()

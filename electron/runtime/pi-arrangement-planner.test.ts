@@ -7,6 +7,7 @@ import * as assert from 'node:assert/strict'
 import type { ArrangementDraft } from '../domain/arrangement-plan'
 import type { ArrangementPlannerEmployee, ArrangementPlanningProgress } from '../domain/arrangement-planner'
 import { AppError } from '../errors/app-error'
+import { setLogSink, type LogRecord } from '../common/logger'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import type { TaskWorkerPort } from './run-types'
 import { PiArrangementPlanner } from './pi-arrangement-planner'
@@ -119,6 +120,105 @@ class FakeWorker implements TaskWorkerPort {
 }
 
 describe('PiArrangementPlanner', () => {
+  for (const scenario of [
+    { text: undefined, phase: 'response-assembly', reason: 'empty-response' },
+    { text: '', phase: 'response-assembly', reason: 'empty-response' },
+    { text: 'private-model-response', phase: 'json-extraction', reason: 'json-not-found' },
+    { text: '{"title":"private-model-response",}', phase: 'json-parse', reason: 'invalid-json' },
+    { text: '{"title":"private-model-response","nodes":[', phase: 'json-parse', reason: 'invalid-json' },
+    { text: '{"nodes":[]}', phase: 'output-validation', reason: 'invalid-output-shape' },
+    { text: '{"title":"Plan","nodes":[]}', phase: 'output-validation', reason: 'empty-plan' },
+    { text: '{"title":"Plan","nodes":[{"subscriptionId":"unknown","modelId":"model-research","title":"Research","instruction":"Research"}]}', phase: 'employee-validation', reason: 'employee-unavailable' },
+    { text: '{"title":"Plan","nodes":[{"subscriptionId":"sub-research","modelId":"unknown","title":"Research","instruction":"Research"}]}', phase: 'model-validation', reason: 'model-not-allowed' },
+    { text: '{"title":"Plan","nodes":[{"id":"node-1","subscriptionId":"sub-research","modelId":"model-research","title":"Research","instruction":"Research","dependsOn":["missing"]}]}', phase: 'dag-validation', reason: 'invalid-draft' },
+  ]) {
+    it(`logs precise and private-safe failures at ${scenario.phase}: ${scenario.reason}`, async () => {
+      const logs: LogRecord[] = []
+      const restore = setLogSink(record => logs.push(record))
+      const planner = new PiArrangementPlanner({
+        gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+        getRefreshToken: () => 'private-refresh-token', onAuthenticationRequired: () => {},
+        createWorker: options => ({
+          async run() {
+            if (scenario.text !== undefined) await options.onEvent({ taskId: 'planning-log', runId: 'planning-log', subscriptionId: 'sub-research', sequence: 1,
+              type: 'text_delta', occurredAt: Date.now(), data: { text: scenario.text } })
+          },
+          async abort() {}, async dispose() {},
+        }),
+      })
+      try {
+        await assert.rejects(planner.plan({
+          planningId: 'planning-log', draft: { ...draft, goal: 'private-user-goal' }, employees,
+          diagnosticContext: { round: 2, employeeScope: 'enterprise' }, onProgress: () => {},
+        }))
+        const failed = logs.find(record => record.message === 'planning phase failed')
+        assert.equal(failed?.fields.phase, scenario.phase)
+        assert.equal(failed?.fields.reason, scenario.reason)
+        assert.equal(failed?.fields.planningId, 'planning-log')
+        assert.equal(failed?.fields.runId, 'planning-log')
+        assert.equal(failed?.fields.draftId, draft.id)
+        assert.equal(failed?.fields.round, 2)
+        assert.equal(failed?.fields.employeeScope, 'enterprise')
+        assert.equal(failed?.fields.eventCount, scenario.text === undefined ? 0 : 1)
+        assert.equal(failed?.fields.modelId, 'model-research')
+        assert.doesNotMatch(JSON.stringify(logs), /private-model-response|private-user-goal|private-refresh-token/)
+      } finally { restore() }
+    })
+  }
+
+  it('logs provider status and stack locations without raw provider payloads', async () => {
+    const logs: LogRecord[] = []
+    const restore = setLogSink(record => logs.push(record))
+    const providerError = new Error('503: {"message":"private-provider-payload","token":"private-token"}')
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'private-token', onAuthenticationRequired: () => {},
+      createWorker: () => ({ async run() { throw providerError }, async abort() {}, async dispose() {} }),
+    })
+    try {
+      await assert.rejects(planner.plan({ planningId: 'planning-provider', draft, employees, onProgress: () => {} }), error => error === providerError)
+      const failed = logs.find(record => record.message === 'planning phase failed')
+      assert.equal(failed?.fields.phase, 'provider-request')
+      assert.equal(failed?.fields.providerStatus, 503)
+      assert.equal(failed?.fields.causeType, 'Error')
+      assert.ok(failed?.fields.stack)
+      assert.doesNotMatch(JSON.stringify(logs), /private-provider-payload|private-token/)
+    } finally { restore() }
+  })
+
+  it('keeps the original failure when worker cleanup also fails', async () => {
+    const logs: LogRecord[] = []
+    const restore = setLogSink(record => logs.push(record))
+    const providerError = new Error('503: private-provider-error')
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'private-token', onAuthenticationRequired: () => {},
+      createWorker: () => ({ async run() { throw providerError }, async abort() {}, async dispose() { throw new Error('private-cleanup-error') } }),
+    })
+    try {
+      await assert.rejects(planner.plan({ planningId: 'planning-cleanup', draft, employees, onProgress: () => {} }), error => error === providerError)
+      assert.equal(logs.find(record => record.message === 'planning cleanup failed')?.fields.phase, 'cleanup')
+      assert.equal(logs.find(record => record.message === 'planning phase failed')?.fields.phase, 'provider-request')
+      assert.doesNotMatch(JSON.stringify(logs), /private-provider-error|private-cleanup-error|private-token/)
+    } finally { restore() }
+  })
+
+  it('logs cancellation as a normal outcome even when cleanup fails', async () => {
+    const logs: LogRecord[] = []
+    const restore = setLogSink(record => logs.push(record))
+    const controller = new AbortController()
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'private-token', onAuthenticationRequired: () => {},
+      createWorker: () => ({ async run() { controller.abort() }, async abort() {}, async dispose() { throw new Error('private-cleanup-error') } }),
+    })
+    try {
+      await assert.rejects(planner.plan({ planningId: 'planning-cancel-log', draft, employees, signal: controller.signal, onProgress: () => {} }), error => error instanceof Error && error.name === 'AbortError')
+      assert.equal(logs.some(record => record.message === 'planning cancelled' && record.level === 'info'), true)
+      assert.equal(logs.some(record => record.message === 'planning phase failed'), false)
+    } finally { restore() }
+  })
+
   it('parses the assistant message when the adapter only emits message_end', async () => {
     let worker: TaskWorkerPort | undefined
     const output = JSON.stringify({

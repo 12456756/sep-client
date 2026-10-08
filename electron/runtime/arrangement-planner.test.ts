@@ -28,11 +28,49 @@ describe('arrangement planner', () => {
     assert.match(prompt, /unresolvedSteps/)
   })
 
+  it('keeps tool operations inside employee work steps in all matching passes', () => {
+    const intentAnalysis = {
+      summary: '整理市场信息并形成报告',
+      steps: [{ id: 'step-1', title: '行业研究与趋势报告', requiredCapabilities: ['行业研究'], dependsOn: [] }],
+    }
+    const matchingPasses = [
+      { source: 'authorized' as const, hasIntentAnalysis: false },
+      { source: 'enterprise' as const, hasIntentAnalysis: true },
+      { source: 'platform' as const, hasIntentAnalysis: true },
+    ]
+
+    for (const pass of matchingPasses) {
+      const prompt = buildArrangementPlannerPrompt({
+        ...draft,
+        intentAnalysis: pass.hasIntentAnalysis ? intentAnalysis : null,
+        unresolvedSteps: pass.hasIntentAnalysis ? [{ stepId: 'step-1', reason: '需要行业研究员工', requiredCapabilities: ['行业研究'] }] : [],
+      }, [{ ...employees[0]!, source: pass.source, canExecute: pass.source === 'authorized' }])
+
+      assert.ok(prompt.includes('一个步骤对应一个员工'), pass.source)
+      assert.ok(prompt.includes('工具操作，不得单独拆成工作编排步骤'), pass.source)
+      assert.ok(prompt.includes('应写入所属工作步骤的 instruction'), pass.source)
+      assert.ok(prompt.includes('“一个步骤一个员工”不等于“每个执行动作一个员工”'), pass.source)
+      assert.ok(prompt.includes('将工具操作作为独立步骤放入 unresolvedSteps'), pass.source)
+      assert.ok(prompt.includes('不应拆出“网络搜索”步骤并为它匹配员工'), pass.source)
+      const planningInstruction = pass.hasIntentAnalysis ? '已有意图快照，禁止重新识别整个任务' : '先识别用户意图'
+      assert.ok(prompt.indexOf('工作步骤拆分规则') < prompt.indexOf(planningInstruction), pass.source)
+      assert.ok(prompt.includes(`"source":"${pass.source}"`), pass.source)
+    }
+  })
+
   it('parses a valid plan and rejects unauthorized employees and models', () => {
     const result = parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-a', title: 'Research', instruction: 'Research sources', expectedOutput: 'Sources', dependsOn: [], skillIds: ['skill-a'], requiresUserConfirmation: false }] }), draft, employees)
     assert.equal(result.nodes[0]?.subscriptionId, 'sub-a')
     assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Bad', nodes: [{ id: 'node-1', subscriptionId: 'sub-x', modelId: 'm-a', title: 'x', instruction: 'x', expectedOutput: 'x', dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }), draft, employees))
     assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Bad', nodes: [{ id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-x', title: 'x', instruction: 'x', expectedOutput: 'x', dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }), draft, employees))
+  })
+
+  it('plans employee work without task-level skill selection', () => {
+    const prompt = buildArrangementPlannerPrompt(draft, employees)
+    assert.ok(prompt.includes('技能由执行阶段根据所选员工加载'))
+    assert.ok(!prompt.includes('用户选择的共享技能'))
+    assert.ok(!prompt.includes('"skillIds"'))
+    assert.ok(!prompt.includes('skill-a'))
   })
 
   it('does not expose reasoning in the parsed result', () => {

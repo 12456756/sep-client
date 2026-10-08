@@ -10,6 +10,7 @@ import type {
 } from '../domain/arrangement-planner'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
+import { setLogSink, type LogRecord } from '../common/logger'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
@@ -73,7 +74,7 @@ function deferred<T>() {
 
 type PlannerInput = Parameters<ArrangementPlannerPort['plan']>[0]
 
-function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlanningResult>) {
+function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlanningResult>, extra: Record<string, unknown> = {}) {
   let currentScope: TaskOwnerScope | null = scope
   let stored: ArrangementDraft | null = persisted(autoDraft())
   let plannerCalls = 0
@@ -118,6 +119,7 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
       async createTask() { taskCreates += 1; return { id: 'task-a', workDir: null } },
       async getTask() { return null },
     },
+    ...extra,
   }))
   return {
     service,
@@ -462,6 +464,64 @@ describe('ArrangementService', () => {
 
     assert.deepEqual(harness.stored?.nodes.map(node => node.id), ['authorized-node', 'enterprise-node', 'platform-node'])
     assert.deepEqual(harness.stored?.unresolvedSteps, [])
+  })
+
+  for (const round of [2, 3]) it(`logs round ${round} failure context and keeps diagnostics out of client events`, async () => {
+    const logs: LogRecord[] = []
+    const restore = setLogSink(record => logs.push(record))
+    const harness = planningHarness(async input => {
+      if (input.diagnosticContext?.round === round) throw new Error('private-backend-error with private-token')
+      return { title: 'Partial plan', nodes: [plannedNode], unresolvedSteps: [{ stepId: 'step-missing', reason: 'Needs employee', requiredCapabilities: ['analysis'] }] }
+    })
+    harness.addCandidates([{ subscriptionId: 'sub-enterprise', employeeId: 'emp-enterprise', name: 'Enterprise', status: 'ACTIVE', allowedModels: [], source: 'enterprise', canExecute: false }])
+    harness.addPlatformCandidates([{ subscriptionId: 'sub-platform', employeeId: 'emp-platform', name: 'Platform', status: 'ACTIVE', allowedModels: [], source: 'platform', canExecute: false }])
+    try {
+      const started = await harness.service.startPlanning('draft-a', 1, 'model-a')
+      await eventually(() => harness.stored?.status === 'planning-failed')
+      const failed = logs.find(record => record.scope === 'arrangement-service' && record.message === 'planning failed')
+      assert.equal(failed?.fields.planningId, started.planningId)
+      assert.equal(failed?.fields.round, round)
+      assert.equal(failed?.fields.employeeScope, round === 2 ? 'enterprise' : 'platform')
+      assert.equal(failed?.fields.phase, `round-${round}`)
+      assert.equal(failed?.fields.completedNodeCount, 1)
+      assert.equal(failed?.fields.unresolvedStepCount, 1)
+      assert.deepEqual(harness.events.at(-1)?.data, { message: '自动编排暂时未能完成，请稍后重试。' })
+      assert.doesNotMatch(JSON.stringify([logs, harness.events, harness.stored]), /private-backend-error|private-token/)
+    } finally { restore() }
+  })
+
+  it('logs employee loading failures before the worker runs', async () => {
+    const logs: LogRecord[] = []
+    const restore = setLogSink(record => logs.push(record))
+    const harness = planningHarness(async () => ({ title: 'unused', nodes: [] }), {
+      employees: { async list() { throw Object.assign(new Error('private-token'), { code: 'ETIMEDOUT' }) } },
+    })
+    try {
+      await harness.service.startPlanning('draft-a', 1, 'model-a')
+      await eventually(() => harness.stored?.status === 'planning-failed')
+      const failed = logs.find(record => record.message === 'planning failed')
+      assert.equal(failed?.fields.phase, 'employee-loading')
+      assert.equal(failed?.fields.round, 1)
+      assert.equal(failed?.fields.employeeScope, 'authorized')
+      assert.equal(failed?.fields.causeCode, 'ETIMEDOUT')
+      assert.equal(harness.plannerCalls(), 0)
+      assert.doesNotMatch(JSON.stringify(logs), /private-token/)
+    } finally { restore() }
+  })
+
+  it('logs the failure even when authentication cleanup removed the scope', async () => {
+    const logs: LogRecord[] = []
+    const restore = setLogSink(record => logs.push(record))
+    const harness = planningHarness(async () => {
+      harness.setScope(null)
+      throw new AppError('AUTH_REQUIRED')
+    })
+    try {
+      await harness.service.startPlanning('draft-a', 1, 'model-a')
+      await eventually(() => logs.some(record => record.message === 'planning failed'))
+      assert.equal(logs.find(record => record.message === 'planning failed')?.fields.reason, 'authentication-required')
+      assert.equal(harness.events.some(event => event.type === 'arrangement_planning_failed'), false)
+    } finally { restore() }
   })
 
   it('writes the auto-planning result back as a ready draft', async () => {
