@@ -9,12 +9,11 @@
  * 路由用受控状态而不是 URL，因为桌面端不需要地址栏，返回行为由 hook 维护的历史栈决定。
  */
 
-import { AlertTriangle, Command, LayoutGrid, Moon, Network, Sun } from 'lucide-react';
+import { AlertTriangle, Bell, Command, LayoutGrid, Moon, Network, Sun } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
-import { NotificationCenter } from '../components/enterprise/NotificationCenter';
 import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
@@ -29,7 +28,6 @@ import { WorkRecordsPage } from './enterprise/WorkRecordsPage';
 import { ComputeCenterPage } from './enterprise/ComputeCenterPage';
 import { OrganizationPage } from './enterprise/OrganizationPage';
 import '../styles/enterprise.css';
-import '../styles/notifications.css';
 import '../styles/arrange.css';
 import '../styles/compute-center.css';
 
@@ -52,22 +50,12 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   const { route, overview } = workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const profile = profileWorkspace.profile;
-  const fallbackUserAvatar = workspace.currentUserAvatar ?? initialUserAvatar ?? null;
-  // /client/profile 可能只返回用户基础资料，头像为空时继续使用组织接口的成员头像。
-  const userAvatar = profile?.user.avatar
+  const userAvatar = profile
     ? { name: profile.user.name || userName, avatar: profile.user.avatar }
-    : profile
-      ? fallbackUserAvatar
-        ? { ...fallbackUserAvatar, name: profile.user.name || fallbackUserAvatar.name || userName }
-        : { name: profile.user.name || userName, avatar: null }
-      : fallbackUserAvatar;
+    : workspace.currentUserAvatar ?? initialUserAvatar ?? null;
   const displayUserName = profile?.user.name || userName;
-  const displayEnterpriseName = profile ? profile.enterprise?.name || overview.name : overview.name;
-  // Profile 的图片为空或企业对象为空时，回退到 /enterprise/organization 的 Logo。
-  const displayEnterpriseLogo = profile?.enterprise?.logo || overview.logo;
-  const fallbackEnterpriseLogo = profile?.enterprise?.logo && overview.logo && profile.enterprise.logo !== overview.logo
-    ? overview.logo
-    : null;
+  const displayEnterpriseName = profile ? profile.enterprise?.name || '我的企业' : overview.name;
+  const displayEnterpriseLogo = profile ? profile.enterprise?.logo ?? null : overview.logo;
   const scroll = useRef<HTMLDivElement | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
@@ -133,7 +121,6 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
         enterpriseLogo={displayEnterpriseLogo}
-        enterpriseLogoFallback={fallbackEnterpriseLogo}
         current={route.name}
         needsMeCount={overview.needsMeCount}
         canManage={canManage}
@@ -193,18 +180,16 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
               >
                 {darkMode ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
               </button>
-              <NotificationCenter onOpenAction={async notification => {
-                if (notification.category === 'USAGE_ALERT' || notification.type === 'CONTRIBUTION_REWARD_CREDITED') {
-                  workspace.navigate({ name: 'compute-center' });
-                } else if (notification.type === 'SKILL_VERSION_UPDATED') {
-                  workspace.navigate({ name: 'skills' });
-                } else if (notification.actionUrl) {
-                  // Desktop does not implement platform approval/contribution pages.
-                  // Main validates the trusted Web origin before opening the browser.
-                  const result = await window.electronAPI.openNotificationAction(notification.actionUrl);
-                  if (!result.success) throw new Error(result.error?.message || '无法打开通知关联页面');
-                }
-              }} />
+              <button
+                type="button"
+                className="ent-top-icon"
+                onClick={() => workspace.navigate({ name: 'records', bucket: overview.needsMeCount ? 'mine' : 'all' })}
+                title={overview.needsMeCount ? `${overview.needsMeCount} 项工作等你处理` : '工作记录'}
+                aria-label={overview.needsMeCount ? `工作提醒，${overview.needsMeCount} 项等你处理` : '工作提醒，暂无待处理'}
+              >
+                <Bell size={16} aria-hidden />
+                {overview.needsMeCount ? <span className="ent-dot" aria-hidden /> : null}
+              </button>
             </div>
           )}
         />

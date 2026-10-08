@@ -5,7 +5,7 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev --watch",
+    "dev": "electron-vite dev",
     "dev:preview": "vite --config vite.preview.config.ts --open /?preview=workspace",
     "build": "node scripts/generate-runtime-config.mjs && electron-vite build",
     "preview": "electron-vite preview",

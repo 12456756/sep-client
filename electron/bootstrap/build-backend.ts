@@ -1,5 +1,3 @@
-import { NotificationService } from '../service/notification-service'
-import { NotificationSocket } from '../common/platform/notification-socket'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { SkillLibraryService } from '../service/skill-library-service'
 /**
@@ -10,7 +8,7 @@ import { SkillLibraryService } from '../service/skill-library-service'
  */
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
-import { getSubscriptions, getEnterpriseOverview, getPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
+import { getSubscriptions, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
 import { config } from '../common/config'
 import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
@@ -68,7 +66,6 @@ class BackendRuntime {
   readonly arrangements: ArrangementService
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
-  readonly notifications: NotificationService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -86,19 +83,6 @@ class BackendRuntime {
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.authSession = new AuthSessionManager()
-    this.notifications = new NotificationService({
-      scope: this,
-      getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
-      onAuthenticationRequired: () => this.invalidateAuthentication(),
-      onUpdate: event => this.renderer.notificationUpdated?.(event),
-      createSocket: onMessage => new NotificationSocket({
-        baseUrl: config.SEP_BASE_URL,
-        getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
-        subscribeAccessToken: callback => this.authSession.subscribeAccessToken(callback),
-        onAuthenticationRequired: () => this.invalidateAuthentication(),
-        onMessage,
-      }),
-    })
     this.taskManager = new TaskManager(userDataDir, renderer)
     this.clientMonitor = new ClientMonitorService({
       store: new ClientMonitorStore(userDataDir),
@@ -217,22 +201,10 @@ class BackendRuntime {
             }
           }))
         },
-        async listPlatform({ keywords, capabilityIds = [] }) {
+        async listPlatform() {
           const accessToken = await platformSession.getValidAccessToken()
-          const queries = [
-            ...capabilityIds.map(capabilityId => getPlatformEmployees(accessToken, {
-              capabilityId, page: 1, pageSize: 100, sort: 'updatedAt_desc',
-            })),
-            ...keywords.map(keyword => getPlatformEmployees(accessToken, {
-              keyword, page: 1, pageSize: 100, sort: 'updatedAt_desc',
-            })),
-            ...(!capabilityIds.length && !keywords.length ? [getPlatformEmployees(accessToken, {
-              page: 1, pageSize: 100, sort: 'updatedAt_desc',
-            })] : []),
-          ]
-          const pages = await Promise.all(queries)
-          const items = new Map(pages.flatMap(page => page.items).map(employee => [employee.employeeId, employee]))
-          return [...items.values()]
+          const employees = await getAllPlatformEmployees(accessToken)
+          return employees
             .filter(employee => employee.employeeStatus === 'APPROVED' && employee.canApply && employee.availability === 'AVAILABLE')
             .map(employee => ({
               subscriptionId: `platform:${employee.employeeId}`,
@@ -277,7 +249,6 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
-    this.notifications.stop()
     await this.runtime.peek()?.stopAll()
     await this.clientMonitor.stop()
   }

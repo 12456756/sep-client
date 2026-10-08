@@ -21,8 +21,6 @@ interface Props {
   enterpriseName: string;
   enterpriseMark: string;
   enterpriseLogo?: string | null;
-  /** Profile may omit the image while the organization response still has one. */
-  enterpriseLogoFallback?: string | null;
   current: AppRouteName;
   /** 待我确认或需要重试的工作数量，挂在「工作记录」右侧。 */
   needsMeCount: number;
@@ -55,17 +53,13 @@ function isActive(item: AppRouteName, current: AppRouteName): boolean {
 }
 
 export function AppSideNav({
-  enterpriseName, enterpriseMark, enterpriseLogo, enterpriseLogoFallback, current, needsMeCount, canManage, userName, userAvatar, collapsed, onToggleCollapse, onNavigate, onOpenSettings, onLogout,
+  enterpriseName, enterpriseMark, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, collapsed, onToggleCollapse, onNavigate, onOpenSettings, onLogout,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
-  const [logoSrc, setLogoSrc] = useState<string | null>(enterpriseLogo ?? null);
   const account = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    setLogoFailed(false);
-    setLogoSrc(enterpriseLogo ?? null);
-  }, [enterpriseLogo, enterpriseLogoFallback]);
+  useEffect(() => setLogoFailed(false), [enterpriseLogo]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -94,19 +88,13 @@ export function AppSideNav({
       </button>
 
       <div className="ent-side-brand electron-drag-region">
-        {logoSrc && !logoFailed ? (
+        {enterpriseLogo && !logoFailed ? (
           <img
             className="ent-enterprise-logo"
-            src={logoSrc}
+            src={enterpriseLogo}
             alt=""
             aria-hidden
-            onError={() => {
-              if (enterpriseLogoFallback && logoSrc !== enterpriseLogoFallback) {
-                setLogoSrc(enterpriseLogoFallback);
-              } else {
-                setLogoFailed(true);
-              }
-            }}
+            onError={() => setLogoFailed(true)}
           />
         ) : <span className="ent-mark" aria-hidden>{enterpriseMark}</span>}
         {!collapsed && <strong title={enterpriseName}>{enterpriseName}</strong>}

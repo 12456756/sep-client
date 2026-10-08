@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { ArrangementService } from './arrangement-service'
+import { buildArrangementPlannerPrompt, parseArrangementPlannerOutput } from '../domain/arrangement-planner'
 import type { ArrangementDraft } from '../domain/arrangement-plan'
 import type {
   ArrangementPlannerPort,
@@ -390,7 +391,7 @@ describe('ArrangementService', () => {
     assert.deepEqual(seenCapabilities, [{ id: 'cap-search', name: '联网搜索', description: '检索公开网页信息', type: 'SKILL' }])
   })
 
-  it('adds deterministic enterprise candidates and does not fall through to platform when enterprise coverage exists', async () => {
+  it('keeps enterprise suggestions and still asks the platform model about unresolved steps', async () => {
     let calls = 0
     const intentAnalysis = {
       summary: 'search current AI news',
@@ -417,8 +418,94 @@ describe('ArrangementService', () => {
     await harness.service.startPlanning('draft-a', 1)
     await eventually(() => harness.stored?.status === 'awaiting-employee')
 
+    assert.equal(calls, 3)
+    assert.deepEqual(harness.stored?.candidateMatches?.map(match => [match.source, match.employeeId]), [
+      ['enterprise', 'emp-enterprise'], ['platform', 'emp-market'],
+    ])
+  })
+
+  it('passes the entire platform catalog to the model without keyword or capability prefiltering', async () => {
+    const platformEmployees: ArrangementPlannerEmployee[] = Array.from({ length: 181 }, (_, index) => ({
+      subscriptionId: `platform:employee-${index}`, employeeId: `employee-${index}`,
+      name: index === 180 ? '销售提案专家' : `Platform employee ${index}`,
+      status: 'APPROVED', source: 'platform', canExecute: false, canApply: true, allowedModels: [],
+      capabilities: [{ id: `cap-${index}`, name: 'Proposal writing', description: 'Writes persuasive proposals' }],
+    }))
+    const unresolvedSteps = [{ stepId: 'step-1', reason: 'Needs a proposal expert', requiredCapabilities: ['销售提案写作能力'], requiredCapabilityIds: ['not-in-catalog'] }]
+    let calls = 0
+    let platformLoads = 0
+    const harness = planningHarness(async input => {
+      calls++
+      if (calls === 1) return { title: 'Sales proposal', nodes: [], unresolvedSteps }
+      assert.equal(input.diagnosticContext?.round, 3)
+      assert.deepEqual(input.employees, platformEmployees)
+      assert.deepEqual(input.draft.unresolvedSteps, unresolvedSteps)
+      const prompt = buildArrangementPlannerPrompt(input.draft, input.employees)
+      assert.match(prompt, /销售提案专家/)
+      assert.match(prompt, /employee-180/)
+      assert.match(prompt, /cap-180/)
+      return {
+        title: 'Sales proposal', nodes: [], unresolvedSteps,
+        candidateMatches: [{ stepId: 'step-1', employeeId: 'employee-180', subscriptionId: null, source: 'platform', name: '销售提案专家', rationale: 'Best fit', canExecute: false, canApply: true }],
+      }
+    }, {
+      candidateEmployees: {
+        async listEnterprise() { return [] },
+        async listPlatform(...args: unknown[]) {
+          platformLoads++
+          assert.deepEqual(args, [])
+          return platformEmployees
+        },
+      },
+    })
+    await harness.service.startPlanning('draft-a', 1)
+    await eventually(() => harness.stored?.status !== 'planning')
+    assert.equal(platformLoads, 1)
     assert.equal(calls, 2)
-    assert.deepEqual(harness.stored?.candidateMatches?.map(match => [match.source, match.employeeId]), [['enterprise', 'emp-enterprise']])
+    assert.equal(harness.stored?.status, 'awaiting-employee')
+    assert.equal(harness.stored?.candidateMatches?.[0]?.employeeId, 'employee-180')
+    assert.equal(harness.stored?.nodes.length, 0)
+  })
+
+  it('keeps authorized nodes and pending steps while parsing enterprise and platform recommendations', async () => {
+    const intentAnalysis = {
+      summary: '整理材料后接待法律客户',
+      steps: [
+        { id: 'step-1', title: '整理客户材料', requiredCapabilities: ['材料整理'], dependsOn: [] },
+        { id: 'step-2', title: '法务客户接待', requiredCapabilities: ['法务客户接待'], dependsOn: ['step-1'] },
+      ],
+    }
+    const unresolvedSteps = [{ stepId: 'step-2', reason: '等待员工授权', requiredCapabilities: ['法务客户接待'] }]
+    const authorizedNode = { ...plannedNode, stepId: 'step-1' }
+    const rounds: number[] = []
+    const harness = planningHarness(async input => {
+      const round = input.diagnosticContext?.round ?? 1
+      rounds.push(round)
+      if (round === 1) return { title: '法务客户接待', intentAnalysis, unresolvedSteps, nodes: [authorizedNode] }
+      const prompt = buildArrangementPlannerPrompt(input.draft, input.employees)
+      assert.match(prompt, /本轮是待授权员工推荐阶段/)
+      assert.deepEqual(input.draft.nodes, [authorizedNode])
+      return parseArrangementPlannerOutput(JSON.stringify({
+        title: '法务客户接待', intentAnalysis, unresolvedSteps, nodes: [],
+        candidateMatches: [{ stepId: 'step-2', employeeId: input.employees[0]!.employeeId, rationale: '具备接待能力，等待申请授权' }],
+      }), input.draft, input.employees)
+    })
+    harness.addCandidates([{
+      subscriptionId: 'sub-enterprise', employeeId: 'emp-enterprise', name: '企业法务接待', status: 'ACTIVE',
+      allowedModels: [], source: 'enterprise', canExecute: false, canApply: true,
+    }])
+    harness.addPlatformCandidates([{
+      subscriptionId: 'platform:emp-platform', employeeId: 'emp-platform', name: '平台法务接待', status: 'APPROVED',
+      allowedModels: [], source: 'platform', canExecute: false, canApply: true,
+    }])
+    await harness.service.startPlanning('draft-a', 1)
+    await eventually(() => harness.stored?.status !== 'planning')
+    assert.deepEqual(rounds, [1, 2, 3])
+    assert.equal(harness.stored?.status, 'awaiting-employee')
+    assert.deepEqual(harness.stored?.nodes, [authorizedNode])
+    assert.deepEqual(harness.stored?.intentAnalysis, intentAnalysis)
+    assert.deepEqual(harness.stored?.unresolvedSteps, unresolvedSteps)
+    assert.deepEqual(harness.stored?.candidateMatches?.map(match => match.employeeId), ['emp-enterprise', 'emp-platform'])
   })
 
   it('preserves nodes from all matching passes', async () => {

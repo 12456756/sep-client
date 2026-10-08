@@ -13,7 +13,6 @@ import { taskRoutes } from './task'
 import { arrangementRoutes } from './arrangement'
 import { computeCreditRoutes } from './compute-credit'
 import { profileWalletRoutes } from './profile-wallet'
-import { notificationRoutes } from './notifications'
 
 export const routes: readonly Route[] = [
   ...authRoutes,
@@ -23,7 +22,6 @@ export const routes: readonly Route[] = [
   ...arrangementRoutes,
   ...computeCreditRoutes,
   ...profileWalletRoutes,
-  ...notificationRoutes,
   ...systemRoutes,
 ]
 

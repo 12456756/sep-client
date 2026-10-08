@@ -120,6 +120,61 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.equal(calls[1]?.authorization, 'Bearer access')
     assert.equal(calls[2]?.authorization, 'Bearer access')
   })
+  it('loads every platform employee page without task search filters and deduplicates IDs', async () => {
+    const pages: number[] = []
+    const platformEmployee = (employeeId: string) => ({
+      employeeId, name: employeeId, position: 'Sales', description: 'Sales proposals',
+      employeeStatus: 'APPROVED', availability: 'AVAILABLE', canApply: true,
+      capabilities: [{ id: 'cap-proposal', name: 'Proposal writing', description: 'Writes proposals' }],
+      updatedAt: '2026-10-08T08:00:00.000Z',
+    })
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input))
+      const page = Number(url.searchParams.get('page'))
+      pages.push(page)
+      assert.equal(url.pathname.endsWith('/client/platform-employees'), true)
+      assert.deepEqual([...url.searchParams.keys()].sort(), ['page', 'pageSize', 'sort'])
+      assert.equal(url.searchParams.get('pageSize'), '100')
+      assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access')
+      const items = page === 1
+        ? Array.from({ length: 100 }, (_, index) => platformEmployee(`employee-${index}`))
+        : page === 2 ? [platformEmployee('employee-99'), platformEmployee('employee-100')]
+          : [platformEmployee('sales-proposal-expert')]
+      return response({ items, page, pageSize: 100, total: 103, hasNextPage: page < 3 })
+    }
+    const employees = await api.getAllPlatformEmployees('access')
+    assert.deepEqual(pages, [1, 2, 3])
+    assert.equal(employees.length, 102)
+    assert.equal(employees.at(-1)?.employeeId, 'sales-proposal-expert')
+    assert.equal(employees.at(-1)?.capabilities[0]?.id, 'cap-proposal')
+  })
+
+  it('returns an empty complete platform directory without extra requests', async () => {
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      return response({ items: [], page: 1, pageSize: 100, total: 0, hasNextPage: false })
+    }
+    assert.deepEqual(await api.getAllPlatformEmployees('access'), [])
+    assert.equal(calls, 1)
+  })
+
+  it('does not return a partial platform directory if a later page fails', async () => {
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      return calls === 1
+        ? response({ items: [], page: 1, pageSize: 100, total: 1, hasNextPage: true })
+        : response({ statusCode: 503, message: 'Directory unavailable' }, 503)
+    }
+    await assert.rejects(() => api.getAllPlatformEmployees('access'), cause => {
+      assert.ok(cause instanceof api.AuthApiError)
+      assert.equal(cause.statusCode, 503)
+      return true
+    })
+    assert.equal(calls, 2)
+  })
+
   for (const targetType of ['PLATFORM_EMPLOYEE', 'ENTERPRISE_SUBSCRIPTION'] as const) {
     it(`sends a trusted platform Origin when applying for ${targetType}`, async () => {
       const request: api.EmployeeAccessRequestInput = {

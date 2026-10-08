@@ -73,9 +73,23 @@ describe('arrangement planner', () => {
     assert.ok(!prompt.includes('skill-a'))
   })
 
-  it('does not expose reasoning in the parsed result', () => {
-    const result = parseArrangementPlannerOutput('```json\n{"title":"Report","reasoning":"secret chain","nodes":[{"id":"node-1","subscriptionId":"sub-a","modelId":"m-a","title":"Research","instruction":"Research","expectedOutput":"Sources","dependsOn":[],"skillIds":[],"requiresUserConfirmation":false}]}\n```', draft, employees)
-    assert.equal('reasoning' in result, false)
+  it('rejects fields outside the employee planning output contract', () => {
+    const plannedNode = {
+      id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-a', title: 'Research',
+      instruction: 'Research sources', expectedOutput: 'Sources', dependsOn: [], requiresUserConfirmation: false,
+    }
+    const result = parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [plannedNode] }), draft, employees)
+    assert.equal('skillIds' in result.nodes[0]!, false)
+    for (const field of [{ skillIds: [] }, { skillIds: ['employee-skill'] }, { unexpected: true }]) {
+      assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({
+        title: 'Report', nodes: [{ ...plannedNode, ...field }],
+      }), draft, employees))
+    }
+    for (const field of [{ sharedSkillIds: [] }, { reasoning: 'secret chain' }, { unexpected: true }]) {
+      assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({
+        title: 'Report', nodes: [plannedNode], ...field,
+      }), draft, employees))
+    }
   })
 
   it('parses candidate matches without turning unavailable employees into executable nodes', () => {
