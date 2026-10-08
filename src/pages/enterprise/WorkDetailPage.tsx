@@ -5,7 +5,7 @@ import {
   PencilLine, RotateCcw, Share2, StopCircle, XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { Empty, StatusChip, StepStateChip, WorkStatusChip } from '../../components/enterprise/atoms';
+import { Empty, StepStateChip, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { WorkPlanDrawer } from '../../components/enterprise/WorkPlanDrawer';
 import { WorkConversation, WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
@@ -13,7 +13,7 @@ import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpris
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
-import { dayTimeText, durationText, relativeTime, stampText, WORK_STATUS } from '../../features/enterprise/vocabulary';
+import { dayTimeText, durationText, stampText } from '../../features/enterprise/vocabulary';
 
 interface Props {
   workspace: EnterpriseWorkspace;
@@ -81,206 +81,142 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         </div>
       </div>
 
-      <div className="ent-wk-meta">
-        <span>{solo ? team[0]?.roleName ?? '硅基员工' : `${team.length} 位同事协作`}</span>
-        <span>{stampText(work.createdAt)} 开始</span>
-        <span>{over ? `耗时 ${durationText(work.updatedAt - work.createdAt)}` : `已运行 ${durationText(Date.now() - work.createdAt)}`}</span>
+      {/*
+        信息条：员工、时间、耗时、进度压成一行。
+        原先这些信息占了一整张卡片（约 150px），而内容只有四条短事实；
+        压成一行后首屏腾出的高度正好给对话与产出。
+      */}
+      <div className="ent-wk-infobar">
+        <span className="ent-wk-infobar-who">
+          {solo ? (
+            <>
+              <EmployeeFace employee={team[0]} name={work.currentEmployeeName} size="sm" round />
+              <span>
+                <strong>{team[0]?.name ?? work.currentEmployeeName}</strong>
+                <small>{team[0]?.roleName ?? '硅基员工'}</small>
+              </span>
+            </>
+          ) : (
+            <>
+              {/*
+                多人协作时头像叠成一串（最多露三张）：信息条只有一行高，
+                摆不开一张一人一行的名单，但也不能只剩一句「N 位同事」把人认不出来。
+                完整的「谁做到哪一步」在右侧「更多信息」的工作步骤里。
+              */}
+              <span className="ent-wk-infobar-team" aria-hidden>
+                {team.slice(0, 3).map(member => (
+                  <EmployeeFace key={member.id} employee={member} name={member.name} size="sm" round />
+                ))}
+              </span>
+              <span>
+                <strong>{team.length} 位同事协作</strong>
+                <small>{team.map(member => member.name).join('、')}</small>
+              </span>
+            </>
+          )}
+        </span>
+        <span className="ent-wk-infobar-sep" aria-hidden />
+        <span className="ent-wk-infobar-item">
+          <small>开始</small>
+          <strong>{dayTimeText(work.createdAt)}</strong>
+        </span>
+        <span className="ent-wk-infobar-item">
+          <small>{over ? '耗时' : '已运行'}</small>
+          <strong>{over ? durationText(work.updatedAt - work.createdAt) : durationText(Date.now() - work.createdAt)}</strong>
+        </span>
+        <span className="ent-wk-infobar-item workdir">
+          <small>工作目录</small>
+          <strong>{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</strong>
+        </span>
+        <span className="ent-wk-infobar-progress">
+          <span className="ent-bar">
+            <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
+            <b>{percent}%</b>
+          </span>
+        </span>
       </div>
 
-      {isConversation ? (
-        <>
+      <div className="ent-wk-detail">
+        {/* 主轴：两种工作类型都以内容为主体，内部滚动 */}
+        <div className="ent-wk-detail-main">
           <NeedsYou work={work} workspace={workspace} onTalk={() => setPanel('talk')} />
-          {/* 工作信息卡片：左右分栏，左边基本信息，右边进度与最近动态 */}
-          <div className="ent-chat-info">
-            <section className="ent-panel ent-chat-facts">
-              <h2>工作信息</h2>
-              <dl>
-                <div>
-                  <dt>执行员工</dt>
-                  <dd>{work.currentEmployeeName}</dd>
-                </div>
-                <div>
-                  <dt>工作目录</dt>
-                  <dd>{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</dd>
-                </div>
-                <div>
-                  <dt>开始时间</dt>
-                  <dd className="mono">{stampText(work.createdAt)}</dd>
-                </div>
-                <div>
-                  <dt>已运行</dt>
-                  <dd>{over ? durationText(work.updatedAt - work.createdAt) : durationText(Date.now() - work.createdAt)}</dd>
-                </div>
-              </dl>
+
+          {isConversation ? (
+            <section className="ent-chat-panel" aria-label="工作对话">
+              <WorkConversation work={work} workspace={workspace} />
             </section>
-
-            <section className="ent-panel ent-chat-progress">
-              <h2>执行进度</h2>
-              <div className="ent-chat-percent">
-                <span className="ent-bar">
-                  <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
-                  <b>{percent}%</b>
-                </span>
-                <small>{doing}</small>
-              </div>
-
-              <h3>最近动态</h3>
-              {work.activities.length ? (
-                <>
-                  <ul className="ent-chat-recent-activities">
-                    {work.activities.slice(-3).reverse().map(activity => (
-                      <li key={`${activity.runId}:${activity.id}`} className={activity.state}>
-                        <time>{hhmm(activity.endedAt ?? activity.startedAt)}</time>
-                        <span>{processActivityLabel(activity)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  {work.activities.length > 3 ? (
+          ) : (
+            <div className="ent-wk-grid">
+              <section className="ent-panel">
+                <h2>{finished ? '工作结果' : '当前进展'}</h2>
+                {finished ? (
+                  <div className="ent-wk-done">
+                    <CheckCircle2 size={30} aria-hidden />
+                    <strong>工作已完成</strong>
+                    <p>
+                      {work.deliverables.length ? `共产出 ${work.deliverables.length} 个结果文件` : '没有产出文件'}
+                      {work.steps.length ? `，完成 ${work.steps.length} 个步骤` : ''}
+                    </p>
                     <button
                       type="button"
                       className="ent-btn sm"
-                      onClick={() => setPanel('plan')}
-                      title="打开完整工作过程记录"
+                      title="打开对话，看员工给出的最后一段说明"
+                      onClick={() => setPanel('talk')}
                     >
-                      查看全部 {work.activities.length} 条
+                      查看总结
                     </button>
-                  ) : null}
-                </>
-              ) : (
-                <p className="ent-hint">暂无执行记录</p>
-              )}
-            </section>
-          </div>
-
-          <section className="ent-chat-panel" aria-label="工作对话">
-            <WorkConversation work={work} workspace={workspace} />
-          </section>
-        </>
-      ) : <div className="ent-wk-grid">
-        <section className="ent-panel">
-          <h2>{solo ? '执行员工' : <>工作成员 <em>（{team.length} 人）</em></>}</h2>
-          {solo ? (
-            <div className="ent-wk-solo">
-              <EmployeeFace employee={team[0]} name={work.currentEmployeeName} size="xl" variant="portrait" />
-              <strong>{team[0]?.name ?? work.currentEmployeeName}</strong>
-              <small>{team[0]?.roleName ?? '硅基员工'}</small>
-              <StatusChip {...roleState(work, team[0]?.id ?? work.currentEmployeeId)} />
+                  </div>
+                ) : (
+                  <div className="ent-donut">
+                    <Donut percent={percent} />
+                    <p>{doing}</p>
+                    {next ? <span className="ent-wk-next">预计下一步：{next.title}</span> : null}
+                  </div>
+                )}
+              </section>
+              <Process work={work} />
             </div>
-          ) : (
-            <ul className="ent-wk-people">
-              {team.map(member => (
-                <li key={member.id}>
-                  <EmployeeFace employee={member} size="sm" round />
-                  <span>
-                    <strong title={member.name}>{member.name}</strong>
-                    <small>{member.roleName}</small>
-                  </span>
-                  <StatusChip {...roleState(work, member.id)} />
-                </li>
-              ))}
-            </ul>
           )}
-        </section>
+        </div>
 
-        <section className="ent-panel">
-          <h2>工作信息</h2>
-          <dl className="ent-wk-facts">
-            <div>
-              <dt>工作目录</dt>
-              <dd>
-                {work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}
-              </dd>
-            </div>
-            <div>
-              <dt>工作类型</dt>
-              <dd>{work.kind === 'flow' ? '流程工作' : '对话工作'}</dd>
-            </div>
-            <div>
-              <dt>开始时间</dt>
-              <dd className="mono">{stampText(work.createdAt)}</dd>
-            </div>
-            {over ? (
-              <div>
-                <dt>{finished ? '完成时间' : '结束时间'}</dt>
-                <dd className="mono">{stampText(work.updatedAt)}</dd>
-              </div>
+        {/*
+          侧栏：产出与过程。
+          这段产出结果原先在页面底部、对两种工作类型都渲染，是共用的一段；
+          这里把它挪进侧栏，不另写一份 —— 上次重复渲染就是因为新写了一份而没有删掉旧的。
+        */}
+        <aside className="ent-wk-detail-side">
+          <section className="ent-panel">
+            <h2>{finished ? '产出结果' : '最终产物'} <em>（{work.deliverables.length} 个）</em></h2>
+            {work.deliverables.length ? (
+              <ul className="ent-wk-files ent-wk-files-side">
+                {work.deliverables.map(file => (
+                  <li key={file.id}>
+                    <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
+                    <span>
+                      <strong title={file.name}>{file.name}</strong>
+                      <small>{file.note}</small>
+                    </span>
+                    <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
+                      复制路径
+                    </button>
+                  </li>
+                ))}
+              </ul>
             ) : (
-              <div>
-                <dt>最后更新</dt>
-                <dd>{relativeTime(work.updatedAt)}</dd>
-              </div>
+              <p className="ent-hint">员工还没有产出文件。产出之后会列在这里。</p>
             )}
-            <div>
-              <dt>当前进度</dt>
-              <dd>
-                <span className="ent-bar">
-                  <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
-                  <b>{percent}%</b>
-                </span>
-              </dd>
-            </div>
-          </dl>
-        </section>
+          </section>
 
-        <section className="ent-panel">
-          <h2>{finished ? '工作结果' : '当前进展'}</h2>
-          {finished ? (
-            <div className="ent-wk-done">
-              <CheckCircle2 size={30} aria-hidden />
-              <strong>工作已完成</strong>
-              <p>
-                {work.deliverables.length ? `共产出 ${work.deliverables.length} 个结果文件` : '没有产出文件'}
-                {work.steps.length ? `，完成 ${work.steps.length} 个步骤` : ''}
-              </p>
-              <button
-                type="button"
-                className="ent-btn sm"
-                title="打开对话，看员工给出的最后一段说明"
-                onClick={() => setPanel('talk')}
-              >
-                查看总结
-              </button>
-            </div>
-          ) : (
-            <div className="ent-donut">
-              <Donut percent={percent} />
-              <p>{doing}</p>
-              {next ? <span className="ent-wk-next">预计下一步：{next.title}</span> : null}
-            </div>
-          )}
-        </section>
-      </div>}
+          {/*
+            对话式工作没有步骤报表，工作过程就放在侧栏；
+            流程工作的过程报表在主栏，这里不再重复一份。
+          */}
+          {isConversation ? <Process work={work} /> : null}
 
-      {(!isConversation || work.deliverables.length > 0) ? <div className={isConversation ? 'ent-chat-files' : 'ent-wk-two'}>
-        {!isConversation ? <Process work={work} /> : null}
-        <section className="ent-panel">
-          <h2>{finished ? '产出结果' : '最终产物'} <em>（{work.deliverables.length} 个）</em></h2>
-          {work.deliverables.length ? (
-            <ul className="ent-wk-files">
-              {work.deliverables.map(file => (
-                <li key={file.id}>
-                  <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
-                  <span>
-                    <strong title={file.name}>{file.name}</strong>
-                    <small>{file.note}</small>
-                  </span>
-                  <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
-                    复制路径
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <p className="ent-hint">员工还没有产出文件。产出之后会列在这里。</p>
-          )}
-        </section>
-      </div> : null}
-
-      {!isConversation ? <>
-        <NeedsYou work={work} workspace={workspace} onTalk={() => setPanel('talk')} />
-        <MoreInfo work={work} />
-      </> : null}
-
+          {/* 工作信息折叠：低频信息不占首屏。多人协作时「谁做到哪一步」也在里面的工作步骤里。 */}
+          <MoreInfo work={work} />
+        </aside>
+      </div>
       {panel === 'talk' ? <WorkTalkDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
       {panel === 'plan' ? <WorkPlanDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
     </div>
@@ -419,21 +355,6 @@ function useTeam(work: WorkItem, workspace: EnterpriseWorkspace): SiliconEmploye
       .map(id => workspace.employees.find(item => item.id === id))
       .filter((item): item is SiliconEmployee => Boolean(item));
   }, [work, workspace.employees]);
-}
-
-/**
- * 这位员工在**这项工作**里的状态，不是他此刻忙不忙 ——
- * 成员表要回答的是「他这一段做完了吗」，用全局的空闲/工作中会答错。
- * 有步骤就按他负责的那些步骤算，没有步骤就只能按整项工作的状态说。
- */
-function roleState(work: WorkItem, employeeId: string) {
-  const mine = work.steps.filter(step => step.employeeId === employeeId);
-  if (!mine.length) return WORK_STATUS[work.status];
-  if (mine.some(step => step.state === 'running')) return { label: '工作中', tone: 'busy' as const, hint: '正在做他负责的步骤' };
-  if (mine.some(step => step.state === 'waiting-user')) return { label: '等你拍板', tone: 'attention' as const, hint: '他这一步的结果等你确认' };
-  if (mine.some(step => step.state === 'failed')) return { label: '未完成', tone: 'danger' as const, hint: '他这一步中断了' };
-  if (mine.every(step => step.state === 'done' || step.state === 'skipped')) return { label: '已完成', tone: 'ready' as const, hint: '他负责的步骤都做完了' };
-  return { label: '等待开始', tone: 'muted' as const, hint: '前面的步骤完成后自动开始' };
 }
 
 /**

@@ -259,36 +259,37 @@
   padding: 0 8px 12px;
 }
 
-/* 折叠切换按钮 */
+/* 折叠切换按钮：做成侧边栏边缘的内嵌把手，避免悬浮圆钮打断布局。 */
 .ent-side-toggle {
   position: absolute;
-  top: 72px;
-  right: -12px;
+  top: 18px;
+  right: 0;
   z-index: 10;
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--ent-line);
-  border-radius: 50%;
-  background: var(--ent-panel);
-  color: var(--ent-ink-2);
+  width: 18px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--ent-line-soft);
+  border-right: 0;
+  border-radius: 10px 0 0 10px;
+  background: color-mix(in srgb, var(--ent-panel) 92%, var(--ent-canvas));
+  color: var(--ent-ink-3);
   cursor: pointer;
-  box-shadow: var(--ent-shadow);
-  transition: all var(--duration-fast) var(--ent-ease);
+  box-shadow: -1px 1px 5px rgba(43, 31, 19, 0.035);
+  transition: width var(--duration-fast) var(--ent-ease), color var(--duration-fast) var(--ent-ease), background var(--duration-fast) var(--ent-ease), border-color var(--duration-fast) var(--ent-ease);
 }
 
 .ent-side-toggle:hover {
+  width: 21px;
   background: var(--ent-brand-tint);
   color: var(--ent-brand);
   border-color: var(--ent-brand-border);
-  box-shadow: var(--ent-shadow-lift);
 }
 
 .ent-side.collapsed .ent-side-toggle {
-  right: -12px;
+  right: 0;
 }
-
 .ent-side-brand {
   display: flex;
   flex: 0 0 auto;
@@ -2984,3 +2985,97 @@
   .org-tree-department-node::before,
   .org-tree-dept-silicon { transition: none; }
 }
+
+/*
+ * ── 工作详情：信息条 + 主从双栏 ────────────────────────────────────────
+ * 原来「员工 / 开始 / 耗时 / 工作目录」占一整张卡片（约 150px），内容只有四条短事实；
+ * 下面的对话或工作报表再各占一块，于是整页一定要滚动才能看完。
+ * 现在把这四条压成一条 56px 的信息条，省下的高度给内容：左边是主体（对话 / 报表，
+ * 内部自己滚），右边是产出与工作信息，页面本身不滚 —— 与首页同一套「固定首屏」做法。
+ *
+ * 侧栏固定 320px：产出文件的名字长，再窄就只能靠省略号读。
+ * 主栏 minmax(0, 1fr) 的 0 不能省，否则长内容会把两栏一起撑宽。
+ */
+.ent-scroll:has(.ent-wk) { max-width: none; overflow: hidden; }
+.ent-page.ent-wk {
+  display: flex;
+  width: min(1440px, 100%);
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  gap: 11px;
+  padding: 14px 24px 16px;
+  overflow: hidden;
+}
+
+.ent-wk-infobar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding: 9px 14px;
+  border: 1px solid var(--ent-line);
+  border-radius: var(--ent-radius);
+  background: var(--ent-panel);
+  box-shadow: var(--ent-shadow);
+}
+.ent-wk-infobar-who { display: flex; min-width: 0; align-items: center; gap: 9px; }
+.ent-wk-infobar-who > span:not(.ent-face) { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.ent-wk-infobar-who strong { overflow: hidden; font-size: var(--ent-fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-wk-infobar-who small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); white-space: nowrap; }
+.ent-wk-infobar-sep { flex: 0 0 auto; width: 1px; height: 24px; background: var(--ent-line); }
+.ent-wk-infobar-item { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.ent-wk-infobar-item > small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-wk-infobar-item > strong { min-width: 0; font-size: var(--ent-fs-body); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* 工作目录吃掉剩余宽度：路径比姓名更长，挤它比挤别的更划算。 */
+.ent-wk-infobar-item.workdir { flex: 1 1 180px; }
+.ent-wk-infobar-item.workdir .ent-wk-path > span { color: var(--ent-ink); font-weight: 600; }
+.ent-wk-infobar-progress { min-width: 132px; flex: 0 1 200px; margin-left: auto; }
+
+.ent-wk-detail { display: grid; min-height: 0; flex: 1 1 auto; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; }
+.ent-wk-detail-main { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: 11px; }
+/* 「现在需要你」是一句话加按钮，不该跟着长内容一起被均分。 */
+.ent-wk-detail-main > .ent-flow-act { flex: 0 0 auto; }
+/* 流程工作的主体是「当前进展 + 工作过程」两格，撑满主栏剩下的高度。 */
+.ent-wk-detail-main > .ent-wk-grid { min-height: 0; flex: 1 1 auto; grid-template-columns: minmax(0, 4fr) minmax(0, 5fr); }
+/* 对话面板在详情页里跟着主栏走，不再按视口算固定高度（conversation.css 那两档在此被覆盖）。 */
+.ent-wk-detail-main .ent-chat-panel { height: auto; min-height: 0; flex: 1 1 auto; }
+
+.ent-wk-detail-side {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ent-line-strong) transparent;
+}
+.ent-wk-detail-side > * { flex: 0 0 auto; }
+/* 侧栏自己滚，清单就不再单独设高度上限，免得出现两个滚动条。 */
+.ent-wk-files-side { min-height: 0; flex: 0 0 auto; overflow: visible; }
+
+/*
+ * 窄窗：双栏落成单列，高度也不再固定 —— 这时让整页滚，
+ * 硬撑固定高度只会把对话压成一条缝。
+ */
+@media (max-width: 1180px) {
+  .ent-scroll:has(.ent-wk) { overflow-x: hidden; overflow-y: auto; }
+  .ent-page.ent-wk { height: auto; min-height: 100%; overflow: visible; }
+  .ent-wk-detail { flex: 0 0 auto; grid-template-columns: minmax(0, 1fr); }
+  .ent-wk-detail-main > .ent-wk-grid { flex: 0 0 auto; grid-template-columns: minmax(0, 1fr); }
+  .ent-wk-detail-main .ent-chat-panel { height: min(620px, 72vh); flex: 0 0 auto; }
+  .ent-wk-detail-side { overflow-y: visible; }
+}
+
+/*
+ * 侧栏自己整体滚，里面每一块就按自然高度排：
+ * 给产出清单和工作过程再各设一个 max-height，等于在一根滚动条里套三根滚动条，
+ * 滚轮在它们之间来回抢，反而读不顺。
+ */
+.ent-wk-detail-side .ent-work-process .ent-wk-activity-list { max-height: none; overflow: visible; }
+
+/* 多人协作时的头像串：叠着放，最多露三张，露出「是谁在做」而不占一行高。 */
+.ent-wk-infobar-team { display: flex; flex: 0 0 auto; }
+.ent-wk-infobar-team > .ent-face + .ent-face { margin-left: -9px; box-shadow: 0 0 0 2px var(--ent-panel); }
