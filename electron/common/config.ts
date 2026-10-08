@@ -23,12 +23,17 @@ const SEP_ASSET_BASE_URL = (
   process.env['SEP_ASSET_BASE_URL'] || deriveAssetBaseUrl(SEP_BASE_URL)
 ).replace(/\/+$/, '')
 
+const SEP_WEB_ORIGIN = new URL(
+  process.env['SEP_WEB_ORIGIN'] || deriveAssetBaseUrl(SEP_BASE_URL),
+).origin
+
 export const config = {
   SEP_BASE_URL,
   SEP_API_BASE_URL: SEP_BASE_URL,
   SEP_ASSET_BASE_URL,
   // Notification action links target the Web application, never a configured asset CDN.
   SEP_WEB_BASE_URL: (process.env['SEP_WEB_BASE_URL'] || deriveAssetBaseUrl(SEP_BASE_URL)).replace(/\/+$/, ''),
+  SEP_WEB_ORIGIN,
   SEP_GATEWAY_URL: process.env['SEP_GATEWAY_URL'] || runtimeConfig.gatewayUrl || `${SEP_BASE_URL}/gateway/v1`,
   CLIENT_VERSION: process.env['npm_package_version'] || process.env['SEP_CLIENT_VERSION'] || '1.0.0',
   RELEASE_CHANNEL: runtimeConfig.channel,

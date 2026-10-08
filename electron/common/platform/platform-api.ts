@@ -283,6 +283,7 @@ async function postJson<T>(
     method: 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
+      Origin: config.SEP_WEB_ORIGIN,
       'Content-Type': 'application/json',
       ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },

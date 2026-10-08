@@ -86,6 +86,8 @@ npm run poc:04
 
 ## 🚀 快速开始
 
+平台 JSON 写请求会携带 `Origin`，用于通过服务端来源校验。默认使用 `SEP_BASE_URL` 的站点来源；本地 API `:3001` 对应 Web `:3000`。Web 与 API 分域部署时，使用 `SEP_WEB_ORIGIN` 指定服务端 `CORS_ORIGIN` 允许的平台 Web 来源。该配置独立于图片资源的 `SEP_ASSET_BASE_URL`，无需使用 Electron 的 `file://` 或开发页面来源。
+
 ### 1. 安装依赖
 ```bash
 npm install

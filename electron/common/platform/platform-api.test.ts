@@ -1,6 +1,7 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import * as api from './platform-api'
+import { config } from '../config'
 
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -118,6 +119,51 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.equal(calls[0]?.authorization, 'Bearer access')
     assert.equal(calls[1]?.authorization, 'Bearer access')
     assert.equal(calls[2]?.authorization, 'Bearer access')
+  })
+  for (const targetType of ['PLATFORM_EMPLOYEE', 'ENTERPRISE_SUBSCRIPTION'] as const) {
+    it(`sends a trusted platform Origin when applying for ${targetType}`, async () => {
+      const request: api.EmployeeAccessRequestInput = {
+        targetType,
+        ...(targetType === 'PLATFORM_EMPLOYEE' ? { employeeId: 'employee-1' } : { subscriptionId: 'subscription-1' }),
+        reason: 'Need data analysis', requestedCapabilities: ['cap-data'],
+      }
+      const key = 'employee-request-key-1234'
+      let calls = 0
+      globalThis.fetch = async (input, init) => {
+        calls++
+        assert.equal(String(input), `${config.SEP_BASE_URL}/client/employee-access-requests`)
+        assert.equal(init?.method, 'POST')
+        const headers = new Headers(init?.headers)
+        assert.equal(headers.get('Origin'), 'https://longdaosep.cn')
+        assert.equal(headers.get('Authorization'), 'Bearer access')
+        assert.equal(headers.get('Content-Type'), 'application/json')
+        assert.equal(headers.get('Idempotency-Key'), key)
+        assert.deepEqual(JSON.parse(String(init?.body)), request)
+        return response({
+          requestId: 'request-1', status: 'PENDING', targetType,
+          employee: { employeeId: 'employee-1', subscriptionId: request.subscriptionId ?? null, name: 'Data Analyst' },
+          requestedCapabilities: ['cap-data'], createdAt: '2026-10-08T08:00:00.000Z', updatedAt: '2026-10-08T08:00:00.000Z',
+        }, 201)
+      }
+      assert.equal((await api.createEmployeeAccessRequest(request, key, 'access')).status, 'PENDING')
+      assert.equal(calls, 1)
+    })
+  }
+  it('preserves employee application rejections without retrying the write', async () => {
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      return response({ statusCode: 403, message: 'Origin not allowed. CSRF protection.' }, 403)
+    }
+    await assert.rejects(() => api.createEmployeeAccessRequest({
+      targetType: 'PLATFORM_EMPLOYEE', employeeId: 'employee-1', reason: 'Need data analysis',
+    }, 'employee-request-key-1234', 'access'), cause => {
+      assert.ok(cause instanceof api.AuthApiError)
+      assert.equal(cause.statusCode, 403)
+      assert.equal(cause.message, 'Origin not allowed. CSRF protection.')
+      return true
+    })
+    assert.equal(calls, 1)
   })
   it('uploads full source and reuses caller-owned idempotency key unchanged', async () => {
     const request = { capabilityId: 'cap-1', parentVersionId: 'published-1', content: '---\r\nname: skill\r\n---\r\n\r\n# Source  \r\n\t', changeSummary: 'Update' }
