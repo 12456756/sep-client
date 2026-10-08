@@ -12,10 +12,11 @@ import {
 } from '../common/platform/client-monitor-contract'
 
 const operationSchema = z.discriminatedUnion('kind', [
-  z.object({ id: z.string(), kind: z.literal('create'), payload: createClientTaskSchema }),
-  z.object({ id: z.string(), kind: z.literal('status'), payload: clientTaskStatusSchema }),
-  z.object({ id: z.string(), kind: z.literal('heartbeat'), payload: clientTaskHeartbeatSchema }),
+  z.object({ clientRunId: z.string().optional(), id: z.string(), kind: z.literal('create'), payload: createClientTaskSchema }),
+  z.object({ clientRunId: z.string().optional(), id: z.string(), kind: z.literal('status'), payload: clientTaskStatusSchema }),
+  z.object({ clientRunId: z.string().optional(), id: z.string(), kind: z.literal('heartbeat'), payload: clientTaskHeartbeatSchema }),
   z.object({
+    clientRunId: z.string().optional(),
     id: z.string(),
     kind: z.literal('event'),
     sequence: z.number().int().positive(),
@@ -36,6 +37,11 @@ const recordMetadataSchema = z.object({
   lastSequence: z.number().int().nonnegative().safe(),
   heartbeatActive: z.boolean(),
   updatedAt: z.number().finite(),
+  retryAt: z.number().finite().optional(),
+  retryStatusCode: z.number().optional(),
+  historyBackfilled: z.boolean().optional(),
+  skippedOldStatusCount: z.number().int().nonnegative().optional(),
+  statusByRun: z.record(z.string(), z.string()).optional(),
 })
 const recordSchema = recordMetadataSchema.extend({ pending: z.array(z.unknown()) })
 
@@ -52,6 +58,11 @@ export interface ClientMonitorRecord {
   heartbeatActive: boolean
   pending: ClientMonitorOperation[]
   updatedAt: number
+  retryAt?: number
+  retryStatusCode?: number
+  historyBackfilled?: boolean
+  skippedOldStatusCount?: number
+  statusByRun?: Record<string, string>
 }
 
 export interface ClientMonitorStorePort {

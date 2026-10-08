@@ -15,11 +15,13 @@ export interface ClientMonitorApiPort {
   sendEvent(mirrorId: string, request: ClientTaskEventRequest, signal?: AbortSignal): Promise<void>
 }
 export class ClientMonitorApiError extends Error {
-  constructor(message: string, public readonly statusCode: number) { super(message); this.name = 'ClientMonitorApiError' }
+  constructor(message: string, public readonly statusCode: number, public readonly retryAfterMs?: number) { super(message); this.name = 'ClientMonitorApiError' }
   get isUnauthorized(): boolean { return this.statusCode === 401 }
   get isRetryable(): boolean { return this.statusCode === 0 || this.statusCode === 408 || this.statusCode === 429 || this.statusCode >= 500 }
 }
 export interface ClientMonitorApiOptions {
+  scopeProvider?: () => { enterpriseId: string; memberId: string } | null
+  now?: () => number
   getAccessToken: (forceRefresh?: boolean) => Promise<string>
   fetch?: typeof fetch
   baseUrl?: string
@@ -53,6 +55,7 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
   private path(id: string, suffix: string): string { return '/client/tasks/' + encodeURIComponent(id) + '/' + suffix }
 
   private async request(path: string, method: string, body: unknown, expectsMirror: boolean, external?: AbortSignal): Promise<unknown> {
+    const scope = this.scopeKey()
     const controller = new AbortController()
     const abort = (): void => controller.abort()
     external?.addEventListener('abort', abort, { once: true })
@@ -66,7 +69,7 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
       if (signal.aborted) onAbort()
     })
     try {
-      return await Promise.race([this.send(path, method, body, expectsMirror, signal), cancelled])
+      return await Promise.race([this.send(path, method, body, expectsMirror, signal, scope), cancelled])
     } catch (error) {
       if (error instanceof ClientMonitorApiError) throw error
       if (error instanceof AuthenticationRequiredError) throw new ClientMonitorApiError('Authentication required.', 401)
@@ -77,11 +80,12 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
       signal.removeEventListener('abort', onAbort)
     }
   }
-  private async send(path: string, method: string, body: unknown, expectsMirror: boolean, signal: AbortSignal): Promise<unknown> {
+  private async send(path: string, method: string, body: unknown, expectsMirror: boolean, signal: AbortSignal, scope: string): Promise<unknown> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       signal.throwIfAborted()
       const token = await this.options.getAccessToken(attempt === 1)
       signal.throwIfAborted()
+      if (scope !== this.scopeKey()) throw new ClientMonitorApiError('SEP monitor scope changed.', 401)
       const response = await this.fetcher(this.baseUrl + path, {
         method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
         body: JSON.stringify(body), signal,
@@ -90,7 +94,7 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
         await response.body?.cancel()
         if (response.status === 401 && attempt === 0) continue
         // Do not log or persist arbitrary remote response bodies.
-        throw new ClientMonitorApiError('SEP monitor HTTP ' + response.status, response.status)
+        throw new ClientMonitorApiError('SEP monitor HTTP ' + response.status, response.status, this.retryAfter(response.headers.get('Retry-After')))
       }
       if (expectsMirror) return await response.json() as unknown
       await response.body?.cancel()
@@ -98,4 +102,19 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
     }
     throw new ClientMonitorApiError('Authentication required.', 401)
   }
+  private scopeKey(): string {
+    const scope = this.options.scopeProvider?.()
+    return scope ? `${scope.enterpriseId}\0${scope.memberId}` : ''
+  }
+
+  private retryAfter(value: string | null): number | undefined {
+    if (!value) return undefined
+    if (/^\d+(?:\.\d+)?$/.test(value.trim())) {
+      const milliseconds = Number(value) * 1000
+      return Number.isFinite(milliseconds) ? milliseconds : undefined
+    }
+    const date = Date.parse(value)
+    return Number.isFinite(date) ? Math.max(0, date - (this.options.now ?? Date.now)()) : undefined
+  }
+
 }

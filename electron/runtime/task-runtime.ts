@@ -30,7 +30,7 @@ import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpo
 import { ArrangementExecutor } from './arrangement-executor'
 import { createArrangementExecutionState, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
 import { shouldPushTaskEvent } from './task-event-visibility'
-import { silentTaskMonitor, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
+import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinishedInput, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
 
 const log = logger.child('task-runtime')
 
@@ -167,6 +167,8 @@ export class TaskRuntime {
         this.reportMonitorInput({ taskId: input.taskId, runId: input.runId, content: input.prompt })
       },
       onOutput: input => this.reportMonitorOutput(input),
+      onStarted: input => this.reportMonitorStarted(input),
+      onFinished: input => this.reportMonitorFinished(input),
     })
   }
 
@@ -286,6 +288,7 @@ export class TaskRuntime {
       const pending = await this.taskManager.getTask(taskId)
       if (pending?.status !== TaskStatus.PAUSED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PAUSED, reason)
       await this.taskManager.clearTaskRun(taskId, latest.activeRunId)
+      this.reportMonitorFinished({ taskId, runId: latest.activeRunId, status: 'PAUSED', error: reason, completedAt: Date.now() })
       return
     }
     if (latest.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
@@ -346,6 +349,7 @@ export class TaskRuntime {
       if (task?.status === TaskStatus.PENDING && task.activeRunId) {
         await this.taskManager.pauseTask(taskId)
         await this.taskManager.clearTaskRun(taskId, task.activeRunId)
+        this.reportMonitorFinished({ taskId, runId: task.activeRunId, status: 'PAUSED', completedAt: Date.now() })
       }
       return
     }
@@ -381,6 +385,7 @@ export class TaskRuntime {
       const task = await this.taskManager.getTask(taskId)
       if (task?.activeRunId && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED) {
         await this.taskManager.settleTaskRun(taskId, task.activeRunId, TaskStatus.PAUSED, stopReason)
+        this.reportMonitorFinished({ taskId, runId: task.activeRunId, status: 'CANCELLED', error: stopReason, completedAt: Date.now() })
         await this.taskManager.addTaskLog(taskId, `工作已终止：${stopReason}`, 'warning')
       } else if (task?.status === TaskStatus.PENDING) {
         await this.taskManager.updateTaskStatus(taskId, TaskStatus.PAUSED, stopReason)
@@ -562,6 +567,7 @@ export class TaskRuntime {
         control: 'none',
       })
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
+      this.reportMonitorStarted({ taskId, runId, startedAt: Date.now() })
       const result = await arrangement.execute(plan, taskId, runId)
       await this.events.drain(taskId)
       const arrangementOutput = this.arrangementOutput(plan, result.state)
@@ -596,6 +602,7 @@ export class TaskRuntime {
                 ? TaskStatus.COMPLETED
                 : TaskStatus.FAILED
         await this.taskManager.settleTaskRun(taskId, runId, status, error)
+        this.reportMonitorFinished({ taskId, runId, status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : 'PAUSED', error, completedAt: Date.now() })
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -603,6 +610,7 @@ export class TaskRuntime {
         await this.taskRunStore.finish(scope, taskId, runId, 'failed', message).catch(() => undefined)
       }
       await this.taskManager.settleTaskRun(taskId, runId, TaskStatus.FAILED, message).catch(() => undefined)
+      this.reportMonitorFinished({ taskId, runId, status: 'FAILED', error: message, completedAt: Date.now() })
     } finally {
       this.events.forgetRun(runId)
       if (this.activeArrangements.get(taskId)?.runId === runId) this.activeArrangements.delete(taskId)
@@ -631,7 +639,7 @@ export class TaskRuntime {
       : event
 
     if (persistedEvent.type === 'text_delta') {
-      const data = persistedEvent.data as { text?: unknown }
+      const data = event.data as { text?: unknown }
       if (typeof data.text === 'string') this.events.appendResponse(persistedEvent.runId, data.text)
     }
 
@@ -671,6 +679,11 @@ export class TaskRuntime {
     } else if (event.type === 'retry_budget_exhausted') {
       await this.taskManager.addTaskLog(event.taskId, '本轮自动重试达到上限，已停止执行。', 'error')
     }
+    if (event.type === 'approval_requested' || event.type === 'approval_resolved') {
+      void this.monitor.taskEvent({ ...persistedEvent, runId: arrangement?.runId ?? event.runId }).catch(() => {
+        log.warn('client monitor approval status report failed', { taskId: event.taskId })
+      })
+    }
     if (shouldPushTaskEvent(persistedEvent)) this.onEvent(persistedEvent)
   }
 
@@ -694,16 +707,21 @@ export class TaskRuntime {
   }
 
   private reportMonitorOutput(input: MonitorTaskContentInput): void {
-    void this.monitor.taskOutput(input)
-      .then(() => this.monitor.taskFinished({
-        taskId: input.taskId,
-        runId: input.runId,
-        status: 'COMPLETED',
-        completedAt: Date.now(),
-      }))
-      .catch(error => {
-        log.warn('client monitor output/completion report failed', { taskId: input.taskId, runId: input.runId, cause: describeError(error) })
-      })
+    void this.monitor.taskOutput(input).catch(() => {
+      log.warn('client monitor output report failed', { taskId: input.taskId, runId: input.runId })
+    })
+  }
+
+  private reportMonitorStarted(input: MonitorTaskStartedInput): void {
+    void this.monitor.taskStarted(input).catch(() => {
+      log.warn('client monitor started report failed', { taskId: input.taskId, runId: input.runId })
+    })
+  }
+
+  private reportMonitorFinished(input: MonitorTaskFinishedInput): void {
+    void this.monitor.taskFinished(input).catch(() => {
+      log.warn('client monitor finished report failed', { taskId: input.taskId, runId: input.runId })
+    })
   }
 
   private removeQueuedTask(taskId: string): string[] {

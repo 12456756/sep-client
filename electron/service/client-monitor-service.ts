@@ -1,79 +1,58 @@
+import { randomUUID } from 'node:crypto'
 import { logger } from '../common/logger'
-import { describeError, redactText } from '../common/redact'
-import {
-  ClientMonitorApiError,
-  type ClientMonitorApiPort,
-  type ClientTaskEventRequest,
-  type ClientTaskStatusRequest,
-  type CreateClientTaskRequest,
-} from '../common/platform/client-monitor-api'
+import { redactText } from '../common/redact'
+import { ClientMonitorApiError, type ClientMonitorApiPort, type ClientTaskStatusRequest } from '../common/platform/client-monitor-api'
 import { ClientMonitorStore, type ClientMonitorOperation, type ClientMonitorRecord, type ClientMonitorStorePort } from '../data/client-monitor-store'
-import type { MonitorStatus } from '../common/platform/client-monitor-contract'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskExecutionEvent } from '../../src/shared/types'
+import type { MonitorTaskQueuedInput, MonitorTaskStartedInput, MonitorTaskFinishedInput, MonitorTaskContentInput } from '../domain/task-monitor'
+import type { ClientMonitorHistorySource, MonitorHistoryTask } from './client-monitor-history-service'
+
+export type ClientMonitorTaskQueuedInput = MonitorTaskQueuedInput
+export type ClientMonitorTaskStartedInput = MonitorTaskStartedInput
+export type ClientMonitorTaskFinishedInput = MonitorTaskFinishedInput
+export type ClientMonitorTaskContentInput = MonitorTaskContentInput
 
 const log = logger.child('client-monitor')
-const RETRY_BASE_DELAY_MS = 250
-const DEFAULT_MAX_ATTEMPTS = 3
+const scopeKey = (scope: TaskOwnerScope | null): string => scope ? `${scope.enterpriseId}\0${scope.memberId}` : ''
+const boundedText = (text: string, length: number): string => redactText(text, Infinity).slice(0, length)
 
-const MONITOR_CONTENT_MAX_LENGTH = 1000
-const MONITOR_TRUNCATION_SUFFIX = '...[truncated]'
-
-function monitorText(value: string): string {
-  const redacted = redactText(value)
-  if (redacted.length <= MONITOR_CONTENT_MAX_LENGTH) return redacted
-  const contentLength = MONITOR_CONTENT_MAX_LENGTH - MONITOR_TRUNCATION_SUFFIX.length
-  return `${redacted.slice(0, contentLength)}${MONITOR_TRUNCATION_SUFFIX}`
+// Never split a surrogate pair. Each wire message still satisfies Zod's UTF-16 max(1000).
+function chunks(text: string): string[] {
+  const parts: string[] = []
+  let part = ''
+  for (const character of text) {
+    if (part.length + character.length > 1000) { parts.push(part); part = '' }
+    part += character
+  }
+  if (part) parts.push(part)
+  return parts
 }
-
-type MonitorScopeProvider = () => TaskOwnerScope | null
-
-type MonitorContentType = 'user_input' | 'model_output'
 
 export interface ClientMonitorServiceOptions {
   store: ClientMonitorStorePort
   api: ClientMonitorApiPort
-  scopeProvider: MonitorScopeProvider
+  scopeProvider: () => TaskOwnerScope | null
+  history?: ClientMonitorHistorySource
   clientVersion?: string
   now?: () => number
   sleep?: (milliseconds: number) => Promise<void>
   maxAttempts?: number
+  recoveryIntervalMs?: number
+  minSendIntervalMs?: number
 }
 
-export interface ClientMonitorTaskQueuedInput {
-  prompt: string
-  taskId: string
-  runId: string
-  subscriptionId: string
-  title: string
-  modelId: string
-  taskType: 'conversation' | 'arrangement'
-}
-
-/** 保留旧业务接口，状态上报已不再由监控业务触发。 */
-export interface ClientMonitorTaskStartedInput {
-  taskId: string
-  runId: string
-  startedAt: number
-}
-
-/** 保留旧业务接口，状态上报已不再由监控业务触发。 */
-export interface ClientMonitorTaskFinishedInput {
-  taskId: string
-  runId: string
-  status: MonitorStatus
-  error?: string | null
-  completedAt: number
-}
-
-export interface ClientMonitorTaskContentInput {
-  taskId: string
-  runId: string
-  content: string
-}
-
+/** Atomic per-task mutations; one global wire queue. Network waits never hold mutation locks. */
 export class ClientMonitorService {
   private readonly chains = new Map<string, Promise<void>>()
+  private sendTail: Promise<void> = Promise.resolve()
+  private recovery: Promise<void> | null = null
+  private timer: ReturnType<typeof setInterval> | null = null
+  private controller = new AbortController()
+  private epoch = 0
+  private stopped = false
+  private blockedUntil = 0
+  private lastSentAt = 0
   private readonly now: () => number
   private readonly sleep: (milliseconds: number) => Promise<void>
   private readonly maxAttempts: number
@@ -81,245 +60,287 @@ export class ClientMonitorService {
 
   constructor(private readonly options: ClientMonitorServiceOptions) {
     this.now = options.now ?? Date.now
-    this.sleep = options.sleep ?? (milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)))
-    this.maxAttempts = Math.max(1, options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)
+    this.sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)))
+    this.maxAttempts = Math.max(1, Math.min(10, options.maxAttempts ?? 3))
     this.clientVersion = options.clientVersion ?? '1.0.0'
   }
 
-  taskQueued(input: ClientMonitorTaskQueuedInput): Promise<void> {
-    return this.enqueue(input.taskId, async scope => {
-      const existing = await this.options.store.load(scope, input.taskId)
-      const createPayload: CreateClientTaskRequest = {
-        clientTaskId: input.taskId,
-        clientRunId: input.runId,
-        subscriptionId: input.subscriptionId,
-        title: redactText(input.title, 512),
-        taskType: input.taskType,
-        modelId: input.modelId,
-        clientVersion: this.clientVersion,
-      }
-      const record = this.withMetadata(existing ?? this.newRecord(input), input, createPayload)
-      await this.options.store.save(scope, input.taskId, record)
-      await this.processPending(scope, input.taskId)
-    })
-  }
-
-  /** 兼容旧调用方；不再产生 SEP 状态或心跳操作。 */
-  taskStarted(_input: ClientMonitorTaskStartedInput): Promise<void> {
-    return Promise.resolve()
-  }
-
-  taskInput(input: ClientMonitorTaskContentInput): Promise<void> {
-    return this.enqueueContent(input, 'user_input')
-  }
-
-  taskOutput(input: ClientMonitorTaskContentInput): Promise<void> {
-    return this.enqueueContent(input, 'model_output')
-  }
-
-  /** 普通执行事件不属于对外监控内容，不再上传。 */
-  taskEvent(_event: TaskExecutionEvent): Promise<void> {
-    return Promise.resolve()
-  }
-
-  /** 兼容旧调用方；不再产生 SEP 终态或心跳操作。 */
-  taskFinished(input: ClientMonitorTaskFinishedInput): Promise<void> {
-    if (input.status !== 'COMPLETED') return Promise.resolve()
+  taskQueued(input: MonitorTaskQueuedInput): Promise<void> {
     return this.enqueue(input.taskId, async scope => {
       const record = await this.options.store.load(scope, input.taskId)
-      if (!record || record.clientRunId !== input.runId || (!record.mirrorId && !record.pending.some(operation => operation.kind === 'create'))) return
-      const statusPayload: ClientTaskStatusRequest = {
-        status: 'COMPLETED',
-        progress: 100,
-        completedAt: new Date(input.completedAt).toISOString(),
-      }
-      const next = this.appendOperation(record, {
-        id: ClientMonitorStore.operationId(),
-        kind: 'status',
-        payload: statusPayload,
-      })
-      await this.options.store.save(scope, input.taskId, next)
-      await this.processPending(scope, input.taskId)
+      await this.options.store.save(scope, input.taskId, this.queueRun(record, input))
     })
   }
 
-  async resumePending(): Promise<void> {
-    const scope = this.options.scopeProvider()
-    if (!scope) return
-    let taskIds: string[]
-    try {
-      taskIds = await this.options.store.listPending(scope)
-    } catch (error) {
-      log.warn('client monitor recovery failed', { cause: describeError(error) })
-      return
+  taskStarted(input: MonitorTaskStartedInput): Promise<void> {
+    return this.enqueueStatus(input.taskId, input.runId, { status: 'RUNNING', startedAt: new Date(input.startedAt).toISOString() })
+  }
+
+  taskInput(input: MonitorTaskContentInput): Promise<void> { return this.enqueueContent(input, 'user_input') }
+  taskOutput(input: MonitorTaskContentInput): Promise<void> { return this.enqueueContent(input, 'model_output') }
+
+  taskEvent(event: TaskExecutionEvent): Promise<void> {
+    if (event.type === 'approval_requested' || event.type === 'approval_resolved') {
+      return this.enqueueStatus(event.taskId, event.runId, { status: event.type === 'approval_requested' ? 'WAITING_APPROVAL' : 'RUNNING' })
     }
-    await Promise.all(taskIds.map(taskId => this.enqueue(taskId, async taskScope => {
-      const record = await this.options.store.load(taskScope, taskId)
-      if (record) await this.processPending(taskScope, taskId)
-    })))
+    // Tool arguments/results and streaming deltas are not public monitor content.
+    return Promise.resolve()
+  }
+
+  taskFinished(input: MonitorTaskFinishedInput): Promise<void> {
+    return this.enqueueStatus(input.taskId, input.runId, {
+      status: input.status,
+      ...(input.status === 'COMPLETED' ? { progress: 100 } : {}),
+      errorSummary: input.error ? boundedText(input.error, 1000) : null,
+      completedAt: new Date(input.completedAt).toISOString(),
+    })
+  }
+
+  resumePending(): Promise<void> {
+    const scope = this.options.scopeProvider()
+    if (!scope) return Promise.resolve()
+    if (this.stopped) { this.stopped = false; this.controller = new AbortController() }
+    if (!this.timer) {
+      this.timer = setInterval(() => { void this.resumePending() }, this.options.recoveryIntervalMs ?? 30_000)
+      this.timer.unref?.()
+    }
+    if (this.recovery) return this.recovery
+    const epoch = this.epoch
+    const recovery = this.recover(scope, epoch).catch(() => {
+      log.warn('client monitor recovery failed')
+    }).finally(() => { if (this.recovery === recovery) this.recovery = null })
+    this.recovery = recovery
+    return recovery
   }
 
   async stop(): Promise<void> {
-    // 保留生命周期接口；当前监控不创建定时器。
+    this.stopped = true
+    this.epoch++
+    this.controller.abort()
+    if (this.timer) clearInterval(this.timer)
+    this.timer = null
+    this.recovery = null
+    this.blockedUntil = 0
+    this.lastSentAt = 0
+    // Aborted old requests cannot hold the new login's wire queue.
+    this.sendTail = Promise.resolve()
   }
 
-  private enqueueContent(input: ClientMonitorTaskContentInput, type: MonitorContentType): Promise<void> {
-    if (!input.content.trim()) return Promise.resolve()
+  private async recover(scope: TaskOwnerScope, epoch: number): Promise<void> {
+    const ids = await this.options.store.listPending(scope)
+    if (!this.valid(scope, epoch)) return
+    // Restore a persisted 429 gate before attempting *any* task.
+    for (const id of ids) {
+      const record = await this.options.store.load(scope, id)
+      if (!this.valid(scope, epoch)) return
+      if (record?.retryStatusCode === 429) this.blockedUntil = Math.max(this.blockedUntil, record.retryAt ?? 0)
+    }
+    if (this.options.history) {
+      const tasks = await this.options.history.read(scope)
+      for (const task of tasks) {
+        if (!this.valid(scope, epoch)) return
+        await this.mutate(scope, task.taskId, epoch, () => this.restoreHistory(scope, task))
+      }
+    }
+    const allIds = await this.options.store.listPending(scope)
+    for (const id of allIds) {
+      if (!this.valid(scope, epoch)) return
+      await this.scheduleDrain(scope, id, epoch)
+    }
+  }
+
+  private async restoreHistory(scope: TaskOwnerScope, task: MonitorHistoryTask): Promise<void> {
+    let record = await this.options.store.load(scope, task.taskId)
+    const backfill = !record
+    for (const run of task.runs) {
+      if (backfill) {
+        record = this.queueRun(record, { ...run, taskId: task.taskId, title: task.title, taskType: task.taskType })
+        for (const message of run.messages) record = this.addContent(record, { taskId: task.taskId, runId: run.runId, content: message.content }, message.type, message.occurredAt)
+      }
+      if (!record || (!backfill && run.runId !== record.clientRunId)) continue
+      // Existing outboxes are replayed, not regenerated. Reconcile only known local runs.
+      if (run.status && record.statusByRun?.[run.runId] !== this.fingerprint(run.status)) {
+        record = this.addStatus(record, run.runId, run.status)
+      }
+    }
+    if (record) await this.options.store.save(scope, task.taskId, { ...record, historyBackfilled: record.historyBackfilled || backfill })
+  }
+
+  private enqueueContent(input: MonitorTaskContentInput, type: 'user_input' | 'model_output'): Promise<void> {
+    if (input.content.length === 0) return Promise.resolve()
     return this.enqueue(input.taskId, async scope => {
       const record = await this.options.store.load(scope, input.taskId)
-      if (!record || record.clientRunId !== input.runId) return
-      const sequence = record.lastSequence + 1
-      const eventPayload: ClientTaskEventRequest = {
-        sequence,
-        type,
-        message: monitorText(input.content),
-        occurredAt: new Date(this.now()).toISOString(),
-      }
-      const next = this.appendOperation({ ...record, lastSequence: sequence }, {
-        id: ClientMonitorStore.operationId(),
-        kind: 'event',
-        sequence,
-        payload: eventPayload,
-      })
-      await this.options.store.save(scope, input.taskId, next)
-      await this.processPending(scope, input.taskId)
+      if (!record) return
+      await this.options.store.save(scope, input.taskId, this.addContent(record, input, type, this.now()))
     })
   }
 
-  private enqueue(taskId: string, operation: (scope: TaskOwnerScope) => Promise<void>): Promise<void> {
+  private addContent(record: ClientMonitorRecord, input: MonitorTaskContentInput, type: 'user_input' | 'model_output', occurredAt: number): ClientMonitorRecord {
+    if (input.content.length === 0) return record
+    const parts = chunks(redactText(input.content, Infinity))
+    const messageId = randomUUID()
+    let sequence = record.lastSequence
+    const operations: ClientMonitorOperation[] = parts.map((message, index) => ({
+      id: ClientMonitorStore.operationId(), kind: 'event', clientRunId: input.runId, sequence: ++sequence,
+      payload: {
+        clientRunId: input.runId, sequence, type, message,
+        ...(parts.length > 1 ? { stepKey: `content:v1:${messageId}:${index}:${parts.length}` } : {}),
+        occurredAt: new Date(occurredAt).toISOString(),
+      },
+    }))
+    return { ...record, lastSequence: sequence, pending: [...record.pending, ...operations], updatedAt: this.now() }
+  }
+
+  private enqueueStatus(taskId: string, runId: string, payload: ClientTaskStatusRequest): Promise<void> {
+    return this.enqueue(taskId, async scope => {
+      const record = await this.options.store.load(scope, taskId)
+      if (record) await this.options.store.save(scope, taskId, this.addStatus(record, runId, payload))
+    })
+  }
+
+  private fingerprint(payload: ClientTaskStatusRequest): string { return JSON.stringify(this.statusPayload(payload)) }
+
+  private statusPayload(payload: ClientTaskStatusRequest): ClientTaskStatusRequest {
+    return { ...payload, ...(payload.errorSummary ? { errorSummary: boundedText(payload.errorSummary, 1000) } : {}) }
+  }
+
+  private addStatus(record: ClientMonitorRecord, runId: string, payload: ClientTaskStatusRequest): ClientMonitorRecord {
+    const statusByRun = { ...record.statusByRun, [runId]: this.fingerprint(payload) }
+    return { ...record, statusByRun, updatedAt: this.now(), pending: [...record.pending, {
+      id: ClientMonitorStore.operationId(), kind: 'status', clientRunId: runId, payload: { ...this.statusPayload(payload), clientRunId: runId },
+    }] }
+  }
+
+  private queueRun(existing: ClientMonitorRecord | null, input: MonitorTaskQueuedInput): ClientMonitorRecord {
+    const title = boundedText(input.title, 200) || 'Task'
+    const record: ClientMonitorRecord = existing ?? {
+      version: 1, clientTaskId: input.taskId, clientRunId: input.runId, mirrorId: null,
+      subscriptionId: input.subscriptionId, title, taskType: input.taskType, modelId: input.modelId,
+      lastSequence: 0, heartbeatActive: false, pending: [], updatedAt: this.now(),
+    }
+    const create = !existing || record.clientRunId !== input.runId
+    return { ...record, clientRunId: input.runId, subscriptionId: input.subscriptionId, title,
+      taskType: input.taskType, modelId: input.modelId, updatedAt: this.now(),
+      pending: create ? [...record.pending, {
+        id: ClientMonitorStore.operationId(), kind: 'create', clientRunId: input.runId,
+        payload: { clientTaskId: input.taskId, clientRunId: input.runId, subscriptionId: input.subscriptionId,
+          title, taskType: input.taskType, modelId: input.modelId, clientVersion: this.clientVersion },
+      }] : record.pending,
+    }
+  }
+
+  private valid(scope: TaskOwnerScope, epoch: number): boolean {
+    return !this.stopped && this.epoch === epoch && scopeKey(scope) === scopeKey(this.options.scopeProvider())
+  }
+
+  private enqueue(taskId: string, mutation: (scope: TaskOwnerScope) => Promise<void>): Promise<void> {
     const scope = this.options.scopeProvider()
-    if (!scope) return Promise.resolve()
-    const key = this.taskKey(scope, taskId)
+    if (!scope || this.stopped) return Promise.resolve()
+    const epoch = this.epoch
+    return this.mutate(scope, taskId, epoch, () => mutation(scope)).then(() => this.scheduleDrain(scope, taskId, epoch))
+  }
+
+  private mutate(scope: TaskOwnerScope, taskId: string, epoch: number, mutation: () => Promise<void>): Promise<void> {
+    const key = `${scopeKey(scope)}\0${taskId}`
     const previous = this.chains.get(key) ?? Promise.resolve()
-    const next = previous.then(() => operation(scope)).catch(error => {
-      log.warn('client monitor operation failed', { taskId, cause: describeError(error) })
+    const next = previous.then(async () => { if (this.valid(scope, epoch)) await mutation() }).catch(() => {
+      log.warn('client monitor outbox mutation failed', { taskId })
     })
     this.chains.set(key, next)
-    return next.finally(() => {
-      if (this.chains.get(key) === next) this.chains.delete(key)
-    })
+    return next.finally(() => { if (this.chains.get(key) === next) this.chains.delete(key) })
   }
 
-  private async processPending(scope: TaskOwnerScope, taskId: string): Promise<void> {
-    while (true) {
+  private scheduleDrain(scope: TaskOwnerScope, taskId: string, epoch: number): Promise<void> {
+    const next = this.sendTail.then(() => this.processPending(scope, taskId, epoch)).catch(() => {
+      log.warn('client monitor send failed', { taskId })
+    })
+    this.sendTail = next
+    return next
+  }
+
+  private async processPending(scope: TaskOwnerScope, taskId: string, epoch: number): Promise<void> {
+    while (this.valid(scope, epoch)) {
       const record = await this.options.store.load(scope, taskId)
-      if (!record) return
+      if (!this.valid(scope, epoch) || !record) return
       const operation = record.pending[0]
-      if (!operation) {
-        await this.options.store.deleteIfEmpty(scope, taskId, record)
-        return
-      }
-      if (this.isObsoleteOperation(operation)) {
-        await this.options.store.save(scope, taskId, this.removeOperation(record, operation.id))
-        continue
-      }
+      if (!operation || Math.max(record.retryAt ?? 0, this.blockedUntil) > this.now()) return
       if (operation.kind !== 'create' && !record.mirrorId) return
       try {
-        if (operation.kind === 'create') {
-          const mirror = await this.callWithRetry(() => this.options.api.createTask(operation.payload), operation.kind)
-          const next = this.removeOperation({ ...record, mirrorId: mirror.id }, operation.id)
-          await this.options.store.save(scope, taskId, next)
+        const mirror = await this.callWithRetry(scope, epoch, () => this.send(record.mirrorId, operation, this.controller.signal))
+        if (!this.valid(scope, epoch)) return
+        await this.mutate(scope, taskId, epoch, async () => {
+          const latest = await this.options.store.load(scope, taskId)
+          if (!latest) return
+          await this.options.store.save(scope, taskId, { ...latest,
+            mirrorId: mirror?.id ?? latest.mirrorId, retryAt: undefined, retryStatusCode: undefined,
+            pending: latest.pending.filter(item => item.id !== operation.id), updatedAt: this.now(),
+          })
+        })
+      } catch (error) {
+        if (!this.valid(scope, epoch)) return
+        // The record's run is the latest admitted run. Only an explicitly older status
+        // can be discarded on 409; current/unknown-run conflicts remain pending.
+        const operationRun = operation.clientRunId ?? operation.payload.clientRunId
+        if (error instanceof ClientMonitorApiError && error.statusCode === 409 && operation.kind === 'status' && operationRun && operationRun !== record.clientRunId) {
+          await this.mutate(scope, taskId, epoch, async () => {
+            const latest = await this.options.store.load(scope, taskId)
+            if (latest) await this.options.store.save(scope, taskId, { ...latest,
+              pending: latest.pending.filter(item => item.id !== operation.id),
+              skippedOldStatusCount: (latest.skippedOldStatusCount ?? 0) + 1, updatedAt: this.now(),
+            })
+          })
+          log.info('client monitor obsolete run status conflict skipped', { taskId, kind: operation.kind })
           continue
         }
-        await this.callWithRetry(() => this.sendOperation(record.mirrorId as string, operation), operation.kind)
-        const next = this.removeOperation(record, operation.id)
-        await this.options.store.save(scope, taskId, next)
-      } catch (error) {
-        log.warn('client monitor pending operation retained', {
-          taskId,
-          kind: operation.kind,
-          cause: describeError(error),
+        const code = error instanceof ClientMonitorApiError ? error.statusCode : 0
+        const delay = error instanceof ClientMonitorApiError ? error.retryAfterMs : undefined
+        const retryAt = this.now() + Math.max(delay ?? 30_000, 1000)
+        if (code === 429) this.blockedUntil = Math.max(this.blockedUntil, retryAt)
+        await this.mutate(scope, taskId, epoch, async () => {
+          const latest = await this.options.store.load(scope, taskId)
+          if (latest) await this.options.store.save(scope, taskId, { ...latest, retryAt, retryStatusCode: code })
         })
+        // Only allowlisted metadata: never arbitrary remote error text or message bodies.
+        log.warn('client monitor pending operation retained', { taskId, kind: operation.kind, statusCode: code })
         return
       }
     }
   }
 
-  private isObsoleteOperation(operation: ClientMonitorOperation): boolean {
-    if (operation.kind === 'status') return operation.payload.status !== 'COMPLETED'
-    if (operation.kind === 'heartbeat') return true
-    return operation.kind === 'event' && operation.payload.type !== 'user_input' && operation.payload.type !== 'model_output'
-  }
-
-  private async callWithRetry<T>(operation: () => Promise<T>, kind: ClientMonitorOperation['kind']): Promise<T> {
-    let lastError: unknown
-    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+  private async callWithRetry<T>(scope: TaskOwnerScope, epoch: number, send: () => Promise<T>): Promise<T> {
+    const signal = this.controller.signal
+    for (let attempt = 1; ; attempt++) {
+      if (!this.valid(scope, epoch)) throw new Error('Monitor scope changed')
+      const pacing = Math.max(0, this.lastSentAt + (this.options.minSendIntervalMs ?? 1000) - this.now())
+      if (pacing) await this.abortable(this.sleep(pacing), signal)
+      if (!this.valid(scope, epoch)) throw new Error('Monitor scope changed')
       try {
-        return await operation()
+        this.lastSentAt = this.now()
+        return await this.abortable(send(), signal)
       } catch (error) {
-        lastError = error
-        const retryable = error instanceof ClientMonitorApiError ? error.isRetryable : false
-        if (!retryable || attempt === this.maxAttempts) throw error
-        await this.sleep(RETRY_BASE_DELAY_MS * 2 ** (attempt - 1))
-        log.debug('retrying client monitor operation', { kind, attempt: attempt + 1 })
+        if (!this.valid(scope, epoch) || !(error instanceof ClientMonitorApiError) || !error.isRetryable || error.statusCode === 429 || attempt >= this.maxAttempts) throw error
+        await this.abortable(this.sleep(Math.min(30_000, Math.max(error.retryAfterMs ?? 0, 250 * 2 ** (attempt - 1)))), signal)
       }
     }
-    throw lastError
   }
 
-  private async sendOperation(mirrorId: string, operation: Exclude<ClientMonitorOperation, { kind: 'create' }>): Promise<void> {
-    if (operation.kind === 'status') {
-      await this.callWithRetry(() => this.options.api.updateStatus(mirrorId, operation.payload), operation.kind)
-    } else if (operation.kind === 'heartbeat') {
-      await this.callWithRetry(() => this.options.api.sendHeartbeat(mirrorId, operation.payload), operation.kind)
-    } else {
-      await this.callWithRetry(() => this.options.api.sendEvent(mirrorId, operation.payload), operation.kind)
-    }
+  private async abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    signal.throwIfAborted()
+    let abort!: () => void
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () => reject(new Error('Monitor stopped'))
+      signal.addEventListener('abort', abort, { once: true })
+    })
+    try { return await Promise.race([promise, cancelled]) }
+    finally { signal.removeEventListener('abort', abort) }
   }
 
-  private taskKey(scope: TaskOwnerScope, taskId: string): string {
-    return `${scope.enterpriseId}\u0000${scope.memberId}\u0000${taskId}`
-  }
-
-  private newRecord(input: ClientMonitorTaskQueuedInput): ClientMonitorRecord {
-    return {
-      version: 1,
-      clientTaskId: input.taskId,
-      clientRunId: input.runId,
-      mirrorId: null,
-      subscriptionId: input.subscriptionId,
-      title: redactText(input.title, 512),
-      taskType: input.taskType,
-      modelId: input.modelId,
-      lastSequence: 0,
-      heartbeatActive: false,
-      pending: [],
-      updatedAt: this.now(),
-    }
-  }
-
-  private withMetadata(
-    existing: ClientMonitorRecord,
-    input: ClientMonitorTaskQueuedInput,
-    createPayload: CreateClientTaskRequest,
-  ): ClientMonitorRecord {
-    const hasCurrentRunCreate = existing.pending.some(operation => (
-      operation.kind === 'create' && operation.payload.clientRunId === input.runId
-    ))
-    const isNewRun = existing.clientRunId !== input.runId
-    const isFirstRecord = existing.mirrorId === null && existing.pending.length === 0 && existing.lastSequence === 0
-    const shouldQueueCreate = isNewRun || isFirstRecord
-    const newOperations: ClientMonitorOperation[] = shouldQueueCreate && !hasCurrentRunCreate
-      ? [{ id: ClientMonitorStore.operationId(), kind: 'create', payload: createPayload }]
-      : []
-    return {
-      ...existing,
-      clientTaskId: input.taskId,
-      clientRunId: input.runId,
-      subscriptionId: input.subscriptionId,
-      title: redactText(input.title, 512),
-      taskType: input.taskType,
-      modelId: input.modelId,
-      pending: [...existing.pending, ...newOperations],
-      updatedAt: this.now(),
-    }
-  }
-
-  private appendOperation(record: ClientMonitorRecord, operation: ClientMonitorOperation): ClientMonitorRecord {
-    return { ...record, pending: [...record.pending, operation], updatedAt: this.now() }
-  }
-
-  private removeOperation(record: ClientMonitorRecord, operationId: string): ClientMonitorRecord {
-    return { ...record, pending: record.pending.filter(operation => operation.id !== operationId), updatedAt: this.now() }
+  private send(mirrorId: string | null, operation: ClientMonitorOperation, signal: AbortSignal): Promise<{ id: string } | void> {
+    if (operation.kind === 'create') return this.options.api.createTask(operation.payload, signal)
+    // Missing historical run IDs stay missing; never silently reattribute to the latest run.
+    const payload = operation.clientRunId ? { ...operation.payload, clientRunId: operation.clientRunId } : operation.payload
+    if (operation.kind === 'status') return this.options.api.updateStatus(mirrorId!, payload as ClientTaskStatusRequest, signal)
+    if (operation.kind === 'heartbeat') return this.options.api.sendHeartbeat(mirrorId!, operation.clientRunId ? { ...operation.payload, clientRunId: operation.clientRunId } : operation.payload, signal)
+    return this.options.api.sendEvent(mirrorId!, operation.clientRunId ? { ...operation.payload, clientRunId: operation.clientRunId } : operation.payload, signal)
   }
 }

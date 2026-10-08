@@ -88,4 +88,44 @@ describe('ClientMonitorApi', () => {
       return true
     })
   })
+  it('parses Retry-After seconds and HTTP dates without reading error bodies', async () => {
+    for (const [header, expected] of [['12', 12000], ['Thu, 08 Oct 2026 00:01:00 GMT', 60000]] as const) {
+      const api = new ClientMonitorApi({
+        now: () => Date.parse('2026-10-08T00:00:00Z'),
+        getAccessToken: async () => 'token',
+        fetch: async () => new Response('private remote body', { status: 429, headers: { 'Retry-After': header } }),
+      })
+      await assert.rejects(api.updateStatus('mirror', { status: 'RUNNING', clientRunId: 'run' }), (error: unknown) => {
+        assert.ok(error instanceof ClientMonitorApiError)
+        assert.equal(error.retryAfterMs, expected)
+        assert.equal(error.message.includes('private'), false)
+        return true
+      })
+    }
+  })
+
+  it('never sends an old request with a token obtained after a scope switch', async () => {
+    let current = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
+    let fetches = 0
+    const api = new ClientMonitorApi({
+      scopeProvider: () => current,
+      getAccessToken: async () => { current = { enterpriseId: 'enterprise-b', memberId: 'member-b' }; return 'new-token' },
+      fetch: async () => { fetches++; return response(204) },
+    })
+    await assert.rejects(api.updateStatus('old-mirror', { status: 'RUNNING' }))
+    assert.equal(fetches, 0)
+  })
+
+  it('also checks scope after the 401 forced-refresh await', async () => {
+    let scope = { enterpriseId: 'a', memberId: 'a' }
+    let calls = 0
+    const api = new ClientMonitorApi({
+      scopeProvider: () => scope,
+      getAccessToken: async force => { if (force) scope = { enterpriseId: 'b', memberId: 'b' }; return 'mock' },
+      fetch: async () => { calls++; return response(401) },
+    })
+    await assert.rejects(api.updateStatus('old', { status: 'RUNNING' }))
+    assert.equal(calls, 1)
+  })
+
 })

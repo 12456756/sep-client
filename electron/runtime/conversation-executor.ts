@@ -20,7 +20,7 @@ import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, 
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
 import type { EventPipeline } from './run-events'
 import type { ToolApprovals } from './run-approvals'
-import type { MonitorTaskContentInput, MonitorTaskQueuedInput } from '../domain/task-monitor'
+import type { MonitorTaskContentInput, MonitorTaskQueuedInput, MonitorTaskStartedInput, MonitorTaskFinishedInput } from '../domain/task-monitor'
 import { logger } from '../common/logger'
 
 const log = logger.child('conversation-executor')
@@ -41,6 +41,8 @@ export interface ConversationExecutorOptions {
   requestPump: () => void
   onQueued?: (input: MonitorTaskQueuedInput) => void
   onOutput?: (input: MonitorTaskContentInput) => void
+  onStarted?: (input: MonitorTaskStartedInput) => void
+  onFinished?: (input: MonitorTaskFinishedInput) => void
 }
 
 export class ConversationExecutor {
@@ -169,6 +171,7 @@ export class ConversationExecutor {
       }
 
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
+      this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       await worker.run(queued.workerPrompt ?? queued.prompt)
       await this.options.events.drain(taskId)
       if (!this.options.workers.isCurrent(active)) return
@@ -189,6 +192,7 @@ export class ConversationExecutor {
         await this.options.taskManager
           .settleTaskRun(taskId, runId, TaskStatus.FAILED, 'The conversation could not be started.')
           .catch(() => undefined)
+        this.options.onFinished?.({ taskId, runId, status: 'FAILED', error: 'The conversation could not be started.', completedAt: Date.now() })
       }
     } finally {
       this.options.events.forgetRun(runId)
@@ -336,7 +340,7 @@ export class ConversationExecutor {
       })
     }
     const response = this.options.events.takeResponse(active.runId)
-    if (response && queued.conversation) {
+    if (response) {
       this.options.onOutput?.({
         taskId: active.taskId,
         runId: active.runId,
@@ -369,6 +373,10 @@ export class ConversationExecutor {
             ? TaskStatus.FAILED
             : TaskStatus.COMPLETED
       await this.options.taskManager.settleTaskRun(active.taskId, active.runId, nextStatus, error)
+      this.options.onFinished?.({ taskId: active.taskId, runId: active.runId,
+        status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : 'PAUSED',
+        error, completedAt: Date.now(),
+      })
     }
   }
 
