@@ -1,4 +1,7 @@
 import { join } from 'node:path'
+import { createHash } from 'node:crypto'
+import { logger, type LogFields } from '../common/logger'
+import { planningErrorFields, planningFailure, type PlanningPhase } from '../errors/planning-diagnostics'
 import { AppError } from '../errors/app-error'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import {
@@ -44,6 +47,8 @@ const PLANNER_POLICY: Omit<TaskToolPolicy, 'workspaceDir'> = {
   approvalMode: 'auto-approve',
 }
 
+const log = logger.child('arrangement-planner')
+
 /**
  * Runs the arrangement planner in a private Pi session.
  *
@@ -61,6 +66,25 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
 
   async plan(input: Parameters<ArrangementPlannerPort['plan']>[0]): Promise<ArrangementPlanningResult> {
     const { planningId, draft, employees, plannerEmployees, signal, onProgress } = input
+    const context: LogFields = {
+      planningId, runId: planningId, draftId: draft.id, draftRevision: draft.revision,
+      round: input.diagnosticContext?.round ?? 1,
+      employeeScope: input.diagnosticContext?.employeeScope ?? employees[0]?.source ?? 'authorized',
+      modelId: input.modelId ?? input.plannerModelId ?? this.options.plannerModelId,
+      employeeCount: employees.length, existingNodeCount: draft.nodes.length,
+      unresolvedStepCount: draft.unresolvedSteps?.length ?? 0,
+    }
+    const workerEvents: TaskExecutionEvent[] = []
+    let phase: PlanningPhase = 'initialization'
+    let phaseStartedAt = Date.now()
+    let primaryError = false
+    const nextPhase = (next: PlanningPhase, fields: LogFields = {}): void => {
+      log.info('planning phase completed', { ...context, phase, elapsedMs: Date.now() - phaseStartedAt, ...fields })
+      phase = next
+      phaseStartedAt = Date.now()
+      log.info('planning phase started', { ...context, phase })
+    }
+    log.info('planning phase started', { ...context, phase })
     const controller = new AbortController()
     const externalAbortHandler = (): void => controller.abort()
     this.planningControllers.set(planningId, controller)
@@ -75,21 +99,23 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       const selectedModelId = input.modelId ?? input.plannerModelId ?? this.options.plannerModelId
       const plannerEmployee = selectPlannerEmployee(plannerEmployees ?? employees, this.options, selectedModelId)
       const plannerModelId = selectedModelId ?? plannerEmployee.allowedModels[0] ?? ''
+      context.modelId = plannerModelId
+      context.subscriptionId = plannerEmployee.subscriptionId
       const prompt = buildArrangementPlannerPrompt(draft, employees)
-      const workerEvents: TaskExecutionEvent[] = []
 
       // A planner returns JSON, never executes tools. Even a non-compliant gateway
       // must not turn unexpected tool calls into an unbounded agent loop.
       let rejectToolCall!: (error: AppError) => void
       const invalidToolCall = new Promise<never>((_resolve, reject) => { rejectToolCall = reject })
       const worker = this.createWorker(planningId, plannerEmployee, plannerModelId, event => {
+        workerEvents.push(event)
         if (event.type === 'tool_execution_start') {
           rejectToolCall(new AppError('PLANNING_FAILED', {
             message: '自动编排模型返回了异常工具调用，已停止规划，请重试。',
+            details: { phase: 'provider-request', reason: 'unexpected-tool-call' },
           }))
           return
         }
-        workerEvents.push(event)
       })
       let abortHandler: (() => void) | null = null
       const abortPromise = new Promise<never>((_resolve, reject) => {
@@ -101,6 +127,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
         else planningSignal.addEventListener('abort', abortHandler, { once: true })
       })
       let runPromise: Promise<void>
+      nextPhase('provider-request', { promptLength: prompt.length })
       try {
         runPromise = worker.run(prompt)
       } catch (error) {
@@ -114,6 +141,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       try {
         await Promise.race([runPromise, abortPromise, invalidToolCall])
         throwIfAborted(planningSignal)
+        nextPhase('response-assembly', summarizeWorkerEvents(workerEvents))
         const deltas = workerEvents
           .filter(event => event.type === 'text_delta')
           .map(event => readTextDelta(event.data))
@@ -125,7 +153,13 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
           .filter((value): value is string => value !== null)
           .join('')
         const text = deltas || messageText
-        const result = parseArrangementPlannerOutput(text, draft, employees)
+        Object.assign(context, {
+          textDeltaLength: deltas.length, messageTextLength: messageText.length,
+          responseLength: text.length, responseFingerprint: createHash('sha256').update(text).digest('hex'),
+        })
+        if (!text.trim()) throw planningFailure('response-assembly', 'empty-response')
+        const result = parseArrangementPlannerOutput(text, draft, employees, nextPhase)
+        nextPhase('finalization', { nodeCount: result.nodes.length, unresolvedStepCount: result.unresolvedSteps?.length ?? 0 })
         if (result.intentAnalysis) {
           onProgress({
             planningId,
@@ -163,8 +197,10 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
           }))
         }
 
+        log.info('planning phase completed', { ...context, phase, elapsedMs: Date.now() - phaseStartedAt, nodeCount: result.nodes.length, unresolvedStepCount: result.unresolvedSteps?.length ?? 0 })
         return result
       } catch (error) {
+        primaryError = true
         if (isUnsupportedModelError(error)) {
           throw new AppError('PLANNING_FAILED', {
             message: '当前选择的模型未配置在服务端账号组中。请管理员同步可用模型，或选择其他模型后重试。',
@@ -174,8 +210,22 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
         throw error
       } finally {
         if (abortHandler) planningSignal.removeEventListener('abort', abortHandler)
-        await worker.dispose()
+        await worker.dispose().catch((error: unknown) => {
+          log.error('planning cleanup failed', { ...context, ...planningErrorFields(error), phase: 'cleanup' })
+          if (!primaryError) {
+            phase = 'cleanup'
+            throw error
+          }
+        })
       }
+    } catch (error) {
+      const cancelled = controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')
+      const fields = planningErrorFields(error)
+      const failurePhase = fields.phase ?? phase
+      const details = { ...context, ...summarizeWorkerEvents(workerEvents), ...fields, phase: failurePhase, elapsedMs: Date.now() - phaseStartedAt }
+      if (cancelled) log.info('planning cancelled', details)
+      else log.error('planning phase failed', details)
+      throw error
     } finally {
       if (signal) signal.removeEventListener('abort', externalAbortHandler)
       if (this.planningControllers.get(planningId) === controller) this.planningControllers.delete(planningId)
@@ -219,6 +269,17 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       runtime: this.options.runtime,
     }
     return this.options.createWorker?.(workerOptions) ?? new PiTaskWorker(workerOptions)
+  }
+}
+
+function summarizeWorkerEvents(events: readonly TaskExecutionEvent[]): LogFields {
+  return {
+    eventCount: events.length,
+    eventTypes: [...new Set(events.map(event => event.type))],
+    textDeltaCount: events.filter(event => event.type === 'text_delta').length,
+    messageEndCount: events.filter(event => event.type === 'message_end').length,
+    textDeltaLength: events.reduce((length, event) => length + (event.type === 'text_delta' ? readTextDelta(event.data)?.length ?? 0 : 0), 0),
+    messageTextLength: events.reduce((length, event) => length + (event.type === 'message_end' ? readMessageText(event.data)?.length ?? 0 : 0), 0),
   }
 }
 

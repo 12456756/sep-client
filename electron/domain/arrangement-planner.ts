@@ -1,4 +1,4 @@
-import { AppError } from '../errors/app-error'
+import { planningFailure, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
 import { validateArrangementDraft, type ArrangementCandidateMatch, type ArrangementDraft, type ArrangementIntentAnalysis, type ArrangementNode, type ArrangementUnresolvedStep } from './arrangement-plan'
 
 export interface ArrangementPlannerCapability {
@@ -67,6 +67,7 @@ export interface ArrangementPlannerPort {
     employees: readonly ArrangementPlannerEmployee[]
     plannerEmployees?: readonly ArrangementPlannerEmployee[]
     plannerModelId?: string
+    diagnosticContext?: PlanningDiagnosticContext
     signal?: AbortSignal
     onProgress: (event: ArrangementPlanningProgress) => void
   }): Promise<ArrangementPlanningResult>
@@ -114,28 +115,32 @@ export function parseArrangementPlannerOutput(
   raw: string,
   draft: ArrangementDraft,
   employees: readonly ArrangementPlannerEmployee[],
+  onPhase?: (phase: PlanningPhase) => void,
 ): ArrangementPlanningResult {
-  const value = JSON.parse(extractJson(raw)) as unknown
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AppError('PLANNING_FAILED')
+  onPhase?.('json-extraction')
+  const json = extractJson(raw)
+  onPhase?.('json-parse')
+  let value: unknown
+  try { value = JSON.parse(json) as unknown } catch (error) { throw planningFailure('json-parse', 'invalid-json', error) }
+  onPhase?.('output-validation')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw planningFailure('output-validation', 'invalid-output-shape')
   const record = value as Record<string, unknown>
   if (typeof record.title !== 'string' || !Array.isArray(record.nodes) || record.nodes.length > 32) {
-    throw new AppError('PLANNING_FAILED')
+    throw planningFailure('output-validation', 'invalid-output-shape')
   }
   const employeeById = new Map(employees.map(employee => [employee.subscriptionId, employee]))
   const intentAnalysis = parseIntentAnalysis(record.intentAnalysis)
   const unresolvedSteps = parseUnresolvedSteps(record.unresolvedSteps)
   const candidateMatches = parseCandidateMatches(record.candidateMatches, employees, intentAnalysis, unresolvedSteps)
-  if (record.nodes.length === 0 && unresolvedSteps.length === 0) throw new AppError('PLANNING_FAILED')
+  if (record.nodes.length === 0 && unresolvedSteps.length === 0) throw planningFailure('output-validation', 'empty-plan')
   const nodes = record.nodes.map((candidate, index) => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new AppError('PLANNING_FAILED')
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFailure('output-validation', 'invalid-node')
     const item = candidate as Record<string, unknown>
     const subscriptionId = stringField(item.subscriptionId)
     const modelId = stringField(item.modelId)
-    if (!subscriptionId || !modelId) throw new AppError('PLANNING_FAILED')
-    const employee = employeeById.get(subscriptionId)
-    if (!employee || employee.status !== 'ACTIVE' || employee.canExecute === false || !employee.allowedModels.includes(modelId)) throw new AppError('PLANNING_FAILED')
+    if (!subscriptionId || !modelId) throw planningFailure('output-validation', 'missing-node-fields')
     const skillIds = stringArray(item.skillIds)
-    if (skillIds.some(skillId => !draft.sharedSkillIds.includes(skillId))) throw new AppError('PLANNING_FAILED')
+    if (skillIds.some(skillId => !draft.sharedSkillIds.includes(skillId))) throw planningFailure('output-validation', 'skill-not-allowed')
     return {
       id: stringField(item.id) ?? `node-${index + 1}`,
       subscriptionId,
@@ -149,6 +154,16 @@ export function parseArrangementPlannerOutput(
       ...(stringField(item.stepId) ? { stepId: stringField(item.stepId)! } : {}),
     }
   })
+  if (nodes.some(node => !node.title || !node.instruction)) throw planningFailure('output-validation', 'missing-node-fields')
+  onPhase?.('employee-validation')
+  for (const node of nodes) {
+    const employee = employeeById.get(node.subscriptionId)
+    if (!employee || employee.status !== 'ACTIVE' || employee.canExecute === false) throw planningFailure('employee-validation', 'employee-unavailable')
+  }
+  onPhase?.('model-validation')
+  for (const node of nodes) {
+    if (!employeeById.get(node.subscriptionId)!.allowedModels.includes(node.modelId)) throw planningFailure('model-validation', 'model-not-allowed')
+  }
   const planned: ArrangementDraft = {
     ...structuredClone(draft),
     title: record.title.trim(),
@@ -159,7 +174,8 @@ export function parseArrangementPlannerOutput(
     revision: draft.revision,
     updatedAt: Date.now(),
   }
-  try { validateArrangementDraft(planned) } catch { throw new AppError('PLANNING_FAILED') }
+  onPhase?.('dag-validation')
+  try { validateArrangementDraft(planned) } catch (error) { throw planningFailure('dag-validation', 'invalid-draft', error) }
   return {
     title: planned.title,
     nodes: structuredClone(nodes),
@@ -172,31 +188,31 @@ export function parseArrangementPlannerOutput(
 
 function parseIntentAnalysis(value: unknown): ArrangementIntentAnalysis | undefined {
   if (value === undefined) return undefined
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AppError('PLANNING_FAILED')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw planningFailure('output-validation', 'invalid-intent-analysis')
   const record = value as Record<string, unknown>
-  if (typeof record.summary !== 'string' || !Array.isArray(record.steps) || record.steps.length === 0) throw new AppError('PLANNING_FAILED')
+  if (typeof record.summary !== 'string' || !Array.isArray(record.steps) || record.steps.length === 0) throw planningFailure('output-validation', 'invalid-intent-analysis')
   const steps = record.steps.map(candidate => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new AppError('PLANNING_FAILED')
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFailure('output-validation', 'invalid-intent-step')
     const item = candidate as Record<string, unknown>
     const id = stringField(item.id)
     const title = stringField(item.title)
-    if (!id || !title) throw new AppError('PLANNING_FAILED')
+    if (!id || !title) throw planningFailure('output-validation', 'invalid-intent-step')
     const requiredCapabilityIds = stringArray(item.requiredCapabilityIds)
     return { id, title, requiredCapabilities: stringArray(item.requiredCapabilities), ...(requiredCapabilityIds.length ? { requiredCapabilityIds } : {}), dependsOn: stringArray(item.dependsOn) }
   })
-  if (new Set(steps.map(step => step.id)).size !== steps.length) throw new AppError('PLANNING_FAILED')
+  if (new Set(steps.map(step => step.id)).size !== steps.length) throw planningFailure('output-validation', 'duplicate-intent-step')
   return { summary: record.summary.trim(), steps }
 }
 
 function parseUnresolvedSteps(value: unknown): ArrangementUnresolvedStep[] {
   if (value === undefined) return []
-  if (!Array.isArray(value)) throw new AppError('PLANNING_FAILED')
+  if (!Array.isArray(value)) throw planningFailure('output-validation', 'invalid-unresolved-steps')
   return value.map(candidate => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw new AppError('PLANNING_FAILED')
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFailure('output-validation', 'invalid-unresolved-step')
     const item = candidate as Record<string, unknown>
     const stepId = stringField(item.stepId)
     const reason = stringField(item.reason)
-    if (!stepId || !reason) throw new AppError('PLANNING_FAILED')
+    if (!stepId || !reason) throw planningFailure('output-validation', 'invalid-unresolved-step')
     const requiredCapabilityIds = stringArray(item.requiredCapabilityIds)
     return { stepId, reason, requiredCapabilities: stringArray(item.requiredCapabilities), ...(requiredCapabilityIds.length ? { requiredCapabilityIds } : {}) }
   })
@@ -243,7 +259,8 @@ function extractJson(raw: string): string {
   if (candidate.startsWith('{') && candidate.endsWith('}')) return candidate
   const start = candidate.indexOf('{')
   const end = candidate.lastIndexOf('}')
-  if (start < 0 || end <= start) throw new AppError('PLANNING_FAILED')
+  if (start < 0) throw planningFailure('json-extraction', 'json-not-found')
+  if (end <= start) return candidate.slice(start)
   return candidate.slice(start, end + 1)
 }
 
