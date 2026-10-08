@@ -115,6 +115,51 @@ describe('TaskRuntime arrangement integration', () => {
     assert.ok(timeline.some(event => event.type === 'arrangement_node_completed'))
     assert.equal(checkpoints.value?.state.status, 'completed')
   })
+  it('loads each selected employee skills', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-employee-skills-'))
+    directories.push(userDataDir)
+    const runStore = new TaskRunStore(userDataDir)
+    const manager = new TaskManager(userDataDir, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('employee skills', 'complete the work', undefined, employee.subscriptionId)
+    const employeeSkills = new Map([
+      [employee.subscriptionId, [join(userDataDir, 'skills', 'employee-a')]],
+      ['employee-b', [join(userDataDir, 'skills', 'employee-b')]],
+    ])
+    const arrangement = twoNodePlan(task.id)
+    arrangement.nodes = arrangement.nodes.map((node, index) => ({
+      ...node,
+      subscriptionId: index === 0 ? employee.subscriptionId : 'employee-b',
+    }))
+    const contexts: Array<Parameters<NonNullable<ConstructorParameters<typeof TaskRuntime>[0]['createWorker']>>[0]['context']> = []
+    const authorizedSubscriptions: string[] = []
+    const runtime = new TaskRuntime({
+      taskManager: manager, taskRunStore: runStore, workPlanStore: new MemoryPlanStore(arrangement),
+      arrangementCheckpointStore: new MemoryCheckpointStore(),
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+      resolveEmployee: id => id === employee.subscriptionId ? employee : null,
+      authorizeEmployee: async subscriptionId => {
+        authorizedSubscriptions.push(subscriptionId)
+        const skillPaths = employeeSkills.get(subscriptionId)
+        return skillPaths ? { ...employee, subscriptionId, additionalSkillPaths: [...skillPaths] } : null
+      },
+      createWorker: options => {
+        contexts.push(options.context)
+        return { async run() {}, async abort() {}, async dispose() {} }
+      },
+    })
+
+    await runtime.executeTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+
+    assert.deepEqual(contexts.map(context => context.subscriptionId), ['employee-a', 'employee-b'])
+    for (const context of contexts) {
+      assert.deepEqual(context.additionalSkillPaths, employeeSkills.get(context.subscriptionId))
+    }
+    assert.ok(authorizedSubscriptions.includes('employee-a'))
+    assert.ok(authorizedSubscriptions.includes('employee-b'))
+  })
 })
 
 
