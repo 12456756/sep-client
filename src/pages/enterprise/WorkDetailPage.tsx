@@ -13,7 +13,7 @@ import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpris
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
-import { dayTimeText, durationText, stampText } from '../../features/enterprise/vocabulary';
+import { clockTime, dayTimeText, durationText, stampText } from '../../features/enterprise/vocabulary';
 
 interface Props {
   workspace: EnterpriseWorkspace;
@@ -409,6 +409,24 @@ function Process({ work }: { work: WorkItem }) {
       {work.activities.length ? (
         <ol className="ent-wk-activity-list" aria-label="工作执行记录" tabIndex={0}>
           {work.activities.map(activity => <WorkActivityRow key={`${activity.runId}:${activity.id}`} activity={activity} />)}
+        </ol>
+      ) : work.timeline.length ? (
+        /*
+          结构化动作只活在运行中的会话里，结束（或重启应用）之后就没了；
+          但「做完了也该看得到过程」—— 这时回落到持久化的时间线：
+          它由后台日志与产出记录建成，和工作记录页展开的那份是同一个数据。
+        */
+        <ol className="ent-timeline" aria-label="工作执行记录">
+          {work.timeline.map(entry => (
+            <li key={entry.id} className={entry.kind}>
+              <span className="ent-timeline-dot" aria-hidden />
+              <span className="ent-timeline-body">
+                <strong>{entry.actor}</strong>
+                <span>{entry.text}</span>
+                <small>{clockTime(entry.at)}</small>
+              </span>
+            </li>
+          ))}
         </ol>
       ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}
     </section>

@@ -3079,3 +3079,11 @@
 /* 多人协作时的头像串：叠着放，最多露三张，露出「是谁在做」而不占一行高。 */
 .ent-wk-infobar-team { display: flex; flex: 0 0 auto; }
 .ent-wk-infobar-team > .ent-face + .ent-face { margin-left: -9px; box-shadow: 0 0 0 2px var(--ent-panel); }
+
+/*
+ * 时间线回落（工作过程在没有结构化动作时的持久化记录）：
+ * 主栏报表框高度是定的，清单在里面滚，和动作清单同一套上限；
+ * 侧栏整列自己滚，这里就按自然高度排，不套第二根滚动条。
+ */
+.ent-work-process .ent-timeline { max-height: 300px; margin-top: 4px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ent-line-strong) transparent; }
+.ent-wk-detail-side .ent-work-process .ent-timeline { max-height: none; overflow: visible; }
