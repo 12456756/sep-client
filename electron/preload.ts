@@ -1,3 +1,4 @@
+import type { NotificationUpdate } from '../src/shared/notification-contracts';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { ElectronAPI } from '../src/shared/ipc';
 import type {
@@ -15,6 +16,18 @@ const runtimePlatform = process.platform === 'darwin' || process.platform === 'w
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
 
 const electronAPI = {
+  listNotifications: query => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_LIST, query ?? {}),
+  getUnreadNotificationCount: query => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_UNREAD_COUNT, query ?? {}),
+  markNotificationRead: id => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_MARK_READ, id),
+  markAllNotificationsRead: query => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_MARK_ALL_READ, query ?? {}),
+  deleteNotification: id => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_DELETE, id),
+  clearReadNotifications: query => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_CLEAR_READ, query ?? {}),
+  openNotificationAction: url => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_OPEN_ACTION, url),
+  onNotificationUpdate: callback => {
+    const handler = (_event: IpcRendererEvent, update: NotificationUpdate) => callback(update);
+    ipcRenderer.on(EVENT_CHANNELS.NOTIFICATION_UPDATED, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.NOTIFICATION_UPDATED, handler);
+  },
   platform: runtimePlatform,
   windowChrome: { height: windowChromeConfig.contentTop, rightInset: windowChromeConfig.windowsRightInset },
   listSkillLibrary: () => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_LIST),

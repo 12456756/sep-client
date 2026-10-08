@@ -1,3 +1,4 @@
+import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type {
   ComputeAllowance,
@@ -233,6 +234,14 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  listNotifications: (query?: NotificationQuery) => Promise<IpcCommandResult & { data?: NotificationPage }>
+  getUnreadNotificationCount: (query?: NotificationCategoryQuery) => Promise<IpcCommandResult & { data?: { count: number } }>
+  markNotificationRead: (id: string) => Promise<IpcCommandResult>
+  markAllNotificationsRead: (query?: NotificationCategoryQuery) => Promise<IpcCommandResult>
+  deleteNotification: (id: string) => Promise<IpcCommandResult>
+  clearReadNotifications: (query?: NotificationCategoryQuery) => Promise<IpcCommandResult>
+  openNotificationAction: (url: string) => Promise<IpcCommandResult>
+  onNotificationUpdate: (callback: (event: NotificationUpdate) => void) => () => void
   platform: RuntimePlatform
   windowChrome: WindowChromeRuntime
   setWindowTheme: (theme: WindowTheme) => Promise<IpcCommandResult>

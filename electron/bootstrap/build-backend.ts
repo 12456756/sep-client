@@ -1,3 +1,5 @@
+import { NotificationService } from '../service/notification-service'
+import { NotificationSocket } from '../common/platform/notification-socket'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { SkillLibraryService } from '../service/skill-library-service'
 /**
@@ -66,6 +68,7 @@ class BackendRuntime {
   readonly arrangements: ArrangementService
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
+  readonly notifications: NotificationService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -83,6 +86,19 @@ class BackendRuntime {
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.authSession = new AuthSessionManager()
+    this.notifications = new NotificationService({
+      scope: this,
+      getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
+      onAuthenticationRequired: () => this.invalidateAuthentication(),
+      onUpdate: event => this.renderer.notificationUpdated?.(event),
+      createSocket: onMessage => new NotificationSocket({
+        baseUrl: config.SEP_BASE_URL,
+        getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
+        subscribeAccessToken: callback => this.authSession.subscribeAccessToken(callback),
+        onAuthenticationRequired: () => this.invalidateAuthentication(),
+        onMessage,
+      }),
+    })
     this.taskManager = new TaskManager(userDataDir, renderer)
     this.clientMonitor = new ClientMonitorService({
       store: new ClientMonitorStore(userDataDir),
@@ -261,6 +277,7 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.notifications.stop()
     await this.runtime.peek()?.stopAll()
     await this.clientMonitor.stop()
   }

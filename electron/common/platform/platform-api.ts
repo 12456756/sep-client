@@ -1,3 +1,9 @@
+import {
+  notificationPageSchema, notificationQuerySchema, notificationCategoryQuerySchema,
+  notificationIdSchema, unreadNotificationCountSchema,
+  type NotificationPage, type NotificationQuery, type NotificationCategoryQuery,
+} from '../../../src/shared/notification-contracts'
+export type { PlatformNotification as Notification, NotificationQuery } from '../../../src/shared/notification-contracts'
 import { config } from '../config'
 import {
   enterpriseOrganizationSchema, enterpriseOverviewSchema, platformEmployeePageSchema, employeeAccessRequestSchema, employeeAccessRequestInputSchema, skillVersionSchema,
@@ -177,12 +183,6 @@ export interface KnowledgeBaseSearchResponse {
   results: KnowledgeBaseSearchResult[]
 }
 
-export interface Notification {
-  id: string
-  category: string
-  [key: string]: unknown
-}
-
 export interface EmployeeStatus {
   employeeId: string
   status: string
@@ -198,13 +198,6 @@ export interface UploadInput {
   bytes: Uint8Array
   filename: string
   contentType: string
-}
-
-export interface NotificationQuery {
-  limit?: number
-  offset?: number
-  category?: string
-  unreadOnly?: boolean
 }
 
 export interface ApiError {
@@ -276,6 +269,7 @@ async function parseError(response: Response, resource?: AuthApiResource): Promi
 async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource): Promise<T> {
   const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
+    ...(resource === 'notifications' ? { signal: AbortSignal.timeout(15_000) } : {}),
   })
   if (!response.ok) throw await parseError(response, resource)
   return response.json() as Promise<T>
@@ -410,32 +404,50 @@ export function getEmployeeStatus(accessToken: string): Promise<EmployeeStatus[]
   return getJson<EmployeeStatus[]>('/enterprise/employee-status', accessToken, 'subscriptions')
 }
 
-export function listNotifications(accessToken: string, params: NotificationQuery = {}): Promise<Notification[]> {
+function notificationQueryString(params: NotificationQuery | NotificationCategoryQuery): string {
   const query = new URLSearchParams()
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) query.set(key, String(value))
   }
-  return getJson<Notification[]>(`/notifications${query.size ? `?${query.toString()}` : ''}`, accessToken, 'notifications')
+  return query.size ? `?${query.toString()}` : ''
 }
 
-export function getUnreadNotificationCount(accessToken: string): Promise<{ count: number }> {
-  return getJson<{ count: number }>('/notifications/unread-count', accessToken, 'notifications')
+export async function listNotifications(accessToken: string, params: NotificationQuery = {}): Promise<NotificationPage> {
+  const query = notificationQueryString(notificationQuerySchema.parse(params))
+  return notificationPageSchema.parse(await getJson<unknown>(`/notifications${query}`, accessToken, 'notifications'))
 }
 
-export function markNotificationRead(notificationId: string, accessToken: string): Promise<unknown> {
-  return postJson('/notifications/' + encodeURIComponent(notificationId) + '/read', {}, accessToken, 'notifications')
+export async function getUnreadNotificationCount(accessToken: string, params: NotificationCategoryQuery = {}): Promise<{ count: number }> {
+  const query = notificationQueryString(notificationCategoryQuerySchema.parse(params))
+  return unreadNotificationCountSchema.parse(await getJson<unknown>(`/notifications/unread-count${query}`, accessToken, 'notifications'))
 }
 
-export function markAllNotificationsRead(accessToken: string): Promise<unknown> {
-  return postJson('/notifications/read-all', {}, accessToken, 'notifications')
+/** Notification writes return 204; do not try to decode a nonexistent JSON body. */
+async function notificationCommand(path: string, method: 'POST' | 'DELETE', accessToken: string): Promise<void> {
+  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!response.ok) throw await parseError(response, 'notifications')
 }
 
-export function deleteNotification(notificationId: string, accessToken: string): Promise<unknown> {
-  return deleteJson('/notifications/' + encodeURIComponent(notificationId), accessToken, 'notifications')
+export async function markNotificationRead(notificationId: string, accessToken: string): Promise<void> {
+  await notificationCommand(`/notifications/${encodeURIComponent(notificationIdSchema.parse(notificationId))}/read`, 'POST', accessToken)
 }
 
-export function clearReadNotifications(accessToken: string): Promise<unknown> {
-  return deleteJson('/notifications/clear-read', accessToken, 'notifications')
+export async function markAllNotificationsRead(accessToken: string, params: NotificationCategoryQuery = {}): Promise<void> {
+  const query = notificationQueryString(notificationCategoryQuerySchema.parse(params))
+  await notificationCommand(`/notifications/read-all${query}`, 'POST', accessToken)
+}
+
+export async function deleteNotification(notificationId: string, accessToken: string): Promise<void> {
+  await notificationCommand(`/notifications/${encodeURIComponent(notificationIdSchema.parse(notificationId))}`, 'DELETE', accessToken)
+}
+
+export async function clearReadNotifications(accessToken: string, params: NotificationCategoryQuery = {}): Promise<void> {
+  const query = notificationQueryString(notificationCategoryQuerySchema.parse(params))
+  await notificationCommand(`/notifications/clear-read${query}`, 'DELETE', accessToken)
 }
 
 export async function uploadFile(input: UploadInput, accessToken: string): Promise<UploadFile> {
@@ -467,16 +479,6 @@ export async function uploadFiles(inputs: UploadInput[], accessToken: string): P
 export async function refreshUploadUrl(key: string, accessToken: string): Promise<UploadFile> {
   return postJson<UploadFile>(`/upload/refresh-url?key=${encodeURIComponent(key)}`, {}, accessToken, 'upload')
 }
-
-async function deleteJson<T>(path: string, accessToken: string, resource: AuthApiResource): Promise<T> {
-  const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-  if (!response.ok) throw await parseError(response, resource)
-  return response.json() as Promise<T>
-}
-
 
 /**
  * Web pages resolve root-relative image paths against their own origin. The Electron

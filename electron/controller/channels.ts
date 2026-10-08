@@ -21,6 +21,13 @@ export const INVOKE_CHANNELS = {
   AUTH_GET_INSTANCES: 'auth:get-instances',
   AUTH_GET_EMPLOYEE_STATUS: 'auth:get-employee-status',
   AUTH_GET_ORGANIZATION: 'auth:get-organization',
+  NOTIFICATION_LIST: 'notifications:list',
+  NOTIFICATION_UNREAD_COUNT: 'notifications:unread-count',
+  NOTIFICATION_MARK_READ: 'notifications:mark-read',
+  NOTIFICATION_MARK_ALL_READ: 'notifications:mark-all-read',
+  NOTIFICATION_DELETE: 'notifications:delete',
+  NOTIFICATION_CLEAR_READ: 'notifications:clear-read',
+  NOTIFICATION_OPEN_ACTION: 'notifications:open-action',
   PROFILE_GET: 'profile:get',
   PROFILE_UPLOAD_AVATAR: 'profile:upload-avatar',
   PROFILE_UPLOAD_ENTERPRISE_LOGO: 'profile:upload-enterprise-logo',
@@ -75,6 +82,7 @@ export const SEND_CHANNELS = {
 
 /** main -> renderer，`webContents.send` / `ipcRenderer.on`。 */
 export const EVENT_CHANNELS = {
+  NOTIFICATION_UPDATED: 'notifications:updated',
   AUTH_REQUIRED: 'auth:required',
   PI_EVENT: 'pi:event',
   TOOL_APPROVAL_REQUEST: 'pi:tool-approval-request',

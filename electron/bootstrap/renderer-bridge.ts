@@ -1,3 +1,4 @@
+import type { NotificationUpdate } from '../../src/shared/notification-contracts'
 /**
  * electron/bootstrap/renderer-bridge.ts — main -> renderer 的唯一推送出口
  *
@@ -23,6 +24,10 @@ export class RendererBridge implements RendererPort {
   /** 需要父窗口的原生弹框（目录选择）用它，避免第二处窗口引用。 */
   currentWindow(): BrowserWindow | null {
     return this.window && !this.window.isDestroyed() ? this.window : null
+  }
+
+  notificationUpdated(update: NotificationUpdate): void {
+    this.send(EVENT_CHANNELS.NOTIFICATION_UPDATED, update)
   }
 
   taskUpdated(task: ClientTask): void {

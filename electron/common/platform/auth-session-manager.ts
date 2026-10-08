@@ -1,3 +1,4 @@
+import { logger } from '../logger'
 import { AuthenticationRequiredError } from './authentication-required-error'
 import { refreshAccessToken, type LoginResponse } from './platform-api'
 import { RefreshTokenRotationQueue, registerSharedRefreshTokenRotation } from './refresh-token-rotation'
@@ -13,6 +14,7 @@ import {
 const EXPIRY_SKEW_MS = 30_000
 
 export class AuthSessionManager {
+  private readonly accessTokenListeners = new Set<(token: string | null) => void>()
   private accessToken: string | null = null
   private accessTokenExpiresAt = 0
   private refreshToken: string | null = null
@@ -59,6 +61,7 @@ export class AuthSessionManager {
       this.clear()
       throw error
     }
+    this.publishAccessToken()
     return this.meta
   }
 
@@ -94,6 +97,7 @@ export class AuthSessionManager {
         email: response.user.email,
       }
       saveAuthMeta(this.meta)
+      this.publishAccessToken()
       return response.accessToken
     }).catch(error => {
       if (error instanceof AuthenticationRequiredError || (error && typeof error === 'object' && (error as { statusCode?: number }).statusCode === 401)) {
@@ -121,7 +125,23 @@ export class AuthSessionManager {
     this.meta = null
     this.refreshPromise = null
     this.refreshTokenRotation.invalidate()
+    this.publishAccessToken()
     clearCredentials()
+  }
+
+  /** Main-process observers only: a refreshed token must replace the old WS connection. */
+  subscribeAccessToken(callback: (token: string | null) => void): () => void {
+    this.accessTokenListeners.add(callback)
+    return () => { this.accessTokenListeners.delete(callback) }
+  }
+
+  private publishAccessToken(): void {
+    for (const callback of this.accessTokenListeners) {
+      try { callback(this.accessToken) } catch {
+        // Never log a callback error: it could contain credentials supplied to the observer.
+        logger.child('auth-session').warn('access token observer failed')
+      }
+    }
   }
 
   private isAccessTokenExpired(): boolean {

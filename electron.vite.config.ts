@@ -11,6 +11,9 @@ export default defineConfig({
         input: {
           index: resolve(__dirname, 'electron/main.ts'),
         },
+        // ws 的 bufferutil/utf-8-validate 是可选 peer 依赖，交给 Node 运行时加载，
+        // 避免 Vite 将 ws 内部的可选 require 转成启动即抛错的 bundle。
+        external: ['ws'],
       },
     },
   },

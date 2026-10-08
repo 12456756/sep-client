@@ -151,3 +151,12 @@ describe('renderer push has a single exit', () => {
   })
 })
 
+
+
+describe('development process consistency', () => {
+  it('watches main/preload changes so new IPC routes are loaded with the renderer', () => {
+    const pkg = JSON.parse(readFileSync(join(electronDir, '..', 'package.json'), 'utf8')) as { scripts: { dev: string } }
+    assert.match(pkg.scripts.dev, /electron-vite dev(?:\s|$)/)
+    assert.match(pkg.scripts.dev, /(?:^|\s)--watch(?:\s|$)/, 'Renderer HMR alone leaves the old main process without new IPC handlers')
+  })
+})
