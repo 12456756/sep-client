@@ -254,11 +254,9 @@ export class ArrangementService {
       let executableNodes = mergeExecutableNodes([], result.nodes)
       context.completedNodeCount = executableNodes.length
       context.unresolvedStepCount = unresolvedSteps.length
-      let enterpriseCandidates: ArrangementPlannerEmployee[] = []
-
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
         nextPhase('employee-loading', { round: 2, employeeScope: 'enterprise' })
-        enterpriseCandidates = await this.deps.candidateEmployees.listEnterprise()
+        const enterpriseCandidates = await this.deps.candidateEmployees.listEnterprise()
         context.employeeCount = enterpriseCandidates.length
         if (enterpriseCandidates.length) {
           planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
@@ -283,33 +281,27 @@ export class ArrangementService {
       }
 
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
-        const steps = unresolvedSteps.filter(step => !enterpriseCandidates.some(employee => coversStep(step, employee)))
-        if (steps.length) {
-          nextPhase('employee-loading', { round: 3, employeeScope: 'platform' })
-          const platform = await this.deps.candidateEmployees.listPlatform({
-            keywords: extractPlanningKeywords(steps),
-            capabilityIds: extractCapabilityIds(steps),
+        nextPhase('employee-loading', { round: 3, employeeScope: 'platform' })
+        const platform = await this.deps.candidateEmployees.listPlatform()
+        context.employeeCount = platform.length
+        if (platform.length) {
+          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
+          employees = platform
+          nextPhase('round-3')
+          result = await this.deps.planner!.plan({
+            planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            modelId, plannerModelId: modelId,
+            diagnosticContext,
+            onProgress: event => this.emitPlanning(event),
           })
-          context.employeeCount = platform.length
-          if (platform.length) {
-            planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
-            employees = platform
-            nextPhase('round-3')
-            result = await this.deps.planner!.plan({
-              planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
-              modelId, plannerModelId: modelId,
-              diagnosticContext,
-              onProgress: event => this.emitPlanning(event),
-            })
-            executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
-            unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
-            context.completedNodeCount = executableNodes.length
-            context.unresolvedStepCount = unresolvedSteps.length
-            candidateMatches = mergeCandidateMatches(
-              mergeCandidateMatches(candidateMatches, result.candidateMatches ?? []),
-              matchCandidateEmployees(unresolvedSteps, platform),
-            )
-          }
+          executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
+          unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
+          context.completedNodeCount = executableNodes.length
+          context.unresolvedStepCount = unresolvedSteps.length
+          candidateMatches = mergeCandidateMatches(
+            mergeCandidateMatches(candidateMatches, result.candidateMatches ?? []),
+            matchCandidateEmployees(unresolvedSteps, platform),
+          )
         }
       }
       if (controller.signal.aborted) throw new PlanningCancelledError()
@@ -561,14 +553,6 @@ function mergeExecutableNodes(
   return order.map(key => byStep.get(key)!).filter(Boolean)
 }
 
-function extractPlanningKeywords(steps: readonly ArrangementUnresolvedStep[]): string[] {
-  return [...new Set(steps.flatMap(step => step.requiredCapabilities).map(value => value.trim()).filter(Boolean))].slice(0, 10)
-}
-
-function extractCapabilityIds(steps: readonly ArrangementUnresolvedStep[]): string[] {
-  return [...new Set(steps.flatMap(step => step.requiredCapabilityIds ?? []).map(value => value.trim()).filter(Boolean))].slice(0, 10)
-}
-
 function requestedCapabilityIds(draft: ArrangementDraft, stepId: string): string[] {
   const step = draft.intentAnalysis?.steps.find(item => item.id === stepId)
   return step?.requiredCapabilityIds?.length ? [...step.requiredCapabilityIds] : []
@@ -605,18 +589,6 @@ function matchCandidateEmployees(
     }
   }
   return matches
-}
-
-function coversStep(step: ArrangementUnresolvedStep, employee: ArrangementPlannerEmployee): boolean {
-  const requiredIds = step.requiredCapabilityIds?.map(normalizeMatchText).filter(Boolean) ?? []
-  const requiredNames = step.requiredCapabilities.map(normalizeMatchText).filter(Boolean)
-  const capabilities = employee.capabilities ?? []
-  return requiredIds.length > 0
-    ? requiredIds.every(required => capabilities.some(capability => normalizeMatchText(capability.id) === required))
-    : requiredNames.length > 0 && requiredNames.every(required => capabilities.some(capability => {
-      const fields = [capability.name, capability.description].map(normalizeMatchText)
-      return fields.some(field => field === required || field.includes(required) || required.includes(field))
-    }))
 }
 
 function normalizeMatchText(value: string): string {

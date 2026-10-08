@@ -594,6 +594,17 @@ export async function getPlatformEmployees(
   return platformEmployeePageSchema.parse(await getJson('/client/platform-employees' + query, accessToken, 'employee-directory'))
 }
 
+export async function getAllPlatformEmployees(accessToken: string): Promise<PlatformEmployeePage['items']> {
+  const employees = new Map<string, PlatformEmployeePage['items'][number]>()
+  let page = 1
+  for (;;) {
+    const result = await getPlatformEmployees(accessToken, { page, pageSize: 100, sort: 'updatedAt_desc' })
+    for (const employee of result.items) employees.set(employee.employeeId, employee)
+    if (!result.hasNextPage) return [...employees.values()]
+    page += 1
+  }
+}
+
 export async function createEmployeeAccessRequest(
   request: EmployeeAccessRequestInput,
   idempotencyKey: string,

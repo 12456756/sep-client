@@ -10,7 +10,7 @@ import { SkillLibraryService } from '../service/skill-library-service'
  */
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
-import { getSubscriptions, getEnterpriseOverview, getPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
+import { getSubscriptions, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
 import { config } from '../common/config'
 import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
@@ -217,22 +217,10 @@ class BackendRuntime {
             }
           }))
         },
-        async listPlatform({ keywords, capabilityIds = [] }) {
+        async listPlatform() {
           const accessToken = await platformSession.getValidAccessToken()
-          const queries = [
-            ...capabilityIds.map(capabilityId => getPlatformEmployees(accessToken, {
-              capabilityId, page: 1, pageSize: 100, sort: 'updatedAt_desc',
-            })),
-            ...keywords.map(keyword => getPlatformEmployees(accessToken, {
-              keyword, page: 1, pageSize: 100, sort: 'updatedAt_desc',
-            })),
-            ...(!capabilityIds.length && !keywords.length ? [getPlatformEmployees(accessToken, {
-              page: 1, pageSize: 100, sort: 'updatedAt_desc',
-            })] : []),
-          ]
-          const pages = await Promise.all(queries)
-          const items = new Map(pages.flatMap(page => page.items).map(employee => [employee.employeeId, employee]))
-          return [...items.values()]
+          const employees = await getAllPlatformEmployees(accessToken)
+          return employees
             .filter(employee => employee.employeeStatus === 'APPROVED' && employee.canApply && employee.availability === 'AVAILABLE')
             .map(employee => ({
               subscriptionId: `platform:${employee.employeeId}`,
