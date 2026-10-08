@@ -90,16 +90,71 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
       {isConversation ? (
         <>
           <NeedsYou work={work} workspace={workspace} onTalk={() => setPanel('talk')} />
+          {/* 工作信息卡片：左右分栏，左边基本信息，右边进度与最近动态 */}
+          <div className="ent-chat-info">
+            <section className="ent-panel ent-chat-facts">
+              <h2>工作信息</h2>
+              <dl>
+                <div>
+                  <dt>执行员工</dt>
+                  <dd>{work.currentEmployeeName}</dd>
+                </div>
+                <div>
+                  <dt>工作目录</dt>
+                  <dd>{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</dd>
+                </div>
+                <div>
+                  <dt>开始时间</dt>
+                  <dd className="mono">{stampText(work.createdAt)}</dd>
+                </div>
+                <div>
+                  <dt>已运行</dt>
+                  <dd>{over ? durationText(work.updatedAt - work.createdAt) : durationText(Date.now() - work.createdAt)}</dd>
+                </div>
+              </dl>
+            </section>
+
+            <section className="ent-panel ent-chat-progress">
+              <h2>执行进度</h2>
+              <div className="ent-chat-percent">
+                <span className="ent-bar">
+                  <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
+                  <b>{percent}%</b>
+                </span>
+                <small>{doing}</small>
+              </div>
+
+              <h3>最近动态</h3>
+              {work.activities.length ? (
+                <>
+                  <ul className="ent-chat-recent-activities">
+                    {work.activities.slice(-3).reverse().map(activity => (
+                      <li key={`${activity.runId}:${activity.id}`} className={activity.state}>
+                        <time>{hhmm(activity.endedAt ?? activity.startedAt)}</time>
+                        <span>{processActivityLabel(activity)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  {work.activities.length > 3 ? (
+                    <button
+                      type="button"
+                      className="ent-btn sm"
+                      onClick={() => setPanel('plan')}
+                      title="打开完整工作过程记录"
+                    >
+                      查看全部 {work.activities.length} 条
+                    </button>
+                  ) : null}
+                </>
+              ) : (
+                <p className="ent-hint">暂无执行记录</p>
+              )}
+            </section>
+          </div>
+
           <section className="ent-chat-panel" aria-label="工作对话">
             <WorkConversation work={work} workspace={workspace} />
           </section>
-          <details className="ent-chat-details ent-panel">
-            <summary>工作信息与过程</summary>
-            <p className="ent-hint">执行员工：{work.currentEmployeeName}</p>
-            <p className="ent-hint">工作目录：{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</p>
-            <Process work={work} />
-            <MoreInfo work={work} />
-          </details>
         </>
       ) : <div className="ent-wk-grid">
         <section className="ent-panel">
