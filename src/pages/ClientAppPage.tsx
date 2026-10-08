@@ -50,12 +50,22 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
   const { route, overview } = workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const profile = profileWorkspace.profile;
-  const userAvatar = profile
+  const fallbackUserAvatar = workspace.currentUserAvatar ?? initialUserAvatar ?? null;
+  // /client/profile 可能只返回用户基础资料，头像为空时继续使用组织接口的成员头像。
+  const userAvatar = profile?.user.avatar
     ? { name: profile.user.name || userName, avatar: profile.user.avatar }
-    : workspace.currentUserAvatar ?? initialUserAvatar ?? null;
+    : profile
+      ? fallbackUserAvatar
+        ? { ...fallbackUserAvatar, name: profile.user.name || fallbackUserAvatar.name || userName }
+        : { name: profile.user.name || userName, avatar: null }
+      : fallbackUserAvatar;
   const displayUserName = profile?.user.name || userName;
-  const displayEnterpriseName = profile ? profile.enterprise?.name || '我的企业' : overview.name;
-  const displayEnterpriseLogo = profile ? profile.enterprise?.logo ?? null : overview.logo;
+  const displayEnterpriseName = profile ? profile.enterprise?.name || overview.name : overview.name;
+  // Profile 的图片为空或企业对象为空时，回退到 /enterprise/organization 的 Logo。
+  const displayEnterpriseLogo = profile?.enterprise?.logo || overview.logo;
+  const fallbackEnterpriseLogo = profile?.enterprise?.logo && overview.logo && profile.enterprise.logo !== overview.logo
+    ? overview.logo
+    : null;
   const scroll = useRef<HTMLDivElement | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
@@ -121,6 +131,7 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
         enterpriseLogo={displayEnterpriseLogo}
+        enterpriseLogoFallback={fallbackEnterpriseLogo}
         current={route.name}
         needsMeCount={overview.needsMeCount}
         canManage={canManage}
