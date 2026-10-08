@@ -235,10 +235,10 @@ it('does not refresh for Origin/policy/timeout rejection or non-401 HTTP failure
   }
 })
 
-it('refreshes token acquisition 401 once, fails closed on failed refresh, retries other token errors', async () => {
+it('refreshes token acquisition 401 once, fails closed on rejected refresh, retries other token errors', async () => {
   for (const error of [{ statusCode: 401 }, { status: 401 }]) {
     const calls: (boolean | undefined)[] = []
-    const h = harness({ getAccessToken: async force => { calls.push(force); throw force ? new Error('refresh failed') : error } })
+    const h = harness({ getAccessToken: async force => { calls.push(force); throw force ? { statusCode: 401 } : error } })
     h.transport.start(); await flush()
     assert.deepEqual(calls, [false, true])
     assert.equal(h.authenticationRequired, 1)
@@ -436,7 +436,7 @@ it('fetches a fresh token on network reconnect instead of reusing the last socke
   h.transport.stop()
 })
 
-it('fails closed on empty token / synchronous logout subscription / stalled refresh', async () => {
+it('fails closed on empty token / synchronous logout subscription', async () => {
   const empty = harness({ getAccessToken: async () => '' })
   empty.transport.start(); await flush()
   assert.equal(empty.authenticationRequired, 1)
@@ -450,14 +450,54 @@ it('fails closed on empty token / synchronous logout subscription / stalled refr
   assert.equal(unsubscribe, 1)
   assert.equal(loggedOut.sockets.length, 0)
 
+})
+
+it('retries transient forced refresh failures without clearing the authenticated session', async () => {
+  for (const failure of [new TypeError('fetch failed'), { statusCode: 503 }]) {
+    const calls: (boolean | undefined)[] = []
+    let refreshAttempts = 0
+    const h = harness({ getAccessToken: async force => {
+      calls.push(force)
+      if (!force) return 'expired'
+      if (++refreshAttempts === 1) throw failure
+      return 'refreshed'
+    } })
+    h.transport.start(); await flush()
+    h.sockets[0].close(4401); await flush()
+    assert.equal(h.authenticationRequired, 0)
+    assert.deepEqual(calls, [false, true])
+    h.clock.tick(1_000); await flush()
+    assert.deepEqual(calls, [false, true, true])
+    const replacement = h.sockets[1]
+    replacement.open()
+    replacement.message({ type: 'connected', data: { unreadCount: 0 } })
+    assert.deepEqual(replacement.sent, [{ type: 'auth', token: 'refreshed' }])
+    assert.equal(h.authenticationRequired, 0)
+    h.transport.stop()
+  }
+})
+
+it('retries stalled forced refresh and ignores late results from the timed out attempt', async () => {
   const pending = gate<string>()
-  const h = harness({ getAccessToken: force => force ? pending.promise : Promise.resolve('expired') })
+  const calls: (boolean | undefined)[] = []
+  let refreshAttempts = 0
+  const h = harness({ getAccessToken: force => {
+    calls.push(force)
+    if (!force) return Promise.resolve('expired')
+    return ++refreshAttempts === 1 ? pending.promise : Promise.resolve('refreshed')
+  } })
   h.transport.start(); await flush()
   h.sockets[0].close(4401); await flush()
   h.clock.tick(10_000)
-  assert.equal(h.authenticationRequired, 1)
+  assert.equal(h.authenticationRequired, 0)
   pending.resolve('too-late'); await flush()
   assert.equal(h.sockets.length, 1)
+  h.clock.tick(1_000); await flush()
+  assert.deepEqual(calls, [false, true, true])
+  assert.equal(h.sockets.length, 2)
+  h.sockets[1].open()
+  assert.deepEqual(h.sockets[1].sent, [{ type: 'auth', token: 'refreshed' }])
+  h.transport.stop()
   assert.equal(h.clock.jobs.size, 0)
 })
 

@@ -150,8 +150,7 @@ export class NotificationSocket {
     if (token !== undefined) this.currentToken = token
     this.cancelAttempt = this.schedule(() => {
       if (!this.isCurrent(generation)) return
-      if (forceRefresh) this.requireAuthentication()
-      else this.retry(generation)
+      this.retry(generation, forceRefresh)
     }, CONNECT_TIMEOUT_MS)
     void this.obtainToken(generation, token, forceRefresh)
   }
@@ -162,9 +161,14 @@ export class NotificationSocket {
       token = suppliedToken ?? await this.options.getAccessToken(forceRefresh)
     } catch (error: unknown) {
       if (!this.isCurrent(generation)) return
-      if (forceRefresh) this.requireAuthentication()
-      else if (isUnauthorized(error)) this.refreshAuthentication(generation)
-      else this.retry(generation)
+      if (isUnauthorized(error)) {
+        if (forceRefresh) this.requireAuthentication()
+        else this.refreshAuthentication(generation)
+      } else {
+        // A refresh request can fail while the session is still valid. Keep the
+        // forced refresh intent so a retry cannot reuse the rejected access token.
+        this.retry(generation, forceRefresh)
+      }
       return
     }
     if (!this.isCurrent(generation)) return
@@ -257,7 +261,7 @@ export class NotificationSocket {
     }
   }
 
-  private retry(generation: number): void {
+  private retry(generation: number, forceRefresh = false): void {
     if (!this.isCurrent(generation)) return
     const retryGeneration = ++this.generation
     this.disconnect()
@@ -267,7 +271,7 @@ export class NotificationSocket {
     this.cancelRetry = this.schedule(() => {
       if (!this.isCurrent(retryGeneration)) return
       this.cancelRetry = undefined
-      this.connect()
+      this.connect(undefined, forceRefresh)
     }, delay)
   }
 
