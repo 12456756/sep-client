@@ -36,6 +36,7 @@ import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
 import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
 import { mapEnterpriseOrganization, mapOrganizationEmployees } from './organization-mapping';
 import type { OrganizationCarbonEmployee } from './organization-model';
+import { TaskReadCache, mergeInitialTaskQuery, mergeTaskList, mergeTaskUpdate } from './task-read-cache';
 
 /**
  * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
@@ -187,6 +188,9 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   arrangeSeed: ArrangeSeed | null;
   seedArrange: (seed: ArrangeSeed | null) => void;
   navigate: (route: AppRoute) => void;
+  /** 更新当前路由的筛选条件，不创建返回历史。 */
+  replaceRoute: (route: AppRoute) => void;
+  retryWorkTypes: () => void;
   goBack: () => void;
   dismissError: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<void>;
@@ -220,7 +224,9 @@ const NOTICE_DURATION_MS = 5_000;
 
 export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses }: Options): EnterpriseWorkspace {
   const [tasks, setTasks] = useState<ClientTask[]>([]);
-  const arrangement = useArrangementPlans(tasks);
+  const scopeKey = JSON.stringify([userId, enterpriseId]);
+  const scopedTasks = useMemo(() => tasks.filter(task => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId), [tasks, userId, enterpriseId]);
+  const arrangement = useArrangementPlans(scopedTasks, scopeKey);
   const { recordEvent: recordArrangementEvent } = arrangement;
   const [route, setRoute] = useState<AppRoute>({ name: 'organization' });
   const [history, setHistory] = useState<AppRoute[]>([]);
@@ -248,6 +254,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const latestRunByTask = useRef(new Map<string, string>());
   const messagesByTask = useRef(new Map<string, ClientTaskMessage[]>());
   const pendingMessages = useRef(new Map<string, ClientTaskMessage[]>());
+  const taskTypeCache = useRef<TaskReadCache | null>(null);
   useEffect(() => {
     let active = true;
     setOrganizationData(null);
@@ -317,7 +324,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
   // ── 工作 ─────────────────────────────────────────────────────────────
   const works = useMemo<WorkItem[]>(() => {
-    const items = tasks.map(task => {
+    const items = scopedTasks.map(task => {
       const history = messagesByTask.current.get(task.id);
       const pending = pendingMessages.current.get(task.id) ?? [];
       return buildWorkItem({
@@ -337,7 +344,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       });
     });
     return items.sort((left, right) => right.updatedAt - left.updatedAt);
-  }, [tasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events]);
+  }, [scopedTasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events]);
 
   /** 员工是否正在处理工作，用于卡片状态。 */
   const employees = useMemo<SiliconEmployee[]>(() => {
@@ -419,11 +426,26 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   useEffect(() => {
     let active = true;
     const api = window.electronAPI;
+    const belongsToScope = (task: ClientTask) => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId;
+    setTasks([]);
+    streamingText.current.clear();
+    runtimeActivities.current.clear();
+    latestRunByTask.current.clear();
+    messagesByTask.current.clear();
+    pendingMessages.current.clear();
 
     const messageVersions = new Map<string, number>();
     const observedRuns = new Map<string, string | null>();
     let receivedTaskList = false;
     const pushedTaskIds = new Set<string>();
+    const typeCache = new TaskReadCache(async task => {
+      const result = await api.getTask(task.id);
+      return result.success && result.task?.workType ? result.task.workType : { state: 'unavailable' };
+    }, (taskId, workType) => {
+      if (!active) return;
+      setTasks(current => current.map(task => task.id === taskId ? { ...task, workType } : task));
+    });
+    taskTypeCache.current = typeCache;
     const loadMessages = async (list: ClientTask[]) => {
       await Promise.all(list.map(async task => {
         const version = (messageVersions.get(task.id) ?? 0) + 1;
@@ -460,28 +482,40 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     };
 
     void api.getAllTasks().then(result => {
-      if (!active || receivedTaskList || !result.success) return;
-      const list = (result.tasks ?? []).filter(task => !pushedTaskIds.has(task.id));
-      setTasks(current => [...list, ...current.filter(task => pushedTaskIds.has(task.id))]);
+      if (!active || !result.success) return;
+      const list = (result.tasks ?? []).filter(belongsToScope);
+      setTasks(current => {
+        const next = mergeInitialTaskQuery(current, list, pushedTaskIds, receivedTaskList);
+        typeCache.retain(next);
+        next.forEach(typeCache.ensure.bind(typeCache));
+        return next.map(task => typeCache.preserve(task));
+      });
       list.forEach(refreshMessages);
     }).catch(() => {
       if (active && !receivedTaskList && pushedTaskIds.size === 0) setTasks([]);
     });
 
-    const unsubscribeList = api.onTaskListUpdated(list => {
+    const unsubscribeList = api.onTaskListUpdated(incoming => {
       if (!active) return;
+      const list = incoming.filter(belongsToScope);
       receivedTaskList = true;
-      setTasks(list);
+      setTasks(current => {
+        const next = mergeTaskList(current, list);
+        typeCache.retain(next);
+        list.forEach(typeCache.ensure.bind(typeCache));
+        return next.map(task => typeCache.preserve(task));
+      });
       list.forEach(refreshMessages);
     });
     const unsubscribeTask = api.onTaskUpdated(task => {
-      if (!active) return;
+      if (!active || !belongsToScope(task)) return;
       pushedTaskIds.add(task.id);
       refreshMessages(task);
       setTasks(current => {
-        const index = current.findIndex(item => item.id === task.id);
-        if (index === -1) return [task, ...current];
-        return current.map(item => (item.id === task.id ? task : item));
+        const next = mergeTaskUpdate(current, task);
+        typeCache.retain(next);
+        typeCache.ensure(task);
+        return next.map(item => typeCache.preserve(item));
       });
     });
     const unsubscribePi = api.onPiEvent(event => {
@@ -507,8 +541,20 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       unsubscribeList();
       unsubscribeTask();
       unsubscribePi();
+      typeCache.dispose();
+      if (taskTypeCache.current === typeCache) taskTypeCache.current = null;
     };
-  }, [recordArrangementEvent]);
+  }, [recordArrangementEvent, scopeKey, userId, enterpriseId]);
+
+  const retryWorkTypes = useCallback(() => {
+    const cache = taskTypeCache.current;
+    if (!cache) return;
+    setTasks(current => current.map(task => {
+      if (task.workType?.state !== 'unavailable') return task;
+      cache.retry(task);
+      return { ...task, workType: undefined };
+    }));
+  }, []);
 
   // ── 导航 ─────────────────────────────────────────────────────────────
   const navigate = useCallback((next: AppRoute) => {
@@ -525,6 +571,11 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       setRoute(stack[stack.length - 1]);
       return stack.slice(0, -1);
     });
+  }, []);
+
+  const replaceRoute = useCallback((next: AppRoute) => {
+    setRoute(next);
+    setError(null);
   }, []);
 
   // ── 工作动作 ──────────────────────────────────────────────────────────
@@ -774,7 +825,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, error, busy,
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
-    navigate, goBack, dismissError: () => setError(null),
+    navigate, replaceRoute, retryWorkTypes, goBack, dismissError: () => setError(null),
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
     stopWork, retryWork, deleteWork, duplicateWork,
     saveFlow, deleteSavedFlow, runSavedFlow,
