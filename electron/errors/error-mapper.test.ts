@@ -57,6 +57,17 @@ describe('toEnvelope', () => {
     assert.equal(toEnvelope(unauthorized, { authenticated: true }).code, 'AUTH_REQUIRED')
   })
 
+  it('reports a missing platform source header as a generic internal error rather than expired authentication', () => {
+    const error = new AuthApiError({ statusCode: 403, message: 'Missing Origin or Referer header' }, 'skills')
+    for (const authenticated of [false, true]) {
+      const result = toEnvelope(error, { authenticated })
+      assert.equal(result.code, 'INTERNAL_ERROR')
+      assert.equal(result.message, ERROR_CODES.INTERNAL_ERROR.message)
+      assert.doesNotMatch(result.message, /Origin|Referer/)
+    }
+    assert.equal(toEnvelope(apiError(403, 'Forbidden'), { authenticated: true }).code, 'AUTH_REQUIRED')
+  })
+
 
   it('classifies transport and server failures as retryable', () => {
     assert.deepEqual(

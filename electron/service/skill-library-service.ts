@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto'
-import { AuthApiError, type EmployeeSkill, type PersonalSkillVersionRequest, type SkillVersion } from '../common/platform/platform-api'
+import { AuthApiError, SkillSubmissionResponseError, type EmployeeSkill, type PersonalSkillVersionRequest, type SkillVersion } from '../common/platform/platform-api'
 import { canUseSkillVersion } from '../common/platform/skill-version-policy'
 import { logger } from '../common/logger'
+import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { SkillVersionStore } from '../data/skill-version-store'
@@ -129,13 +130,17 @@ export class SkillLibraryService {
 
   private async upload(scope: TaskOwnerScope, record: LocalSkillSubmission): Promise<SaveSkillResult> {
     let version: SkillVersion
+    let token: string
     try {
       this.checkScope(scope)
-      const token = await this.options.token()
+      token = await this.options.token()
       this.checkScope(scope)
       version = await this.options.platform.create(record.request, record.idempotencyKey, token)
     } catch (error) {
       this.checkScope(scope)
+      if (error instanceof SkillSubmissionResponseError) throw new AppError('INTERNAL_ERROR', {
+        details: { idempotencyKey: record.idempotencyKey, capabilityId: record.request.capabilityId, phase: 'submission-response' },
+      })
       if (error instanceof AuthApiError && !error.isNetworkError) throw error
       log.warn('Personal skill upload failed; durable retry retained', { errorType: error instanceof Error ? error.name : 'UnknownError' })
       return { idempotencyKey: record.idempotencyKey, uploaded: false }
@@ -147,7 +152,31 @@ export class SkillLibraryService {
         ...item, versions: [...item.versions.filter(value => value.id !== version.id), version],
       }) }
     }
+    await this.verifyUpload(scope, record, version, token)
     return { idempotencyKey: record.idempotencyKey, uploaded: true, version }
+  }
+
+  private async verifyUpload(scope: TaskOwnerScope, record: LocalSkillSubmission, version: SkillVersion, token: string): Promise<void> {
+    const fields = {
+      idempotencyKey: record.idempotencyKey, versionId: version.id,
+      capabilityId: record.request.capabilityId, enterpriseId: scope.enterpriseId,
+      phase: 'submission-verification',
+    }
+    try {
+      this.checkScope(scope)
+      const versions = await this.options.platform.list({ capabilityId: record.request.capabilityId }, token)
+      this.checkScope(scope)
+      const submitted = versions.find(item => item.id === version.id && item.capabilityId === record.request.capabilityId)
+      const result = { ...fields, found: Boolean(submitted), reviewStatus: submitted?.status ?? null, versionCount: versions.length }
+      if (submitted) log.info('personal skill upload verification completed', result)
+      else log.warn('personal skill upload verification completed', result)
+    } catch (error) {
+      this.checkScope(scope)
+      log.warn('personal skill upload verification failed', {
+        ...fields, statusCode: error instanceof AuthApiError ? error.statusCode : null,
+        errorType: error instanceof Error ? error.name : 'UnknownError',
+      })
+    }
   }
 
   async select(input: { capabilityId: string; versionId: string }): Promise<void> {

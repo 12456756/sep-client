@@ -99,8 +99,19 @@ export const skillVersionSchema = z.object({
 export const personalSkillVersionRequestSchema = z.object({
   capabilityId: resourceId, parentVersionId: resourceId,
   content: z.string().min(1).max(500_000),
-  changeSummary: z.string().max(2_000).optional(),
+  changeSummary: z.string().trim().max(2_000).optional(),
 }).strict()
+export const personalSkillSubmissionResponseSchema = skillVersionSchema.extend({
+  id: z.string().min(1), capabilityId: z.string().min(1),
+  parentVersionId: z.string().min(1), enterpriseId: z.string().min(1),
+  ownerId: z.string().min(1), scope: z.literal('PERSONAL'),
+  version: z.string().min(1),
+  status: z.enum(['PENDING_ENTERPRISE_REVIEW', 'ENTERPRISE_APPROVED', 'ENTERPRISE_REJECTED']),
+  submittedAt: z.string().min(1), enterpriseReviewedAt: nullableText,
+  rejectionReason: nullableText, changeSummary: nullableText,
+  createdAt: z.string().min(1), updatedAt: z.string().min(1),
+  content: z.string().min(1).max(500_000),
+}).strip()
 export const idempotencyKeySchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/)
 export const skillVersionQuerySchema = z.object({
   capabilityId: resourceId, status: z.string().min(1).optional(),
