@@ -220,12 +220,13 @@ describe('ClientMonitorService', () => {
   it('reconciles only an existing outbox current run and backfills absent records once', async () => {
     const store = new MemoryStore()
     const api = new FakeApi()
-    const run = (runId: string, status: 'COMPLETED' | 'FAILED') => ({ runId, subscriptionId: 'sub-a', modelId: 'model', prompt: 'prompt', messages: [{ type: 'user_input' as const, content: 'prompt', occurredAt: 10 }, { type: 'model_output' as const, content: 'answer', occurredAt: 11 }], status: { status, completedAt: new Date(12).toISOString() } })
+    const run = (runId: string, status: 'COMPLETED' | 'FAILED') => ({ runId, subscriptionId: 'sub-a', modelId: 'model', prompt: 'prompt', queuedAt: runId === 'run-1' ? 10 : 20, messages: [{ type: 'user_input' as const, content: 'prompt', occurredAt: 10 }, { type: 'model_output' as const, content: 'answer', occurredAt: 11 }], status: { status, completedAt: new Date(12).toISOString() } })
     const monitor = service(store, api, { history: { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation', runs: [run('run-1', 'COMPLETED'), run('run-2', 'FAILED')] }] } })
     await monitor.resumePending()
     assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:1', 'event:2', 'status:COMPLETED', 'create:task-a:run-2', 'event:3', 'event:4', 'status:FAILED'])
     assert.equal(store.records.get('task-a')?.historyBackfilled, true)
-    assert.ok(api.creates.every(create => create.protocolVersion === undefined && create.queuedAt === undefined))
+    assert.ok(api.creates.every(create => create.protocolVersion === undefined))
+    assert.deepEqual(api.creates.map(create => create.queuedAt), [new Date(10).toISOString(), new Date(20).toISOString()])
     assert.ok(api.events.every(event => event.participation === undefined))
     assert.equal(store.records.get('task-a')?.liveRuns, undefined)
     const previous = api.calls.length
@@ -236,6 +237,98 @@ describe('ClientMonitorService', () => {
     await monitor.resumePending()
     assert.equal(api.calls.length, previous + 1)
     await monitor.stop()
+  })
+
+  it('safely patches only matched pending creates without altering IDs, sequence, retries or protocol', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const create = (id: string, runId: string, extra: Partial<CreateClientTaskRequest> = {}, operationRunId: string | undefined = runId) => ({
+      id, kind: 'create' as const, clientRunId: operationRunId,
+      payload: { clientTaskId: 'task-a', clientRunId: runId, subscriptionId: 'sub-a', title: 'Task', ...extra },
+    })
+    const original: ClientMonitorRecord = {
+      version: 1, clientTaskId: 'task-a', clientRunId: 'run-2', mirrorId: null,
+      subscriptionId: 'sub-a', title: 'Task', taskType: 'conversation', modelId: 'model', lastSequence: 37,
+      heartbeatActive: false, updatedAt: 50, retryAt: 100000, retryStatusCode: 403,
+      pending: [
+        create('first', 'run-1'), create('second', 'run-2'),
+        create('unknown', 'missing'), create('already-timed', 'run-1', { queuedAt: new Date(9).toISOString() }),
+        create('wrong-sub', 'run-1', { subscriptionId: 'other-sub' }), create('wrong-task', 'run-1', { clientTaskId: 'other-task' }),
+        create('conflict', 'run-1', {}, 'run-2'), create('unproven', 'run-3'), create('snapshot-only', 'history-task-a'),
+        { ...create('legacy-without-envelope-run', 'run-1'), clientRunId: undefined },
+        create('v2', 'run-1', { protocolVersion: 2 }),
+        { id: 'event', kind: 'event', clientRunId: 'run-1', sequence: 37,
+          payload: { clientRunId: 'run-1', sequence: 37, type: 'user_input', message: 'saved input', occurredAt: new Date(10).toISOString() } },
+      ],
+    }
+    store.records.set('task-a', structuredClone(original))
+    const history = { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation' as const,
+      runs: [
+        { runId: 'run-1', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [], queuedAt: 10, localRun: true as const },
+        { runId: 'run-2', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [], queuedAt: 20, localRun: true as const },
+        { runId: 'run-3', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [], localRun: true as const },
+        { runId: 'history-task-a', subscriptionId: 'sub-a', modelId: 'unknown', prompt: '', messages: [], queuedAt: 1 },
+      ],
+    }] }
+    const monitor = service(store, api, { history, now: () => 50 })
+    await monitor.resumePending()
+    const expected = structuredClone(original)
+    for (const operation of expected.pending) {
+      if (operation.kind === 'create' && ['first', 'second', 'legacy-without-envelope-run', 'v2'].includes(operation.id)) {
+        operation.payload.queuedAt = new Date(operation.id === 'second' ? 20 : 10).toISOString()
+      }
+    }
+    // Recovery records its existing backfill flag, but all original operation metadata is retained.
+    assert.deepEqual(store.records.get('task-a'), { ...expected, historyBackfilled: false })
+    await monitor.resumePending()
+    assert.deepEqual(store.records.get('task-a'), { ...expected, historyBackfilled: false })
+    assert.deepEqual(api.calls, [])
+    await monitor.stop()
+
+    // A task with an uploaded mirror is never retroactively rewritten, even with a pending create.
+    store.records.set('task-a', { ...structuredClone(original), mirrorId: 'uploaded-mirror' })
+    const uploaded = service(store, api, { history, now: () => 50 })
+    await uploaded.resumePending()
+    assert.deepEqual(store.records.get('task-a')?.pending, original.pending)
+    await uploaded.stop()
+  })
+
+  it('uploads a safely patched v1 create once while preserving its original event sequence', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    store.records.set('task-a', {
+      version: 1, clientTaskId: 'task-a', clientRunId: 'run-1', mirrorId: null,
+      subscriptionId: 'sub-a', title: 'Task', taskType: 'conversation', modelId: 'model', lastSequence: 8,
+      heartbeatActive: false, updatedAt: 10,
+      pending: [
+        { id: 'create', kind: 'create', payload: { clientTaskId: 'task-a', clientRunId: 'run-1', subscriptionId: 'sub-a', title: 'Task' } },
+        { id: 'event', kind: 'event', clientRunId: 'run-1', sequence: 8, payload: { sequence: 8, type: 'user_input', message: 'saved input', occurredAt: new Date(10).toISOString() } },
+      ],
+    })
+    const monitor = service(store, api, { history: { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation',
+      runs: [{ runId: 'run-1', subscriptionId: 'sub-a', modelId: 'model', prompt: 'saved input', messages: [], queuedAt: 7, localRun: true }],
+    }] } })
+    await monitor.resumePending(); await monitor.resumePending()
+    assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:8'])
+    assert.equal(api.creates[0].queuedAt, new Date(7).toISOString())
+    assert.equal(api.creates[0].protocolVersion, undefined)
+    assert.equal(store.records.get('task-a')?.lastSequence, 8)
+    await monitor.stop()
+  })
+
+  it('does not restore history when the account changes or logout occurs during its read', async () => {
+    for (const action of ['switch', 'logout'] as const) {
+      const store = new MemoryStore(); const api = new FakeApi()
+      let current: TaskOwnerScope | null = scope
+      const monitor = service(store, api, { scopeProvider: () => current, history: { read: async () => {
+        if (action === 'switch') current = { enterpriseId: 'other-enterprise', memberId: 'other-member' }
+        else { current = null; await monitor.stop() }
+        return [{ taskId: 'task-a', title: 'Task', taskType: 'conversation',
+          runs: [{ runId: 'run-1', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [], queuedAt: 7 }] }]
+      } } })
+      await monitor.resumePending()
+      assert.equal(store.records.size, 0)
+      assert.deepEqual(api.calls, [])
+      await monitor.stop()
+    }
   })
 
   it('uses automatic compensation, prevents reentry, stops timers, and restarts on login', async () => {

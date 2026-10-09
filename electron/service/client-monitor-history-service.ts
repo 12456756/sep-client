@@ -10,6 +10,9 @@ export interface MonitorHistoryRun {
   subscriptionId: string
   modelId: string
   prompt: string
+  queuedAt?: number
+  /** Positive evidence required to enrich an existing pending create. */
+  localRun?: true
   messages: { type: 'user_input' | 'model_output'; content: string; occurredAt: number }[]
   status?: ClientTaskStatusRequest
 }
@@ -73,7 +76,7 @@ export class ClientMonitorHistoryService implements ClientMonitorHistorySource {
       runs.sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
       const recovered: MonitorHistoryRun[] = []
       for (const [index, run] of runs.entries()) {
-        if (!run.subscriptionId || run.owner.memberId !== scope.memberId || run.owner.enterpriseId !== scope.enterpriseId) continue
+        if (run.taskId !== task.id || !run.subscriptionId || run.owner.memberId !== scope.memberId || run.owner.enterpriseId !== scope.enterpriseId) continue
         const canonical = messages.filter(message => message.taskId === task.id && message.runId === run.id && (message.role === 'user' || message.role === 'assistant'))
           .sort((a, b) => a.createdAt - b.createdAt)
         const content: MonitorHistoryRun['messages'] = canonical.map(message => ({ type: message.role === 'user' ? 'user_input' : 'model_output', content: message.content, occurredAt: message.createdAt }))
@@ -91,15 +94,17 @@ export class ClientMonitorHistoryService implements ClientMonitorHistorySource {
         // A cancelled run remains CANCELLED even though the local task is stored as PAUSED.
         if (index === runs.length - 1 && (!task.activeRunId || task.activeRunId === run.id) && run.outcome !== 'cancelled') status = snapshotStatus(task.status)
         const completedAt = run.endedAt ?? (index === runs.length - 1 ? task.completedAt : null)
-        recovered.push({ runId: run.id, subscriptionId: run.subscriptionId, modelId: run.modelId, prompt: run.prompt ?? '', messages: content,
+        recovered.push({ runId: run.id, subscriptionId: run.subscriptionId, modelId: run.modelId, prompt: run.prompt ?? '', messages: content, localRun: true,
+          // TaskRunStore writes startedAt when it creates the persisted run.
+          queuedAt: localTimestamp(run.startedAt) ?? (index === 0 ? localTimestamp(task.createdAt) : undefined),
           status: { status, ...(status === 'COMPLETED' ? { progress: 100 } : {}),
-            startedAt: new Date(run.startedAt).toISOString(), completedAt: completedAt === null ? null : new Date(completedAt).toISOString(),
+            startedAt: localTimestamp(run.startedAt) === undefined ? null : new Date(run.startedAt).toISOString(), completedAt: completedAt === null ? null : new Date(completedAt).toISOString(),
             errorSummary: safeError(run.error ?? (index === runs.length - 1 ? task.error : null)),
           },
         })
       }
       if (recovered.length === 0 && runs.length === 0 && task.subscriptionId) {
-        recovered.push({ runId: task.activeRunId ?? `history-${task.id}`, subscriptionId: task.subscriptionId, modelId: 'unknown', prompt: task.prompt,
+        recovered.push({ runId: task.activeRunId ?? `history-${task.id}`, subscriptionId: task.subscriptionId, modelId: 'unknown', prompt: task.prompt, queuedAt: task.activeRunId ? undefined : localTimestamp(task.createdAt),
           messages: task.prompt ? [{ type: 'user_input', content: task.prompt, occurredAt: task.createdAt }] : [],
           status: { status: snapshotStatus(task.status), startedAt: task.startedAt === null ? null : new Date(task.startedAt).toISOString(),
             completedAt: task.completedAt === null ? null : new Date(task.completedAt).toISOString(), errorSummary: safeError(task.error) },
@@ -118,4 +123,8 @@ function safeError(value: string | null | undefined): string | null {
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function localTimestamp(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isFinite(new Date(value).getTime()) ? value : undefined
 }

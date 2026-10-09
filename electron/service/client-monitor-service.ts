@@ -165,6 +165,16 @@ export class ClientMonitorService {
         record = this.queueRun(record, { ...run, taskId: task.taskId, title: task.title, taskType: task.taskType })
         for (const message of run.messages) record = this.addContent(record, { taskId: task.taskId, runId: run.runId, content: message.content }, message.type, message.occurredAt)
       }
+      if (record && !backfill && record.mirrorId === null && run.localRun && run.queuedAt !== undefined && Number.isFinite(new Date(run.queuedAt).getTime())) {
+        const queuedAt = new Date(run.queuedAt).toISOString()
+        record = { ...record, pending: record.pending.map(operation => {
+          if (operation.kind !== 'create' || operation.payload.queuedAt !== undefined ||
+            operation.payload.clientTaskId !== task.taskId || operation.payload.clientRunId !== run.runId ||
+            operation.payload.subscriptionId !== run.subscriptionId ||
+            (operation.clientRunId !== undefined && operation.clientRunId !== run.runId)) return operation
+          return { ...operation, payload: { ...operation.payload, queuedAt } }
+        }) }
+      }
       if (!record || (!backfill && run.runId !== record.clientRunId)) continue
       // Existing outboxes are replayed, not regenerated. Reconcile only known local runs.
       if (run.status && record.statusByRun?.[run.runId] !== this.fingerprint(run.status)) {
@@ -266,7 +276,8 @@ export class ClientMonitorService {
         id: ClientMonitorStore.operationId(), kind: 'create', clientRunId: input.runId,
         payload: { clientTaskId: input.taskId, clientRunId: input.runId, subscriptionId: input.subscriptionId,
           title, taskType: input.taskType, modelId: input.modelId, clientVersion: this.clientVersion,
-          ...(input.protocolVersion === 2 ? { protocolVersion: 2, queuedAt: new Date(input.queuedAt ?? this.now()).toISOString() } : {}),
+          ...(input.protocolVersion === 2 ? { protocolVersion: 2 } : {}),
+          ...(input.queuedAt !== undefined || input.protocolVersion === 2 ? { queuedAt: new Date(input.queuedAt ?? this.now()).toISOString() } : {}),
         },
       }] : record.pending,
     }

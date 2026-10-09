@@ -17,6 +17,8 @@ it('uses canonical messages before sanitized deltas and maps interrupted to PAUS
   })
   const [result] = await history.read(scope)
   assert.deepEqual(result.runs.map(r => r.runId), ['run-1', 'run-2'])
+  assert.deepEqual(result.runs.map(r => r.queuedAt), [2, 4])
+  assert.ok(result.runs.every(r => r.localRun))
   assert.equal(result.runs[0].messages[1].content.length, 12000)
   assert.equal(result.runs[1].status?.status, 'PAUSED')
   assert.equal(result.runs[1].messages[1].content, 'partial')
@@ -36,6 +38,8 @@ it('skips missing subscription/foreign scope and creates a stable snapshot-only 
   assert.equal(first[0].runs[0].runId, second[0].runs[0].runId)
   assert.equal(first[0].runs[0].messages[0].content, 'snapshot input')
   assert.equal(first[0].runs[0].status?.status, 'PAUSED')
+  assert.equal(first[0].runs[0].queuedAt, task.createdAt)
+  assert.equal(first[0].runs[0].localRun, undefined)
 })
 
 it('redacts and bounds historical error summaries', async () => {
@@ -57,4 +61,38 @@ it('discards a recovery snapshot if the scope changes during reads', async () =>
     listMessages: async () => [], getTimeline: async () => [],
   })
   assert.deepEqual(await history.read(scope), [])
+})
+
+it('falls back only to a proven first-run task creation time and never invents a later run time', async () => {
+  for (const createdAt of [10, Number.NaN]) {
+    const history = new ClientMonitorHistoryService({
+      scopeProvider: () => scope, listTasks: async () => [{ ...task, createdAt }],
+      listRuns: async () => [run('run-1', 'running', Number.NaN), run('run-2', 'running', Number.NaN)],
+      listMessages: async () => [], getTimeline: async () => [],
+    })
+    const [result] = await history.read(scope)
+    assert.equal(result.runs[0].queuedAt, Number.isFinite(createdAt) ? createdAt : undefined)
+    assert.equal(result.runs[1].queuedAt, undefined)
+    assert.ok(result.runs.every(value => value.status?.startedAt === null))
+  }
+})
+
+it('ignores a local run whose task ID does not match the task snapshot', async () => {
+  const history = new ClientMonitorHistoryService({
+    scopeProvider: () => scope, listTasks: async () => [task],
+    listRuns: async () => [{ ...run('foreign-run', 'completed', 2), taskId: 'another-task' }],
+    listMessages: async () => [], getTimeline: async () => [],
+  })
+  assert.deepEqual(await history.read(scope), [])
+})
+
+it('does not assign task creation time to a snapshot active run without its persisted record', async () => {
+  const history = new ClientMonitorHistoryService({
+    scopeProvider: () => scope, listTasks: async () => [{ ...task, activeRunId: 'unproven-active' }],
+    listRuns: async () => [], listMessages: async () => [], getTimeline: async () => [],
+  })
+  const [result] = await history.read(scope)
+  assert.equal(result.runs[0].runId, 'unproven-active')
+  assert.equal(result.runs[0].queuedAt, undefined)
+  assert.equal(result.runs[0].localRun, undefined)
 })

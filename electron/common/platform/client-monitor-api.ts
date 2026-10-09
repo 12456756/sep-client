@@ -25,6 +25,7 @@ export interface ClientMonitorApiOptions {
   getAccessToken: (forceRefresh?: boolean) => Promise<string>
   fetch?: typeof fetch
   baseUrl?: string
+  webOrigin?: string
   requestTimeoutMs?: number
 }
 const mirrorSchema = z.object({ id: z.string().min(1).max(256) })
@@ -33,9 +34,11 @@ const responseSchema = z.union([mirrorSchema, z.object({ data: mirrorSchema })])
 export class ClientMonitorApi implements ClientMonitorApiPort {
   private readonly fetcher: typeof fetch
   private readonly baseUrl: string
+  private readonly webOrigin: string
   constructor(private readonly options: ClientMonitorApiOptions) {
     this.fetcher = options.fetch ?? globalThis.fetch
     this.baseUrl = (options.baseUrl ?? config.SEP_BASE_URL).replace(/\/+$/, '')
+    this.webOrigin = new URL(options.webOrigin ?? config.SEP_WEB_ORIGIN).origin
   }
   async createTask(request: CreateClientTaskRequest, signal?: AbortSignal): Promise<ClientTaskMirror> {
     const value = await this.request('/client/tasks', 'POST', createClientTaskSchema.parse(request), true, signal)
@@ -87,14 +90,15 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
       signal.throwIfAborted()
       if (scope !== this.scopeKey()) throw new ClientMonitorApiError('SEP monitor scope changed.', 401)
       const response = await this.fetcher(this.baseUrl + path, {
-        method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+        method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Origin: this.webOrigin, Referer: this.webOrigin + '/' },
         body: JSON.stringify(body), signal,
       })
       if (!response.ok) {
-        await response.body?.cancel()
+        const reason = response.status === 403 ? await this.forbiddenReason(response) : undefined
+        if (response.status !== 403) await response.body?.cancel()
         if (response.status === 401 && attempt === 0) continue
-        // Do not log or persist arbitrary remote response bodies.
-        throw new ClientMonitorApiError('SEP monitor HTTP ' + response.status, response.status, this.retryAfter(response.headers.get('Retry-After')))
+        // Only fixed, known reasons may escape the response boundary.
+        throw new ClientMonitorApiError('SEP monitor HTTP ' + response.status + (reason ? ': ' + reason : ''), response.status, this.retryAfter(response.headers.get('Retry-After')))
       }
       if (expectsMirror) return await response.json() as unknown
       await response.body?.cancel()
@@ -102,6 +106,39 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
     }
     throw new ClientMonitorApiError('Authentication required.', 401)
   }
+  private async forbiddenReason(response: Response): Promise<string | undefined> {
+    const reader = response.body?.getReader()
+    if (!reader) return undefined
+    try {
+      // Bound the untrusted body even when Content-Length is absent or incorrect.
+      const parts: Uint8Array[] = []
+      let size = 0
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        size += value.byteLength
+        if (size > 4096) return undefined
+        parts.push(value)
+      }
+      const bytes = new Uint8Array(size)
+      let offset = 0
+      for (const part of parts) { bytes.set(part, offset); offset += part.byteLength }
+      const parsed = z.object({ message: z.string().max(512) }).safeParse(JSON.parse(new TextDecoder().decode(bytes)) as unknown)
+      if (!parsed.success) return undefined
+      const message = parsed.data.message
+      for (const reason of ['Missing Origin or Referer header', 'Invalid Origin or Referer header', 'Subscription unavailable', '没有有效的员工使用授权']) {
+        if (message === reason) return reason
+      }
+      if (message === `Origin ${this.webOrigin} not allowed. CSRF protection.`) return 'Origin not allowed. CSRF protection.'
+      return undefined
+    } catch {
+      return undefined
+    } finally {
+      await reader.cancel().catch(() => undefined)
+      reader.releaseLock()
+    }
+  }
+
   private scopeKey(): string {
     const scope = this.options.scopeProvider?.()
     return scope ? `${scope.enterpriseId}\0${scope.memberId}` : ''

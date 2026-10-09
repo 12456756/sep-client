@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { ClientMonitorApi, ClientMonitorApiError } from './client-monitor-api'
+import { config } from '../config'
 
 type Call = { url: string; init: RequestInit }
 
@@ -34,8 +35,78 @@ describe('ClientMonitorApi', () => {
       ['https://sep.example/api/client/tasks/mirror%2Fa%3Fb/events', 'POST'],
     ])
     assert.equal(calls[0].init.headers && (calls[0].init.headers as Record<string, string>).Authorization, 'Bearer access-token')
+    for (const call of calls) {
+      const headers = new Headers(call.init.headers)
+      assert.equal(headers.get('Origin'), config.SEP_WEB_ORIGIN)
+      assert.equal(headers.get('Referer'), config.SEP_WEB_ORIGIN + '/')
+    }
     assert.equal(JSON.parse(String(calls[0].init.body)).status, 'RUNNING')
     assert.equal(JSON.stringify(calls[0].init.body).includes('access-token'), false)
+  })
+
+  it('uses the normalized injected Web origin for all four writes across separate API domains', async () => {
+    const calls: Call[] = []
+    const api = new ClientMonitorApi({
+      baseUrl: 'https://api.example/api/', webOrigin: 'https://WEB.example:443/workspace?secret=ignored',
+      getAccessToken: async () => 'access-token',
+      fetch: async (url, init) => { calls.push({ url: String(url), init: init ?? {} }); return response(200, { id: 'mirror' }) },
+    })
+    await api.createTask({ clientTaskId: 'task', clientRunId: 'run', subscriptionId: 'sub', title: 'Task' })
+    await api.updateStatus('mirror', { status: 'RUNNING' })
+    await api.sendHeartbeat('mirror', { clientVersion: '1.0.0' })
+    await api.sendEvent('mirror', { sequence: 1, type: 'run_started', occurredAt: '2026-10-09T00:00:00.000Z' })
+    assert.equal(calls.length, 4)
+    for (const call of calls) {
+      assert.ok(call.url.startsWith('https://api.example/api/client/tasks'))
+      const headers = new Headers(call.init.headers)
+      assert.equal(headers.get('Origin'), 'https://web.example')
+      assert.equal(headers.get('Referer'), 'https://web.example/')
+      assert.equal(headers.get('Authorization'), 'Bearer access-token')
+    }
+  })
+
+  it('exposes only exact known 403 reasons and retains HTTP and Retry-After metadata', async () => {
+    for (const [message, reason] of [
+      ['Missing Origin or Referer header', 'Missing Origin or Referer header'],
+      ['Invalid Origin or Referer header', 'Invalid Origin or Referer header'],
+      ['Origin https://web.example not allowed. CSRF protection.', 'Origin not allowed. CSRF protection.'],
+      ['Subscription unavailable', 'Subscription unavailable'],
+      ['没有有效的员工使用授权', '没有有效的员工使用授权'],
+    ]) {
+      const api = new ClientMonitorApi({
+        webOrigin: 'https://web.example', getAccessToken: async () => 'token',
+        fetch: async () => new Response(JSON.stringify({ message, private: 'Bearer remote-secret' }), { status: 403, headers: { 'Retry-After': '7' } }),
+      })
+      await assert.rejects(api.updateStatus('mirror', { status: 'RUNNING' }), (error: unknown) => {
+        assert.ok(error instanceof ClientMonitorApiError)
+        assert.equal(error.message, 'SEP monitor HTTP 403: ' + reason)
+        assert.equal(error.statusCode, 403)
+        assert.equal(error.retryAfterMs, 7000)
+        assert.equal(error.isRetryable, false)
+        return true
+      })
+    }
+  })
+
+  it('discards unknown, malformed, oversized and lookalike 403 bodies', async () => {
+    for (const body of [
+      'Bearer remote-secret', '{broken',
+      JSON.stringify({ message: 'Missing Origin or Referer header Bearer remote-secret' }),
+      JSON.stringify({ message: 'Origin https://other.example not allowed. CSRF protection.' }),
+      JSON.stringify({ message: ['Subscription unavailable', 'remote-secret'] }),
+      JSON.stringify({ message: 'Subscription unavailable', private: 'x'.repeat(5000) }),
+    ]) {
+      const api = new ClientMonitorApi({
+        webOrigin: 'https://web.example', getAccessToken: async () => 'token',
+        fetch: async () => new Response(body, { status: 403 }),
+      })
+      await assert.rejects(api.updateStatus('mirror', { status: 'RUNNING' }), (error: unknown) => {
+        assert.ok(error instanceof ClientMonitorApiError)
+        assert.equal(error.statusCode, 403)
+        assert.equal(error.message, 'SEP monitor HTTP 403')
+        return true
+      })
+    }
   })
 
   it('accepts flat and enveloped create responses', async () => {
@@ -53,10 +124,12 @@ describe('ClientMonitorApi', () => {
   it('refreshes the token path by retrying one 401 and rejects a second 401', async () => {
     let calls = 0
     let tokenCalls = 0
+    const headers: Headers[] = []
     const api = new ClientMonitorApi({
       baseUrl: 'https://sep.example/api',
       getAccessToken: async () => `token-${++tokenCalls}`,
-      fetch: async () => {
+      fetch: async (_url, init) => {
+        headers.push(new Headers(init?.headers))
         calls += 1
         return calls === 1 ? response(401, { message: 'expired' }) : response(200, { id: 'mirror' })
       },
@@ -64,6 +137,8 @@ describe('ClientMonitorApi', () => {
     assert.equal((await api.createTask({ clientTaskId: 'task', clientRunId: 'run', subscriptionId: 'sub', title: 'Task' })).id, 'mirror')
     assert.equal(calls, 2)
     assert.equal(tokenCalls, 2)
+    assert.deepEqual(headers.map(value => value.get('Authorization')), ['Bearer token-1', 'Bearer token-2'])
+    assert.ok(headers.every(value => value.get('Origin') === config.SEP_WEB_ORIGIN && value.get('Referer') === config.SEP_WEB_ORIGIN + '/'))
 
     const failing = new ClientMonitorApi({
       baseUrl: 'https://sep.example/api',
