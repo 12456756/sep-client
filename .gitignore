@@ -34,6 +34,7 @@ npm-debug.log*
 *.tsbuildinfo
 
 # electron-builder
+.release/
 app-update.yml
 
 # Test artifacts

@@ -40,3 +40,21 @@ describe('conversation display regressions', () => {
     assert.deepEqual(work.messages.map(message => message.content), ['之前的回答', '你好，世界'])
   })
 })
+
+describe('authoritative work type projection', () => {
+  it('uses the queried type over conflicting legacy prompt metadata', () => {
+    const work = buildWorkItem({ task: { ...task, workType: { state: 'resolved', kind: 'arrangement' } }, employees: [] })
+    assert.equal(work.kind, 'flow')
+    assert.deepEqual(work.workType, { state: 'resolved', kind: 'arrangement' })
+  })
+
+  it('does not label an unqueried task as a resolved conversation', () => {
+    assert.deepEqual(buildWorkItem({ task, employees: [] }).workType, { state: 'loading' })
+  })
+
+  it('keeps unavailable classification separate from execution status', () => {
+    const work = buildWorkItem({ task: { ...task, workType: { state: 'unavailable' } }, employees: [] })
+    assert.equal(work.status, 'running')
+    assert.deepEqual(work.workType, { state: 'unavailable' })
+  })
+})

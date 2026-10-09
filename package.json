@@ -9,7 +9,7 @@
     "dev:preview": "vite --config vite.preview.config.ts --open /?preview=workspace",
     "build": "node scripts/generate-runtime-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
-    "package": "npm run build && electron-builder",
+    "package": "npm run package:beta",
     "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "lint": "eslint . --ext .ts,.tsx",
     "auth:smoke": "bash scripts/test-auth-flow.sh",
@@ -25,9 +25,14 @@
     "poc:browser": "tsx poc/playwright-mcp.ts",
     "release:config:beta": "node scripts/generate-runtime-config.mjs beta",
     "release:config:stable": "node scripts/generate-runtime-config.mjs stable",
-    "package:beta": "npm run release:config:beta && electron-vite build && electron-builder && node scripts/generate-checksums.mjs dist && node scripts/generate-release-notes.mjs beta",
-    "package:stable": "npm run release:config:stable && electron-vite build && electron-builder && node scripts/generate-checksums.mjs dist && node scripts/generate-release-notes.mjs stable",
-    "test:packaging": "node --test scripts/packaging.test.mjs"
+    "package:beta": "npm run release:config:beta && npm run release:builder:beta && electron-vite build && electron-builder --config .release/electron-builder.beta.json --publish never && node scripts/generate-checksums.mjs dist/beta && node scripts/generate-release-notes.mjs beta dist/beta",
+    "package:stable": "npm run release:config:stable && npm run release:builder:stable && electron-vite build && electron-builder --config .release/electron-builder.stable.json --publish never && node scripts/generate-checksums.mjs dist/stable && node scripts/generate-release-notes.mjs stable dist/stable",
+    "test:packaging": "node --test scripts/packaging.test.mjs",
+    "release:builder:beta": "node scripts/generate-builder-config.mjs beta",
+    "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
+    "verify:update-manifest": "node scripts/verify-update-manifest.mjs",
+    "test:update-feed": "node scripts/test-update-feed.mjs",
+    "test:updates": "node --test scripts/update-manifest.test.mjs"
   },
   "dependencies": {
     "@dicebear/core": "9.4.3",
@@ -75,7 +80,8 @@
     "tailwindcss": "^4.0.0",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "vite": "^5.4.11",
+    "js-yaml": "4.3.0"
   },
   "overrides": {
     "undici": "6.20.1"

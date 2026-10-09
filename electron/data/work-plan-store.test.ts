@@ -1,10 +1,11 @@
 import { after, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { WorkPlanStore } from './work-plan-store'
 import type { WorkPlan } from '../domain/arrangement-plan'
+import { ScopePath } from './scope-path'
 
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const roots: string[] = []
@@ -25,6 +26,22 @@ function plan(): WorkPlan {
 }
 
 describe('WorkPlanStore', () => {
+  it('diagnoses valid backup, conversation mode, corruption and scope independently', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-work-plan-diagnostic-'))
+    roots.push(root)
+    const store = new WorkPlanStore(root)
+    const conversation = { ...plan(), mode: 'conversation' as const }
+    await store.save(scope, conversation)
+    await store.save(scope, plan())
+    const file = new ScopePath(root).workPlanFile(scope, conversation.id)
+    await writeFile(file, 'broken')
+    assert.deepEqual(await store.diagnose(scope, conversation.id), { state: 'found', value: conversation })
+    assert.deepEqual(await store.diagnose({ ...scope, enterpriseId: 'other' }, conversation.id), { state: 'missing' })
+    await rm(`${file}.bak`)
+    for (let i = 0; i < 2; i += 1) assert.deepEqual(await store.diagnose(scope, conversation.id), { state: 'unavailable' })
+    assert.equal(await store.get(scope, conversation.id), null)
+    assert.deepEqual(await store.diagnose(scope, conversation.id), { state: 'unavailable' })
+  })
   it('persists an immutable plan under the owner scope', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-work-plan-'))
     roots.push(root)

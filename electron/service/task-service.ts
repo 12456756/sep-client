@@ -7,7 +7,7 @@
  *
  * 参数形状由控制层校验；这里负责业务前置条件和错误语义。
  */
-import type { ClientTask, ClientTaskMessage, ClientTaskStats, TaskExecutionEvent } from '../../src/shared/types'
+import type { ClientTask, ClientTaskMessage, ClientTaskStats, TaskExecutionEvent, TaskReadView } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskMetadata, TaskMetadataStore } from '../data/task-metadata-store'
 import type { TaskRunRecord, TaskRunStore } from '../data/task-run-store'
@@ -17,6 +17,10 @@ import type { SessionRecoveryMode } from '../runtime/run-types'
 import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { EmployeeAuthorizer } from './employee-authorizer'
+import type { WorkPlanStorePort } from '../data/work-plan-store'
+import type { JsonReadDiagnostic } from '../data/atomic-file'
+import { TaskCreationGate } from './task-creation-gate'
+import { resolveWorkType } from './work-type'
 
 /**
  * 服务层用到的执行能力。实现由 `runtime/task-runtime.ts` 提供；
@@ -43,6 +47,8 @@ export interface TaskServiceDependencies {
   taskManager: TaskManager
   taskRunStore: TaskRunStore
   taskMetadataStore: TaskMetadataStore
+  workPlans?: WorkPlanStorePort
+  creationGate?: TaskCreationGate
   employees: EmployeeAuthorizer
   /** 惰性取运行时：它必须在异步边界之后才能加载（Electron 33 / undici 边界）。 */
   execution: () => Promise<TaskExecutionPort>
@@ -56,29 +62,40 @@ export interface CreateTaskInput {
 }
 
 export class TaskService {
-  constructor(private readonly deps: TaskServiceDependencies) {}
+  private readonly creationGate: TaskCreationGate
+
+  constructor(private readonly deps: TaskServiceDependencies) {
+    this.creationGate = deps.creationGate ?? new TaskCreationGate()
+  }
 
   /**
    * 建任务 + 落一份元数据。`task:create` 与 `conversation:create` 的公共部分
    * 授权必须在建任务之前：建完再发现员工不可用，就留下一个永远跑不起来的任务。
    */
-  async create(input: CreateTaskInput, kind: TaskMetadata['kind']): Promise<ClientTask> {
+  async create(input: CreateTaskInput, kind: TaskMetadata['kind']): Promise<TaskReadView> {
+    const scope = this.scope()
     await this.requireAuthorizedEmployee(input.subscriptionId)
-    const task = await this.deps.taskManager.createTask(
-      input.title,
-      input.prompt,
-      input.workDir,
-      input.subscriptionId,
-    )
-    await this.deps.taskMetadataStore.save(this.scope(), {
-      version: 1,
-      taskId: task.id,
-      kind,
-      participantSubscriptionIds: [input.subscriptionId],
-      currentSubscriptionId: input.subscriptionId,
-      createdAt: Date.now(),
-    })
-    return task
+    this.assertScope(scope)
+    const lease = this.creationGate.begin(scope)
+    let success = false
+    try {
+      const task = await this.deps.taskManager.createTask(input.title, input.prompt, input.workDir, input.subscriptionId)
+      lease.taskCreated(task.id)
+      this.assertScope(scope)
+      await this.deps.taskMetadataStore.save(scope, {
+        version: 1,
+        taskId: task.id,
+        kind,
+        participantSubscriptionIds: [input.subscriptionId],
+        currentSubscriptionId: input.subscriptionId,
+        createdAt: Date.now(),
+      })
+      this.assertScope(scope)
+      success = true
+      return { ...task, workType: { state: 'resolved', kind } }
+    } finally {
+      lease.finish(success)
+    }
   }
 
   /** 首次执行。是不是对话任务由元数据决定，而不是由调用方声明。 */
@@ -113,12 +130,15 @@ export class TaskService {
 
   // ── 查询 ────────────────────────────────────────────────────────────────────
 
-  async get(taskId: string): Promise<ClientTask> {
-    return this.requireTask(taskId)
+  async get(taskId: string): Promise<TaskReadView> {
+    return this.stableRead(async scope => this.projectTask(scope, await this.requireTask(taskId)))
   }
 
-  async list(): Promise<ClientTask[]> {
-    return this.deps.taskManager.getAllTasks()
+  async list(): Promise<TaskReadView[]> {
+    return this.stableRead(async scope => {
+      const tasks = await this.deps.taskManager.getAllTasks()
+      return Promise.all(tasks.map(task => this.projectTask(scope, task)))
+    })
   }
 
   async stats(): Promise<ClientTaskStats> {
@@ -161,6 +181,43 @@ export class TaskService {
   /** 唯一的 scope 取用点，失效清理进行中也在这里被拒（C7）。 */
   private scope(): TaskOwnerScope {
     return requireScope(this.deps.scope)
+  }
+
+  private assertScope(expected: TaskOwnerScope): void {
+    const current = this.scope()
+    if (current.memberId !== expected.memberId || current.enterpriseId !== expected.enterpriseId) {
+      throw new AppError('AUTH_REQUIRED')
+    }
+  }
+
+  private async stableRead<T>(read: (scope: TaskOwnerScope) => Promise<T>): Promise<T> {
+    const scope = this.scope()
+    for (;;) {
+      const version = await this.creationGate.waitForIdle(scope)
+      this.assertScope(scope)
+      const result = await read(scope)
+      this.assertScope(scope)
+      if (this.creationGate.isStable(scope, version)) return result
+    }
+  }
+
+  private async diagnose<T>(read: (() => Promise<JsonReadDiagnostic<T>>) | undefined): Promise<JsonReadDiagnostic<T>> {
+    if (!read) return { state: 'unavailable' }
+    try {
+      return await read()
+    } catch {
+      return { state: 'unavailable' }
+    }
+  }
+
+  private async projectTask(scope: TaskOwnerScope, task: ClientTask): Promise<TaskReadView> {
+    if (this.creationGate.hasFailed(scope, task.id)) return { ...task, workType: { state: 'unavailable' } }
+    const plans = this.deps.workPlans
+    const [metadata, plan] = await Promise.all([
+      this.diagnose(() => this.deps.taskMetadataStore.diagnose(scope, task.id)),
+      this.diagnose(plans?.diagnose ? () => plans.diagnose!(scope, task.id) : undefined),
+    ])
+    return { ...task, workType: resolveWorkType(metadata, plan, task.prompt) }
   }
 
   private async requireTask(taskId: string): Promise<ClientTask> {

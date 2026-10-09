@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { ArrangementService } from './arrangement-service'
+import { TaskService, type TaskServiceDependencies } from './task-service'
+import { TaskCreationGate } from './task-creation-gate'
 import { buildArrangementPlannerPrompt, parseArrangementPlannerOutput } from '../domain/arrangement-planner'
 import type { ArrangementDraft } from '../domain/arrangement-plan'
 import type {
@@ -166,6 +168,71 @@ function accessRequest(status: EmployeeAccessRequest['status'] = 'PENDING'): Emp
 }
 
 describe('ArrangementService', () => {
+  it('shares the creation gate with task queries through plan and metadata persistence', async () => {
+    const gate = new TaskCreationGate()
+    const entered = deferred<void>()
+    const saving = deferred<void>()
+    let metadataKind: string | null = null
+    const order: string[] = []
+    const rawTask = { id: 'task-a', prompt: 'plain', workDir: null }
+    const taskManager = { async createTask() { order.push('create'); return rawTask }, async getTask() { return rawTask }, async getAllTasks() { return [rawTask] } }
+    const taskMetadata = {
+      async save(_scope: TaskOwnerScope, value: { kind: string }) { order.push('metadata'); entered.resolve(); await saving.promise; metadataKind = value.kind },
+      async diagnose() { return metadataKind ? { state: 'found', value: { kind: metadataKind } } : { state: 'missing' } },
+    }
+    const workPlans = { async save() { order.push('plan') }, async get() { return null }, async diagnose() { return { state: 'missing' } } }
+    const stored = persisted(draft())
+    const service = new ArrangementService(serviceDeps({
+      creationGate: gate, taskManager, taskMetadata, workPlans,
+      employees: { async list() { return [employee()] } },
+      drafts: { async get() { return stored }, async update() { order.push('draft'); return stored } },
+    }))
+    const queries = new TaskService({ scope: { currentScope: () => scope }, taskManager, taskMetadataStore: taskMetadata, workPlans, creationGate: gate } as unknown as TaskServiceDependencies)
+    const confirming = service.confirmDraft(stored.id, stored.revision, 'key')
+    await entered.promise
+    let returned = false
+    const pending = queries.list().then(list => { returned = true; return list })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(returned, false)
+    assert.deepEqual(order, ['create', 'plan', 'metadata'])
+    saving.resolve()
+    await confirming
+    assert.deepEqual((await pending)[0]?.workType, { state: 'resolved', kind: 'arrangement' })
+    assert.deepEqual(order, ['create', 'plan', 'metadata', 'draft'])
+  })
+
+  it('releases failed confirmation gates without defaulting a visible task to conversation', async () => {
+    const gate = new TaskCreationGate()
+    const rawTask = { id: 'task-a', prompt: 'plain', workDir: null }
+    const taskManager = { async createTask() { return rawTask }, async getTask() { return rawTask } }
+    const stored = persisted(draft())
+    const service = new ArrangementService(serviceDeps({
+      creationGate: gate, taskManager,
+      employees: { async list() { return [employee()] } },
+      drafts: { async get() { return stored } },
+      workPlans: { async save() { throw new Error('disk full') }, async get() { return null } },
+    }))
+    await assert.rejects(service.confirmDraft(stored.id, stored.revision, 'key'), /disk full/)
+    const queries = new TaskService({ scope: { currentScope: () => scope }, taskManager, creationGate: gate } as unknown as TaskServiceDependencies)
+    assert.deepEqual((await queries.get(rawTask.id)).workType, { state: 'unavailable' })
+  })
+
+  it('persists conversation draft kind without treating every confirmation as an arrangement', async () => {
+    const gate = new TaskCreationGate()
+    const stored = persisted({ ...draft(), mode: 'conversation', nodes: [], conversation: { participants: [{ subscriptionId: 'sub-a', modelId: 'model-a' }], activeSubscriptionId: 'sub-a' } })
+    let savedKind: string | undefined
+    const service = new ArrangementService(serviceDeps({
+      creationGate: gate,
+      employees: { async list() { return [employee()] } },
+      drafts: { async get() { return stored }, async update() { return stored } },
+      taskMetadata: { async save(_scope: TaskOwnerScope, value: { kind: string }) { savedKind = value.kind } },
+    }))
+    const result = await service.confirmDraft(stored.id, stored.revision, 'key')
+    assert.equal(savedKind, 'conversation')
+    assert.equal(result.plan.mode, 'conversation')
+    assert.equal(gate.hasFailed(scope, result.plan.id), false)
+    await gate.waitForIdle(scope)
+  })
   it('loads a confirmed plan from the current task scope', async () => {
     const plan = { id: 'task-a', title: 'Report' }
     const service = new ArrangementService(serviceDeps({

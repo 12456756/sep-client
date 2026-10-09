@@ -4,7 +4,7 @@
  * 元数据决定一个任务是对话还是安排，以及参与过哪些员工。
  * 路径走 `scope-path.ts`、写走 `atomic-file.ts`。
  */
-import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
+import { diagnoseJsonWithBackup, readJsonWithBackup, writeJsonAtomic, type JsonReadDiagnostic } from './atomic-file'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 
 export type TaskKind = 'conversation' | 'arrangement'
@@ -47,6 +47,10 @@ export class TaskMetadataStore {
       this.paths.metadataFile(scope, taskId),
       value => parseMetadata(value, taskId),
     )
+  }
+
+  async diagnose(scope: TaskOwnerScope, taskId: string): Promise<JsonReadDiagnostic<TaskMetadata>> {
+    return diagnoseJsonWithBackup(this.paths.metadataFile(scope, taskId), value => parseMetadata(value, taskId))
   }
 }
 

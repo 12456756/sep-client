@@ -1,0 +1,12 @@
+version: 0.1.2
+files:
+  - url: SEP-Client-0.1.2-win-x64.exe
+    sha512: L00oDfZD7O+Ijz03sfLhH9otAFG+ZIbTQA9z3TpJ26/OzQcVByei+nCQRWWGzzHzAzTC6/F3J1DpHiQ78vHQNg==
+    size: 104
+    blockMapSize: 0
+path: SEP-Client-0.1.2-win-x64.exe
+sha512: L00oDfZD7O+Ijz03sfLhH9otAFG+ZIbTQA9z3TpJ26/OzQcVByei+nCQRWWGzzHzAzTC6/F3J1DpHiQ78vHQNg==
+releaseDate: '2026-10-09T00:00:00.000Z'
+releaseNotes: |-
+  Local stable fixture for Phase 0 tests.
+  These tiny text files are not real ZIP archives or NSIS installers.

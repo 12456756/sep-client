@@ -1,4 +1,5 @@
 import type { EmployeeAvatarAsset } from '../../shared/types'
+import type { WorkTypeReadResult } from '../../shared/types'
 import type { WorkActivity } from '../../shared/work-activity'
 
 /**
@@ -173,6 +174,8 @@ export interface WorkItem {
   goal: string;
   /** 对话式工作与流程式工作走不同的页面，但在记录里统一呈现。 */
   kind: 'conversation' | 'flow';
+  /** 分类读取状态，不能从执行状态推断。 */
+  workType: WorkTypeReadResult | { state: 'loading' };
   status: WorkStatus;
   progress: number;
   currentEmployeeId: string;
@@ -267,7 +270,7 @@ export type AppRoute =
   | { name: 'employee'; employeeId: string }
   /** employeeId 只在 chat 下有意义：从员工页点「安排工作」时预选那位同事。 */
   | { name: 'arrange'; templateId?: string; mode?: ArrangeMode; employeeId?: string }
-  | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped' }
+  | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped'; workType?: 'all' | 'conversation' | 'arrangement'; search?: string }
   | { name: 'work'; workId: string }
   | { name: 'skills'; skillId?: string }
   | { name: 'compute-center' };

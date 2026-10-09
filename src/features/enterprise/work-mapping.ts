@@ -193,6 +193,8 @@ interface BuildInput {
 
 export function buildWorkItem({ task, employees, messages, streamingText, streamingRunId, activities = [], activeEmployeeId, plan, arrangementEvents = [] }: BuildInput): WorkItem {
   const legacyMeta = decodeWorkMeta(task.prompt);
+  const workType: WorkItem['workType'] = task.workType ?? { state: 'loading' };
+  const resolvedKind = workType.state === 'resolved' ? workType.kind : null;
   const meta: WorkMeta | null = plan && plan.mode !== 'conversation' ? {
     kind: 'flow', goal: plan.goal,
     steps: plan.nodes.map(node => ({ id: node.id, employeeId: node.subscriptionId, title: node.title,
@@ -200,7 +202,11 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     participants: [...new Set(plan.nodes.map(node => node.subscriptionId))],
     sharedContext: { goal: plan.goal, confirmedInputs: [...plan.confirmedInputs], previousResults: [], userNotes: [] },
   } : legacyMeta;
-  const kind: 'conversation' | 'flow' = meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
+  const kind: 'conversation' | 'flow' = resolvedKind === 'arrangement'
+    ? 'flow'
+    : resolvedKind === 'conversation'
+      ? 'conversation'
+      : meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
   const status = toWorkStatus(task.status);
   const legacyProgress = task.progress ?? (status === 'completed' ? 100 : 0);
   const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
@@ -225,6 +231,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     title: task.title,
     goal: meta?.goal || readableGoal(task.prompt),
     kind,
+    workType,
     status,
     progress,
     currentEmployeeId,
