@@ -69,6 +69,9 @@ export function toEnvelope(error: unknown, context: { authenticated?: boolean } 
   if (error instanceof AppError) return envelope(error.code, error.userMessage)
   if (error instanceof AuthenticationRequiredError) return envelope('AUTH_REQUIRED')
   if (error instanceof AuthApiError) {
+    if (error.resource === 'skills' && error.statusCode === 403 && /^Missing Origin or Referer header\.?$/i.test(error.message.trim())) {
+      return envelope('INTERNAL_ERROR')
+    }
     // 已登录之后收到 401/403，含义是"会话/授权失效，请重新登录"，
     // 而不是登录接口上的"账号密码不对"。原来 authError 与 taskError 各自处理，
     // 同一个错误在两条路径上给出的码不一样。

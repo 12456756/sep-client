@@ -2,9 +2,11 @@ import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import * as api from './platform-api'
 import { config } from '../config'
+import { setLogSink, type LogRecord } from '../logger'
 
 const originalFetch = globalThis.fetch
-afterEach(() => { globalThis.fetch = originalFetch })
+let restoreLogSink: (() => void) | undefined
+afterEach(() => { globalThis.fetch = originalFetch; restoreLogSink?.(); restoreLogSink = undefined })
 const version = {
   id: 'psv_opaque-id', capabilityId: 'cap-1', parentVersionId: 'published-1',
   enterpriseId: 'enterprise-1', ownerId: 'user-1', scope: 'PERSONAL', version: '0.0.0-personal.hash',
@@ -120,6 +122,61 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.equal(calls[1]?.authorization, 'Bearer access')
     assert.equal(calls[2]?.authorization, 'Bearer access')
   })
+  it('loads every platform employee page without task search filters and deduplicates IDs', async () => {
+    const pages: number[] = []
+    const platformEmployee = (employeeId: string) => ({
+      employeeId, name: employeeId, position: 'Sales', description: 'Sales proposals',
+      employeeStatus: 'APPROVED', availability: 'AVAILABLE', canApply: true,
+      capabilities: [{ id: 'cap-proposal', name: 'Proposal writing', description: 'Writes proposals' }],
+      updatedAt: '2026-10-08T08:00:00.000Z',
+    })
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input))
+      const page = Number(url.searchParams.get('page'))
+      pages.push(page)
+      assert.equal(url.pathname.endsWith('/client/platform-employees'), true)
+      assert.deepEqual([...url.searchParams.keys()].sort(), ['page', 'pageSize', 'sort'])
+      assert.equal(url.searchParams.get('pageSize'), '100')
+      assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access')
+      const items = page === 1
+        ? Array.from({ length: 100 }, (_, index) => platformEmployee(`employee-${index}`))
+        : page === 2 ? [platformEmployee('employee-99'), platformEmployee('employee-100')]
+          : [platformEmployee('sales-proposal-expert')]
+      return response({ items, page, pageSize: 100, total: 103, hasNextPage: page < 3 })
+    }
+    const employees = await api.getAllPlatformEmployees('access')
+    assert.deepEqual(pages, [1, 2, 3])
+    assert.equal(employees.length, 102)
+    assert.equal(employees.at(-1)?.employeeId, 'sales-proposal-expert')
+    assert.equal(employees.at(-1)?.capabilities[0]?.id, 'cap-proposal')
+  })
+
+  it('returns an empty complete platform directory without extra requests', async () => {
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      return response({ items: [], page: 1, pageSize: 100, total: 0, hasNextPage: false })
+    }
+    assert.deepEqual(await api.getAllPlatformEmployees('access'), [])
+    assert.equal(calls, 1)
+  })
+
+  it('does not return a partial platform directory if a later page fails', async () => {
+    let calls = 0
+    globalThis.fetch = async () => {
+      calls++
+      return calls === 1
+        ? response({ items: [], page: 1, pageSize: 100, total: 1, hasNextPage: true })
+        : response({ statusCode: 503, message: 'Directory unavailable' }, 503)
+    }
+    await assert.rejects(() => api.getAllPlatformEmployees('access'), cause => {
+      assert.ok(cause instanceof api.AuthApiError)
+      assert.equal(cause.statusCode, 503)
+      return true
+    })
+    assert.equal(calls, 2)
+  })
+
   for (const targetType of ['PLATFORM_EMPLOYEE', 'ENTERPRISE_SUBSCRIPTION'] as const) {
     it(`sends a trusted platform Origin when applying for ${targetType}`, async () => {
       const request: api.EmployeeAccessRequestInput = {
@@ -166,6 +223,8 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.equal(calls, 1)
   })
   it('uploads full source and reuses caller-owned idempotency key unchanged', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
     const request = { capabilityId: 'cap-1', parentVersionId: 'published-1', content: '---\r\nname: skill\r\n---\r\n\r\n# Source  \r\n\t', changeSummary: 'Update' }
     const key = '902a70ec-b23d-4ec0-82c8-73450fe778a9'
     let calls = 0
@@ -175,11 +234,53 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
       assert.equal(init?.method, 'POST')
       assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access')
       assert.equal(new Headers(init?.headers).get('Idempotency-Key'), key)
+      assert.equal(new Headers(init?.headers).get('Origin'), new URL(String(input)).origin)
+      assert.equal(new Headers(init?.headers).get('Referer'), new URL(String(input)).origin + '/')
       assert.deepEqual(JSON.parse(String(init?.body)), request)
       return response({ ...version, content: request.content }, 201)
     }
     for (let i = 0; i < 2; i++) assert.equal((await api.createPersonalSkillVersion(request, key, 'access')).content, request.content)
     assert.equal(calls, 2)
+    const responseLogs = logs.filter(record => record.message === 'personal skill upload response received')
+    const resultLogs = logs.filter(record => record.message === 'personal skill upload result validated')
+    assert.equal(responseLogs.length, 2)
+    assert.equal(resultLogs.length, 2)
+    for (const record of responseLogs) {
+      assert.equal(record.scope, 'platform-api')
+      assert.equal(record.message, 'personal skill upload response received')
+      assert.equal(record.level, 'info')
+      assert.deepEqual(record.fields, { method: 'POST', path: '/enterprise/skill-versions', statusCode: 201, ok: true, idempotencyKey: key })
+    }
+    for (const record of resultLogs) {
+      assert.equal(record.level, 'info')
+      assert.deepEqual(record.fields, {
+        idempotencyKey: key, versionId: version.id, capabilityId: version.capabilityId,
+        parentVersionId: version.parentVersionId, scope: 'PERSONAL',
+        reviewStatus: 'PENDING_ENTERPRISE_REVIEW', enterpriseId: version.enterpriseId,
+        submittedAt: version.submittedAt,
+      })
+    }
+    assert.doesNotMatch(JSON.stringify(logs), /Bearer access|# Source/)
+  })
+
+  it('logs the actual current review state returned by an idempotent upload retry', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    globalThis.fetch = async () => response({ ...version, status: 'ENTERPRISE_REJECTED', rejectionReason: 'private-review-comment', content: 'private-skill-source' }, 201)
+    const saved = await api.createPersonalSkillVersion({ capabilityId: 'cap-1', parentVersionId: 'published-1', content: 'private-skill-source' }, 'retry-request-key-01', 'private-access-token')
+    assert.equal(saved.status, 'ENTERPRISE_REJECTED')
+    assert.equal(logs.find(record => record.message === 'personal skill upload result validated')?.fields.reviewStatus, 'ENTERPRISE_REJECTED')
+    assert.doesNotMatch(JSON.stringify(logs), /private-review-comment|private-skill-source|private-access-token/)
+  })
+
+  it('does not log a validated upload result when HTTP 201 contains an invalid version response', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    globalThis.fetch = async () => response({ message: 'private-response' }, 201)
+    await assert.rejects(() => api.createPersonalSkillVersion({ capabilityId: 'cap-1', parentVersionId: 'published-1', content: 'private-skill-source' }, 'invalid-response-key-01', 'private-access-token'))
+    assert.equal(logs.find(record => record.message === 'personal skill upload response received')?.fields.statusCode, 201)
+    assert.equal(logs.some(record => record.message === 'personal skill upload result validated'), false)
+    assert.doesNotMatch(JSON.stringify(logs), /private-response|private-skill-source|private-access-token/)
   })
 
   it('requires valid save inputs and does not send ownership or state from callers', async () => {
@@ -193,6 +294,44 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.equal(calls, 0)
   })
 
+  it('trims only changeSummary before enforcing its length limit', async () => {
+    const request = { capabilityId: 'cap-1', parentVersionId: 'published-1', content: ' source \r\n\t', changeSummary: '  ' + 'x'.repeat(2000) + '  ' }
+    globalThis.fetch = async (_input, init) => {
+      assert.deepEqual(JSON.parse(String(init?.body)), { ...request, changeSummary: 'x'.repeat(2000) })
+      return response({ ...version, content: request.content }, 201)
+    }
+    assert.equal((await api.createPersonalSkillVersion(request, 'trim-summary-key-01', 'access')).content, request.content)
+  })
+
+  it('rejects incomplete or mismatched submission receipts without logging private response values', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    const request = { capabilityId: 'cap-1', parentVersionId: 'published-1', content: 'private-skill-source' }
+    const receipt = { ...version, content: request.content }
+    for (const fields of [
+      { id: '' }, { scope: 'ENTERPRISE' }, { status: 'PERSONAL_ACTIVE' },
+      { submittedAt: null }, { enterpriseId: null }, { ownerId: null }, { content: undefined },
+      { capabilityId: 'wrong-capability' }, { parentVersionId: 'wrong-parent' },
+      { content: 'private-wrong-source' },
+    ]) {
+      globalThis.fetch = async () => response({ ...receipt, ...fields }, 201)
+      await assert.rejects(() => api.createPersonalSkillVersion(request, 'invalid-receipt-key-01', 'private-access-token'))
+    }
+    assert.equal(logs.filter(record => record.message === 'personal skill upload result invalid').length, 10)
+    assert.equal(logs.some(record => record.message === 'personal skill upload result validated'), false)
+    assert.doesNotMatch(JSON.stringify(logs), /private-skill-source|private-wrong-source|private-access-token|wrong-capability|wrong-parent/)
+  })
+
+  it('logs a non-JSON submission receipt as a response parsing failure', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    globalThis.fetch = async () => new Response('private-invalid-response', { status: 201 })
+    await assert.rejects(() => api.createPersonalSkillVersion({ capabilityId: 'cap-1', parentVersionId: 'published-1', content: 'source' }, 'invalid-json-key-01', 'access'))
+    const record = logs.find(record => record.message === 'personal skill upload result invalid')
+    assert.equal(record?.fields.phase, 'response-json')
+    assert.doesNotMatch(JSON.stringify(logs), /private-invalid-response/)
+  })
+
   it('lists versions using required capabilityId and optional status, preserving review metadata', async () => {
     globalThis.fetch = async input => {
       const url = new URL(String(input))
@@ -204,6 +343,20 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     const result = await api.listSkillVersions({ capabilityId: 'cap/with & characters', status: 'ENTERPRISE_REJECTED' }, 'access')
     assert.equal(result[0]?.rejectionReason, 'Add acceptance criteria')
     await assert.rejects(async () => api.listSkillVersions({ capabilityId: '' }, 'access'))
+  })
+
+  it('logs the HTTP status of personal submission queries without response contents', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    for (const statusCode of [200, 403, 503]) {
+      globalThis.fetch = async () => response(statusCode === 200 ? [version] : { statusCode, message: 'private-query-error' }, statusCode)
+      if (statusCode === 200) await api.listSkillVersions({ capabilityId: 'cap-1' }, 'private-access-token')
+      else await assert.rejects(() => api.listSkillVersions({ capabilityId: 'cap-1' }, 'private-access-token'))
+    }
+    const records = logs.filter(record => record.message === 'skill version query response received')
+    assert.deepEqual(records.map(record => record.fields.statusCode), [200, 403, 503])
+    assert.deepEqual(records.map(record => record.level), ['info', 'warn', 'warn'])
+    assert.doesNotMatch(JSON.stringify(logs), /private-query-error|private-access-token/)
   })
 
   it('preserves review pagination and sends review decisions to the encoded version URL', async () => {
@@ -263,8 +416,10 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.equal((await api.reviewSkillVersion('psv_opaque', { decision: 'APPROVE' }, 'access')).status, 'ENTERPRISE_APPROVED')
   })
 
-  for (const status of [400, 401, 403, 404, 409, 500]) {
+  for (const status of [400, 401, 403, 404, 409, 429, 500]) {
     it(`retains the platform ${status} error and does not retry writes automatically`, async () => {
+      const logs: LogRecord[] = []
+      restoreLogSink = setLogSink(record => logs.push(record))
       let calls = 0
       const error = { statusCode: status, message: 'Platform rejection', requestId: 'req-1', timestamp: '2026-09-16', path: '/api/enterprise/skill-versions' }
       globalThis.fetch = async () => { calls++; return response(error, status) }
@@ -274,6 +429,11 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
         return true
       })
       assert.equal(calls, 1)
+      assert.equal(logs.length, 1)
+      assert.equal(logs[0]?.level, 'warn')
+      assert.equal(logs[0]?.fields.statusCode, status)
+      assert.equal(logs[0]?.fields.ok, false)
+      assert.doesNotMatch(JSON.stringify(logs), /Platform rejection|Bearer access|"content"/)
     })
   }
 

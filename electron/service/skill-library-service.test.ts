@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test'
+import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -6,7 +6,12 @@ import { join } from 'node:path'
 import { SkillLibraryService } from './skill-library-service'
 import { SkillVersionStore } from '../data/skill-version-store'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
-import { AuthApiError, type SkillVersion } from '../common/platform/platform-api'
+import { AuthApiError, SkillSubmissionResponseError, type SkillVersion } from '../common/platform/platform-api'
+import { AppError } from '../errors/app-error'
+import { setLogSink, type LogRecord } from '../common/logger'
+
+let restoreLogSink: (() => void) | undefined
+afterEach(() => { restoreLogSink?.(); restoreLogSink = undefined })
 
 const scope = { enterpriseId: 'ent', memberId: 'user' }
 const published: SkillVersion = { id: 'v1', capabilityId: 'cap', scope: 'PLATFORM', version: '1.0', status: 'PLATFORM_APPROVED' }
@@ -20,13 +25,21 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
   let uploadError: unknown = null
   let offline = false
   let currentScope = scope
+  let verificationError: unknown = null
+  let hideSubmission = false
+  const queries: { capabilityId: string }[] = []
   const uploads: string[] = []
   const service = new SkillLibraryService({
     scope: { currentScope: () => currentScope }, token: async () => { if (offline) throw new Error('offline'); return 'test-token' }, versions, submissions,
     subscriptions: async () => [{ subscriptionId: 'sub-a', employeeId: 'emp-a' }, { subscriptionId: 'sub-b', employeeId: 'emp-b' }],
     platform: {
       skills: async (id: string) => ({ subscriptionId: id === 'emp-a' ? 'sub-a' : 'sub-b', canManage: false, skills: [{ capability: { id: 'cap', name: 'Analysis', description: 'Raw skill', type: 'SKILL' }, currentVersion: published, versions: personal ? [published, personal] : [published], upgradeAvailable: false }] }),
-      list: async () => personal ? [published, personal] : [published],
+      list: async input => {
+        queries.push(input)
+        if (personal && verificationError) throw verificationError
+        if (personal) assert.equal((await submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, personal.id)
+        return personal && !hideSubmission ? [published, personal] : [published]
+      },
       preview: async () => ({ content }),
       create: async (request, key) => {
         assert.equal(request.content, content)
@@ -38,10 +51,66 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
       },
     },
   })
-  return { service, versions, submissions, uploads, setUploadError: (error: unknown) => { uploadError = error }, switchUser: () => { currentScope = { ...scope, memberId: "other" } }, offline: () => { offline = true }, fail: (value: boolean) => { failUpload = value }, reject: () => { personal = { ...personal!, status: 'ENTERPRISE_REJECTED' } }, approve: () => { personal = { ...personal!, status: 'ENTERPRISE_APPROVED' } } }
+  return { service, versions, submissions, uploads, queries, setVerificationError: (error: unknown) => { verificationError = error }, hideSubmission: () => { hideSubmission = true }, setUploadError: (error: unknown) => { uploadError = error }, switchUser: () => { currentScope = { ...scope, memberId: "other" } }, offline: () => { offline = true }, fail: (value: boolean) => { failUpload = value }, reject: () => { personal = { ...personal!, status: 'ENTERPRISE_REJECTED' } }, approve: () => { personal = { ...personal!, status: 'ENTERPRISE_APPROVED' } } }
 }
 
 describe('SkillLibraryService', () => {
+  it('queries the submitted capability after persisting its successful receipt and logs confirmation', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    const f = await fixture()
+    const result = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'confirm-upload-key-01' })
+    assert.equal(result.uploaded, true)
+    assert.deepEqual(f.queries.at(-1), { capabilityId: 'cap' })
+    const record = logs.find(record => record.message === 'personal skill upload verification completed')
+    assert.equal(record?.fields.found, true)
+    assert.equal(record?.fields.versionId, 'personal-v1')
+    assert.equal(record?.fields.reviewStatus, 'PENDING_ENTERPRISE_REVIEW')
+    assert.equal(record?.fields.idempotencyKey, result.idempotencyKey)
+    assert.doesNotMatch(JSON.stringify(logs), /name: example|test-token/)
+  })
+
+  it('keeps upload success and the saved receipt when the confirmation list omits it', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    const f = await fixture()
+    f.hideSubmission()
+    const result = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'missing-receipt-key-01' })
+    assert.equal(result.uploaded, true)
+    assert.equal((await f.submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, result.version?.id)
+    const record = logs.find(record => record.message === 'personal skill upload verification completed')
+    assert.equal(record?.level, 'warn')
+    assert.equal(record?.fields.found, false)
+    assert.equal(f.uploads.length, 1)
+  })
+
+  it('logs a confirmation HTTP failure without resubmitting or losing the successful receipt', async () => {
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    const f = await fixture()
+    f.setVerificationError(new AuthApiError({ statusCode: 503, message: 'private-platform-error' }, 'skills'))
+    const result = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'query-failed-key-01' })
+    assert.equal(result.uploaded, true)
+    assert.equal((await f.submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, 'personal-v1')
+    const record = logs.find(record => record.message === 'personal skill upload verification failed')
+    assert.equal(record?.fields.statusCode, 503)
+    assert.equal(f.uploads.length, 1)
+    assert.doesNotMatch(JSON.stringify(logs), /private-platform-error|name: example|test-token/)
+  })
+
+  it('reports an invalid submission receipt as a generic error, not an offline upload', async () => {
+    const f = await fixture()
+    f.setUploadError(new SkillSubmissionResponseError())
+    await assert.rejects(() => f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'invalid-receipt-key-01' }), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'INTERNAL_ERROR')
+      assert.doesNotMatch(error.message, /response|validation|SkillSubmission/)
+      return true
+    })
+    const saved = await f.submissions.list(scope, 'cap')
+    assert.equal(saved[0]?.request.content, content)
+    assert.equal(saved[0]?.uploadedVersion, undefined)
+  })
   it('groups a capability across employees without losing subscription selections', async () => {
     const { service } = await fixture()
     const items = await service.list()

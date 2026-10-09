@@ -5,9 +5,11 @@ import {
 } from '../../../src/shared/notification-contracts'
 export type { PlatformNotification as Notification, NotificationQuery } from '../../../src/shared/notification-contracts'
 import { config } from '../config'
+import { logger } from '../logger'
+import { platformSourceHeaders } from './platform-source-headers'
 import {
   enterpriseOrganizationSchema, enterpriseOverviewSchema, platformEmployeePageSchema, employeeAccessRequestSchema, employeeAccessRequestInputSchema, skillVersionSchema,
-  personalSkillVersionRequestSchema, idempotencyKeySchema, skillVersionQuerySchema,
+  personalSkillVersionRequestSchema, personalSkillSubmissionResponseSchema, idempotencyKeySchema, skillVersionQuerySchema,
   skillVersionReviewQuerySchema, skillVersionReviewRequestSchema, skillVersionIdSchema,
   skillVersionListSchema, skillVersionReviewPageSchema,
 } from '../../../src/shared/platform-supplement-contracts'
@@ -47,6 +49,15 @@ import type { Subscription } from '../../../src/shared/types'
 export type { Subscription } from '../../../src/shared/types'
 
 export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'REVOKED'
+
+const log = logger.child('platform-api')
+
+export class SkillSubmissionResponseError extends Error {
+  constructor() {
+    super('Personal skill submission response could not be validated')
+    this.name = 'SkillSubmissionResponseError'
+  }
+}
 
 export interface PlatformUser {
   id: string
@@ -271,6 +282,11 @@ async function getJson<T>(path: string, accessToken: string, resource: AuthApiRe
     headers: { Authorization: `Bearer ${accessToken}` },
     ...(resource === 'notifications' ? { signal: AbortSignal.timeout(15_000) } : {}),
   })
+  if (resource === 'skills' && path.startsWith('/enterprise/skill-versions?')) {
+    const fields = { method: 'GET', path: '/enterprise/skill-versions', statusCode: response.status, ok: response.ok }
+    if (response.ok) log.info('skill version query response received', fields)
+    else log.warn('skill version query response received', fields)
+  }
   if (!response.ok) throw await parseError(response, resource)
   return response.json() as Promise<T>
 }
@@ -284,13 +300,25 @@ async function postJson<T>(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Origin: config.SEP_WEB_ORIGIN,
+      ...(path === '/enterprise/skill-versions' ? platformSourceHeaders(config.SEP_BASE_URL) : {}),
       'Content-Type': 'application/json',
       ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },
     body: JSON.stringify(body),
   })
+  if (path === '/enterprise/skill-versions') {
+    const fields = { method: 'POST', path, statusCode: response.status, ok: response.ok, idempotencyKey }
+    if (response.ok) log.info('personal skill upload response received', fields)
+    else log.warn('personal skill upload response received', fields)
+  }
   if (!response.ok) throw await parseError(response, resource)
-  return response.json() as Promise<T>
+  try {
+    return await response.json() as T
+  } catch (error) {
+    if (path !== '/enterprise/skill-versions') throw error
+    log.error('personal skill upload result invalid', { idempotencyKey, phase: 'response-json', statusCode: response.status })
+    throw new SkillSubmissionResponseError()
+  }
 }
 
 async function postMultipart<T>(
@@ -594,6 +622,17 @@ export async function getPlatformEmployees(
   return platformEmployeePageSchema.parse(await getJson('/client/platform-employees' + query, accessToken, 'employee-directory'))
 }
 
+export async function getAllPlatformEmployees(accessToken: string): Promise<PlatformEmployeePage['items']> {
+  const employees = new Map<string, PlatformEmployeePage['items'][number]>()
+  let page = 1
+  for (;;) {
+    const result = await getPlatformEmployees(accessToken, { page, pageSize: 100, sort: 'updatedAt_desc' })
+    for (const employee of result.items) employees.set(employee.employeeId, employee)
+    if (!result.hasNextPage) return [...employees.values()]
+    page += 1
+  }
+}
+
 export async function createEmployeeAccessRequest(
   request: EmployeeAccessRequestInput,
   idempotencyKey: string,
@@ -686,7 +725,27 @@ export async function createPersonalSkillVersion(
 ): Promise<SkillVersion> {
   const body = personalSkillVersionRequestSchema.parse(request)
   const key = idempotencyKeySchema.parse(idempotencyKey)
-  return skillVersionSchema.parse(await postJson('/enterprise/skill-versions', body, accessToken, 'skills', key))
+  const response = await postJson<unknown>('/enterprise/skill-versions', body, accessToken, 'skills', key)
+  const result = personalSkillSubmissionResponseSchema
+    .refine(value => value.capabilityId === body.capabilityId, { path: ['capabilityId'] })
+    .refine(value => value.parentVersionId === body.parentVersionId, { path: ['parentVersionId'] })
+    .refine(value => value.content === body.content, { path: ['content'] })
+    .safeParse(response)
+  if (!result.success) {
+    log.error('personal skill upload result invalid', {
+      idempotencyKey: key, phase: 'response-validation',
+      issues: result.error.issues.slice(0, 12).map(issue => ({ field: issue.path.join('.'), code: issue.code })),
+    })
+    throw new SkillSubmissionResponseError()
+  }
+  const version = result.data
+  log.info('personal skill upload result validated', {
+    idempotencyKey: key, versionId: version.id, capabilityId: version.capabilityId,
+    parentVersionId: version.parentVersionId, scope: version.scope,
+    reviewStatus: version.status, enterpriseId: version.enterpriseId,
+    submittedAt: version.submittedAt,
+  })
+  return version
 }
 
 function platformQuery(params: object): string {
