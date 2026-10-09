@@ -277,10 +277,10 @@ async function parseError(response: Response, resource?: AuthApiResource): Promi
   }
 }
 
-async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource): Promise<T> {
+async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    ...(resource === 'notifications' ? { signal: AbortSignal.timeout(15_000) } : {}),
+    signal: signal ?? (resource === 'notifications' ? AbortSignal.timeout(15_000) : undefined),
   })
   if (resource === 'skills' && path.startsWith('/enterprise/skill-versions?')) {
     const fields = { method: 'GET', path: '/enterprise/skill-versions', statusCode: response.status, ok: response.ok }
@@ -300,7 +300,7 @@ async function postJson<T>(
     headers: {
       Authorization: `Bearer ${accessToken}`,
       Origin: config.SEP_WEB_ORIGIN,
-      ...(path === '/enterprise/skill-versions' ? platformSourceHeaders(config.SEP_BASE_URL) : {}),
+      ...(path === '/enterprise/skill-versions' ? platformSourceHeaders(config.SEP_WEB_ORIGIN) : {}),
       'Content-Type': 'application/json',
       ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
     },
@@ -757,9 +757,9 @@ function platformQuery(params: object): string {
 }
 
 /** capabilityId is required to avoid the legacy enterprise-only listing semantics. */
-export async function listSkillVersions(params: SkillVersionQuery, accessToken: string): Promise<SkillVersion[]> {
+export async function listSkillVersions(params: SkillVersionQuery, accessToken: string, signal?: AbortSignal): Promise<SkillVersion[]> {
   const query = platformQuery(skillVersionQuerySchema.parse(params))
-  return skillVersionListSchema.parse(await getJson('/enterprise/skill-versions' + query, accessToken, 'skills'))
+  return skillVersionListSchema.parse(await getJson('/enterprise/skill-versions' + query, accessToken, 'skills', signal))
 }
 
 export async function listSkillVersionReviews(

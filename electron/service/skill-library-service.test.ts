@@ -16,6 +16,16 @@ afterEach(() => { restoreLogSink?.(); restoreLogSink = undefined })
 const scope = { enterpriseId: 'ent', memberId: 'user' }
 const published: SkillVersion = { id: 'v1', capabilityId: 'cap', scope: 'PLATFORM', version: '1.0', status: 'PLATFORM_APPROVED' }
 const content = '---\r\nname: example\r\n---\r\n# Raw  \r\n'
+function confirmationLogs() {
+  const logs: LogRecord[] = []
+  let complete!: () => void
+  const done = new Promise<void>(resolve => { complete = resolve })
+  restoreLogSink = setLogSink(record => {
+    logs.push(record)
+    if (record.message === 'personal skill upload verification completed' || record.message === 'personal skill upload verification failed') complete()
+  })
+  return { logs, done }
+}
 async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
   const root = await mkdtemp(join(tmpdir(), 'sep-library-'))
   const versions = new SkillVersionStore(join(root, 'versions'))
@@ -27,6 +37,7 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
   let currentScope = scope
   let verificationError: unknown = null
   let hideSubmission = false
+  let confirmation: ((signal?: AbortSignal) => Promise<SkillVersion[]>) | null = null
   const queries: { capabilityId: string }[] = []
   const uploads: string[] = []
   const service = new SkillLibraryService({
@@ -34,8 +45,9 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
     subscriptions: async () => [{ subscriptionId: 'sub-a', employeeId: 'emp-a' }, { subscriptionId: 'sub-b', employeeId: 'emp-b' }],
     platform: {
       skills: async (id: string) => ({ subscriptionId: id === 'emp-a' ? 'sub-a' : 'sub-b', canManage: false, skills: [{ capability: { id: 'cap', name: 'Analysis', description: 'Raw skill', type: 'SKILL' }, currentVersion: published, versions: personal ? [published, personal] : [published], upgradeAvailable: false }] }),
-      list: async input => {
+      list: async (input, _token, signal) => {
         queries.push(input)
+        if (personal && confirmation) return confirmation(signal)
         if (personal && verificationError) throw verificationError
         if (personal) assert.equal((await submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, personal.id)
         return personal && !hideSubmission ? [published, personal] : [published]
@@ -51,16 +63,16 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
       },
     },
   })
-  return { service, versions, submissions, uploads, queries, setVerificationError: (error: unknown) => { verificationError = error }, hideSubmission: () => { hideSubmission = true }, setUploadError: (error: unknown) => { uploadError = error }, switchUser: () => { currentScope = { ...scope, memberId: "other" } }, offline: () => { offline = true }, fail: (value: boolean) => { failUpload = value }, reject: () => { personal = { ...personal!, status: 'ENTERPRISE_REJECTED' } }, approve: () => { personal = { ...personal!, status: 'ENTERPRISE_APPROVED' } } }
+  return { service, versions, submissions, uploads, queries, setConfirmation: (query: (signal?: AbortSignal) => Promise<SkillVersion[]>) => { confirmation = query }, setVerificationError: (error: unknown) => { verificationError = error }, hideSubmission: () => { hideSubmission = true }, setUploadError: (error: unknown) => { uploadError = error }, switchUser: () => { currentScope = { ...scope, memberId: "other" } }, offline: () => { offline = true }, fail: (value: boolean) => { failUpload = value }, reject: () => { personal = { ...personal!, status: 'ENTERPRISE_REJECTED' } }, approve: () => { personal = { ...personal!, status: 'ENTERPRISE_APPROVED' } } }
 }
 
 describe('SkillLibraryService', () => {
   it('queries the submitted capability after persisting its successful receipt and logs confirmation', async () => {
-    const logs: LogRecord[] = []
-    restoreLogSink = setLogSink(record => logs.push(record))
+    const { logs, done } = confirmationLogs()
     const f = await fixture()
     const result = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'confirm-upload-key-01' })
     assert.equal(result.uploaded, true)
+    await done
     assert.deepEqual(f.queries.at(-1), { capabilityId: 'cap' })
     const record = logs.find(record => record.message === 'personal skill upload verification completed')
     assert.equal(record?.fields.found, true)
@@ -71,12 +83,12 @@ describe('SkillLibraryService', () => {
   })
 
   it('keeps upload success and the saved receipt when the confirmation list omits it', async () => {
-    const logs: LogRecord[] = []
-    restoreLogSink = setLogSink(record => logs.push(record))
+    const { logs, done } = confirmationLogs()
     const f = await fixture()
     f.hideSubmission()
     const result = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'missing-receipt-key-01' })
     assert.equal(result.uploaded, true)
+    await done
     assert.equal((await f.submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, result.version?.id)
     const record = logs.find(record => record.message === 'personal skill upload verification completed')
     assert.equal(record?.level, 'warn')
@@ -85,17 +97,67 @@ describe('SkillLibraryService', () => {
   })
 
   it('logs a confirmation HTTP failure without resubmitting or losing the successful receipt', async () => {
-    const logs: LogRecord[] = []
-    restoreLogSink = setLogSink(record => logs.push(record))
+    const { logs, done } = confirmationLogs()
     const f = await fixture()
     f.setVerificationError(new AuthApiError({ statusCode: 503, message: 'private-platform-error' }, 'skills'))
     const result = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'query-failed-key-01' })
     assert.equal(result.uploaded, true)
+    await done
     assert.equal((await f.submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, 'personal-v1')
     const record = logs.find(record => record.message === 'personal skill upload verification failed')
     assert.equal(record?.fields.statusCode, 503)
     assert.equal(f.uploads.length, 1)
     assert.doesNotMatch(JSON.stringify(logs), /private-platform-error|name: example|test-token/)
+  })
+
+  it('returns the persisted upload result while confirmation is stalled and logs its timeout', { timeout: 2_000 }, async t => {
+    const { logs, done } = confirmationLogs()
+    const controller = new AbortController()
+    const timeouts: number[] = []
+    t.mock.method(AbortSignal, 'timeout', (milliseconds: number) => {
+      timeouts.push(milliseconds)
+      return controller.signal
+    })
+    const f = await fixture()
+    let querySignal: AbortSignal | undefined
+    f.setConfirmation(signal => {
+      querySignal = signal
+      return new Promise<SkillVersion[]>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    })
+    try {
+      const saved = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'stalled-query-key-01' })
+      assert.equal(saved.uploaded, true)
+      assert.equal((await f.submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, saved.version?.id)
+      assert.equal(querySignal, controller.signal)
+      assert.deepEqual(timeouts, [15_000])
+      assert.equal(logs.some(record => record.message.startsWith('personal skill upload verification')), false)
+    } finally {
+      controller.abort(new DOMException('Confirmation timed out', 'TimeoutError'))
+    }
+    await done
+    assert.equal(logs.find(record => record.message === 'personal skill upload verification failed')?.fields.errorType, 'TimeoutError')
+    assert.equal(f.uploads.length, 1)
+  })
+
+  it('handles an account switch during background confirmation without rejecting the saved upload', { timeout: 2_000 }, async () => {
+    const { logs, done } = confirmationLogs()
+    const f = await fixture()
+    let release!: (versions: SkillVersion[]) => void
+    const pending = new Promise<SkillVersion[]>(resolve => { release = resolve })
+    f.setConfirmation(() => pending)
+    try {
+      const saved = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'switched-query-key-01' })
+      assert.equal(saved.uploaded, true)
+      f.switchUser()
+    } finally {
+      release([published])
+    }
+    await done
+    assert.equal(logs.some(record => record.message === 'personal skill upload verification completed'), false)
+    assert.equal(logs.find(record => record.message === 'personal skill upload verification failed')?.fields.errorType, 'Error')
+    assert.equal((await f.submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, 'personal-v1')
   })
 
   it('reports an invalid submission receipt as a generic error, not an offline upload', async () => {
