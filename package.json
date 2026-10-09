@@ -32,7 +32,8 @@
     "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
     "verify:update-manifest": "node scripts/verify-update-manifest.mjs",
     "test:update-feed": "node scripts/test-update-feed.mjs",
-    "test:updates": "node --test scripts/update-manifest.test.mjs"
+    "test:updates": "node --test scripts/update-manifest.test.mjs",
+    "test:updates:runtime": "tsx --test electron/bootstrap/app-updater.test.ts electron/bootstrap/create-app-updater.test.ts electron/bootstrap/shutdown.test.ts electron/common/update-config.test.ts electron/controller/update-contract.test.ts"
   },
   "dependencies": {
     "@dicebear/core": "9.4.3",
@@ -58,7 +59,8 @@
     "tailwind-merge": "^2.5.4",
     "typebox": "1.3.7",
     "zod": "4.5.4",
-    "zustand": "^5.0.1"
+    "zustand": "^5.0.1",
+    "electron-updater": "6.8.9"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.83.0",

@@ -1,6 +1,6 @@
 import type { NotificationUpdate } from '../src/shared/notification-contracts';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import type { ElectronAPI } from '../src/shared/ipc';
+import type { ElectronAPI, UpdateState } from '../src/shared/ipc';
 import type {
   ArrangementPlanningProgress,
   ClientTask,
@@ -16,6 +16,16 @@ const runtimePlatform = process.platform === 'darwin' || process.platform === 'w
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
 
 const electronAPI = {
+  getUpdateState: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_GET_STATE),
+  checkForUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_CHECK),
+  downloadUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_DOWNLOAD),
+  cancelUpdateDownload: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_CANCEL),
+  installUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_INSTALL),
+  onUpdateStateChanged: callback => {
+    const handler = (_event: IpcRendererEvent, state: UpdateState) => callback(state);
+    ipcRenderer.on(EVENT_CHANNELS.UPDATE_STATE_CHANGED, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.UPDATE_STATE_CHANGED, handler);
+  },
   listNotifications: query => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_LIST, query ?? {}),
   getUnreadNotificationCount: query => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_UNREAD_COUNT, query ?? {}),
   markNotificationRead: id => ipcRenderer.invoke(INVOKE_CHANNELS.NOTIFICATION_MARK_READ, id),

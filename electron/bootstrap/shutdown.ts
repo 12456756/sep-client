@@ -24,12 +24,15 @@ export interface ShutdownOptions {
   stop: () => Promise<void>
   /** 进日志的停机现场，例如运行时是否加载过、还有几个 run 在跑。 */
   describeState?: () => LogFields
+  /** 更新安装已完成清理时，让原生 updater 自己退出与重启，避免 app.exit 打断安装。 */
+  isUpdateInstallPrepared?: () => boolean
 }
 
-export function installShutdownHandler({ stop, describeState }: ShutdownOptions): void {
+export function installShutdownHandler({ stop, describeState, isUpdateInstallPrepared }: ShutdownOptions): void {
   let shuttingDown = false
 
   app.on('before-quit', event => {
+    if (isUpdateInstallPrepared?.()) return
     if (shuttingDown) return
     event.preventDefault()
     shuttingDown = true

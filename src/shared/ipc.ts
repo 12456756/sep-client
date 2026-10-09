@@ -62,6 +62,39 @@ export interface IpcCommandResult {
   error?: IpcError
 }
 
+export type UpdateState =
+  | { status: 'idle'; currentVersion: string }
+  | { status: 'checking'; currentVersion: string }
+  | {
+      status: 'available'
+      currentVersion: string
+      version: string
+      releaseDate: string | null
+      releaseNotes: string[]
+    }
+  | {
+      status: 'downloading'
+      currentVersion: string
+      version: string
+      percent: number
+      transferred: number
+      total: number
+      bytesPerSecond: number
+    }
+  | { status: 'downloaded'; currentVersion: string; version: string }
+  | { status: 'not-available'; currentVersion: string; checkedAt: string }
+  | {
+      status: 'error'
+      currentVersion: string
+      operation: 'check' | 'download' | 'cancel' | 'install'
+      message: string
+      retryable: boolean
+    }
+
+export interface UpdateStateResult extends IpcCommandResult {
+  state?: UpdateState
+}
+
 export interface UploadInput {
   bytes: Uint8Array
   filename: string
@@ -234,6 +267,12 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  getUpdateState: () => Promise<UpdateStateResult>
+  checkForUpdate: () => Promise<IpcCommandResult>
+  downloadUpdate: () => Promise<IpcCommandResult>
+  cancelUpdateDownload: () => Promise<IpcCommandResult>
+  installUpdate: () => Promise<IpcCommandResult>
+  onUpdateStateChanged: (callback: (state: UpdateState) => void) => () => void
   listNotifications: (query?: NotificationQuery) => Promise<IpcCommandResult & { data?: NotificationPage }>
   getUnreadNotificationCount: (query?: NotificationCategoryQuery) => Promise<IpcCommandResult & { data?: { count: number } }>
   markNotificationRead: (id: string) => Promise<IpcCommandResult>

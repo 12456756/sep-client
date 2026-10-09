@@ -5,6 +5,7 @@
  * 这样所有业务入口共享同一套认证失效语义。
  */
 import type { BrowserWindow } from 'electron'
+import type { AppUpdater } from '../bootstrap/app-updater'
 import type { Backend } from '../bootstrap/build-backend'
 
 export interface RequestContext {
@@ -21,6 +22,8 @@ export interface RequestContext {
    * 任务类路由不该碰它——它们的入口是上面的服务句柄。
    */
   readonly backend: Backend
+  /** 自动更新独立于登录会话；未组装时路由返回普通 IPC 错误。 */
+  readonly updater?: AppUpdater
   /** 需要父窗口的原生弹框（目录选择）用它。 */
   readonly window: () => BrowserWindow | null
 }
@@ -28,6 +31,7 @@ export interface RequestContext {
 export function createRequestContext(
   backend: Backend,
   window: () => BrowserWindow | null,
+  updater?: AppUpdater,
 ): RequestContext {
   return {
     notifications: backend.notifications,
@@ -37,6 +41,7 @@ export function createRequestContext(
     arrangements: backend.arrangements,
     employees: backend.employees,
     backend,
+    updater,
     window,
   }
 }
