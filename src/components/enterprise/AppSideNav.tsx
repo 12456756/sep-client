@@ -11,7 +11,7 @@
  * titleBarOverlay 画在右上角，那一侧的留白见 enterprise.css 的 .ent-top）。
  */
 
-import { Building2, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, Gauge, GraduationCap, LayoutGrid, ListTodo, LogOut, Settings, ShieldCheck, Users } from 'lucide-react';
+import { Building2, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, Gauge, GraduationCap, LayoutGrid, ListTodo, LogOut, RefreshCw, Settings, ShieldCheck, Users } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { AppRoute, AppRouteName } from '../../features/enterprise/types';
 import type { EmployeeAvatarSource } from '../../shared/types';
@@ -34,6 +34,7 @@ interface Props {
   onToggleCollapse: () => void;
   onNavigate: (route: AppRoute) => void;
   onOpenSettings: () => void;
+  onCheckUpdate?: () => void;
   onLogout: () => void;
 }
 
@@ -55,7 +56,7 @@ function isActive(item: AppRouteName, current: AppRouteName): boolean {
 }
 
 export function AppSideNav({
-  enterpriseName, enterpriseMark, enterpriseLogo, enterpriseLogoFallback, current, needsMeCount, canManage, userName, userAvatar, collapsed, onToggleCollapse, onNavigate, onOpenSettings, onLogout,
+  enterpriseName, enterpriseMark, enterpriseLogo, enterpriseLogoFallback, current, needsMeCount, canManage, userName, userAvatar, collapsed, onToggleCollapse, onNavigate, onOpenSettings, onCheckUpdate, onLogout,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
@@ -173,6 +174,10 @@ export function AppSideNav({
               <Settings size={13} aria-hidden />
               设置
             </button>
+            {onCheckUpdate && <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onCheckUpdate(); }}>
+              <RefreshCw size={13} aria-hidden />
+              检查更新
+            </button>}
             <button type="button" role="menuitem" className="danger" onClick={() => { setMenuOpen(false); onLogout(); }}>
               <LogOut size={13} aria-hidden />
               退出登录

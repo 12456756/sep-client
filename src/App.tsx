@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { LoginPage } from './pages/LoginPage';
 import { ClientAppPage } from './pages/ClientAppPage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
+import { useUpdate } from './features/update/use-update';
 import type { EmployeeStatus, Subscription, RememberedAccount } from './shared/types';
 
 interface AuthState {
@@ -18,6 +19,7 @@ interface ToolApprovalRequest {
 const INSTANCE_LOAD_TIMEOUT_MS = 3_000;
 
 export default function App() {
+  const update = useUpdate();
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const [instances, setInstances] = useState<Subscription[]>([]);
   const [employeeStatuses, setEmployeeStatuses] = useState<EmployeeStatus[]>([]);
@@ -100,7 +102,7 @@ export default function App() {
     if (!authState) return <LoginPage encryptionAvailable={encryptionAvailable} rememberedAccounts={rememberedAccounts} onAccountListChange={setRememberedAccounts} onLoginSuccess={setAuthState} />;
     if (loadingInstances) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在准备你的员工团队</p></div>;
     if (instanceError) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={() => void handleLogout()}>退出登录</button></div>;
-    return <ClientAppPage userId={authState.user.id} userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={instances} employeeStatuses={employeeStatuses} onLogout={handleLogout} />;
+    return <ClientAppPage update={update} userId={authState.user.id} userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={instances} employeeStatuses={employeeStatuses} onLogout={handleLogout} />;
   };
 
   return <>
