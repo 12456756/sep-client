@@ -21,8 +21,9 @@ class MemoryStore {
 class FakeApi implements ClientMonitorApiPort {
   calls: string[] = []
   events: ClientTaskEventRequest[] = []
+  creates: CreateClientTaskRequest[] = []
   beforeCreate?: (taskId: string) => Promise<void>
-  async createTask(request: CreateClientTaskRequest): Promise<{ id: string }> { this.calls.push(`create:${request.clientTaskId}:${request.clientRunId}`); await this.beforeCreate?.(request.clientTaskId); return { id: 'mirror-1' } }
+  async createTask(request: CreateClientTaskRequest): Promise<{ id: string }> { this.creates.push(request); this.calls.push(`create:${request.clientTaskId}:${request.clientRunId}`); await this.beforeCreate?.(request.clientTaskId); return { id: 'mirror-1' } }
   async updateStatus(_mirrorId: string, request: ClientTaskStatusRequest): Promise<void> { this.calls.push(`status:${request.status}`) }
   async sendHeartbeat(_mirrorId: string, request: ClientTaskHeartbeatRequest): Promise<void> { this.calls.push(`heartbeat:${request.clientVersion}`) }
   async sendEvent(_mirrorId: string, request: ClientTaskEventRequest): Promise<void> { this.calls.push(`event:${request.sequence}`); this.events.push(request) }
@@ -224,6 +225,9 @@ describe('ClientMonitorService', () => {
     await monitor.resumePending()
     assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:1', 'event:2', 'status:COMPLETED', 'create:task-a:run-2', 'event:3', 'event:4', 'status:FAILED'])
     assert.equal(store.records.get('task-a')?.historyBackfilled, true)
+    assert.ok(api.creates.every(create => create.protocolVersion === undefined && create.queuedAt === undefined))
+    assert.ok(api.events.every(event => event.participation === undefined))
+    assert.equal(store.records.get('task-a')?.liveRuns, undefined)
     const previous = api.calls.length
     // Simulate a legacy outbox without status fingerprints. Only the current run is reconciled.
     store.records.set('task-a', { ...store.records.get('task-a')!, statusByRun: undefined })
@@ -333,4 +337,67 @@ describe('ClientMonitorService', () => {
     }
   })
 
+  it('keeps conversation attribution and actual lifecycle times per live run', async () => {
+    const store = new MemoryStore(); const api = new FakeApi(); const monitor = service(store, api)
+    const start = 1_700_000_000_000
+    const live = (runId: string, subscriptionId: string): QueueInput => ({ ...queued(runId), subscriptionId,
+      protocolVersion: 2, queuedAt: start - 100, participation: { executionId: runId, subscriptionId, title: 'Task', modelId: 'model' } })
+    await monitor.taskQueued(live('run-1', 'sub-1'))
+    await monitor.taskStarted({ taskId: 'task-a', runId: 'run-1', startedAt: start })
+    await monitor.taskQueued(live('run-2', 'sub-2'))
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', content: 'late old output' })
+    await monitor.taskFinished({ taskId: 'task-a', runId: 'run-1', status: 'FAILED', completedAt: start + 100 })
+    await monitor.taskInput({ taskId: 'task-a', runId: 'run-2', content: 'new input' })
+    assert.ok(api.creates.every(create => create.protocolVersion === 2 && create.queuedAt === new Date(start - 100).toISOString()))
+    const old = api.events.filter(event => event.clientRunId === 'run-1')
+    assert.ok(old.every(event => event.participation?.executionId === 'run-1' && event.participation.subscriptionId === 'sub-1'))
+    assert.equal(old.at(-1)?.participation?.startedAt, new Date(start).toISOString())
+    assert.equal(old.at(-1)?.participation?.completedAt, new Date(start + 100).toISOString())
+    assert.equal(api.events.at(-1)?.participation?.subscriptionId, 'sub-2')
+    assert.equal(store.records.get('task-a')?.liveRuns?.['run-1'].participation?.status, 'FAILED')
+  })
+
+  it('chunks node content with exact attempt metadata without assigning the aggregate', async () => {
+    const store = new MemoryStore(); const api = new FakeApi(); const monitor = service(store, api)
+    await monitor.taskQueued({ ...queued('parent'), protocolVersion: 2, taskType: 'arrangement' })
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'parent', content: 'aggregate' })
+    const calls = api.calls.length
+    for (const executionId of ['node-attempt-1', 'node-attempt-2']) {
+      const participation = { executionId, subscriptionId: 'node-sub', nodeId: 'node', title: 'Node', modelId: 'node-model', status: 'FAILED' as const }
+      await monitor.taskEvent({ taskId: 'task-a', runId: 'parent', subscriptionId: 'sub-a', sequence: 0,
+        type: 'arrangement_node_failed', occurredAt: 10, data: {} }, participation)
+      await monitor.taskOutput({ taskId: 'task-a', runId: 'parent', content: 'x'.repeat(2500), participation, occurredAt: 10 })
+    }
+    assert.equal(api.events[0].participation, undefined)
+    assert.ok(api.calls.slice(calls).every(call => call.startsWith('event:')))
+    for (const executionId of ['node-attempt-1', 'node-attempt-2']) {
+      const parts = api.events.filter(event => event.type === 'model_output' && event.participation?.executionId === executionId)
+      assert.deepEqual(parts.map(part => part.message?.length), [1000, 1000, 500])
+      assert.ok(parts.every(part => part.clientRunId === 'parent' && part.participation?.subscriptionId === 'node-sub' && part.occurredAt === new Date(10).toISOString()))
+    }
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'unknown-history', content: 'unproven', participation: { executionId: 'guessed', subscriptionId: 'node-sub' } })
+    assert.equal(api.events.at(-1)?.participation, undefined)
+  })
+
+  it('replays persisted v2 participation and retains historic v2 status conflicts', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    let now = 1_700_000_000_000
+    api.beforeCreate = async () => { throw new ClientMonitorApiError('offline', 503) }
+    const monitor = service(store, api, { now: () => now, maxAttempts: 1 })
+    await monitor.taskQueued({ ...queued('run-1'), protocolVersion: 2, participation: { executionId: 'run-1', subscriptionId: 'sub-a' } })
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', content: 'persisted' })
+    await monitor.taskQueued({ ...queued('run-2'), protocolVersion: 2 })
+    await monitor.taskFinished({ taskId: 'task-a', runId: 'run-1', status: 'FAILED', completedAt: now })
+    await monitor.stop()
+    api.beforeCreate = undefined
+    api.updateStatus = async () => { throw new ClientMonitorApiError('historic conflict', 409) }
+    now += 30_000
+    const reopened = service(store, api, { now: () => now })
+    await reopened.resumePending()
+    assert.equal(api.events.find(event => event.message === 'persisted')?.participation?.executionId, 'run-1')
+    assert.equal(store.records.get('task-a')?.pending[0].kind, 'status')
+    assert.equal(store.records.get('task-a')?.pending[0].clientRunId, 'run-1')
+    assert.equal(store.records.get('task-a')?.skippedOldStatusCount, undefined)
+    await reopened.stop()
+  })
 })

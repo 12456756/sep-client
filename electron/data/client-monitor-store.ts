@@ -9,6 +9,7 @@ import {
   clientTaskEventSchema,
   clientTaskHeartbeatSchema,
   clientTaskStatusSchema,
+  monitorParticipationSchema,
 } from '../common/platform/client-monitor-contract'
 
 const operationSchema = z.discriminatedUnion('kind', [
@@ -24,6 +25,10 @@ const operationSchema = z.discriminatedUnion('kind', [
   }),
 ])
 export type ClientMonitorOperation = z.infer<typeof operationSchema>
+const liveRunSchema = z.object({
+  protocolVersion: z.literal(2), participation: monitorParticipationSchema.optional(),
+}).strict()
+type LiveMonitorRun = z.infer<typeof liveRunSchema>
 
 const recordMetadataSchema = z.object({
   version: z.literal(1),
@@ -42,6 +47,7 @@ const recordMetadataSchema = z.object({
   historyBackfilled: z.boolean().optional(),
   skippedOldStatusCount: z.number().int().nonnegative().optional(),
   statusByRun: z.record(z.string(), z.string()).optional(),
+  liveRuns: z.record(z.string(), liveRunSchema).optional(),
 })
 const recordSchema = recordMetadataSchema.extend({ pending: z.array(z.unknown()) })
 
@@ -63,6 +69,7 @@ export interface ClientMonitorRecord {
   historyBackfilled?: boolean
   skippedOldStatusCount?: number
   statusByRun?: Record<string, string>
+  liveRuns?: Record<string, LiveMonitorRun>
 }
 
 export interface ClientMonitorStorePort {

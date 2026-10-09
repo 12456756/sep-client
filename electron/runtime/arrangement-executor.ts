@@ -42,7 +42,7 @@ export interface ArrangementExecutionOptions {
   onAuthenticationRequired: () => void
   onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   onEvent: (event: TaskExecutionEvent) => Promise<void>
-  authorizeEmployee: (subscriptionId: string) => Promise<EmployeeRuntimeConfig | null>
+  authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   workspaceRoot: string
   arrangementSubscriptionId: string
 }
@@ -184,10 +184,6 @@ export class ArrangementExecutor {
     checkpoint: ArrangementExecutionState['nodes'][number],
     state: ArrangementExecutionState,
   ): Promise<{ ok: true; nodeId: string; output: string | null } | { ok: false; nodeId: string; error: string }> {
-    if (this.abortRequested) return { ok: false, nodeId: node.id, error: 'Arrangement execution was interrupted.' }
-    const employee = await this.options.authorizeEmployee(node.subscriptionId)
-    if (!employee) return { ok: false, nodeId: node.id, error: 'The selected employee is no longer available.' }
-    if (this.abortRequested) return { ok: false, nodeId: node.id, error: 'Arrangement execution was interrupted.' }
     const nodeRunId = randomUUID()
     const workspaceDir = plan.workspace.path ?? this.options.workspaceRoot
     const paths = this.options.scope && this.options.taskRunStore
@@ -197,17 +193,20 @@ export class ArrangementExecutor {
     const prompt = buildArrangementNodePrompt(plan, node, dependencies)
     let output = ''
     let worker: TaskWorkerPort | null = null
-    await this.emitNodeEvent(taskId, arrangementRunId, {
-      type: 'arrangement_node_started', arrangementRunId, nodeId: node.id, nodeRunId,
-      subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
-      data: { title: node.title, modelId: node.modelId },
-    })
+    let created = false
+    let startedAt: string | undefined
+    const metadata = () => ({ title: node.title, modelId: node.modelId, ...(startedAt ? { startedAt } : {}) })
     try {
+      if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
+      const employee = await this.options.authorizeEmployee(node.subscriptionId, node.modelId)
+      if (!employee) throw new Error('The selected employee is no longer available.')
+      if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       if (this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.create(this.options.scope, {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
           runtimeKey: `${node.subscriptionId}:${node.modelId}`, workspaceDir, prompt,
         })
+        created = true
       }
       worker = this.options.createWorker({
         context: {
@@ -233,29 +232,36 @@ export class ArrangementExecutor {
         },
       })
       this.activeWorkers.set(nodeRunId, worker)
+      if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
+      startedAt = new Date().toISOString()
+      await this.emitNodeEvent(taskId, arrangementRunId, {
+        type: 'arrangement_node_started', arrangementRunId, nodeId: node.id, nodeRunId,
+        subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
+        data: { ...metadata(), prompt, status: 'RUNNING' },
+      })
       // Start the worker before the second abort check: an abort can arrive while
       // the worker is being constructed, before it has installed its own stop hook.
       const runPromise = worker.run(prompt)
       if (this.abortRequested) await worker.abort()
       await runPromise
+      if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       if (this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
       await this.emitNodeEvent(taskId, arrangementRunId, {
         type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
-        attempt: checkpoint.attempt, data: { output: output || null },
+        attempt: checkpoint.attempt, data: { ...metadata(), output: output || null, status: 'COMPLETED', completedAt: new Date().toISOString() },
       })
       return { ok: true, nodeId: node.id, output: output || null }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const interrupted = this.abortRequested
-      if (this.options.scope && this.options.taskRunStore) {
-        await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message)
+      if (created && this.options.scope && this.options.taskRunStore) {
+        await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message).catch(() => undefined)
       }
-      if (!interrupted) {
-        await this.emitNodeEvent(taskId, arrangementRunId, {
-          type: 'arrangement_node_failed', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
-          attempt: checkpoint.attempt, data: { error: message },
-        })
-      }
+      await this.emitNodeEvent(taskId, arrangementRunId, {
+        type: 'arrangement_node_failed', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
+        attempt: checkpoint.attempt, data: { ...metadata(), output: output || null, error: message,
+          status: interrupted ? this.stopRequested ? 'CANCELLED' : 'PAUSED' : 'FAILED', completedAt: new Date().toISOString() },
+      })
       return { ok: false, nodeId: node.id, error: message }
     } finally {
       this.activeWorkers.delete(nodeRunId)
@@ -282,7 +288,7 @@ export class ArrangementExecutor {
   private async emitNodeEvent(taskId: string, arrangementRunId: string, event: ArrangementNodeEvent): Promise<void> {
     await this.options.onEvent({
       taskId, runId: arrangementRunId, subscriptionId: this.options.arrangementSubscriptionId, sequence: 0,
-      type: event.type, occurredAt: Date.now(), data: { ...(event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}), nodeId: event.nodeId, nodeRunId: event.nodeRunId, attempt: event.attempt },
+      type: event.type, occurredAt: Date.now(), data: { ...(event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}), nodeId: event.nodeId, nodeRunId: event.nodeRunId, subscriptionId: event.subscriptionId, attempt: event.attempt },
     })
   }
 }

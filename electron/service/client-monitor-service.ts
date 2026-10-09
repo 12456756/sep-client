@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { logger } from '../common/logger'
 import { redactText } from '../common/redact'
 import { ClientMonitorApiError, type ClientMonitorApiPort, type ClientTaskStatusRequest } from '../common/platform/client-monitor-api'
+import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
 import { ClientMonitorStore, type ClientMonitorOperation, type ClientMonitorRecord, type ClientMonitorStorePort } from '../data/client-monitor-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskExecutionEvent } from '../../src/shared/types'
@@ -79,7 +80,14 @@ export class ClientMonitorService {
   taskInput(input: MonitorTaskContentInput): Promise<void> { return this.enqueueContent(input, 'user_input') }
   taskOutput(input: MonitorTaskContentInput): Promise<void> { return this.enqueueContent(input, 'model_output') }
 
-  taskEvent(event: TaskExecutionEvent): Promise<void> {
+  taskEvent(event: TaskExecutionEvent, participation?: MonitorParticipation): Promise<void> {
+    if (participation) {
+      return this.enqueue(event.taskId, async scope => {
+        const record = await this.options.store.load(scope, event.taskId)
+        if (!record?.liveRuns?.[event.runId]) return
+        await this.options.store.save(scope, event.taskId, this.addParticipation(record, event.runId, participation, event.occurredAt))
+      })
+    }
     if (event.type === 'approval_requested' || event.type === 'approval_resolved') {
       return this.enqueueStatus(event.taskId, event.runId, { status: event.type === 'approval_requested' ? 'WAITING_APPROVAL' : 'RUNNING' })
     }
@@ -171,7 +179,7 @@ export class ClientMonitorService {
     return this.enqueue(input.taskId, async scope => {
       const record = await this.options.store.load(scope, input.taskId)
       if (!record) return
-      await this.options.store.save(scope, input.taskId, this.addContent(record, input, type, this.now()))
+      await this.options.store.save(scope, input.taskId, this.addContent(record, input, type, input.occurredAt ?? this.now()))
     })
   }
 
@@ -179,6 +187,8 @@ export class ClientMonitorService {
     if (input.content.length === 0) return record
     const parts = chunks(redactText(input.content, Infinity))
     const messageId = randomUUID()
+    const liveRun = record.liveRuns?.[input.runId]
+    const participation = liveRun ? this.participation(input.participation ?? liveRun.participation) : undefined
     let sequence = record.lastSequence
     const operations: ClientMonitorOperation[] = parts.map((message, index) => ({
       id: ClientMonitorStore.operationId(), kind: 'event', clientRunId: input.runId, sequence: ++sequence,
@@ -186,6 +196,7 @@ export class ClientMonitorService {
         clientRunId: input.runId, sequence, type, message,
         ...(parts.length > 1 ? { stepKey: `content:v1:${messageId}:${index}:${parts.length}` } : {}),
         occurredAt: new Date(occurredAt).toISOString(),
+        ...(participation ? { participation } : {}),
       },
     }))
     return { ...record, lastSequence: sequence, pending: [...record.pending, ...operations], updatedAt: this.now() }
@@ -206,8 +217,34 @@ export class ClientMonitorService {
 
   private addStatus(record: ClientMonitorRecord, runId: string, payload: ClientTaskStatusRequest): ClientMonitorRecord {
     const statusByRun = { ...record.statusByRun, [runId]: this.fingerprint(payload) }
-    return { ...record, statusByRun, updatedAt: this.now(), pending: [...record.pending, {
+    const updated = { ...record, statusByRun, updatedAt: this.now(), pending: [...record.pending, {
       id: ClientMonitorStore.operationId(), kind: 'status', clientRunId: runId, payload: { ...this.statusPayload(payload), clientRunId: runId },
+    } as ClientMonitorOperation] }
+    const participation = record.liveRuns?.[runId]?.participation
+    if (!participation) return updated
+    const snapshot = this.participation({
+      ...participation, status: payload.status,
+      ...(payload.startedAt ? { startedAt: payload.startedAt } : {}),
+      ...(payload.completedAt ? { completedAt: payload.completedAt } : {}),
+    })!
+    return this.addParticipation({ ...updated, liveRuns: { ...record.liveRuns,
+      [runId]: { protocolVersion: 2, participation: snapshot },
+    } }, runId, snapshot, payload.completedAt || payload.startedAt ? Date.parse((payload.completedAt || payload.startedAt)!) : this.now())
+  }
+
+  private participation(value?: MonitorParticipation): MonitorParticipation | undefined {
+    if (!value) return undefined
+    return monitorParticipationSchema.parse({ ...value,
+      ...(value.title ? { title: boundedText(value.title, 200) || 'Task' } : {}),
+    })
+  }
+
+  private addParticipation(record: ClientMonitorRecord, runId: string, value: MonitorParticipation, occurredAt: number): ClientMonitorRecord {
+    const sequence = record.lastSequence + 1
+    return { ...record, lastSequence: sequence, updatedAt: this.now(), pending: [...record.pending, {
+      id: ClientMonitorStore.operationId(), kind: 'event', clientRunId: runId, sequence,
+      payload: { clientRunId: runId, sequence, type: 'participation_status',
+        participation: this.participation(value), occurredAt: new Date(occurredAt).toISOString() },
     }] }
   }
 
@@ -219,14 +256,21 @@ export class ClientMonitorService {
       lastSequence: 0, heartbeatActive: false, pending: [], updatedAt: this.now(),
     }
     const create = !existing || record.clientRunId !== input.runId
-    return { ...record, clientRunId: input.runId, subscriptionId: input.subscriptionId, title,
+    const participation = input.protocolVersion === 2 ? this.participation(input.participation) : undefined
+    const updated: ClientMonitorRecord = { ...record, clientRunId: input.runId, subscriptionId: input.subscriptionId, title,
       taskType: input.taskType, modelId: input.modelId, updatedAt: this.now(),
+      ...(create && input.protocolVersion === 2 ? { liveRuns: { ...record.liveRuns,
+        [input.runId]: { protocolVersion: 2, ...(participation ? { participation } : {}) },
+      } } : {}),
       pending: create ? [...record.pending, {
         id: ClientMonitorStore.operationId(), kind: 'create', clientRunId: input.runId,
         payload: { clientTaskId: input.taskId, clientRunId: input.runId, subscriptionId: input.subscriptionId,
-          title, taskType: input.taskType, modelId: input.modelId, clientVersion: this.clientVersion },
+          title, taskType: input.taskType, modelId: input.modelId, clientVersion: this.clientVersion,
+          ...(input.protocolVersion === 2 ? { protocolVersion: 2, queuedAt: new Date(input.queuedAt ?? this.now()).toISOString() } : {}),
+        },
       }] : record.pending,
     }
+    return create && participation ? this.addParticipation(updated, input.runId, { ...participation, status: 'QUEUED' }, input.queuedAt ?? this.now()) : updated
   }
 
   private valid(scope: TaskOwnerScope, epoch: number): boolean {
@@ -281,7 +325,7 @@ export class ClientMonitorService {
         // The record's run is the latest admitted run. Only an explicitly older status
         // can be discarded on 409; current/unknown-run conflicts remain pending.
         const operationRun = operation.clientRunId ?? operation.payload.clientRunId
-        if (error instanceof ClientMonitorApiError && error.statusCode === 409 && operation.kind === 'status' && operationRun && operationRun !== record.clientRunId) {
+        if (error instanceof ClientMonitorApiError && error.statusCode === 409 && operation.kind === 'status' && operationRun && operationRun !== record.clientRunId && !record.liveRuns?.[operationRun]) {
           await this.mutate(scope, taskId, epoch, async () => {
             const latest = await this.options.store.load(scope, taskId)
             if (latest) await this.options.store.save(scope, taskId, { ...latest,

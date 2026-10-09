@@ -9,6 +9,13 @@ export const createClientTaskSchema = z.object({
   clientTaskId: z.string().min(1).max(160), clientRunId: z.string().min(1).max(160),
   subscriptionId: z.string().min(1), title: z.string().min(1).max(200),
   taskType: z.string().optional(), modelId: z.string().optional(), clientVersion: z.string().optional(),
+  protocolVersion: z.literal(2).optional(), queuedAt: z.string().datetime().optional(),
+}).strict()
+export const monitorParticipationSchema = z.object({
+  executionId: z.string().min(1).max(160), subscriptionId: z.string().min(1),
+  nodeId: z.string().min(1).max(160).optional(), title: z.string().min(1).max(200).optional(),
+  modelId: z.string().min(1).optional(), status: monitorStatusSchema.optional(),
+  startedAt: z.string().datetime().optional(), completedAt: z.string().datetime().optional(),
 }).strict()
 export const clientTaskStatusSchema = z.object({
   clientRunId, status: monitorStatusSchema, progress, currentStep: text, activity: text, errorSummary: text,
@@ -18,7 +25,9 @@ export const clientTaskHeartbeatSchema = z.object({ clientRunId, progress, curre
 export const clientTaskEventSchema = z.object({
   clientRunId, sequence: z.number().int().positive().safe(), type: z.string().min(1).max(64),
   stepKey: text, message: text, progress, occurredAt: z.string().datetime(),
+  participation: monitorParticipationSchema.optional(),
 }).strict()
+export type MonitorParticipation = z.infer<typeof monitorParticipationSchema>
 export type MonitorStatus = z.infer<typeof monitorStatusSchema>
 export type CreateClientTaskRequest = z.infer<typeof createClientTaskSchema>
 export type ClientTaskStatusRequest = z.infer<typeof clientTaskStatusSchema>

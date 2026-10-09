@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { TaskManager } from './task-manager'
 import { TaskRunStore } from '../data/task-run-store'
 import { TaskRuntime } from './task-runtime'
-import { silentTaskMonitor, type MonitorTaskFinishedInput } from '../domain/task-monitor'
+import { silentTaskMonitor, type MonitorTaskFinishedInput, type MonitorTaskQueuedInput } from '../domain/task-monitor'
 
 async function waitFor(predicate: () => boolean | Promise<boolean>): Promise<void> {
   const deadline = Date.now() + 3000
@@ -26,10 +26,12 @@ it('reports real RUNNING/FAILED after settlement and never completes on partial 
     const finished: MonitorTaskFinishedInput[] = []
     const localAtReport: string[] = []
     const started: string[] = []
+    const queued: MonitorTaskQueuedInput[] = []
     const runtime = new TaskRuntime({ taskManager: manager, taskRunStore: new TaskRunStore(root),
       getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
       resolveEmployee: () => ({ subscriptionId: 'sub', modelId: 'model', gatewayUrl: 'http://not-used' }),
       monitor: { ...silentTaskMonitor,
+        async taskQueued(input) { queued.push(input) },
         async taskStarted(input) { started.push(input.runId) },
         async taskOutput(input) { output.push(input.content) },
         async taskFinished(input) { finished.push(input); localAtReport.push((await manager.getTask(input.taskId))!.status) },
@@ -44,9 +46,45 @@ it('reports real RUNNING/FAILED after settlement and never completes on partial 
     await runtime.executeTask(task.id)
     await waitFor(() => finished.length > 0 && localAtReport.length > 0)
     assert.equal(started.length, 1)
+    assert.equal(queued[0].protocolVersion, 2)
+    assert.ok(Number.isFinite(queued[0].queuedAt))
+    assert.deepEqual(queued[0].participation, { executionId: started[0], subscriptionId: 'sub', title: 'task', modelId: 'model' })
     assert.equal(output[0].length, 12000)
     assert.deepEqual(finished.map(input => input.status), ['FAILED'])
     assert.deepEqual(localAtReport, ['failed'])
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+it('settles local execution while all monitor network promises remain pending', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-monitor-best-effort-'))
+  try {
+    const manager = new TaskManager(root)
+    await manager.initialize(); await manager.setCurrentUser('member', 'enterprise')
+    const task = await manager.createTask('task', 'actual prompt', join(root, 'workspace'), 'sub')
+    const pending = new Promise<void>(() => {})
+    const calls: string[] = []
+    const runtime = new TaskRuntime({ taskManager: manager, taskRunStore: new TaskRunStore(root),
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+      resolveEmployee: () => ({ subscriptionId: 'sub', modelId: 'model', gatewayUrl: 'http://not-used' }),
+      monitor: { ...silentTaskMonitor,
+        taskQueued() { calls.push('queued'); return pending },
+        taskInput(input) { assert.equal(input.content, 'actual prompt'); calls.push('input'); return pending },
+        taskStarted() { calls.push('started'); return pending },
+        taskOutput(input) { assert.equal(input.content, 'actual output'); calls.push('output'); return pending },
+        taskFinished(input) { assert.equal(input.status, 'COMPLETED'); calls.push('finished'); return pending },
+      },
+      createWorker: options => ({
+        async run(prompt) {
+          assert.equal(prompt, 'actual prompt')
+          await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: 'sub', sequence: 0,
+            type: 'text_delta', occurredAt: Date.now(), data: { text: 'actual output' } })
+        }, async abort() {}, async dispose() {},
+      }),
+    })
+    await runtime.executeTask(task.id)
+    await waitFor(() => calls.includes('finished'))
+    assert.equal((await manager.getTask(task.id))?.status, 'completed')
+    assert.deepEqual(calls, ['queued', 'input', 'started', 'output', 'finished'])
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
