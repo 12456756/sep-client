@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { test } from 'node:test'
@@ -13,7 +13,7 @@ const root = process.cwd()
 function fixture() {
   const dir = mkdtempSync(resolve(tmpdir(), 'sep-packaging-test-'))
   for (const folder of ['scripts', 'config', 'electron/common', 'dist']) mkdirSync(resolve(dir, folder), { recursive: true })
-  for (const file of ['generate-runtime-config.mjs', 'generate-builder-config.mjs', 'generate-checksums.mjs', 'generate-release-notes.mjs']) cpSync(resolve(root, 'scripts', file), resolve(dir, 'scripts', file))
+  for (const file of ['generate-runtime-config.mjs', 'generate-builder-config.mjs', 'release-signing.mjs', 'generate-checksums.mjs', 'generate-release-notes.mjs']) cpSync(resolve(root, 'scripts', file), resolve(dir, 'scripts', file))
   for (const channel of ['beta', 'stable']) cpSync(resolve(root, 'config', 'release.' + channel + '.json'), resolve(dir, 'config', 'release.' + channel + '.json'))
   cpSync(resolve(root, 'package.json'), resolve(dir, 'package.json'))
   return dir
@@ -47,8 +47,12 @@ test('release scripts keep channel selection and do not force cross-platform pac
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
   for (const channel of ['beta', 'stable']) {
     assert.match(pkg.scripts['package:' + channel], new RegExp('release:config:' + channel))
-    assert.match(pkg.scripts['package:' + channel], new RegExp('release:builder:' + channel))
-    assert.match(pkg.scripts['package:' + channel], new RegExp(`electron-builder --config \\.release/electron-builder\\.${channel}\\.json --publish never`))
+    assert.match(pkg.scripts['package:' + channel], new RegExp('release:builder:signed:' + channel))
+    assert.match(pkg.scripts['package:' + channel], new RegExp(`electron-builder --config \\.release/electron-builder\\.${channel}\\.signed\\.json --publish never`))
+    assert.ok(pkg.scripts['package:' + channel].startsWith('npm run release:preflight && '))
+    assert.match(pkg.scripts['package:' + channel], new RegExp(`verify-release-signatures\\.mjs ${channel} && node scripts/verify-update-manifest\\.mjs dist/${channel} && node scripts/generate-checksums`))
+    assert.match(pkg.scripts['package:local:' + channel], /--publish never/)
+    assert.doesNotMatch(pkg.scripts['package:local:' + channel], /signed\.json/)
     assert.match(pkg.scripts['package:' + channel], new RegExp(`generate-checksums\\.mjs dist/${channel}`))
     assert.match(pkg.scripts['package:' + channel], new RegExp(`generate-release-notes\\.mjs ${channel} dist/${channel}`))
     assert.doesNotMatch(pkg.scripts['package:' + channel], /npm run build|--mac --win/)
@@ -66,7 +70,7 @@ test('channel builder configs preserve packaging settings and pass the installed
     const path = resolve(dir, `.release/electron-builder.${channel}.json`)
     const config = JSON.parse(readFileSync(path, 'utf8'))
     assert.deepEqual(config.publish, [{ provider: 'generic', url: `https://download.longdaosep.cn/sep-client/${channel}/`, channel: 'latest' }])
-    assert.equal(config.directories.output, `dist/${channel}`)
+    assert.equal(config.directories.output, `dist/local/${channel}`)
     assert.equal(config.detectUpdateChannel, false)
     assert.equal(config.generateUpdatesFilesForAllChannels, false)
     for (const key of ['appId', 'productName', 'copyright', 'files', 'asarUnpack', 'artifactName', 'win', 'linux']) {
@@ -97,6 +101,18 @@ test('builder generation rejects unknown, missing and conflicting channels befor
   const result = run(dir, 'generate-builder-config.mjs', ['stable'], { SEP_RELEASE_CHANNEL: 'beta' })
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /conflicts/)
+})
+
+test('signed builder CLI fails before writing config without explicit release identity and rejects unknown flags', () => {
+  const dir = fixture()
+  const result = run(dir, 'generate-builder-config.mjs', ['beta', '--signed'])
+  assert.notEqual(result.status, 0)
+  assert.equal(existsSync(resolve(dir, '.release/electron-builder.beta.signed.json')), false)
+  for (const args of [['beta', '--unsigned'], ['beta', '--signed', '--extra']]) {
+    const invalid = run(dir, 'generate-builder-config.mjs', args)
+    assert.notEqual(invalid.status, 0)
+    assert.match(invalid.stderr, /usage/)
+  }
 })
 
 test('builder config does not mutate the base and rejects platform feed overrides', () => {
