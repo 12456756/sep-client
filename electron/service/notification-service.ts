@@ -75,7 +75,7 @@ export class NotificationService {
         }
       }
     } catch (error) {
-      if (isCurrent() && (error instanceof AuthenticationRequiredError || (error instanceof platformApi.AuthApiError && error.isUnauthorized))) {
+      if (isCurrent() && error instanceof AuthenticationRequiredError) {
         this.stop()
         this.options.onAuthenticationRequired()
       }

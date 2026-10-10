@@ -277,7 +277,7 @@ export class NotificationSocket {
 
   private refreshAuthentication(generation: number): void {
     if (!this.isCurrent(generation)) return
-    if (this.refreshed) { this.requireAuthentication(); return }
+    if (this.refreshed) { this.retry(generation); return }
     this.refreshed = true
     this.connect(undefined, true)
   }

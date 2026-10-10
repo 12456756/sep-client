@@ -210,10 +210,17 @@ it('refreshes once for HTTP 401, 4401 and the precise backend 1008 authenticatio
     h.sockets[1].open()
     assert.deepEqual(h.sockets[1].sent, [{ type: 'auth', token: 'refreshed' }])
     rejection(h.sockets[1]); await flush()
-    assert.equal(h.authenticationRequired, 1)
+    assert.equal(h.authenticationRequired, 0)
     assert.equal(h.sockets.length, 2)
-    assert.equal(h.clock.jobs.size, 0)
-    assert.equal(h.removed, 1)
+    assert.equal(h.clock.jobs.size, 1)
+    assert.equal(h.removed, 0)
+    h.clock.tick(1_000); await flush()
+    assert.deepEqual(calls, [false, true, false])
+    assert.equal(h.sockets.length, 3)
+    h.sockets[2].open()
+    rejection(h.sockets[2]); await flush()
+    assert.equal(h.authenticationRequired, 0)
+    assert.equal(h.clock.jobs.size, 1)
     h.transport.stop()
   }
 })
@@ -501,7 +508,7 @@ it('retries stalled forced refresh and ignores late results from the timed out a
   assert.equal(h.clock.jobs.size, 0)
 })
 
-it('invalidates on a second auth rejection after forced refresh publishes, without duplicate connections or late retries', async () => {
+it('backs off after a second auth rejection after forced refresh publishes without clearing the session', async () => {
   for (const reject of [
     (socket: FakeSocket) => socket.emit('unexpected-response', {}, { statusCode: 401 }),
     (socket: FakeSocket) => socket.close(4401),
@@ -527,15 +534,23 @@ it('invalidates on a second auth rejection after forced refresh publishes, witho
     replacement.open()
     assert.deepEqual(replacement.sent, [{ type: 'auth', token: 'published-refresh' }])
     reject(replacement); await flush()
-    assert.equal(h.authenticationRequired, 1)
-    assert.equal(h.removed, 1)
+    assert.equal(h.authenticationRequired, 0)
+    assert.equal(h.removed, 0)
     assert.equal(replacement.eventNames().length, 0)
-    assert.equal(h.clock.jobs.size, 0)
+    assert.equal(h.clock.jobs.size, 1)
     pendingRefresh.resolve('published-refresh'); await flush()
-    h.clock.tick(120_000); await flush()
     assert.deepEqual(calls, [false, true])
     assert.equal(h.sockets.length, 2)
-    assert.equal(h.authenticationRequired, 1)
+    h.clock.tick(1_000); await flush()
+    assert.deepEqual(calls, [false, true, false])
+    assert.equal(h.sockets.length, 3)
+    const recovered = h.sockets[2]
+    recovered.open()
+    recovered.message({ type: 'connected', data: { unreadCount: 2 } })
+    assert.equal(h.authenticationRequired, 0)
+    assert.equal(h.removed, 0)
+    h.transport.stop()
+    assert.equal(h.clock.jobs.size, 0)
   }
 })
 
