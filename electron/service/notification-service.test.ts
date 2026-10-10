@@ -1,11 +1,13 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { AuthApiError } from '../common/platform/platform-api'
+import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
+import { AppError } from '../errors/app-error'
 import { NotificationService } from './notification-service'
 import type { NotificationUpdate } from '../../src/shared/notification-contracts'
 
 const scope = { memberId: 'u1', enterpriseId: 'e1' }
-function setup() {
+function setup(getAccessToken: (force: boolean) => Promise<string> = async force => force ? 'fresh' : 'access') {
   let current: typeof scope | null = scope
   const tokenRequests: boolean[] = []
   let invalidations = 0
@@ -23,7 +25,7 @@ function setup() {
   }
   const service = new NotificationService({
     scope: { currentScope: () => current },
-    getAccessToken: async (force = false) => { tokenRequests.push(force); return force ? 'fresh' : 'access' },
+    getAccessToken: async (force = false) => { tokenRequests.push(force); return getAccessToken(force) },
     onAuthenticationRequired: () => { invalidations++ },
     onUpdate: event => { updates.push(event) },
     createSocket: callback => { receive = callback; return { start: () => { starts++ }, stop: () => { stops++ } } },
@@ -44,14 +46,74 @@ describe('notification authorization and lifecycle', () => {
     assert.deepEqual(s.tokenRequests, [false, true])
     assert.equal(s.counters().invalidations, 0)
   })
-  it('invalidates after the second 401 but never retries 400/403', async () => {
+  it('keeps notification rejection local after successful refresh and never retries 400/403', async () => {
     for (const code of [400, 403, 401]) {
       const s = setup()
       s.api.listNotifications = async () => { throw new AuthApiError({ statusCode: code, message: 'denied' }) }
-      await assert.rejects(() => s.service.list({}))
+      await assert.rejects(() => s.service.list({}), error => code !== 401 || (error instanceof AppError && error.code === 'SERVICE_UNAVAILABLE'))
       assert.deepEqual(s.tokenRequests, code === 401 ? [false, true] : [false])
-      assert.equal(s.counters().invalidations, code === 401 ? 1 : 0)
+      assert.equal(s.counters().invalidations, 0)
+      assert.equal(s.counters().stops, 0)
+      assert.equal(s.counters().starts, 1)
     }
+  })
+  it('keeps all notification endpoint 401 failures local after refreshing once', async () => {
+    const s = setup()
+    const reject = async () => { throw new AuthApiError({ statusCode: 401, message: 'denied' }) }
+    s.api.getUnreadNotificationCount = reject
+    s.api.markNotificationRead = reject
+    s.api.markAllNotificationsRead = reject
+    s.api.deleteNotification = reject
+    s.api.clearReadNotifications = reject
+    for (const operation of [
+      () => s.service.unreadCount({}), () => s.service.markRead('n1'),
+      () => s.service.markAllRead({}), () => s.service.delete('n1'), () => s.service.clearRead({}),
+    ]) {
+      await assert.rejects(operation, error => error instanceof AppError && error.code === 'SERVICE_UNAVAILABLE')
+    }
+    assert.deepEqual(s.tokenRequests, Array.from({ length: 5 }, () => [false, true]).flat())
+    assert.deepEqual(s.counters(), { invalidations: 0, starts: 1, stops: 0 })
+    assert.deepEqual(s.updates, [])
+  })
+  it('still invalidates when token acquisition confirms the session is invalid', async () => {
+    for (const forceOnly of [false, true]) {
+      for (const failure of [new AuthenticationRequiredError(), new AuthApiError({ statusCode: 401, message: 'refresh rejected' })]) {
+        const s = setup(async force => {
+          if (!forceOnly || force) throw failure
+          return 'access'
+        })
+        s.api.listNotifications = async () => { throw new AuthApiError({ statusCode: 401, message: 'expired' }) }
+        await assert.rejects(() => s.service.list({}), error => error === failure)
+        assert.deepEqual(s.tokenRequests, forceOnly ? [false, true] : [false])
+        assert.deepEqual(s.counters(), { invalidations: 1, starts: 0, stops: 1 })
+      }
+    }
+  })
+  it('does not treat an endpoint authentication error as refresh-token invalidation', async () => {
+    const s = setup()
+    s.api.listNotifications = async () => { throw new AuthenticationRequiredError() }
+    await assert.rejects(() => s.service.list({}), error => error instanceof AppError && error.code === 'SERVICE_UNAVAILABLE')
+    assert.deepEqual(s.tokenRequests, [false])
+    assert.deepEqual(s.counters(), { invalidations: 0, starts: 1, stops: 0 })
+  })
+  it('preserves the session on transient refresh failure without retrying the rejected API token', async () => {
+    for (const failure of [new TypeError('fetch failed'), new AuthApiError({ statusCode: 503, message: 'unavailable' })]) {
+      const s = setup(async force => { if (force) throw failure; return 'access' })
+      let calls = 0
+      s.api.listNotifications = async () => { calls++; throw new AuthApiError({ statusCode: 401, message: 'expired' }) }
+      await assert.rejects(() => s.service.list({}), error => error === failure)
+      assert.equal(calls, 1)
+      assert.deepEqual(s.tokenRequests, [false, true])
+      assert.deepEqual(s.counters(), { invalidations: 0, starts: 1, stops: 0 })
+    }
+  })
+  it('does not invalidate the new account for a late token acquisition failure', async () => {
+    const s = setup(async () => {
+      s.changeScope({ ...scope, memberId: 'u2' })
+      throw new AuthenticationRequiredError()
+    })
+    await assert.rejects(() => s.service.list({}))
+    assert.deepEqual(s.counters(), { invalidations: 0, starts: 0, stops: 0 })
   })
   it('denies unauthenticated access and drops in-flight data after an account switch', async () => {
     const s = setup()

@@ -1,5 +1,6 @@
 import * as platformApi from '../common/platform/platform-api'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
+import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from '../../src/shared/notification-contracts'
 
@@ -46,10 +47,21 @@ export class NotificationService {
       return generation === this.generation && current?.memberId === scope.memberId && current.enterpriseId === scope.enterpriseId
     }
     const assertCurrent = (): void => { if (!isCurrent()) throw new AuthenticationRequiredError() }
+    const getToken = async (forceRefresh = false): Promise<string> => {
+      try {
+        return await this.options.getAccessToken(forceRefresh)
+      } catch (error) {
+        if (isCurrent() && (error instanceof AuthenticationRequiredError || (error instanceof platformApi.AuthApiError && error.isUnauthorized))) {
+          this.stop()
+          this.options.onAuthenticationRequired()
+        }
+        throw error
+      }
+    }
     let refreshed = false
     let retriedRead = false
     try {
-      let token = await this.options.getAccessToken()
+      let token = await getToken()
       assertCurrent()
       for (;;) {
         try {
@@ -60,9 +72,12 @@ export class NotificationService {
           assertCurrent()
           if (error instanceof platformApi.AuthApiError && error.isUnauthorized && !refreshed) {
             refreshed = true
-            token = await this.options.getAccessToken(true)
+            token = await getToken(true)
             assertCurrent()
             continue
+          }
+          if (error instanceof AuthenticationRequiredError || (error instanceof platformApi.AuthApiError && error.isUnauthorized)) {
+            throw new AppError('SERVICE_UNAVAILABLE', { cause: error })
           }
           const transient = (error instanceof platformApi.AuthApiError && error.isNetworkError) || error instanceof TypeError || (error instanceof Error && error.name === 'TimeoutError')
           if (retryRead && transient && !retriedRead) {
@@ -74,12 +89,6 @@ export class NotificationService {
           throw error
         }
       }
-    } catch (error) {
-      if (isCurrent() && (error instanceof AuthenticationRequiredError || (error instanceof platformApi.AuthApiError && error.isUnauthorized))) {
-        this.stop()
-        this.options.onAuthenticationRequired()
-      }
-      throw error
     } finally {
       // Start even if REST is offline: a successful reconnect triggers REST compensation.
       if (isCurrent() && !this.started) {
