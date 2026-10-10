@@ -61,6 +61,7 @@ function harness(options: Partial<NotificationSocketOptions> = {}) {
   let authenticationRequired = 0
   const transport = new NotificationSocket({
     baseUrl: 'https://sep.example/api',
+    origin: 'https://web.sep.example',
     getAccessToken: async force => { tokenCalls.push(force); return token },
     subscribeAccessToken: callback => { subscriber = callback; return () => { subscriber = undefined; removed++ } },
     onMessage: message => { updates.push(message) },
@@ -105,6 +106,12 @@ it('derives safe ws/wss URLs and authenticates immediately on open without brows
   }
   assert.throws(() => harness({ baseUrl: 'file:///api' }))
   assert.throws(() => harness({ baseUrl: 'https://user:password@sep.example/api' }))
+})
+
+it('rejects non-HTTP or credential-bearing notification origins', () => {
+  for (const origin of ['file:///app', 'wss://sep.example', 'https://user:password@sep.example', 'invalid']) {
+    assert.throws(() => harness({ origin }))
+  }
 })
 
 it('validates unknown messages, ignores pong/binary/malformed input and forwards only safe updates', async () => {
@@ -194,7 +201,7 @@ it('coalesces error/close and reconnects after socket factory/send exceptions', 
   failedFactory.transport.stop()
 })
 
-it('refreshes once for HTTP 401, 4401 and the precise backend 1008 authentication reasons', async () => {
+it('refreshes once for socket authentication rejection then backs off without logging out or rotating again', async () => {
   for (const rejection of [
     (socket: FakeSocket) => socket.emit('unexpected-response', {}, { statusCode: 401 }),
     (socket: FakeSocket) => socket.close(4401),
@@ -214,14 +221,17 @@ it('refreshes once for HTTP 401, 4401 and the precise backend 1008 authenticatio
     assert.equal(h.sockets.length, 2)
     assert.equal(h.clock.jobs.size, 1)
     assert.equal(h.removed, 0)
-    h.clock.tick(1_000); await flush()
-    assert.deepEqual(calls, [false, true, false])
-    assert.equal(h.sockets.length, 3)
-    h.sockets[2].open()
-    rejection(h.sockets[2]); await flush()
-    assert.equal(h.authenticationRequired, 0)
-    assert.equal(h.clock.jobs.size, 1)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      h.clock.tick(1_000 * 2 ** attempt); await flush()
+      assert.equal(h.sockets.length, 3 + attempt)
+      h.sockets.at(-1)!.open()
+      rejection(h.sockets.at(-1)!); await flush()
+      assert.equal(h.authenticationRequired, 0)
+      assert.equal(h.clock.jobs.size, 1)
+    }
+    assert.equal(calls.filter(Boolean).length, 1)
     h.transport.stop()
+    assert.equal(h.clock.jobs.size, 0)
   }
 })
 
@@ -240,6 +250,26 @@ it('does not refresh for Origin/policy/timeout rejection or non-401 HTTP failure
     assert.equal(h.sockets.length, 2)
     h.transport.stop()
   }
+})
+
+it('recovers after repeated socket rejection and still handles a later session invalidation', async () => {
+  const h = harness()
+  h.transport.start(); await flush()
+  h.sockets[0].close(4401); await flush()
+  h.sockets[1].close(4401); await flush()
+  assert.equal(h.authenticationRequired, 0)
+  h.clock.tick(1_000); await flush()
+  const recovered = h.sockets[2]
+  recovered.open()
+  recovered.message({ type: 'connected', data: { unreadCount: 1 } })
+  assert.deepEqual(h.updates, [{ type: 'connected', data: { unreadCount: 1 } }])
+  recovered.close(4401); await flush()
+  assert.equal(h.tokenCalls.filter(Boolean).length, 2)
+  assert.equal(h.authenticationRequired, 0)
+  h.rotate(null)
+  assert.equal(h.authenticationRequired, 1)
+  assert.equal(h.removed, 1)
+  assert.equal(h.clock.jobs.size, 0)
 })
 
 it('refreshes token acquisition 401 once, fails closed on rejected refresh, retries other token errors', async () => {
@@ -353,23 +383,24 @@ it('times out stalled token acquisition, connection opening and server authentic
   h.transport.stop()
 })
 
-it('uses real Node ws with no Origin/token handshake and stops a pending handshake without uncaught errors', async () => {
+it('sends the configured trusted Origin without token handshake headers and stops a pending handshake safely', async () => {
   // An HTTP server is sufficient to inspect the real ws handshake and then reject it.
   const server = createServer()
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
   const address = server.address()
   assert.ok(address && typeof address === 'object')
-  const requests: { url: string | undefined; origin: string | undefined }[] = []
+  const requests: { url: string | undefined; origin: string | undefined; authorization: string | undefined; protocol: string | undefined }[] = []
   const upgraded = gate<void>()
   const peers = new Set<import('node:net').Socket>()
   server.on('connection', peer => { peers.add(peer); peer.on('close', () => peers.delete(peer)) })
   server.on('upgrade', req => {
-    requests.push({ url: req.url, origin: req.headers.origin })
+    requests.push({ url: req.url, origin: req.headers.origin, authorization: req.headers.authorization, protocol: req.headers['sec-websocket-protocol'] })
     upgraded.resolve()
   })
   const transport = new NotificationSocket({
     baseUrl: `http://127.0.0.1:${address.port}/api?token=secret`,
+    origin: 'https://web.sep.example:8443/path?ignored=true',
     getAccessToken: async () => 'secret-access',
     onMessage: () => { assert.fail('no established socket') },
     onAuthenticationRequired: () => { assert.fail('not an auth rejection') },
@@ -379,7 +410,7 @@ it('uses real Node ws with no Origin/token handshake and stops a pending handsha
     await upgraded.promise
     transport.stop()
     await new Promise<void>(resolve => setImmediate(resolve))
-    assert.deepEqual(requests, [{ url: '/ws/notifications', origin: undefined }])
+    assert.deepEqual(requests, [{ url: '/ws/notifications', origin: 'https://web.sep.example:8443', authorization: undefined, protocol: undefined }])
   } finally {
     transport.stop()
     for (const peer of peers) peer.destroy()
@@ -508,7 +539,7 @@ it('retries stalled forced refresh and ignores late results from the timed out a
   assert.equal(h.clock.jobs.size, 0)
 })
 
-it('backs off after a second auth rejection after forced refresh publishes without clearing the session', async () => {
+it('keeps a second socket auth rejection local after refresh publishes and ignores the late refresh result', async () => {
   for (const reject of [
     (socket: FakeSocket) => socket.emit('unexpected-response', {}, { statusCode: 401 }),
     (socket: FakeSocket) => socket.close(4401),

@@ -3,7 +3,7 @@ declare module 'ws' {
   import { EventEmitter } from 'node:events'
 
   export default class WebSocket extends EventEmitter {
-    constructor(url: string, options?: { maxPayload?: number; followRedirects?: boolean })
+    constructor(url: string, options?: { origin?: string; maxPayload?: number; followRedirects?: boolean })
     send(data: string): void
     terminate(): void
   }

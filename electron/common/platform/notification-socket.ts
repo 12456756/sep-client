@@ -12,6 +12,7 @@ export interface NotificationWebSocket {
 
 export interface NotificationSocketOptions {
   baseUrl: string
+  origin: string
   getAccessToken: (forceRefresh?: boolean) => Promise<string>
   subscribeAccessToken?: (callback: (token: string | null) => void) => () => void
   onMessage: (message: NotificationUpdate) => void
@@ -86,9 +87,12 @@ export class NotificationSocket {
 
   constructor(private readonly options: NotificationSocketOptions) {
     this.url = socketUrl(options.baseUrl)
-    // ws is deliberately bundled from the installed transitive dependency. No Origin,
-    // Authorization headers, URL credentials, subprotocol tokens or redirects.
+    const origin = new URL(options.origin)
+    if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password) {
+      throw new Error('Notification Origin must be HTTP(S) without credentials')
+    }
     this.createSocket = options.createSocket ?? (url => new WebSocket(url, {
+      origin: origin.origin,
       maxPayload: 1024 * 1024,
       followRedirects: false,
     }))

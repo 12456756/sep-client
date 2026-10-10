@@ -96,6 +96,7 @@ class BackendRuntime {
       onUpdate: event => this.renderer.notificationUpdated?.(event),
       createSocket: onMessage => new NotificationSocket({
         baseUrl: config.SEP_BASE_URL,
+        origin: config.SEP_WEB_ORIGIN,
         getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
         subscribeAccessToken: callback => this.authSession.subscribeAccessToken(callback),
         onAuthenticationRequired: () => this.invalidateAuthentication(),
