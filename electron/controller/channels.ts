@@ -7,6 +7,11 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  UPDATE_GET_STATE: 'update:get-state',
+  UPDATE_CHECK: 'update:check',
+  UPDATE_DOWNLOAD: 'update:download',
+  UPDATE_CANCEL: 'update:cancel',
+  UPDATE_INSTALL: 'update:install',
   SKILL_LIBRARY_LIST: 'skill-library:list',
   SKILL_LIBRARY_PREVIEW: 'skill-library:preview',
   SKILL_LIBRARY_SELECT: 'skill-library:select',
@@ -82,6 +87,7 @@ export const SEND_CHANNELS = {
 
 /** main -> renderer，`webContents.send` / `ipcRenderer.on`。 */
 export const EVENT_CHANNELS = {
+  UPDATE_STATE_CHANGED: 'update:state-changed',
   NOTIFICATION_UPDATED: 'notifications:updated',
   AUTH_REQUIRED: 'auth:required',
   PI_EVENT: 'pi:event',

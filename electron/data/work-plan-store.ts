@@ -1,4 +1,4 @@
-import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
+import { diagnoseJsonWithBackup, readJsonWithBackup, writeJsonAtomic, type JsonReadDiagnostic } from './atomic-file'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 import type { WorkPlan } from '../domain/arrangement-plan'
 import { TaskPersistenceError } from './task-store'
@@ -6,6 +6,7 @@ import { TaskPersistenceError } from './task-store'
 export interface WorkPlanStorePort {
   save(scope: TaskOwnerScope, plan: WorkPlan): Promise<void>
   get(scope: TaskOwnerScope, taskId: string): Promise<WorkPlan | null>
+  diagnose?(scope: TaskOwnerScope, taskId: string): Promise<JsonReadDiagnostic<WorkPlan>>
 }
 
 function parsePlan(value: unknown, scope: TaskOwnerScope, taskId: string): WorkPlan | null {
@@ -40,6 +41,10 @@ export class WorkPlanStore implements WorkPlanStorePort {
 
   async get(scope: TaskOwnerScope, taskId: string): Promise<WorkPlan | null> {
     return readJsonWithBackup(this.paths.workPlanFile(scope, taskId), value => parsePlan(value, scope, taskId))
+  }
+
+  async diagnose(scope: TaskOwnerScope, taskId: string): Promise<JsonReadDiagnostic<WorkPlan>> {
+    return diagnoseJsonWithBackup(this.paths.workPlanFile(scope, taskId), value => parsePlan(value, scope, taskId))
   }
 }
 

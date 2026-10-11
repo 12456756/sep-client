@@ -10,6 +10,7 @@
 import './common/undici-polyfill'; // Pi SDK 使用的网络兼容层，必须是第一个副作用 import。
 import { app, BrowserWindow, dialog, safeStorage } from 'electron';
 import { createBackend } from './bootstrap/build-backend';
+import { createAppUpdater } from './bootstrap/create-app-updater';
 import { createMainWindow } from './bootstrap/main-window';
 import { RendererBridge } from './bootstrap/renderer-bridge';
 import { installShutdownHandler } from './bootstrap/shutdown';
@@ -61,11 +62,16 @@ app.whenReady().then(async () => {
       isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
     });
 
-    registerRoutes(createRequestContext(backend, () => bridge.currentWindow()), { routes, listeners });
+    const updater = createAppUpdater(backend, bridge);
+    registerRoutes(createRequestContext(backend, () => bridge.currentWindow(), updater), { routes, listeners });
+    app.once('before-quit', () => updater.dispose());
     installShutdownHandler({
       stop: () => backend.stopAll(),
+      isUpdateInstallPrepared: () => updater.isInstallPrepared(),
       describeState: () => ({ runtimeLoaded: backend.peekTaskRuntime() !== null }),
     });
+    openMainWindow();
+    updater.startAutomaticCheck();
   } catch (error) {
     reportFatal('无法启动任务运行时', error, { stage: 'compose-backend' });
     app.exit(1);
@@ -73,7 +79,6 @@ app.whenReady().then(async () => {
   }
 
   // 任务运行时延迟到首次任务执行时初始化（SDK 加载边界，见 AGENTS.md）。
-  openMainWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) openMainWindow();

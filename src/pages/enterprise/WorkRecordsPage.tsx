@@ -7,12 +7,22 @@
  * 已确认的内容和终止原因都会保留，不会一起消失。
  */
 
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ClipboardCheck, Copy, FileCheck2, History, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, CircleHelp, ClipboardCheck, Copy, FileCheck2, History, LoaderCircle, MessageSquare, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
+import { useState } from 'react';
 import { Empty, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { WorkItem, WorkStatus } from '../../features/enterprise/types';
+import {
+  countWorkRecordStatuses,
+  countWorkRecordTypes,
+  filterWorkRecords,
+  countUnresolvedWorkRecordTypes,
+  readWorkRecordFilters,
+  resetWorkRecordFilters,
+  type WorkRecordBucket,
+  type WorkRecordTypeFilter,
+} from '../../features/enterprise/work-record-filters';
 import { clockTime, relativeTime } from '../../features/enterprise/vocabulary';
 
 /**
@@ -35,18 +45,18 @@ const LEAD: Record<WorkStatus, { label: string; icon: typeof ClipboardCheck }> =
   paused: { label: '去重新执行', icon: PlayCircle },
 };
 
-type Bucket = 'all' | 'active' | 'mine' | 'done' | 'stopped';
+const BUCKETS: { id: WorkRecordBucket; label: string }[] = [
+  { id: 'all', label: '全部' },
+  { id: 'active', label: '进行中' },
+  { id: 'mine', label: '需要我处理' },
+  { id: 'done', label: '已完成' },
+  { id: 'stopped', label: '未完成' },
+];
 
-/**
- * 「未完成」收的是中断了的和被你终止的两种 —— 它们的共同点是「停了，而且没交付」。
- * 终止过的工作不算「进行中」：它不会自己接着跑，摆在进行中会让人以为还有人在做。
- */
-const BUCKETS: { id: Bucket; label: string; match: (work: WorkItem) => boolean }[] = [
-  { id: 'all', label: '全部', match: () => true },
-  { id: 'active', label: '进行中', match: work => work.status === 'running' || work.status === 'arranging' },
-  { id: 'mine', label: '需要我处理', match: work => work.status === 'waiting-user' || Boolean(work.nextUserAction) },
-  { id: 'done', label: '已完成', match: work => work.status === 'completed' },
-  { id: 'stopped', label: '未完成', match: work => work.status === 'failed' || work.status === 'paused' },
+const TYPES: { id: WorkRecordTypeFilter; label: string }[] = [
+  { id: 'all', label: '全部' },
+  { id: 'conversation', label: '会话' },
+  { id: 'arrangement', label: '编排' },
 ];
 
 interface Props {
@@ -54,25 +64,21 @@ interface Props {
 }
 
 export function WorkRecordsPage({ workspace }: Props) {
-  const [search, setSearch] = useState('');
-  const [bucket, setBucket] = useState<Bucket>(workspace.route.name === 'records' ? workspace.route.bucket ?? 'mine' : 'mine');
   const [openId, setOpenId] = useState<string | null>(null);
   const [panel, setPanel] = useState<'result' | 'process'>('process');
   const [removing, setRemoving] = useState<string | null>(null);
   const [stopping, setStopping] = useState<string | null>(null);
   const [stopReason, setStopReason] = useState('');
 
-  useEffect(() => {
-    if (workspace.route.name === 'records') setBucket(workspace.route.bucket ?? 'mine');
-  }, [workspace.route]);
-
-  const keyword = search.trim();
-  const matcher = BUCKETS.find(item => item.id === bucket) ?? BUCKETS[0];
-  const records = workspace.works
-    .filter(work => matcher.match(work))
-    .filter(work => !keyword || `${work.title} ${work.goal} ${work.currentEmployeeName}`.includes(keyword))
-    .slice()
-    .sort((a, b) => b.updatedAt - a.updatedAt);
+  const filters = readWorkRecordFilters(workspace.route);
+  const records = filterWorkRecords(workspace.works, filters);
+  const statusCounts = countWorkRecordStatuses(workspace.works, filters);
+  const typeCounts = countWorkRecordTypes(workspace.works, filters);
+  const unresolvedTypes = countUnresolvedWorkRecordTypes(workspace.works, filters);
+  const updateFilters = (next: Partial<typeof filters>) => {
+    workspace.replaceRoute({ name: 'records', ...filters, ...next });
+  };
+  const resetFilters = () => workspace.replaceRoute({ name: 'records', ...resetWorkRecordFilters() });
 
   const open = (work: WorkItem, next: 'result' | 'process') => {
     setPanel(next);
@@ -90,46 +96,95 @@ export function WorkRecordsPage({ workspace }: Props) {
 
   return (
     <div className="ent-page">
-      <div className="ent-toolbar">
-        <div className="ent-record-filters" role="tablist" aria-label="按状态筛选工作记录">
-          {BUCKETS.map(item => {
-            const count = workspace.works.filter(work => item.match(work)).length;
-            return (
+      <div className="ent-record-toolbar">
+        <div className="ent-record-filter-row">
+          <span className="ent-record-filter-label">状态</span>
+          <div className="ent-record-filters" role="group" aria-label="按状态筛选工作记录">
+            {BUCKETS.map(item => (
               <button
                 key={item.id}
                 type="button"
-                role="tab"
-                aria-selected={bucket === item.id}
-                className={bucket === item.id ? 'active' : undefined}
-                onClick={() => setBucket(item.id)}
+                aria-pressed={filters.bucket === item.id}
+                className={filters.bucket === item.id ? 'active' : undefined}
+                onClick={() => updateFilters({ bucket: item.id })}
               >
                 {item.label}
-                <em>{count}</em>
+                <em>{statusCounts[item.id]}</em>
               </button>
-            );
-          })}
+            ))}
+          </div>
         </div>
-        <span className="ent-ask-spacer" />
-        <label className="ent-find">
-          <Search size={14} aria-hidden />
-          <input
-            type="search"
-            value={search}
-            placeholder="搜索工作标题或员工"
-            aria-label="搜索工作记录"
-            onChange={event => setSearch(event.target.value)}
-          />
-        </label>
+        <div className="ent-record-filter-row">
+          <span className="ent-record-filter-label">类型</span>
+          <div className="ent-record-filters ent-record-type-filters" role="group" aria-label="按类型筛选工作记录">
+            {TYPES.map(item => (
+              <button
+                key={item.id}
+                type="button"
+                aria-pressed={filters.workType === item.id}
+                className={filters.workType === item.id ? 'active' : undefined}
+                onClick={() => updateFilters({ workType: item.id })}
+              >
+                {item.id === 'conversation' ? <MessageSquare size={14} aria-hidden /> : null}
+                {item.id === 'arrangement' ? <Workflow size={14} aria-hidden /> : null}
+                {item.label}
+                <em>{typeCounts[item.id]}</em>
+              </button>
+            ))}
+          </div>
+          <label className="ent-find ent-record-search">
+            <Search size={14} aria-hidden />
+            <input
+              type="search"
+              value={filters.search}
+              placeholder="搜索工作标题或员工"
+              aria-label="搜索工作记录"
+              onChange={event => updateFilters({ search: event.target.value })}
+            />
+          </label>
+        </div>
       </div>
 
-      {!records.length ? (
-        <Empty title={keyword ? `没有和「${keyword}」相关的工作` : '这里还没有工作记录'}>
-          {keyword ? '换一个关键词，或者切换上面的状态看看。' : '安排一项工作之后，它的进展、结果和过程都会记录在这里。'}
+      {unresolvedTypes.loading ? (
+        <p className="ent-record-type-notice loading" role="status">
+          <LoaderCircle size={14} aria-hidden />
+          {unresolvedTypes.loading} 条记录的类型正在加载，暂仅显示在全部类型中。
+        </p>
+      ) : null}
+
+      {unresolvedTypes.unavailable ? (
+        <div className="ent-record-type-notice unavailable" role="status">
+          <CircleHelp size={14} aria-hidden />
+          <span>{unresolvedTypes.unavailable} 条记录的类型暂不可用，暂仅显示在全部类型中。</span>
+          <button type="button" className="ent-btn sm ghost" onClick={() => workspace.retryWorkTypes()}>
+            <RotateCcw size={13} aria-hidden />
+            重新读取类型
+          </button>
+        </div>
+      ) : null}
+
+      {!records.length && !workspace.works.length ? (
+        <Empty title="这里还没有工作记录">
+          安排一项工作之后，它的进展、结果和过程都会记录在这里。
+        </Empty>
+      ) : null}
+
+      {!records.length && workspace.works.length ? (
+        <Empty title="没有符合条件的工作记录">
+          <button type="button" className="ent-btn sm ghost" onClick={resetFilters}>
+            <RotateCcw size={13} aria-hidden />
+            重置筛选
+          </button>
         </Empty>
       ) : null}
 
       <div className="ent-records">
         {records.map(work => {
+          const workType = work.workType;
+          const typeLabel = workType.state === 'resolved' ? (workType.kind === 'conversation' ? '会话' : '编排') : workType.state === 'loading' ? '类型加载中' : '类型暂不可用';
+          const TypeIcon = workType.state === 'resolved'
+            ? workType.kind === 'arrangement' ? Workflow : MessageSquare
+            : workType.state === 'loading' ? LoaderCircle : CircleHelp;
           const people = [...new Set([work.currentEmployeeId, ...work.participants])].filter(Boolean);
           const expanded = openId === work.id;
           // 已经停下来的三种：做完了、中断了、被你终止了。终止过的工作不能再终止一次。
@@ -148,6 +203,10 @@ export function WorkRecordsPage({ workspace }: Props) {
                 <button type="button" className="ent-record-title" onClick={() => workspace.navigate({ name: 'work', workId: work.id })}>
                   {work.title}
                 </button>
+                <span className={`ent-record-type ${workType.state}`} aria-label={`工作类型：${typeLabel}`}>
+                  <TypeIcon size={13} aria-hidden />
+                  {typeLabel}
+                </span>
                 <WorkStatusChip value={work.status} />
                 <span className="ent-tag">最后更新 {relativeTime(work.updatedAt)}</span>
               </div>

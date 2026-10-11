@@ -52,9 +52,7 @@ describe('notification authorization and lifecycle', () => {
       s.api.listNotifications = async () => { throw new AuthApiError({ statusCode: code, message: 'denied' }) }
       await assert.rejects(() => s.service.list({}), error => code !== 401 || (error instanceof AppError && error.code === 'SERVICE_UNAVAILABLE'))
       assert.deepEqual(s.tokenRequests, code === 401 ? [false, true] : [false])
-      assert.equal(s.counters().invalidations, 0)
-      assert.equal(s.counters().stops, 0)
-      assert.equal(s.counters().starts, 1)
+      assert.deepEqual(s.counters(), { invalidations: 0, starts: 1, stops: 0 })
     }
   })
   it('keeps all notification endpoint 401 failures local after refreshing once', async () => {

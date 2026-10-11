@@ -1,0 +1,5 @@
+SEP update-feed fixture ONLY. Not an installer or archive.
+channel=stable
+version=0.1.2
+os=mac
+arch=arm64

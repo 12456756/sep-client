@@ -26,6 +26,7 @@ import { requireScope, type ScopeSource } from './scope-guard'
 import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirectory, ArrangementPlannerPort, ArrangementPlanningProgress, ArrangementPlannerEmployee } from '../domain/arrangement-planner'
 import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementEmployeeAccessRequest } from '../domain/arrangement-plan'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
+import { TaskCreationGate } from './task-creation-gate'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -34,6 +35,7 @@ export interface ArrangementServiceDependencies {
   workPlans: WorkPlanStorePort
   taskMetadata: TaskMetadataStore
   taskManager: TaskManager
+  creationGate?: TaskCreationGate
   execution: () => Promise<TaskExecutionPort>
   planner?: ArrangementPlannerPort
   candidateEmployees?: ArrangementCandidateDirectory
@@ -79,7 +81,11 @@ const DEFAULT_SUBSCRIPTION_THRESHOLD_MS = 15 * 60 * 1000
 const log = logger.child('arrangement-service')
 
 export class ArrangementService {
-  constructor(private readonly deps: ArrangementServiceDependencies) {}
+  private readonly creationGate: TaskCreationGate
+
+  constructor(private readonly deps: ArrangementServiceDependencies) {
+    this.creationGate = deps.creationGate ?? new TaskCreationGate()
+  }
 
   async context(): Promise<ArrangementContext> {
     const scope = requireScope(this.deps.scope)
@@ -473,41 +479,51 @@ export class ArrangementService {
       ? draft.conversation?.participants[0]?.subscriptionId
       : draft.nodes[0]?.subscriptionId
     if (!primarySubscription) throw new AppError('INVALID_ARGUMENT')
-    const task = await this.deps.taskManager.createTask(draft.title || draft.goal, draft.goal, draft.workspace.path ?? undefined, primarySubscription)
-    const plan = {
-      id: task.id,
-      schemaVersion: 1 as const,
-      sourceDraftId: draft.id,
-      sourceDraftRevision: draft.revision,
-      owner: { ...scope },
-      mode: draft.mode,
-      title: draft.title || draft.goal,
-      goal: draft.goal,
-      conversation: draft.conversation ? structuredClone(draft.conversation) : null,
-      nodes: structuredClone(draft.nodes),
-      workspace: { mode: 'shared' as const, path: task.workDir },
-      permissions: preflight.permissionPolicy,
-      confirmedInputs: [...draft.confirmedInputs],
-      planHash: `${draft.id}:${draft.revision}:${idempotencyKey}`,
-      createdAt: Date.now(),
+    const current = requireScope(this.deps.scope)
+    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    const lease = this.creationGate.begin(scope)
+    let success = false
+    try {
+      const task = await this.deps.taskManager.createTask(draft.title || draft.goal, draft.goal, draft.workspace.path ?? undefined, primarySubscription)
+      lease.taskCreated(task.id)
+      const plan = {
+        id: task.id,
+        schemaVersion: 1 as const,
+        sourceDraftId: draft.id,
+        sourceDraftRevision: draft.revision,
+        owner: { ...scope },
+        mode: draft.mode,
+        title: draft.title || draft.goal,
+        goal: draft.goal,
+        conversation: draft.conversation ? structuredClone(draft.conversation) : null,
+        nodes: structuredClone(draft.nodes),
+        workspace: { mode: 'shared' as const, path: task.workDir },
+        permissions: preflight.permissionPolicy,
+        confirmedInputs: [...draft.confirmedInputs],
+        planHash: `${draft.id}:${draft.revision}:${idempotencyKey}`,
+        createdAt: Date.now(),
+      }
+      await this.deps.workPlans.save(scope, plan)
+      await this.deps.taskMetadata.save(scope, {
+        version: 1,
+        taskId: task.id,
+        kind: draft.mode === 'conversation' ? 'conversation' : 'arrangement',
+        participantSubscriptionIds: draft.mode === 'conversation'
+          ? [...new Set(draft.conversation?.participants.map(item => item.subscriptionId) ?? [])]
+          : [...new Set(draft.nodes.map(node => node.subscriptionId))],
+        currentSubscriptionId: primarySubscription,
+        createdAt: Date.now(),
+      })
+      await this.deps.drafts.update(scope, draft.id, draft.revision, {
+        ...draft,
+        status: 'confirmed',
+        confirmedWorkPlanId: plan.id,
+      })
+      success = true
+      return { plan, execution: null }
+    } finally {
+      lease.finish(success)
     }
-    await this.deps.workPlans.save(scope, plan)
-    await this.deps.taskMetadata.save(scope, {
-      version: 1,
-      taskId: task.id,
-      kind: draft.mode === 'conversation' ? 'conversation' : 'arrangement',
-      participantSubscriptionIds: draft.mode === 'conversation'
-        ? [...new Set(draft.conversation?.participants.map(item => item.subscriptionId) ?? [])]
-        : [...new Set(draft.nodes.map(node => node.subscriptionId))],
-      currentSubscriptionId: primarySubscription,
-      createdAt: Date.now(),
-    })
-    await this.deps.drafts.update(scope, draft.id, draft.revision, {
-      ...draft,
-      status: 'confirmed',
-      confirmedWorkPlanId: plan.id,
-    })
-    return { plan, execution: null }
   }
 
   async confirmAndStart(draftId: string, expectedRevision: number, idempotencyKey: string): Promise<{ plan: WorkPlan; execution: { id: string; status: 'queued' | 'running' } }> {

@@ -33,10 +33,13 @@ import { EmployeeAuthorizer } from '../service/employee-authorizer'
 import { EmployeeDirectory } from '../service/employee-directory'
 import { ConversationService } from '../service/conversation-service'
 import { TaskService } from '../service/task-service'
+import { TaskCreationGate } from '../service/task-creation-gate'
 import { ArrangementService } from '../service/arrangement-service'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
 import { ClientMonitorApi } from '../common/platform/client-monitor-api'
 import { ClientMonitorStore } from '../data/client-monitor-store'
+import { ConversationContextStore } from '../domain/conversation-context'
+import { ClientMonitorHistoryService } from '../service/client-monitor-history-service'
 import { ClientMonitorService } from '../service/client-monitor-service'
 
 const log = logger.child('build-backend')
@@ -101,16 +104,28 @@ class BackendRuntime {
       }),
     })
     this.taskManager = new TaskManager(userDataDir, renderer)
+    this.taskRunStore = new TaskRunStore(userDataDir)
     this.clientMonitor = new ClientMonitorService({
       store: new ClientMonitorStore(userDataDir),
       api: new ClientMonitorApi({
         getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
         baseUrl: config.SEP_BASE_URL,
+        scopeProvider: () => this.currentScope(),
+      }),
+      history: new ClientMonitorHistoryService({
+        scopeProvider: () => this.currentScope(),
+        listTasks: () => this.taskManager.getAllTasks(),
+        listRuns: (scope, taskId) => this.taskRunStore.list(scope, taskId),
+        listMessages: (scope, taskId) => new ConversationContextStore(this.taskRunStore.getTaskDir(scope, taskId)).listMessages(),
+        getTimeline: (scope, taskId, runId) => this.taskRunStore.events.getTimeline(scope, taskId, runId),
+        taskType: async (scope, taskId) => {
+          const plan = await this.workPlans.get(scope, taskId)
+          return plan && plan.mode !== 'conversation' ? 'arrangement' : 'conversation'
+        },
       }),
       scopeProvider: () => this.currentScope(),
       clientVersion: config.CLIENT_VERSION,
     })
-    this.taskRunStore = new TaskRunStore(userDataDir)
     this.taskMetadataStore = new TaskMetadataStore(userDataDir)
     const arrangementDrafts = new ArrangementDraftStore(userDataDir)
     this.workPlans = new WorkPlanStore(userDataDir)
@@ -134,6 +149,7 @@ class BackendRuntime {
     })
 
     // 服务只拿到作用域、数据存取和执行端口；运行时实现继续由组合根延迟加载。
+    const creationGate = new TaskCreationGate()
     const shared = {
       scope: this,
       taskManager: this.taskManager,
@@ -141,7 +157,7 @@ class BackendRuntime {
       employees: this.employees,
       execution: () => this.getTaskRuntime(),
     }
-    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore })
+    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks })
     const platformSession = this.authSession
     this.arrangements = new ArrangementService({
@@ -151,6 +167,7 @@ class BackendRuntime {
       workPlans: this.workPlans,
       taskMetadata: this.taskMetadataStore,
       taskManager: this.taskManager,
+      creationGate,
       execution: () => this.getTaskRuntime(),
       planner: {
         plan: input => this.arrangementPlanner.get().then(planner => planner.plan(input)),

@@ -14,6 +14,7 @@ import { arrangementRoutes } from './arrangement'
 import { computeCreditRoutes } from './compute-credit'
 import { profileWalletRoutes } from './profile-wallet'
 import { notificationRoutes } from './notifications'
+import { updateRoutes } from './update'
 
 export const routes: readonly Route[] = [
   ...authRoutes,
@@ -25,6 +26,7 @@ export const routes: readonly Route[] = [
   ...profileWalletRoutes,
   ...notificationRoutes,
   ...systemRoutes,
+  ...updateRoutes,
 ]
 
 export const listeners: readonly Listener[] = [...systemListeners]

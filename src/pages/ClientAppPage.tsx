@@ -15,6 +15,8 @@ import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { NotificationCenter } from '../components/enterprise/NotificationCenter';
+import { UpdateNotice } from '../components/enterprise/UpdateNotice';
+import type { UpdateModel } from '../features/update/use-update';
 import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
@@ -30,10 +32,12 @@ import { ComputeCenterPage } from './enterprise/ComputeCenterPage';
 import { OrganizationPage } from './enterprise/OrganizationPage';
 import '../styles/enterprise.css';
 import '../styles/notifications.css';
+import '../styles/updates.css';
 import '../styles/arrange.css';
 import '../styles/compute-center.css';
 
 interface Props {
+  update: UpdateModel;
   userId: string;
   userName: string;
   enterpriseId: string;
@@ -46,11 +50,12 @@ interface Props {
   canManage?: boolean;
 }
 
-export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
+export function ClientAppPage({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const profile = profileWorkspace.profile;
   const fallbackUserAvatar = workspace.currentUserAvatar ?? initialUserAvatar ?? null;
   // /client/profile 可能只返回用户基础资料，头像为空时继续使用组织接口的成员头像。
@@ -143,6 +148,7 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
         onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
         onNavigate={workspace.navigate}
         onOpenSettings={() => setSettingsOpen(true)}
+        onCheckUpdate={() => { setUpdateOpen(true); void update.check(); }}
         onLogout={() => { void onLogout(); }}
       />
       <div className="ent-shell-main">
@@ -193,6 +199,8 @@ export function ClientAppPage({ userId, userName, enterpriseId, enterpriseName, 
               >
                 {darkMode ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
               </button>
+              <UpdateNotice update={update} open={updateOpen} onOpenChange={setUpdateOpen}
+                onOpenWorkRecords={() => workspace.navigate({ name: 'records' })} />
               <NotificationCenter onOpenAction={async notification => {
                 if (notification.category === 'USAGE_ALERT' || notification.type === 'CONTRIBUTION_REWARD_CREDITED') {
                   workspace.navigate({ name: 'compute-center' });

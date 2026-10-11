@@ -1,4 +1,5 @@
 import { afterEach, describe, it } from 'node:test'
+import { execFileSync } from 'node:child_process'
 import * as assert from 'node:assert/strict'
 import * as api from './platform-api'
 import { config } from '../config'
@@ -234,8 +235,8 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
       assert.equal(init?.method, 'POST')
       assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access')
       assert.equal(new Headers(init?.headers).get('Idempotency-Key'), key)
-      assert.equal(new Headers(init?.headers).get('Origin'), new URL(String(input)).origin)
-      assert.equal(new Headers(init?.headers).get('Referer'), new URL(String(input)).origin + '/')
+      assert.equal(new Headers(init?.headers).get('Origin'), config.SEP_WEB_ORIGIN)
+      assert.equal(new Headers(init?.headers).get('Referer'), config.SEP_WEB_ORIGIN + '/')
       assert.deepEqual(JSON.parse(String(init?.body)), request)
       return response({ ...version, content: request.content }, 201)
     }
@@ -262,6 +263,26 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     }
     assert.doesNotMatch(JSON.stringify(logs), /Bearer access|# Source/)
   })
+
+  for (const scenario of [
+    { name: 'separate Web and API domains', baseUrl: 'https://api.example.com/api', webOrigin: 'https://web.example.com', expected: 'https://web.example.com' },
+    { name: 'local Web and API ports', baseUrl: 'http://127.0.0.1:3001/api', webOrigin: '', expected: 'http://127.0.0.1:3000' },
+  ]) {
+    it(`uses the configured Web source headers for ${scenario.name}`, () => {
+      execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+        import assert from 'node:assert/strict';
+        import { createPersonalSkillVersion } from ${JSON.stringify(new URL('./platform-api.ts', import.meta.url).href)};
+        globalThis.fetch = async (input, init) => {
+          assert.equal(String(input), ${JSON.stringify(scenario.baseUrl + '/enterprise/skill-versions')});
+          const headers = new Headers(init.headers);
+          assert.equal(headers.get('Origin'), ${JSON.stringify(scenario.expected)});
+          assert.equal(headers.get('Referer'), ${JSON.stringify(scenario.expected + '/')});
+          return new Response(JSON.stringify(${JSON.stringify({ ...version, content: 'source' })}), { status: 201 });
+        };
+        await createPersonalSkillVersion({ capabilityId: 'cap-1', parentVersionId: 'published-1', content: 'source' }, 'web-source-key-01', 'access');
+      `], { env: { ...process.env, SEP_BASE_URL: scenario.baseUrl, SEP_WEB_ORIGIN: scenario.webOrigin }, stdio: 'pipe' })
+    })
+  }
 
   it('logs the actual current review state returned by an idempotent upload retry', async () => {
     const logs: LogRecord[] = []
@@ -357,6 +378,19 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.deepEqual(records.map(record => record.fields.statusCode), [200, 403, 503])
     assert.deepEqual(records.map(record => record.level), ['info', 'warn', 'warn'])
     assert.doesNotMatch(JSON.stringify(logs), /private-query-error|private-access-token/)
+  })
+
+  it('aborts a stalled skill version query using the caller signal', async () => {
+    const controller = new AbortController()
+    globalThis.fetch = async (_input, init) => {
+      assert.equal(init?.signal, controller.signal)
+      return new Promise<Response>((_resolve, reject) => {
+        controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true })
+      })
+    }
+    const pending = api.listSkillVersions({ capabilityId: 'cap-1' }, 'access', controller.signal)
+    controller.abort(new DOMException('Confirmation timed out', 'TimeoutError'))
+    await assert.rejects(pending, { name: 'TimeoutError' })
   })
 
   it('preserves review pagination and sends review decisions to the encoded version URL', async () => {

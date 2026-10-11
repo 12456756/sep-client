@@ -14,6 +14,7 @@ import {
   pathExists,
   readJsonFile,
   readJsonWithBackup,
+  diagnoseJsonWithBackup,
   writeJsonAtomic,
 } from './atomic-file'
 
@@ -109,6 +110,40 @@ describe('readJsonWithBackup', () => {
 
     assert.equal(await readJsonWithBackup(file, parseOk), null)
     assert.equal((await readdir(dir)).filter(name => name.includes('.corrupt-backup-')).length, 1)
+  })
+})
+
+describe('diagnoseJsonWithBackup', () => {
+  it('distinguishes confirmed absence from repeated corrupt reads without moving files', async () => {
+    const dir = await workDir()
+    const file = join(dir, 'value.json')
+    assert.deepEqual(await diagnoseJsonWithBackup(file, parseOk), { state: 'missing' })
+    await writeFile(file, 'broken')
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      assert.deepEqual(await diagnoseJsonWithBackup(file, parseOk), { state: 'unavailable' })
+    }
+    assert.equal(await readFile(file, 'utf8'), 'broken')
+    assert.deepEqual(await readdir(dir), ['value.json'])
+  })
+
+  it('uses a valid backup without repairing the primary', async () => {
+    const file = join(await workDir(), 'value.json')
+    await writeFile(file, 'broken')
+    await writeFile(backupPath(file), JSON.stringify({ ok: true, n: 7 }))
+    assert.deepEqual(await diagnoseJsonWithBackup(file, parseOk), { state: 'found', value: { ok: true, n: 7 } })
+    assert.equal(await readFile(file, 'utf8'), 'broken')
+    await rm(file)
+    assert.equal((await diagnoseJsonWithBackup(file, parseOk)).state, 'found')
+  })
+
+  it('does not mistake an earlier quarantine or an IO error for absence', async () => {
+    const file = join(await workDir(), 'value.json')
+    await writeFile(file, 'broken')
+    await readJsonWithBackup(file, parseOk)
+    assert.deepEqual(await diagnoseJsonWithBackup(file, parseOk), { state: 'unavailable' })
+    const parentFile = join(await workDir(), 'not-a-directory')
+    await writeFile(parentFile, '')
+    assert.deepEqual(await diagnoseJsonWithBackup(join(parentFile, 'value.json'), parseOk), { state: 'unavailable' })
   })
 })
 

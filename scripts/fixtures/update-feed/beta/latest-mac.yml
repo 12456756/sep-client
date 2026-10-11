@@ -1,0 +1,16 @@
+version: 0.1.3-beta.1
+files:
+  - url: SEP-Client-0.1.3-beta.1-mac-arm64.zip
+    sha512: Zlz2aBttYKw+9fJ3VrlwK+Sy2OcQQSAIk49pqC4te83HlNtrDjLhhgjIE6VKj0wutRdyd7ctYdFaye6SgE+9Sg==
+    size: 111
+    blockMapSize: 0
+  - url: SEP-Client-0.1.3-beta.1-mac-x64.zip
+    sha512: PUZ3p0l4k29WVS3iRPhoSW/OhTIzRbwM8w408aCo2idnGpZpxrgyEGNRKE6keyuXopSyUHPVZzpujoHwxv90WA==
+    size: 109
+    blockMapSize: 0
+path: SEP-Client-0.1.3-beta.1-mac-arm64.zip
+sha512: Zlz2aBttYKw+9fJ3VrlwK+Sy2OcQQSAIk49pqC4te83HlNtrDjLhhgjIE6VKj0wutRdyd7ctYdFaye6SgE+9Sg==
+releaseDate: '2026-10-09T00:00:00.000Z'
+releaseNotes: |-
+  Local beta fixture for Phase 0 tests.
+  These tiny text files are not real ZIP archives or NSIS installers.

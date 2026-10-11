@@ -74,6 +74,11 @@ export const TaskStatus = {
 export type ClientTaskStatus = typeof TaskStatus[keyof typeof TaskStatus]
 export type ClientTaskLogLevel = 'info' | 'warning' | 'error'
 
+export type WorkKind = 'conversation' | 'arrangement'
+export type WorkTypeReadResult =
+  | { state: 'resolved'; kind: WorkKind }
+  | { state: 'unavailable' }
+
 export interface ClientTaskLog {
   timestamp: number
   message: string
@@ -98,7 +103,11 @@ export interface ClientTask {
   ownerEnterpriseId: string
   subscriptionId?: string | null
   activeRunId: string | null
+  /** Query projection only; raw runtime events may omit this field. */
+  workType?: WorkTypeReadResult
 }
+
+export type TaskReadView = ClientTask & { workType: WorkTypeReadResult }
 
 export type ClientTaskRunOutcome = 'running' | 'completed' | 'failed' | 'cancelled' | 'stopped' | 'interrupted'
 

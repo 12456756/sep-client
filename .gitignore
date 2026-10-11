@@ -24,6 +24,9 @@ Thumbs.db
 .env.*.local
 *.pem
 *.key
+*.p8
+*.p12
+*.pfx
 
 # Logs
 logs/
@@ -34,6 +37,7 @@ npm-debug.log*
 *.tsbuildinfo
 
 # electron-builder
+.release/
 app-update.yml
 
 # Test artifacts

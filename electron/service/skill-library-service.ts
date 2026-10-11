@@ -11,7 +11,7 @@ import type { LocalSkillSubmission, SaveSkillInput, SaveSkillResult, SkillLibrar
 
 interface SkillPlatform {
   skills(employeeId: string, token: string): Promise<{ subscriptionId: string; skills: { capability: EmployeeSkill['capability']; currentVersion: SkillVersion; versions: SkillVersion[] }[] }>
-  list(input: { capabilityId: string }, token: string): Promise<SkillVersion[]>
+  list(input: { capabilityId: string }, token: string, signal?: AbortSignal): Promise<SkillVersion[]>
   preview(versionId: string, token: string): Promise<{ content: string }>
   create(input: PersonalSkillVersionRequest, key: string, token: string): Promise<SkillVersion>
 }
@@ -152,7 +152,8 @@ export class SkillLibraryService {
         ...item, versions: [...item.versions.filter(value => value.id !== version.id), version],
       }) }
     }
-    await this.verifyUpload(scope, record, version, token)
+    // Diagnostic confirmation must not delay the persisted upload result.
+    void this.verifyUpload(scope, record, version, token)
     return { idempotencyKey: record.idempotencyKey, uploaded: true, version }
   }
 
@@ -164,14 +165,13 @@ export class SkillLibraryService {
     }
     try {
       this.checkScope(scope)
-      const versions = await this.options.platform.list({ capabilityId: record.request.capabilityId }, token)
+      const versions = await this.options.platform.list({ capabilityId: record.request.capabilityId }, token, AbortSignal.timeout(15_000))
       this.checkScope(scope)
       const submitted = versions.find(item => item.id === version.id && item.capabilityId === record.request.capabilityId)
       const result = { ...fields, found: Boolean(submitted), reviewStatus: submitted?.status ?? null, versionCount: versions.length }
       if (submitted) log.info('personal skill upload verification completed', result)
       else log.warn('personal skill upload verification completed', result)
     } catch (error) {
-      this.checkScope(scope)
       log.warn('personal skill upload verification failed', {
         ...fields, statusCode: error instanceof AuthApiError ? error.statusCode : null,
         errorType: error instanceof Error ? error.name : 'UnknownError',

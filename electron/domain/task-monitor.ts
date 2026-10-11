@@ -1,6 +1,6 @@
 import type { TaskExecutionEvent } from '../../src/shared/types'
 
-import type { MonitorStatus } from '../common/platform/client-monitor-contract'
+import type { MonitorStatus, MonitorParticipation } from '../common/platform/client-monitor-contract'
 export type { MonitorStatus } from '../common/platform/client-monitor-contract'
 
 export interface MonitorTaskQueuedInput {
@@ -11,6 +11,9 @@ export interface MonitorTaskQueuedInput {
   title: string
   modelId: string
   taskType: 'conversation' | 'arrangement'
+  protocolVersion?: 2
+  queuedAt?: number
+  participation?: MonitorParticipation
 }
 
 export interface MonitorTaskStartedInput {
@@ -23,6 +26,8 @@ export interface MonitorTaskContentInput {
   taskId: string
   runId: string
   content: string
+  participation?: MonitorParticipation
+  occurredAt?: number
 }
 
 export interface MonitorTaskFinishedInput {
@@ -36,7 +41,7 @@ export interface MonitorTaskFinishedInput {
 export interface TaskMonitorPort {
   taskQueued(input: MonitorTaskQueuedInput): Promise<void>
   taskStarted(input: MonitorTaskStartedInput): Promise<void>
-  taskEvent(event: TaskExecutionEvent): Promise<void>
+  taskEvent(event: TaskExecutionEvent, participation?: MonitorParticipation): Promise<void>
   taskInput(input: MonitorTaskContentInput): Promise<void>
   taskOutput(input: MonitorTaskContentInput): Promise<void>
   taskFinished(input: MonitorTaskFinishedInput): Promise<void>

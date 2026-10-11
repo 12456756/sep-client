@@ -11,6 +11,9 @@ import type { WorkPlan } from '../domain/arrangement-plan'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import type { EmployeeRuntimeConfig, TaskWorkerPort } from './run-types'
 import type { TaskOwnerScope } from '../data/scope-path'
+import { ArrangementExecutor, buildArrangementNodePrompt } from './arrangement-executor'
+import { silentTaskMonitor, type TaskMonitorPort, type MonitorTaskQueuedInput, type MonitorTaskContentInput } from '../domain/task-monitor'
+import type { MonitorParticipation } from '../common/platform/client-monitor-contract'
 
 const scope: TaskOwnerScope = { memberId: 'member-arrangement', enterpriseId: 'enterprise-arrangement' }
 const employee: EmployeeRuntimeConfig = {
@@ -84,6 +87,11 @@ describe('TaskRuntime arrangement integration', () => {
       taskManager: manager, taskRunStore: runStore, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
       getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: event => events.push(event), onApprovalRequest: () => {},
       resolveEmployee: id => id === employee.subscriptionId ? employee : null,
+      authorizeEmployee: async (subscriptionId, modelId) => {
+        if (subscriptionId !== employee.subscriptionId) return null
+        assert.ok(!modelId || arrangement.nodes.some(node => node.modelId === modelId))
+        return { ...employee, modelId: modelId ?? employee.modelId }
+      },
       createWorker: options => {
         contexts.push(options.context)
         const worker: TaskWorkerPort = {
@@ -186,12 +194,18 @@ function runtimeForArrangement(
   checkpoints: MemoryCheckpointStore,
   arrangement: WorkPlan,
   createWorker: (options: Parameters<NonNullable<ConstructorParameters<typeof TaskRuntime>[0]['createWorker']>>[0]) => TaskWorkerPort,
+  monitor: TaskMonitorPort = silentTaskMonitor,
 ): TaskRuntime {
   return new TaskRuntime({
     taskManager: manager, taskRunStore: runStore, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
     getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
-    resolveEmployee: id => id === employee.subscriptionId ? employee : null,
-    createWorker,
+    resolveEmployee: id => arrangement.nodes.some(node => node.subscriptionId === id) ? { ...employee, subscriptionId: id } : null,
+    authorizeEmployee: async (subscriptionId, modelId) => {
+      if (!arrangement.nodes.some(node => node.subscriptionId === subscriptionId)) return null
+      assert.ok(!modelId || arrangement.nodes.some(node => node.subscriptionId === subscriptionId && node.modelId === modelId))
+      return { ...employee, subscriptionId, modelId: modelId ?? employee.modelId }
+    },
+    createWorker, monitor,
   })
 }
 
@@ -202,6 +216,156 @@ function arrangementRetryApi(runtime: TaskRuntime): { retryTask(taskId: string, 
 describe('TaskRuntime arrangement controls', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })
+
+  it('attributes exact dependency prompts, partial outputs and approvals to distinct node attempts under each parent run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-monitor-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize(); await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.nodes[1].subscriptionId = 'employee-b'
+    const queued: MonitorTaskQueuedInput[] = []
+    const inputs: MonitorTaskContentInput[] = []
+    const outputs: MonitorTaskContentInput[] = []
+    const states: Array<{ event: TaskExecutionEvent; participation?: MonitorParticipation }> = []
+    const prompts: string[] = []
+    let attempts = 0
+    const runtime = runtimeForArrangement(manager, runStore, new MemoryCheckpointStore(), arrangement, options => ({
+      async run(prompt) {
+        prompts.push(prompt)
+        const nodeA = options.context.modelId === 'node-model-a'
+        if (nodeA) attempts++
+        const event = (type: TaskExecutionEvent['type'], data: unknown): TaskExecutionEvent => ({
+          taskId: task.id, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+          sequence: 0, type, occurredAt: Date.now(), data,
+        })
+        await options.onEvent(event('approval_requested', null))
+        await options.onEvent(event('approval_resolved', null))
+        await options.onEvent(event('text_delta', { text: nodeA ? attempts === 1 ? 'partial A' : 'A recovered' : 'B complete' }))
+        if (nodeA && attempts === 1) throw new Error('first attempt failed')
+      }, async abort() {}, async dispose() {},
+    }), { ...silentTaskMonitor,
+      async taskQueued(input) { queued.push(input) },
+      async taskInput(input) { inputs.push(input) },
+      async taskOutput(input) { outputs.push(input) },
+      async taskEvent(event, participation) { states.push({ event, participation }) },
+    })
+    await runtime.executeTask(task.id)
+    await waitFor(() => outputs.some(output => output.content === 'partial A'))
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.PAUSED)
+    await arrangementRetryApi(runtime).retryTask(task.id, { conversation: false, nodeId: 'node-a' })
+    await waitFor(() => outputs.some(output => !output.participation && output.content.includes('B complete')))
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+    assert.equal(queued.length, 2)
+    assert.ok(queued.every(input => input.protocolVersion === 2 && input.participation === undefined))
+    assert.notEqual(queued[0].runId, queued[1].runId)
+    const nodeInputs = inputs.filter(input => input.participation)
+    const nodeOutputs = outputs.filter(output => output.participation)
+    assert.deepEqual(nodeInputs.map(input => input.content), prompts)
+    assert.deepEqual(nodeOutputs.map(output => output.content), ['partial A', 'A recovered', 'B complete'])
+    assert.equal(new Set(nodeInputs.map(input => input.participation!.executionId)).size, 3)
+    assert.deepEqual(nodeInputs.map(input => input.runId), [queued[0].runId, queued[1].runId, queued[1].runId])
+    assert.deepEqual(nodeOutputs.map(output => output.participation!.status), ['FAILED', 'COMPLETED', 'COMPLETED'])
+    assert.equal(nodeInputs[2].participation?.subscriptionId, 'employee-b')
+    assert.equal(nodeInputs[2].content, buildArrangementNodePrompt(arrangement, arrangement.nodes[1], [{ node: arrangement.nodes[0], output: 'A recovered' }]))
+    for (const output of nodeOutputs) {
+      assert.ok(output.participation?.startedAt)
+      assert.ok(output.participation?.completedAt)
+      assert.ok(Date.parse(output.participation!.startedAt!) <= Date.parse(output.participation!.completedAt!))
+      assert.equal(output.participation?.executionId, nodeInputs.find(input => input.participation?.executionId === output.participation?.executionId)?.participation?.executionId)
+    }
+    const approvals = states.filter(state => state.event.type.startsWith('approval_'))
+    assert.equal(approvals.length, 6)
+    assert.ok(approvals.every(state => state.participation && queued.some(input => input.runId === state.event.runId)))
+    assert.deepEqual(approvals.map(state => state.participation?.status), ['WAITING_APPROVAL', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING'])
+    const nodeB = states.find(state => state.event.type === 'arrangement_node_started' && state.participation?.nodeId === 'node-b')!
+    assert.equal(nodeB.event.subscriptionId, employee.subscriptionId)
+    assert.equal((nodeB.event.data as { subscriptionId: string }).subscriptionId, 'employee-b')
+  })
+
+  it('keeps the parent arrangement waiting until all parallel node approvals resolve', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-approval-aggregation-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize(); await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const base = twoNodePlan(task.id)
+    const arrangement: WorkPlan = { ...base, nodes: base.nodes.map(node => ({ ...node, dependsOn: [] })) }
+    const requested = new Set<string>()
+    const resolved = new Set<string>()
+    const releases = new Map<string, () => void>()
+    const runtime = runtimeForArrangement(manager, runStore, new MemoryCheckpointStore(), arrangement, options => ({
+      async run() {
+        const nodeId = options.context.modelId === 'node-model-a' ? 'node-a' : 'node-b'
+        const requestId = `approval-${nodeId}`
+        await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+          sequence: 1, type: 'approval_requested', occurredAt: Date.now(), data: { requestId } })
+        requested.add(nodeId)
+        await new Promise<void>(resolve => releases.set(nodeId, resolve))
+        await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+          sequence: 2, type: 'approval_resolved', occurredAt: Date.now(), data: { requestId, approved: true } })
+        resolved.add(nodeId)
+      },
+      async abort() {}, async dispose() {},
+    }))
+
+    await runtime.executeTask(task.id)
+    await waitFor(() => requested.size === 2 && releases.size === 2)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.WAITING_APPROVAL)
+
+    releases.get('node-a')!()
+    await waitFor(() => resolved.has('node-a'))
+    assert.equal((await manager.getTask(task.id))?.status, TaskStatus.WAITING_APPROVAL)
+
+    releases.get('node-b')!()
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+    assert.deepEqual([...resolved].sort(), ['node-a', 'node-b'])
+  })
+
+  for (const outcome of ['denied', 'throws', 'aborted-before-start', 'aborted-after-output'] as const) {
+    it(`records known ${outcome} node outcome without guessing a start time`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-outcome-'))
+      directories.push(root)
+      const manager = new TaskManager(root)
+      const events: TaskExecutionEvent[] = []
+      let workers = 0
+      const executor = new ArrangementExecutor({
+        scope: null, taskManager: manager, taskRunStore: null, checkpointStore: null,
+        workspaceRoot: root, arrangementSubscriptionId: 'parent-sub',
+        getRefreshToken: () => 'mock', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+        async onEvent(event) { events.push(event) },
+        async authorizeEmployee(subscriptionId, modelId) {
+          assert.equal(subscriptionId, 'employee-a'); assert.equal(modelId, 'node-model')
+          if (outcome === 'denied') return null
+          if (outcome === 'throws') throw new Error('authorization failed')
+          if (outcome === 'aborted-before-start') await executor.abort()
+          return employee
+        },
+        createWorker: options => {
+          workers++
+          return { async run() {
+            await options.onEvent({ taskId: 'task', runId: options.context.runId, subscriptionId: 'employee-a', sequence: 0,
+              type: 'text_delta', occurredAt: Date.now(), data: { text: 'partial' } })
+            await executor.abort()
+          }, async abort() {}, async dispose() {} }
+        },
+      })
+      await executor.execute(plan('task'), 'task', 'parent-run')
+      const terminal = events.find(event => event.type === 'arrangement_node_failed')!
+      const data = terminal.data as { status: string; startedAt?: string; completedAt: string; output: string | null; nodeRunId: string; subscriptionId: string }
+      assert.ok(data.nodeRunId); assert.ok(Number.isFinite(Date.parse(data.completedAt)))
+      assert.equal(data.subscriptionId, 'employee-a'); assert.equal(terminal.subscriptionId, 'parent-sub')
+      assert.equal(terminal.runId, 'parent-run')
+      assert.equal(data.status, outcome.startsWith('aborted') ? 'PAUSED' : 'FAILED')
+      assert.equal(workers, outcome === 'aborted-after-output' ? 1 : 0)
+      assert.equal(Boolean(data.startedAt), outcome === 'aborted-after-output')
+      assert.equal(data.output, outcome === 'aborted-after-output' ? 'partial' : null)
+      assert.ok(events.every(event => event.type !== 'arrangement_node_completed'))
+    })
+  }
 
   it('retries only the failed node and then schedules its dependents', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-retry-'))

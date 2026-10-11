@@ -224,8 +224,10 @@ it('refreshes once for socket authentication rejection then backs off without lo
     for (let attempt = 0; attempt < 3; attempt++) {
       h.clock.tick(1_000 * 2 ** attempt); await flush()
       assert.equal(h.sockets.length, 3 + attempt)
+      h.sockets.at(-1)!.open()
       rejection(h.sockets.at(-1)!); await flush()
       assert.equal(h.authenticationRequired, 0)
+      assert.equal(h.clock.jobs.size, 1)
     }
     assert.equal(calls.filter(Boolean).length, 1)
     h.transport.stop()
@@ -568,12 +570,16 @@ it('keeps a second socket auth rejection local after refresh publishes and ignor
     assert.equal(replacement.eventNames().length, 0)
     assert.equal(h.clock.jobs.size, 1)
     pendingRefresh.resolve('published-refresh'); await flush()
-    assert.equal(h.sockets.length, 2)
     assert.deepEqual(calls, [false, true])
+    assert.equal(h.sockets.length, 2)
     h.clock.tick(1_000); await flush()
     assert.deepEqual(calls, [false, true, false])
     assert.equal(h.sockets.length, 3)
+    const recovered = h.sockets[2]
+    recovered.open()
+    recovered.message({ type: 'connected', data: { unreadCount: 2 } })
     assert.equal(h.authenticationRequired, 0)
+    assert.equal(h.removed, 0)
     h.transport.stop()
     assert.equal(h.clock.jobs.size, 0)
   }

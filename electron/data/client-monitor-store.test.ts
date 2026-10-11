@@ -31,6 +31,30 @@ function record(): ClientMonitorRecord {
 }
 
 describe('ClientMonitorStore', () => {
+  it('roundtrips v2 proof and participant operations while rejecting unknown participant metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-client-monitor-v2-'))
+    roots.push(root)
+    const store = new ClientMonitorStore(root)
+    const participation = { executionId: 'node-run', subscriptionId: 'node-sub', nodeId: 'node', status: 'FAILED' as const,
+      startedAt: '2026-09-22T00:00:00.000Z', completedAt: '2026-09-22T00:00:01.000Z' }
+    const saved: ClientMonitorRecord = { ...record(), liveRuns: { 'run-a': { protocolVersion: 2 } }, lastSequence: 1, pending: [
+      { id: 'create', kind: 'create', clientRunId: 'run-a', payload: { clientTaskId: 'task-a', clientRunId: 'run-a', subscriptionId: 'sub-a', title: 'Task', protocolVersion: 2, queuedAt: participation.startedAt } },
+      { id: 'event', kind: 'event', clientRunId: 'run-a', sequence: 1, payload: { clientRunId: 'run-a', sequence: 1, type: 'model_output', message: 'partial', occurredAt: participation.completedAt, participation } },
+    ] }
+    await store.save(scope, 'task-a', saved)
+    assert.deepEqual(await new ClientMonitorStore(root).load(scope, 'task-a'), saved)
+    const file = new ScopePath(root).clientMonitorFile(scope, 'task-a')
+    const malformed = structuredClone(saved) as unknown as { pending: Array<{ payload: Record<string, unknown> }>; liveRuns: Record<string, unknown> }
+    malformed.pending[1].payload.participation = { ...participation, guessed: true }
+    await writeFile(file, JSON.stringify(malformed), 'utf8')
+    assert.equal((await store.load(scope, 'task-a'))?.pending.length, 1)
+    malformed.liveRuns['run-a'] = { protocolVersion: 2, participation: { ...participation, guessed: true } }
+    await writeFile(file, JSON.stringify(malformed), 'utf8')
+    assert.equal(await store.load(scope, 'task-a'), null)
+    malformed.liveRuns['run-a'] = { protocolVersion: 3 }
+    await writeFile(file, JSON.stringify(malformed), 'utf8')
+    assert.equal(await store.load(scope, 'task-a'), null)
+  })
   it('persists records and pending operations across store instances', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-client-monitor-store-'))
     roots.push(root)

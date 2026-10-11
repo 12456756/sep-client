@@ -4,8 +4,8 @@
  * 写入使用临时文件和同目录 rename，并保留 `.bak` 以便写入失败或主文件损坏时恢复。
  * 损坏文件会被隔离，不能阻止其他任务继续启动。
  */
-import { chmod, copyFile, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { basename, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 /** 持久化文件一律 0600：userData 目录之外不该有人读得到。 */
@@ -78,6 +78,50 @@ export async function readJsonFile(file: string): Promise<unknown | null> {
   } catch {
     return null
   }
+}
+
+export type JsonReadDiagnostic<T> =
+  | { state: 'found'; value: T }
+  | { state: 'missing' }
+  | { state: 'unavailable' }
+
+function isMissing(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT'
+}
+
+async function diagnoseJsonFile<T>(file: string, parse: (value: unknown) => T | null): Promise<JsonReadDiagnostic<T>> {
+  let content: string
+  try {
+    content = await readFile(file, 'utf8')
+  } catch (error) {
+    return { state: isMissing(error) ? 'missing' : 'unavailable' }
+  }
+  try {
+    const value = parse(JSON.parse(content) as unknown)
+    return value === null ? { state: 'unavailable' } : { state: 'found', value }
+  } catch {
+    return { state: 'unavailable' }
+  }
+}
+
+/** Query-only read: never repair or quarantine files, so failure evidence survives retries. */
+export async function diagnoseJsonWithBackup<T>(file: string, parse: (value: unknown) => T | null): Promise<JsonReadDiagnostic<T>> {
+  const primary = await diagnoseJsonFile(file, parse)
+  if (primary.state === 'found') return primary
+  const backup = await diagnoseJsonFile(backupPath(file), parse)
+  if (backup.state === 'found') return backup
+  if (primary.state !== 'missing' || backup.state !== 'missing') return { state: 'unavailable' }
+  // Legacy load/get can already have quarantined the only evidence of a broken store.
+  try {
+    const names = await readdir(dirname(file))
+    const name = basename(file)
+    if (names.some(entry => entry.startsWith(`${name}.corrupt-`) || entry.startsWith(`${name}.bak.corrupt-`))) {
+      return { state: 'unavailable' }
+    }
+  } catch (error) {
+    if (!isMissing(error)) return { state: 'unavailable' }
+  }
+  return { state: 'missing' }
 }
 
 /**
