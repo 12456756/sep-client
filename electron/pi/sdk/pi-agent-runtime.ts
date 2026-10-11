@@ -38,6 +38,7 @@ export interface PiAgentSessionConfig {
   sessionDir: string
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
+  employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   mcpServers?: readonly McpServerConfig[]
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>

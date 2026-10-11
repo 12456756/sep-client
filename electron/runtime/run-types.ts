@@ -1,4 +1,5 @@
 import type { WorkPlan } from '../domain/arrangement-plan'
+import type { EmployeeProfile } from '../domain/employee-profile'
 
 export interface TaskToolPolicy {
   /** Persisted preset; full-local + auto-approve is the unrestricted mode. */
@@ -17,6 +18,7 @@ export interface EmployeeRuntimeConfig {
   gatewayUrl: string
 
   additionalSkillPaths?: string[]
+  employeeProfile?: EmployeeProfile
 }
 
 export type SessionRecoveryMode = 'strict' | 'confirm_rebuild' | 'auto_rebuild_from_task_history'

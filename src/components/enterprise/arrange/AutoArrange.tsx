@@ -15,7 +15,7 @@ type Props = {
   settings: RunSettings;
   models: string[];
   onSettingsChange: (patch: Partial<RunSettings>) => void;
-  onChooseFolder: () => Promise<string | null>;
+  onChooseFolder: (currentPath?: string) => Promise<string | null>;
 };
 
 function toDocument(draft: ArrangementDraft): ArrangementDraftDocument {

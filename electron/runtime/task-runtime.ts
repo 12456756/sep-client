@@ -25,6 +25,7 @@ import type {
 } from './run-types'
 import { describeError, redactText } from '../common/redact'
 import { logger } from '../common/logger'
+import { AppError } from '../errors/app-error'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor } from './arrangement-executor'
@@ -302,13 +303,14 @@ export class TaskRuntime {
     if (!scope || !this.arrangementCheckpointStore) throw new Error('Arrangement checkpoint storage is unavailable.')
     const checkpoint = await this.arrangementCheckpointStore.get(scope, task.id)
     if (!checkpoint) throw new Error('Arrangement has no recoverable checkpoint.')
-    if (checkpoint.state.status === 'stopped' || checkpoint.state.status === 'completed') throw new Error('This arrangement cannot be retried.')
+    if (checkpoint.planHash !== plan.planHash) throw new AppError('INVALID_STATE', { message: '编排计划与恢复进度不一致，无法重试。' })
+    if (checkpoint.state.status === 'stopped' || checkpoint.state.status === 'completed') throw new AppError('INVALID_STATE', { message: '这项编排已终止或完成，不能重试。' })
     let nextState: ArrangementExecutionState
-    if (nodeId) {
+    if (checkpoint.state.status === 'waiting-user') {
       nextState = retryArrangementNode(checkpoint.state, plan.nodes, nodeId)
-      if (nextState === checkpoint.state) throw new Error('The selected node is not waiting for a retry.')
+      if (nextState === checkpoint.state) throw new AppError('INVALID_STATE', { message: '没有可重试的失败节点。' })
     } else {
-      if (checkpoint.state.status !== 'interrupted') throw new Error('A failed arrangement node must be selected for retry.')
+      if (nodeId || checkpoint.state.status !== 'interrupted') throw new AppError('INVALID_STATE', { message: '当前编排状态不支持重试。' })
       nextState = resumeArrangement(checkpoint.state)
     }
     await this.saveArrangementCheckpoint(scope, task.id, checkpoint.planHash, null, nextState)

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { buildWorkItem, encodeWorkPrompt } from './work-mapping'
-import type { ClientTask } from '../../shared/types'
+import type { ArrangementPlanSnapshot, ClientTask, TaskExecutionEvent } from '../../shared/types'
 
 const prompt = encodeWorkPrompt('整理资料', {
   kind: 'conversation', goal: '请整理这份资料', steps: [], participants: ['employee-a'],
@@ -12,6 +12,35 @@ const task: ClientTask = {
   createdAt: 1, startedAt: 2, completedAt: null, error: null, files: [], logs: [],
   ownerId: 'member-a', ownerEnterpriseId: 'enterprise-a', subscriptionId: 'employee-a', activeRunId: 'run-a',
 }
+
+describe('arrangement retry display regressions', () => {
+  const plan: ArrangementPlanSnapshot = {
+    id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1,
+    owner: { memberId: 'member-a', enterpriseId: 'enterprise-a' },
+    mode: 'auto', title: task.title, goal: 'goal', conversation: null,
+    nodes: [{ id: 'node-a', subscriptionId: 'employee-a', modelId: 'model-a', title: 'Node A', instruction: 'do A', expectedOutput: 'output', dependsOn: [], skillIds: [], requiresUserConfirmation: false }],
+    workspace: { mode: 'shared', path: null },
+    permissions: { preset: 'read-only', allowedTools: [], allowedPaths: [], deniedPaths: [], requireApprovalFor: [], commandPolicy: 'disabled', approvalMode: 'confirm-each' },
+    confirmedInputs: [], planHash: 'hash', createdAt: 1,
+  }
+  const failed: TaskExecutionEvent = {
+    taskId: task.id, runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
+    type: 'arrangement_state_changed', occurredAt: 3, data: { nodeId: 'node-a', nodeStatus: 'failed', status: 'waiting-user' },
+  }
+
+  it('shows a paused arrangement waiting for a failed node retry as failed', () => {
+    const work = buildWorkItem({ task: { ...task, status: 'paused', error: '429' }, employees: [], plan, arrangementEvents: [failed] })
+    assert.equal(work.status, 'failed')
+    assert.equal(work.stopReason, '429')
+    assert.equal(work.steps[0]?.state, 'failed')
+  })
+
+  it('does not mistake an explicitly stopped arrangement for a retryable failure', () => {
+    const stopped: TaskExecutionEvent = { ...failed, sequence: 2, type: 'stop_requested', data: { reason: 'user stopped' } }
+    const work = buildWorkItem({ task: { ...task, status: 'paused', error: 'user stopped' }, employees: [], plan, arrangementEvents: [failed, stopped] })
+    assert.equal(work.status, 'paused')
+  })
+})
 
 describe('conversation display regressions', () => {
   it('renders only the original user goal for legacy encoded initial prompts', () => {

@@ -201,7 +201,11 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     sharedContext: { goal: plan.goal, confirmedInputs: [...plan.confirmedInputs], previousResults: [], userNotes: [] },
   } : legacyMeta;
   const kind: 'conversation' | 'flow' = meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
-  const status = toWorkStatus(task.status);
+  let status = toWorkStatus(task.status);
+  if (plan && plan.mode !== 'conversation' && task.status === 'paused') {
+    const latestState = [...arrangementEvents].reverse().find(event => event.type === 'arrangement_state_changed' || event.type === 'stop_requested');
+    if (latestState?.type === 'arrangement_state_changed' && (latestState.data as { status?: unknown } | null)?.status === 'waiting-user') status = 'failed';
+  }
   const legacyProgress = task.progress ?? (status === 'completed' ? 100 : 0);
   const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
 

@@ -34,7 +34,7 @@ interface Props {
   settings: RunSettings;
   models: string[];
   onSettingsChange: (patch: Partial<RunSettings>) => void;
-  onChooseFolder: () => Promise<string | null>;
+  onChooseFolder: (currentPath?: string) => Promise<string | null>;
 }
 
 /** 一条链：每一步都依赖上一步。加人、删人、换顺序之后都要重新串一遍。 */

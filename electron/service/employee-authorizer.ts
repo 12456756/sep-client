@@ -59,7 +59,15 @@ export function resolveEmployeeRuntime(
   const instance = instances.find(item => item.subscriptionId === subscriptionId)
   const modelId = selectedModelId ?? instance?.allowedModels?.[0]
   if (!instance || !modelId || !instance.allowedModels.includes(modelId)) return null
-  return { subscriptionId, modelId, gatewayUrl }
+  return {
+    subscriptionId, modelId, gatewayUrl,
+    employeeProfile: {
+      name: instance.name,
+      position: instance.position,
+      functionalCategory: instance.functionalCategory,
+      description: instance.description,
+    },
+  }
 }
 
 export class EmployeeAuthorizer {

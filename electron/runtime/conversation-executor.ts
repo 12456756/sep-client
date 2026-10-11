@@ -101,6 +101,7 @@ export class ConversationExecutor {
           sessionDir: conversationPaths?.sessionDir ?? runPaths?.sessionDir ?? `${this.options.workspaceRoot()}/.pi-sessions/${runId}`,
           resumeSessionFile: queued.resumeSessionFile,
           additionalSkillPaths: employee.additionalSkillPaths,
+          employeeProfile: employee.employeeProfile,
           toolPolicy: queued.arrangement ? {
             preset: queued.arrangement.permissions.preset,
             allowedTools: [...queued.arrangement.permissions.allowedTools],

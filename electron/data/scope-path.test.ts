@@ -56,6 +56,12 @@ describe('ScopePath 的目录布局（第 11 章硬约束）', () => {
     )
   })
 
+  it('exposes the scoped parent of task workspaces for directory selection', () => {
+    assert.equal(normalize(paths.defaultWorkspaceRoot(SCOPE)), `/data/task-workspaces/v1/${ENT}/${MEM}`)
+    assert.equal(normalize(paths.defaultWorkspaceDir(SCOPE, 'task-1')), normalize(paths.defaultWorkspaceRoot(SCOPE)) + '/task-1')
+    assert.throws(() => paths.defaultWorkspaceRoot({ memberId: '../escape', enterpriseId: 'e' }), TaskScopeError)
+  })
+
   it('derives arrangement drafts inside the authenticated owner scope', () => {
     const root = new ScopePath('/tmp/sep-user-data')
     const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }

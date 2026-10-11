@@ -31,6 +31,7 @@ import {
 import { logger } from '../../common/logger'
 import { createMcpRuntime, type McpRuntime } from './pi-mcp-client'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES } from './pi-playwright-mcp'
+import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 
 const log = logger.child('pi-gateway')
 
@@ -471,6 +472,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     const servers = canUseMcp ? config.mcpServers ?? await loadHostMcpServers() : []
     const mcp = await createMcpRuntime(servers, config.workspaceDir)
     try {
+      const employeePrompt = config.employeeProfile ? buildEmployeeSystemPrompt(config.employeeProfile) : undefined
       const resourceLoader = new DefaultResourceLoader({
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
@@ -478,6 +480,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         noSkills: false,
         noContextFiles: true,
         additionalSkillPaths: config.additionalSkillPaths,
+        appendSystemPromptOverride: employeePrompt
+          ? base => [...base, employeePrompt]
+          : undefined,
       })
       await resourceLoader.reload()
       const extensionState = resourceLoader.getExtensions()

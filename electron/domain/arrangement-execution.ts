@@ -80,7 +80,8 @@ export function markArrangementNodeCompleted(
     }
   }
   const ordered = [...nextNodes.values()]
-  const status = ordered.every(node => node.status === 'completed') ? 'completed' : 'running'
+  const status = ordered.every(node => node.status === 'completed') ? 'completed'
+    : ordered.some(node => node.status === 'failed') ? 'waiting-user' : 'running'
   return { ...state, status, nodes: ordered }
 }
 
@@ -105,22 +106,24 @@ export function markArrangementNodeFailed(
 export function retryArrangementNode(
   state: ArrangementExecutionState,
   planNodes: readonly ArrangementNode[],
-  nodeId: string,
+  nodeId?: string,
 ): ArrangementExecutionState {
   if (state.status !== 'waiting-user') return state
-  const failed = state.nodes.find(node => node.nodeId === nodeId && node.status === 'failed')
-  if (!failed) return state
-  const descendantsToRelease = descendantNodeIds(planNodes, nodeId)
+  const retryIds = new Set(state.nodes.filter(node => node.status === 'failed' && (!nodeId || node.nodeId === nodeId)).map(node => node.nodeId))
+  if (retryIds.size === 0) return state
+  const descendantsToRelease = new Set([...retryIds].flatMap(id => [...descendantNodeIds(planNodes, id)]))
+  const stillBlocked = new Set(state.nodes.filter(node => node.status === 'failed' && !retryIds.has(node.nodeId))
+    .flatMap(node => [...descendantNodeIds(planNodes, node.nodeId)]))
   const nodes = state.nodes.map(node => {
-    if (node.nodeId === nodeId) return { ...node, status: 'ready' as const, error: null }
-    if (descendantsToRelease.has(node.nodeId) && node.status === 'blocked') return { ...node, status: 'pending' as const }
+    if (retryIds.has(node.nodeId)) return { ...node, status: 'ready' as const, error: null }
+    if (descendantsToRelease.has(node.nodeId) && !stillBlocked.has(node.nodeId) && node.status === 'blocked') return { ...node, status: 'pending' as const }
     return { ...node }
   })
   return {
     ...state,
     status: 'running',
     nodes,
-    failureNodeIds: state.failureNodeIds.filter(id => id !== nodeId),
+    failureNodeIds: state.failureNodeIds.filter(id => !retryIds.has(id)),
   }
 }
 

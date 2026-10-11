@@ -249,6 +249,111 @@ describe('TaskRuntime arrangement controls', () => {
     assert.ok(checkpoints.value?.state.nodes.every(node => node.status === 'completed'))
   })
 
+  it('retries parallel failures by task ID while preserving a completed node', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-parallel-retry-'))
+    directories.push(userDataDir)
+    const runStore = new TaskRunStore(userDataDir)
+    const manager = new TaskManager(userDataDir, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.nodes[1].dependsOn = []
+    arrangement.nodes.push({ ...arrangement.nodes[0], id: 'done', modelId: 'done-model' })
+    const checkpoints = new MemoryCheckpointStore()
+    const attempts = new Map<string, number>()
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+      async run() {
+        const model = options.context.modelId
+        const attempt = (attempts.get(model) ?? 0) + 1
+        attempts.set(model, attempt)
+        if (model !== 'done-model' && attempt === 1) throw new Error('429: Too Many Requests')
+        await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: employee.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: model } })
+      },
+      async abort() {},
+      async dispose() {},
+    }))
+    await runtime.executeTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.PAUSED)
+    assert.equal(checkpoints.value?.state.status, 'waiting-user')
+    assert.deepEqual(checkpoints.value?.state.failureNodeIds, ['node-a', 'node-b'])
+    const failedCheckpoint = structuredClone(checkpoints.value)
+    await assert.rejects(() => runtime.retryTask(task.id, { nodeId: 'done' }), { code: 'INVALID_STATE' })
+    assert.deepEqual(checkpoints.value, failedCheckpoint)
+    await runtime.retryTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+    assert.deepEqual([...attempts], [['node-model-a', 2], ['node-model-b', 2], ['done-model', 1]])
+    assert.equal(checkpoints.value?.state.nodes.find(item => item.nodeId === 'done')?.output, 'done-model')
+  })
+
+  it('keeps an unselected parallel failure retryable after a targeted retry succeeds', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-targeted-retry-'))
+    directories.push(userDataDir)
+    const runStore = new TaskRunStore(userDataDir)
+    const manager = new TaskManager(userDataDir, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.nodes[1].dependsOn = []
+    const checkpoints = new MemoryCheckpointStore()
+    const attempts = new Map<string, number>()
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+      async run() {
+        const model = options.context.modelId
+        const attempt = (attempts.get(model) ?? 0) + 1
+        attempts.set(model, attempt)
+        if (attempt === 1) throw new Error('429: Too Many Requests')
+      },
+      async abort() {},
+      async dispose() {},
+    }))
+    await runtime.executeTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.PAUSED)
+    await runtime.retryTask(task.id, { nodeId: 'node-a' })
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.PAUSED)
+    assert.equal(checkpoints.value?.state.status, 'waiting-user')
+    assert.equal(checkpoints.value?.state.nodes.find(node => node.nodeId === 'node-a')?.status, 'completed')
+    assert.equal(checkpoints.value?.state.nodes.find(node => node.nodeId === 'node-b')?.status, 'failed')
+    assert.deepEqual(checkpoints.value?.state.failureNodeIds, ['node-b'])
+    assert.deepEqual([...attempts], [['node-model-a', 2], ['node-model-b', 1]])
+    await runtime.retryTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+    assert.deepEqual([...attempts], [['node-model-a', 2], ['node-model-b', 2]])
+  })
+
+  it('retries a single failed node by task ID without rerunning its completed dependency', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-task-retry-'))
+    directories.push(userDataDir)
+    const runStore = new TaskRunStore(userDataDir)
+    const manager = new TaskManager(userDataDir, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    const checkpoints = new MemoryCheckpointStore()
+    const attempts = new Map<string, number>()
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+      async run(prompt) {
+        const model = options.context.modelId
+        const attempt = (attempts.get(model) ?? 0) + 1
+        attempts.set(model, attempt)
+        if (model === 'node-model-b') {
+          assert.match(prompt, /saved output/)
+          if (attempt === 1) throw new Error('429: Too Many Requests')
+        }
+        await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: employee.subscriptionId, sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'saved output' } })
+      },
+      async abort() {},
+      async dispose() {},
+    }))
+    await runtime.executeTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.PAUSED)
+    await runtime.retryTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+    assert.deepEqual([...attempts], [['node-model-a', 1], ['node-model-b', 2]])
+  })
+
   it('requires explicit resume for an interrupted arrangement and does not rerun completed nodes', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-resume-'))
     directories.push(userDataDir)

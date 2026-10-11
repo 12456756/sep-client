@@ -146,7 +146,10 @@ export class ArrangementExecutor {
         await this.persist(plan, taskId, arrangementRunId, current)
         await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.nodeId)
       }
-      if (results.some(result => !result.ok)) return { status: current.status, state: current, error: results.find(result => !result.ok)?.error }
+      if (current.status === 'waiting-user') return {
+        status: current.status, state: current,
+        error: current.nodes.find(node => node.status === 'failed')?.error ?? undefined,
+      }
     }
 
     current = this.stopRequested

@@ -86,7 +86,7 @@ export function TaskCenterCreatePage({ employees, workflows, initialWorkflowId, 
   const canSubmit = Boolean(goal.trim() && employees.length && (mode === 'auto' || nodes.length));
 
   const chooseDirectory = async () => {
-    const result = await window.electronAPI.selectDirectory();
+    const result = await window.electronAPI.selectDirectory(workspace.path);
     if (result.success && result.path) setWorkspace(current => ({ ...current, path: result.path!, displayName: result.path!.split(/[\\/]/).filter(Boolean).pop() || result.path! }));
   };
 

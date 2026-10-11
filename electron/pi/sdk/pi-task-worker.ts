@@ -26,6 +26,7 @@ export interface PiTaskWorkerContext {
   sessionDir: string
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
+  employeeProfile?: PiAgentSessionConfig['employeeProfile']
   toolPolicy?: PiAgentSessionConfig['toolPolicy']
   disableTools?: boolean
 }
@@ -124,6 +125,7 @@ export class PiTaskWorker {
         sessionDir: this.context.sessionDir,
         resumeSessionFile: this.context.resumeSessionFile,
         additionalSkillPaths: this.context.additionalSkillPaths,
+        employeeProfile: this.context.employeeProfile,
         toolPolicy: this.context.toolPolicy,
         disableTools: this.context.disableTools,
         getAccessToken: () => this.tokenManager.getValidToken(),

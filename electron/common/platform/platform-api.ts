@@ -279,7 +279,10 @@ async function parseError(response: Response, resource?: AuthApiResource): Promi
 
 async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource): Promise<T> {
   const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      ...(resource === 'notifications' ? { Origin: config.SEP_WEB_ORIGIN } : {}),
+    },
     ...(resource === 'notifications' ? { signal: AbortSignal.timeout(15_000) } : {}),
   })
   if (resource === 'skills' && path.startsWith('/enterprise/skill-versions?')) {
@@ -455,7 +458,10 @@ export async function getUnreadNotificationCount(accessToken: string, params: No
 async function notificationCommand(path: string, method: 'POST' | 'DELETE', accessToken: string): Promise<void> {
   const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
     method,
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Origin: config.SEP_WEB_ORIGIN,
+    },
     signal: AbortSignal.timeout(15_000),
   })
   if (!response.ok) throw await parseError(response, 'notifications')

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, stat } from 'node:fs/promises'
 import type {
   ClientTask,
   ClientTaskLogLevel,
@@ -155,6 +155,15 @@ export class TaskManager {
     const scope = await this.requireCurrentUser()
     await this.setCurrentUser(scope.memberId, scope.enterpriseId)
     if (this.persistenceDegraded) throw new TaskPersistenceError('Task history recovery did not complete.')
+  }
+
+  async prepareDirectorySelection(currentPath?: string): Promise<string> {
+    const scope = await this.requireCurrentUser()
+    const chosen = currentPath?.trim()
+    if (chosen && await stat(chosen).then(info => info.isDirectory(), () => false)) return chosen
+    const defaultPath = this.paths.defaultWorkspaceRoot(scope)
+    await mkdir(defaultPath, { recursive: true })
+    return defaultPath
   }
 
   async createTask(

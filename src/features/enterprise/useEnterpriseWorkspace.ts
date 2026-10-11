@@ -205,7 +205,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   runSavedFlow: (flowId: string) => void;
   setPermission: (employeeId: string, permissionId: OperationPermissionId, enabled: boolean) => void;
   setPermissionScope: (employeeId: string, permissionId: OperationPermissionId, scope: string) => void;
-  chooseFolder: () => Promise<string | null>;
+  chooseFolder: (currentPath?: string) => Promise<string | null>;
   organizationMembers: OrganizationCarbonEmployee[];
   organizationEmployees: SiliconEmployee[];
   organizationStatus: 'loading' | 'ready' | 'empty' | 'error';
@@ -739,9 +739,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     navigate({ name: 'arrange', mode: 'manual' });
   }, [savedFlows, myEmployees, navigate]);
 
-  const chooseFolder = useCallback(async () => {
+  const chooseFolder = useCallback(async (currentPath?: string) => {
     try {
-      const result = await window.electronAPI.selectDirectory();
+      const result = await window.electronAPI.selectDirectory(currentPath);
       return result.success ? result.path ?? null : null;
     } catch {
       return null;

@@ -19,7 +19,7 @@ interface Props {
   settings: RunSettings;
   models: string[];
   onSettingsChange: (patch: Partial<RunSettings>) => void;
-  onChooseFolder: () => Promise<string | null>;
+  onChooseFolder: (currentPath?: string) => Promise<string | null>;
 }
 
 export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onStart, settings, models, onSettingsChange, onChooseFolder }: Props) {
