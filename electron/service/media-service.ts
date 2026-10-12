@@ -121,7 +121,9 @@ export class MediaService {
     const [assets, jobs, archived] = await Promise.all([this.options.store.listAssets(scope, taskId), this.options.store.listJobs(scope, taskId), this.options.store.isArchived(scope, taskId)])
     this.assert(scope, epoch)
     const capabilities = this.caps.get(key) ?? null
-    return { capabilities, unavailableReason: capabilities ? null : '当前员工未提供可用的图片能力，普通对话不受影响。',
+    return { capabilities, unavailableReason: capabilities ? null : !this.options.gateway
+      ? 'SEP 图片执行接口尚未接通，当前不能生成图片，普通对话不受影响。'
+      : '当前员工未提供可用的图片能力，普通对话不受影响。',
       assets: assets.map(asset => this.viewAsset(asset)), jobs: jobs.map(job => this.viewJob(job, assets)), archived }
   }
   async importReferences(taskId: string, paths: readonly string[]): Promise<MediaAssetView[]> {

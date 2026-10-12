@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { MediaCapabilities, MediaGenerationInput } from '../../../src/shared/media'
+import { parseSepMediaRuntime } from './sep-media-runtime-contract'
 
 export const mediaId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const opaqueId = z.string().min(1).max(256)
@@ -49,6 +50,11 @@ export const mediaQuoteSchema = z.object({
 }).strict().refine(value => value.status !== 'quoted' || (value.amount !== null && value.currency !== null), 'A quoted price requires an amount and currency.')
 
 export function parseMediaCapabilities(value: unknown): MediaCapabilities {
+  if (typeof value === 'object' && value !== null && 'executionAvailable' in value) {
+    parseSepMediaRuntime(value)
+    // A configured profile does not authorize execution or imply recovery/cancellation support.
+    return { protocolVersion: 1, tools: [], profiles: [] }
+  }
   return mediaCapabilitiesSchema.parse(value)
 }
 

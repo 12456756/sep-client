@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createHash } from 'node:crypto'
 import { inflateSync } from 'node:zlib'
+import { readFileSync } from 'node:fs'
 import type { MediaGenerationInput } from '../../src/shared/media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import { MOCK_MEDIA_CAPABILITIES, MOCK_MEDIA_PNG, MOCK_MEDIA_PNG_SHA256, MockMediaGateway } from '../data/mock-media-gateway'
@@ -112,6 +113,29 @@ function notSentJob(): LocalMediaJob {
 }
 
 describe('MediaService authorization and request semantics', () => {
+  it('identifies a missing production SEP gateway on read without issuing authorization requests', async () => {
+    let authorizationCalls = 0
+    const f = await fixture({ gateway: undefined, authorize: async () => { authorizationCalls++; return null } })
+    const view = await f.service.getTaskMedia('task-a')
+    assert.equal(view.capabilities, null)
+    assert.match(view.unavailableReason!, /SEP 图片执行接口尚未接通/)
+    assert.equal(authorizationCalls, 0)
+    assert.equal(f.gateway.calls.submit.length, 0)
+  })
+
+  it('keeps configured but disabled SEP runtime non-executable even with a gateway injected', async () => {
+    const sepFixtures: { media: unknown }[] = JSON.parse(readFileSync(
+      new URL('../common/platform/fixtures/sep-media-runtime-v1.json', import.meta.url), 'utf8',
+    ))
+    const f = await fixture()
+    f.employee.media = sepFixtures[1].media
+    assert.equal((await f.service.getTaskMedia('task-a')).capabilities, null)
+    await assert.rejects(f.service.generateTaskMedia('task-a', input()), code('SERVICE_UNAVAILABLE'))
+    assert.equal(f.gateway.calls.quote.length, 0)
+    assert.equal(f.gateway.calls.submit.length, 0)
+    assert.equal(f.gateway.calls.uploadReference.length, 0)
+  })
+
   it('uses a deterministic valid PNG fixture with matching chunks, pixels and sha256', () => {
     assert.deepEqual(inspectMediaImage(MOCK_MEDIA_PNG), { mime: 'image/png', width: 1, height: 1, size: MOCK_MEDIA_PNG.length })
     assert.equal(createHash('sha256').update(MOCK_MEDIA_PNG).digest('hex'), MOCK_MEDIA_PNG_SHA256)

@@ -2,6 +2,7 @@ import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { employeeRuntimeSnapshotSchema, parseEmployeeRuntimeManifest } from './employee-runtime-contract'
 import { getEmployeeRuntime } from './platform-api'
+import { readFileSync } from 'node:fs'
 
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -45,11 +46,11 @@ describe('existing SEP employee runtime manifest v1', () => {
     ]) assert.throws(() => parseEmployeeRuntimeManifest(invalid), { message: 'Invalid employee runtime manifest.' })
   })
 
-  it('uses the real runtime route and bearer auth without speculative negotiation', async () => {
+  it('negotiates the implemented SEP media runtime v1 using bearer auth', async () => {
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input))
       assert.equal(url.pathname, '/api/client/subscriptions/sub-1/runtime')
-      assert.equal(url.search, '')
+      assert.equal(url.search, '?mediaProtocolVersion=1')
       assert.deepEqual([...new Headers(init?.headers)], [['authorization', 'Bearer access']])
       return new Response(JSON.stringify(fixture()), { status: 200 })
     }
@@ -59,6 +60,36 @@ describe('existing SEP employee runtime manifest v1', () => {
   it('rejects a response for a different subscription', async () => {
     globalThis.fetch = async () => new Response(JSON.stringify({ ...fixture(), subscriptionId: 'other' }), { status: 200 })
     await assert.rejects(getEmployeeRuntime('sub-1', 'access'), /subscription mismatch/)
+  })
+
+  it('consumes the authoritative SEP media fixtures without changing chat configuration', async () => {
+    const fixtures: { media: unknown }[] = JSON.parse(readFileSync(
+      new URL('./fixtures/sep-media-runtime-v1.json', import.meta.url), 'utf8',
+    ))
+    for (const entry of fixtures) {
+      const value = fixture()
+      globalThis.fetch = async () => new Response(JSON.stringify({ ...value, runtime: { ...value.runtime, media: entry.media } }))
+      const result = await getEmployeeRuntime('sub-1', 'access')
+      assert.deepEqual(result.runtime.media, entry.media)
+      assert.equal(result.runtime.modelId, 'model-1')
+      assert.equal(result.runtime.systemPrompt, 'Actual instructions')
+      assert.equal(result.runtime.skills.length, 1)
+    }
+  })
+
+  it('omits malformed or unsupported media without disabling ordinary chat or returning private fields', async () => {
+    const value = fixture()
+    for (const media of [
+      { protocolVersion: 2, apiKey: 'secret' },
+      { protocolVersion: 1, executionAvailable: true, defaultProfileId: null, tools: [], profiles: [] },
+      { protocolVersion: 1, executionAvailable: false, defaultProfileId: null, tools: [], profiles: [], apiKey: 'secret' },
+    ]) {
+      globalThis.fetch = async () => new Response(JSON.stringify({ ...value, runtime: { ...value.runtime, media } }))
+      const result = await getEmployeeRuntime('sub-1', 'access')
+      assert.equal(result.runtime.media, undefined)
+      assert.equal(result.runtime.modelId, 'model-1')
+      assert.equal(JSON.stringify(result).includes('secret'), false)
+    }
   })
 
   it('round-trips the complete immutable snapshot and validates disk skill hashes', () => {

@@ -1,6 +1,28 @@
 import * as assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaQuoteSchema, mediaReceiptSchema } from './media-contract'
+import { readFileSync } from 'node:fs'
+import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities } from './media-contract'
+
+const sepFixtures: { name: string; media: Record<string, unknown> }[] = JSON.parse(readFileSync(
+  new URL('./fixtures/sep-media-runtime-v1.json', import.meta.url), 'utf8',
+))
+
+test('formal SEP configuration fixtures never advertise executable image tools', () => {
+  for (const fixture of sepFixtures) {
+    assert.deepEqual(parseMediaCapabilities(fixture.media), { protocolVersion: 1, tools: [], profiles: [] }, fixture.name)
+  }
+})
+
+test('formal SEP runtime rejects unsupported execution and malformed configuration without leaking input', () => {
+  const configured = sepFixtures[1].media
+  for (const invalid of [
+    { ...configured, executionAvailable: true },
+    { ...configured, executionAvailable: 'false' },
+    { ...configured, protocolVersion: 2 },
+    { ...configured, tools: ['media_generate_image'] },
+    { ...configured, profiles: [{ modelId: 'private-model', apiKey: 'secret' }] },
+  ]) assert.throws(() => parseMediaCapabilities(invalid), { message: 'Invalid or unsupported SEP media runtime.' })
+})
 
 const capabilities = { protocolVersion: 1, tools: ['media_generate_image'], profiles: [{
   profileId: 'product', kind: 'image', displayName: 'Product image', configVersion: 'v1', operations: ['generate'], executionMode: 'async-query',
