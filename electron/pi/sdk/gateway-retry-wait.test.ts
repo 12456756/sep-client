@@ -18,6 +18,49 @@ describe('gateway retry wait', () => {
     assert.equal(retry.schedule(), 4000)
   })
 
+  it('uses Retry-After for retryable 5xx responses', () => {
+    for (const status of [500, 502, 503, 504, 524]) {
+      const retry = new GatewayRetryWait()
+      assert.equal(retry.inspect(response({ 'Retry-After': '15' }, status)), true)
+      assert.equal(retry.schedule(), 15000)
+      retry.inspect(response({ 'Retry-After': new Date(5000).toUTCString() }, status), 1000)
+      assert.equal(retry.schedule(), 4000)
+      retry.inspect(response({ 'retry-after-ms': '150' }, status))
+      assert.equal(retry.schedule(), 150)
+    }
+  })
+
+  it('does not use Retry-After from successful or other client-error responses', () => {
+    for (const status of [200, 400, 401, 403, 404]) {
+      const retry = new GatewayRetryWait()
+      retry.inspect(response({ 'Retry-After': '15' }, status))
+      assert.equal(retry.schedule(), 2000)
+    }
+  })
+
+  it('preserves wait limits and explicit retry denial for 5xx', async () => {
+    const retry = new GatewayRetryWait()
+    assert.equal(retry.inspect(response({ 'Retry-After': '301' }, 503)), false)
+    await assert.rejects(retry.wait(), /300000/)
+    retry.reset()
+    assert.equal(retry.inspect(response({ 'Retry-After': '300' }, 500)), true)
+    assert.equal(retry.schedule(), 300000)
+    retry.reset()
+    assert.equal(retry.inspect(response({ 'Retry-After': '15', 'x-should-retry': 'false' }, 503)), false)
+    await assert.rejects(retry.wait(), /disabled automatic retry/)
+  })
+
+  it('resets exponential backoff after a successful round', () => {
+    const retry = new GatewayRetryWait()
+    retry.inspect(response({}, 503))
+    assert.equal(retry.schedule(), 2000)
+    retry.inspect(response({}, 503))
+    assert.equal(retry.schedule(), 4000)
+    retry.reset()
+    retry.inspect(response({}, 503))
+    assert.equal(retry.schedule(), 2000)
+  })
+
   it('supports millisecond hints and falls back for absent or invalid hints', () => {
     for (const header of [undefined, 'invalid', '-2', 'Infinity']) {
       const retry = new GatewayRetryWait()

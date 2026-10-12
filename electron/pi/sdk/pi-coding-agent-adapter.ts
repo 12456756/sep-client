@@ -419,6 +419,7 @@ class PiCodingAgentSession implements PiAgentSession {
     private readonly settingsManager: SettingsManager,
   ) {
     this.unsubscribe = session.subscribe(event => {
+      if (event.type === 'auto_retry_end' && event.success === true) retryWait.reset()
       const delayMs = event.type === 'auto_retry_start' || event.type === 'summarization_retry_scheduled'
         ? retryWait.schedule() : undefined
       const normalized = normalizeEvent(event)

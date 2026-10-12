@@ -49,7 +49,8 @@ export class GatewayRetryWait {
   }
 
   inspect(response: Response, now = Date.now()): boolean {
-    this.hintMs = response.status === 429 ? retryAfter(response.headers, now) : undefined
+    const hasRetryHint = response.status === 429 || (response.status >= 500 && response.status < 600)
+    this.hintMs = hasRetryHint ? retryAfter(response.headers, now) : undefined
     this.blocked = response.headers.get('x-should-retry') === 'false' && !response.ok
     if (this.blocked) return false
     if (this.hintMs !== undefined && this.hintMs > MAX_GATEWAY_RETRY_WAIT_MS) {
