@@ -132,7 +132,11 @@ export class ArrangementExecutor {
     while (!this.abortRequested) {
       const ready = current.nodes.filter(node => node.status === 'ready')
       if (ready.length === 0) {
-        if (current.nodes.some(node => node.status === 'running')) continue
+        if (current.nodes.some(node => node.status === 'running')) {
+          current = interruptArrangement(current, 'runtime-error')
+          await this.persist(plan, taskId, arrangementRunId, current)
+          await this.emitStateEvent(plan, taskId, arrangementRunId, current)
+        }
         return { status: current.status, state: current }
       }
 

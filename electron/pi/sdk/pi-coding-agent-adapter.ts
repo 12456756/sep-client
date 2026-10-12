@@ -7,7 +7,6 @@ import {
   SessionManager,
   SettingsManager,
   type AgentSessionEvent,
-  type BeforeProviderHeadersEvent,
   type BeforeProviderRequestEvent,
   type ExtensionFactory,
   type ToolCallEvent,
@@ -520,15 +519,7 @@ function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): Extensi
     })
   }
 
-  const providerAuth: ExtensionFactory = pi => {
-    log.debug('provider headers hook registered')
-    pi.on('before_provider_headers', async (event: BeforeProviderHeadersEvent): Promise<void> => {
-      log.debug('provider headers hook entered')
-      event.headers.authorization = buildBearerAuthorizationHeader(await config.getAccessToken())
-    })
-  }
-
-  return [gatewayPayload, ...(mcp.tools.length ? [mcpExtension] : []), ...(mediaNames.length ? [mediaExtension] : []), toolGuard, providerAuth]
+  return [gatewayPayload, ...(mcp.tools.length ? [mcpExtension] : []), ...(mediaNames.length ? [mediaExtension] : []), toolGuard]
 }
 
 class PiCodingAgentSession implements PiAgentSession {
@@ -618,14 +609,16 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       apiKey: 'placeholder',
       api: 'openai-completions',
       streamSimple: (model, context, options) => lazyStream(model, async () => {
-        // Wait before auth hooks so a recovered request obtains a fresh access token.
+        // ModelRuntime prepares headers before entering this provider; authenticate at fetch instead.
         await retryWait.wait(options?.signal)
         return streamSimple({ ...model, api: 'openai-completions' }, context, {
           ...options,
           maxTokens: GATEWAY_MAX_OUTPUT_TOKENS,
           maxRetries: 0,
           fetch: async (input, init) => {
-            const response = await globalThis.fetch(input, init)
+            const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+            headers.set('authorization', buildBearerAuthorizationHeader(await config.getAccessToken()))
+            const response = await globalThis.fetch(input, { ...init, headers })
             if (!retryWait.inspect(response)) settingsManager.setRetryEnabled(false)
             return response
           },
