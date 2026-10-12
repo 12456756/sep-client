@@ -352,7 +352,7 @@ export interface ElectronAPI {
   getEmployeeAccessRequest: (input: GetEmployeeAccessRequestInput) => Promise<ArrangementDraftResult>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
   getTaskStats: () => Promise<TaskStatsResult>
-  selectDirectory: () => Promise<SelectDirectoryResult>
+  selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>
   onPiEvent: (callback: (event: TaskExecutionEvent) => void) => () => void
   onToolApprovalRequest: (callback: (request: ToolAuthorizationRequest) => void) => () => void
   onTaskUpdated: (callback: (task: ClientTask) => void) => () => void

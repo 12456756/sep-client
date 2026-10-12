@@ -25,6 +25,7 @@ import type {
 } from './run-types'
 import { redactText } from '../common/redact'
 import { logger } from '../common/logger'
+import { AppError } from '../errors/app-error'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor } from './arrangement-executor'
@@ -306,7 +307,22 @@ export class TaskRuntime {
     if (current?.status === TaskStatus.PENDING) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PAUSED, reason)
   }
 
+  private readonly arrangementRetries = new Set<string>()
+
   private async retryArrangement(
+    task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
+    plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
+    nodeId?: string,
+  ): Promise<void> {
+    if (this.arrangementRetries.has(task.id) || task.activeRunId) {
+      throw new AppError('INVALID_STATE', { message: '这项编排正在执行或提交重试，请等待当前操作完成。' })
+    }
+    this.arrangementRetries.add(task.id)
+    try { await this.prepareArrangementRetry(task, plan, nodeId) }
+    finally { this.arrangementRetries.delete(task.id) }
+  }
+
+  private async prepareArrangementRetry(
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
     nodeId?: string,
@@ -315,18 +331,31 @@ export class TaskRuntime {
     if (!scope || !this.arrangementCheckpointStore) throw new Error('Arrangement checkpoint storage is unavailable.')
     const checkpoint = await this.arrangementCheckpointStore.get(scope, task.id)
     if (!checkpoint) throw new Error('Arrangement has no recoverable checkpoint.')
-    if (checkpoint.state.status === 'stopped' || checkpoint.state.status === 'completed') throw new Error('This arrangement cannot be retried.')
+    if (checkpoint.planHash !== plan.planHash) throw new AppError('INVALID_STATE', { message: '编排计划与恢复进度不一致，无法重试。' })
+    if (checkpoint.state.status === 'stopped' || checkpoint.state.status === 'completed') throw new AppError('INVALID_STATE', { message: '这项编排已终止或完成，不能重试。' })
     let nextState: ArrangementExecutionState
-    if (nodeId) {
+    if (checkpoint.state.status === 'waiting-user') {
       nextState = retryArrangementNode(checkpoint.state, plan.nodes, nodeId)
-      if (nextState === checkpoint.state) throw new Error('The selected node is not waiting for a retry.')
+      if (nextState === checkpoint.state) throw new AppError('INVALID_STATE', { message: '没有可重试的失败节点。' })
     } else {
-      if (checkpoint.state.status !== 'interrupted') throw new Error('A failed arrangement node must be selected for retry.')
+      if (nodeId || checkpoint.state.status !== 'interrupted') throw new AppError('INVALID_STATE', { message: '当前编排状态不支持重试。' })
       nextState = resumeArrangement(checkpoint.state)
     }
-    await this.saveArrangementCheckpoint(scope, task.id, checkpoint.planHash, null, nextState)
-    if (task.status !== TaskStatus.PENDING) await this.taskManager.updateTaskStatus(task.id, TaskStatus.PENDING)
-    await this.executeTask(task.id, { conversation: false })
+    // Authorization must not consume the failed checkpoint before admission.
+    const primary = plan.nodes[0]
+    if (!primary || !await this.authorizeEmployee(primary.subscriptionId)) throw new Error('The selected employee is no longer available.')
+    try {
+      await this.saveArrangementCheckpoint(scope, task.id, checkpoint.planHash, null, nextState)
+      if (task.status !== TaskStatus.PENDING) await this.taskManager.updateTaskStatus(task.id, TaskStatus.PENDING)
+      await this.executeTask(task.id, { conversation: false })
+    } catch (error) {
+      const current = await this.taskManager.getTask(task.id)
+      if (current && !current.activeRunId) {
+        await this.arrangementCheckpointStore.save(scope, checkpoint)
+        await this.taskManager.updateTaskStatus(task.id, task.status, task.error ?? undefined)
+      }
+      throw error
+    }
   }
 
   private async saveArrangementCheckpoint(
@@ -702,14 +731,14 @@ export class TaskRuntime {
           ? data.requestId
           : event.runId
         const pending = this.pendingArrangementApprovals.get(node.parentRunId) ?? new Set<string>()
+        const wasWaiting = pending.size > 0
         if (event.type === 'approval_requested') pending.add(requestId)
         else pending.delete(requestId)
-        const wasWaiting = pending.size > 0
         if (pending.size > 0) this.pendingArrangementApprovals.set(node.parentRunId, pending)
         else this.pendingArrangementApprovals.delete(node.parentRunId)
         await this.taskManager.updateTaskStatus(event.taskId, pending.size > 0 ? TaskStatus.WAITING_APPROVAL : TaskStatus.RUNNING)
         if (wasWaiting !== (pending.size > 0)) {
-          this.reportMonitorApprovalStatus({ ...persistedEvent, runId: node.parentRunId })
+          this.reportMonitorParticipation({ ...persistedEvent, runId: node.parentRunId })
         }
       } else {
         await this.taskManager.updateTaskStatus(event.taskId,

@@ -6,6 +6,8 @@
  * 节点的文本产出；检查点、审批和运行事件都通过注入的端口交给外层处理。
  */
 import { randomUUID } from 'node:crypto'
+import { WriteChain } from '../data/write-chain'
+import { recoverArrangementSession } from '../data/arrangement-session-recovery'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunStorePort } from '../data/task-run-store'
@@ -96,6 +98,7 @@ function nodeMap(plan: WorkPlan): Map<string, ArrangementNode> {
 
 export class ArrangementExecutor {
   private readonly activeWorkers = new Map<string, TaskWorkerPort>()
+  private readonly checkpointWrites = new WriteChain()
   private abortRequested = false
   private stopRequested = false
   private taskId: string | null = null
@@ -121,6 +124,7 @@ export class ArrangementExecutor {
     this.stopRequested = false
     const state = await this.loadState(plan, taskId, arrangementRunId, requestedState)
     await this.persist(plan, taskId, arrangementRunId, state)
+    await this.emitStateEvent(plan, taskId, arrangementRunId, state)
     if (state.status === 'completed' || state.status === 'stopped' || state.status === 'waiting-user') return { status: state.status, state }
 
     let current = state
@@ -137,7 +141,10 @@ export class ArrangementExecutor {
         return { checkpoint: current.nodes.find(node => node.nodeId === checkpoint.nodeId)!, node: nodes.get(checkpoint.nodeId)! }
       })
       await this.persist(plan, taskId, arrangementRunId, current)
-      const results = await Promise.all(batch.map(item => this.executeNode(plan, taskId, arrangementRunId, item.node, item.checkpoint, current)))
+      const results = await Promise.all(batch.map(item => this.executeNode(plan, taskId, arrangementRunId, item.node, item.checkpoint, current, async sessionRunId => {
+        current = { ...current, nodes: current.nodes.map(node => node.nodeId === item.node.id ? { ...node, sessionRunId } : node) }
+        await this.persist(plan, taskId, arrangementRunId, current)
+      })))
 
       if (this.abortRequested) {
         current = this.stopRequested
@@ -153,9 +160,9 @@ export class ArrangementExecutor {
         await this.persist(plan, taskId, arrangementRunId, current)
         await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.nodeId)
       }
-      if (results.some(result => !result.ok)) {
+      if (current.status === 'waiting-user') {
         await this.options.media?.stopTask(taskId)
-        return { status: current.status, state: current, error: results.find(result => !result.ok)?.error }
+        return { status: current.status, state: current, error: current.nodes.find(node => node.status === 'failed')?.error ?? undefined }
       }
     }
 
@@ -193,6 +200,7 @@ export class ArrangementExecutor {
     node: ArrangementNode,
     checkpoint: ArrangementExecutionState['nodes'][number],
     state: ArrangementExecutionState,
+    saveSessionRun: (runId: string) => Promise<void>,
   ): Promise<{ ok: true; nodeId: string; output: string | null } | { ok: false; nodeId: string; error: string }> {
     const nodeRunId = randomUUID()
     const workspaceDir = plan.workspace.path ?? this.options.workspaceRoot
@@ -200,7 +208,7 @@ export class ArrangementExecutor {
       ? this.options.taskRunStore.getPaths(this.options.scope, taskId, nodeRunId)
       : null
     const dependencies = node.dependsOn.map(id => ({ node: plan.nodes.find(item => item.id === id)!, output: state.nodes.find(item => item.nodeId === id)?.output ?? null }))
-    const prompt = buildArrangementNodePrompt(plan, node, dependencies)
+    let prompt = buildArrangementNodePrompt(plan, node, dependencies)
     let output = ''
     let worker: TaskWorkerPort | null = null
     let created = false
@@ -208,6 +216,10 @@ export class ArrangementExecutor {
     const metadata = () => ({ title: node.title, modelId: node.modelId, ...(startedAt ? { startedAt } : {}) })
     try {
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
+      const recovery = this.options.scope && this.options.taskRunStore
+        ? await recoverArrangementSession(this.options.taskRunStore, this.options.scope, taskId, node, checkpoint, workspaceDir)
+        : null
+      if (recovery) prompt = '沿用此会话中已保存的任务目标、工具结果和执行进度，从中断处继续完成当前节点。不要重新开始任务，也不要重复已经完成的操作；对结果不确定的操作先核实。'
       const employee = await this.options.authorizeEmployee(node.subscriptionId, node.modelId)
       if (!employee) throw new Error('The selected employee is no longer available.')
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
@@ -215,6 +227,7 @@ export class ArrangementExecutor {
         await this.options.taskRunStore.create(this.options.scope, {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
           runtimeKey: `${node.subscriptionId}:${node.modelId}`, workspaceDir, prompt,
+          arrangementNodeId: node.id, ...(recovery ? { resumedFromRunId: recovery.runId } : {}),
         })
         created = true
       }
@@ -233,13 +246,22 @@ export class ArrangementExecutor {
           gatewayUrl: employee.gatewayUrl, workspaceDir,
           agentDir: paths?.agentDir ?? `${workspaceDir}/.pi-runs/${nodeRunId}`,
           sessionDir: paths?.sessionDir ?? `${workspaceDir}/.pi-sessions/${nodeRunId}`,
+          ...(recovery ? { resumeSessionFile: recovery.sessionFile } : {}),
           additionalSkillPaths: employee.additionalSkillPaths,
           systemPrompt: employee.systemPrompt, mediaTools, toolPolicy,
+          employeeProfile: employee.employeeProfile,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
         onApprovalRequest: request => this.options.onApprovalRequest(request),
         onEvent: async event => {
+          if (event.type === 'turn_start') output = ''
+          if (event.type === 'turn_end') {
+            const data = event.data as { message?: { role?: string; stopReason?: string; content?: Array<{ type?: string; text?: string }> } } | null
+            if (data?.message?.role === 'assistant' && !['error', 'aborted'].includes(data.message.stopReason ?? '')) {
+              output = (data.message.content ?? []).filter(part => part.type === 'text').map(part => part.text ?? '').join('')
+            }
+          }
           if (event.type === 'text_delta') {
             const data = event.data as { text?: unknown }
             if (typeof data.text === 'string') output += data.text
@@ -247,7 +269,10 @@ export class ArrangementExecutor {
           await this.options.onEvent(event)
         },
         onSessionCreated: async session => {
-          if (this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.setSession(this.options.scope, taskId, nodeRunId, session)
+          if (this.options.scope && this.options.taskRunStore) {
+            await this.options.taskRunStore.setSession(this.options.scope, taskId, nodeRunId, session)
+            if (session.sessionFile) await saveSessionRun(nodeRunId)
+          }
         },
       })
       this.activeWorkers.set(nodeRunId, worker)
@@ -295,13 +320,16 @@ export class ArrangementExecutor {
       version: 1, taskId, owner: { ...this.options.scope }, planHash: plan.planHash,
       activeRunId: arrangementRunId, state: structuredClone(state), updatedAt: Date.now(),
     }
-    await this.options.checkpointStore.save(this.options.scope, checkpoint)
+    const scope = this.options.scope
+    const store = this.options.checkpointStore
+    await this.checkpointWrites.run(taskId, () => store.save(scope, checkpoint))
   }
 
-  private async emitStateEvent(plan: WorkPlan, taskId: string, arrangementRunId: string, state: ArrangementExecutionState, nodeId: string): Promise<void> {
+  private async emitStateEvent(plan: WorkPlan, taskId: string, arrangementRunId: string, state: ArrangementExecutionState, nodeId?: string): Promise<void> {
     await this.emitNodeEvent(taskId, arrangementRunId, {
       type: 'arrangement_state_changed', arrangementRunId, nodeId,
-      data: { status: state.status, nodeId, nodeStatus: state.nodes.find(node => node.nodeId === nodeId)?.status, planHash: plan.planHash },
+      data: { status: state.status, nodeId, nodeStatus: state.nodes.find(node => node.nodeId === nodeId)?.status, planHash: plan.planHash,
+        nodeStates: state.nodes.map(node => ({ nodeId: node.nodeId, status: node.status })) },
     })
   }
 

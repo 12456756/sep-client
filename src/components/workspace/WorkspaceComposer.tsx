@@ -82,7 +82,7 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
   const updateWorkspace = (next: LocalWorkspaceBinding) => { setWorkspace(next); onDraftChange({ workspace: next }); };
   const chooseDirectory = async () => {
     if (workspaceLocked) return;
-    const result = await window.electronAPI.selectDirectory();
+    const result = await window.electronAPI.selectDirectory(workspace.path);
     if (result.success && result.path) updateWorkspace({ path: result.path, displayName: result.path.split(/[\\/]/).filter(Boolean).pop() || result.path, accessMode: workspace.accessMode });
   };
   const handleFiles = (event: React.ChangeEvent<HTMLInputElement>) => {

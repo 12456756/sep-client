@@ -58,7 +58,25 @@ function fakeSkills(): SkillProvisioner & { prepared: () => number; invalidation
 describe('resolveEmployeeRuntime（纯函数）', () => {
   it('maps an active subscription to its first allowed model', () => {
     const result = resolveEmployeeRuntime([subscription('sub-a', 'model-x')], 'sub-a', GATEWAY)
-    assert.deepEqual(result, { subscriptionId: 'sub-a', modelId: 'model-x', gatewayUrl: GATEWAY })
+    assert.deepEqual(result, {
+      subscriptionId: 'sub-a', modelId: 'model-x', gatewayUrl: GATEWAY,
+      employeeProfile: {
+        name: 'employee-sub-a', position: undefined, functionalCategory: undefined, description: undefined,
+      },
+    })
+  })
+
+  it('copies only the selected employee identity fields for responsibility judgment', () => {
+    const selected = {
+      ...subscription('sub-b'), position: 'Frontend Developer',
+      functionalCategory: 'Engineering', description: 'Build web interfaces',
+    }
+    const result = resolveEmployeeRuntime([subscription('sub-a'), selected], 'sub-b', GATEWAY)
+    assert.deepEqual(result?.employeeProfile, {
+      name: selected.name, position: selected.position,
+      functionalCategory: selected.functionalCategory, description: selected.description,
+    })
+    assert.notEqual(result?.employeeProfile, selected)
   })
 
   it('returns null for an unknown subscription or one with no allowed model', () => {

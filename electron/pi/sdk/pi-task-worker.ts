@@ -28,6 +28,7 @@ export interface PiTaskWorkerContext {
   additionalSkillPaths?: string[]
   systemPrompt?: string
   mediaTools?: PiAgentSessionConfig['mediaTools']
+  employeeProfile?: PiAgentSessionConfig['employeeProfile']
   toolPolicy?: PiAgentSessionConfig['toolPolicy']
   disableTools?: boolean
 }
@@ -128,6 +129,7 @@ export class PiTaskWorker {
         additionalSkillPaths: this.context.additionalSkillPaths,
         systemPrompt: this.context.systemPrompt,
         mediaTools: this.context.mediaTools,
+        employeeProfile: this.context.employeeProfile,
         toolPolicy: this.context.toolPolicy,
         disableTools: this.context.disableTools,
         getAccessToken: () => this.tokenManager.getValidToken(),
@@ -175,6 +177,7 @@ export class PiTaskWorker {
       ? (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => this.sessionAdapter!.subscribe(listener)
       : (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => session.subscribe(listener)
     this.unsubscribe = subscribe(event => {
+      if (event.type === 'auto_retry_end' && (event.data as { success?: unknown } | null)?.success === true) this.retryCount = 0
       if (event.failure && !this.finalFailure) this.finalFailure = event.failure
       if (event.type === 'auto_retry_start' && ++this.retryCount > MAX_RUN_AUTO_RETRIES) {
         this.finalFailure = `本轮自动重试已达到 ${MAX_RUN_AUTO_RETRIES} 次上限，请检查网关错误后手动重试。`

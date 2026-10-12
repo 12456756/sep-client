@@ -92,6 +92,15 @@ describe('SEP gateway payload compatibility', () => {
     ])
   })
 
+  it('maps SDK completion limits to gateway max_tokens without losing the budget', () => {
+    const base = { model: 'deepseek', messages: [{ role: 'user', content: 'hello' }] }
+    assert.deepEqual(normalizeGatewayPayload({ ...base, max_completion_tokens: 4096 }), { ...base, max_tokens: 4096 })
+    assert.deepEqual(normalizeGatewayPayload({ ...base, max_tokens: 128, max_completion_tokens: 4096 }), { ...base, max_tokens: 128 })
+    for (const invalid of [0, -1, 1.5, '4096', NaN]) {
+      assert.deepEqual(normalizeGatewayPayload({ ...base, max_completion_tokens: invalid }), base)
+    }
+  })
+
   it('leaves ordinary requests unchanged', () => {
     const payload = { model: 'gpt-5.2', messages: [{ role: 'user', content: 'hello' }] }
     assert.deepEqual(normalizeGatewayPayload(payload), {
@@ -112,7 +121,39 @@ describe('SEP gateway payload compatibility', () => {
       model: 'gpt-5.2',
       messages: [{ role: 'assistant', content: 'hello' }],
       stream: true,
+      stream_options: { include_usage: true },
     })
+  })
+
+  it('maps the SDK output limit to the gateway field without duplicates', () => {
+    assert.deepEqual(normalizeGatewayPayload({
+      model: 'model-a', messages: [], max_completion_tokens: 16384,
+    }), { model: 'model-a', messages: [], max_tokens: 16384 })
+  })
+
+  it('preserves a valid gateway limit and falls back to the SDK limit otherwise', () => {
+    const base = { model: 'model-a', messages: [] }
+    assert.deepEqual(normalizeGatewayPayload({ ...base, max_tokens: 128, max_completion_tokens: 4096 }),
+      { ...base, max_tokens: 128 })
+    assert.deepEqual(normalizeGatewayPayload({ ...base, max_tokens: 0, max_completion_tokens: 16384 }),
+      { ...base, max_tokens: 16384 })
+  })
+
+  for (const includeUsage of [true, false]) {
+    it(`preserves valid usage option ${includeUsage} without unknown streaming fields`, () => {
+      assert.deepEqual(normalizeGatewayPayload({
+        model: 'model-a', messages: [], stream_options: { include_usage: includeUsage, unknown: true },
+      }), { model: 'model-a', messages: [], stream_options: { include_usage: includeUsage } })
+    })
+  }
+
+  it('does not forward invalid output limits or usage options', () => {
+    for (const limit of [0, -1, 1.5, '16384', null]) {
+      assert.deepEqual(normalizeGatewayPayload({
+        model: 'model-a', messages: [], max_completion_tokens: limit,
+        stream_options: { include_usage: 'true' },
+      }), { model: 'model-a', messages: [] })
+    }
   })
 })
 

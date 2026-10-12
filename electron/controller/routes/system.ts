@@ -1,14 +1,15 @@
 /**
  * electron/controller/routes/system.routes.ts — 2 条工具路由 + 1 个单向监听
  *
- * 这些系统通道都不进服务层：目录选择和主题同步要的是窗口句柄（UI 能力，不是用例），
- * 审批响应是执行层的控制信号，服务层插一层只是转发。
+ * 原生目录弹框与主题同步由控制层持有窗口句柄；默认工作目录由任务服务准备。
+ * 审批响应是执行层的控制信号。
  */
 import { dialog } from 'electron'
+import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { appError } from '../../errors/app-error'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from '../channels'
-import { listener, NO_INPUT, route } from '../router'
+import { listener, route } from '../router'
 
 /**
  * 审批响应。`requestId` 必填（C5）——缺了就不批，不做任何推断。
@@ -22,6 +23,7 @@ const approvalResponse = z.object({
 })
 
 const windowTheme = z.enum(['light', 'dark'])
+const directorySelection = z.string().trim().max(32768).refine(path => !path || isAbsolute(path)).optional()
 
 const WINDOW_THEME_COLORS = {
   light: { color: '#f7f8fc', symbolColor: '#5c6375', background: '#f7f8fc' },
@@ -39,16 +41,18 @@ export const systemRoutes = [
     window.setBackgroundColor(colors.background)
     return { success: true }
   }, { errorShape: 'ipc' }),
-  route(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, NO_INPUT, async ctx => {
+  route(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, directorySelection, async (ctx, input) => {
     const window = ctx.window()
     if (!window) {
       // 渲染进程本就跑在窗口里，走到这里说明窗口在调用途中被销毁了——
       // 不变式被破坏，按第 5.2 节记 error 级日志，而不是静默失败。
       throw appError('INTERNAL_ERROR', { details: { reason: 'main window unavailable' } })
     }
+    const defaultPath = await ctx.tasks.prepareDirectorySelection(input)
     const result = await dialog.showOpenDialog(window, {
       properties: ['openDirectory', 'createDirectory'],
       title: '选择工作目录',
+      defaultPath,
     })
     if (result.canceled || result.filePaths.length === 0) return { success: false, path: null }
     return { success: true, path: result.filePaths[0] }

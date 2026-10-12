@@ -31,7 +31,7 @@ import type {
   WorkTemplate,
 } from './types';
 import { upgradeDraftSteps, layoutSteps } from './work-graph';
-import { buildWorkItem, completedStepCount } from './work-mapping';
+import { buildWorkItem, completedStepCount, getArrangementDisplayEvents } from './work-mapping';
 import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
 import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
 import { mapEnterpriseOrganization, mapOrganizationEmployees } from './organization-mapping';
@@ -209,7 +209,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   runSavedFlow: (flowId: string) => void;
   setPermission: (employeeId: string, permissionId: OperationPermissionId, enabled: boolean) => void;
   setPermissionScope: (employeeId: string, permissionId: OperationPermissionId, scope: string) => void;
-  chooseFolder: () => Promise<string | null>;
+  chooseFolder: (currentPath?: string) => Promise<string | null>;
   organizationMembers: OrganizationCarbonEmployee[];
   organizationEmployees: SiliconEmployee[];
   organizationStatus: 'loading' | 'ready' | 'empty' | 'error';
@@ -340,7 +340,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         activities: runtimeActivities.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')) ?? [],
         activeEmployeeId: activeEmployeeByWork[task.id],
         plan: arrangement.plans[task.id],
-        arrangementEvents: arrangement.events[runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')],
+        arrangementEvents: getArrangementDisplayEvents(arrangement.events, task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? ''),
       });
     });
     return items.sort((left, right) => right.updatedAt - left.updatedAt);
@@ -790,9 +790,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     navigate({ name: 'arrange', mode: 'manual' });
   }, [savedFlows, myEmployees, navigate]);
 
-  const chooseFolder = useCallback(async () => {
+  const chooseFolder = useCallback(async (currentPath?: string) => {
     try {
-      const result = await window.electronAPI.selectDirectory();
+      const result = await window.electronAPI.selectDirectory(currentPath);
       return result.success ? result.path ?? null : null;
     } catch {
       return null;

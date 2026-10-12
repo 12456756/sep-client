@@ -137,6 +137,7 @@ export class ConversationExecutor {
           systemPrompt: employee.systemPrompt,
           mediaTools,
           toolPolicy,
+          employeeProfile: employee.employeeProfile,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,

@@ -148,6 +148,11 @@ export class TaskService {
     return this.deps.taskManager.getTaskStats()
   }
 
+  async prepareDirectorySelection(currentPath?: string): Promise<string> {
+    this.scope()
+    return this.deps.taskManager.prepareDirectorySelection(currentPath)
+  }
+
   async messages(taskId: string): Promise<ClientTaskMessage[]> {
     const task = await this.requireTask(taskId)
     const scope = this.scope()

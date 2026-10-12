@@ -1,5 +1,5 @@
 import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
-import { ScopePath, type TaskOwnerScope } from './scope-path'
+import { ScopePath, isSafeId, type TaskOwnerScope } from './scope-path'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
 
 /** 已确认编排的可恢复进度快照；文件读写细节留在本存储适配器内。 */
@@ -28,7 +28,14 @@ function parseCheckpoint(value: unknown, scope: TaskOwnerScope, taskId: string):
     !checkpoint.state || typeof checkpoint.state !== 'object' || typeof checkpoint.updatedAt !== 'number'
   ) return null
   const state = checkpoint.state as ArrangementExecutionState
-  if (!Array.isArray(state.nodes) || typeof state.status !== 'string') return null
+  if (!Array.isArray(state.nodes) || !['queued', 'running', 'waiting-user', 'interrupted', 'completed', 'stopped', 'failed'].includes(state.status) ||
+      !Array.isArray(state.failureNodeIds) || !state.failureNodeIds.every(id => typeof id === 'string')) return null
+  if (state.nodes.some(node => !node || typeof node.nodeId !== 'string' ||
+      !['pending', 'ready', 'running', 'completed', 'failed', 'blocked', 'interrupted', 'stopped'].includes(node.status) ||
+      !Number.isInteger(node.attempt) || node.attempt < 0 ||
+      (node.error !== null && typeof node.error !== 'string') ||
+      (node.output !== null && typeof node.output !== 'string') ||
+      (node.sessionRunId !== undefined && (typeof node.sessionRunId !== 'string' || !isSafeId(node.sessionRunId))))) return null
   return {
     version: 1,
     taskId,

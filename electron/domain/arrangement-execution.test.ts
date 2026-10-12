@@ -48,6 +48,52 @@ describe('ArrangementExecutionState', () => {
     assert.equal(stopped.nodes.find(item => item.nodeId === 'independent')?.status, 'stopped')
   })
 
+  it('retries all failed nodes without changing completed outputs or attempts', () => {
+    const plan = [node('done'), node('a'), node('b'), node('join', ['a', 'b'])]
+    let state = createArrangementExecutionState(plan)
+    for (const id of ['done', 'a', 'b']) state = markArrangementNodeRunning(state, id)
+    state = markArrangementNodeCompleted(state, plan, 'done', 'saved output')
+    state = markArrangementNodeFailed(state, plan, 'a', '429')
+    state = markArrangementNodeFailed(state, plan, 'b', '429')
+    const original = structuredClone(state)
+    const retried = retryArrangementNode(state, plan)
+    assert.equal(retried.status, 'running')
+    assert.deepEqual(retried.failureNodeIds, [])
+    assert.deepEqual(retried.nodes.map(item => item.status), ['completed', 'ready', 'ready', 'pending'])
+    assert.deepEqual(retried.nodes[0], state.nodes[0])
+    assert.deepEqual(retried.nodes.map(item => item.attempt), [1, 1, 1, 0])
+    assert.deepEqual(state, original)
+  })
+
+  it('keeps shared dependents blocked and waits for remaining failures after a targeted retry', () => {
+    const plan = [node('a'), node('b'), node('join', ['a', 'b'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeFailed(state, plan, 'a', 'A failed')
+    state = markArrangementNodeFailed(state, plan, 'b', 'B failed')
+    state = retryArrangementNode(state, plan, 'a')
+    assert.equal(state.nodes.find(item => item.nodeId === 'join')?.status, 'blocked')
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeCompleted(state, plan, 'a', 'A recovered')
+    assert.equal(state.status, 'waiting-user')
+    assert.deepEqual(state.failureNodeIds, ['b'])
+    state = retryArrangementNode(state, plan, 'b')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'b', 'B recovered')
+    assert.equal(state.nodes.find(item => item.nodeId === 'join')?.status, 'ready')
+  })
+
+  it('does not lose waiting-user status when another node in the same batch succeeds', () => {
+    const plan = [node('a'), node('b')]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeFailed(state, plan, 'a', '429')
+    state = markArrangementNodeCompleted(state, plan, 'b', 'B complete')
+    assert.equal(state.status, 'waiting-user')
+  })
+
   it('marks running nodes interrupted and resumes only those nodes', () => {
     const plan = [node('a'), node('b')]
     let state = createArrangementExecutionState(plan)

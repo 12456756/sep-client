@@ -1,4 +1,4 @@
-/** One retry budget per user turn, including retries separated by successful tool calls. */
+/** Maximum consecutive automatic retries; a successful SDK round resets the budget. */
 export const MAX_RUN_AUTO_RETRIES = 3
 
 export interface PiAgentEvent {
@@ -40,6 +40,7 @@ export interface PiAgentSessionConfig {
   additionalSkillPaths?: string[]
   systemPrompt?: string
   mediaTools?: import('../../domain/media-tools').MediaHostTools
+  employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   mcpServers?: readonly McpServerConfig[]
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>

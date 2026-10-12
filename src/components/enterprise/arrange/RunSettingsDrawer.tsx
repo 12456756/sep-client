@@ -16,7 +16,7 @@ interface SharedProps {
 interface DirectoryProps {
   settings: RunSettings;
   onChange: (patch: Partial<RunSettings>) => void;
-  onChooseFolder: () => Promise<string | null>;
+  onChooseFolder: (currentPath?: string) => Promise<string | null>;
 }
 
 interface Props extends SharedProps, DirectoryProps {
@@ -47,7 +47,7 @@ export function RunSettingsDirectory({ settings, onChange, onChooseFolder }: Dir
         type="button"
         className="ent-rs-directory"
         title={settings.workDir || '选择本次工作的目录'}
-        onClick={() => void onChooseFolder().then(path => { if (path) onChange({ workDir: path }); })}
+        onClick={() => void onChooseFolder(settings.workDir).then(path => { if (path) onChange({ workDir: path }); })}
       >
         <FolderOpen size={16} aria-hidden />
         <span>{directoryLabel(settings.workDir)}</span>

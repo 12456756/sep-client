@@ -1,6 +1,7 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import * as api from './platform-api'
+import { config } from '../config'
 
 const originalFetch = globalThis.fetch
 const item = { id: 'n1', type: 'INFO', title: '系统通知', message: '消息', read: false, category: 'SYSTEM', severity: 'INFO', relatedType: null, relatedId: null, actionUrl: null, createdAt: '2026-10-08T08:30:00.000Z' }
@@ -10,6 +11,8 @@ describe('notification REST v1', () => {
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input))
       assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access-only')
+      assert.equal(new Headers(init?.headers).get('Origin'), config.SEP_WEB_ORIGIN)
+      assert.ok(init?.signal instanceof AbortSignal)
       if (url.pathname.endsWith('/unread-count')) {
         assert.equal(url.searchParams.get('category'), 'APPROVAL')
         return Response.json({ count: 3 })
@@ -28,6 +31,10 @@ describe('notification REST v1', () => {
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input))
       calls.push({ path: url.pathname + url.search, method: init?.method })
+      const headers = new Headers(init?.headers)
+      assert.equal(headers.get('Authorization'), 'Bearer access')
+      assert.equal(headers.get('Origin'), config.SEP_WEB_ORIGIN)
+      assert.ok(init?.signal instanceof AbortSignal)
       return new Response(null, { status: 204 })
     }
     await api.markNotificationRead('n/1', 'access')

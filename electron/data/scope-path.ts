@@ -221,13 +221,19 @@ export class ScopePath {
    */
   defaultWorkspaceDir(scope: TaskOwnerScope, taskId: string): string {
     assertSafeId(taskId, 'taskId')
+    const ownerRoot = this.defaultWorkspaceRoot(scope)
+    const path = join(ownerRoot, taskId)
+    assertContained(ownerRoot, path)
+    return path
+  }
+
+  defaultWorkspaceRoot(scope: TaskOwnerScope): string {
     const ownerRoot = join(
       this.workspaceRoot,
       encodeTaskScopeSegment(scope.enterpriseId, 'enterpriseId'),
       encodeTaskScopeSegment(scope.memberId, 'memberId'),
     )
-    const path = join(ownerRoot, taskId)
-    assertContained(ownerRoot, path)
-    return path
+    assertContained(this.workspaceRoot, ownerRoot)
+    return ownerRoot
   }
 }

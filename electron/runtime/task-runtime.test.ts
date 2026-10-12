@@ -334,12 +334,16 @@ describe('conversation task lifecycle', () => {
       permissions: effectivePermissionPolicy({ preset: 'workspace-edit', approvalMode: 'auto-approve' }),
     }
     const contexts: PiTaskWorkerOptions['context'][] = []
+    const employeeProfile = {
+      name: 'Frontend employee', position: 'Frontend Developer',
+      functionalCategory: 'Engineering', description: 'Build web interfaces',
+    }
     const runtime = new TaskRuntime({
       taskManager: manager, taskRunStore: new TaskRunStore(userData),
       workPlanStore: { get: async () => plan, save: async () => {} },
       getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
       resolveEmployee: subscriptionId => ({ subscriptionId, modelId: 'default', gatewayUrl: 'http://gateway' }),
-      authorizeEmployee: async (subscriptionId, modelId) => ({ subscriptionId, modelId: modelId ?? 'wrong-default', gatewayUrl: 'http://gateway' }),
+      authorizeEmployee: async (subscriptionId, modelId) => ({ subscriptionId, modelId: modelId ?? 'wrong-default', gatewayUrl: 'http://gateway', employeeProfile }),
       createWorker: options => ({
         async run() {
           contexts.push(options.context)
@@ -357,6 +361,7 @@ describe('conversation task lifecycle', () => {
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal(contexts.length, 2)
     for (const context of contexts) {
+      assert.deepEqual(context.employeeProfile, employeeProfile)
       assert.equal(context.modelId, 'selected')
       assert.equal(context.toolPolicy?.preset, 'workspace-edit')
       assert.equal(context.toolPolicy?.approvalMode, 'auto-approve')
