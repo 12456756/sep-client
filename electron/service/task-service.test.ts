@@ -5,9 +5,11 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskManager } from '../runtime/task-manager'
 import { ScopePath, type TaskOwnerScope } from '../data/scope-path'
+import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { TaskService, type TaskServiceDependencies } from './task-service'
 
 const owner: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+const workspaceNames = { enterpriseName: 'Acme Studio', memberName: 'Alice' }
 
 describe('directory selection starting path', () => {
   const directories: string[] = []
@@ -18,7 +20,7 @@ describe('directory selection starting path', () => {
     directories.push(userDataDir)
     const manager = new TaskManager(userDataDir)
     await manager.initialize()
-    await manager.setCurrentUser(owner.memberId, owner.enterpriseId)
+    await manager.setCurrentUser(owner.memberId, owner.enterpriseId, workspaceNames)
     const service = new TaskService({
       scope: { currentScope: () => manager.getCurrentUserScope() }, taskManager: manager,
     } as ConstructorParameters<typeof TaskService>[0])
@@ -28,7 +30,8 @@ describe('directory selection starting path', () => {
   it('creates the default parent without creating or changing a task', async () => {
     const { userDataDir, manager, service } = await harness()
     const path = await service.prepareDirectorySelection()
-    const expected = new ScopePath(userDataDir).defaultWorkspaceRoot(owner)
+    const expected = new ScopePath(userDataDir).defaultWorkspaceRoot(owner, workspaceNames)
+    assert.equal(path, join(userDataDir, 'task-workspaces', 'v1', 'Acme Studio', 'Alice'))
     assert.equal(path, expected)
     assert.ok((await stat(path)).isDirectory())
     assert.deepEqual(await manager.getAllTasks(), [])
@@ -47,7 +50,7 @@ describe('directory selection starting path', () => {
     const { userDataDir, service } = await harness()
     const file = join(userDataDir, 'file.txt')
     await writeFile(file, 'fixture')
-    const expected = new ScopePath(userDataDir).defaultWorkspaceRoot(owner)
+    const expected = new ScopePath(userDataDir).defaultWorkspaceRoot(owner, workspaceNames)
     for (const path of ['', '   ', join(userDataDir, 'missing'), file]) {
       assert.equal(await service.prepareDirectorySelection(path), expected)
     }
@@ -55,9 +58,54 @@ describe('directory selection starting path', () => {
 
   it('uses the currently authenticated owner workspace', async () => {
     const { userDataDir, manager, service } = await harness()
-    await manager.setCurrentUser('member-b', 'enterprise-b')
-    assert.equal(await service.prepareDirectorySelection(), new ScopePath(userDataDir).defaultWorkspaceRoot({ memberId: 'member-b', enterpriseId: 'enterprise-b' }))
+    const names = { enterpriseName: 'Other Company', memberName: 'Bob' }
+    await manager.setCurrentUser('member-b', 'enterprise-b', names)
+    assert.equal(await service.prepareDirectorySelection(), new ScopePath(userDataDir).defaultWorkspaceRoot({ memberId: 'member-b', enterpriseId: 'enterprise-b' }, names))
   })
+
+  it('keeps workspace names during persistence recovery and task reload', async () => {
+    const { userDataDir, manager, service } = await harness()
+    const path = await service.prepareDirectorySelection()
+    await manager.recoverPersistence()
+    const task = await manager.createTask('conversation', 'goal')
+    assert.equal(task.workDir, join(path, task.id))
+    const restored = new TaskManager(userDataDir)
+    await restored.setCurrentUser(owner.memberId, owner.enterpriseId, workspaceNames)
+    assert.equal((await restored.getTask(task.id))?.workDir, task.workDir)
+    assert.equal(await restored.prepareDirectorySelection(), path)
+    assert.deepEqual(restored.getCurrentUserScope(), owner)
+  })
+
+  it('leaves an explicitly selected task workspace unchanged', async () => {
+    const { userDataDir, manager } = await harness()
+    const chosen = join(userDataDir, 'chosen')
+    const task = await manager.createTask('arrangement', 'goal', chosen)
+    assert.equal(task.workDir, chosen)
+  })
+
+  for (const operation of ['createTask', 'prepareDirectorySelection'] as const) {
+    it(`rejects ${operation} if the owner changes during directory resolution`, async t => {
+      const { userDataDir, manager } = await harness()
+      const entered = deferred()
+      const resume = deferred()
+      t.mock.method(WorkspaceDirectoryStore.prototype, 'resolve', async () => {
+        entered.resolve()
+        await resume.promise
+        return workspaceNames
+      })
+      const pending = operation === 'createTask'
+        ? manager.createTask('old owner task', 'goal')
+        : manager.prepareDirectorySelection()
+      const rejected = assert.rejects(pending, /scope/i)
+      await entered.promise
+      await manager.setCurrentUser('member-b', 'enterprise-b', { enterpriseName: 'Other', memberName: 'Bob' })
+      resume.resolve()
+      await rejected
+      assert.deepEqual(await manager.getAllTasks(), [])
+      const path = new ScopePath(userDataDir).defaultWorkspaceRoot(owner, workspaceNames)
+      assert.equal(await stat(path).then(() => true, () => false), false)
+    })
+  }
 
   it('rejects a cleared session before using a supplied directory', async () => {
     const { userDataDir, service, clearScope } = await harness()
