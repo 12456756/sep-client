@@ -1,4 +1,4 @@
-/** One retry budget per user turn, including retries separated by successful tool calls. */
+/** Maximum consecutive automatic retries; a successful SDK round resets the budget. */
 export const MAX_RUN_AUTO_RETRIES = 3
 
 export interface PiAgentEvent {

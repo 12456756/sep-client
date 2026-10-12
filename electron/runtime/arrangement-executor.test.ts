@@ -60,7 +60,7 @@ class MemoryCheckpointStore implements ArrangementCheckpointStorePort {
 
 describe('TaskRuntime arrangement integration', () => {
   const directories: string[] = []
-  after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })
+  after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }))) })
 
   it('executes a saved arrangement plan with node model and persists parent arrangement events', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-integration-'))
@@ -276,8 +276,9 @@ describe('TaskRuntime arrangement controls', () => {
       assert.ok(Date.parse(output.participation!.startedAt!) <= Date.parse(output.participation!.completedAt!))
       assert.equal(output.participation?.executionId, nodeInputs.find(input => input.participation?.executionId === output.participation?.executionId)?.participation?.executionId)
     }
-    const approvals = states.filter(state => state.event.type.startsWith('approval_'))
+    const approvals = states.filter(state => state.event.type.startsWith('approval_') && state.participation)
     assert.equal(approvals.length, 6)
+    assert.equal(states.filter(state => state.event.type.startsWith('approval_') && !state.participation).length, 6)
     assert.ok(approvals.every(state => state.participation && queued.some(input => input.runId === state.event.runId)))
     assert.deepEqual(approvals.map(state => state.participation?.status), ['WAITING_APPROVAL', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING'])
     const nodeB = states.find(state => state.event.type === 'arrangement_node_started' && state.participation?.nodeId === 'node-b')!
@@ -367,6 +368,39 @@ describe('TaskRuntime arrangement controls', () => {
     })
   }
 
+  it('passes only the final successful answer to the dependent node after a streamed retry', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-final-output-'))
+    directories.push(root)
+    const arrangement = twoNodePlan('task')
+    const prompts: string[] = []
+    const executor = new ArrangementExecutor({
+      scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
+      workspaceRoot: root, arrangementSubscriptionId: 'employee-a',
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+      async onEvent() {}, async authorizeEmployee() { return employee },
+      createWorker: options => ({ async run(prompt) {
+        prompts.push(prompt)
+        const emit = (type: TaskExecutionEvent['type'], data: unknown) => options.onEvent({ taskId: 'task',
+          runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 0, occurredAt: Date.now(), type, data })
+        if (options.context.modelId === 'node-model-a') {
+          await emit('text_delta', { text: 'failed fragment' })
+          await emit('turn_end', { message: { role: 'assistant', stopReason: 'error', content: [{ type: 'text', text: 'failed fragment' }] } })
+          await emit('turn_start', {})
+          await emit('text_delta', { text: 'checking files' })
+          await emit('turn_end', { message: { role: 'assistant', stopReason: 'toolUse', content: [{ type: 'text', text: 'checking files' }] } })
+          await emit('turn_start', {})
+          await emit('text_delta', { text: 'final answer' })
+          await emit('turn_end', { message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'final answer' }] } })
+        }
+      }, async abort() {}, async dispose() {} }),
+    })
+    const result = await executor.execute(arrangement, 'task', 'parent')
+    assert.equal(result.status, 'completed')
+    assert.equal(result.state.nodes[0]?.output, 'final answer')
+    assert.match(prompts[1], /final answer/)
+    assert.doesNotMatch(prompts[1], /failed fragment|checking files/)
+  })
+
   it('retries only the failed node and then schedules its dependents', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-retry-'))
     directories.push(userDataDir)
@@ -446,7 +480,7 @@ describe('TaskRuntime arrangement controls', () => {
     assert.deepEqual(checkpoints.value, failedCheckpoint)
     await runtime.retryTask(task.id)
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
-    assert.deepEqual([...attempts], [['node-model-a', 2], ['node-model-b', 2], ['done-model', 1]])
+    assert.deepEqual([...attempts].sort(), [['done-model', 1], ['node-model-a', 2], ['node-model-b', 2]])
     assert.equal(checkpoints.value?.state.nodes.find(item => item.nodeId === 'done')?.output, 'done-model')
   })
 
@@ -480,10 +514,10 @@ describe('TaskRuntime arrangement controls', () => {
     assert.equal(checkpoints.value?.state.nodes.find(node => node.nodeId === 'node-a')?.status, 'completed')
     assert.equal(checkpoints.value?.state.nodes.find(node => node.nodeId === 'node-b')?.status, 'failed')
     assert.deepEqual(checkpoints.value?.state.failureNodeIds, ['node-b'])
-    assert.deepEqual([...attempts], [['node-model-a', 2], ['node-model-b', 1]])
+    assert.deepEqual([...attempts].sort(), [['node-model-a', 2], ['node-model-b', 1]])
     await runtime.retryTask(task.id)
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
-    assert.deepEqual([...attempts], [['node-model-a', 2], ['node-model-b', 2]])
+    assert.deepEqual([...attempts].sort(), [['node-model-a', 2], ['node-model-b', 2]])
   })
 
   it('retries a single failed node by task ID without rerunning its completed dependency', async () => {
@@ -541,7 +575,7 @@ describe('TaskRuntime arrangement controls', () => {
     }))
 
     await runtime.executeTask(task.id)
-    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.RUNNING)
+    await waitFor(async () => release !== null && (await manager.getTask(task.id))?.status === TaskStatus.RUNNING)
     await runtime.stopAll()
     assert.equal((await manager.getTask(task.id))?.status, TaskStatus.INTERRUPTED)
     assert.equal(checkpoints.value?.state.status, 'interrupted')

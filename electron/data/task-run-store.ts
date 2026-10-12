@@ -43,6 +43,8 @@ export interface TaskRunRecord {
   outcome: TaskRunOutcome
   error: string | null
   prompt?: string
+  arrangementNodeId?: string
+  resumedFromRunId?: string
 }
 
 export interface CreateTaskRunInput {
@@ -53,6 +55,8 @@ export interface CreateTaskRunInput {
   runtimeKey: string
   workspaceDir: string
   prompt: string
+  arrangementNodeId?: string
+  resumedFromRunId?: string
 }
 
 export interface TaskRunStorePort {
@@ -111,6 +115,8 @@ export class TaskRunStore implements TaskRunStorePort {
       outcome: 'running',
       error: null,
       prompt: input.prompt,
+      ...(input.arrangementNodeId ? { arrangementNodeId: input.arrangementNodeId } : {}),
+      ...(input.resumedFromRunId ? { resumedFromRunId: input.resumedFromRunId } : {}),
     }
     await Promise.all([
       mkdir(join(paths.taskDir, 'runs'), { recursive: true }),

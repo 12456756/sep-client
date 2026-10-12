@@ -84,6 +84,15 @@ describe('SEP gateway payload compatibility', () => {
     ])
   })
 
+  it('maps SDK completion limits to gateway max_tokens without losing the budget', () => {
+    const base = { model: 'deepseek', messages: [{ role: 'user', content: 'hello' }] }
+    assert.deepEqual(normalizeGatewayPayload({ ...base, max_completion_tokens: 4096 }), { ...base, max_tokens: 4096 })
+    assert.deepEqual(normalizeGatewayPayload({ ...base, max_tokens: 128, max_completion_tokens: 4096 }), { ...base, max_tokens: 128 })
+    for (const invalid of [0, -1, 1.5, '4096', NaN]) {
+      assert.deepEqual(normalizeGatewayPayload({ ...base, max_completion_tokens: invalid }), base)
+    }
+  })
+
   it('leaves ordinary requests unchanged', () => {
     const payload = { model: 'gpt-5.2', messages: [{ role: 'user', content: 'hello' }] }
     assert.deepEqual(normalizeGatewayPayload(payload), {

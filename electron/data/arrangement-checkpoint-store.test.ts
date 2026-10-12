@@ -14,6 +14,15 @@ afterEach(async () => {
 })
 
 describe('ArrangementCheckpointStore', () => {
+  it('rejects an unsafe persisted node session pointer', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-checkpoint-'))
+    roots.push(root)
+    const store = new ArrangementCheckpointStore(root)
+    await store.save(scope, { version: 1, taskId: 'task-a', owner: scope, planHash: 'plan-a', activeRunId: null,
+      state: { ...createArrangementExecutionState([]), nodes: [{ nodeId: 'node', status: 'failed', attempt: 1, error: 'failed', output: null, sessionRunId: '../foreign' }] }, updatedAt: 1 })
+    assert.equal(await store.get(scope, 'task-a'), null)
+  })
+
   it('persists checkpoint state under the owner scope', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-checkpoint-'))
     roots.push(root)

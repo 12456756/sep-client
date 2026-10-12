@@ -301,7 +301,22 @@ export class TaskRuntime {
     if (current?.status === TaskStatus.PENDING) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PAUSED, reason)
   }
 
+  private readonly arrangementRetries = new Set<string>()
+
   private async retryArrangement(
+    task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
+    plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
+    nodeId?: string,
+  ): Promise<void> {
+    if (this.arrangementRetries.has(task.id) || task.activeRunId) {
+      throw new AppError('INVALID_STATE', { message: '这项编排正在执行或提交重试，请等待当前操作完成。' })
+    }
+    this.arrangementRetries.add(task.id)
+    try { await this.prepareArrangementRetry(task, plan, nodeId) }
+    finally { this.arrangementRetries.delete(task.id) }
+  }
+
+  private async prepareArrangementRetry(
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
     nodeId?: string,
@@ -320,9 +335,21 @@ export class TaskRuntime {
       if (nodeId || checkpoint.state.status !== 'interrupted') throw new AppError('INVALID_STATE', { message: '当前编排状态不支持重试。' })
       nextState = resumeArrangement(checkpoint.state)
     }
-    await this.saveArrangementCheckpoint(scope, task.id, checkpoint.planHash, null, nextState)
-    if (task.status !== TaskStatus.PENDING) await this.taskManager.updateTaskStatus(task.id, TaskStatus.PENDING)
-    await this.executeTask(task.id, { conversation: false })
+    // Authorization must not consume the failed checkpoint before admission.
+    const primary = plan.nodes[0]
+    if (!primary || !await this.authorizeEmployee(primary.subscriptionId)) throw new Error('The selected employee is no longer available.')
+    try {
+      await this.saveArrangementCheckpoint(scope, task.id, checkpoint.planHash, null, nextState)
+      if (task.status !== TaskStatus.PENDING) await this.taskManager.updateTaskStatus(task.id, TaskStatus.PENDING)
+      await this.executeTask(task.id, { conversation: false })
+    } catch (error) {
+      const current = await this.taskManager.getTask(task.id)
+      if (current && !current.activeRunId) {
+        await this.arrangementCheckpointStore.save(scope, checkpoint)
+        await this.taskManager.updateTaskStatus(task.id, task.status, task.error ?? undefined)
+      }
+      throw error
+    }
   }
 
   private async saveArrangementCheckpoint(

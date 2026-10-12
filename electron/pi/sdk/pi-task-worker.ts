@@ -173,6 +173,7 @@ export class PiTaskWorker {
       ? (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => this.sessionAdapter!.subscribe(listener)
       : (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => session.subscribe(listener)
     this.unsubscribe = subscribe(event => {
+      if (event.type === 'auto_retry_end' && (event.data as { success?: unknown } | null)?.success === true) this.retryCount = 0
       if (event.failure && !this.finalFailure) this.finalFailure = event.failure
       if (event.type === 'auto_retry_start' && ++this.retryCount > MAX_RUN_AUTO_RETRIES) {
         this.finalFailure = `本轮自动重试已达到 ${MAX_RUN_AUTO_RETRIES} 次上限，请检查网关错误后手动重试。`

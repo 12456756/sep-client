@@ -332,7 +332,7 @@ for (const stage of ['token', 'session', 'persistence'] as const) {
   })
 }
 
-it('bounds automatic retries across successful SDK tool turns, not just consecutive failures', async () => {
+it('resets consecutive retry budget after a successful SDK round', async () => {
   const runtime = new FakeRuntime()
   runtime.session.prompt = async () => {
     for (let index = 0; index < 4; index++) {
@@ -346,10 +346,10 @@ it('bounds automatic retries across successful SDK tool turns, not just consecut
     onAuthenticationRequired: () => {}, onApprovalRequest: async () => true,
     onEvent: event => { events.push(event.type) }, runtime, createTokenManager: () => new FakeTokenManager(),
   })
-  await assert.rejects(worker.run('hello'), /\u81ea\u52a8\u91cd\u8bd5.*\u4e0a\u9650/)
+  await worker.run('hello')
+  assert.equal(runtime.session.aborted, false)
+  assert.equal(events.includes('retry_budget_exhausted'), false)
   await worker.dispose()
-  assert.equal(runtime.session.aborted, true)
-  assert.ok(events.includes('retry_budget_exhausted'))
 })
 
 
@@ -683,3 +683,133 @@ for (const progress of ['arguments', 'results', 'valid-turn', 'ordinary-error', 
     } finally { await worker.dispose() }
   })
 }
+
+it('resumes the real SDK session with previous goal and successful tool results across two interruptions', { timeout: 25000 }, async () => {
+  const requests: Array<{ messages: Array<Record<string, unknown>> }> = []
+  const server = createServer((request, response) => {
+    let body = ''
+    request.on('data', chunk => { body += String(chunk) })
+    request.on('end', () => {
+      requests.push(JSON.parse(body))
+      const index = requests.length
+      if (index === 2 || index === 4) {
+        response.writeHead(400, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ error: { message: 'test interruption' } }))
+        return
+      }
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      if (index === 1 || index === 3) {
+        writeChunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'saved-read-'+index, type: 'function',
+          function: { name: 'read', arguments: JSON.stringify({ path: index === 1 ? 'first.txt' : 'second.txt' }) } }] })
+        writeChunk(response, {}, 'tool_calls')
+      } else {
+        writeChunk(response, { role: 'assistant', content: 'Done with the saved results.' })
+        writeChunk(response, {}, 'stop')
+      }
+      response.end('data: [DONE]\n\n')
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+  const root = await makeDirectory()
+  await writeFile(join(root, 'first.txt'), 'first retained result')
+  await writeFile(join(root, 'second.txt'), 'second retained result')
+  let sessionFile: string | undefined
+  let logicalSession: string | undefined
+  const workers: PiTaskWorker[] = []
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const worker = new PiTaskWorker({
+        context: { ...context(root), runId: 'attempt-'+attempt, gatewayUrl: 'http://127.0.0.1:'+address.port+'/v1',
+          sessionDir: join(root, 'sessions', 'attempt-'+attempt), agentDir: join(root, 'agents', 'attempt-'+attempt),
+          ...(sessionFile ? { resumeSessionFile: sessionFile } : {}),
+        },
+        runtime: new PiCodingAgentAdapter(), createTokenManager: () => new FakeTokenManager(),
+        getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onApprovalRequest: async () => true, onEvent() {},
+        onSessionCreated(session) {
+          if (attempt) assert.equal(session.sessionId, logicalSession)
+          logicalSession = session.sessionId
+          sessionFile = session.sessionFile ?? undefined
+        },
+      })
+      workers.push(worker)
+      const promise = worker.run(attempt ? 'Continue from saved progress.' : 'Original unique task goal.')
+      if (attempt < 2) await assert.rejects(promise, /test interruption/)
+      else await promise
+      await worker.dispose()
+    }
+    assert.equal(requests.length, 5)
+    for (const index of [2, 4]) {
+      const messages = requests[index]!.messages
+      assert.equal(messages.filter(message => message.role === 'user' && String(message.content).includes('Original unique task goal.')).length, 1)
+      assert.equal(messages.filter(message => message.role === 'tool' && message.tool_call_id === 'saved-read-1').length, 1)
+      assert.match(String(messages.find(message => message.tool_call_id === 'saved-read-1')?.content), /first retained result/)
+    }
+    const finalMessages = requests[4]!.messages
+    assert.equal(finalMessages.filter(message => message.tool_call_id === 'saved-read-3').length, 1)
+    assert.match(String(finalMessages.find(message => message.tool_call_id === 'saved-read-3')?.content), /second retained result/)
+  } finally {
+    await Promise.all(workers.map(worker => worker.dispose()))
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
+
+it('surfaces missing finish_reason and manually resumes the saved tool result', { timeout: 30000 }, async () => {
+  const requests: Array<{ messages: Array<Record<string, unknown>> }> = []
+  const server = createServer((request, response) => {
+    let body = ''
+    request.on('data', chunk => { body += String(chunk) })
+    request.on('end', () => {
+      requests.push(JSON.parse(body))
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      if (requests.length === 1) {
+        writeChunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'saved-before-stream-error', type: 'function',
+          function: { name: 'read', arguments: JSON.stringify({ path: 'retained.txt' }) } }] })
+        writeChunk(response, {}, 'tool_calls')
+      } else if (requests.length <= 5) {
+        writeChunk(response, { role: 'assistant', content: 'incomplete streamed answer' })
+        // DONE without a terminal finish_reason reproduces the observed failure.
+      } else {
+        writeChunk(response, { role: 'assistant', content: 'recovered answer' })
+        writeChunk(response, {}, 'stop')
+      }
+      response.end('data: [DONE]\n\n')
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+  const root = await makeDirectory()
+  await writeFile(join(root, 'retained.txt'), 'retained result after stream failure')
+  let sessionFile: string | undefined
+  const workers: PiTaskWorker[] = []
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const worker = new PiTaskWorker({
+        context: { ...context(root), runId: 'stream-attempt-'+attempt, gatewayUrl: 'http://127.0.0.1:'+address.port+'/v1',
+          sessionDir: join(root, 'sessions', 'stream-attempt-'+attempt), agentDir: join(root, 'agents', 'stream-attempt-'+attempt),
+          ...(sessionFile ? { resumeSessionFile: sessionFile } : {}),
+        }, runtime: new PiCodingAgentAdapter(), createTokenManager: () => new FakeTokenManager(),
+        getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onApprovalRequest: async () => true, onEvent() {},
+        onSessionCreated(session) { sessionFile = session.sessionFile ?? undefined },
+      })
+      workers.push(worker)
+      const promise = worker.run(attempt ? 'Continue saved progress.' : 'Unique original stream goal.')
+      if (!attempt) await assert.rejects(promise, /Stream ended without finish_reason/)
+      else await promise
+      await worker.dispose()
+    }
+    assert.equal(requests.length, 6)
+    const messages = requests[5]!.messages
+    assert.equal(messages.filter(message => message.role === 'user' && String(message.content).includes('Unique original stream goal.')).length, 1)
+    assert.equal(messages.filter(message => message.tool_call_id === 'saved-before-stream-error').length, 1)
+    assert.match(String(messages.find(message => message.tool_call_id === 'saved-before-stream-error')?.content), /retained result after stream failure/)
+    assert.equal(messages.some(message => message.role === 'assistant' && String(message.content).includes('incomplete streamed answer')), false)
+  } finally {
+    await Promise.all(workers.map(worker => worker.dispose()))
+    server.closeAllConnections()
+    await new Promise<void>(resolve => server.close(() => resolve()))
+  }
+})
