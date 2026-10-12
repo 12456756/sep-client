@@ -12,6 +12,7 @@ const SCOPE = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const ENT = encodeTaskScopeSegment(SCOPE.enterpriseId, 'enterpriseId')
 const MEM = encodeTaskScopeSegment(SCOPE.memberId, 'memberId')
 const ROOT = '/data'
+const NAMES = { enterpriseName: 'Acme Studio', memberName: 'Alice' }
 
 /** 断言用正斜杠比较，与平台分隔符无关。 */
 function normalize(path: string): string {
@@ -51,15 +52,23 @@ describe('ScopePath 的目录布局（第 11 章硬约束）', () => {
   it('keeps the default workspace out of the task-data tree', () => {
     // 工作区是 pi 真正干活的地方，可能很大，与数据分开放。
     assert.equal(
-      normalize(paths.defaultWorkspaceDir(SCOPE, 'task-1')),
-      `/data/task-workspaces/v1/${ENT}/${MEM}/task-1`,
+      normalize(paths.defaultWorkspaceDir(SCOPE, 'task-1', NAMES)),
+      '/data/task-workspaces/v1/Acme Studio/Alice/task-1',
     )
   })
 
   it('exposes the scoped parent of task workspaces for directory selection', () => {
-    assert.equal(normalize(paths.defaultWorkspaceRoot(SCOPE)), `/data/task-workspaces/v1/${ENT}/${MEM}`)
-    assert.equal(normalize(paths.defaultWorkspaceDir(SCOPE, 'task-1')), normalize(paths.defaultWorkspaceRoot(SCOPE)) + '/task-1')
+    assert.equal(normalize(paths.defaultWorkspaceRoot(SCOPE, NAMES)), '/data/task-workspaces/v1/Acme Studio/Alice')
+    assert.equal(normalize(paths.defaultWorkspaceDir(SCOPE, 'task-1', NAMES)), normalize(paths.defaultWorkspaceRoot(SCOPE, NAMES)) + '/task-1')
     assert.throws(() => paths.defaultWorkspaceRoot({ memberId: '../escape', enterpriseId: 'e' }), TaskScopeError)
+  })
+
+  it('sanitizes display names without changing identity or internal data paths', () => {
+    const names = { enterpriseName: ' ../Acme:Studio. ', memberName: 'CON.txt' }
+    assert.equal(normalize(paths.defaultWorkspaceRoot(SCOPE, names)), '/data/task-workspaces/v1/_Acme_Studio/_CON.txt')
+    assert.equal(normalize(paths.ownerRoot(SCOPE)), owner)
+    assert.equal(paths.scopeKey(SCOPE), `${ENT}:${MEM}`)
+    assert.equal(normalize(paths.defaultWorkspaceRoot(SCOPE, { enterpriseName: '...', memberName: '' })), '/data/task-workspaces/v1/Enterprise/User')
   })
 
   it('derives arrangement drafts inside the authenticated owner scope', () => {
