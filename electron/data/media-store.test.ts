@@ -1,7 +1,9 @@
-import { afterEach, describe, it } from 'node:test'
+import { afterEach, describe, it, type TestContext } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { promises as fs, type Mode, type PathLike } from 'node:fs'
 import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { LocalMediaJob, MediaOutput, MediaRunSnapshot } from '../domain/media'
@@ -62,6 +64,207 @@ async function* stream(bytes: Uint8Array = png): AsyncIterable<Uint8Array> {
 }
 
 function signal(): AbortSignal { return new AbortController().signal }
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+function pauseRename(context: TestContext, destination: string): { entered: Promise<void>; release: () => void; restore: () => void } {
+  const entered = deferred()
+  const released = deferred()
+  const original = fs.rename
+  const mocked = context.mock.method(fs, 'rename', async (source: PathLike, target: PathLike) => {
+    if (target === destination) {
+      entered.resolve()
+      await released.promise
+    }
+    return original(source, target)
+  })
+  syncBuiltinESMExports()
+  return { entered: entered.promise, release: released.resolve, restore: () => { mocked.mock.restore(); syncBuiltinESMExports() } }
+}
+
+async function assertPublicationPending(reads: Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    // The rename barrier fixes the interleaving; this timeout only bounds the pending-read assertion.
+    const result = await Promise.race([
+      reads.then(() => 'fulfilled', () => 'rejected'),
+      new Promise<string>(resolve => { timer = setTimeout(() => resolve('pending'), 100) }),
+    ])
+    assert.equal(result, 'pending', 'Reads must wait for the live publication, not classify its temporary files as crash evidence.')
+  } finally { clearTimeout(timer) }
+}
+
+describe('MediaStore concurrent publication', () => {
+  it('reads the opened old manifest after atomic replacement unlinks its inode', { timeout: 5000 }, async context => {
+    const { store, root, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const file = join(paths.mediaRoot(owner, 'task-a'), 'jobs', 'job-a.json')
+    const entered = deferred()
+    const released = deferred()
+    const original = fs.open
+    let intercepted = false
+    let links: number | undefined
+    const mocked = context.mock.method(fs, 'open', async (path: PathLike, flags: string | number, mode?: Mode) => {
+      const handle = await original(path, flags, mode)
+      if (path === file && !intercepted) {
+        intercepted = true
+        const originalStat = handle.stat.bind(handle)
+        context.mock.method(handle, 'stat', async () => {
+          entered.resolve()
+          await released.promise
+          const stat = await originalStat()
+          links = stat.nlink
+          return stat
+        })
+      }
+      return handle
+    })
+    syncBuiltinESMExports()
+    const reading = store.getJob(owner, 'task-a', 'job-a')
+    void reading.catch(() => undefined)
+    try {
+      await entered.promise
+      const next = job({ saveStatus: 'SAVED', updatedAt: 3 })
+      await new MediaStore(root).saveJob(owner, next)
+      released.resolve()
+      assert.deepEqual(await reading, job())
+      assert.equal(links, 0, 'The regression must exercise an unlinked but still readable descriptor.')
+      assert.deepEqual(await store.getJob(owner, 'task-a', 'job-a'), next)
+    } finally {
+      released.resolve()
+      await reading.catch(() => undefined)
+      mocked.mock.restore()
+      syncBuiltinESMExports()
+    }
+  })
+
+  it('waits for a live first job publication across store instances', { timeout: 5000 }, async context => {
+    const { store, root, paths } = await fixture()
+    const file = join(paths.mediaRoot(owner, 'task-a'), 'jobs', 'job-a.json')
+    const barrier = pauseRename(context, file)
+    const publishing = store.saveJob(owner, job())
+    void publishing.catch(() => undefined)
+    let reads: Promise<unknown[]> | undefined
+    try {
+      await barrier.entered
+      assert.ok((await readdir(join(paths.mediaRoot(owner, 'task-a'), 'jobs'))).some(name => /^job-a\.json\..+\.tmp$/.test(name)))
+      const reader = new MediaStore(root)
+      reads = Promise.all([reader.listJobs(owner), reader.getJob(owner, 'task-a', 'job-a')])
+      await assertPublicationPending(reads)
+      barrier.release()
+      await publishing
+      assert.deepEqual(await reads, [[job()], job()])
+    } finally {
+      barrier.release()
+      await Promise.allSettled([publishing, ...(reads ? [reads] : [])])
+      barrier.restore()
+    }
+  })
+
+  for (const source of ['reference', 'output'] as const) {
+    it(`waits for a live first ${source} asset commit across store instances`, { timeout: 5000 }, async context => {
+      const { store, root, paths, selected } = await fixture()
+      if (source === 'output') await store.saveJob(owner, job())
+      const id = source === 'reference' ? `ref_${createHash('sha256').update(hash).digest('hex')}`
+        : `out_${createHash('sha256').update(JSON.stringify(['job-a', output().outputId])).digest('hex')}`
+      const file = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${id}.json`)
+      const barrier = pauseRename(context, `${file}.commit`)
+      const publishing = source === 'reference' ? store.importReference(owner, 'task-a', selected)
+        : store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+      void publishing.catch(() => undefined)
+      let reads: Promise<unknown[]> | undefined
+      try {
+        await barrier.entered
+        assert.ok((await readdir(join(paths.mediaRoot(owner, 'task-a'), 'assets'))).some(name => name.startsWith(`${id}.json.commit.`) && name.endsWith('.tmp')))
+        const reader = new MediaStore(root)
+        reads = Promise.all([reader.listAssets(owner, 'task-a'), reader.getAsset(owner, 'task-a', id)])
+        await assertPublicationPending(reads)
+        barrier.release()
+        const asset = await publishing
+        assert.deepEqual(await reads, [[asset], asset])
+        assert.deepEqual(await reader.readAsset(owner, 'task-a', id), png)
+      } finally {
+        barrier.release()
+        await Promise.allSettled([publishing, ...(reads ? [reads] : [])])
+        barrier.restore()
+      }
+    })
+  }
+
+  it('preserves abandoned asset commit temporary evidence and refuses to overwrite it', async () => {
+    const { store, paths, selected } = await fixture()
+    const directory = join(paths.mediaRoot(owner, 'task-a'), 'assets')
+    await mkdir(directory, { recursive: true })
+    const id = `ref_${createHash('sha256').update(hash).digest('hex')}`
+    const temporary = join(directory, `${id}.json.commit.crash-id.tmp`)
+    await writeFile(temporary, 'retained crash evidence')
+    await assert.rejects(store.listAssets(owner, 'task-a'), /Incomplete media commit/)
+    await assert.rejects(store.getAsset(owner, 'task-a', id), /preserved/)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /preserved/)
+    assert.equal(await readFile(temporary, 'utf8'), 'retained crash evidence')
+  })
+
+  it('does not hide abandoned temporary job evidence beside a valid manifest', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const temporary = join(paths.mediaRoot(owner, 'task-a'), 'jobs', 'job-a.json.crash-id.tmp')
+    await writeFile(temporary, 'retained crash evidence')
+    await assert.rejects(store.listJobs(owner), /preserved/)
+    assert.equal(await readFile(temporary, 'utf8'), 'retained crash evidence')
+  })
+
+  it('retries a missing manifest read when its first publication completes during the evidence scan', { timeout: 5000 }, async context => {
+    const { store, root, paths } = await fixture()
+    const file = join(paths.mediaRoot(owner, 'task-a'), 'jobs', 'job-a.json')
+    const entered = deferred()
+    const released = deferred()
+    const original = fs.open
+    let intercepted = false
+    const mocked = context.mock.method(fs, 'open', async (path: PathLike, flags: string | number, mode?: Mode) => {
+      if (path === file && !intercepted) {
+        intercepted = true
+        try { return await original(path, flags, mode) } catch (error) {
+          entered.resolve()
+          await released.promise
+          throw error
+        }
+      }
+      return original(path, flags, mode)
+    })
+    syncBuiltinESMExports()
+    const reading = store.getJob(owner, 'task-a', 'job-a')
+    void reading.catch(() => undefined)
+    try {
+      await entered.promise
+      await new MediaStore(root).saveJob(owner, job())
+      released.resolve()
+      assert.deepEqual(await reading, job())
+    } finally {
+      released.resolve()
+      await reading.catch(() => undefined)
+      mocked.mock.restore()
+      syncBuiltinESMExports()
+    }
+  })
+
+  it('still rejects hardlinked and symbolic-link job manifests', async () => {
+    const { store, paths, directory } = await fixture()
+    await store.saveJob(owner, job())
+    const file = join(paths.mediaRoot(owner, 'task-a'), 'jobs', 'job-a.json')
+    const retained = join(directory, 'hardlinked-job.json')
+    await link(file, retained)
+    await assert.rejects(store.getJob(owner, 'task-a', 'job-a'), /size or type/)
+    await assert.rejects(store.listJobs(owner), /size or type/)
+    await rm(file)
+    await symlink(retained, file)
+    await assert.rejects(store.getJob(owner, 'task-a', 'job-a'), /symbolic/)
+    await assert.rejects(store.saveJob(owner, job()), /symbolic/)
+  })
+})
 
 describe('MediaStore jobs and snapshots', () => {
   it('persists scoped jobs, restores across instances and validates safe IDs', async () => {

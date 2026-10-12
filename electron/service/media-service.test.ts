@@ -73,6 +73,22 @@ function code(expected: string): (error: unknown) => boolean {
   return error => error instanceof AppError && error.code === expected
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+async function pendingJob(f: Awaited<ReturnType<typeof fixture>>, taskId = 'task-a', id = 'pending-job'): Promise<LocalMediaJob> {
+  const job = notSentJob()
+  job.jobId = id; job.taskId = taskId; job.clientRequestId = `request-${id}`
+  job.request.clientRequestId = job.clientRequestId
+  const receipt = await f.gateway.submit(job.subscriptionId, job.request, new AbortController().signal)
+  job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = receipt.status
+  await f.store.saveJob(owner, job)
+  return job
+}
+
 it('allows ordinary legacy tasks without an employee binding to bypass media archival', async () => {
   const f = await fixture({ getTask: async () => ({ subscriptionId: null }) })
   assert.equal(await f.service.archiveIfMedia('task-a'), false)
@@ -547,5 +563,249 @@ describe('MediaService cancellation, scope and archive', () => {
     assert.equal(f.gateway.calls.submit.length, 0)
     assert.deepEqual(await f.store.listJobs(owner), [])
     assert.deepEqual(await f.store.listJobs(other), [])
+  })
+})
+
+describe('MediaService review lifecycle regressions', () => {
+  it('releases generation reservations even when initial and error-state persistence both fail', async context => {
+    const f = await fixture({ policy: async () => policy() })
+    const stub = context.mock.method(f.store, 'saveJob', async () => { throw new Error('Disk full') })
+    try {
+      for (let index = 0; index < 4; index++) await assert.rejects(f.service.generateTaskMedia('task-a', input()))
+      assert.equal(f.gateway.calls.submit.length, 0)
+      const stopped = await Promise.race([f.service.stopTask('task-a').then(() => true), delay(150).then(() => false)])
+      assert.equal(stopped, true, 'Failed writes must not leave unresolved activity promises.')
+      await f.service.stopAll()
+      stub.mock.restore()
+      const view = await f.service.generateTaskMedia('task-a', input())
+      await f.service.waitForRun('task-a', view.runId)
+      assert.equal(f.gateway.calls.submit.length, 1)
+    } finally {
+      stub.mock.restore()
+      // A failing pre-fix service has no running I/O, only unresolved reservations.
+      services.splice(services.indexOf(f.service), 1)
+    }
+  })
+
+  it('does not permanently cache a transient capability authorization failure', async () => {
+    let calls = 0
+    const f = await fixture({ authorize: async () => {
+      if (++calls === 1) throw new Error('Transient authorization outage')
+      return f.employee
+    } })
+    assert.equal((await f.service.getTaskMedia('task-a')).capabilities, null)
+    assert.deepEqual((await f.service.getTaskMedia('task-a')).capabilities, MOCK_MEDIA_CAPABILITIES)
+    assert.equal(calls, 2)
+    const unavailable = await fixture({ gateway: undefined, authorize: async () => { assert.fail('No gateway requires no grant lookup.') } })
+    await unavailable.service.getTaskMedia('task-a')
+    await unavailable.service.getTaskMedia('task-a')
+  })
+
+  it('refreshes capabilities when a temporarily unavailable employee becomes available', async () => {
+    let calls = 0
+    const f = await fixture({ authorize: async () => ++calls === 1 ? null : f.employee })
+    assert.equal((await f.service.getTaskMedia('task-a')).capabilities, null)
+    assert.deepEqual((await f.service.getTaskMedia('task-a')).capabilities, MOCK_MEDIA_CAPABILITIES)
+    assert.equal(calls, 2)
+  })
+
+  it('does not submit generation prepared before an explicit task stop', async context => {
+    const f = await fixture({ policy: async () => policy() })
+    const entered = deferred<void>(), release = deferred<void>()
+    context.mock.method(f.store, 'isArchived', async () => { entered.resolve(); await release.promise; return false })
+    const generating = f.service.generateTaskMedia('task-a', input())
+    const rejected = assert.rejects(generating)
+    await entered.promise
+    await f.service.stopTask('task-a')
+    release.resolve()
+    await rejected
+    assert.equal(f.gateway.calls.quote.length, 0)
+    assert.equal(f.gateway.calls.submit.length, 0)
+  })
+
+  it('does not revive a cancelled job from an already running recovery scan', async context => {
+    const f = await fixture({ pollFloorMs: 60_000 }, new MockMediaGateway({ pollStatuses: ['RUNNING'] }))
+    const job = await pendingJob(f)
+    const entered = deferred<void>(), release = deferred<void>()
+    const listJobs = f.store.listJobs.bind(f.store)
+    context.mock.method(f.store, 'listJobs', async (scope: TaskOwnerScope, taskId?: string) => {
+      if (taskId) return listJobs(scope, taskId)
+      const snapshot = await listJobs(scope)
+      entered.resolve(); await release.promise
+      return snapshot
+    })
+    const recovering = f.service.resumePending()
+    await entered.promise
+    await f.service.cancel('task-a', job.jobId, false)
+    release.resolve()
+    await recovering
+    assert.equal((await f.store.getJob(owner, 'task-a', job.jobId))?.trackingStatus, 'STOPPED')
+    assert.equal(f.gateway.calls.getReceipt.length, 0)
+  })
+
+  it('preserves explicit stop when session shutdown races with activity settlement', async () => {
+    const f = await fixture({ pollFloorMs: 60_000 }, new MockMediaGateway({ pollStatuses: ['RUNNING'] }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await Promise.all([f.service.stopTask('task-a'), f.service.stopAll()])
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus, 'STOPPED')
+    await f.service.resumePending()
+    assert.equal(f.gateway.calls.getReceipt.length, 0)
+  })
+
+  it('persists explicit stop during recovery lookup even when shutdown invalidates that lookup', async context => {
+    const f = await fixture()
+    const job = await pendingJob(f)
+    const getJob = f.store.getJob.bind(f.store)
+    const entered = deferred<void>(), release = deferred<void>()
+    let first = true
+    context.mock.method(f.store, 'getJob', async (scope: TaskOwnerScope, taskId: string, jobId: string) => {
+      const snapshot = await getJob(scope, taskId, jobId)
+      if (first) { first = false; entered.resolve(); await release.promise }
+      return snapshot
+    })
+    const recovering = f.service.resume('task-a', job.jobId)
+    const settlement = recovering.catch(() => undefined)
+    await entered.promise
+    const stopping = f.service.stopTask('task-a'), shutdown = f.service.stopAll()
+    release.resolve()
+    await Promise.all([settlement, stopping, shutdown])
+    assert.equal((await f.store.getJob(owner, 'task-a', job.jobId))?.trackingStatus, 'STOPPED')
+    assert.equal(f.gateway.calls.getReceipt.length, 0)
+  })
+
+  it('persists an explicitly stopped queued job during simultaneous session shutdown', async () => {
+    const f = await fixture({ getTask: async () => ({ subscriptionId: 'subscription-a' }), pollFloorMs: 60_000 }, new MockMediaGateway({ pollStatuses: ['RUNNING'] }))
+    for (let index = 0; index < 5; index++) await pendingJob(f, `task-${index}`, `queued-${index}`)
+    await f.service.resumePending()
+    await Promise.all([f.service.stopTask('task-4'), f.service.stopAll()])
+    assert.equal((await f.store.getJob(owner, 'task-4', 'queued-4'))?.trackingStatus, 'STOPPED')
+  })
+
+  for (const stage of ['approval', 'gateway'] as const) {
+    it(`aborts host cancellation during ${stage} without accepting a late response`, async context => {
+      const entered = deferred<void>(), release = deferred<void>()
+      const f = await fixture()
+      const job = await pendingJob(f)
+      if (stage === 'gateway') {
+        const cancel = f.gateway.cancel.bind(f.gateway)
+        context.mock.method(f.gateway, 'cancel', async (subscriptionId: string, receiptId: string, signal: AbortSignal) => {
+          entered.resolve(); await release.promise
+          return cancel(subscriptionId, receiptId, signal)
+        })
+      }
+      const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'cancel-run', subscriptionId: f.employee.subscriptionId,
+        employee: f.employee, toolPolicy: policy('full-local', stage === 'approval' ? 'confirm-each' : 'auto-approve'),
+        requestApproval: async () => { entered.resolve(); await release.promise; return true } })
+      const controller = new AbortController()
+      const rejected = assert.rejects(tools!.execute('media_cancel_job', { jobId: job.jobId, cancelUpstream: true }, controller.signal),
+        (error: unknown) => error instanceof Error && error.name === 'AbortError')
+      await entered.promise
+      controller.abort()
+      release.resolve()
+      await rejected
+      assert.equal(f.gateway.calls.cancel.length, 0)
+      assert.notEqual((await f.store.getJob(owner, 'task-a', job.jobId))?.generationStatus, 'CANCELLED')
+    })
+  }
+
+  for (const action of ['stopTask', 'cancel'] as const) {
+    it(`keeps recovery stopped when ${action} races with its task lookup`, async context => {
+      const f = await fixture({ pollFloorMs: 60_000 }, new MockMediaGateway({ pollStatuses: ['RUNNING'] }))
+      const job = await pendingJob(f)
+      const listJobs = f.store.listJobs.bind(f.store)
+      context.mock.method(f.store, 'listJobs', async (scope: TaskOwnerScope, taskId?: string) => taskId ? listJobs(scope, taskId) : [structuredClone(job)])
+      const entered = deferred<void>(), release = deferred<void>(), cancellationRead = deferred<void>()
+      let first = true
+      const getJob = f.store.getJob.bind(f.store)
+      context.mock.method(f.store, 'getJob', async (scope: TaskOwnerScope, taskId: string, jobId: string) => {
+        const snapshot = await getJob(scope, taskId, jobId)
+        if (first) { first = false; entered.resolve(); await release.promise }
+        else cancellationRead.resolve()
+        return snapshot
+      })
+      const recovering = f.service.resumePending()
+      await entered.promise
+      const stopping = action === 'stopTask' ? f.service.stopTask('task-a') : f.service.cancel('task-a', job.jobId, false)
+      try {
+        // Cancellation must finish its own lookup before the recovery lookup is released.
+        if (action === 'cancel') {
+          await cancellationRead.promise
+          await new Promise<void>(resolve => setImmediate(resolve))
+        }
+        release.resolve()
+        await Promise.all([recovering, stopping])
+        assert.equal((await f.store.getJob(owner, 'task-a', job.jobId))?.trackingStatus, 'STOPPED')
+        assert.equal(f.gateway.calls.getReceipt.length, 0)
+      } finally { release.resolve(); await Promise.allSettled([recovering, stopping]) }
+    })
+  }
+
+  it('persists explicit stop of a queued recovery without reviving it after restart', async () => {
+    const f = await fixture({ getTask: async () => ({ subscriptionId: 'subscription-a' }), pollFloorMs: 60_000 }, new MockMediaGateway({ pollStatuses: ['RUNNING'] }))
+    const jobs: LocalMediaJob[] = []
+    for (let index = 0; index < 5; index++) jobs.push(await pendingJob(f, `task-${index}`, `queued-${index}`))
+    await f.service.resumePending()
+    await f.service.stopTask('task-4')
+    assert.equal((await f.store.getJob(owner, 'task-4', jobs[4].jobId))?.trackingStatus, 'STOPPED')
+    await f.service.stopAll()
+    assert.equal((await f.store.getJob(owner, 'task-0', jobs[0].jobId))?.trackingStatus, 'INTERRUPTED')
+    const restarted = new MediaService({ ...f.options, store: new MediaStore(f.root) })
+    services.push(restarted)
+    await restarted.resumePending()
+    assert.ok(!f.gateway.calls.getReceipt.some(call => call.receiptId === jobs[4].receiptId))
+    assert.equal(f.gateway.calls.submit.length, 5)
+  })
+
+  it('preserves recoverable jobs when runtime task cleanup follows session shutdown', async () => {
+    const f = await fixture({ pollFloorMs: 60_000 }, new MockMediaGateway({ pollStatuses: ['RUNNING'] }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.stopAll()
+    await f.service.stopTask('task-a')
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus, 'INTERRUPTED')
+  })
+
+  it('invalidates upstream cancellation across same-owner logout and login during policy lookup', async () => {
+    const entered = deferred<void>(), release = deferred<TaskToolPolicy>()
+    const f = await fixture({ policy: async () => { entered.resolve(); return release.promise } })
+    const job = await pendingJob(f)
+    const cancelling = f.service.cancel('task-a', job.jobId, true)
+    const rejected = assert.rejects(cancelling, code('AUTH_REQUIRED'))
+    await entered.promise
+    f.setScope(null)
+    await f.service.stopAll()
+    f.setScope({ ...owner })
+    release.resolve(policy())
+    await rejected
+    assert.equal(f.gateway.calls.cancel.length, 0)
+  })
+
+  it('forwards host tool abort through cancellation lookup before any upstream call', async context => {
+    const f = await fixture()
+    const job = await pendingJob(f)
+    const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'cancel-run', subscriptionId: f.employee.subscriptionId,
+      employee: f.employee, toolPolicy: policy(), requestApproval: f.options.requestApproval })
+    const entered = deferred<void>(), release = deferred<void>()
+    context.mock.method(f.options, 'getTask', async () => { entered.resolve(); await release.promise; return { subscriptionId: f.employee.subscriptionId } })
+    const controller = new AbortController()
+    const cancelling = tools!.execute('media_cancel_job', { jobId: job.jobId, cancelUpstream: true }, controller.signal)
+    const rejected = assert.rejects(cancelling, (error: unknown) => error instanceof Error && error.name === 'AbortError')
+    await entered.promise
+    controller.abort()
+    await f.service.stopTask('task-a')
+    release.resolve()
+    await rejected
+    assert.equal(f.gateway.calls.cancel.length, 0)
+  })
+
+  it('still sends approved upstream cancellation when tracking settlement cannot be saved', async context => {
+    const f = await fixture({ policy: async () => policy(), pollFloorMs: 60_000 }, new MockMediaGateway({ pollStatuses: ['RUNNING'] }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    const stub = context.mock.method(f.store, 'saveJob', async () => { throw new Error('Disk full during cancellation') })
+    try {
+      await assert.rejects(f.service.cancel('task-a', view.jobId, true), /Disk full|persist|cancel/i)
+      assert.equal(f.gateway.calls.cancel.length, 1, 'Tracking persistence failure must not prevent approved cancellation.')
+      stub.mock.restore()
+      await f.service.stopTask('task-a')
+    } finally { stub.mock.restore() }
   })
 })

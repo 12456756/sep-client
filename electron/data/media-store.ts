@@ -64,6 +64,8 @@ const snapshotSchema = z.object({
 ), 'Employee runtime snapshot does not match its run owner or installed skill metadata.')
 const archiveSchema = z.object({ version: z.literal(1), owner: ownerSchema, taskId: mediaId, archivedAt: timestamp }).strict()
 const writes = new WriteChain()
+const publications = new Map<string, Set<Promise<void>>>()
+let publicationRevision = 0
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 const extensions = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' } as const
 
@@ -133,7 +135,8 @@ export class MediaStore implements MediaStorePort {
     const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
     try {
       const stat = await handle.stat()
-      if (!stat.isFile() || stat.size === 0 || stat.size > maxBytes || (!external && stat.nlink !== 1)) throw new MediaPersistenceError('Invalid media file size or type.')
+      // Atomic replacement can unlink an already opened inode; its descriptor still owns valid bytes.
+      if (!stat.isFile() || stat.size === 0 || stat.size > maxBytes || (!external && stat.nlink > 1)) throw new MediaPersistenceError('Invalid media file size or type.')
       const result = Buffer.alloc(stat.size)
       let offset = 0
       while (offset < result.length) {
@@ -149,20 +152,52 @@ export class MediaStore implements MediaStorePort {
     }
   }
 
+  private async publishing<T>(directory: string, operation: () => Promise<T>): Promise<T> {
+    let finish!: () => void
+    const settled = new Promise<void>(resolve => { finish = resolve })
+    const active = publications.get(directory) ?? new Set<Promise<void>>()
+    publications.set(directory, active)
+    active.add(settled)
+    publicationRevision++
+    try { return await operation() } finally {
+      active.delete(settled)
+      if (active.size === 0) publications.delete(directory)
+      finish()
+    }
+  }
+
+  private async waitForPublication(directory: string): Promise<void> {
+    for (;;) {
+      const active = publications.get(directory)
+      if (!active) return
+      await Promise.all(active)
+    }
+  }
+
   private async names(directory: string): Promise<string[]> {
-    await this.assertPath(directory)
-    try { return (await readdir(directory)).sort() } catch (error) {
-      if (missing(error)) return []
-      throw error
+    for (;;) {
+      await this.waitForPublication(directory)
+      const revision = publicationRevision
+      await this.assertPath(directory)
+      let names: string[]
+      try { names = (await readdir(directory)).sort() } catch (error) {
+        if (!missing(error)) throw error
+        names = []
+      }
+      // A writer may have started during readdir; discard that transient directory snapshot.
+      if (!publications.has(directory) && revision === publicationRevision) return names
     }
   }
 
   private async json<T>(file: string, schema: z.ZodType<T>): Promise<T | null> {
+    await this.waitForPublication(dirname(file))
     let bytes: Buffer
     try { bytes = await this.bytes(file, false, MAX_MANIFEST_BYTES) } catch (error) {
       if (!missing(error)) throw error
       const name = relative(dirname(file), file)
-      const evidence = (await this.names(dirname(file))).some(entry => entry === `${name}.bak` || entry.startsWith(`${name}.corrupt-`) ||
+      const names = await this.names(dirname(file))
+      if (names.includes(name)) return this.json(file, schema)
+      const evidence = names.some(entry => entry === `${name}.bak` || entry.startsWith(`${name}.corrupt-`) ||
         (entry.startsWith(`${name}.`) && entry.endsWith('.tmp')))
       if (evidence) throw new MediaPersistenceError()
       return null
@@ -174,11 +209,14 @@ export class MediaStore implements MediaStorePort {
 
   private async write(file: string, value: unknown): Promise<void> {
     if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_MANIFEST_BYTES) throw new MediaPersistenceError('Media manifest exceeds the supported size.')
-    await this.assertPath(file)
-    await mkdir(dirname(file), { recursive: true, mode: 0o700 })
-    await this.assertPath(file)
-    // No stale backup rollback: a MAYBE_SENT request must never reappear as NOT_SENT.
-    await writeJsonAtomic(file, value, { backup: false })
+    // Only publication is tracked, not the WriteChain operation: writers read before publishing.
+    await this.publishing(dirname(file), async () => {
+      await this.assertPath(file)
+      await mkdir(dirname(file), { recursive: true, mode: 0o700 })
+      await this.assertPath(file)
+      // No stale backup rollback: a MAYBE_SENT request must never reappear as NOT_SENT.
+      await writeJsonAtomic(file, value, { backup: false })
+    })
   }
 
   async getJob(scope: TaskOwnerScope, taskId: string, jobId: string): Promise<LocalMediaJob | null> {
@@ -207,8 +245,7 @@ export class MediaStore implements MediaStorePort {
 
   private manifestId(name: string): string | null {
     if (name.endsWith('.tmp')) {
-      const temporary = /^([A-Za-z0-9_-]{1,128})\.json\.[A-Za-z0-9_-]+\.tmp$/.exec(name)
-      if (temporary) return temporary[1]
+      if (/^([A-Za-z0-9_-]{1,128})\.json\.[A-Za-z0-9_-]+\.tmp$/.test(name)) throw new MediaPersistenceError()
       if (/\.json\.commit\.[A-Za-z0-9_-]+\.tmp$/.test(name)) throw new MediaPersistenceError('Incomplete media commit evidence requires recovery.')
       throw new MediaPersistenceError('Unexpected media temporary manifest evidence.')
     }
@@ -362,11 +399,14 @@ export class MediaStore implements MediaStorePort {
         this.validateOutput(output, asset)
         if (existing && !isDeepStrictEqual(existing, asset)) throw new MediaPersistenceError('Recovered output differs from its original commit.')
         signal.throwIfAborted()
-        await this.write(`${this.file(scope, taskId, 'assets', id)}.commit`, asset)
-        signal.throwIfAborted()
-        await this.assertPath(file)
-        await rename(part, file)
-        await this.write(this.file(scope, taskId, 'assets', id), asset)
+        const manifest = this.file(scope, taskId, 'assets', id)
+        await this.publishing(dirname(manifest), async () => {
+          await this.write(`${manifest}.commit`, asset)
+          signal.throwIfAborted()
+          await this.assertPath(file)
+          await rename(part, file)
+          await this.write(manifest, asset)
+        })
         return asset
       } finally { await rm(part, { force: true }) }
     })
@@ -432,10 +472,13 @@ export class MediaStore implements MediaStorePort {
     try {
       const hash = await this.streamPart(part, stream, signal)
       if (hash !== asset.sha256) throw new MediaPersistenceError('Reference image changed during copying.')
-      await this.write(`${this.file(scope, asset.taskId, 'assets', asset.localAssetId)}.commit`, asset)
-      await this.assertPath(file)
-      await rename(part, file)
-      await this.write(this.file(scope, asset.taskId, 'assets', asset.localAssetId), asset)
+      const manifest = this.file(scope, asset.taskId, 'assets', asset.localAssetId)
+      await this.publishing(dirname(manifest), async () => {
+        await this.write(`${manifest}.commit`, asset)
+        await this.assertPath(file)
+        await rename(part, file)
+        await this.write(manifest, asset)
+      })
       return asset
     } finally { await rm(part, { force: true }) }
   }

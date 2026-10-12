@@ -14,6 +14,7 @@ import { requireScope, type ScopeSource } from './scope-guard'
 
 const log = logger.child('media-service')
 const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'])
+const explicitStop = Symbol('explicit-media-stop')
 type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
 interface TaskBinding { subscriptionId?: string | null }
 export interface MediaServiceOptions {
@@ -43,6 +44,8 @@ export class MediaService {
   private readonly caps = new Map<string, MediaCapabilities | null>()
   private readonly submitting = new Set<string>()
   private readonly recoveryQueue = new Map<string, { taskId: string; jobId: string }>()
+  private readonly taskStops = new Map<string, number>()
+  private readonly jobStops = new Map<string, number>()
   private recoveryDraining = false
   constructor(private readonly options: MediaServiceOptions) {}
 
@@ -107,9 +110,13 @@ export class MediaService {
     const key = this.key(scope, taskId)
     if (!this.caps.has(key)) {
       let employee: EmployeeRuntimeConfig | null = null
-      try { if (this.options.gateway) employee = await this.options.authorize(subscriptionId) } catch { /* Historical local reads do not require a new generation grant. */ }
+      let authorized = true
+      try { if (this.options.gateway) employee = await this.options.authorize(subscriptionId) } catch {
+        // Historical reads survive transient grant failures; a later refresh retries authorization.
+        authorized = false
+      }
       this.assert(scope, epoch)
-      this.caps.set(key, employee ? this.capabilities(employee) : null)
+      if (authorized && employee) this.caps.set(key, this.capabilities(employee))
     }
     const [assets, jobs, archived] = await Promise.all([this.options.store.listAssets(scope, taskId), this.options.store.listJobs(scope, taskId), this.options.store.isArchived(scope, taskId)])
     this.assert(scope, epoch)
@@ -168,11 +175,13 @@ export class MediaService {
       }
       if (name === 'media_generate_image') return this.generate(input.taskId, parseMediaInput(raw), { ...input, capabilities }, signal)
       const args = z.object({ jobId: mediaId, cancelUpstream: z.boolean().optional() }).strict().parse(raw)
-      if (name === 'media_cancel_job') await this.cancel(input.taskId, args.jobId, args.cancelUpstream ?? false, input)
+      if (name === 'media_cancel_job') await this.cancel(input.taskId, args.jobId, args.cancelUpstream ?? false, input, signal)
       return this.getJobView(input.taskId, args.jobId)
     } }
   }
   async generateTaskMedia(taskId: string, raw: MediaGenerationInput): Promise<MediaJobView> {
+    const initialScope = this.scope(), initialEpoch = this.epoch, stopKey = this.key(initialScope, taskId)
+    const stopVersion = this.taskStops.get(stopKey) ?? 0
     const { scope, subscriptionId } = await this.task(taskId), epoch = this.epoch
     const employee = await this.options.authorize(subscriptionId)
     this.assert(scope, epoch)
@@ -182,11 +191,17 @@ export class MediaService {
     const runId = randomUUID(), toolPolicy = await this.options.policy?.(taskId)
     this.assert(scope, epoch)
     await this.prepareRun({ taskId, runId, subscriptionId, employee, toolPolicy, requestApproval: this.options.requestApproval })
+    this.assert(initialScope, initialEpoch)
+    if (stopVersion !== (this.taskStops.get(stopKey) ?? 0)) throw new AppError('INVALID_STATE')
     return this.generate(taskId, parseMediaInput(raw), { runId, subscriptionId, toolPolicy, capabilities, requestApproval: this.options.requestApproval })
   }
   private async generate(taskId: string, input: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; requestApproval: Approval }, signal?: AbortSignal): Promise<MediaJobView> {
-    const { scope } = await this.task(taskId), epoch = this.epoch
+    const epoch = this.epoch, initialScope = this.scope(), stopKey = this.key(initialScope, taskId)
+    const stopVersion = this.taskStops.get(stopKey) ?? 0
+    const { scope } = await this.task(taskId)
     if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE')
+    this.assert(scope, epoch); signal?.throwIfAborted()
+    if (stopVersion !== (this.taskStops.get(stopKey) ?? 0)) throw new AppError('INVALID_STATE')
     if (binding.toolPolicy && (binding.toolPolicy.preset === 'read-only' || (binding.toolPolicy.preset !== 'full-local' && !binding.toolPolicy.allowedTools.includes('media_generate_image')))) throw new AppError('PERMISSION_DENIED')
     const profile = binding.capabilities.profiles.find(profile => profile.profileId === input.profileId)
     if (!binding.capabilities.tools.includes('media_generate_image') || !profile || !profile.operations.includes(input.operation)
@@ -205,6 +220,7 @@ export class MediaService {
     let job: LocalMediaJob | undefined
     let finish: () => void = () => undefined
     const pending = new Promise<void>(resolve => { finish = resolve })
+    let trackingStarted = false
     this.activities.set(activityKey, { taskId, controller, promise: pending })
     try {
       const gateway = this.gateway(), referenceHashes: string[] = [], referenceIds: string[] = []
@@ -259,22 +275,30 @@ export class MediaService {
       await this.options.store.saveJob(scope, job)
       this.assert(scope, epoch)
       const submitted = job
-      const tracking = this.track(scope, submitted, parent).finally(finish)
+      const tracking = this.track(scope, submitted, parent, epoch).finally(finish)
       this.activities.set(activityKey, { taskId, controller, promise: tracking })
+      trackingStarted = true
       void tracking.finally(() => this.releaseActivity(activityKey, controller)).catch(() => undefined)
       const assets = await this.options.store.listAssets(scope, taskId)
       this.assert(scope, epoch)
       return this.viewJob(job, assets)
     } catch (error) {
-      if (job && job.submission === 'NOT_SENT') { job.trackingStatus = 'STOPPED'; job.generationStatus = 'FAILED'; job.error = '请求未提交。'; await this.options.store.saveJob(scope, job) }
-      if (job && job.submission !== 'NOT_SENT') {
-        job.trackingStatus = epoch !== this.epoch ? 'INTERRUPTED' : 'STOPPED'
+      if (trackingStarted) {
+        controller.abort()
+        await this.activities.get(activityKey)?.promise.catch(() => undefined)
+      } else if (job) {
+        job.trackingStatus = epoch !== this.epoch && parent.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
+        if (job.submission === 'NOT_SENT') { job.generationStatus = 'FAILED'; job.error = '请求未提交。' }
         job.updatedAt = Date.now()
-        await this.options.store.saveJob(scope, job)
+        try { await this.options.store.saveJob(scope, job) } catch {
+          log.warn('media submission state could not be saved', { taskId, jobId })
+        }
       }
-      this.releaseActivity(activityKey, controller); finish()
       throw error
-    } finally { this.submitting.delete(gate) }
+    } finally {
+      if (!trackingStarted) { this.releaseActivity(activityKey, controller); finish() }
+      this.submitting.delete(gate)
+    }
   }
   private acceptReceipt(job: LocalMediaJob, raw: unknown): void {
     const receipt: MediaReceipt = mediaReceiptSchema.parse(raw)
@@ -305,8 +329,7 @@ export class MediaService {
     job.error = failed ? '部分图片未保存，可以重试保存原结果。' : null
     await this.options.store.saveJob(scope, job)
   }
-  private async track(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal): Promise<void> {
-    const epoch = this.epoch
+  private async track(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, epoch = this.epoch): Promise<void> {
     const trackingStartedAt = Date.now()
     let polls = 0
     try {
@@ -343,7 +366,7 @@ export class MediaService {
         job.trackingStatus = 'STOPPED'
       }
     } catch (error) {
-      job.trackingStatus = epoch !== this.epoch ? 'INTERRUPTED' : 'STOPPED'
+      job.trackingStatus = epoch !== this.epoch && parent.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
       if (job.saveStatus === 'SAVING') job.saveStatus = 'SAVE_FAILED'
       job.error = parent.aborted ? '本地跟踪已停止，上游任务可能仍在执行。' : '本地跟踪暂不可用，可恢复原请求。'
       if (!parent.aborted) log.warn('media tracking interrupted', { taskId: job.taskId, jobId: job.jobId, authChanged: error instanceof AppError && error.code === 'AUTH_REQUIRED' })
@@ -353,11 +376,12 @@ export class MediaService {
     }
   }
   private async job(taskId: string, jobId: string) {
+    const epoch = this.epoch
     mediaId.parse(jobId)
     const { scope } = await this.task(taskId)
     const job = await this.options.store.getJob(scope, taskId, jobId)
     if (!job) throw new AppError('NOT_FOUND')
-    this.assert(scope)
+    this.assert(scope, epoch)
     return { scope, job }
   }
   private async getJobView(taskId: string, jobId: string): Promise<MediaJobView> {
@@ -365,20 +389,45 @@ export class MediaService {
     return this.viewJob(job, await this.options.store.listAssets(scope, taskId))
   }
   async resume(taskId: string, jobId: string): Promise<void> {
-    const epoch = this.epoch
-    const { scope, job } = await this.job(taskId, jobId), key = this.key(scope, jobId)
-    this.assert(scope, epoch)
+    mediaId.parse(taskId); mediaId.parse(jobId)
+    const epoch = this.epoch, scope = this.scope(), key = this.key(scope, jobId)
+    const taskKey = this.key(scope, taskId), stopVersion = this.taskStops.get(taskKey) ?? 0
     if (this.activities.has(key)) return
     if (this.activities.size >= 4) throw new AppError('RATE_LIMITED')
     const controller = new AbortController()
-    const promise = (async () => {
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    this.activities.set(key, { taskId, controller, promise: pending })
+    let trackingStarted = false
+    try {
+      const { job } = await this.job(taskId, jobId)
+      if (controller.signal.aborted || stopVersion !== (this.taskStops.get(taskKey) ?? 0)) {
+        job.trackingStatus = epoch !== this.epoch && controller.signal.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
+        job.updatedAt = Date.now()
+        await this.options.store.saveJob(scope, job)
+        return
+      }
+      this.assert(scope, epoch)
       job.trackingStatus = 'ACTIVE'; job.attempts = 0; job.nextPollAt = Date.now()
       await this.options.store.saveJob(scope, job)
-      this.assert(scope, epoch); controller.signal.throwIfAborted()
-      await this.track(scope, job, controller.signal)
-    })()
-    this.activities.set(key, { taskId, controller, promise })
-    void promise.finally(() => this.releaseActivity(key, controller)).catch(() => undefined)
+      const promise = this.track(scope, job, controller.signal, epoch).finally(finish)
+      this.activities.set(key, { taskId, controller, promise })
+      trackingStarted = true
+      void promise.finally(() => this.releaseActivity(key, controller)).catch(() => undefined)
+    } catch (error) {
+      if (controller.signal.aborted) {
+        // Settle only the captured owner's local record, even after its session has ended.
+        const job = await this.options.store.getJob(scope, taskId, jobId)
+        if (job) {
+          job.trackingStatus = controller.signal.reason === explicitStop ? 'STOPPED' : 'INTERRUPTED'
+          job.updatedAt = Date.now()
+          await this.options.store.saveJob(scope, job)
+        }
+      }
+      throw error
+    } finally {
+      if (!trackingStarted) { this.releaseActivity(key, controller); finish() }
+    }
   }
   async retrySave(taskId: string, jobId: string): Promise<void> { await this.resume(taskId, jobId) }
   async redo(taskId: string, jobId: string): Promise<MediaJobView> {
@@ -386,30 +435,44 @@ export class MediaService {
     if (!terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE', { message: '原请求尚未结束或提交状态不明，不能重做。' })
     return this.generateTaskMedia(taskId, job.input)
   }
-  async cancel(taskId: string, jobId: string, cancelUpstream: boolean, binding?: { toolPolicy?: TaskToolPolicy; requestApproval: Approval }): Promise<void> {
+  async cancel(taskId: string, jobId: string, cancelUpstream: boolean, binding?: { toolPolicy?: TaskToolPolicy; requestApproval: Approval }, signal?: AbortSignal): Promise<void> {
+    const epoch = this.epoch, parent = signal ?? new AbortController().signal
+    parent.throwIfAborted()
     const { scope, job: initial } = await this.job(taskId, jobId), key = this.key(scope, jobId)
+    const check = () => { this.assert(scope, epoch); parent.throwIfAborted() }
+    check()
     if (cancelUpstream) {
       if (!initial.receiptId || !initial.profile.capabilities.cancel || terminal.has(initial.generationStatus)) throw new AppError('INVALID_STATE')
       const policy = binding ? binding.toolPolicy : await this.options.policy?.(taskId)
+      check()
       if (policy && (policy.preset === 'read-only' || (policy.preset !== 'full-local' && !policy.allowedTools.includes('media_cancel_job')))) throw new AppError('PERMISSION_DENIED')
       if (!(policy?.preset === 'full-local' && policy.approvalMode === 'auto-approve')) {
-        const approved = await this.network(scope, new AbortController().signal, () => (binding?.requestApproval ?? this.options.requestApproval)({
+        const approved = await this.network(scope, parent, () => (binding?.requestApproval ?? this.options.requestApproval)({
           taskId, runId: initial.runId, subscriptionId: initial.subscriptionId, toolName: 'media_cancel_job',
           input: { jobId, cancelUpstream: true, billing: '取消不代表退款，上游可能已产生费用。' },
         }))
+        check()
         if (!approved) throw new AppError('PERMISSION_DENIED')
       }
     }
     const activity = this.activities.get(key)
+    this.jobStops.set(key, (this.jobStops.get(key) ?? 0) + 1)
     this.recoveryQueue.delete(key)
-    activity?.controller.abort(); await activity?.promise
+    activity?.controller.abort(explicitStop)
+    let settlementError: unknown
+    try { await activity?.promise } catch (error) { settlementError = error }
+    check()
     const { job } = await this.job(taskId, jobId)
+    check()
     if (cancelUpstream) {
       if (!job.receiptId || !job.profile.capabilities.cancel || terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE')
-      this.acceptReceipt(job, await this.network(scope, new AbortController().signal, signal => this.gateway().cancel(job.subscriptionId, job.receiptId!, signal)))
+      this.acceptReceipt(job, await this.network(scope, parent, signal => this.gateway().cancel(job.subscriptionId, job.receiptId!, signal)))
     }
+    check()
     job.trackingStatus = 'STOPPED'; job.updatedAt = Date.now()
     await this.options.store.saveJob(scope, job)
+    check()
+    if (settlementError) throw settlementError
   }
   async waitForRun(taskId: string, runId: string): Promise<void> {
     const { scope } = await this.task(taskId)
@@ -421,13 +484,27 @@ export class MediaService {
     }
   }
   async stopTask(taskId: string): Promise<void> {
-    for (const [key, job] of this.recoveryQueue) if (job.taskId === taskId) this.recoveryQueue.delete(key)
+    mediaId.parse(taskId)
+    const scope = this.options.scope.currentScope()
+    if (scope) {
+      const key = this.key(scope, taskId)
+      this.taskStops.set(key, (this.taskStops.get(key) ?? 0) + 1)
+    }
+    const queued: string[] = []
+    for (const [key, job] of this.recoveryQueue) if (job.taskId === taskId) { this.recoveryQueue.delete(key); queued.push(job.jobId) }
     const matches = [...this.activities.values()].filter(activity => activity.taskId === taskId)
-    for (const activity of matches) activity.controller.abort()
+    for (const activity of matches) activity.controller.abort(explicitStop)
     await Promise.allSettled(matches.map(activity => activity.promise))
+    // An accepted local stop remains valid for this captured owner during logout.
+    if (scope) for (const jobId of queued) {
+      const job = await this.options.store.getJob(scope, taskId, jobId)
+      if (job && (job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED')) {
+        job.trackingStatus = 'STOPPED'; job.updatedAt = Date.now(); await this.options.store.saveJob(scope, job)
+      }
+    }
   }
   async stopAll(): Promise<void> {
-    this.epoch++; this.caps.clear()
+    this.epoch++; this.caps.clear(); this.taskStops.clear(); this.jobStops.clear()
     this.recoveryQueue.clear()
     this.sessionController.abort()
     this.sessionController = new AbortController()
@@ -438,9 +515,21 @@ export class MediaService {
   async resumePending(): Promise<void> {
     if (!this.options.gateway) return
     const scope = this.scope(), epoch = this.epoch
+    const stops = new Map(this.taskStops)
+    const jobStops = new Map(this.jobStops)
     for (const job of await this.options.store.listJobs(scope)) {
       this.assert(scope, epoch)
       const key = this.key(scope, job.jobId)
+      const taskKey = this.key(scope, job.taskId)
+      if (jobStops.get(key) !== this.jobStops.get(key)) continue
+      if (stops.get(taskKey) !== this.taskStops.get(taskKey)) {
+        const current = await this.options.store.getJob(scope, job.taskId, job.jobId)
+        this.assert(scope, epoch)
+        if (current && (current.trackingStatus === 'ACTIVE' || current.trackingStatus === 'INTERRUPTED')) {
+          current.trackingStatus = 'STOPPED'; current.updatedAt = Date.now(); await this.options.store.saveJob(scope, current)
+        }
+        continue
+      }
       if ((job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED') && !this.activities.has(key)) this.recoveryQueue.set(key, { taskId: job.taskId, jobId: job.jobId })
     }
     await this.drainRecoveryQueue()
