@@ -17,6 +17,9 @@ export interface EmployeeRuntimeConfig {
   gatewayUrl: string
 
   additionalSkillPaths?: string[]
+  systemPrompt?: string
+  media?: unknown
+  runtimeSnapshot?: import('../common/platform/employee-runtime-contract').EmployeeRuntimeSnapshot
 }
 
 export type SessionRecoveryMode = 'strict' | 'confirm_rebuild' | 'auto_rebuild_from_task_history'

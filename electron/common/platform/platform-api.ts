@@ -7,6 +7,7 @@ export type { PlatformNotification as Notification, NotificationQuery } from '..
 import { config } from '../config'
 import { logger } from '../logger'
 import { platformSourceHeaders } from './platform-source-headers'
+import { parseEmployeeRuntimeManifest, type EmployeeRuntimeManifest } from './employee-runtime-contract'
 import {
   enterpriseOrganizationSchema, enterpriseOverviewSchema, platformEmployeePageSchema, employeeAccessRequestSchema, employeeAccessRequestInputSchema, skillVersionSchema,
   personalSkillVersionRequestSchema, personalSkillSubmissionResponseSchema, idempotencyKeySchema, skillVersionQuerySchema,
@@ -376,6 +377,16 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
 export async function getSubscriptions(accessToken: string): Promise<Subscription[]> {
   const data = await getJson<Subscription[]>('/client/subscriptions', accessToken, 'subscriptions')
   return normalizeSubscriptions(data)
+}
+
+/** Existing JWT-authenticated v1 endpoint; no draft media headers or query parameters. */
+export async function getEmployeeRuntime(subscriptionId: string, accessToken: string): Promise<EmployeeRuntimeManifest> {
+  const id = skillVersionIdSchema.parse(subscriptionId)
+  const manifest = parseEmployeeRuntimeManifest(await getJson<unknown>(
+    `/client/subscriptions/${encodeURIComponent(id)}/runtime`, accessToken, 'subscriptions',
+  ))
+  if (manifest.subscriptionId !== id) throw new Error('Employee runtime subscription mismatch.')
+  return manifest
 }
 
 export async function getEmploymentToken(

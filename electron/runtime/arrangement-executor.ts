@@ -25,6 +25,7 @@ import {
 } from '../domain/arrangement-execution'
 import type { EmployeeRuntimeConfig, TaskToolPolicy, TaskWorkerPort } from './run-types'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
+import type { MediaRunPort } from '../domain/media-tools'
 
 export interface ArrangementExecutionResult {
   status: ArrangementExecutionState['status']
@@ -45,6 +46,7 @@ export interface ArrangementExecutionOptions {
   authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   workspaceRoot: string
   arrangementSubscriptionId: string
+  media?: MediaRunPort
 }
 
 export interface ArrangementNodeEvent {
@@ -96,12 +98,16 @@ export class ArrangementExecutor {
   private readonly activeWorkers = new Map<string, TaskWorkerPort>()
   private abortRequested = false
   private stopRequested = false
+  private taskId: string | null = null
 
   constructor(private readonly options: ArrangementExecutionOptions) {}
 
   async abort(): Promise<void> {
     this.abortRequested = true
-    await Promise.all([...this.activeWorkers.values()].map(worker => worker.abort().catch(() => undefined)))
+    await Promise.all([
+      ...[...this.activeWorkers.values()].map(worker => worker.abort().catch(() => undefined)),
+      this.taskId ? this.options.media?.stopTask(this.taskId) : undefined,
+    ])
   }
 
   async stop(): Promise<void> {
@@ -110,6 +116,7 @@ export class ArrangementExecutor {
   }
 
   async execute(plan: WorkPlan, taskId: string, arrangementRunId: string, requestedState?: ArrangementExecutionState): Promise<ArrangementExecutionResult> {
+    this.taskId = taskId
     this.abortRequested = false
     this.stopRequested = false
     const state = await this.loadState(plan, taskId, arrangementRunId, requestedState)
@@ -146,7 +153,10 @@ export class ArrangementExecutor {
         await this.persist(plan, taskId, arrangementRunId, current)
         await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.nodeId)
       }
-      if (results.some(result => !result.ok)) return { status: current.status, state: current, error: results.find(result => !result.ok)?.error }
+      if (results.some(result => !result.ok)) {
+        await this.options.media?.stopTask(taskId)
+        return { status: current.status, state: current, error: results.find(result => !result.ok)?.error }
+      }
     }
 
     current = this.stopRequested
@@ -208,6 +218,15 @@ export class ArrangementExecutor {
         })
         created = true
       }
+      const toolPolicy = toToolPolicy(plan.permissions, workspaceDir)
+      const mediaTools = await this.options.media?.prepareRun({
+        taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
+        requestApproval: request => this.options.onApprovalRequest(request),
+      })
+      if (this.abortRequested) {
+        await this.options.media?.stopTask(taskId)
+        throw new Error('Arrangement execution was interrupted.')
+      }
       worker = this.options.createWorker({
         context: {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -215,7 +234,7 @@ export class ArrangementExecutor {
           agentDir: paths?.agentDir ?? `${workspaceDir}/.pi-runs/${nodeRunId}`,
           sessionDir: paths?.sessionDir ?? `${workspaceDir}/.pi-sessions/${nodeRunId}`,
           additionalSkillPaths: employee.additionalSkillPaths,
-          toolPolicy: toToolPolicy(plan.permissions, workspaceDir),
+          systemPrompt: employee.systemPrompt, mediaTools, toolPolicy,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
@@ -244,6 +263,7 @@ export class ArrangementExecutor {
       const runPromise = worker.run(prompt)
       if (this.abortRequested) await worker.abort()
       await runPromise
+      if (!this.abortRequested) await this.options.media?.waitForRun(taskId, nodeRunId)
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       if (this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
       await this.emitNodeEvent(taskId, arrangementRunId, {

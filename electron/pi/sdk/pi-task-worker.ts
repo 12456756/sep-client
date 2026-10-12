@@ -26,6 +26,8 @@ export interface PiTaskWorkerContext {
   sessionDir: string
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
+  systemPrompt?: string
+  mediaTools?: PiAgentSessionConfig['mediaTools']
   toolPolicy?: PiAgentSessionConfig['toolPolicy']
   disableTools?: boolean
 }
@@ -124,6 +126,8 @@ export class PiTaskWorker {
         sessionDir: this.context.sessionDir,
         resumeSessionFile: this.context.resumeSessionFile,
         additionalSkillPaths: this.context.additionalSkillPaths,
+        systemPrompt: this.context.systemPrompt,
+        mediaTools: this.context.mediaTools,
         toolPolicy: this.context.toolPolicy,
         disableTools: this.context.disableTools,
         getAccessToken: () => this.tokenManager.getValidToken(),

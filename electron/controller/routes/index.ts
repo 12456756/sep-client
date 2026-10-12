@@ -15,6 +15,7 @@ import { computeCreditRoutes } from './compute-credit'
 import { profileWalletRoutes } from './profile-wallet'
 import { notificationRoutes } from './notifications'
 import { updateRoutes } from './update'
+import { mediaRoutes } from './media'
 
 export const routes: readonly Route[] = [
   ...authRoutes,
@@ -27,6 +28,7 @@ export const routes: readonly Route[] = [
   ...notificationRoutes,
   ...systemRoutes,
   ...updateRoutes,
+  ...mediaRoutes,
 ]
 
 export const listeners: readonly Listener[] = [...systemListeners]

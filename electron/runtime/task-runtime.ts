@@ -32,6 +32,7 @@ import { createArrangementExecutionState, resumeArrangement, retryArrangementNod
 import { shouldPushTaskEvent } from './task-event-visibility'
 import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinishedInput, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
 import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
+import type { MediaRunPort } from '../domain/media-tools'
 
 const log = logger.child('task-runtime')
 
@@ -75,6 +76,7 @@ export interface TaskRuntimeOptions {
   workPlanStore?: WorkPlanStorePort
   arrangementCheckpointStore?: ArrangementCheckpointStorePort
   monitor?: TaskMonitorPort
+  media?: MediaRunPort
 }
 
 export class TaskRuntime {
@@ -89,6 +91,7 @@ export class TaskRuntime {
   private readonly workPlanStore: WorkPlanStorePort | null
   private readonly arrangementCheckpointStore: ArrangementCheckpointStorePort | null
   private readonly monitor: TaskMonitorPort
+  private readonly media: MediaRunPort | undefined
   private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
@@ -122,6 +125,7 @@ export class TaskRuntime {
     this.workPlanStore = options.workPlanStore ?? null
     this.arrangementCheckpointStore = options.arrangementCheckpointStore ?? null
     this.monitor = options.monitor ?? silentTaskMonitor
+    this.media = options.media
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvals = new ToolApprovals({
@@ -172,6 +176,7 @@ export class TaskRuntime {
       onOutput: input => this.reportMonitorOutput(input),
       onStarted: input => this.reportMonitorStarted(input),
       onFinished: input => this.reportMonitorFinished(input),
+      media: this.media,
     })
   }
 
@@ -269,7 +274,7 @@ export class TaskRuntime {
         taskId, runId: activeArrangement.runId, subscriptionId: activeArrangement.subscriptionId, sequence: 0,
         type: 'stop_requested', occurredAt: Date.now(), data: reason ? { reason } : null,
       })
-      this.approvals.denyRun(activeArrangement.runId)
+      this.denyTaskApprovals(taskId, activeArrangement.runId)
       await activeArrangement.executor.stop()
       await activeArrangement.completion
       return
@@ -281,6 +286,7 @@ export class TaskRuntime {
     const plan = await this.workPlanStore.get(scope, taskId)
     if (!plan || plan.mode === 'conversation') throw new Error('The task is not an arrangement.')
     this.removeQueuedTask(taskId)
+    await this.media?.stopTask(taskId)
     const checkpoint = await this.arrangementCheckpointStore.get(scope, taskId)
     const state = checkpoint?.state ?? createArrangementExecutionState(plan.nodes)
     const stopped = stopArrangement(state)
@@ -341,7 +347,7 @@ export class TaskRuntime {
     const activeArrangement = this.activeArrangements.get(taskId)
     if (activeArrangement) {
       activeArrangement.control = 'pause'
-      this.approvals.denyRun(activeArrangement.runId)
+      this.denyTaskApprovals(taskId, activeArrangement.runId)
       await activeArrangement.executor.abort()
       await activeArrangement.completion
       return
@@ -349,6 +355,7 @@ export class TaskRuntime {
     const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
+      await this.media?.stopTask(taskId)
       const task = await this.taskManager.getTask(taskId)
       if (task?.status === TaskStatus.PENDING && task.activeRunId) {
         await this.taskManager.pauseTask(taskId)
@@ -359,7 +366,7 @@ export class TaskRuntime {
     }
     active.control = 'pause'
     this.approvals.denyRun(active.runId)
-    await active.worker.abort()
+    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId)])
     await active.completion
   }
 
@@ -378,7 +385,7 @@ export class TaskRuntime {
         occurredAt: Date.now(),
         data: null,
       })
-      this.approvals.denyRun(activeArrangement.runId)
+      this.denyTaskApprovals(taskId, activeArrangement.runId)
       await activeArrangement.executor.abort()
       await activeArrangement.completion
       return
@@ -386,6 +393,7 @@ export class TaskRuntime {
     const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
+      await this.media?.stopTask(taskId)
       const task = await this.taskManager.getTask(taskId)
       if (task?.activeRunId && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED) {
         await this.taskManager.settleTaskRun(taskId, task.activeRunId, TaskStatus.PAUSED, stopReason)
@@ -408,7 +416,7 @@ export class TaskRuntime {
       data: null,
     })
     this.approvals.denyRun(active.runId)
-    await active.worker.abort()
+    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId)])
     await active.completion
   }
 
@@ -439,7 +447,7 @@ export class TaskRuntime {
         occurredAt: Date.now(),
         data: null,
       })
-      await active.worker.abort()
+      await Promise.all([active.worker.abort(), this.media?.stopTask(active.taskId)])
       await active.completion
     }))])
     await this.conversationExecutor.disposeSessions()
@@ -447,6 +455,17 @@ export class TaskRuntime {
 
   respondToApproval(response: { requestId: string; approved: boolean; reason?: string }): boolean {
     return this.approvals.respond(response)
+  }
+
+  readonly requestMediaApproval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>): Promise<boolean> => {
+    return this.approvals.request(input)
+  }
+
+  private denyTaskApprovals(taskId: string, runId: string): void {
+    this.approvals.denyRun(runId)
+    for (const [nodeRunId, node] of this.nodeParticipations) {
+      if (node.taskId === taskId && node.parentRunId === runId) this.approvals.denyRun(nodeRunId)
+    }
   }
 
   private enqueueEvent(event: TaskExecutionEvent): Promise<void> {
@@ -561,6 +580,7 @@ export class TaskRuntime {
         authorizeEmployee: this.authorizeEmployee,
         workspaceRoot: task.workDir ?? this.getTaskWorkspaceRoot(),
         arrangementSubscriptionId: queued.subscriptionId,
+        media: this.media,
       })
       this.activeArrangements.set(taskId, {
         taskId,

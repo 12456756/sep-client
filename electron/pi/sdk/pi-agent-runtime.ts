@@ -38,6 +38,8 @@ export interface PiAgentSessionConfig {
   sessionDir: string
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
+  systemPrompt?: string
+  mediaTools?: import('../../domain/media-tools').MediaHostTools
   mcpServers?: readonly McpServerConfig[]
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>

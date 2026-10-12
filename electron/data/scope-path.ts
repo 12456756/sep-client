@@ -158,6 +158,10 @@ export class ScopePath {
     return join(this.taskDir(scope, taskId), 'metadata.json')
   }
 
+  mediaRoot(scope: TaskOwnerScope, taskId: string): string {
+    return join(this.taskDir(scope, taskId), 'media')
+  }
+
   clientMonitorRoot(scope: TaskOwnerScope): string {
     return join(this.ownerRoot(scope), 'client-monitor')
   }

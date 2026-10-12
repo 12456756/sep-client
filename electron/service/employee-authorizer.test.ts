@@ -17,7 +17,9 @@ import {
   EmployeeAuthorizer,
   resolveEmployeeRuntime,
   type SkillProvisioner,
+  type RuntimeProvider,
 } from './employee-authorizer'
+import { employeeRuntimeSnapshotSchema, type PreparedEmployeeSkill } from '../common/platform/employee-runtime-contract'
 
 const GATEWAY = 'http://gateway.test'
 
@@ -153,5 +155,182 @@ describe('explicit model selection', () => {
     const employee = { ...subscription('sub-a'), allowedModels: ['first', 'selected'] }
     assert.equal(resolveEmployeeRuntime([employee], 'sub-a', GATEWAY, 'selected')?.modelId, 'selected')
     assert.equal(resolveEmployeeRuntime([employee], 'sub-a', GATEWAY, 'forbidden'), null)
+  })
+})
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+function runtimeManifest() {
+  return {
+    manifestVersion: 1, subscriptionId: 'sub-a', templateVersion: 'locked-template',
+    employee: { id: 'template-', name: 'Employee', version: 'actual-employee', maxSteps: 10 },
+    runtime: { systemPrompt: 'Actual employee prompt', modelId: 'preferred', allowedModels: ['first', 'preferred'],
+      skills: [{ capabilityId: 'cap-a', name: 'Orders', description: null, versionId: 'approved-v1', version: '1.0', content: '# Approved source' }] },
+  }
+}
+
+function preparedSkill(): PreparedEmployeeSkill {
+  return {
+    capabilityId: 'cap-a', versionId: 'local-personal', baseSkillVersionId: 'approved-v1', version: 'personal', source: 'owner-local',
+    name: 'cap-a', description: 'Orders', content: '---\nname: cap-a\ndescription: Orders\n---\n# Actual owner source', sha256: 'a'.repeat(64), path: '/skills/immutable/cap-a',
+  }
+}
+
+describe('C1 employee runtime preparation', () => {
+  it('uses the runtime prompt/model and snapshots the actual selected skill, not the platform default', async () => {
+    const manifest = runtimeManifest()
+    const actual = preparedSkill()
+    const requests: Array<Parameters<SkillProvisioner['prepare']>[0]> = []
+    const skills: SkillProvisioner = {
+      async prepare(input) { requests.push(input); return { skillPaths: [actual.path], skills: [actual] } },
+      invalidate() {},
+    }
+    const directory = new EmployeeDirectory(async () => [{ ...subscription('sub-a'), allowedModels: ['first', 'preferred'] }])
+    let runtimeFetches = 0
+    const provider: RuntimeProvider = { async getRuntime(id, token) { assert.equal(id, 'sub-a'); assert.equal(token, 'access-token'); runtimeFetches++; return manifest } }
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, provider)
+    const result = await authorizer.authorize('sub-a')
+    assert.equal(result?.modelId, 'preferred')
+    assert.equal(result?.systemPrompt, manifest.runtime.systemPrompt)
+    assert.equal(result?.runtimeSnapshot?.templateVersion, 'locked-template')
+    assert.equal(result?.runtimeSnapshot?.employeeVersion, 'actual-employee')
+    assert.deepEqual(result?.runtimeSnapshot?.skills, [actual])
+    assert.deepEqual(requests[0]?.runtimeSkills, manifest.runtime.skills)
+    assert.equal(requests[0]?.isCurrent?.(), true)
+    assert.equal(employeeRuntimeSnapshotSchema.safeParse(result?.runtimeSnapshot).success, true)
+    actual.content = '# Later mutation'
+    manifest.runtime.skills[0]!.content = '# Later platform mutation'
+    assert.notEqual(result?.runtimeSnapshot?.skills[0]?.content, actual.content)
+    assert.notEqual(result?.runtimeSnapshot?.approvedSkills[0]?.content, manifest.runtime.skills[0]?.content)
+    assert.equal(Object.isFrozen(result?.runtimeSnapshot?.skills[0]), true)
+    authorizer.resolve('sub-a')
+    assert.equal(runtimeFetches, 1, 'resolve must not perform runtime IO')
+  })
+
+  it('passes raw media without advertising or negotiating a capability', async () => {
+    const manifest = runtimeManifest()
+    const media = { mock: true }
+    const directory = new EmployeeDirectory(async () => [{ ...subscription('sub-a'), allowedModels: ['first', 'preferred'] }])
+    const skills: SkillProvisioner = { async prepare() { return { skillPaths: [], skills: [] } }, invalidate() {} }
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, {
+      async getRuntime() { return { ...manifest, runtime: { ...manifest.runtime, skills: [], media } } },
+    })
+    assert.deepEqual((await authorizer.authorize('sub-a'))?.media, media)
+  })
+
+  it('checks selected models against both runtime and directory before skill IO', async () => {
+    const manifest = runtimeManifest()
+    const skills = fakeSkills()
+    const directory = new EmployeeDirectory(async () => [{ ...subscription('sub-a'), allowedModels: ['first', 'preferred', 'directory-only'] }])
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, { async getRuntime() { return manifest } })
+    assert.equal(await authorizer.authorize('sub-a', 'directory-only'), null)
+    manifest.runtime.allowedModels = []
+    assert.equal(await authorizer.authorize('sub-a'), null)
+    assert.equal(skills.prepared(), 0)
+  })
+
+  it('rejects unsupported or mismatched manifests without preparing skills', async () => {
+    const manifest = runtimeManifest()
+    const skills = fakeSkills()
+    const directory = new EmployeeDirectory(async () => [{ ...subscription('sub-a'), allowedModels: ['first', 'preferred'] }])
+    for (const invalid of [
+      { ...manifest, manifestVersion: 2 },
+      { ...manifest, subscriptionId: 'another-subscription' },
+      { ...manifest, employee: { ...manifest.employee, id: 'another-employee' } },
+    ]) {
+      const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, { async getRuntime() { return invalid } })
+      await assert.rejects(authorizer.authorize('sub-a'), /manifest|identity mismatch/)
+    }
+    assert.equal(skills.prepared(), 0)
+  })
+
+  it('fails explicitly when the provisioner omits an approved runtime skill', async () => {
+    const directory = new EmployeeDirectory(async () => [{ ...subscription('sub-a'), allowedModels: ['first', 'preferred'] }])
+    const authorizer = new EmployeeAuthorizer(session, directory, fakeSkills(), GATEWAY, { async getRuntime() { return runtimeManifest() } })
+    await assert.rejects(authorizer.authorize('sub-a'), /not fully prepared/)
+  })
+
+  it('rejects authorization with no scope or an inactive subscription', async () => {
+    const skills = fakeSkills()
+    const directory = new EmployeeDirectory(async () => [subscription('sub-a')])
+    const noScope = new EmployeeAuthorizer({ ...session, getMeta() { return null } }, directory, skills, GATEWAY)
+    assert.equal(await noScope.authorize('sub-a'), null)
+    assert.equal(resolveEmployeeRuntime([{ ...subscription('sub-a'), status: 'PAUSED' }], 'sub-a', GATEWAY), null)
+    assert.equal(skills.prepared(), 0)
+  })
+
+  it('drops results when scope changes while obtaining a token', async () => {
+    const token = deferred<string>()
+    let meta = { enterpriseId: 'enterprise-1', memberId: 'member-1' }
+    let directoryReads = 0
+    const directory = new EmployeeDirectory(async () => { directoryReads++; return [subscription('sub-a')] })
+    const authorizer = new EmployeeAuthorizer({ getValidAccessToken: () => token.promise, getMeta: () => meta }, directory, fakeSkills(), GATEWAY)
+    const pending = authorizer.authorize('sub-a')
+    meta = { enterpriseId: 'enterprise-2', memberId: 'member-2' }
+    token.resolve('new-token')
+    assert.equal(await pending, null)
+    assert.equal(directoryReads, 0)
+  })
+
+  it('drains old directory requests and never admits old subscriptions into a new account', async () => {
+    const oldDirectory = deferred<Subscription[]>()
+    const started = deferred<void>()
+    let meta = { enterpriseId: 'enterprise-1', memberId: 'member-1' }
+    let reads = 0
+    const directory = new EmployeeDirectory(async () => {
+      reads++
+      if (reads === 1) { started.resolve(); return oldDirectory.promise }
+      return [subscription('sub-b')]
+    })
+    const authorizer = new EmployeeAuthorizer({ ...session, getMeta: () => meta }, directory, fakeSkills(), GATEWAY)
+    const old = authorizer.authorize('sub-a')
+    await started.promise
+    authorizer.clear()
+    meta = { enterpriseId: 'enterprise-2', memberId: 'member-2' }
+    const next = authorizer.authorize('sub-b')
+    oldDirectory.resolve([subscription('sub-a')])
+    assert.equal(await old, null)
+    assert.ok(await next)
+    assert.equal(reads, 2)
+    assert.equal(authorizer.resolve('sub-a'), null)
+    assert.ok(authorizer.resolve('sub-b'))
+  })
+
+  it('drops old runtime responses after clear even when the same member signs in again', async () => {
+    const runtime = deferred<unknown>()
+    const started = deferred<void>()
+    const directory = new EmployeeDirectory(async () => [{ ...subscription('sub-a'), allowedModels: ['first', 'preferred'] }])
+    const skills = fakeSkills()
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, {
+      getRuntime() { started.resolve(); return runtime.promise },
+    })
+    const pending = authorizer.authorize('sub-a')
+    await started.promise
+    authorizer.clear()
+    runtime.resolve(runtimeManifest())
+    assert.equal(await pending, null)
+    assert.equal(skills.prepared(), 0)
+    assert.equal(authorizer.resolve('sub-a'), null)
+  })
+
+  it('provides an invalidation guard and discards stale skill preparations', async () => {
+    const preparation = deferred<{ skillPaths: string[] }>()
+    const started = deferred<void>()
+    let guard: (() => boolean) | undefined
+    const skills: SkillProvisioner = {
+      prepare(input) { guard = input.isCurrent; started.resolve(); return preparation.promise }, invalidate() {},
+    }
+    const directory = new EmployeeDirectory(async () => [subscription('sub-a')])
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY)
+    const pending = authorizer.authorize('sub-a')
+    await started.promise
+    authorizer.clear()
+    assert.equal(guard?.(), false)
+    preparation.resolve({ skillPaths: ['/old-account/skill'] })
+    assert.equal(await pending, null)
   })
 })

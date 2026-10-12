@@ -1,0 +1,551 @@
+import { afterEach, describe, it } from 'node:test'
+import * as assert from 'node:assert/strict'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { setTimeout as delay } from 'node:timers/promises'
+import { createHash } from 'node:crypto'
+import { inflateSync } from 'node:zlib'
+import type { MediaGenerationInput } from '../../src/shared/media'
+import type { ToolAuthorizationRequest } from '../../src/shared/types'
+import { MOCK_MEDIA_CAPABILITIES, MOCK_MEDIA_PNG, MOCK_MEDIA_PNG_SHA256, MockMediaGateway } from '../data/mock-media-gateway'
+import { MediaStore } from '../data/media-store'
+import { inspectMediaImage } from '../data/media-image'
+import type { TaskOwnerScope } from '../data/scope-path'
+import type { LocalMediaJob } from '../domain/media'
+import { AppError } from '../errors/app-error'
+import { ToolApprovals } from '../runtime/run-approvals'
+import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
+import { MediaService, type MediaServiceOptions } from './media-service'
+
+const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+const other = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
+const directories: string[] = []
+const services: MediaService[] = []
+const approvals: ToolApprovals[] = []
+
+afterEach(async () => {
+  for (const approval of approvals.splice(0)) approval.denyAll()
+  await Promise.all(services.splice(0).map(service => service.stopAll()))
+  await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
+})
+
+function input(overrides: Partial<MediaGenerationInput> = {}): MediaGenerationInput {
+  return { profileId: 'mock-image', operation: 'generate', localAssetIds: [], creativeBrief: 'A product photograph',
+    parameters: { aspectRatio: '1:1', count: 1 }, ...overrides }
+}
+
+function policy(preset: TaskToolPolicy['preset'] = 'full-local', approvalMode: TaskToolPolicy['approvalMode'] = 'auto-approve'): TaskToolPolicy {
+  return { preset, approvalMode, allowedTools: [], allowedPaths: [], deniedPaths: [], commandPolicy: 'restricted', workspaceDir: '/unused-mock-workspace' }
+}
+
+async function fixture(overrides: Partial<MediaServiceOptions> = {}, gateway = new MockMediaGateway()) {
+  const directory = await mkdtemp(join(await realpath(tmpdir()), 'sep-media-service-'))
+  directories.push(directory)
+  const root = join(directory, 'user-data')
+  const store = new MediaStore(root)
+  let activeScope: TaskOwnerScope | null = owner
+  const approvalRequests: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>[] = []
+  const employee: EmployeeRuntimeConfig = { subscriptionId: 'subscription-a', modelId: 'model-a', gatewayUrl: 'mock://no-network',
+    systemPrompt: 'Product photography employee', media: structuredClone(MOCK_MEDIA_CAPABILITIES) }
+  const options: MediaServiceOptions = {
+    scope: { currentScope: () => activeScope }, store, gateway,
+    getTask: async taskId => ['task-a', 'task-b'].includes(taskId) ? { subscriptionId: employee.subscriptionId } : null,
+    authorize: async () => employee,
+    requestApproval: async request => { approvalRequests.push(request); return true },
+    pollFloorMs: 1, maxAttempts: 3, operationTimeoutMs: 1_000,
+    ...overrides,
+  }
+  const service = new MediaService(options)
+  services.push(service)
+  return { service, store, gateway, root, directory, employee, options, approvalRequests, setScope: (scope: TaskOwnerScope | null) => { activeScope = scope } }
+}
+
+async function waitUntil(check: () => Promise<boolean>, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!await check()) {
+    if (Date.now() >= deadline) assert.fail('Media operation did not settle within the test deadline.')
+    await delay(2)
+  }
+}
+
+function code(expected: string): (error: unknown) => boolean {
+  return error => error instanceof AppError && error.code === expected
+}
+
+it('allows ordinary legacy tasks without an employee binding to bypass media archival', async () => {
+  const f = await fixture({ getTask: async () => ({ subscriptionId: null }) })
+  assert.equal(await f.service.archiveIfMedia('task-a'), false)
+  assert.equal(await f.store.isArchived(owner, 'task-a'), false)
+  assert.equal(f.gateway.calls.submit.length, 0)
+})
+
+function notSentJob(): LocalMediaJob {
+  const requestHash = 'a'.repeat(64)
+  const generationInput = input()
+  return {
+    version: 1, owner, jobId: 'not-sent-job', taskId: 'task-a', runId: 'original-run', subscriptionId: 'subscription-a', clientRequestId: 'original-request', requestHash,
+    input: generationInput, profile: structuredClone(MOCK_MEDIA_CAPABILITIES.profiles[0]),
+    request: { clientRequestId: 'original-request', requestHash, quoteId: 'quote-a', profileId: 'mock-image', configVersion: 'mock-v1',
+      operation: 'generate', referenceIds: [], referenceHashes: [], creativeBrief: generationInput.creativeBrief, parameters: generationInput.parameters },
+    quote: { quoteId: 'quote-a', requestHash, expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0', currency: 'MOCK', authorized: true,
+      budgetAuthorized: true, allowUnknownCost: false },
+    approval: 'manual', receiptId: null, submission: 'NOT_SENT', generationStatus: 'SUBMITTING', trackingStatus: 'ACTIVE', saveStatus: 'PENDING',
+    outputs: [], billingStatus: 'UNKNOWN', nextPollAt: 0, attempts: 0, error: null, createdAt: 1, updatedAt: 1,
+  }
+}
+
+describe('MediaService authorization and request semantics', () => {
+  it('uses a deterministic valid PNG fixture with matching chunks, pixels and sha256', () => {
+    assert.deepEqual(inspectMediaImage(MOCK_MEDIA_PNG), { mime: 'image/png', width: 1, height: 1, size: MOCK_MEDIA_PNG.length })
+    assert.equal(createHash('sha256').update(MOCK_MEDIA_PNG).digest('hex'), MOCK_MEDIA_PNG_SHA256)
+    for (let offset = 8; offset < MOCK_MEDIA_PNG.length;) {
+      const length = MOCK_MEDIA_PNG.readUInt32BE(offset)
+      const chunk = MOCK_MEDIA_PNG.subarray(offset + 4, offset + 8 + length)
+      let crc = 0xffffffff
+      for (const byte of chunk) {
+        crc ^= byte
+        for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0)
+      }
+      assert.equal(MOCK_MEDIA_PNG.readUInt32BE(offset + 8 + length), (crc ^ 0xffffffff) >>> 0)
+      if (chunk.toString('ascii', 0, 4) === 'IDAT') assert.deepEqual(inflateSync(chunk.subarray(4)), Buffer.from([1, 255, 255]))
+      offset += 12 + length
+    }
+  })
+
+  it('returns mock capabilities and degrades cleanly when the employee has no media capability', async () => {
+    const f = await fixture()
+    assert.deepEqual((await f.service.getTaskMedia('task-a')).capabilities, MOCK_MEDIA_CAPABILITIES)
+    f.employee.media = undefined
+    await f.service.stopAll()
+    const view = await f.service.getTaskMedia('task-a')
+    assert.equal(view.capabilities, null)
+    assert.ok(view.unavailableReason)
+    await assert.rejects(f.service.generateTaskMedia('task-a', input()), code('SERVICE_UNAVAILABLE'))
+    assert.equal(f.gateway.calls.submit.length, 0)
+  })
+
+  it('blocks auto-approved requests whose quote lacks budget or platform authorization', async () => {
+    for (const quote of [{ budgetAuthorized: false }, { authorized: false }, { expiresAt: 1 }, { requestHash: 'b'.repeat(64) },
+      { status: 'unavailable' as const, amount: null, currency: null, allowUnknownCost: false }]) {
+      const f = await fixture({ policy: async () => policy() }, new MockMediaGateway({ quote }))
+      await assert.rejects(f.service.generateTaskMedia('task-a', input()), code('PERMISSION_DENIED'))
+      assert.equal(f.gateway.calls.submit.length, 0)
+      assert.equal(f.gateway.calls.uploadReference.length, 0)
+      assert.equal(f.approvalRequests.length, 0)
+      assert.deepEqual(await f.store.listJobs(owner), [])
+    }
+  })
+
+  it('requires manual approval unless both full-local and auto-approve are selected', async () => {
+    for (const selectedPolicy of [{ ...policy('workspace-edit'), allowedTools: ['media_generate_image'] }, policy('full-local', 'confirm-each')]) {
+      const f = await fixture({ policy: async () => selectedPolicy })
+      const view = await f.service.generateTaskMedia('task-a', input())
+      await f.service.waitForRun('task-a', view.runId)
+      assert.equal(f.approvalRequests.length, 1)
+      assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.approval, 'manual')
+    }
+    const automatic = await fixture({ policy: async () => policy() })
+    const view = await automatic.service.generateTaskMedia('task-a', input())
+    await automatic.service.waitForRun('task-a', view.runId)
+    assert.equal(automatic.approvalRequests.length, 0)
+    assert.equal((await automatic.store.getJob(owner, 'task-a', view.jobId))?.approval, 'automatic')
+  })
+
+  it('blocks read-only and tools not included in a restricted policy before quote or approval', async () => {
+    for (const selectedPolicy of [policy('read-only'), { ...policy('read-only'), allowedTools: ['media_generate_image'] }, policy('workspace-edit')]) {
+      const f = await fixture({ policy: async () => selectedPolicy })
+      await assert.rejects(f.service.generateTaskMedia('task-a', input()), code('PERMISSION_DENIED'))
+      assert.equal(f.gateway.calls.quote.length, 0)
+      assert.equal(f.gateway.calls.submit.length, 0)
+      assert.equal(f.approvalRequests.length, 0)
+    }
+  })
+
+  it('denies timed-out native tool approval without uploading references or submitting', async () => {
+    const delivered: ToolAuthorizationRequest[] = []
+    const approval = new ToolApprovals({ timeoutMs: 10, onRequest: request => { delivered.push(request) } })
+    approvals.push(approval)
+    const f = await fixture({ requestApproval: request => approval.request(request) })
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [asset] = await f.service.importReferences('task-a', [selected])
+    await assert.rejects(f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId] })), code('PERMISSION_DENIED'))
+    assert.equal(delivered.length, 1)
+    assert.equal(approval.size, 0)
+    assert.equal(approval.respond({ requestId: delivered[0].requestId, approved: true }), false)
+    assert.equal(f.gateway.calls.uploadReference.length, 0)
+    assert.equal(f.gateway.calls.submit.length, 0)
+  })
+
+  it('bounds a stalled approval operation without performing a submission', async () => {
+    const f = await fixture({ operationTimeoutMs: 15, requestApproval: () => new Promise(() => undefined) })
+    // AbortSignal.timeout is unref'ed; keep this isolated test alive while awaiting it.
+    const timer = setTimeout(() => undefined, 100)
+    try { await assert.rejects(f.service.generateTaskMedia('task-a', input())) } finally { clearTimeout(timer) }
+    assert.equal(f.gateway.calls.submit.length, 0)
+    assert.deepEqual(await f.store.listJobs(owner), [])
+  })
+
+  it('hashes semantic parameters, configuration and reference content rather than quote/request/run IDs', async () => {
+    const f = await fixture({ policy: async () => policy() }, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [a] = await f.service.importReferences('task-a', [selected])
+    const [b] = await f.service.importReferences('task-b', [selected])
+    const first = await f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [a.localAssetId] }))
+    await f.service.waitForRun('task-a', first.runId)
+    const second = await f.service.generateTaskMedia('task-b', input({ parameters: { count: 1, aspectRatio: '1:1' }, operation: 'edit', localAssetIds: [b.localAssetId] }))
+    await f.service.waitForRun('task-b', second.runId)
+    const [requestA, requestB] = f.gateway.calls.submit.map(call => call.request)
+    assert.equal(requestA.requestHash, requestB.requestHash)
+    assert.notEqual(requestA.clientRequestId, requestB.clientRequestId)
+    assert.notEqual(requestA.quoteId, requestB.quoteId)
+    assert.notEqual(first.runId, second.runId)
+    assert.deepEqual(requestA.referenceHashes, [MOCK_MEDIA_PNG_SHA256])
+    assert.deepEqual(f.gateway.calls.quote[0].request.referenceIds, [])
+    const changed = await f.service.generateTaskMedia('task-a', input({ creativeBrief: 'Different product photograph' }))
+    await f.service.waitForRun('task-a', changed.runId)
+    assert.notEqual(f.gateway.calls.submit[2].request.requestHash, requestA.requestHash)
+    const changedCount = await f.service.generateTaskMedia('task-a', input({ parameters: { aspectRatio: '1:1', count: 2 } }))
+    await f.service.waitForRun('task-a', changedCount.runId)
+    assert.notEqual(f.gateway.calls.submit[3].request.requestHash, f.gateway.calls.submit[2].request.requestHash)
+    const changedCapabilities = structuredClone(MOCK_MEDIA_CAPABILITIES)
+    changedCapabilities.profiles[0].configVersion = 'mock-v2'
+    f.employee.media = changedCapabilities
+    const changedConfig = await f.service.generateTaskMedia('task-a', input({ parameters: { aspectRatio: '1:1', count: 2 } }))
+    await f.service.waitForRun('task-a', changedConfig.runId)
+    assert.notEqual(f.gateway.calls.submit[4].request.requestHash, f.gateway.calls.submit[3].request.requestHash)
+  })
+
+  it('rejects unknown fields, cross-task assets, unsupported parameters and duplicate references before quote', async () => {
+    const f = await fixture()
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [asset] = await f.service.importReferences('task-b', [selected])
+    for (const invalid of [input({ profileId: 'unknown' }), input({ operation: 'edit' }), input({ parameters: { aspectRatio: '4:3', count: 1 } }),
+      input({ parameters: { aspectRatio: '1:1', count: 5 } }), input({ parameters: { aspectRatio: '1:1', count: 1, quality: 'arbitrary' } }),
+      input({ localAssetIds: [asset.localAssetId] }), input({ localAssetIds: [asset.localAssetId, asset.localAssetId] }), { ...input(), upstreamUrl: 'https://untrusted.invalid' }]) {
+      await assert.rejects(f.service.generateTaskMedia('task-a', invalid))
+    }
+    assert.equal(f.gateway.calls.quote.length, 0)
+    assert.equal(f.gateway.calls.submit.length, 0)
+  })
+})
+
+describe('MediaService local delivery and original-request recovery', () => {
+  it('persists the complete employee, approved and installed skills, and model configuration for a run', async () => {
+    const f = await fixture()
+    f.employee.runtimeSnapshot = {
+      manifestVersion: 1, subscriptionId: f.employee.subscriptionId, ...owner,
+      employeeId: 'employee-a', templateVersion: 'template-1', employeeVersion: 'employee-2', maxSteps: 20,
+      systemPrompt: f.employee.systemPrompt!, modelId: 'model-a', allowedModels: ['model-a', 'model-b'],
+      approvedSkills: [{ capabilityId: 'product', name: 'Product', description: null, versionId: 'approved-1', version: '1', content: 'Approved contents' }],
+      skills: [{ capabilityId: 'product', versionId: 'local-1', baseSkillVersionId: 'approved-1', version: '2', source: 'owner-local',
+        name: 'product', description: 'Actual product skill', content: 'Installed contents', path: '/local/skills/product/SKILL.md', sha256: 'c'.repeat(64) }],
+    }
+    const expected = structuredClone(f.employee.runtimeSnapshot)
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', view.runId)
+    const saved = await new MediaStore(f.root).getSnapshot(owner, 'task-a', view.runId)
+    assert.deepEqual(saved?.runtimeSnapshot, expected)
+    assert.deepEqual(saved?.skills, [{ path: '/local/skills/product/SKILL.md', sha256: 'c'.repeat(64), version: '2' }])
+    f.employee.runtimeSnapshot = { ...expected, modelId: 'model-b', skills: [] }
+    assert.deepEqual((await f.store.getSnapshot(owner, 'task-a', view.runId))?.runtimeSnapshot, expected)
+  })
+
+  it('delivers validated PNG files and returns sanitized views without local paths or request details', async () => {
+    const f = await fixture()
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', view.runId)
+    const task = await f.service.getTaskMedia('task-a')
+    assert.equal(task.jobs[0].generationStatus, 'SUCCEEDED')
+    assert.equal(task.jobs[0].saveStatus, 'SAVED')
+    assert.equal(task.assets.length, 1)
+    assert.equal(task.assets[0].mime, 'image/png')
+    assert.equal(f.gateway.calls.submit.length, 1)
+    assert.equal(f.gateway.calls.content.length, 1)
+    const preview = await f.service.preview('task-a', task.assets[0].localAssetId)
+    assert.equal(preview.mime, 'image/png')
+    assert.deepEqual(preview.bytes, MOCK_MEDIA_PNG)
+    const exported = join(f.directory, 'export.png')
+    await f.service.export('task-a', task.assets[0].localAssetId, exported)
+    assert.deepEqual(await readFile(exported), MOCK_MEDIA_PNG)
+    for (const field of ['relativePath', 'owner', 'requestHash', 'clientRequestId', 'quoteId', 'systemPrompt']) assert.ok(!JSON.stringify(task).includes(`"${field}"`))
+    assert.ok(!JSON.stringify(task).includes(f.directory))
+    assert.ok(await f.store.getSnapshot(owner, 'task-a', view.runId))
+  })
+
+  it('finds a lost submit response by its original request ID and never resubmits or changes the run', async () => {
+    const f = await fixture({}, new MockMediaGateway({ submitResponseLost: true }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', view.runId)
+    const job = await f.store.getJob(owner, 'task-a', view.jobId)
+    assert.equal(f.gateway.calls.submit.length, 1)
+    assert.ok(f.gateway.calls.findReceipt.length > 0)
+    assert.ok(f.gateway.calls.findReceipt.every(call => call.clientRequestId === f.gateway.calls.submit[0].request.clientRequestId))
+    assert.equal(job?.clientRequestId, f.gateway.calls.submit[0].request.clientRequestId)
+    assert.equal(job?.runId, view.runId)
+    assert.equal(job?.generationStatus, 'SUCCEEDED')
+    assert.equal(job?.saveStatus, 'SAVED')
+  })
+
+  it('stops bounded missing-receipt recovery without turning it into a second generation', async () => {
+    const f = await fixture({}, new MockMediaGateway({ submitResponseLost: true, missingFinds: 100 }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await assert.rejects(f.service.waitForRun('task-a', view.runId), code('INVALID_STATE'))
+    const job = await f.store.getJob(owner, 'task-a', view.jobId)
+    assert.equal(job?.generationStatus, 'SUBMISSION_UNKNOWN')
+    assert.equal(job?.trackingStatus, 'STOPPED')
+    assert.equal(f.gateway.calls.findReceipt.length, 3)
+    assert.equal(f.gateway.calls.submit.length, 1)
+    await assert.rejects(f.service.redo('task-a', view.jobId), code('INVALID_STATE'))
+    await f.service.resume('task-a', view.jobId)
+    await assert.rejects(f.service.waitForRun('task-a', view.runId))
+    assert.equal(f.gateway.calls.submit.length, 1)
+    assert.ok(f.gateway.calls.findReceipt.every(call => call.clientRequestId === job?.clientRequestId))
+  })
+
+  it('recovers NOT_SENT jobs as not submitted and never automatically generates them', async () => {
+    const f = await fixture()
+    await f.store.saveJob(owner, notSentJob())
+    await f.service.resumePending()
+    await waitUntil(async () => (await f.store.getJob(owner, 'task-a', 'not-sent-job'))?.trackingStatus === 'STOPPED')
+    const restored = await f.store.getJob(owner, 'task-a', 'not-sent-job')
+    assert.equal(restored?.submission, 'NOT_SENT')
+    assert.equal(restored?.clientRequestId, 'original-request')
+    assert.equal(restored?.runId, 'original-run')
+    assert.match(restored?.error ?? '', /未提交/)
+    assert.equal(f.gateway.calls.submit.length, 0)
+    assert.equal(f.gateway.calls.findReceipt.length, 0)
+    assert.equal(f.gateway.calls.getReceipt.length, 0)
+  })
+
+  it('drains every pending original request while limiting recovery to four activities', async () => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'QUEUED', pollStatuses: ['SUCCEEDED'] }))
+    let active = 0, maximum = 0
+    const original = f.gateway.getReceipt.bind(f.gateway)
+    f.gateway.getReceipt = async (...args) => {
+      active++; maximum = Math.max(maximum, active)
+      try { await delay(15); return await original(...args) } finally { active-- }
+    }
+    for (let i = 0; i < 7; i++) {
+      const job = notSentJob()
+      job.jobId = `recovery-${i}`; job.clientRequestId = `original-${i}`
+      job.request = { ...job.request, clientRequestId: job.clientRequestId }
+      const receipt = await f.gateway.submit(job.subscriptionId, job.request, new AbortController().signal)
+      job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'
+      job.generationStatus = 'QUEUED'; job.trackingStatus = 'INTERRUPTED'
+      await f.store.saveJob(owner, job)
+    }
+    await f.service.resumePending()
+    await waitUntil(async () => (await f.store.listJobs(owner)).every(job => job.saveStatus === 'SAVED' && job.trackingStatus === 'STOPPED'))
+    assert.equal(f.gateway.calls.getReceipt.length, 7)
+    assert.equal(f.gateway.calls.submit.length, 7)
+    assert.ok(maximum > 1 && maximum <= 4)
+  })
+
+  it('retries failed saving of original outputs without generation, approval, quote or receipt mutation', async () => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED', contentFailures: 2 }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await assert.rejects(f.service.waitForRun('task-a', view.runId))
+    const before = await f.store.getJob(owner, 'task-a', view.jobId)
+    assert.equal(before?.generationStatus, 'SUCCEEDED')
+    assert.equal(before?.saveStatus, 'SAVE_FAILED')
+    const paidCalls = { quote: f.gateway.calls.quote.length, submit: f.gateway.calls.submit.length, approval: f.approvalRequests.length }
+    f.gateway.contentFailures = 0
+    await f.service.retrySave('task-a', view.jobId)
+    await f.service.waitForRun('task-a', view.runId)
+    const after = await f.store.getJob(owner, 'task-a', view.jobId)
+    assert.equal(after?.saveStatus, 'SAVED')
+    assert.equal(after?.clientRequestId, before?.clientRequestId)
+    assert.equal(after?.receiptId, before?.receiptId)
+    assert.equal(after?.runId, before?.runId)
+    assert.equal(after?.requestHash, before?.requestHash)
+    assert.deepEqual({ quote: f.gateway.calls.quote.length, submit: f.gateway.calls.submit.length, approval: f.approvalRequests.length }, paidCalls)
+    assert.equal((await f.store.listAssets(owner, 'task-a')).length, 1)
+  })
+
+  it('retries a failed filesystem save using the same original result', async context => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const stub = context.mock.method(f.store, 'saveOutput', async () => { throw new Error('Mock disk full') })
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await assert.rejects(f.service.waitForRun('task-a', view.runId))
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.saveStatus, 'SAVE_FAILED')
+    stub.mock.restore()
+    await f.service.retrySave('task-a', view.jobId)
+    await f.service.waitForRun('task-a', view.runId)
+    assert.equal(f.gateway.calls.submit.length, 1)
+    assert.equal((await f.store.listAssets(owner, 'task-a')).length, 1)
+  })
+
+  it('does not downgrade an accepted receipt when persisting that receipt fails', async context => {
+    for (const persistedBeforeError of [false, true]) {
+      const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+      const saveJob = f.store.saveJob.bind(f.store)
+      let injected = false
+      context.mock.method(f.store, 'saveJob', async (scope: TaskOwnerScope, job: LocalMediaJob) => {
+        if (!injected && job.submission === 'RECEIPTED') {
+          injected = true
+          if (persistedBeforeError) await saveJob(scope, job)
+          throw new Error('Mock receipt persistence failure')
+        }
+        assert.ok(!injected || job.generationStatus !== 'SUBMISSION_UNKNOWN', 'Accepted receipts must not become unknown submissions.')
+        await saveJob(scope, job)
+      })
+      try { await f.service.generateTaskMedia('task-a', input()) } catch { /* Local persistence may reject delivery, but must retain receipt identity. */ }
+      const [job] = await f.store.listJobs(owner, 'task-a')
+      assert.equal(injected, true)
+      assert.equal(job.submission, 'RECEIPTED')
+      assert.equal(job.receiptId, 'mock-receipt-1')
+      assert.equal(job.generationStatus, 'SUCCEEDED')
+      await f.service.resume('task-a', job.jobId)
+      await f.service.waitForRun('task-a', job.runId)
+      assert.equal(f.gateway.calls.submit.length, 1)
+      assert.equal(f.gateway.calls.findReceipt.length, 0)
+      assert.equal((await f.store.getJob(owner, 'task-a', job.jobId))?.saveStatus, 'SAVED')
+    }
+  })
+
+  it('preserves INTERRUPTED original requests across stopAll and resumes them after restart', async () => {
+    const states = ['RUNNING'] as ('RUNNING' | 'SUCCEEDED')[]
+    const f = await fixture({ pollFloorMs: 50 }, new MockMediaGateway({ pollStatuses: states }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.stopAll()
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus, 'INTERRUPTED')
+    states.splice(0, 1, 'SUCCEEDED')
+    const restarted = new MediaService({ ...f.options, store: new MediaStore(f.root), pollFloorMs: 1 })
+    services.push(restarted)
+    await restarted.resumePending()
+    await restarted.waitForRun('task-a', view.runId)
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.saveStatus, 'SAVED')
+    assert.equal(f.gateway.calls.submit.length, 1)
+  })
+})
+
+describe('MediaService cancellation, scope and archive', () => {
+  it('distinguishes local stop from upstream cancellation and rejects premature redo', async () => {
+    const f = await fixture({ pollFloorMs: 50 }, new MockMediaGateway({ pollStatuses: ['RUNNING'] }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await assert.rejects(f.service.redo('task-a', view.jobId), code('INVALID_STATE'))
+    await f.service.cancel('task-a', view.jobId, false)
+    const stopped = await f.store.getJob(owner, 'task-a', view.jobId)
+    assert.equal(stopped?.trackingStatus, 'STOPPED')
+    assert.notEqual(stopped?.generationStatus, 'CANCELLED')
+    assert.equal(f.gateway.calls.cancel.length, 0)
+    await f.service.resumePending()
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus, 'STOPPED')
+    await f.service.cancel('task-a', view.jobId, true)
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.generationStatus, 'CANCELLED')
+    assert.equal(f.gateway.calls.cancel.length, 1)
+  })
+
+  it('requires a fresh approved request for explicit redo after a completed job', async () => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const initial = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', initial.runId)
+    const repeated = await f.service.redo('task-a', initial.jobId)
+    await f.service.waitForRun('task-a', repeated.runId)
+    assert.notEqual(repeated.jobId, initial.jobId)
+    assert.notEqual(repeated.runId, initial.runId)
+    assert.notEqual(f.gateway.calls.submit[0].request.clientRequestId, f.gateway.calls.submit[1].request.clientRequestId)
+    assert.equal(f.gateway.calls.submit[0].request.requestHash, f.gateway.calls.submit[1].request.requestHash)
+    assert.equal(f.gateway.calls.submit.length, 2)
+    assert.equal(f.approvalRequests.length, 2)
+    assert.equal((await f.store.listJobs(owner, 'task-a')).length, 2)
+    assert.equal((await f.store.listAssets(owner, 'task-a')).length, 2)
+  })
+
+  it('keeps archived files readable and jobs trackable while blocking new generation/import', async () => {
+    const states = ['RUNNING'] as ('RUNNING' | 'SUCCEEDED')[]
+    const f = await fixture({ pollFloorMs: 20 }, new MockMediaGateway({ pollStatuses: states }))
+    assert.equal(await f.service.archiveIfMedia('task-a'), false)
+    const view = await f.service.generateTaskMedia('task-a', input())
+    assert.equal(await f.service.archiveIfMedia('task-a'), true)
+    await assert.rejects(f.service.generateTaskMedia('task-a', input()), code('INVALID_STATE'))
+    await assert.rejects(f.service.importReferences('task-a', []), code('INVALID_STATE'))
+    states.splice(0, 1, 'SUCCEEDED')
+    await f.service.waitForRun('task-a', view.runId)
+    const task = await f.service.getTaskMedia('task-a')
+    assert.equal(task.archived, true)
+    assert.equal(task.assets.length, 1)
+    assert.deepEqual((await f.service.preview('task-a', task.assets[0].localAssetId)).bytes, MOCK_MEDIA_PNG)
+    assert.equal((await f.store.listJobs(owner)).length, 1)
+    assert.equal(f.gateway.calls.submit.length, 1)
+  })
+
+  it('does not expose another owner or task assets/jobs after scope changes', async () => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', view.runId)
+    const [asset] = await f.store.listAssets(owner, 'task-a')
+    await assert.rejects(f.service.preview('task-b', asset.localAssetId), code('NOT_FOUND'))
+    await assert.rejects(f.service.cancel('task-b', view.jobId, false), code('NOT_FOUND'))
+    f.setScope(other)
+    const task = await f.service.getTaskMedia('task-a')
+    assert.deepEqual(task.jobs, [])
+    assert.deepEqual(task.assets, [])
+    await assert.rejects(f.service.preview('task-a', asset.localAssetId), code('NOT_FOUND'))
+    await assert.rejects(f.service.retrySave('task-a', view.jobId), code('NOT_FOUND'))
+    f.setScope(null)
+    await assert.rejects(f.service.getTaskMedia('task-a'), code('AUTH_REQUIRED'))
+  })
+
+  it('invalidates native-dialog selection closures on account change or epoch reset', async () => {
+    const f = await fixture()
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const selection = await f.service.nativeSelection('task-a')
+    f.setScope(other)
+    await assert.rejects(selection.import([selected]), code('AUTH_REQUIRED'))
+    assert.deepEqual(await f.store.listAssets(other, 'task-a'), [])
+    f.setScope(owner)
+    const second = await f.service.nativeSelection('task-a')
+    await f.service.stopAll()
+    await assert.rejects(second.import([selected]), code('AUTH_REQUIRED'))
+    assert.deepEqual(await f.store.listAssets(owner, 'task-a'), [])
+  })
+
+  it('invalidates native import and export selections across same-owner logout and login', async () => {
+    const f = await fixture()
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [asset] = await f.service.importReferences('task-a', [selected])
+    const selection = await f.service.nativeSelection('task-a')
+    f.setScope(null)
+    await f.service.stopAll()
+    f.setScope({ ...owner })
+    await assert.rejects(selection.import([selected]), code('AUTH_REQUIRED'))
+    const destination = join(f.directory, 'stale-export.png')
+    await assert.rejects(selection.export(asset.localAssetId, destination), code('AUTH_REQUIRED'))
+    await assert.rejects(readFile(destination), { code: 'ENOENT' })
+    const current = await f.service.nativeSelection('task-a')
+    await current.export(asset.localAssetId, destination)
+    assert.deepEqual(await readFile(destination), MOCK_MEDIA_PNG)
+    assert.equal((await f.store.listAssets(owner, 'task-a')).length, 1)
+  })
+
+  it('does not bind old employee authorization to a different scope after awaiting policy', async () => {
+    const f = await fixture({ policy: async () => { f.setScope(other); return policy() } })
+    await assert.rejects(f.service.generateTaskMedia('task-a', input()), code('AUTH_REQUIRED'))
+    assert.equal(f.gateway.calls.quote.length, 0)
+    assert.equal(f.gateway.calls.submit.length, 0)
+    assert.deepEqual(await f.store.listJobs(other), [])
+    assert.equal(await f.store.getSnapshot(other, 'task-a'), null)
+  })
+
+  it('does not submit when scope changes while approval is pending', async () => {
+    let approve: (value: boolean) => void = () => undefined
+    let entered = false
+    const f = await fixture({ requestApproval: () => new Promise(resolve => { entered = true; approve = resolve }) })
+    const pending = f.service.generateTaskMedia('task-a', input())
+    const rejection = assert.rejects(pending, code('AUTH_REQUIRED'))
+    await waitUntil(async () => entered)
+    f.setScope(other)
+    approve(true)
+    await rejection
+    assert.equal(f.gateway.calls.submit.length, 0)
+    assert.deepEqual(await f.store.listJobs(owner), [])
+    assert.deepEqual(await f.store.listJobs(other), [])
+  })
+})

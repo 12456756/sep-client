@@ -1,0 +1,504 @@
+import { afterEach, describe, it } from 'node:test'
+import * as assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import type { LocalMediaJob, MediaOutput, MediaRunSnapshot } from '../domain/media'
+import { MediaStore } from './media-store'
+import { ScopePath } from './scope-path'
+import { MAX_MEDIA_BYTES } from './media-image'
+
+const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+const other = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
+const hash = createHash('sha256').update(png).digest('hex')
+const temporaryDirectories: string[] = []
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })))
+})
+
+async function fixture(): Promise<{ store: MediaStore; paths: ScopePath; directory: string; root: string; selected: string }> {
+  const directory = await mkdtemp(join(await realpath(tmpdir()), 'sep-media-'))
+  temporaryDirectories.push(directory)
+  const root = join(directory, 'user-data')
+  await mkdir(root)
+  const selected = join(directory, 'selected.not-a-png-extension')
+  await writeFile(selected, png)
+  return { store: new MediaStore(root), paths: new ScopePath(root), directory, root, selected }
+}
+
+function output(outputId = 'output/opaque-id'): MediaOutput {
+  return { outputId, mime: 'image/png', size: png.length, width: 1, height: 1, sha256: hash, expiresAt: null }
+}
+
+function job(overrides: Partial<LocalMediaJob> = {}): LocalMediaJob {
+  const parameters = { aspectRatio: '1:1', count: 1 }
+  const requestHash = 'a'.repeat(64)
+  return {
+    version: 1, owner, jobId: 'job-a', taskId: 'task-a', runId: 'original-run', subscriptionId: 'subscription-a',
+    clientRequestId: 'request-a', requestHash,
+    input: { profileId: 'profile-a', operation: 'generate', localAssetIds: [], creativeBrief: 'Product photo', parameters },
+    profile: { profileId: 'profile-a', kind: 'image', displayName: 'Product', configVersion: 'config-a', operations: ['generate'],
+      executionMode: 'async-query', capabilities: { referenceImage: true, cancel: true, recoverByRequestId: true }, allowedAspectRatios: ['1:1'], maxCount: 1 },
+    request: { clientRequestId: 'request-a', requestHash, quoteId: 'quote-a', profileId: 'profile-a', configVersion: 'config-a',
+      operation: 'generate', referenceIds: [], referenceHashes: [], creativeBrief: 'Product photo', parameters },
+    quote: { quoteId: 'quote-a', requestHash, expiresAt: 100, status: 'quoted', amount: '1', currency: 'CNY', authorized: true, budgetAuthorized: true, allowUnknownCost: false },
+    approval: 'manual', receiptId: 'receipt-a', submission: 'RECEIPTED', generationStatus: 'SUCCEEDED', trackingStatus: 'ACTIVE',
+    saveStatus: 'PENDING', outputs: [output()], billingStatus: 'UNKNOWN', nextPollAt: 0, attempts: 1, error: null, createdAt: 1, updatedAt: 2,
+    ...overrides,
+  }
+}
+
+function snapshot(runId = 'run-a', createdAt = 1): MediaRunSnapshot {
+  return { version: 1, owner, taskId: 'task-a', runId, subscriptionId: 'subscription-a', systemPrompt: 'Frozen prompt',
+    skills: [{ path: 'skills/product/SKILL.md', sha256: 'b'.repeat(64), version: '1' }], capabilities: null, createdAt }
+}
+
+async function* stream(bytes: Uint8Array = png): AsyncIterable<Uint8Array> {
+  yield bytes.subarray(0, 5)
+  yield bytes.subarray(5)
+}
+
+function signal(): AbortSignal { return new AbortController().signal }
+
+describe('MediaStore jobs and snapshots', () => {
+  it('persists scoped jobs, restores across instances and validates safe IDs', async () => {
+    const { store, root } = await fixture()
+    await store.saveJob(owner, job())
+    assert.deepEqual(await new MediaStore(root).getJob(owner, 'task-a', 'job-a'), job())
+    assert.deepEqual(await store.listJobs(owner), [job()])
+    assert.equal(await store.getJob(other, 'task-a', 'job-a'), null)
+    assert.deepEqual(await store.listJobs(other), [])
+    await assert.rejects(store.getJob(owner, '../task', 'job-a'))
+    await assert.rejects(store.getJob(owner, 'task-a', '../job'))
+    await assert.rejects(store.saveJob(other, job()))
+  })
+
+  it('retains malformed MAYBE_SENT evidence and never overwrites it as a missing job', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const file = join(paths.mediaRoot(owner, 'task-a'), 'jobs', 'job-a.json')
+    await writeFile(file, '{"submission":"MAYBE_SENT"')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await assert.rejects(store.getJob(owner, 'task-a', 'job-a'), /preserved/)
+      await assert.rejects(store.listJobs(owner), /preserved/)
+      await assert.rejects(store.saveJob(owner, job()), /preserved/)
+    }
+    assert.equal(await readFile(file, 'utf8'), '{"submission":"MAYBE_SENT"')
+  })
+
+  it('does not interpret backup or quarantined evidence as a new request', async () => {
+    const { store, paths } = await fixture()
+    const directory = join(paths.mediaRoot(owner, 'task-a'), 'jobs')
+    await mkdir(directory, { recursive: true })
+    const file = join(directory, 'job-a.json.bak')
+    await writeFile(file, JSON.stringify(job()))
+    await assert.rejects(store.getJob(owner, 'task-a', 'job-a'), /preserved/)
+    await assert.rejects(store.listJobs(owner), /preserved/)
+    await rm(file)
+    await writeFile(join(directory, 'job-a.json.corrupt-test.json'), 'broken')
+    await assert.rejects(store.getJob(owner, 'task-a', 'job-a'), /preserved/)
+    await assert.rejects(store.listJobs(owner))
+  })
+
+  it('does not mistake an interrupted atomic job write for a never-submitted request', async () => {
+    const { store, paths } = await fixture()
+    const directory = join(paths.mediaRoot(owner, 'task-a'), 'jobs')
+    await mkdir(directory, { recursive: true })
+    const temporary = join(directory, 'job-a.json.crash-id.tmp')
+    await writeFile(temporary, JSON.stringify(job({ generationStatus: 'SUBMISSION_UNKNOWN', submission: 'MAYBE_SENT', receiptId: null })))
+    await assert.rejects(store.getJob(owner, 'task-a', 'job-a'), /preserved/)
+    await assert.rejects(store.listJobs(owner), /preserved/)
+    await assert.rejects(store.saveJob(owner, job()), /preserved/)
+    assert.ok((await readFile(temporary, 'utf8')).includes('MAYBE_SENT'))
+  })
+
+  it('validates persisted versions, owner, identity, enums and nested receipts', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const file = join(paths.mediaRoot(owner, 'task-a'), 'jobs', 'job-a.json')
+    for (const corrupt of [{ version: 2 }, { owner: other }, { jobId: 'job-b' }, { taskId: 'task-b' }, { runId: '../run' },
+      { generationStatus: 'COMPLETED' }, { trackingStatus: 'BOGUS' }, { saveStatus: 'DONE' }, { outputs: [{ ...output(), sha256: 'bad' }] },
+      { request: { ...job().request, clientRequestId: 'request-b' } }]) {
+      await writeFile(file, JSON.stringify({ ...job(), ...corrupt }))
+      await assert.rejects(store.getJob(owner, 'task-a', 'job-a'))
+    }
+  })
+
+  it('prevents changing stable request, original run, quote and completed output identity', async () => {
+    const { store } = await fixture()
+    await store.saveJob(owner, job())
+    for (const change of [{ runId: 'run-b' }, { subscriptionId: 'subscription-b' }, { createdAt: 0 }, { updatedAt: 1 }, { attempts: -1 },
+      { generationStatus: 'RUNNING' as const }, { receiptId: 'receipt-b' }, { outputs: [] }, { outputs: [{ ...output(), sha256: 'b'.repeat(64) }] },
+      { clientRequestId: 'request-b', request: { ...job().request, clientRequestId: 'request-b' } },
+      { requestHash: 'c'.repeat(64), request: { ...job().request, requestHash: 'c'.repeat(64) }, quote: { ...job().quote, requestHash: 'c'.repeat(64) } }]) {
+      await assert.rejects(store.saveJob(owner, job(change)))
+    }
+    await store.saveJob(owner, job({ saveStatus: 'SAVED', updatedAt: 3 }))
+    assert.equal((await store.getJob(owner, 'task-a', 'job-a'))?.saveStatus, 'SAVED')
+  })
+
+  it('serializes writes across instances and blocks duplicate request IDs across tasks', async () => {
+    const { store, root } = await fixture()
+    const otherStore = new MediaStore(root)
+    const results = await Promise.allSettled([store.saveJob(owner, job()), otherStore.saveJob(owner, job({ taskId: 'task-b', jobId: 'job-b' }))])
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1)
+    assert.equal((await store.listJobs(owner)).length, 1)
+    await store.saveJob(other, job({ owner: other }))
+    assert.equal((await store.listJobs(other)).length, 1)
+  })
+
+  it('allows monotonic submission and generation updates but rejects regression', async () => {
+    const { store } = await fixture()
+    const initial = job({ submission: 'NOT_SENT', receiptId: null, generationStatus: 'SUBMITTING', outputs: [], attempts: 0 })
+    await store.saveJob(owner, initial)
+    const sent = { ...initial, submission: 'MAYBE_SENT' as const, generationStatus: 'SUBMISSION_UNKNOWN' as const, updatedAt: 3 }
+    await store.saveJob(owner, sent)
+    await assert.rejects(store.saveJob(owner, { ...initial, updatedAt: 4 }))
+    const queued = { ...sent, submission: 'RECEIPTED' as const, receiptId: 'receipt-a', generationStatus: 'QUEUED' as const, updatedAt: 4 }
+    await store.saveJob(owner, queued)
+    await assert.rejects(store.saveJob(owner, { ...queued, generationStatus: 'SUBMITTING', updatedAt: 5 }))
+    await store.saveJob(owner, { ...queued, generationStatus: 'RUNNING', updatedAt: 5 })
+    await assert.rejects(store.saveJob(owner, { ...queued, updatedAt: 6 }))
+    await store.saveJob(owner, job({ updatedAt: 6 }))
+    await store.saveJob(owner, job({ generationStatus: 'RESULT_EXPIRED', updatedAt: 7 }))
+  })
+
+  it('stores immutable per-run snapshots and selects the latest run by timestamp', async () => {
+    const { store, root } = await fixture()
+    assert.equal(await store.getSnapshot(owner, 'task-a'), null)
+    await store.saveSnapshot(owner, snapshot('run-a', 10))
+    await store.saveSnapshot(owner, snapshot('run-b', 5))
+    await store.saveSnapshot(owner, snapshot('run-a', 10))
+    await assert.rejects(store.saveSnapshot(owner, { ...snapshot('run-a', 10), systemPrompt: 'Changed' }), /immutable/)
+    assert.deepEqual(await new MediaStore(root).getSnapshot(owner, 'task-a'), snapshot('run-a', 10))
+    assert.deepEqual(await store.getSnapshot(owner, 'task-a', 'run-b'), snapshot('run-b', 5))
+    assert.equal(await store.getSnapshot(other, 'task-a'), null)
+    await assert.rejects(store.saveSnapshot(other, snapshot()))
+  })
+
+  it('preserves snapshot corruption and refuses invalid owners/ids/versions', async () => {
+    const { store, paths } = await fixture()
+    await store.saveSnapshot(owner, snapshot())
+    const file = join(paths.mediaRoot(owner, 'task-a'), 'snapshots', 'run-a.json')
+    for (const corruption of [{ version: 2 }, { owner: other }, { taskId: 'task-b' }, { runId: 'run-b' }, { capabilities: {} }]) {
+      await writeFile(file, JSON.stringify({ ...snapshot(), ...corruption }))
+      await assert.rejects(store.getSnapshot(owner, 'task-a'))
+      await assert.rejects(store.saveSnapshot(owner, snapshot()))
+    }
+  })
+
+  it('treats an undefined optional runtime snapshot as absent across repeated saves', async () => {
+    const { store, root } = await fixture()
+    const value = { ...snapshot(), runtimeSnapshot: undefined }
+    await store.saveSnapshot(owner, value)
+    await store.saveSnapshot(owner, value)
+    await new MediaStore(root).saveSnapshot(owner, snapshot())
+    assert.deepEqual(await store.getSnapshot(owner, 'task-a'), snapshot())
+  })
+
+  it('preserves the complete employee runtime snapshot immutably and validates its owner and installed skills', async () => {
+    const { store, root } = await fixture()
+    const runtimeSnapshot = {
+      manifestVersion: 1 as const, subscriptionId: 'subscription-a', enterpriseId: owner.enterpriseId, memberId: owner.memberId,
+      employeeId: 'employee-a', templateVersion: 'template-1', employeeVersion: 'employee-2', maxSteps: 20,
+      systemPrompt: 'Frozen prompt', modelId: 'model-a', allowedModels: ['model-a', 'model-b'],
+      approvedSkills: [{ capabilityId: 'product', name: 'Product', description: null, versionId: 'approved-1', version: '0.9', content: 'Approved skill' }],
+      skills: [{ capabilityId: 'product', versionId: 'local-1', baseSkillVersionId: 'approved-1', version: '1', source: 'owner-local' as const,
+        name: 'product', description: 'Product skill', content: 'Installed owner skill', path: 'skills/product/SKILL.md', sha256: 'b'.repeat(64) }],
+    }
+    const complete = { ...snapshot(), runtimeSnapshot }
+    await store.saveSnapshot(owner, complete)
+    assert.deepEqual(await new MediaStore(root).getSnapshot(owner, 'task-a', 'run-a'), complete)
+    await assert.rejects(store.saveSnapshot(owner, { ...complete, runtimeSnapshot: { ...runtimeSnapshot, modelId: 'model-b' } }), /immutable/)
+    for (const invalid of [{ enterpriseId: 'other-enterprise' }, { memberId: 'other-member' }, { subscriptionId: 'other-subscription' },
+      { systemPrompt: 'Different prompt' }, { skills: [] }, { manifestVersion: 2 }]) {
+      await assert.rejects(store.saveSnapshot(owner, { ...complete, runId: 'run-invalid', runtimeSnapshot: { ...runtimeSnapshot, ...invalid } } as MediaRunSnapshot))
+    }
+  })
+
+  it('rejects a snapshot whose serialized multibyte prompt would exceed the readable manifest limit', async () => {
+    const { store } = await fixture()
+    await assert.rejects(store.saveSnapshot(owner, { ...snapshot(), systemPrompt: '\u4e00'.repeat(1_500_000) }), /manifest exceeds/)
+    assert.equal(await store.getSnapshot(owner, 'task-a'), null)
+  })
+
+  it('archives without losing job/assets/snapshots or hiding jobs from background scans', async () => {
+    const { store, selected, paths } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    await store.saveJob(owner, job())
+    await store.saveSnapshot(owner, snapshot())
+    assert.equal(await store.isArchived(owner, 'task-a'), false)
+    await store.archive(owner, 'task-a')
+    await store.archive(owner, 'task-a')
+    assert.equal(await store.isArchived(owner, 'task-a'), true)
+    assert.equal(await store.isArchived(other, 'task-a'), false)
+    assert.equal((await store.listJobs(owner)).length, 1)
+    assert.equal((await store.listAssets(owner, 'task-a')).length, 1)
+    assert.deepEqual(await store.readAsset(owner, 'task-a', asset.localAssetId), png)
+    assert.deepEqual(await store.getSnapshot(owner, 'task-a'), snapshot())
+    const archive = join(paths.mediaRoot(owner, 'task-a'), 'archive.json')
+    await writeFile(archive, 'invalid')
+    await assert.rejects(store.isArchived(owner, 'task-a'))
+    await assert.rejects(store.archive(owner, 'task-a'))
+  })
+})
+
+describe('MediaStore images', () => {
+  it('copies native selections into scope-owned files and deduplicates references', async () => {
+    const { store, paths, selected, root } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    assert.equal(asset.mime, 'image/png')
+    assert.equal(asset.sha256, hash)
+    assert.equal(asset.source, 'reference')
+    assert.match(asset.localAssetId, /^ref_[a-f0-9]{64}$/)
+    assert.ok(!JSON.stringify(asset).includes(selected))
+    await rm(selected)
+    assert.deepEqual(await new MediaStore(root).readAsset(owner, 'task-a', asset.localAssetId), png)
+    await writeFile(selected, png)
+    assert.deepEqual(await store.importReference(owner, 'task-a', selected), asset)
+    const internal = join(paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    assert.deepEqual(await readFile(internal), png)
+    assert.equal(await store.getAsset(other, 'task-a', asset.localAssetId), null)
+    assert.equal(await store.getAsset(owner, 'task-b', asset.localAssetId), null)
+  })
+
+  it('streams validated outputs and deduplicates output IDs without consuming another stream', async () => {
+    const { store, root, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const asset = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    assert.match(asset.localAssetId, /^out_[a-f0-9]{64}$/)
+    assert.equal(asset.outputId, output().outputId)
+    assert.deepEqual(await store.readAsset(owner, 'task-a', asset.localAssetId), png)
+    const neverConsume = (async function* () { throw new Error('Must not download twice'); yield png })()
+    assert.deepEqual(await new MediaStore(root).saveOutput(owner, 'task-a', 'job-a', output(), neverConsume, signal()), asset)
+    assert.equal((await readdir(join(paths.mediaRoot(owner, 'task-a'), 'files'))).some(name => name.endsWith('.part')), false)
+  })
+
+  it('recovers a renamed output with a missing manifest from its durable commit without downloading', async () => {
+    const { store, root, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const asset = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    const manifest = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json`)
+    await rm(manifest)
+    const reopened = new MediaStore(root)
+    assert.deepEqual(await reopened.listAssets(owner, 'task-a'), [asset])
+    const unused = (async function* () { throw new Error('No regeneration/download on recovery'); yield png })()
+    assert.deepEqual(await reopened.saveOutput(owner, 'task-a', 'job-a', output(), unused, signal()), asset)
+    assert.deepEqual(JSON.parse(await readFile(manifest, 'utf8')), asset)
+  })
+
+  it('recovers after the actual final manifest write fails following a successful image rename', async () => {
+    const { store, root, paths, selected } = await fixture()
+    await store.saveJob(owner, job())
+    const id = `out_${createHash('sha256').update(JSON.stringify(['job-a', output().outputId])).digest('hex')}`
+    const manifest = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${id}.json`)
+    const failing = (async function* () {
+      yield png
+      await mkdir(join(paths.mediaRoot(owner, 'task-a'), 'assets'), { recursive: true })
+      await symlink(selected, manifest)
+    })()
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), failing, signal()), /symbolic/)
+    assert.deepEqual(await readFile(join(paths.mediaRoot(owner, 'task-a'), 'files', `${id}.png`)), png)
+    assert.equal(JSON.parse(await readFile(`${manifest}.commit`, 'utf8')).localAssetId, id)
+    await rm(manifest)
+    const unused = (async function* () { throw new Error('Must recover without consuming stream'); yield png })()
+    const asset = await new MediaStore(root).saveOutput(owner, 'task-a', 'job-a', output(), unused, signal())
+    assert.equal(asset.localAssetId, id)
+    assert.deepEqual(JSON.parse(await readFile(manifest, 'utf8')), asset)
+  })
+
+  it('serializes simultaneous output saves across instances without duplicate downloads', async () => {
+    const { store, root } = await fixture()
+    await store.saveJob(owner, job())
+    let downloads = 0
+    const tracked = (): AsyncIterable<Uint8Array> => (async function* () { downloads++; yield png })()
+    const assets = await Promise.all([store.saveOutput(owner, 'task-a', 'job-a', output(), tracked(), signal()),
+      new MediaStore(root).saveOutput(owner, 'task-a', 'job-a', output(), tracked(), signal())])
+    assert.equal(downloads, 1)
+    assert.deepEqual(assets[0], assets[1])
+    assert.equal((await store.listAssets(owner, 'task-a')).length, 1)
+  })
+
+  it('rejects orphaned output files rather than overwriting or redownloading them', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const asset = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    const manifest = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json`)
+    await rm(manifest)
+    await rm(`${manifest}.commit`)
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal()), /Orphaned/)
+    assert.deepEqual(await readFile(join(paths.mediaRoot(owner, 'task-a'), asset.relativePath)), png)
+  })
+
+  it('validates receipt hash, MIME, byte size and dimensions before committing output', async () => {
+    const { store, paths } = await fixture()
+    for (const mismatch of [{ sha256: 'b'.repeat(64) }, { mime: 'image/jpeg' as const }, { size: png.length + 1 }, { width: 2 }, { height: 2 }]) {
+      const expected = { ...output(), ...mismatch }
+      await store.saveJob(owner, job())
+      await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', expected, stream(), signal()), /authorized/)
+    }
+    // A receipt can itself be wrong: the store must check the streamed bytes too.
+    for (let index = 0; index < 5; index++) {
+      const mismatch = [{ sha256: 'b'.repeat(64) }, { mime: 'image/jpeg' as const }, { size: png.length + 1 }, { width: 2 }, { height: 2 }][index]
+      const expected = { ...output(`output-${index}`), ...mismatch }
+      const record = job({ jobId: `job-${index}`, clientRequestId: `request-${index}`, request: { ...job().request, clientRequestId: `request-${index}` }, outputs: [expected] })
+      await store.saveJob(owner, record)
+      await assert.rejects(store.saveOutput(owner, 'task-a', record.jobId, expected, stream(), signal()), /match/)
+    }
+    assert.deepEqual(await store.listAssets(owner, 'task-a'), [])
+    assert.deepEqual(await readdir(join(paths.mediaRoot(owner, 'task-a'), 'files')), [])
+  })
+
+  it('rejects oversized inputs, invalid SVG images and oversized output streams', async () => {
+    const { store, selected, paths } = await fixture()
+    await writeFile(selected, '<svg width="1" height="1"/>')
+    await assert.rejects(store.importReference(owner, 'task-a', selected))
+    await writeFile(selected, Buffer.alloc(MAX_MEDIA_BYTES + 1))
+    await assert.rejects(store.importReference(owner, 'task-a', selected))
+    await store.saveJob(owner, job())
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), stream(Buffer.alloc(MAX_MEDIA_BYTES + 1)), signal()), /32 MB/)
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), stream(Buffer.from('<svg/>')), signal()))
+    assert.deepEqual(await store.listAssets(owner, 'task-a'), [])
+    assert.deepEqual(await readdir(join(paths.mediaRoot(owner, 'task-a'), 'files')), [])
+  })
+
+  it('cleans .part files after cancellation and interrupted streams, and permits retry', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const controller = new AbortController()
+    const cancelled = (async function* () { yield png.subarray(0, 5); controller.abort(); yield png.subarray(5) })()
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), cancelled, controller.signal))
+    const failed = (async function* () { yield png.subarray(0, 5); throw new Error('Network lost') })()
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), failed, signal()), /Network lost/)
+    assert.deepEqual(await readdir(join(paths.mediaRoot(owner, 'task-a'), 'files')), [])
+    assert.equal((await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())).status, 'SAVED')
+  })
+
+  it('refuses invalid stream chunks and already-aborted transfers without leaving output files', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const invalid = (async function* () { yield 'untrusted string' as unknown as Uint8Array })()
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), invalid, signal()), /chunk/)
+    const controller = new AbortController()
+    controller.abort()
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), controller.signal))
+    assert.deepEqual(await readdir(join(paths.mediaRoot(owner, 'task-a'), 'files')), [])
+  })
+
+  it('aborts promptly while a content iterator is stalled', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const controller = new AbortController()
+    const stalled: AsyncIterable<Uint8Array> = { [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => undefined) }) }
+    const pending = store.saveOutput(owner, 'task-a', 'job-a', output(), stalled, controller.signal)
+    const timer = setTimeout(() => controller.abort(), 25)
+    try { await assert.rejects(pending) } finally { clearTimeout(timer) }
+    assert.deepEqual(await readdir(join(paths.mediaRoot(owner, 'task-a'), 'files')), [])
+  })
+
+  it('maps missing assets to MISSING without deleting manifests and can redownload the same output', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const asset = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    await rm(join(paths.mediaRoot(owner, 'task-a'), asset.relativePath))
+    assert.equal((await store.listAssets(owner, 'task-a'))[0]?.status, 'MISSING')
+    await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId))
+    await assert.rejects(store.exportAsset(owner, 'task-a', asset.localAssetId, join(paths.dataRoot(), 'missing-export.png')))
+    assert.deepEqual(await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal()), asset)
+  })
+
+  it('rejects file tampering and manifest hash/MIME/dimensions/path/identity mismatches', async () => {
+    const { store, paths, selected } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const root = paths.mediaRoot(owner, 'task-a')
+    const file = join(root, asset.relativePath)
+    const manifest = join(root, 'assets', `${asset.localAssetId}.json`)
+    const tampered = Buffer.from(png)
+    tampered[45] ^= 1
+    await writeFile(file, tampered)
+    await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId), /match/)
+    await assert.rejects(store.listAssets(owner, 'task-a'), /match/)
+    await writeFile(file, png)
+    await rm(`${manifest}.commit`)
+    for (const mismatch of [{ relativePath: '../../secret.png' }, { relativePath: `/tmp/${asset.localAssetId}.png` }, { owner: other },
+      { width: 2 }, { mime: 'image/jpeg' }, { size: png.length + 1 }, { localAssetId: 'other' }, { version: 2 }, { status: 'SAVING' }]) {
+      await writeFile(manifest, JSON.stringify({ ...asset, ...mismatch }))
+      await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId))
+    }
+    await writeFile(manifest, 'broken')
+    await assert.rejects(store.listAssets(owner, 'task-a'))
+    assert.equal(await readFile(manifest, 'utf8'), 'broken')
+  })
+
+  it('checks actual output hash even when its valid manifest is changed in isolation', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const asset = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    const manifest = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json`)
+    await rm(`${manifest}.commit`)
+    await writeFile(manifest, JSON.stringify({ ...asset, sha256: 'b'.repeat(64) }))
+    await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId), /match/)
+  })
+
+  it('rejects disagreement or corruption in retained commit records rather than hiding evidence', async () => {
+    const { store, paths, selected } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const commit = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json.commit`)
+    await writeFile(commit, JSON.stringify({ ...asset, createdAt: asset.createdAt + 1 }))
+    await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId), /disagree/)
+    await writeFile(commit, 'broken')
+    await assert.rejects(store.getAsset(owner, 'task-a', asset.localAssetId), /preserved/)
+    assert.equal(await readFile(commit, 'utf8'), 'broken')
+  })
+
+  it('refuses symbolic links and hardlinked internal files', async () => {
+    const { store, paths, selected, directory } = await fixture()
+    const linkedInput = join(directory, 'linked-input.png')
+    await symlink(selected, linkedInput)
+    await assert.rejects(store.importReference(owner, 'task-a', linkedInput), /symbolic/)
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const file = join(paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    await rm(file)
+    await symlink(selected, file)
+    await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId), /symbolic/)
+    await assert.rejects(store.exportAsset(owner, 'task-a', asset.localAssetId, join(directory, 'export.png')), /symbolic/)
+    await rm(file)
+    await link(selected, file)
+    await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId), /type/)
+  })
+
+  it('refuses directory symlinks before reading or writing scope data', async () => {
+    const { store, paths, selected, directory } = await fixture()
+    const task = paths.taskDir(owner, 'task-a')
+    await mkdir(task, { recursive: true })
+    const outside = join(directory, 'outside')
+    await mkdir(outside)
+    await symlink(outside, join(task, 'media'))
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /symbolic/)
+    await assert.rejects(store.saveJob(owner, job()), /symbolic/)
+    await assert.rejects(store.listJobs(owner), /symbolic/)
+    assert.deepEqual(await readdir(outside), [])
+  })
+
+  it('exports verified images only to native absolute destinations and rejects symlink destinations', async () => {
+    const { store, selected, directory, root } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const destination = join(directory, 'export.png')
+    await writeFile(destination, 'Previous export')
+    await store.exportAsset(owner, 'task-a', asset.localAssetId, destination)
+    assert.deepEqual(await readFile(destination), png)
+    await assert.rejects(store.exportAsset(owner, 'task-a', asset.localAssetId, 'relative.png'))
+    await assert.rejects(store.importReference(owner, 'task-a', 'relative.png'))
+    await assert.rejects(store.exportAsset(owner, 'task-a', asset.localAssetId, join(root, 'overwrite.json')), /persistence/)
+    await rm(destination)
+    await symlink(selected, destination)
+    await assert.rejects(store.exportAsset(owner, 'task-a', asset.localAssetId, destination), /symbolic/)
+    assert.deepEqual(await readFile(selected), png)
+    const linkDir = join(directory, 'linked-dir')
+    await symlink(directory, linkDir)
+    await assert.rejects(store.exportAsset(owner, 'task-a', asset.localAssetId, join(linkDir, 'export.png')), /symbolic/)
+  })
+})

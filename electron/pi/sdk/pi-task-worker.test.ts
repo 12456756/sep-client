@@ -67,6 +67,48 @@ function context(root: string) {
 }
 
 describe('PiTaskWorker', () => {
+  it('forwards the trusted system prompt and media facade to the session config', async () => {
+    let received: PiAgentSessionConfig | undefined
+    const session = new FakeSession()
+    const mediaTools = { names: ['media_get_job'] as const, execute: async () => null }
+    const worker = new PiTaskWorker({
+      context: { ...context(await makeDirectory()), systemPrompt: 'Trusted employee instructions.', mediaTools },
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onApprovalRequest: async () => false,
+      onEvent: () => {}, runtime: { async createSession(config) { received = config; return session } },
+      createTokenManager: () => new FakeTokenManager(),
+    })
+    try {
+      await worker.run('hello')
+      assert.equal(received?.systemPrompt, 'Trusted employee instructions.')
+      assert.equal(received?.mediaTools, mediaTools)
+    } finally { await worker.dispose() }
+  })
+
+  it('refreshes task-scoped media and prompt bindings across shared-session turns', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession() } })
+    const root = await makeDirectory()
+    const facades = [
+      { names: ['media_get_job'] as const, execute: async () => 'first' },
+      { names: ['media_get_capabilities'] as const, execute: async () => 'second' },
+    ]
+    try {
+      for (let index = 0; index < facades.length; index++) {
+        const worker = new PiTaskWorker({
+          context: { ...context(root), runId: `run-${index}`, systemPrompt: `Instructions ${index}`, mediaTools: facades[index] },
+          sessionAdapter: adapter, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {},
+          onApprovalRequest: async () => false, onEvent: () => {}, createTokenManager: () => new FakeTokenManager(),
+        })
+        await worker.run('hello')
+        await worker.dispose()
+      }
+      assert.equal(configs.length, 2)
+      assert.equal(configs[0].mediaTools, facades[0])
+      assert.equal(configs[1].mediaTools, facades[1])
+      assert.equal(configs[1].systemPrompt, 'Instructions 1')
+      assert.equal(configs[1].resumeSessionFile, 'session-a.jsonl')
+    } finally { await adapter.dispose() }
+  })
   it('owns one run session and emits events with explicit context', async () => {
     const runtime = new FakeRuntime()
     const events: string[] = []
