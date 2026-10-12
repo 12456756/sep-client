@@ -169,34 +169,23 @@
 .ent-aa-think li.in svg { animation: arr-spark 1.8s ease-in-out infinite; }
 @keyframes arr-spark { 50% { opacity: .45; } }
 
-/* ── 自动编排：员工池与筛选 ──────────────────────────────────────────── */
-
-/*
- * 落选的卡不是直接消失，是把宽度和外边距收到 0 —— 这样选中的那几张会自然地
- * 向中间靠拢，不用算坐标，也不用做飞行动画。
- */
-.ent-aa-pool { display: flex; flex-wrap: wrap; justify-content: center; margin: 4px 0 0; }
-.ent-aa-card {
-  display: flex; width: 120px; height: 154px; flex-direction: column; align-items: center; gap: 5px;
-  margin: 0 8px 16px; padding: 14px 8px 10px; overflow: hidden;
-  border: 1px solid var(--arr-emp-line); border-radius: 12px; background: var(--ent-panel);
-  transition: border-color 300ms ease-out, background 300ms ease-out, box-shadow 300ms ease-out,
-    transform 300ms ease-out, opacity 420ms ease-out,
-    width 600ms var(--arr-ease), margin 600ms var(--arr-ease), padding 600ms var(--arr-ease);
+/* Reserve the complete team layout before selected employees enter their slots. */
+.ent-aa-team { box-sizing: border-box; width: min(520px, 100%); flex: 0 0 auto; align-self: center; padding: 24px; border: 1px solid var(--arr-emp-line); border-radius: 8px; background: var(--ent-panel); animation: arr-team-in var(--aa-frame-duration, 300ms) ease-out both; }
+.ent-aa-team.exiting { animation: arr-team-out var(--aa-exit-duration, 220ms) ease-in both; }
+.ent-aa-team-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); grid-auto-rows: minmax(64px, auto); gap: 16px 24px; margin: 0; padding: 0; list-style: none; }
+.ent-aa-team-member { display: flex; min-width: 0; align-items: center; gap: 10px; visibility: hidden; opacity: 0; animation: arr-team-member-in var(--aa-entry-duration, 500ms) cubic-bezier(.2, .7, .3, 1) var(--aa-entry-delay, 300ms) forwards; }
+.ent-aa-team-member:only-child { justify-self: center; }
+.ent-aa-team-member .ent-face.md { width: 42px; height: 42px; flex: 0 0 42px; }
+.ent-aa-team-member > span:last-child { display: flex; min-width: 0; flex-direction: column; gap: 4px; }
+.ent-aa-team-member strong { color: var(--ent-ink); font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.ent-aa-team-member small { color: var(--ent-ink-3); font-size: 12px; overflow-wrap: anywhere; }
+@keyframes arr-team-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes arr-team-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes arr-team-member-in {
+  from { visibility: visible; opacity: 0; transform: translateY(-30px) scale(.96); }
+  75% { visibility: visible; opacity: 1; transform: translateY(2px) scale(1); }
+  to { visibility: visible; opacity: 1; transform: translateY(0) scale(1); }
 }
-.ent-aa-card .ent-face.md { width: 46px; height: 46px; }
-.ent-aa-card strong { max-width: 100%; overflow: hidden; color: var(--ent-ink); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.ent-aa-card small { max-width: 100%; overflow: hidden; color: var(--ent-ink-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.ent-aa-card-state { display: flex; min-height: 32px; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
-.ent-aa-card-state em { color: var(--ent-brand-ink); font-size: 12px; font-style: normal; }
-.ent-aa-card-state b { display: inline-flex; align-items: center; gap: 3px; color: var(--ent-brand-ink); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.ent-aa-card-state i { max-width: 100%; overflow: hidden; color: var(--ent-ink-2); font-size: 11px; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
-
-.ent-aa-card.scanning { border-color: var(--arr-card-hover); box-shadow: 0 0 0 3px rgb(217 75 82 / 8%); }
-/* 选中：红色描边、极浅红底、放大 1.03。再大就变成弹窗了。 */
-.ent-aa-card.picked { border-color: var(--ent-brand); background: var(--ent-brand-softer); transform: scale(1.03); }
-.ent-aa-card.passed { opacity: .35; }
-.ent-aa-card.gone { width: 0; margin-right: 0; margin-left: 0; padding-right: 0; padding-left: 0; border-width: 0; opacity: 0; }
 
 /* ── 自动编排：生成流程 ──────────────────────────────────────────────── */
 
@@ -428,8 +417,10 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   .ent-chat-whobtn, .ent-chat-whobtn > svg, .ent-chat-tips button, .ent-chat-ask,
   .ent-rs-input, .ent-rs-pick, .ent-toggle i, .ent-toggle i::after { transition: none; }
   .ent-mode:hover, .ent-mode:hover .ent-mode-cta svg,
-  .ent-aa-card.picked, .ent-mn-item.dragging .ent-mn-node { transform: none; }
-  .ent-aa-card, .ent-aa-goalnode, .ent-flowcard { transform: none; transition: opacity 200ms linear, border-color 200ms linear, background 200ms linear, width 240ms linear, margin 240ms linear, padding 240ms linear; }
+  .ent-mn-item.dragging .ent-mn-node { transform: none; }
+  .ent-aa-team, .ent-aa-team.exiting, .ent-aa-team-member { animation: none; }
+  .ent-aa-team-member { opacity: 1; visibility: visible; transform: none; }
+  .ent-aa-goalnode, .ent-flowcard { transform: none; transition: opacity 200ms linear, border-color 200ms linear, background 200ms linear, width 240ms linear, margin 240ms linear, padding 240ms linear; }
   .ent-aa-link.in .ent-aa-link-line, .ent-aa-link.in .ent-aa-link-tip { animation: none; }
   .ent-aa-link path { stroke-dasharray: none; stroke-dashoffset: 0; }
   .ent-aa-link .ent-aa-link-tip { opacity: 1; }
@@ -520,6 +511,37 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-arr-chat,
 .ent-arr-auto {
   justify-content: flex-end;
+}
+/* Keep only the analysis screen above center; the composer stays bottom-aligned. */
+.ent-arr-auto.ent-aa-analyzing {
+  justify-content: flex-start;
+}
+.ent-aa-analyzing::before,
+.ent-aa-analyzing::after {
+  content: '';
+  flex: 17 1 0;
+}
+.ent-aa-analyzing::after {
+  flex-grow: 33;
+}
+.ent-aa-analyzing > * {
+  flex-shrink: 0;
+}
+.ent-arr-auto.ent-aa-matching {
+  justify-content: flex-start;
+}
+.ent-aa-matching::before {
+  content: '';
+  flex: 0 0 max(24px, calc(37.5% - var(--aa-stage-height, 0px) / 2));
+}
+.ent-aa-team-stage {
+  display: flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  flex-direction: column;
+}
+.ent-aa-team-stage > * {
+  flex-shrink: 0;
 }
 .ent-arr-chat {
   gap: 8px;

@@ -1,18 +1,17 @@
 import { Check, Sparkles } from 'lucide-react';
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { ArrangementDraft, ArrangementPlanningProgress } from '../../../shared/types';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
 import { usePrefersReducedMotion } from '../../../features/enterprise/use-reduced-motion';
 import { EmployeeFace } from '../EmployeeFace';
 
-type Phase = 'analyzing' | 'planning' | 'matching' | 'gathering' | 'flowing' | 'done';
+type Phase = 'analyzing' | 'planning' | 'matching' | 'flowing' | 'done';
 const STRIP = ['分析目标', '制定计划', '匹配员工', '生成流程'];
 const THINKING = ['分析任务内容', '识别需要完成的工作', '匹配员工能力'];
 const TITLES: Record<Phase, string> = {
   analyzing: '正在分析你的工作目标',
   planning: '正在制定执行计划',
   matching: '正在匹配最适合完成任务的员工……',
-  gathering: '正在匹配最适合完成任务的员工……',
   flowing: '正在安排工作流程',
   done: '自动编排完成',
 };
@@ -25,23 +24,71 @@ interface Props {
   children: ReactNode;
 }
 
-/** 恢复原版四拍动效。计时器只控制展示，入选结果与流程始终来自后端草稿。 */
+interface EmployeesProps {
+  nodes: ArrangementDraft['nodes'];
+  employees: SiliconEmployee[];
+  ready: boolean;
+  exiting?: boolean;
+  reducedMotion?: boolean;
+}
+
+export function getTeamAnimationTiming(employeeCount: number, reducedMotion = false): {
+  frameMs: number; entryMs: number; staggerMs: number; exitMs: number; leaveAtMs: number; flowAtMs: number;
+} {
+  const frameMs = reducedMotion ? 0 : 300;
+  const entryMs = reducedMotion ? 0 : 500;
+  const staggerMs = reducedMotion ? 0 : 600;
+  const exitMs = reducedMotion ? 0 : 220;
+  const leaveAtMs = frameMs + Math.max(0, employeeCount - 1) * staggerMs + entryMs + 1500;
+  return { frameMs, entryMs, staggerMs, exitMs, leaveAtMs, flowAtMs: leaveAtMs + exitMs };
+}
+
+export function AutoArrangeEmployees({ nodes, employees, ready, exiting = false, reducedMotion = false }: EmployeesProps): JSX.Element | null {
+  if (!ready || !nodes.length) return null;
+  const employeeById = new Map(employees.map(employee => [employee.id, employee]));
+  const selectedIds = [...new Set(nodes.map(node => node.subscriptionId))];
+  const timing = getTeamAnimationTiming(selectedIds.length, reducedMotion);
+  return (
+    <div className={`ent-aa-team${exiting ? ' exiting' : ''}`} role="group" aria-label="已选中的员工" style={{
+      '--aa-frame-duration': `${timing.frameMs}ms`,
+      '--aa-exit-duration': `${timing.exitMs}ms`,
+    } as CSSProperties}>
+      <ul className="ent-aa-team-list">
+        {selectedIds.map((id, index) => {
+          const employee = employeeById.get(id);
+          return (
+            <li key={id} className="ent-aa-team-member" style={{
+              '--aa-entry-delay': `${timing.frameMs + index * timing.staggerMs}ms`,
+              '--aa-entry-duration': `${timing.entryMs}ms`,
+            } as CSSProperties}>
+              <EmployeeFace employee={employee} name={id} size="md" round />
+              <span><strong>{employee?.name ?? id}</strong>{employee?.roleName ? <small>{employee.roleName}</small> : null}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/** Timers control presentation only; selected employees and workflow come from the final draft. */
 export function AutoArrangeAnimation({ draft, employees, planning, planningEvents, children }: Props): JSX.Element {
   const [phase, setPhase] = useState<Phase>('analyzing');
   const [thought, setThought] = useState(0);
-  const [scan, setScan] = useState(-1);
-  const [resolved, setResolved] = useState(0);
-  const [gathered, setGathered] = useState(false);
   const [rows, setRows] = useState(0);
-  // Freeze the visual pool for this attempt; directory refreshes must not reorder an active scan.
-  const [pool] = useState(() => employees.map(employee => ({ ...employee })));
+  const [teamExiting, setTeamExiting] = useState(false);
+  const [teamStageHeight, setTeamStageHeight] = useState(0);
+  const teamStageRef = useRef<HTMLDivElement>(null);
   const reduced = usePrefersReducedMotion();
   const beat = reduced ? 0.3 : 1;
   const ready = !planning && draft.nodes.length > 0;
   const nodeCount = draft.nodes.length;
+  const selectedCount = new Set(draft.nodes.map(node => node.subscriptionId)).size;
+  const { leaveAtMs, flowAtMs } = getTeamAnimationTiming(selectedCount, reduced);
   const planEvent = planningEvents.find(event => event.type === 'arrangement_plan_ready');
   const hasConsideringEvent = planningEvents.some(event => event.type === 'arrangement_employee_considering');
   const terminalEvent = planningEvents.find(event => event.type === 'arrangement_planning_failed' || event.type === 'arrangement_planning_cancelled');
+  const stopped = draft.status === 'awaiting-employee' || Boolean(terminalEvent);
 
   useEffect(() => {
     if (phase !== 'analyzing') return;
@@ -55,32 +102,29 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
 
   useEffect(() => {
     if (phase === 'analyzing' && planEvent) setPhase('planning');
-    if (phase === 'planning' && hasConsideringEvent) setPhase('matching');
-  }, [phase, planEvent, hasConsideringEvent]);
+    if (phase === 'planning' && (hasConsideringEvent || ready)) setPhase('matching');
+  }, [phase, planEvent, hasConsideringEvent, ready]);
 
   useEffect(() => {
-    if (phase !== 'matching') return;
-    // While the model is working, scan without inventing selections or match percentages.
-    if (!ready) {
-      setScan(pool.length ? 0 : -1);
-      const timer = window.setInterval(() => setScan(current => pool.length ? (current + 1) % pool.length : -1), 560 * beat);
-      return () => window.clearInterval(timer);
-    }
-    const timers: number[] = [];
-    pool.forEach((_, index) => {
-      timers.push(window.setTimeout(() => setScan(index), index * 560 * beat));
-      timers.push(window.setTimeout(() => setResolved(index + 1), (index * 560 + 400) * beat));
-    });
-    timers.push(window.setTimeout(() => { setScan(-1); setPhase('gathering'); }, (pool.length * 560 + 220) * beat));
+    if (phase !== 'matching' || !ready || stopped) return;
+    setTeamExiting(false);
+    const timers = [
+      window.setTimeout(() => setTeamExiting(true), leaveAtMs),
+      window.setTimeout(() => setPhase('flowing'), flowAtMs),
+    ];
     return () => timers.forEach(window.clearTimeout);
-  }, [phase, ready, pool, beat]);
+  }, [phase, ready, stopped, leaveAtMs, flowAtMs]);
 
   useEffect(() => {
-    if (phase !== 'gathering') return;
-    setGathered(true);
-    const timer = window.setTimeout(() => setPhase('flowing'), 720 * beat);
-    return () => window.clearTimeout(timer);
-  }, [phase, beat]);
+    const stage = teamStageRef.current;
+    if (phase !== 'matching' || !stage) return;
+    // Anchor the complete group, including wrapped names, without moving individual slots.
+    const measure = () => setTeamStageHeight(stage.getBoundingClientRect().height);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [phase, ready, selectedCount]);
 
   useEffect(() => {
     if (phase !== 'flowing') return;
@@ -93,8 +137,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
     return () => timers.forEach(window.clearTimeout);
   }, [phase, nodeCount, beat]);
 
-  const at = phase === 'analyzing' ? 0 : phase === 'planning' ? 1 : phase === 'matching' || phase === 'gathering' ? 2 : 3;
-  const selectedCount = new Set(draft.nodes.map(node => node.subscriptionId)).size;
+  const at = phase === 'analyzing' ? 0 : phase === 'planning' ? 1 : phase === 'matching' ? 2 : 3;
   if (draft.status === 'awaiting-employee') {
     return (
       <section className="ent-arr-auto" aria-busy={planning}>
@@ -117,8 +160,8 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
       </section>
     );
   }
-  return (
-    <section className="ent-arr-auto" aria-busy={phase !== 'done'}>
+  const heading = (
+    <>
       <ol className="ent-aa-strip">
         {STRIP.map((label, index) => (
           <li key={label} className={index < at ? 'done' : index === at ? 'now' : 'wait'}>
@@ -127,9 +170,21 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
         ))}
       </ol>
       <header className="ent-aa-head" aria-live="polite">
-        <h1>{phase === 'done' ? <span className="ent-aa-ok" aria-hidden><Check size={12} /></span> : null}{TITLES[phase]}</h1>
+        <h1>{phase === 'done' ? <span className="ent-aa-ok" aria-hidden><Check size={12} /></span> : null}{phase === 'matching' && ready ? '正在组建工作团队' : TITLES[phase]}</h1>
         {phase === 'done' ? <p>已为你的任务安排 {selectedCount} 名员工，并拆分为 {nodeCount} 个工作阶段。</p> : null}
       </header>
+    </>
+  );
+  return (
+    <section className={`ent-arr-auto${phase === 'analyzing' ? ' ent-aa-analyzing' : phase === 'matching' ? ' ent-aa-matching' : ''}`} aria-busy={phase !== 'done'} style={phase === 'matching' ? {
+      '--aa-stage-height': `${teamStageHeight}px`,
+    } as CSSProperties : undefined}>
+      {phase === 'matching' ? (
+        <div className="ent-aa-team-stage" ref={teamStageRef}>
+          {heading}
+          <AutoArrangeEmployees nodes={draft.nodes} employees={employees} ready={ready} exiting={teamExiting} reducedMotion={reduced} />
+        </div>
+      ) : heading}
       {phase === 'analyzing' ? (
         <ul className="ent-aa-think">{THINKING.map((line, index) => (
           <li key={line} className={index < thought ? 'in' : undefined}><Sparkles size={13} aria-hidden />{line}</li>
@@ -143,24 +198,6 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
             <ol>{planEvent.data.planSteps.map((step, index) => <li key={step.id}><span>{String(index + 1).padStart(2, '0')}</span>{step.title}</li>)}</ol>
           ) : null}
         </article>
-      ) : null}
-      {phase === 'matching' || phase === 'gathering' ? (
-        <div className={`ent-aa-pool${gathered ? ' gathered' : ''}`}>
-          {pool.map((employee, index) => {
-            const node = draft.nodes.find(item => item.subscriptionId === employee.id);
-            const tone = ready && index < resolved ? (node ? 'picked' : 'passed') : index === scan ? 'scanning' : 'idle';
-            return (
-              <article key={employee.id} className={`ent-aa-card ${tone}${gathered && !node ? ' gone' : ''}`}>
-                <EmployeeFace employee={employee} size="md" round />
-                <strong>{employee.name}</strong><small>{employee.roleName}</small>
-                <span className="ent-aa-card-state">
-                  {tone === 'scanning' ? <em>匹配中…</em> : null}
-                  {tone === 'picked' ? <><b><Check size={11} aria-hidden />已匹配</b><i title={node?.title}>{node?.title}</i></> : null}
-                </span>
-              </article>
-            );
-          })}
-        </div>
       ) : null}
       {phase === 'flowing' || phase === 'done' ? (
         <div className="ent-aa-flow">
