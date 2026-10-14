@@ -9,6 +9,8 @@
  * 4. 数值一律给图形：进度条、圆环、时间轴圆点，不靠一串文字描述。
  */
 
+@import '../components/workspace/media-artifacts.css';
+
 :root {
   /*
    * 主色系统 - 与登录页保持一致的温暖橙红色
@@ -3052,7 +3054,8 @@
 .ent-wk-infobar-item > strong { min-width: 0; font-size: var(--ent-fs-body); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 工作目录吃掉剩余宽度：路径比姓名更长，挤它比挤别的更划算。 */
 .ent-wk-infobar-item.workdir { flex: 1 1 180px; }
-.ent-wk-infobar-item.workdir .ent-wk-path > span { color: var(--ent-ink); font-weight: 600; }
+.ent-wk-infobar-item.workdir .ent-wk-path { display: flex; max-width: 100%; }
+.ent-wk-infobar-item.workdir .ent-wk-path > span { min-width: 0; flex: 1; color: var(--ent-ink); font-weight: 600; }
 .ent-wk-infobar-progress { min-width: 132px; flex: 0 1 200px; margin-left: auto; }
 
 .ent-wk-detail { display: grid; min-height: 0; flex: 1 1 auto; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; }

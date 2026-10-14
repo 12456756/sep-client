@@ -206,6 +206,36 @@ describe('unrestricted full-local session options', () => {
   })
 })
 
+describe('employee skill loader adapter boundary (no model requests)', () => {
+  it('fails closed for employee entries while preserving ordinary session discovery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-pi-employee-loader-'))
+    const restoreLog = setLogSink(() => {})
+    const config: PiAgentSessionConfig = {
+      runId: 'run-loader', modelId: 'model-a', gatewayUrl: 'http://127.0.0.1:1/v1',
+      workspaceDir: root, agentDir: join(root, 'agent'), sessionDir: join(root, 'sessions'), mcpServers: [],
+      additionalSkillPaths: [join(root, 'missing')],
+      getAccessToken: async () => { throw new Error('No model request is permitted.') },
+      authorizeTool: async () => false,
+    }
+    let session: Awaited<ReturnType<PiCodingAgentAdapter['createSession']>> | undefined
+    try {
+      const adapter = new PiCodingAgentAdapter()
+      await assert.rejects(adapter.createSession({ ...config, employeeProfile: { name: 'Orders' } }), /integrity mismatch/)
+      session = await adapter.createSession(config)
+      assert.ok(session.sessionId)
+      await session.dispose()
+      session = await adapter.createSession({
+        ...config, additionalSkillPaths: [], employeeProfile: { name: 'Orders' },
+      })
+      assert.ok(session.sessionId)
+    } finally {
+      await session?.dispose()
+      await rm(root, { recursive: true, force: true })
+      restoreLog()
+    }
+  })
+})
+
 const mediaNames: MediaToolName[] = ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job']
 const generationInput = {
   profileId: 'profile-a', operation: 'generate', localAssetIds: [], creativeBrief: 'A product photo',

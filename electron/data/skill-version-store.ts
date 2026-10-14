@@ -41,8 +41,11 @@ export class SkillVersionStore {
   }
   async save(scope: TaskOwnerScope, input: Omit<LocalSkillVersion, 'versionId'|'sha256'|'updatedAt'|'state'> & { versionId?: string }): Promise<LocalSkillVersion> {
     const value: LocalSkillVersion = { ...input, versionId: input.versionId ?? `local-${randomUUID()}`, sha256: createHash('sha256').update(input.content, 'utf8').digest('hex'), state: 'DRAFT', updatedAt: Date.now() }
-    await mkdir(join(this.dir(scope, value.subscriptionId, value.capabilityId), 'versions'), { recursive: true })
-    await writeJsonAtomic(this.versionFile(scope, value), value)
+    const file = this.versionFile(scope, value)
+    await this.writes.run(file, async () => {
+      await mkdir(join(this.dir(scope, value.subscriptionId, value.capabilityId), 'versions'), { recursive: true })
+      await writeJsonAtomic(file, value)
+    })
     return value
   }
   async savePlatform(scope: TaskOwnerScope, input: Omit<LocalSkillVersion, 'versionId'|'sha256'|'updatedAt'|'state'>): Promise<LocalSkillVersion> {

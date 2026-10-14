@@ -9,6 +9,7 @@ import { Empty, StepStateChip, WorkStatusChip } from '../../components/enterpris
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { WorkPlanDrawer } from '../../components/enterprise/WorkPlanDrawer';
 import { WorkConversation, WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
+import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
@@ -206,6 +207,8 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
               <p className="ent-hint">员工还没有产出文件。产出之后会列在这里。</p>
             )}
           </section>
+
+          {isConversation ? <MediaArtifactsPanel taskId={work.id} /> : null}
 
           {/*
             对话式工作没有步骤报表，工作过程就放在侧栏；

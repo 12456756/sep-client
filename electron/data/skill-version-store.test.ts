@@ -1,11 +1,55 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { SkillVersionStore } from './skill-version-store'
 
 describe('SkillVersionStore', () => {
+  it('serializes concurrent saves to the same version file in submission order', async (context) => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-skills-version-race-'))
+    context.after(() => rm(root, { recursive: true, force: true }))
+    const store = new SkillVersionStore(relative(process.cwd(), root))
+    const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
+    const input = { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a',
+      baseSkillVersionId: 'v1', version: '1', content: '# Original' }
+    const original = await store.savePlatform(scope, input)
+    const saves = await Promise.all(Array.from({ length: 16 }, (_, index) => {
+      const update = { ...input, content: `# Update ${index}` }
+      return index % 2 === 0
+        ? store.save(scope, { ...update, versionId: original.versionId })
+        : store.savePlatform(scope, update)
+    }))
+    const file = join(root, 'enterprise-a', 'member-a', 'sub-a', 'cap-a', 'versions', `${original.versionId}.json`)
+    assert.equal(saves.length, 16)
+    assert.deepEqual(await store.load(scope, 'sub-a', 'cap-a', original.versionId), saves[15])
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), saves[15])
+    assert.deepEqual(JSON.parse(await readFile(`${file}.bak`, 'utf8')), saves[14])
+    if (process.platform !== 'win32') {
+      assert.equal((await stat(file)).mode & 0o777, 0o600)
+      assert.equal((await stat(`${file}.bak`)).mode & 0o777, 0o600)
+    }
+  })
+
+  it('keeps concurrent same-version saves isolated by owner scope and rejects unsafe identifiers', async (context) => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-skills-version-scope-'))
+    context.after(() => rm(root, { recursive: true, force: true }))
+    const store = new SkillVersionStore(root)
+    const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
+    const scopes = [scope, { ...scope, memberId: 'member-b' }, { ...scope, enterpriseId: 'enterprise-b' }]
+    const input = { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a',
+      baseSkillVersionId: 'v1', version: '1', content: '# Source' }
+    const saves = await Promise.all(scopes.map((owner, index) => store.savePlatform(owner, {
+      ...input, content: `# Owner ${index}`,
+    })))
+    for (const [index, owner] of scopes.entries()) {
+      assert.deepEqual(await store.load(owner, 'sub-a', 'cap-a', 'platform-v1'), saves[index])
+    }
+    await assert.rejects(store.save({ ...scope, memberId: '..' }, input), /Invalid skill identifier/)
+    await assert.rejects(store.save(scope, { ...input, versionId: '../escape' }), /Invalid skill identifier/)
+    await assert.rejects(store.savePlatform(scope, { ...input, capabilityId: '..' }), /Invalid skill identifier/)
+  })
+
   it('keeps local content isolated and selects only an existing version', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-skills-'))
     const store = new SkillVersionStore(root)

@@ -39,6 +39,7 @@ import { createMcpRuntime, type McpRuntime } from './pi-mcp-client'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 import { GatewayRetryWait } from './gateway-retry-wait'
+import { employeeSkillLoaderOptions } from './employee-skill-loader'
 
 const log = logger.child('pi-gateway')
 
@@ -647,7 +648,11 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
         extensionFactories: buildExtensions(config, mcp),
-        noSkills: false,
+        ...employeeSkillLoaderOptions(
+          config.workspaceDir,
+          config.agentDir,
+          config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
+        ),
         noContextFiles: true,
         additionalSkillPaths: config.additionalSkillPaths,
         // Use the literal override: the SDK's systemPrompt option also interprets existing paths as files.

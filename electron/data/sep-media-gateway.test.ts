@@ -5,6 +5,7 @@ import { once } from 'node:events'
 import { createHash } from 'node:crypto'
 import { SepMediaGateway, SepMediaGatewayError, type SepMediaGatewayErrorCode } from './sep-media-gateway'
 import { AppError } from '../errors/app-error'
+import { AuthApiError } from '../common/platform/platform-api'
 import type { MediaRequest } from '../domain/media'
 import { mediaCapabilitiesSchema, mediaQuoteSchema } from '../common/platform/media-contract'
 import {
@@ -402,6 +403,29 @@ test('business errors retain distinct gateway codes with existing AppError class
     assert.equal(error.details, undefined)
     assert.equal('cause' in error, false)
   }
+})
+
+test('temporary token service failures remain retryable and sanitized instead of requiring login', async t => {
+  let calls = 0
+  const { baseUrl } = await loopback(t, (_incoming, response) => { calls++; json(response, wireProfiles()) })
+  for (const [error, expectedCode] of [
+    [new AuthApiError({ statusCode: 429, message: employmentToken }, 'employment-token'), 'RATE_LIMITED'],
+    [new AuthApiError({ statusCode: 503, message: employmentToken }, 'employment-token'), 'SERVICE_UNAVAILABLE'],
+    [new AuthApiError({ statusCode: 0, message: employmentToken }, 'employment-token'), 'NETWORK_ERROR'],
+    [new AppError('RATE_LIMITED', { message: employmentToken }), 'RATE_LIMITED'],
+    [new AppError('SERVICE_UNAVAILABLE', { message: employmentToken }), 'SERVICE_UNAVAILABLE'],
+    [new AppError('NETWORK_ERROR', { message: employmentToken }), 'NETWORK_ERROR'],
+  ] as const) {
+    const gateway = new SepMediaGateway({ baseUrl, token: async () => { throw error } })
+    await assert.rejects(gateway.profiles('subscription-1', signal()), failure => {
+      assert.ok(failure instanceof AppError)
+      assert.equal(failure.code, expectedCode)
+      assert.equal(failure.details, undefined)
+      assert.equal(failure.message.includes(employmentToken), false)
+      return true
+    })
+  }
+  assert.equal(calls, 0)
 })
 
 test('redirects are never followed, including same-origin redirects', async t => {

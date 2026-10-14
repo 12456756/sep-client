@@ -14,6 +14,7 @@ import {
 import { inspectMediaImage } from './media-image'
 import { AppError } from '../errors/app-error'
 import type { ErrorCode } from '../errors/error-codes'
+import { AuthApiError } from '../common/platform/platform-api'
 
 export interface SepMediaGatewayOptions {
   baseUrl: string
@@ -263,6 +264,18 @@ export class SepMediaGateway implements MediaGatewayPort {
       if (signal.aborted) throw new SepMediaGatewayError('MEDIA_ABORTED')
       if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {
         throw new SepMediaGatewayError(error.code)
+      }
+      if ((error instanceof AppError && error.code === 'RATE_LIMITED')
+        || (error instanceof AuthApiError && error.statusCode === 429)) {
+        throw new SepMediaGatewayError('MEDIA_RATE_LIMITED')
+      }
+      if ((error instanceof AppError && error.code === 'NETWORK_ERROR')
+        || (error instanceof AuthApiError && error.isNetworkError && error.statusCode === 0)) {
+        throw new SepMediaGatewayError('MEDIA_NETWORK_ERROR')
+      }
+      if ((error instanceof AppError && error.code === 'SERVICE_UNAVAILABLE')
+        || (error instanceof AuthApiError && error.statusCode >= 500)) {
+        throw new SepMediaGatewayError('MEDIA_HTTP_ERROR', 503)
       }
       throw new SepMediaGatewayError(signal.aborted ? 'MEDIA_ABORTED' : 'MEDIA_AUTH_FAILED')
     }

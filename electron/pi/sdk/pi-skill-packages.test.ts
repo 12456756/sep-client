@@ -90,6 +90,30 @@ async function readSkillBody(path: string): Promise<string> {
 }
 
 describe('SkillStore', () => {
+  it('allows a bound skill with no approved version when runtime has no skills', async () => {
+    const { skills } = await createStore()
+    const payload = skillsPayload('version-v1', '1.0')
+    globalThis.fetch = async () => jsonResponse({ ...payload,
+      skills: payload.skills.map(skill => ({ ...skill, currentVersion: null })),
+    })
+    const result = await skills.prepare({ ...request(), runtimeSkills: [], skillArtifactProtocolVersion: 1 })
+    assert.deepEqual(result, { skillPaths: [], skills: [] })
+    assert.deepEqual(await skills.prepare(request()), { skillPaths: [], skills: [] })
+  })
+
+  it('rejects a claimed runtime skill without an approved version even when metadata is nullable', async () => {
+    const { skills } = await createStore()
+    const runtime = artifactFixture()
+    const payload = skillsPayload(runtime.versionId, runtime.version)
+    let downloads = 0
+    globalThis.fetch = async input => {
+      if (String(input).endsWith('/artifact')) downloads++
+      return jsonResponse({ ...payload, skills: payload.skills.map(skill => ({ ...skill, currentVersion: null })) })
+    }
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 }), /not approved/)
+    assert.equal(downloads, 0)
+  })
+
   function artifactFixture(content = '---\nname: orders\ndescription: Approved order operations\n---\n# Approved\n'): EmployeeRuntimeSkill & { artifact: SkillArtifactAvailable } {
     const hash = createHash('sha256').update(content).digest('hex')
     return { capabilityId: 'cap-a', name: 'Orders', description: 'Orders', versionId: 'version-v1', version: '1.0', content,

@@ -35,7 +35,7 @@ const metadataSchema = z.object({
       id: z.string().min(1), capabilityId: z.string().min(1), scope: z.string(), status: z.string(),
       version: z.string().min(1), ownerId: z.string().nullable().optional(),
       parentVersionId: z.string().nullable().optional(),
-    }),
+    }).nullable(),
     versions: z.array(z.object({
       id: z.string().min(1), capabilityId: z.string().min(1), scope: z.string(), status: z.string(),
       version: z.string().min(1), ownerId: z.string().nullable().optional(),
@@ -45,6 +45,7 @@ const metadataSchema = z.object({
 })
 
 type SkillMetadata = z.infer<typeof metadataSchema>['skills'][number]
+type ApprovedSkillMetadata = SkillMetadata & { currentVersion: NonNullable<SkillMetadata['currentVersion']> }
 
 function checkCurrent(input: SkillStoreRequest): void {
   if (input.isCurrent && !input.isCurrent()) throw new Error('Employee preparation scope changed.')
@@ -153,13 +154,13 @@ export class SkillStore {
     const skillsResponse = response.data
     if (skillsResponse.subscriptionId !== input.subscriptionId) throw new Error('The employee skills response does not match the subscription.')
     if (new Set(skillsResponse.skills.map(skill => skill.capability.id)).size !== skillsResponse.skills.length) throw new Error('Duplicate employee skill metadata.')
-    let approvedSkills = skillsResponse.skills
+    let approvedSkills = skillsResponse.skills.filter((skill): skill is ApprovedSkillMetadata => skill.currentVersion !== null)
     if (input.runtimeSkills) {
       const runtimeSkills = z.array(employeeRuntimeSkillSchema).parse(input.runtimeSkills)
       if (new Set(runtimeSkills.map(skill => skill.capabilityId)).size !== runtimeSkills.length) throw new Error('Duplicate runtime skill.')
       approvedSkills = runtimeSkills.map(runtime => {
         const metadata = skillsResponse.skills.find(skill => skill.capability.id === runtime.capabilityId)
-        const version = metadata && [metadata.currentVersion, ...metadata.versions].find(version => version.id === runtime.versionId)
+        const version = metadata?.currentVersion && [metadata.currentVersion, ...metadata.versions].find(version => version.id === runtime.versionId)
         if (!metadata || !version || version.capabilityId !== runtime.capabilityId || version.version !== runtime.version || !canUseSkillVersion(version, input.memberId ?? '')) {
           throw new Error('Runtime skill version is not approved or is no longer available.')
         }
@@ -343,7 +344,7 @@ export class SkillStore {
   }
 
   private async resolveSkillContent(skill: SkillMetadata, accessToken: string): Promise<string | null> {
-    if (!skill.currentVersion.id) return null
+    if (!skill.currentVersion?.id) return null
     const preview = await previewSkill(skill.currentVersion.id, accessToken)
     if (!preview || typeof preview.content !== 'string' || !preview.content.trim()) throw new Error('Approved skill preview is empty or unavailable.')
     return preview.content
