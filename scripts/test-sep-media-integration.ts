@@ -15,6 +15,7 @@ import { SkillStore } from '../electron/pi/sdk/pi-skill-packages'
 import { AuthApiError, getEmployeeRuntime, getEmployeeSkills, getSubscriptions } from '../electron/common/platform/platform-api'
 import { config } from '../electron/common/config'
 import type { MediaGenerationInput, MediaJobView } from '../src/shared/media'
+import { AppError } from '../electron/errors/app-error'
 
 // Invoked by SEP's isolated PostgreSQL/Nest test, never by the production client.
 const baseUrl = process.env.SEP_MEDIA_TEST_URL!
@@ -62,11 +63,16 @@ async function fixtureState(state: 'v1' | 'v2' | 'blocked' | 'revoked') {
   assert.equal(response.status, 201)
 }
 let loseSubmitResponse = false, failDownload = false, unavailableSubmitResponse = false, denyDownload = false
+let revokeAfterAcceptance = false
 const http: typeof fetch = async (url, init) => {
   const pathname = new URL(String(url)).pathname
   if (init?.method === 'POST' && pathname.endsWith('/requests')) metrics.submits++
   if (init?.method === 'POST' && pathname.endsWith('/quotes')) metrics.quotes++
   const response = await fetch(url, init)
+  if (init?.method === 'POST' && pathname.endsWith('/requests') && response.ok && revokeAfterAcceptance) {
+    revokeAfterAcceptance = false
+    await fixtureState('revoked')
+  }
   if (init?.method === 'POST' && pathname.endsWith('/requests') && loseSubmitResponse) {
     loseSubmitResponse = false
     await response.body?.cancel()
@@ -300,6 +306,50 @@ try {
   assert.equal(metrics.submits, beforeAuth.submits + 1)
   assert.equal(metrics.quotes, beforeAuth.quotes + 1)
 
+  const accessRecovery = []
+  for (const stage of ['receipt-query', 'lost-acknowledgement', 'result-download'] as const) {
+    const taskId = `task-revoked-${stage}`
+    const before = { ...metrics }
+    loseSubmitResponse = stage === 'lost-acknowledgement'
+    revokeAfterAcceptance = true
+    const accepted = await service.generateTaskMedia(taskId, input(stage === 'result-download' ? 'mock-sync' : 'mock-async'))
+    const paused = await settle(service, taskId, accepted.jobId)
+    await assert.rejects(service.waitForRun(taskId, accepted.runId), error => error instanceof AppError && error.code === 'INVALID_STATE')
+    assert.equal(paused.trackingStatus, 'AUTH_REQUIRED', 'Real MEDIA_FORBIDDEN must pause the original job')
+    assert.equal(paused.assets.length, 0)
+    assert.equal(metrics.submits, before.submits + 1)
+    assert.equal(metrics.quotes, before.quotes + 1)
+    const original = (await store.getJob(owner, taskId, accepted.jobId))!
+    const frozenSnapshot = await store.getSnapshot(owner, taskId, accepted.runId)
+    assert.ok(frozenSnapshot?.runtimeSnapshot)
+    await service.stopAll()
+    const whileDenied = { ...metrics }
+    ;({ service, store, authorizer } = client())
+    await service.resumePending()
+    assert.deepEqual(metrics, whileDenied, 'Restart must not silently retry a job paused for authorization')
+    assert.equal((await store.getJob(owner, taskId, accepted.jobId))?.trackingStatus, 'AUTH_REQUIRED')
+    await fixtureState('v2')
+    await service.resumePending()
+    assert.deepEqual(metrics, whileDenied, 'Restoring permission alone must not automatically retry the paused job')
+    assert.equal((await store.getJob(owner, taskId, accepted.jobId))?.trackingStatus, 'AUTH_REQUIRED')
+    await service.resume(taskId, accepted.jobId)
+    const delivered = await settle(service, taskId, accepted.jobId)
+    await service.waitForRun(taskId, accepted.runId)
+    assert.equal(delivered.saveStatus, 'SAVED')
+    assert.equal(delivered.billingStatus, 'MOCK_NOT_CHARGED')
+    const recovered = (await store.getJob(owner, taskId, accepted.jobId))!
+    for (const key of ['jobId', 'runId', 'subscriptionId', 'clientRequestId', 'requestHash', 'request', 'profile', 'quote', 'approval'] as const) {
+      assert.deepEqual(recovered[key], original[key], `Recovery must retain original ${key}`)
+    }
+    if (original.receiptId) assert.equal(recovered.receiptId, original.receiptId)
+    else assert.ok(recovered.receiptId, 'Lost acknowledgement must be resolved by the original request ID')
+    assert.deepEqual(await store.getSnapshot(owner, taskId, accepted.runId), frozenSnapshot)
+    assert.equal(metrics.submits, before.submits + 1)
+    assert.equal(metrics.quotes, before.quotes + 1)
+    assert.deepEqual(await store.readAsset(owner, taskId, delivered.assets[0].localAssetId), png)
+    accessRecovery.push({ stage, paused: true, originalRequestRecovered: true, extraSubmissions: 0 })
+  }
+
   const cancelTask = 'task-cancel'
   const cancelled = await service.generateTaskMedia(cancelTask, input('mock-async'))
   await service.cancel(cancelTask, cancelled.jobId, true)
@@ -348,7 +398,7 @@ try {
   assert.ok(employeeMetrics.runtime > 10)
   assert.ok(employeeMetrics.metadata > 10)
   assert.equal(employeeMetrics.previews, 0, 'Approved artifact path must never fallback to preview')
-  process.stdout.write(`SEP_MEDIA_INTEGRATION_PASSED ${JSON.stringify({ ...metrics, employee: employeeMetrics, authentication: 'synthetic-no-real-login' })}\n`)
+  process.stdout.write(`SEP_MEDIA_INTEGRATION_PASSED ${JSON.stringify({ ...metrics, accessRecovery, employee: employeeMetrics, authentication: 'synthetic-no-real-login' })}\n`)
 } finally {
   try { await Promise.all(services.map(service => service.stopAll())) }
   finally {

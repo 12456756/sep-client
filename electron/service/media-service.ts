@@ -399,8 +399,9 @@ export class MediaService {
         job.trackingStatus = 'STOPPED'
       }
     } catch (error) {
-      const authRequired = error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
-      job.trackingStatus = authRequired ? 'AUTH_REQUIRED' : epoch !== this.epoch && parent.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
+      const interrupted = epoch !== this.epoch && parent.reason !== explicitStop
+      const authRequired = !interrupted && parent.reason !== explicitStop && error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
+      job.trackingStatus = authRequired ? 'AUTH_REQUIRED' : interrupted ? 'INTERRUPTED' : 'STOPPED'
       if (job.saveStatus === 'SAVING') job.saveStatus = 'SAVE_FAILED'
       job.error = authRequired ? '请恢复图片任务的读取授权。' : parent.aborted ? '本地跟踪已停止，上游任务可能仍在执行。' : '本地跟踪暂不可用，可恢复原请求。'
       if (!parent.aborted) log.warn('media tracking interrupted', { taskId: job.taskId, jobId: job.jobId, authChanged: error instanceof AppError && error.code === 'AUTH_REQUIRED' })
