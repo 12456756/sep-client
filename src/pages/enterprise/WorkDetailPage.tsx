@@ -39,7 +39,6 @@ type Panel = 'talk' | 'plan' | null;
 
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   const team = useTeam(work, workspace);
-  const solo = team.length <= 1;
   const isConversation = work.kind === 'conversation';
   const finished = work.status === 'completed';
   /** 这项工作已经不会自己往前走了。耗时、结束时间、能不能终止都按它算。 */
@@ -48,6 +47,34 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const doing = currentWorkOperation(work.status, work.activities);
   const next = work.steps.find(step => step.state === 'pending');
   const [panel, setPanel] = useState<Panel>(null);
+  const facts = {
+    start: (
+      <span className="ent-wk-infobar-item">
+        <small>开始</small>
+        <strong>{dayTimeText(work.createdAt)}</strong>
+      </span>
+    ),
+    elapsed: (
+      <span className="ent-wk-infobar-item">
+        <small>{over ? '耗时' : '已运行'}</small>
+        <strong>{over ? durationText(work.updatedAt - work.createdAt) : durationText(Date.now() - work.createdAt)}</strong>
+      </span>
+    ),
+    directory: (
+      <span className="ent-wk-infobar-item workdir">
+        <small>工作目录</small>
+        <strong>{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</strong>
+      </span>
+    ),
+    progress: (
+      <span className="ent-wk-infobar-progress">
+        <span className={`ent-bar${finished ? ' complete' : ''}`}>
+          <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
+          <b>{percent}%</b>
+        </span>
+      </span>
+    ),
+  };
 
   return (
     <div className="ent-page ent-wk">
@@ -81,59 +108,36 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         </div>
       </div>
 
-      {/*
-        信息条：员工、时间、耗时、进度压成一行。
-        原先这些信息占了一整张卡片（约 150px），而内容只有四条短事实；
-        压成一行后首屏腾出的高度正好给对话与产出。
-      */}
-      <div className="ent-wk-infobar">
-        <span className="ent-wk-infobar-who">
-          {solo ? (
-            <>
-              <EmployeeFace employee={team[0]} name={work.currentEmployeeName} size="sm" round />
-              <span>
-                <strong>{team[0]?.name ?? work.currentEmployeeName}</strong>
-                <small>{team[0]?.roleName ?? '硅基员工'}</small>
-              </span>
-            </>
-          ) : (
-            <>
-              {/*
-                多人协作时头像叠成一串（最多露三张）：信息条只有一行高，
-                摆不开一张一人一行的名单，但也不能只剩一句「N 位同事」把人认不出来。
-                完整的「谁做到哪一步」在右侧「更多信息」的工作步骤里。
-              */}
-              <span className="ent-wk-infobar-team" aria-hidden>
-                {team.slice(0, 3).map(member => (
-                  <EmployeeFace key={member.id} employee={member} name={member.name} size="sm" round />
-                ))}
-              </span>
-              <span>
-                <strong>{team.length} 位同事协作</strong>
-                <small>{team.map(member => member.name).join('、')}</small>
-              </span>
-            </>
-          )}
-        </span>
-        <span className="ent-wk-infobar-sep" aria-hidden />
-        <span className="ent-wk-infobar-item">
-          <small>开始</small>
-          <strong>{dayTimeText(work.createdAt)}</strong>
-        </span>
-        <span className="ent-wk-infobar-item">
-          <small>{over ? '耗时' : '已运行'}</small>
-          <strong>{over ? durationText(work.updatedAt - work.createdAt) : durationText(Date.now() - work.createdAt)}</strong>
-        </span>
-        <span className="ent-wk-infobar-item workdir">
-          <small>工作目录</small>
-          <strong>{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</strong>
-        </span>
-        <span className="ent-wk-infobar-progress">
-          <span className="ent-bar">
-            <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
-            <b>{percent}%</b>
+      {/* 编排名单独立滚动；对话任务继续使用紧凑的单人信息。 */}
+      <div className={`ent-wk-infobar${isConversation ? '' : ' ent-wk-infobar-flow'}`}>
+        {isConversation || !team.length ? (
+          <span className="ent-wk-infobar-who">
+            <EmployeeFace employee={team[0]} name={work.currentEmployeeName} size="sm" round />
+            <span>
+              <strong>{team[0]?.name ?? work.currentEmployeeName}</strong>
+              <small>{team[0]?.roleName ?? '硅基员工'}</small>
+            </span>
           </span>
-        </span>
+        ) : (
+          <section className="ent-wk-team" aria-label="协作员工">
+            <strong>{team.length} 位同事协作</strong>
+            <ul className="ent-wk-team-list" aria-label="参与员工" tabIndex={0}>
+              {team.map(member => (
+                <li key={member.id}>
+                  <EmployeeFace employee={member} name={member.name} size="sm" round />
+                  <span className="ent-wk-team-name">{member.name}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <span className="ent-wk-infobar-sep" aria-hidden />
+        {isConversation ? <>{facts.start}{facts.elapsed}{facts.directory}{facts.progress}</> : (
+          <div className="ent-wk-infobar-meta">
+            <div className="ent-wk-infobar-summary">{facts.start}{facts.elapsed}{facts.progress}</div>
+            {facts.directory}
+          </div>
+        )}
       </div>
 
       <div className="ent-wk-detail">
@@ -475,12 +479,15 @@ function ShareButton({ work }: { work: WorkItem }) {
   );
 }
 
-/** 工作目录：一行放不下就省略，右边一个复制按钮。 */
+/** 只缩短目录的展示文本；悬停和复制始终使用完整路径。 */
 function PathValue({ path }: { path: string }) {
+  const separator = path.includes('\\') ? '\\' : '/';
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const label = parts.length > 2 ? `…${separator}${parts.slice(-2).join(separator)}` : path;
   return (
     <span className="ent-wk-path">
-      <span title={path}>{path}</span>
-      <button type="button" className="ent-wk-copy" onClick={() => void copy(path)} aria-label="复制工作目录">
+      <span title={path}>{label}</span>
+      <button type="button" className="ent-wk-copy" onClick={() => void copy(path)} aria-label="复制工作目录" title="复制完整工作目录">
         <Copy size={13} aria-hidden />
       </button>
     </span>
