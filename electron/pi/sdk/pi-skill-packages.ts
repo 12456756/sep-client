@@ -1,15 +1,15 @@
 import { canUseSkillVersion } from '../../common/platform/skill-version-policy'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import type { SkillVersionStore } from '../../data/skill-version-store'
 import { getEmployeeSkills, previewSkill, type SkillVersion } from '../../common/platform/platform-api'
 import { employeeRuntimeSkillSchema, type EmployeeRuntimeSkill, type PreparedEmployeeSkill } from '../../common/platform/employee-runtime-contract'
 import { downloadSkillArtifact } from '../../common/platform/skill-artifact-api'
-import { skillArtifactSchema, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
+import { skillArtifactSchema, skillArtifactNameSchema, skillArtifactFrontmatterSchema, skillNameComparisonKey, maxSkillEntryBytes, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 import { z } from 'zod'
-// @ts-expect-error The existing js-yaml dependency does not ship TypeScript declarations.
-import { load as loadYaml, CORE_SCHEMA } from 'js-yaml'
+import { parseSkillMarkdown, validatedSkillMarkdown, validateSkillResources, approvedPackageBody } from './skill-package-parser'
+import { readSkillZip, packageCache, packageManifestName, packageSha256, safePackagePath, verifyPackageCache, assertSkillPathParents, type SkillPackageFile } from './skill-package-zip'
 
 export interface SkillStoreRequest {
   enterpriseId: string
@@ -45,65 +45,29 @@ const metadataSchema = z.object({
 })
 
 type SkillMetadata = z.infer<typeof metadataSchema>['skills'][number]
-type ApprovedSkillMetadata = SkillMetadata & { currentVersion: NonNullable<SkillMetadata['currentVersion']> }
 
 function checkCurrent(input: SkillStoreRequest): void {
   if (input.isCurrent && !input.isCurrent()) throw new Error('Employee preparation scope changed.')
 }
 
 function fallbackName(capabilityId: string): string {
-  if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(capabilityId) && capabilityId.length <= 64) return capabilityId
+  if (skillArtifactNameSchema.safeParse(capabilityId).success) return capabilityId
   return `skill-${createHash('sha256').update(capabilityId).digest('hex').slice(0, 24)}`
 }
 
-function validateSelfContained(body: string): void {
-  const references = [
-    ...body.matchAll(/!?\[[^\]\n]*\]\(\s*<?([^\s)>]+)>?(?:\s+[^)]*)?\)/g),
-    ...body.matchAll(/^\s*\[[^\]\n]+\]:\s*<?([^\s>]+)>?/gm),
-    ...body.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/gi),
-    ...body.matchAll(/(?:^|[\s`"'(])((?:\.\.?\/)?(?:references|scripts|assets)\/[^\s`"'<>()[\]]+)/g),
-    ...body.matchAll(/`(\.\.?\/[^`\n]+|[A-Za-z0-9_-]+\.(?:md|py|sh|js|ts|json|ya?ml|png|jpe?g|webp))`/g),
-  ]
-  for (const reference of references) {
-    const path = reference[1]
-    if (/^(?:https?:\/\/|mailto:|data:|#)/i.test(path)) continue
-    if (/^(?:\.\/)?SKILL\.md(?:#.*)?$/.test(path)) continue
-    throw new Error('Skill entry references a missing local resource; an approved package is required.')
-  }
-}
-
-function parseSkillFrontmatter(content: string): { frontmatter: unknown; body: string } {
-  if (!content.startsWith('---')) return { frontmatter: {}, body: content }
-  const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(content)
-  if (!match) throw new Error('Invalid skill YAML frontmatter.')
-  try {
-    // YAML 1.2 core types match Pi; dates stay strings and merge keys cannot supply metadata.
-    const frontmatter: unknown = loadYaml(match[1], { schema: CORE_SCHEMA })
-    return { frontmatter: frontmatter ?? {}, body: content.slice(match[0].length).trim() }
-  } catch {
-    throw new Error('Invalid skill YAML frontmatter.')
-  }
-}
-
 function skillEntry(content: string, skill: SkillMetadata): { content: string; name: string; description: string } {
-  const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
-  if (!normalized.trim()) throw new Error('Approved skill entry is empty.')
-  const parsed = parseSkillFrontmatter(normalized)
-  const hasFrontmatter = normalized.startsWith('---\n')
+  const parsed = parseSkillMarkdown(content)
+  const hasFrontmatter = parsed.hasFrontmatter
   const metadata = hasFrontmatter ? parsed.frontmatter : {
     name: fallbackName(skill.capability.id),
     description: skill.capability.description?.trim() || skill.capability.name,
   }
-  const valid = z.object({
-    name: z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
-    description: z.string().min(1).max(1024).refine(value => Boolean(value.trim())),
-    'disable-model-invocation': z.literal(false).optional(),
-  }).safeParse(metadata)
+  const valid = skillArtifactFrontmatterSchema.safeParse(metadata)
   if (!valid.success) throw new Error('Skill frontmatter requires a valid name and description.')
   if (!parsed.body.trim()) throw new Error('Approved skill entry is empty.')
-  validateSelfContained(parsed.body)
-  const entry = hasFrontmatter ? normalized : `---\nname: ${JSON.stringify(valid.data.name)}\ndescription: ${JSON.stringify(valid.data.description)}\n---\n\n${normalized}`
-  parseSkillFrontmatter(entry)
+  validateSkillResources(parsed.body)
+  const entry = hasFrontmatter ? content : `---\nname: ${JSON.stringify(valid.data.name)}\ndescription: ${JSON.stringify(valid.data.description)}\n---\n\n${content}`
+  validatedSkillMarkdown(entry)
   return { content: entry, name: valid.data.name, description: valid.data.description }
 }
 
@@ -112,26 +76,32 @@ function safeSegment(value: string): string {
   return value
 }
 
-function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable): { content: string; name: string; description: string } {
-  if (artifact.format !== 'single-file') throw new Error('Approved ZIP skill installation is not supported yet; no content fallback is permitted.')
-  if (artifact.entryPath !== 'SKILL.md' || artifact.fileCount !== 1 || bytes.length > 500 * 1024 || bytes.length !== artifact.byteLength ||
-    createHash('sha256').update(bytes).digest('hex') !== artifact.artifactSha256 || artifact.entrySha256 !== artifact.artifactSha256) {
+function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approvedContent: string): { content: string; name: string; description: string; files: SkillPackageFile[] } {
+  if (bytes.length !== artifact.byteLength || packageSha256(bytes) !== artifact.artifactSha256) {
+    throw new Error('Approved skill artifact integrity mismatch.')
+  }
+  const files = artifact.format === 'zip' ? readSkillZip(bytes, artifact) : [{ path: 'SKILL.md', bytes }]
+  const entry = files.find(file => file.path === artifact.entryPath)
+  if (!entry || entry.bytes.length > maxSkillEntryBytes || packageSha256(entry.bytes) !== artifact.entrySha256 ||
+    artifact.format === 'single-file' && (artifact.entryPath !== 'SKILL.md' || artifact.fileCount !== 1)) {
     throw new Error('Approved skill artifact integrity mismatch.')
   }
   let content: string
-  try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+  try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(entry.bytes) }
   catch { throw new Error('Approved skill entry is not valid UTF-8.') }
-  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) throw new Error('Approved skill entry requires frontmatter.')
-  const parsed = parseSkillFrontmatter(content.replace(/\r\n?/g, '\n'))
-  const metadata = z.object({
-    name: z.literal(artifact.installationDirectory),
-    description: z.string().min(1).max(1024).refine(value => Boolean(value.trim())),
-    'disable-model-invocation': z.literal(false).optional(),
-  }).safeParse(parsed.frontmatter)
-  if (!metadata.success || !parsed.body.trim()) throw new Error('Invalid approved skill frontmatter or body.')
-  validateSelfContained(parsed.body)
+  const parsed = validatedSkillMarkdown(content)
+  const metadata = parsed.metadata
+  let expectedContent = approvedContent
+  if (artifact.format === 'single-file' && !parseSkillMarkdown(approvedContent).hasFrontmatter) {
+    const summary = Array.from(approvedContent.trim().replace(/\s+/g, ' ')).slice(0, 300).join('')
+    expectedContent = `---\nname: ${JSON.stringify(artifact.installationDirectory)}\ndescription: ${JSON.stringify(`Use for tasks matching these approved instructions: ${summary}`)}\n---\n${approvedContent}`
+  }
+  if (content !== expectedContent && !(artifact.format === 'zip' && approvedPackageBody(content) === approvedContent)) throw new Error('Approved skill artifact content mismatch.')
+  if (!safePackagePath(metadata.name) || skillNameComparisonKey(metadata.name) !== skillNameComparisonKey(artifact.installationDirectory)
+    || artifact.format === 'zip' && dirname(artifact.entryPath) !== '.' && skillNameComparisonKey(basename(dirname(artifact.entryPath))) !== skillNameComparisonKey(metadata.name)) throw new Error('Invalid approved skill frontmatter or directory.')
+  validateSkillResources(parsed.body, artifact.entryPath, new Set(files.filter(file => !file.directory).map(file => file.path)))
   // Validate normalized metadata, but install and freeze the exact authenticated bytes.
-  return { content, name: metadata.data.name, description: metadata.data.description }
+  return { content, name: metadata.name, description: metadata.description, files }
 }
 
 export class SkillStore {
@@ -154,13 +124,15 @@ export class SkillStore {
     const skillsResponse = response.data
     if (skillsResponse.subscriptionId !== input.subscriptionId) throw new Error('The employee skills response does not match the subscription.')
     if (new Set(skillsResponse.skills.map(skill => skill.capability.id)).size !== skillsResponse.skills.length) throw new Error('Duplicate employee skill metadata.')
-    let approvedSkills = skillsResponse.skills.filter((skill): skill is ApprovedSkillMetadata => skill.currentVersion !== null)
+    let approvedSkills = skillsResponse.skills.filter(
+      (skill): skill is SkillMetadata & { currentVersion: NonNullable<SkillMetadata['currentVersion']> } => skill.currentVersion !== null,
+    )
     if (input.runtimeSkills) {
       const runtimeSkills = z.array(employeeRuntimeSkillSchema).parse(input.runtimeSkills)
       if (new Set(runtimeSkills.map(skill => skill.capabilityId)).size !== runtimeSkills.length) throw new Error('Duplicate runtime skill.')
       approvedSkills = runtimeSkills.map(runtime => {
         const metadata = skillsResponse.skills.find(skill => skill.capability.id === runtime.capabilityId)
-        const version = metadata?.currentVersion && [metadata.currentVersion, ...metadata.versions].find(version => version.id === runtime.versionId)
+        const version = metadata && [metadata.currentVersion, ...metadata.versions].find(version => version?.id === runtime.versionId)
         if (!metadata || !version || version.capabilityId !== runtime.capabilityId || version.version !== runtime.version || !canUseSkillVersion(version, input.memberId ?? '')) {
           throw new Error('Runtime skill version is not approved or is no longer available.')
         }
@@ -176,6 +148,7 @@ export class SkillStore {
     )
     const skillRoot = base
     checkCurrent(input)
+    assertSkillPathParents(skillRoot)
     await mkdir(skillRoot, { recursive: true })
     const paths: string[] = []
     const installed: PreparedEmployeeSkill[] = []
@@ -207,37 +180,52 @@ export class SkillStore {
           artifact.approvedContentSha256 !== createHash('sha256').update(runtimeSkill.content).digest('hex')) {
           throw new Error('Approved skill artifact identity or content mismatch.')
         }
-        if (artifact.format !== 'single-file') throw new Error('Approved ZIP skill installation is not supported yet; no content fallback is permitted.')
         const bytes = await downloadSkillArtifact(input.subscriptionId, artifact, input.accessToken)
         checkCurrent(input)
-        const entry = approvedEntry(bytes, artifact)
+        const entry = approvedEntry(bytes, artifact, runtimeSkill.content)
         if (!isOwnerLocalVersion) {
           if (selected && selected !== platformVersionId && !isAutomaticSelection) throw new Error('Selected skill version is not the currently approved runtime version.')
-          if (names.has(entry.name)) throw new Error('Installed skill names collide.')
-          names.add(entry.name)
+          const nameKey = skillNameComparisonKey(entry.name)
+          if (names.has(nameKey)) throw new Error('Installed skill names collide.')
+          names.add(nameKey)
           const versionKey = createHash('sha256').update(JSON.stringify([artifact.versionId, artifact.artifactSha256])).digest('hex')
           const parent = join(skillRoot, safeSegment(skill.capability.id), versionKey)
-          const target = join(parent, entry.name)
+          const packageRoot = join(parent, entry.name)
+          const target = join(packageRoot, dirname(artifact.entryPath))
           const snapshot: PreparedEmployeeSkill = {
             capabilityId: skill.capability.id, versionId: platformVersionId, baseSkillVersionId: artifact.versionId,
             version: runtimeSkill.version, source: 'approved', name: entry.name, description: entry.description,
             content: entry.content, sha256: artifact.entrySha256, path: target, artifact,
           }
           checkCurrent(input)
+          assertSkillPathParents(parent)
           await mkdir(parent, { recursive: true, mode: 0o700 })
+          assertSkillPathParents(parent)
           const temporary = await mkdtemp(join(parent, '.staging-'))
+          const installedFiles = artifact.format === 'single-file'
+            ? [...entry.files, { path: 'manifest.json', bytes: Buffer.from(JSON.stringify(snapshot)) }]
+            : entry.files
+          const cache = Buffer.from(JSON.stringify({ ...snapshot, ...packageCache(installedFiles, artifact.entryPath) }))
           try {
-            await writeFile(join(temporary, 'SKILL.md'), bytes, { mode: 0o600 })
-            await writeFile(join(temporary, 'manifest.json'), JSON.stringify(snapshot), { mode: 0o600 })
+            for (const file of installedFiles) {
+              const path = join(temporary, file.path)
+              if (file.directory) { await mkdir(path, { recursive: true, mode: 0o700 }); continue }
+              await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+              await writeFile(path, file.bytes, { mode: 0o600, flag: 'wx' })
+            }
+            const stagedEntry = join(temporary, artifact.entryPath)
+            await writeFile(join(dirname(stagedEntry), packageManifestName), cache, { mode: 0o600, flag: 'wx' })
+            verifyPackageCache(stagedEntry, cache)
             checkCurrent(input)
-            try { await rename(temporary, target) }
+            try { await rename(temporary, packageRoot) }
             catch (error) {
               const code = (error as NodeJS.ErrnoException).code
               if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
-              const directory = await lstat(target)
-              const file = await lstat(join(target, 'SKILL.md'))
-              if (!directory.isDirectory() || directory.isSymbolicLink() || !file.isFile() || file.isSymbolicLink() ||
-                !(await readFile(join(target, 'SKILL.md'))).equals(bytes)) throw new Error('Immutable skill entry integrity mismatch.')
+              try {
+                const directory = await lstat(packageRoot)
+                if (!directory.isDirectory() || directory.isSymbolicLink() || !(await readFile(join(target, packageManifestName))).equals(cache)) throw new Error('Cache mismatch.')
+                verifyPackageCache(join(target, 'SKILL.md'), cache)
+              } catch { throw new Error('Immutable skill entry integrity mismatch.') }
             }
           } finally { await rm(temporary, { recursive: true, force: true }) }
           checkCurrent(input)
@@ -303,8 +291,10 @@ export class SkillStore {
       const content = selected ? activeVersion?.content : platform?.content ?? platformContent
       if (!content?.trim()) throw new Error('Approved skill entry is empty or unavailable.')
       const entry = skillEntry(content, skill)
-      if (names.has(entry.name)) throw new Error('Installed skill names collide.')
-      names.add(entry.name)
+      if (!safePackagePath(entry.name)) throw new Error('Invalid skill installation directory.')
+      const nameKey = skillNameComparisonKey(entry.name)
+      if (names.has(nameKey)) throw new Error('Installed skill names collide.')
+      names.add(nameKey)
       const versionId = activeVersion?.versionId ?? platform?.versionId ?? `platform-${skill.currentVersion.id}`
       const version = activeVersion?.version ?? platform?.version ?? skill.currentVersion.version
       const sha256 = createHash('sha256').update(entry.content).digest('hex')
@@ -318,7 +308,9 @@ export class SkillStore {
         name: entry.name, description: entry.description, content: entry.content, sha256, path: target,
       }
       checkCurrent(input)
+      assertSkillPathParents(parent)
       await mkdir(parent, { recursive: true })
+      assertSkillPathParents(parent)
       const temporary = await mkdtemp(join(parent, '.staging-'))
       try {
         await writeFile(join(temporary, 'SKILL.md'), entry.content, { encoding: 'utf8', mode: 0o600 })

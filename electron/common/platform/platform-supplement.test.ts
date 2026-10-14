@@ -57,12 +57,28 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     let calls = 0
     globalThis.fetch = async () => { calls++; return response(version) }
     const request = { capabilityId: 'cap', parentVersionId: 'v', content: 'text' }
-    for (const invalid of [{ ...request, content: '' }, { ...request, content: 'x'.repeat(500001) }, { ...request, ownerId: 'other' }, { ...request, capabilityId: 'x'.repeat(129) }]) {
+    for (const invalid of [{ ...request, content: '' }, { ...request, content: '  \n' }, { ...request, content: 'x'.repeat(512001) }, { ...request, content: '中'.repeat(180000) }, { ...request, ownerId: 'other' }, { ...request, capabilityId: 'x'.repeat(129) }]) {
       await assert.rejects(async () => api.createPersonalSkillVersion(invalid, 'valid-key-1234567', 'access'))
     }
     await assert.rejects(async () => api.createPersonalSkillVersion(request, '', 'access'))
     assert.equal(calls, 0)
   })
+
+  it('uses the UTF-8 byte budget without rejecting short instructions or rewriting source', async () => {
+    const inputs = ['翻译商品名。', 'x'.repeat(512000), '中'.repeat(170666)]
+    let calls = 0
+    globalThis.fetch = async (_input, init) => {
+      calls++
+      const body = JSON.parse(String(init?.body))
+      return response({ ...version, content: body.content }, 201)
+    }
+    for (const content of inputs) {
+      const result = await api.createPersonalSkillVersion({ capabilityId: 'cap-1', parentVersionId: 'published-1', content }, 'valid-key-1234567', 'access')
+      assert.equal(result.content, content)
+    }
+    assert.equal(calls, inputs.length)
+  })
+
 
   it('lists versions using required capabilityId and optional status, preserving review metadata', async () => {
     globalThis.fetch = async input => {

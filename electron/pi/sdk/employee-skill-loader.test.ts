@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile, rename, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DefaultResourceLoader, SettingsManager } from '@earendil-works/pi-coding-agent'
+import { DefaultResourceLoader, SettingsManager, loadSkills, formatSkillsForPrompt } from '@earendil-works/pi-coding-agent'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 
 const approvedContent = '---\nname: orders\ndescription: Approved orders\n---\nApproved operations.\n'
@@ -29,7 +29,7 @@ async function fixture() {
       settingsManager: SettingsManager.inMemory(),
       noExtensions: true, noContextFiles: true, noPromptTemplates: true, noThemes: true,
       additionalSkillPaths: paths,
-      ...employeeSkillLoaderOptions(cwd, agentDir, paths),
+      ...employeeSkillLoaderOptions(cwd, agentDir, paths, loadSkills),
     })
   }
   return {
@@ -79,7 +79,7 @@ describe('employee skills with the real DefaultResourceLoader (no model)', () =>
       cwd: f.cwd, agentDir: f.agentDir, settingsManager: SettingsManager.inMemory(),
       noExtensions: true, noContextFiles: true, noPromptTemplates: true, noThemes: true,
       additionalSkillPaths: [f.approved],
-      ...employeeSkillLoaderOptions(f.cwd, f.agentDir, undefined),
+      ...employeeSkillLoaderOptions(f.cwd, f.agentDir, undefined, loadSkills),
     })
     await loader.reload()
     assert.equal(loader.getSkills().skills[0].filePath, join(project, 'SKILL.md'))
@@ -134,4 +134,70 @@ describe('employee skills with the real DefaultResourceLoader (no model)', () =>
     assert.equal(await readFile(join(local, 'SKILL.md'), 'utf8'), content)
   })
 
+  for (const prefix of ['', '\uFEFF', '\uFEFF\n\n', '\n \t\n']) {
+    it('really loads Unicode names, prefixed YAML, CORE extras and explicit-only invocation: ' + JSON.stringify(prefix), async t => {
+      const f = await fixture()
+      t.after(f.cleanup)
+      const content = prefix + approvedContent.replace('name: orders', 'name: 订单-处理').replace('---\nApproved', 'disable-model-invocation: true\nmetadata: {version: 1, enabled: true}\n---\nApproved')
+      await f.skill(f.approved, content)
+      const raw = loadSkills({ cwd: f.cwd, agentDir: f.agentDir, skillPaths: [f.approved], includeDefaults: false })
+      if (!prefix) assert.equal(raw.skills[0]?.name, '订单-处理')
+      const loader = f.loader()
+      await loader.reload()
+      assert.equal(loader.getSkills().skills[0]?.name, '订单-处理')
+      assert.equal(loader.getSkills().skills[0]?.disableModelInvocation, true)
+      assert.equal(formatSkillsForPrompt(loader.getSkills().skills), '')
+      assert.deepEqual(loader.getSkills().diagnostics, [])
+      assert.equal(await readFile(join(f.approved, 'SKILL.md'), 'utf8'), content)
+      await loader.reload()
+    })
+  }
+
+  it('rejects all non-whitelisted diagnostics even for a valid prefixed entry', async t => {
+    const f = await fixture()
+    t.after(f.cleanup)
+    await f.skill(f.approved, '\uFEFF' + approvedContent)
+    const options = employeeSkillLoaderOptions(f.cwd, f.agentDir, [f.approved], loadSkills)
+    for (const message of ['description exceeds 1024 characters (1025)', 'unknown diagnostic', 'name must not contain consecutive hyphens']) {
+      assert.throws(() => options.skillsOverride!({ skills: [], diagnostics: [{ type: 'warning', message, path: join(f.approved, 'SKILL.md') }] }), /integrity mismatch/)
+    }
+    assert.throws(() => options.skillsOverride!({ skills: [], diagnostics: [{ type: 'warning', message: 'description is required', path: '/foreign/SKILL.md' }] }), /integrity mismatch/)
+  })
+
+  for (const name of ['CRM 标签体系', 'SKU 生命周期管理', '电商 SOP 编排', 'CRM  标签', 'CRM\u00a0\u3000标签', '𠀀'.repeat(64)]) {
+    it('preserves market names and exposes an exact readable model location: ' + name, async t => {
+      const f = await fixture()
+      t.after(f.cleanup)
+      const directory = join(f.agentDir, name)
+      const content = approvedContent.replace('name: orders', `name: ${name}`)
+      await f.skill(directory, content)
+      const loader = f.loader([directory])
+      await loader.reload()
+      const skills = loader.getSkills().skills
+      assert.equal(skills[0]?.name, name)
+      assert.equal(skills[0]?.filePath, join(directory, 'SKILL.md'))
+      assert.ok(formatSkillsForPrompt(skills).includes(`<name>${name}</name>`))
+      assert.ok(formatSkillsForPrompt(skills).includes(`<location>${join(directory, 'SKILL.md')}</location>`))
+      assert.equal(await readFile(skills[0].filePath, 'utf8'), content)
+      const options = employeeSkillLoaderOptions(f.cwd, f.agentDir, [directory], loadSkills)
+      assert.throws(() => options.skillsOverride!({ skills: [{ ...skills[0], baseDir: f.cwd }], diagnostics: [] }), /integrity mismatch/)
+    })
+  }
+
+  it('rejects NFKC name collisions and same-byte replacement or symlink substitution', async t => {
+    const f = await fixture()
+    t.after(f.cleanup)
+    const other = join(f.agentDir, 'other')
+    await f.skill(other, approvedContent.replace('name: orders', 'name: ｏｒｄｅｒｓ'))
+    assert.throws(() => f.loader([f.approved, other]), /integrity mismatch/)
+    const loader = f.loader()
+    await loader.reload()
+    const entry = join(f.approved, 'SKILL.md')
+    await rename(entry, join(f.approved, 'old.md'))
+    await writeFile(entry, approvedContent)
+    await assert.rejects(loader.reload(), /integrity mismatch/)
+    await rm(entry)
+    await symlink(join(f.approved, 'old.md'), entry)
+    assert.throws(() => f.loader(), /integrity mismatch/)
+  })
 })

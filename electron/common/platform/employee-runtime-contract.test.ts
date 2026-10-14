@@ -115,7 +115,7 @@ describe('existing SEP employee runtime manifest v1', () => {
       maxSteps: value.employee.maxSteps, systemPrompt: value.runtime.systemPrompt, modelId: value.runtime.modelId,
       allowedModels: value.runtime.allowedModels, approvedSkills: value.runtime.skills,
       skills: [{ capabilityId: 'cap-1', versionId: 'local-1', baseSkillVersionId: 'approved-1', version: 'personal', source: 'owner-local',
-        name: 'cap-1', description: 'Approved skill', content: '---\nname: cap-1\ndescription: Approved skill\n---\n# Local',
+        name: '订单-处理', description: 'Approved skill', content: '---\nname: 订单-处理\ndescription: Approved skill\n---\n# Local',
         sha256: 'a'.repeat(64), path: '/runtime/immutable/cap-1' }],
     }
     const parsed = employeeRuntimeSnapshotSchema.parse(JSON.parse(JSON.stringify(snapshot)))

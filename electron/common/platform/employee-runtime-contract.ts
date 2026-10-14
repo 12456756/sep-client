@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactDownloadPath } from './skill-artifact-contract'
+import { skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactDownloadPath, skillArtifactNameSchema } from './skill-artifact-contract'
 
 const identifier = z.string().min(1).max(128)
 
@@ -60,7 +60,7 @@ export const preparedEmployeeSkillSchema = z.object({
   baseSkillVersionId: identifier,
   version: z.string().min(1),
   source: z.enum(['approved', 'owner-local']),
-  name: z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  name: skillArtifactNameSchema,
   description: z.string().min(1).max(1024),
   content: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),

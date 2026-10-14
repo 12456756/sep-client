@@ -2,8 +2,23 @@ import { z } from 'zod'
 
 export const skillArtifactProtocolVersion = 1 as const
 export const maxSkillArtifactBytes = 20 * 1024 * 1024
+export const maxSkillEntryBytes = 500 * 1024
 export const skillArtifactSha256Schema = z.string().regex(/^[0-9a-f]{64}$/)
-export const skillArtifactNameSchema = z.string().min(1).max(64).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+const safeName = /^[\p{L}\p{N}]+(?:(?:-|\p{Zs}+)[\p{L}\p{N}]+)*$/u
+export function isSafeSkillPathComponent(value: string): boolean {
+  return [value, value.normalize('NFKC')].every(part => part.length > 0 && part !== '.' && part !== '..'
+    && !/[\\/:<>"|?*]/.test(part)
+    && !Array.from(part).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+    && !/[ .]$/.test(part) && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))
+}
+export const skillArtifactNameSchema = z.string().refine(value =>
+  Array.from(value).length >= 1 && Array.from(value).length <= 64 && safeName.test(value)
+  && safeName.test(value.normalize('NFKC'))
+  && isSafeSkillPathComponent(value), 'Invalid skill name.')
+
+export function skillNameComparisonKey(value: string): string {
+  return value.normalize('NFKC').toLowerCase()
+}
 const artifactIdSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/)
 
 export const skillArtifactFrontmatterSchema = z.object({
@@ -11,8 +26,9 @@ export const skillArtifactFrontmatterSchema = z.object({
   description: z.string().min(1).max(1024).refine(value => value.trim().length > 0),
   license: z.string().optional(),
   compatibility: z.string().min(1).max(500).optional(),
-  metadata: z.record(z.string(), z.string()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   'allowed-tools': z.string().optional(),
+  'disable-model-invocation': z.boolean().optional(),
 }).passthrough()
 
 const identity = {
@@ -35,9 +51,7 @@ export const skillArtifactAvailableSchema = z.object({
   entryPath: z.string().max(1024).refine(value => {
     const parts = value.split('/')
     return parts.at(-1) === 'SKILL.md'
-      && parts.every(part => part.length > 0 && part !== '.' && part !== '..')
-      && !/[\\:]/.test(value)
-      && !Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+      && parts.every(isSafeSkillPathComponent)
   }, 'Invalid skill artifact entry path.'),
   entrySha256: skillArtifactSha256Schema,
   artifactSha256: skillArtifactSha256Schema,

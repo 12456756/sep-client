@@ -328,7 +328,7 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     let calls = 0
     globalThis.fetch = async () => { calls++; return response(version) }
     const request = { capabilityId: 'cap', parentVersionId: 'v', content: 'text' }
-    for (const invalid of [{ ...request, content: '' }, { ...request, content: 'x'.repeat(500001) }, { ...request, ownerId: 'other' }, { ...request, capabilityId: 'x'.repeat(129) }]) {
+    for (const invalid of [{ ...request, content: '' }, { ...request, content: 'x'.repeat(512001) }, { ...request, ownerId: 'other' }, { ...request, capabilityId: 'x'.repeat(129) }]) {
       await assert.rejects(async () => api.createPersonalSkillVersion(invalid, 'valid-key-1234567', 'access'))
     }
     await assert.rejects(async () => api.createPersonalSkillVersion(request, '', 'access'))

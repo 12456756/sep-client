@@ -1,14 +1,17 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile, lstat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { loadSkills } from '@earendil-works/pi-coding-agent'
 import type { SkillVersion } from '../../common/platform/platform-api'
 import { SkillVersionStore } from '../../data/skill-version-store'
 import { SkillStore } from './pi-skill-packages'
 import type { EmployeeRuntimeSkill } from '../../common/platform/employee-runtime-contract'
 import type { SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
+import { zipFixture, zipDescriptor } from './skill-package-zip.fixture'
+import { employeeSkillLoaderOptions } from './employee-skill-loader'
 
 const originalFetch = globalThis.fetch
 
@@ -132,13 +135,37 @@ describe('SkillStore', () => {
         downloads++
         assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer access-token')
         return new Response(options.bytes ?? Buffer.from(skill.content), { status: options.status ?? 200,
-          headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Length': String(skill.artifact.byteLength),
+          headers: { 'Content-Type': skill.artifact.format === 'zip' ? 'application/zip' : 'text/markdown; charset=utf-8', 'Content-Length': String(skill.artifact.byteLength),
             'X-SHA256': skill.artifact.artifactSha256 } })
       }
       throw new Error('Negotiated preparation must not preview or downgrade.')
     }
     return () => downloads
   }
+
+  it('authenticates a backend-wrapped legacy entry while retaining the approved raw hash', async () => {
+    const content = '\uFEFF\n# Legacy 中文 instructions\r\n'
+    const summary = Array.from(content.trim().replace(/\s+/g, ' ')).slice(0, 300).join('')
+    const wrapper = `---\nname: "orders"\ndescription: ${JSON.stringify(`Use for tasks matching these approved instructions: ${summary}`)}\n---\n${content}`
+    const runtime = artifactFixture(wrapper)
+    runtime.content = content
+    runtime.artifact.approvedContentSha256 = createHash('sha256').update(content).digest('hex')
+    serveArtifact(runtime, { bytes: Buffer.from(wrapper) })
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+    assert.equal(prepared.skills[0]?.artifact?.approvedContentSha256, runtime.artifact.approvedContentSha256)
+    assert.equal(prepared.skills[0]?.sha256, runtime.artifact.entrySha256)
+    assert.notEqual(prepared.skills[0]?.sha256, runtime.artifact.approvedContentSha256)
+    assert.equal(await readFile(join(prepared.skillPaths[0], 'SKILL.md'), 'utf8'), wrapper)
+    const options = employeeSkillLoaderOptions(tmpdir(), tmpdir(), prepared.skillPaths, loadSkills)
+    assert.equal(options.skillsOverride!({ skills: (await import('@earendil-works/pi-coding-agent')).loadSkills({ cwd: tmpdir(), agentDir: tmpdir(), skillPaths: prepared.skillPaths, includeDefaults: false }).skills, diagnostics: [] }).skills[0]?.name, 'orders')
+    const substituted = wrapper.replace(content, '# Substituted instructions')
+    const malicious = artifactFixture(substituted)
+    malicious.content = content
+    malicious.artifact.approvedContentSha256 = runtime.artifact.approvedContentSha256
+    serveArtifact(malicious, { bytes: Buffer.from(substituted) })
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [malicious] }), /content mismatch/)
+  })
 
   it('installs exact approved bytes, freezes descriptor, and reauthorizes downloads even when cached', async () => {
     const runtime = artifactFixture()
@@ -186,12 +213,89 @@ describe('SkillStore', () => {
     assert.deepEqual(await readdir(join(prepared.skillPaths[0]!, '..')), ['orders'])
   })
 
-  it('refuses ZIP until safe package installation is implemented', async () => {
-    const runtime = artifactFixture()
-    const downloads = serveArtifact(runtime)
+  it('installs the entire ZIP atomically, preserves approved entry hash and checks attachments on reload and reuse', async () => {
+    const content = '\uFEFF\n\n---\r\nname: 订单-处理\r\ndescription: Approved operations\r\ndisable-model-invocation: true\r\nmetadata: {version: 1}\r\n---\r\nRead [guide](references/guide.md).\r\n'
+    const files = [{ path: '订单-处理/SKILL.md', bytes: Buffer.from(content) }, { path: '订单-处理/references/guide.md', bytes: Buffer.from('Complete guide') }, { path: '订单-处理/assets/icon.bin', bytes: Buffer.from([0, 255, 1]) }, { path: '订单-处理/output/empty/', bytes: Buffer.alloc(0) }]
+    const bytes = zipFixture(files, { deflate: true, descriptor: true })
+    const runtime = { ...artifactFixture(content), artifact: { ...zipDescriptor(bytes, files, '订单-处理/SKILL.md'), installationDirectory: '订单-处理' } }
+    const downloads = serveArtifact(runtime, { bytes })
     const { skills } = await createStore()
-    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [{ ...runtime, artifact: { ...runtime.artifact, format: 'zip' } }] }), /ZIP skill installation is not supported/)
-    assert.equal(downloads(), 0)
+    const results = await Promise.all(Array.from({ length: 3 }, () => skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [runtime] })))
+    assert.equal(new Set(results.map(result => result.skillPaths[0])).size, 1)
+    const prepared = results[0]!
+    const path = prepared.skillPaths[0]!
+    assert.deepEqual(await readFile(join(path, 'SKILL.md')), Buffer.from(content))
+    assert.equal(prepared.skills[0]?.content, content)
+    assert.equal(prepared.skills[0]?.sha256, runtime.artifact.approvedContentSha256)
+    assert.equal(await readFile(join(path, 'references/guide.md'), 'utf8'), 'Complete guide')
+    assert.deepEqual(await readFile(join(path, 'assets/icon.bin')), Buffer.from([0, 255, 1]))
+    assert.equal((await lstat(join(path, 'output/empty'))).isDirectory(), true)
+    const { DefaultResourceLoader, SettingsManager, formatSkillsForPrompt } = await import('@earendil-works/pi-coding-agent')
+    const loader = new DefaultResourceLoader({ cwd: tmpdir(), agentDir: tmpdir(), settingsManager: SettingsManager.inMemory(),
+      noExtensions: true, noContextFiles: true, noPromptTemplates: true, noThemes: true, additionalSkillPaths: prepared.skillPaths,
+      ...employeeSkillLoaderOptions(tmpdir(), tmpdir(), prepared.skillPaths, loadSkills) })
+    await loader.reload()
+    assert.equal(loader.getSkills().skills[0]?.name, '订单-处理')
+    assert.equal(loader.getSkills().skills[0]?.disableModelInvocation, true)
+    assert.equal(formatSkillsForPrompt(loader.getSkills().skills), '')
+    await writeFile(join(path, 'references/guide.md'), 'Tampered guide')
+    await assert.rejects(loader.reload(), /integrity mismatch/)
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /integrity mismatch/)
+    assert.equal(downloads(), 4)
+    assert.deepEqual(await readdir(join(path, '../..')), ['订单-处理'])
+  })
+
+  it('never falls back to a bare entry when the ZIP lacks a referenced attachment', async () => {
+    const content = '---\nname: orders\ndescription: Orders\n---\nRead [guide](references/missing.md).'
+    const files = [{ path: 'SKILL.md', bytes: Buffer.from(content) }]
+    const bytes = zipFixture(files)
+    const runtime = { ...artifactFixture(content), artifact: zipDescriptor(bytes, files) }
+    const downloads = serveArtifact(runtime, { bytes })
+    const { skills } = await createStore()
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /missing local resource/)
+    assert.equal(downloads(), 1)
+  })
+
+  for (const name of ['CRM 标签体系', 'SKU 生命周期管理', '电商 SOP 编排']) {
+    it('installs market ZIP names unchanged when approval stores only the raw body: ' + name, async () => {
+      const body = 'Read [guide](references/guide.md).\r\n'
+      const content = `\uFEFF\n---\r\nname: ${name}\r\ndescription: Approved\r\n---\r\n\r\n${body}`
+      const entryPath = `${name}/SKILL.md`
+      const files = [{ path: entryPath, bytes: Buffer.from(content) }, { path: `${name}/references/guide.md`, bytes: Buffer.from('Approved attachment') }]
+      const bytes = zipFixture(files, { deflate: true })
+      const runtime = { ...artifactFixture(body), artifact: { ...zipDescriptor(bytes, files, entryPath), installationDirectory: name,
+        approvedContentSha256: createHash('sha256').update(body).digest('hex') } }
+      serveArtifact(runtime, { bytes })
+      const { skills } = await createStore()
+      const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+      assert.equal(prepared.skills[0]?.name, name)
+      assert.equal(prepared.skills[0]?.content, content)
+      assert.equal(prepared.skills[0]?.sha256, runtime.artifact.entrySha256)
+      assert.equal(prepared.skills[0]?.artifact?.approvedContentSha256, runtime.artifact.approvedContentSha256)
+      assert.deepEqual(await readFile(join(prepared.skillPaths[0], 'SKILL.md')), Buffer.from(content))
+      const { DefaultResourceLoader, SettingsManager } = await import('@earendil-works/pi-coding-agent')
+      const loader = new DefaultResourceLoader({ cwd: tmpdir(), agentDir: tmpdir(), settingsManager: SettingsManager.inMemory(),
+        noExtensions: true, noContextFiles: true, noPromptTemplates: true, noThemes: true, additionalSkillPaths: prepared.skillPaths,
+        ...employeeSkillLoaderOptions(tmpdir(), tmpdir(), prepared.skillPaths, loadSkills) })
+      await loader.reload()
+      assert.equal(loader.getSkills().skills[0]?.name, name)
+      runtime.content = body.replace('guide', 'different')
+      runtime.artifact.approvedContentSha256 = createHash('sha256').update(runtime.content).digest('hex')
+      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /content mismatch/)
+    })
+  }
+
+  it('rejects ZIP name/directory mismatch and malformed UTF-8 instead of repairing approved bytes', async () => {
+    for (const malformed of [false, true]) {
+      const content = '---\nname: orders\ndescription: Approved\n---\nWork'
+      const entryPath = malformed ? 'orders/SKILL.md' : 'foreign/SKILL.md'
+      const files = [{ path: entryPath, bytes: malformed ? Buffer.concat([Buffer.from(content), Buffer.from([0xff])]) : Buffer.from(content) }]
+      const bytes = zipFixture(files)
+      const runtime = { ...artifactFixture(content), artifact: zipDescriptor(bytes, files, entryPath) }
+      serveArtifact(runtime, { bytes })
+      const { skills } = await createStore()
+      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /directory|content mismatch|UTF-8/)
+    }
   })
 
   it('keeps owner-local content separate from approved artifact provenance', async () => {
@@ -506,7 +610,6 @@ describe('SkillStore', () => {
     '---\nname: [invalid\ndescription: test\n---\n# Work',
     '---\nname: missing-end',
     '---\nname: valid-name\nname: duplicated\ndescription: test\n---\n# Work',
-    '---\nname: valid-name\ndescription: test\ndisable-model-invocation: true\n---\n# Work',
     '---\n- name: valid-name\n- description: test\n---\n# Work',
     '---\nname: valid-name\ndescription: true\n---\n# Work',
     '---\nname: valid-name\ndescription: test\n---invalid\n# Work',
@@ -538,6 +641,23 @@ describe('SkillStore', () => {
     const { skills } = await createStore()
     assert.equal((await skills.prepare(request())).skillPaths.length, 1)
   })
+
+  for (const content of [
+    'Output `report.md`. Save `./result.json`. Generate `assets/output.png`.',
+    '输出 `report.md`，保存 `./result.json`。目录 `scripts/` 与 `assets/`。',
+    '[Web](https://example.test/scripts/helper.py) `https://example.test/assets/icon.png` [FTP](ftp://example.test/references/a.md) [CDN](//example.test/scripts/a.py)',
+    '---\nname: 中文-名称\ndescription: Operations\ndisable-model-invocation: true\nmetadata: {version: 1, arbitrary: [x, true]}\n---\n# Work',
+    '\uFEFF\n\n---\r\nname: 中文-名称\r\ndescription: Operations\r\n---\r\n# Work',
+  ]) {
+    it('permits compatible metadata, output instructions and external links: ' + content.slice(0, 40), async () => {
+      installPlatformMock({ versionId: 'version-v1', version: '1.0', content })
+      const { skills } = await createStore()
+      const prepared = await skills.prepare(request())
+      assert.equal(prepared.skillPaths.length, 1)
+      if (content.includes('name: 中文')) assert.equal(prepared.skills[0]?.content, content)
+      assert.equal(createHash('sha256').update(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'))).digest('hex'), prepared.skills[0]?.sha256)
+    })
+  }
 
   it('uses runtime content without preview and preserves old paths across same-ID changes', async () => {
     const calls = installPlatformMock({ versionId: 'version-v1', version: '1.0', content: '# Stale preview' })

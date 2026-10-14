@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict'
 import {
   skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactBlockedSchema,
   skillArtifactBlockedReasonSchema, skillArtifactFrontmatterSchema, skillArtifactParamsSchema,
-  maxSkillArtifactBytes,
+  maxSkillArtifactBytes, skillArtifactNameSchema, skillNameComparisonKey,
 } from './skill-artifact-contract'
 
 const available = {
@@ -50,7 +50,7 @@ describe('SEP skill artifact descriptor schema parity', () => {
     for (const override of [
       { protocolVersion: 2 }, { status: 'UNKNOWN' }, { format: 'tar' },
       { approvedContentSha256: 'bad' }, { entrySha256: 'A'.repeat(64) }, { artifactSha256: 'a'.repeat(63) },
-      { installationDirectory: '' }, { installationDirectory: 'Bad-Name' }, { installationDirectory: '../skill' },
+      { installationDirectory: '' }, { installationDirectory: 'Bad_Name' }, { installationDirectory: '../skill' },
       { installationDirectory: 'a'.repeat(65) }, { installationDirectory: 'a--b' },
       { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: maxSkillArtifactBytes + 1 },
       { fileCount: 0 }, { fileCount: 1.5 }, { fileCount: 501 },
@@ -65,7 +65,9 @@ describe('SEP skill artifact descriptor schema parity', () => {
     }
     for (const entryPath of ['', '/SKILL.md', '//SKILL.md', '../SKILL.md', './SKILL.md', 'a/../SKILL.md',
       'a/./SKILL.md', 'a//SKILL.md', 'a\\SKILL.md', 'C:/SKILL.md', 'a\0/SKILL.md', 'a\n/SKILL.md',
-      'a\x7f/SKILL.md', 'skill.md', 'NOTSKILL.md', 'SKILL.md/', `${'a'.repeat(1020)}/SKILL.md`]) {
+      'a\x7f/SKILL.md', 'CON.txt/SKILL.md', 'COM¹/SKILL.md', 'ＣＯＭ１.txt/SKILL.md', 'nul/SKILL.md',
+      'a./SKILL.md', 'a /SKILL.md', 'a?/SKILL.md', 'a|/SKILL.md', 'a＜/SKILL.md',
+      'skill.md', 'NOTSKILL.md', 'SKILL.md/', `${'a'.repeat(1020)}/SKILL.md`]) {
       assert.equal(skillArtifactSchema.safeParse({ ...available, entryPath }).success, false, entryPath)
     }
   })
@@ -101,10 +103,17 @@ describe('SEP skill artifact descriptor schema parity', () => {
       metadata: { author: 'mock' }, 'allowed-tools': 'Read Bash', custom: 'retained' }
     assert.deepEqual(skillArtifactFrontmatterSchema.parse(value), value)
     for (const override of [{ description: '' }, { description: ' \n ' }, { description: 'x'.repeat(1025) },
-      { name: 'Bad_Name' }, { compatibility: '' }, { compatibility: 'x'.repeat(501) }, { license: 1 },
-      { metadata: { version: 1 } }, { metadata: ['mock'] }, { 'allowed-tools': ['Read'] }]) {
+      { name: 'Bad_Name' }, { 'disable-model-invocation': 'true' }, { license: 1 }, { compatibility: '' }, { 'allowed-tools': ['Read'] }]) {
       assert.equal(skillArtifactFrontmatterSchema.safeParse({ ...value, ...override }).success, false)
     }
     assert.equal(skillArtifactFrontmatterSchema.safeParse({ name: 'a', description: 'x'.repeat(1024), compatibility: 'x'.repeat(500) }).success, true)
+    const extra = { ...value, metadata: { version: 1, nested: { safe: true } }, 'disable-model-invocation': true }
+    assert.deepEqual(skillArtifactFrontmatterSchema.parse(extra), extra)
+  })
+
+  it('accepts Unicode letters and numbers without rewriting names and compares only using NFKC', () => {
+    for (const name of ['订单-处理', 'Orders', 'ＡＢＣ-１２３', '𠀀'.repeat(64), 'CRM 标签体系', 'SKU 生命周期管理', '电商 SOP 编排', 'CRM  标签', 'CRM\u00a0标签', 'CRM\u3000\u2002标签']) assert.equal(skillArtifactNameSchema.parse(name), name)
+    for (const name of ['中'.repeat(65), '𠀀'.repeat(65), 'a--b', '-中', '中-', '../中', 'a_b', 'a\u200db', '½', 'a\u0301', ' CRM', 'CRM ', 'CRM\t标签', 'CRM\n标签', 'CRM\u2028标签', 'CRM -标签', 'CON', 'ｎｕｌ', 'COM1', 'COM¹', 'ＣＯＭ１', 'lpt9']) assert.equal(skillArtifactNameSchema.safeParse(name).success, false, name)
+    assert.equal(skillNameComparisonKey('ＡＢＣ'), skillNameComparisonKey('abc'))
   })
 })

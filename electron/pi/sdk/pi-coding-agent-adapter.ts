@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises'
 import { lazyStream, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
+  loadSkills,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
@@ -12,6 +13,7 @@ import {
   type ToolCallEvent,
   type ToolCallEventResult,
   type ToolDefinition,
+  type Skill,
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { z } from 'zod'
@@ -42,6 +44,10 @@ import { GatewayRetryWait } from './gateway-retry-wait'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 
 const log = logger.child('pi-gateway')
+
+export type PiSkill = Skill
+export type PiLoadSkills = typeof loadSkills
+export type PiResourceLoaderOptions = ConstructorParameters<typeof DefaultResourceLoader>[0]
 
 let gatewayRequestSequence = 0
 
@@ -652,6 +658,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           config.workspaceDir,
           config.agentDir,
           config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
+          loadSkills,
         ),
         noContextFiles: true,
         additionalSkillPaths: config.additionalSkillPaths,
