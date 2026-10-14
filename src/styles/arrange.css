@@ -751,6 +751,17 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+/* Results grow downward inside the full-width workbench scroll area. */
+.ent-arr-auto.ent-aa-result {
+  height: auto;
+  min-height: 100%;
+  flex: 0 0 auto;
+  justify-content: flex-start;
+  overflow-anchor: none;
+}
+.ent-aa-result > * {
+  flex-shrink: 0;
+}
 .ent-arr-chat > .ent-rs-env,
 .ent-goal-stack > .ent-rs-env {
   width: fit-content;

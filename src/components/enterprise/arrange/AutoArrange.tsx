@@ -194,12 +194,6 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
               </div>
             </section>
           ) : null}
-          <footer className="ent-arr-foot">
-            <button type="button" className="ent-arr-second" disabled={starting || saving || planning} onClick={() => { setDraft(null); setError(null); setSubmitted(false); }}>重新编排</button>
-            <span className="ent-arr-gap" />
-            <button type="button" className="ent-arr-ghost" disabled={starting || saving} aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><Settings2 size={14} aria-hidden />执行设置</button>
-            {draft.nodes.length > 0 && draft.status !== 'confirmed' && draft.status !== 'awaiting-employee' ? <button type="button" className="ent-arr-primary" disabled={starting || busy || saving} onClick={() => void confirmAndStart()}>{starting ? '正在启动…' : '确认并开始工作'}<ArrowRight size={15} aria-hidden /></button> : null}
-          </footer>
           {settingsOpen ? (
             <div className="ent-auto-plan">
               <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
@@ -223,6 +217,12 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
             })}
             {!planning && draft.nodes.length ? <button type="button" className="ent-btn" disabled={starting || saving} onClick={() => void updateDraft({ nodes: draft.nodes })}>保存步骤修改</button> : null}
           </details>
+          <footer className="ent-arr-foot">
+            <button type="button" className="ent-arr-second" disabled={starting || saving || planning} onClick={() => { setDraft(null); setError(null); setSubmitted(false); }}>重新编排</button>
+            <span className="ent-arr-gap" />
+            <button type="button" className="ent-arr-ghost" disabled={starting || saving} aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><Settings2 size={14} aria-hidden />执行设置</button>
+            {draft.nodes.length > 0 && draft.status !== 'confirmed' && draft.status !== 'awaiting-employee' ? <button type="button" className="ent-arr-primary" disabled={starting || busy || saving} onClick={() => void confirmAndStart()}>{starting ? '正在启动…' : '确认并开始工作'}<ArrowRight size={15} aria-hidden /></button> : null}
+          </footer>
         </AutoArrangeAnimation>
       ) : null}
       {planning && draft ? <button type="button" className="ent-arr-second" disabled={!cancellable} onClick={() => void cancel()}><X size={14} aria-hidden />取消编排</button> : null}
