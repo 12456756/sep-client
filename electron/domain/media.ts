@@ -19,9 +19,12 @@ export interface MediaReceipt {
   profileId: string
   configVersion: string
   status: MediaGenerationStatus
-  pollAfterMs: number
+  pollAfterMs: number | null
   outputs: MediaOutput[]
   billingStatus: string
+  recovery?: { canQuery: boolean; canCancel: boolean; canDownload: boolean }
+  errorCode?: string | null
+  outputErrors?: { index: number; code: string }[]
 }
 
 /** Mock/adapter port, not a finalized HTTP DTO. Amounts remain platform-owned strings. */
@@ -51,6 +54,7 @@ export interface MediaRequest {
 }
 
 export interface MediaGatewayPort {
+  readonly quoteRequiresUploadedReferences?: boolean
   uploadReference(subscriptionId: string, input: { bytes: Uint8Array; mime: ImageMime; sha256: string }, signal: AbortSignal): Promise<{ referenceId: string; sha256: string; expiresAt: number }>
   quote(subscriptionId: string, request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>, signal: AbortSignal): Promise<unknown>
   submit(subscriptionId: string, request: MediaRequest, signal: AbortSignal): Promise<unknown>
@@ -89,6 +93,9 @@ export interface LocalMediaJob {
   saveStatus: MediaSaveStatus
   outputs: MediaOutput[]
   billingStatus: string
+  recovery?: MediaReceipt['recovery']
+  errorCode?: MediaReceipt['errorCode']
+  outputErrors?: MediaReceipt['outputErrors']
   nextPollAt: number
   attempts: number
   error: string | null

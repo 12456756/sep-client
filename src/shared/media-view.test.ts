@@ -105,6 +105,17 @@ test('partial success and missing files offer original save recovery without aut
   assert.match(jobs(partial, false, true), /disabled=""/)
 })
 
+test('authoritative gateway recovery flags hide unavailable tracking and expired downloads', () => {
+  const unknown = job({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED', canResumeTracking: false })
+  assert.equal(mediaJobActions(unknown, false).resumeTracking, false)
+  assert.equal(mediaJobActions(unknown, false).redo, false)
+  assert.doesNotMatch(jobs(unknown), /恢复跟踪|重做（可能收费）/)
+  const expired = job({ generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVE_FAILED', canRetrySave: false, canResumeTracking: false })
+  assert.equal(mediaJobActions(expired, false).retrySave, false)
+  assert.equal(mediaJobActions(expired, false).resumeTracking, false)
+  assert.doesNotMatch(jobs(expired), /重新保存|恢复跟踪/)
+})
+
 test('SSR creation controls provide system reference selection, specs and no fee-confirmation modal', () => {
   const html = render(React.createElement(MediaCreationForm, { profiles: [profile], references: [], archived: false, busy: false,
     taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))

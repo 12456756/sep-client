@@ -98,12 +98,18 @@ export class MediaService {
       source: asset.source, mime: asset.mime, size: asset.size, width: asset.width, height: asset.height, status: asset.status }
   }
   private viewJob(job: LocalMediaJob, assets: MediaAssetView[]): MediaJobView {
+    const jobAssets = assets.filter(asset => asset.jobId === job.jobId)
+    const missingOutput = job.outputs.some(output => !jobAssets.some(asset => asset.outputId === output.outputId && asset.status === 'SAVED'))
+    const saveStatus = job.saveStatus === 'SAVED' && missingOutput ? 'MISSING' : job.saveStatus
+    const canRetrySave = job.recovery?.canDownload !== false && job.outputs.some(output =>
+      (output.expiresAt === null || output.expiresAt > Date.now()) && !jobAssets.some(asset => asset.outputId === output.outputId && asset.status === 'SAVED'))
     return { jobId: job.jobId, taskId: job.taskId, runId: job.runId, profileId: job.profile.profileId,
       operation: job.input.operation, parameters: { ...job.input.parameters }, generationStatus: job.generationStatus,
-      trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.billingStatus,
+      trackingStatus: job.trackingStatus, saveStatus, billingStatus: job.billingStatus,
       error: job.error, createdAt: job.createdAt, updatedAt: job.updatedAt,
-      assets: assets.filter(asset => asset.jobId === job.jobId).map(asset => this.viewAsset(asset)),
-      canCancelUpstream: job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
+      assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
+      canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave : job.recovery?.canQuery !== false,
+      canCancelUpstream: job.recovery?.canCancel !== false && job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
   }
   async getTaskMedia(taskId: string): Promise<MediaTaskView> {
     const { scope, subscriptionId } = await this.task(taskId), epoch = this.epoch
@@ -234,12 +240,35 @@ export class MediaService {
       const semantic = { profileId: profile.profileId, configVersion: profile.configVersion, operation: input.operation,
         referenceHashes, creativeBrief: input.creativeBrief, parameters: { aspectRatio: input.parameters.aspectRatio, count: input.parameters.count,
           ...(input.parameters.size ? { size: input.parameters.size } : {}), ...(input.parameters.quality ? { quality: input.parameters.quality } : {}) } }
-      const requestHash = createHash('sha256').update(JSON.stringify(semantic)).digest('hex')
-      // Quote before transfer: manual approval describes both the upload and its possible charge.
-      const quote = mediaQuoteSchema.parse(await this.network(scope, parent, s => gateway.quote(binding.subscriptionId, { ...semantic, referenceIds: [], requestHash }, s)))
+      const hashInput = gateway.quoteRequiresUploadedReferences ? { profileId: semantic.profileId, configVersion: semantic.configVersion,
+        operation: semantic.operation, creativeBrief: semantic.creativeBrief,
+        parameters: { size: semantic.parameters.size ?? '1x1', count: semantic.parameters.count }, references: referenceHashes } : semantic
+      const requestHash = createHash('sha256').update(JSON.stringify(hashInput)).digest('hex')
+      const automatic = binding.toolPolicy?.preset === 'full-local' && binding.toolPolicy.approvalMode === 'auto-approve'
+      const uploadReferences = async () => {
+        for (const id of input.localAssetIds) {
+          const asset = await this.options.store.getAsset(scope, taskId, id)
+          if (!asset) throw new AppError('NOT_FOUND')
+          const bytes = await this.options.store.readAsset(scope, taskId, id)
+          const uploaded = z.object({ referenceId: z.string().min(1).max(256), sha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int().positive() }).strict()
+            .parse(await this.network(scope, parent, s => gateway.uploadReference(binding.subscriptionId, { bytes, mime: asset.mime, sha256: asset.sha256 }, s)))
+          if (uploaded.sha256 !== asset.sha256 || uploaded.expiresAt <= Date.now()) throw new AppError('INVALID_STATE')
+          referenceIds.push(uploaded.referenceId)
+        }
+      }
+      // SEP quotes bind uploaded references. Approve transmission before sending any image bytes.
+      if (gateway.quoteRequiresUploadedReferences && input.localAssetIds.length) {
+        if (!automatic) {
+          const allowed = await this.network(scope, parent, () => binding.requestApproval({ taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
+            toolName: 'media_generate_image', input: { operation: 'upload-references', referenceCount: input.localAssetIds.length,
+              transmission: '参考图片将上传到 SEP 图片网关；尚未提交生成，报价后另行确认。' } }))
+          if (!allowed) throw new AppError('PERMISSION_DENIED')
+        }
+        await uploadReferences()
+      }
+      const quote = mediaQuoteSchema.parse(await this.network(scope, parent, s => gateway.quote(binding.subscriptionId, { ...semantic, referenceIds, requestHash }, s)))
       if (quote.requestHash !== requestHash || quote.expiresAt <= Date.now() || !quote.authorized || !quote.budgetAuthorized
         || (quote.status === 'unavailable' && !quote.allowUnknownCost)) throw new AppError('PERMISSION_DENIED')
-      const automatic = binding.toolPolicy?.preset === 'full-local' && binding.toolPolicy.approvalMode === 'auto-approve'
       if (!automatic) {
         const allowed = await this.network(scope, parent, () => binding.requestApproval({ taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
           toolName: 'media_generate_image', input: { profile: profile.displayName, operation: input.operation, referenceCount: input.localAssetIds.length,
@@ -248,15 +277,7 @@ export class MediaService {
         if (!allowed) throw new AppError('PERMISSION_DENIED')
       }
       if (quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED', { message: '报价授权已过期，请重新发起。' })
-      for (const id of input.localAssetIds) {
-        const asset = await this.options.store.getAsset(scope, taskId, id)
-        if (!asset) throw new AppError('NOT_FOUND')
-        const bytes = await this.options.store.readAsset(scope, taskId, id)
-        const uploaded = z.object({ referenceId: z.string().min(1).max(256), sha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int().positive() }).strict()
-          .parse(await this.network(scope, parent, s => gateway.uploadReference(binding.subscriptionId, { bytes, mime: asset.mime, sha256: asset.sha256 }, s)))
-        if (uploaded.sha256 !== asset.sha256 || uploaded.expiresAt <= Date.now()) throw new AppError('INVALID_STATE')
-        referenceIds.push(uploaded.referenceId)
-      }
+      if (!gateway.quoteRequiresUploadedReferences) await uploadReferences()
       const now = Date.now(), clientRequestId = randomUUID()
       job = { version: 1, owner: scope, jobId, taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
         clientRequestId, requestHash, input, profile, request: { ...semantic, referenceIds, requestHash, quoteId: quote.quoteId, clientRequestId },
@@ -309,26 +330,33 @@ export class MediaService {
       || receipt.outputs.length > job.input.parameters.count) throw new AppError('INVALID_ARGUMENT')
     job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = receipt.status
     job.outputs = receipt.outputs; job.billingStatus = receipt.billingStatus
-    job.nextPollAt = Date.now() + Math.max(this.options.pollFloorMs ?? 1_000, receipt.pollAfterMs)
+    job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors
+    job.nextPollAt = Date.now() + Math.max(this.options.pollFloorMs ?? 1_000, receipt.pollAfterMs ?? 0)
     job.error = null; job.attempts = 0; job.updatedAt = Date.now()
   }
   private async save(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal): Promise<void> {
     if (!job.outputs.length || !job.receiptId) return
     job.saveStatus = 'SAVING'; await this.options.store.saveJob(scope, job)
-    let failed = 0
+    let failed = 0, expired = 0
     for (const output of job.outputs) {
       const assets = await this.options.store.listAssets(scope, job.taskId)
       if (assets.some(asset => asset.jobId === job.jobId && asset.outputId === output.outputId && asset.status === 'SAVED')) continue
-      if (output.expiresAt !== null && output.expiresAt <= Date.now()) { failed++; continue }
+      if (output.expiresAt !== null && output.expiresAt <= Date.now()) { failed++; expired++; continue }
+      if (job.recovery?.canDownload === false) { failed++; continue }
       try {
         await this.network(scope, parent, async signal => {
           const stream = await this.gateway().content(job.subscriptionId, job.receiptId!, output.outputId, signal)
           await this.options.store.saveOutput(scope, job.taskId, job.jobId, output, stream, signal)
         })
-      } catch { if (parent.aborted) throw parent.reason; failed++ }
+      } catch (error) {
+        if (parent.aborted) throw parent.reason
+        if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) throw error
+        failed++
+      }
     }
     job.saveStatus = failed ? 'SAVE_FAILED' : 'SAVED'
-    job.error = failed ? '部分图片未保存，可以重试保存原结果。' : null
+    job.error = !failed ? null : expired === failed ? '未保存的原结果已过期，无法再次下载；已保存的图片仍可使用。'
+      : job.recovery?.canDownload === false ? '原结果当前不可下载，不会重新生成。' : '部分图片未保存，可以重试保存原结果。'
     await this.options.store.saveJob(scope, job)
   }
   private async track(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, epoch = this.epoch): Promise<void> {
@@ -337,6 +365,9 @@ export class MediaService {
     try {
       while (!terminal.has(job.generationStatus)) {
         this.assert(scope, epoch); parent.throwIfAborted()
+        if (job.receiptId && job.recovery?.canQuery === false) {
+          job.trackingStatus = 'STOPPED'; job.error = '服务端无法继续查询原请求，不会再次生成。'; break
+        }
         if (++polls > 500 || Date.now() - trackingStartedAt > 86_400_000) {
           job.trackingStatus = 'STOPPED'; job.error = '本轮跟踪已达时长或查询上限，可手动恢复原请求。'; break
         }
@@ -368,9 +399,10 @@ export class MediaService {
         job.trackingStatus = 'STOPPED'
       }
     } catch (error) {
-      job.trackingStatus = epoch !== this.epoch && parent.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
+      const authRequired = error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
+      job.trackingStatus = authRequired ? 'AUTH_REQUIRED' : epoch !== this.epoch && parent.reason !== explicitStop ? 'INTERRUPTED' : 'STOPPED'
       if (job.saveStatus === 'SAVING') job.saveStatus = 'SAVE_FAILED'
-      job.error = parent.aborted ? '本地跟踪已停止，上游任务可能仍在执行。' : '本地跟踪暂不可用，可恢复原请求。'
+      job.error = authRequired ? '请恢复图片任务的读取授权。' : parent.aborted ? '本地跟踪已停止，上游任务可能仍在执行。' : '本地跟踪暂不可用，可恢复原请求。'
       if (!parent.aborted) log.warn('media tracking interrupted', { taskId: job.taskId, jobId: job.jobId, authChanged: error instanceof AppError && error.code === 'AUTH_REQUIRED' })
     } finally {
       job.updatedAt = Date.now()
@@ -444,7 +476,7 @@ export class MediaService {
     const check = () => { this.assert(scope, epoch); parent.throwIfAborted() }
     check()
     if (cancelUpstream) {
-      if (!initial.receiptId || !initial.profile.capabilities.cancel || terminal.has(initial.generationStatus)) throw new AppError('INVALID_STATE')
+      if (!initial.receiptId || !initial.profile.capabilities.cancel || initial.recovery?.canCancel === false || terminal.has(initial.generationStatus)) throw new AppError('INVALID_STATE')
       const policy = binding ? binding.toolPolicy : await this.options.policy?.(taskId)
       check()
       if (policy && (policy.preset === 'read-only' || (policy.preset !== 'full-local' && !policy.allowedTools.includes('media_cancel_job')))) throw new AppError('PERMISSION_DENIED')
@@ -467,7 +499,7 @@ export class MediaService {
     const { job } = await this.job(taskId, jobId)
     check()
     if (cancelUpstream) {
-      if (!job.receiptId || !job.profile.capabilities.cancel || terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE')
+      if (!job.receiptId || !job.profile.capabilities.cancel || job.recovery?.canCancel === false || terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE')
       this.acceptReceipt(job, await this.network(scope, parent, signal => this.gateway().cancel(job.subscriptionId, job.receiptId!, signal)))
     }
     check()

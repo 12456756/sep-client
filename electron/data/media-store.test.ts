@@ -468,6 +468,128 @@ describe('MediaStore images', () => {
     assert.equal(await store.getAsset(owner, 'task-b', asset.localAssetId), null)
   })
 
+  it('recovers a reference whose image rename failed after its commit without changing identity', async context => {
+    const { store, paths, selected, root } = await fixture()
+    const id = `ref_${createHash('sha256').update(hash).digest('hex')}`
+    const mediaRoot = paths.mediaRoot(owner, 'task-a')
+    const file = join(mediaRoot, 'files', `${id}.png`)
+    const manifest = join(mediaRoot, 'assets', `${id}.json`)
+    const original = fs.rename
+    const failing = context.mock.method(fs, 'rename', async (source: PathLike, target: PathLike) => {
+      if (target === file) throw new Error('Mock crash before reference image rename')
+      return original(source, target)
+    })
+    syncBuiltinESMExports()
+    try {
+      await assert.rejects(store.importReference(owner, 'task-a', selected), /Mock crash/)
+    } finally { failing.mock.restore(); syncBuiltinESMExports() }
+    const commit = await readFile(`${manifest}.commit`, 'utf8')
+    const committed = JSON.parse(commit)
+    assert.equal(committed.localAssetId, id)
+    assert.equal((await store.getAsset(owner, 'task-a', id))?.status, 'MISSING')
+    assert.deepEqual(await readdir(join(mediaRoot, 'files')), [])
+    const reopened = new MediaStore(root)
+    assert.deepEqual(await reopened.importReference(owner, 'task-a', selected), committed)
+    assert.equal(await readFile(`${manifest}.commit`, 'utf8'), commit)
+    assert.deepEqual(JSON.parse(await readFile(manifest, 'utf8')), committed)
+    assert.deepEqual(await reopened.readAsset(owner, 'task-a', id), png)
+    assert.deepEqual(await reopened.importReference(owner, 'task-a', selected), committed)
+  })
+
+  it('restores missing reference bytes from a repeated selection while retaining all original metadata', async () => {
+    const { store, paths, selected, root } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const file = join(paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    await rm(file)
+    assert.equal((await store.getAsset(owner, 'task-a', asset.localAssetId))?.status, 'MISSING')
+    assert.deepEqual(await new MediaStore(root).importReference(owner, 'task-a', selected), asset)
+    assert.deepEqual(await store.readAsset(owner, 'task-a', asset.localAssetId), png)
+  })
+
+  it('serializes repeated reference recovery across store instances without changing identity or commit evidence', async () => {
+    const { store, paths, selected, root } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const manifest = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json`)
+    const commit = await readFile(`${manifest}.commit`, 'utf8')
+    await rm(join(paths.mediaRoot(owner, 'task-a'), asset.relativePath))
+    await rm(manifest)
+    const recovered = await Promise.all([store.importReference(owner, 'task-a', selected),
+      new MediaStore(root).importReference(owner, 'task-a', selected)])
+    assert.deepEqual(recovered, [asset, asset])
+    assert.equal(await readFile(`${manifest}.commit`, 'utf8'), commit)
+    assert.deepEqual(await store.listAssets(owner, 'task-a'), [asset])
+    assert.deepEqual(await readdir(join(paths.mediaRoot(owner, 'task-a'), 'files')), [`${asset.localAssetId}.png`])
+  })
+
+  it('restores a missing reference manifest from a verified commit without replacing its image', async context => {
+    const { store, paths, selected, root } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const file = join(paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    const manifest = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json`)
+    await rm(manifest)
+    const original = fs.rename
+    const guarded = context.mock.method(fs, 'rename', async (source: PathLike, target: PathLike) => {
+      assert.notEqual(target, file, 'Verified reference bytes must not be overwritten during manifest recovery.')
+      return original(source, target)
+    })
+    syncBuiltinESMExports()
+    try {
+      assert.deepEqual(await new MediaStore(root).importReference(owner, 'task-a', selected), asset)
+      assert.deepEqual(JSON.parse(await readFile(manifest, 'utf8')), asset)
+    } finally { guarded.mock.restore(); syncBuiltinESMExports() }
+  })
+
+  it('does not recover a missing reference when its commit metadata disagrees with the selected image', async () => {
+    const { store, paths, selected } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const file = join(paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    const manifest = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json`)
+    await rm(file)
+    await rm(manifest)
+    const changedCommit = JSON.stringify({ ...asset, width: 2 })
+    await writeFile(`${manifest}.commit`, changedCommit)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /differs/)
+    assert.equal(await readFile(`${manifest}.commit`, 'utf8'), changedCommit)
+    await assert.rejects(readFile(file), { code: 'ENOENT' })
+    await assert.rejects(readFile(manifest), { code: 'ENOENT' })
+  })
+
+  it('refuses orphaned reference files without recreating metadata or overwriting the bytes', async () => {
+    const { store, paths, selected } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const file = join(paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    const manifest = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json`)
+    await rm(manifest)
+    await rm(`${manifest}.commit`)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /Orphaned/)
+    assert.deepEqual(await readFile(file), png)
+    await assert.rejects(readFile(manifest), { code: 'ENOENT' })
+    await assert.rejects(readFile(`${manifest}.commit`), { code: 'ENOENT' })
+  })
+
+  it('refuses to overwrite tampered reference bytes during repeated import', async () => {
+    const { store, paths, selected } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const file = join(paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    const tampered = Buffer.from(png)
+    tampered[45] ^= 1
+    await writeFile(file, tampered)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /match/)
+    assert.deepEqual(await readFile(file), tampered)
+  })
+
+  it('rejects header-only JPEG references and outputs even when receipt metadata matches', async () => {
+    const { store, selected, paths } = await fixture()
+    const headerOnly = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0, 0xff, 0xd9])
+    await writeFile(selected, headerOnly)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /Invalid/)
+    const expected: MediaOutput = { ...output(), mime: 'image/jpeg', size: headerOnly.length, sha256: createHash('sha256').update(headerOnly).digest('hex') }
+    await store.saveJob(owner, job({ outputs: [expected] }))
+    await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', expected, stream(headerOnly), signal()), /Invalid/)
+    assert.deepEqual(await store.listAssets(owner, 'task-a'), [])
+    assert.deepEqual(await readdir(join(paths.mediaRoot(owner, 'task-a'), 'files')), [])
+  })
+
   it('streams validated outputs and deduplicates output IDs without consuming another stream', async () => {
     const { store, root, paths } = await fixture()
     await store.saveJob(owner, job())
@@ -652,8 +774,10 @@ describe('MediaStore images', () => {
     const commit = join(paths.mediaRoot(owner, 'task-a'), 'assets', `${asset.localAssetId}.json.commit`)
     await writeFile(commit, JSON.stringify({ ...asset, createdAt: asset.createdAt + 1 }))
     await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId), /disagree/)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /disagree/)
     await writeFile(commit, 'broken')
     await assert.rejects(store.getAsset(owner, 'task-a', asset.localAssetId), /preserved/)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /preserved/)
     assert.equal(await readFile(commit, 'utf8'), 'broken')
   })
 
@@ -667,10 +791,15 @@ describe('MediaStore images', () => {
     await rm(file)
     await symlink(selected, file)
     await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId), /symbolic/)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /symbolic/)
     await assert.rejects(store.exportAsset(owner, 'task-a', asset.localAssetId, join(directory, 'export.png')), /symbolic/)
+    await rm(file)
+    await symlink(join(directory, 'missing.png'), file)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /symbolic/)
     await rm(file)
     await link(selected, file)
     await assert.rejects(store.readAsset(owner, 'task-a', asset.localAssetId), /type/)
+    await assert.rejects(store.importReference(owner, 'task-a', selected), /type/)
   })
 
   it('refuses directory symlinks before reading or writing scope data', async () => {

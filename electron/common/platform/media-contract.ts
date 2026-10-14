@@ -35,14 +35,17 @@ export const mediaOutputSchema = z.object({
   width: z.number().int().positive().max(32_768).nullable(), height: z.number().int().positive().max(32_768).nullable(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), expiresAt: z.number().int().nonnegative().nullable(),
 }).strict()
+export const mediaRecoverySchema = z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict()
+export const mediaOutputErrorsSchema = z.array(z.object({ index: z.number().int().min(0).max(15), code: mediaId }).strict()).max(16)
 export const mediaReceiptSchema = z.object({
   receiptId: opaqueId, clientRequestId: mediaId, profileId: opaqueId, configVersion: opaqueId,
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
-  pollAfterMs: z.number().int().nonnegative().max(86_400_000), outputs: z.array(mediaOutputSchema).max(16),
+  pollAfterMs: z.number().int().nonnegative().max(86_400_000).nullable(), outputs: z.array(mediaOutputSchema).max(16),
   billingStatus: z.string().min(1).max(64),
+  recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(),
 }).strict()
 
-/** Local port fixture format only: SEP's amount/envelope/authorization DTO is not yet finalized. */
+/** Internal port format; HTTP adapters must validate and translate their wire contracts. */
 export const mediaQuoteSchema = z.object({
   quoteId: opaqueId, requestHash: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int().positive(),
   status: z.enum(['quoted', 'unavailable']), amount: z.string().regex(/^\d+(?:\.\d+)?$/).max(100).nullable(),

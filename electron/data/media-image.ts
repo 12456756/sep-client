@@ -22,7 +22,7 @@ function dimensions(mime: ImageMime, width: number, height: number, size: number
   return { mime, width, height, size }
 }
 
-/** Inspect container headers only; never decode untrusted pixel data in the main process. */
+/** Inspect container structure only; never decode untrusted pixel data in the main process. */
 export function inspectMediaImage(bytes: Uint8Array): MediaImageInfo {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_MEDIA_BYTES) throw new Error('Media image size exceeds the supported limit.')
   const data = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -51,20 +51,63 @@ export function inspectMediaImage(bytes: Uint8Array): MediaImageInfo {
   if (data.length >= 4 && data[0] === 0xff && data[1] === 0xd8) {
     if (data[data.length - 2] !== 0xff || data[data.length - 1] !== 0xd9) invalid()
     let offset = 2
-    while (offset < data.length - 2) {
+    let frame: MediaImageInfo | undefined
+    const components = new Set<number>()
+    let scans = 0
+    while (offset < data.length) {
       if (data[offset++] !== 0xff) invalid()
       while (data[offset] === 0xff) offset++
       const marker = data[offset++]
-      if (marker === 0xda || marker === 0xd9 || marker === undefined) invalid()
-      if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+      if (marker === 0xd9) {
+        if (!frame || scans === 0 || offset !== data.length) invalid()
+        return frame
+      }
+      if (marker === undefined || marker === 0x00 || marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) invalid()
+      if (marker === 0x01) continue
       if (offset + 2 > data.length) invalid()
       const length = data.readUInt16BE(offset)
       if (length < 2 || offset + length > data.length - 2) invalid()
       if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
-        if (length < 8 || ![8, 12, 16].includes(data[offset + 2]) || length !== 8 + 3 * data[offset + 7]) invalid()
-        return dimensions('image/jpeg', data.readUInt16BE(offset + 5), data.readUInt16BE(offset + 3), data.length)
+        if (frame || length < 8 || ![8, 12, 16].includes(data[offset + 2]) ||
+          data[offset + 7] === 0 || length !== 8 + 3 * data[offset + 7]) invalid()
+        for (let component = offset + 8; component < offset + length; component += 3) {
+          if (components.has(data[component])) invalid()
+          components.add(data[component])
+        }
+        frame = dimensions('image/jpeg', data.readUInt16BE(offset + 5), data.readUInt16BE(offset + 3), data.length)
+      }
+      if (marker === 0xda) {
+        if (!frame || length < 6) invalid()
+        const count = data[offset + 2]
+        if (count < 1 || count > 4 || length !== 6 + 2 * count) invalid()
+        const selected = new Set<number>()
+        for (let component = offset + 3; component < offset + 3 + 2 * count; component += 2) {
+          if (!components.has(data[component]) || selected.has(data[component])) invalid()
+          selected.add(data[component])
+        }
       }
       offset += length
+      if (marker !== 0xda) continue
+      // Stuffing and restart markers belong to the scan; other markers end it.
+      let scanData = false
+      while (offset < data.length) {
+        if (data[offset] !== 0xff) { scanData = true; offset++; continue }
+        const start = offset++
+        while (data[offset] === 0xff) offset++
+        const next = data[offset++]
+        if (next === undefined) invalid()
+        if (next === 0x00) {
+          if (offset !== start + 2) invalid()
+          scanData = true
+        } else if (next === 0x01 || (next >= 0xd0 && next <= 0xd7)) {
+          if (!scanData) invalid()
+        } else {
+          offset = start
+          break
+        }
+      }
+      if (!scanData || offset === data.length) invalid()
+      scans++
     }
     invalid()
   }

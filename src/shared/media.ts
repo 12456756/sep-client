@@ -62,6 +62,8 @@ export interface MediaJobView {
   updatedAt: number
   assets: MediaAssetView[]
   canCancelUpstream: boolean
+  canRetrySave?: boolean
+  canResumeTracking?: boolean
 }
 
 export interface MediaTaskView {

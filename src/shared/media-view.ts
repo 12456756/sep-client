@@ -41,8 +41,8 @@ export function mediaJobActions(job: MediaJobView, archived: boolean): {
   return {
     stopTracking: job.trackingStatus === 'ACTIVE' && recoverable,
     cancelUpstream: job.canCancelUpstream && ['QUEUED', 'RUNNING'].includes(job.generationStatus),
-    resumeTracking: job.trackingStatus !== 'ACTIVE' && recoverable && job.generationStatus !== 'RESULT_EXPIRED',
-    retrySave: ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus) && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus),
+    resumeTracking: job.canResumeTracking !== false && job.trackingStatus !== 'ACTIVE' && recoverable && job.generationStatus !== 'RESULT_EXPIRED',
+    retrySave: job.canRetrySave !== false && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus) && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus),
     // Unknown receipts must be resolved before offering a fresh charged request.
     redo: !archived && !unfinished,
   }

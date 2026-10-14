@@ -13,6 +13,8 @@ import { MOCK_MEDIA_CAPABILITIES, MOCK_MEDIA_PNG, MOCK_MEDIA_PNG_SHA256, MockMed
 import { MediaStore } from '../data/media-store'
 import { inspectMediaImage } from '../data/media-image'
 import type { TaskOwnerScope } from '../data/scope-path'
+import { ScopePath } from '../data/scope-path'
+import { mediaJobActions } from '../../src/shared/media-view'
 import type { LocalMediaJob } from '../domain/media'
 import { AppError } from '../errors/app-error'
 import { ToolApprovals } from '../runtime/run-approvals'
@@ -113,6 +115,121 @@ function notSentJob(): LocalMediaJob {
 }
 
 describe('MediaService authorization and request semantics', () => {
+  it('offers original download recovery after a saved local image is deleted without generating again', async () => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const generated = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', generated.runId)
+    const [asset] = await f.store.listAssets(owner, 'task-a')
+    await rm(join(new ScopePath(f.root).mediaRoot(owner, 'task-a'), asset.relativePath))
+    const missing = (await f.service.getTaskMedia('task-a')).jobs[0]
+    assert.equal(missing.assets[0].status, 'MISSING')
+    assert.equal(missing.saveStatus, 'MISSING')
+    assert.equal(mediaJobActions(missing, false).retrySave, true)
+    await f.service.retrySave('task-a', generated.jobId)
+    await waitUntil(async () => (await f.service.getTaskMedia('task-a')).jobs[0].saveStatus === 'SAVED')
+    assert.equal(f.gateway.calls.submit.length, 1)
+    assert.equal(f.gateway.calls.quote.length, 1)
+    assert.deepEqual(await f.store.readAsset(owner, 'task-a', asset.localAssetId), MOCK_MEDIA_PNG)
+  })
+
+  it('rechecks authoritative cancellation permission after waiting for approval', async () => {
+    const approval = deferred<boolean>()
+    const entered = deferred<void>()
+    const f = await fixture({ requestApproval: async () => { entered.resolve(); return approval.promise } })
+    const job = await pendingJob(f)
+    job.recovery = { canQuery: true, canCancel: true, canDownload: false }
+    await f.store.saveJob(owner, job)
+    const cancelling = f.service.cancel('task-a', job.jobId, true)
+    const rejected = assert.rejects(cancelling, code('INVALID_STATE'))
+    await entered.promise
+    job.recovery.canCancel = false
+    await f.store.saveJob(owner, job)
+    approval.resolve(true)
+    await rejected
+    assert.equal(f.gateway.calls.cancel.length, 0)
+  })
+
+  it('preserves the legacy gateway hash including local aspect ratio and quality semantics', async () => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', view.runId)
+    const quoted = f.gateway.calls.quote[0].request
+    assert.equal(quoted.requestHash, createHash('sha256').update(JSON.stringify({ profileId: quoted.profileId,
+      configVersion: quoted.configVersion, operation: quoted.operation, referenceHashes: quoted.referenceHashes,
+      creativeBrief: quoted.creativeBrief, parameters: quoted.parameters })).digest('hex'))
+  })
+
+  it('approves transmission before upload and quotes the uploaded references for SEP', async () => {
+    const gateway = new MockMediaGateway({ initialStatus: 'SUCCEEDED' })
+    Object.assign(gateway, { quoteRequiresUploadedReferences: true })
+    const stages: string[] = []
+    const f = await fixture({ requestApproval: async request => {
+      stages.push((request.input as { operation: string }).operation === 'upload-references' ? 'upload-approval' : 'generate-approval')
+      return true
+    } }, gateway)
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [asset] = await f.service.importReferences('task-a', [selected])
+    const view = await f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId] }))
+    await f.service.waitForRun('task-a', view.runId)
+    assert.deepEqual(stages, ['upload-approval', 'generate-approval'])
+    const quoted = gateway.calls.quote[0].request
+    assert.equal(quoted.referenceIds.length, 1)
+    assert.deepEqual(quoted.referenceIds, gateway.calls.submit[0].request.referenceIds)
+    assert.equal(quoted.requestHash, createHash('sha256').update(JSON.stringify({ profileId: quoted.profileId, configVersion: quoted.configVersion,
+      operation: quoted.operation, creativeBrief: quoted.creativeBrief,
+      parameters: { size: '1x1', count: 1 }, references: [MOCK_MEDIA_PNG_SHA256] })).digest('hex'))
+  })
+
+  it('does not upload or quote when the separate SEP reference transfer approval is denied', async () => {
+    const gateway = new MockMediaGateway()
+    Object.assign(gateway, { quoteRequiresUploadedReferences: true })
+    const f = await fixture({ requestApproval: async () => false }, gateway)
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [asset] = await f.service.importReferences('task-a', [selected])
+    await assert.rejects(f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId] })), code('PERMISSION_DENIED'))
+    assert.equal(gateway.calls.uploadReference.length, 0)
+    assert.equal(gateway.calls.quote.length, 0)
+    assert.equal(gateway.calls.submit.length, 0)
+  })
+
+  it('does not submit after uploaded references receive a denied SEP budget', async () => {
+    const gateway = new MockMediaGateway({ quote: { budgetAuthorized: false } })
+    Object.assign(gateway, { quoteRequiresUploadedReferences: true })
+    const f = await fixture({}, gateway)
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [asset] = await f.service.importReferences('task-a', [selected])
+    await assert.rejects(f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId] })), code('PERMISSION_DENIED'))
+    assert.equal(gateway.calls.uploadReference.length, 1)
+    assert.equal(gateway.calls.quote.length, 1)
+    assert.equal(gateway.calls.submit.length, 0)
+    assert.deepEqual(await f.store.listJobs(owner), [])
+  })
+
+  it('persists authoritative UNKNOWN recovery flags and stops querying without enabling redo', async context => {
+    const gateway = new MockMediaGateway()
+    const original = gateway.submit.bind(gateway)
+    context.mock.method(gateway, 'submit', async (...args: Parameters<typeof gateway.submit>) => ({
+      ...await original(...args), status: 'SUBMISSION_UNKNOWN' as const, pollAfterMs: null,
+      recovery: { canQuery: false, canCancel: false, canDownload: false }, errorCode: 'SUBMISSION_UNKNOWN', outputErrors: [],
+    }))
+    const f = await fixture({}, gateway)
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus === 'STOPPED')
+    await f.service.resume('task-a', view.jobId)
+    await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus === 'STOPPED')
+    const restored = await new MediaStore(f.root).getJob(owner, 'task-a', view.jobId)
+    assert.equal(restored?.generationStatus, 'SUBMISSION_UNKNOWN')
+    assert.deepEqual(restored?.recovery, { canQuery: false, canCancel: false, canDownload: false })
+    assert.equal(restored?.errorCode, 'SUBMISSION_UNKNOWN')
+    assert.equal(gateway.calls.getReceipt.length, 0)
+    await assert.rejects(f.service.redo('task-a', view.jobId), code('INVALID_STATE'))
+    await assert.rejects(f.service.cancel('task-a', view.jobId, true), code('INVALID_STATE'))
+    assert.equal(gateway.calls.submit.length, 1)
+  })
+
   it('identifies a missing production SEP gateway on read without issuing authorization requests', async () => {
     let authorizationCalls = 0
     const f = await fixture({ gateway: undefined, authorize: async () => { authorizationCalls++; return null } })
@@ -274,6 +391,46 @@ describe('MediaService authorization and request semantics', () => {
 })
 
 describe('MediaService local delivery and original-request recovery', () => {
+  for (const authCode of ['AUTH_REQUIRED', 'PERMISSION_DENIED'] as const) {
+    it(`pauses all downloads on ${authCode} and resumes only the original outputs`, async context => {
+      const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+      const content = f.gateway.content.bind(f.gateway)
+      let attempted = 0
+      const stub = context.mock.method(f.gateway, 'content', async () => { attempted++; throw new AppError(authCode) })
+      const view = await f.service.generateTaskMedia('task-a', input({ parameters: { aspectRatio: '1:1', count: 2 } }))
+      await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus === 'AUTH_REQUIRED')
+      assert.equal(attempted, 1)
+      const blocked = await f.store.getJob(owner, 'task-a', view.jobId)
+      assert.equal(blocked?.saveStatus, 'SAVE_FAILED')
+      assert.match(blocked!.error!, /读取授权/)
+      stub.mock.restore()
+      context.mock.method(f.gateway, 'content', content)
+      await f.service.retrySave('task-a', view.jobId)
+      await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.saveStatus === 'SAVED')
+      assert.equal(f.gateway.calls.submit.length, 1)
+      assert.equal(f.gateway.calls.quote.length, 1)
+      assert.equal((await f.store.listAssets(owner, 'task-a')).length, 2)
+    })
+  }
+
+  it('labels expired unsaved outputs and disables ineffective save/recovery actions without losing successful history', async context => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const submit = f.gateway.submit.bind(f.gateway)
+    context.mock.method(f.gateway, 'submit', async (...args: Parameters<typeof f.gateway.submit>) => {
+      const receipt = await submit(...args)
+      return { ...receipt, outputs: receipt.outputs.map(output => ({ ...output, expiresAt: 1 })) }
+    })
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus === 'STOPPED')
+    const [restored] = (await f.service.getTaskMedia('task-a')).jobs
+    assert.equal(restored.generationStatus, 'SUCCEEDED')
+    assert.equal(restored.saveStatus, 'SAVE_FAILED')
+    assert.match(restored.error!, /已过期/)
+    assert.equal(restored.canRetrySave, false)
+    assert.equal(restored.canResumeTracking, false)
+    assert.equal(f.gateway.calls.content.length, 0)
+  })
+
   it('persists the complete employee, approved and installed skills, and model configuration for a run', async () => {
     const f = await fixture()
     f.employee.runtimeSnapshot = {

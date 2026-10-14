@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { employeeRuntimeSnapshotSchema } from '../common/platform/employee-runtime-contract'
-import { imageMimeSchema, mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId, mediaOutputSchema, mediaParametersSchema, mediaProfileSchema, mediaQuoteSchema } from '../common/platform/media-contract'
+import { imageMimeSchema, mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId, mediaOutputErrorsSchema, mediaOutputSchema, mediaParametersSchema, mediaProfileSchema, mediaQuoteSchema, mediaRecoverySchema } from '../common/platform/media-contract'
 import type { LocalMediaAsset, LocalMediaJob, MediaOutput, MediaRunSnapshot, MediaStorePort } from '../domain/media'
 import { writeJsonAtomic } from './atomic-file'
 import { inspectMediaImage, MAX_MEDIA_BYTES, MAX_MEDIA_DIMENSION, MAX_MEDIA_PIXELS } from './media-image'
@@ -30,6 +30,7 @@ const jobSchema = z.object({
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), generationStatus: generationSchema,
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: saveSchema,
   outputs: z.array(mediaOutputSchema).max(16), billingStatus: z.string().min(1).max(64), nextPollAt: timestamp,
+  recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(),
   attempts: z.number().int().nonnegative(), error: z.string().max(20_000).nullable(), createdAt: timestamp, updatedAt: timestamp,
 }).strict().superRefine((job, context) => {
   const { request, input, profile, quote } = job
@@ -356,9 +357,18 @@ export class MediaStore implements MediaStorePort {
     return writes.run(this.key(scope, taskId), async () => {
       const existing = await this.assetRecord(scope, taskId, id)
       if (existing) {
-        await this.verifiedBytes(scope, existing)
+        if (!isDeepStrictEqual(existing, { ...existing, ...image, sha256: hash })) {
+          throw new MediaPersistenceError('Recovered reference differs from its original commit.')
+        }
+        try { await this.verifiedBytes(scope, existing) } catch (error) {
+          if (!missing(error)) throw error
+          return this.persistAsset(scope, existing, (async function* () { yield bytes })(), new AbortController().signal)
+        }
+        await this.write(this.file(scope, taskId, 'assets', id), existing)
         return existing
       }
+      const file = this.file(scope, taskId, 'files', id, `.${extensions[image.mime]}`)
+      try { await this.bytes(file); throw new MediaPersistenceError('Orphaned media reference requires its commit evidence.') } catch (error) { if (!missing(error)) throw error }
       const asset: LocalMediaAsset = { ...image, version: 1, owner: { ...scope }, taskId, localAssetId: id, jobId: null, outputId: null,
         source: 'reference', status: 'SAVED', sha256: hash, relativePath: `files/${id}.${extensions[image.mime]}`, createdAt: Date.now() }
       return this.persistAsset(scope, asset, (async function* () { yield bytes })(), new AbortController().signal)
@@ -473,8 +483,10 @@ export class MediaStore implements MediaStorePort {
       const hash = await this.streamPart(part, stream, signal)
       if (hash !== asset.sha256) throw new MediaPersistenceError('Reference image changed during copying.')
       const manifest = this.file(scope, asset.taskId, 'assets', asset.localAssetId)
+      const commit = await this.json(`${manifest}.commit`, assetSchema)
+      if (commit && !isDeepStrictEqual(commit, asset)) throw new MediaPersistenceError('Recovered reference differs from its original commit.')
       await this.publishing(dirname(manifest), async () => {
-        await this.write(`${manifest}.commit`, asset)
+        if (!commit) await this.write(`${manifest}.commit`, asset)
         await this.assertPath(file)
         await rename(part, file)
         await this.write(manifest, asset)
