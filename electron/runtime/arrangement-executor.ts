@@ -1,3 +1,4 @@
+import { withApprovedSkillReadPaths } from './run-skill-policy'
 /**
  * 编排式任务的节点执行器。
  *
@@ -235,7 +236,7 @@ export class ArrangementExecutor {
         })
         created = true
       }
-      const toolPolicy = toToolPolicy(plan.permissions, workspaceDir)
+      const toolPolicy = withApprovedSkillReadPaths(toToolPolicy(plan.permissions, workspaceDir), employee)
       const mediaTools = await this.options.media?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.onApprovalRequest(request),

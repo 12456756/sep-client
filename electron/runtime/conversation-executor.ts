@@ -16,6 +16,7 @@ import type { TaskManager } from './task-manager'
 import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
 import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { ConversationRecoveryError } from './conversation-recovery-error'
+import { withApprovedSkillReadPaths } from './run-skill-policy'
 import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, TaskWorkerPort } from './run-types'
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
 import type { EventPipeline } from './run-events'
@@ -94,14 +95,14 @@ export class ConversationExecutor {
         ? this.options.taskRunStore.getConversationSessionPaths(scope, taskId)
         : null
       const workspaceDir = task.workDir ?? this.options.workspaceRoot()
-      const toolPolicy: PiTaskWorkerOptions['context']['toolPolicy'] = queued.arrangement ? {
+      const toolPolicy = withApprovedSkillReadPaths(queued.arrangement ? {
         preset: queued.arrangement.permissions.preset,
         allowedTools: [...queued.arrangement.permissions.allowedTools],
         allowedPaths: [...queued.arrangement.permissions.allowedPaths],
         deniedPaths: [...queued.arrangement.permissions.deniedPaths],
         commandPolicy: queued.arrangement.permissions.commandPolicy,
         approvalMode: queued.arrangement.permissions.approvalMode ?? 'confirm-each', workspaceDir,
-      } : undefined
+      } : undefined, employee)
       // Register before async host preparation so pause/shutdown can stop setup too.
       active = {
         taskId, runId, subscriptionId: queued.subscriptionId, releaseWorkspace, control: 'none', completion: completion.promise,
