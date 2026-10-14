@@ -1,7 +1,10 @@
 import '../electron/common/undici-polyfill'
-import { app } from 'electron'
+import { app, session } from 'electron'
 import { isAbsolute, join } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import { createPiMediaModelMock, type PiMediaModelMock } from './pi-media-model-mock'
+import { isMediaMockRendererRequestAllowed } from './electron-media-mock-policy.mjs'
 
 // This entry is bundled only by the opt-in Electron integration runner, not the app build.
 const profile = process.env.SEP_ELECTRON_MOCK_PROFILE
@@ -29,32 +32,61 @@ const responses: Record<string, Record<string, number>> = {}
 const mediaErrors: unknown[] = []
 let blockedRequests = 0
 let disconnected = false
+const piMockEnabled = process.env.SEP_ELECTRON_PI_MEDIA_MOCK === 'true'
+const shutdownId = process.env.SEP_ELECTRON_MOCK_SHUTDOWN_ID
+if (process.env.SEP_MCP_CONFIG || process.env.ELECTRON_RENDERER_URL || process.env.SEP_PLAYWRIGHT_MCP !== '0'
+  || (piMockEnabled && !/^[a-f0-9-]{36}$/.test(shutdownId ?? ''))) {
+  throw new Error('Isolated mock environment and shutdown identity required')
+}
+let rendererBlockedRequests = 0
+const mockCompletion = 'http://127.0.0.1:1/pi-media-model-mock/chat/completions'
+let piModel: PiMediaModelMock | undefined
+const piErrors: string[] = []
 const nativeFetch = globalThis.fetch
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url)
+  if (piMockEnabled && url.href === mockCompletion) {
+    if (!piModel || (init?.method ?? (input instanceof Request ? input.method : 'GET')) !== 'POST') {
+      throw new Error('Approved Skill preparation required before Pi mock execution')
+    }
+    const body = init?.body ?? (input instanceof Request ? await input.text() : undefined)
+    if (typeof body !== 'string') throw new Error('Pi mock requires a JSON request')
+    try {
+      return piModel.respond(JSON.parse(body) as unknown)
+    } catch (error) {
+      const code = error instanceof Error && /^Pi media model mock: [A-Z_]+$/.test(error.message)
+        ? error.message : 'Pi media model mock: INVALID_REQUEST'
+      piErrors.push(code)
+      throw new Error(code)
+    }
+  }
   const allowed = [apiRoot, mockRoot].some(root => url.origin === new URL(root).origin)
     && url.pathname.startsWith('/api/') && !/chat\/completions|responses|images\/generations|embeddings/.test(url.pathname)
   if (!allowed) { blockedRequests++; throw new Error('External/model HTTP disabled in Electron mock integration') }
   requests[url.pathname] = (requests[url.pathname] ?? 0) + 1
   if (disconnected && url.origin === new URL(mockRoot).origin) throw new Error('Injected local media disconnect')
-  const response = await nativeFetch(input, init)
-  if (url.pathname.startsWith('/api/gateway/v1/media/') || url.pathname === '/api/client/auth/token') {
-    const statuses = responses[url.pathname] ??= {}
-    statuses[response.status] = (statuses[response.status] ?? 0) + 1
-  }
+  const response = await nativeFetch(input, { ...init, redirect: 'error' })
+  const statuses = responses[url.pathname] ??= {}
+  statuses[response.status] = (statuses[response.status] ?? 0) + 1
   return response
 }) as typeof fetch
 
 app.whenReady().then(async () => {
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+    const allowed = isMediaMockRendererRequestAllowed(details.url)
+    if (!allowed) rendererBlockedRequests++
+    callback({ cancel: !allowed })
+  })
   const [{ safeStorage }, { createBackend }, { createMainWindow }, { RendererBridge },
     { createRequestContext }, { registerRoutes }, { routes, listeners },
-    { SepMediaGateway }, { getRefreshToken }, { EmploymentTokenManager }, { setLogSink }] = await Promise.all([
+    { SepMediaGateway }, { getRefreshToken }, { EmploymentTokenManager }, { setLogSink }, { installShutdownHandler }] = await Promise.all([
     import('electron'), import('../electron/bootstrap/build-backend'), import('../electron/bootstrap/main-window'),
     import('../electron/bootstrap/renderer-bridge'), import('../electron/controller/request-context'),
     import('../electron/controller/router'), import('../electron/controller/routes'),
     import('../electron/data/sep-media-gateway'), import('../electron/common/platform/credential-vault'),
     import('../electron/common/platform/employment-token-manager'),
     import('../electron/common/logger'),
+    import('../electron/bootstrap/shutdown'),
   ])
   setLogSink(record => {
     if (typeof record.fields.operation === 'string' && record.fields.operation.startsWith('media:')) {
@@ -91,6 +123,11 @@ app.whenReady().then(async () => {
   const backend = await createBackend({ userDataDir: profile, renderer: bridge,
     isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(), mediaGateway: gateway,
     mediaCapabilities: employee => caps.get(employee.subscriptionId) })
+  installShutdownHandler({ stop: async () => {
+    await backend.stopAll()
+    if (shutdownId) await writeFile(join(profile, `media-mock-shutdown-${shutdownId}.json`),
+      JSON.stringify({ shutdownId, completed: true }), { flag: 'wx', mode: 0o600 })
+  } })
   registerRoutes(createRequestContext(backend, () => bridge.currentWindow()), { routes, listeners })
   bridge.attach(createMainWindow({ onClosed: () => bridge.attach(null) }))
 
@@ -101,15 +138,22 @@ app.whenReady().then(async () => {
       caps.set(subscriptionId, profiles.capabilities)
       const employee = await backend.employees.authorize(subscriptionId)
       if (!employee) throw new Error('Actual subscribed employee unavailable')
+      const imageSkill = employee.runtimeSnapshot?.skills.find(skill => skill.name === 'ecommerce-image-mock')
+      if (piMockEnabled && !piModel) {
+        if (!imageSkill) throw new Error('Approved ecommerce image Skill required')
+        piModel = createPiMediaModelMock({ approvedSkillPath: join(imageSkill.path, 'SKILL.md') })
+      }
       const productionMedia = employee.media as { executionAvailable?: boolean } | undefined
       return { subscriptionId, productionExecutionAvailable: productionMedia?.executionAvailable ?? false,
-        skills: employee.runtimeSnapshot?.skills.map(skill => ({ versionId: skill.versionId, path: join(skill.path, 'SKILL.md'), sha256: skill.sha256 })) ?? [],
+        skills: employee.runtimeSnapshot?.skills.map(skill => ({ name: skill.name, versionId: skill.versionId, path: join(skill.path, 'SKILL.md'), sha256: skill.sha256 })) ?? [],
         referenceFixtureBase64: profiles.referenceFixtureBase64, referenceFixtureSha256: profiles.referenceFixtureSha256 }
     },
     async inspect(taskId: string) { return backend.media.getTaskMedia(taskId) },
     disconnect(value: boolean) { disconnected = value },
-    evidence() { return { requests: { ...requests }, responses, blockedRequests, mediaErrors, userData: profile, runtimeLoaded: backend.peekTaskRuntime() !== null } },
-    async shutdown() { await backend.stopAll(); app.exit(0) },
+    evidence() { return { requests: { ...requests }, responses, blockedRequests, rendererBlockedRequests,
+      rendererNetworkRestricted: true, mcpConfigured: !!process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP !== '0',
+      mediaErrors, piModel: piModel?.audit, piErrors: [...piErrors], userData: profile, runtimeLoaded: backend.peekTaskRuntime() !== null } },
+    async shutdown() { app.quit() },
     exportPath: join(profile, 'export.png'),
   } })
 }).catch(() => { app.exit(1) })
