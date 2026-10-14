@@ -40,7 +40,7 @@ const log = logger.child('pi-gateway')
 let gatewayRequestSequence = 0
 
 const DEFAULT_SESSION_TOOLS = ['read', 'bash', 'edit', 'write'] as const
-const GATEWAY_MAX_OUTPUT_TOKENS = 16384
+const GATEWAY_MAX_OUTPUT_TOKENS = 4096
 const OPENAI_COMPLETIONS_API_MODULE = '@earendil-works/pi-ai/api/openai-completions'
 
 export function sessionToolOptions(

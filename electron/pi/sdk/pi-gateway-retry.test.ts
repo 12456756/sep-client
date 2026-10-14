@@ -125,7 +125,7 @@ for (const scenario of ['recover', 'cancel', 'too-long', 'non-retryable', 'exhau
       const expected = scenario === 'recover' ? 2 : scenario === 'exhausted' ? 4 : scenario === 'next-turn' ? 3 : 1
       assert.equal(requests.length, expected)
       for (const { payload } of requests) {
-        assert.equal(payload.max_tokens, 16384)
+        assert.equal(payload.max_tokens, 4096)
         assert.equal('max_completion_tokens' in payload, false)
         assert.deepEqual(payload.stream_options, { include_usage: true })
       }
