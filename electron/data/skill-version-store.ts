@@ -19,7 +19,7 @@ export interface LocalSkillVersion {
   updatedAt: number
 }
 
-export interface SkillSelection { versionId: string; pendingVersionId?: string }
+export interface SkillSelection { versionId: string; pendingVersionId?: string; automatic?: true }
 export type SkillSelections = Record<string, SkillSelection>
 
 function safe(value: string): string {
@@ -62,6 +62,16 @@ export class SkillVersionStore {
       await writeJsonAtomic(this.selectionFile(scope, subscriptionId), { ...selections, [capabilityId]: { versionId } })
     })
   }
+  async selectDefault(scope: TaskOwnerScope, subscriptionId: string, capabilityId: string, versionId: string): Promise<void> {
+    await this.writes.run(this.selectionFile(scope, subscriptionId), async () => {
+      const selections = await this.selections(scope, subscriptionId)
+      const selection = selections[capabilityId]
+      if (selection && selection.automatic !== true) return
+      const current = await this.load(scope, subscriptionId, capabilityId, versionId)
+      if (!current) throw new Error('Skill version not found.')
+      await writeJsonAtomic(this.selectionFile(scope, subscriptionId), { ...selections, [capabilityId]: { versionId, automatic: true } })
+    })
+  }
   async selected(scope: TaskOwnerScope, subscriptionId: string, capabilityId: string): Promise<string | null> {
     const value = await this.selections(scope, subscriptionId)
     return value[capabilityId]?.versionId ?? null
@@ -71,7 +81,7 @@ export class SkillVersionStore {
       if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
       return Object.fromEntries(Object.entries(input as Record<string, unknown>).flatMap(([key, value]) => {
         const item = value as Partial<SkillSelection>
-        return typeof item?.versionId === 'string' ? [[key, { versionId: item.versionId, ...(typeof item.pendingVersionId === 'string' ? { pendingVersionId: item.pendingVersionId } : {}) }]] : []
+        return typeof item?.versionId === 'string' ? [[key, { versionId: item.versionId, ...(typeof item.pendingVersionId === 'string' ? { pendingVersionId: item.pendingVersionId } : {}), ...(item.automatic === true ? { automatic: true as const } : {}) }]] : []
       }))
     })) ?? {}
   }

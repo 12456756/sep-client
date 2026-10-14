@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactDownloadPath } from './skill-artifact-contract'
 
 const identifier = z.string().min(1).max(128)
 
@@ -10,6 +11,11 @@ export const employeeRuntimeSkillSchema = z.object({
   versionId: identifier,
   version: z.string().min(1),
   content: z.string().min(1),
+  artifact: skillArtifactSchema.readonly().optional(),
+}).superRefine((skill, ctx) => {
+  if (skill.artifact && (skill.artifact.capabilityId !== skill.capabilityId || skill.artifact.versionId !== skill.versionId)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['artifact'], message: 'Runtime skill artifact identity mismatch.' })
+  }
 })
 
 export const employeeRuntimeManifestSchema = z.object({
@@ -27,6 +33,7 @@ export const employeeRuntimeManifestSchema = z.object({
     modelId: z.string().min(1),
     allowedModels: z.array(z.string().min(1)),
     media: z.unknown().optional(),
+    skillArtifactProtocolVersion: z.literal(1).optional(),
     skills: z.array(employeeRuntimeSkillSchema).superRefine((skills, ctx) => {
       const ids = new Set<string>()
       skills.forEach((skill, index) => {
@@ -35,6 +42,12 @@ export const employeeRuntimeManifestSchema = z.object({
       })
     }),
   }),
+}).superRefine((manifest, ctx) => {
+  manifest.runtime.skills.forEach((skill, index) => {
+    if (skill.artifact?.status === 'AVAILABLE' && skill.artifact.downloadPath !== skillArtifactDownloadPath(manifest.subscriptionId, skill.artifact)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['runtime', 'skills', index, 'artifact', 'downloadPath'], message: 'Runtime skill artifact download path mismatch.' })
+    }
+  })
 })
 
 export type EmployeeRuntimeSkill = z.infer<typeof employeeRuntimeSkillSchema>
@@ -52,12 +65,14 @@ export const preparedEmployeeSkillSchema = z.object({
   content: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   path: z.string().min(1),
+  artifact: skillArtifactAvailableSchema.readonly().optional(),
 })
 
 export type PreparedEmployeeSkill = z.infer<typeof preparedEmployeeSkillSchema>
 
 export const employeeRuntimeSnapshotSchema = z.object({
   manifestVersion: z.literal(1),
+  skillArtifactProtocolVersion: z.literal(1).optional(),
   subscriptionId: identifier,
   enterpriseId: identifier,
   memberId: identifier.optional(),

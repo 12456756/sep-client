@@ -31,6 +31,55 @@ describe('SkillVersionStore', () => {
       pendingVersionId: 'platform-v2',
     })
   })
+  it('marks default selections and migrates them without changing saved versions', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-skills-default-'))
+    const store = new SkillVersionStore(root)
+    const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
+    const first = await store.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a', baseSkillVersionId: 'v1', version: '1', content: '# First' })
+    const second = await store.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a', baseSkillVersionId: 'v2', version: '2', content: '# Second' })
+    await store.selectDefault(scope, 'sub-a', 'cap-a', first.versionId)
+    await store.markPending(scope, 'sub-a', 'cap-a', second.versionId)
+    const restored = new SkillVersionStore(root)
+    assert.deepEqual((await restored.selections(scope, 'sub-a'))['cap-a'], { versionId: first.versionId, automatic: true, pendingVersionId: second.versionId })
+    await restored.selectDefault(scope, 'sub-a', 'cap-a', second.versionId)
+    assert.deepEqual((await restored.selections(scope, 'sub-a'))['cap-a'], { versionId: second.versionId, automatic: true })
+    assert.deepEqual(await restored.load(scope, 'sub-a', 'cap-a', first.versionId), first)
+    await assert.rejects(restored.selectDefault(scope, 'sub-a', 'cap-a', 'missing'), /not found/)
+  })
+
+  it('preserves unmarked selections as manual and clears automatic on explicit selection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-skills-manual-'))
+    const store = new SkillVersionStore(root)
+    const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
+    const first = await store.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a', baseSkillVersionId: 'v1', version: '1', content: '# First' })
+    const second = await store.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a', baseSkillVersionId: 'v2', version: '2', content: '# Second' })
+    await store.selectDefault(scope, 'sub-a', 'cap-a', first.versionId)
+    await store.select(scope, 'sub-a', 'cap-a', first.versionId)
+    await store.markPending(scope, 'sub-a', 'cap-a', second.versionId)
+    // Existing records without the new marker must remain explicit selections after restart.
+    const restored = new SkillVersionStore(root)
+    await restored.selectDefault(scope, 'sub-a', 'cap-a', second.versionId)
+    assert.deepEqual((await restored.selections(scope, 'sub-a'))['cap-a'], { versionId: first.versionId, pendingVersionId: second.versionId })
+  })
+
+  it('never overwrites manual selection when default and manual writes race', async () => {
+    const store = new SkillVersionStore(await mkdtemp(join(tmpdir(), 'sep-skills-default-race-')))
+    const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
+    const first = await store.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a', baseSkillVersionId: 'v1', version: '1', content: '# First' })
+    const second = await store.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a', baseSkillVersionId: 'v2', version: '2', content: '# Second' })
+    await store.selectDefault(scope, 'sub-a', 'cap-a', first.versionId)
+    await Promise.all([
+      store.selectDefault(scope, 'sub-a', 'cap-a', second.versionId),
+      store.select(scope, 'sub-a', 'cap-a', first.versionId),
+    ])
+    assert.deepEqual((await store.selections(scope, 'sub-a'))['cap-a'], { versionId: first.versionId })
+    await Promise.all([
+      store.select(scope, 'sub-a', 'cap-a', second.versionId),
+      store.selectDefault(scope, 'sub-a', 'cap-a', first.versionId),
+    ])
+    assert.deepEqual((await store.selections(scope, 'sub-a'))['cap-a'], { versionId: second.versionId })
+  })
+
   it('preserves concurrent capability selections and rejects dot path segments', async () => {
     const store = new SkillVersionStore(await mkdtemp(join(tmpdir(), 'sep-skills-race-')))
     const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }

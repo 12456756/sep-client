@@ -383,13 +383,16 @@ export async function getSubscriptions(accessToken: string): Promise<Subscriptio
   return normalizeSubscriptions(data)
 }
 
-/** Negotiates the implemented media configuration extension; execution remains disabled. */
+/** Independently negotiates skill artifacts v1 and media configuration v1. */
 export async function getEmployeeRuntime(subscriptionId: string, accessToken: string): Promise<EmployeeRuntimeManifest> {
   const id = skillVersionIdSchema.parse(subscriptionId)
   const manifest = parseEmployeeRuntimeManifest(await getJson<unknown>(
-    `/client/subscriptions/${encodeURIComponent(id)}/runtime?mediaProtocolVersion=1`, accessToken, 'subscriptions',
+    `/client/subscriptions/${encodeURIComponent(id)}/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1`, accessToken, 'subscriptions',
   ))
   if (manifest.subscriptionId !== id) throw new Error('Employee runtime subscription mismatch.')
+  if (manifest.runtime.skillArtifactProtocolVersion !== 1 || manifest.runtime.skills.some(skill => skill.artifact === undefined)) {
+    throw new Error('Employee runtime skill artifact negotiation failed.')
+  }
   if (manifest.runtime.media !== undefined) {
     const media = sepMediaRuntimeSchema.safeParse(manifest.runtime.media)
     if (media.success) manifest.runtime.media = media.data

@@ -20,7 +20,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
       response.end(JSON.stringify({ statusCode: 401, message: 'Unauthorized' }))
       return
     }
-    if (path !== '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1') {
+    if (path !== '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1') {
       response.writeHead(404)
       response.end()
       return
@@ -29,7 +29,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
     response.end(JSON.stringify({
       manifestVersion: 1, subscriptionId: 'sub-http', templateVersion: '1.0',
       employee: { id: 'employee-http', name: 'Fixture employee', version: '1.0', maxSteps: 10 },
-      runtime: { systemPrompt: 'Fixture instructions', modelId: 'chat-fixture', allowedModels: ['chat-fixture'], skills: [],
+      runtime: { systemPrompt: 'Fixture instructions', modelId: 'chat-fixture', allowedModels: ['chat-fixture'], skills: [], skillArtifactProtocolVersion: 1,
         ...(media === undefined ? {} : { media }) },
     }))
   })
@@ -61,5 +61,5 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
   })
   assert.equal(requests.length, 4)
   assert.equal(requests.filter(request => request.authenticated).length, 3)
-  assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1'))
+  assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1'))
 })

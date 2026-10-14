@@ -1,10 +1,12 @@
 import { canUseSkillVersion } from '../../common/platform/skill-version-policy'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { SkillVersionStore } from '../../data/skill-version-store'
 import { getEmployeeSkills, previewSkill, type SkillVersion } from '../../common/platform/platform-api'
 import { employeeRuntimeSkillSchema, type EmployeeRuntimeSkill, type PreparedEmployeeSkill } from '../../common/platform/employee-runtime-contract'
+import { downloadSkillArtifact } from '../../common/platform/skill-artifact-api'
+import { skillArtifactSchema, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 import { z } from 'zod'
 // @ts-expect-error The existing js-yaml dependency does not ship TypeScript declarations.
 import { load as loadYaml, CORE_SCHEMA } from 'js-yaml'
@@ -16,6 +18,7 @@ export interface SkillStoreRequest {
   memberId?: string
   accessToken: string
   runtimeSkills?: readonly EmployeeRuntimeSkill[]
+  skillArtifactProtocolVersion?: 1
   isCurrent?: () => boolean
 }
 
@@ -108,6 +111,28 @@ function safeSegment(value: string): string {
   return value
 }
 
+function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable): { content: string; name: string; description: string } {
+  if (artifact.format !== 'single-file') throw new Error('Approved ZIP skill installation is not supported yet; no content fallback is permitted.')
+  if (artifact.entryPath !== 'SKILL.md' || artifact.fileCount !== 1 || bytes.length > 500 * 1024 || bytes.length !== artifact.byteLength ||
+    createHash('sha256').update(bytes).digest('hex') !== artifact.artifactSha256 || artifact.entrySha256 !== artifact.artifactSha256) {
+    throw new Error('Approved skill artifact integrity mismatch.')
+  }
+  let content: string
+  try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+  catch { throw new Error('Approved skill entry is not valid UTF-8.') }
+  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) throw new Error('Approved skill entry requires frontmatter.')
+  const parsed = parseSkillFrontmatter(content.replace(/\r\n?/g, '\n'))
+  const metadata = z.object({
+    name: z.literal(artifact.installationDirectory),
+    description: z.string().min(1).max(1024).refine(value => Boolean(value.trim())),
+    'disable-model-invocation': z.literal(false).optional(),
+  }).safeParse(parsed.frontmatter)
+  if (!metadata.success || !parsed.body.trim()) throw new Error('Invalid approved skill frontmatter or body.')
+  validateSelfContained(parsed.body)
+  // Validate normalized metadata, but install and freeze the exact authenticated bytes.
+  return { content, name: metadata.data.name, description: metadata.data.description }
+}
+
 export class SkillStore {
   constructor(private readonly rootDir: string, private readonly versions?: SkillVersionStore) {}
 
@@ -157,17 +182,76 @@ export class SkillStore {
     for (const skill of approvedSkills) {
       checkCurrent(input)
       const scope = input.memberId ? { enterpriseId: input.enterpriseId, memberId: input.memberId } : null
-      const selected = scope && this.versions ? await this.versions.selected(scope, input.subscriptionId, skill.capability.id) : null
+      const selection = scope && this.versions ? (await this.versions.selections(scope, input.subscriptionId))[skill.capability.id] : undefined
+      const selected = selection?.versionId ?? null
       const selectedVersion = selected && scope && this.versions
         ? await this.versions.load(scope, input.subscriptionId, skill.capability.id, selected)
         : null
       const isOwnerLocalVersion = Boolean(input.memberId && selectedVersion?.localSubmissionId)
+      const isAutomaticSelection = selection?.automatic === true && !isOwnerLocalVersion
+        && selected === `platform-${selectedVersion?.baseSkillVersionId}`
       if (!canUseSkillVersion(skill.currentVersion, input.memberId ?? '') && !isOwnerLocalVersion) continue
       const platformVersionId = `platform-${skill.currentVersion.id}`
       const cachedPlatform = scope && this.versions
         ? await this.versions.load(scope, input.subscriptionId, skill.capability.id, platformVersionId)
         : null
       const runtimeSkill = input.runtimeSkills?.find(runtime => runtime.capabilityId === skill.capability.id)
+      if (input.skillArtifactProtocolVersion === 1 && runtimeSkill?.artifact === undefined) {
+        throw new Error('Negotiated approved skill artifact descriptor is missing.')
+      }
+      if (runtimeSkill?.artifact !== undefined) {
+        const artifact = skillArtifactSchema.parse(runtimeSkill.artifact)
+        if (artifact.status !== 'AVAILABLE') throw new Error('Approved skill artifact is BLOCKED; preparation cannot continue.')
+        if (artifact.capabilityId !== runtimeSkill.capabilityId || artifact.versionId !== runtimeSkill.versionId ||
+          artifact.approvedContentSha256 !== createHash('sha256').update(runtimeSkill.content).digest('hex')) {
+          throw new Error('Approved skill artifact identity or content mismatch.')
+        }
+        if (artifact.format !== 'single-file') throw new Error('Approved ZIP skill installation is not supported yet; no content fallback is permitted.')
+        const bytes = await downloadSkillArtifact(input.subscriptionId, artifact, input.accessToken)
+        checkCurrent(input)
+        const entry = approvedEntry(bytes, artifact)
+        if (!isOwnerLocalVersion) {
+          if (selected && selected !== platformVersionId && !isAutomaticSelection) throw new Error('Selected skill version is not the currently approved runtime version.')
+          if (names.has(entry.name)) throw new Error('Installed skill names collide.')
+          names.add(entry.name)
+          const versionKey = createHash('sha256').update(JSON.stringify([artifact.versionId, artifact.artifactSha256])).digest('hex')
+          const parent = join(skillRoot, safeSegment(skill.capability.id), versionKey)
+          const target = join(parent, entry.name)
+          const snapshot: PreparedEmployeeSkill = {
+            capabilityId: skill.capability.id, versionId: platformVersionId, baseSkillVersionId: artifact.versionId,
+            version: runtimeSkill.version, source: 'approved', name: entry.name, description: entry.description,
+            content: entry.content, sha256: artifact.entrySha256, path: target, artifact,
+          }
+          checkCurrent(input)
+          await mkdir(parent, { recursive: true, mode: 0o700 })
+          const temporary = await mkdtemp(join(parent, '.staging-'))
+          try {
+            await writeFile(join(temporary, 'SKILL.md'), bytes, { mode: 0o600 })
+            await writeFile(join(temporary, 'manifest.json'), JSON.stringify(snapshot), { mode: 0o600 })
+            checkCurrent(input)
+            try { await rename(temporary, target) }
+            catch (error) {
+              const code = (error as NodeJS.ErrnoException).code
+              if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
+              const directory = await lstat(target)
+              const file = await lstat(join(target, 'SKILL.md'))
+              if (!directory.isDirectory() || directory.isSymbolicLink() || !file.isFile() || file.isSymbolicLink() ||
+                !(await readFile(join(target, 'SKILL.md'))).equals(bytes)) throw new Error('Immutable skill entry integrity mismatch.')
+            }
+          } finally { await rm(temporary, { recursive: true, force: true }) }
+          checkCurrent(input)
+          if (scope && this.versions) {
+            await this.versions.savePlatform(scope, { subscriptionId: input.subscriptionId, employeeId: input.employeeId,
+              capabilityId: skill.capability.id, baseSkillVersionId: artifact.versionId, version: runtimeSkill.version, content: runtimeSkill.content })
+            checkCurrent(input)
+            await this.versions.selectDefault(scope, input.subscriptionId, skill.capability.id, platformVersionId)
+          }
+          checkCurrent(input)
+          paths.push(target)
+          installed.push(snapshot)
+          continue
+        }
+      }
       const platformContent = runtimeSkill ? runtimeSkill.content : cachedPlatform?.content.trim()
         ? cachedPlatform.content
         : isOwnerLocalVersion
@@ -185,16 +269,16 @@ export class SkillStore {
         }))
         : null
       checkCurrent(input)
-      if (scope && this.versions && platform && !selected) await this.versions.select(scope, input.subscriptionId, skill.capability.id, platform.versionId)
-      const activeVersionId = selected ?? platform?.versionId ?? null
-      const activeVersion = (selectedVersion?.versionId === platform?.versionId ? platform : selectedVersion) ?? (activeVersionId && scope && this.versions
+      if (scope && this.versions && platform) await this.versions.selectDefault(scope, input.subscriptionId, skill.capability.id, platform.versionId)
+      const activeVersionId = (isAutomaticSelection ? platform?.versionId : selected) ?? platform?.versionId ?? null
+      const activeVersion = (isAutomaticSelection || selectedVersion?.versionId === platform?.versionId ? platform : selectedVersion) ?? (activeVersionId && scope && this.versions
         ? await this.versions.load(scope, input.subscriptionId, skill.capability.id, activeVersionId)
         : null)
       const availableVersions: SkillVersion[] = [skill.currentVersion, ...skill.versions]
       const selectedMetadata = activeVersion
         ? availableVersions.find(version => version.id === activeVersion.baseSkillVersionId)
         : null
-      if (selected && (!activeVersion || (!isOwnerLocalVersion && (
+      if (selected && (!activeVersion || (!isOwnerLocalVersion && !isAutomaticSelection && (
         selected !== `platform-${activeVersion.baseSkillVersionId}` ||
         !selectedMetadata ||
         !canUseSkillVersion(selectedMetadata, input.memberId ?? '')
@@ -211,7 +295,7 @@ export class SkillStore {
         if (!baseline) break
       }
       const publicBaseId = baseline?.id ?? selectedMetadata?.parentVersionId ?? selectedVersion?.baseSkillVersionId
-      if (scope && this.versions && platform && activeVersion && publicBaseId !== platform.baseSkillVersionId) {
+      if (scope && this.versions && platform && activeVersion && !isAutomaticSelection && publicBaseId !== platform.baseSkillVersionId) {
         checkCurrent(input)
         await this.versions.markPending(scope, input.subscriptionId, skill.capability.id, platform.versionId)
       }

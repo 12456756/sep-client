@@ -1,12 +1,14 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { SkillVersion } from '../../common/platform/platform-api'
 import { SkillVersionStore } from '../../data/skill-version-store'
 import { SkillStore } from './pi-skill-packages'
+import type { EmployeeRuntimeSkill } from '../../common/platform/employee-runtime-contract'
+import type { SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 
 const originalFetch = globalThis.fetch
 
@@ -88,6 +90,174 @@ async function readSkillBody(path: string): Promise<string> {
 }
 
 describe('SkillStore', () => {
+  function artifactFixture(content = '---\nname: orders\ndescription: Approved order operations\n---\n# Approved\n'): EmployeeRuntimeSkill & { artifact: SkillArtifactAvailable } {
+    const hash = createHash('sha256').update(content).digest('hex')
+    return { capabilityId: 'cap-a', name: 'Orders', description: 'Orders', versionId: 'version-v1', version: '1.0', content,
+      artifact: { protocolVersion: 1, status: 'AVAILABLE', capabilityId: 'cap-a', versionId: 'version-v1',
+        approvedContentSha256: hash, format: 'single-file', installationDirectory: 'orders', entryPath: 'SKILL.md',
+        entrySha256: hash, artifactSha256: hash, byteLength: Buffer.byteLength(content), fileCount: 1,
+        downloadPath: '/client/subscriptions/sub-a/skills/cap-a/versions/version-v1/artifact' } }
+  }
+
+  function serveArtifact(skill: ReturnType<typeof artifactFixture>, options: { bytes?: Buffer; status?: number } = {}) {
+    let downloads = 0
+    globalThis.fetch = async (input, init) => {
+      const path = new URL(String(input)).pathname
+      if (path.endsWith('/skills')) return jsonResponse(skillsPayload(skill.versionId, skill.version))
+      if (path.endsWith('/artifact')) {
+        downloads++
+        assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer access-token')
+        return new Response(options.bytes ?? Buffer.from(skill.content), { status: options.status ?? 200,
+          headers: { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Length': String(skill.artifact.byteLength),
+            'X-SHA256': skill.artifact.artifactSha256 } })
+      }
+      throw new Error('Negotiated preparation must not preview or downgrade.')
+    }
+    return () => downloads
+  }
+
+  it('installs exact approved bytes, freezes descriptor, and reauthorizes downloads even when cached', async () => {
+    const runtime = artifactFixture()
+    const downloads = serveArtifact(runtime)
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [runtime] })
+    assert.deepEqual(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md')), Buffer.from(runtime.content))
+    assert.deepEqual(prepared.skills[0]?.artifact, runtime.artifact)
+    assert.equal(prepared.skills[0]?.sha256, runtime.artifact.entrySha256)
+    const { loadSkills } = await import('@earendil-works/pi-coding-agent')
+    const loaded = loadSkills({ cwd: tmpdir(), agentDir: tmpdir(), skillPaths: prepared.skillPaths, includeDefaults: false })
+    assert.deepEqual(loaded.diagnostics, [])
+    assert.equal(loaded.skills[0]?.name, runtime.artifact.installationDirectory)
+    assert.equal((await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [runtime] })).skillPaths[0], prepared.skillPaths[0])
+    assert.equal(downloads(), 2)
+    serveArtifact(runtime, { status: 404 })
+    await assert.rejects(skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [runtime] }))
+    assert.equal(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'), 'utf8'), runtime.content)
+  })
+
+  it('refuses missing, BLOCKED, foreign, and mismatched approved artifacts without falling back', async () => {
+    const runtime = artifactFixture()
+    const downloads = serveArtifact(runtime)
+    const { skills } = await createStore()
+    const { artifact: _artifact, ...missing } = runtime
+    await assert.rejects(skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [missing] }), /descriptor is missing/)
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [{ ...runtime, artifact: {
+      protocolVersion: 1, status: 'BLOCKED', capabilityId: 'cap-a', versionId: 'version-v1',
+      approvedContentSha256: runtime.artifact.approvedContentSha256, reason: 'PACKAGE_REQUIRED',
+    } }] }), /BLOCKED/)
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [{ ...runtime, artifact: { ...runtime.artifact, capabilityId: 'foreign' } }] }), /mismatch/)
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [{ ...runtime, content: '# changed' }] }), /mismatch/)
+    assert.equal(downloads(), 0)
+  })
+
+  it('does not normalize approved CRLF bytes and rejects corrupted immutable entries', async () => {
+    const runtime = artifactFixture('---\r\nname: orders\r\ndescription: Orders\r\n---\r\n# Approved\r\n')
+    serveArtifact(runtime)
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    assert.equal(prepared.skills[0]?.content, runtime.content)
+    await writeFile(join(prepared.skillPaths[0]!, 'SKILL.md'), '# changed')
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /integrity mismatch/)
+    assert.equal(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'), 'utf8'), '# changed')
+    assert.deepEqual(await readdir(join(prepared.skillPaths[0]!, '..')), ['orders'])
+  })
+
+  it('refuses ZIP until safe package installation is implemented', async () => {
+    const runtime = artifactFixture()
+    const downloads = serveArtifact(runtime)
+    const { skills } = await createStore()
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [{ ...runtime, artifact: { ...runtime.artifact, format: 'zip' } }] }), /ZIP skill installation is not supported/)
+    assert.equal(downloads(), 0)
+  })
+
+  it('keeps owner-local content separate from approved artifact provenance', async () => {
+    const runtime = artifactFixture()
+    const downloads = serveArtifact(runtime)
+    const { skills, versions } = await createStore()
+    const local = await versions.save(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a',
+      baseSkillVersionId: 'version-v1', version: 'Owner', content: '# Local owner', localSubmissionId: 'local-owner-source' })
+    await versions.select(scope, 'sub-a', 'cap-a', local.versionId)
+    const prepared = await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [runtime] })
+    assert.equal(prepared.skills[0]?.source, 'owner-local')
+    assert.equal(prepared.skills[0]?.artifact, undefined)
+    assert.equal(downloads(), 1)
+    assert.equal(await readSkillBody(prepared.skillPaths[0]!), '# Local owner')
+  })
+
+  it('keeps old artifact paths alive across content updates and concurrent preparations', async () => {
+    const firstRuntime = artifactFixture()
+    serveArtifact(firstRuntime)
+    const { skills } = await createStore()
+    const first = await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [firstRuntime] })
+    const secondRuntime = artifactFixture(firstRuntime.content.replace('# Approved', '# Approved update'))
+    serveArtifact(secondRuntime)
+    const next = await Promise.all(Array.from({ length: 4 }, () => skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [secondRuntime] })))
+    assert.equal(new Set(next.map(result => result.skillPaths[0])).size, 1)
+    assert.notEqual(first.skillPaths[0], next[0]!.skillPaths[0])
+    assert.equal(await readFile(join(first.skillPaths[0]!, 'SKILL.md'), 'utf8'), firstRuntime.content)
+    assert.equal(await readFile(join(next[0]!.skillPaths[0]!, 'SKILL.md'), 'utf8'), secondRuntime.content)
+    assert.deepEqual(await readdir(join(next[0]!.skillPaths[0]!, '..')), ['orders'])
+  })
+
+  it('migrates the automatic approved selection from v1 to v2 while preserving the v1 files and snapshot', async () => {
+    const firstRuntime = artifactFixture()
+    serveArtifact(firstRuntime)
+    const { skills, versions } = await createStore()
+    const first = await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [firstRuntime] })
+    const firstSnapshot = JSON.parse(JSON.stringify(first.skills[0]))
+    const firstManifest = await readFile(join(first.skillPaths[0]!, 'manifest.json'), 'utf8')
+    const secondRuntime = artifactFixture(firstRuntime.content.replace('# Approved', '# Approved v2'))
+    secondRuntime.versionId = 'version-v2'
+    secondRuntime.version = '2.0'
+    secondRuntime.artifact.versionId = secondRuntime.versionId
+    secondRuntime.artifact.downloadPath = '/client/subscriptions/sub-a/skills/cap-a/versions/version-v2/artifact'
+    serveArtifact(secondRuntime)
+    const second = await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [secondRuntime] })
+    assert.equal(second.skills[0]?.baseSkillVersionId, 'version-v2')
+    assert.equal(second.skills[0]?.version, '2.0')
+    assert.deepEqual((await versions.selections(scope, 'sub-a'))['cap-a'], { versionId: 'platform-version-v2', automatic: true })
+    assert.notEqual(first.skillPaths[0], second.skillPaths[0])
+    assert.deepEqual(first.skills[0], firstSnapshot)
+    assert.equal(await readFile(join(first.skillPaths[0]!, 'manifest.json'), 'utf8'), firstManifest)
+    assert.deepEqual(await readFile(join(first.skillPaths[0]!, 'SKILL.md')), Buffer.from(firstRuntime.content))
+    assert.deepEqual(await readFile(join(second.skillPaths[0]!, 'SKILL.md')), Buffer.from(secondRuntime.content))
+  })
+
+  it('rejects an explicitly selected old approved version instead of migrating it', async () => {
+    const firstRuntime = artifactFixture()
+    serveArtifact(firstRuntime)
+    const { skills, versions } = await createStore()
+    const first = await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [firstRuntime] })
+    await versions.select(scope, 'sub-a', 'cap-a', 'platform-version-v1')
+    const secondRuntime = artifactFixture(firstRuntime.content.replace('# Approved', '# Approved v2'))
+    secondRuntime.versionId = 'version-v2'
+    secondRuntime.version = '2.0'
+    secondRuntime.artifact.versionId = secondRuntime.versionId
+    secondRuntime.artifact.downloadPath = '/client/subscriptions/sub-a/skills/cap-a/versions/version-v2/artifact'
+    serveArtifact(secondRuntime)
+    await assert.rejects(skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [secondRuntime] }), /not the currently approved runtime version/)
+    assert.deepEqual((await versions.selections(scope, 'sub-a'))['cap-a'], { versionId: 'platform-version-v1' })
+    assert.deepEqual(await readFile(join(first.skillPaths[0]!, 'SKILL.md')), Buffer.from(firstRuntime.content))
+    assert.equal(await versions.load(scope, 'sub-a', 'cap-a', 'platform-version-v2'), null)
+  })
+
+  it('stops before publishing or selecting an artifact downloaded after logout', async () => {
+    const runtime = artifactFixture()
+    let current = true
+    const downloads = serveArtifact(runtime)
+    const fetch = globalThis.fetch
+    globalThis.fetch = async (input, init) => {
+      const result = await fetch(input, init)
+      if (String(input).endsWith('/artifact')) current = false
+      return result
+    }
+    const { skills, versions } = await createStore()
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime], isCurrent: () => current }), /scope changed/)
+    assert.equal(downloads(), 1)
+    assert.equal(await versions.load(scope, 'sub-a', 'cap-a', 'platform-version-v1'), null)
+    assert.deepEqual(await versions.selections(scope, 'sub-a'), {})
+  })
+
   it('executes an unuploaded personal source only in its owner scope and keeps runtime paths isolated', async () => {
     installPlatformMock({ versionId: 'version-v1', version: '1.0', content: '# Published' })
     const { versions, skills } = await createStore()
@@ -156,9 +326,25 @@ describe('SkillStore', () => {
 
     assert.equal(calls.metadataRequests(), 2)
     assert.equal(calls.previewRequests(), 1)
-    assert.deepEqual(await versions.selections(scope, 'sub-a'), { 'cap-a': { versionId: 'platform-version-v1' } })
+    assert.deepEqual(await versions.selections(scope, 'sub-a'), { 'cap-a': { versionId: 'platform-version-v1', automatic: true } })
     assert.equal(await readSkillBody(first.skillPaths[0]!), '# Platform v1')
     assert.equal(await readSkillBody(second.skillPaths[0]!), '# Platform v1')
+  })
+
+  it('migrates the legacy default to the current platform version and preserves the old entry', async () => {
+    const state = { versionId: 'version-v1', version: '1.0', content: '# Platform v1' }
+    installPlatformMock(state)
+    const { versions, skills } = await createStore()
+    const first = await skills.prepare(request())
+    state.versionId = 'version-v2'
+    state.version = '2.0'
+    state.content = '# Platform v2'
+    const second = await skills.prepare(request())
+    assert.deepEqual((await versions.selections(scope, 'sub-a'))['cap-a'], { versionId: 'platform-version-v2', automatic: true })
+    assert.equal(second.skills[0]?.baseSkillVersionId, 'version-v2')
+    assert.notEqual(first.skillPaths[0], second.skillPaths[0])
+    assert.equal(await readSkillBody(first.skillPaths[0]!), '# Platform v1')
+    assert.equal(await readSkillBody(second.skillPaths[0]!), '# Platform v2')
   })
 
   it('keeps a user-selected version active and records a newer platform version as pending', async () => {

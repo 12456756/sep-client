@@ -10,8 +10,11 @@
  * B2：本文件不 import `pi/`。技能准备经 `SkillProvisioner` 端口注入，
  * 实现是 `pi/sdk/pi-skill-packages.ts` 的 `SkillStore`。
  */
+import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import type { Subscription } from '../common/platform/platform-api'
-import { employeeRuntimeSnapshotSchema, parseEmployeeRuntimeManifest, type EmployeeRuntimeSkill, type PreparedEmployeeSkill } from '../common/platform/employee-runtime-contract'
+import { employeeRuntimeSnapshotSchema, parseEmployeeRuntimeManifest, preparedEmployeeSkillSchema, type EmployeeRuntimeSkill, type PreparedEmployeeSkill } from '../common/platform/employee-runtime-contract'
+import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-contract'
 // import type 会被编译擦除，所以不构成对 runtime/ 的运行时依赖；
 // EmployeeRuntimeConfig 是运行时的入参契约。定义点在 runtime/run-types.ts——
 // 那是个零依赖的类型模块，import 它不会把 pi SDK 拉进服务层（B2）。
@@ -44,6 +47,7 @@ export interface SkillProvisioner {
     memberId?: string
     accessToken: string
     runtimeSkills?: readonly EmployeeRuntimeSkill[]
+    skillArtifactProtocolVersion?: 1
     isCurrent?: () => boolean
   }): Promise<{ skillPaths: string[]; skills?: PreparedEmployeeSkill[] }>
   invalidate(subscriptionId?: string): void
@@ -188,6 +192,24 @@ export class EmployeeAuthorizer {
       ? modelId ?? (manifest.runtime.allowedModels.includes(manifest.runtime.modelId) ? manifest.runtime.modelId : manifest.runtime.allowedModels[0])
       : employee.modelId
     if (!selectedModel || (manifest && !manifest.runtime.allowedModels.includes(selectedModel)) || !instance.allowedModels.includes(selectedModel)) return null
+    const skillArtifactProtocolVersion = manifest?.runtime.skillArtifactProtocolVersion
+    // Keep the approved versions and resource identities fixed throughout asynchronous preparation.
+    const approvedSkills = manifest && Object.freeze(manifest.runtime.skills.map(skill => Object.freeze({
+      ...skill,
+      ...(skill.artifact ? { artifact: Object.freeze({ ...skill.artifact }) } : {}),
+    })))
+    for (const skill of approvedSkills ?? []) {
+      const artifact = skill.artifact
+      if (skillArtifactProtocolVersion === 1) {
+        if (!artifact || artifact.status !== 'AVAILABLE' || artifact.capabilityId !== skill.capabilityId
+          || artifact.versionId !== skill.versionId
+          || artifact.approvedContentSha256 !== createHash('sha256').update(skill.content).digest('hex')) {
+          throw new Error('Employee runtime skill artifact is unavailable or mismatched.')
+        }
+      } else if (artifact) {
+        throw new Error('Employee runtime skill artifact protocol was not negotiated.')
+      }
+    }
     let prepared: Awaited<ReturnType<SkillProvisioner['prepare']>>
     try {
       prepared = await this.skills.prepare({
@@ -196,7 +218,8 @@ export class EmployeeAuthorizer {
         employeeId: instance.employeeId,
         memberId: scope.memberId,
         accessToken,
-        ...(manifest ? { runtimeSkills: manifest.runtime.skills } : {}),
+        ...(approvedSkills ? { runtimeSkills: approvedSkills } : {}),
+        ...(skillArtifactProtocolVersion !== undefined ? { skillArtifactProtocolVersion } : {}),
         isCurrent: scope.isCurrent,
       })
     } catch (error) {
@@ -204,32 +227,50 @@ export class EmployeeAuthorizer {
       throw error
     }
     if (!scope.isCurrent()) return null
-    if (!manifest) return { ...employee, additionalSkillPaths: prepared.skillPaths }
-    const actualSkills = prepared.skills ?? []
-    if (actualSkills.length !== manifest.runtime.skills.length || manifest.runtime.skills.some(skill =>
-      !actualSkills.some(actual => actual.capabilityId === skill.capabilityId && prepared.skillPaths.includes(actual.path)),
-    )) throw new Error('Employee runtime skills were not fully prepared.')
+    if (!manifest || !approvedSkills) return { ...employee, additionalSkillPaths: [...prepared.skillPaths] }
+    const parsedSkills = preparedEmployeeSkillSchema.array().safeParse(prepared.skills ?? [])
+    if (!parsedSkills.success) throw new Error('Employee runtime skills were not fully prepared.')
+    const actualSkills = parsedSkills.data
+    if (actualSkills.length !== approvedSkills.length || prepared.skillPaths.length !== actualSkills.length
+      || new Set(prepared.skillPaths).size !== actualSkills.length
+      || new Set(actualSkills.map(skill => skill.capabilityId)).size !== actualSkills.length
+      || new Set(actualSkills.map(skill => skill.path)).size !== actualSkills.length
+      || new Set(actualSkills.map(skill => skill.name)).size !== actualSkills.length
+      || actualSkills.some(actual => {
+        const approved = approvedSkills.find(skill => skill.capabilityId === actual.capabilityId)
+        if (!approved || !prepared.skillPaths.includes(actual.path)
+          || actual.sha256 !== createHash('sha256').update(actual.content).digest('hex')) return true
+        if (actual.source === 'owner-local') return actual.artifact !== undefined
+        if (actual.baseSkillVersionId !== approved.versionId || actual.version !== approved.version) return true
+        const artifact: SkillArtifactAvailable | undefined = approved.artifact?.status === 'AVAILABLE' ? approved.artifact : undefined
+        return !isDeepStrictEqual(actual.artifact, artifact) || (artifact !== undefined && actual.sha256 !== artifact.entrySha256)
+      })) throw new Error('Employee runtime skills were not fully prepared.')
+    const runtimeSnapshot = employeeRuntimeSnapshotSchema.parse({
+      manifestVersion: manifest.manifestVersion,
+      ...(skillArtifactProtocolVersion !== undefined ? { skillArtifactProtocolVersion } : {}),
+      subscriptionId,
+      enterpriseId: scope.enterpriseId,
+      memberId: scope.memberId,
+      employeeId: manifest.employee.id,
+      templateVersion: manifest.templateVersion,
+      employeeVersion: manifest.employee.version,
+      maxSteps: manifest.employee.maxSteps,
+      systemPrompt: manifest.runtime.systemPrompt,
+      modelId: selectedModel,
+      allowedModels: manifest.runtime.allowedModels,
+      approvedSkills,
+      skills: actualSkills,
+    })
+    for (const skill of [...runtimeSnapshot.approvedSkills, ...runtimeSnapshot.skills]) {
+      if (skill.artifact) Object.freeze(skill.artifact)
+    }
     return {
       ...employee,
       modelId: selectedModel,
       additionalSkillPaths: [...prepared.skillPaths],
       systemPrompt: manifest.runtime.systemPrompt,
       ...(manifest.runtime.media !== undefined ? { media: manifest.runtime.media } : {}),
-      runtimeSnapshot: employeeRuntimeSnapshotSchema.parse({
-        manifestVersion: manifest.manifestVersion,
-        subscriptionId,
-        enterpriseId: scope.enterpriseId,
-        memberId: scope.memberId,
-        employeeId: manifest.employee.id,
-        templateVersion: manifest.templateVersion,
-        employeeVersion: manifest.employee.version,
-        maxSteps: manifest.employee.maxSteps,
-        systemPrompt: manifest.runtime.systemPrompt,
-        modelId: selectedModel,
-        allowedModels: manifest.runtime.allowedModels,
-        approvedSkills: manifest.runtime.skills,
-        skills: actualSkills,
-      }),
+      runtimeSnapshot,
     }
   }
 }
