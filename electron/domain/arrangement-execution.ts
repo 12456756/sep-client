@@ -13,6 +13,8 @@ export interface ArrangementNodeCheckpoint {
   nodeId: string
   status: ArrangementNodeStatus
   attempt: number
+  /** Last attempt that durably registered this node’s Pi session. */
+  sessionRunId?: string
   error: string | null
   output: string | null
 }

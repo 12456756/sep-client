@@ -6,6 +6,7 @@
  * 后端补上工作结构后，把 encode/decode 换成真实字段读写即可，页面不受影响。
  */
 
+import { runtimeKey } from '../../shared/work-activity';
 import type { ArrangementPlanSnapshot, TaskExecutionEvent, ClientTask, ClientTaskMessage } from '../../shared/types';
 import type {
   SharedContext,
@@ -331,12 +332,44 @@ function buildMessages(
   return source;
 }
 
+/** Keep completed progress visible until the retry run publishes its checkpoint snapshot. */
+export function getArrangementDisplayEvents(
+  eventsByRun: Record<string, TaskExecutionEvent[]>, taskId: string, runId: string,
+): TaskExecutionEvent[] {
+  const key = runtimeKey(taskId, runId);
+  const current = eventsByRun[key] ?? [];
+  if (current.some(event => event.type === 'arrangement_state_changed'
+    && Array.isArray((event.data as { nodeStates?: unknown } | null)?.nodeStates))) return current;
+
+  const completed: TaskExecutionEvent[] = [];
+  for (const [previousKey, events] of Object.entries(eventsByRun)) {
+    if (previousKey === key) continue;
+    for (const event of events) {
+      if (event.taskId !== taskId) continue;
+      if (event.type === 'arrangement_node_completed') completed.push(event);
+      if (event.type !== 'arrangement_state_changed') continue;
+      const data = event.data as { nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: string }> } | null;
+      const nodeStates = Array.isArray(data?.nodeStates) ? data.nodeStates.filter(node => node.status === 'completed') : [];
+      if (data?.nodeId && data.nodeStatus === 'completed') nodeStates.push({ nodeId: data.nodeId, status: 'completed' });
+      if (nodeStates.length) completed.push({ ...event, data: { nodeStates } });
+    }
+  }
+  return completed.length ? [...completed, ...current] : current;
+}
+
 /** Node IDs (not array position) drive parallel/out-of-order execution state. */
 function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskExecutionEvent[]): WorkStepState {
   if (status === 'completed') return 'done';
   let state: WorkStepState = 'pending';
   for (const event of events) {
-    const data = event.data as { nodeId?: string; nodeStatus?: string; status?: string };
+    const data = event.data as { nodeId?: string; nodeStatus?: string; status?: string; nodeStates?: Array<{ nodeId: string; status: string }> };
+    if (event.type === 'arrangement_state_changed' && Array.isArray(data?.nodeStates)) {
+      const saved = data.nodeStates.find(node => node.nodeId === nodeId)?.status;
+      if (saved === 'completed') state = 'done';
+      else if (saved === 'running') state = 'running';
+      else if (saved === 'failed' || saved === 'interrupted') state = 'failed';
+      else if (saved) state = 'pending';
+    }
     if (data?.nodeId !== nodeId) continue;
     if (event.type === 'arrangement_node_started') state = 'running';
     if (event.type === 'arrangement_node_completed') state = 'done';

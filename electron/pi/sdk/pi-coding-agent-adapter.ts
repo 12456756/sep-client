@@ -1,4 +1,5 @@
 import { mkdir } from 'node:fs/promises'
+import { lazyStream, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -32,12 +33,15 @@ import { logger } from '../../common/logger'
 import { createMcpRuntime, type McpRuntime } from './pi-mcp-client'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
+import { GatewayRetryWait } from './gateway-retry-wait'
 
 const log = logger.child('pi-gateway')
 
 let gatewayRequestSequence = 0
 
 const DEFAULT_SESSION_TOOLS = ['read', 'bash', 'edit', 'write'] as const
+const GATEWAY_MAX_OUTPUT_TOKENS = 4096
+const OPENAI_COMPLETIONS_API_MODULE = '@earendil-works/pi-ai/api/openai-completions'
 
 export function sessionToolOptions(
   toolPolicy: PiAgentSessionConfig['toolPolicy'],
@@ -181,12 +185,19 @@ export function normalizeGatewayPayload(payload: unknown): unknown {
   })
 
   const source = payload as Record<string, unknown>
+  const maxTokens = Number.isInteger(source.max_tokens) && (source.max_tokens as number) > 0
+    ? source.max_tokens
+    : source.max_completion_tokens
+  const streamOptions = source.stream_options && typeof source.stream_options === 'object'
+    ? source.stream_options as Record<string, unknown> : undefined
   return {
     model: typeof source.model === 'string' ? source.model : '',
     messages,
     ...(typeof source.temperature === 'number' ? { temperature: source.temperature } : {}),
-    ...(Number.isInteger(source.max_tokens) && (source.max_tokens as number) > 0 ? { max_tokens: source.max_tokens } : {}),
+    ...(Number.isInteger(maxTokens) && (maxTokens as number) > 0 ? { max_tokens: maxTokens } : {}),
     ...(typeof source.stream === 'boolean' ? { stream: source.stream } : {}),
+    ...(typeof streamOptions?.include_usage === 'boolean'
+      ? { stream_options: { include_usage: streamOptions.include_usage } } : {}),
     ...(Array.isArray(source.tools) ? { tools: source.tools } : {}),
   }
 }
@@ -398,10 +409,30 @@ function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): Extensi
 }
 
 class PiCodingAgentSession implements PiAgentSession {
+  private readonly listeners = new Set<(event: PiAgentEvent) => void>()
+  private readonly unsubscribe: () => void
+
   constructor(
     private readonly session: Awaited<ReturnType<typeof createAgentSession>>['session'],
     private readonly mcp: McpRuntime,
-  ) {}
+    private readonly retryWait: GatewayRetryWait,
+    private readonly settingsManager: SettingsManager,
+  ) {
+    this.unsubscribe = session.subscribe(event => {
+      if (event.type === 'auto_retry_end' && event.success === true) retryWait.reset()
+      const delayMs = event.type === 'auto_retry_start' || event.type === 'summarization_retry_scheduled'
+        ? retryWait.schedule() : undefined
+      const normalized = normalizeEvent(event)
+      if (!normalized) return
+      if (event.type === 'auto_retry_start') {
+        normalized.data = { ...(normalized.data as Record<string, unknown>), delayMs }
+      }
+      if (event.type === 'agent_end' && !event.willRetry && retryWait.terminalError) {
+        normalized.failure = retryWait.terminalError
+      }
+      for (const listener of this.listeners) listener(normalized)
+    })
+  }
 
   get sessionId(): string {
     return this.session.sessionId
@@ -412,6 +443,8 @@ class PiCodingAgentSession implements PiAgentSession {
   }
 
   prompt(text: string): Promise<void> {
+    this.retryWait.reset()
+    this.settingsManager.setRetryEnabled(true)
     return this.session.prompt(text)
   }
 
@@ -420,13 +453,13 @@ class PiCodingAgentSession implements PiAgentSession {
   }
 
   subscribe(listener: (event: PiAgentEvent) => void): () => void {
-    return this.session.subscribe(event => {
-      const normalized = normalizeEvent(event)
-      if (normalized) listener(normalized)
-    })
+    this.listeners.add(listener)
+    return () => { this.listeners.delete(listener) }
   }
 
   async dispose(): Promise<void> {
+    this.unsubscribe()
+    this.listeners.clear()
     try {
       await this.session.dispose()
     } finally {
@@ -449,11 +482,33 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     ])
 
     const modelRuntime = await ModelRuntime.create({ modelsPath: null })
+    const retryWait = new GatewayRetryWait()
+    const settingsManager = SettingsManager.inMemory({
+      // The request boundary applies the one cancellable delay; Pi must not sleep again.
+      retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 0, provider: { maxRetries: 0 } },
+    })
+    // The exported subpath is loaded dynamically under the project's legacy Node resolution.
+    const { streamSimple }: { streamSimple: StreamFunction<'openai-completions', SimpleStreamOptions> } =
+      await import(OPENAI_COMPLETIONS_API_MODULE)
     modelRuntime.registerProvider('sep-gateway', {
       name: 'SEP Gateway',
       baseUrl: config.gatewayUrl,
       apiKey: 'placeholder',
       api: 'openai-completions',
+      streamSimple: (model, context, options) => lazyStream(model, async () => {
+        // Wait before auth hooks so a recovered request obtains a fresh access token.
+        await retryWait.wait(options?.signal)
+        return streamSimple({ ...model, api: 'openai-completions' }, context, {
+          ...options,
+          maxTokens: GATEWAY_MAX_OUTPUT_TOKENS,
+          maxRetries: 0,
+          fetch: async (input, init) => {
+            const response = await globalThis.fetch(input, init)
+            if (!retryWait.inspect(response)) settingsManager.setRetryEnabled(false)
+            return response
+          },
+        })
+      }),
       models: [{
         id: config.modelId,
         name: config.modelId,
@@ -461,7 +516,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: 128_000,
-        maxTokens: 4096,
+        maxTokens: GATEWAY_MAX_OUTPUT_TOKENS,
       }],
     })
     const model = modelRuntime.getModel('sep-gateway', config.modelId)
@@ -505,12 +560,10 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         // Advertise only the task policy's tools so the model cannot select denied tools.
         ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()]),
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
-        settingsManager: SettingsManager.inMemory({
-          retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 2000, provider: { maxRetries: 0 } },
-        }),
+        settingsManager,
       })
       log.info('createAgentSession completed', { sessionId: session.sessionId })
-      return new PiCodingAgentSession(session, mcp)
+      return new PiCodingAgentSession(session, mcp, retryWait, settingsManager)
     } catch (error) {
       await mcp.dispose()
       throw error

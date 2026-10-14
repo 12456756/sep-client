@@ -31,7 +31,7 @@ import type {
   WorkTemplate,
 } from './types';
 import { upgradeDraftSteps, layoutSteps } from './work-graph';
-import { buildWorkItem, completedStepCount } from './work-mapping';
+import { buildWorkItem, completedStepCount, getArrangementDisplayEvents } from './work-mapping';
 import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
 import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
 import { mapEnterpriseOrganization, mapOrganizationEmployees } from './organization-mapping';
@@ -340,7 +340,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         activities: runtimeActivities.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')) ?? [],
         activeEmployeeId: activeEmployeeByWork[task.id],
         plan: arrangement.plans[task.id],
-        arrangementEvents: arrangement.events[runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')],
+        arrangementEvents: getArrangementDisplayEvents(arrangement.events, task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? ''),
       });
     });
     return items.sort((left, right) => right.updatedAt - left.updatedAt);

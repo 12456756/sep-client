@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { buildWorkItem, encodeWorkPrompt } from './work-mapping'
+import { buildWorkItem, encodeWorkPrompt, getArrangementDisplayEvents } from './work-mapping'
 import type { ArrangementPlanSnapshot, ClientTask, TaskExecutionEvent } from '../../shared/types'
 
 const prompt = encodeWorkPrompt('整理资料', {
@@ -33,6 +33,44 @@ describe('arrangement retry display regressions', () => {
     assert.equal(work.status, 'failed')
     assert.equal(work.stopReason, '429')
     assert.equal(work.steps[0]?.state, 'failed')
+  })
+
+  it('keeps completed predecessors visible from the retry checkpoint snapshot', () => {
+    const snapshot: TaskExecutionEvent = { ...failed, runId: 'retry-run', data: {
+      status: 'running', nodeStates: [{ nodeId: 'node-a', status: 'completed' }],
+    } }
+    const work = buildWorkItem({ task, employees: [], plan, arrangementEvents: [snapshot] })
+    assert.equal(work.steps[0]?.state, 'done')
+  })
+
+  it('retains completed progress while the retry run is queued or has no snapshot', () => {
+    const serialPlan = { ...plan, nodes: [plan.nodes[0], { ...plan.nodes[0], id: 'node-b', dependsOn: ['node-a'] }] }
+    const completed: TaskExecutionEvent = { ...failed, type: 'arrangement_node_completed', data: { nodeId: 'node-a' } }
+    const failedB: TaskExecutionEvent = { ...failed, sequence: 2, data: { nodeId: 'node-b', nodeStatus: 'failed', status: 'waiting-user' } }
+    const started: TaskExecutionEvent = { ...failed, runId: 'retry-run', type: 'arrangement_node_started', data: { nodeId: 'node-b' } }
+    for (const current of [[], [started]]) {
+      const events = getArrangementDisplayEvents({ 'task-a:run-a': [completed, failedB], 'task-a:retry-run': current }, task.id, 'retry-run')
+      const work = buildWorkItem({ task: { ...task, status: current.length ? 'running' : 'pending', activeRunId: 'retry-run' }, employees: [], plan: serialPlan, arrangementEvents: events })
+      assert.equal(work.progress, 50)
+      assert.equal(work.steps[0]?.state, 'done')
+      assert.equal(work.steps[1]?.state, current.length ? 'running' : 'pending')
+    }
+  })
+
+  it('retains completed nodes from an earlier retry snapshot without borrowing another task', () => {
+    const snapshot: TaskExecutionEvent = { ...failed, data: { nodeStates: [{ nodeId: 'node-a', status: 'completed' }] } }
+    const foreign: TaskExecutionEvent = { ...snapshot, taskId: 'task-b' }
+    const events = getArrangementDisplayEvents({ 'task-a:run-a': [snapshot], 'task-b:run-a': [foreign] }, task.id, 'retry-run')
+    assert.equal(buildWorkItem({ task, employees: [], plan, arrangementEvents: events }).progress, 100)
+    assert.deepEqual(getArrangementDisplayEvents({ 'task-b:run-a': [foreign] }, task.id, 'retry-run'), [])
+  })
+
+  it('uses the new run snapshot as authoritative once it arrives', () => {
+    const completed: TaskExecutionEvent = { ...failed, type: 'arrangement_node_completed', data: { nodeId: 'node-a' } }
+    const current: TaskExecutionEvent[] = [{ ...failed, runId: 'retry-run', data: { nodeStates: [{ nodeId: 'node-a', status: 'ready' }] } }]
+    const events = getArrangementDisplayEvents({ 'task-a:run-a': [completed], 'task-a:retry-run': current }, task.id, 'retry-run')
+    assert.equal(events, current)
+    assert.equal(buildWorkItem({ task, employees: [], plan, arrangementEvents: events }).steps[0]?.state, 'pending')
   })
 
   it('does not mistake an explicitly stopped arrangement for a retryable failure', () => {
