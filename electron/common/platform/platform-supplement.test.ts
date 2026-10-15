@@ -79,6 +79,18 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     assert.equal(calls, inputs.length)
   })
 
+  it('preserves an optional review concurrency guard and rejects malformed timestamps before HTTP', async () => {
+    const expectedUpdatedAt = '2026-10-14T03:00:00.000Z'
+    let calls = 0
+    globalThis.fetch = async (_input, init) => {
+      calls++
+      assert.deepEqual(JSON.parse(String(init?.body)), { decision: 'APPROVE', expectedUpdatedAt })
+      return response({ ...version, status: 'ENTERPRISE_APPROVED' }, 201)
+    }
+    await api.reviewSkillVersion('v', { decision: 'APPROVE', expectedUpdatedAt }, 'access')
+    await assert.rejects(() => api.reviewSkillVersion('v', { decision: 'APPROVE', expectedUpdatedAt: 'yesterday' }, 'access'))
+    assert.equal(calls, 1)
+  })
 
   it('lists versions using required capabilityId and optional status, preserving review metadata', async () => {
     globalThis.fetch = async input => {

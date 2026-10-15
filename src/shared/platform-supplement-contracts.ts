@@ -124,7 +124,8 @@ export const skillVersionReviewQuerySchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
 }).strict()
 export const skillVersionReviewRequestSchema = z.object({
-  decision: z.enum(['APPROVE', 'REJECT']), comment: z.string().max(2_000).optional(),
+  decision: z.enum(['APPROVE', 'REJECT']), comment: z.string().trim().max(2_000).optional(),
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 }).strict().refine(value => value.decision !== 'REJECT' || Boolean(value.comment?.trim()), {
   message: 'REJECT requires a nonempty comment', path: ['comment'],
 })
