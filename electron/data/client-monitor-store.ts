@@ -2,14 +2,15 @@ import { randomUUID } from 'node:crypto'
 import { readdir, rm } from 'node:fs/promises'
 import { z } from 'zod'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
-import { backupPath, readJsonWithBackup, writeJsonAtomic } from './atomic-file'
+import { backupPath, diagnoseJsonWithBackup, readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { WriteChain } from './write-chain'
 import {
   createClientTaskSchema,
   clientTaskEventSchema,
   clientTaskHeartbeatSchema,
   clientTaskStatusSchema,
-  monitorParticipationSchema,
+  monitorParticipationSchema, normalizeMonitorStatus, normalizeMonitorParticipation,
+  type ClientTaskEventRequest,
 } from '../common/platform/client-monitor-contract'
 
 const operationSchema = z.discriminatedUnion('kind', [
@@ -30,6 +31,13 @@ const liveRunSchema = z.object({
 }).strict()
 type LiveMonitorRun = z.infer<typeof liveRunSchema>
 
+const contentIndexSchema = z.object({
+  sourceId: z.string(), digest: z.string(), clientRunId: z.string(),
+  sequences: z.array(z.number().int().positive().safe()),
+  manifestSequence: z.number().int().positive().safe(), confirmed: z.boolean(),
+  manifestFingerprint: z.string().optional(),
+  wireMessageId: z.string().regex(/^[A-Za-z0-9_-]{1,100}$/).optional(),
+})
 const recordMetadataSchema = z.object({
   version: z.literal(1),
   clientTaskId: z.string(),
@@ -47,6 +55,12 @@ const recordMetadataSchema = z.object({
   historyBackfilled: z.boolean().optional(),
   skippedOldStatusCount: z.number().int().nonnegative().optional(),
   statusByRun: z.record(z.string(), z.string()).optional(),
+  queuedStatusByRun: z.record(z.string(), z.string()).optional(),
+  confirmedStatusByRun: z.record(z.string(), z.string()).optional(),
+  contentIndex: z.record(z.string(), contentIndexSchema).optional(),
+  sentEvents: z.array(clientTaskEventSchema).optional(),
+  recoveryByRun: z.record(z.string(), z.string()).optional(),
+  stateEvidenceByRun: z.record(z.string(), z.string()).optional(),
   liveRuns: z.record(z.string(), liveRunSchema).optional(),
 })
 const recordSchema = recordMetadataSchema.extend({ pending: z.array(z.unknown()) })
@@ -68,11 +82,19 @@ export interface ClientMonitorRecord {
   retryStatusCode?: number
   historyBackfilled?: boolean
   skippedOldStatusCount?: number
+  /** Legacy enqueued fingerprints, never interpreted as acknowledgements. */
   statusByRun?: Record<string, string>
+  queuedStatusByRun?: Record<string, string>
+  confirmedStatusByRun?: Record<string, string>
+  contentIndex?: Record<string, z.infer<typeof contentIndexSchema>>
+  sentEvents?: ClientTaskEventRequest[]
+  recoveryByRun?: Record<string, string>
+  stateEvidenceByRun?: Record<string, string>
   liveRuns?: Record<string, LiveMonitorRun>
 }
 
 export interface ClientMonitorStorePort {
+  inspect?(scope: TaskOwnerScope, taskId: string): Promise<ClientMonitorRecord | null>
   load(scope: TaskOwnerScope, taskId: string): Promise<ClientMonitorRecord | null>
   listPending(scope: TaskOwnerScope): Promise<string[]>
   save(scope: TaskOwnerScope, taskId: string, record: ClientMonitorRecord): Promise<void>
@@ -87,9 +109,25 @@ export class ClientMonitorStore implements ClientMonitorStorePort {
     this.paths = new ScopePath(userDataDir)
   }
 
+  async inspect(scope: TaskOwnerScope, taskId: string): Promise<ClientMonitorRecord | null> {
+    const result = await diagnoseJsonWithBackup(this.paths.clientMonitorFile(scope, taskId),
+      value => this.parseRecord(value, taskId))
+    if (result.state === 'unavailable') throw new Error('Monitoring outbox is unavailable for inspection.')
+    return result.state === 'found' ? result.value : null
+  }
+
   async load(scope: TaskOwnerScope, taskId: string): Promise<ClientMonitorRecord | null> {
     const file = this.paths.clientMonitorFile(scope, taskId)
-    return readJsonWithBackup(file, value => this.parseRecord(value, taskId))
+    return this.writes.run(this.writeKey(scope, taskId), async () => {
+      const record = await readJsonWithBackup(file, value => this.parseRecord(value, taskId))
+      if (!record) return null
+      const normalized = normalizeMonitorRecord(record)
+      if (normalized !== record) {
+        await writeJsonAtomic(file, normalized, { backup: false })
+        await rm(backupPath(file), { force: true })
+      }
+      return normalized
+    })
   }
 
   async listPending(scope: TaskOwnerScope): Promise<string[]> {
@@ -144,4 +182,49 @@ export class ClientMonitorStore implements ClientMonitorStorePort {
 
 function isMissing(error: unknown): boolean {
   return !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
+}
+
+/** Repair only attributable legacy timestamps, preserving every operation ID and its position. */
+export function normalizeMonitorRecord(record: ClientMonitorRecord): ClientMonitorRecord {
+  let changed = false
+  let sequence = Math.max(record.lastSequence, ...record.pending.flatMap(op => op.kind === 'event' ? [op.sequence] : []))
+  const statusByRun = { ...record.statusByRun }
+  const queuedStatusByRun = { ...record.queuedStatusByRun }
+  const pending: ClientMonitorOperation[] = []
+  for (const operation of record.pending) {
+    const runId = operation.clientRunId ?? operation.payload.clientRunId
+    if (!runId) { pending.push(operation); continue }
+    const originalParticipation = operation.kind === 'event' ? operation.payload.participation : undefined
+    const normalizedParticipation = originalParticipation ? normalizeMonitorParticipation(originalParticipation) : undefined
+    const payload = operation.kind === 'status' ? normalizeMonitorStatus(operation.payload) : operation.payload
+    const endedAt = operation.kind === 'status' && payload !== operation.payload
+      ? operation.payload.completedAt : normalizedParticipation !== originalParticipation ? originalParticipation?.completedAt : undefined
+    if (!endedAt) { pending.push(operation); continue }
+    changed = true
+    const repaired = operation.kind === 'status'
+      ? { ...operation, payload: normalizeMonitorStatus(operation.payload) }
+      : operation.kind === 'event' ? { ...operation, payload: { ...operation.payload, participation: normalizedParticipation } } : operation
+    pending.push(repaired)
+    if (repaired.kind === 'status') {
+      const { clientRunId: _runId, ...status } = repaired.payload
+      statusByRun[runId] = JSON.stringify(status)
+      queuedStatusByRun[runId] = JSON.stringify(status)
+    }
+    const reportedStatus = operation.kind === 'status' ? operation.payload.status : originalParticipation?.status
+    if (!reportedStatus) continue
+    const participation = normalizedParticipation ?? (record.liveRuns?.[runId]?.participation
+      ? normalizeMonitorParticipation({ ...record.liveRuns[runId].participation!, status: reportedStatus }) : undefined)
+    pending.push({ id: randomUUID(), kind: 'event', clientRunId: runId, sequence: ++sequence,
+      payload: { clientRunId: runId, sequence, type: 'monitor_state', occurredAt: new Date(record.updatedAt).toISOString(),
+        message: JSON.stringify({ version: 1, reportedStatus, source: 'snapshot', observedAt: new Date(record.updatedAt).toISOString(), runEndedAt: endedAt }),
+        ...(participation ? { participation } : {}),
+      },
+    })
+  }
+  const liveRuns = record.liveRuns ? Object.fromEntries(Object.entries(record.liveRuns).map(([id, run]) => {
+    const participation = run.participation ? normalizeMonitorParticipation(run.participation) : undefined
+    if (participation !== run.participation) changed = true
+    return [id, { ...run, ...(participation ? { participation } : {}) }]
+  })) : undefined
+  return changed ? { ...record, pending, lastSequence: sequence, statusByRun, queuedStatusByRun, ...(liveRuns ? { liveRuns } : {}) } : record
 }

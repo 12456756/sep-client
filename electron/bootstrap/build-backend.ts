@@ -127,7 +127,9 @@ class BackendRuntime {
         listMessages: (scope, taskId) => new ConversationContextStore(this.taskRunStore.getTaskDir(scope, taskId)).listMessages(),
         getTimeline: (scope, taskId, runId) => this.taskRunStore.events.getTimeline(scope, taskId, runId),
         taskType: async (scope, taskId) => {
-          const plan = await this.workPlans.get(scope, taskId)
+          const diagnostic = await this.workPlans.diagnose(scope, taskId)
+          if (diagnostic.state === 'unavailable') throw new Error('Monitoring work plan is unavailable for inspection.')
+          const plan = diagnostic.state === 'found' ? diagnostic.value : null
           return plan && plan.mode !== 'conversation' ? 'arrangement' : 'conversation'
         },
       }),

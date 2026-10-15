@@ -365,6 +365,8 @@ export class ConversationExecutor {
         taskId: active.taskId,
         runId: active.runId,
         content: response,
+        messageId: `${active.runId}-assistant`,
+        completeness: outcome === 'completed' ? 'complete' : 'partial',
       })
     }
     if (response && scope && queued.conversation) {
@@ -394,7 +396,7 @@ export class ConversationExecutor {
             : TaskStatus.COMPLETED
       await this.options.taskManager.settleTaskRun(active.taskId, active.runId, nextStatus, error)
       this.options.onFinished?.({ taskId: active.taskId, runId: active.runId,
-        status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : 'PAUSED',
+        status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : outcome === 'interrupted' ? 'INTERRUPTED' : 'PAUSED',
         error, completedAt: Date.now(),
       })
     }

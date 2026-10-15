@@ -625,7 +625,7 @@ export class TaskRuntime {
       const result = await arrangement.execute(plan, taskId, runId)
       await this.events.drain(taskId)
       const arrangementOutput = this.arrangementOutput(plan, result.state)
-      if (arrangementOutput) this.reportMonitorOutput({ taskId, runId, content: arrangementOutput })
+      if (arrangementOutput) this.reportMonitorOutput({ taskId, runId, content: arrangementOutput, completeness: result.status === 'completed' ? 'complete' : 'partial' })
       const activeArrangement = this.activeArrangements.get(taskId)
       const control = activeArrangement?.runId === runId ? activeArrangement.control : 'none'
       const error = control === 'cancel' ? activeArrangement?.controlReason : result.error
@@ -648,15 +648,19 @@ export class TaskRuntime {
       if (activeArrangement?.runId === runId) {
         const status = control === 'cancel'
           ? TaskStatus.PAUSED
-          : control === 'interrupt' || result.status === 'interrupted'
+          : control === 'interrupt'
             ? TaskStatus.INTERRUPTED
-            : control === 'pause' || control === 'stop' || result.status === 'stopped' || result.status === 'waiting-user'
+            : control === 'pause' || control === 'stop'
               ? TaskStatus.PAUSED
-              : result.status === 'completed'
-                ? TaskStatus.COMPLETED
-                : TaskStatus.FAILED
+              : result.status === 'interrupted'
+                ? TaskStatus.INTERRUPTED
+                : result.status === 'stopped' || result.status === 'waiting-user'
+                  ? TaskStatus.PAUSED
+                  : result.status === 'completed'
+                    ? TaskStatus.COMPLETED
+                    : TaskStatus.FAILED
         await this.taskManager.settleTaskRun(taskId, runId, status, error)
-        this.reportMonitorFinished({ taskId, runId, status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : 'PAUSED', error, completedAt: Date.now() })
+        this.reportMonitorFinished({ taskId, runId, status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : outcome === 'interrupted' ? 'INTERRUPTED' : 'PAUSED', error, completedAt: Date.now() })
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -734,10 +738,11 @@ export class TaskRuntime {
         const wasWaiting = pending.size > 0
         if (event.type === 'approval_requested') pending.add(requestId)
         else pending.delete(requestId)
-        if (pending.size > 0) this.pendingArrangementApprovals.set(node.parentRunId, pending)
+        const isWaiting = pending.size > 0
+        if (isWaiting) this.pendingArrangementApprovals.set(node.parentRunId, pending)
         else this.pendingArrangementApprovals.delete(node.parentRunId)
-        await this.taskManager.updateTaskStatus(event.taskId, pending.size > 0 ? TaskStatus.WAITING_APPROVAL : TaskStatus.RUNNING)
-        if (wasWaiting !== (pending.size > 0)) {
+        await this.taskManager.updateTaskStatus(event.taskId, isWaiting ? TaskStatus.WAITING_APPROVAL : TaskStatus.RUNNING)
+        if (wasWaiting !== isWaiting) {
           this.reportMonitorParticipation({ ...persistedEvent, runId: node.parentRunId })
         }
       } else {
@@ -809,13 +814,15 @@ export class TaskRuntime {
   }
 
   private reportMonitorInput(input: MonitorTaskContentInput): void {
-    void this.monitor.taskInput(input).catch(() => {
+    void this.monitor.taskInput({ ...input, messageId: input.messageId ?? (input.participation?.nodeId
+      ? `${input.runId}:${input.participation.executionId}:user_input` : `${input.runId}-user`) }).catch(() => {
       log.warn('client monitor input report failed', { taskId: input.taskId, runId: input.runId })
     })
   }
 
   private reportMonitorOutput(input: MonitorTaskContentInput): void {
-    void this.monitor.taskOutput(input).catch(() => {
+    void this.monitor.taskOutput({ ...input, messageId: input.messageId ?? (input.participation?.nodeId
+      ? `${input.runId}:${input.participation.executionId}:model_output` : `${input.runId}-assistant`) }).catch(() => {
       log.warn('client monitor output report failed', { taskId: input.taskId, runId: input.runId })
     })
   }

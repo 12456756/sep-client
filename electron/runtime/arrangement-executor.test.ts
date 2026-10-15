@@ -272,16 +272,18 @@ function runtimeForArrangement(
   arrangement: WorkPlan,
   createWorker: (options: Parameters<NonNullable<ConstructorParameters<typeof TaskRuntime>[0]['createWorker']>>[0]) => TaskWorkerPort,
   monitor: TaskMonitorPort = silentTaskMonitor,
+  onEvent: (event: TaskExecutionEvent) => void = () => {},
+  authorizeEmployee?: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>,
 ): TaskRuntime {
   return new TaskRuntime({
     taskManager: manager, taskRunStore: runStore, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
-    getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+    getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent, onApprovalRequest: () => {},
     resolveEmployee: id => arrangement.nodes.some(node => node.subscriptionId === id) ? { ...employee, subscriptionId: id } : null,
-    authorizeEmployee: async (subscriptionId, modelId) => {
+    authorizeEmployee: authorizeEmployee ?? (async (subscriptionId, modelId) => {
       if (!arrangement.nodes.some(node => node.subscriptionId === subscriptionId)) return null
       assert.ok(!modelId || arrangement.nodes.some(node => node.subscriptionId === subscriptionId && node.modelId === modelId))
       return { ...employee, subscriptionId, modelId: modelId ?? employee.modelId }
-    },
+    }),
     createWorker, monitor,
   })
 }
@@ -355,9 +357,11 @@ describe('TaskRuntime arrangement controls', () => {
     }
     const approvals = states.filter(state => state.event.type.startsWith('approval_') && state.participation)
     assert.equal(approvals.length, 6)
-    assert.equal(states.filter(state => state.event.type.startsWith('approval_') && !state.participation).length, 6)
     assert.ok(approvals.every(state => state.participation && queued.some(input => input.runId === state.event.runId)))
     assert.deepEqual(approvals.map(state => state.participation?.status), ['WAITING_APPROVAL', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING'])
+    const aggregateApprovals = states.filter(state => state.event.type.startsWith('approval_') && !state.participation)
+    assert.equal(aggregateApprovals.length, 6)
+    assert.ok(aggregateApprovals.every(state => queued.some(input => input.runId === state.event.runId)))
     const nodeB = states.find(state => state.event.type === 'arrangement_node_started' && state.participation?.nodeId === 'node-b')!
     assert.equal(nodeB.event.subscriptionId, employee.subscriptionId)
     assert.equal((nodeB.event.data as { subscriptionId: string }).subscriptionId, 'employee-b')
@@ -401,6 +405,85 @@ describe('TaskRuntime arrangement controls', () => {
     releases.get('node-b')!()
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
     assert.deepEqual([...resolved].sort(), ['node-a', 'node-b'])
+  })
+
+  it('reports only the aggregate parent approval transitions for parallel nodes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-approval-monitor-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize(); await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const base = twoNodePlan(task.id)
+    const arrangement: WorkPlan = { ...base, nodes: base.nodes.map(node => ({ ...node, dependsOn: [] })) }
+    const parentRunIds: string[] = []
+    const monitorEvents: Array<{ event: TaskExecutionEvent; participation?: MonitorParticipation }> = []
+    const releases = new Map<string, () => void>()
+    const runtime = runtimeForArrangement(manager, runStore, new MemoryCheckpointStore(), arrangement, options => ({
+      async run() {
+        const nodeId = options.context.modelId === 'node-model-a' ? 'node-a' : 'node-b'
+        const requestId = `approval-${nodeId}`
+        await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+          sequence: 1, type: 'approval_requested', occurredAt: Date.now(), data: { requestId } })
+        await new Promise<void>(resolve => releases.set(nodeId, resolve))
+        await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+          sequence: 2, type: 'approval_resolved', occurredAt: Date.now(), data: { requestId, approved: true } })
+      },
+      async abort() {}, async dispose() {},
+    }), { ...silentTaskMonitor,
+      async taskEvent(event, participation) {
+        monitorEvents.push({ event, participation })
+        if (!participation && (event.type === 'approval_requested' || event.type === 'approval_resolved')) parentRunIds.push(event.runId)
+      },
+    })
+
+    await runtime.executeTask(task.id)
+    await waitFor(() => releases.size === 2)
+    releases.get('node-a')!()
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.WAITING_APPROVAL)
+    releases.get('node-b')!()
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+
+    const aggregateApprovals = monitorEvents.filter(({ event, participation }) =>
+      !participation && (event.type === 'approval_requested' || event.type === 'approval_resolved'))
+    assert.deepEqual(aggregateApprovals.map(({ event }) => event.type), ['approval_requested', 'approval_resolved'])
+    assert.equal(new Set(parentRunIds).size, 1)
+    assert.ok(parentRunIds[0])
+  })
+
+  it('does not create node participation or content outbox inputs when authorization fails before start', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-authorization-failure-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize(); await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const arrangement = plan(task.id)
+    const events: TaskExecutionEvent[] = []
+    const monitorEvents: Array<{ event: TaskExecutionEvent; participation?: MonitorParticipation }> = []
+    const inputs: MonitorTaskContentInput[] = []
+    const outputs: MonitorTaskContentInput[] = []
+    let workers = 0
+    const runtime = runtimeForArrangement(manager, runStore, new MemoryCheckpointStore(), arrangement, () => {
+      workers++
+      return { async run() {}, async abort() {}, async dispose() {} }
+    }, { ...silentTaskMonitor,
+      async taskEvent(event, participation) { monitorEvents.push({ event, participation }) },
+      async taskInput(input) { inputs.push(input) },
+      async taskOutput(input) { outputs.push(input) },
+    }, event => events.push(event), async (subscriptionId, modelId) => {
+      if (modelId) return null
+      return { ...employee, subscriptionId }
+    })
+
+    await runtime.executeTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.PAUSED)
+
+    assert.ok(events.some(event => event.type === 'arrangement_node_failed'))
+    assert.equal(workers, 0)
+    assert.equal(monitorEvents.filter(({ participation }) => participation).length, 0)
+    assert.equal(inputs.filter(input => input.participation).length, 0)
+    assert.equal(outputs.filter(output => output.participation).length, 0)
   })
 
   for (const outcome of ['denied', 'throws', 'aborted-before-start', 'aborted-after-output'] as const) {

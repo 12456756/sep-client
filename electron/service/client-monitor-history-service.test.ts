@@ -3,12 +3,62 @@ import * as assert from 'node:assert/strict'
 import { ClientMonitorHistoryService } from './client-monitor-history-service'
 import type { ClientTask, TaskExecutionEvent } from '../../src/shared/types'
 import type { TaskRunRecord } from '../data/task-run-store'
+import type { ConversationMessage } from '../domain/conversation-context'
 
 const scope = { enterpriseId: 'enterprise', memberId: 'member' }
 const task: ClientTask = { id: 'task', title: 'Task', prompt: 'snapshot input', status: 'interrupted', createdAt: 1, startedAt: 2, completedAt: null, error: null, ownerId: 'member', ownerEnterpriseId: 'enterprise', subscriptionId: 'sub', activeRunId: null, workDir: null, files: [], logs: [] }
 const run = (id: string, outcome: TaskRunRecord['outcome'], startedAt: number): TaskRunRecord => ({ version: 3, id, taskId: 'task', owner: scope, subscriptionId: 'sub', modelId: 'model', runtimeKey: 'sub:model', workspaceDir: '', sessionDir: '', agentDir: '', sessionFile: null, sessionId: null, startedAt, endedAt: outcome === 'running' ? null : startedAt + 1, outcome, error: null, prompt: `input-${id}` })
 
-it('uses canonical messages before sanitized deltas and maps interrupted to PAUSED', async () => {
+it('does not override persisted run outcomes with conflicting snapshot labels', async () => {
+  const cases = [
+    ['interrupted', 'paused', 'INTERRUPTED'], ['interrupted', 'completed', 'INTERRUPTED'],
+    ['interrupted', 'running', 'INTERRUPTED'], ['stopped', 'interrupted', 'PAUSED'],
+    ['cancelled', 'paused', 'CANCELLED'], ['completed', 'paused', 'COMPLETED'],
+    ['failed', 'completed', 'FAILED'], ['running', 'completed', 'RUNNING'],
+    ['running', 'waiting_approval', 'WAITING_APPROVAL'],
+  ] as const
+  for (const [outcome, snapshot, expected] of cases) {
+    const history = new ClientMonitorHistoryService({
+      scopeProvider: () => scope, listTasks: async () => [{ ...task, status: snapshot, completedAt: 99 }],
+      listRuns: async () => [run('run-1', outcome, 2)], listMessages: async () => [], getTimeline: async () => [],
+    })
+    const recovered = (await history.read(scope))[0].runs[0]
+    assert.equal(recovered.status?.status, expected, `${outcome}/${snapshot}`)
+    if (['INTERRUPTED', 'PAUSED', 'RUNNING', 'WAITING_APPROVAL'].includes(expected)) assert.equal(recovered.status?.completedAt, null)
+    if (outcome === 'interrupted') assert.equal(recovered.runEndedAt, new Date(3).toISOString())
+  }
+})
+
+it('does not use one run_completed event to certify multiple assistant messages', async () => {
+  const messages: ConversationMessage[] = ['run-1-assistant', 'another-assistant'].map((id, index) => ({ id, taskId: 'task', turnId: 'run-1', runId: 'run-1', subscriptionId: 'sub', modelId: 'model', role: 'assistant', content: 'same response', createdAt: 3 + index }))
+  const history = new ClientMonitorHistoryService({
+    scopeProvider: () => scope, listTasks: async () => [{ ...task, status: 'completed' }], listRuns: async () => [run('run-1', 'completed', 2)],
+    listMessages: async () => messages,
+    getTimeline: async () => [{ taskId: 'task', runId: 'run-1', subscriptionId: 'sub', sequence: 1, type: 'run_completed', occurredAt: 5, data: null }],
+  })
+  const [result] = await history.read(scope)
+  const outputs = result.runs[0].messages.filter(message => message.type === 'model_output')
+  assert.deepEqual(outputs.map(message => message.messageId), ['run-1-assistant', 'another-assistant'])
+  assert.deepEqual(outputs.map(message => message.completeness), ['unverified', 'unverified'])
+  messages.pop()
+  assert.equal((await history.read(scope))[0].runs[0].messages.find(message => message.type === 'model_output')?.completeness, 'complete')
+})
+
+it('recovers bound canonical orphan messages under their original run without status or v2 proof', async () => {
+  const messages: ConversationMessage[] = [
+    { id: 'output-1', taskId: 'task', turnId: 'orphan-1', runId: 'orphan-1', subscriptionId: 'sub', modelId: 'model', role: 'assistant', content: 'answer', createdAt: 3 },
+    { id: 'output-2', taskId: 'task', turnId: 'orphan-2', runId: 'orphan-2', subscriptionId: 'other-sub', modelId: 'model', role: 'assistant', content: 'answer', createdAt: 4 },
+    { id: 'foreign', taskId: 'foreign', turnId: 'orphan-1', runId: 'orphan-1', subscriptionId: 'sub', modelId: 'model', role: 'assistant', content: 'foreign', createdAt: 3 },
+  ]
+  const history = new ClientMonitorHistoryService({ scopeProvider: () => scope, listTasks: async () => [task], listRuns: async () => [], listMessages: async () => messages, getTimeline: async () => [] })
+  const [result] = await history.read(scope)
+  assert.deepEqual(result.runs.map(value => value.runId), ['orphan-1', 'orphan-2'])
+  assert.ok(result.runs.every(value => !value.status && !value.localRun && value.messages[0].completeness === 'unverified'))
+  messages.push({ ...messages[0], id: 'conflict', subscriptionId: 'conflicting-sub' })
+  assert.deepEqual((await history.read(scope))[0].runs.map(value => value.runId), ['orphan-2'])
+})
+
+it('uses canonical messages before sanitized deltas and preserves INTERRUPTED', async () => {
   let timelines = 0
   const history = new ClientMonitorHistoryService({
     scopeProvider: () => scope, listTasks: async () => [task], listRuns: async () => [run('run-2', 'interrupted', 4), run('run-1', 'completed', 2)],
@@ -20,10 +70,12 @@ it('uses canonical messages before sanitized deltas and maps interrupted to PAUS
   assert.deepEqual(result.runs.map(r => r.queuedAt), [2, 4])
   assert.ok(result.runs.every(r => r.localRun))
   assert.equal(result.runs[0].messages[1].content.length, 12000)
-  assert.equal(result.runs[1].status?.status, 'PAUSED')
+  assert.equal(result.runs[1].status?.status, 'INTERRUPTED')
+  assert.equal(result.runs[1].status?.completedAt, null)
+  assert.equal(result.runs[1].runEndedAt, new Date(5).toISOString())
   assert.equal(result.runs[1].messages[1].content, 'partial')
   assert.equal(result.runs[1].status?.errorSummary, null)
-  assert.equal(timelines, 1)
+  assert.equal(timelines, 2)
 })
 
 it('skips missing subscription/foreign scope and creates a stable snapshot-only run', async () => {
@@ -37,7 +89,7 @@ it('skips missing subscription/foreign scope and creates a stable snapshot-only 
   assert.equal(first.length, 1)
   assert.equal(first[0].runs[0].runId, second[0].runs[0].runId)
   assert.equal(first[0].runs[0].messages[0].content, 'snapshot input')
-  assert.equal(first[0].runs[0].status?.status, 'PAUSED')
+  assert.equal(first[0].runs[0].status?.status, 'INTERRUPTED')
   assert.equal(first[0].runs[0].queuedAt, task.createdAt)
   assert.equal(first[0].runs[0].localRun, undefined)
 })
