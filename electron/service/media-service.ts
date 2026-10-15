@@ -8,6 +8,7 @@ import type { LocalMediaJob, MediaCapabilities, MediaGatewayPort, MediaGeneratio
 import type { MediaHostTools } from '../domain/media-tools'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
+import { resolveSepRealMediaSize } from '../common/platform/sep-media-runtime-contract'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
@@ -97,6 +98,9 @@ export class MediaService {
     return { localAssetId: asset.localAssetId, taskId: asset.taskId, jobId: asset.jobId, outputId: asset.outputId,
       source: asset.source, mime: asset.mime, size: asset.size, width: asset.width, height: asset.height, status: asset.status }
   }
+  private needsBillingQuery(job: LocalMediaJob): boolean {
+    return (job.billingStatus === 'RESERVED' || job.billingStatus === 'RECONCILING') && job.recovery?.canQuery === true
+  }
   private viewJob(job: LocalMediaJob, assets: MediaAssetView[]): MediaJobView {
     const jobAssets = assets.filter(asset => asset.jobId === job.jobId)
     const missingOutput = job.outputs.some(output => !jobAssets.some(asset => asset.outputId === output.outputId && asset.status === 'SAVED'))
@@ -108,7 +112,7 @@ export class MediaService {
       trackingStatus: job.trackingStatus, saveStatus, billingStatus: job.billingStatus,
       error: job.error, createdAt: job.createdAt, updatedAt: job.updatedAt,
       assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
-      canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave : job.recovery?.canQuery !== false,
+      canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job) : job.recovery?.canQuery !== false,
       canCancelUpstream: job.recovery?.canCancel !== false && job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
   }
   async getTaskMedia(taskId: string): Promise<MediaTaskView> {
@@ -242,7 +246,7 @@ export class MediaService {
           ...(input.parameters.size ? { size: input.parameters.size } : {}), ...(input.parameters.quality ? { quality: input.parameters.quality } : {}) } }
       const hashInput = gateway.quoteRequiresUploadedReferences ? { profileId: semantic.profileId, configVersion: semantic.configVersion,
         operation: semantic.operation, creativeBrief: semantic.creativeBrief,
-        parameters: { size: semantic.parameters.size ?? '1x1', count: semantic.parameters.count }, references: referenceHashes } : semantic
+        parameters: { size: resolveSepRealMediaSize(semantic.parameters), count: semantic.parameters.count }, references: referenceHashes } : semantic
       const requestHash = createHash('sha256').update(JSON.stringify(hashInput)).digest('hex')
       const automatic = binding.toolPolicy?.preset === 'full-local' && binding.toolPolicy.approvalMode === 'auto-approve'
       const uploadReferences = async () => {
@@ -364,7 +368,9 @@ export class MediaService {
     const trackingStartedAt = Date.now()
     let polls = 0
     try {
-      while (!terminal.has(job.generationStatus)) {
+      // Generation may finish before billing. Deliver its outputs before querying the original receipt further.
+      if (terminal.has(job.generationStatus)) await this.save(scope, job, parent)
+      while (!terminal.has(job.generationStatus) || this.needsBillingQuery(job)) {
         this.assert(scope, epoch); parent.throwIfAborted()
         if (job.receiptId && job.recovery?.canQuery === false) {
           job.trackingStatus = 'STOPPED'; job.error = '服务端无法继续查询原请求，不会再次生成。'; break
@@ -384,7 +390,7 @@ export class MediaService {
           if (receipt === null) throw new AppError('NOT_FOUND')
           this.acceptReceipt(job, receipt)
           await this.options.store.saveJob(scope, job)
-          if (!terminal.has(job.generationStatus)) await this.save(scope, job, parent)
+          await this.save(scope, job, parent)
         } catch (error) {
           if (parent.aborted) throw parent.reason
           if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {
@@ -395,8 +401,7 @@ export class MediaService {
           await this.options.store.saveJob(scope, job)
         }
       }
-      if (terminal.has(job.generationStatus)) {
-        await this.save(scope, job, parent)
+      if (terminal.has(job.generationStatus) && !this.needsBillingQuery(job) && job.trackingStatus === 'ACTIVE') {
         job.trackingStatus = 'STOPPED'
       }
     } catch (error) {

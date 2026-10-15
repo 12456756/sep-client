@@ -53,13 +53,32 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
     assert.deepEqual(parseMediaCapabilities(manifest.runtime.media), { protocolVersion: 1, tools: [], profiles: [] })
     assert.equal(manifest.runtime.modelId, 'chat-fixture')
   }
+  media = { mock: false, protocolVersion: 1, persistence: 'database', tools: ['image_generate', 'image_edit'], profiles: [{
+    profileId: 'image-prod', kind: 'image', displayName: 'Production image', configVersion: 'config-v1', operations: ['generate', 'edit'],
+    executionMode: 'sync-response', capabilities: { supportsReferenceImage: true, maxOutputs: 4,
+      sizes: ['1024x1024', '1536x1024'], maxWidth: 1536, maxHeight: 1024 },
+  }] }
+  const realManifest = await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')
+  assert.deepEqual(realManifest.runtime.media, media)
+  assert.deepEqual(parseMediaCapabilities(realManifest.runtime.media).tools,
+    ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'])
+  assert.equal(parseMediaCapabilities(realManifest.runtime.media).profiles[0]?.profileId, 'image-prod')
+  media = { protocolVersion: 1, executionAvailable: true, defaultProfileId: 'image-prod', tools: ['image_generate', 'image_edit'], profiles: [{
+    profileId: 'image-prod', kind: 'image', displayName: 'Production image', configVersion: 'config-v1', operations: ['generate', 'edit'],
+    executionMode: 'sync-response', capabilities: { supportsReferenceImage: true, maxOutputs: 8,
+      sizes: ['1024x1024', '1536x1024'], maxWidth: 1536, maxHeight: 1024 },
+  }] }
+  const executableManifest = await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')
+  const executableCapabilities = parseMediaCapabilities(executableManifest.runtime.media)
+  assert.deepEqual(executableCapabilities.tools, ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'])
+  assert.equal(executableCapabilities.profiles[0]?.maxCount, 4)
   media = undefined
   assert.equal((await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')).runtime.media, undefined)
   await assert.rejects(getEmployeeRuntime('sub-http', 'invalid-fixture-token'), error => {
     assert.equal((error as { statusCode?: number }).statusCode, 401)
     return true
   })
-  assert.equal(requests.length, 4)
-  assert.equal(requests.filter(request => request.authenticated).length, 3)
+  assert.equal(requests.length, 6)
+  assert.equal(requests.filter(request => request.authenticated).length, 5)
   assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1'))
 })

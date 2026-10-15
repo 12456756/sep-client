@@ -11,6 +11,7 @@ import type { MediaGenerationInput } from '../../src/shared/media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import { MOCK_MEDIA_CAPABILITIES, MOCK_MEDIA_PNG, MOCK_MEDIA_PNG_SHA256, MockMediaGateway } from '../data/mock-media-gateway'
 import { MediaStore } from '../data/media-store'
+import { SepRealMediaGateway } from '../data/sep-real-media-gateway'
 import { inspectMediaImage } from '../data/media-image'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { ScopePath } from '../data/scope-path'
@@ -91,6 +92,208 @@ async function pendingJob(f: Awaited<ReturnType<typeof fixture>>, taskId = 'task
   await f.store.saveJob(owner, job)
   return job
 }
+
+async function realFixture(initial: {
+  billingStatus?: 'RESERVED' | 'RECONCILING' | 'SETTLED' | 'RELEASED'
+  status?: 'SUCCEEDED' | 'PARTIAL_SUCCEEDED' | 'FAILED'
+  canQuery?: boolean
+  lostSubmit?: boolean
+} = {}) {
+  const state = { billingStatus: initial.billingStatus ?? 'RECONCILING', status: initial.status ?? 'SUCCEEDED',
+    canQuery: initial.canQuery ?? true, queryFailure: 0, clientRequestId: '' }
+  const calls: { path: string; method: string; body: Record<string, unknown> | null }[] = []
+  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
+  const receipt = () => ({ mock: false, receiptId: 'real-receipt', clientRequestId: state.clientRequestId,
+    profileId: 'image-prod', configVersion: 'cfg-v1', executionMode: 'sync-response', status: state.status, pollAfterMs: 1,
+    billingStatus: state.billingStatus, errorCode: null, outputErrors: state.status === 'PARTIAL_SUCCEEDED' ? [{ index: 1, code: 'OUTPUT_FAILED' }] : [],
+    recovery: { canQuery: state.canQuery, canCancel: false, canDownload: state.status !== 'FAILED' },
+    outputs: state.status === 'FAILED' ? [] : [{ outputId: 'real-output', kind: 'image', mimeType: 'image/png',
+      byteLength: MOCK_MEDIA_PNG.length, width: 1, height: 1, sha256: MOCK_MEDIA_PNG_SHA256,
+      expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
+  const gateway = new SepRealMediaGateway({ baseUrl: 'https://sep.invalid/api', token: async () => 'fixture-token-not-real',
+    fetch: async (url, init) => {
+      const path = new URL(String(url)).pathname.replace('/api/gateway/v1/media/real', '')
+      const method = init?.method ?? 'GET'
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : null
+      calls.push({ path, method, body })
+      if (path === '/quotes' && method === 'POST') return json({ mock: false, quoteId: 'real-quote',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(), semanticSha256: 'a'.repeat(64), pricingStatus: 'quoted',
+        amountCny: '0.120000', pricingVersion: 'price-v1', billingStatus: 'NOT_RESERVED',
+        funding: { creditCny: '0.120000', memberWalletCny: '0.000000', personalCny: '0.000000' } })
+      if (path === '/requests' && method === 'POST') {
+        assert.equal(state.clientRequestId, '', 'Generation must never be resubmitted.')
+        state.clientRequestId = String(body?.clientRequestId)
+        if (initial.lostSubmit) throw new Error('Simulated lost submission response')
+        return json(receipt(), 202)
+      }
+      if (method === 'GET' && (path === '/requests/real-receipt' || path === `/requests/by-client-id/${state.clientRequestId}`)) {
+        if (state.queryFailure) return json({}, state.queryFailure)
+        return json(receipt())
+      }
+      if (path === '/requests/real-receipt/outputs/real-output/content' && method === 'GET') {
+        return new Response(MOCK_MEDIA_PNG, { headers: { 'Content-Type': 'image/png', 'Content-Length': String(MOCK_MEDIA_PNG.length),
+          'X-SHA256': MOCK_MEDIA_PNG_SHA256, 'X-SEP-Media-Mock': 'false' } })
+      }
+      assert.fail(`Unexpected media request: ${method} ${path}`)
+    } })
+  const f = await fixture({ gateway })
+  f.employee.media = { protocolVersion: 1, executionAvailable: true, defaultProfileId: 'image-prod', tools: ['image_generate'], profiles: [{
+    profileId: 'image-prod', kind: 'image', displayName: 'Production image', configVersion: 'cfg-v1', operations: ['generate'], executionMode: 'sync-response',
+    capabilities: { supportsReferenceImage: false, maxOutputs: 4, sizes: ['1024x1024', '1536x1024', '1024x1536'], maxWidth: 1536, maxHeight: 1536 },
+  }] }
+  return { ...f, state, calls, generate: (parameters: MediaGenerationInput['parameters'] = { aspectRatio: '1:1', size: '1024x1024', count: 1 }) =>
+    f.service.generateTaskMedia('task-a', input({ profileId: 'image-prod', parameters })) }
+}
+
+describe('real media billing recovery and canonical sizes', () => {
+  for (const [aspectRatio, explicitSize, expectedSize] of [
+    ['1:1', undefined, '1024x1024'], ['3:2', undefined, '1536x1024'], ['2:3', undefined, '1024x1536'],
+    ['1:1', '1536x1024', '1536x1024'],
+  ] as const) {
+    it(`uses the same quote and submission hash for ${aspectRatio} ${explicitSize ?? 'default size'}`, async () => {
+      const f = await realFixture({ billingStatus: 'SETTLED' })
+      const view = await f.generate({ aspectRatio, count: 1, ...(explicitSize ? { size: explicitSize } : {}) })
+      await f.service.waitForRun('task-a', view.runId)
+      const quoted = f.calls.find(call => call.path === '/quotes')!.body!
+      const submitted = f.calls.find(call => call.path === '/requests')!.body!
+      assert.deepEqual(quoted.parameters, { size: expectedSize, count: 1, quality: 'medium' })
+      assert.deepEqual(submitted.parameters, quoted.parameters)
+      const job = (await f.store.getJob(owner, 'task-a', view.jobId))!
+      const expectedHash = createHash('sha256').update(JSON.stringify({ profileId: 'image-prod', configVersion: 'cfg-v1',
+        operation: 'generate', creativeBrief: input().creativeBrief, parameters: { size: expectedSize, count: 1 }, references: [] })).digest('hex')
+      assert.equal(job.requestHash, expectedHash)
+      assert.equal(job.quote.requestHash, expectedHash)
+      assert.equal(job.request.requestHash, expectedHash)
+      assert.equal(job.approval, 'manual')
+      assert.equal(f.approvalRequests.length, 1)
+      assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+    })
+  }
+
+  for (const status of ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED'] as const) {
+    for (const billingStatus of ['RESERVED', 'RECONCILING'] as const) {
+      it(`continues original receipt queries after ${status} with ${billingStatus}`, async () => {
+        const f = await realFixture({ status, billingStatus })
+        const view = await f.generate({ aspectRatio: '1:1', size: '1024x1024', count: status === 'PARTIAL_SUCCEEDED' ? 2 : 1 })
+        await waitUntil(async () => f.calls.some(call => call.path === '/requests/real-receipt'))
+        const pending = (await f.store.getJob(owner, 'task-a', view.jobId))!
+        assert.equal(pending.generationStatus, status)
+        assert.equal(pending.trackingStatus, 'ACTIVE')
+        assert.equal(pending.billingStatus, billingStatus)
+        if (status !== 'FAILED') {
+          const assets = await f.store.listAssets(owner, 'task-a')
+          assert.equal(assets.length, 1, 'Save outputs before billing settles.')
+          assert.equal(assets[0].status, 'SAVED')
+        }
+        assert.equal((await f.service.getTaskMedia('task-a')).jobs[0].canResumeTracking, true)
+        f.state.billingStatus = status === 'FAILED' ? 'RELEASED' : 'SETTLED'
+        await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus === 'STOPPED')
+        const settled = (await f.store.getJob(owner, 'task-a', view.jobId))!
+        assert.equal(settled.billingStatus, f.state.billingStatus)
+        assert.equal((await f.service.getTaskMedia('task-a')).jobs[0].canResumeTracking, false)
+        assert.equal(f.calls.filter(call => call.path.endsWith('/content')).length, status === 'FAILED' ? 0 : 1)
+        assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+        assert.equal(f.calls.filter(call => call.path === '/quotes').length, 1)
+      })
+    }
+  }
+
+  it('recovers a lost submission response by original client ID then receipt ID without another POST', async () => {
+    const f = await realFixture({ lostSubmit: true })
+    const view = await f.generate()
+    await waitUntil(async () => f.calls.some(call => call.path === '/requests/real-receipt'))
+    assert.equal(f.calls.filter(call => call.path === `/requests/by-client-id/${f.state.clientRequestId}`).length, 1)
+    assert.equal((await f.store.listAssets(owner, 'task-a'))[0]?.status, 'SAVED')
+    f.state.billingStatus = 'SETTLED'
+    await f.service.waitForRun('task-a', view.runId)
+    assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+  })
+
+  it('restores terminal pending billing after restart without redownloading or resubmitting', async () => {
+    const f = await realFixture()
+    const view = await f.generate()
+    await waitUntil(async () => f.calls.some(call => call.path === '/requests/real-receipt'))
+    await f.service.stopAll()
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus, 'INTERRUPTED')
+    const queries = f.calls.filter(call => call.path === '/requests/real-receipt').length
+    const restarted = new MediaService({ ...f.options, store: new MediaStore(f.root) })
+    services.push(restarted)
+    f.state.billingStatus = 'SETTLED'
+    await restarted.resumePending()
+    await restarted.waitForRun('task-a', view.runId)
+    assert.ok(f.calls.filter(call => call.path === '/requests/real-receipt').length > queries)
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus, 'SETTLED')
+    assert.equal(f.calls.filter(call => call.path.endsWith('/content')).length, 1)
+    assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+  })
+
+  for (const failure of [503, 401]) {
+    it(`preserves query failure state ${failure} and resumes billing against the original receipt`, async () => {
+      const f = await realFixture()
+      f.state.queryFailure = failure
+      const view = await f.generate()
+      const expectedStatus = failure === 401 ? 'AUTH_REQUIRED' : 'STOPPED'
+      await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus === expectedStatus)
+      const job = (await f.store.getJob(owner, 'task-a', view.jobId))!
+      assert.equal(job.saveStatus, 'SAVED')
+      assert.equal(job.billingStatus, 'RECONCILING')
+      assert.match(job.error!, failure === 401 ? /授权/ : /重试已达上限/)
+      assert.equal(f.calls.filter(call => call.path === '/requests/real-receipt').length, failure === 401 ? 1 : 3)
+      f.state.queryFailure = 0
+      f.state.billingStatus = 'SETTLED'
+      await f.service.resume('task-a', view.jobId)
+      await f.service.waitForRun('task-a', view.runId)
+      assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus, 'SETTLED')
+      assert.equal(f.calls.filter(call => call.path.endsWith('/content')).length, 1)
+      assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+    })
+  }
+
+  for (const failure of ['AUTH_REQUIRED', 'PERMISSION_DENIED'] as const) {
+    it(`preserves gateway download ${failure} after a query reaches terminal settled billing`, async context => {
+      const f = await realFixture({ lostSubmit: true, billingStatus: 'SETTLED' })
+      const stub = context.mock.method(f.options.gateway!, 'content', async () => { throw new AppError(failure) })
+      const view = await f.generate()
+      await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus === 'AUTH_REQUIRED')
+      const job = (await f.store.getJob(owner, 'task-a', view.jobId))!
+      assert.equal(job.generationStatus, 'SUCCEEDED')
+      assert.equal(job.billingStatus, 'SETTLED')
+      assert.match(job.error!, /授权/)
+      assert.equal((await f.store.listAssets(owner, 'task-a')).length, 0)
+      stub.mock.restore()
+      await f.service.resume('task-a', view.jobId)
+      await f.service.waitForRun('task-a', view.runId)
+      assert.equal((await f.store.listAssets(owner, 'task-a'))[0]?.status, 'SAVED')
+      assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+      assert.equal(f.calls.filter(call => call.path === '/quotes').length, 1)
+    })
+  }
+
+  it('honors canQuery=false even when terminal billing is unresolved', async () => {
+    const f = await realFixture({ canQuery: false })
+    const view = await f.generate()
+    await f.service.waitForRun('task-a', view.runId)
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus, 'RECONCILING')
+    assert.equal((await f.service.getTaskMedia('task-a')).jobs[0].canResumeTracking, false)
+    assert.equal(f.calls.filter(call => call.path === '/requests/real-receipt').length, 0)
+    assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+  })
+
+  it('does not automatically revive terminal billing queries explicitly stopped by the user', async () => {
+    const f = await realFixture()
+    const view = await f.generate()
+    await waitUntil(async () => f.calls.some(call => call.path === '/requests/real-receipt'))
+    await f.service.stopTask('task-a')
+    const queries = f.calls.filter(call => call.path === '/requests/real-receipt').length
+    await f.service.stopAll()
+    const restarted = new MediaService({ ...f.options, store: new MediaStore(f.root) })
+    services.push(restarted)
+    await restarted.resumePending()
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus, 'STOPPED')
+    assert.equal(f.calls.filter(call => call.path === '/requests/real-receipt').length, queries)
+    assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+  })
+})
 
 it('allows ordinary legacy tasks without an employee binding to bypass media archival', async () => {
   const f = await fixture({ getTask: async () => ({ subscriptionId: null }) })
@@ -178,7 +381,7 @@ describe('MediaService authorization and request semantics', () => {
     assert.deepEqual(quoted.referenceIds, gateway.calls.submit[0].request.referenceIds)
     assert.equal(quoted.requestHash, createHash('sha256').update(JSON.stringify({ profileId: quoted.profileId, configVersion: quoted.configVersion,
       operation: quoted.operation, creativeBrief: quoted.creativeBrief,
-      parameters: { size: '1x1', count: 1 }, references: [MOCK_MEDIA_PNG_SHA256] })).digest('hex'))
+      parameters: { size: '1024x1024', count: 1 }, references: [MOCK_MEDIA_PNG_SHA256] })).digest('hex'))
   })
 
   it('does not upload or quote when the separate SEP reference transfer approval is denied', async () => {

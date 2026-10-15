@@ -10,6 +10,7 @@ import { SkillLibraryService } from '../service/skill-library-service'
  */
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
+import { EmploymentTokenManager } from '../common/platform/employment-token-manager'
 import { getSubscriptions, getEmployeeRuntime, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
 import { config } from '../common/config'
 import { loadOnce, type LazyAsync } from '../common/load-once'
@@ -43,6 +44,7 @@ import { ClientMonitorHistoryService } from '../service/client-monitor-history-s
 import { ClientMonitorService } from '../service/client-monitor-service'
 import { MediaStore } from '../data/media-store'
 import { MediaService } from '../service/media-service'
+import { SepRealMediaGateway } from '../data/sep-real-media-gateway'
 import type { MediaGatewayPort } from '../domain/media'
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 
@@ -88,6 +90,7 @@ class BackendRuntime {
   private readonly isEncryptionAvailable: () => boolean
   private readonly runtime: LazyAsync<TaskRuntime>
   private readonly arrangementPlanner: LazyAsync<ArrangementPlannerPort>
+  private readonly employmentTokens = new Map<string, { manager: EmploymentTokenManager; initialized: Promise<void> }>()
   private authenticationCleanup: Promise<void> | null = null
 
   constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities }: BackendOptions) {
@@ -97,6 +100,26 @@ class BackendRuntime {
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.authSession = new AuthSessionManager()
+    const realMediaGateway = mediaGateway ?? new SepRealMediaGateway({
+      baseUrl: config.SEP_BASE_URL,
+      token: async (subscriptionId, signal) => {
+        let entry = this.employmentTokens.get(subscriptionId)
+        if (!entry) {
+          const manager = new EmploymentTokenManager({ getRefreshToken: () => this.authSession.getRefreshToken() })
+          const initialized = manager.initialize(subscriptionId)
+          entry = { manager, initialized }
+          this.employmentTokens.set(subscriptionId, entry)
+        }
+        signal.throwIfAborted()
+        try { await entry.initialized } catch (error) {
+          if (this.employmentTokens.get(subscriptionId) === entry) this.employmentTokens.delete(subscriptionId)
+          entry.manager.stop()
+          throw error
+        }
+        signal.throwIfAborted()
+        return entry.manager.getValidToken()
+      },
+    })
     this.notifications = new NotificationService({
       scope: this,
       getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
@@ -155,7 +178,7 @@ class BackendRuntime {
     this.media = new MediaService({
       scope: this,
       store: new MediaStore(userDataDir),
-      gateway: mediaGateway,
+      gateway: realMediaGateway,
       capabilities: mediaCapabilities,
       getTask: taskId => this.taskManager.getTask(taskId),
       authorize: subscriptionId => this.employees.authorize(subscriptionId),
@@ -313,6 +336,8 @@ class BackendRuntime {
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
     this.notifications.stop()
+    for (const entry of this.employmentTokens.values()) entry.manager.stop()
+    this.employmentTokens.clear()
     await this.media.stopAll()
     await this.runtime.peek()?.stopAll()
     await this.clientMonitor.stop()
