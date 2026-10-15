@@ -14,6 +14,23 @@ afterEach(async () => {
 })
 
 describe('ArrangementCheckpointStore', () => {
+  it('persists delivery failures and verified files, and rejects corrupt validation counters', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-checkpoint-'))
+    roots.push(root)
+    const store = new ArrangementCheckpointStore(root)
+    const state = createArrangementExecutionState([])
+    state.nodes = [{ nodeId: 'node', status: 'completed', attempt: 1, error: null, output: 'Findings',
+      delivery: { validationAttempts: 3, issues: [], summary: 'Findings', finalFiles: [{ id: 'report', path: 'report.txt', format: 'txt', size: 5,
+        sha256: 'a'.repeat(64), nodeRunId: 'run-node', validatedAt: 1 }] } }]
+    const checkpoint = { version: 1 as const, taskId: 'task-a', owner: scope, planHash: 'plan-a', activeRunId: 'run-a', state, updatedAt: 1 }
+    await store.save(scope, checkpoint)
+    assert.deepEqual((await store.get(scope, 'task-a'))?.state.nodes[0]?.delivery, state.nodes[0]!.delivery)
+    state.nodes[0]!.delivery!.validationAttempts = 6
+    await store.save(scope, checkpoint)
+    assert.equal((await store.get(scope, 'task-a'))?.state.nodes[0]?.delivery?.validationAttempts, 3)
+    await store.save(scope, { ...checkpoint, taskId: 'task-b' })
+    assert.equal(await store.get(scope, 'task-b'), null)
+  })
   it('rejects an unsafe persisted node session pointer', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-checkpoint-'))
     roots.push(root)

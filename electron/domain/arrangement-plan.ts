@@ -1,4 +1,5 @@
 import { AppError } from '../errors/app-error'
+import { z } from 'zod'
 
 export type ArrangementMode = 'conversation' | 'auto' | 'manual'
 export type DraftStatus = 'editing' | 'planning' | 'planning-failed' | 'awaiting-employee' | 'ready' | 'preflight-failed' | 'confirmed'
@@ -67,13 +68,39 @@ export interface ArrangementCandidateMatch {
   canApply: true
 }
 
+const deliveryText = z.string().trim().min(1).max(4_000)
+export function isSafeDeliveryPath(value: string): boolean {
+  return !!value && !/^[\\/]/.test(value) && !/[<>:"|?*]/.test(value) &&
+    [...value].every(character => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127) &&
+    value.split(/[\\/]/).every(part => part !== '' && part !== '.' && part !== '..' && !/[ .]$/.test(part) &&
+      !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))
+}
+
+export const arrangementNodeWorkContractSchema = z.object({
+  objective: deliveryText.optional(),
+  deliverables: z.array(z.object({
+    id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+    name: deliveryText,
+    format: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_+-]{0,31}$/),
+    path: z.string().trim().min(1).max(1_024).refine(isSafeDeliveryPath),
+    contentOutline: z.array(deliveryText).min(1).max(128),
+    acceptanceCriteria: z.array(deliveryText).min(1).max(128),
+  }).strict().refine(value => value.path.toLowerCase().endsWith(`.${value.format.toLowerCase()}`)))
+    .min(1).max(32).optional(),
+})
+
+export type ArrangementDeliverable = NonNullable<z.infer<typeof arrangementNodeWorkContractSchema>['deliverables']>[number]
+
 export interface ArrangementNode {
   id: string
   subscriptionId: string
   modelId: string
   title: string
+  /** Optional for plans created before structured planning contracts. */
+  objective?: string
   instruction: string
   expectedOutput: string
+  deliverables?: ArrangementDeliverable[]
   dependsOn: string[]
   skillIds: string[]
   requiresUserConfirmation: boolean
@@ -229,6 +256,7 @@ export function validateArrangementNodes(nodes: readonly ArrangementNode[]): voi
     if (!node.subscriptionId || !node.modelId || !node.title.trim() || !node.instruction.trim()) {
       throw new AppError('INVALID_ARGUMENT')
     }
+    if (!arrangementNodeWorkContractSchema.safeParse(node).success) throw new AppError('INVALID_ARGUMENT')
     ids.add(node.id)
     byId.set(node.id, node)
   }

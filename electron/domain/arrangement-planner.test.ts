@@ -21,9 +21,17 @@ const authorized: ArrangementPlannerEmployee = {
 }
 
 function outputExample(prompt: string): Record<string, unknown> {
-  const example = prompt.split('\n').find(line => line.startsWith('JSON 格式：'))
-  assert.ok(example)
-  return JSON.parse(example.slice('JSON 格式：'.length)) as Record<string, unknown>
+  const marker = 'JSON 结构示例：\n'
+  const start = prompt.indexOf(marker)
+  const end = prompt.indexOf('\n\n字段要求：', start)
+  assert.ok(start >= 0 && end > start)
+  const example = JSON.parse(prompt.slice(start + marker.length, end)) as Record<string, unknown>
+  const intent = example.intentAnalysis as { steps: Array<{ id: string }> }
+  const stepIds = new Set(intent.steps.map(step => step.id))
+  for (const field of ['nodes', 'unresolvedSteps', 'candidateMatches']) {
+    for (const item of example[field] as Array<{ stepId: string }>) assert.ok(stepIds.has(item.stepId))
+  }
+  return example
 }
 
 describe('arrangement recommendation output contract', () => {
@@ -35,12 +43,11 @@ describe('arrangement recommendation output contract', () => {
 
     it(`uses a recommendation-only prompt and example for ${source} employees`, () => {
       const prompt = buildArrangementPlannerPrompt(draft, [candidate])
-      assert.ok(!prompt.includes('生成一个可执行的编排草稿'))
-      assert.match(prompt, /本轮是待授权员工推荐阶段/)
-      assert.match(prompt, /nodes 必须返回空数组/)
-      assert.match(prompt, /选中候选员工不代表该步骤已解决/)
-      assert.match(prompt, /原样保留已有 intentAnalysis/)
-      assert.match(prompt, /不得重复返回已有执行节点/)
+      assert.match(prompt, /当前规划阶段：\n待授权员工推荐/)
+      assert.match(prompt, /待授权推荐阶段 nodes 必须返回 \[\]/)
+      assert.match(prompt, /推荐成功不等于步骤已解决/)
+      assert.match(prompt, /原样保留意图摘要、步骤 ID、能力需求及步骤依赖/)
+      assert.match(prompt, /保留已有执行节点，不重复生成/)
       const example = outputExample(prompt)
       assert.deepEqual(example.nodes, [])
       assert.ok(Array.isArray(example.unresolvedSteps) && example.unresolvedSteps.length > 0)
@@ -75,15 +82,13 @@ describe('arrangement recommendation output contract', () => {
 
   it('keeps executable node guidance for authorized employees', () => {
     const prompt = buildArrangementPlannerPrompt(draft, [authorized])
-    assert.match(prompt, /生成一个可执行的编排草稿/)
-    assert.ok(!prompt.includes('本轮是待授权员工推荐阶段'))
-    assert.match(prompt, /优先使用最少必要员工/)
+    assert.match(prompt, /当前规划阶段：\n已授权员工匹配/)
+    assert.match(prompt, /不为细分动作增加员工/)
     assert.match(prompt, /同一个员工可以承担多个步骤/)
     assert.match(prompt, /不同员工总数不得超过 6 名/)
-    assert.match(prompt, /不得默认增加项目经理、协调员、审核员、汇总员等角色/)
-    assert.match(prompt, /职责内默认专业化执行/)
+    assert.match(prompt, /不得默认增加项目经理、协调员、审核员或汇总员/)
     assert.match(prompt, /不要求用户重复确认专业范围/)
-    assert.match(prompt, /抖音策划专员收到“帮我生成一份策划案”时，应直接生成抖音策划案/)
+    assert.match(prompt, /抖音策划专员承担“生成策划案”时，应规划抖音策划案/)
     const example = outputExample(prompt)
     assert.ok(Array.isArray(example.nodes) && example.nodes.length > 0)
     assert.ok(JSON.stringify(example).includes('modelId'))
@@ -95,5 +100,62 @@ describe('arrangement recommendation output contract', () => {
     const prompt = buildArrangementPlannerPrompt({ ...draft, nodes: [existingNode] }, [{ ...authorized, source: 'platform', canExecute: false, allowedModels: [] }])
     assert.match(prompt, /existing-node/)
     assert.deepEqual(outputExample(prompt).nodes, [])
+  })
+
+  it('uses the approved eight-section prompt and a readable node contract example', () => {
+    const prompt = buildArrangementPlannerPrompt({ ...draft, intentAnalysis: null, unresolvedSteps: [] }, [authorized])
+    const sections = ['规划职责', '工作拆分', '员工与模型匹配', '每个执行节点的工作要求', '交付物设计', '依赖与补充规划', '返回结构', '本轮规划数据']
+    assert.deepEqual([...prompt.matchAll(/【[一二三四五六七八]、([^】]+)】/g)].map(match => match[1]), sections)
+    assert.match(prompt, /只返回严格 JSON/)
+    assert.match(prompt, /不得执行用户任务，不得调用工具/)
+    assert.match(prompt, /不得虚构“行业强制标准”/)
+    assert.match(prompt, /整个计划必须覆盖用户要求的最终交付物/)
+    assert.match(prompt, /不能只规划研究或分析而遗漏最终制作、保存和交付/)
+    const example = outputExample(prompt)
+    assert.deepEqual(Object.keys(example), ['title', 'intentAnalysis', 'nodes', 'unresolvedSteps', 'candidateMatches'])
+    const node = (example.nodes as Array<Record<string, unknown>>)[0]!
+    assert.equal(typeof node.objective, 'string')
+    assert.deepEqual(Object.keys((node.deliverables as Array<Record<string, unknown>>)[0]!), ['id', 'name', 'format', 'path', 'contentOutline', 'acceptanceCriteria'])
+    assert.ok(prompt.includes('\n  "intentAnalysis": {\n'))
+  })
+
+  it('includes complete existing work requirements in later matching input without skill selection', () => {
+    const existingNode = {
+      id: 'node-existing', stepId: 'step-existing', subscriptionId: 'subscription-existing', modelId: 'model-a',
+      title: 'Research', objective: 'Find market opportunities', instruction: 'Compare competitors', expectedOutput: 'Word report',
+      deliverables: [{ id: 'report', name: 'Report', format: 'docx', path: 'deliverables/report.docx', contentOutline: ['Findings'], acceptanceCriteria: ['Contains cited findings'] }],
+      dependsOn: [], skillIds: ['private-skill'], requiresUserConfirmation: false,
+    }
+    const prompt = buildArrangementPlannerPrompt({ ...draft, nodes: [existingNode] }, [authorized])
+    for (const text of [existingNode.objective, existingNode.instruction, existingNode.deliverables[0]!.path]) assert.ok(prompt.includes(text))
+    assert.ok(!prompt.includes('private-skill'))
+    assert.ok(!prompt.includes('输入来源'))
+  })
+})
+
+describe('arrangement node work contract parsing', () => {
+  const deliverable = { id: 'report', name: 'Report', format: 'docx', path: 'deliverables/report.docx', contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }
+  const node = { id: 'node-1', stepId: 'step-1', subscriptionId: authorized.subscriptionId, modelId: 'model-a', title: 'Research', instruction: 'Research the market', expectedOutput: 'Word report', dependsOn: [], requiresUserConfirmation: false }
+  const parse = (extra: Record<string, unknown>) => parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ ...node, ...extra }] }), draft, [authorized])
+
+  it('preserves objective and deliverables instead of discarding them', () => {
+    const result = parse({ objective: 'Identify market opportunities', deliverables: [deliverable] })
+    assert.equal(result.nodes[0]?.objective, 'Identify market opportunities')
+    assert.deepEqual(result.nodes[0]?.deliverables, [deliverable])
+  })
+
+  it('remains compatible with existing nodes without new fields', () => {
+    const result = parse({})
+    assert.ok(!('objective' in result.nodes[0]!))
+    assert.ok(!('deliverables' in result.nodes[0]!))
+  })
+
+  it('rejects invalid new fields when supplied', () => {
+    for (const extra of [
+      { objective: 42 }, { objective: ' ' }, { deliverables: [] }, { deliverables: 'file' },
+      { deliverables: [{ ...deliverable, contentOutline: [42] }] },
+      { deliverables: [{ ...deliverable, acceptanceCriteria: [] }] },
+      ...['../report.docx', 'C:\\report.docx', '/report.docx', 'deliverables/../../report.docx'].map(path => ({ deliverables: [{ ...deliverable, path }] })),
+    ]) assert.throws(() => parse(extra), JSON.stringify(extra))
   })
 })

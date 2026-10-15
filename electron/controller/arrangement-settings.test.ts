@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import * as ts from 'typescript'
 import { z } from 'zod'
+import * as arrangementPlan from '../domain/arrangement-plan'
 import { INVOKE_CHANNELS } from './channels'
 
 interface TestRoute {
@@ -18,6 +19,7 @@ function settingsRoute(): TestRoute {
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   const imports: Record<string, unknown> = {
     zod: { z }, '../channels': { INVOKE_CHANNELS },
+    '../../domain/arrangement-plan': arrangementPlan,
     '../router': {
       NO_INPUT: z.undefined(),
       route: (channel: string, schema: z.ZodType, handle: TestRoute['handle']) => ({ channel, schema, handle }),

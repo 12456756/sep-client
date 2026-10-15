@@ -37,8 +37,8 @@ async function waitFor(check: () => Promise<boolean>): Promise<void> {
   assert.fail('Arrangement did not reach the expected state.')
 }
 
-for (const manual of [false, true]) {
-  it(`plans, confirms and executes an arrangement in a ${manual ? 'manual' : 'name-based default'} workspace`, async t => {
+for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: false }, { manual: true, invalidDelivery: false }, { manual: false, invalidDelivery: true }]) {
+  it(`plans, confirms and ${invalidDelivery ? 'fails undelivered work' : 'executes an arrangement'} in a ${manual ? 'manual' : 'name-based default'} workspace`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-workspace-'))
     const runs = new TaskRunStore(root)
     const manager = new TaskManager(root, null, undefined, runs)
@@ -58,7 +58,7 @@ for (const manual of [false, true]) {
       resolveEmployee: id => authorizer.resolve(id),
       authorizeEmployee: (id, modelId) => authorizer.authorize(id, modelId),
       createWorker: options => ({
-        async run(prompt) {
+        async run() {
           const context = options.context
           const task = await manager.getTask(context.taskId)
           assert.equal(context.workspaceDir, task?.workDir)
@@ -68,21 +68,36 @@ for (const manual of [false, true]) {
           const paths = runs.getPaths(scope, context.taskId, context.runId)
           assert.equal(context.agentDir, paths.agentDir)
           assert.equal(context.sessionDir, paths.sessionDir)
-          const artifact = join(context.workspaceDir, '\u7814\u7a76 result.txt')
+          const nodeId = executed.length === 0 ? 'research' : 'report'
+          const artifact = join(context.workspaceDir, `${nodeId}-result.txt`)
           assert.ok(context.toolPolicy)
           assert.equal(evaluateToolCall('write', { path: artifact }, context.toolPolicy).allowed, true)
           assert.equal(evaluateToolCall('read', { path: artifact }, context.toolPolicy).allowed, true)
           assert.equal(evaluateToolCall('write', { path: join(root, 'outside.txt') }, context.toolPolicy).allowed, false)
-          if (executed.length === 0) await writeFile(artifact, 'research result', 'utf8')
-          else {
-            assert.equal(await readFile(artifact, 'utf8'), 'research result')
-            assert.ok(prompt.includes('research result'))
+          if (nodeId === 'report') {
+            assert.equal(await readFile(join(context.workspaceDir, 'research-result.txt'), 'utf8'), 'research result')
+            assert.ok(context.fixedSystemPrompt?.includes('research-result.txt'))
           }
+          if (!invalidDelivery) await writeFile(artifact, `${nodeId} result`, 'utf8')
           executed.push(context.workspaceDir)
           await options.onEvent({
             taskId: context.taskId, runId: context.runId, subscriptionId: context.subscriptionId,
             sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'research result' },
           })
+          for (let validation = 0; validation < 5; validation++) {
+            assert.equal((await manager.getTask(context.taskId))?.status, TaskStatus.RUNNING)
+            const checkpoint = await checkpoints.get(scope, context.taskId)
+            assert.equal(checkpoint?.state.status, 'running')
+            assert.equal(checkpoint?.state.nodes.find(node => node.nodeId === nodeId)?.status, 'running')
+            const correction = await options.onResponseSettled?.({ text: JSON.stringify({
+              nodeId, summary: `${nodeId} result`, finalDeliverables: [{ id: 'result', path: `${nodeId}-result.txt` }],
+            }), stopReason: 'stop' })
+            if (!correction) return
+            assert.equal((await manager.getTask(context.taskId))?.status, TaskStatus.RUNNING)
+            assert.equal((await checkpoints.get(scope, context.taskId))?.state.nodes.find(node => node.nodeId === nodeId)?.status, 'running')
+            assert.match(correction.continueWith, /FILE_MISSING/)
+          }
+          assert.fail('Failed delivery must throw on the fifth validation')
         },
         async abort() {}, async dispose() {},
       }),
@@ -114,6 +129,9 @@ for (const manual of [false, true]) {
               nodes: ['research', 'report'].map((id, index) => ({
                 id, subscriptionId: employee.subscriptionId, modelId: 'model-a', title: id,
                 instruction: `Complete ${id}`, expectedOutput: `${id} result`,
+                objective: `Deliver ${id} results`,
+                deliverables: [{ id: 'result', name: `${id} result`, format: 'txt', path: `${id}-result.txt`,
+                  contentOutline: ['Research findings'], acceptanceCriteria: ['Contains research findings'] }],
                 dependsOn: index === 0 ? [] : ['research'], requiresUserConfirmation: false,
               })),
             }) },
@@ -150,17 +168,18 @@ for (const manual of [false, true]) {
     assert.equal((await metadata.load(scope, taskId))?.kind, 'arrangement')
     await waitFor(async () => {
       const task = await manager.getTask(taskId)
-      assert.notEqual(task?.status, TaskStatus.FAILED, task?.error ?? undefined)
+      if (!invalidDelivery) assert.notEqual(task?.status, TaskStatus.FAILED, task?.error ?? undefined)
       assert.notEqual(task?.status, TaskStatus.PAUSED, task?.error ?? undefined)
-      return task?.status === TaskStatus.COMPLETED && task.activeRunId === null
+      return task?.status === (invalidDelivery ? TaskStatus.FAILED : TaskStatus.COMPLETED) && task.activeRunId === null
     })
-    assert.deepEqual(executed, [workspace, workspace])
-    assert.equal((await checkpoints.get(scope, taskId))?.state.status, 'completed')
+    assert.deepEqual(executed, invalidDelivery ? [workspace] : [workspace, workspace])
+    assert.equal((await checkpoints.get(scope, taskId))?.state.status, invalidDelivery ? 'failed' : 'completed')
+    if (invalidDelivery) assert.equal((await checkpoints.get(scope, taskId))?.state.nodes[0]?.delivery?.validationAttempts, 5)
     const records = await runs.list(scope, taskId)
-    assert.equal(records.length, 3)
+    assert.equal(records.length, invalidDelivery ? 2 : 3)
     for (const record of records) {
       assert.equal(record.workspaceDir, workspace)
-      assert.equal(record.outcome, 'completed')
+      assert.equal(record.outcome, invalidDelivery ? 'failed' : 'completed')
       assert.deepEqual(record.owner, scope)
     }
     const paths = new ScopePath(root)
@@ -170,6 +189,6 @@ for (const manual of [false, true]) {
     await restarted.initialize()
     await restarted.setCurrentUser(scope.memberId, scope.enterpriseId, names)
     assert.equal((await restarted.getTask(taskId))?.workDir, workspace)
-    assert.equal((await restarted.getTask(taskId))?.status, TaskStatus.COMPLETED)
+    assert.equal((await restarted.getTask(taskId))?.status, invalidDelivery ? TaskStatus.FAILED : TaskStatus.COMPLETED)
   })
 }

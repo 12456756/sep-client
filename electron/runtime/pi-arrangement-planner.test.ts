@@ -287,7 +287,7 @@ describe('PiArrangementPlanner', () => {
     ])
     assert.equal(worker?.prompts.length, 1)
     assert.match(worker?.prompts[0] ?? '', /Prepare a market report\./)
-    assert.match(worker?.prompts[0] ?? '', /不调用任何工具/)
+    assert.match(worker?.prompts[0] ?? '', /不得调用工具/)
     assert.equal(capturedOptions?.context.taskId, 'planning-a')
     assert.equal(capturedOptions?.context.runId, 'planning-a')
     assert.equal(capturedOptions?.context.subscriptionId, 'sub-writer')

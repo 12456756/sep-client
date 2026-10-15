@@ -28,6 +28,20 @@ describe('arrangement retry display regressions', () => {
     type: 'arrangement_state_changed', occurredAt: 3, data: { nodeId: 'node-a', nodeStatus: 'failed', status: 'waiting-user' },
   }
 
+  it('does not treat a settled model reply or rejected delivery as a completed node', () => {
+    const events: TaskExecutionEvent[] = [{ ...failed, type: 'arrangement_node_started', data: { nodeId: 'node-a' } }]
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      events.push({ ...failed, type: 'agent_end', data: { willRetry: false } },
+        { ...failed, type: 'arrangement_delivery_checked', data: { nodeId: 'node-a', validationAttempts: attempt, accepted: false } })
+      const work = buildWorkItem({ task, employees: [], plan, arrangementEvents: events })
+      assert.equal(work.status, 'running')
+      assert.equal(work.steps[0]?.state, 'running')
+      assert.equal(work.progress, 0)
+    }
+    events.push({ ...failed, type: 'arrangement_node_completed', data: { nodeId: 'node-a' } })
+    assert.equal(buildWorkItem({ task, employees: [], plan, arrangementEvents: events }).steps[0]?.state, 'done')
+  })
+
   it('shows a paused arrangement waiting for a failed node retry as failed', () => {
     const work = buildWorkItem({ task: { ...task, status: 'paused', error: '429' }, employees: [], plan, arrangementEvents: [failed] })
     assert.equal(work.status, 'failed')

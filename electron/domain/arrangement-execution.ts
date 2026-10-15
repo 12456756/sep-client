@@ -1,4 +1,5 @@
 import type { ArrangementNode } from './arrangement-plan'
+import type { NodeDeliveryProgress } from './arrangement-delivery'
 
 /**
  * 已确认编排的纯状态机。
@@ -17,6 +18,7 @@ export interface ArrangementNodeCheckpoint {
   sessionRunId?: string
   error: string | null
   output: string | null
+  delivery?: NodeDeliveryProgress
 }
 
 export interface ArrangementExecutionState {

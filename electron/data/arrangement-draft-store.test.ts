@@ -34,6 +34,21 @@ function draftInput(): Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'cre
 }
 
 describe('ArrangementDraftStore', () => {
+  it('retains node objectives and delivery metadata after saving and reopening', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-contract-'))
+    roots.push(root)
+    const store = new ArrangementDraftStore(root)
+    const input = draftInput()
+    const contractNode = {
+      ...input.nodes[0]!, objective: 'Identify market opportunities',
+      deliverables: [{ id: 'report', name: 'Report', format: 'docx', path: 'deliverables/report.docx', contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }],
+    }
+    const created = await store.create(scope, { ...input, nodes: [contractNode] })
+    await store.update(scope, created.id, created.revision, { ...input, nodes: [contractNode], title: 'Updated' })
+    const loaded = await new ArrangementDraftStore(root).get(scope, created.id)
+    assert.deepEqual(loaded?.nodes, [contractNode])
+  })
+
   it('persists drafts by authenticated scope and keeps them after reopening', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-drafts-'))
     roots.push(root)
