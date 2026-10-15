@@ -294,6 +294,72 @@ describe('MediaService authorization and request semantics', () => {
     }
   })
 
+  for (const mode of ['manual', 'automatic'] as const) {
+    const selectedPolicy = policy('full-local', mode === 'manual' ? 'confirm-each' : 'auto-approve')
+
+    it(`blocks unavailable prices in ${mode} mode even when legacy allowUnknownCost is true`, async () => {
+      for (const allowUnknownCost of [false, true]) {
+        for (const price of [{ amount: null, currency: null }, { amount: '1.25', currency: 'CNY' }]) {
+          const f = await fixture({ policy: async () => selectedPolicy }, new MockMediaGateway({
+            quote: { status: 'unavailable', ...price, allowUnknownCost },
+          }))
+          await assert.rejects(f.service.generateTaskMedia('task-a', input()), code('PERMISSION_DENIED'))
+          assert.equal(f.gateway.calls.quote.length, 1)
+          assert.equal(f.gateway.calls.submit.length, 0)
+          assert.equal(f.gateway.calls.uploadReference.length, 0)
+          assert.equal(f.approvalRequests.length, 0)
+          assert.deepEqual(await f.store.listJobs(owner), [])
+        }
+      }
+    })
+
+    it(`blocks invalid quoted amounts and currencies before ${mode} approval or submission`, async () => {
+      for (const price of [
+        { amount: null }, { amount: '' }, { amount: '-1' }, { amount: 'NaN' },
+        { amount: '1e3' }, { amount: '9'.repeat(101) },
+        { currency: null }, { currency: '' }, { currency: ' \t ' },
+      ]) {
+        const f = await fixture({ policy: async () => selectedPolicy }, new MockMediaGateway({
+          quote: { status: 'quoted', allowUnknownCost: true, ...price },
+        }))
+        await assert.rejects(f.service.generateTaskMedia('task-a', input()))
+        assert.equal(f.gateway.calls.quote.length, 1)
+        assert.equal(f.gateway.calls.submit.length, 0)
+        assert.equal(f.gateway.calls.uploadReference.length, 0)
+        assert.equal(f.approvalRequests.length, 0)
+        assert.deepEqual(await f.store.listJobs(owner), [])
+      }
+    })
+
+    it(`submits valid quoted prices in ${mode} mode while retaining legacy quote fields`, async () => {
+      for (const amount of ['0', '1.25']) {
+        for (const allowUnknownCost of [false, true]) {
+          const f = await fixture({ policy: async () => selectedPolicy }, new MockMediaGateway({
+            quote: { status: 'quoted', amount, currency: 'CNY', allowUnknownCost },
+          }))
+          const view = await f.service.generateTaskMedia('task-a', input())
+          await f.service.waitForRun('task-a', view.runId)
+          assert.equal(f.gateway.calls.quote.length, 1)
+          assert.equal(f.gateway.calls.submit.length, 1)
+          assert.equal(f.approvalRequests.length, mode === 'manual' ? 1 : 0)
+          const job = await f.store.getJob(owner, 'task-a', view.jobId)
+          if (mode === 'manual') {
+            const approvalInput = f.approvalRequests[0].input
+            assert.ok(typeof approvalInput === 'object' && approvalInput !== null && 'quote' in approvalInput)
+            assert.deepEqual(approvalInput.quote, {
+              status: 'quoted', amount, currency: 'CNY', expiresAt: job?.quote.expiresAt,
+            })
+          }
+          assert.equal(job?.approval, mode)
+          assert.equal(job?.generationStatus, 'SUCCEEDED')
+          assert.equal(job?.quote.amount, amount)
+          assert.equal(job?.quote.currency, 'CNY')
+          assert.equal(job?.quote.allowUnknownCost, allowUnknownCost)
+        }
+      }
+    })
+  }
+
   it('requires manual approval unless both full-local and auto-approve are selected', async () => {
     for (const selectedPolicy of [{ ...policy('workspace-edit'), allowedTools: ['media_generate_image'] }, policy('full-local', 'confirm-each')]) {
       const f = await fixture({ policy: async () => selectedPolicy })

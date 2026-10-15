@@ -267,8 +267,9 @@ export class MediaService {
         await uploadReferences()
       }
       const quote = mediaQuoteSchema.parse(await this.network(scope, parent, s => gateway.quote(binding.subscriptionId, { ...semantic, referenceIds, requestHash }, s)))
+      // Keep legacy quote fields readable; unknown prices cannot authorize generation in either approval mode.
       if (quote.requestHash !== requestHash || quote.expiresAt <= Date.now() || !quote.authorized || !quote.budgetAuthorized
-        || (quote.status === 'unavailable' && !quote.allowUnknownCost)) throw new AppError('PERMISSION_DENIED')
+        || quote.status !== 'quoted' || quote.amount === null || !quote.currency?.trim()) throw new AppError('PERMISSION_DENIED')
       if (!automatic) {
         const allowed = await this.network(scope, parent, () => binding.requestApproval({ taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
           toolName: 'media_generate_image', input: { profile: profile.displayName, operation: input.operation, referenceCount: input.localAssetIds.length,
