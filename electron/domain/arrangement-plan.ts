@@ -96,6 +96,12 @@ export interface RequestedTaskPermissionPolicy {
   approvalMode?: ApprovalMode
 }
 
+export interface ArrangementExecutionSettings {
+  modelId?: string
+  workDir: string | null
+  permissions: RequestedTaskPermissionPolicy
+}
+
 export interface EffectiveTaskPermissionPolicy {
   preset: PermissionPreset
   allowedTools: string[]

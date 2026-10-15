@@ -98,6 +98,7 @@ if (serve) {
         await page.locator('.ent-wk').waitFor();
       };
       await open();
+      assert.equal(await page.getByRole('button', { name: '改一版安排', exact: true }).count(), 0);
       assert.equal(await page.locator('.ent-wk-infobar-meta').count(), 1, 'arrangement facts must form one right-side group');
       const layout = await page.evaluate(() => {
         const summary = document.querySelector('.ent-wk-infobar-summary').getBoundingClientRect();

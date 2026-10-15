@@ -47,7 +47,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   const [autoStartError, setAutoStartError] = useState<string | null>(null);
   /** 正在淡出的目标画面。给「点了卡片但还没换页」这 200ms 用。 */
   const [leaving, setLeaving] = useState<ArrangeMode | null>(null);
-  /** 从常用工作 / 复制为新工作带进来的初始内容。用过就从 workspace 里清掉。 */
+  /** 从常用工作带进来的初始内容，用过就从 workspace 里清掉。 */
   const [seed, setSeed] = useState<{ title?: string; goal?: string; steps: WorkDraftStep[]; confirmedInputs?: string[] } | null>(null);
   const [seedNo, setSeedNo] = useState(0);
   const reduced = usePrefersReducedMotion();
@@ -83,19 +83,11 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   const startAuto = async (draft: ArrangementDraft): Promise<ArrangementDraft> => {
     setAutoStartError(null);
     try {
-      const updated = await window.electronAPI.updateArrangementDraft({
+      const updated = await window.electronAPI.updateArrangementExecutionSettings({
         draftId: draft.id, expectedRevision: draft.revision,
-        document: {
-          schemaVersion: draft.schemaVersion, mode: draft.mode, title: draft.title, goal: draft.goal,
-          confirmedInputs: [...draft.confirmedInputs], sharedSkillIds: [...draft.sharedSkillIds],
-          conversation: draft.conversation ? structuredClone(draft.conversation) : null,
-          intentAnalysis: draft.intentAnalysis ? structuredClone(draft.intentAnalysis) : null,
-          unresolvedSteps: draft.unresolvedSteps ? structuredClone(draft.unresolvedSteps) : [],
-          candidateMatches: draft.candidateMatches ? structuredClone(draft.candidateMatches) : [],
-          employeeAccessRequests: draft.employeeAccessRequests ? structuredClone(draft.employeeAccessRequests) : [],
-          lastPlanning: draft.lastPlanning ? { ...draft.lastPlanning } : null,
-          nodes: draft.nodes.map(node => ({ ...node, modelId: settings.modelId || node.modelId })),
-          workspace: { ...draft.workspace, path: settings.workDir.trim() || draft.workspace.path },
+        settings: {
+          modelId: settings.modelId || undefined,
+          workDir: settings.workDir.trim() || null,
           permissions: { ...settings.permissions },
         },
       });

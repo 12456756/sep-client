@@ -325,6 +325,12 @@ export interface ArrangementDraftDocument {
   } | null
 }
 
+export interface ArrangementExecutionSettings {
+  modelId?: string
+  workDir: string | null
+  permissions: ArrangementDraftDocument['permissions']
+}
+
 export interface ArrangementDraft extends ArrangementDraftDocument {
   id: string
   revision: number

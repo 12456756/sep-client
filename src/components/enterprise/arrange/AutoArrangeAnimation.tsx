@@ -257,6 +257,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
                   <div className="ent-flowcard-body">
                     <span className="ent-flowcard-who"><EmployeeFace employee={employee} size="sm" round /><strong>{employee?.name ?? node.subscriptionId}</strong><small>{employee?.roleName}</small></span>
                     <strong className="ent-flowcard-stage">{node.title}</strong><p>{node.instruction}</p>
+                    {node.expectedOutput ? <p className="ent-flowcard-output"><span>预期输出</span>{node.expectedOutput}</p> : null}
                   </div>
                 </article>
               </Fragment>
