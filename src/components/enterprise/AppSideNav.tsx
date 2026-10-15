@@ -21,8 +21,6 @@ interface Props {
   enterpriseName: string;
   enterpriseMark: string;
   enterpriseLogo?: string | null;
-  /** Profile may omit the image while the organization response still has one. */
-  enterpriseLogoFallback?: string | null;
   current: AppRouteName;
   /** 待我确认或需要重试的工作数量，挂在「工作记录」右侧。 */
   needsMeCount: number;
@@ -56,7 +54,7 @@ function isActive(item: AppRouteName, current: AppRouteName): boolean {
 }
 
 export function AppSideNav({
-  enterpriseName, enterpriseMark, enterpriseLogo, enterpriseLogoFallback, current, needsMeCount, canManage, userName, userAvatar, collapsed, onToggleCollapse, onNavigate, onOpenSettings, onCheckUpdate, onLogout,
+  enterpriseName, enterpriseMark, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, collapsed, onToggleCollapse, onNavigate, onOpenSettings, onCheckUpdate, onLogout,
 }: Props) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
@@ -66,7 +64,7 @@ export function AppSideNav({
   useEffect(() => {
     setLogoFailed(false);
     setLogoSrc(enterpriseLogo ?? null);
-  }, [enterpriseLogo, enterpriseLogoFallback]);
+  }, [enterpriseLogo]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -102,11 +100,7 @@ export function AppSideNav({
             alt=""
             aria-hidden
             onError={() => {
-              if (enterpriseLogoFallback && logoSrc !== enterpriseLogoFallback) {
-                setLogoSrc(enterpriseLogoFallback);
-              } else {
-                setLogoFailed(true);
-              }
+              setLogoFailed(true);
             }}
           />
         ) : <span className="ent-mark" aria-hidden>{enterpriseMark}</span>}

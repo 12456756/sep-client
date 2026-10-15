@@ -19,6 +19,7 @@ import { UpdateNotice } from '../components/enterprise/UpdateNotice';
 import type { UpdateModel } from '../features/update/use-update';
 import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
+import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
@@ -57,22 +58,10 @@ export function ClientAppPage({ update, userId, userName, enterpriseId, enterpri
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const profile = profileWorkspace.profile;
-  const fallbackUserAvatar = workspace.currentUserAvatar ?? initialUserAvatar ?? null;
-  // /client/profile 可能只返回用户基础资料，头像为空时继续使用组织接口的成员头像。
-  const userAvatar = profile?.user.avatar
-    ? { name: profile.user.name || userName, avatar: profile.user.avatar }
-    : profile
-      ? fallbackUserAvatar
-        ? { ...fallbackUserAvatar, name: profile.user.name || fallbackUserAvatar.name || userName }
-        : { name: profile.user.name || userName, avatar: null }
-      : fallbackUserAvatar;
+  const userAvatar = displayedUserAvatar(profile, initialUserAvatar ?? null, userName);
   const displayUserName = profile?.user.name || userName;
   const displayEnterpriseName = profile ? profile.enterprise?.name || overview.name : overview.name;
-  // Profile 的图片为空或企业对象为空时，回退到 /enterprise/organization 的 Logo。
-  const displayEnterpriseLogo = profile?.enterprise?.logo || overview.logo;
-  const fallbackEnterpriseLogo = profile?.enterprise?.logo && overview.logo && profile.enterprise.logo !== overview.logo
-    ? overview.logo
-    : null;
+  const displayEnterpriseLogo = displayedEnterpriseLogo(profile, overview.logo);
   const scroll = useRef<HTMLDivElement | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
@@ -138,7 +127,6 @@ export function ClientAppPage({ update, userId, userName, enterpriseId, enterpri
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
         enterpriseLogo={displayEnterpriseLogo}
-        enterpriseLogoFallback={fallbackEnterpriseLogo}
         current={route.name}
         needsMeCount={overview.needsMeCount}
         canManage={canManage}
@@ -244,9 +232,21 @@ export function ClientAppPage({ update, userId, userName, enterpriseId, enterpri
           canManage={canManage}
           uploading={profileWorkspace.uploading}
           error={profileWorkspace.error}
-          onUploadAvatar={profileWorkspace.uploadAvatar}
-          onUploadLogo={profileWorkspace.uploadLogo}
-          onRefresh={profileWorkspace.refresh}
+          onUploadAvatar={async input => {
+            const result = await profileWorkspace.uploadAvatar(input);
+            await workspace.refreshOrganization();
+            return result;
+          }}
+          onUploadLogo={async input => {
+            const result = await profileWorkspace.uploadLogo(input);
+            await workspace.refreshOrganization();
+            return result;
+          }}
+          onRefresh={async () => {
+            const result = await profileWorkspace.refresh();
+            await workspace.refreshOrganization();
+            return result;
+          }}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
