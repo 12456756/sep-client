@@ -32,7 +32,7 @@ async function waitFor(condition: () => Promise<boolean> | boolean, timeoutMs = 
 function plan(taskId: string): WorkPlan {
   return {
     id: taskId, schemaVersion: 1, sourceDraftId: 'draft-a', sourceDraftRevision: 1,
-    owner: scope, mode: 'auto', title: 'Arrangement', goal: 'complete the work', conversation: null,
+    owner: scope, mode: 'manual', title: 'Arrangement', goal: 'complete the work', conversation: null,
     nodes: [{
       id: 'node-a', subscriptionId: employee.subscriptionId, modelId: 'node-model', title: 'Node A',
       instruction: 'do node A', expectedOutput: 'a result', dependsOn: [], skillIds: [], requiresUserConfirmation: false,

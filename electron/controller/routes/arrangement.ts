@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
-import type { ArrangementDraft } from '../../domain/arrangement-plan'
+import { arrangementNodeWorkContractSchema, type ArrangementDraft } from '../../domain/arrangement-plan'
 
 const draftId = z.string().min(1)
 const taskId = z.string().min(1)
@@ -23,7 +23,7 @@ const node = z.object({
   dependsOn: z.array(z.string()),
   skillIds: z.array(z.string()),
   requiresUserConfirmation: z.boolean(),
-})
+}).extend(arrangementNodeWorkContractSchema.shape)
 const workspace = z.object({ mode: z.literal('shared'), path: z.string().nullable() })
 const permissions = z.object({
   preset: permissionPreset,

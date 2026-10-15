@@ -27,6 +27,7 @@ export interface PiTaskWorkerContext {
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
+  fixedSystemPrompt?: string
   toolPolicy?: PiAgentSessionConfig['toolPolicy']
   disableTools?: boolean
 }
@@ -44,6 +45,8 @@ export interface PiTaskWorkerOptions {
   onApprovalRequest: (request: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
   onEvent: (event: TaskExecutionEvent) => Promise<void> | void
   onSessionCreated?: (session: { sessionId: string; sessionFile: string | null }) => Promise<void> | void
+  /** Runs only after a complete agent execution, never after individual tool turns. */
+  onResponseSettled?: (response: { text: string; stopReason?: string }) => Promise<{ continueWith: string } | void>
   runtime?: PiAgentRuntime
   sessionAdapter?: SharedPiSession
   createTokenManager?: () => TokenManagerPort
@@ -56,6 +59,7 @@ export class PiTaskWorker {
   private readonly onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   private readonly onEvent: PiTaskWorkerOptions['onEvent']
   private readonly onSessionCreated: PiTaskWorkerOptions['onSessionCreated']
+  private readonly onResponseSettled: PiTaskWorkerOptions['onResponseSettled']
   private readonly sessionAdapter: SharedPiSession | null
   private session: PiAgentSession | null = null
   private unsubscribe: (() => void) | null = null
@@ -73,6 +77,7 @@ export class PiTaskWorker {
   private identicalSuccessfulToolTurns = 0
   private finalFailure: string | null = null
   private eventChain: Promise<void> = Promise.resolve()
+  private settledResponse: { text: string; stopReason?: string } = { text: '' }
 
   constructor(options: PiTaskWorkerOptions) {
     this.context = options.context
@@ -80,6 +85,7 @@ export class PiTaskWorker {
     this.onApprovalRequest = options.onApprovalRequest
     this.onEvent = options.onEvent
     this.onSessionCreated = options.onSessionCreated
+    this.onResponseSettled = options.onResponseSettled
     this.sessionAdapter = options.sessionAdapter ?? null
     this.tokenManager = options.createTokenManager?.() ?? new EmploymentTokenManager({
       getRefreshToken: options.getRefreshToken,
@@ -126,6 +132,7 @@ export class PiTaskWorker {
         resumeSessionFile: this.context.resumeSessionFile,
         additionalSkillPaths: this.context.additionalSkillPaths,
         employeeProfile: this.context.employeeProfile,
+        fixedSystemPrompt: this.context.fixedSystemPrompt,
         toolPolicy: this.context.toolPolicy,
         disableTools: this.context.disableTools,
         getAccessToken: () => this.tokenManager.getValidToken(),
@@ -173,6 +180,14 @@ export class PiTaskWorker {
       ? (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => this.sessionAdapter!.subscribe(listener)
       : (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => session.subscribe(listener)
     this.unsubscribe = subscribe(event => {
+      if (event.type === 'turn_start') this.settledResponse = { text: '' }
+      if (event.type === 'turn_end') {
+        const data = event.data as { message?: { role?: string; stopReason?: string; content?: Array<{ type?: string; text?: string }> } } | null
+        if (data?.message?.role === 'assistant') this.settledResponse = {
+          text: (data.message.content ?? []).filter(part => part.type === 'text').map(part => part.text ?? '').join(''),
+          stopReason: data.message.stopReason,
+        }
+      }
       if (event.type === 'auto_retry_end' && (event.data as { success?: unknown } | null)?.success === true) this.retryCount = 0
       if (event.failure && !this.finalFailure) this.finalFailure = event.failure
       if (event.type === 'auto_retry_start' && ++this.retryCount > MAX_RUN_AUTO_RETRIES) {
@@ -205,13 +220,22 @@ export class PiTaskWorker {
       stage = 'session-persist'
       await this.duringSetup(Promise.resolve(this.onSessionCreated?.({ sessionId: session.sessionId, sessionFile: session.sessionFile })))
       this.checkCancellation()
-      stage = 'prompt'
-      await session.prompt(prompt)
-      stage = 'event-flush'
-      await this.eventChain
-      stage = 'agent-result'
-      if (this.finalFailure) throw new Error(this.finalFailure)
-      this.checkCancellation()
+      let nextPrompt = prompt
+      while (true) {
+        this.settledResponse = { text: '' }
+        stage = 'prompt'
+        await session.prompt(nextPrompt)
+        stage = 'event-flush'
+        await this.eventChain
+        stage = 'agent-result'
+        if (this.finalFailure) throw new Error(this.finalFailure)
+        this.checkCancellation()
+        stage = 'response-settlement'
+        const correction = await this.onResponseSettled?.(this.settledResponse)
+        this.checkCancellation()
+        if (!correction) break
+        nextPrompt = correction.continueWith
+      }
       log.info('run completed', logContext)
     } catch (error) {
       const failure = this.finalFailure ? new Error(this.finalFailure) : error

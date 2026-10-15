@@ -197,13 +197,24 @@ export interface ArrangementParticipantSnapshot {
   modelId: string
 }
 
+export interface ArrangementDeliverable {
+  id: string
+  name: string
+  format: string
+  path: string
+  contentOutline: string[]
+  acceptanceCriteria: string[]
+}
+
 export interface ArrangementNodeSnapshot {
   id: string
   subscriptionId: string
   modelId: string
   title: string
+  objective?: string
   instruction: string
   expectedOutput: string
+  deliverables?: ArrangementDeliverable[]
   dependsOn: string[]
   skillIds: string[]
   requiresUserConfirmation: boolean
@@ -244,11 +255,14 @@ export type ArrangementDraftStatus = 'editing' | 'planning' | 'planning-failed' 
 
 export interface ArrangementDraftNode {
   id: string
+  stepId?: string
   subscriptionId: string
   modelId: string
   title: string
+  objective?: string
   instruction: string
   expectedOutput: string
+  deliverables?: ArrangementDeliverable[]
   dependsOn: string[]
   skillIds: string[]
   requiresUserConfirmation: boolean

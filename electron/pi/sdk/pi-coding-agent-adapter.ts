@@ -535,8 +535,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         noSkills: false,
         noContextFiles: true,
         additionalSkillPaths: config.additionalSkillPaths,
-        appendSystemPromptOverride: employeePrompt
-          ? base => [...base, employeePrompt]
+        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt
+          ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : [])]
           : undefined,
       })
       await resourceLoader.reload()

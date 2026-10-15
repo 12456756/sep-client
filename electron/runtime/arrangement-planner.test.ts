@@ -22,8 +22,8 @@ describe('arrangement planner', () => {
     assert.match(prompt, /Researches public information/)
     assert.match(prompt, /sub-a/)
     assert.match(prompt, /JSON/)
-    assert.ok(prompt.startsWith("\u4f60\u662f SEP \u81ea\u52a8\u7f16\u6392 Agent"))
-    assert.ok(prompt.includes("\u53ea\u80fd\u4ece employeeCatalog \u4e2d\u9009\u62e9\u5458\u5de5"))
+    assert.ok(prompt.startsWith('你是 SEP 自动编排规划 Agent'))
+    assert.ok(prompt.includes('只能使用当前 employeeCatalog 中的真实员工'))
     assert.match(prompt, /intentAnalysis/)
     assert.match(prompt, /unresolvedSteps/)
   })
@@ -46,15 +46,11 @@ describe('arrangement planner', () => {
         unresolvedSteps: pass.hasIntentAnalysis ? [{ stepId: 'step-1', reason: '需要行业研究员工', requiredCapabilities: ['行业研究'] }] : [],
       }, [{ ...employees[0]!, source: pass.source, canExecute: pass.source === 'authorized' }])
 
-      assert.ok(prompt.includes('一个步骤对应一个员工'), pass.source)
-      assert.ok(prompt.includes('工具操作，不得单独拆成工作编排步骤'), pass.source)
-      assert.ok(prompt.includes('应写入所属工作步骤的 instruction'), pass.source)
-      assert.ok(prompt.includes('“一个步骤一个员工”不等于“每个执行动作一个员工”'), pass.source)
-      assert.ok(prompt.includes('将工具操作作为独立步骤放入 unresolvedSteps'), pass.source)
-      assert.ok(prompt.includes('不应拆出“网络搜索”步骤并为它匹配员工'), pass.source)
-      const planningInstruction = pass.hasIntentAnalysis ? '已有意图快照，禁止重新识别整个任务' : '先识别用户意图'
-      assert.ok(prompt.indexOf('工作步骤拆分规则') < prompt.indexOf(planningInstruction), pass.source)
-      assert.ok(prompt.includes(`"source":"${pass.source}"`), pass.source)
+      assert.ok(prompt.includes('一个工作步骤分配一个员工'), pass.source)
+      assert.ok(prompt.includes('应写入所属节点的 instruction，不得单独拆成步骤'), pass.source)
+      assert.ok(prompt.includes('不得另设“网络搜索”节点'), pass.source)
+      assert.ok(prompt.indexOf('【二、工作拆分】') < prompt.indexOf('【六、依赖与补充规划】'), pass.source)
+      assert.ok(prompt.includes(`"source": "${pass.source}"`), pass.source)
     }
   })
 
@@ -67,7 +63,7 @@ describe('arrangement planner', () => {
 
   it('plans employee work without task-level skill selection', () => {
     const prompt = buildArrangementPlannerPrompt(draft, employees)
-    assert.ok(prompt.includes('技能由执行阶段根据所选员工加载'))
+    assert.ok(prompt.includes('技能由执行阶段根据员工加载'))
     assert.ok(!prompt.includes('用户选择的共享技能'))
     assert.ok(!prompt.includes('"skillIds"'))
     assert.ok(!prompt.includes('skill-a'))

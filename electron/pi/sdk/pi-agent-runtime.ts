@@ -39,6 +39,8 @@ export interface PiAgentSessionConfig {
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
+  /** Host-owned instructions retained outside compacted conversation history. */
+  fixedSystemPrompt?: string
   mcpServers?: readonly McpServerConfig[]
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>

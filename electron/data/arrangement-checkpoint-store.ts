@@ -1,6 +1,7 @@
 import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { ScopePath, isSafeId, type TaskOwnerScope } from './scope-path'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
+import { nodeDeliveryProgressSchema } from '../domain/arrangement-delivery'
 
 /** 已确认编排的可恢复进度快照；文件读写细节留在本存储适配器内。 */
 export interface ArrangementCheckpoint {
@@ -35,7 +36,8 @@ function parseCheckpoint(value: unknown, scope: TaskOwnerScope, taskId: string):
       !Number.isInteger(node.attempt) || node.attempt < 0 ||
       (node.error !== null && typeof node.error !== 'string') ||
       (node.output !== null && typeof node.output !== 'string') ||
-      (node.sessionRunId !== undefined && (typeof node.sessionRunId !== 'string' || !isSafeId(node.sessionRunId))))) return null
+      (node.sessionRunId !== undefined && (typeof node.sessionRunId !== 'string' || !isSafeId(node.sessionRunId))) ||
+      (node.delivery !== undefined && !nodeDeliveryProgressSchema.safeParse(node.delivery).success))) return null
   return {
     version: 1,
     taskId,

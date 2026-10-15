@@ -27,6 +27,7 @@ import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirect
 import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementEmployeeAccessRequest } from '../domain/arrangement-plan'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 import { TaskCreationGate } from './task-creation-gate'
+import { deliveryPlanIssues } from '../domain/arrangement-delivery'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -446,6 +447,8 @@ export class ArrangementService {
         })))
     const permissionPolicy = effectivePermissionPolicy(draft.permissions)
     const blockingIssues = [
+      ...(draft.mode === 'auto' ? deliveryPlanIssues(draft.nodes).map(issue => issue.message) : []),
+      ...(draft.mode === 'auto' && draft.unresolvedSteps?.length ? ['仍有未解决的工作步骤，不能启动不完整计划。'] : []),
       ...subscriptions.filter(item => !item.available || !item.passesThreshold).map(item => `${item.subscriptionId}:${item.reasonCode ?? 'unavailable'}`),
       ...modelIssues,
     ]

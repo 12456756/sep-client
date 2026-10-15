@@ -24,7 +24,7 @@ async function fixture() {
   const task = await manager.createTask('resume', 'goal', undefined, 'employee')
   const plan: WorkPlan = {
     id: task.id, owner: scope, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1,
-    mode: 'auto', title: 'resume', goal: 'original goal', conversation: null,
+    mode: 'manual', title: 'resume', goal: 'original goal', conversation: null,
     nodes: ['a', 'b'].map((id, index) => ({ id, subscriptionId: 'employee', modelId: id, title: id,
       instruction: 'do '+id, expectedOutput: 'output', dependsOn: index ? ['a'] : [], skillIds: [], requiresUserConfirmation: false })),
     workspace: { mode: 'shared', path: task.workDir },

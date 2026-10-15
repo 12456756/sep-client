@@ -168,6 +168,24 @@ function accessRequest(status: EmployeeAccessRequest['status'] = 'PENDING'): Emp
 }
 
 describe('ArrangementService', () => {
+  it('blocks automatic confirmation without file contracts or with unresolved work', async () => {
+    const h = planningHarness(async () => ({ title: 'unused', nodes: [] }))
+    const stored = persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode] })
+    h.setStored(stored)
+    const invalid = await h.service.preflightDraft('draft-a', 1)
+    assert.equal(invalid.canStart, false)
+    assert.match(invalid.blockingIssues.join('\n'), /缺少完整目标或文件交付要求/)
+    await assert.rejects(h.service.confirmAndStart('draft-a', 1, 'confirm'))
+    assert.equal(h.taskCreates(), 0)
+    stored.nodes[0]!.objective = 'Collect findings'
+    stored.nodes[0]!.deliverables = [{ id: 'report', name: 'Findings', format: 'txt', path: 'findings.txt',
+      contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }]
+    h.setStored(stored)
+    assert.equal((await h.service.preflightDraft('draft-a', 1)).canStart, true)
+    stored.unresolvedSteps = [{ stepId: 'missing', reason: 'Waiting authorization', requiredCapabilities: [] }]
+    h.setStored(stored)
+    assert.equal((await h.service.preflightDraft('draft-a', 1)).canStart, false)
+  })
   it('shares the creation gate with task queries through plan and metadata persistence', async () => {
     const gate = new TaskCreationGate()
     const entered = deferred<void>()
@@ -550,7 +568,7 @@ describe('ArrangementService', () => {
       rounds.push(round)
       if (round === 1) return { title: '法务客户接待', intentAnalysis, unresolvedSteps, nodes: [authorizedNode] }
       const prompt = buildArrangementPlannerPrompt(input.draft, input.employees)
-      assert.match(prompt, /本轮是待授权员工推荐阶段/)
+      assert.match(prompt, /当前规划阶段：\n待授权员工推荐/)
       assert.deepEqual(input.draft.nodes, [authorizedNode])
       return parseArrangementPlannerOutput(JSON.stringify({
         title: '法务客户接待', intentAnalysis, unresolvedSteps, nodes: [],
