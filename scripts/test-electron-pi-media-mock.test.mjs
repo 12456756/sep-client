@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { openWorkRecord, verifyCleanClose, verifyPersistedJobIdentity, verifyPiTimeline, verifyShutdownMarker } from './test-electron-pi-media-mock.mjs'
+import { openWorkRecord, verifyCleanClose, verifyFailureJobIdentity, verifyFailureModelAudit, verifyPausedRestartAudit, verifyPersistedJobIdentity, verifyPiTimeline, verifyShutdownMarker } from './test-electron-pi-media-mock.mjs'
 
 const context = { taskId: 'task-a', runId: 'run-a', subscriptionId: 'sub-a', scenario: 'SYNC',
   skillPath: '/approved/SKILL.md', referenceId: 'ref-a', jobId: 'job-a' }
@@ -47,6 +47,67 @@ test('rejects missing or invalid timestamps instead of weakening temporal checks
   const events = timeline()
   delete events[2].occurredAt
   assert.throws(() => verifyPiTimeline(events, context), /TIMELINE_TIMESTAMP/)
+})
+
+for (const scenario of ['GENERATE', 'PARTIAL']) {
+  test(`validates ${scenario} Pi generation and original-job query, not a second generation`, () => {
+    const events = timeline().filter(event => !['upload-references', 'edit'].includes(event.data.operation)
+      && !['upload', 'generation'].includes(event.data.requestId))
+    const start = events.find(event => event.type === 'tool_execution_start' && event.data.toolName === 'media_generate_image')
+    start.data.input = { profileId: 'mock-sync', operation: 'generate', localAssetIds: [],
+      parameters: { aspectRatio: '1:1', count: scenario === 'PARTIAL' ? 2 : 1, size: '1x1' } }
+    const request = { ...events[0], sequence: 10, occurredAt: 9, type: 'approval_requested',
+      data: { requestId: 'approve', toolName: 'media_generate_image', input: { operation: 'generate', referenceCount: 0 } } }
+    const resolved = { ...request, sequence: 11, occurredAt: 10, type: 'approval_resolved',
+      data: { requestId: 'approve', toolName: 'media_generate_image', approved: true } }
+    events.push(request, resolved)
+    events.sort((a, b) => a.sequence - b.sequence)
+    assert.equal(verifyPiTimeline(events, { ...context, scenario }).referenceCount, 0)
+    start.data.input.parameters.count = scenario === 'PARTIAL' ? 1 : 2
+    assert.throws(() => verifyPiTimeline(events, { ...context, scenario }), /PI_PARAMETERS/)
+  })
+}
+
+test('requires the original manual approval and quote, with stable frozen request hashes', () => {
+  const task = { id: 'task-a', subscriptionId: 'sub-a', ownerId: 'user-a', ownerEnterpriseId: 'enterprise-a' }
+  const job = { owner: { memberId: 'user-a', enterpriseId: 'enterprise-a' }, taskId: task.id,
+    subscriptionId: task.subscriptionId, jobId: 'job-a', runId: 'run-a', submission: 'RECEIPTED',
+    receiptId: 'receipt-a', clientRequestId: 'request-a', requestHash: 'a'.repeat(64), profile: { configVersion: 'config-a' },
+    approval: 'manual', quote: { quoteId: 'quote-a', requestHash: 'a'.repeat(64) },
+    request: { clientRequestId: 'request-a', requestHash: 'a'.repeat(64), configVersion: 'config-a', quoteId: 'quote-a' } }
+  const original = verifyFailureJobIdentity(job, task, 'job-a', 'run-a')
+  const mutable = { ...job, trackingStatus: 'STOPPED', saveStatus: 'SAVED', updatedAt: Date.now() }
+  assert.deepEqual(verifyFailureJobIdentity(mutable, task, 'job-a', 'run-a'), original)
+  assert.throws(() => verifyFailureJobIdentity({ ...job, approval: 'automatic' }, task, 'job-a', 'run-a'), /PERSISTED_APPROVAL_IDENTITY/)
+  assert.throws(() => verifyFailureJobIdentity({ ...job, runId: 'other-run' }, task, 'job-a', 'run-a'), /PERSISTED_JOB_IDENTITY/)
+  assert.throws(() => verifyFailureJobIdentity({ ...job, quote: { ...job.quote, quoteId: 'new-quote' } }, task, 'job-a', 'run-a'), /PERSISTED_APPROVAL_IDENTITY/)
+  assert.notEqual(verifyFailureJobIdentity({ ...job, request: { ...job.request, creativeBrief: 'changed' } }, task, 'job-a', 'run-a').requestSha256, original.requestSha256)
+})
+
+test('requires one Pi read, generation and query per independent failure task; recovery invokes no model', () => {
+  const make = tasks => ({ requests: tasks * 5, generationCount: tasks, skillReadVerified: tasks > 0,
+    steps: { read: tasks, media_get_capabilities: tasks, media_generate_image: tasks, media_get_job: tasks, final: tasks, businessError: 0 } })
+  verifyFailureModelAudit(make(0), 0)
+  verifyFailureModelAudit(make(2), 2)
+  const rerun = make(2)
+  rerun.steps.media_generate_image++
+  assert.throws(() => verifyFailureModelAudit(rerun, 2), /MODEL_AUDIT_STEPS/)
+  assert.throws(() => verifyFailureModelAudit({ ...make(0), requests: 1 }, 0), /MODEL_AUDIT_GENERATION/)
+  assert.throws(() => verifyFailureModelAudit(undefined, 0), /MODEL_AUDIT_MISSING/)
+})
+
+test('includes the whole restart window when checking a paused job has not retried', () => {
+  const identity = { receiptId: 'receipt-a', clientRequestId: 'request-a' }
+  const audit = { requests: { '/api/client/subscriptions': 2, '/api/gateway/v1/media/profiles': 1 },
+    piModel: { requests: 0, generationCount: 0, skillReadVerified: false,
+      steps: { read: 0, media_get_capabilities: 0, media_generate_image: 0, media_get_job: 0, final: 0, businessError: 0 } } }
+  verifyPausedRestartAudit(audit, identity)
+  for (const path of ['/api/gateway/v1/media/quotes', '/api/gateway/v1/media/requests',
+    '/api/gateway/v1/media/requests/receipt-a', '/api/gateway/v1/media/requests/receipt-a/outputs/image-a/content',
+    '/api/gateway/v1/media/requests/by-client-id/request-a']) {
+    assert.throws(() => verifyPausedRestartAudit({ ...audit, requests: { ...audit.requests, [path]: 1 } }, identity), /RESTART_NETWORK_RETRY/)
+  }
+  assert.throws(() => verifyPausedRestartAudit({ ...audit, piModel: { ...audit.piModel, requests: 1 } }, identity), /MODEL_AUDIT_GENERATION/)
 })
 
 test('accepts normal exit even if Playwright reports its target was already closed', () => {
@@ -99,6 +160,11 @@ test('clears status, type and search filters before opening a recovered work rec
         return { async click() { actions.push(options.name) } }
       } }
       if (role === 'searchbox') return { async fill(value) { assert.equal(value, ''); actions.push(options.name) } }
+      if (role === 'button') {
+        for (const name of ['工作记录', '工作记录 1', '工作记录12']) assert.ok(options.name.test(name))
+        for (const name of ['其他工作记录', '工作记录详情']) assert.equal(options.name.test(name), false)
+        return { async click() { actions.push('工作记录') } }
+      }
       return {
         async click() { actions.push(options.name) },
         async waitFor() { actions.push(options.name) },

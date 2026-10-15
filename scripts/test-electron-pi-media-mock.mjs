@@ -1,6 +1,6 @@
 /* global window */
 import { createHash, randomUUID } from 'node:crypto'
-import { access, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,8 +14,17 @@ const check = (condition, code) => { if (!condition) throw new Error(code) }
 const equal = (actual, expected, code) => check(JSON.stringify(actual) === JSON.stringify(expected), code)
 const metadata = skills => skills.map(({ name, versionId, sha256 }) => ({ name, versionId, sha256 }))
 
+export function verifyPausedRestartAudit(audit, identity) {
+  check(audit && audit.requests && typeof audit.requests === 'object', 'RESTART_AUDIT_MISSING')
+  const relevant = path => path === submissionPath || path === '/api/gateway/v1/media/quotes'
+    || path.startsWith(`${submissionPath}/${identity.receiptId}`)
+    || path === `${submissionPath}/by-client-id/${identity.clientRequestId}`
+  check(Object.entries(audit.requests).every(([path, count]) => !relevant(path) || count === 0), 'RESTART_NETWORK_RETRY')
+  verifyFailureModelAudit(audit.piModel, 0)
+}
+
 export function verifyPiTimeline(events, { taskId, runId, subscriptionId, scenario, skillPath, referenceId, jobId }) {
-  check(['DENY', 'SYNC', 'ASYNC'].includes(scenario), 'INVALID_SCENARIO')
+  check(['DENY', 'SYNC', 'ASYNC', 'GENERATE', 'PARTIAL'].includes(scenario), 'INVALID_SCENARIO')
   check(Array.isArray(events) && events.length > 0, 'TIMELINE_MISSING')
   for (let i = 0; i < events.length; i++) {
     const event = events[i]
@@ -45,7 +54,7 @@ export function verifyPiTimeline(events, { taskId, runId, subscriptionId, scenar
   check(generation.operation === (scenario === 'SYNC' ? 'edit' : 'generate'), 'PI_OPERATION')
   if (scenario === 'SYNC') check(typeof referenceId === 'string' && referenceId.length > 0, 'REFERENCE_REQUIRED')
   equal(generation.localAssetIds, scenario === 'SYNC' ? [referenceId] : [], 'PI_REFERENCES')
-  equal(generation.parameters, { aspectRatio: '1:1', count: 1, size: '1x1' }, 'PI_PARAMETERS')
+  equal(generation.parameters, { aspectRatio: '1:1', count: scenario === 'PARTIAL' ? 2 : 1, size: '1x1' }, 'PI_PARAMETERS')
   if (scenario !== 'DENY') {
     check(typeof jobId === 'string' && jobId.length > 0, 'JOB_REQUIRED')
     equal(starts[3].data.input, { jobId }, 'PI_ORIGINAL_JOB')
@@ -155,8 +164,25 @@ export function verifyPersistedJobIdentity(job, task, jobId, runId) {
     frozenProfileSha256: hash(Buffer.from(JSON.stringify(job.profile))) }
 }
 
+export function verifyFailureJobIdentity(job, task, jobId, runId) {
+  const identity = verifyPersistedJobIdentity(job, task, jobId, runId)
+  check(job.approval === 'manual' && job.quote?.quoteId === job.request?.quoteId
+    && job.quote?.requestHash === job.requestHash, 'PERSISTED_APPROVAL_IDENTITY')
+  return { ...identity, requestSha256: hash(Buffer.from(JSON.stringify(job.request))),
+    quoteSha256: hash(Buffer.from(JSON.stringify(job.quote))), approval: job.approval }
+}
+
+export function verifyFailureModelAudit(audit, tasks) {
+  check(audit?.steps && Number.isSafeInteger(tasks) && tasks >= 0, 'MODEL_AUDIT_MISSING')
+  equal(audit.steps, { read: tasks, media_get_capabilities: tasks, media_generate_image: tasks,
+    media_get_job: tasks, final: tasks, businessError: audit.steps.businessError }, 'MODEL_AUDIT_STEPS')
+  check(Number.isSafeInteger(audit.steps.businessError) && audit.steps.businessError >= 0
+    && audit.steps.businessError <= tasks && audit.generationCount === tasks
+    && audit.skillReadVerified === (tasks > 0) && (tasks > 0 ? audit.requests >= tasks * 5 : audit.requests === 0), 'MODEL_AUDIT_GENERATION')
+}
+
 export async function openWorkRecord(page, title) {
-  await page.getByRole('button', { name: '工作记录', exact: true }).click()
+  await page.getByRole('button', { name: /^工作记录(?:\s*\d+)?$/ }).click()
   for (const name of ['按状态筛选工作记录', '按类型筛选工作记录']) {
     await page.getByRole('group', { name, exact: true }).getByRole('button', { name: /^全部/ }).click()
   }
@@ -187,7 +213,8 @@ export async function main() {
   const output = process.env.SEP_ELECTRON_MOCK_OUTPUT ? resolve(process.env.SEP_ELECTRON_MOCK_OUTPUT)
     : join(root, 'outputs', `electron-pi-media-mock-${Date.now()}`)
   await mkdir(output, { recursive: true })
-  const evidence = { explicitMock: true, realLogin: false, gateway, mcpEnabled: false,
+  const failureScenarios = process.env.SEP_ELECTRON_PI_MEDIA_FAILURES === 'true'
+  const evidence = { explicitMock: true, failureScenarios, realLogin: false, gateway, mcpEnabled: false,
     phases: [], processes: [], lifecycle: [], screenshots: [], step: 'preflight', passed: false }
   let application, page, profile, shutdownId, processNumber = 0
   const control = (fn, arg) => application.evaluate(fn, arg)
@@ -228,6 +255,7 @@ export async function main() {
     await control(({ BrowserWindow }) => {
       for (const win of BrowserWindow.getAllWindows()) { win.on('show', () => win.hide()); win.hide() }
     })
+    evidence.step = 'launch-await-auth-screen'
     const email = page.getByLabel('邮箱', { exact: true })
     await poll(async () => {
       if (await email.isVisible()) return 'login'
@@ -235,16 +263,20 @@ export async function main() {
       return result.success && result.data.length > 0 ? 'authenticated' : false
     }, 'LOGIN_SCREEN_TIMEOUT')
     if (await email.isVisible()) {
+      evidence.step = 'launch-fill-login'
       await email.fill(process.env.SEP_ELECTRON_TEST_EMAIL ?? 'staff@acme.local')
       await page.getByLabel('密码', { exact: true }).fill(process.env.SEP_ELECTRON_TEST_PASSWORD ?? 'Demo123456')
+      evidence.step = 'launch-submit-login'
       await page.getByRole('button', { name: '登录', exact: true }).click()
+      evidence.step = 'launch-await-login'
       await email.waitFor({ state: 'hidden', timeout: 20_000 })
       evidence.realLogin = true
     }
-    await page.waitForFunction(async () => {
-      const result = await window.electronAPI.getSubscriptions()
-      return result.success && result.data.length > 0
-    }, undefined, { timeout: 20_000 })
+    evidence.step = 'launch-await-subscriptions'
+    await poll(async () => {
+      const result = await page.evaluate(() => window.electronAPI.getSubscriptions())
+      return result.success && Array.isArray(result.data) && result.data.length > 0
+    }, 'LOGIN_SUBSCRIPTIONS_TIMEOUT', { timeout: 20_000, interval: 250 })
   }
   async function close() {
     if (!application) return
@@ -254,7 +286,7 @@ export async function main() {
       evidence.processes.push({ process: processNumber, requests: raw.requests, responses: raw.responses,
         blockedRequests: raw.blockedRequests, mediaErrorCount: raw.mediaErrors.length, runtimeLoaded: raw.runtimeLoaded,
         rendererBlockedRequests: raw.rendererBlockedRequests, rendererNetworkRestricted: raw.rendererNetworkRestricted,
-        mcpConfigured: raw.mcpConfigured, piModel: raw.piModel, piErrors: raw.piErrors ?? [] })
+        mcpConfigured: raw.mcpConfigured, piModel: raw.piModel, piErrors: raw.piErrors ?? [], faults: raw.faults })
     } finally {
       evidence.step = 'close-process'
       const child = current.process()
@@ -281,9 +313,11 @@ export async function main() {
     }
   }
   async function viewTask(title) {
+    evidence.step = 'open-work-record'
     await openWorkRecord(page, title)
   }
   async function prepare(subscriptionId) {
+    evidence.step = 'prepare-approved-skill'
     const prepared = await control((_, id) => globalThis.__sepMediaTest.prepare(id), subscriptionId)
     check(prepared.subscriptionId === subscriptionId && prepared.productionExecutionAvailable === false, 'EXPLICIT_MOCK_REQUIRED')
     check(Array.isArray(prepared.skills) && prepared.skills.filter(skill => skill.name === skillName).length === 1, 'APPROVED_SKILL_REQUIRED')
@@ -358,14 +392,14 @@ export async function main() {
     const value = JSON.parse(await readFile(join(mediaRoot(task), 'jobs', `${jobId}.json`), 'utf8'))
     return verifyPersistedJobIdentity(value, task, jobId, runId)
   }
-  async function savedJob(task, profileId) {
+  async function savedJob(task, profileId, count = 1) {
     return poll(async () => {
       const view = (await ipc('getTaskMedia', task.id)).data
       check(view.jobs.length <= 1, 'DUPLICATE_GENERATION')
       const job = view.jobs[0]
       if (!job || job.saveStatus !== 'SAVED') return false
       check(job.profileId === profileId && job.generationStatus === 'SUCCEEDED'
-        && job.billingStatus === 'MOCK_NOT_CHARGED' && job.assets.filter(asset => asset.source === 'output').length === 1, 'SAVED_MOCK_JOB_INVALID')
+        && job.billingStatus === 'MOCK_NOT_CHARGED' && job.assets.filter(asset => asset.source === 'output').length === count, 'SAVED_MOCK_JOB_INVALID')
       return { view, job }
     }, 'MEDIA_SAVE_TIMEOUT', { timeout: 60_000 })
   }
@@ -387,6 +421,140 @@ export async function main() {
     return { file: `${name}-export.png`, sha256: expectedHash, decoded: true }
   }
   const submitted = async () => (await control(() => globalThis.__sepMediaTest.evidence())).requests[submissionPath] ?? 0
+  async function failureIdentity(task, job, runId) {
+    check(job.runId === runId, 'JOB_PI_RUN_MISMATCH')
+    const stored = JSON.parse(await readFile(join(mediaRoot(task), 'jobs', `${job.jobId}.json`), 'utf8'))
+    return verifyFailureJobIdentity(stored, task, job.jobId, runId)
+  }
+  async function diskEvidence(task, expectedCount, expectedHash) {
+    const names = await readdir(mediaRoot(task), { recursive: true })
+    check(!names.some(name => name.endsWith('.part')), 'UNCOMMITTED_MEDIA_PART')
+    const images = names.filter(name => name.startsWith('files/') && name.endsWith('.png')).sort()
+    check(images.length === expectedCount, 'DISK_OUTPUT_COUNT')
+    return Promise.all(images.map(async name => {
+      check(/^files\/[A-Za-z0-9_-]+\.png$/.test(name), 'UNSAFE_MEDIA_FILE')
+      const path = join(mediaRoot(task), name), bytes = await readFile(path), info = await stat(path)
+      check(hash(bytes) === expectedHash, 'DISK_OUTPUT_HASH')
+      return { file: name, sha256: hash(bytes), bytes: bytes.length, inode: info.ino, mtimeMs: info.mtimeMs }
+    }))
+  }
+  async function runFailures(subscriptionId, initialPreparation) {
+    let prepared = initialPreparation
+    const scenarios = [
+      { fault: 'AUTH_QUERY', scenario: 'ASYNC', count: 1, saved: 0, auth: true, restart: true },
+      { fault: 'AUTH_DOWNLOAD', scenario: 'GENERATE', count: 1, saved: 0, auth: true, restart: true },
+      { fault: 'CORRUPT_DOWNLOAD', scenario: 'GENERATE', count: 1, saved: 0, auth: false, restart: false },
+      { fault: 'PARTIAL_DOWNLOAD', scenario: 'PARTIAL', count: 2, saved: 1, auth: false, restart: true },
+    ]
+    for (const [index, scenario] of scenarios.entries()) {
+      if (index) {
+        evidence.step = 'wait-failure-auth-window'
+        await new Promise(done => setTimeout(done, 62_000))
+      }
+      const label = scenario.fault.toLowerCase()
+      const task = await create(scenario.scenario, subscriptionId)
+      await control((_, kind) => globalThis.__sepMediaTest.fault(kind), scenario.fault)
+      const beforePosts = await submitted()
+      await ipc('executeTask', task.id)
+      await decide(task, 'generate', true, `${label}-approval`)
+      evidence.step = `${label}-wait-persisted-failure`
+      const failed = await poll(async () => {
+        const view = (await ipc('getTaskMedia', task.id)).data
+        check(view.jobs.length <= 1, 'DUPLICATE_GENERATION')
+        const job = view.jobs[0]
+        if (!job || (scenario.auth ? job.trackingStatus !== 'AUTH_REQUIRED'
+          : job.saveStatus !== 'SAVE_FAILED' || job.trackingStatus !== 'STOPPED')) return false
+        check(job.assets.length === scenario.saved && job.billingStatus === 'MOCK_NOT_CHARGED', 'FAILED_ASSET_COUNT')
+        return { view, job }
+      }, 'EXPECTED_MEDIA_FAILURE_TIMEOUT')
+      const run = await completedTimeline(task, scenario.scenario, prepared, failed.job.jobId)
+      const eventSha256 = hash(Buffer.from(JSON.stringify((await timeline(task)).events)))
+      const identity = await failureIdentity(task, failed.job, run.runId)
+      const frozen = await snapshot(task, run.runId, prepared)
+      const originalFiles = await diskEvidence(task, scenario.saved, prepared.referenceFixtureSha256)
+      const audit = await control(() => globalThis.__sepMediaTest.evidence())
+      check(audit.faults.injected > 0 && audit.faults.targetReceiptId === identity.receiptId
+        && audit.faults.targetClientRequestId === identity.clientRequestId && await submitted() === beforePosts + 1, 'FAULT_NOT_BOUND_TO_ACCEPTED_REQUEST')
+      const jobUi = () => page.locator('.media-job').filter({ hasText: failed.job.jobId })
+      await jobUi().getByText(scenario.auth ? '需要恢复认证' : '本地保存失败', { exact: true }).waitFor()
+      await jobUi().scrollIntoViewIfNeeded()
+      await shot(`${label}-paused`)
+      const phase = { name: label, job: jobEvidence(failed.job), trackingStatus: failed.job.trackingStatus,
+        identity, timeline: run.evidence, snapshot: frozen, faults: audit.faults, filesBefore: originalFiles, originalProcess: processNumber }
+      evidence.phases.push(phase)
+
+      // Restored permission alone never resumes a persisted authorization pause.
+      await control(() => globalThis.__sepMediaTest.fault(null))
+      if (scenario.restart) {
+        await close()
+        evidence.step = `${label}-wait-restart-auth-window`
+        await new Promise(done => setTimeout(done, 62_000))
+        await launch()
+        prepared = await prepare(subscriptionId)
+        equal(metadata(prepared.skills), metadata(initialPreparation.skills), 'RECOVERY_SKILL_VERSION_CHANGED')
+        await viewTask(task.title)
+      }
+      const idleBefore = await control(() => globalThis.__sepMediaTest.evidence())
+      if (scenario.restart) verifyPausedRestartAudit(idleBefore, identity)
+      await control(() => globalThis.__sepMediaTest.scanPending())
+      await new Promise(done => setTimeout(done, 3500))
+      const idle = (await ipc('getTaskMedia', task.id)).data.jobs[0]
+      check(idle.jobId === failed.job.jobId && idle.trackingStatus === failed.job.trackingStatus
+        && idle.saveStatus === failed.job.saveStatus && idle.assets.length === scenario.saved, 'PAUSED_JOB_AUTO_RESUMED')
+      equal(await failureIdentity(task, idle, run.runId), identity, 'IDLE_RECEIPT_IDENTITY_CHANGED')
+      equal(await diskEvidence(task, scenario.saved, prepared.referenceFixtureSha256), originalFiles, 'IDLE_FILES_CHANGED')
+      const idleAfter = await control(() => globalThis.__sepMediaTest.evidence())
+      const relevant = path => path === submissionPath || path === '/api/gateway/v1/media/quotes'
+        || path.startsWith(`${submissionPath}/${identity.receiptId}`) || path === `${submissionPath}/by-client-id/${identity.clientRequestId}`
+      equal(Object.entries(idleAfter.requests).filter(([path]) => relevant(path)),
+        Object.entries(idleBefore.requests).filter(([path]) => relevant(path)), 'IDLE_NETWORK_RETRY')
+      await jobUi().getByText(scenario.auth ? '需要恢复认证' : '本地保存失败', { exact: true }).waitFor()
+      await jobUi().scrollIntoViewIfNeeded()
+      await shot(`${label}-restored-not-resumed`)
+      const action = scenario.auth ? '恢复跟踪' : '重新保存'
+      const postsBeforeResume = await submitted()
+      await jobUi().getByRole('button', { name: action, exact: true }).click()
+      const result = await savedJob(task, scenario.scenario === 'ASYNC' ? 'mock-async' : 'mock-sync', scenario.count)
+      equal(await failureIdentity(task, result.job, run.runId), identity, 'RECOVERY_RECEIPT_IDENTITY_CHANGED')
+      const afterSnapshot = await snapshot(task, run.runId, prepared)
+      check(afterSnapshot.snapshotSha256 === frozen.snapshotSha256 && await submitted() === postsBeforeResume, 'RECOVERY_REGENERATED')
+      check(hash(Buffer.from(JSON.stringify((await timeline(task)).events))) === eventSha256, 'RECOVERY_TIMELINE_CHANGED')
+      const afterRun = await completedTimeline(task, scenario.scenario, prepared, result.job.jobId)
+      equal(afterRun, run, 'RECOVERY_PI_RERUN')
+      const finalFiles = await diskEvidence(task, scenario.count, prepared.referenceFixtureSha256)
+      for (const file of originalFiles) equal(finalFiles.find(item => item.file === file.file), file, 'SAVED_FIRST_IMAGE_REWRITTEN')
+      const resumedAudit = await control(() => globalThis.__sepMediaTest.evidence())
+      equal(resumedAudit.piModel, idleAfter.piModel, 'RESUME_CALLED_MODEL')
+      check((resumedAudit.requests['/api/gateway/v1/media/quotes'] ?? 0) === (idleAfter.requests['/api/gateway/v1/media/quotes'] ?? 0), 'RESUME_REQUOTED')
+      if (scenario.saved) {
+        const firstPath = `${submissionPath}/${identity.receiptId}/outputs/${audit.faults.allowedOutputId}/content`
+        check((resumedAudit.requests[firstPath] ?? 0) === (idleAfter.requests[firstPath] ?? 0), 'SAVED_FIRST_IMAGE_REDOWNLOADED')
+      }
+      await jobUi().getByText('已保存到本地', { exact: true }).waitFor()
+      await jobUi().scrollIntoViewIfNeeded()
+      await shot(`${label}-saved`)
+      phase.recovery = { process: processNumber, action, originalIdentityUnchanged: true, snapshotUnchanged: true,
+        modelUnchanged: true, extraSubmissions: 0, firstImageUnchanged: originalFiles.length > 0,
+        files: finalFiles, export: await exportImage(label, prepared.referenceFixtureSha256) }
+    }
+    await close()
+    const modelTasks = evidence.processes.map(item => item.piModel?.generationCount)
+    check(modelTasks.reduce((sum, count) => sum + count, 0) === 4, 'TOTAL_PI_GENERATIONS')
+    evidence.processes.forEach(item => {
+      verifyFailureModelAudit(item.piModel, item.piModel.generationCount)
+      check(item.piErrors.length === 0 && item.blockedRequests === 0 && item.rendererNetworkRestricted
+        && item.rendererBlockedRequests >= 1 && !item.mcpConfigured, 'PROCESS_AUDIT_INVALID')
+    })
+    evidence.totalSubmissionPosts = evidence.processes.reduce((sum, item) => sum + (item.requests[submissionPath] ?? 0), 0)
+    const accepted = evidence.processes.reduce((sum, item) => sum + Object.entries(item.responses[submissionPath] ?? {})
+      .reduce((count, [status, total]) => count + (Number(status) >= 200 && Number(status) < 300 ? total : 0), 0), 0)
+    check(accepted === 4, 'TOTAL_ACCEPTED_SUBMISSIONS')
+    check(evidence.totalSubmissionPosts === 4, 'TOTAL_SUBMISSION_POSTS')
+    const exits = evidence.lifecycle.filter(item => item.event === 'process-exit')
+    check(exits.length === evidence.processes.length && exits.every(item => item.code === 0 && item.signal === null), 'PROCESS_EXIT_NOT_CLEAN')
+    evidence.step = 'complete'
+    evidence.passed = true
+  }
   try {
     await access(join(root, 'out/main/media-mock.js')).catch(() => { throw new Error('OPT_IN_BUNDLE_MISSING') })
     profile = await realpath(await mkdtemp(join(tmpdir(), 'sep-electron-media-mock-')))
@@ -403,6 +571,11 @@ export async function main() {
     const prepared = await prepare(selected.subscriptionId)
     evidence.skills = metadata(prepared.skills)
     check(await submitted() === 0, 'PREFLIGHT_SUBMISSION')
+
+    if (failureScenarios) {
+      await runFailures(selected.subscriptionId, prepared)
+      return evidence
+    }
 
     const denied = await create('DENY', selected.subscriptionId)
     await ipc('executeTask', denied.id)
@@ -513,7 +686,9 @@ export async function main() {
     evidence.step = 'complete'
     evidence.passed = true
   } catch (error) {
-    evidence.error = { step: evidence.step, code: /^[A-Z][A-Z0-9_]+$/.test(error?.message ?? '') ? error.message : 'RUNNER_OPERATION_FAILED' }
+    evidence.error = { step: evidence.step, code: /^[A-Z][A-Z0-9_]+$/.test(error?.message ?? '') ? error.message : 'RUNNER_OPERATION_FAILED',
+      kind: ['Error', 'TypeError', 'TimeoutError'].includes(error?.name) ? error.name : 'Unknown',
+      api: /^([A-Za-z]+\.[A-Za-z]+):/.exec(error?.message ?? '')?.[1] ?? null }
     if (page && !page.isClosed()) await shot('failure').catch(() => undefined)
     if (application) await close().catch(() => undefined)
     process.exitCode = 1

@@ -23,7 +23,7 @@ function body(scenario = 'SYNC', path = approvedSkillPath): Body {
   }
 }
 
-function capabilities(referenceAssets: Value[] = [{ localAssetId: 'reference-first' }, { localAssetId: 'reference-second' }]): Value {
+function capabilities(referenceAssets: Value[] = [{ localAssetId: 'reference-first' }, { localAssetId: 'reference-second' }], syncMaxCount = 1): Value {
   return {
     capabilities: {
       protocolVersion: 1, tools: toolNames.slice(1),
@@ -32,7 +32,7 @@ function capabilities(referenceAssets: Value[] = [{ localAssetId: 'reference-fir
         profileId, kind: 'image', displayName: profileId, configVersion: 'mock-v1',
         executionMode: profileId === 'mock-sync' ? 'sync-response' : 'async-query',
         operations: ['generate', 'edit'], capabilities: { referenceImage: true, cancel: false, recoverByRequestId: true },
-        allowedAspectRatios: ['1:1'], allowedSizes: ['1x1'], maxCount: 1,
+        allowedAspectRatios: ['1:1'], allowedSizes: ['1x1'], maxCount: profileId === 'mock-sync' ? syncMaxCount : 1,
       })),
     }, referenceAssets,
   }
@@ -150,6 +150,87 @@ describe('deterministic Pi media model SSE fixture', () => {
     }
   })
 
+  for (const scenario of ['GENERATE', 'PARTIAL']) {
+    it(`${scenario} generates synchronously with the requested count and no references`, async () => {
+      const count = scenario === 'PARTIAL' ? 2 : 1
+      for (const maxCount of [count, count + 1]) {
+        for (const references of [[], [{ localAssetId: 'unused-reference' }], [{ localAssetId: '../invalid-unused' }]]) {
+          const mock = new PiMediaModelMock({ approvedSkillPath })
+          const request = body(scenario)
+          await readSkill(mock, request)
+          const actual = capabilities(references, maxCount)
+          const profiles = (actual.capabilities as Value).profiles as Value[]
+          const sync = profiles.find(profile => profile.profileId === 'mock-sync')!
+          sync.operations = ['generate']
+          sync.capabilities = { referenceImage: false, cancel: false, recoverByRequestId: true }
+          sync.allowedAspectRatios = ['4:3', '1:1']
+          sync.allowedSizes = ['actual-size', 'other-size']
+          sync.allowedQualities = ['actual-quality', 'other-quality']
+          await getCapabilities(mock, request, actual)
+          const generate = await delta(mock.respond(request))
+          assert.equal(generate.tool_calls![0].function.name, 'media_generate_image')
+          assert.deepEqual(JSON.parse(generate.tool_calls![0].function.arguments), {
+            profileId: 'mock-sync', operation: 'generate', localAssetIds: [],
+            creativeBrief: 'Deterministic ecommerce mock image.',
+            parameters: { aspectRatio: '4:3', count, size: 'actual-size', quality: 'actual-quality' },
+          })
+          append(request, generate, { jobId: 'actual-generated-job', profileId: 'mock-sync', operation: 'generate' })
+          const get = await delta(mock.respond(request))
+          assert.equal(get.tool_calls![0].function.name, 'media_get_job')
+          assert.deepEqual(JSON.parse(get.tool_calls![0].function.arguments), { jobId: 'actual-generated-job' })
+          append(request, get, {
+            jobId: 'actual-generated-job', generationStatus: scenario === 'PARTIAL' ? 'PARTIAL_SUCCEEDED' : 'SUCCEEDED', error: null,
+          })
+          const final = await delta(mock.respond(request))
+          assert.equal(final.tool_calls, undefined)
+          assert.match(final.content!, /图片生成/)
+          assert.doesNotMatch(final.content!, /异步|图片编辑/)
+          assert.deepEqual(mock.audit, {
+            requests: 5, skillReadVerified: true, generationCount: 1,
+            steps: { read: 1, media_get_capabilities: 1, media_generate_image: 1, media_get_job: 1, final: 1, businessError: 0 },
+          })
+        }
+      }
+    })
+
+    it(`${scenario} fails closed when the actual sync profile or required tools are unavailable`, async () => {
+      const mutations: Array<(value: Value) => void> = [
+        value => { value.profiles = (value.profiles as Value[]).filter(profile => profile.profileId !== 'mock-sync') },
+        value => { ((value.profiles as Value[])[1]).executionMode = 'async-query' },
+        value => { ((value.profiles as Value[])[1]).operations = ['edit'] },
+        value => { value.tools = ['media_get_capabilities', 'media_generate_image'] },
+      ]
+      for (const mutate of mutations) {
+        const mock = new PiMediaModelMock({ approvedSkillPath })
+        const request = body(scenario)
+        await readSkill(mock, request)
+        const actual = capabilities([], 2)
+        mutate(actual.capabilities as Value)
+        await getCapabilities(mock, request, actual)
+        assert.throws(() => mock.respond(request), { message: 'Pi media model mock: CAPABILITIES_UNAVAILABLE' })
+        assert.equal(mock.audit.generationCount, 0)
+        assert.equal(mock.audit.steps.media_get_job, 0)
+      }
+    })
+  }
+
+  it('rejects PARTIAL when the actual sync maxCount is below two without falling back or generating', async () => {
+    const mock = new PiMediaModelMock({ approvedSkillPath })
+    const request = body('PARTIAL')
+    await readSkill(mock, request)
+    const actual = capabilities([], 1)
+    // Another profile's capacity must not authorize the selected sync profile.
+    const profiles = (actual.capabilities as Value).profiles as Value[]
+    profiles[0].maxCount = 16
+    await getCapabilities(mock, request, actual)
+    for (let replay = 0; replay < 2; replay++) {
+      assert.throws(() => mock.respond(request), { message: 'Pi media model mock: CAPABILITIES_UNAVAILABLE' })
+    }
+    assert.equal(mock.audit.generationCount, 0)
+    assert.equal(mock.audit.steps.media_get_job, 0)
+    assert.equal(mock.audit.steps.final, 0)
+  })
+
   it('lets the real generation tool deny the request and terminates without polling or retry', async () => {
     const mock = new PiMediaModelMock({ approvedSkillPath })
     const request = body('DENY')
@@ -180,23 +261,27 @@ describe('deterministic Pi media model SSE fixture', () => {
   })
 
   it('never regenerates after generation, and gives identical SSE IDs on a fetch replay', async () => {
-    const mock = new PiMediaModelMock({ approvedSkillPath })
-    const request = body('ASYNC')
-    await readSkill(mock, request)
-    await getCapabilities(mock, request)
-    const first = await delta(mock.respond(request))
-    assert.deepEqual(await delta(mock.respond(request)), first)
-    assert.equal(mock.audit.generationCount, 1)
-    append(request, first, { jobId: 'only-job' })
-    const get = await delta(mock.respond(request))
-    assert.equal(get.tool_calls![0].function.name, 'media_get_job')
-    append(request, get, { jobId: 'only-job', generationStatus: 'QUEUED' })
-    const final = await delta(mock.respond(request))
-    assert.equal(final.tool_calls, undefined)
-    assert.deepEqual(await delta(mock.respond(request)), final)
-    request.messages.push({ role: 'assistant', content: final.content })
-    assert.equal((await delta(mock.respond(request))).tool_calls, undefined)
-    assert.equal(mock.audit.generationCount, 1)
+    for (const scenario of ['ASYNC', 'GENERATE', 'PARTIAL']) {
+      const mock = new PiMediaModelMock({ approvedSkillPath })
+      const request = body(scenario)
+      await readSkill(mock, request)
+      await getCapabilities(mock, request, capabilities([], scenario === 'PARTIAL' ? 2 : 1))
+      const first = await delta(mock.respond(request))
+      assert.deepEqual(await delta(mock.respond(request)), first)
+      assert.equal(mock.audit.generationCount, 1)
+      append(request, first, { jobId: 'only-job' })
+      const get = await delta(mock.respond(request))
+      assert.equal(get.tool_calls![0].function.name, 'media_get_job')
+      assert.deepEqual(await delta(mock.respond(request)), get)
+      append(request, get, { jobId: 'only-job', generationStatus: 'QUEUED' })
+      const final = await delta(mock.respond(request))
+      assert.equal(final.tool_calls, undefined)
+      assert.deepEqual(await delta(mock.respond(request)), final)
+      request.messages.push({ role: 'assistant', content: final.content })
+      assert.equal((await delta(mock.respond(request))).tool_calls, undefined)
+      assert.equal(mock.audit.generationCount, 1)
+      assert.equal(mock.audit.steps.media_get_job, 1)
+    }
   })
 
   it('uses only the latest user marker and performs a fresh skill read in each turn', async () => {
@@ -216,7 +301,11 @@ describe('deterministic Pi media model SSE fixture', () => {
   })
 
   it('fails closed for unknown or ambiguous prompts without echoing their content', () => {
-    for (const prompt of ['Bearer secret-token /private/SKILL.md', '[SEP_PI_MEDIA_MOCK_SYNC] [SEP_PI_MEDIA_MOCK_ASYNC]', 'SEP_PI_MEDIA_MOCK_SYNC']) {
+    const scenarios = ['SYNC', 'ASYNC', 'DENY', 'GENERATE', 'PARTIAL']
+    const ambiguous = scenarios.flatMap((scenario, index) => scenarios.slice(index + 1)
+      .map(other => `[SEP_PI_MEDIA_MOCK_${scenario}] [SEP_PI_MEDIA_MOCK_${other}]`))
+    for (const prompt of ['Bearer secret-token /private/SKILL.md', '[SEP_PI_MEDIA_MOCK_UNKNOWN]',
+      ...scenarios.map(scenario => `SEP_PI_MEDIA_MOCK_${scenario}`), ...ambiguous]) {
       const mock = new PiMediaModelMock({ approvedSkillPath })
       const request = body()
       request.messages[1].content = prompt
@@ -302,22 +391,32 @@ describe('deterministic Pi media model SSE fixture', () => {
   })
 
   it('stops for business errors at every stage, including read, with no output leakage', async () => {
-    for (let failureStage = 0; failureStage < 4; failureStage++) {
-      const mock = new PiMediaModelMock({ approvedSkillPath })
-      const request = body('ASYNC')
-      const results = ['SEP_ECOMMERCE_IMAGE_MOCK_V1', capabilities(), { jobId: 'real-job' }, { jobId: 'real-job' }]
-      for (let stage = 0; stage <= failureStage; stage++) {
-        append(request, await delta(mock.respond(request)), stage === failureStage
-          ? { ok: false, error: { code: 'MEDIA_DENIED', message: `Bearer private-token ${approvedSkillPath} SEP_ECOMMERCE_IMAGE_MOCK_V1` } }
-          : results[stage])
+    for (const scenario of ['ASYNC', 'GENERATE', 'PARTIAL']) {
+      for (let failureStage = 0; failureStage < 4; failureStage++) {
+        const mock = new PiMediaModelMock({ approvedSkillPath })
+        const request = body(scenario)
+        const results = ['SEP_ECOMMERCE_IMAGE_MOCK_V1', capabilities([], scenario === 'PARTIAL' ? 2 : 1), { jobId: 'real-job' }, { jobId: 'real-job' }]
+        for (let stage = 0; stage <= failureStage; stage++) {
+          append(request, await delta(mock.respond(request)), stage === failureStage
+            ? { ok: false, error: { code: 'MEDIA_DENIED', message: `Bearer private-token ${approvedSkillPath} SEP_ECOMMERCE_IMAGE_MOCK_V1` } }
+            : results[stage])
+        }
+        const final = await delta(mock.respond(request))
+        assert.equal(final.tool_calls, undefined)
+        assert.match(final.content!, /终止/)
+        const audit = JSON.stringify(mock.audit)
+        assert.doesNotMatch(`${JSON.stringify(final)}${audit}`, /private-token|SKILL\.md|SEP_ECOMMERCE_IMAGE_MOCK_V1/)
+        assert.equal(mock.audit.skillReadVerified, failureStage > 0)
+        assert.equal(mock.audit.steps.businessError, 1)
+        assert.deepEqual(toolNames.map(name => mock.audit.steps[name as keyof typeof mock.audit.steps]),
+          toolNames.map((_, stage) => stage <= failureStage ? 1 : 0))
+        assert.equal(mock.audit.generationCount, failureStage >= 2 ? 1 : 0)
+        assert.deepEqual(await delta(mock.respond(request)), final)
+        request.messages.push({ role: 'assistant', content: final.content })
+        assert.deepEqual(await delta(mock.respond(request)), final)
+        assert.equal(JSON.stringify(mock.audit.steps), JSON.stringify(JSON.parse(audit).steps))
+        assert.equal(mock.audit.generationCount, failureStage >= 2 ? 1 : 0)
       }
-      const final = await delta(mock.respond(request))
-      assert.equal(final.tool_calls, undefined)
-      assert.match(final.content!, /终止/)
-      const audit = JSON.stringify(mock.audit)
-      assert.doesNotMatch(`${JSON.stringify(final)}${audit}`, /private-token|SKILL\.md|SEP_ECOMMERCE_IMAGE_MOCK_V1/)
-      assert.equal(mock.audit.skillReadVerified, failureStage > 0)
-      assert.equal(mock.audit.steps.businessError, 1)
     }
   })
 

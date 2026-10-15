@@ -7,7 +7,7 @@ import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId } from '..
 // the caller must feed the real host's tool results back through the Pi transcript.
 const toolNames = ['read', 'media_get_capabilities', 'media_generate_image', 'media_get_job'] as const
 type ToolName = typeof toolNames[number]
-type Scenario = 'SYNC' | 'ASYNC' | 'DENY'
+type Scenario = 'SYNC' | 'ASYNC' | 'DENY' | 'GENERATE' | 'PARTIAL'
 type RecordValue = Record<string, unknown>
 type Message = RecordValue & { role: 'system' | 'user' | 'assistant' | 'tool'; content: string | null }
 type Call = { name: ToolName; input: RecordValue }
@@ -68,8 +68,10 @@ function generation(capabilities: Capabilities, references: unknown[], scenario:
   const profileId = scenario === 'ASYNC' ? 'mock-async' : 'mock-sync'
   const profile = capabilities.profiles.find(candidate => candidate.profileId === profileId)
   const operation = scenario === 'SYNC' ? 'edit' : 'generate'
+  const count = scenario === 'PARTIAL' ? 2 : 1
   if (!profile || profile.executionMode !== (scenario === 'ASYNC' ? 'async-query' : 'sync-response')
     || !profile.operations.includes(operation)
+    || profile.maxCount < count
     || (operation === 'edit' && !profile.capabilities.referenceImage)
     || !toolNames.slice(1).every(name => capabilities.tools.some(tool => tool === name))) fail('CAPABILITIES_UNAVAILABLE')
   const localAssetIds: string[] = []
@@ -83,7 +85,7 @@ function generation(capabilities: Capabilities, references: unknown[], scenario:
     profileId: profile.profileId, operation, localAssetIds,
     creativeBrief: operation === 'edit' ? 'Deterministic ecommerce mock reference edit.' : 'Deterministic ecommerce mock image.',
     parameters: {
-      aspectRatio: profile.allowedAspectRatios[0], count: 1,
+      aspectRatio: profile.allowedAspectRatios[0], count,
       ...(profile.allowedSizes?.[0] ? { size: profile.allowedSizes[0] } : {}),
       ...(profile.allowedQualities?.[0] ? { quality: profile.allowedQualities[0] } : {}),
     },
@@ -133,7 +135,7 @@ export class PiMediaModelMock {
     while (userIndex >= 0 && messages[userIndex].role !== 'user') userIndex--
     if (userIndex < 0) fail('UNKNOWN_PROMPT')
     const prompt = messages[userIndex].content ?? ''
-    const scenarios = (['SYNC', 'ASYNC', 'DENY'] as const).filter(value => prompt.includes(`[SEP_PI_MEDIA_MOCK_${value}]`))
+    const scenarios = (['SYNC', 'ASYNC', 'DENY', 'GENERATE', 'PARTIAL'] as const).filter(value => prompt.includes(`[SEP_PI_MEDIA_MOCK_${value}]`))
     if (scenarios.length !== 1) fail('UNKNOWN_PROMPT')
     const scenario = scenarios[0]
     // Require a skill name outside the path and boundaries around the entire path.
@@ -231,6 +233,7 @@ export class PiMediaModelMock {
       count('final')
       const content = failed ? '媒体工具返回业务错误或拒绝，已终止本轮，未重试。'
         : scenario === 'SYNC' ? '本地 mock 图片编辑请求已提交，并已查询任务状态。'
+          : scenario === 'GENERATE' || scenario === 'PARTIAL' ? '本地 mock 图片生成请求已提交，并已查询任务状态。'
           : '本地 mock 异步图片请求已提交，并已查询任务状态。'
       return response(model, `${turn.slice(0, 20)}-final`, { role: 'assistant', content }, 'stop')
     }

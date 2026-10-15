@@ -4,6 +4,7 @@ import { isAbsolute, join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { createPiMediaModelMock, type PiMediaModelMock } from './pi-media-model-mock'
+import { MediaFaultInjector } from './electron-media-faults'
 import { isMediaMockRendererRequestAllowed } from './electron-media-mock-policy.mjs'
 
 // This entry is bundled only by the opt-in Electron integration runner, not the app build.
@@ -24,6 +25,7 @@ if (app.isPackaged || process.env.SEP_ELECTRON_MEDIA_MOCK !== 'true'
 }
 const apiRoot = localRoot(process.env.SEP_BASE_URL)
 const mockRoot = localRoot(mediaRoot)
+const faults = new MediaFaultInjector(mockRoot)
 mkdirSync(profile, { recursive: true })
 app.setPath('userData', profile)
 
@@ -65,7 +67,9 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   if (!allowed) { blockedRequests++; throw new Error('External/model HTTP disabled in Electron mock integration') }
   requests[url.pathname] = (requests[url.pathname] ?? 0) + 1
   if (disconnected && url.origin === new URL(mockRoot).origin) throw new Error('Injected local media disconnect')
-  const response = await nativeFetch(input, { ...init, redirect: 'error' })
+  const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
+  const response = faults.before(url, method)
+    ?? await faults.after(url, method, await nativeFetch(input, { ...init, redirect: 'error' }))
   const statuses = responses[url.pathname] ??= {}
   statuses[response.status] = (statuses[response.status] ?? 0) + 1
   return response
@@ -149,10 +153,12 @@ app.whenReady().then(async () => {
         referenceFixtureBase64: profiles.referenceFixtureBase64, referenceFixtureSha256: profiles.referenceFixtureSha256 }
     },
     async inspect(taskId: string) { return backend.media.getTaskMedia(taskId) },
+    fault(kind: Parameters<MediaFaultInjector['configure']>[0]) { faults.configure(kind); return faults.audit },
+    async scanPending() { await backend.media.resumePending() },
     disconnect(value: boolean) { disconnected = value },
     evidence() { return { requests: { ...requests }, responses, blockedRequests, rendererBlockedRequests,
       rendererNetworkRestricted: true, mcpConfigured: !!process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP !== '0',
-      mediaErrors, piModel: piModel?.audit, piErrors: [...piErrors], userData: profile, runtimeLoaded: backend.peekTaskRuntime() !== null } },
+      mediaErrors, piModel: piModel?.audit, piErrors: [...piErrors], faults: faults.audit, userData: profile, runtimeLoaded: backend.peekTaskRuntime() !== null } },
     async shutdown() { app.quit() },
     exportPath: join(profile, 'export.png'),
   } })
