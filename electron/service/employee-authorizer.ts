@@ -188,8 +188,10 @@ export class EmployeeAuthorizer {
     if (manifest && (manifest.subscriptionId !== subscriptionId || manifest.employee.id !== instance.employeeId)) {
       throw new Error('Employee runtime identity mismatch.')
     }
+    // Runtime may still advertise retired models that the current directory excludes.
     const selectedModel = manifest
-      ? modelId ?? (manifest.runtime.allowedModels.includes(manifest.runtime.modelId) ? manifest.runtime.modelId : manifest.runtime.allowedModels[0])
+      ? modelId ?? ([manifest.runtime.modelId, ...manifest.runtime.allowedModels].find(candidate =>
+        manifest.runtime.allowedModels.includes(candidate) && instance.allowedModels.includes(candidate)))
       : employee.modelId
     if (!selectedModel || (manifest && !manifest.runtime.allowedModels.includes(selectedModel)) || !instance.allowedModels.includes(selectedModel)) return null
     const skillArtifactProtocolVersion = manifest?.runtime.skillArtifactProtocolVersion

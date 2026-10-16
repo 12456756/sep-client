@@ -6,7 +6,7 @@ import type { MediaAssetView, MediaJobView, MediaProfile } from './media'
 import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels } from './media-view'
 
 // Shared tests also compile under the Node tsconfig, which intentionally has no JSX setting.
-const { MediaArtifactsPanel, MediaAssetGrid, MediaCreationForm, MediaJobList } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
+const { MediaArtifactsPanel, MediaAssetGrid, MediaCommandFeedback, MediaCreationForm, MediaJobList } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
 
 const profile: MediaProfile = {
   profileId: 'image-profile', kind: 'image', displayName: '商品图片', configVersion: '1', operations: ['generate', 'edit'],
@@ -127,6 +127,43 @@ test('SSR creation controls provide system reference selection, specs and no fee
     taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))
   assert.doesNotMatch(minimal, /图片尺寸|图片质量/)
   assert.match(minimal, /任务已归档/)
+})
+
+test('SSR command failures appear once immediately beside creation submit and before long task history', () => {
+  const message = '认证失败，请重新登录 <script>bad()</script>'
+  const html = render(React.createElement(React.Fragment, null,
+    React.createElement(MediaCreationForm, { profiles: [profile], references: [], archived: false, busy: true,
+      taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop,
+      feedback: { pending: 'generate', notice: { message, tone: 'error' } } }),
+    React.createElement(MediaJobList, { jobs: Array.from({ length: 20 }, (_, index) => job({ jobId: `job-${index}` })), archived: false, busy: true, onAction: noop })))
+  const feedbackId = html.match(/aria-describedby="([^"]+)"/)?.[1]
+  assert.ok(feedbackId)
+  assert.ok(html.includes(`提交图片生成</button><p id="${feedbackId}" class="media-notice media-tone-error" role="alert" aria-atomic="true">`))
+  assert.equal(html.split('认证失败，请重新登录').length - 1, 1)
+  assert.ok(html.indexOf('认证失败，请重新登录') < html.indexOf('media-jobs'))
+  assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/)
+  assert.doesNotMatch(html, /<script>|正在处理图片操作/)
+})
+
+test('SSR pending feedback stays beside submit for every media command without changing controls', () => {
+  for (const pending of ['generate', 'import', 'export', 'retry', 'cancel', 'resume', 'redo']) {
+    const html = render(React.createElement(MediaCreationForm, { profiles: [profile], references: [], archived: false, busy: true,
+      taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop, feedback: { pending, notice: null } }))
+    assert.match(html, /提交图片生成<\/button><p[^>]*role="status" aria-atomic="true">/)
+    assert.equal(html.split('正在处理图片操作').length - 1, 1)
+    assert.match(html, /<textarea[^>]*disabled=""/)
+    assert.match(html, /type="submit"[^>]*disabled=""[^>]*aria-describedby="[^"]+"/)
+  }
+  const idle = render(React.createElement(MediaCommandFeedback, { pending: null, notice: null }))
+  assert.equal(idle, '')
+})
+
+test('SSR standalone feedback supports errors and export success outside the creation form', () => {
+  const failure = render(React.createElement(MediaCommandFeedback, { notice: { message: '导出失败', tone: 'error' } }))
+  assert.match(failure, /media-tone-error" role="alert" aria-atomic="true">导出失败/)
+  const success = render(React.createElement(MediaCommandFeedback, { notice: { message: '图片已导出', tone: 'success' } }))
+  assert.match(success, /media-tone-success" role="status" aria-atomic="true">图片已导出/)
+  assert.doesNotMatch(success, /role="alert"/)
 })
 
 test('SSR grids allow saved results immediately but never export missing or unsaved files', () => {

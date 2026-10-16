@@ -479,6 +479,34 @@ describe('C1 employee runtime preparation', () => {
     assert.equal(skills.prepared(), 0)
   })
 
+  for (const preferred of ['retired', 'unavailable']) {
+    it(`selects a shared default when runtime default ${preferred} is not in the current directory`, async () => {
+      const manifest = runtimeManifest()
+      manifest.runtime.modelId = preferred
+      manifest.runtime.allowedModels = ['retired', 'preferred', 'current']
+      manifest.runtime.skills = []
+      const directory = new EmployeeDirectory(async () => [{ ...subscription('sub-a'), allowedModels: ['directory-only', 'current'] }])
+      let prepared = 0
+      const skills: SkillProvisioner = { async prepare() { prepared++; return { skillPaths: [], skills: [] } }, invalidate() {} }
+      const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, { async getRuntime() { return manifest } })
+      const employee = await authorizer.authorize('sub-a')
+      assert.equal(employee?.modelId, 'current')
+      assert.equal(employee?.runtimeSnapshot?.modelId, 'current')
+      assert.equal(prepared, 1)
+      assert.equal(await authorizer.authorize('sub-a', preferred), null, 'Explicit model choices must not silently fall back')
+      assert.equal(prepared, 1)
+    })
+  }
+
+  it('rejects disjoint model permissions without preparing skills', async () => {
+    const manifest = runtimeManifest()
+    const skills = fakeSkills()
+    const directory = new EmployeeDirectory(async () => [subscription('sub-a', 'directory-only')])
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, { async getRuntime() { return manifest } })
+    assert.equal(await authorizer.authorize('sub-a'), null)
+    assert.equal(skills.prepared(), 0)
+  })
+
   it('rejects unsupported or mismatched manifests without preparing skills', async () => {
     const manifest = runtimeManifest()
     const skills = fakeSkills()

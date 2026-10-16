@@ -6,7 +6,16 @@ import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLab
 
 type Command = 'import' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
 type JobAction = Exclude<Command, 'import' | 'generate' | 'export'>
+type CommandNotice = { message: string; tone: 'error' | 'success' }
+type CommandFeedback = { pending: Command | null; notice: CommandNotice | null }
 const POLL_INTERVAL = 3000
+
+export function MediaCommandFeedback({ pending, notice, id }: Partial<CommandFeedback> & { id?: string }) {
+  if (!pending && !notice) return null
+  return <p id={id} className={`media-notice${notice ? ` media-tone-${notice.tone}` : ''}`} role={notice?.tone === 'error' ? 'alert' : 'status'} aria-atomic="true">
+    {notice ? notice.message : <><LoaderCircle size={13} aria-hidden="true" />正在处理图片操作</>}
+  </p>
+}
 
 function failure(result: IpcCommandResult, fallback: string): string {
   return result.error?.message || fallback
@@ -75,9 +84,10 @@ export function MediaAssetGrid({ taskId, assets, references = false, selected = 
   </div>)}</div>
 }
 
-export function MediaCreationForm({ profiles, references, archived, busy, onImport, onGenerate, taskId, onPreview }: {
+export function MediaCreationForm({ profiles, references, archived, busy, onImport, onGenerate, taskId, onPreview, feedback }: {
   profiles: MediaProfile[]; references: MediaAssetView[]; archived: boolean; busy: boolean; taskId: string
   onImport: () => void; onGenerate: (input: MediaGenerationInput) => void; onPreview: (asset: MediaAssetView) => void
+  feedback?: CommandFeedback
 }) {
   const id = useId()
   const [profileId, setProfileId] = useState(profiles[0]?.profileId || '')
@@ -127,7 +137,8 @@ export function MediaCreationForm({ profiles, references, archived, busy, onImpo
     <label htmlFor={`${id}-brief`}>创作需求</label>
     <textarea id={`${id}-brief`} rows={4} value={brief} disabled={busy || archived} placeholder="用途、画面要求、不可改变的商品特征" onChange={event => setBrief(event.target.value)} />
     {problem && <p className="media-notice">{problem}</p>}
-    <button type="submit" className="media-command media-primary" disabled={busy || !!problem}>{busy ? <LoaderCircle size={14} /> : <ImagePlus size={14} />}{operation === 'edit' ? '提交图片编辑' : '提交图片生成'}</button>
+    <button type="submit" className="media-command media-primary" disabled={busy || !!problem} aria-describedby={feedback?.pending || feedback?.notice ? `${id}-feedback` : undefined}>{busy ? <LoaderCircle size={14} /> : <ImagePlus size={14} />}{operation === 'edit' ? '提交图片编辑' : '提交图片生成'}</button>
+    <MediaCommandFeedback {...feedback} id={`${id}-feedback`} />
   </form>
 }
 
@@ -155,7 +166,7 @@ export function MediaJobList({ jobs, archived, busy, onAction }: { jobs: MediaJo
   })}</div>
 }
 
-function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport }: { taskId: string; asset: MediaAssetView; busy: boolean; onClose: () => void; onExport: () => void }) {
+function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport, feedback }: { taskId: string; asset: MediaAssetView; busy: boolean; onClose: () => void; onExport: () => void; feedback: CommandFeedback }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -164,6 +175,7 @@ function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport }: { taskId
   }, [])
   return <dialog className="media-preview-dialog" ref={dialog} aria-label="图片大图预览" onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <div className="media-dialog-heading"><strong>{asset.source === 'reference' ? '商品参考图' : '图片成果'}</strong><div className="media-dialog-tools"><button type="button" className="media-icon-button" title="导出图片" aria-label="导出图片" disabled={busy} onClick={onExport}><Download size={18} /></button><button type="button" className="media-icon-button" title="关闭大图预览" aria-label="关闭大图预览" ref={closeButton} onClick={onClose}><X size={18} /></button></div></div>
+    <MediaCommandFeedback {...feedback} />
     <AssetImage key={`${taskId}:${asset.localAssetId}`} taskId={taskId} asset={asset} large />
     <p>{asset.width} × {asset.height} · {asset.mime} · {mediaSaveLabels[asset.status].label}</p>
   </dialog>
@@ -172,7 +184,7 @@ function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport }: { taskId
 function MediaTaskPanel({ taskId }: { taskId: string }) {
   const [view, setView] = useState<MediaTaskView | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<CommandNotice | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
   const [preview, setPreview] = useState<MediaAssetView | null>(null)
   const alive = useRef(false)
@@ -224,12 +236,12 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
     try {
       const result = await execute(window.electronAPI)
       if (!alive.current || epoch !== lifetime.current) return
-      if (!result.success) setNotice(failure(result, '图片操作失败'))
-      else if (command === 'export' && !result.cancelled) setNotice('图片已导出')
+      if (!result.success) setNotice({ message: failure(result, '图片操作失败'), tone: 'error' })
+      else if (command === 'export' && !result.cancelled) setNotice({ message: '图片已导出', tone: 'success' })
       if (command !== 'export') await refresh()
     } catch {
       if (alive.current && epoch === lifetime.current) {
-        setNotice(command === 'generate' || command === 'redo' ? '未收到操作结果，请查看任务记录；不要重复提交。' : '图片操作失败，请稍后重试')
+        setNotice({ message: command === 'generate' || command === 'redo' ? '未收到操作结果，请查看任务记录；不要重复提交。' : '图片操作失败，请稍后重试', tone: 'error' })
         if (command !== 'export') await refresh()
       }
     } finally {
@@ -258,20 +270,20 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
     if (asset.taskId === taskId && asset.source === 'output') outputs.set(asset.localAssetId, asset)
   }
   const busy = pending !== null
+  const feedback = { pending, notice }
   return <section className="artifact-section media-artifacts" aria-label="图片创作与成果">
     <h3><ImageIcon size={15} />图片创作与成果</h3>
     {error && <p className="media-notice media-tone-error" role="alert">{error}<button type="button" className="media-icon-button" title="重新读取图片任务" aria-label="重新读取图片任务" onClick={() => { void refresh() }}><RefreshCw size={14} /></button></p>}
     {!view && !error && <p className="artifact-empty" role="status">正在读取图片能力</p>}
+    {!preview && !profiles.length && <MediaCommandFeedback {...feedback} />}
     {view && <>
       {(!profiles.length || view.unavailableReason) && <p className="media-notice">{view.unavailableReason || '图片能力尚未配置，普通聊天仍可使用'}</p>}
-      {!!profiles.length && <MediaCreationForm taskId={taskId} profiles={profiles} references={references} archived={view.archived} busy={busy} onImport={() => { void run('import', api => api.importMediaReferences(taskId)) }} onGenerate={input => { void run('generate', api => api.generateTaskMedia({ taskId, input })) }} onPreview={setPreview} />}
+      {!!profiles.length && <MediaCreationForm taskId={taskId} profiles={profiles} references={references} archived={view.archived} busy={busy} feedback={preview ? undefined : feedback} onImport={() => { void run('import', api => api.importMediaReferences(taskId)) }} onGenerate={input => { void run('generate', api => api.generateTaskMedia({ taskId, input })) }} onPreview={setPreview} />}
       {!profiles.length && references.length > 0 && <MediaAssetGrid taskId={taskId} assets={references} references onPreview={setPreview} disabled />}
       {!!jobs.length && <><h4>图片任务</h4><MediaJobList jobs={jobs} archived={view.archived || !profiles.length} busy={busy} onAction={jobAction} /></>}
       {outputs.size > 0 && <><h4>图片成果</h4><MediaAssetGrid taskId={taskId} assets={[...outputs.values()]} onPreview={setPreview} onExport={exportAsset} disabled={busy} /></>}
     </>}
-    {pending && <p className="media-notice" role="status"><LoaderCircle size={13} />正在处理图片操作</p>}
-    {notice && <p className="media-notice" role="status">{notice}</p>}
-    {preview && <MediaPreviewDialog key={preview.localAssetId} taskId={taskId} asset={preview} busy={busy} onClose={() => setPreview(null)} onExport={() => exportAsset(preview)} />}
+    {preview && <MediaPreviewDialog key={preview.localAssetId} taskId={taskId} asset={preview} busy={busy} feedback={feedback} onClose={() => setPreview(null)} onExport={() => exportAsset(preview)} />}
   </section>
 }
 
