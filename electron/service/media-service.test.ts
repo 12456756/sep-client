@@ -18,6 +18,7 @@ import { ScopePath } from '../data/scope-path'
 import { mediaJobActions } from '../../src/shared/media-view'
 import type { LocalMediaJob } from '../domain/media'
 import { AppError } from '../errors/app-error'
+import { config } from '../common/config'
 import { ToolApprovals } from '../runtime/run-approvals'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { MediaService, type MediaServiceOptions } from './media-service'
@@ -112,6 +113,9 @@ async function realFixture(initial: {
       expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
   const gateway = new SepRealMediaGateway({ baseUrl: 'https://sep.invalid/api', token: async () => 'fixture-token-not-real',
     fetch: async (url, init) => {
+      const headers = new Headers(init?.headers)
+      assert.equal(headers.get('Origin'), config.SEP_WEB_ORIGIN)
+      assert.equal(headers.get('Referer'), `${config.SEP_WEB_ORIGIN}/`)
       const path = new URL(String(url)).pathname.replace('/api/gateway/v1/media/real', '')
       const method = init?.method ?? 'GET'
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : null
@@ -146,6 +150,18 @@ async function realFixture(initial: {
 }
 
 describe('real media billing recovery and canonical sizes', () => {
+  it('explains unadvertised quality as an input error without quoting or submitting', async () => {
+    const f = await realFixture({})
+    await assert.rejects(f.generate({ aspectRatio: '2:3', count: 1, quality: 'high' }), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'INVALID_ARGUMENT')
+      assert.match(error.userMessage, /media_get_capabilities/)
+      assert.match(error.userMessage, /不要传 quality/)
+      return true
+    })
+    assert.deepEqual(f.calls, [])
+  })
+
   for (const [aspectRatio, explicitSize, expectedSize] of [
     ['1:1', undefined, '1024x1024'], ['3:2', undefined, '1536x1024'], ['2:3', undefined, '1024x1536'],
     ['1:1', '1536x1024', '1536x1024'],

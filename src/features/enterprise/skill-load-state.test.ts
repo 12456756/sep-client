@@ -1,6 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifySkillLoadError, formatSkillRateLimitMessage } from './skill-load-state';
+import { classifySkillLoadError, formatSkillRateLimitMessage, needsSkillLibrary } from './skill-load-state';
+
+test('loads the skill library only for views that consume it, not chat or task execution', () => {
+  assert.equal(needsSkillLibrary({ name: 'skills' }), true);
+  assert.equal(needsSkillLibrary({ name: 'employee', employeeId: 'sub-1' }), true);
+  assert.equal(needsSkillLibrary({ name: 'arrange', mode: 'manual' }), true);
+  for (const route of [
+    { name: 'organization' }, { name: 'home' }, { name: 'employees' },
+    { name: 'arrange' }, { name: 'arrange', mode: 'pick' },
+    { name: 'arrange', mode: 'chat' }, { name: 'arrange', mode: 'auto' },
+    { name: 'work', workId: 'task-1' }, { name: 'records' }, { name: 'compute-center' },
+  ] as const) assert.equal(needsSkillLibrary(route), false, JSON.stringify(route));
+});
 
 test('classifies rate limiting and keeps a usable retry duration', () => {
   const failure = classifySkillLoadError({ statusCode: 429, message: '请在 12 秒后重试' });

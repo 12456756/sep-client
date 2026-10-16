@@ -1,5 +1,6 @@
 import { useArrangementPlans } from './use-arrangement-plans';
 import { useSkillLibrary, type SkillLibraryWorkspace } from './use-skill-library';
+import { needsSkillLibrary } from './skill-load-state';
 import { conversationDocument } from './run-settings';
 /**
  * 把平台数据与本地状态聚合成业务域模型。
@@ -244,7 +245,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const [organizationStatus, setOrganizationStatus] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
   const [organizationError, setOrganizationError] = useState<string | null>(null);
   const organizationRequestRef = useRef(0);
-  const skillLibrary = useSkillLibrary(enterpriseId);
+  const skillLibrary = useSkillLibrary(scopeKey, needsSkillLibrary(route));
   const { skills } = skillLibrary;
   const [permissionOverrides, setPermissionOverrides] = useState<Record<string, OperationPermission[]>>({});
   const [activeEmployeeByWork, setActiveEmployeeByWork] = useState<Record<string, string>>({});

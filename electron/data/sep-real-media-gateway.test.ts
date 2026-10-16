@@ -192,6 +192,27 @@ describe('SepRealMediaGateway response lifecycle', () => {
 })
 
 describe('SepRealMediaGateway', () => {
+  it('sends the configured Web origin on JSON writes, uploads and recovery requests', async () => {
+    const calls: string[] = []
+    const gateway = new SepRealMediaGateway({ baseUrl: 'https://api.example/api/',
+      webOrigin: 'https://WEB.example:443/workspace', token: async () => token,
+      fetch: async (input, init) => {
+        const headers = new Headers(init?.headers)
+        assert.equal(headers.get('Origin'), 'https://web.example')
+        assert.equal(headers.get('Referer'), 'https://web.example/')
+        assert.equal(headers.get('Authorization'), `Bearer ${token}`)
+        calls.push(`${init?.method} ${new URL(String(input)).pathname}`)
+        return json({}, 403)
+      } })
+    await assert.rejects(gateway.quote('subscription-1', request, signal()), safeError('PERMISSION_DENIED'))
+    await assert.rejects(gateway.submit('subscription-1', { ...request, clientRequestId: 'request-1', quoteId: 'quote-1' }, signal()), safeError('PERMISSION_DENIED'))
+    await assert.rejects(gateway.uploadReference('subscription-1', { bytes: png, mime: 'image/png', sha256: pngHeaders['X-SHA256'] }, signal()), safeError('PERMISSION_DENIED'))
+    await assert.rejects(gateway.getReceipt('subscription-1', 'receipt-1', signal()), safeError('PERMISSION_DENIED'))
+    await assert.rejects(gateway.cancel('subscription-1', 'receipt-1', signal()), safeError('PERMISSION_DENIED'))
+    await assert.rejects(gateway.content('subscription-1', 'receipt-1', 'output-1', signal()), safeError('PERMISSION_DENIED'))
+    assert.equal(calls.length, 6)
+  })
+
   it('posts once and queries the original client request ID after an unknown result', async () => {
     const { gateway, calls } = create(async (_input, init) => init?.method === 'POST' ? json(receipt, 202) : json(receipt))
     const result = await gateway.submit('subscription-1', { ...request, clientRequestId: 'request-1', quoteId: 'quote-1' }, signal())

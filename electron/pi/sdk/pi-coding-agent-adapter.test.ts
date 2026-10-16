@@ -253,7 +253,7 @@ async function mediaSession(
   result: unknown = jobView,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sep-pi-media-'))
-  const bodies: Array<{ messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string; parameters: Record<string, unknown> } }> }> = []
+  const bodies: Array<{ messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string; description: string; parameters: Record<string, unknown> } }> }> = []
   const executions: Array<{ name: MediaToolName; input: unknown; signal?: AbortSignal }> = []
   let approvals = 0
   const server = createServer((request, response) => {
@@ -305,6 +305,22 @@ async function mediaSession(
 }
 
 describe('trusted media host tools with the real Pi SDK', () => {
+  for (const systemPrompt of [undefined, 'Custom employee instructions.']) {
+    it(`keeps image tools and duty-bound means available with ${systemPrompt ? 'custom' : 'default'} instructions`, async () => {
+      const { bodies, executions } = await mediaSession({ systemPrompt,
+        employeeProfile: { name: '培训师', description: '制作员工培训材料' },
+      }, { name: 'media_generate_image', input: generationInput })
+      const prompt = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+      assert.equal(prompt.split('<employee_profile>').length, 2)
+      assert.match(prompt, /不要求员工资料逐项列明这些手段/)
+      assert.match(prompt, /工具可用性、费用及审批限制保持不变/)
+      const tool = bodies[0].tools!.find(tool => tool.function.name === 'media_generate_image')!
+      assert.match(tool.function.description, /First call media_get_capabilities/)
+      assert.match(tool.function.description, /do not invent quality values/)
+      assert.equal(executions.length, 1)
+    })
+  }
+
   it('injects a literal system prompt and registers strict TypeBox schemas without profile secrets', async () => {
     const { bodies, literalPrompt } = await mediaSession({})
     assert.ok(bodies[0].messages.some(message => message.role === 'system' && message.content.includes(literalPrompt)))

@@ -222,7 +222,9 @@ export class MediaService {
       || (input.parameters.quality !== undefined && !profile.allowedQualities?.includes(input.parameters.quality))
       || (input.localAssetIds.length > 0 && !profile.capabilities.referenceImage)
       || (input.operation === 'edit' && input.localAssetIds.length === 0)
-      || new Set(input.localAssetIds).size !== input.localAssetIds.length) throw new AppError('INVALID_ARGUMENT')
+      || new Set(input.localAssetIds).size !== input.localAssetIds.length) throw new AppError('INVALID_ARGUMENT', {
+        message: '图片参数不受当前配置支持，请查询 media_get_capabilities，按返回的操作、比例、尺寸、数量和质量选项重试；未提供质量选项时不要传 quality。这不是权限拒绝。',
+      })
     const gate = this.key(scope, taskId)
     if (this.submitting.has(gate)) throw new AppError('CONFLICT')
     if (this.activities.size >= 4) throw new AppError('RATE_LIMITED')

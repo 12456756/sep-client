@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto'
 import { z, type ZodType } from 'zod'
 import type { ImageMime, MediaGatewayPort, MediaQuote, MediaRequest } from '../domain/media'
 import { resolveSepRealMediaSize } from '../common/platform/sep-media-runtime-contract'
+import { config } from '../common/config'
+import { platformSourceHeaders } from '../common/platform/platform-source-headers'
 import { AppError } from '../errors/app-error'
 import { inspectMediaImage } from './media-image'
 
@@ -32,6 +34,7 @@ const MAX_CONTENT = 25 * 1024 * 1024
 
 export interface SepRealMediaGatewayOptions {
   baseUrl: string
+  webOrigin?: string
   token: (subscriptionId: string, signal: AbortSignal) => Promise<string>
   fetch?: typeof fetch
 }
@@ -40,12 +43,16 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   readonly quoteRequiresUploadedReferences = true
   private readonly root: string
   private readonly fetcher: typeof fetch
+  private readonly sourceHeaders: { Origin: string; Referer: string }
 
   constructor(private readonly options: SepRealMediaGatewayOptions) {
     try {
       const url = new URL(options.baseUrl)
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error()
       this.root = `${url.href.replace(/\/+$/, '')}/gateway/v1/media/real`
+      const web = new URL(options.webOrigin ?? config.SEP_WEB_ORIGIN)
+      if (!['http:', 'https:'].includes(web.protocol) || web.username || web.password) throw new Error()
+      this.sourceHeaders = platformSourceHeaders(web.origin)
     } catch { throw new AppError('INVALID_ARGUMENT', { message: 'Media service URL is invalid.' }) }
     this.fetcher = options.fetch ?? fetch
   }
@@ -202,7 +209,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
       if (!/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new Error()
       const multipart = body instanceof FormData
       const response = await this.fetcher(`${this.root}${path}`, { method, signal, redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer',
-        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json, image/png', ...(body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : {}) },
+        headers: { ...this.sourceHeaders, Authorization: `Bearer ${token}`, Accept: 'application/json, image/png', ...(body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : {}) },
         body: body === undefined ? undefined : multipart ? body : JSON.stringify(body) })
       if (response.redirected || (response.status >= 300 && response.status < 400)) { await response.body?.cancel(); throw new Error() }
       return response

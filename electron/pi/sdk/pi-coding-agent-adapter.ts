@@ -123,7 +123,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
   }
   const descriptions = {
     media_get_capabilities: 'Get available image profiles and their supported operations.',
-    media_generate_image: 'Generate or edit images using a supported profile and task-local reference assets. The host validates cost and obtains approval before submission.',
+    media_generate_image: 'Generate or edit images using a supported profile and task-local reference assets. First call media_get_capabilities; use only advertised operations, aspect ratios, sizes, qualities and counts. Omit optional size or quality unless advertised by the profile; do not invent quality values. INVALID_ARGUMENT means unsupported input, not denied permission: correct parameters using capabilities. The host validates cost and obtains approval before submission.',
     media_get_job: 'Get the business status and task-local assets of an image job.',
     media_cancel_job: 'Stop tracking an image job, optionally requesting upstream cancellation through the host approval policy.',
   }
