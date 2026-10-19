@@ -6,9 +6,9 @@ import { classifySkillLoadError, formatSkillRateLimitMessage, type SkillLoadErro
 const FOCUS_REFRESH_COOLDOWN_MS = 30_000;
 
 /** Server metadata and durable local versions only. No browser-side skill copies. */
-export function useSkillLibrary(scopeKey: string) {
+export function useSkillLibrary(scopeKey: string, enabled = true) {
   const [skills, setSkills] = useState<SkillLibraryItem[]>([]);
-  const [skillsLoading, setLoading] = useState(true);
+  const [skillsLoading, setLoading] = useState(enabled);
   const [loadError, setLoadError] = useState<SkillLoadError | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const generation = useRef(0);
@@ -32,6 +32,7 @@ export function useSkillLibrary(scopeKey: string) {
     setLoading(true);
     inFlightRequest.current = request;
     const requestPromise = Promise.resolve().then(async () => {
+      if (generation.current !== request) return;
       try {
         const result = await window.electronAPI.listSkillLibrary();
         if (!result.success || !result.data) {
@@ -64,20 +65,26 @@ export function useSkillLibrary(scopeKey: string) {
 
   useEffect(() => {
     setSkills([]);
+    setLoading(false);
     loadErrorRef.current = null;
     setLoadError(null);
     inFlight.current = null;
     inFlightRequest.current = null;
-    void refreshSkills();
-    const refresh = () => { void refreshSkills(false); };
-    window.addEventListener('focus', refresh);
+    lastRefreshAt.current = 0;
     return () => {
       generation.current += 1;
       inFlight.current = null;
       inFlightRequest.current = null;
-      window.removeEventListener('focus', refresh);
     };
-  }, [scopeKey, refreshSkills]);
+  }, [scopeKey]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    void refreshSkills(false);
+    const refresh = () => { void refreshSkills(false); };
+    window.addEventListener('focus', refresh);
+    return () => window.removeEventListener('focus', refresh);
+  }, [scopeKey, enabled, refreshSkills]);
 
   useEffect(() => {
     if (loadError?.kind !== 'rate-limited' || !loadError.retryAfterSeconds) return;

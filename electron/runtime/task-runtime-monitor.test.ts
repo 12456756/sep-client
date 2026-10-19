@@ -88,7 +88,7 @@ it('settles local execution while all monitor network promises remain pending', 
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
-for (const [control, expected] of [['pauseTask', 'PAUSED'], ['cancelTask', 'CANCELLED'], ['stopAll', 'PAUSED']] as const) {
+for (const [control, expected] of [['pauseTask', 'PAUSED'], ['cancelTask', 'CANCELLED'], ['stopAll', 'INTERRUPTED']] as const) {
   it(`reports ${expected} for ${control} only after the real run ends`, async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-monitor-control-'))
     try {

@@ -1,4 +1,5 @@
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
+import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type {
   ComputeAllowance,
@@ -269,6 +270,15 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  getTaskMedia: (taskId: string) => Promise<IpcCommandResult & { data?: MediaTaskView }>
+  importMediaReferences: (taskId: string) => Promise<IpcCommandResult & { data?: MediaAssetView[] }>
+  generateTaskMedia: (input: { taskId: string; input: MediaGenerationInput }) => Promise<IpcCommandResult & { data?: MediaJobView }>
+  previewMediaAsset: (input: { taskId: string; assetId: string }) => Promise<IpcCommandResult & { data?: MediaPreview }>
+  exportMediaAsset: (input: { taskId: string; assetId: string }) => Promise<IpcCommandResult & { cancelled?: boolean }>
+  retryMediaSave: (input: { taskId: string; jobId: string }) => Promise<IpcCommandResult>
+  cancelMediaJob: (input: { taskId: string; jobId: string; cancelUpstream: boolean }) => Promise<IpcCommandResult>
+  resumeMediaTracking: (input: { taskId: string; jobId: string }) => Promise<IpcCommandResult>
+  redoMediaJob: (input: { taskId: string; jobId: string }) => Promise<IpcCommandResult & { data?: MediaJobView }>
   getUpdateState: () => Promise<UpdateStateResult>
   checkForUpdate: () => Promise<IpcCommandResult>
   downloadUpdate: () => Promise<IpcCommandResult>

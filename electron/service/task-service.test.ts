@@ -236,3 +236,32 @@ it('does not wait on another scope and keeps one broken record from failing the 
     other.finish(true)
   }
 })
+
+it('archives media tasks without deleting their history and filters them from the active list', async () => {
+  const archived = new Set<string>()
+  let deletions = 0
+  const service = harness({
+    taskManager: { async getTask() { return task }, async getAllTasks() { return [task] }, async deleteTask() { deletions++; return true } },
+    media: {
+      async archiveIfMedia(id: string) { archived.add(id); return true },
+      async isArchived(id: string) { return archived.has(id) },
+    },
+  })
+  await service.delete(task.id)
+  assert.equal(deletions, 0)
+  assert.deepEqual(await service.list(), [])
+  assert.equal((await service.get(task.id)).id, task.id)
+})
+
+it('preserves ordinary task deletion and the running-task guard when media is absent', async () => {
+  let allowed = true
+  let deletions = 0
+  const service = harness({
+    taskManager: { async deleteTask() { deletions++; return allowed } },
+    media: { async archiveIfMedia() { return false } },
+  })
+  await service.delete(task.id)
+  allowed = false
+  await assert.rejects(service.delete(task.id), { code: 'INVALID_STATE' })
+  assert.equal(deletions, 2)
+})

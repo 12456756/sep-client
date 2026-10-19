@@ -11,6 +11,8 @@ import { TaskPersistenceError, TaskStore, type TaskStorePort } from '../data/tas
 import { ScopePath, TaskScopeError, type TaskOwnerScope, type WorkspaceDirectoryNames } from '../data/scope-path'
 import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
+import { ArrangementCheckpointStore, type ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
+import { interruptArrangement } from '../domain/arrangement-execution'
 import {
   assertTaskTransition,
   canTransitionTask,
@@ -64,6 +66,7 @@ export class TaskManager {
     notifier: TaskNotifier | null = null,
     store: TaskStorePort = new TaskStore(userDataDir),
     runStore: TaskRunStorePort = new TaskRunStore(userDataDir),
+    private readonly checkpoints: ArrangementCheckpointStorePort = new ArrangementCheckpointStore(userDataDir),
   ) {
     this.paths = new ScopePath(userDataDir)
     this.workspaceDirectories = new WorkspaceDirectoryStore(userDataDir)
@@ -98,6 +101,7 @@ export class TaskManager {
       this.notifyTaskListUpdate()
 
       const loadedTasks = (await this.store.load(scope)).map(cloneTask)
+      const interruptedRuns = new Map<string, string>()
       let recovered = false
       for (const task of loadedTasks) {
         if (
@@ -106,6 +110,7 @@ export class TaskManager {
           !(task.status === TaskStatus.PENDING && task.activeRunId)
         ) continue
         assertTaskTransition(task.status, TaskStatus.INTERRUPTED)
+        if (task.activeRunId) interruptedRuns.set(task.id, task.activeRunId)
         task.status = TaskStatus.INTERRUPTED
         task.activeRunId = null
         if (!task.logs.some(log => log.message === 'Previous session ended; task interrupted.')) {
@@ -119,9 +124,50 @@ export class TaskManager {
       this.tasks = new Map(loadedTasks.map(task => [task.id, task]))
       this.persistenceDegraded = false
 
+      for (const task of loadedTasks) {
+        if (task.status !== TaskStatus.INTERRUPTED) continue
+        try {
+          const checkpoint = await this.checkpoints.get(scope, task.id)
+          if (!checkpoint) continue
+          const terminal = checkpoint.state.status === 'completed' || checkpoint.state.status === 'stopped'
+          if (!checkpoint.activeRunId && !terminal) continue
+          const previousRunId = interruptedRuns.get(task.id)
+          if (previousRunId && checkpoint.activeRunId && checkpoint.activeRunId !== previousRunId) {
+            throw new TaskPersistenceError('Arrangement checkpoint belongs to a different run.')
+          }
+          // Also repair tasks already saved as interrupted by an earlier startup.
+          if (!previousRunId && checkpoint.activeRunId) {
+            const run = await this.runStore.get(scope, task.id, checkpoint.activeRunId)
+            if (!run || !['running', 'interrupted', ...(terminal ? ['completed', 'stopped', 'cancelled'] : [])].includes(run.outcome)) {
+              throw new TaskPersistenceError('Arrangement run interruption cannot be verified.')
+            }
+          }
+          if (terminal) {
+            const runId = previousRunId ?? checkpoint.activeRunId
+            if (runId) await this.runStore.finish(scope, task.id, runId, checkpoint.state.status === 'completed' ? 'completed' : 'stopped')
+          }
+          await this.checkpoints.save(scope, {
+            ...checkpoint,
+            activeRunId: null,
+            state: interruptArrangement(checkpoint.state, 'client-crash'),
+            updatedAt: Date.now(),
+          })
+          if (terminal) {
+            task.status = checkpoint.state.status === 'completed' ? TaskStatus.COMPLETED : TaskStatus.PAUSED
+            task.completedAt = task.status === TaskStatus.COMPLETED ? checkpoint.updatedAt : null
+            task.error = null
+            recovered = true
+          }
+        } catch (error) {
+          this.persistenceDegraded = true
+          log.warn('failed to recover arrangement checkpoint', { taskId: task.id, cause: describeError(error) })
+        }
+      }
+
       try {
         await this.runStore.markActiveRunsInterrupted(scope)
       } catch (error) {
+        this.persistenceDegraded = true
         log.warn('failed to recover persisted task runs', { cause: describeError(error) })
       }
 

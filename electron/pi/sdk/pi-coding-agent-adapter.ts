@@ -2,17 +2,24 @@ import { mkdir } from 'node:fs/promises'
 import { lazyStream, type AssistantMessage, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
+  loadSkills,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSessionEvent,
-  type BeforeProviderHeadersEvent,
   type BeforeProviderRequestEvent,
   type ExtensionFactory,
   type ToolCallEvent,
   type ToolCallEventResult,
+  type ToolDefinition,
+  type Skill,
 } from '@earendil-works/pi-coding-agent'
+import { Type } from 'typebox'
+import { z } from 'zod'
+import type { MediaToolName } from '../../domain/media-tools'
+import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId } from '../../common/platform/media-contract'
+import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import type {
   PiAgentEvent,
   PiAgentRuntime,
@@ -35,12 +42,113 @@ import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 import { GatewayRetryWait } from './gateway-retry-wait'
 import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
+import { employeeSkillLoaderOptions } from './employee-skill-loader'
 
 const log = logger.child('pi-gateway')
+
+export type PiSkill = Skill
+export type PiLoadSkills = typeof loadSkills
+export type PiResourceLoaderOptions = ConstructorParameters<typeof DefaultResourceLoader>[0]
 
 let gatewayRequestSequence = 0
 
 const DEFAULT_SESSION_TOOLS = ['read', 'bash', 'edit', 'write'] as const
+const MEDIA_TOOL_NAMES: readonly MediaToolName[] = ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job']
+const READ_ONLY_MEDIA_TOOLS = new Set<MediaToolName>(['media_get_capabilities', 'media_get_job'])
+
+function registeredMediaNames(config: PiAgentSessionConfig): MediaToolName[] {
+  if (config.disableTools || !config.mediaTools) return []
+  return MEDIA_TOOL_NAMES.filter(name => config.mediaTools?.names.includes(name) && (
+    READ_ONLY_MEDIA_TOOLS.has(name) || !config.toolPolicy || (
+      config.toolPolicy.preset !== 'read-only' &&
+      (config.toolPolicy.preset === 'full-local' || config.toolPolicy.allowedTools.includes(name))
+    )
+  ))
+}
+
+const mediaJobInputSchema = z.object({ jobId: mediaId }).strict()
+const mediaCancelInputSchema = mediaJobInputSchema.extend({ cancelUpstream: z.boolean() }).strict()
+const emptyMediaInputSchema = z.object({}).strict()
+const mediaAssetResultSchema = z.object({
+  localAssetId: mediaId, taskId: z.string(), jobId: z.string().nullable(), outputId: z.string().nullable(),
+  source: z.enum(['reference', 'output']), mime: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  size: z.number(), width: z.number(), height: z.number(),
+  status: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
+})
+const mediaJobResultSchema = z.object({
+  jobId: mediaId, taskId: z.string(), runId: z.string(), profileId: z.string(), operation: z.enum(['generate', 'edit']),
+  parameters: mediaGenerationInputSchema.shape.parameters,
+  generationStatus: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
+  trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
+  saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
+  billingStatus: z.string(), error: z.string().nullable(), createdAt: z.number(), updatedAt: z.number(),
+  assets: z.array(mediaAssetResultSchema), canCancelUpstream: z.boolean(),
+})
+
+function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown; isError: boolean } {
+  // Project business views only: quotes, provider credentials, URLs and transport DTOs never reach Pi.
+  if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
+    const parsed = z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }).safeParse(result)
+    if (parsed.success) return { value: mediaToolFailure(parsed.data.error.code, parsed.data.error.message), isError: true }
+    throw new Error('Invalid media business error.')
+  }
+  const value = name === 'media_get_capabilities'
+    ? (result && typeof result === 'object' && 'capabilities' in result
+        ? z.object({ capabilities: mediaCapabilitiesSchema, referenceAssets: z.array(mediaAssetResultSchema) }).parse(result)
+        : mediaCapabilitiesSchema.parse(result))
+    : mediaJobResultSchema.parse(result)
+  return { value: redactValue(value), isError: false }
+}
+
+function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly MediaToolName[]): ToolDefinition[] {
+  const id = Type.String({ pattern: '^[A-Za-z0-9_-]{1,128}$' })
+  const parameters = {
+    media_get_capabilities: Type.Object({}, { additionalProperties: false }),
+    media_generate_image: Type.Object({
+      profileId: Type.String({ minLength: 1, maxLength: 256 }),
+      operation: Type.Union([Type.Literal('generate'), Type.Literal('edit')]),
+      localAssetIds: Type.Array(id, { maxItems: 16 }),
+      creativeBrief: Type.String({ minLength: 1, maxLength: 20_000 }),
+      parameters: Type.Object({
+        aspectRatio: Type.String({ minLength: 1, maxLength: 32 }), count: Type.Integer({ minimum: 1, maximum: 16 }),
+        size: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+        quality: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+      }, { additionalProperties: false }),
+    }, { additionalProperties: false }),
+    media_get_job: Type.Object({ jobId: id }, { additionalProperties: false }),
+    media_cancel_job: Type.Object({ jobId: id, cancelUpstream: Type.Boolean() }, { additionalProperties: false }),
+  }
+  const validators = {
+    media_get_capabilities: emptyMediaInputSchema, media_generate_image: mediaGenerationInputSchema,
+    media_get_job: mediaJobInputSchema, media_cancel_job: mediaCancelInputSchema,
+  }
+  const descriptions = {
+    media_get_capabilities: 'Get available image profiles and their supported operations.',
+    media_generate_image: 'Generate or edit images using a supported profile and task-local reference assets. First call media_get_capabilities; use only advertised operations, aspect ratios, sizes, qualities and counts. Omit optional size or quality unless advertised by the profile; do not invent quality values. INVALID_ARGUMENT means unsupported input, not denied permission: correct parameters using capabilities. The host validates cost and obtains approval before submission.',
+    media_get_job: 'Get the business status and task-local assets of an image job.',
+    media_cancel_job: 'Stop tracking an image job, optionally requesting upstream cancellation through the host approval policy.',
+  }
+  return names.map(name => ({
+    name, label: name, description: descriptions[name], parameters: parameters[name], executionMode: 'sequential',
+    async execute(_toolCallId, input, signal) {
+      try {
+        const parsed = validators[name].safeParse(input)
+        if (!parsed.success) return {
+          content: [{ type: 'text', text: 'Invalid media tool input.' }], details: { isError: true },
+        }
+        if (signal?.aborted) throw new Error('Cancelled media call.')
+        const result = safeMediaResult(name, await config.mediaTools!.execute(name, parsed.data, signal))
+        return { content: [{ type: 'text', text: JSON.stringify(result.value) }], details: { isError: result.isError } }
+      } catch (error) {
+        const value = mediaToolFailureFrom(error, signal?.aborted)
+        return {
+          content: [{ type: 'text', text: JSON.stringify(value) }],
+          details: { isError: true },
+        }
+      }
+    },
+  }))
+}
 const GATEWAY_MAX_OUTPUT_TOKENS = 4096
 const OPENAI_COMPLETIONS_API_MODULE = '@earendil-works/pi-ai/api/openai-completions'
 const HAN_CHARACTER = /\p{Script=Han}/u
@@ -49,14 +157,17 @@ export function sessionToolOptions(
   toolPolicy: PiAgentSessionConfig['toolPolicy'],
   disableTools = false,
   registeredMcpNames: readonly string[] = [],
+  registeredMediaNames: readonly MediaToolName[] = [],
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
   const allowedTools = toolPolicy && isUnrestrictedToolPolicy(toolPolicy)
     ? [...BUILTIN_TOOL_NAMES]
     : toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
   return { tools: [...new Set([
-    ...allowedTools.filter(name => !name.startsWith('mcp__') || registeredMcpNames.includes(name)),
+    ...allowedTools.filter(name => (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
+      (!name.startsWith('media_') || registeredMediaNames.includes(name as MediaToolName))),
     ...registeredMcpNames,
+    ...registeredMediaNames,
   ])] }
 }
 
@@ -290,6 +401,16 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
 }
 
 function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): ExtensionFactory[] {
+  const mediaNames = registeredMediaNames(config)
+  const mediaExtension: ExtensionFactory = pi => {
+    for (const tool of mediaToolDefinitions(config, mediaNames)) pi.registerTool(tool)
+    pi.on('tool_result', event => {
+      if (!mediaNames.includes(event.toolName as MediaToolName)) return
+      if (event.details && typeof event.details === 'object' && 'isError' in event.details && event.details.isError === true) {
+        return { isError: true }
+      }
+    })
+  }
   const toolPolicy = config.toolPolicy ? {
     ...config.toolPolicy,
     // Only explicitly enabled and actually discovered host tools extend the local policy.
@@ -425,6 +546,14 @@ function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): Extensi
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (toolName.startsWith('media_')) {
+        if (mediaNames.includes(toolName as MediaToolName) && pi.getActiveTools().includes(toolName)) {
+          // The trusted facade owns quote validation and approval, even in full-local-auto.
+          return { block: false }
+        }
+        await config.reportPolicyEvent?.('unknown_tool_blocked', { toolName, reason: 'Media tool is not enabled for this run.' })
+        return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
+      }
       if (toolPolicy && isUnrestrictedToolPolicy(toolPolicy)) {
         // In the explicit highest-permission mode, the policy is no longer a
         // path/command/approval gate. Pi still remains the source of truth for
@@ -463,15 +592,7 @@ function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): Extensi
     })
   }
 
-  const providerAuth: ExtensionFactory = pi => {
-    log.trace('provider headers hook registered')
-    pi.on('before_provider_headers', async (event: BeforeProviderHeadersEvent): Promise<void> => {
-      log.trace('provider headers hook entered')
-      event.headers.authorization = buildBearerAuthorizationHeader(await config.getAccessToken())
-    })
-  }
-
-  return [gatewayPayload, ...(mcp.tools.length ? [mcpExtension] : []), toolGuard, providerAuth]
+  return [gatewayPayload, ...(mcp.tools.length ? [mcpExtension] : []), ...(mediaNames.length ? [mediaExtension] : []), toolGuard]
 }
 
 class PiCodingAgentSession implements PiAgentSession {
@@ -567,7 +688,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       apiKey: 'placeholder',
       api: 'openai-completions',
       streamSimple: (model, context, options) => lazyStream(model, async () => {
-        // Wait before auth hooks so a recovered request obtains a fresh access token.
+        // ModelRuntime prepares headers before entering this provider; authenticate at fetch instead.
         await retryWait.wait(options?.signal)
         options?.signal?.throwIfAborted()
         let snapshot: ModelRequestSnapshot | undefined
@@ -591,7 +712,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
             return normalizeGatewayPayload(replacement === undefined ? payload : replacement)
           },
           fetch: async (input, init) => {
-            const response = await globalThis.fetch(input, init)
+            const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+            headers.set('authorization', buildBearerAuthorizationHeader(await config.getAccessToken()))
+            const response = await globalThis.fetch(input, { ...init, headers })
             if (!retryWait.inspect(response)) settingsManager.setRetryEnabled(false)
             return response
           },
@@ -620,9 +743,16 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
         extensionFactories: buildExtensions(config, mcp),
-        noSkills: false,
+        ...employeeSkillLoaderOptions(
+          config.workspaceDir,
+          config.agentDir,
+          config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
+          loadSkills,
+        ),
         noContextFiles: true,
         additionalSkillPaths: config.additionalSkillPaths,
+        // Use the literal override: the SDK's systemPrompt option also interprets existing paths as files.
+        systemPromptOverride: config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
         appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt
           ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : [])]
           : undefined,
@@ -646,7 +776,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         resourceLoader,
         sessionManager,
         // Advertise only the task policy's tools so the model cannot select denied tools.
-        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()]),
+        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config)),
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
         settingsManager,
       })

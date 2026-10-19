@@ -52,6 +52,7 @@ export interface TaskServiceDependencies {
   employees: EmployeeAuthorizer
   /** 惰性取运行时：它必须在异步边界之后才能加载（Electron 33 / undici 边界）。 */
   execution: () => Promise<TaskExecutionPort>
+  media?: { archiveIfMedia(taskId: string): Promise<boolean>; isArchived?(taskId: string): Promise<boolean> }
 }
 
 export interface CreateTaskInput {
@@ -123,6 +124,7 @@ export class TaskService {
 
   /** 删除。任务正在执行时不允许删（判断在 TaskManager 的 commit 闭包内，C9）。 */
   async delete(taskId: string): Promise<void> {
+    if (await this.deps.media?.archiveIfMedia(taskId)) return
     if (!await this.deps.taskManager.deleteTask(taskId)) {
       throw new AppError('INVALID_STATE', { message: '任务正在执行，无法删除。' })
     }
@@ -137,7 +139,8 @@ export class TaskService {
   async list(): Promise<TaskReadView[]> {
     return this.stableRead(async scope => {
       const tasks = await this.deps.taskManager.getAllTasks()
-      return Promise.all(tasks.map(task => this.projectTask(scope, task)))
+      const visible = await Promise.all(tasks.map(async task => ({ task, archived: await this.deps.media?.isArchived?.(task.id) ?? false })))
+      return Promise.all(visible.filter(item => !item.archived).map(item => this.projectTask(scope, item.task)))
     })
   }
 

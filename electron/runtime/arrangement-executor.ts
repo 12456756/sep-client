@@ -1,3 +1,4 @@
+import { withApprovedSkillReadPaths } from './run-skill-policy'
 /**
  * 编排式任务的节点执行器。
  *
@@ -30,6 +31,7 @@ import {
 import type { EmployeeRuntimeConfig, TaskToolPolicy, TaskWorkerPort } from './run-types'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../domain/model-request-progress'
+import type { MediaRunPort } from '../domain/media-tools'
 
 export interface ArrangementExecutionResult {
   status: ArrangementExecutionState['status']
@@ -50,6 +52,7 @@ export interface ArrangementExecutionOptions {
   authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
   workspaceRoot: string
   arrangementSubscriptionId: string
+  media?: MediaRunPort
 }
 
 export interface ArrangementNodeEvent {
@@ -139,13 +142,17 @@ export class ArrangementExecutor {
   private stopRequested = false
   private failureRequested = false
   private validationCancellation = new AbortController()
+  private taskId: string | null = null
 
   constructor(private readonly options: ArrangementExecutionOptions) {}
 
   async abort(): Promise<void> {
     this.abortRequested = true
     this.validationCancellation.abort()
-    await Promise.all([...this.activeWorkers.values()].map(worker => worker.abort().catch(() => undefined)))
+    await Promise.all([
+      ...[...this.activeWorkers.values()].map(worker => worker.abort().catch(() => undefined)),
+      this.taskId ? this.options.media?.stopTask(this.taskId) : undefined,
+    ])
   }
 
   async stop(): Promise<void> {
@@ -154,6 +161,7 @@ export class ArrangementExecutor {
   }
 
   async execute(plan: WorkPlan, taskId: string, arrangementRunId: string, requestedState?: ArrangementExecutionState): Promise<ArrangementExecutionResult> {
+    this.taskId = taskId
     this.abortRequested = false
     this.stopRequested = false
     this.failureRequested = false
@@ -184,7 +192,11 @@ export class ArrangementExecutor {
     while (!this.abortRequested) {
       const ready = current.nodes.filter(node => node.status === 'ready')
       if (ready.length === 0) {
-        if (current.nodes.some(node => node.status === 'running')) continue
+        if (current.nodes.some(node => node.status === 'running')) {
+          current = interruptArrangement(current, 'runtime-error')
+          await this.persist(plan, taskId, arrangementRunId, current)
+          await this.emitStateEvent(plan, taskId, arrangementRunId, current)
+        }
         return { status: current.status, state: current }
       }
 
@@ -230,11 +242,12 @@ export class ArrangementExecutor {
         current = { ...current, status: 'failed', nodes: current.nodes.map(node => ['ready', 'pending', 'running', 'interrupted'].includes(node.status) ? { ...node, status: 'blocked' as const } : node) }
         await this.persist(plan, taskId, arrangementRunId, current)
         await this.emitStateEvent(plan, taskId, arrangementRunId, current)
+        await this.options.media?.stopTask(taskId)
         return { status: 'failed', state: current, error: error && !error.ok ? error.error : undefined }
       }
-      if (current.status === 'waiting-user') return {
-        status: current.status, state: current,
-        error: current.nodes.find(node => node.status === 'failed')?.error ?? undefined,
+      if (current.status === 'waiting-user') {
+        await this.options.media?.stopTask(taskId)
+        return { status: current.status, state: current, error: current.nodes.find(node => node.status === 'failed')?.error ?? undefined }
       }
     }
 
@@ -340,6 +353,16 @@ export class ArrangementExecutor {
         })
         created = true
       }
+      const toolPolicy = withApprovedSkillReadPaths(toToolPolicy(plan.permissions, workspaceDir), employee)
+      const mediaTools = await this.options.media?.prepareRun({
+        taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
+        requestApproval: request => this.options.onApprovalRequest(request),
+      })
+      if (this.abortRequested) {
+        await this.options.media?.stopTask(taskId)
+        throw new Error('Arrangement execution was interrupted.')
+      }
+      this.checkExecutionControl()
       worker = this.options.createWorker({
         context: {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -351,13 +374,15 @@ export class ArrangementExecutor {
           employeeProfile: employee.employeeProfile,
           arrangementNodeId: node.id,
           ...(structured ? { fixedSystemPrompt: buildArrangementNodePrompt(plan, node, dependencies) } : {}),
-          toolPolicy: toToolPolicy(plan.permissions, workspaceDir),
+          systemPrompt: employee.systemPrompt, mediaTools, toolPolicy,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
         onApprovalRequest: request => this.options.onApprovalRequest(request),
         onModelRequest: structured ? kind => saveModelRequestProgress(kind, recovery !== null) : undefined,
         ...(structured ? { onResponseSettled: async (response: { text: string; stopReason?: string }): Promise<{ continueWith: string } | void> => {
+          this.checkExecutionControl()
+          await this.options.media?.waitForRun(taskId, nodeRunId)
           this.checkExecutionControl()
           this.validationCancellation.signal.throwIfAborted()
           if (delivery.validationAttempts >= MAX_DELIVERY_VALIDATIONS) throw new DeliveryExecutionError('本节点交付校验已达到 5 次失败上限，停止自动修正。')
@@ -422,6 +447,8 @@ export class ArrangementExecutor {
       const runPromise = worker.run(structured ? startMessage + pendingCorrection : prompt)
       if (this.abortRequested) await worker.abort()
       await runPromise
+      if (!this.abortRequested) await this.options.media?.waitForRun(taskId, nodeRunId)
+      if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       this.checkExecutionControl()
       if (!accepted) throw new DeliveryExecutionError('节点未经过最终交付校验，不能确认完成。')
       if (this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')

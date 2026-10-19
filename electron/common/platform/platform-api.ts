@@ -7,6 +7,8 @@ export type { PlatformNotification as Notification, NotificationQuery } from '..
 import { config } from '../config'
 import { logger } from '../logger'
 import { platformSourceHeaders } from './platform-source-headers'
+import { parseEmployeeRuntimeManifest, type EmployeeRuntimeManifest } from './employee-runtime-contract'
+import { sepMediaRuntimeSchema } from './sep-media-runtime-contract'
 import {
   enterpriseOrganizationSchema, enterpriseOverviewSchema, platformEmployeePageSchema, employeeAccessRequestSchema, employeeAccessRequestInputSchema, skillVersionSchema,
   personalSkillVersionRequestSchema, personalSkillSubmissionResponseSchema, idempotencyKeySchema, skillVersionQuerySchema,
@@ -379,6 +381,27 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
 export async function getSubscriptions(accessToken: string): Promise<Subscription[]> {
   const data = await getJson<Subscription[]>('/client/subscriptions', accessToken, 'subscriptions')
   return normalizeSubscriptions(data)
+}
+
+/** Independently negotiates skill artifacts v1 and media configuration v1. */
+export async function getEmployeeRuntime(subscriptionId: string, accessToken: string): Promise<EmployeeRuntimeManifest> {
+  const id = skillVersionIdSchema.parse(subscriptionId)
+  const manifest = parseEmployeeRuntimeManifest(await getJson<unknown>(
+    `/client/subscriptions/${encodeURIComponent(id)}/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1`, accessToken, 'subscriptions',
+  ))
+  if (manifest.subscriptionId !== id) throw new Error('Employee runtime subscription mismatch.')
+  if (manifest.runtime.skillArtifactProtocolVersion !== 1 || manifest.runtime.skills.some(skill => skill.artifact === undefined)) {
+    throw new Error('Employee runtime skill artifact negotiation failed.')
+  }
+  if (manifest.runtime.media !== undefined) {
+    const media = sepMediaRuntimeSchema.safeParse(manifest.runtime.media)
+    if (media.success) manifest.runtime.media = media.data
+    else {
+      log.warn('unsupported SEP media runtime omitted', { subscriptionId: id })
+      delete manifest.runtime.media
+    }
+  }
+  return manifest
 }
 
 export async function getEmploymentToken(

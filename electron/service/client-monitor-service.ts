@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { logger } from '../common/logger'
 import { redactText } from '../common/redact'
 import { ClientMonitorApiError, type ClientMonitorApiPort, type ClientTaskStatusRequest } from '../common/platform/client-monitor-api'
-import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
-import { ClientMonitorStore, type ClientMonitorOperation, type ClientMonitorRecord, type ClientMonitorStorePort } from '../data/client-monitor-store'
+import { monitorParticipationSchema, monitorMetadataSchemas, contentManifestSchema, normalizeMonitorStatus, normalizeMonitorParticipation,
+  type MonitorParticipation, type MonitorState, type ContentManifest, type ContentRecovery, type ClientTaskEventRequest } from '../common/platform/client-monitor-contract'
+import { ClientMonitorStore, normalizeMonitorRecord, type ClientMonitorOperation, type ClientMonitorRecord, type ClientMonitorStorePort } from '../data/client-monitor-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import type { MonitorTaskQueuedInput, MonitorTaskStartedInput, MonitorTaskFinishedInput, MonitorTaskContentInput } from '../domain/task-monitor'
@@ -17,6 +18,29 @@ export type ClientMonitorTaskContentInput = MonitorTaskContentInput
 const log = logger.child('client-monitor')
 const scopeKey = (scope: TaskOwnerScope | null): string => scope ? `${scope.enterpriseId}\0${scope.memberId}` : ''
 const boundedText = (text: string, length: number): string => redactText(text, Infinity).slice(0, length)
+const digest = (text: string): string => createHash('sha256').update(text).digest('hex')
+const stableId = (sourceId: string): string => {
+  const encoded = Buffer.from(sourceId).toString('base64url')
+  return encoded.length <= 100 ? encoded : digest(sourceId)
+}
+const contentIdentity = (input: MonitorTaskContentInput, type: 'user_input' | 'model_output', participation = input.participation): string => {
+  const sourceId = input.messageId ?? (participation?.nodeId
+    ? `${input.runId}:${participation.executionId}:${type}` : `${input.runId}-${type === 'user_input' ? 'user' : 'assistant'}`)
+  return input.messageId ? sourceId : `${sourceId}:${digest(redactText(input.content, Infinity))}`
+}
+const contentEvents = (record: ClientMonitorRecord): ClientTaskEventRequest[] => [
+  ...(record.sentEvents ?? []), ...record.pending.flatMap(op => op.kind === 'event' ? [op.payload] : []),
+]
+function manifestData(event: ClientTaskEventRequest | undefined): ContentManifest | undefined {
+  if (event?.type !== 'content_manifest') return
+  try {
+    const parsed = contentManifestSchema.safeParse(JSON.parse(event.message ?? ''))
+    return parsed.success ? parsed.data : undefined
+  } catch { return }
+}
+const completenessRank = { unverified: 0, partial: 1, complete: 2 }
+const sameParticipation = (left?: MonitorParticipation, right?: MonitorParticipation): boolean =>
+  left?.executionId === right?.executionId && left?.subscriptionId === right?.subscriptionId && left?.nodeId === right?.nodeId
 
 // Never split a surrogate pair. Each wire message still satisfies Zod's UTF-16 max(1000).
 function chunks(text: string): string[] {
@@ -41,6 +65,18 @@ export interface ClientMonitorServiceOptions {
   maxAttempts?: number
   recoveryIntervalMs?: number
   minSendIntervalMs?: number
+}
+
+export interface ClientMonitorRecoveryPreview {
+  tasks: number
+  normalizedOperations: number
+  bodyMessages: number
+  bodyChunks: number
+  metadataEvents: number
+  ambiguous: number
+  sourceMissing: number
+  /** Local-only preview cannot certify already accepted cloud events. */
+  cloudReconciliationRequired: boolean
 }
 
 /** Atomic per-task mutations; one global wire queue. Network waits never hold mutation locks. */
@@ -101,7 +137,54 @@ export class ClientMonitorService {
       ...(input.status === 'COMPLETED' ? { progress: 100 } : {}),
       errorSummary: input.error ? boundedText(input.error, 1000) : null,
       completedAt: new Date(input.completedAt).toISOString(),
-    })
+    }, new Date(input.completedAt).toISOString())
+  }
+
+  async previewRecovery(): Promise<ClientMonitorRecoveryPreview | null> {
+    const scope = this.options.scopeProvider()
+    if (!scope) return null
+    const inspect = this.options.store.inspect
+    if (!inspect) throw new Error('Read-only monitoring inspection is unavailable.')
+    const epoch = this.epoch
+    const current = (): boolean => scopeKey(scope) === scopeKey(this.options.scopeProvider()) && epoch === this.epoch
+    const tasks = await this.options.history?.read(scope) ?? []
+    if (!current()) return null
+    const ids = new Set([...await this.options.store.listPending(scope), ...tasks.map(task => task.taskId)])
+    const result: ClientMonitorRecoveryPreview = { tasks: ids.size, normalizedOperations: 0,
+      bodyMessages: 0, bodyChunks: 0, metadataEvents: 0, ambiguous: 0, sourceMissing: 0,
+      cloudReconciliationRequired: false }
+    for (const id of ids) {
+      if (!current()) return null
+      const original = await inspect.call(this.options.store, scope, id)
+      if (!current()) return null
+      const normalized = original ? normalizeMonitorRecord(structuredClone(original)) : null
+      result.normalizedOperations += original?.pending.filter(operation => {
+        const repaired = normalized?.pending.find(candidate => candidate.id === operation.id)
+        return repaired && JSON.stringify(repaired.payload) !== JSON.stringify(operation.payload)
+      }).length ?? 0
+      const task = tasks.find(candidate => candidate.taskId === id)
+      const projected = task ? this.restoreRecord(normalized, task) : normalized
+      const oldIds = new Set(original?.pending.map(operation => operation.id))
+      const added = projected?.pending.filter(operation => !oldIds.has(operation.id)) ?? []
+      const messages = new Set<string>()
+      for (const operation of added) {
+        if (operation.kind !== 'event') continue
+        if (operation.payload.type === 'user_input' || operation.payload.type === 'model_output') {
+          result.bodyChunks++
+          messages.add(JSON.stringify([operation.clientRunId, operation.payload.type,
+            operation.payload.stepKey?.split(':').slice(0, 3)]))
+        } else if (Object.prototype.hasOwnProperty.call(monitorMetadataSchemas, operation.payload.type)) {
+          result.metadataEvents++
+        }
+      }
+      result.bodyMessages += messages.size
+      for (const reason of Object.values(projected?.recoveryByRun ?? {})) {
+        if (reason === 'ambiguous') result.ambiguous++
+        if (reason === 'source-missing') result.sourceMissing++
+      }
+      if (original?.mirrorId && task) result.cloudReconciliationRequired = true
+    }
+    return current() ? result : null
   }
 
   resumePending(): Promise<void> {
@@ -147,7 +230,22 @@ export class ClientMonitorService {
       const tasks = await this.options.history.read(scope)
       for (const task of tasks) {
         if (!this.valid(scope, epoch)) return
-        await this.mutate(scope, task.taskId, epoch, () => this.restoreHistory(scope, task))
+        const existing = await this.options.store.load(scope, task.taskId)
+        let remote: ClientTaskEventRequest[] | undefined
+        const unresolved = task.runs.some(run => run.messages.some(message => {
+          const identity = contentIdentity({ ...message, taskId: task.taskId, runId: run.runId }, message.type)
+          const entry = existing?.contentIndex?.[`${run.runId}:${stableId(identity)}`]
+          return !entry || !manifestData(contentEvents(existing!).find(event => event.clientRunId === run.runId && event.sequence === entry.manifestSequence))
+        }))
+        if (existing?.mirrorId && this.options.api.getDetail && unresolved && this.blockedUntil <= this.now()) {
+          try {
+            const detail = await this.callWithRetry(scope, epoch, () => this.options.api.getDetail!(existing.mirrorId!, this.controller.signal))
+            if (detail.clientTaskId !== task.taskId) continue
+            remote = detail.events
+          } catch { log.warn('client monitor history reconciliation unavailable', { taskId: task.taskId }) }
+        }
+        if (!this.valid(scope, epoch)) return
+        await this.mutate(scope, task.taskId, epoch, () => this.restoreHistory(scope, task, remote))
       }
     }
     const allIds = await this.options.store.listPending(scope)
@@ -157,13 +255,17 @@ export class ClientMonitorService {
     }
   }
 
-  private async restoreHistory(scope: TaskOwnerScope, task: MonitorHistoryTask): Promise<void> {
-    let record = await this.options.store.load(scope, task.taskId)
+  private async restoreHistory(scope: TaskOwnerScope, task: MonitorHistoryTask, remote?: ClientTaskEventRequest[]): Promise<void> {
+    const record = this.restoreRecord(await this.options.store.load(scope, task.taskId), task, remote)
+    if (record) await this.options.store.save(scope, task.taskId, record)
+  }
+
+  private restoreRecord(initial: ClientMonitorRecord | null, task: MonitorHistoryTask, remote?: ClientTaskEventRequest[]): ClientMonitorRecord | null {
+    let record = initial
     const backfill = !record
     for (const run of task.runs) {
       if (backfill) {
         record = this.queueRun(record, { ...run, taskId: task.taskId, title: task.title, taskType: task.taskType })
-        for (const message of run.messages) record = this.addContent(record, { taskId: task.taskId, runId: run.runId, content: message.content }, message.type, message.occurredAt)
       }
       if (record && !backfill && record.mirrorId === null && run.localRun && run.queuedAt !== undefined && Number.isFinite(new Date(run.queuedAt).getTime())) {
         const queuedAt = new Date(run.queuedAt).toISOString()
@@ -175,13 +277,26 @@ export class ClientMonitorService {
           return { ...operation, payload: { ...operation.payload, queuedAt } }
         }) }
       }
-      if (!record || (!backfill && run.runId !== record.clientRunId)) continue
-      // Existing outboxes are replayed, not regenerated. Reconcile only known local runs.
-      if (run.status && record.statusByRun?.[run.runId] !== this.fingerprint(run.status)) {
-        record = this.addStatus(record, run.runId, run.status)
+      if (!record) continue
+      if (remote) record = { ...record, lastSequence: Math.max(record.lastSequence, ...remote.map(event => event.sequence)), sentEvents: [...new Map([...remote, ...(record.sentEvents ?? [])].map(event => [JSON.stringify([event.clientRunId, event.sequence]), event])).values()] }
+      for (const message of run.messages) {
+        if (!Number.isFinite(message.occurredAt) || !Number.isFinite(new Date(message.occurredAt).getTime())) continue
+        const duplicate = run.messages.filter(other => other.type === message.type && other.content === message.content).length > 1
+        record = this.addContent(record, { ...message, taskId: task.taskId, runId: run.runId }, message.type, message.occurredAt, true, duplicate)
+      }
+      if (run.status && run.runId === record.clientRunId) {
+        const fingerprint = this.fingerprint(run.status)
+        if (record.queuedStatusByRun?.[run.runId] !== fingerprint && record.confirmedStatusByRun?.[run.runId] !== fingerprint) {
+          record = this.addStatus(record, run.runId, run.status, run.localRun ? 'local-run' : 'snapshot', run.runEndedAt)
+        } else {
+          record = this.addState(record, run.runId, run.status, run.localRun ? 'local-run' : 'snapshot', run.runEndedAt)
+        }
+      }
+      if (run.recoveryReason) {
+        record = this.addRecovery(record, run.runId, run.recoveryReason)
       }
     }
-    if (record) await this.options.store.save(scope, task.taskId, { ...record, historyBackfilled: record.historyBackfilled || backfill })
+    return record ? { ...record, historyBackfilled: record.historyBackfilled || backfill } : null
   }
 
   private enqueueContent(input: MonitorTaskContentInput, type: 'user_input' | 'model_output'): Promise<void> {
@@ -193,69 +308,207 @@ export class ClientMonitorService {
     })
   }
 
-  private addContent(record: ClientMonitorRecord, input: MonitorTaskContentInput, type: 'user_input' | 'model_output', occurredAt: number): ClientMonitorRecord {
+  private addContent(record: ClientMonitorRecord, input: MonitorTaskContentInput, type: 'user_input' | 'model_output', occurredAt: number, historical = false, duplicate = false): ClientMonitorRecord {
     if (input.content.length === 0) return record
-    const parts = chunks(redactText(input.content, Infinity))
-    const messageId = randomUUID()
+    const text = redactText(input.content, Infinity)
+    const parts = chunks(text)
     const liveRun = record.liveRuns?.[input.runId]
     const participation = liveRun ? this.participation(input.participation ?? liveRun.participation) : undefined
+    const identity = contentIdentity(input, type, participation)
+    let messageId = stableId(identity)
+    const key = `${input.runId}:${messageId}`
+    const existing = record.contentIndex?.[key]
+    const manifestFingerprint = JSON.stringify([input.source ?? 'canonical', input.completeness ?? (type === 'user_input' ? 'complete' : 'unverified')])
+    if (existing && existing.digest === digest(text)) {
+      if (existing.manifestFingerprint === manifestFingerprint || !historical) return record
+      const prior = manifestData(contentEvents(record).find(event => event.clientRunId === input.runId &&
+        event.sequence === existing.manifestSequence && sameParticipation(event.participation, participation)))
+      if (!prior || prior.type !== type || prior.messageId !== (existing.wireMessageId ?? messageId) ||
+        prior.chunks !== existing.sequences.length || (prior.legacySequences &&
+          JSON.stringify(prior.legacySequences) !== JSON.stringify(existing.sequences))) return record
+      const manifest = { ...prior, source: input.source ?? 'canonical', completeness: input.completeness ?? (type === 'user_input' ? 'complete' : 'unverified') }
+      // New evidence may strengthen coverage; unverified recovery cannot downgrade a live complete reply.
+      if (completenessRank[manifest.completeness] <= completenessRank[prior.completeness]) return record
+      const updated = this.addMetadata(record, input.runId, 'content_manifest', manifest, participation, occurredAt)
+      return { ...updated, contentIndex: { ...record.contentIndex, [key]: { ...existing, manifestSequence: updated.lastSequence, confirmed: false, manifestFingerprint } } }
+    }
+    if (existing) return this.addRecovery(record, input.runId, 'ambiguous', participation)
+    let legacySequences: number[] | undefined
+    let replacesSequences: number[] | undefined
+    let replacesMessageId: string | undefined
+    if (historical) {
+      const claimed = new Set(Object.values(record.contentIndex ?? {}).flatMap(entry => entry.sequences))
+      const events = contentEvents(record)
+        .filter(event => event.clientRunId === input.runId && event.type === type &&
+          !claimed.has(event.sequence) &&
+          sameParticipation(event.participation, participation))
+      const groups = new Map<string, ClientTaskEventRequest[]>()
+      for (const event of events) {
+        const id = event.stepKey?.match(/^content:v1:([^:]+):\d+:\d+$/)?.[1] ?? `sequence-${event.sequence}`
+        const group = groups.get(id) ?? []
+        if (!group.some(item => item.sequence === event.sequence)) group.push(event)
+        groups.set(id, group)
+      }
+      const assembled = [...groups.entries()].map(([id, group]) => {
+        const headers = group.map(event => event.stepKey?.match(/^content:v1:([^:]+):(\d+):(\d+)$/))
+        const stable = headers.every(Boolean)
+        const total = stable ? Number(headers[0]![3]) : 1
+        const valid = !stable || (Number.isSafeInteger(total) && total > 0 && total === group.length &&
+          headers.every(header => Number(header![3]) === total && Number(header![2]) < total) &&
+          new Set(headers.map(header => Number(header![2]))).size === total)
+        group.sort((a, b) => stable ? Number(a.stepKey!.split(':')[3]) - Number(b.stepKey!.split(':')[3]) : a.sequence - b.sequence)
+        return { id, group, stable, valid, text: group.map(event => event.message ?? '').join('') }
+      })
+      if (assembled.some(candidate => candidate.id === messageId && (!candidate.valid || candidate.text !== text))) {
+        return this.addRecovery(record, input.runId, 'ambiguous', participation)
+      }
+      let candidates = assembled.filter(candidate => candidate.valid && (candidate.text === text || (candidate.text.length > 0 && text.startsWith(candidate.text) &&
+        candidate.group.every(event => Date.parse(event.occurredAt) === occurredAt))))
+      const exactTime = candidates.filter(candidate => candidate.group.every(event => Date.parse(event.occurredAt) === occurredAt))
+      if (exactTime.length) candidates = exactTime
+      if (candidates.length > 1 || (duplicate && candidates.some(candidate => candidate.group.some(event => Date.parse(event.occurredAt) !== occurredAt)))) {
+        return this.addRecovery(record, input.runId, 'ambiguous', participation)
+      }
+      const match = candidates[0]
+      if (match) {
+        const sequences = match.group.map(event => event.sequence)
+        if (match.text === text && match.stable) {
+          messageId = match.id
+          const priorEvents = contentEvents(record).filter(event => event.clientRunId === input.runId &&
+            sameParticipation(event.participation, participation))
+          const priorEvent = priorEvents.filter(event => {
+            const data = manifestData(event)
+            return data?.messageId === messageId && data.type === type && !data.legacySequences && data.chunks === sequences.length
+          }).sort((a, b) => b.sequence - a.sequence)[0]
+          const prior = manifestData(priorEvent)
+          if (prior && priorEvent) {
+            const mapped = { ...record, contentIndex: { ...record.contentIndex, [key]: {
+              sourceId: identity, digest: digest(text), clientRunId: input.runId, wireMessageId: messageId,
+              sequences, manifestSequence: priorEvent.sequence,
+              confirmed: !record.pending.some(op => op.kind === 'event' && op.clientRunId === input.runId && op.sequence === priorEvent.sequence),
+              manifestFingerprint: JSON.stringify([prior.source, prior.completeness]),
+            } } }
+            return this.addContent(mapped, input, type, occurredAt, historical, duplicate)
+          }
+          const manifest: ContentManifest = { version: 1, messageId, type, chunks: sequences.length,
+            source: input.source ?? 'canonical', completeness: input.completeness ?? (type === 'user_input' ? 'complete' : 'unverified') }
+          const updated = this.addMetadata(record, input.runId, 'content_manifest', manifest, participation, occurredAt)
+          return { ...updated, contentIndex: { ...record.contentIndex, [key]: { sourceId: identity, digest: digest(text), clientRunId: input.runId,
+            wireMessageId: messageId, sequences, manifestSequence: updated.lastSequence, confirmed: false, manifestFingerprint } } }
+        }
+        if (sequences.length > 64) return this.addRecovery(record, input.runId, 'ambiguous', participation)
+        if (match.text === text) legacySequences = sequences
+        else {
+          if (input.completeness !== 'complete') return this.addRecovery(record, input.runId, 'ambiguous', participation)
+          if (/^[A-Za-z0-9_-]{1,100}$/.test(match.id) && !match.id.startsWith('sequence-')) replacesMessageId = match.id
+          else replacesSequences = sequences
+        }
+      } else if (record.lastSequence > 0 && record.sentEvents === undefined) {
+        // The old outbox does not prove what the cloud already accepted.
+        return this.addRecovery(record, input.runId, 'ambiguous', participation)
+      }
+    }
     let sequence = record.lastSequence
-    const operations: ClientMonitorOperation[] = parts.map((message, index) => ({
+    const operations: ClientMonitorOperation[] = legacySequences ? [] : parts.map((message, index) => ({
       id: ClientMonitorStore.operationId(), kind: 'event', clientRunId: input.runId, sequence: ++sequence,
       payload: {
         clientRunId: input.runId, sequence, type, message,
-        ...(parts.length > 1 ? { stepKey: `content:v1:${messageId}:${index}:${parts.length}` } : {}),
+        stepKey: `content:v1:${messageId}:${index}:${parts.length}`,
         occurredAt: new Date(occurredAt).toISOString(),
         ...(participation ? { participation } : {}),
       },
     }))
-    return { ...record, lastSequence: sequence, pending: [...record.pending, ...operations], updatedAt: this.now() }
+    const sequences = legacySequences ?? operations.flatMap(op => op.kind === 'event' ? [op.sequence] : [])
+    const manifest: ContentManifest = { version: 1, messageId, type, chunks: legacySequences?.length ?? parts.length,
+      source: input.source ?? 'canonical', completeness: input.completeness ?? (type === 'user_input' ? 'complete' : 'unverified'),
+      ...(legacySequences ? { legacySequences } : {}), ...(replacesSequences ? { replacesSequences } : {}), ...(replacesMessageId ? { replacesMessageId } : {}),
+    }
+    // Check the final JSON before mutating either body operations or the durable index.
+    if (JSON.stringify(manifest).length > 1000) return this.addRecovery(record, input.runId, 'ambiguous', participation)
+    const updated = this.addMetadata({ ...record, lastSequence: sequence, pending: [...record.pending, ...operations], updatedAt: this.now() }, input.runId, 'content_manifest', manifest, participation, occurredAt)
+    return { ...updated, contentIndex: { ...record.contentIndex, [key]: { sourceId: identity, digest: digest(text), clientRunId: input.runId,
+      sequences, manifestSequence: updated.lastSequence, confirmed: false, manifestFingerprint } } }
   }
 
-  private enqueueStatus(taskId: string, runId: string, payload: ClientTaskStatusRequest): Promise<void> {
+  private enqueueStatus(taskId: string, runId: string, payload: ClientTaskStatusRequest, endedAt?: string): Promise<void> {
     return this.enqueue(taskId, async scope => {
       const record = await this.options.store.load(scope, taskId)
-      if (record) await this.options.store.save(scope, taskId, this.addStatus(record, runId, payload))
+      if (record) await this.options.store.save(scope, taskId, this.addStatus(record, runId, payload, 'live', endedAt))
     })
   }
 
   private fingerprint(payload: ClientTaskStatusRequest): string { return JSON.stringify(this.statusPayload(payload)) }
 
   private statusPayload(payload: ClientTaskStatusRequest): ClientTaskStatusRequest {
-    return { ...payload, ...(payload.errorSummary ? { errorSummary: boundedText(payload.errorSummary, 1000) } : {}) }
+    const { clientRunId: _runId, ...normalized } = normalizeMonitorStatus(payload)
+    return { ...normalized, ...(payload.errorSummary ? { errorSummary: boundedText(payload.errorSummary, 1000) } : {}) }
   }
 
-  private addStatus(record: ClientMonitorRecord, runId: string, payload: ClientTaskStatusRequest): ClientMonitorRecord {
+  private addStatus(record: ClientMonitorRecord, runId: string, payload: ClientTaskStatusRequest, source: MonitorState['source'] = 'live', endedAt?: string): ClientMonitorRecord {
     const statusByRun = { ...record.statusByRun, [runId]: this.fingerprint(payload) }
-    const updated = { ...record, statusByRun, updatedAt: this.now(), pending: [...record.pending, {
+    const updated = { ...record, statusByRun, queuedStatusByRun: { ...record.queuedStatusByRun, [runId]: this.fingerprint(payload) }, updatedAt: this.now(), pending: [...record.pending, {
       id: ClientMonitorStore.operationId(), kind: 'status', clientRunId: runId, payload: { ...this.statusPayload(payload), clientRunId: runId },
     } as ClientMonitorOperation] }
     const participation = record.liveRuns?.[runId]?.participation
-    if (!participation) return updated
+    if (!participation) return this.addState(updated, runId, payload, source, endedAt)
     const snapshot = this.participation({
       ...participation, status: payload.status,
       ...(payload.startedAt ? { startedAt: payload.startedAt } : {}),
-      ...(payload.completedAt ? { completedAt: payload.completedAt } : {}),
+      completedAt: normalizeMonitorStatus(payload).completedAt ?? undefined,
     })!
-    return this.addParticipation({ ...updated, liveRuns: { ...record.liveRuns,
+    const withParticipation = this.addParticipation({ ...updated, liveRuns: { ...record.liveRuns,
       [runId]: { protocolVersion: 2, participation: snapshot },
     } }, runId, snapshot, payload.completedAt || payload.startedAt ? Date.parse((payload.completedAt || payload.startedAt)!) : this.now())
+    return this.addState(withParticipation, runId, payload, source, endedAt)
   }
 
   private participation(value?: MonitorParticipation): MonitorParticipation | undefined {
     if (!value) return undefined
-    return monitorParticipationSchema.parse({ ...value,
+    return monitorParticipationSchema.parse({ ...normalizeMonitorParticipation(value),
       ...(value.title ? { title: boundedText(value.title, 200) || 'Task' } : {}),
     })
   }
 
-  private addParticipation(record: ClientMonitorRecord, runId: string, value: MonitorParticipation, occurredAt: number): ClientMonitorRecord {
+  private addMetadata(record: ClientMonitorRecord, runId: string, type: keyof typeof monitorMetadataSchemas,
+    metadata: MonitorState | ContentManifest | ContentRecovery, participation?: MonitorParticipation, occurredAt = this.now()): ClientMonitorRecord {
+    const message = JSON.stringify(monitorMetadataSchemas[type].parse(metadata))
+    if (message.length > 1000) throw new Error('Monitor metadata exceeds wire limit')
     const sequence = record.lastSequence + 1
     return { ...record, lastSequence: sequence, updatedAt: this.now(), pending: [...record.pending, {
       id: ClientMonitorStore.operationId(), kind: 'event', clientRunId: runId, sequence,
-      payload: { clientRunId: runId, sequence, type: 'participation_status',
-        participation: this.participation(value), occurredAt: new Date(occurredAt).toISOString() },
+      payload: { clientRunId: runId, sequence, type, message, occurredAt: new Date(occurredAt).toISOString(),
+        ...(participation ? { participation: this.participation(participation) } : {}) },
     }] }
+  }
+
+  private addState(record: ClientMonitorRecord, runId: string, payload: ClientTaskStatusRequest, source: MonitorState['source'], endedAt?: string): ClientMonitorRecord {
+    const evidence = { version: 1 as const, reportedStatus: payload.status, source,
+      ...(endedAt ?? payload.completedAt ? { runEndedAt: endedAt ?? payload.completedAt! } : {}),
+      ...(payload.progress !== undefined ? { progress: payload.progress } : {}) }
+    const key = JSON.stringify(evidence)
+    if (record.stateEvidenceByRun?.[runId] === key) return record
+    const updated = this.addMetadata(record, runId, 'monitor_state', { ...evidence, observedAt: new Date(this.now()).toISOString() }, record.liveRuns?.[runId]?.participation)
+    return { ...updated, stateEvidenceByRun: { ...record.stateEvidenceByRun, [runId]: key } }
+  }
+
+  private addRecovery(record: ClientMonitorRecord, runId: string, reason: ContentRecovery['reason'], participation = record.liveRuns?.[runId]?.participation): ClientMonitorRecord {
+    const key = `${runId}:${participation?.executionId ?? ''}`
+    if (record.recoveryByRun?.[key] === reason) return record
+    const updated = this.addMetadata(record, runId, 'content_recovery', { version: 1, reason, source: 'local-history', checkedAt: new Date(this.now()).toISOString() }, participation)
+    return { ...updated, recoveryByRun: { ...record.recoveryByRun, [key]: reason } }
+  }
+
+  private addParticipation(record: ClientMonitorRecord, runId: string, value: MonitorParticipation, occurredAt: number): ClientMonitorRecord {
+    const sequence = record.lastSequence + 1
+    const normalized = this.participation(value)
+    const updated = { ...record, lastSequence: sequence, updatedAt: this.now(), pending: [...record.pending, {
+      id: ClientMonitorStore.operationId(), kind: 'event', clientRunId: runId, sequence,
+      payload: { clientRunId: runId, sequence, type: 'participation_status',
+        participation: normalized, occurredAt: new Date(occurredAt).toISOString() },
+    } as ClientMonitorOperation] }
+    return value.completedAt && value.completedAt !== normalized?.completedAt && value.status
+      ? this.addMetadata(updated, runId, 'monitor_state', { version: 1, reportedStatus: value.status, source: 'live',
+        observedAt: new Date(occurredAt).toISOString(), runEndedAt: value.completedAt }, normalized, occurredAt) : updated
   }
 
   private queueRun(existing: ClientMonitorRecord | null, input: MonitorTaskQueuedInput): ClientMonitorRecord {
@@ -263,7 +516,7 @@ export class ClientMonitorService {
     const record: ClientMonitorRecord = existing ?? {
       version: 1, clientTaskId: input.taskId, clientRunId: input.runId, mirrorId: null,
       subscriptionId: input.subscriptionId, title, taskType: input.taskType, modelId: input.modelId,
-      lastSequence: 0, heartbeatActive: false, pending: [], updatedAt: this.now(),
+      lastSequence: 0, heartbeatActive: false, pending: [], updatedAt: this.now(), contentIndex: {}, sentEvents: [],
     }
     const create = !existing || record.clientRunId !== input.runId
     const participation = input.protocolVersion === 2 ? this.participation(input.participation) : undefined
@@ -281,7 +534,8 @@ export class ClientMonitorService {
         },
       }] : record.pending,
     }
-    return create && participation ? this.addParticipation(updated, input.runId, { ...participation, status: 'QUEUED' }, input.queuedAt ?? this.now()) : updated
+    const withParticipation = create && participation ? this.addParticipation(updated, input.runId, { ...participation, status: 'QUEUED' }, input.queuedAt ?? this.now()) : updated
+    return create && input.protocolVersion === 2 ? this.addState(withParticipation, input.runId, { status: 'QUEUED' }, 'live') : withParticipation
   }
 
   private valid(scope: TaskOwnerScope, epoch: number): boolean {
@@ -295,11 +549,12 @@ export class ClientMonitorService {
     return this.mutate(scope, taskId, epoch, () => mutation(scope)).then(() => this.scheduleDrain(scope, taskId, epoch))
   }
 
-  private mutate(scope: TaskOwnerScope, taskId: string, epoch: number, mutation: () => Promise<void>): Promise<void> {
+  private mutate(scope: TaskOwnerScope, taskId: string, epoch: number, mutation: () => Promise<void>, propagateFailure = false): Promise<void> {
     const key = `${scopeKey(scope)}\0${taskId}`
     const previous = this.chains.get(key) ?? Promise.resolve()
-    const next = previous.then(async () => { if (this.valid(scope, epoch)) await mutation() }).catch(() => {
+    const next = previous.catch(() => undefined).then(async () => { if (this.valid(scope, epoch)) await mutation() }).catch((error: unknown) => {
       log.warn('client monitor outbox mutation failed', { taskId })
+      if (propagateFailure) throw error
     })
     this.chains.set(key, next)
     return next.finally(() => { if (this.chains.get(key) === next) this.chains.delete(key) })
@@ -315,6 +570,12 @@ export class ClientMonitorService {
 
   private async processPending(scope: TaskOwnerScope, taskId: string, epoch: number): Promise<void> {
     while (this.valid(scope, epoch)) {
+      await this.mutate(scope, taskId, epoch, async () => {
+        const latest = await this.options.store.load(scope, taskId)
+        if (!latest) return
+        const normalized = normalizeMonitorRecord(latest)
+        if (normalized !== latest) await this.options.store.save(scope, taskId, normalized)
+      }, true)
       const record = await this.options.store.load(scope, taskId)
       if (!this.valid(scope, epoch) || !record) return
       const operation = record.pending[0]
@@ -326,11 +587,18 @@ export class ClientMonitorService {
         await this.mutate(scope, taskId, epoch, async () => {
           const latest = await this.options.store.load(scope, taskId)
           if (!latest) return
+          const runId = operation.clientRunId ?? operation.payload.clientRunId
+          const acknowledged = operation.kind === 'status' && runId
+            ? { confirmedStatusByRun: { ...latest.confirmedStatusByRun, [runId]: this.fingerprint(operation.payload) } } : {}
+          const contentIndex = latest.contentIndex ? Object.fromEntries(Object.entries(latest.contentIndex).map(([key, entry]) =>
+            [key, operation.kind === 'event' && entry.manifestSequence === operation.sequence ? { ...entry, confirmed: true } : entry])) : undefined
           await this.options.store.save(scope, taskId, { ...latest,
+            ...acknowledged, ...(contentIndex ? { contentIndex } : {}),
+            ...(operation.kind === 'event' ? { sentEvents: [...(latest.sentEvents ?? []), operation.payload] } : {}),
             mirrorId: mirror?.id ?? latest.mirrorId, retryAt: undefined, retryStatusCode: undefined,
             pending: latest.pending.filter(item => item.id !== operation.id), updatedAt: this.now(),
           })
-        })
+        }, true)
       } catch (error) {
         if (!this.valid(scope, epoch)) return
         // The record's run is the latest admitted run. Only an explicitly older status
@@ -343,7 +611,7 @@ export class ClientMonitorService {
               pending: latest.pending.filter(item => item.id !== operation.id),
               skippedOldStatusCount: (latest.skippedOldStatusCount ?? 0) + 1, updatedAt: this.now(),
             })
-          })
+          }, true)
           log.info('client monitor obsolete run status conflict skipped', { taskId, kind: operation.kind })
           continue
         }
@@ -354,7 +622,7 @@ export class ClientMonitorService {
         await this.mutate(scope, taskId, epoch, async () => {
           const latest = await this.options.store.load(scope, taskId)
           if (latest) await this.options.store.save(scope, taskId, { ...latest, retryAt, retryStatusCode: code })
-        })
+        }, true)
         // Only allowlisted metadata: never arbitrary remote error text or message bodies.
         log.warn('client monitor pending operation retained', { taskId, kind: operation.kind, statusCode: code })
         return

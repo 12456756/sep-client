@@ -14,6 +14,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import { ArrangementExecutor, buildArrangementNodePrompt } from './arrangement-executor'
 import { silentTaskMonitor, type TaskMonitorPort, type MonitorTaskQueuedInput, type MonitorTaskContentInput } from '../domain/task-monitor'
 import type { MonitorParticipation } from '../common/platform/client-monitor-contract'
+import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
 
 const scope: TaskOwnerScope = { memberId: 'member-arrangement', enterpriseId: 'enterprise-arrangement' }
 const employee: EmployeeRuntimeConfig = {
@@ -61,6 +62,82 @@ class MemoryCheckpointStore implements ArrangementCheckpointStorePort {
 describe('TaskRuntime arrangement integration', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }))) })
+
+  it('passes per-node prompts and media bindings and blocks downstream nodes until image delivery', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-media-'))
+    directories.push(userDataDir)
+    const manager = new TaskManager(userDataDir)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('media arrangement', 'work', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    const prepared: Array<Parameters<MediaRunPort['prepareRun']>[0]> = []
+    const started: string[] = []
+    let waiting = false
+    let deliver!: () => void
+    const delivery = new Promise<void>(resolve => { deliver = resolve })
+    const host: MediaHostTools = { names: ['media_get_job'], execute: async () => null }
+    const runtime = new TaskRuntime({
+      taskManager: manager, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: new MemoryCheckpointStore(),
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+      resolveEmployee: () => employee,
+      authorizeEmployee: async (subscriptionId, modelId) => ({ ...employee, subscriptionId, modelId: modelId ?? employee.modelId, systemPrompt: `Instructions for ${modelId}` }),
+      media: {
+        async prepareRun(input) { prepared.push(input); return host },
+        async waitForRun(taskId, runId) { assert.equal(taskId, task.id); if (runId === prepared[0]?.runId) { waiting = true; await delivery } },
+        async stopTask() { deliver() },
+      },
+      createWorker: options => {
+        assert.equal(options.context.systemPrompt, `Instructions for ${options.context.modelId}`)
+        assert.equal(options.context.mediaTools, host)
+        return { async run() { started.push(options.context.modelId) }, async abort() {}, async dispose() {} }
+      },
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => waiting)
+      assert.deepEqual(started, ['node-model-a'])
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.RUNNING)
+      assert.equal(prepared[0].toolPolicy?.preset, 'workspace-edit')
+      deliver()
+      await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+      assert.deepEqual(started, ['node-model-a', 'node-model-b'])
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)
+    } finally { deliver(); await runtime.stopAll() }
+  })
+
+  it('pauses an arrangement awaiting media and denies a pending node media approval', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-media-pause-'))
+    directories.push(userDataDir)
+    const manager = new TaskManager(userDataDir)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('media pause', 'work', undefined, employee.subscriptionId)
+    const arrangement = plan(task.id)
+    let prepared: Parameters<MediaRunPort['prepareRun']>[0] | undefined
+    let waiting = false
+    let deliver!: () => void
+    const delivery = new Promise<void>(resolve => { deliver = resolve })
+    const stopped: string[] = []
+    let approvalRequested = false
+    const runtime = new TaskRuntime({
+      taskManager: manager, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: new MemoryCheckpointStore(),
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => { approvalRequested = true },
+      resolveEmployee: () => employee, authorizeEmployee: async () => employee,
+      media: { async prepareRun(input) { prepared = input; return undefined }, async waitForRun() { waiting = true; await delivery }, async stopTask(id) { stopped.push(id); deliver() } },
+      createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => waiting)
+      const approval = prepared!.requestApproval({ taskId: task.id, runId: prepared!.runId, subscriptionId: employee.subscriptionId, toolName: 'media_generate_image', input: { quote: { amount: '1', currency: 'credits' } } })
+      await waitFor(() => approvalRequested)
+      await runtime.pauseTask(task.id)
+      assert.equal(await approval, false)
+      assert.deepEqual(stopped, [task.id])
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
+    } finally { deliver(); await runtime.stopAll() }
+  })
 
   it('executes a saved arrangement plan with node model and persists parent arrangement events', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-integration-'))
@@ -195,16 +272,18 @@ function runtimeForArrangement(
   arrangement: WorkPlan,
   createWorker: (options: Parameters<NonNullable<ConstructorParameters<typeof TaskRuntime>[0]['createWorker']>>[0]) => TaskWorkerPort,
   monitor: TaskMonitorPort = silentTaskMonitor,
+  onEvent: (event: TaskExecutionEvent) => void = () => {},
+  authorizeEmployee?: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>,
 ): TaskRuntime {
   return new TaskRuntime({
     taskManager: manager, taskRunStore: runStore, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
-    getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+    getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent, onApprovalRequest: () => {},
     resolveEmployee: id => arrangement.nodes.some(node => node.subscriptionId === id) ? { ...employee, subscriptionId: id } : null,
-    authorizeEmployee: async (subscriptionId, modelId) => {
+    authorizeEmployee: authorizeEmployee ?? (async (subscriptionId, modelId) => {
       if (!arrangement.nodes.some(node => node.subscriptionId === subscriptionId)) return null
       assert.ok(!modelId || arrangement.nodes.some(node => node.subscriptionId === subscriptionId && node.modelId === modelId))
       return { ...employee, subscriptionId, modelId: modelId ?? employee.modelId }
-    },
+    }),
     createWorker, monitor,
   })
 }
@@ -278,9 +357,11 @@ describe('TaskRuntime arrangement controls', () => {
     }
     const approvals = states.filter(state => state.event.type.startsWith('approval_') && state.participation)
     assert.equal(approvals.length, 6)
-    assert.equal(states.filter(state => state.event.type.startsWith('approval_') && !state.participation).length, 6)
     assert.ok(approvals.every(state => state.participation && queued.some(input => input.runId === state.event.runId)))
     assert.deepEqual(approvals.map(state => state.participation?.status), ['WAITING_APPROVAL', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING', 'WAITING_APPROVAL', 'RUNNING'])
+    const aggregateApprovals = states.filter(state => state.event.type.startsWith('approval_') && !state.participation)
+    assert.equal(aggregateApprovals.length, 6)
+    assert.ok(aggregateApprovals.every(state => queued.some(input => input.runId === state.event.runId)))
     const nodeB = states.find(state => state.event.type === 'arrangement_node_started' && state.participation?.nodeId === 'node-b')!
     assert.equal(nodeB.event.subscriptionId, employee.subscriptionId)
     assert.equal((nodeB.event.data as { subscriptionId: string }).subscriptionId, 'employee-b')
@@ -324,6 +405,85 @@ describe('TaskRuntime arrangement controls', () => {
     releases.get('node-b')!()
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
     assert.deepEqual([...resolved].sort(), ['node-a', 'node-b'])
+  })
+
+  it('reports only the aggregate parent approval transitions for parallel nodes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-approval-monitor-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize(); await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const base = twoNodePlan(task.id)
+    const arrangement: WorkPlan = { ...base, nodes: base.nodes.map(node => ({ ...node, dependsOn: [] })) }
+    const parentRunIds: string[] = []
+    const monitorEvents: Array<{ event: TaskExecutionEvent; participation?: MonitorParticipation }> = []
+    const releases = new Map<string, () => void>()
+    const runtime = runtimeForArrangement(manager, runStore, new MemoryCheckpointStore(), arrangement, options => ({
+      async run() {
+        const nodeId = options.context.modelId === 'node-model-a' ? 'node-a' : 'node-b'
+        const requestId = `approval-${nodeId}`
+        await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+          sequence: 1, type: 'approval_requested', occurredAt: Date.now(), data: { requestId } })
+        await new Promise<void>(resolve => releases.set(nodeId, resolve))
+        await options.onEvent({ taskId: task.id, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+          sequence: 2, type: 'approval_resolved', occurredAt: Date.now(), data: { requestId, approved: true } })
+      },
+      async abort() {}, async dispose() {},
+    }), { ...silentTaskMonitor,
+      async taskEvent(event, participation) {
+        monitorEvents.push({ event, participation })
+        if (!participation && (event.type === 'approval_requested' || event.type === 'approval_resolved')) parentRunIds.push(event.runId)
+      },
+    })
+
+    await runtime.executeTask(task.id)
+    await waitFor(() => releases.size === 2)
+    releases.get('node-a')!()
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.WAITING_APPROVAL)
+    releases.get('node-b')!()
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+
+    const aggregateApprovals = monitorEvents.filter(({ event, participation }) =>
+      !participation && (event.type === 'approval_requested' || event.type === 'approval_resolved'))
+    assert.deepEqual(aggregateApprovals.map(({ event }) => event.type), ['approval_requested', 'approval_resolved'])
+    assert.equal(new Set(parentRunIds).size, 1)
+    assert.ok(parentRunIds[0])
+  })
+
+  it('does not create node participation or content outbox inputs when authorization fails before start', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-authorization-failure-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize(); await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('arrangement', 'ignored', undefined, employee.subscriptionId)
+    const arrangement = plan(task.id)
+    const events: TaskExecutionEvent[] = []
+    const monitorEvents: Array<{ event: TaskExecutionEvent; participation?: MonitorParticipation }> = []
+    const inputs: MonitorTaskContentInput[] = []
+    const outputs: MonitorTaskContentInput[] = []
+    let workers = 0
+    const runtime = runtimeForArrangement(manager, runStore, new MemoryCheckpointStore(), arrangement, () => {
+      workers++
+      return { async run() {}, async abort() {}, async dispose() {} }
+    }, { ...silentTaskMonitor,
+      async taskEvent(event, participation) { monitorEvents.push({ event, participation }) },
+      async taskInput(input) { inputs.push(input) },
+      async taskOutput(input) { outputs.push(input) },
+    }, event => events.push(event), async (subscriptionId, modelId) => {
+      if (modelId) return null
+      return { ...employee, subscriptionId }
+    })
+
+    await runtime.executeTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.PAUSED)
+
+    assert.ok(events.some(event => event.type === 'arrangement_node_failed'))
+    assert.equal(workers, 0)
+    assert.equal(monitorEvents.filter(({ participation }) => participation).length, 0)
+    assert.equal(inputs.filter(input => input.participation).length, 0)
+    assert.equal(outputs.filter(output => output.participation).length, 0)
   })
 
   for (const outcome of ['denied', 'throws', 'aborted-before-start', 'aborted-after-output'] as const) {

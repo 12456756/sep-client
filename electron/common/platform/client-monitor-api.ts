@@ -8,7 +8,13 @@ import {
 export type { CreateClientTaskRequest, ClientTaskStatusRequest, ClientTaskHeartbeatRequest, ClientTaskEventRequest } from './client-monitor-contract'
 
 export interface ClientTaskMirror { id: string }
+export interface ClientTaskMirrorDetail {
+  id: string
+  clientTaskId: string
+  events: ClientTaskEventRequest[]
+}
 export interface ClientMonitorApiPort {
+  getDetail?(mirrorId: string, signal?: AbortSignal): Promise<ClientTaskMirrorDetail>
   createTask(request: CreateClientTaskRequest, signal?: AbortSignal): Promise<ClientTaskMirror>
   updateStatus(mirrorId: string, request: ClientTaskStatusRequest, signal?: AbortSignal): Promise<void>
   sendHeartbeat(mirrorId: string, request: ClientTaskHeartbeatRequest, signal?: AbortSignal): Promise<void>
@@ -30,6 +36,19 @@ export interface ClientMonitorApiOptions {
 }
 const mirrorSchema = z.object({ id: z.string().min(1).max(256) })
 const responseSchema = z.union([mirrorSchema, z.object({ data: mirrorSchema })])
+const detailSchema = z.object({
+  id: z.string().min(1), clientTaskId: z.string().min(1),
+  events: z.array(z.object({
+    clientRunId: z.string().min(1), sequence: z.number().int().positive().max(2147483647),
+    type: z.string().min(1).max(64), message: z.string().max(1000).nullable(),
+    stepKey: z.string().max(1000).nullable(), occurredAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(), participationMetadata: z.unknown().optional(),
+  }).transform(event => clientTaskEventSchema.parse({
+    clientRunId: event.clientRunId, sequence: event.sequence, type: event.type,
+    message: event.message, stepKey: event.stepKey, occurredAt: event.occurredAt ?? event.createdAt,
+    ...(event.participationMetadata != null ? { participation: event.participationMetadata } : {}),
+  }))),
+})
 
 export class ClientMonitorApi implements ClientMonitorApiPort {
   private readonly fetcher: typeof fetch
@@ -54,6 +73,15 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
   }
   async sendEvent(id: string, request: ClientTaskEventRequest, signal?: AbortSignal): Promise<void> {
     await this.request(this.path(id, 'events'), 'POST', clientTaskEventSchema.parse(request), false, signal)
+  }
+  async getDetail(id: string, signal?: AbortSignal): Promise<ClientTaskMirrorDetail> {
+    const value = await this.request('/client/tasks/' + encodeURIComponent(id), 'GET', undefined, true, signal)
+    try {
+      const parsed = z.union([detailSchema, z.object({ data: detailSchema })]).parse(value)
+      const detail = 'data' in parsed ? parsed.data : parsed
+      if (detail.id !== id) throw new Error('Mismatched mirror')
+      return detail
+    } catch { throw new ClientMonitorApiError('Invalid SEP monitor detail.', 502) }
   }
   private path(id: string, suffix: string): string { return '/client/tasks/' + encodeURIComponent(id) + '/' + suffix }
 
@@ -91,7 +119,7 @@ export class ClientMonitorApi implements ClientMonitorApiPort {
       if (scope !== this.scopeKey()) throw new ClientMonitorApiError('SEP monitor scope changed.', 401)
       const response = await this.fetcher(this.baseUrl + path, {
         method, headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json', Origin: this.webOrigin, Referer: this.webOrigin + '/' },
-        body: JSON.stringify(body), signal,
+        ...(method !== 'GET' ? { body: JSON.stringify(body) } : {}), signal,
       })
       if (!response.ok) {
         const reason = response.status === 403 ? await this.forbiddenReason(response) : undefined

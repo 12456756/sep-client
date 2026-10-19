@@ -26,6 +26,10 @@ export interface MonitorTaskContentInput {
   taskId: string
   runId: string
   content: string
+  /** Original local message/source ID; encoded at the wire boundary. */
+  messageId?: string
+  source?: 'canonical' | 'timeline' | 'snapshot'
+  completeness?: 'complete' | 'partial' | 'unverified'
   participation?: MonitorParticipation
   occurredAt?: number
 }

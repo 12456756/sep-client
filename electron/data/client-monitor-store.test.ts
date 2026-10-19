@@ -31,6 +31,44 @@ function record(): ClientMonitorRecord {
 }
 
 describe('ClientMonitorStore', () => {
+  it('inspects legacy pending work without normalizing or modifying the file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-monitor-inspect-')); roots.push(root)
+    const store = new ClientMonitorStore(root)
+    const saved: ClientMonitorRecord = { ...record(), pending: [
+      { id: 'paused', kind: 'status', clientRunId: 'run-a', payload: { status: 'PAUSED', completedAt: '2026-10-10T00:00:01.000Z' } },
+    ] }
+    await store.save(scope, 'task-a', saved)
+    const file = new ScopePath(root).clientMonitorFile(scope, 'task-a')
+    const before = await readFile(file, 'utf8')
+    assert.deepEqual(await store.inspect(scope, 'task-a'), saved)
+    assert.equal(await readFile(file, 'utf8'), before)
+    assert.equal(await store.inspect(scope, 'missing'), null)
+  })
+  it('normalizes legacy PAUSED/INTERRUPTED operations durably without changing IDs or losing pending work', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-monitor-normalize-')); roots.push(root)
+    const store = new ClientMonitorStore(root)
+    const endedAt = '2026-10-10T00:00:01.000Z'
+    const saved: ClientMonitorRecord = { ...record(), mirrorId: 'mirror-a', lastSequence: 7, retryAt: 1000, retryStatusCode: 400,
+      liveRuns: { 'run-a': { protocolVersion: 2, participation: { executionId: 'run-a', subscriptionId: 'sub-a', status: 'PAUSED', completedAt: endedAt } } },
+      pending: [
+        { id: 'paused', kind: 'status', clientRunId: 'run-a', payload: { clientRunId: 'run-a', status: 'PAUSED', completedAt: endedAt } },
+        { id: 'participant', kind: 'event', clientRunId: 'run-a', sequence: 7, payload: { clientRunId: 'run-a', sequence: 7, type: 'participation_status', occurredAt: endedAt,
+          participation: { executionId: 'run-a', subscriptionId: 'sub-a', status: 'INTERRUPTED', completedAt: endedAt } } },
+      ] }
+    await store.save(scope, 'task-a', saved)
+    const normalized = (await store.load(scope, 'task-a'))!
+    assert.deepEqual(normalized.pending.filter(op => ['paused', 'participant'].includes(op.id)).map(op => op.id), ['paused', 'participant'])
+    assert.equal(normalized.pending[0].kind === 'status' ? normalized.pending[0].payload.completedAt : undefined, null)
+    const participant = normalized.pending.find(op => op.id === 'participant')!
+    assert.equal(participant.kind === 'event' ? participant.payload.participation?.completedAt : null, undefined)
+    assert.equal(normalized.liveRuns?.['run-a'].participation?.completedAt, undefined)
+    assert.equal(normalized.retryAt, saved.retryAt)
+    assert.equal(normalized.retryStatusCode, 400)
+    assert.equal(normalized.lastSequence, 9)
+    assert.equal(normalized.pending.filter(op => op.kind === 'event' && op.payload.type === 'monitor_state').length, 2)
+    assert.deepEqual(await new ClientMonitorStore(root).load(scope, 'task-a'), normalized)
+    assert.deepEqual(JSON.parse(await readFile(new ScopePath(root).clientMonitorFile(scope, 'task-a'), 'utf8')), normalized)
+  })
   it('roundtrips v2 proof and participant operations while rejecting unknown participant metadata', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-client-monitor-v2-'))
     roots.push(root)

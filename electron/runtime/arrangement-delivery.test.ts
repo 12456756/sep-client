@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ArrangementExecutor } from './arrangement-executor'
+import { ArrangementExecutor, type ArrangementExecutionOptions } from './arrangement-executor'
 import { TaskManager } from './task-manager'
 import { createArrangementExecutionState } from '../domain/arrangement-execution'
 import type { WorkPlan } from '../domain/arrangement-plan'
@@ -14,7 +14,7 @@ import type { TaskExecutionEvent } from '../../src/shared/types'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>) {
+async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>, media?: ArrangementExecutionOptions['media']) {
   const root = await mkdtemp(join(tmpdir(), 'sep-node-delivery-'))
   roots.push(root)
   await mkdir(join(root, 'deliverables'))
@@ -37,7 +37,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
       await checkpoints.save(scope, value)
       saved = structuredClone(value)
     } }, workspaceRoot: root, arrangementSubscriptionId: 'employee',
-    getRefreshToken: () => 'mock', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+    getRefreshToken: () => 'mock', onAuthenticationRequired() {}, async onApprovalRequest() { return true }, media,
     async authorizeEmployee(_id, modelId) { await onAuthorize?.(modelId!); return { subscriptionId: 'employee', modelId: modelId!, gatewayUrl: 'http://invalid', employeeProfile: { name: 'Researcher' }, additionalSkillPaths: [join(root, 'skills')] } },
     async onEvent(event) {
       if (event.type === 'arrangement_node_completed') assert.equal(saved?.state.nodes.find(node => node.nodeId === (event.data as { nodeId: string }).nodeId)?.status, 'completed')
@@ -65,6 +65,36 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
 function submission(id: string): string { return JSON.stringify({ nodeId: id, summary: 'private summary '+id, finalDeliverables: [{ id: 'report', path: `deliverables/${id}.txt` }] }) }
 
 describe('automatic arrangement final file handover', () => {
+  it('waits for pending media outputs before validating final delivery', async () => {
+    const nodesByRun = new Map<string, string>()
+    const savedRuns = new Set<string>()
+    const mediaTools = { names: ['media_get_capabilities'] as const, async execute() { return {} } }
+    let stops = 0
+    const f = await fixture(async id => ({ text: submission(id) }), undefined, {
+      async prepareRun(input) {
+        nodesByRun.set(input.runId, input.employee.modelId)
+        return mediaTools
+      },
+      async waitForRun(taskId, runId) {
+        assert.equal(taskId, 'task')
+        if (savedRuns.has(runId)) return
+        const nodeId = nodesByRun.get(runId)!
+        const progress = f.checkpoint()!.state.nodes.find(node => node.nodeId === nodeId)!
+        assert.equal(progress.status, 'running')
+        assert.equal(progress.delivery?.validationAttempts ?? 0, 0)
+        await writeFile(join(f.root, `deliverables/${nodeId}.txt`), 'Saved media output '+nodeId)
+        savedRuns.add(runId)
+      },
+      async stopTask() { stops++ },
+    })
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.equal(savedRuns.size, 2)
+    assert.equal(stops, 0)
+    assert.deepEqual(result.state.nodes.map(node => node.delivery?.validationAttempts), [1, 1])
+    assert.ok(f.contexts.every(context => context.mediaTools === mediaTools))
+  })
+
   it('keeps the node and run running during four corrections and accepts the fifth submission', async () => {
     const f = await fixture(async (id, iteration, root) => {
       if (id === 'a') {

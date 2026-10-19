@@ -5,11 +5,16 @@ import type { ClientMonitorRecord, ClientMonitorStore } from '../data/client-mon
 import type { ClientMonitorApiPort, ClientTaskEventRequest, ClientTaskHeartbeatRequest, ClientTaskStatusRequest, CreateClientTaskRequest } from '../common/platform/client-monitor-api'
 import { ClientMonitorApiError } from '../common/platform/client-monitor-api'
 import { ClientMonitorService } from './client-monitor-service'
+import { createHash } from 'node:crypto'
 
 const scope: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
 class MemoryStore {
   records = new Map<string, ClientMonitorRecord>()
+  async inspect(scope: TaskOwnerScope, taskId: string): Promise<ClientMonitorRecord | null> {
+    const record = await this.load(scope, taskId)
+    return record ? structuredClone(record) : null
+  }
   async load(_scope: TaskOwnerScope, taskId: string): Promise<ClientMonitorRecord | null> { return this.records.get(taskId) ?? null }
   async save(_scope: TaskOwnerScope, taskId: string, record: ClientMonitorRecord): Promise<void> { this.records.set(taskId, structuredClone(record)) }
   async deleteIfEmpty(_scope: TaskOwnerScope, taskId: string, record: ClientMonitorRecord): Promise<void> {
@@ -37,6 +42,187 @@ function service(store: MemoryStore, api: ClientMonitorApiPort, options: Partial
 }
 
 describe('ClientMonitorService', () => {
+  it('previews local repair and content differences without sending, saving or starting recovery', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const endedAt = '2026-10-10T00:00:01.000Z'
+    store.records.set('task-a', { version: 1, clientTaskId: 'task-a', clientRunId: 'run-1', mirrorId: 'mirror-1', subscriptionId: 'sub-a', title: 'Task', taskType: 'conversation', modelId: 'model', lastSequence: 0, pending: [
+      { id: 'paused', kind: 'status', clientRunId: 'run-1', payload: { status: 'PAUSED', completedAt: endedAt } },
+    ], sentEvents: [], heartbeatActive: false, updatedAt: 10 })
+    const before = structuredClone(store.records)
+    let writes = 0
+    store.save = async () => { writes++; throw new Error('Preview must not write') }
+    const monitor = service(store, api, { history: { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation', runs: [
+      { runId: 'run-1', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [{ messageId: 'reply', type: 'model_output', content: 'x'.repeat(2100), occurredAt: 11, completeness: 'complete' }], recoveryReason: 'source-missing' },
+    ] }] } })
+    const preview = await monitor.previewRecovery()
+    assert.deepEqual(preview, { tasks: 1, normalizedOperations: 1, bodyMessages: 1, bodyChunks: 3,
+      metadataEvents: 3, ambiguous: 0, sourceMissing: 1, cloudReconciliationRequired: true })
+    assert.equal(writes, 0)
+    assert.deepEqual(store.records, before)
+    assert.deepEqual(api.calls, [])
+    await monitor.stop()
+  })
+
+  it('discards a preview when the account changes while reading local history', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    let current: TaskOwnerScope | null = scope
+    const monitor = service(store, api, { scopeProvider: () => current, history: { read: async () => {
+      current = { memberId: 'other', enterpriseId: 'other' }
+      return []
+    } } })
+    assert.equal(await monitor.previewRecovery(), null)
+    assert.deepEqual(api.calls, [])
+    await monitor.stop()
+  })
+
+  it('replays the identical event after server acceptance but before the local acknowledgement is saved', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    let now = 100
+    const write = store.save.bind(store)
+    let failAcknowledgement = true
+    store.save = async (owner, id, record) => {
+      if (failAcknowledgement && record.sentEvents?.some(event => event.type === 'model_output')) {
+        failAcknowledgement = false
+        throw new Error('Simulated acknowledgement write failure')
+      }
+      await write(owner, id, record)
+    }
+    const monitor = service(store, api, { now: () => now })
+    await monitor.taskQueued(queued('run-1'))
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', messageId: 'reply', content: 'answer', completeness: 'complete', occurredAt: 11 })
+    assert.equal(store.records.get('task-a')?.pending[0].kind, 'event')
+    await monitor.stop()
+    now += 30_001
+    const restarted = service(store, api, { now: () => now })
+    await restarted.resumePending(); await restarted.stop()
+    const bodies = api.events.filter(event => event.type === 'model_output')
+    assert.equal(bodies.length, 2)
+    assert.deepEqual(bodies[0], bodies[1])
+    assert.equal(store.records.get('task-a')?.pending.length, 0)
+    assert.equal(store.records.get('task-a')?.sentEvents?.filter(event => event.type === 'model_output').length, 1)
+  })
+
+  it('stops draining when both acknowledgement and retry persistence fail', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const monitor = service(store, api)
+    await monitor.taskQueued(queued('run-1'))
+    const write = store.save.bind(store)
+    let diskFailed = false
+    store.save = async (owner, id, record) => {
+      if (diskFailed) throw new Error('Simulated persistent disk failure')
+      await write(owner, id, record)
+    }
+    const send = api.sendEvent.bind(api)
+    api.sendEvent = async (mirrorId, event) => { await send(mirrorId, event); diskFailed = true }
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', messageId: 'reply', content: 'answer', occurredAt: 11 })
+    assert.equal(api.events.length, 1)
+    assert.equal(store.records.get('task-a')?.pending[0].kind, 'event')
+    await monitor.stop()
+  })
+
+  it('preserves queued mutations after an acknowledgement write rejects the previous chain', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const monitor = service(store, api, { now: () => 100 })
+    await monitor.taskQueued(queued('run-1'))
+    const write = store.save.bind(store)
+    let signalAcknowledgement!: () => void
+    let rejectAcknowledgement!: () => void
+    const entered = new Promise<void>(resolve => { signalAcknowledgement = resolve })
+    const blocked = new Promise<void>((_resolve, reject) => {
+      rejectAcknowledgement = () => reject(new Error('Simulated acknowledgement write failure'))
+    })
+    let firstAcknowledgement = true
+    store.save = async (owner, id, record) => {
+      if (firstAcknowledgement && record.sentEvents?.some(event => event.type === 'model_output')) {
+        firstAcknowledgement = false
+        signalAcknowledgement()
+        await blocked
+      }
+      await write(owner, id, record)
+    }
+    const first = monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', messageId: 'first', content: 'first answer', occurredAt: 11 })
+    await entered
+    const second = monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', messageId: 'second', content: 'second answer', occurredAt: 12 })
+    rejectAcknowledgement()
+    await Promise.all([first, second])
+    assert.deepEqual(store.records.get('task-a')?.pending.flatMap(operation => operation.kind === 'event' && operation.payload.type === 'model_output'
+      ? [operation.payload.message] : []), ['first answer', 'second answer'])
+    assert.equal(api.events.filter(event => event.type === 'model_output').length, 1)
+    await monitor.stop()
+  })
+
+  it('upgrades indexed content from its cloud manifest when no local manifest remains', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const messageId = Buffer.from('run-1-assistant').toString('base64url')
+    const manifest = { version: 1, messageId, type: 'model_output', chunks: 1, source: 'canonical', completeness: 'unverified' }
+    const cloud: ClientTaskEventRequest[] = [
+      { clientRunId: 'run-1', sequence: 1, type: 'model_output', stepKey: `content:v1:${messageId}:0:1`, message: 'answer', occurredAt: new Date(11).toISOString() },
+      { clientRunId: 'run-1', sequence: 2, type: 'content_manifest', message: JSON.stringify(manifest), occurredAt: new Date(11).toISOString() },
+    ]
+    store.records.set('task-a', { version: 1, clientTaskId: 'task-a', clientRunId: 'run-1', mirrorId: 'mirror-1', subscriptionId: 'sub-a', title: 'Task', taskType: 'conversation', modelId: 'model', lastSequence: 2, pending: [], heartbeatActive: false, updatedAt: 12,
+      contentIndex: { [`run-1:${messageId}`]: { sourceId: 'run-1-assistant', digest: createHash('sha256').update('answer').digest('hex'), clientRunId: 'run-1', sequences: [1], manifestSequence: 2, confirmed: true } } })
+    let reads = 0
+    const remoteApi = Object.assign(api, { getDetail: async () => { reads++; return { id: 'mirror-1', clientTaskId: 'task-a', events: cloud } } })
+    const history = { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation' as const, runs: [{ runId: 'run-1', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [{ messageId: 'run-1-assistant', type: 'model_output' as const, content: 'answer', occurredAt: 11, source: 'canonical' as const, completeness: 'complete' as const }] }] }] }
+    const monitor = service(store, remoteApi, { history })
+    await monitor.resumePending(); await monitor.stop()
+    const restarted = service(store, remoteApi, { history })
+    await restarted.resumePending(); await restarted.stop()
+    assert.equal(reads, 1)
+    assert.equal(api.events.length, 1)
+    assert.equal(api.events[0].type, 'content_manifest')
+    assert.equal(JSON.parse(api.events[0].message!).completeness, 'complete')
+    assert.equal(JSON.parse(api.events[0].message!).messageId, messageId)
+  })
+
+  it('maps cloud stable content without reuploading its body or duplicating its manifest', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const monitor = service(store, api)
+    await monitor.taskQueued(queued('run-1'))
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', messageId: 'legacy-source', content: 'answer', completeness: 'complete', occurredAt: 11 })
+    const cloud = structuredClone(api.events)
+    const wireId = JSON.parse(cloud.find(event => event.type === 'content_manifest')!.message!).messageId
+    const saved = store.records.get('task-a')!
+    store.records.set('task-a', { ...saved, contentIndex: undefined, sentEvents: undefined })
+    api.events = []
+    const remoteApi = Object.assign(api, { getDetail: async () => ({ id: 'mirror-1', clientTaskId: 'task-a', events: cloud }) })
+    const restored = service(store, remoteApi, { history: { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation', runs: [{ runId: 'run-1', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [{ messageId: 'canonical-source', type: 'model_output', content: 'answer', occurredAt: 11, completeness: 'complete' }] }] }] } })
+    await restored.resumePending(); await restored.resumePending(); await restored.stop()
+    assert.deepEqual(api.events, [])
+    const entry = Object.values(store.records.get('task-a')!.contentIndex!)[0]
+    assert.deepEqual(entry.sequences, [1])
+    assert.equal(entry.manifestSequence, 2)
+    assert.equal(entry.confirmed, true)
+    assert.equal(entry.wireMessageId, wireId)
+  })
+
+  it('never downgrades complete manifests during partial or unverified history recovery', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const monitor = service(store, api)
+    await monitor.taskQueued(queued('run-1'))
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', messageId: 'message', content: 'answer', completeness: 'complete', occurredAt: 11 })
+    for (const completeness of ['partial', 'unverified'] as const) {
+      const recovered = service(store, api, { history: { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation', runs: [{ runId: 'run-1', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [{ messageId: 'message', type: 'model_output', content: 'answer', occurredAt: 11, completeness }] }] }] } })
+      await recovered.resumePending(); await recovered.stop()
+    }
+    assert.equal(api.events.filter(event => event.type === 'model_output').length, 1)
+    assert.deepEqual(api.events.filter(event => event.type === 'content_manifest').map(event => JSON.parse(event.message!).completeness), ['complete'])
+  })
+
+  it('does not upgrade an indexed message using metadata from another participation', async () => {
+    const store = new MemoryStore(); const api = new FakeApi()
+    const monitor = service(store, api)
+    await monitor.taskQueued({ ...queued('run-1'), protocolVersion: 2, participation: { executionId: 'run-1', subscriptionId: 'sub-a' } })
+    await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', messageId: 'message', content: 'answer', completeness: 'unverified', occurredAt: 11 })
+    const saved = store.records.get('task-a')!
+    store.records.set('task-a', { ...saved, sentEvents: saved.sentEvents!.map(event => event.type === 'content_manifest'
+      ? { ...event, participation: { executionId: 'foreign-node', subscriptionId: 'sub-a', nodeId: 'foreign' } } : event) })
+    const count = api.events.length
+    const recovered = service(store, api, { history: { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation', runs: [{ runId: 'run-1', subscriptionId: 'sub-a', modelId: 'model', prompt: '', messages: [{ messageId: 'message', type: 'model_output', content: 'answer', occurredAt: 11, completeness: 'complete' }] }] }] } })
+    await recovered.resumePending(); await recovered.stop()
+    assert.equal(api.events.length, count)
+  })
+
   it('reports real lifecycle and uploads only input/output content', async () => {
     const store = new MemoryStore()
     const api = new FakeApi()
@@ -47,8 +233,8 @@ describe('ClientMonitorService', () => {
     await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', content: 'world' })
     await monitor.taskEvent({ taskId: 'task-a', runId: 'run-1', subscriptionId: 'sub-a', sequence: 1, type: 'tool_execution_start', occurredAt: Date.now(), data: { input: 'secret' } })
     await monitor.taskFinished({ taskId: 'task-a', runId: 'run-1', status: 'COMPLETED', completedAt: Date.now() })
-    assert.deepEqual(api.calls, ['create:task-a:run-1', 'status:RUNNING', 'event:1', 'event:2', 'status:COMPLETED'])
-    assert.deepEqual(api.events.map(event => ({ type: event.type, message: event.message })), [
+    assert.deepEqual(api.calls, ['create:task-a:run-1', 'status:RUNNING', 'event:1', 'event:2', 'event:3', 'event:4', 'event:5', 'status:COMPLETED', 'event:6'])
+    assert.deepEqual(api.events.filter(event => event.type === 'user_input' || event.type === 'model_output').map(event => ({ type: event.type, message: event.message })), [
       { type: 'user_input', message: 'hello' },
       { type: 'model_output', message: 'world' },
     ])
@@ -63,7 +249,7 @@ describe('ClientMonitorService', () => {
     await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', content: 'final answer' })
     await monitor.taskFinished({ taskId: 'task-a', runId: 'run-1', status: 'COMPLETED', completedAt: 1_700_000_000_000 })
 
-    assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:1', 'status:COMPLETED'])
+    assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:1', 'event:2', 'status:COMPLETED', 'event:3'])
   })
 
   it('keeps one queue per task and increments sequence across runs', async () => {
@@ -74,8 +260,8 @@ describe('ClientMonitorService', () => {
     await monitor.taskInput({ taskId: 'task-a', runId: 'run-1', content: 'one' })
     await monitor.taskQueued(queued('run-2'))
     await monitor.taskInput({ taskId: 'task-a', runId: 'run-2', content: 'two' })
-    assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:1', 'create:task-a:run-2', 'event:2'])
-    assert.deepEqual(api.events.map(item => item.sequence), [1, 2])
+    assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:1', 'event:2', 'create:task-a:run-2', 'event:3', 'event:4'])
+    assert.deepEqual(api.events.map(item => item.sequence), [1, 2, 3, 4])
   })
 
   it('replays legacy status, heartbeat, and ordinary event outbox operations', async () => {
@@ -104,7 +290,7 @@ describe('ClientMonitorService', () => {
     await monitor.taskInput({ taskId: 'task-a', runId: 'run-1', content: '   \t  ' })
     assert.ok(api.events.length > 8)
     assert.equal(api.events.some(event => event.message === '   \t  '), true)
-    const longEvents = api.events.filter(event => event.stepKey)
+    const longEvents = api.events.filter(event => event.type === 'model_output')
     assert.equal(longEvents.map(e => e.message).join(''), `Bearer [redacted] ${'x😀'.repeat(4000)}`)
     const ids = longEvents.map(e => e.stepKey?.split(':')[2])
     assert.equal(new Set(ids).size, 1)
@@ -126,7 +312,9 @@ describe('ClientMonitorService', () => {
     const monitor = service(store, api, { maxAttempts: 1 })
     await monitor.taskQueued(queued('run-1'))
     await monitor.taskInput({ taskId: 'task-a', runId: 'run-1', content: 'hello' })
-    assert.deepEqual(store.records.get('task-a')?.pending.map(item => item.kind), ['create', 'event'])
+    assert.deepEqual(store.records.get('task-a')?.pending.map(item => item.kind), ['create', 'event', 'event'])
+    const manifest = store.records.get('task-a')?.pending.at(-1)
+    assert.equal(manifest?.kind === 'event' ? manifest.payload.type : undefined, 'content_manifest')
   })
   it('serializes sends globally while persisting a second task before the first finishes', async () => {
     const store = new MemoryStore()
@@ -173,10 +361,11 @@ describe('ClientMonitorService', () => {
     await monitor.taskQueued(queued('run-2'))
     await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', content: 'partial' })
     assert.equal(api.events[0].clientRunId, 'run-1')
-    assert.equal(api.events[0].stepKey, undefined)
+    assert.match(api.events[0].stepKey!, /^content:v1:[A-Za-z0-9_-]{1,100}:0:1$/)
     assert.equal(api.calls.includes('status:COMPLETED'), false)
     await monitor.taskFinished({ taskId: 'task-a', runId: 'run-1', status: 'FAILED', completedAt: Date.now() })
-    assert.equal(api.calls.at(-1), 'status:FAILED')
+    assert.ok(api.calls.includes('status:FAILED'))
+    assert.equal(api.events.at(-1)?.type, 'monitor_state')
   })
 
   it('skips only explicit old-run status 409 so the new run can drain', async () => {
@@ -223,7 +412,7 @@ describe('ClientMonitorService', () => {
     const run = (runId: string, status: 'COMPLETED' | 'FAILED') => ({ runId, subscriptionId: 'sub-a', modelId: 'model', prompt: 'prompt', queuedAt: runId === 'run-1' ? 10 : 20, messages: [{ type: 'user_input' as const, content: 'prompt', occurredAt: 10 }, { type: 'model_output' as const, content: 'answer', occurredAt: 11 }], status: { status, completedAt: new Date(12).toISOString() } })
     const monitor = service(store, api, { history: { read: async () => [{ taskId: 'task-a', title: 'Task', taskType: 'conversation', runs: [run('run-1', 'COMPLETED'), run('run-2', 'FAILED')] }] } })
     await monitor.resumePending()
-    assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:1', 'event:2', 'status:COMPLETED', 'create:task-a:run-2', 'event:3', 'event:4', 'status:FAILED'])
+    assert.deepEqual(api.calls, ['create:task-a:run-1', 'event:1', 'event:2', 'event:3', 'event:4', 'status:COMPLETED', 'event:5', 'create:task-a:run-2', 'event:6', 'event:7', 'event:8', 'event:9', 'status:FAILED', 'event:10'])
     assert.equal(store.records.get('task-a')?.historyBackfilled, true)
     assert.ok(api.creates.every(create => create.protocolVersion === undefined))
     assert.deepEqual(api.creates.map(create => create.queuedAt), [new Date(10).toISOString(), new Date(20).toISOString()])
@@ -233,9 +422,9 @@ describe('ClientMonitorService', () => {
     // Simulate a legacy outbox without status fingerprints. Only the current run is reconciled.
     store.records.set('task-a', { ...store.records.get('task-a')!, statusByRun: undefined })
     await monitor.resumePending()
-    assert.deepEqual(api.calls.slice(previous), ['status:FAILED'])
+    assert.deepEqual(api.calls.slice(previous), [])
     await monitor.resumePending()
-    assert.equal(api.calls.length, previous + 1)
+    assert.equal(api.calls.length, previous)
     await monitor.stop()
   })
 
@@ -371,10 +560,11 @@ describe('ClientMonitorService', () => {
     await new Promise(resolve => setImmediate(resolve))
     await monitor.stop()
     await Promise.all([queuedPromise, inputPromise])
-    assert.deepEqual(store.records.get('task-a')?.pending.map(op => op.kind), ['create', 'event'])
+    assert.deepEqual(store.records.get('task-a')?.pending.map(op => op.kind), ['create', 'event', 'event'])
     release(); api.beforeCreate = undefined
     await monitor.resumePending()
-    assert.deepEqual(api.events.map(e => e.message), ['persisted before stop'])
+    assert.deepEqual(api.events.filter(e => e.type === 'user_input').map(e => e.message), ['persisted before stop'])
+    assert.equal(api.events.filter(e => e.type === 'content_manifest').length, 1)
     await monitor.stop()
   })
 
@@ -425,7 +615,9 @@ describe('ClientMonitorService', () => {
       await monitor.taskOutput({ taskId: 'task-a', runId: 'run-1', content: 'answer' })
       await monitor.resumePending(); await monitor.resumePending()
       assert.equal(sends, expected)
-      assert.equal(store.records.get('task-a')?.pending.length, 1)
+      assert.equal(store.records.get('task-a')?.pending.length, 2)
+      const manifest = store.records.get('task-a')?.pending.at(-1)
+      assert.equal(manifest?.kind === 'event' ? manifest.payload.type : undefined, 'content_manifest')
       await monitor.stop()
     }
   })

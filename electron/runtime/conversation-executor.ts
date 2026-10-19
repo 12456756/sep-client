@@ -16,12 +16,14 @@ import type { TaskManager } from './task-manager'
 import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
 import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { ConversationRecoveryError } from './conversation-recovery-error'
+import { withApprovedSkillReadPaths } from './run-skill-policy'
 import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, TaskWorkerPort } from './run-types'
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
 import type { EventPipeline } from './run-events'
 import type { ToolApprovals } from './run-approvals'
 import type { MonitorTaskContentInput, MonitorTaskQueuedInput, MonitorTaskStartedInput, MonitorTaskFinishedInput } from '../domain/task-monitor'
 import { logger } from '../common/logger'
+import type { MediaRunPort } from '../domain/media-tools'
 
 const log = logger.child('conversation-executor')
 
@@ -43,6 +45,7 @@ export interface ConversationExecutorOptions {
   onOutput?: (input: MonitorTaskContentInput) => void
   onStarted?: (input: MonitorTaskStartedInput) => void
   onFinished?: (input: MonitorTaskFinishedInput) => void
+  media?: MediaRunPort
 }
 
 export class ConversationExecutor {
@@ -91,6 +94,35 @@ export class ConversationExecutor {
       const conversationPaths = queued.conversation && scope && this.options.taskRunStore
         ? this.options.taskRunStore.getConversationSessionPaths(scope, taskId)
         : null
+      const workspaceDir = task.workDir ?? this.options.workspaceRoot()
+      const toolPolicy = withApprovedSkillReadPaths(queued.arrangement ? {
+        preset: queued.arrangement.permissions.preset,
+        allowedTools: [...queued.arrangement.permissions.allowedTools],
+        allowedPaths: [...queued.arrangement.permissions.allowedPaths],
+        deniedPaths: [...queued.arrangement.permissions.deniedPaths],
+        commandPolicy: queued.arrangement.permissions.commandPolicy,
+        approvalMode: queued.arrangement.permissions.approvalMode ?? 'confirm-each', workspaceDir,
+      } : undefined, employee)
+      // Register before async host preparation so pause/shutdown can stop setup too.
+      active = {
+        taskId, runId, subscriptionId: queued.subscriptionId, releaseWorkspace, control: 'none', completion: completion.promise,
+        worker: {
+          async run(prompt) { await worker?.run(prompt) },
+          async abort() { await worker?.abort() },
+          async dispose() { await worker?.dispose() },
+        },
+      }
+      this.options.workers.register(active)
+      const mediaTools = await this.options.media?.prepareRun({
+        taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
+        requestApproval: request => this.options.approvals.request(request),
+      })
+      if (active.control !== 'none') {
+        // stopTask may have won before prepareRun published its tracking state.
+        await this.options.media?.stopTask(taskId)
+        await this.finalize(active, queued, scope, runCreated)
+        return
+      }
       worker = this.options.createWorker({
         context: {
           taskId,
@@ -103,16 +135,10 @@ export class ConversationExecutor {
           sessionDir: conversationPaths?.sessionDir ?? runPaths?.sessionDir ?? `${this.options.workspaceRoot()}/.pi-sessions/${runId}`,
           resumeSessionFile: queued.resumeSessionFile,
           additionalSkillPaths: employee.additionalSkillPaths,
+          systemPrompt: employee.systemPrompt,
+          mediaTools,
+          toolPolicy,
           employeeProfile: employee.employeeProfile,
-          toolPolicy: queued.arrangement ? {
-            preset: queued.arrangement.permissions.preset,
-            allowedTools: [...queued.arrangement.permissions.allowedTools],
-            allowedPaths: [...queued.arrangement.permissions.allowedPaths],
-            deniedPaths: [...queued.arrangement.permissions.deniedPaths],
-            commandPolicy: queued.arrangement.permissions.commandPolicy,
-            approvalMode: queued.arrangement.permissions.approvalMode ?? 'confirm-each',
-            workspaceDir: task.workDir ?? this.options.workspaceRoot(),
-          } : undefined,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
@@ -132,16 +158,7 @@ export class ConversationExecutor {
         },
         sessionAdapter: queued.conversation && scope ? this.conversationAdapter(scope, taskId) : undefined,
       })
-      active = {
-        taskId,
-        runId,
-        subscriptionId: queued.subscriptionId,
-        releaseWorkspace,
-        worker,
-        control: 'none',
-        completion: completion.promise,
-      }
-      this.options.workers.register(active)
+      active.worker = worker
 
       if (scope && this.options.taskRunStore) {
         await this.options.taskRunStore.create(scope, {
@@ -174,10 +191,12 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       await worker.run(queued.workerPrompt ?? queued.prompt)
+      if (active.control === 'none') await this.options.media?.waitForRun(taskId, runId)
       await this.options.events.drain(taskId)
       if (!this.options.workers.isCurrent(active)) return
       await this.finalize(active, queued, scope, runCreated)
     } catch (error) {
+      await this.options.media?.stopTask(taskId).catch(() => undefined)
       log.error('conversation run failed', {
         taskId,
         runId,
@@ -346,6 +365,8 @@ export class ConversationExecutor {
         taskId: active.taskId,
         runId: active.runId,
         content: response,
+        messageId: `${active.runId}-assistant`,
+        completeness: outcome === 'completed' ? 'complete' : 'partial',
       })
     }
     if (response && scope && queued.conversation) {
@@ -375,7 +396,7 @@ export class ConversationExecutor {
             : TaskStatus.COMPLETED
       await this.options.taskManager.settleTaskRun(active.taskId, active.runId, nextStatus, error)
       this.options.onFinished?.({ taskId: active.taskId, runId: active.runId,
-        status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : 'PAUSED',
+        status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : outcome === 'interrupted' ? 'INTERRUPTED' : 'PAUSED',
         error, completedAt: Date.now(),
       })
     }

@@ -1,0 +1,7 @@
+body { margin: 0; background: #f5f6f4; color: #303831; font: 14px/1.6 system-ui, sans-serif; }
+main { max-width: 860px; margin: 24px auto; padding: 24px; background: white; }
+h1 { font-size: 21px; }
+button { font: inherit; }
+.artifact-section { padding: 16px; border: 1px solid #ddd; }
+.media-image { max-height: 300px; }
+.media-image-large { max-height: none; }

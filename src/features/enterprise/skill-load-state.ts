@@ -1,3 +1,10 @@
+import type { AppRoute } from './types';
+
+export function needsSkillLibrary(route: AppRoute): boolean {
+  return route.name === 'skills' || route.name === 'employee'
+    || route.name === 'arrange' && route.mode === 'manual';
+}
+
 export type SkillLoadErrorKind = 'rate-limited' | 'auth' | 'forbidden' | 'network' | 'service' | 'unknown';
 
 export interface SkillLoadFailureInput {

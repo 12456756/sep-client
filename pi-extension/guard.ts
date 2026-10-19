@@ -3,11 +3,18 @@
  *
  * The side-effecting tool list has one shared definition in electron/common/constants.ts.
  */
+import { realpathSync, statSync } from 'node:fs'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { hasSideEffects, SIDE_EFFECT_TOOLS } from '../electron/common/constants'
 
 export const READ_ONLY_TOOLS = new Set(['read', 'grep', 'find', 'ls'])
 export const BUILTIN_TOOL_NAMES = ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash'] as const
 export type ToolPermissionPreset = 'read-only' | 'workspace-edit' | 'full-local'
+
+export interface ApprovedSkillReadPath {
+  readonly entryPath: string
+  readonly packageRoot?: string
+}
 
 export interface ToolPolicy {
   /** Persisted permission preset. Full-local + auto-approve is the unrestricted mode. */
@@ -18,6 +25,8 @@ export interface ToolPolicy {
   commandPolicy: 'disabled' | 'restricted' | 'confirm-each'
   approvalMode: 'confirm-each' | 'auto-approve'
   workspaceDir: string
+  /** Canonical paths fixed by the host from this run's approved skill snapshot. */
+  approvedSkillPaths?: readonly ApprovedSkillReadPath[]
 }
 
 export type RegisteredToolPermissions = ReadonlyMap<string, 'confirm-each' | 'auto-approve'>
@@ -77,7 +86,8 @@ export function evaluateToolCall(
     const path = readString(input, ['path', 'filePath', 'file_path', 'filename', 'target'])
     const optionalPath = toolName === 'grep' || toolName === 'find' || toolName === 'ls'
     const candidatePath = path ?? (optionalPath ? policy.workspaceDir : null)
-    if (!candidatePath || !isAllowedPath(candidatePath, policy)) {
+    if (!candidatePath || (!isAllowedPath(candidatePath, policy)
+      && !(toolName === 'read' && isApprovedSkillRead(candidatePath, policy)))) {
       return {
         allowed: false,
         requiresApproval: false,
@@ -113,6 +123,33 @@ function isAllowedPath(candidate: string, policy: ToolPolicy): boolean {
   if (policy.deniedPaths.some(path => matchesPath(resolved, policy.workspaceDir, path))) return false
   if (policy.allowedPaths.length === 0) return true
   return policy.allowedPaths.some(path => matchesPath(resolved, policy.workspaceDir, path))
+}
+
+function containsNativePath(root: string, candidate: string): boolean {
+  const remainder = relative(root, candidate)
+  return remainder === '' || (!isAbsolute(remainder) && remainder !== '..' && !remainder.startsWith(`..${sep}`))
+}
+
+function isApprovedSkillRead(candidate: string, policy: ToolPolicy): boolean {
+  if (!policy.approvedSkillPaths?.length) return false
+  try {
+    const absolute = resolve(policy.workspaceDir, candidate)
+    const actual = realpathSync(absolute)
+    if (!statSync(actual).isFile()) return false
+    if (policy.deniedPaths.some(configured => {
+      const denied = resolve(policy.workspaceDir, configured)
+      if (containsNativePath(denied, absolute) || containsNativePath(denied, actual)) return true
+      try { return containsNativePath(realpathSync(denied), actual) } catch { return false }
+    })) return false
+    return policy.approvedSkillPaths.some(({ entryPath, packageRoot }) => {
+      // A replaced entry/root symlink must not redefine the frozen grant.
+      if (realpathSync(entryPath) !== entryPath) return false
+      if (!packageRoot) return actual === entryPath
+      return realpathSync(packageRoot) === packageRoot && containsNativePath(packageRoot, actual)
+    })
+  } catch {
+    return false
+  }
 }
 
 function containsOutsideWorkspacePath(command: string, policy: ToolPolicy): boolean {

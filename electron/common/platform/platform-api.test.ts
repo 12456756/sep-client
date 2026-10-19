@@ -25,6 +25,26 @@ function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
+describe('employee runtime skill artifact negotiation errors', () => {
+  for (const status of [401, 403, 404, 409]) {
+    it(`preserves HTTP ${status} without a legacy retry`, async () => {
+      let calls = 0
+      globalThis.fetch = async (input, init) => {
+        calls++
+        assert.equal(String(input), `${config.SEP_BASE_URL}/client/subscriptions/sub-1/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1`)
+        assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access')
+        return response({ statusCode: status, message: 'Rejected' }, status)
+      }
+      await assert.rejects(api.getEmployeeRuntime('sub-1', 'access'), error => {
+        assert.ok(error instanceof api.AuthApiError)
+        assert.equal(error.statusCode, status)
+        return true
+      })
+      assert.equal(calls, 1)
+    })
+  }
+})
+
 describe('SEP 2026-09-16 supplemental API contract', () => {
   it('reads organization and overview without enterpriseId or field remapping', async () => {
     const organization = { ...overview, departments: [], members: [{ id: 'member-1', userId: 'user-1', name: 'Member', departmentId: null, position: null, avatar: null }], grants: [] }
@@ -308,7 +328,7 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     let calls = 0
     globalThis.fetch = async () => { calls++; return response(version) }
     const request = { capabilityId: 'cap', parentVersionId: 'v', content: 'text' }
-    for (const invalid of [{ ...request, content: '' }, { ...request, content: 'x'.repeat(500001) }, { ...request, ownerId: 'other' }, { ...request, capabilityId: 'x'.repeat(129) }]) {
+    for (const invalid of [{ ...request, content: '' }, { ...request, content: 'x'.repeat(512001) }, { ...request, ownerId: 'other' }, { ...request, capabilityId: 'x'.repeat(129) }]) {
       await assert.rejects(async () => api.createPersonalSkillVersion(invalid, 'valid-key-1234567', 'access'))
     }
     await assert.rejects(async () => api.createPersonalSkillVersion(request, '', 'access'))

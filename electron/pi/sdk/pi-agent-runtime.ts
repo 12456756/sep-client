@@ -40,6 +40,8 @@ export interface PiAgentSessionConfig {
   sessionDir: string
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
+  systemPrompt?: string
+  mediaTools?: import('../../domain/media-tools').MediaHostTools
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   /** Host-owned instructions retained outside compacted conversation history. */
   fixedSystemPrompt?: string

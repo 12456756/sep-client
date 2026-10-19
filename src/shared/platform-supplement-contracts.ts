@@ -3,6 +3,8 @@ import { z } from 'zod'
 const resourceId = z.string().min(1).max(128)
 const nullableText = z.string().nullable()
 const count = z.number().int().nonnegative()
+const skillContent = z.string().refine(value => value.trim().length > 0, 'Skill content cannot be blank')
+  .refine(value => new TextEncoder().encode(value).byteLength <= 500 * 1024, 'Skill content cannot exceed 500 KiB (UTF-8)')
 
 export const platformEmployeeCapabilitySchema = z.object({
   id: resourceId, name: z.string(), description: z.string(), type: z.string().optional(),
@@ -98,7 +100,7 @@ export const skillVersionSchema = z.object({
 
 export const personalSkillVersionRequestSchema = z.object({
   capabilityId: resourceId, parentVersionId: resourceId,
-  content: z.string().min(1).max(500_000),
+  content: skillContent,
   changeSummary: z.string().trim().max(2_000).optional(),
 }).strict()
 export const personalSkillSubmissionResponseSchema = skillVersionSchema.extend({
@@ -110,7 +112,7 @@ export const personalSkillSubmissionResponseSchema = skillVersionSchema.extend({
   submittedAt: z.string().min(1), enterpriseReviewedAt: nullableText,
   rejectionReason: nullableText, changeSummary: nullableText,
   createdAt: z.string().min(1), updatedAt: z.string().min(1),
-  content: z.string().min(1).max(500_000),
+  content: skillContent,
 }).strip()
 export const idempotencyKeySchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/)
 export const skillVersionQuerySchema = z.object({
@@ -122,7 +124,8 @@ export const skillVersionReviewQuerySchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
 }).strict()
 export const skillVersionReviewRequestSchema = z.object({
-  decision: z.enum(['APPROVE', 'REJECT']), comment: z.string().max(2_000).optional(),
+  decision: z.enum(['APPROVE', 'REJECT']), comment: z.string().trim().max(2_000).optional(),
+  expectedUpdatedAt: z.string().datetime({ offset: true }).optional(),
 }).strict().refine(value => value.decision !== 'REJECT' || Boolean(value.comment?.trim()), {
   message: 'REJECT requires a nonempty comment', path: ['comment'],
 })

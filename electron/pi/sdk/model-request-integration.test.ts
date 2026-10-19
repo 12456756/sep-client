@@ -171,7 +171,7 @@ describe('real SDK model request awareness', () => {
     assert.equal(f.requests[0]!.messages.at(-1)!.content, 'First requirement\nSecond requirement\nBearer request-secret')
     assert.equal(f.logs.some(record => 'context' in record.fields), false)
     assert.doesNotMatch(JSON.stringify(f.logs), /request-secret|response-secret/)
-    assert.equal(f.logs.some(record => record.message === 'provider headers hook entered'), false)
+    assert.equal(f.logs.some(record => record.message === 'provider response received'), false)
     assert.equal(f.logs.some(record => record.message === 'model request tool list'), false)
   })
 
@@ -179,7 +179,7 @@ describe('real SDK model request awareness', () => {
     setLogLevel('trace')
     const f = await fixture(t, (_body, response) => answer(response, 'Visible response'))
     await f.session.prompt('New requirement')
-    assert.ok(f.logs.some(record => record.message === 'provider headers hook entered' && record.level === 'trace'))
+    assert.ok(f.logs.some(record => record.message === 'provider response received' && record.level === 'trace'))
     assert.ok(f.logs.some(record => record.message === 'model request tool list' && record.level === 'trace'))
     assert.ok(f.logs.some(record => record.message === 'model response content' && record.fields.content === 'Visible response'))
   })

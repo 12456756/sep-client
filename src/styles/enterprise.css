@@ -9,6 +9,8 @@
  * 4. 数值一律给图形：进度条、圆环、时间轴圆点，不靠一串文字描述。
  */
 
+@import '../components/workspace/media-artifacts.css';
+
 :root {
   /*
    * 主色系统 - 与登录页保持一致的温暖橙红色

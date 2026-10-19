@@ -9,6 +9,7 @@ import { TaskManager } from './task-manager'
 import { TaskRuntime } from './task-runtime'
 import { TaskStatus } from '../../src/shared/types'
 import type { WorkPlan } from '../domain/arrangement-plan'
+import { ArrangementExecutor } from './arrangement-executor'
 
 const scope = { memberId: 'resume-member', enterpriseId: 'resume-enterprise' }
 const directories: string[] = []
@@ -39,6 +40,127 @@ async function waitFor(predicate: () => Promise<boolean>) {
   while (Date.now() < until) { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)) }
   throw new Error('state did not settle')
 }
+
+async function crashedFixture() {
+  const f = await fixture()
+  await f.runs.create(scope, { taskId: f.task.id, runId: 'parent-run', subscriptionId: 'employee',
+    modelId: 'a', runtimeKey: 'employee:a', workspaceDir: f.task.workDir!, prompt: f.plan.goal })
+  await f.manager.admitTask(f.task.id, 'parent-run')
+  await f.manager.updateTaskStatus(f.task.id, TaskStatus.RUNNING)
+  const nodeRun = await f.runs.create(scope, { taskId: f.task.id, runId: 'node-b-run', subscriptionId: 'employee',
+    modelId: 'b', runtimeKey: 'employee:b', workspaceDir: f.task.workDir!, prompt: 'do b', arrangementNodeId: 'b' })
+  const paths = f.runs.getPaths(scope, f.task.id, nodeRun.id)
+  await mkdir(paths.sessionDir, { recursive: true })
+  const sessionFile = join(paths.sessionDir, 'session.jsonl')
+  await writeFile(sessionFile, JSON.stringify({ type: 'session', id: 'crashed-b', version: 3 })+'\n')
+  await f.runs.setSession(scope, f.task.id, nodeRun.id, { sessionId: 'crashed-b', sessionFile })
+  await f.checkpoints.save(scope, { version: 1, taskId: f.task.id, owner: scope, planHash: f.plan.planHash,
+    activeRunId: 'parent-run', updatedAt: Date.now(), state: { status: 'running', failureNodeIds: [], interruptionReason: null,
+      nodes: [{ nodeId: 'a', status: 'completed', attempt: 1, error: null, output: 'A completed' },
+        { nodeId: 'b', status: 'running', attempt: 1, sessionRunId: nodeRun.id, error: null, output: null }] } })
+  return { ...f, sessionFile }
+}
+
+it('recovers a crashed arrangement on startup and resumes only its unfinished node with the saved session', async () => {
+  const f = await crashedFixture()
+  const manager = new TaskManager(f.root)
+  await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+  assert.equal((await manager.getTask(f.task.id))!.status, TaskStatus.INTERRUPTED)
+  assert.equal((await manager.getTask(f.task.id))!.activeRunId, null)
+  const recovered = (await f.checkpoints.get(scope, f.task.id))!
+  assert.equal(recovered.activeRunId, null)
+  assert.equal(recovered.state.status, 'interrupted')
+  assert.equal(recovered.state.interruptionReason, 'client-crash')
+  assert.deepEqual(recovered.state.nodes.map(node => node.status), ['completed', 'interrupted'])
+  assert.equal(recovered.state.nodes[1]!.sessionRunId, 'node-b-run')
+  assert.equal((await f.runs.get(scope, f.task.id, 'node-b-run'))!.outcome, 'interrupted')
+  const attempts: string[] = []
+  const runtime = new TaskRuntime({ taskManager: manager, taskRunStore: f.runs,
+    workPlanStore: { async get() { return f.plan }, async save() {} }, arrangementCheckpointStore: f.checkpoints,
+    getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+    resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'a', gatewayUrl: 'http://invalid' }),
+    authorizeEmployee: async (_subscriptionId, modelId) => ({ subscriptionId: 'employee', modelId: modelId ?? 'a', gatewayUrl: 'http://invalid' }),
+    createWorker: options => ({ async run() {
+      attempts.push(options.context.modelId)
+      assert.equal(options.context.resumeSessionFile, f.sessionFile)
+      await options.onSessionCreated?.({ sessionId: 'crashed-b', sessionFile: f.sessionFile })
+    }, async abort() {}, async dispose() {} }),
+  })
+  await assert.rejects(runtime.executeTask(f.task.id), /Resume it explicitly/)
+  await runtime.retryTask(f.task.id)
+  await waitFor(async () => (await manager.getTask(f.task.id))?.status === TaskStatus.COMPLETED)
+  assert.deepEqual(attempts, ['b'])
+  assert.equal((await f.checkpoints.get(scope, f.task.id))!.state.nodes[0]!.output, 'A completed')
+})
+
+it('blocks admission when checkpoint recovery fails and repairs it on the next recovery attempt', async () => {
+  const f = await crashedFixture()
+  const original = (await f.checkpoints.get(scope, f.task.id))!
+  let rejectSave = true
+  const manager = new TaskManager(f.root, null, undefined, f.runs, {
+    get: (owner, taskId) => f.checkpoints.get(owner, taskId),
+    save: async (owner, checkpoint) => {
+      if (rejectSave) throw new Error('checkpoint disk unavailable')
+      await f.checkpoints.save(owner, checkpoint)
+    },
+  })
+  await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+  assert.equal(manager.isPersistenceDegraded(), true)
+  assert.deepEqual(await f.checkpoints.get(scope, f.task.id), original)
+  await assert.rejects(manager.admitTask(f.task.id, 'new-run'), /needs recovery/)
+  rejectSave = false
+  await manager.recoverPersistence()
+  assert.equal(manager.isPersistenceDegraded(), false)
+  assert.equal((await f.checkpoints.get(scope, f.task.id))!.state.status, 'interrupted')
+})
+
+it('does not overwrite a checkpoint that belongs to another parent run', async () => {
+  const f = await crashedFixture()
+  const checkpoint = (await f.checkpoints.get(scope, f.task.id))!
+  checkpoint.activeRunId = 'another-parent'
+  await f.checkpoints.save(scope, checkpoint)
+  const manager = new TaskManager(f.root)
+  await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+  assert.equal(manager.isPersistenceDegraded(), true)
+  assert.deepEqual(await f.checkpoints.get(scope, f.task.id), checkpoint)
+})
+
+for (const status of ['completed', 'stopped'] as const) {
+  it(`settles a ${status} checkpoint saved before the task finished on startup`, async () => {
+    const f = await crashedFixture()
+    const checkpoint = (await f.checkpoints.get(scope, f.task.id))!
+    checkpoint.state.status = status
+    checkpoint.state.nodes[1]!.status = status
+    await f.checkpoints.save(scope, checkpoint)
+    const manager = new TaskManager(f.root)
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = (await manager.getTask(f.task.id))!
+    assert.equal(task.status, status === 'completed' ? TaskStatus.COMPLETED : TaskStatus.PAUSED)
+    assert.equal(task.activeRunId, null)
+    assert.equal(task.completedAt, status === 'completed' ? checkpoint.updatedAt : null)
+    assert.equal((await f.runs.get(scope, f.task.id, 'parent-run'))!.outcome, status)
+    assert.equal((await f.checkpoints.get(scope, f.task.id))!.state.status, status)
+    assert.equal((await f.checkpoints.get(scope, f.task.id))!.activeRunId, null)
+    await manager.recoverPersistence()
+    assert.equal((await manager.getTask(f.task.id))!.status, task.status)
+    assert.equal(manager.isPersistenceDegraded(), false)
+  })
+}
+
+it('interrupts orphaned running nodes instead of spinning with no active workers', async () => {
+  const f = await crashedFixture()
+  const checkpoint = (await f.checkpoints.get(scope, f.task.id))!
+  const executor = new ArrangementExecutor({ workspaceRoot: f.task.workDir!, scope, checkpointStore: f.checkpoints,
+    taskManager: f.manager, taskRunStore: f.runs, arrangementSubscriptionId: 'employee',
+    authorizeEmployee: async () => { throw new Error('must not authorize') },
+    getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent: async () => {},
+    onApprovalRequest: async () => false, createWorker: () => { throw new Error('must not create a worker') },
+  })
+  const result = await executor.execute(f.plan, f.task.id, 'new-run', checkpoint.state)
+  assert.equal(result.status, 'interrupted')
+  assert.equal(result.state.interruptionReason, 'runtime-error')
+  assert.deepEqual(result.state.nodes.map(node => node.status), ['completed', 'interrupted'])
+})
 
 for (const scenario of ['resume', 'legacy', 'missing', 'corrupt', 'foreign-session', 'uncertain-side-effect', 'admission-failed', 'queue-failed'] as const) {
   it('preserves serial node progress when '+scenario, async () => {

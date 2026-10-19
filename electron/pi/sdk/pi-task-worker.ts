@@ -27,6 +27,8 @@ export interface PiTaskWorkerContext {
   sessionDir: string
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
+  systemPrompt?: string
+  mediaTools?: PiAgentSessionConfig['mediaTools']
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
   fixedSystemPrompt?: string
   arrangementNodeId?: string
@@ -137,6 +139,8 @@ export class PiTaskWorker {
         sessionDir: this.context.sessionDir,
         resumeSessionFile: this.context.resumeSessionFile,
         additionalSkillPaths: this.context.additionalSkillPaths,
+        systemPrompt: this.context.systemPrompt,
+        mediaTools: this.context.mediaTools,
         employeeProfile: this.context.employeeProfile,
         fixedSystemPrompt: this.context.fixedSystemPrompt,
         onModelRequest: this.onModelRequest ? async kind => {

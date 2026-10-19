@@ -10,7 +10,8 @@ import { SkillLibraryService } from '../service/skill-library-service'
  */
 import { join } from 'node:path'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
-import { getSubscriptions, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
+import { EmploymentTokenManager } from '../common/platform/employment-token-manager'
+import { getSubscriptions, getEmployeeRuntime, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
 import { config } from '../common/config'
 import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
@@ -41,6 +42,11 @@ import { ClientMonitorStore } from '../data/client-monitor-store'
 import { ConversationContextStore } from '../domain/conversation-context'
 import { ClientMonitorHistoryService } from '../service/client-monitor-history-service'
 import { ClientMonitorService } from '../service/client-monitor-service'
+import { MediaStore } from '../data/media-store'
+import { MediaService } from '../service/media-service'
+import { SepRealMediaGateway } from '../data/sep-real-media-gateway'
+import type { MediaGatewayPort } from '../domain/media'
+import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 
 const log = logger.child('build-backend')
 
@@ -54,6 +60,9 @@ export interface BackendOptions {
   renderer: RendererPort
   /** safeStorage 可用性。注入而非直接 import electron，组装根才能脱离 Electron 单测。 */
   isEncryptionAvailable?: () => boolean
+  /** Explicit local/test adapter until SEP media HTTP schemas are finalized. */
+  mediaGateway?: MediaGatewayPort
+  mediaCapabilities?: (employee: EmployeeRuntimeConfig) => unknown
 }
 
 /**
@@ -72,6 +81,7 @@ class BackendRuntime {
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
   readonly notifications: NotificationService
+  readonly media: MediaService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -80,15 +90,36 @@ class BackendRuntime {
   private readonly isEncryptionAvailable: () => boolean
   private readonly runtime: LazyAsync<TaskRuntime>
   private readonly arrangementPlanner: LazyAsync<ArrangementPlannerPort>
+  private readonly employmentTokens = new Map<string, { manager: EmploymentTokenManager; initialized: Promise<void> }>()
   private authenticationCleanup: Promise<void> | null = null
 
-  constructor({ userDataDir, renderer, isEncryptionAvailable = () => true }: BackendOptions) {
+  constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities }: BackendOptions) {
     this.userDataDir = userDataDir
     this.renderer = renderer
     this.isEncryptionAvailable = isEncryptionAvailable
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.authSession = new AuthSessionManager()
+    const realMediaGateway = mediaGateway ?? new SepRealMediaGateway({
+      baseUrl: config.SEP_BASE_URL,
+      token: async (subscriptionId, signal) => {
+        let entry = this.employmentTokens.get(subscriptionId)
+        if (!entry) {
+          const manager = new EmploymentTokenManager({ getRefreshToken: () => this.authSession.getRefreshToken() })
+          const initialized = manager.initialize(subscriptionId)
+          entry = { manager, initialized }
+          this.employmentTokens.set(subscriptionId, entry)
+        }
+        signal.throwIfAborted()
+        try { await entry.initialized } catch (error) {
+          if (this.employmentTokens.get(subscriptionId) === entry) this.employmentTokens.delete(subscriptionId)
+          entry.manager.stop()
+          throw error
+        }
+        signal.throwIfAborted()
+        return entry.manager.getValidToken()
+      },
+    })
     this.notifications = new NotificationService({
       scope: this,
       getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
@@ -119,7 +150,9 @@ class BackendRuntime {
         listMessages: (scope, taskId) => new ConversationContextStore(this.taskRunStore.getTaskDir(scope, taskId)).listMessages(),
         getTimeline: (scope, taskId, runId) => this.taskRunStore.events.getTimeline(scope, taskId, runId),
         taskType: async (scope, taskId) => {
-          const plan = await this.workPlans.get(scope, taskId)
+          const diagnostic = await this.workPlans.diagnose(scope, taskId)
+          if (diagnostic.state === 'unavailable') throw new Error('Monitoring work plan is unavailable for inspection.')
+          const plan = diagnostic.state === 'found' ? diagnostic.value : null
           return plan && plan.mode !== 'conversation' ? 'arrangement' : 'conversation'
         },
       }),
@@ -139,7 +172,26 @@ class BackendRuntime {
       // 技能准备经端口注入——B2 不允许 service/ 直接依赖 pi/。
       new SkillStore(join(userDataDir, 'runtime'), skillVersions),
       config.SEP_GATEWAY_URL,
+      { getRuntime: getEmployeeRuntime },
     )
+
+    this.media = new MediaService({
+      scope: this,
+      store: new MediaStore(userDataDir),
+      gateway: realMediaGateway,
+      capabilities: mediaCapabilities,
+      getTask: taskId => this.taskManager.getTask(taskId),
+      authorize: subscriptionId => this.employees.authorize(subscriptionId),
+      requestApproval: async input => (await this.getTaskRuntime()).requestMediaApproval(input),
+      policy: async taskId => {
+        const scope = this.currentScope()
+        if (!scope) return undefined
+        const plan = await this.workPlans.get(scope, taskId)
+        if (!plan) return undefined
+        const task = await this.taskManager.getTask(taskId)
+        return { ...plan.permissions, approvalMode: plan.permissions.approvalMode ?? 'confirm-each', workspaceDir: task?.workDir ?? join(userDataDir, 'task-workspaces') }
+      },
+    })
 
     this.skills = new SkillLibraryService({
       scope: this, token: () => this.authSession.getValidAccessToken(),
@@ -157,7 +209,7 @@ class BackendRuntime {
       employees: this.employees,
       execution: () => this.getTaskRuntime(),
     }
-    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate })
+    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks })
     const platformSession = this.authSession
     this.arrangements = new ArrangementService({
@@ -285,12 +337,16 @@ class BackendRuntime {
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
     this.notifications.stop()
+    for (const entry of this.employmentTokens.values()) entry.manager.stop()
+    this.employmentTokens.clear()
+    await this.media.stopAll()
     await this.runtime.peek()?.stopAll()
     await this.clientMonitor.stop()
   }
 
   async resumeClientMonitor(): Promise<void> {
     await this.clientMonitor.resumePending()
+    await this.media.resumePending()
   }
 
   /**
@@ -384,6 +440,7 @@ class BackendRuntime {
       workPlanStore: this.workPlans,
       arrangementCheckpointStore: this.arrangementCheckpoints,
       monitor: this.clientMonitor,
+      media: this.media,
     })
     log.info('task runtime loaded')
     return runtime

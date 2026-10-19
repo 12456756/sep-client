@@ -77,25 +77,27 @@ for (const scenario of [500, 502, 503, 504, 524, 'server-15-seconds', 'backoff-r
   })
 }
 
-for (const scenario of ['recover', 'cancel', 'too-long', 'non-retryable', 'exhausted', 'next-turn'] as const) {
+for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-retryable', 'exhausted', 'next-turn'] as const) {
   it(`real gateway: ${scenario}`, { timeout: 10000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-gateway-retry-'))
-    const requests: Array<{ time: number; payload: Record<string, unknown> }> = []
+    const requests: Array<{ time: number; payload: Record<string, unknown>; authorization: string | undefined }> = []
+    let token = 'test-token'
+    let tokenRotation: ReturnType<typeof setTimeout> | undefined
     const events: PiAgentEvent[] = []
     const restoreLog = setLogSink(() => {})
     const server = createServer((request, response) => {
       let body = ''
       request.on('data', chunk => { body += String(chunk) })
       request.on('end', () => {
-        requests.push({ time: Date.now(), payload: JSON.parse(body) as Record<string, unknown> })
+        requests.push({ time: Date.now(), payload: JSON.parse(body) as Record<string, unknown>, authorization: request.headers.authorization })
         const count = requests.length
-        if ((scenario === 'recover' && count === 2) || (scenario === 'next-turn' && count === 3)) {
+        if ((['recover', 'token-rotation'].includes(scenario) && count === 2) || (scenario === 'next-turn' && count === 3)) {
           success(response)
           return
         }
         response.writeHead(429, {
           'Content-Type': 'application/json',
-          'Retry-After': scenario === 'cancel' ? '90' : scenario === 'too-long' || (scenario === 'next-turn' && count === 1) ? '301' : '0.05',
+          'Retry-After': scenario === 'cancel' ? '90' : scenario === 'too-long' || (scenario === 'next-turn' && count === 1) ? '301' : scenario === 'token-rotation' ? '0.3' : '0.05',
           ...(scenario === 'non-retryable' ? { 'x-should-retry': 'false' } : {}),
         })
         response.end(JSON.stringify({ error: { message: 'Too many requests', type: 'rate_limit_error' } }))
@@ -107,7 +109,7 @@ for (const scenario of ['recover', 'cancel', 'too-long', 'non-retryable', 'exhau
     const session = await new PiCodingAgentAdapter().createSession({
       runId: 'run-a', modelId: 'model-a', gatewayUrl: `http://127.0.0.1:${address.port}/v1`,
       workspaceDir: root, agentDir: join(root, 'agent'), sessionDir: join(root, 'sessions'),
-      getAccessToken: async () => 'test-token', authorizeTool: async () => false,
+      getAccessToken: async () => token, authorizeTool: async () => false,
       disableTools: true, mcpServers: [],
     })
     let cancellation: ReturnType<typeof setTimeout> | undefined
@@ -116,13 +118,16 @@ for (const scenario of ['recover', 'cancel', 'too-long', 'non-retryable', 'exhau
       if (scenario === 'cancel' && event.type === 'auto_retry_start') {
         cancellation = setTimeout(() => { void session.abort() }, 20)
       }
+      if (scenario === 'token-rotation' && event.type === 'auto_retry_start') {
+        tokenRotation = setTimeout(() => { token = 'rotated-token' }, 100)
+      }
     })
     try {
       const started = Date.now()
       await session.prompt('Hello')
       if (scenario === 'next-turn') await session.prompt('Try again')
       assert.ok(Date.now() - started < 5000, 'must not add a second 2/4/8-second wait')
-      const expected = scenario === 'recover' ? 2 : scenario === 'exhausted' ? 4 : scenario === 'next-turn' ? 3 : 1
+      const expected = ['recover', 'token-rotation'].includes(scenario) ? 2 : scenario === 'exhausted' ? 4 : scenario === 'next-turn' ? 3 : 1
       assert.equal(requests.length, expected)
       for (const { payload } of requests) {
         assert.equal(payload.max_tokens, 4096)
@@ -130,7 +135,13 @@ for (const scenario of ['recover', 'cancel', 'too-long', 'non-retryable', 'exhau
         assert.deepEqual(payload.stream_options, { include_usage: true })
       }
       const retries = events.filter(event => event.type === 'auto_retry_start')
-      assert.equal(retries.length, scenario === 'exhausted' ? 3 : ['recover', 'cancel', 'next-turn'].includes(scenario) ? 1 : 0)
+      assert.equal(retries.length, scenario === 'exhausted' ? 3 : ['recover', 'token-rotation', 'cancel', 'next-turn'].includes(scenario) ? 1 : 0)
+      if (scenario === 'token-rotation') {
+        assert.equal(requests[0]!.authorization, 'Bearer test-token')
+        assert.equal(requests[1]!.authorization, 'Bearer rotated-token')
+        assert.ok(requests[1]!.time - requests[0]!.time >= 300)
+        assert.equal(events.filter(event => event.type === 'agent_end').at(-1)?.failure, undefined)
+      }
       if (scenario === 'recover' || scenario === 'next-turn') {
         const start = scenario === 'next-turn' ? 1 : 0
         assert.ok(requests[start + 1]!.time - requests[start]!.time >= 50)
@@ -149,6 +160,7 @@ for (const scenario of ['recover', 'cancel', 'too-long', 'non-retryable', 'exhau
       }
     } finally {
       clearTimeout(cancellation)
+      clearTimeout(tokenRotation)
       await session.dispose()
       server.closeAllConnections()
       await new Promise<void>(resolve => server.close(() => resolve()))

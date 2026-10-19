@@ -18,6 +18,9 @@ export interface EmployeeRuntimeConfig {
   gatewayUrl: string
 
   additionalSkillPaths?: string[]
+  systemPrompt?: string
+  media?: unknown
+  runtimeSnapshot?: import('../common/platform/employee-runtime-contract').EmployeeRuntimeSnapshot
   employeeProfile?: EmployeeProfile
 }
 

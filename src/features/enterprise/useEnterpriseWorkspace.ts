@@ -1,5 +1,6 @@
 import { useArrangementPlans } from './use-arrangement-plans';
 import { useSkillLibrary, type SkillLibraryWorkspace } from './use-skill-library';
+import { needsSkillLibrary } from './skill-load-state';
 import { conversationDocument } from './run-settings';
 /**
  * 把平台数据与本地状态聚合成业务域模型。
@@ -215,6 +216,8 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   organizationError: string | null;
   /** Current human member's SEP avatar, if the organization endpoint provides it. */
   currentUserAvatar: EmployeeAvatarSource | null;
+  /** Reloads the server-owned organization, including current logo/member avatars. */
+  refreshOrganization: () => Promise<void>;
   retryOrganization: () => void;
 
 }
@@ -240,8 +243,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const [organizationMembers, setOrganizationMembers] = useState<OrganizationCarbonEmployee[]>([]);
   const [organizationStatus, setOrganizationStatus] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
   const [organizationError, setOrganizationError] = useState<string | null>(null);
-  const [organizationRetryKey, setOrganizationRetryKey] = useState(0);
-  const skillLibrary = useSkillLibrary(enterpriseId);
+  const organizationRequestRef = useRef(0);
+  const skillLibrary = useSkillLibrary(scopeKey, needsSkillLibrary(route));
   const { skills } = skillLibrary;
   const [permissionOverrides, setPermissionOverrides] = useState<Record<string, OperationPermission[]>>({});
   const [activeEmployeeByWork, setActiveEmployeeByWork] = useState<Record<string, string>>({});
@@ -254,17 +257,21 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const messagesByTask = useRef(new Map<string, ClientTaskMessage[]>());
   const pendingMessages = useRef(new Map<string, ClientTaskMessage[]>());
   const taskTypeCache = useRef<TaskReadCache | null>(null);
-  useEffect(() => {
-    let active = true;
-    setOrganizationData(null);
-    setOrganizationMembers([]);
+  const refreshOrganization = useCallback(async (): Promise<void> => {
+    const requestId = organizationRequestRef.current + 1;
+    organizationRequestRef.current = requestId;
     setOrganizationError(null);
     setOrganizationStatus(enterpriseId ? 'loading' : 'empty');
 
-    if (!enterpriseId) return () => { active = false; };
+    if (!enterpriseId) {
+      setOrganizationData(null);
+      setOrganizationMembers([]);
+      return;
+    }
 
-    void window.electronAPI.getEnterpriseOrganization().then(result => {
-      if (!active) return;
+    try {
+      const result = await window.electronAPI.getEnterpriseOrganization();
+      if (requestId !== organizationRequestRef.current) return;
       if (!result.success || !result.data) {
         setOrganizationStatus('error');
         setOrganizationError(result.error?.message ?? '组织架构加载失败');
@@ -275,14 +282,16 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       setOrganizationData(result.data);
       setOrganizationMembers(mapped);
       setOrganizationStatus(mapped.length > 0 ? 'ready' : 'empty');
-    }).catch((error: unknown) => {
-      if (!active) return;
+    } catch (error: unknown) {
+      if (requestId !== organizationRequestRef.current) return;
       setOrganizationStatus('error');
       setOrganizationError(error instanceof Error ? error.message : '组织架构加载失败');
-    });
+    }
+  }, [enterpriseId, userId]);
 
-    return () => { active = false; };
-  }, [enterpriseId, organizationRetryKey, userId]);
+  useEffect(() => {
+    void refreshOrganization();
+  }, [refreshOrganization]);
 
   const clearRuntimeState = useCallback((taskId: string): void => {
     for (const key of [...streamingText.current.keys()]) {
@@ -809,7 +818,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,
     organizationMembers, organizationEmployees, organizationStatus, organizationError, currentUserAvatar,
-    retryOrganization: () => setOrganizationRetryKey(value => value + 1),
+    refreshOrganization,
+    retryOrganization: () => { void refreshOrganization(); },
   };
 }
 

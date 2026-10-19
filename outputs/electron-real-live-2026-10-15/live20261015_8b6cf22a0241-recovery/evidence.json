@@ -1,0 +1,284 @@
+{
+  "harness": "explicit-real-receipt",
+  "provesPiFlow": false,
+  "profile": "/private/tmp/sep-electron-real-receipt-qjgc7x",
+  "phases": [
+    {
+      "phase": "blocked-before-quit",
+      "taskId": "real-receipt-acceptance",
+      "source": "supplied-real-receipts",
+      "identities": [
+        {
+          "jobId": "real-edit",
+          "taskId": "real-receipt-acceptance",
+          "runId": "live20261015_8b6cf22a0241",
+          "subscriptionId": "cmv98jhvj000c7qym76h93xuy",
+          "clientRequestId": "live20261015_8b6cf22a0241-edit",
+          "receiptId": "cmv98nivt00117qymeeckr4wa",
+          "profileId": "acceptance-live20261015_8b6cf22a0241",
+          "configVersion": "local-477495e9-8e70-47b3-8a02-05361bc320f5",
+          "requestHash": "7bdf5fae7e656ca056b701d14f3c18f59529ef5b14d983460b777507189f1fea",
+          "immutableHash": "b02c17bbc1c86051106a15357a3446fb7880b31b7586de7a778007e3e711e64a",
+          "trackingStatus": "ACTIVE",
+          "saveStatus": "SAVING"
+        },
+        {
+          "jobId": "real-generate",
+          "taskId": "real-receipt-acceptance",
+          "runId": "live20261015_8b6cf22a0241",
+          "subscriptionId": "cmv98jhvj000c7qym76h93xuy",
+          "clientRequestId": "live20261015_8b6cf22a0241-generate",
+          "receiptId": "cmv98k2mm000t7qymkm6wu364",
+          "profileId": "acceptance-live20261015_8b6cf22a0241",
+          "configVersion": "local-477495e9-8e70-47b3-8a02-05361bc320f5",
+          "requestHash": "5f7cfbf91145617bc987c3e7b72cd7943444dafe349d2d2972f8b70910ee3815",
+          "immutableHash": "f4e16407d001d1bdb00c83b36340a2787c71f60ba5bc0c0e154477b5f9a49699",
+          "trackingStatus": "ACTIVE",
+          "saveStatus": "SAVING"
+        }
+      ],
+      "audit": {
+        "source": "supplied-real-receipts",
+        "phase": "blocked",
+        "allowed": [
+          {
+            "method": "GET",
+            "path": "/api/gateway/v1/media/real/requests/cmv98k2mm000t7qymkm6wu364"
+          },
+          {
+            "method": "GET",
+            "path": "/api/gateway/v1/media/real/requests/cmv98nivt00117qymeeckr4wa"
+          },
+          {
+            "method": "GET",
+            "path": "/api/gateway/v1/media/real/requests/cmv98k2mm000t7qymkm6wu364/outputs/cmv98k2mm000t7qymkm6wu364_0/content"
+          },
+          {
+            "method": "GET",
+            "path": "/api/gateway/v1/media/real/requests/cmv98nivt00117qymeeckr4wa/outputs/cmv98nivt00117qymeeckr4wa_0/content"
+          }
+        ],
+        "deniedRequests": 0,
+        "blockedDownloads": 2,
+        "rendererDenied": 0,
+        "actualNetworkRequests": 2,
+        "postRequestsSent": 0,
+        "downloadGate": true,
+        "provesPiFlow": false,
+        "approvalRequested": 0
+      },
+      "expected": [
+        {
+          "jobId": "real-generate",
+          "operation": "generate",
+          "outputs": [
+            {
+              "outputId": "cmv98k2mm000t7qymkm6wu364_0",
+              "mime": "image/png",
+              "sha256": "d5ee4a94f027d873078a8db5c323983ca9570fdf274c66d4b01071c6c2107479",
+              "size": 951049,
+              "width": 1024,
+              "height": 1024,
+              "expiresAt": 1792136992039
+            }
+          ]
+        },
+        {
+          "jobId": "real-edit",
+          "operation": "edit",
+          "outputs": [
+            {
+              "outputId": "cmv98nivt00117qymeeckr4wa_0",
+              "mime": "image/png",
+              "sha256": "1a6b4c77d436688189f214eed0a235b10092c49b80fdda55bef2cf76f9ec6d05",
+              "size": 964920,
+              "width": 1024,
+              "height": 1024,
+              "expiresAt": 1792137037160
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "phase": "blocked",
+      "completed": true,
+      "identities": [
+        {
+          "jobId": "real-edit",
+          "taskId": "real-receipt-acceptance",
+          "runId": "live20261015_8b6cf22a0241",
+          "subscriptionId": "cmv98jhvj000c7qym76h93xuy",
+          "clientRequestId": "live20261015_8b6cf22a0241-edit",
+          "receiptId": "cmv98nivt00117qymeeckr4wa",
+          "profileId": "acceptance-live20261015_8b6cf22a0241",
+          "configVersion": "local-477495e9-8e70-47b3-8a02-05361bc320f5",
+          "requestHash": "7bdf5fae7e656ca056b701d14f3c18f59529ef5b14d983460b777507189f1fea",
+          "immutableHash": "b02c17bbc1c86051106a15357a3446fb7880b31b7586de7a778007e3e711e64a",
+          "trackingStatus": "INTERRUPTED",
+          "saveStatus": "SAVE_FAILED"
+        },
+        {
+          "jobId": "real-generate",
+          "taskId": "real-receipt-acceptance",
+          "runId": "live20261015_8b6cf22a0241",
+          "subscriptionId": "cmv98jhvj000c7qym76h93xuy",
+          "clientRequestId": "live20261015_8b6cf22a0241-generate",
+          "receiptId": "cmv98k2mm000t7qymkm6wu364",
+          "profileId": "acceptance-live20261015_8b6cf22a0241",
+          "configVersion": "local-477495e9-8e70-47b3-8a02-05361bc320f5",
+          "requestHash": "5f7cfbf91145617bc987c3e7b72cd7943444dafe349d2d2972f8b70910ee3815",
+          "immutableHash": "f4e16407d001d1bdb00c83b36340a2787c71f60ba5bc0c0e154477b5f9a49699",
+          "trackingStatus": "INTERRUPTED",
+          "saveStatus": "SAVE_FAILED"
+        }
+      ]
+    },
+    {
+      "phase": "recovered-preview-export",
+      "taskId": "real-receipt-acceptance",
+      "source": "supplied-real-receipts",
+      "identities": [
+        {
+          "jobId": "real-edit",
+          "taskId": "real-receipt-acceptance",
+          "runId": "live20261015_8b6cf22a0241",
+          "subscriptionId": "cmv98jhvj000c7qym76h93xuy",
+          "clientRequestId": "live20261015_8b6cf22a0241-edit",
+          "receiptId": "cmv98nivt00117qymeeckr4wa",
+          "profileId": "acceptance-live20261015_8b6cf22a0241",
+          "configVersion": "local-477495e9-8e70-47b3-8a02-05361bc320f5",
+          "requestHash": "7bdf5fae7e656ca056b701d14f3c18f59529ef5b14d983460b777507189f1fea",
+          "immutableHash": "b02c17bbc1c86051106a15357a3446fb7880b31b7586de7a778007e3e711e64a",
+          "trackingStatus": "STOPPED",
+          "saveStatus": "SAVED"
+        },
+        {
+          "jobId": "real-generate",
+          "taskId": "real-receipt-acceptance",
+          "runId": "live20261015_8b6cf22a0241",
+          "subscriptionId": "cmv98jhvj000c7qym76h93xuy",
+          "clientRequestId": "live20261015_8b6cf22a0241-generate",
+          "receiptId": "cmv98k2mm000t7qymkm6wu364",
+          "profileId": "acceptance-live20261015_8b6cf22a0241",
+          "configVersion": "local-477495e9-8e70-47b3-8a02-05361bc320f5",
+          "requestHash": "5f7cfbf91145617bc987c3e7b72cd7943444dafe349d2d2972f8b70910ee3815",
+          "immutableHash": "f4e16407d001d1bdb00c83b36340a2787c71f60ba5bc0c0e154477b5f9a49699",
+          "trackingStatus": "STOPPED",
+          "saveStatus": "SAVED"
+        }
+      ],
+      "audit": {
+        "source": "supplied-real-receipts",
+        "phase": "recover",
+        "allowed": [
+          {
+            "method": "GET",
+            "path": "/api/gateway/v1/media/real/requests/cmv98k2mm000t7qymkm6wu364/outputs/cmv98k2mm000t7qymkm6wu364_0/content"
+          },
+          {
+            "method": "GET",
+            "path": "/api/gateway/v1/media/real/requests/cmv98nivt00117qymeeckr4wa/outputs/cmv98nivt00117qymeeckr4wa_0/content"
+          }
+        ],
+        "deniedRequests": 0,
+        "blockedDownloads": 0,
+        "rendererDenied": 0,
+        "actualNetworkRequests": 2,
+        "postRequestsSent": 0,
+        "downloadGate": false,
+        "provesPiFlow": false,
+        "approvalRequested": 0
+      },
+      "expected": [
+        {
+          "jobId": "real-generate",
+          "operation": "generate",
+          "outputs": [
+            {
+              "outputId": "cmv98k2mm000t7qymkm6wu364_0",
+              "mime": "image/png",
+              "sha256": "d5ee4a94f027d873078a8db5c323983ca9570fdf274c66d4b01071c6c2107479",
+              "size": 951049,
+              "width": 1024,
+              "height": 1024,
+              "expiresAt": 1792136992039
+            }
+          ]
+        },
+        {
+          "jobId": "real-edit",
+          "operation": "edit",
+          "outputs": [
+            {
+              "outputId": "cmv98nivt00117qymeeckr4wa_0",
+              "mime": "image/png",
+              "sha256": "1a6b4c77d436688189f214eed0a235b10092c49b80fdda55bef2cf76f9ec6d05",
+              "size": 964920,
+              "width": 1024,
+              "height": 1024,
+              "expiresAt": 1792137037160
+            }
+          ]
+        }
+      ],
+      "exports": [
+        {
+          "jobId": "real-generate",
+          "outputId": "cmv98k2mm000t7qymkm6wu364_0",
+          "dimensions": {
+            "width": 1024,
+            "height": 1024
+          },
+          "previewHash": "d5ee4a94f027d873078a8db5c323983ca9570fdf274c66d4b01071c6c2107479",
+          "exportSha256": "d5ee4a94f027d873078a8db5c323983ca9570fdf274c66d4b01071c6c2107479",
+          "byteLength": 951049
+        },
+        {
+          "jobId": "real-edit",
+          "outputId": "cmv98nivt00117qymeeckr4wa_0",
+          "dimensions": {
+            "width": 1024,
+            "height": 1024
+          },
+          "previewHash": "1a6b4c77d436688189f214eed0a235b10092c49b80fdda55bef2cf76f9ec6d05",
+          "exportSha256": "1a6b4c77d436688189f214eed0a235b10092c49b80fdda55bef2cf76f9ec6d05",
+          "byteLength": 964920
+        }
+      ]
+    }
+  ],
+  "passed": true,
+  "step": "complete",
+  "source": "supplied-real-receipts",
+  "identities": [
+    {
+      "jobId": "real-edit",
+      "taskId": "real-receipt-acceptance",
+      "runId": "live20261015_8b6cf22a0241",
+      "subscriptionId": "cmv98jhvj000c7qym76h93xuy",
+      "clientRequestId": "live20261015_8b6cf22a0241-edit",
+      "receiptId": "cmv98nivt00117qymeeckr4wa",
+      "profileId": "acceptance-live20261015_8b6cf22a0241",
+      "configVersion": "local-477495e9-8e70-47b3-8a02-05361bc320f5",
+      "requestHash": "7bdf5fae7e656ca056b701d14f3c18f59529ef5b14d983460b777507189f1fea",
+      "immutableHash": "b02c17bbc1c86051106a15357a3446fb7880b31b7586de7a778007e3e711e64a",
+      "trackingStatus": "STOPPED",
+      "saveStatus": "PENDING"
+    },
+    {
+      "jobId": "real-generate",
+      "taskId": "real-receipt-acceptance",
+      "runId": "live20261015_8b6cf22a0241",
+      "subscriptionId": "cmv98jhvj000c7qym76h93xuy",
+      "clientRequestId": "live20261015_8b6cf22a0241-generate",
+      "receiptId": "cmv98k2mm000t7qymkm6wu364",
+      "profileId": "acceptance-live20261015_8b6cf22a0241",
+      "configVersion": "local-477495e9-8e70-47b3-8a02-05361bc320f5",
+      "requestHash": "5f7cfbf91145617bc987c3e7b72cd7943444dafe349d2d2972f8b70910ee3815",
+      "immutableHash": "f4e16407d001d1bdb00c83b36340a2787c71f60ba5bc0c0e154477b5f9a49699",
+      "trackingStatus": "STOPPED",
+      "saveStatus": "PENDING"
+    }
+  ]
+}

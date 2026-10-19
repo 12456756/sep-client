@@ -61,6 +61,14 @@ test('release scripts keep channel selection and do not force cross-platform pac
   assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '0.83.0')
 })
 
+test('notification WebSocket transport is a direct production dependency', () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+  const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'))
+  assert.ok(pkg.dependencies.ws, 'externalized ws must be available from the application root')
+  assert.equal(lock.packages[''].dependencies.ws, pkg.dependencies.ws)
+  assert.notEqual(lock.packages['node_modules/ws'].dev, true)
+})
+
 test('channel builder configs preserve packaging settings and pass the installed builder schema', async () => {
   const dir = fixture()
   const original = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')).build
