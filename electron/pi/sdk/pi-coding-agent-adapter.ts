@@ -1,5 +1,5 @@
 import { mkdir } from 'node:fs/promises'
-import { lazyStream, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
+import { lazyStream, type AssistantMessage, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
   loadSkills,
@@ -36,11 +36,12 @@ import {
   isUnrestrictedToolPolicy,
   requiresToolApproval,
 } from '../../../pi-extension'
-import { logger } from '../../common/logger'
+import { isLogLevelEnabled, logger } from '../../common/logger'
 import { createMcpRuntime, type McpRuntime } from './pi-mcp-client'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 import { GatewayRetryWait } from './gateway-retry-wait'
+import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 
 const log = logger.child('pi-gateway')
@@ -148,8 +149,9 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     },
   }))
 }
-const GATEWAY_MAX_OUTPUT_TOKENS = 16384
+const GATEWAY_MAX_OUTPUT_TOKENS = 4096
 const OPENAI_COMPLETIONS_API_MODULE = '@earendil-works/pi-ai/api/openai-completions'
+const HAN_CHARACTER = /\p{Script=Han}/u
 
 export function sessionToolOptions(
   toolPolicy: PiAgentSessionConfig['toolPolicy'],
@@ -210,39 +212,50 @@ function toolResultText(value: unknown): string {
   return value == null ? '' : String(value)
 }
 
-export function summarizeGatewayMessages(messages: unknown[]): Array<Record<string, unknown>> {
-  return messages.map((message, index) => {
-    if (!message || typeof message !== 'object') {
-      return { index, role: 'unknown', content: '' }
-    }
+function gatewayOutputLimit(context: Record<string, unknown>): number | undefined {
+  return typeof context.max_tokens === 'number' ? context.max_tokens
+    : typeof context.max_completion_tokens === 'number' ? context.max_completion_tokens : undefined
+}
 
-    const current = message as Record<string, unknown>
-    const toolCalls = Array.isArray(current.tool_calls)
-      ? current.tool_calls.map(call => {
-        if (!call || typeof call !== 'object') return null
-        const record = call as Record<string, unknown>
-        const functionValue = record.function
-        const functionRecord = functionValue && typeof functionValue === 'object'
-          ? functionValue as Record<string, unknown>
-          : null
-        return {
-          id: typeof record.id === 'string' ? record.id : undefined,
-          type: typeof record.type === 'string' ? record.type : undefined,
-          name: typeof functionRecord?.name === 'string' ? functionRecord.name : undefined,
-        }
-      }).filter(call => call !== null)
-      : undefined
-
-    return {
-      index,
-      role: typeof current.role === 'string' ? current.role : 'unknown',
-      content: gatewayContent(current.content),
-      ...(current.reasoning_content !== undefined ? { reasoning_content: current.reasoning_content } : {}),
-      ...(toolCalls ? { toolCalls } : {}),
-      ...(typeof current.tool_call_id === 'string' ? { toolCallId: current.tool_call_id } : {}),
-      ...(typeof current.name === 'string' ? { name: current.name } : {}),
+export function buildGatewayThinkingLogFields(content: readonly AssistantMessage['content'][number][]): {
+  thinkingLength: number
+  estimatedThinkingTokens: number
+} {
+  let thinkingLength = 0
+  let estimatedTokenTenths = 0
+  for (const part of content) {
+    if (part.type !== 'thinking') continue
+    // Length uses JS UTF-16 units, matching the existing contentLength diagnostic.
+    thinkingLength += part.thinking.length
+    // Diagnostic heuristic only: ASCII 0.3, Han 0.6, other Unicode code points 1.
+    // Iterate code points without copying the text; round once across all blocks.
+    for (const character of part.thinking) {
+      estimatedTokenTenths += character.charCodeAt(0) <= 0x7f ? 3 : HAN_CHARACTER.test(character) ? 6 : 10
     }
+  }
+  return { thinkingLength, estimatedThinkingTokens: Math.ceil(estimatedTokenTenths / 10) }
+}
+
+export function buildGatewayRequestLogFields(context: Record<string, unknown>, requestId: number): Record<string, unknown> {
+  const tools = Array.isArray(context.tools) ? context.tools as unknown[] : []
+  const toolNames = tools.flatMap(tool => {
+    if (!tool || typeof tool !== 'object') return []
+    const definition = (tool as Record<string, unknown>).function
+    const name = definition && typeof definition === 'object' ? (definition as Record<string, unknown>).name : undefined
+    return typeof name === 'string' ? [name] : []
   })
+  return {
+    requestId,
+    model: context.model,
+    messageCount: Array.isArray(context.messages) ? context.messages.length : 0,
+    outputLimit: gatewayOutputLimit(context),
+    temperature: context.temperature,
+    stream: context.stream,
+    includeUsage: context.stream_options && typeof context.stream_options === 'object'
+      ? (context.stream_options as Record<string, unknown>).include_usage : undefined,
+    toolCount: toolNames.length,
+    ...(toolNames.length ? { tools: toolNames.join(', ') } : {}),
+  }
 }
 
 
@@ -404,31 +417,26 @@ function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): Extensi
     allowedTools: [...config.toolPolicy.allowedTools, ...mcp.permissions.keys()],
   } : undefined
   const gatewayPayload: ExtensionFactory = pi => {
-    log.debug('provider payload hook registered')
+    let activeRequest: { requestId: number; startedAt: number; outputLimit?: number; platformRequestId?: string; providerStatus?: number } | undefined
+    let latestInputSequence = 0
+    log.trace('provider payload hook registered')
+    pi.on('turn_start', () => { activeRequest = undefined })
     pi.on('before_provider_request', (event: BeforeProviderRequestEvent) => {
       const requestId = ++gatewayRequestSequence
-      log.debug('provider request hook entered', { requestId })
+      activeRequest = { requestId, startedAt: Date.now() }
       try {
-        const normalized = normalizeGatewayPayload(event.payload)
-        const normalizedRecord = normalized && typeof normalized === 'object' ? normalized as { model?: unknown; messages?: unknown } : {}
-        const context = {
-          model: typeof normalizedRecord.model === 'string' ? normalizedRecord.model : undefined,
-          messages: Array.isArray(normalizedRecord.messages)
-            ? summarizeGatewayMessages(normalizedRecord.messages)
-            : [],
-          tools: 'tools' in normalizedRecord ? normalizedRecord.tools : undefined,
-          temperature: 'temperature' in normalizedRecord ? normalizedRecord.temperature : undefined,
-          maxTokens: 'max_tokens' in normalizedRecord ? normalizedRecord.max_tokens : undefined,
-          stream: 'stream' in normalizedRecord ? normalizedRecord.stream : undefined,
+        const context = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {}
+        activeRequest.outputLimit = gatewayOutputLimit(context)
+        if (isLogLevelEnabled('info')) {
+          const { tools, ...fields } = buildGatewayRequestLogFields(context, requestId)
+          log.info('model request overview', {
+            runId: config.runId, latestInputSequence, ...fields,
+          })
+          if (tools) log.trace('model request tool list', { runId: config.runId, requestId, tools })
         }
-        log.debug('normalized provider request', {
-          requestId,
-          // Keep the complete context on one line so Electron/Node does not collapse nested values to [Object].
-          context: JSON.stringify(redactValue(context)),
-        })
-        return normalized
       } catch (error) {
-        log.error('payload normalization failed', {
+        log.error('provider request diagnostics failed', {
+          runId: config.runId,
           requestId,
           error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
           stack: error instanceof Error ? error.stack : undefined,
@@ -438,20 +446,78 @@ function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): Extensi
     })
 
     pi.on('after_provider_response', event => {
-      log.debug('provider response received', {
+      if (activeRequest) {
+        activeRequest.platformRequestId = event.headers['x-request-id']
+        activeRequest.providerStatus = event.status
+      }
+      log.trace('provider response received', {
+        runId: config.runId,
+        requestId: activeRequest?.requestId,
         status: event.status,
-        headers: redactValue(event.headers),
+        platformRequestId: event.headers['x-request-id'],
+        retryAfter: event.headers['retry-after'],
       })
     })
 
     // after_provider_response exposes headers only, never a JSON body (including SSE).
-    // Inspect the assembled assistant message instead, without logging content/arguments.
+    // Inspect the final assembled message rather than logging every streaming delta.
     pi.on('message_end', event => {
-      if (event.message.role !== 'assistant') return
-      const calls = event.message.content.filter(part => part.type === 'toolCall')
+      const response = event.message
+      if (response.role !== 'assistant') {
+        if (response.role !== 'user' && response.role !== 'toolResult' && response.role !== 'custom') return
+        // Live events contain only new inputs; replayed history and retry payloads never pass here.
+        const inputSequence = ++latestInputSequence
+        if (!isLogLevelEnabled('debug')) return
+        const role = response.role === 'toolResult' ? 'tool' : response.role
+        const content = gatewayContent(response.content)
+        log.debug(`model input added: ${role}`, {
+          displayTitle: role === 'tool' ? '模型输入（工具返回）' : role === 'user' ? '模型输入（用户消息）' : '模型输入（补充消息）',
+          runId: config.runId, inputSequence, role, content, contentLength: content?.length ?? 0,
+          ...(response.role === 'toolResult' ? { toolCallId: response.toolCallId, name: response.toolName, isError: response.isError } : {}),
+        })
+        return
+      }
+      const request = activeRequest
+      activeRequest = undefined
+      const calls = response.content.filter(part => part.type === 'toolCall')
+      const textParts = response.content.filter(part => part.type === 'text')
+      const contentLength = textParts.reduce((length, part) => length + part.text.length, Math.max(textParts.length - 1, 0))
+      log.info('model response completed', {
+        runId: config.runId,
+        requestId: request?.requestId,
+        platformRequestId: request?.platformRequestId,
+        providerStatus: request?.providerStatus,
+        model: response.model,
+        stopReason: response.stopReason,
+        elapsedMs: request ? Date.now() - request.startedAt : undefined,
+        outputLimit: request?.outputLimit,
+        contentLength,
+        ...(isLogLevelEnabled('info') ? buildGatewayThinkingLogFields(response.content) : {}),
+        toolCount: calls.length,
+        usage: { input: response.usage.input, output: response.usage.output,
+          cacheRead: response.usage.cacheRead, cacheWrite: response.usage.cacheWrite, total: response.usage.totalTokens },
+        ...(response.errorMessage ? { error: response.errorMessage } : {}),
+      })
+      if (isLogLevelEnabled('debug')) {
+        const thinking = response.content.filter(part => part.type === 'thinking').map(part => part.thinking).join('\n')
+        if (thinking) {
+          log.debug('model response thinking', {
+            displayTitle: '模型思考', runId: config.runId, requestId: request?.requestId,
+            content: thinking,
+          })
+        }
+        const text = textParts.map(part => part.text).join('\n')
+        const toolSummary = calls.length ? `调用工具：${calls.map(call => call.name).join('、')}` : ''
+        log.debug('model response content', {
+          displayTitle: '模型输出', runId: config.runId, requestId: request?.requestId,
+          content: [text, toolSummary].filter(Boolean).join('\n\n') || '（本轮没有正文输出）',
+        })
+      }
       if (calls.length === 0) return
       const availableTools = pi.getActiveTools()
-      log.debug('provider tool calls assembled', {
+      log.trace('provider tool calls assembled', {
+        runId: config.runId,
+        requestId: request?.requestId,
         toolCalls: calls.map(call => ({ toolId: call.id, toolName: call.name })),
       })
       const unavailable = calls.filter(call => !availableTools.includes(call.name))
@@ -538,8 +604,11 @@ class PiCodingAgentSession implements PiAgentSession {
     private readonly mcp: McpRuntime,
     private readonly retryWait: GatewayRetryWait,
     private readonly settingsManager: SettingsManager,
+    private readonly requestTracker: ModelRequestTracker | null,
   ) {
     this.unsubscribe = session.subscribe(event => {
+      this.requestTracker?.observe(event)
+      if (event.type === 'auto_retry_end' && event.success === true) retryWait.reset()
       const delayMs = event.type === 'auto_retry_start' || event.type === 'summarization_retry_scheduled'
         ? retryWait.schedule() : undefined
       const normalized = normalizeEvent(event)
@@ -562,10 +631,12 @@ class PiCodingAgentSession implements PiAgentSession {
     return this.session.sessionFile ?? null
   }
 
-  prompt(text: string): Promise<void> {
+  async prompt(text: string): Promise<void> {
+    this.requestTracker?.startPrompt()
     this.retryWait.reset()
     this.settingsManager.setRetryEnabled(true)
-    return this.session.prompt(text)
+    await this.session.prompt(text)
+    if (this.requestTracker?.failure) throw this.requestTracker.failure
   }
 
   abort(): Promise<void> {
@@ -590,7 +661,7 @@ class PiCodingAgentSession implements PiAgentSession {
 
 export class PiCodingAgentAdapter implements PiAgentRuntime {
   async createSession(config: PiAgentSessionConfig): Promise<PiAgentSession> {
-    log.info('createSession started', {
+    log.trace('createSession started', {
       modelId: config.modelId,
       gatewayUrl: config.gatewayUrl,
       workspaceDir: config.workspaceDir,
@@ -607,6 +678,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       // The request boundary applies the one cancellable delay; Pi must not sleep again.
       retry: { enabled: true, maxRetries: MAX_RUN_AUTO_RETRIES, baseDelayMs: 0, provider: { maxRetries: 0 } },
     })
+    const requestTracker = config.onModelRequest ? new ModelRequestTracker(config.onModelRequest) : null
     // The exported subpath is loaded dynamically under the project's legacy Node resolution.
     const { streamSimple }: { streamSimple: StreamFunction<'openai-completions', SimpleStreamOptions> } =
       await import(OPENAI_COMPLETIONS_API_MODULE)
@@ -618,10 +690,27 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       streamSimple: (model, context, options) => lazyStream(model, async () => {
         // ModelRuntime prepares headers before entering this provider; authenticate at fetch instead.
         await retryWait.wait(options?.signal)
-        return streamSimple({ ...model, api: 'openai-completions' }, context, {
+        options?.signal?.throwIfAborted()
+        let snapshot: ModelRequestSnapshot | undefined
+        try {
+          // Persist outside extension hooks: Pi reports hook errors but can still send the request.
+          snapshot = await requestTracker?.prepare(options?.signal)
+        } catch (error) {
+          settingsManager.setRetryEnabled(false)
+          throw error
+        }
+        const requestContext = snapshot && snapshot.kind !== 'compaction'
+          ? { ...context, systemPrompt: [context.systemPrompt, buildModelRequestAwareness(snapshot.progress, snapshot.kind)].filter(Boolean).join('\n\n') }
+          : context
+        return streamSimple({ ...model, api: 'openai-completions' }, requestContext, {
           ...options,
           maxTokens: GATEWAY_MAX_OUTPUT_TOKENS,
           maxRetries: 0,
+          onPayload: async (payload, requestModel) => {
+            const replacement = await options?.onPayload?.(payload, requestModel)
+            // Standalone summaries omit the Agent hooks; normalize once after any caller hook.
+            return normalizeGatewayPayload(replacement === undefined ? payload : replacement)
+          },
           fetch: async (input, init) => {
             const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
             headers.set('authorization', buildBearerAuthorizationHeader(await config.getAccessToken()))
@@ -664,8 +753,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         additionalSkillPaths: config.additionalSkillPaths,
         // Use the literal override: the SDK's systemPrompt option also interprets existing paths as files.
         systemPromptOverride: config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
-        appendSystemPromptOverride: employeePrompt
-          ? base => [...base, employeePrompt]
+        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt
+          ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : [])]
           : undefined,
       })
       await resourceLoader.reload()
@@ -691,8 +780,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
         settingsManager,
       })
-      log.info('createAgentSession completed', { sessionId: session.sessionId })
-      return new PiCodingAgentSession(session, mcp, retryWait, settingsManager)
+      log.trace('createAgentSession completed', { sessionId: session.sessionId })
+      return new PiCodingAgentSession(session, mcp, retryWait, settingsManager, requestTracker)
     } catch (error) {
       await mcp.dispose()
       throw error

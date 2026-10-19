@@ -1,5 +1,5 @@
 import type { EmployeeAvatarAsset } from '../../shared/types'
-import type { WorkTypeReadResult } from '../../shared/types'
+import type { ArrangementExecutionSnapshot, WorkTypeReadResult } from '../../shared/types'
 import type { WorkActivity } from '../../shared/work-activity'
 
 /**
@@ -155,6 +155,8 @@ export interface WorkDeliverable {
   /** 文件在本机的完整路径。界面上只在需要时展示，复制路径按它。 */
   path: string;
   note: string;
+  nodeId?: string;
+  nodeTitle?: string;
 }
 
 export type { WorkActivity, WorkActivityState } from '../../shared/work-activity'
@@ -187,6 +189,7 @@ export interface WorkItem {
   updatedAt: number;
   participants: string[];
   deliverables: WorkDeliverable[];
+  arrangementExecution?: ArrangementExecutionSnapshot | null;
   timeline: WorkTimelineEntry[];
   messages: WorkMessage[];
   /** ?????????????????? */

@@ -79,7 +79,10 @@ export const authRoutes = [
 
       await ctx.backend.stopAll()
       ctx.backend.authSession.setLogin(response)
-      await ctx.backend.taskManager.setCurrentUser(response.user.id, response.enterprise.id)
+      await ctx.backend.taskManager.setCurrentUser(response.user.id, response.enterprise.id, {
+        memberName: response.user.name,
+        enterpriseName: response.enterprise.name,
+      })
       try {
         await ctx.backend.resumeClientMonitor()
       } catch (error) {

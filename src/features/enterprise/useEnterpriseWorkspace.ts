@@ -31,7 +31,7 @@ import type {
   WorkItem,
   WorkTemplate,
 } from './types';
-import { upgradeDraftSteps, layoutSteps } from './work-graph';
+import { upgradeDraftSteps } from './work-graph';
 import { buildWorkItem, completedStepCount, getArrangementDisplayEvents } from './work-mapping';
 import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
 import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
@@ -73,7 +73,7 @@ export interface ArrangeWorkDraft {
   sharedSkillIds: string[];
 }
 
-/** 从模板、已保存的常用工作或「复制为新工作」带到安排工作页的初始内容。 */
+/** 从模板或已保存的常用工作带到安排工作页的初始内容。 */
 export interface ArrangeSeed {
   goal: string;
   steps: WorkDraftStep[];
@@ -202,7 +202,6 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   stopWork: (workId: string, reason: string) => Promise<boolean>;
   retryWork: (workId: string) => Promise<void>;
   deleteWork: (workId: string) => Promise<void>;
-  duplicateWork: (workId: string) => void;
   /** 把当前安排好的工作存成常用工作，返回是否存成功。 */
   saveFlow: (flow: Omit<SavedWorkFlow, 'id' | 'savedAt'>) => boolean;
   deleteSavedFlow: (flowId: string) => void;
@@ -350,10 +349,11 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         activeEmployeeId: activeEmployeeByWork[task.id],
         plan: arrangement.plans[task.id],
         arrangementEvents: getArrangementDisplayEvents(arrangement.events, task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? ''),
+        arrangementExecution: arrangement.executions[task.id],
       });
     });
     return items.sort((left, right) => right.updatedAt - left.updatedAt);
-  }, [scopedTasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events]);
+  }, [scopedTasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events, arrangement.executions]);
 
   /** 员工是否正在处理工作，用于卡片状态。 */
   const employees = useMemo<SiliconEmployee[]>(() => {
@@ -731,28 +731,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     }
   }, [clearRuntimeState, run]);
 
-  const duplicateWork = useCallback((workId: string) => {
-    const work = works.find(item => item.id === workId);
-    if (!work) return;
-    // 运行期的步骤没有画布坐标，自动布局按依赖分层补上，进「自己编排」时直接是一条链。
-    setArrangeSeed({
-      goal: work.goal,
-      steps: layoutSteps(work.steps.map(step => ({
-        id: step.id,
-        employeeId: step.employeeId,
-        title: step.title,
-        input: step.input,
-        output: step.output,
-        dependsOn: [...step.dependsOn],
-        needsConfirm: step.needsConfirm,
-        skillIds: [],
-        x: 0,
-        y: 0,
-      }))),
-    });
-    navigate({ name: 'arrange', mode: 'manual' });
-  }, [works, navigate]);
-
   // ── 常用工作 ──────────────────────────────────────────────────────────
   /** 写盘失败（无痕模式、配额满）不阻断界面：内存里仍然保留，只是下次打开会丢。 */
   const persistFlows = useCallback((next: SavedWorkFlow[]) => {
@@ -836,7 +814,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, replaceRoute, retryWorkTypes, goBack, dismissError: () => setError(null),
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
-    stopWork, retryWork, deleteWork, duplicateWork,
+    stopWork, retryWork, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,
     organizationMembers, organizationEmployees, organizationStatus, organizationError, currentUserAvatar,

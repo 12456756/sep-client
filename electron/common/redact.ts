@@ -34,6 +34,8 @@ export function redactOptionalText(value: string | undefined | null): string | n
  * 数组与对象限量限深——日志与事件载荷都不该无界增长。
  */
 export function redactValue(value: unknown, depth = 0, key = ''): unknown {
+  // This exact numeric diagnostic is a count, never an authentication token.
+  if (key === 'estimatedThinkingTokens' && typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value
   if (SENSITIVE_KEY.test(key)) return '[redacted]'
   if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
   if (typeof value === 'string') return redactText(value)

@@ -4,6 +4,7 @@ import { Empty } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { SkillDetail } from '../../components/enterprise/skills/SkillDetail';
 import { localSkillVersionStatus, selectedSkillVersion, skillVersionLabel, skillVersionStatus } from '../../features/enterprise/skill-labels';
+import { filterSkillLibrary } from '../../features/enterprise/skill-search';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SkillLibraryItem } from '../../shared/skill-library';
 import '../../styles/skills.css';
@@ -14,7 +15,7 @@ export function SkillsPage({ workspace, skillId }: Props) {
   const [filter, setFilter] = useState('all');
   const skill = workspace.skills.find(item => item.capability.id === skillId);
   if (skill) return <SkillDetail key={skill.capability.id} workspace={workspace} skill={skill} />;
-  const matches = workspace.skills.filter(item => `${item.capability.name} ${item.capability.description}`.toLowerCase().includes(query.trim().toLowerCase()) && (filter !== 'personal' || item.versions.some(version => version.scope === 'PERSONAL') || item.localVersions.length));
+  const matches = filterSkillLibrary(workspace.skills, workspace.employees, query, filter);
   const hasError = Boolean(workspace.skillsError);
   const hasCachedSkills = workspace.skills.length > 0;
   const isRateLimited = workspace.skillsErrorKind === 'rate-limited';
@@ -23,7 +24,7 @@ export function SkillsPage({ workspace, skillId }: Props) {
   const emptyTitle = query || filter !== 'all' ? '没有匹配的技能' : '当前账号还没有已授权的员工技能';
   return <div className="ent-page skill-library" aria-busy={workspace.skillsLoading}>
     <div className="skill-toolbar">
-      <label className="skill-search"><Search size={17} aria-hidden /><input aria-label="搜索技能" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索技能名称、描述或关键词…" /></label>
+      <label className="skill-search"><Search size={17} aria-hidden /><input aria-label="搜索技能" value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索技能名称、描述或员工名称…" /></label>
       <select className="ent-select" aria-label="版本范围" value={filter} onChange={event => setFilter(event.target.value)}><option value="all">全部技能</option><option value="personal">有个人版本</option></select>
       <button className="ent-btn" disabled={workspace.skillsLoading || !canRetry} onClick={() => void workspace.refreshSkills()}><RefreshCw size={15} aria-hidden />{refreshLabel}</button>
     </div>

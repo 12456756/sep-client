@@ -948,33 +948,17 @@
 .ent-drawer-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
 
 /*
- * 宽抽屉：工作详情页的「对话」和「改一版安排」。
- * 比员工工作清单那档宽一截 —— 一边要放对话气泡，一边要放一列输入框，400 宽两者都挤。
+ * 宽抽屉：工作详情页的对话，给消息气泡留出阅读空间。
  */
 .ent-drawer.wide { width: min(720px, 94vw); }
 /* .ent-field 的标题在别处是 <label>，抽屉里外层已经是 <label> 了，只能用 <span>。 */
 .ent-drawer .ent-field > span { color: var(--ent-ink-2); font-size: var(--ent-fs-body); font-weight: 600; }
-.ent-drawer .ent-field + .ent-field, .ent-drawer .ent-field + .ent-plan-h { margin-top: 14px; }
+.ent-drawer .ent-field + .ent-field { margin-top: 14px; }
 .ent-drawer .ent-hint { margin: 12px 0 0; }
 /* 对话列表交给抽屉正文滚，自己不再限高 —— 两层滚动条同时出现会不知道该滚哪个。 */
 .ent-drawer .ent-talk { max-height: none; margin-bottom: 0; }
-.ent-drawer-lead { display: flex; gap: 8px; margin: 0 0 16px; padding: 10px 12px; border: 1px solid var(--ent-brand-border); border-radius: var(--ent-radius-sm); background: var(--ent-brand-softer); color: var(--ent-ink-2); font-size: var(--ent-fs-body); line-height: 1.7; }
-.ent-drawer-lead > svg { flex: 0 0 auto; margin-top: 3px; color: var(--ent-brand); }
-.ent-drawer-lead > span { min-width: 0; }
-.ent-drawer-lead strong { color: var(--ent-ink); font-weight: 600; }
 .ent-drawer-foot { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding: 14px 18px 18px; box-shadow: inset 0 1px 0 var(--ent-line); }
 .ent-drawer-foot .ent-ask, .ent-drawer-foot .ent-confirm { min-width: 0; flex: 1; }
-
-/* 「改一版安排」的步骤表。员工那一行是死的，两个输入框是活的。 */
-.ent-plan-h { margin: 0 0 10px; font-size: var(--ent-fs-module); font-weight: 600; }
-.ent-plan-h em { color: var(--ent-ink-3); font-style: normal; font-weight: 400; }
-.ent-plan-steps { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
-.ent-plan-step { display: flex; flex-direction: column; gap: 10px; padding: 12px 13px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel-subtle); }
-.ent-plan-step .ent-input { background: var(--ent-panel); }
-.ent-plan-who { display: flex; align-items: center; gap: 8px; color: var(--ent-ink); font-size: var(--ent-fs-body); }
-.ent-plan-who > b { display: grid; width: 20px; height: 20px; flex: 0 0 auto; place-items: center; border-radius: 50%; color: var(--ent-brand-ink); background: var(--ent-brand-soft); font-size: var(--ent-fs-note); font-weight: 600; }
-.ent-plan-who > strong { min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.ent-plan-who > em { flex: 0 0 auto; color: var(--ent-danger); font-size: var(--ent-fs-note); font-style: normal; }
 
 /*
  * 一张工作卡：图标片 + 标题 + 一行进度或完成说明 + 右侧箭头。
@@ -1144,6 +1128,18 @@
 .ent-wk-activity-copy strong { overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ent-wk-activity-copy small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-wk-activity time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-variant-numeric: tabular-nums; }
+.ent-arrangement-step-list { display: flex; flex-direction: column; gap: 7px; margin: 0 0 14px; padding: 0; list-style: none; }
+.ent-arrangement-step { display: grid; min-height: 48px; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid #e8ebf2; border-radius: var(--ent-radius-xs); background: var(--ent-panel); }
+.ent-arrangement-step.running { border-color: #c9d7ff; background: #f3f6ff; }
+.ent-arrangement-step.failed { border-color: #f2c9c7; background: #fff5f4; }
+.ent-arrangement-step.done { border-color: #cce6d4; background: #f4fbf6; }
+.ent-arrangement-step-icon { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; color: var(--ent-muted); background: #fff; }
+.ent-arrangement-step.done .ent-arrangement-step-icon { color: var(--ent-ready-solid); }
+.ent-arrangement-step.failed .ent-arrangement-step-icon { color: var(--ent-danger); }
+.ent-arrangement-step.running .ent-arrangement-step-icon { color: var(--ent-brand-ink); }
+.ent-arrangement-step-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.ent-arrangement-step-copy strong { overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-arrangement-step-copy small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-spin { animation: ent-spin 1s linear infinite; }
 @keyframes ent-spin { to { transform: rotate(360deg); } }
 
@@ -3054,9 +3050,33 @@
 .ent-wk-infobar-item > strong { min-width: 0; font-size: var(--ent-fs-body); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* 工作目录吃掉剩余宽度：路径比姓名更长，挤它比挤别的更划算。 */
 .ent-wk-infobar-item.workdir { flex: 1 1 180px; }
-.ent-wk-infobar-item.workdir .ent-wk-path { display: flex; max-width: 100%; }
-.ent-wk-infobar-item.workdir .ent-wk-path > span { min-width: 0; flex: 1; color: var(--ent-ink); font-weight: 600; }
+.ent-wk-infobar-item.workdir .ent-wk-path { display: flex; width: 100%; max-width: 320px; }
+.ent-wk-infobar-item.workdir .ent-wk-path > span { min-width: 0; flex: 0 1 auto; color: var(--ent-ink); font-weight: 600; }
 .ent-wk-infobar-progress { min-width: 132px; flex: 0 1 200px; margin-left: auto; }
+
+.ent-wk-infobar-flow > .ent-wk-infobar-sep { height: auto; align-self: stretch; }
+.ent-wk-infobar-meta {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 320px;
+  align-self: stretch;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px 0;
+}
+.ent-wk-infobar-summary { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 12px 24px; }
+.ent-wk-infobar-meta .ent-wk-infobar-item { flex-direction: row; align-items: center; gap: 8px; }
+.ent-wk-infobar-meta .ent-wk-infobar-item > small { flex: 0 0 auto; }
+.ent-wk-infobar-meta .ent-wk-infobar-item > strong { font-weight: 400; line-height: 20px; }
+.ent-wk-infobar-meta .workdir { flex: 0 0 auto; gap: 12px; }
+.ent-wk-infobar-meta .workdir > strong { flex: 1; }
+.ent-wk-infobar-meta .workdir .ent-wk-path { max-width: 100%; }
+.ent-wk-infobar-meta .workdir .ent-wk-path > span { font-weight: 400; }
+.ent-wk-infobar-meta .ent-wk-infobar-progress { max-width: 180px; flex-basis: 180px; }
+.ent-wk-infobar-meta .ent-bar > span { height: 4px; }
+.ent-wk-infobar-meta .ent-bar.complete > span > i { background: var(--ent-ready-solid); animation: none; }
+.ent-wk-infobar-meta .ent-bar.complete > b { color: var(--ent-ready); }
 
 .ent-wk-detail { display: grid; min-height: 0; flex: 1 1 auto; grid-template-columns: minmax(0, 1fr) 320px; gap: 14px; }
 .ent-wk-detail-main { display: flex; min-width: 0; min-height: 0; flex-direction: column; gap: 11px; }
@@ -3080,6 +3100,9 @@
 .ent-wk-detail-side > * { flex: 0 0 auto; }
 /* 侧栏自己滚，清单就不再单独设高度上限，免得出现两个滚动条。 */
 .ent-wk-files-side { min-height: 0; flex: 0 0 auto; overflow: visible; }
+.ent-wk-final-files { display: flex; flex-direction: column; gap: 13px; }
+.ent-wk-final-group { display: flex; flex-direction: column; gap: 7px; }
+.ent-wk-final-group h3 { margin: 0; color: var(--ent-ink-2); font-size: var(--ent-fs-note); font-weight: 700; }
 
 /*
  * 窄窗：双栏落成单列，高度也不再固定 —— 这时让整页滚，
@@ -3101,9 +3124,43 @@
  */
 .ent-wk-detail-side .ent-work-process .ent-wk-activity-list { max-height: none; overflow: visible; }
 
-/* 多人协作时的头像串：叠着放，最多露三张，露出「是谁在做」而不占一行高。 */
-.ent-wk-infobar-team { display: flex; flex: 0 0 auto; }
-.ent-wk-infobar-team > .ent-face + .ent-face { margin-left: -9px; box-shadow: 0 0 0 2px var(--ent-panel); }
+/* Keep the selected team readable without growing the work header. */
+.ent-wk-infobar:has(.ent-wk-team) { align-items: flex-start; }
+.ent-wk-team {
+  display: flex;
+  width: 240px;
+  max-width: 100%;
+  min-width: 0;
+  flex: 0 1 240px;
+  flex-direction: column;
+  gap: 8px;
+}
+.ent-wk-team > strong { font-size: var(--ent-fs-body); font-weight: 600; line-height: 20px; }
+.ent-wk-team-list {
+  display: flex;
+  height: 74px;
+  min-height: 0;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0 6px 0 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ent-line-strong) transparent;
+  scrollbar-gutter: stable;
+  list-style: none;
+}
+.ent-wk-team-list > li { display: flex; min-width: 0; min-height: 34px; flex: 0 0 auto; align-items: flex-start; gap: 10px; padding: 2px 0; }
+.ent-wk-team-name { min-width: 0; flex: 1; padding-top: 5px; color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 20px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .ent-wk-team { width: 100%; flex-basis: 100%; }
+  .ent-wk-infobar:has(.ent-wk-team) > .ent-wk-infobar-sep { display: none; }
+  .ent-wk-infobar-summary { column-gap: 12px; }
+  .ent-wk-infobar-summary .ent-wk-infobar-item { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .ent-wk-infobar-meta .ent-wk-infobar-progress { min-width: 96px; flex-basis: 120px; }
+}
 
 /*
  * 时间线回落（工作过程在没有结构化动作时的持久化记录）：

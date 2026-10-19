@@ -8,7 +8,8 @@ import type {
 } from '../../src/shared/types'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskPersistenceError, TaskStore, type TaskStorePort } from '../data/task-store'
-import { ScopePath, TaskScopeError, type TaskOwnerScope } from '../data/scope-path'
+import { ScopePath, TaskScopeError, type TaskOwnerScope, type WorkspaceDirectoryNames } from '../data/scope-path'
+import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
 import { ArrangementCheckpointStore, type ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { interruptArrangement } from '../domain/arrangement-execution'
@@ -43,6 +44,8 @@ function cloneTasks(tasks: Map<string, Task>): Map<string, Task> {
 
 export class TaskManager {
   private readonly paths: ScopePath
+  private readonly workspaceDirectories: WorkspaceDirectoryStore
+  private currentWorkspaceNames: WorkspaceDirectoryNames | undefined
   private tasks = new Map<string, Task>()
   private readonly notifier: TaskNotifier
   private currentUser: TaskOwnerScope | null = null
@@ -66,6 +69,7 @@ export class TaskManager {
     private readonly checkpoints: ArrangementCheckpointStorePort = new ArrangementCheckpointStore(userDataDir),
   ) {
     this.paths = new ScopePath(userDataDir)
+    this.workspaceDirectories = new WorkspaceDirectoryStore(userDataDir)
     this.notifier = notifier ?? silentTaskNotifier
     this.store = store
     this.runStore = runStore
@@ -81,7 +85,7 @@ export class TaskManager {
     await this.initializing
   }
 
-  async setCurrentUser(memberId: string, enterpriseId: string): Promise<void> {
+  async setCurrentUser(memberId: string, enterpriseId: string, workspaceNames?: WorkspaceDirectoryNames): Promise<void> {
     await this.ensureInitialized()
     const scope = { memberId, enterpriseId }
     this.validateScope(scope)
@@ -92,6 +96,7 @@ export class TaskManager {
     await this.serialize(async () => {
       this.generation += 1
       this.currentUser = null
+      this.currentWorkspaceNames = undefined
       this.tasks.clear()
       this.notifyTaskListUpdate()
 
@@ -115,6 +120,7 @@ export class TaskManager {
       }
 
       this.currentUser = scope
+      this.currentWorkspaceNames = workspaceNames ? { ...workspaceNames } : undefined
       this.tasks = new Map(loadedTasks.map(task => [task.id, task]))
       this.persistenceDegraded = false
 
@@ -180,6 +186,7 @@ export class TaskManager {
   clearCurrentUser(): void {
     this.generation += 1
     this.currentUser = null
+    this.currentWorkspaceNames = undefined
     this.tasks.clear()
     this.persistenceDegraded = false
     this.notifyTaskListUpdate()
@@ -199,16 +206,25 @@ export class TaskManager {
 
   async recoverPersistence(): Promise<void> {
     const scope = await this.requireCurrentUser()
-    await this.setCurrentUser(scope.memberId, scope.enterpriseId)
+    await this.setCurrentUser(scope.memberId, scope.enterpriseId, this.currentWorkspaceNames)
     if (this.persistenceDegraded) throw new TaskPersistenceError('Task history recovery did not complete.')
   }
 
   async prepareDirectorySelection(currentPath?: string): Promise<string> {
     const scope = await this.requireCurrentUser()
+    const generation = this.generation
+    this.assertCurrentScope(scope, generation)
     const chosen = currentPath?.trim()
-    if (chosen && await stat(chosen).then(info => info.isDirectory(), () => false)) return chosen
-    const defaultPath = this.paths.defaultWorkspaceRoot(scope)
+    if (chosen && await stat(chosen).then(info => info.isDirectory(), () => false)) {
+      this.assertCurrentScope(scope, generation)
+      return chosen
+    }
+    this.assertCurrentScope(scope, generation)
+    const names = await this.workspaceDirectories.resolve(scope, this.currentWorkspaceNames)
+    this.assertCurrentScope(scope, generation)
+    const defaultPath = this.paths.defaultWorkspaceRoot(scope, names)
     await mkdir(defaultPath, { recursive: true })
+    this.assertCurrentScope(scope, generation)
     return defaultPath
   }
 
@@ -219,8 +235,12 @@ export class TaskManager {
     subscriptionId: string | null = null,
   ): Promise<Task> {
     const user = await this.requireCurrentUser()
+    const generation = this.generation
+    this.assertCurrentScope(user, generation)
     const id = randomUUID()
-    const resolvedWorkDir = workDir?.trim() || this.paths.defaultWorkspaceDir(user, id)
+    const names = workDir?.trim() ? undefined : await this.workspaceDirectories.resolve(user, this.currentWorkspaceNames)
+    this.assertCurrentScope(user, generation)
+    const resolvedWorkDir = workDir?.trim() || this.paths.defaultWorkspaceDir(user, id, names)
     await mkdir(resolvedWorkDir, { recursive: true })
     const task: Task = {
       id, title, prompt, status: TaskStatus.PENDING, workDir: resolvedWorkDir,
@@ -229,7 +249,7 @@ export class TaskManager {
       subscriptionId, activeRunId: null,
     }
     try {
-      await this.commit(nextTasks => nextTasks.set(task.id, task))
+      await this.commit(nextTasks => nextTasks.set(task.id, task), generation)
     } catch (error) {
       if (!workDir?.trim()) await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => undefined)
       throw error
@@ -437,10 +457,12 @@ export class TaskManager {
     }
   }
 
-  private async commit(mutate: (nextTasks: Map<string, Task>) => void): Promise<void> {
+  private async commit(mutate: (nextTasks: Map<string, Task>) => void, expectedGeneration?: number): Promise<void> {
     const scope = await this.requireCurrentUser()
     const generation = this.generation
+    if (expectedGeneration !== undefined) this.assertCurrentScope(scope, expectedGeneration)
     await this.serialize(async () => {
+      if (expectedGeneration !== undefined) this.assertCurrentScope(scope, expectedGeneration)
       // C8：排队期间 scope 可能已经切走。世代号变了就放弃这次写入——否则会把新 scope
       // 的内存快照写进旧 scope 的文件，并把新 scope 的内存状态覆盖回去。
       if (this.generation !== generation) {
@@ -475,6 +497,12 @@ export class TaskManager {
     await this.ensureInitialized()
     if (!this.currentUser) throw new TaskScopeError()
     return this.currentUser
+  }
+
+  private assertCurrentScope(scope: TaskOwnerScope, generation: number): void {
+    if (this.currentUser !== scope || this.generation !== generation) {
+      throw new TaskScopeError('Task scope changed during directory preparation.')
+    }
   }
 
   private validateScope(scope: TaskOwnerScope): void {

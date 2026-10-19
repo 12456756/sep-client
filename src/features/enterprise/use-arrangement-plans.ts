@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ArrangementPlanSnapshot, ClientTask, TaskExecutionEvent } from '../../shared/types';
+import type { ArrangementExecutionSnapshot, ArrangementPlanSnapshot, ClientTask, TaskExecutionEvent } from '../../shared/types';
 import { runtimeKey } from '../../shared/work-activity';
 
 function mergeEvents(current: TaskExecutionEvent[], incoming: TaskExecutionEvent[]): TaskExecutionEvent[] {
@@ -12,6 +12,7 @@ function mergeEvents(current: TaskExecutionEvent[], incoming: TaskExecutionEvent
 export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
   const [plans, setPlans] = useState<Record<string, ArrangementPlanSnapshot>>({});
   const [events, setEvents] = useState<Record<string, TaskExecutionEvent[]>>({});
+  const [executions, setExecutions] = useState<Record<string, ArrangementExecutionSnapshot | null>>({});
   const [error, setError] = useState<string | null>(null);
   const requested = useRef(new Map<string, string>());
   const mounted = useRef(false);
@@ -23,6 +24,7 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
     requested.current.clear();
     setPlans({});
     setEvents({});
+    setExecutions({});
     setError(null);
     setLoadedScope(scopeKey);
   }, [scopeKey]);
@@ -60,6 +62,16 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
           if (isCurrent()) setError(cause instanceof Error ? cause.message : '工作计划加载失败');
         }
       })();
+      if (task.workType.state === 'resolved' && task.workType.kind === 'arrangement') void (async () => {
+        try {
+          const result = await window.electronAPI.getArrangementExecution(task.id);
+          if (!isCurrent()) return;
+          if (!result.success) throw new Error(result.error?.message || '编排执行状态加载失败');
+          setExecutions(previous => ({ ...previous, [task.id]: result.execution ?? null }));
+        } catch (cause) {
+          if (isCurrent()) setError(cause instanceof Error ? cause.message : '编排执行状态加载失败');
+        }
+      })();
       if (task.activeRunId) void (async () => {
         try {
           const timeline = await window.electronAPI.getTaskTimeline(task.id, task.activeRunId!);
@@ -75,5 +87,5 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
       })();
     }
   }, [tasks, generation]);
-  return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, recordEvent, error };
+  return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, executions: loadedScope === scopeKey ? executions : {}, recordEvent, error };
 }

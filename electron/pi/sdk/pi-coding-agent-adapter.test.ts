@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PiCodingAgentAdapter, normalizeGatewayPayload, sessionToolOptions, classifyToolFailure, summarizeGatewayMessages } from './pi-coding-agent-adapter'
+import { PiCodingAgentAdapter, normalizeGatewayPayload, sessionToolOptions, classifyToolFailure, buildGatewayRequestLogFields, buildGatewayThinkingLogFields } from './pi-coding-agent-adapter'
 import type { PiAgentSessionConfig } from './pi-agent-runtime'
 import type { MediaHostTools, MediaToolName } from '../../domain/media-tools'
 import { AppError } from '../../errors/app-error'
@@ -45,30 +45,62 @@ describe('task tool policy session options', () => {
   })
 })
 
-describe('provider request context diagnostics', () => {
-  it('logs the complete redacted message context instead of content booleans', () => {
-    assert.deepEqual(summarizeGatewayMessages([
-      { role: 'user', content: 'list files' },
-      {
-        role: 'assistant',
-        content: null,
-        reasoning_content: 'Inspecting the workspace before listing files.',
-        tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'ls', arguments: '{}' } }],
-      },
-      { role: 'tool', tool_call_id: 'call-1', content: 'file-a.txt\\nfile-b.txt' },
-    ]), [
-      { index: 0, role: 'user', content: 'list files' },
-      {
-        index: 1,
-        role: 'assistant',
-        content: null,
-        reasoning_content: 'Inspecting the workspace before listing files.',
-        toolCalls: [{ id: 'call-1', type: 'function', name: 'ls' }],
-      },
-      { index: 2, role: 'tool', content: 'file-a.txt\\nfile-b.txt', toolCallId: 'call-1' },
-    ])
+describe('provider request diagnostics', () => {
+  it('summarizes request metadata without reading historical message bodies or tool schemas', () => {
+    const historical = { get content(): never { throw new Error('Historical content must not be read') } }
+    const fields = buildGatewayRequestLogFields({
+      model: 'model-a', max_tokens: 16_384, temperature: 0.2, stream: true,
+      stream_options: { include_usage: true },
+      tools: [{ type: 'function', function: { name: 'read' } }, { type: 'function', function: { name: 'write' } }],
+      messages: [historical, historical, historical],
+    }, 42)
+    assert.deepEqual(fields, {
+      requestId: 42, model: 'model-a', messageCount: 3, outputLimit: 16_384, temperature: 0.2,
+      stream: true, includeUsage: true, toolCount: 2, tools: 'read, write',
+    })
+  })
+
+  it('tolerates absent metadata and malformed tool definitions', () => {
+    assert.deepEqual(buildGatewayRequestLogFields({ tools: [null, {}, { function: { name: 12 } }] }, 7), {
+      requestId: 7, model: undefined, messageCount: 0, outputLimit: undefined,
+      temperature: undefined, stream: undefined, includeUsage: undefined, toolCount: 0,
+    })
+  })
+
+  it('reads the SDK output budget before the shared gateway conversion', () => {
+    assert.equal(buildGatewayRequestLogFields({ max_completion_tokens: 2048 }, 42).outputLimit, 2048)
+    assert.equal(buildGatewayRequestLogFields({ max_tokens: 128, max_completion_tokens: 2048 }, 42).outputLimit, 128)
   })
 })
+describe('provider thinking diagnostics', () => {
+  it('reports zero for responses without thinking and never reads text or tool bodies', () => {
+    assert.deepEqual(buildGatewayThinkingLogFields([
+      { type: 'text', get text(): never { throw new Error('Body must not be read') } },
+      { type: 'toolCall', id: 'call', name: 'read', get arguments(): never { throw new Error('Arguments must not be read') } },
+    ]), { thinkingLength: 0, estimatedThinkingTokens: 0 })
+  })
+
+  it('estimates mixed thinking without exposing or mutating its contents', () => {
+    const content = Object.freeze([
+      Object.freeze({ type: 'thinking' as const, thinking: '中文abc!' }),
+      Object.freeze({ type: 'thinking' as const, thinking: 'é😀𠀀' }),
+    ])
+    // Han: 3 * 0.6, ASCII: 4 * 0.3, other code points: 2 * 1.
+    assert.deepEqual(buildGatewayThinkingLogFields(content), {
+      thinkingLength: 11, estimatedThinkingTokens: 5,
+    })
+  })
+
+  it('rounds once across thinking blocks and starts fresh for the next response', () => {
+    const split = buildGatewayThinkingLogFields([
+      { type: 'thinking', thinking: 'a' }, { type: 'thinking', thinking: 'b' },
+    ])
+    assert.deepEqual(split, buildGatewayThinkingLogFields([{ type: 'thinking', thinking: 'ab' }]))
+    assert.deepEqual(split, { thinkingLength: 2, estimatedThinkingTokens: 1 })
+    assert.deepEqual(buildGatewayThinkingLogFields([]), { thinkingLength: 0, estimatedThinkingTokens: 0 })
+  })
+})
+
 describe('SEP gateway payload compatibility', () => {
   it('preserves tool call IDs and tool roles across gateway turns', () => {
     const result = normalizeGatewayPayload({

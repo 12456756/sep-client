@@ -197,13 +197,24 @@ export interface ArrangementParticipantSnapshot {
   modelId: string
 }
 
+export interface ArrangementDeliverable {
+  id: string
+  name: string
+  format: string
+  path: string
+  contentOutline: string[]
+  acceptanceCriteria: string[]
+}
+
 export interface ArrangementNodeSnapshot {
   id: string
   subscriptionId: string
   modelId: string
   title: string
+  objective?: string
   instruction: string
   expectedOutput: string
+  deliverables?: ArrangementDeliverable[]
   dependsOn: string[]
   skillIds: string[]
   requiresUserConfirmation: boolean
@@ -244,11 +255,14 @@ export type ArrangementDraftStatus = 'editing' | 'planning' | 'planning-failed' 
 
 export interface ArrangementDraftNode {
   id: string
+  stepId?: string
   subscriptionId: string
   modelId: string
   title: string
+  objective?: string
   instruction: string
   expectedOutput: string
+  deliverables?: ArrangementDeliverable[]
   dependsOn: string[]
   skillIds: string[]
   requiresUserConfirmation: boolean
@@ -325,6 +339,12 @@ export interface ArrangementDraftDocument {
   } | null
 }
 
+export interface ArrangementExecutionSettings {
+  modelId?: string
+  workDir: string | null
+  permissions: ArrangementDraftDocument['permissions']
+}
+
 export interface ArrangementDraft extends ArrangementDraftDocument {
   id: string
   revision: number
@@ -363,6 +383,35 @@ export interface ArrangementDraftPreflightResult {
 export interface ArrangementPlanResult {
   success: boolean
   plan?: ArrangementPlanSnapshot | null
+  error?: TaskError
+}
+
+export interface ArrangementFinalFileSnapshot {
+  id: string
+  path: string
+  format: string
+  size: number
+  sha256: string
+  nodeRunId: string
+  validatedAt: number
+}
+
+export interface ArrangementNodeExecutionSnapshot {
+  nodeId: string
+  status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
+  finalFiles: ArrangementFinalFileSnapshot[]
+}
+
+export interface ArrangementExecutionSnapshot {
+  activeRunId: string | null
+  status: 'queued' | 'running' | 'waiting-user' | 'interrupted' | 'completed' | 'stopped' | 'failed'
+  nodes: ArrangementNodeExecutionSnapshot[]
+  updatedAt: number
+}
+
+export interface ArrangementExecutionResult {
+  success: boolean
+  execution?: ArrangementExecutionSnapshot | null
   error?: TaskError
 }
 

@@ -47,6 +47,16 @@ describe('redactValue', () => {
     )
   })
 
+  it('preserves only safe numeric thinking estimates while still hiding credentials', () => {
+    assert.deepEqual(redactValue({ estimatedThinkingTokens: 4096, accessToken: 123456 }), {
+      estimatedThinkingTokens: 4096, accessToken: '[redacted]',
+    })
+    assert.deepEqual(redactValue({ estimatedThinkingTokens: 0 }), { estimatedThinkingTokens: 0 })
+    for (const value of ['Bearer private', '4096', -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1, { token: 'private' }]) {
+      assert.deepEqual(redactValue({ estimatedThinkingTokens: value }), { estimatedThinkingTokens: '[redacted]' })
+    }
+  })
+
   it('bounds depth, array length, and key count', () => {
     let deep: unknown = 'bottom'
     for (let level = 0; level < 8; level += 1) deep = { nested: deep }

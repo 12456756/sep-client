@@ -15,6 +15,7 @@ import {
   validateArrangementDraft,
   validateNodeModels,
   type ArrangementDraft,
+  type ArrangementExecutionSettings,
   type ArrangementMode,
   type ArrangementNode,
   type EffectiveTaskPermissionPolicy,
@@ -27,6 +28,9 @@ import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirect
 import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementEmployeeAccessRequest } from '../domain/arrangement-plan'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 import { TaskCreationGate } from './task-creation-gate'
+import { deliveryPlanIssues } from '../domain/arrangement-delivery'
+import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
+import type { ArrangementExecutionSnapshot } from '../../src/shared/types'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -45,6 +49,7 @@ export interface ArrangementServiceDependencies {
     create(input: EmployeeAccessRequestInput, idempotencyKey: string): Promise<EmployeeAccessRequest>
     get(requestId: string): Promise<EmployeeAccessRequest>
   }
+  arrangementCheckpoints?: ArrangementCheckpointStorePort
 }
 
 export interface ArrangementContext {
@@ -124,20 +129,42 @@ export class ArrangementService {
     return this.deps.workPlans.get(requireScope(this.deps.scope), taskId)
   }
 
+  async getExecution(taskId: string): Promise<ArrangementExecutionSnapshot | null> {
+    const scope = requireScope(this.deps.scope)
+    if (!this.deps.arrangementCheckpoints) return null
+    const checkpoint = await this.deps.arrangementCheckpoints.get(scope, taskId)
+    if (!checkpoint) return null
+    return {
+      activeRunId: checkpoint.activeRunId,
+      status: checkpoint.state.status,
+      updatedAt: checkpoint.updatedAt,
+      nodes: checkpoint.state.nodes.map(node => ({
+        nodeId: node.nodeId,
+        status: node.status,
+        finalFiles: node.delivery?.finalFiles ? structuredClone(node.delivery.finalFiles) : [],
+      })),
+    }
+  }
+
   async createDraft(input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>): Promise<ArrangementDraft> {
+    if (input.mode === 'auto' && input.nodes.length > 0) throw new AppError('INVALID_ARGUMENT')
     return this.deps.drafts.create(requireScope(this.deps.scope), input)
   }
 
-  async updateDraft(
+  async updateExecutionSettings(
     draftId: string,
     expectedRevision: number,
-    patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>,
+    settings: ArrangementExecutionSettings,
   ): Promise<ArrangementDraft> {
-    return this.deps.drafts.update(requireScope(this.deps.scope), draftId, expectedRevision, {
-      ...patch,
-      status: 'editing',
-      lastPlanning: null,
-      confirmedWorkPlanId: null,
+    const scope = requireScope(this.deps.scope)
+    const draft = await this.getDraft(draftId)
+    if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
+    if (draft.mode !== 'auto' || !['ready', 'preflight-failed'].includes(draft.status) || draft.confirmedWorkPlanId) throw new AppError('INVALID_STATE')
+    return this.deps.drafts.update(scope, draftId, expectedRevision, {
+      ...draft,
+      nodes: draft.nodes.map(node => ({ ...node, modelId: settings.modelId ?? node.modelId })),
+      workspace: { ...draft.workspace, path: settings.workDir ?? draft.workspace.path },
+      permissions: structuredClone(settings.permissions),
     })
   }
 
@@ -446,6 +473,8 @@ export class ArrangementService {
         })))
     const permissionPolicy = effectivePermissionPolicy(draft.permissions)
     const blockingIssues = [
+      ...(draft.mode === 'auto' ? deliveryPlanIssues(draft.nodes).map(issue => issue.message) : []),
+      ...(draft.mode === 'auto' && draft.unresolvedSteps?.length ? ['仍有未解决的工作步骤，不能启动不完整计划。'] : []),
       ...subscriptions.filter(item => !item.available || !item.passesThreshold).map(item => `${item.subscriptionId}:${item.reasonCode ?? 'unavailable'}`),
       ...modelIssues,
     ]

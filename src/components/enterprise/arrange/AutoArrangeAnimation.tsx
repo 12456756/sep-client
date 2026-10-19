@@ -79,6 +79,8 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
   const [teamExiting, setTeamExiting] = useState(false);
   const [teamStageHeight, setTeamStageHeight] = useState(0);
   const teamStageRef = useRef<HTMLDivElement>(null);
+  const flowRef = useRef<HTMLDivElement>(null);
+  const userScrolledRef = useRef(false);
   const reduced = usePrefersReducedMotion();
   const beat = reduced ? 0.3 : 1;
   const ready = !planning && draft.nodes.length > 0;
@@ -137,6 +139,47 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
     return () => timers.forEach(window.clearTimeout);
   }, [phase, nodeCount, beat]);
 
+  useEffect(() => {
+    if (phase !== 'flowing') return;
+    const scroller = flowRef.current?.closest<HTMLElement>('.ent-arr-view');
+    if (!scroller) return;
+    userScrolledRef.current = false;
+    const stopFollowing = () => { userScrolledRef.current = true; };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) stopFollowing();
+    };
+    scroller.addEventListener('wheel', stopFollowing, { passive: true });
+    scroller.addEventListener('touchstart', stopFollowing, { passive: true });
+    scroller.addEventListener('pointerdown', stopFollowing, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      scroller.removeEventListener('wheel', stopFollowing);
+      scroller.removeEventListener('touchstart', stopFollowing);
+      scroller.removeEventListener('pointerdown', stopFollowing);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [phase]);
+
+  useEffect(() => {
+    if (stopped || (phase !== 'flowing' && phase !== 'done') || userScrolledRef.current) return;
+    const flow = flowRef.current;
+    const scroller = flow?.closest<HTMLElement>('.ent-arr-view');
+    if (!flow || !scroller) return;
+    // Scroll the workbench, never the document or a separate node-list viewport.
+    const frame = window.requestAnimationFrame(() => {
+      if (userScrolledRef.current) return;
+      if (phase === 'done') {
+        scroller.scrollTo({ top: 0, behavior: 'instant' });
+        return;
+      }
+      const revealed = flow.children.item(rows - 1);
+      if (!revealed) return;
+      const overflow = revealed.getBoundingClientRect().bottom - scroller.getBoundingClientRect().bottom + 16;
+      if (overflow > 0) scroller.scrollTo({ top: scroller.scrollTop + overflow, behavior: 'instant' });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [phase, rows, stopped]);
+
   const at = phase === 'analyzing' ? 0 : phase === 'planning' ? 1 : phase === 'matching' ? 2 : 3;
   if (draft.status === 'awaiting-employee') {
     return (
@@ -176,7 +219,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
     </>
   );
   return (
-    <section className={`ent-arr-auto${phase === 'analyzing' ? ' ent-aa-analyzing' : phase === 'matching' ? ' ent-aa-matching' : ''}`} aria-busy={phase !== 'done'} style={phase === 'matching' ? {
+    <section className={`ent-arr-auto${phase === 'analyzing' ? ' ent-aa-analyzing' : phase === 'matching' ? ' ent-aa-matching' : phase === 'flowing' || phase === 'done' ? ' ent-aa-result' : ''}`} aria-busy={phase !== 'done'} style={phase === 'matching' ? {
       '--aa-stage-height': `${teamStageHeight}px`,
     } as CSSProperties : undefined}>
       {phase === 'matching' ? (
@@ -200,7 +243,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
         </article>
       ) : null}
       {phase === 'flowing' || phase === 'done' ? (
-        <div className="ent-aa-flow">
+        <div className="ent-aa-flow" ref={flowRef}>
           <article className={`ent-aa-goalnode${rows >= 1 ? ' in' : ''}`}><span>工作目标</span><p>{draft.goal}</p></article>
           {draft.nodes.map((node, index) => {
             const employee = employees.find(item => item.id === node.subscriptionId);
@@ -214,6 +257,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
                   <div className="ent-flowcard-body">
                     <span className="ent-flowcard-who"><EmployeeFace employee={employee} size="sm" round /><strong>{employee?.name ?? node.subscriptionId}</strong><small>{employee?.roleName}</small></span>
                     <strong className="ent-flowcard-stage">{node.title}</strong><p>{node.instruction}</p>
+                    {node.expectedOutput ? <p className="ent-flowcard-output"><span>预期输出</span>{node.expectedOutput}</p> : null}
                   </div>
                 </article>
               </Fragment>

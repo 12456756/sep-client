@@ -7,7 +7,7 @@
  * 已确认的内容和终止原因都会保留，不会一起消失。
  */
 
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, CircleHelp, ClipboardCheck, Copy, FileCheck2, History, LoaderCircle, MessageSquare, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, ChevronDown, CircleHelp, ClipboardCheck, FileCheck2, History, LoaderCircle, MessageSquare, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
 import { useState } from 'react';
 import { Empty, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
@@ -248,10 +248,6 @@ export function WorkRecordsPage({ workspace }: Props) {
                   <History size={13} aria-hidden />
                   查看过程
                   <ChevronDown size={13} aria-hidden className="ent-record-caret" />
-                </button>
-                <button type="button" className="ent-btn sm ghost" onClick={() => void workspace.duplicateWork(work.id)} disabled={workspace.busy}>
-                  <Copy size={13} aria-hidden />
-                  复制为新工作
                 </button>
                 {!over ? (
                   <button type="button" className="ent-btn sm danger ghost" onClick={() => { setStopping(work.id); setStopReason(''); }} disabled={workspace.busy}>

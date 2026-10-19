@@ -37,7 +37,7 @@ interface Props {
   viewportRef: React.RefObject<HTMLDivElement>;
   /**
    * 这个值一变就把全部节点归位到视野内。
-   * 用在「载入模板 / 已保存的常用工作 / 复制为新工作」之后 ——
+   * 用在载入模板或已保存的常用工作之后 ——
    * 自动布局产生的节点可能超出当前视野，用户会以为只铺了两步。
    */
   fitKey: number;

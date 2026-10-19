@@ -2,12 +2,11 @@
 
 import {
   AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, LoaderCircle, MessageSquareText,
-  PencilLine, RotateCcw, Share2, StopCircle, XCircle,
+  RotateCcw, Share2, StopCircle, XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Empty, StepStateChip, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
-import { WorkPlanDrawer } from '../../components/enterprise/WorkPlanDrawer';
 import { WorkConversation, WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
@@ -31,16 +30,15 @@ export function WorkDetailPage({ workspace, workId }: Props) {
     );
   }
   // 找不到工作时上面直接返回，所以下面这一层可以放心用 hook。
-  // key 带上工作 id：改一版安排之后会跳到新工作，不重置的话抽屉会开着不动、内容换成新的那一项。
+  // 切换工作时重置抽屉状态。
   return <Detail key={work.id} work={work} workspace={workspace} />;
 }
 
 /** 抬头右边和抽屉之间共用的一个状态：现在拉开的是哪个抽屉。 */
-type Panel = 'talk' | 'plan' | null;
+type Panel = 'talk' | null;
 
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   const team = useTeam(work, workspace);
-  const solo = team.length <= 1;
   const isConversation = work.kind === 'conversation';
   const finished = work.status === 'completed';
   /** 这项工作已经不会自己往前走了。耗时、结束时间、能不能终止都按它算。 */
@@ -49,6 +47,34 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const doing = currentWorkOperation(work.status, work.activities);
   const next = work.steps.find(step => step.state === 'pending');
   const [panel, setPanel] = useState<Panel>(null);
+  const facts = {
+    start: (
+      <span className="ent-wk-infobar-item">
+        <small>开始</small>
+        <strong>{dayTimeText(work.createdAt)}</strong>
+      </span>
+    ),
+    elapsed: (
+      <span className="ent-wk-infobar-item">
+        <small>{over ? '耗时' : '已运行'}</small>
+        <strong>{over ? durationText(work.updatedAt - work.createdAt) : durationText(Date.now() - work.createdAt)}</strong>
+      </span>
+    ),
+    directory: (
+      <span className="ent-wk-infobar-item workdir">
+        <small>工作目录</small>
+        <strong>{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</strong>
+      </span>
+    ),
+    progress: (
+      <span className="ent-wk-infobar-progress">
+        <span className={`ent-bar${finished ? ' complete' : ''}`}>
+          <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
+          <b>{percent}%</b>
+        </span>
+      </span>
+    ),
+  };
 
   return (
     <div className="ent-page ent-wk">
@@ -68,73 +94,39 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         <WorkStatusChip value={work.status} />
         <div className="ent-wk-head-actions">
           <ShareButton work={work} />
-          {isConversation ? null : (
-            <button
-              type="button"
-              className="ent-btn primary sm"
-              title="同一批同事、同样的顺序，只改要完成什么。会开一项新工作，不影响这一项"
-              onClick={() => setPanel('plan')}
-            >
-              <PencilLine size={14} aria-hidden />
-              改一版安排
-            </button>
-          )}
         </div>
       </div>
 
-      {/*
-        信息条：员工、时间、耗时、进度压成一行。
-        原先这些信息占了一整张卡片（约 150px），而内容只有四条短事实；
-        压成一行后首屏腾出的高度正好给对话与产出。
-      */}
-      <div className="ent-wk-infobar">
-        <span className="ent-wk-infobar-who">
-          {solo ? (
-            <>
-              <EmployeeFace employee={team[0]} name={work.currentEmployeeName} size="sm" round />
-              <span>
-                <strong>{team[0]?.name ?? work.currentEmployeeName}</strong>
-                <small>{team[0]?.roleName ?? '硅基员工'}</small>
-              </span>
-            </>
-          ) : (
-            <>
-              {/*
-                多人协作时头像叠成一串（最多露三张）：信息条只有一行高，
-                摆不开一张一人一行的名单，但也不能只剩一句「N 位同事」把人认不出来。
-                完整的「谁做到哪一步」在右侧「更多信息」的工作步骤里。
-              */}
-              <span className="ent-wk-infobar-team" aria-hidden>
-                {team.slice(0, 3).map(member => (
-                  <EmployeeFace key={member.id} employee={member} name={member.name} size="sm" round />
-                ))}
-              </span>
-              <span>
-                <strong>{team.length} 位同事协作</strong>
-                <small>{team.map(member => member.name).join('、')}</small>
-              </span>
-            </>
-          )}
-        </span>
-        <span className="ent-wk-infobar-sep" aria-hidden />
-        <span className="ent-wk-infobar-item">
-          <small>开始</small>
-          <strong>{dayTimeText(work.createdAt)}</strong>
-        </span>
-        <span className="ent-wk-infobar-item">
-          <small>{over ? '耗时' : '已运行'}</small>
-          <strong>{over ? durationText(work.updatedAt - work.createdAt) : durationText(Date.now() - work.createdAt)}</strong>
-        </span>
-        <span className="ent-wk-infobar-item workdir">
-          <small>工作目录</small>
-          <strong>{work.workDir ? <PathValue path={work.workDir} /> : '默认工作场地'}</strong>
-        </span>
-        <span className="ent-wk-infobar-progress">
-          <span className="ent-bar">
-            <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
-            <b>{percent}%</b>
+      {/* 编排名单独立滚动；对话任务继续使用紧凑的单人信息。 */}
+      <div className={`ent-wk-infobar${isConversation ? '' : ' ent-wk-infobar-flow'}`}>
+        {isConversation || !team.length ? (
+          <span className="ent-wk-infobar-who">
+            <EmployeeFace employee={team[0]} name={work.currentEmployeeName} size="sm" round />
+            <span>
+              <strong>{team[0]?.name ?? work.currentEmployeeName}</strong>
+              <small>{team[0]?.roleName ?? '硅基员工'}</small>
+            </span>
           </span>
-        </span>
+        ) : (
+          <section className="ent-wk-team" aria-label="协作员工">
+            <strong>{team.length} 位同事协作</strong>
+            <ul className="ent-wk-team-list" aria-label="参与员工" tabIndex={0}>
+              {team.map(member => (
+                <li key={member.id}>
+                  <EmployeeFace employee={member} name={member.name} size="sm" round />
+                  <span className="ent-wk-team-name">{member.name}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <span className="ent-wk-infobar-sep" aria-hidden />
+        {isConversation ? <>{facts.start}{facts.elapsed}{facts.directory}{facts.progress}</> : (
+          <div className="ent-wk-infobar-meta">
+            <div className="ent-wk-infobar-summary">{facts.start}{facts.elapsed}{facts.progress}</div>
+            {facts.directory}
+          </div>
+        )}
       </div>
 
       <div className="ent-wk-detail">
@@ -189,20 +181,27 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           <section className="ent-panel">
             <h2>{finished ? '产出结果' : '最终产物'} <em>（{work.deliverables.length} 个）</em></h2>
             {work.deliverables.length ? (
-              <ul className="ent-wk-files ent-wk-files-side">
-                {work.deliverables.map(file => (
-                  <li key={file.id}>
-                    <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
-                    <span>
-                      <strong title={file.name}>{file.name}</strong>
-                      <small>{file.note}</small>
-                    </span>
-                    <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
-                      复制路径
-                    </button>
-                  </li>
+              <div className="ent-wk-final-files">
+                {groupDeliverables(work.deliverables).map(group => (
+                  <section key={group.key} className="ent-wk-final-group">
+                    {group.title ? <h3>{group.title}</h3> : null}
+                    <ul className="ent-wk-files ent-wk-files-side">
+                      {group.files.map(file => (
+                        <li key={file.id}>
+                          <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
+                          <span>
+                            <strong title={file.name}>{file.name}</strong>
+                            <small>{file.note}</small>
+                          </span>
+                          <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
+                            复制路径
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
                 ))}
-              </ul>
+              </div>
             ) : (
               <p className="ent-hint">员工还没有产出文件。产出之后会列在这里。</p>
             )}
@@ -221,7 +220,6 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         </aside>
       </div>
       {panel === 'talk' ? <WorkTalkDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
-      {panel === 'plan' ? <WorkPlanDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
     </div>
   );
 }
@@ -405,6 +403,7 @@ function Donut({ percent }: { percent: number }) {
 /** 工作过程。多人协作时上面一排页签按人筛，单人工作不出现页签。 */
 /** 用户只看结构化动作；原始日志仍由后台保留，不在详情页呈现。 */
 function Process({ work }: { work: WorkItem }) {
+  if (work.kind === 'flow') return <ArrangementProcess work={work} />;
   return (
     <section className="ent-panel ent-work-process">
       <h2>工作过程</h2>
@@ -436,6 +435,34 @@ function Process({ work }: { work: WorkItem }) {
   );
 }
 
+function ArrangementProcess({ work }: { work: WorkItem }) {
+  return (
+    <section className="ent-panel ent-work-process">
+      <h2>工作过程</h2>
+      <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities)}</p>
+      {work.steps.length ? (
+        <ol className="ent-arrangement-step-list" aria-label="节点完成情况">
+          {work.steps.map(step => {
+            const label = step.state === 'done' ? '已完成'
+              : step.state === 'running' ? '进行中'
+                : step.state === 'waiting-user' ? '等待确认'
+                  : step.state === 'failed' ? '失败'
+                    : step.state === 'skipped' ? '已跳过' : '未开始';
+            return (
+              <li key={step.id} className={`ent-arrangement-step ${step.state}`}>
+                <span className="ent-arrangement-step-icon" aria-hidden>
+                  {step.state === 'done' ? <CheckCircle2 size={15} /> : step.state === 'failed' ? <XCircle size={15} /> : step.state === 'running' ? <LoaderCircle size={15} className="ent-spin" /> : <span />}
+                </span>
+                <span className="ent-arrangement-step-copy"><strong>{step.title}</strong><small>{step.employeeName} · {label}</small></span>
+              </li>
+            );
+          })}
+        </ol>
+      ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}
+    </section>
+  );
+}
+
 function WorkActivityRow({ activity }: { activity: WorkActivity }) {
   const stateLabel = activity.state === 'running'
     ? '进行中'
@@ -453,6 +480,20 @@ function WorkActivityRow({ activity }: { activity: WorkActivity }) {
       <time>{hhmm(activity.endedAt ?? activity.startedAt)}</time>
     </li>
   );
+}
+
+function groupDeliverables(files: WorkItem['deliverables']): Array<{ key: string; title: string; files: WorkItem['deliverables'] }> {
+  const groups: Array<{ key: string; title: string; files: WorkItem['deliverables'] }> = [];
+  for (const file of files) {
+    const key = file.nodeId ?? 'all';
+    let group = groups.find(item => item.key === key);
+    if (!group) {
+      group = { key, title: file.nodeTitle ?? '', files: [] };
+      groups.push(group);
+    }
+    group.files.push(file);
+  }
+  return groups;
 }
 
 function ShareButton({ work }: { work: WorkItem }) {
@@ -478,12 +519,15 @@ function ShareButton({ work }: { work: WorkItem }) {
   );
 }
 
-/** 工作目录：一行放不下就省略，右边一个复制按钮。 */
+/** 只缩短目录的展示文本；悬停和复制始终使用完整路径。 */
 function PathValue({ path }: { path: string }) {
+  const separator = path.includes('\\') ? '\\' : '/';
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const label = parts.length > 2 ? `…${separator}${parts.slice(-2).join(separator)}` : path;
   return (
     <span className="ent-wk-path">
-      <span title={path}>{path}</span>
-      <button type="button" className="ent-wk-copy" onClick={() => void copy(path)} aria-label="复制工作目录">
+      <span title={path}>{label}</span>
+      <button type="button" className="ent-wk-copy" onClick={() => void copy(path)} aria-label="复制工作目录" title="复制完整工作目录">
         <Copy size={13} aria-hidden />
       </button>
     </span>

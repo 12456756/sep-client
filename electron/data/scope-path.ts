@@ -17,7 +17,7 @@
  * │       ├── work-plan.json              已确认的安排方案
  * │       ├── arrangement-checkpoint.json 安排执行检查点
  * │       └── metadata.json               任务元数据
- * └── task-workspaces/v1/<ent>/<mem>/<taskId>/   workDir 未指定时的默认工作区
+ * └── task-workspaces/v1/<enterpriseName>/<memberName>/<taskId>/   默认工作区
  * ```
  *
  * 任务目录只接收真实 taskId；run、对话会话和安排方案各自使用明确的路径方法。
@@ -33,6 +33,11 @@ export interface TaskOwnerScope {
   enterpriseId: string
 }
 
+export interface WorkspaceDirectoryNames {
+  memberName: string
+  enterpriseName: string
+}
+
 export class TaskScopeError extends Error {
   constructor(message = 'A valid authenticated task scope is required.') {
     super(message)
@@ -41,6 +46,8 @@ export class TaskScopeError extends Error {
 }
 
 const MAX_SCOPE_SEGMENT_LENGTH = 256
+const MAX_WORKSPACE_NAME_LENGTH = 80
+const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9\u00b9\u00b2\u00b3]|lpt[1-9\u00b9\u00b2\u00b3])(?:\..*)?$/i
 
 function validateScopeSegment(value: string, name: string): void {
   if (
@@ -60,6 +67,22 @@ function validateScopeSegment(value: string, name: string): void {
 export function encodeTaskScopeSegment(value: string, name: string): string {
   validateScopeSegment(value, name)
   return Buffer.from(value, 'utf8').toString('base64url')
+}
+
+/** Turn display names into safe, readable single directory segments. */
+export function sanitizeWorkspaceDirectoryName(value: string, fallback: string): string {
+  let segment = Array.from(value.normalize('NFC').trim(), character =>
+    character.charCodeAt(0) < 32 || /[\\/:*?\u0022<>|]/.test(character) ? '_' : character,
+  ).join('')
+  segment = Array.from(segment).slice(0, MAX_WORKSPACE_NAME_LENGTH).join('')
+  while (segment.length > MAX_WORKSPACE_NAME_LENGTH || Buffer.byteLength(segment, 'utf8') > 160) {
+    segment = Array.from(segment).slice(0, -1).join('')
+  }
+  segment = segment.replace(/[. ]+$/g, '')
+  segment = segment.replace(/^\.+/g, '')
+  if (!segment || segment === '.' || segment === '..') return fallback
+  if (WINDOWS_RESERVED_NAME.test(segment)) return `_${segment.slice(0, MAX_WORKSPACE_NAME_LENGTH - 1).replace(/[. ]+$/g, '')}`
+  return segment
 }
 
 /** run / task 标识符的唯一形状约束。用于路径段，所以不能含分隔符或点号。 */
@@ -219,21 +242,31 @@ export class ScopePath {
    * `workDir` 未指定时的默认工作区。注意它在 `task-workspaces/v1` 那棵树下，
    * 不在 `task-data` 里——工作区是 pi 真正干活的地方，可能很大，与数据分开放。
    */
-  defaultWorkspaceDir(scope: TaskOwnerScope, taskId: string): string {
+  defaultWorkspaceDir(scope: TaskOwnerScope, taskId: string, names?: WorkspaceDirectoryNames): string {
     assertSafeId(taskId, 'taskId')
-    const ownerRoot = this.defaultWorkspaceRoot(scope)
+    const ownerRoot = this.defaultWorkspaceRoot(scope, names)
     const path = join(ownerRoot, taskId)
     assertContained(ownerRoot, path)
     return path
   }
 
-  defaultWorkspaceRoot(scope: TaskOwnerScope): string {
+  defaultWorkspaceRoot(scope: TaskOwnerScope, names?: WorkspaceDirectoryNames): string {
+    validateScopeSegment(scope.enterpriseId, 'enterpriseId')
+    validateScopeSegment(scope.memberId, 'memberId')
     const ownerRoot = join(
       this.workspaceRoot,
-      encodeTaskScopeSegment(scope.enterpriseId, 'enterpriseId'),
-      encodeTaskScopeSegment(scope.memberId, 'memberId'),
+      sanitizeWorkspaceDirectoryName(names?.enterpriseName ?? '', 'Enterprise'),
+      sanitizeWorkspaceDirectoryName(names?.memberName ?? '', 'User'),
     )
     assertContained(this.workspaceRoot, ownerRoot)
     return ownerRoot
+  }
+
+  workspaceBaseRoot(): string {
+    return this.workspaceRoot
+  }
+
+  workspaceDirectoryIndexFile(): string {
+    return join(this.workspaceRoot, '.directory-index.json')
   }
 }

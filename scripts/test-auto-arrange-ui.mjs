@@ -25,6 +25,7 @@ try {
    await page.getByRole('textbox',{name:'工作目标',exact:true}).waitFor();
    await page.evaluate(s=>{window.scenario=s;},scenario);
    await page.getByRole('textbox',{name:'工作目标',exact:true}).fill('分析市场并生成报告');
+   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model');
   };
   const check = async (name, fn) => { try {await fn();log('PASS',width,name);} catch(e) {log('DIAGNOSTIC',name,await page.evaluate(()=>({text:document.body.innerText,route:window.workspace?.route,works:window.workspace?.works,counts:window.counts})),errors);failures.push(width+' '+name+': '+e.message);await page.screenshot({path:join(tmpdir(),'sep-auto-failure-'+width+'-'+name+'.png')});} };
   await check('creation-lock',async()=>{
@@ -45,20 +46,23 @@ try {
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
    await page.evaluate(()=>window.emit('arrangement_planning_failed',{message:'测试规划失败'}));
    await page.getByRole('alert').filter({hasText:'测试规划失败'}).waitFor({timeout:3000});
-   await page.getByRole('button',{name:'开始自动编排'}).waitFor({timeout:3000});
+   await page.getByRole('button',{name:'重新编排',exact:true}).click();
+   await page.getByRole('textbox',{name:'工作目标',exact:true}).fill('分析市场并生成报告');
+   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model');
   });
   await check('selection-to-execution',async()=>{
    await reset('normal');await page.getByRole('button',{name:'开始自动编排'}).click();
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
    await page.evaluate(()=>window.emit('arrangement_employee_considering',{subscriptionId:'sub-spare'}));
-   await page.locator('.ent-aa-pool .ent-aa-card.scanning').first().waitFor();
-   assert.equal(await page.locator('.ent-aa-strip li').count(),3);
-   assert.equal(await page.locator('.animate-spin').count(),0,'restore cards, not loading spinners');
+   await page.getByText('正在匹配最适合完成任务的员工……',{exact:true}).waitFor();
+   assert.equal(await page.locator('.ent-aa-team, .ent-aa-card').count(),0,'no employee identities before the result');
+   assert.equal(await page.locator('.ent-aa-strip li').count(),4);
    assert.equal(await page.getByRole('button',{name:'确认并开始工作',exact:true}).count(),0);
    await page.screenshot({path:join(tmpdir(),'sep-auto-selecting-'+width+'.png')});
    await page.evaluate(()=>window.complete());
-   await page.waitForFunction(()=>document.querySelector('.ent-aa-card.picked'));
-   await page.waitForFunction(()=>document.querySelector('.ent-aa-pool.gathered'));
+   await page.getByRole('group',{name:'已选中的员工'}).waitFor();
+   assert.equal(await page.locator('.ent-aa-team-member').count(),2);
+   assert.equal(await page.locator('.ent-aa-team').getByText('候补员工',{exact:true}).count(),0);
    await page.waitForFunction(()=>document.querySelector('.ent-aa-flow .ent-aa-link.in'));
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).waitFor();
    assert.equal(await page.locator('.ent-flowcard.in').count(),2);
@@ -68,7 +72,7 @@ try {
    await page.screenshot({path:join(tmpdir(),'sep-auto-ready-'+width+'.png'),fullPage:true});
    assert.equal(await page.locator('.animate-spin').count(),0,'unselected employees must stop spinning');
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).click();
-   await page.getByText('流程工作',{exact:true}).waitFor({timeout:4000});
+   await page.locator('.ent-wk').waitFor({timeout:4000});
    await page.getByText('2 位同事协作',{exact:true}).waitFor();
    await page.evaluate(()=>window.nodeEvent('arrangement_node_started','node-a'));
    await page.getByRole('status').filter({hasText:'当前：正在市场调研'}).waitFor();
@@ -103,8 +107,7 @@ try {
    await page.evaluate(()=>window.staleEvent());
    assert.equal(await page.getByRole('alert').count(),0);
    await page.getByRole('button',{name:'取消编排'}).click();
-   await page.getByRole('button',{name:'开始自动编排'}).waitFor();
-   await page.evaluate(()=>window.complete());
+   await page.getByRole('button',{name:'重新编排',exact:true}).waitFor();
    assert.equal(await page.getByRole('button',{name:'确认并开始工作',exact:true}).count(),0);
    assert.equal(await page.locator('.animate-spin').count(),0);
   });
@@ -115,10 +118,11 @@ try {
    await page.getByRole('textbox',{name:'工作目标',exact:true}).waitFor();
    assert.equal(await page.locator('.ent-aa-flow').count(),0);
    await page.evaluate(()=>{window.scenario='normal';});
+   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model');
    await page.getByRole('button',{name:'开始自动编排'}).click();
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
-   await page.locator('.ent-aa-card.scanning').first().waitFor();
-   assert.equal(await page.locator('.ent-aa-card.picked').count(),0);
+   await page.getByText('正在匹配最适合完成任务的员工……',{exact:true}).waitFor();
+   assert.equal(await page.locator('.ent-aa-team-member').count(),0);
    assert.equal(await page.getByRole('button',{name:'确认并开始工作',exact:true}).count(),0);
    assert.equal(await page.evaluate(()=>window.counts.start),0);
   });
@@ -130,29 +134,46 @@ try {
    await page.getByText('测试预检失败',{exact:true}).waitFor();
    assert.equal(await page.evaluate(()=>window.counts.start),0);
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).click();
-   await page.getByText('流程工作',{exact:true}).waitFor();
+   await page.locator('.ent-wk').waitFor();
    assert.equal(await page.evaluate(()=>window.counts.start),1);
   });
-  await check('confirm-lock-and-unsaved-edits',async()=>{
+  await check('read-only-plan-and-confirm-lock',async()=>{
    await reset('slow-start');await page.getByRole('button',{name:'开始自动编排'}).click();
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
    await page.evaluate(()=>window.complete());
-   await page.getByText('编辑编排草稿',{exact:true}).click();
-   await page.getByRole('textbox',{name:/^执行说明/}).first().fill('修改后的调研说明');
+   await page.getByRole('button',{name:'确认并开始工作',exact:true}).waitFor();
+   assert.equal(await page.getByText('编辑编排草稿',{exact:true}).count(),0);
+   assert.equal(await page.getByRole('button',{name:'保存步骤修改',exact:true}).count(),0);
+   assert.equal(await page.getByRole('textbox').count(),0);
+   assert.equal(await page.locator('.ent-flowcard-output').count(),2);
+   await page.getByText('事实清单',{exact:false}).waitFor();
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).click();
    await page.waitForFunction(()=>window.counts.start===1);
    assert.equal(await page.getByRole('button',{name:'正在启动…',exact:true}).isDisabled(),true);
    await page.evaluate(()=>window.resolveStart());
-   await page.getByText('流程工作',{exact:true}).waitFor();
-   assert.equal(await page.evaluate(()=>window.workspace.works[0].steps[0].input),'修改后的调研说明');
+   await page.locator('.ent-wk').waitFor();
+   assert.equal(await page.evaluate(()=>window.workspace.works[0].steps[0].input),'整理市场事实');
+   assert.equal(await page.getByRole('button',{name:'改一版安排',exact:true}).count(),0);
    assert.equal(await page.evaluate(()=>window.counts.start),1);
   });
   await check('execution-plan-contract',async()=>{
    await reset('normal');await page.getByRole('button',{name:'开始自动编排'}).click();
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
    await page.evaluate(()=>window.complete());
+   await page.getByRole('button',{name:'执行设置',exact:true}).click();
+   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model-alternate');
+   await page.getByRole('combobox',{name:'访问权限',exact:true}).selectOption('workspace-edit');
+   await page.locator('.ent-rs-directory').click();
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).click();
-   await page.getByText('流程工作',{exact:true}).waitFor({timeout:3000});
+   await page.locator('.ent-wk').waitFor({timeout:3000});
+   const input=await page.evaluate(()=>window.lastSettingsInput);
+   assert.deepEqual(Object.keys(input).sort(),['draftId','expectedRevision','settings']);
+   assert.equal(input.settings.modelId,'model-alternate');
+   assert.equal(input.settings.workDir,'D:/fixture');
+   assert.equal(input.settings.permissions.preset,'workspace-edit');
+   assert.deepEqual(await page.evaluate(()=>window.workspace.works[0].steps.map(step=>[step.title,step.input,step.output])),[
+    ['市场调研','整理市场事实','事实清单'],['撰写报告','根据调研结果生成报告','最终报告'],
+   ]);
   });
   assert.deepEqual(errors,[]);
   await page.close();

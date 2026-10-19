@@ -219,6 +219,7 @@ class BackendRuntime {
       workPlans: this.workPlans,
       taskMetadata: this.taskMetadataStore,
       taskManager: this.taskManager,
+      arrangementCheckpoints: this.arrangementCheckpoints,
       creationGate,
       execution: () => this.getTaskRuntime(),
       planner: {

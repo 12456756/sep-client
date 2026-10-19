@@ -334,7 +334,7 @@ export class TaskRuntime {
     if (checkpoint.planHash !== plan.planHash) throw new AppError('INVALID_STATE', { message: '编排计划与恢复进度不一致，无法重试。' })
     if (checkpoint.state.status === 'stopped' || checkpoint.state.status === 'completed') throw new AppError('INVALID_STATE', { message: '这项编排已终止或完成，不能重试。' })
     let nextState: ArrangementExecutionState
-    if (checkpoint.state.status === 'waiting-user') {
+    if (checkpoint.state.status === 'waiting-user' || checkpoint.state.status === 'failed') {
       nextState = retryArrangementNode(checkpoint.state, plan.nodes, nodeId)
       if (nextState === checkpoint.state) throw new AppError('INVALID_STATE', { message: '没有可重试的失败节点。' })
     } else {

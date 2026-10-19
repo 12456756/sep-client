@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
-import type { ArrangementDraft } from '../../domain/arrangement-plan'
+import { arrangementNodeWorkContractSchema, type ArrangementDraft } from '../../domain/arrangement-plan'
 
 const draftId = z.string().min(1)
 const taskId = z.string().min(1)
@@ -23,7 +23,7 @@ const node = z.object({
   dependsOn: z.array(z.string()),
   skillIds: z.array(z.string()),
   requiresUserConfirmation: z.boolean(),
-})
+}).extend(arrangementNodeWorkContractSchema.shape)
 const workspace = z.object({ mode: z.literal('shared'), path: z.string().nullable() })
 const permissions = z.object({
   preset: permissionPreset,
@@ -78,11 +78,15 @@ const draftDocument = z.object({
 const createInput = draftDocument.omit({ schemaVersion: true, status: true }).extend({
   schemaVersion: z.literal(1).optional(),
 })
-const updateInput = z.object({
+const executionSettingsInput = z.object({
   draftId,
   expectedRevision: revision,
-  document: draftDocument.omit({ schemaVersion: true, status: true }).extend({ schemaVersion: z.literal(1).optional() }),
-})
+  settings: z.object({
+    modelId: z.string().trim().min(1).optional(),
+    workDir: z.string().trim().min(1).nullable(),
+    permissions: permissions.strict(),
+  }).strict(),
+}).strict()
 const confirmInput = z.object({ draftId, expectedRevision: revision, idempotencyKey: z.string().min(1).max(256) })
 const planInput = z.object({ draftId, expectedRevision: revision, modelId: z.string().min(1) })
 const cancelPlanInput = z.object({ draftId, planningId: z.string().min(1) })
@@ -97,6 +101,10 @@ export const arrangementRoutes = [
   route(INVOKE_CHANNELS.ARRANGE_GET_PLAN, taskId, async (ctx, id) => ({
     success: true,
     plan: await ctx.arrangements.getPlan(id),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_GET_EXECUTION, taskId, async (ctx, id) => ({
+    success: true,
+    execution: await ctx.arrangements.getExecution(id),
   })),
   route(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS, NO_INPUT, async ctx => ({
     success: true,
@@ -114,12 +122,12 @@ export const arrangementRoutes = [
     success: true,
     draft: await ctx.arrangements.getDraft(id),
   })),
-  route(INVOKE_CHANNELS.ARRANGE_UPDATE_DRAFT, updateInput, async (ctx, input) => ({
+  route(INVOKE_CHANNELS.ARRANGE_UPDATE_EXECUTION_SETTINGS, executionSettingsInput, async (ctx, input) => ({
     success: true,
-    draft: await ctx.arrangements.updateDraft(
+    draft: await ctx.arrangements.updateExecutionSettings(
       input.draftId,
       input.expectedRevision,
-      input.document as Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>,
+      input.settings,
     ),
   })),
   route(INVOKE_CHANNELS.ARRANGE_DELETE_DRAFT, draftId, async (ctx, id) => ({

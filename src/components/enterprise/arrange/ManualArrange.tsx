@@ -27,7 +27,7 @@ export interface ManualDraft {
 interface Props {
   employees: SiliconEmployee[];
   busy: boolean;
-  /** 从「常用工作」「复制为新工作」或企业固定流程带进来的初始内容。 */
+  /** 从常用工作或企业固定流程带进来的初始内容。 */
   seed: { title?: string; goal?: string; steps: WorkDraftStep[]; confirmedInputs?: string[] } | null;
   onSave: (draft: ManualDraft) => void;
   onStart: (draft: ManualDraft) => void;

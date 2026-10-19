@@ -1,6 +1,6 @@
 import { after, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
@@ -33,7 +33,7 @@ async function waitFor(condition: () => Promise<boolean> | boolean, timeoutMs = 
 function plan(taskId: string): WorkPlan {
   return {
     id: taskId, schemaVersion: 1, sourceDraftId: 'draft-a', sourceDraftRevision: 1,
-    owner: scope, mode: 'auto', title: 'Arrangement', goal: 'complete the work', conversation: null,
+    owner: scope, mode: 'manual', title: 'Arrangement', goal: 'complete the work', conversation: null,
     nodes: [{
       id: 'node-a', subscriptionId: employee.subscriptionId, modelId: 'node-model', title: 'Node A',
       instruction: 'do node A', expectedOutput: 'a result', dependsOn: [], skillIds: [], requiresUserConfirmation: false,
@@ -711,6 +711,89 @@ describe('TaskRuntime arrangement controls', () => {
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
     assert.deepEqual([...attempts], [['node-model-a', 1], ['node-model-b', 2]])
   })
+
+  for (const outcome of ['repaired', 'invalid'] as const) {
+    it(`manually retries terminal delivery failure with its saved session (${outcome})`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sep-delivery-manual-retry-'))
+      directories.push(root)
+      const runStore = new TaskRunStore(root)
+      const manager = new TaskManager(root, null, undefined, runStore)
+      await manager.initialize()
+      await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+      const task = await manager.createTask('arrangement', 'goal', undefined, employee.subscriptionId)
+      const arrangement = twoNodePlan(task.id)
+      arrangement.mode = 'auto'
+      arrangement.workspace.path = root
+      arrangement.nodes = arrangement.nodes.map(node => ({ ...node, objective: `Finish ${node.id}`,
+        deliverables: [{ id: 'report', name: node.title, format: 'txt', path: `${node.id}.txt`,
+          contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }],
+      }))
+      const checkpoints = new MemoryCheckpointStore()
+      let sessionFile: string | undefined
+      let failedNodeRuns = 0
+      let completedNodeRuns = 0
+      const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+        async run(prompt) {
+          const id = options.context.arrangementNodeId!
+          if (id === 'node-a') completedNodeRuns++
+          else {
+            failedNodeRuns++
+            if (failedNodeRuns === 1) {
+              sessionFile = join(options.context.sessionDir, 'session.jsonl')
+              await mkdir(options.context.sessionDir, { recursive: true })
+              await writeFile(sessionFile, JSON.stringify({ type: 'session', id: 'logical-b' })+'\n')
+              await options.onSessionCreated?.({ sessionId: 'logical-b', sessionFile })
+            } else {
+              assert.equal(options.context.resumeSessionFile, sessionFile)
+              assert.match(prompt, /INVALID_SUBMISSION/)
+              assert.equal(checkpoints.value?.state.nodes[1]?.delivery?.validationAttempts, 0)
+            }
+          }
+          for (let iteration = 1; iteration <= 5; iteration++) {
+            await options.onModelRequest?.('execution')
+            const valid = id === 'node-a' || (failedNodeRuns > 1 && outcome === 'repaired' && iteration === 2)
+            if (valid) await writeFile(join(root, `${id}.txt`), 'Saved findings '+id)
+            const correction = await options.onResponseSettled?.({ text: valid
+              ? JSON.stringify({ nodeId: id, summary: `Done ${id}`, finalDeliverables: [{ id: 'report', path: `${id}.txt` }] })
+              : '', stopReason: 'stop' })
+            if (!correction) return
+          }
+          assert.fail('The fifth invalid submission must stop the run')
+        }, async abort() {}, async dispose() {},
+      }))
+      await runtime.executeTask(task.id)
+      await waitFor(async () => {
+        const current = await manager.getTask(task.id)
+        return current?.status === TaskStatus.FAILED && !current.activeRunId
+      })
+      const original = structuredClone(checkpoints.value!)
+      const savedSession = await readFile(sessionFile!, 'utf8')
+      const originalRun = await runStore.get(scope, task.id, original.state.nodes[1]!.sessionRunId!)
+      assert.equal(original.state.status, 'failed')
+      assert.equal(original.state.nodes[1]?.delivery?.validationAttempts, 5)
+      assert.equal(original.state.nodes[1]?.modelRequestProgress?.executionRounds, 5)
+      await assert.rejects(runtime.retryTask(task.id, { nodeId: 'node-a' }), { code: 'INVALID_STATE' })
+      assert.deepEqual(checkpoints.value, original)
+      const admit = manager.admitTask.bind(manager)
+      manager.admitTask = async () => { throw new Error('admission rejected') }
+      await assert.rejects(runtime.retryTask(task.id), /admission rejected/)
+      assert.deepEqual(checkpoints.value, original)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.FAILED)
+      manager.admitTask = admit
+      await runtime.retryTask(task.id)
+      await waitFor(async () => {
+        const current = await manager.getTask(task.id)
+        return current?.status === (outcome === 'repaired' ? TaskStatus.COMPLETED : TaskStatus.FAILED) && !current.activeRunId
+      })
+      assert.equal(completedNodeRuns, 1)
+      assert.equal(failedNodeRuns, 2)
+      assert.deepEqual(checkpoints.value?.state.nodes[0], original.state.nodes[0])
+      assert.equal(checkpoints.value?.state.nodes[1]?.delivery?.validationAttempts, outcome === 'repaired' ? 2 : 5)
+      assert.equal(checkpoints.value?.state.nodes[1]?.modelRequestProgress?.executionRounds, outcome === 'repaired' ? 7 : 10)
+      assert.equal(await readFile(sessionFile!, 'utf8'), savedSession)
+      assert.deepEqual(await runStore.get(scope, task.id, originalRun!.id), originalRun)
+    })
+  }
 
   it('requires explicit resume for an interrupted arrangement and does not rerun completed nodes', async () => {
     const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-resume-'))
