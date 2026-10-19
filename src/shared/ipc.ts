@@ -1,5 +1,6 @@
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
+import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type {
   ComputeAllowance,
@@ -270,6 +271,14 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  getTaskVideo: (taskId: string) => Promise<IpcCommandResult & { data?: VideoTaskView | null }>
+  importVideoReferences: (taskId: string) => Promise<IpcCommandResult & { data?: MediaAssetView[] }>
+  getVideoReferences: (taskId: string) => Promise<IpcCommandResult & { data?: MediaAssetView[] }>
+  generateTaskVideo: (input: { taskId: string; input: VideoGenerationInput }) => Promise<IpcCommandResult & { data?: VideoJobView }>
+  previewVideoOutput: (input: { taskId: string; jobId: string; outputId: string }) => Promise<IpcCommandResult & { data?: { mime: 'video/mp4' | 'video/webm'; bytes: Uint8Array } }>
+  exportVideoOutput: (input: { taskId: string; jobId: string; outputId: string }) => Promise<IpcCommandResult & { cancelled?: boolean }>
+  resumeVideoTracking: (input: { taskId: string; jobId: string }) => Promise<IpcCommandResult>
+  retryVideoSave: (input: { taskId: string; jobId: string }) => Promise<IpcCommandResult>
   getTaskMedia: (taskId: string) => Promise<IpcCommandResult & { data?: MediaTaskView }>
   importMediaReferences: (taskId: string) => Promise<IpcCommandResult & { data?: MediaAssetView[] }>
   generateTaskMedia: (input: { taskId: string; input: MediaGenerationInput }) => Promise<IpcCommandResult & { data?: MediaJobView }>

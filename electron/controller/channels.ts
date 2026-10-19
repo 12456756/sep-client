@@ -7,6 +7,14 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  VIDEO_GET_TASK: 'video:get-task',
+  VIDEO_IMPORT_REFERENCES: 'video:import-references',
+  VIDEO_GET_REFERENCES: 'video:get-references',
+  VIDEO_GENERATE: 'video:generate',
+  VIDEO_PREVIEW: 'video:preview',
+  VIDEO_EXPORT: 'video:export',
+  VIDEO_RESUME: 'video:resume',
+  VIDEO_RETRY_SAVE: 'video:retry-save',
   MEDIA_GET_TASK: 'media:get-task',
   MEDIA_IMPORT_REFERENCES: 'media:import-references',
   MEDIA_GENERATE: 'media:generate',

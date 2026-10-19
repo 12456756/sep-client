@@ -25,6 +25,16 @@ const TIMEOUT_SECONDS = 60;
 
 // 高风险工具的说明
 const TOOL_DESCRIPTIONS: Record<string, { title: string; description: string; risk: string }> = {
+  video_from_image: {
+    title: '参考图生成视频',
+    description: '员工请求传输所选参考图或按已确认参数生成视频',
+    risk: '请核对参考图、创意和报价。标记为 mock 的任务使用模拟数据，不扣费。',
+  },
+  video_generate: {
+    title: '生成视频',
+    description: '员工请求按已确认的创意和参数生成视频',
+    risk: '请核对创意、参数和报价后批准。标记为 mock 的任务不扣费。',
+  },
   bash: {
     title: 'Shell 命令执行',
     description: 'AI 请求在您的系统上执行 Shell 命令',

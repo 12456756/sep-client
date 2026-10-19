@@ -42,6 +42,7 @@ export interface PiAgentSessionConfig {
   additionalSkillPaths?: string[]
   systemPrompt?: string
   mediaTools?: import('../../domain/media-tools').MediaHostTools
+  videoTools?: import('../../domain/video-tools').VideoHostTools
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   /** Host-owned instructions retained outside compacted conversation history. */
   fixedSystemPrompt?: string

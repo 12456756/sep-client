@@ -16,6 +16,7 @@ import { profileWalletRoutes } from './profile-wallet'
 import { notificationRoutes } from './notifications'
 import { updateRoutes } from './update'
 import { mediaRoutes } from './media'
+import { videoRoutes } from './video'
 
 export const routes: readonly Route[] = [
   ...authRoutes,
@@ -29,6 +30,7 @@ export const routes: readonly Route[] = [
   ...systemRoutes,
   ...updateRoutes,
   ...mediaRoutes,
+  ...videoRoutes,
 ]
 
 export const listeners: readonly Listener[] = [...systemListeners]

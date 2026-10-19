@@ -16,6 +16,14 @@ const runtimePlatform = process.platform === 'darwin' || process.platform === 'w
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
 
 const electronAPI = {
+  getTaskVideo: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.VIDEO_GET_TASK, taskId),
+  importVideoReferences: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.VIDEO_IMPORT_REFERENCES, taskId),
+  getVideoReferences: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.VIDEO_GET_REFERENCES, taskId),
+  generateTaskVideo: input => ipcRenderer.invoke(INVOKE_CHANNELS.VIDEO_GENERATE, input),
+  previewVideoOutput: input => ipcRenderer.invoke(INVOKE_CHANNELS.VIDEO_PREVIEW, input),
+  exportVideoOutput: input => ipcRenderer.invoke(INVOKE_CHANNELS.VIDEO_EXPORT, input),
+  resumeVideoTracking: input => ipcRenderer.invoke(INVOKE_CHANNELS.VIDEO_RESUME, input),
+  retryVideoSave: input => ipcRenderer.invoke(INVOKE_CHANNELS.VIDEO_RETRY_SAVE, input),
   getUpdateState: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_GET_STATE),
   checkForUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_CHECK),
   downloadUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_DOWNLOAD),

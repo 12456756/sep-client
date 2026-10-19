@@ -3,6 +3,7 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaOperation, MediaPreview, MediaProfile, MediaTaskView } from '../../shared/media'
 import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
+import { VideoTaskPanel } from './VideoArtifactsPanel'
 
 type Command = 'import' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
 type JobAction = Exclude<Command, 'import' | 'generate' | 'export'>
@@ -288,5 +289,5 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
 }
 
 export function MediaArtifactsPanel({ taskId }: { taskId: string }) {
-  return <MediaTaskPanel key={taskId} taskId={taskId} />
+  return <><MediaTaskPanel key={taskId} taskId={taskId} /><VideoTaskPanel taskId={taskId} /></>
 }

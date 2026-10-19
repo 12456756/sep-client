@@ -309,3 +309,69 @@ test('never returns old-scope results when logout happens during receipt persist
   assert.equal(f.gateway.calls.submit, 1)
   assert.equal((await f.store.listJobs(scope))[0].submission, 'RECEIPTED')
 })
+
+test('native selection lease rejects changed authorization before import or export', async () => {
+  const f = await setup()
+  let revision = 1, imports = 0, exports = 0
+  const host = new MockVideoHostService({ ...f.options, authorizationRevision: () => revision,
+    references: { list: async () => [], import: async () => { imports++; return [] } },
+    exportOutput: async () => { exports++ },
+  })
+  const selection = await host.nativeSelection('task-a')
+  revision++
+  await assert.rejects(selection.import(['/native/reference.png']), { code: 'AUTH_REQUIRED' })
+  await assert.rejects(selection.export('job-a', 'output-a', '/native/export.mp4'), { code: 'AUTH_REQUIRED' })
+  assert.equal(imports, 0); assert.equal(exports, 0)
+  const current = await host.nativeSelection('task-a')
+  await current.import(['/native/reference.png'])
+  await current.export('job-a', 'output-a', '/native/export.mp4')
+  assert.equal(imports, 1); assert.equal(exports, 1)
+  await host.stopAll()
+})
+
+test('preview reads verified saved bytes and rejects output identities from another task', async () => {
+  const f = await setup({ tracker: { floorMs: 1 } })
+  const job = await f.host.generate('task-a', input())
+  await f.host.track('task-a')
+  const saved = (await f.host.getTaskVideo('task-a')).jobs[0]
+  const preview = await f.host.preview('task-a', job.jobId, saved.outputs[0].outputId)
+  assert.equal(preview.mime, 'video/mp4')
+  assert.equal(createHash('sha256').update(preview.bytes).digest('hex'), fixture.mediaFixture.sha256)
+  await assert.rejects(f.host.preview('other-task', job.jobId, saved.outputs[0].outputId))
+  await assert.rejects(f.host.preview('task-a', job.jobId, '../output'))
+  await f.host.stopAll()
+})
+
+test('runtime grant denial during automatic recovery persists pause until explicit resume', async () => {
+  const f = await setup({ tracker: { floorMs: 1 } })
+  const job = await f.host.generate('task-a', input())
+  let revoked = true
+  const host = new MockVideoHostService({ ...f.options, tracker: { floorMs: 1 }, authorize: async () => {
+    if (revoked) throw new AppError('PERMISSION_DENIED')
+    return f.state.runtime
+  } })
+  await host.track('task-a')
+  assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.trackingStatus, 'AUTH_REQUIRED')
+  revoked = false
+  await host.track('task-a')
+  assert.equal(f.gateway.calls.getReceipt, 0)
+  await host.resume('task-a', job.jobId)
+  await host.track('task-a')
+  assert.equal((await host.getTaskVideo('task-a')).jobs[0].saveStatus, 'SAVED')
+  assert.equal(f.gateway.calls.submit, 1)
+  await host.stopAll()
+})
+
+test('read projections reject a revision changed during runtime or reference lookup', async () => {
+  const f = await setup()
+  let revision = 1
+  const changedRuntime = new MockVideoHostService({ ...f.options, authorizationRevision: () => revision,
+    authorize: async () => { revision++; return f.state.runtime },
+  })
+  await assert.rejects(changedRuntime.getTaskVideo('task-a'), { code: 'AUTH_REQUIRED' })
+  const changedReference = new MockVideoHostService({ ...f.options, authorizationRevision: () => revision,
+    references: { list: async () => { revision++; return [] }, import: async () => [] },
+  })
+  await assert.rejects(changedReference.getReferences('task-a'), { code: 'AUTH_REQUIRED' })
+  await changedRuntime.stopAll(); await changedReference.stopAll()
+})

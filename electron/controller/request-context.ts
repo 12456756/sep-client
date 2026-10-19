@@ -7,6 +7,7 @@
 import type { BrowserWindow } from 'electron'
 import type { AppUpdater } from '../bootstrap/app-updater'
 import type { Backend } from '../bootstrap/build-backend'
+import type { MockVideoHostService } from '../service/mock-video-host-service'
 
 export interface RequestContext {
   /** 服务层句柄。任务类路由只该用这几个。 */
@@ -17,6 +18,8 @@ export interface RequestContext {
   readonly arrangements: Backend['arrangements']
   readonly employees: Backend['employees']
   readonly media: Backend['media']
+  /** Only the isolated mock composition injects a video host. */
+  readonly video?: MockVideoHostService
   /**
    * 后端本体。auth 与 system 路由需要它的生命周期能力：登录要 `stopAll` +
    * `setCurrentUser`，登出要 `signOut`，401 要 `invalidateAuthentication`。
@@ -33,6 +36,7 @@ export function createRequestContext(
   backend: Backend,
   window: () => BrowserWindow | null,
   updater?: AppUpdater,
+  video?: MockVideoHostService,
 ): RequestContext {
   return {
     notifications: backend.notifications,
@@ -42,6 +46,7 @@ export function createRequestContext(
     arrangements: backend.arrangements,
     employees: backend.employees,
     media: backend.media,
+    video,
     backend,
     updater,
     window,

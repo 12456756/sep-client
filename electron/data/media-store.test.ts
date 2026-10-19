@@ -834,3 +834,234 @@ describe('MediaStore images', () => {
     await assert.rejects(store.exportAsset(owner, 'task-a', asset.localAssetId, join(linkDir, 'export.png')), /symbolic/)
   })
 })
+
+describe('MediaStore reference import authorization fencing', () => {
+  const id = `ref_${createHash('sha256').update(hash).digest('hex')}`
+
+  for (const stage of ['part write', 'part sync', 'commit publication'] as const) {
+    for (const interruption of ['revoke', 'abort'] as const) {
+      it(`does not publish reference bytes after ${interruption} during ${stage}`, async context => {
+        const { store, paths, selected, root } = await fixture()
+        const mediaRoot = paths.mediaRoot(owner, 'task-a')
+        const files = join(mediaRoot, 'files')
+        const assets = join(mediaRoot, 'assets')
+        const file = join(files, `${id}.png`)
+        const manifest = join(assets, `${id}.json`)
+        const commit = `${manifest}.commit`
+        await mkdir(assets, { recursive: true })
+        const controller = new AbortController()
+        const reason = new Error(`Import ${interruption} at ${stage}`)
+        let revision = 1, intercepted = false
+        const published: string[] = []
+        const interrupt = (): void => {
+          intercepted = true
+          if (interruption === 'abort') controller.abort(reason)
+          else revision++
+        }
+        const validate = (): void => { if (revision !== 1) throw reason }
+        const originalOpen = fs.open
+        const originalRename = fs.rename
+        const mockedOpen = context.mock.method(fs, 'open', async (path: PathLike, flags?: string | number, mode?: Mode) => {
+          const handle = await originalOpen(path, flags, mode)
+          if (String(path).startsWith(`${file}.`) && String(path).endsWith('.part')) {
+            if (stage === 'part write') {
+              const write = handle.write.bind(handle)
+              context.mock.method(handle, 'write', async (buffer: Uint8Array, offset: number, length: number) => {
+                const result = await write(buffer, offset, length)
+                interrupt()
+                return result
+              })
+            } else if (stage === 'part sync') {
+              const sync = handle.sync.bind(handle)
+              context.mock.method(handle, 'sync', async () => { await sync(); interrupt() })
+            }
+          }
+          return handle
+        })
+        const mockedRename = context.mock.method(fs, 'rename', async (source: PathLike, target: PathLike) => {
+          if (target === file || target === manifest) published.push(String(target))
+          await originalRename(source, target)
+          if (stage === 'commit publication' && target === commit) interrupt()
+        })
+        syncBuiltinESMExports()
+        try {
+          await assert.rejects(store.importReference(owner, 'task-a', selected, controller.signal, validate), error => error === reason)
+          assert.equal(intercepted, true, 'The intended asynchronous boundary must have been exercised.')
+          assert.equal(controller.signal.aborted, interruption === 'abort')
+          assert.deepEqual(published, [], 'Neither the reference image nor the delivery manifest may be published.')
+          assert.deepEqual(await readdir(files), [], 'Cancelled/revoked copies must clean all .part files.')
+          if (stage === 'commit publication') {
+            // A commit completed before revocation is retained evidence, not a delivered image.
+            assert.deepEqual(await readdir(assets), [`${id}.json.commit`])
+            assert.equal(JSON.parse(await readFile(commit, 'utf8')).localAssetId, id)
+            assert.equal((await store.getAsset(owner, 'task-a', id))?.status, 'MISSING')
+          } else {
+            assert.deepEqual(await readdir(assets), [])
+            assert.deepEqual(await store.listAssets(owner, 'task-a'), [])
+          }
+          assert.deepEqual(await readFile(selected), png)
+        } finally {
+          mockedRename.mock.restore()
+          mockedOpen.mock.restore()
+          syncBuiltinESMExports()
+        }
+        // Cancellation/revocation cannot poison a later authorized legacy import or recovery.
+        const reopened = new MediaStore(root)
+        const asset = await reopened.importReference(owner, 'task-a', selected)
+        assert.equal(asset.localAssetId, id)
+        assert.deepEqual(await reopened.readAsset(owner, 'task-a', id), png)
+        assert.deepEqual(await readdir(files), [`${id}.png`])
+        assert.deepEqual((await readdir(assets)).sort(), [`${id}.json`, `${id}.json.commit`])
+      })
+    }
+  }
+
+  it('rejects entry cancellation and validation errors before reading or publishing', async context => {
+    const { store, selected, root } = await fixture()
+    const reason = new Error('Import authorization unavailable')
+    const controller = new AbortController()
+    controller.abort(reason)
+    const originalOpen = fs.open
+    const opened: PathLike[] = []
+    const mocked = context.mock.method(fs, 'open', async (path: PathLike, flags?: string | number, mode?: Mode) => {
+      opened.push(path)
+      return originalOpen(path, flags, mode)
+    })
+    syncBuiltinESMExports()
+    try {
+      await assert.rejects(store.importReference(owner, 'task-a', selected, controller.signal), error => error === reason)
+      await assert.rejects(store.importReference(owner, 'task-a', selected, signal(), () => { throw reason }), error => error === reason)
+      assert.deepEqual(opened, [])
+      assert.deepEqual(await readdir(root), [])
+      assert.deepEqual(await readFile(selected), png)
+    } finally { mocked.mock.restore(); syncBuiltinESMExports() }
+  })
+
+  for (const interruption of ['revoke', 'abort'] as const) {
+    it(`preserves an existing reference when ${interruption} occurs during deduplication verification`, async context => {
+      const { store, selected, paths } = await fixture()
+      const asset = await store.importReference(owner, 'task-a', selected)
+      const mediaRoot = paths.mediaRoot(owner, 'task-a')
+      const file = join(mediaRoot, asset.relativePath)
+      const manifest = join(mediaRoot, 'assets', `${id}.json`)
+      const originalManifest = await readFile(manifest)
+      const originalCommit = await readFile(`${manifest}.commit`)
+      const originalOpen = fs.open
+      const originalRename = fs.rename
+      const controller = new AbortController()
+      const reason = new Error(`Existing reference ${interruption}`)
+      let revision = 1, intercepted = false, renames = 0
+      const mockedOpen = context.mock.method(fs, 'open', async (path: PathLike, flags?: string | number, mode?: Mode) => {
+        const handle = await originalOpen(path, flags, mode)
+        if (path === file) {
+          const stat = handle.stat.bind(handle)
+          context.mock.method(handle, 'stat', async () => {
+            const result = await stat()
+            intercepted = true
+            if (interruption === 'abort') controller.abort(reason)
+            else revision++
+            return result
+          })
+        }
+        return handle
+      })
+      const mockedRename = context.mock.method(fs, 'rename', async (source: PathLike, target: PathLike) => {
+        renames++
+        return originalRename(source, target)
+      })
+      syncBuiltinESMExports()
+      try {
+        await assert.rejects(store.importReference(owner, 'task-a', selected, controller.signal, () => {
+          if (revision !== 1) throw reason
+        }), error => error === reason)
+        assert.equal(intercepted, true)
+        assert.equal(renames, 0, 'A stale deduplication must not rewrite the existing manifest.')
+        assert.deepEqual(await readFile(file), png)
+        assert.deepEqual(await readFile(manifest), originalManifest)
+        assert.deepEqual(await readFile(`${manifest}.commit`), originalCommit)
+        assert.deepEqual(await readdir(join(mediaRoot, 'files')), [`${id}.png`])
+        assert.deepEqual((await readdir(join(mediaRoot, 'assets'))).sort(), [`${id}.json`, `${id}.json.commit`])
+      } finally {
+        mockedRename.mock.restore()
+        mockedOpen.mock.restore()
+        syncBuiltinESMExports()
+      }
+      assert.deepEqual(await store.importReference(owner, 'task-a', selected), asset)
+      assert.deepEqual(await store.readAsset(owner, 'task-a', id), png)
+    })
+  }
+
+  for (const metadata of ['commit', 'existing manifest', 'final manifest'] as const) {
+    for (const interruption of ['revoke', 'abort'] as const) {
+      it(`does not publish ${metadata} after ${interruption} during its temporary JSON write`, async context => {
+        const { store, selected, paths } = await fixture()
+        const mediaRoot = paths.mediaRoot(owner, 'task-a')
+        const assets = join(mediaRoot, 'assets')
+        const file = join(mediaRoot, 'files', `${id}.png`)
+        const manifest = join(assets, `${id}.json`)
+        const target = metadata === 'commit' ? `${manifest}.commit` : manifest
+        let retainedCommit: Buffer | undefined
+        if (metadata === 'existing manifest') {
+          await store.importReference(owner, 'task-a', selected)
+          retainedCommit = await readFile(`${manifest}.commit`)
+          await rm(manifest)
+        }
+        const controller = new AbortController()
+        const reason = new Error(`${metadata} ${interruption} before JSON publication`)
+        let revision = 1, intercepted = false
+        const originalOpen = fs.open
+        const mocked = context.mock.method(fs, 'open', async (path: PathLike, flags?: string | number, mode?: Mode) => {
+          const handle = await originalOpen(path, flags, mode)
+          const name = String(path)
+          if (name.startsWith(`${target}.`) && /^[^.]+\.tmp$/.test(name.slice(target.length + 1))) {
+            const write = handle.writeFile.bind(handle)
+            context.mock.method(handle, 'writeFile', async (...args: Parameters<typeof handle.writeFile>) => {
+              await write(...args)
+              intercepted = true
+              if (interruption === 'abort') controller.abort(reason)
+              else revision++
+            })
+          }
+          return handle
+        })
+        syncBuiltinESMExports()
+        try {
+          const outcome = await store.importReference(owner, 'task-a', selected, controller.signal, () => {
+            if (revision !== 1) throw reason
+          }).then(value => ({ value, error: undefined }), (error: unknown) => ({ value: undefined, error }))
+          assert.equal(intercepted, true, 'Revocation must occur after staging JSON but before submitting its rename.')
+          const names = await readdir(assets)
+          assert.deepEqual(names.sort(), metadata === 'commit' ? [] : [`${id}.json.commit`],
+            'No new commit or repaired manifest may be published after the authorization lease is invalidated.')
+          assert.equal(outcome.error, reason, 'Revoked/cancelled imports must reject, including existing-reference repairs.')
+          assert.equal(outcome.value, undefined)
+          assert.deepEqual(await readdir(join(mediaRoot, 'files')), metadata === 'commit' ? [] : [`${id}.png`])
+          if (retainedCommit) {
+            assert.deepEqual(await readFile(`${manifest}.commit`), retainedCommit)
+            assert.deepEqual(await readFile(file), png)
+          }
+          assert.deepEqual(await readFile(selected), png)
+        } finally { mocked.mock.restore(); syncBuiltinESMExports() }
+      })
+    }
+  }
+
+  it('keeps the legacy three-argument import and guarded existing-reference imports compatible', async () => {
+    const { store, selected, paths, root } = await fixture()
+    const asset = await store.importReference(owner, 'task-a', selected)
+    const mediaRoot = paths.mediaRoot(owner, 'task-a')
+    const manifest = join(mediaRoot, 'assets', `${id}.json`)
+    const originalManifest = await readFile(manifest)
+    const originalCommit = await readFile(`${manifest}.commit`)
+    let validations = 0
+    assert.deepEqual(await store.importReference(owner, 'task-a', selected, signal(), () => { validations++ }), asset)
+    assert.ok(validations >= 3, 'Entry, source-read and existing-reference branches must be validated.')
+    assert.deepEqual(await new MediaStore(root).importReference(owner, 'task-a', selected), asset)
+    assert.deepEqual(JSON.parse(await readFile(manifest, 'utf8')), JSON.parse(originalManifest.toString('utf8')))
+    assert.deepEqual(await readFile(`${manifest}.commit`), originalCommit)
+    assert.deepEqual(await store.readAsset(owner, 'task-a', id), png)
+    assert.deepEqual(await store.listAssets(owner, 'task-a'), [asset])
+    assert.deepEqual(await readdir(join(mediaRoot, 'files')), [`${id}.png`])
+    assert.deepEqual((await readdir(join(mediaRoot, 'assets'))).sort(), [`${id}.json`, `${id}.json.commit`])
+  })
+})

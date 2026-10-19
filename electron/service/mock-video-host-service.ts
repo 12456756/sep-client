@@ -3,6 +3,7 @@ import type { z } from 'zod'
 import { videoGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../src/shared/video-host'
 import { videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
+import type { MediaAssetView } from '../../src/shared/media'
 import { videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { abortableVideo } from '../data/video-files'
@@ -24,6 +25,11 @@ export interface MockVideoHostOptions {
   authorize(subscriptionId: string, signal: AbortSignal): Promise<unknown>
   gateway(scope: VideoScope): MockVideoHostGateway
   readReference(scope: VideoScope, taskId: string, localAssetId: string): Promise<{ bytes: Uint8Array; sha256: string }>
+  references?: {
+    list(scope: VideoScope, taskId: string): Promise<MediaAssetView[]>
+    import(scope: VideoScope, taskId: string, paths: readonly string[], signal: AbortSignal, validate: () => void): Promise<MediaAssetView[]>
+  }
+  exportOutput?(scope: VideoScope, taskId: string, jobId: string, outputId: string, path: string, signal: AbortSignal, validate: () => void): Promise<void>
   requestApproval: Approval
   policy?(taskId: string): Promise<TaskToolPolicy | undefined>
   /** Synchronous host generation, incremented on task binding, policy or grant changes. */
@@ -112,6 +118,7 @@ export class MockVideoHostService {
       await this.runtime(scope, epoch, signal)
       const result = await abortableVideo(call(signal, revision), signal)
       this.assert(scope, epoch, signal)
+      if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
       return result
     }
     const gateway: VideoGatewayPort = {
@@ -127,9 +134,12 @@ export class MockVideoHostService {
       }),
       findReceipt: (id, signal) => authorized(signal, bounded => source.findReceipt(id, bounded)),
       getReceipt: (id, signal) => authorized(signal, bounded => source.getReceipt(id, bounded)),
-      content: (receiptId, outputId, signal) => authorized(signal, async bounded => {
+      content: (receiptId, outputId, signal) => authorized(signal, async (bounded, revision) => {
         const stream = await source.content(receiptId, outputId, bounded)
-        const assert = () => this.assert(scope, epoch, bounded)
+        const assert = () => {
+          this.assert(scope, epoch, bounded)
+          if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+        }
         return (async function* () {
           const iterator = stream[Symbol.asyncIterator]()
           let complete = false
@@ -185,10 +195,78 @@ export class MockVideoHostService {
   }
   async getTaskVideo(taskId: string): Promise<VideoTaskView> {
     const signal = this.signal()
+    const revision = this.options.authorizationRevision()
     const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
     const jobs = (await context.service.listJobs()).filter(job => job.taskId === taskId)
+    const views: VideoJobView[] = []
+    for (const job of jobs) {
+      const savedOutputIds: string[] = []
+      for (const output of job.receipt?.outputs ?? []) {
+        // A corrupt output must remain visible for explicit repair. Never count
+        // it as saved or let it hide the other verified outputs in the task.
+        try {
+          const asset = await this.options.store.getAsset(scope, taskId, job.jobId, output.outputId)
+          if (asset?.status === 'SAVED') savedOutputIds.push(output.outputId)
+        } catch { /* persistence evidence stays intact for explicit retry */ }
+      }
+      views.push({ ...jobView(job), savedOutputIds })
+    }
     this.assert(scope, epoch, signal)
-    return { mock: true, runtime, jobs: jobs.map(jobView) }
+    if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    return { mock: true, runtime, jobs: views }
+  }
+  async getReferences(taskId: string): Promise<MediaAssetView[]> {
+    const signal = this.signal()
+    const revision = this.options.authorizationRevision()
+    const { scope, epoch } = await this.binding(taskId, signal)
+    const assets = await this.options.references?.list(scope, taskId) ?? []
+    this.assert(scope, epoch, signal)
+    if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    return assets.filter(asset => asset.source === 'reference' && asset.taskId === taskId).map(asset => ({
+      localAssetId: asset.localAssetId, taskId: asset.taskId, jobId: null, outputId: null,
+      source: 'reference', mime: asset.mime, size: asset.size, width: asset.width, height: asset.height, status: asset.status,
+    }))
+  }
+  /** Native dialogs retain an authorization lease, never renderer-provided paths. */
+  async nativeSelection(taskId: string) {
+    const signal = this.signal()
+    const revision = this.options.authorizationRevision()
+    const { scope, epoch } = await this.binding(taskId, signal)
+    const validate = () => {
+      this.assert(scope, epoch, signal)
+      if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    }
+    validate()
+    return {
+      import: async (paths: readonly string[]) => this.operation(async () => {
+        validate()
+        if (!this.options.references || paths.length > 4) throw new AppError('INVALID_ARGUMENT')
+        const result = await this.options.references.import(scope, taskId, paths, signal, validate)
+        validate()
+        return result
+      }),
+      export: async (jobId: string, outputId: string, path: string) => this.operation(async () => {
+        videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
+        validate()
+        if (!this.options.exportOutput) throw new AppError('SERVICE_UNAVAILABLE')
+        await this.options.exportOutput(scope, taskId, jobId, outputId, path, signal, validate)
+        validate()
+      }),
+    }
+  }
+  async preview(taskId: string, jobId: string, outputId: string) {
+    videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
+    const signal = this.signal()
+    const revision = this.options.authorizationRevision()
+    const { scope, epoch } = await this.binding(taskId, signal)
+    const asset = await this.options.store.getAsset(scope, taskId, jobId, outputId)
+    // This preview bridge is mock-only; do not transfer a production-sized video over IPC.
+    if (!asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
+    if (asset.output.byteLength > 16 * 1024 * 1024) throw new AppError('INVALID_ARGUMENT')
+    const bytes = await this.options.store.readAsset(scope, taskId, jobId, outputId)
+    this.assert(scope, epoch, signal)
+    if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    return { mime: asset.output.mimeType, bytes }
   }
   async generate(taskId: string, value: VideoGenerationInput, parent?: AbortSignal): Promise<VideoJobView> {
     const signal = this.signal(parent)
@@ -259,8 +337,10 @@ export class MockVideoHostService {
   async track(taskId: string): Promise<void> {
     const signal = this.signal()
     return this.operation(async () => {
-      const { context } = await this.binding(taskId, signal)
-      await context.tracker.wake()
+      const { scope, epoch } = await this.task(taskId, signal)
+      // Let service.recover persist a grant failure as AUTH_REQUIRED. Checking
+      // runtime before entering recover would leave disk jobs ACTIVE on denial.
+      await this.context(scope, epoch).tracker.wake()
     })
   }
   async stopAll(): Promise<void> {

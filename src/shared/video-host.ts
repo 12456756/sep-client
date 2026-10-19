@@ -31,6 +31,8 @@ export interface VideoJobView {
   updatedAt: number
   error: string | null
   outputs: VideoOutput[]
+  /** Verified local outputs; supports partial save without hiding existing files. */
+  savedOutputIds?: string[]
 }
 
 export interface VideoTaskView {

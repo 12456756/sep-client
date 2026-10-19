@@ -18,6 +18,9 @@ import {
 import { Type } from 'typebox'
 import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
+import type { VideoToolName } from '../../domain/video-tools'
+import { videoGenerationInputSchema } from '../../../src/shared/video-host'
+import { videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../../src/shared/video-media'
 import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId } from '../../common/platform/media-contract'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import type {
@@ -64,6 +67,102 @@ function registeredMediaNames(config: PiAgentSessionConfig): MediaToolName[] {
       (config.toolPolicy.preset === 'full-local' || config.toolPolicy.allowedTools.includes(name))
     )
   ))
+}
+
+const VIDEO_TOOL_NAMES: readonly VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
+
+function registeredVideoNames(config: PiAgentSessionConfig): VideoToolName[] {
+  if (config.disableTools || !config.videoTools) return []
+  return VIDEO_TOOL_NAMES.filter(name => config.videoTools?.names.includes(name) && (
+    name === 'video_get_job' || !config.toolPolicy || (
+      config.toolPolicy.preset !== 'read-only' &&
+      (config.toolPolicy.preset === 'full-local' || config.toolPolicy.allowedTools.includes(name))
+    )
+  ))
+}
+
+const videoId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+const videoJobInputSchema = z.object({ jobId: videoId }).strict()
+const videoJobResultSchema = z.object({
+  jobId: videoId, taskId: videoId, profileId: videoId,
+  operation: z.enum(['image-to-video', 'text-to-video']),
+  parameters: videoParametersSchema.extend({ aspectRatio: z.string().regex(/^\d+:\d+$/).max(32) }),
+  generationStatus: z.enum(['NOT_SUBMITTED', 'SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
+  trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
+  saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
+  billingStatus: z.literal('MOCK_NOT_CHARGED'),
+  // Free-form upstream messages can echo prompts, paths or credentials. Never forward them.
+  error: z.string().max(8192).nullable().transform(value => value === null ? null : 'Video job reported an error.'),
+  createdAt: z.number().nonnegative().finite(), updatedAt: z.number().nonnegative().finite(),
+  outputs: z.array(videoOutputSchema.strip()).max(4),
+})
+const videoTaskResultSchema = z.object({
+  mock: z.literal(true), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
+    runtime.profiles.every(profile => profile.capabilities.aspectRatios.every(ratio => ratio.length <= 32))),
+  jobs: z.array(videoJobResultSchema).max(50),
+})
+
+function safeVideoResult(result: unknown, names: readonly VideoToolName[]): unknown {
+  // Only bounded business schemas are serialized. Raw host records and error objects fail closed.
+  const parsed = z.union([videoJobResultSchema, videoTaskResultSchema]).parse(result)
+  if (!('runtime' in parsed)) return parsed
+  return {
+    ...parsed,
+    runtime: {
+      ...parsed.runtime,
+      tools: parsed.runtime.tools.filter(name => names.includes(name as VideoToolName)),
+      profiles: parsed.runtime.profiles.map(profile => ({
+        ...profile, configVersion: videoId.parse(profile.configVersion),
+        // Runtime display names are free text too; keep model-facing metadata deterministic.
+        displayName: 'Video profile',
+      })),
+    },
+  }
+}
+
+function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly VideoToolName[]): ToolDefinition[] {
+  const id = Type.String({ pattern: '^[A-Za-z0-9_-]{1,128}$' })
+  const parameters = Type.Object({
+    durationSeconds: Type.Integer({ minimum: 1, maximum: 600 }),
+    aspectRatio: Type.String({ pattern: '^\\d+:\\d+$' }),
+    resolution: Type.Union(['480p', '720p', '1080p', '4k'].map(value => Type.Literal(value))),
+    frameRate: Type.Integer({ minimum: 1, maximum: 120 }), audio: Type.Boolean(),
+    outputFormat: Type.Union([Type.Literal('video/mp4'), Type.Literal('video/webm')]),
+  }, { additionalProperties: false })
+  return names.map(name => {
+    const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
+    return {
+      name, label: name, executionMode: 'sequential',
+      description: name === 'video_get_job'
+        ? 'Get the business status of a task-local video job.'
+        : `Generate a video using ${operation} and an advertised video profile. The host validates cost and obtains approval before submission.`,
+      parameters: name === 'video_get_job' ? Type.Object({ jobId: id }, { additionalProperties: false })
+        : Type.Object({
+          profileId: id, operation: Type.Literal(operation),
+          localAssetIds: Type.Array(id, { minItems: name === 'video_from_image' ? 1 : 0, maxItems: name === 'video_from_image' ? 1 : 0 }),
+          creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters,
+        }, { additionalProperties: false }),
+      async execute(_toolCallId, input, signal) {
+        const failure = (message: string) => ({ content: [{ type: 'text' as const, text: message }], details: { isError: true } })
+        try {
+          // Recheck the facade and task policy at dispatch, including direct SDK execution.
+          if (!registeredVideoNames(config).includes(name)) return failure('Video tool is not enabled for this run.')
+          const parsed = name === 'video_get_job' ? videoJobInputSchema.safeParse(input) : videoGenerationInputSchema.safeParse(input)
+          if (!parsed.success || ('operation' in parsed.data && parsed.data.operation !== operation)) return failure('Invalid video tool input.')
+          if (signal?.aborted) return failure('Video tool request cancelled.')
+          const result = await config.videoTools!.execute(name, parsed.data, signal)
+          if (signal?.aborted) return failure('Video tool request cancelled.')
+          const value = safeVideoResult(result, registeredVideoNames(config))
+          const text = JSON.stringify(value)
+          if (text.length > 65_536) return failure('Video tool result exceeds the safe limit.')
+          return { content: [{ type: 'text', text: redactText(text, 65_536) }], details: { isError: false } }
+        } catch {
+          // Neither validation diagnostics nor transport errors may echo the Pi prompt or host internals.
+          return failure(signal?.aborted ? 'Video tool request cancelled.' : 'Video tool request failed.')
+        }
+      },
+    } satisfies ToolDefinition
+  })
 }
 
 const mediaJobInputSchema = z.object({ jobId: mediaId }).strict()
@@ -158,6 +257,7 @@ export function sessionToolOptions(
   disableTools = false,
   registeredMcpNames: readonly string[] = [],
   registeredMediaNames: readonly MediaToolName[] = [],
+  registeredVideoNames: readonly VideoToolName[] = [],
 ): { tools?: string[]; noTools?: 'all' } {
   if (disableTools) return { noTools: 'all' }
   const allowedTools = toolPolicy && isUnrestrictedToolPolicy(toolPolicy)
@@ -165,9 +265,11 @@ export function sessionToolOptions(
     : toolPolicy ? [...toolPolicy.allowedTools] : [...DEFAULT_SESSION_TOOLS]
   return { tools: [...new Set([
     ...allowedTools.filter(name => (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
-      (!name.startsWith('media_') || registeredMediaNames.includes(name as MediaToolName))),
+      (!name.startsWith('media_') || registeredMediaNames.includes(name as MediaToolName)) &&
+      (!name.startsWith('video_') || registeredVideoNames.includes(name as VideoToolName))),
     ...registeredMcpNames,
     ...registeredMediaNames,
+    ...registeredVideoNames,
   ])] }
 }
 
@@ -400,8 +502,18 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
   }
 }
 
-function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): ExtensionFactory[] {
+export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): ExtensionFactory[] {
   const mediaNames = registeredMediaNames(config)
+  const videoNames = registeredVideoNames(config)
+  const videoExtension: ExtensionFactory = pi => {
+    for (const tool of videoToolDefinitions(config, videoNames)) pi.registerTool(tool)
+    pi.on('tool_result', event => {
+      if (!videoNames.includes(event.toolName as VideoToolName)) return
+      if (event.details && typeof event.details === 'object' && 'isError' in event.details && event.details.isError === true) {
+        return { isError: true }
+      }
+    })
+  }
   const mediaExtension: ExtensionFactory = pi => {
     for (const tool of mediaToolDefinitions(config, mediaNames)) pi.registerTool(tool)
     pi.on('tool_result', event => {
@@ -546,6 +658,13 @@ function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): Extensi
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (toolName.startsWith('video_')) {
+        if (registeredVideoNames(config).includes(toolName as VideoToolName) && pi.getActiveTools().includes(toolName)) {
+          return { block: false }
+        }
+        await config.reportPolicyEvent?.('unknown_tool_blocked', { toolName, reason: 'Video tool is not enabled for this run.' })
+        return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
+      }
       if (toolName.startsWith('media_')) {
         if (mediaNames.includes(toolName as MediaToolName) && pi.getActiveTools().includes(toolName)) {
           // The trusted facade owns quote validation and approval, even in full-local-auto.
@@ -776,7 +895,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         resourceLoader,
         sessionManager,
         // Advertise only the task policy's tools so the model cannot select denied tools.
-        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config)),
+        ...sessionToolOptions(config.toolPolicy, config.disableTools, [...mcp.permissions.keys()], registeredMediaNames(config), registeredVideoNames(config)),
         // Apply retries at the session layer only; never inherit workstation CLI retry overrides.
         settingsManager,
       })
