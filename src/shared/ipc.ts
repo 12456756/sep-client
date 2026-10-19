@@ -45,6 +45,7 @@ import type {
   ArrangementPlanResult,
   ArrangementExecutionResult,
   ArrangementDraftDocument,
+  ArrangementExecutionSettings,
   ArrangementDraftListResult,
   ArrangementDraftPreflightResult,
   ArrangementPlanSnapshot,
@@ -332,7 +333,7 @@ export interface ElectronAPI {
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
   createArrangementDraft: (input: ArrangementDraftDocument) => Promise<ArrangementDraftResult>
   getArrangementDraft: (draftId: string) => Promise<ArrangementDraftResult>
-  updateArrangementDraft: (input: { draftId: string; expectedRevision: number; document: ArrangementDraftDocument }) => Promise<ArrangementDraftResult>
+  updateArrangementExecutionSettings: (input: { draftId: string; expectedRevision: number; settings: ArrangementExecutionSettings }) => Promise<ArrangementDraftResult>
   deleteArrangementDraft: (draftId: string) => Promise<unknown>
   validateArrangementDraft: (draftId: string) => Promise<unknown>
   preflightArrangementDraft: (input: { draftId: string; expectedRevision: number }) => Promise<ArrangementDraftPreflightResult>

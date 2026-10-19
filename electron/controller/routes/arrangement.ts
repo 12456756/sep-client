@@ -78,11 +78,15 @@ const draftDocument = z.object({
 const createInput = draftDocument.omit({ schemaVersion: true, status: true }).extend({
   schemaVersion: z.literal(1).optional(),
 })
-const updateInput = z.object({
+const executionSettingsInput = z.object({
   draftId,
   expectedRevision: revision,
-  document: draftDocument.omit({ schemaVersion: true, status: true }).extend({ schemaVersion: z.literal(1).optional() }),
-})
+  settings: z.object({
+    modelId: z.string().trim().min(1).optional(),
+    workDir: z.string().trim().min(1).nullable(),
+    permissions: permissions.strict(),
+  }).strict(),
+}).strict()
 const confirmInput = z.object({ draftId, expectedRevision: revision, idempotencyKey: z.string().min(1).max(256) })
 const planInput = z.object({ draftId, expectedRevision: revision, modelId: z.string().min(1) })
 const cancelPlanInput = z.object({ draftId, planningId: z.string().min(1) })
@@ -118,12 +122,12 @@ export const arrangementRoutes = [
     success: true,
     draft: await ctx.arrangements.getDraft(id),
   })),
-  route(INVOKE_CHANNELS.ARRANGE_UPDATE_DRAFT, updateInput, async (ctx, input) => ({
+  route(INVOKE_CHANNELS.ARRANGE_UPDATE_EXECUTION_SETTINGS, executionSettingsInput, async (ctx, input) => ({
     success: true,
-    draft: await ctx.arrangements.updateDraft(
+    draft: await ctx.arrangements.updateExecutionSettings(
       input.draftId,
       input.expectedRevision,
-      input.document as Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>,
+      input.settings,
     ),
   })),
   route(INVOKE_CHANNELS.ARRANGE_DELETE_DRAFT, draftId, async (ctx, id) => ({

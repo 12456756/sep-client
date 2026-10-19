@@ -218,6 +218,8 @@
 .ent-flowcard-who small { overflow: hidden; color: var(--ent-ink-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .ent-flowcard-stage { color: var(--ent-brand-ink); font-size: 13px; font-weight: 600; }
 .ent-flowcard p { margin: 0; color: var(--arr-desc); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.ent-flowcard-output { padding-top: 7px; border-top: 1px solid var(--arr-card-line); }
+.ent-flowcard-output > span { margin-right: 8px; color: var(--ent-ink-3); font-size: 12px; }
 
 /* ── 自己编排 ────────────────────────────────────────────────────────── */
 
@@ -427,10 +429,8 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 }
 
 
-/* Automatic drafts reuse the existing arrangement form/panel tokens. */
+/* Execution settings below the read-only automatic plan. */
 .ent-auto-plan { display: flex; flex-direction: column; gap: 16px; margin-top: 20px; color: var(--arr-input-ink); }
-.ent-auto-plan h2 { font-size: 18px; font-weight: 600; }
-.ent-auto-plan > p { color: var(--ent-ink-2); font-size: 13px; }
 .ent-aa-waiting { display: flex; flex-direction: column; gap: 18px; margin-top: 18px; }
 .ent-aa-waiting-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid var(--arr-input-line); border-radius: 10px; background: var(--ent-panel); }
 .ent-aa-waiting-head h2 { margin: 0; color: var(--arr-strong); font-size: 16px; font-weight: 600; }
@@ -451,14 +451,6 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-aa-empty { margin: 0; color: var(--ent-ink-3); font-size: 12px; }
 @media (max-width: 640px) { .ent-aa-waiting-head { flex-direction: column; } .ent-aa-candidate { align-items: flex-start; flex-wrap: wrap; } .ent-aa-candidate-info { min-width: calc(100% - 40px); } }
 
-.ent-auto-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 13px; }
-.ent-auto-field input, .ent-auto-field textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--arr-input-line); border-radius: 8px; background: var(--ent-panel); color: var(--arr-input-ink); font: inherit; }
-.ent-auto-field textarea { min-height: 72px; resize: vertical; }
-.ent-auto-field input:focus-visible, .ent-auto-field textarea:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
-.ent-auto-field input:disabled, .ent-auto-field textarea:disabled { color: var(--ent-ink-3); background: var(--arr-node-on); }
-.ent-auto-node { display: flex; flex-direction: column; gap: 12px; animation: arr-in 240ms var(--arr-ease) both; }
-.ent-auto-plan > .ent-btn { align-self: flex-start; }
-@media (prefers-reduced-motion: reduce) { .ent-auto-node { animation: none; } }
 
 /* ── 极简工作台：输入区下沉，说明文字让位给实际操作 ─────────────── */
 .ent-arr { min-height: 100%; display: flex; flex-direction: column; }

@@ -67,7 +67,7 @@ export const INVOKE_CHANNELS = {
   ARRANGE_LIST_DRAFTS: 'arrange:list-drafts',
   ARRANGE_CREATE_DRAFT: 'arrange:create-draft',
   ARRANGE_GET_DRAFT: 'arrange:get-draft',
-  ARRANGE_UPDATE_DRAFT: 'arrange:update-draft',
+  ARRANGE_UPDATE_EXECUTION_SETTINGS: 'arrange:update-execution-settings',
   ARRANGE_DELETE_DRAFT: 'arrange:delete-draft',
   ARRANGE_VALIDATE_DRAFT: 'arrange:validate-draft',
   ARRANGE_PREFLIGHT_DRAFT: 'arrange:preflight-draft',

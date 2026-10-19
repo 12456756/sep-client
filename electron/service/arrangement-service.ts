@@ -15,6 +15,7 @@ import {
   validateArrangementDraft,
   validateNodeModels,
   type ArrangementDraft,
+  type ArrangementExecutionSettings,
   type ArrangementMode,
   type ArrangementNode,
   type EffectiveTaskPermissionPolicy,
@@ -146,19 +147,24 @@ export class ArrangementService {
   }
 
   async createDraft(input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>): Promise<ArrangementDraft> {
+    if (input.mode === 'auto' && input.nodes.length > 0) throw new AppError('INVALID_ARGUMENT')
     return this.deps.drafts.create(requireScope(this.deps.scope), input)
   }
 
-  async updateDraft(
+  async updateExecutionSettings(
     draftId: string,
     expectedRevision: number,
-    patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>,
+    settings: ArrangementExecutionSettings,
   ): Promise<ArrangementDraft> {
-    return this.deps.drafts.update(requireScope(this.deps.scope), draftId, expectedRevision, {
-      ...patch,
-      status: 'editing',
-      lastPlanning: null,
-      confirmedWorkPlanId: null,
+    const scope = requireScope(this.deps.scope)
+    const draft = await this.getDraft(draftId)
+    if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
+    if (draft.mode !== 'auto' || !['ready', 'preflight-failed'].includes(draft.status) || draft.confirmedWorkPlanId) throw new AppError('INVALID_STATE')
+    return this.deps.drafts.update(scope, draftId, expectedRevision, {
+      ...draft,
+      nodes: draft.nodes.map(node => ({ ...node, modelId: settings.modelId ?? node.modelId })),
+      workspace: { ...draft.workspace, path: settings.workDir ?? draft.workspace.path },
+      permissions: structuredClone(settings.permissions),
     })
   }
 

@@ -33,20 +33,16 @@ const node = {
   dependsOn: [], skillIds: [], requiresUserConfirmation: false,
 }
 const document = {
-  mode: 'auto', title: 'Report', goal: 'Build report', confirmedInputs: [], sharedSkillIds: [], conversation: null,
+  mode: 'manual', title: 'Report', goal: 'Build report', confirmedInputs: [], sharedSkillIds: [], conversation: null,
   nodes: [node], workspace: { mode: 'shared', path: null }, permissions: { preset: 'read-only' }, lastPlanning: null,
 }
 
 describe('arrangement work contract IPC', () => {
-  for (const channel of [INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT, INVOKE_CHANNELS.ARRANGE_UPDATE_DRAFT]) {
-    it(`preserves the work contract through ${channel}`, () => {
-      const route = loadRoutes().find(entry => entry.channel === channel)!
-      const input = channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT
-        ? document : { draftId: 'draft-a', expectedRevision: 1, document }
-      const parsed = route.schema.parse(input) as { nodes?: unknown[]; document?: { nodes: unknown[] } }
-      assert.deepEqual(parsed.nodes ?? parsed.document?.nodes, [node])
-    })
-  }
+  it('preserves the work contract when creating a manual draft', () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
+    const parsed = route.schema.parse(document) as { nodes: unknown[] }
+    assert.deepEqual(parsed.nodes, [node])
+  })
 
   it('accepts legacy nodes and rejects malformed delivery metadata', () => {
     const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!

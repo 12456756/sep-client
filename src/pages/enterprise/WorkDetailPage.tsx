@@ -2,12 +2,11 @@
 
 import {
   AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, LoaderCircle, MessageSquareText,
-  PencilLine, RotateCcw, Share2, StopCircle, XCircle,
+  RotateCcw, Share2, StopCircle, XCircle,
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Empty, StepStateChip, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
-import { WorkPlanDrawer } from '../../components/enterprise/WorkPlanDrawer';
 import { WorkConversation, WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
@@ -30,12 +29,12 @@ export function WorkDetailPage({ workspace, workId }: Props) {
     );
   }
   // 找不到工作时上面直接返回，所以下面这一层可以放心用 hook。
-  // key 带上工作 id：改一版安排之后会跳到新工作，不重置的话抽屉会开着不动、内容换成新的那一项。
+  // 切换工作时重置抽屉状态。
   return <Detail key={work.id} work={work} workspace={workspace} />;
 }
 
 /** 抬头右边和抽屉之间共用的一个状态：现在拉开的是哪个抽屉。 */
-type Panel = 'talk' | 'plan' | null;
+type Panel = 'talk' | null;
 
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   const team = useTeam(work, workspace);
@@ -94,17 +93,6 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         <WorkStatusChip value={work.status} />
         <div className="ent-wk-head-actions">
           <ShareButton work={work} />
-          {isConversation ? null : (
-            <button
-              type="button"
-              className="ent-btn primary sm"
-              title="同一批同事、同样的顺序，只改要完成什么。会开一项新工作，不影响这一项"
-              onClick={() => setPanel('plan')}
-            >
-              <PencilLine size={14} aria-hidden />
-              改一版安排
-            </button>
-          )}
         </div>
       </div>
 
@@ -229,7 +217,6 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         </aside>
       </div>
       {panel === 'talk' ? <WorkTalkDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
-      {panel === 'plan' ? <WorkPlanDrawer work={work} workspace={workspace} onClose={() => setPanel(null)} /> : null}
     </div>
   );
 }

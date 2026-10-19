@@ -168,6 +168,72 @@ function accessRequest(status: EmployeeAccessRequest['status'] = 'PENDING'): Emp
 }
 
 describe('ArrangementService', () => {
+  it('does not accept client-supplied nodes in an automatic draft', async () => {
+    let creates = 0
+    const harness = planningHarness(async () => ({ nodes: [] } as never), {
+      drafts: { async create() { creates += 1; return persisted(autoDraft()) } },
+    })
+    await assert.rejects(harness.service.createDraft({ ...autoDraft(), nodes: [plannedNode] }),
+      (error: unknown) => error instanceof AppError && error.code === 'INVALID_ARGUMENT')
+    assert.equal(creates, 0)
+  })
+
+  it('updates execution settings while preserving the authoritative automatic plan', async () => {
+    const harness = planningHarness(async () => ({ nodes: [] } as never))
+    const node = { ...plannedNode, objective: 'Collect findings', deliverables: [{
+      id: 'report', name: 'Findings', format: 'txt', path: 'findings.txt',
+      contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'],
+    }] }
+    const original = persisted({
+      ...autoDraft(), status: 'ready', nodes: [node],
+      lastPlanning: { planningId: 'planning-a', status: 'ready', message: null },
+      intentAnalysis: { summary: 'Model plan', steps: [] },
+    }, 3)
+    harness.setStored(original)
+    const updated = await harness.service.updateExecutionSettings(original.id, 3, {
+      modelId: 'model-b', workDir: 'D:/reports', permissions: { preset: 'workspace-edit' },
+      ...{ title: 'Tampered title', goal: 'Tampered goal', nodes: [], mode: 'manual' },
+    })
+    assert.deepEqual(updated, {
+      ...original, revision: 4, updatedAt: 4,
+      nodes: original.nodes.map(node => ({ ...node, modelId: 'model-b' })),
+      workspace: { mode: 'shared', path: 'D:/reports' }, permissions: { preset: 'workspace-edit' },
+    })
+    assert.deepEqual(original.nodes, [node])
+    assert.equal(harness.taskCreates(), 0)
+  })
+
+  it('retains planned models and workspace when execution overrides are empty', async () => {
+    const harness = planningHarness(async () => ({ nodes: [] } as never))
+    const original = persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode], workspace: { mode: 'shared', path: 'D:/original' } })
+    harness.setStored(original)
+    const updated = await harness.service.updateExecutionSettings(original.id, 1, {
+      workDir: null, permissions: { preset: 'read-only' },
+    })
+    assert.deepEqual(updated.nodes, original.nodes)
+    assert.deepEqual(updated.workspace, original.workspace)
+  })
+
+  it('rejects stale execution settings without writing over a newer plan', async () => {
+    const harness = planningHarness(async () => ({ nodes: [] } as never))
+    harness.setStored(persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode] }, 3))
+    await assert.rejects(harness.service.updateExecutionSettings('draft-a', 2, {
+      workDir: null, permissions: { preset: 'read-only' },
+    }), (error: unknown) => error instanceof AppError && error.code === 'DRAFT_REVISION_CONFLICT')
+    assert.equal(harness.updates.length, 0)
+  })
+
+  it('blocks execution settings during planning, employee resolution and after confirmation', async () => {
+    const harness = planningHarness(async () => ({ nodes: [] } as never))
+    for (const status of ['editing', 'planning', 'planning-failed', 'awaiting-employee', 'confirmed'] as const) {
+      harness.setStored(persisted({ ...autoDraft(), status, nodes: [plannedNode] }))
+      await assert.rejects(harness.service.updateExecutionSettings('draft-a', 1, {
+        workDir: null, permissions: { preset: 'read-only' },
+      }), (error: unknown) => error instanceof AppError && error.code === 'INVALID_STATE')
+    }
+    assert.equal(harness.updates.length, 0)
+  })
+
   it('blocks automatic confirmation without file contracts or with unresolved work', async () => {
     const h = planningHarness(async () => ({ title: 'unused', nodes: [] }))
     const stored = persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode] })

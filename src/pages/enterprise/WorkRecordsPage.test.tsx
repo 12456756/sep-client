@@ -81,10 +81,11 @@ describe('WorkRecordsPage', () => {
     assert.doesNotMatch(filtered, /class="ent-record"/);
   });
 
-  it('preserves existing card actions', () => {
+  it('keeps execution and record actions without copying a plan for editing', () => {
     const html = renderRecords([work]);
-    for (const label of ['去确认', '查看结果', '查看过程', '复制为新工作', '终止当前工作', '删除记录']) {
+    for (const label of ['去确认', '查看结果', '查看过程', '终止当前工作', '删除记录']) {
       assert.ok(html.includes(label), label);
     }
+    assert.doesNotMatch(html, /复制为新工作|改一版安排/);
   });
 });
