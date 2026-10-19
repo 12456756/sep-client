@@ -1,0 +1,355 @@
+{
+  "mock": true,
+  "simulationOnly": true,
+  "profile": {
+    "profileId": "mock-video-from-image",
+    "kind": "video",
+    "displayName": "Mock product video",
+    "modelId": "mock-video-model",
+    "configVersion": "mock-video-v1",
+    "operations": [
+      "image-to-video"
+    ],
+    "executionMode": "async-query",
+    "capabilities": {
+      "supportsTextToVideo": false,
+      "supportsImageToVideo": true,
+      "supportsAudio": false,
+      "durationsSeconds": [
+        5
+      ],
+      "aspectRatios": [
+        "9:16"
+      ],
+      "resolutions": [
+        "720p"
+      ],
+      "frameRates": [
+        24
+      ],
+      "maxInputBytes": 10485760,
+      "maxReferenceCount": 1,
+      "outputFormats": [
+        "video/mp4"
+      ],
+      "supportsTaskQuery": true,
+      "supportsCancel": false,
+      "resultRetentionSeconds": 86400
+    },
+    "enabled": false,
+    "verified": false
+  },
+  "runtime": {
+    "protocolVersion": 1,
+    "executionAvailable": true,
+    "defaultProfileId": "mock-video-from-image",
+    "tools": [
+      "video_from_image",
+      "video_get_job"
+    ],
+    "profiles": [
+      {
+        "profileId": "mock-video-from-image",
+        "kind": "video",
+        "displayName": "Mock product video",
+        "configVersion": "mock-video-v1",
+        "operations": [
+          "image-to-video"
+        ],
+        "executionMode": "async-query",
+        "capabilities": {
+          "supportsTextToVideo": false,
+          "supportsImageToVideo": true,
+          "supportsAudio": false,
+          "durationsSeconds": [
+            5
+          ],
+          "aspectRatios": [
+            "9:16"
+          ],
+          "resolutions": [
+            "720p"
+          ],
+          "frameRates": [
+            24
+          ],
+          "maxInputBytes": 10485760,
+          "maxReferenceCount": 1,
+          "outputFormats": [
+            "video/mp4"
+          ],
+          "supportsTaskQuery": true,
+          "supportsCancel": false,
+          "resultRetentionSeconds": 86400
+        }
+      }
+    ]
+  },
+  "quoteRequest": {
+    "profileId": "mock-video-from-image",
+    "configVersion": "mock-video-v1",
+    "operation": "image-to-video",
+    "referenceIds": [
+      "reference-image-1"
+    ],
+    "creativeBrief": "商品保持包装不变，镜头缓慢推进",
+    "parameters": {
+      "durationSeconds": 5,
+      "aspectRatio": "9:16",
+      "resolution": "720p",
+      "frameRate": 24,
+      "audio": false,
+      "outputFormat": "video/mp4"
+    }
+  },
+  "request": {
+    "profileId": "mock-video-from-image",
+    "configVersion": "mock-video-v1",
+    "operation": "image-to-video",
+    "referenceIds": [
+      "reference-image-1"
+    ],
+    "creativeBrief": "商品保持包装不变，镜头缓慢推进",
+    "parameters": {
+      "durationSeconds": 5,
+      "aspectRatio": "9:16",
+      "resolution": "720p",
+      "frameRate": 24,
+      "audio": false,
+      "outputFormat": "video/mp4"
+    },
+    "clientRequestId": "video-request-1",
+    "quoteId": "video-quote-1"
+  },
+  "receipt": {
+    "mock": true,
+    "receiptId": "video-receipt-1",
+    "clientRequestId": "video-request-1",
+    "profileId": "mock-video-from-image",
+    "configVersion": "mock-video-v1",
+    "operation": "image-to-video",
+    "status": "QUEUED",
+    "pollAfterMs": 1000,
+    "outputs": [],
+    "billingStatus": "MOCK_NOT_CHARGED",
+    "errorCode": null,
+    "recovery": {
+      "canQuery": true,
+      "canCancel": false,
+      "canDownload": false
+    }
+  },
+  "output": {
+    "outputId": "video-output-1",
+    "kind": "video",
+    "mimeType": "video/mp4",
+    "byteLength": 7295,
+    "sha256": "ba3671acef928d1735491c8cb53995edc860923ba70504f8f6cb525977c98a6e",
+    "durationSeconds": 5,
+    "width": 720,
+    "height": 1280,
+    "frameRate": 24,
+    "thumbnailOutputId": null,
+    "expiresAt": "2026-10-20T00:00:00.000Z"
+  },
+  "mediaFixture": {
+    "description": "Offline solid-color H.264 MP4; no model call, no audio, no billing.",
+    "base64": "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",
+    "sha256": "ba3671acef928d1735491c8cb53995edc860923ba70504f8f6cb525977c98a6e",
+    "byteLength": 7295,
+    "durationSeconds": 5,
+    "width": 720,
+    "height": 1280,
+    "frameRate": 24
+  },
+  "quote": {
+    "mock": true,
+    "quoteId": "video-quote-1",
+    "expiresAt": "2026-10-20T00:00:00.000Z",
+    "semanticSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "pricingStatus": "quoted",
+    "amountCny": "0.000000",
+    "pricingVersion": "mock-video-v1",
+    "billingStatus": "MOCK_NOT_CHARGED"
+  },
+  "receipts": {
+    "queued": {
+      "mock": true,
+      "receiptId": "video-receipt-1",
+      "clientRequestId": "video-request-1",
+      "profileId": "mock-video-from-image",
+      "configVersion": "mock-video-v1",
+      "operation": "image-to-video",
+      "status": "QUEUED",
+      "pollAfterMs": 1000,
+      "outputs": [],
+      "billingStatus": "MOCK_NOT_CHARGED",
+      "errorCode": null,
+      "recovery": {
+        "canQuery": true,
+        "canCancel": false,
+        "canDownload": false
+      }
+    },
+    "running": {
+      "mock": true,
+      "receiptId": "video-receipt-1",
+      "clientRequestId": "video-request-1",
+      "profileId": "mock-video-from-image",
+      "configVersion": "mock-video-v1",
+      "operation": "image-to-video",
+      "status": "RUNNING",
+      "pollAfterMs": 1000,
+      "outputs": [],
+      "billingStatus": "MOCK_NOT_CHARGED",
+      "errorCode": null,
+      "recovery": {
+        "canQuery": true,
+        "canCancel": false,
+        "canDownload": false
+      }
+    },
+    "succeeded": {
+      "mock": true,
+      "receiptId": "video-receipt-1",
+      "clientRequestId": "video-request-1",
+      "profileId": "mock-video-from-image",
+      "configVersion": "mock-video-v1",
+      "operation": "image-to-video",
+      "status": "SUCCEEDED",
+      "pollAfterMs": null,
+      "outputs": [
+        {
+          "outputId": "video-output-1",
+          "kind": "video",
+          "mimeType": "video/mp4",
+          "byteLength": 7295,
+          "sha256": "ba3671acef928d1735491c8cb53995edc860923ba70504f8f6cb525977c98a6e",
+          "durationSeconds": 5,
+          "width": 720,
+          "height": 1280,
+          "frameRate": 24,
+          "thumbnailOutputId": null,
+          "expiresAt": "2026-10-20T00:00:00.000Z"
+        }
+      ],
+      "billingStatus": "MOCK_NOT_CHARGED",
+      "errorCode": null,
+      "recovery": {
+        "canQuery": false,
+        "canCancel": false,
+        "canDownload": true
+      }
+    },
+    "failed": {
+      "mock": true,
+      "receiptId": "video-receipt-1",
+      "clientRequestId": "video-request-1",
+      "profileId": "mock-video-from-image",
+      "configVersion": "mock-video-v1",
+      "operation": "image-to-video",
+      "status": "FAILED",
+      "pollAfterMs": null,
+      "outputs": [],
+      "billingStatus": "MOCK_NOT_CHARGED",
+      "errorCode": "MOCK_VIDEO_FAILED",
+      "recovery": {
+        "canQuery": false,
+        "canCancel": false,
+        "canDownload": false
+      }
+    },
+    "partial": {
+      "mock": true,
+      "receiptId": "video-receipt-1",
+      "clientRequestId": "video-request-1",
+      "profileId": "mock-video-from-image",
+      "configVersion": "mock-video-v1",
+      "operation": "image-to-video",
+      "status": "PARTIAL_SUCCEEDED",
+      "pollAfterMs": null,
+      "outputs": [
+        {
+          "outputId": "video-output-1",
+          "kind": "video",
+          "mimeType": "video/mp4",
+          "byteLength": 7295,
+          "sha256": "ba3671acef928d1735491c8cb53995edc860923ba70504f8f6cb525977c98a6e",
+          "durationSeconds": 5,
+          "width": 720,
+          "height": 1280,
+          "frameRate": 24,
+          "thumbnailOutputId": null,
+          "expiresAt": "2026-10-20T00:00:00.000Z"
+        }
+      ],
+      "billingStatus": "MOCK_NOT_CHARGED",
+      "errorCode": "MOCK_PARTIAL_OUTPUT",
+      "recovery": {
+        "canQuery": false,
+        "canCancel": false,
+        "canDownload": true
+      }
+    },
+    "unknown": {
+      "mock": true,
+      "receiptId": "video-receipt-1",
+      "clientRequestId": "video-request-1",
+      "profileId": "mock-video-from-image",
+      "configVersion": "mock-video-v1",
+      "operation": "image-to-video",
+      "status": "SUBMISSION_UNKNOWN",
+      "pollAfterMs": 1000,
+      "outputs": [],
+      "billingStatus": "MOCK_NOT_CHARGED",
+      "errorCode": "MOCK_SUBMISSION_UNKNOWN",
+      "recovery": {
+        "canQuery": true,
+        "canCancel": false,
+        "canDownload": false
+      }
+    },
+    "expired": {
+      "mock": true,
+      "receiptId": "video-receipt-1",
+      "clientRequestId": "video-request-1",
+      "profileId": "mock-video-from-image",
+      "configVersion": "mock-video-v1",
+      "operation": "image-to-video",
+      "status": "RESULT_EXPIRED",
+      "pollAfterMs": null,
+      "outputs": [
+        {
+          "outputId": "video-output-1",
+          "kind": "video",
+          "mimeType": "video/mp4",
+          "byteLength": 7295,
+          "sha256": "ba3671acef928d1735491c8cb53995edc860923ba70504f8f6cb525977c98a6e",
+          "durationSeconds": 5,
+          "width": 720,
+          "height": 1280,
+          "frameRate": 24,
+          "thumbnailOutputId": null,
+          "expiresAt": "2026-10-20T00:00:00.000Z"
+        }
+      ],
+      "billingStatus": "MOCK_NOT_CHARGED",
+      "errorCode": "RESULT_EXPIRED",
+      "recovery": {
+        "canQuery": false,
+        "canCancel": false,
+        "canDownload": false
+      }
+    }
+  },
+  "rejections": {
+    "synchronous": {
+      "status": 503,
+      "code": "MOCK_VIDEO_REJECTED"
+    },
+    "cancelUnsupported": {
+      "status": 409,
+      "code": "CANCEL_UNSUPPORTED"
+    }
+  }
+}
