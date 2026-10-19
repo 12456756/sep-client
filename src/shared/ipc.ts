@@ -43,6 +43,7 @@ import type {
   TaskTimelineResult,
   ClientTaskMessage,
   ArrangementPlanResult,
+  ArrangementExecutionResult,
   ArrangementDraftDocument,
   ArrangementDraftListResult,
   ArrangementDraftPreflightResult,
@@ -327,6 +328,7 @@ export interface ElectronAPI {
   cancelTask: (taskId: string, reason?: string) => Promise<IpcCommandResult>
   getArrangementContext: () => Promise<unknown>
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
+  getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
   createArrangementDraft: (input: ArrangementDraftDocument) => Promise<ArrangementDraftResult>
   getArrangementDraft: (draftId: string) => Promise<ArrangementDraftResult>

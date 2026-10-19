@@ -98,6 +98,10 @@ export const arrangementRoutes = [
     success: true,
     plan: await ctx.arrangements.getPlan(id),
   })),
+  route(INVOKE_CHANNELS.ARRANGE_GET_EXECUTION, taskId, async (ctx, id) => ({
+    success: true,
+    execution: await ctx.arrangements.getExecution(id),
+  })),
   route(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS, NO_INPUT, async ctx => ({
     success: true,
     drafts: await ctx.arrangements.listDrafts(),

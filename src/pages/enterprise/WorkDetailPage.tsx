@@ -192,20 +192,27 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           <section className="ent-panel">
             <h2>{finished ? '产出结果' : '最终产物'} <em>（{work.deliverables.length} 个）</em></h2>
             {work.deliverables.length ? (
-              <ul className="ent-wk-files ent-wk-files-side">
-                {work.deliverables.map(file => (
-                  <li key={file.id}>
-                    <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
-                    <span>
-                      <strong title={file.name}>{file.name}</strong>
-                      <small>{file.note}</small>
-                    </span>
-                    <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
-                      复制路径
-                    </button>
-                  </li>
+              <div className="ent-wk-final-files">
+                {groupDeliverables(work.deliverables).map(group => (
+                  <section key={group.key} className="ent-wk-final-group">
+                    {group.title ? <h3>{group.title}</h3> : null}
+                    <ul className="ent-wk-files ent-wk-files-side">
+                      {group.files.map(file => (
+                        <li key={file.id}>
+                          <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
+                          <span>
+                            <strong title={file.name}>{file.name}</strong>
+                            <small>{file.note}</small>
+                          </span>
+                          <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
+                            复制路径
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
                 ))}
-              </ul>
+              </div>
             ) : (
               <p className="ent-hint">员工还没有产出文件。产出之后会列在这里。</p>
             )}
@@ -406,6 +413,7 @@ function Donut({ percent }: { percent: number }) {
 /** 工作过程。多人协作时上面一排页签按人筛，单人工作不出现页签。 */
 /** 用户只看结构化动作；原始日志仍由后台保留，不在详情页呈现。 */
 function Process({ work }: { work: WorkItem }) {
+  if (work.kind === 'flow') return <ArrangementProcess work={work} />;
   return (
     <section className="ent-panel ent-work-process">
       <h2>工作过程</h2>
@@ -437,6 +445,34 @@ function Process({ work }: { work: WorkItem }) {
   );
 }
 
+function ArrangementProcess({ work }: { work: WorkItem }) {
+  return (
+    <section className="ent-panel ent-work-process">
+      <h2>工作过程</h2>
+      <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities)}</p>
+      {work.steps.length ? (
+        <ol className="ent-arrangement-step-list" aria-label="节点完成情况">
+          {work.steps.map(step => {
+            const label = step.state === 'done' ? '已完成'
+              : step.state === 'running' ? '进行中'
+                : step.state === 'waiting-user' ? '等待确认'
+                  : step.state === 'failed' ? '失败'
+                    : step.state === 'skipped' ? '已跳过' : '未开始';
+            return (
+              <li key={step.id} className={`ent-arrangement-step ${step.state}`}>
+                <span className="ent-arrangement-step-icon" aria-hidden>
+                  {step.state === 'done' ? <CheckCircle2 size={15} /> : step.state === 'failed' ? <XCircle size={15} /> : step.state === 'running' ? <LoaderCircle size={15} className="ent-spin" /> : <span />}
+                </span>
+                <span className="ent-arrangement-step-copy"><strong>{step.title}</strong><small>{step.employeeName} · {label}</small></span>
+              </li>
+            );
+          })}
+        </ol>
+      ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}
+    </section>
+  );
+}
+
 function WorkActivityRow({ activity }: { activity: WorkActivity }) {
   const stateLabel = activity.state === 'running'
     ? '进行中'
@@ -454,6 +490,20 @@ function WorkActivityRow({ activity }: { activity: WorkActivity }) {
       <time>{hhmm(activity.endedAt ?? activity.startedAt)}</time>
     </li>
   );
+}
+
+function groupDeliverables(files: WorkItem['deliverables']): Array<{ key: string; title: string; files: WorkItem['deliverables'] }> {
+  const groups: Array<{ key: string; title: string; files: WorkItem['deliverables'] }> = [];
+  for (const file of files) {
+    const key = file.nodeId ?? 'all';
+    let group = groups.find(item => item.key === key);
+    if (!group) {
+      group = { key, title: file.nodeTitle ?? '', files: [] };
+      groups.push(group);
+    }
+    group.files.push(file);
+  }
+  return groups;
 }
 
 function ShareButton({ work }: { work: WorkItem }) {

@@ -1142,6 +1142,18 @@
 .ent-wk-activity-copy strong { overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ent-wk-activity-copy small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-wk-activity time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-variant-numeric: tabular-nums; }
+.ent-arrangement-step-list { display: flex; flex-direction: column; gap: 7px; margin: 0 0 14px; padding: 0; list-style: none; }
+.ent-arrangement-step { display: grid; min-height: 48px; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid #e8ebf2; border-radius: var(--ent-radius-xs); background: var(--ent-panel); }
+.ent-arrangement-step.running { border-color: #c9d7ff; background: #f3f6ff; }
+.ent-arrangement-step.failed { border-color: #f2c9c7; background: #fff5f4; }
+.ent-arrangement-step.done { border-color: #cce6d4; background: #f4fbf6; }
+.ent-arrangement-step-icon { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; color: var(--ent-muted); background: #fff; }
+.ent-arrangement-step.done .ent-arrangement-step-icon { color: var(--ent-ready-solid); }
+.ent-arrangement-step.failed .ent-arrangement-step-icon { color: var(--ent-danger); }
+.ent-arrangement-step.running .ent-arrangement-step-icon { color: var(--ent-brand-ink); }
+.ent-arrangement-step-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.ent-arrangement-step-copy strong { overflow: hidden; color: var(--ent-ink); font-size: var(--ent-fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ent-arrangement-step-copy small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-spin { animation: ent-spin 1s linear infinite; }
 @keyframes ent-spin { to { transform: rotate(360deg); } }
 
@@ -3102,6 +3114,9 @@
 .ent-wk-detail-side > * { flex: 0 0 auto; }
 /* 侧栏自己滚，清单就不再单独设高度上限，免得出现两个滚动条。 */
 .ent-wk-files-side { min-height: 0; flex: 0 0 auto; overflow: visible; }
+.ent-wk-final-files { display: flex; flex-direction: column; gap: 13px; }
+.ent-wk-final-group { display: flex; flex-direction: column; gap: 7px; }
+.ent-wk-final-group h3 { margin: 0; color: var(--ent-ink-2); font-size: var(--ent-fs-note); font-weight: 700; }
 
 /*
  * 窄窗：双栏落成单列，高度也不再固定 —— 这时让整页滚，

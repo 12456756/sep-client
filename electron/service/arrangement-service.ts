@@ -28,6 +28,8 @@ import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementE
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 import { TaskCreationGate } from './task-creation-gate'
 import { deliveryPlanIssues } from '../domain/arrangement-delivery'
+import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
+import type { ArrangementExecutionSnapshot } from '../../src/shared/types'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -46,6 +48,7 @@ export interface ArrangementServiceDependencies {
     create(input: EmployeeAccessRequestInput, idempotencyKey: string): Promise<EmployeeAccessRequest>
     get(requestId: string): Promise<EmployeeAccessRequest>
   }
+  arrangementCheckpoints?: ArrangementCheckpointStorePort
 }
 
 export interface ArrangementContext {
@@ -123,6 +126,23 @@ export class ArrangementService {
 
   async getPlan(taskId: string): Promise<WorkPlan | null> {
     return this.deps.workPlans.get(requireScope(this.deps.scope), taskId)
+  }
+
+  async getExecution(taskId: string): Promise<ArrangementExecutionSnapshot | null> {
+    const scope = requireScope(this.deps.scope)
+    if (!this.deps.arrangementCheckpoints) return null
+    const checkpoint = await this.deps.arrangementCheckpoints.get(scope, taskId)
+    if (!checkpoint) return null
+    return {
+      activeRunId: checkpoint.activeRunId,
+      status: checkpoint.state.status,
+      updatedAt: checkpoint.updatedAt,
+      nodes: checkpoint.state.nodes.map(node => ({
+        nodeId: node.nodeId,
+        status: node.status,
+        finalFiles: node.delivery?.finalFiles ? structuredClone(node.delivery.finalFiles) : [],
+      })),
+    }
   }
 
   async createDraft(input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>): Promise<ArrangementDraft> {

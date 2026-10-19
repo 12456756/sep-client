@@ -87,6 +87,22 @@ describe('arrangement retry display regressions', () => {
     assert.equal(buildWorkItem({ task, employees: [], plan, arrangementEvents: events }).steps[0]?.state, 'pending')
   })
 
+  it('shows only validated final files and keeps them after a retry starts', () => {
+    const retryPlan = { ...plan, nodes: [plan.nodes[0], { ...plan.nodes[0], id: 'node-b', title: 'Node B', dependsOn: ['node-a'] }] }
+    const execution = {
+      activeRunId: 'retry-run', status: 'running' as const, updatedAt: 5,
+      nodes: [
+        { nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'deliverables/report.md', format: 'md', size: 10, sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 4 }] },
+        { nodeId: 'node-b', status: 'running' as const, finalFiles: [] },
+      ],
+    }
+    const work = buildWorkItem({ task: { ...task, activeRunId: 'retry-run' }, employees: [], plan: retryPlan, arrangementExecution: execution })
+    assert.deepEqual(work.deliverables.map(file => file.path), ['deliverables/report.md'])
+    assert.equal(work.deliverables[0]?.nodeTitle, 'Node A')
+    assert.equal(work.steps[0]?.state, 'done')
+    assert.equal(work.steps[1]?.state, 'running')
+  })
+
   it('does not mistake an explicitly stopped arrangement for a retryable failure', () => {
     const stopped: TaskExecutionEvent = { ...failed, sequence: 2, type: 'stop_requested', data: { reason: 'user stopped' } }
     const work = buildWorkItem({ task: { ...task, status: 'paused', error: 'user stopped' }, employees: [], plan, arrangementEvents: [failed, stopped] })

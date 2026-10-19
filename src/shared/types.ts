@@ -380,6 +380,35 @@ export interface ArrangementPlanResult {
   error?: TaskError
 }
 
+export interface ArrangementFinalFileSnapshot {
+  id: string
+  path: string
+  format: string
+  size: number
+  sha256: string
+  nodeRunId: string
+  validatedAt: number
+}
+
+export interface ArrangementNodeExecutionSnapshot {
+  nodeId: string
+  status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
+  finalFiles: ArrangementFinalFileSnapshot[]
+}
+
+export interface ArrangementExecutionSnapshot {
+  activeRunId: string | null
+  status: 'queued' | 'running' | 'waiting-user' | 'interrupted' | 'completed' | 'stopped' | 'failed'
+  nodes: ArrangementNodeExecutionSnapshot[]
+  updatedAt: number
+}
+
+export interface ArrangementExecutionResult {
+  success: boolean
+  execution?: ArrangementExecutionSnapshot | null
+  error?: TaskError
+}
+
 export interface CreateTaskRequest {
   title: string
   prompt: string

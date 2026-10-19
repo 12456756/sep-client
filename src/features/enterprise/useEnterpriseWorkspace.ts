@@ -341,10 +341,11 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         activeEmployeeId: activeEmployeeByWork[task.id],
         plan: arrangement.plans[task.id],
         arrangementEvents: getArrangementDisplayEvents(arrangement.events, task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? ''),
+        arrangementExecution: arrangement.executions[task.id],
       });
     });
     return items.sort((left, right) => right.updatedAt - left.updatedAt);
-  }, [scopedTasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events]);
+  }, [scopedTasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events, arrangement.executions]);
 
   /** 员工是否正在处理工作，用于卡片状态。 */
   const employees = useMemo<SiliconEmployee[]>(() => {

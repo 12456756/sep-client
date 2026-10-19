@@ -1,3 +1,5 @@
+import type { ModelRequestKind, ModelRequestProgress } from '../../domain/model-request-progress'
+
 /** Maximum consecutive automatic retries; a successful SDK round resets the budget. */
 export const MAX_RUN_AUTO_RETRIES = 3
 
@@ -41,6 +43,8 @@ export interface PiAgentSessionConfig {
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
   /** Host-owned instructions retained outside compacted conversation history. */
   fixedSystemPrompt?: string
+  /** Must durably record the attempt before resolving; failures must prevent provider I/O. */
+  onModelRequest?: (kind: ModelRequestKind) => Promise<ModelRequestProgress>
   mcpServers?: readonly McpServerConfig[]
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>

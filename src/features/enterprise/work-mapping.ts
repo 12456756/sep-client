@@ -7,7 +7,7 @@
  */
 
 import { runtimeKey } from '../../shared/work-activity';
-import type { ArrangementPlanSnapshot, TaskExecutionEvent, ClientTask, ClientTaskMessage } from '../../shared/types';
+import type { ArrangementExecutionSnapshot, ArrangementFinalFileSnapshot, ArrangementPlanSnapshot, TaskExecutionEvent, ClientTask, ClientTaskMessage } from '../../shared/types';
 import type {
   SharedContext,
   WorkActivity,
@@ -18,6 +18,7 @@ import type {
   WorkStep,
   WorkStepState,
   WorkTimelineEntry,
+  WorkDeliverable,
 } from './types';
 
 const META_MARKER = '[SEP_WORK_META]';
@@ -188,11 +189,12 @@ interface BuildInput {
   streamingText?: string;
   streamingRunId?: string;
   activities?: WorkActivity[];
+  arrangementExecution?: ArrangementExecutionSnapshot | null;
   /** 当前活跃员工，切换员工后由本地状态覆盖任务上的订阅。 */
   activeEmployeeId?: string;
 }
 
-export function buildWorkItem({ task, employees, messages, streamingText, streamingRunId, activities = [], activeEmployeeId, plan, arrangementEvents = [] }: BuildInput): WorkItem {
+export function buildWorkItem({ task, employees, messages, streamingText, streamingRunId, activities = [], activeEmployeeId, plan, arrangementEvents = [], arrangementExecution }: BuildInput): WorkItem {
   const legacyMeta = decodeWorkMeta(task.prompt);
   const workType: WorkItem['workType'] = task.workType ?? { state: 'loading' };
   const resolvedKind = workType.state === 'resolved' ? workType.kind : null;
@@ -217,10 +219,11 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
   const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
 
   const stepStates = deriveStepStates(meta?.steps.length ?? 0, status, legacyProgress);
+  const effectiveExecution = mergeExecutionSnapshots(arrangementExecution, executionFromEvents(plan, arrangementEvents));
   const steps: WorkStep[] = (meta?.steps ?? []).map((step, index) => ({
     ...step,
     employeeName: nameOf(step.employeeId),
-    state: plan && plan.mode !== 'conversation' ? arrangementStepState(step.id, status, arrangementEvents) : stepStates[index],
+    state: plan && plan.mode !== 'conversation' ? arrangementStepState(step.id, status, arrangementEvents, effectiveExecution) : stepStates[index],
   }));
 
   const progress = plan && plan.mode !== 'conversation' && steps.length
@@ -231,6 +234,14 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     ?? steps[0]?.employeeId
     ?? '';
 
+  const deliverables = kind === 'flow'
+    ? finalDeliverables(plan, effectiveExecution)
+    : task.files.map((file, index) => ({
+      id: `${task.id}-file-${index}`,
+      name: file.split(/[\\/]/).pop() || file,
+      path: file,
+      note: '由员工在工作过程中产出',
+    }));
   return {
     id: task.id,
     title: task.title,
@@ -246,12 +257,8 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     createdAt: task.createdAt,
     updatedAt: task.completedAt ?? task.startedAt ?? task.createdAt,
     participants: meta?.participants.length ? meta.participants : [currentEmployeeId].filter(Boolean),
-    deliverables: task.files.map((file, index) => ({
-      id: `${task.id}-file-${index}`,
-      name: file.split(/[\\/]/).pop() || file,
-      path: file,
-      note: '由员工在工作过程中产出',
-    })),
+    deliverables,
+    arrangementExecution: kind === 'flow' ? effectiveExecution : undefined,
     timeline: buildTimeline(task, kind, nameOf(currentEmployeeId)),
     messages: buildMessages(task, messages, streamingText, currentEmployeeId, nameOf(currentEmployeeId), streamingRunId),
     activities: status === 'completed' || status === 'failed' || status === 'paused'
@@ -357,8 +364,83 @@ export function getArrangementDisplayEvents(
   return completed.length ? [...completed, ...current] : current;
 }
 
+function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: TaskExecutionEvent[]): ArrangementExecutionSnapshot | null {
+  if (!plan || plan.mode === 'conversation') return null
+  const nodes: ArrangementExecutionSnapshot['nodes'] = plan.nodes.map(node => ({ nodeId: node.id, status: 'pending', finalFiles: [] }))
+  let changed = false
+  for (const event of events) {
+    const data = event.data as { nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status'] }>; finalDeliverables?: unknown } | null
+    if (Array.isArray(data?.nodeStates)) {
+      for (const saved of data.nodeStates) {
+        const target = nodes.find(node => node.nodeId === saved.nodeId)
+        if (target) { target.status = saved.status; changed = true }
+      }
+    }
+    if (data?.nodeId && data.nodeStatus) {
+      const target = nodes.find(node => node.nodeId === data.nodeId)
+      if (target) { target.status = data.nodeStatus as typeof target.status; changed = true }
+    }
+    if (event.type === 'arrangement_node_completed' && data?.nodeId && Array.isArray(data.finalDeliverables)) {
+      const target = nodes.find(node => node.nodeId === data.nodeId)
+      if (target) target.finalFiles = data.finalDeliverables.filter(isFinalFile)
+    }
+  }
+  return changed ? { activeRunId: events.at(-1)?.runId ?? null, status: 'running', nodes, updatedAt: events.at(-1)?.occurredAt ?? 0 } : null
+}
+
+function mergeExecutionSnapshots(
+  persisted: ArrangementExecutionSnapshot | null | undefined,
+  live: ArrangementExecutionSnapshot | null,
+): ArrangementExecutionSnapshot | null {
+  if (!persisted) return live
+  if (!live) return persisted
+  return {
+    ...persisted,
+    activeRunId: live.activeRunId ?? persisted.activeRunId,
+    status: live.status,
+    updatedAt: Math.max(persisted.updatedAt, live.updatedAt),
+    nodes: persisted.nodes.map(node => {
+      const current = live.nodes.find(item => item.nodeId === node.nodeId)
+      return current ? {
+        ...node,
+        status: current.status,
+        finalFiles: current.finalFiles.length ? current.finalFiles : node.finalFiles,
+      } : node
+    }),
+  }
+}
+
+function isFinalFile(value: unknown): value is ArrangementFinalFileSnapshot {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<ArrangementFinalFileSnapshot>
+  return typeof item.id === 'string' && typeof item.path === 'string' && typeof item.format === 'string'
+    && typeof item.size === 'number' && typeof item.sha256 === 'string' && typeof item.nodeRunId === 'string' && typeof item.validatedAt === 'number'
+}
+
+function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution: ArrangementExecutionSnapshot | null): WorkDeliverable[] {
+  if (!plan || !execution) return []
+  const files: WorkDeliverable[] = []
+  for (const node of plan.nodes) {
+    const state = execution.nodes.find(item => item.nodeId === node.id)
+    for (const file of state?.finalFiles ?? []) files.push({
+      id: `${node.id}:${file.id}`,
+      name: file.path.split(/[\\/]/).pop() || file.path,
+      path: file.path,
+      note: `节点最终交付物 · ${node.title}`,
+      nodeId: node.id,
+      nodeTitle: node.title,
+    })
+  }
+  return files
+}
+
 /** Node IDs (not array position) drive parallel/out-of-order execution state. */
-function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskExecutionEvent[]): WorkStepState {
+function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskExecutionEvent[], execution: ArrangementExecutionSnapshot | null): WorkStepState {
+  const saved = execution?.nodes.find(node => node.nodeId === nodeId)?.status
+  if (saved === 'completed') return 'done'
+  if (saved === 'running') return 'running'
+  if (saved === 'failed' || saved === 'interrupted' || saved === 'stopped' || saved === 'blocked') return 'failed'
+  if (saved === 'ready') return 'pending'
   if (status === 'completed') return 'done';
   let state: WorkStepState = 'pending';
   for (const event of events) {

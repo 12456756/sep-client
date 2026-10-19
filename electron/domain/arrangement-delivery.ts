@@ -92,5 +92,8 @@ export class DeliveryExecutionError extends Error {
 }
 
 export function buildDeliveryCorrection(attempt: number, issues: readonly DeliveryIssue[]): string {
-  return `第 ${attempt} 次交付校验失败，最多允许 ${MAX_DELIVERY_VALIDATIONS} 次。节点尚未完成。\n失败项目：\n${JSON.stringify(issues, null, 2)}\n请修复实际文件或提交内容，保留其他有效成果，不重复已完成的操作。重新确认节点全部工作结束后，按固定提示词提交完整最终 JSON。不得只回复“已修复”。`
+  const progress = attempt === 0
+    ? `上次执行的交付校验失败，本次手动重试最多允许 ${MAX_DELIVERY_VALIDATIONS} 次校验。`
+    : `第 ${attempt} 次交付校验失败，最多允许 ${MAX_DELIVERY_VALIDATIONS} 次。`
+  return `${progress}节点尚未完成。\n失败项目：\n${JSON.stringify(issues, null, 2)}\n请修复实际文件或提交内容，保留其他有效成果，不重复已完成的操作。重新确认节点全部工作结束后，按固定提示词提交完整最终 JSON。不得只回复“已修复”。`
 }

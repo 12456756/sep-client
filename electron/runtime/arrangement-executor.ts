@@ -29,6 +29,7 @@ import {
 } from '../domain/arrangement-execution'
 import type { EmployeeRuntimeConfig, TaskToolPolicy, TaskWorkerPort } from './run-types'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
+import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../domain/model-request-progress'
 
 export interface ArrangementExecutionResult {
   status: ArrangementExecutionState['status']
@@ -133,6 +134,7 @@ function nodeMap(plan: WorkPlan): Map<string, ArrangementNode> {
 export class ArrangementExecutor {
   private readonly activeWorkers = new Map<string, TaskWorkerPort>()
   private readonly checkpointWrites = new WriteChain()
+  private readonly requestProgressWrites = new WriteChain()
   private abortRequested = false
   private stopRequested = false
   private failureRequested = false
@@ -194,7 +196,15 @@ export class ArrangementExecutor {
       const results = await Promise.all(batch.map(item => this.executeNode(plan, taskId, arrangementRunId, item.node, item.checkpoint, current, async sessionRunId => {
         current = { ...current, nodes: current.nodes.map(node => node.nodeId === item.node.id ? { ...node, sessionRunId } : node) }
         await this.persist(plan, taskId, arrangementRunId, current)
-      }, async delivery => {
+      }, (kind, recoveredSession) => this.requestProgressWrites.run(taskId, async () => {
+        this.checkExecutionControl()
+        const previous = current.nodes.find(node => node.nodeId === item.node.id)!.modelRequestProgress
+        const next = advanceModelRequestProgress(previous, kind, recoveredSession ? 'since-resume' : undefined)
+        current = { ...current, nodes: current.nodes.map(node => node.nodeId === item.node.id ? { ...node, modelRequestProgress: next } : node) }
+        await this.persist(plan, taskId, arrangementRunId, current)
+        this.checkExecutionControl()
+        return next
+      }), async delivery => {
         current = { ...current, nodes: current.nodes.map(node => node.nodeId === item.node.id ? { ...node, delivery } : node) }
         await this.persist(plan, taskId, arrangementRunId, current)
       })))
@@ -263,6 +273,7 @@ export class ArrangementExecutor {
     checkpoint: ArrangementExecutionState['nodes'][number],
     state: ArrangementExecutionState,
     saveSessionRun: (runId: string) => Promise<void>,
+    saveModelRequestProgress: (kind: ModelRequestKind, recoveredSession: boolean) => Promise<ModelRequestProgress>,
     saveDelivery: (delivery: NodeDeliveryProgress) => Promise<void>,
   ): Promise<{ ok: true; nodeId: string; output: string | null; completion: ArrangementNodeEvent } | { ok: false; nodeId: string; error: string; terminal: boolean }> {
     const nodeRunId = randomUUID()
@@ -338,12 +349,14 @@ export class ArrangementExecutor {
           ...(recovery ? { resumeSessionFile: recovery.sessionFile } : {}),
           additionalSkillPaths: employee.additionalSkillPaths,
           employeeProfile: employee.employeeProfile,
+          arrangementNodeId: node.id,
           ...(structured ? { fixedSystemPrompt: buildArrangementNodePrompt(plan, node, dependencies) } : {}),
           toolPolicy: toToolPolicy(plan.permissions, workspaceDir),
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
         onApprovalRequest: request => this.options.onApprovalRequest(request),
+        onModelRequest: structured ? kind => saveModelRequestProgress(kind, recovery !== null) : undefined,
         ...(structured ? { onResponseSettled: async (response: { text: string; stopReason?: string }): Promise<{ continueWith: string } | void> => {
           this.checkExecutionControl()
           this.validationCancellation.signal.throwIfAborted()

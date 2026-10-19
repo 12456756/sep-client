@@ -1,5 +1,6 @@
 import type { ArrangementNode } from './arrangement-plan'
 import type { NodeDeliveryProgress } from './arrangement-delivery'
+import type { ModelRequestProgress } from './model-request-progress'
 
 /**
  * 已确认编排的纯状态机。
@@ -19,6 +20,7 @@ export interface ArrangementNodeCheckpoint {
   error: string | null
   output: string | null
   delivery?: NodeDeliveryProgress
+  modelRequestProgress?: ModelRequestProgress
 }
 
 export interface ArrangementExecutionState {
@@ -112,15 +114,21 @@ export function retryArrangementNode(
   planNodes: readonly ArrangementNode[],
   nodeId?: string,
 ): ArrangementExecutionState {
-  if (state.status !== 'waiting-user') return state
+  if (state.status !== 'waiting-user' && state.status !== 'failed') return state
   const retryIds = new Set(state.nodes.filter(node => node.status === 'failed' && (!nodeId || node.nodeId === nodeId)).map(node => node.nodeId))
   if (retryIds.size === 0) return state
   const descendantsToRelease = new Set([...retryIds].flatMap(id => [...descendantNodeIds(planNodes, id)]))
   const stillBlocked = new Set(state.nodes.filter(node => node.status === 'failed' && !retryIds.has(node.nodeId))
     .flatMap(node => [...descendantNodeIds(planNodes, node.nodeId)]))
+  const completedIds = new Set(state.nodes.filter(node => node.status === 'completed').map(node => node.nodeId))
   const nodes = state.nodes.map(node => {
-    if (retryIds.has(node.nodeId)) return { ...node, status: 'ready' as const, error: null }
-    if (descendantsToRelease.has(node.nodeId) && !stillBlocked.has(node.nodeId) && node.status === 'blocked') return { ...node, status: 'pending' as const }
+    // Only an explicit retry renews validation; pause/resume preserves its budget.
+    if (retryIds.has(node.nodeId)) return { ...node, status: 'ready' as const, error: null,
+      ...(node.delivery ? { delivery: { ...node.delivery, validationAttempts: 0 } } : {}) }
+    if ((state.status === 'failed' || descendantsToRelease.has(node.nodeId)) && !stillBlocked.has(node.nodeId) && node.status === 'blocked') {
+      const ready = planNodes.find(item => item.id === node.nodeId)!.dependsOn.every(id => completedIds.has(id))
+      return { ...node, status: ready ? 'ready' as const : 'pending' as const }
+    }
     return { ...node }
   })
   return {

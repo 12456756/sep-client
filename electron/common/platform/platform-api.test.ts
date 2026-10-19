@@ -3,11 +3,11 @@ import { execFileSync } from 'node:child_process'
 import * as assert from 'node:assert/strict'
 import * as api from './platform-api'
 import { config } from '../config'
-import { setLogSink, type LogRecord } from '../logger'
+import { setLogLevel, setLogSink, type LogRecord } from '../logger'
 
 const originalFetch = globalThis.fetch
 let restoreLogSink: (() => void) | undefined
-afterEach(() => { globalThis.fetch = originalFetch; restoreLogSink?.(); restoreLogSink = undefined })
+afterEach(() => { globalThis.fetch = originalFetch; restoreLogSink?.(); restoreLogSink = undefined; setLogLevel('debug') })
 const version = {
   id: 'psv_opaque-id', capabilityId: 'cap-1', parentVersionId: 'published-1',
   enterpriseId: 'enterprise-1', ownerId: 'user-1', scope: 'PERSONAL', version: '0.0.0-personal.hash',
@@ -367,6 +367,7 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
   })
 
   it('logs the HTTP status of personal submission queries without response contents', async () => {
+    setLogLevel('trace')
     const logs: LogRecord[] = []
     restoreLogSink = setLogSink(record => logs.push(record))
     for (const statusCode of [200, 403, 503]) {
@@ -376,8 +377,22 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     }
     const records = logs.filter(record => record.message === 'skill version query response received')
     assert.deepEqual(records.map(record => record.fields.statusCode), [200, 403, 503])
-    assert.deepEqual(records.map(record => record.level), ['info', 'warn', 'warn'])
+    assert.deepEqual(records.map(record => record.level), ['trace', 'warn', 'warn'])
     assert.doesNotMatch(JSON.stringify(logs), /private-query-error|private-access-token/)
+  })
+
+  it('keeps successful skill polling quiet at the normal level and still reports failures', async () => {
+    setLogLevel('debug')
+    const logs: LogRecord[] = []
+    restoreLogSink = setLogSink(record => logs.push(record))
+    globalThis.fetch = async () => response([version])
+    await api.listSkillVersions({ capabilityId: 'cap-1' }, 'private-access-token')
+    assert.equal(logs.length, 0)
+    globalThis.fetch = async () => response({ statusCode: 503, message: 'private-query-error' }, 503)
+    await assert.rejects(() => api.listSkillVersions({ capabilityId: 'cap-1' }, 'private-access-token'))
+    assert.equal(logs.length, 1)
+    assert.equal(logs[0]!.level, 'warn')
+    assert.equal(logs[0]!.fields.statusCode, 503)
   })
 
   it('aborts a stalled skill version query using the caller signal', async () => {

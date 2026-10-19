@@ -6,6 +6,7 @@ import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-
 import { PiCodingAgentAdapter } from './pi-coding-agent-adapter'
 import { SharedPiSession } from './pi-shared-session'
 import { logger } from '../../common/logger'
+import type { ModelRequestKind, ModelRequestProgress } from '../../domain/model-request-progress'
 
 const log = logger.child('pi-task-worker')
 const MAX_IDENTICAL_UNKNOWN_TOOL_TURNS = 3
@@ -28,6 +29,7 @@ export interface PiTaskWorkerContext {
   additionalSkillPaths?: string[]
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
   fixedSystemPrompt?: string
+  arrangementNodeId?: string
   toolPolicy?: PiAgentSessionConfig['toolPolicy']
   disableTools?: boolean
 }
@@ -47,6 +49,7 @@ export interface PiTaskWorkerOptions {
   onSessionCreated?: (session: { sessionId: string; sessionFile: string | null }) => Promise<void> | void
   /** Runs only after a complete agent execution, never after individual tool turns. */
   onResponseSettled?: (response: { text: string; stopReason?: string }) => Promise<{ continueWith: string } | void>
+  onModelRequest?: (kind: ModelRequestKind) => Promise<ModelRequestProgress>
   runtime?: PiAgentRuntime
   sessionAdapter?: SharedPiSession
   createTokenManager?: () => TokenManagerPort
@@ -60,6 +63,7 @@ export class PiTaskWorker {
   private readonly onEvent: PiTaskWorkerOptions['onEvent']
   private readonly onSessionCreated: PiTaskWorkerOptions['onSessionCreated']
   private readonly onResponseSettled: PiTaskWorkerOptions['onResponseSettled']
+  private readonly onModelRequest: PiTaskWorkerOptions['onModelRequest']
   private readonly sessionAdapter: SharedPiSession | null
   private session: PiAgentSession | null = null
   private unsubscribe: (() => void) | null = null
@@ -86,6 +90,7 @@ export class PiTaskWorker {
     this.onEvent = options.onEvent
     this.onSessionCreated = options.onSessionCreated
     this.onResponseSettled = options.onResponseSettled
+    this.onModelRequest = options.onModelRequest
     this.sessionAdapter = options.sessionAdapter ?? null
     this.tokenManager = options.createTokenManager?.() ?? new EmploymentTokenManager({
       getRefreshToken: options.getRefreshToken,
@@ -110,6 +115,7 @@ export class PiTaskWorker {
       runId: this.context.runId,
       subscriptionId: this.context.subscriptionId,
       modelId: this.context.modelId,
+      nodeId: this.context.arrangementNodeId,
     }
     log.info('run started', logContext)
     let session: PiAgentSession
@@ -119,7 +125,7 @@ export class PiTaskWorker {
       }))
       this.checkCancellation()
       stage = 'session-create'
-      log.info('creating runtime session', {
+      log.trace('creating runtime session', {
         runtime: this.runtime.constructor?.name ?? 'unknown',
       })
       const sessionConfig: PiAgentSessionConfig = {
@@ -133,6 +139,13 @@ export class PiTaskWorker {
         additionalSkillPaths: this.context.additionalSkillPaths,
         employeeProfile: this.context.employeeProfile,
         fixedSystemPrompt: this.context.fixedSystemPrompt,
+        onModelRequest: this.onModelRequest ? async kind => {
+          this.checkCancellation()
+          const progress = await this.onModelRequest!(kind)
+          this.checkCancellation()
+          log.info('model request prepared', { ...logContext, kind, ...progress })
+          return progress
+        } : undefined,
         toolPolicy: this.context.toolPolicy,
         disableTools: this.context.disableTools,
         getAccessToken: () => this.tokenManager.getValidToken(),

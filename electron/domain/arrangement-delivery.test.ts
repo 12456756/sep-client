@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { deliveryPlanIssues, parseDeliverySubmission } from './arrangement-delivery'
+import { buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission } from './arrangement-delivery'
 import type { ArrangementNode } from './arrangement-plan'
 
 const node: ArrangementNode = {
@@ -11,6 +11,14 @@ const node: ArrangementNode = {
 const submission = { nodeId: node.id, summary: 'Research complete', finalDeliverables: [{ id: 'report', path: 'deliverables/report.txt' }] }
 
 describe('node final delivery protocol', () => {
+  it('carries prior validation issues into a new manual retry without reporting a zeroth failure', () => {
+    const issues = [{ code: 'INVALID_SUBMISSION', message: 'invalid JSON' }]
+    const prompt = buildDeliveryCorrection(0, issues)
+    assert.match(prompt, /上次执行/)
+    assert.match(prompt, /INVALID_SUBMISSION/)
+    assert.doesNotMatch(prompt, /第 0 次/)
+    assert.match(buildDeliveryCorrection(1, issues), /第 1 次交付校验失败/)
+  })
   it('accepts only the complete final manifest for this node', () => {
     assert.deepEqual(parseDeliverySubmission(node, JSON.stringify(submission)), { ok: true, submission })
   })

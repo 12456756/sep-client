@@ -287,7 +287,7 @@ async function getJson<T>(path: string, accessToken: string, resource: AuthApiRe
   })
   if (resource === 'skills' && path.startsWith('/enterprise/skill-versions?')) {
     const fields = { method: 'GET', path: '/enterprise/skill-versions', statusCode: response.status, ok: response.ok }
-    if (response.ok) log.info('skill version query response received', fields)
+    if (response.ok) log.trace('skill version query response received', fields)
     else log.warn('skill version query response received', fields)
   }
   if (!response.ok) throw await parseError(response, resource)

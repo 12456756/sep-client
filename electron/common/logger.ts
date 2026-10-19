@@ -9,13 +9,15 @@
  *   - 每个模块用 child(模块名)，来源自带，不在消息里手写模块前缀。
  *   - 全部字段过 redact。这条与安全约束绑定，不是风格问题。
  */
+import { inspect } from 'node:util'
 import { redactValue } from './redact'
 
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
+export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 
 export type LogFields = Record<string, unknown>
 
 export interface Logger {
+  trace(message: string, fields?: LogFields): void
   debug(message: string, fields?: LogFields): void
   info(message: string, fields?: LogFields): void
   warn(message: string, fields?: LogFields): void
@@ -34,10 +36,10 @@ export interface LogRecord {
 
 export type LogSink = (record: LogRecord) => void
 
-const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 }
+const LEVEL_ORDER: Record<LogLevel, number> = { trace: 0, debug: 1, info: 2, warn: 3, error: 4 }
 
 function parseLevel(value: string | undefined): LogLevel | null {
-  return value && value in LEVEL_ORDER ? value as LogLevel : null
+  return value && Object.hasOwn(LEVEL_ORDER, value) ? value as LogLevel : null
 }
 
 /**
@@ -51,13 +53,26 @@ function defaultLevel(): LogLevel {
 
 /** 唯一允许调用 console 的地方。级别映射到对应的 console 方法，便于 devtools 过滤。 */
 function writeToConsole(record: LogRecord): void {
-  const prefix = `${record.level.toUpperCase().padEnd(5)} ${record.scope}`
-  const hasFields = Object.keys(record.fields).length > 0
-  const payload = hasFields ? [record.fields] : []
-  if (record.level === 'error') console.error(prefix, record.message, ...payload)
-  else if (record.level === 'warn') console.warn(prefix, record.message, ...payload)
-  else if (record.level === 'info') console.info(prefix, record.message, ...payload)
-  else console.debug(prefix, record.message, ...payload)
+  const time = new Date(record.timestamp)
+  const timestamp = `${time.toTimeString().slice(0, 8)}.${String(time.getMilliseconds()).padStart(3, '0')}`
+  const displayTitle = typeof record.fields.displayTitle === 'string' ? record.fields.displayTitle : undefined
+  const prefix = displayTitle
+    ? `${timestamp} 【${displayTitle}】`
+    : `${timestamp} ${record.level.toUpperCase().padEnd(5)} ${record.scope} ${record.message}`
+  const fields: string[] = []
+  const multiline: string[] = []
+  for (const [key, value] of Object.entries(record.fields)) {
+    if (key === 'displayTitle' && displayTitle) continue
+    // Keep summaries on one line and display newly added bodies as readable blocks.
+    if (key === 'content' && typeof value === 'string' && displayTitle) multiline.push(`\n${value}`)
+    else if (typeof value === 'string' && (key === 'content' || /[\r\n]/.test(value))) multiline.push(`\n${key}:\n${value}`)
+    else fields.push(`${key}=${typeof value === 'string' ? value : inspect(value, { compact: true, breakLength: Infinity, depth: 5 })}`)
+  }
+  const output = `${prefix}${fields.length ? ` ${fields.join(' ')}` : ''}${multiline.join('')}`
+  if (record.level === 'error') console.error(output)
+  else if (record.level === 'warn') console.warn(output)
+  else if (record.level === 'info') console.info(output)
+  else console.debug(output)
 }
 
 interface LoggerState {
@@ -72,6 +87,10 @@ export function setLogLevel(level: LogLevel): void {
   state.level = level
 }
 
+export function isLogLevelEnabled(level: LogLevel): boolean {
+  return LEVEL_ORDER[level] >= LEVEL_ORDER[state.level]
+}
+
 /** 替换输出目标。返回恢复函数，便于测试断言后复原。 */
 export function setLogSink(sink: LogSink): () => void {
   const previous = state.sink
@@ -80,7 +99,7 @@ export function setLogSink(sink: LogSink): () => void {
 }
 
 function emit(level: LogLevel, scope: string, bound: LogFields, message: string, fields?: LogFields): void {
-  if (LEVEL_ORDER[level] < LEVEL_ORDER[state.level]) return
+  if (!isLogLevelEnabled(level)) return
   const merged = { ...bound, ...fields }
   state.sink({
     level,
@@ -93,6 +112,7 @@ function emit(level: LogLevel, scope: string, bound: LogFields, message: string,
 
 function build(scope: string, bound: LogFields): Logger {
   return {
+    trace: (message, fields) => emit('trace', scope, bound, message, fields),
     debug: (message, fields) => emit('debug', scope, bound, message, fields),
     info: (message, fields) => emit('info', scope, bound, message, fields),
     warn: (message, fields) => emit('warn', scope, bound, message, fields),
