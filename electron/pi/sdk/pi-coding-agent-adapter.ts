@@ -20,7 +20,7 @@ import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
 import { videoGenerationInputSchema } from '../../../src/shared/video-host'
-import { videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../../src/shared/video-media'
+import { videoBillingStatusSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../../src/shared/video-media'
 import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId } from '../../common/platform/media-contract'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import type {
@@ -90,17 +90,21 @@ const videoJobResultSchema = z.object({
   generationStatus: z.enum(['NOT_SUBMITTED', 'SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
-  billingStatus: z.literal('MOCK_NOT_CHARGED'),
+  billingStatus: videoBillingStatusSchema,
+  amountCny: z.string().regex(/^\d+\.\d{6}$/).max(128).optional(),
+  actualCostCny: z.string().regex(/^\d+\.\d{6}$/).max(128).optional(),
+  amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).max(128).optional(),
   // Free-form upstream messages can echo prompts, paths or credentials. Never forward them.
   error: z.string().max(8192).nullable().transform(value => value === null ? null : 'Video job reported an error.'),
   createdAt: z.number().nonnegative().finite(), updatedAt: z.number().nonnegative().finite(),
   outputs: z.array(videoOutputSchema.strip()).max(4),
-})
+}).refine(job => job.billingStatus !== 'MOCK_NOT_CHARGED' || job.amountCny === undefined && job.actualCostCny === undefined && job.amountUsd === undefined)
 const videoTaskResultSchema = z.object({
-  mock: z.literal(true), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
+  mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
     runtime.profiles.every(profile => profile.capabilities.aspectRatios.every(ratio => ratio.length <= 32))),
   jobs: z.array(videoJobResultSchema).max(50),
-})
+}).refine(task => (task.runtime.executionMode ?? 'mock') === (task.mock ? 'mock' : 'real') &&
+  task.jobs.every(job => (job.billingStatus === 'MOCK_NOT_CHARGED') === task.mock))
 
 function safeVideoResult(result: unknown, names: readonly VideoToolName[]): unknown {
   // Only bounded business schemas are serialized. Raw host records and error objects fail closed.

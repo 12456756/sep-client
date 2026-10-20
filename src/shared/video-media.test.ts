@@ -4,6 +4,33 @@ import { test } from 'node:test'
 import * as fixture from './fixtures/media-video-v1.json'
 import { videoOutputSchema, videoProfileSchema, videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema, videoRuntimeSchema, videoQuoteResponseSchema } from './video-media'
 
+test('real video contracts are strict and cannot accept mock billing', () => {
+  assert.equal(videoRuntimeSchema.parse({ ...fixture.runtime, executionMode: 'real' }).executionMode, 'real')
+  for (const billingStatus of ['NOT_RESERVED', 'RESERVED', 'SETTLED', 'RELEASED', 'RECONCILING']) {
+    assert.ok(videoReceiptSchema.safeParse({ ...fixture.receipt, mock: false, billingStatus, amountCny: '1.000000', actualCostCny: '0.800000', amountUsd: '0.12' }).success)
+  }
+  for (const value of [{ ...fixture.receipt, mock: false }, { ...fixture.receipt, amountCny: '1.000000' },
+    { ...fixture.receipt, mock: false, billingStatus: 'RESERVED', amountCny: '1.00' },
+    { ...fixture.receipt, mock: false, billingStatus: 'RESERVED', privateUrl: 'secret' }]) assert.equal(videoReceiptSchema.safeParse(value).success, false)
+})
+
+test('real terminal billing remains queryable with null poll hints until settled or released', () => {
+  for (const status of ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']) {
+    for (const billingStatus of ['RESERVED', 'RECONCILING', 'SETTLED', 'RELEASED', 'NOT_RESERVED']) {
+      const delivered = status === 'SUCCEEDED' || status === 'PARTIAL_SUCCEEDED'
+      const pending = billingStatus === 'RESERVED' || billingStatus === 'RECONCILING'
+      const value = { ...fixture.receipts.succeeded, mock: false, status, billingStatus,
+        outputs: delivered ? [{ ...fixture.output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }] : [],
+        recovery: { canQuery: pending, canCancel: false, canDownload: delivered }, pollAfterMs: null }
+      assert.ok(videoReceiptSchema.safeParse(value).success, `${status}/${billingStatus}`)
+      assert.equal(videoReceiptSchema.safeParse({ ...value, recovery: { ...value.recovery, canQuery: !pending } }).success, false)
+      assert.equal(videoReceiptSchema.safeParse({ ...value, pollAfterMs: 1000 }).success, false)
+      assert.equal(videoReceiptSchema.safeParse({ ...value, recovery: { ...value.recovery, canCancel: true } }).success, false)
+      if (delivered) assert.equal(videoReceiptSchema.parse(value).outputs[0].durationSeconds, 4.458333)
+    }
+  }
+})
+
 test('shared video fixtures preserve the async profile, request and quote contracts', () => {
   assert.deepEqual(videoProfileSchema.parse(fixture.profile), fixture.profile)
   assert.deepEqual(videoRuntimeSchema.parse(fixture.runtime), fixture.runtime)

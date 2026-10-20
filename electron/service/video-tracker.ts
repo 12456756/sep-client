@@ -1,5 +1,6 @@
 import type { LocalVideoJob } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
+import { videoBillingPending } from '../../src/shared/video-media'
 
 export interface VideoTrackerPort {
   recover(signal?: AbortSignal): Promise<LocalVideoJob[]>
@@ -39,7 +40,8 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 function pollable(job: LocalVideoJob): boolean {
   if (job.submission === 'NOT_SENT' || job.trackingStatus === 'STOPPED') return false
   if (!job.receipt) return true
-  return !terminal.has(job.receipt.status) && job.receipt.recovery.canQuery && job.receipt.pollAfterMs !== null
+  const billingPending = !job.receipt.mock && videoBillingPending(job.receipt.billingStatus)
+  return (!terminal.has(job.receipt.status) || billingPending) && job.receipt.recovery.canQuery && (job.receipt.pollAfterMs !== null || billingPending)
 }
 
 /** One authenticated scope per instance. No explicit resume, dispatch or runtime wiring. */

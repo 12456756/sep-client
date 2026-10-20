@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { videoParametersSchema, videoOperationSchema, type VideoOutput, type VideoRuntime } from './video-media'
+import { videoParametersSchema, videoOperationSchema, type VideoOutput, type VideoRuntime, type VideoReceipt } from './video-media'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 export const videoGenerationInputSchema = z.object({
@@ -26,7 +26,10 @@ export interface VideoJobView {
   generationStatus: string
   trackingStatus: 'ACTIVE' | 'INTERRUPTED' | 'AUTH_REQUIRED' | 'STOPPED'
   saveStatus: 'PENDING' | 'SAVING' | 'SAVED' | 'SAVE_FAILED' | 'MISSING'
-  billingStatus: 'MOCK_NOT_CHARGED'
+  billingStatus: VideoReceipt['billingStatus']
+  amountCny?: string
+  actualCostCny?: string
+  amountUsd?: string
   createdAt: number
   updatedAt: number
   error: string | null
@@ -36,7 +39,7 @@ export interface VideoJobView {
 }
 
 export interface VideoTaskView {
-  mock: true
+  mock: boolean
   runtime: VideoRuntime
   jobs: VideoJobView[]
 }

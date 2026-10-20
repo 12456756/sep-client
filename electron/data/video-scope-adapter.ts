@@ -14,8 +14,16 @@ const view = (asset: LocalMediaAsset): MediaAssetView => ({
   mime: asset.mime, size: asset.size, width: asset.width, height: asset.height, status: asset.status,
 })
 
-export function createVideoScopeAdapter(root: string, media: MediaStore, store: VideoStore) {
+export function createVideoScopeAdapter(root: string, media: MediaStore, store: VideoStore, openLocalVideo?: (path: string) => Promise<void>) {
   return {
+    openOutput: async (scope: VideoScope, taskId: string, jobId: string, outputId: string, signal: AbortSignal, validate: () => void) => {
+      if (!openLocalVideo) throw new AppError('SERVICE_UNAVAILABLE')
+      signal.throwIfAborted(); validate()
+      const path = await store.verifiedAssetPath(scope, taskId, jobId, outputId)
+      signal.throwIfAborted(); validate()
+      await openLocalVideo(path)
+      signal.throwIfAborted(); validate()
+    },
     readReference: async (scope: VideoScope, taskId: string, id: string) => {
       const asset = await media.getAsset(owner(scope), taskId, id)
       if (!asset || asset.source !== 'reference' || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')

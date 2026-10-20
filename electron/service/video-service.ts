@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { z } from 'zod'
-import { videoReceiptSchema, videoRequestSchema, type VideoGatewayPort, type VideoReceipt } from '../../src/shared/video-media'
+import { videoBillingPending, videoReceiptSchema, videoRequestSchema, type VideoGatewayPort, type VideoReceipt } from '../../src/shared/video-media'
 import { receiptMatchesRequest, videoLocalIdSchema, videoScopeSchema, videoStoredQuoteSchema,
   type LocalVideoJob, type VideoAssetState, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { abortableVideo } from '../data/video-files'
@@ -11,12 +11,16 @@ type VideoInput = z.infer<typeof videoRequestSchema>
 export interface VideoServiceOptions {
   /** One immutable authenticated scope and one gateway bound to that subscription. */
   scope: VideoScope
+  executionMode?: 'mock' | 'real'
   gateway: VideoGatewayPort
   store: VideoStorePort
   now?: () => number
 }
 const activities = new WriteChain()
 const generating = new Set(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'])
+function tracking(receipt: VideoReceipt): boolean {
+  return generating.has(receipt.status) || !receipt.mock && videoBillingPending(receipt.billingStatus) && receipt.recovery.canQuery
+}
 function interrupted(error: unknown, fallback: string): Pick<LocalVideoJob, 'trackingStatus' | 'error'> {
   const authorization = error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
   return { trackingStatus: authorization ? 'AUTH_REQUIRED' : 'INTERRUPTED', error: error instanceof AppError ? error.code : fallback }
@@ -28,6 +32,7 @@ export class VideoService {
   private readonly gateway: VideoGatewayPort
   private readonly store: VideoStorePort
   private readonly now: () => number
+  private readonly mode: 'mock' | 'real'
   private readonly shutdown = new AbortController()
 
   constructor(options: VideoServiceOptions) {
@@ -35,6 +40,7 @@ export class VideoService {
     this.gateway = options.gateway
     this.store = options.store
     this.now = options.now ?? Date.now
+    this.mode = options.executionMode ?? 'mock'
   }
   private signal(parent?: AbortSignal): AbortSignal {
     return parent ? AbortSignal.any([parent, this.shutdown.signal]) : this.shutdown.signal
@@ -46,6 +52,7 @@ export class VideoService {
   private async load(taskId: string, jobId: string): Promise<LocalVideoJob> {
     const job = await this.store.getJob(this.scope, taskId, jobId)
     if (!job) throw new Error('Video job does not exist in the active scope.')
+    if ((job.executionMode ?? 'mock') !== this.mode) throw new AppError('PERMISSION_DENIED')
     return job
   }
   private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error'>>): Promise<LocalVideoJob> {
@@ -63,7 +70,7 @@ export class VideoService {
     if (quote.status !== 'quoted' || quote.expiresAt <= this.now()) throw new Error('Video quote is unavailable or expired.')
     const now = this.now()
     const job: LocalVideoJob = {
-      version: 1, scope: { ...this.scope }, taskId, jobId: `video_${randomUUID()}`,
+      version: 1, executionMode: this.mode, scope: { ...this.scope }, taskId, jobId: `video_${randomUUID()}`,
       request: { ...input, clientRequestId: `video_request_${randomUUID()}`, quoteId: quote.quoteId }, quote,
       submission: 'NOT_SENT', receipt: null, trackingStatus: 'ACTIVE', saveStatus: 'PENDING', error: null, createdAt: now, updatedAt: now,
     }
@@ -81,6 +88,7 @@ export class VideoService {
     return this.locked(taskId, jobId, async () => {
       const signal = this.signal(parent)
       signal.throwIfAborted()
+      await this.load(taskId, jobId)
       let job = await this.store.updateJob(this.scope, taskId, jobId, previous => {
         signal.throwIfAborted()
         if (previous.submission !== 'NOT_SENT') throw new Error('Video may already be submitted; query the original request.')
@@ -105,7 +113,7 @@ export class VideoService {
   private async accept(job: LocalVideoJob, value: VideoReceipt): Promise<LocalVideoJob> {
     const receipt = videoReceiptSchema.parse(value)
     if (!receiptMatchesRequest(job, receipt) || (job.receipt && job.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
-    return this.update(job, { receipt, submission: 'RECEIPTED', trackingStatus: generating.has(receipt.status) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode })
+    return this.update(job, { receipt, submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode })
   }
 
   private async save(job: LocalVideoJob, signal: AbortSignal, repair = false): Promise<LocalVideoJob> {
@@ -141,7 +149,7 @@ export class VideoService {
     // Includes the final manifest write: failures propagate, never return SAVED.
     return this.update(job, { saveStatus: failed ? 'SAVE_FAILED' : 'SAVED',
       error: failed ? 'VIDEO_SAVE_FAILED' : receipt.errorCode,
-      ...(!failed ? { trackingStatus: generating.has(receipt.status) ? 'ACTIVE' as const : 'STOPPED' as const } : {}), ...(interruption ?? {}) })
+      ...(!failed ? { trackingStatus: tracking(receipt) ? 'ACTIVE' as const : 'STOPPED' as const } : {}), ...(interruption ?? {}) })
   }
 
   /** One find/get only. A missing/unknown receipt NEVER authorizes a submit. */
@@ -157,7 +165,7 @@ export class VideoService {
       // Recheck under the activity lock: another recovery may just have lost auth.
       if (automatic && job.trackingStatus === 'AUTH_REQUIRED') return job
       if (job.submission === 'NOT_SENT') return this.update(job, { trackingStatus: 'STOPPED', error: 'NOT_SUBMITTED' })
-      if (!job.receipt || (generating.has(job.receipt.status) && job.receipt.recovery.canQuery)) {
+      if (!job.receipt || (tracking(job.receipt) && job.receipt.recovery.canQuery)) {
         let receipt: VideoReceipt | null
         try {
           receipt = job.receipt
@@ -187,7 +195,7 @@ export class VideoService {
   async recover(parent?: AbortSignal): Promise<LocalVideoJob[]> {
     return activities.run(JSON.stringify(['video-recovery', this.scope]), async () => {
       const signal = this.signal(parent)
-      const jobs = await this.store.listJobs(this.scope)
+      const jobs = (await this.store.listJobs(this.scope)).filter(job => (job.executionMode ?? 'mock') === this.mode)
       // Authorization belongs to the authenticated scope, not just one job.
       // Keep this pause durable across reconstruction and overlapping recovery.
       if (jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) return jobs
@@ -197,13 +205,13 @@ export class VideoService {
         const current = await this.resumeOriginal(job.taskId, job.jobId, signal, true)
         restored.push(current)
         if (current.trackingStatus === 'AUTH_REQUIRED') {
-          const paused = await this.store.listJobs(this.scope)
+          const paused = (await this.store.listJobs(this.scope)).filter(job => (job.executionMode ?? 'mock') === this.mode)
           for (const candidate of paused) {
             if (candidate.trackingStatus === 'ACTIVE' || candidate.trackingStatus === 'INTERRUPTED' || candidate.saveStatus === 'SAVE_FAILED') {
               await this.update(candidate, { trackingStatus: 'AUTH_REQUIRED', error: current.error })
             }
           }
-          return this.store.listJobs(this.scope)
+          return (await this.store.listJobs(this.scope)).filter(job => (job.executionMode ?? 'mock') === this.mode)
         }
       }
       return restored
@@ -211,7 +219,7 @@ export class VideoService {
   }
 
   async listJobs(): Promise<LocalVideoJob[]> {
-    const jobs = await this.store.listJobs(this.scope)
+    const jobs = (await this.store.listJobs(this.scope)).filter(job => (job.executionMode ?? 'mock') === this.mode)
     const result: LocalVideoJob[] = []
     for (const job of jobs) {
       result.push(await this.locked(job.taskId, job.jobId, async () => {

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { videoGenerationInputSchema } from '../../src/shared/video-host'
-import { videoRuntimeSchema } from '../../src/shared/video-media'
+import { videoBillingPending, videoRuntimeSchema } from '../../src/shared/video-media'
 import { videoLocalIdSchema } from '../domain/video-media'
 import type { VideoHostTools, VideoRunPort, VideoToolName } from '../domain/video-tools'
 import { AppError } from '../errors/app-error'
@@ -18,13 +18,13 @@ interface Run {
 }
 const names: readonly VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
 
-/** Explicit mock composition, with no Pi dependency or synthetic capability fallback. */
+/** Explicit mode composition, with no Pi dependency or synthetic capability fallback. */
 export class VideoRunService implements VideoRunPort {
   private readonly runs = new Map<string, Run>()
   private readonly stops = new Map<string, number>()
   private readonly preparations = new Map<string, Set<AbortController>>()
   constructor(private readonly options: MockVideoHostOptions, private readonly ipcHost?: MockVideoHostService) {
-    if (options.mock !== true) throw new AppError('INVALID_ARGUMENT')
+    if (typeof options.mock !== 'boolean') throw new AppError('INVALID_ARGUMENT')
   }
   private key(taskId: string, runId: string): string { return JSON.stringify([taskId, runId]) }
 
@@ -32,7 +32,7 @@ export class VideoRunService implements VideoRunPort {
     videoLocalIdSchema.parse(input.taskId); videoLocalIdSchema.parse(input.runId)
     const stop = this.stops.get(input.taskId) ?? 0
     const runtime = videoRuntimeSchema.safeParse(input.employee.video)
-    if (input.employee.subscriptionId !== input.subscriptionId || !runtime.success || !runtime.data.executionAvailable) return undefined
+    if (input.employee.subscriptionId !== input.subscriptionId || !runtime.success || (runtime.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real') || !runtime.data.executionAvailable) return undefined
     let allowed = names.filter(name => runtime.data.tools.includes(name) && (!input.toolPolicy || input.toolPolicy.preset === 'full-local' ||
       (input.toolPolicy.preset !== 'read-only' && input.toolPolicy.allowedTools.includes(name))))
     if (!allowed.length) return undefined
@@ -85,7 +85,7 @@ export class VideoRunService implements VideoRunPort {
       allowed = allowed.filter(name => restored.runtime.tools.includes(name))
       if (!allowed.length) { await this.finishRun(input.taskId, input.runId); return undefined }
       for (const job of restored.jobs) {
-        if (job.generationStatus !== 'NOT_SUBMITTED' && (!['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)) && job.saveStatus !== 'SAVED') run.jobs.add(job.jobId)
+        if (videoBillingPending(job.billingStatus) || job.generationStatus !== 'NOT_SUBMITTED' && (!['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)) && job.saveStatus !== 'SAVED') run.jobs.add(job.jobId)
       }
       if (run.jobs.size) {
         run.tracking = host.track(input.taskId)
@@ -107,7 +107,7 @@ export class VideoRunService implements VideoRunPort {
       signal.throwIfAborted()
       const current = videoRuntimeSchema.safeParse(await abortableVideo(this.options.authorize(input.subscriptionId, signal), signal))
       validate()
-      if (!current.success || !current.data.executionAvailable || !current.data.tools.includes(name)) throw new AppError('PERMISSION_DENIED')
+      if (!current.success || (current.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real') || !current.data.executionAvailable || !current.data.tools.includes(name)) throw new AppError('PERMISSION_DENIED')
       if (name === 'video_get_job') {
         const args = z.object({ jobId: videoLocalIdSchema }).strict().parse(raw)
         const view = await abortableVideo(host.getTaskVideo(input.taskId), signal)
@@ -141,7 +141,7 @@ export class VideoRunService implements VideoRunPort {
     const view = await run.host.getTaskVideo(taskId)
     for (const id of run.jobs) {
       const job = view.jobs.find(job => job.jobId === id)
-      if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED') throw new AppError('INVALID_STATE')
+      if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED' || videoBillingPending(job.billingStatus)) throw new AppError('INVALID_STATE')
     }
   }
 

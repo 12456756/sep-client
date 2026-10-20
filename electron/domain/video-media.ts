@@ -14,10 +14,14 @@ export const videoStoredQuoteSchema = z.object({
   quoteId: videoLocalIdSchema, requestHash: z.string().regex(/^[a-fA-F0-9]{64}$/),
   expiresAt: z.number().int().nonnegative(), status: z.enum(['quoted', 'unavailable']),
   amount: z.string().max(128).nullable(), currency: z.string().max(32).nullable(),
+  amountUsd: z.string().regex(/^\d+(?:\.\d+)?$/).optional(), pricingVersion: z.string().min(1).max(256).optional(),
+  usdToCnyRate: z.number().finite().positive().optional(),
+  funding: z.object({ creditCny: z.string(), memberWalletCny: z.string(), personalCny: z.string() }).strict().optional(),
 }).strict()
 export const videoSaveStatusSchema = z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING'])
 export const localVideoJobSchema = z.object({
   version: z.literal(1), scope: videoScopeSchema, taskId: videoLocalIdSchema, jobId: videoLocalIdSchema,
+  executionMode: z.enum(['mock', 'real']).optional(),
   request: videoRequestWithIdentitySchema, quote: videoStoredQuoteSchema,
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), receipt: videoReceiptSchema.nullable(),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: videoSaveStatusSchema,
@@ -29,14 +33,15 @@ export const localVideoJobSchema = z.object({
     context.addIssue({ code: 'custom', message: 'Inconsistent local video job.' })
   }
   if (job.receipt && !receiptMatchesRequest(job, job.receipt)) context.addIssue({ code: 'custom', message: 'Video receipt does not match the frozen request.' })
+  if ((job.executionMode ?? 'mock') === 'real' ? job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '') : job.quote.currency !== 'MOCK' || !/^0(?:\.0+)?$/.test(job.quote.amount ?? '')) context.addIssue({ code: 'custom', message: 'Video quote does not match the frozen execution mode.' })
   if (job.receipt && new Set(job.receipt.outputs.map(output => output.outputId)).size !== job.receipt.outputs.length) {
     context.addIssue({ code: 'custom', message: 'Duplicate video output identity.' })
   }
 })
 export type LocalVideoJob = z.infer<typeof localVideoJobSchema>
 
-export function receiptMatchesRequest(job: Pick<LocalVideoJob, 'request'>, receipt: VideoReceipt): boolean {
-  return receipt.clientRequestId === job.request.clientRequestId && receipt.profileId === job.request.profileId &&
+export function receiptMatchesRequest(job: Pick<LocalVideoJob, 'request' | 'executionMode'>, receipt: VideoReceipt): boolean {
+  return receipt.mock === ((job.executionMode ?? 'mock') === 'mock') && receipt.clientRequestId === job.request.clientRequestId && receipt.profileId === job.request.profileId &&
     receipt.configVersion === job.request.configVersion && receipt.operation === job.request.operation
 }
 
@@ -49,7 +54,7 @@ export type LocalVideoAsset = z.infer<typeof localVideoAssetSchema>
 export type VideoAssetState = Omit<LocalVideoAsset, 'status'> & { status: 'SAVED' | 'MISSING' }
 
 export function assertVideoJobUpdate(previous: LocalVideoJob, next: LocalVideoJob): void {
-  const stable = ['version', 'scope', 'taskId', 'jobId', 'request', 'quote', 'createdAt'] as const
+  const stable = ['version', 'scope', 'taskId', 'jobId', 'executionMode', 'request', 'quote', 'createdAt'] as const
   if (stable.some(key => !isDeepStrictEqual(previous[key], next[key])) || next.updatedAt < previous.updatedAt ||
     ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(next.submission) < ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(previous.submission)) {
     throw new Error('Frozen video identity or submission state cannot change.')

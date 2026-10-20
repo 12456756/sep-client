@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
-import { videoRuntimeSchema } from '../../src/shared/video-media'
+import { videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
 import type { VideoGenerationInput } from '../../src/shared/video-host'
 import { VideoStore } from '../data/video-store'
 import { MockVideoMediaGateway, type MockVideoScenario } from '../data/mock-video-media-gateway'
@@ -66,6 +66,40 @@ test('run facade binds two host approvals to real run and awaits original output
   assert.equal(f.state.uploads, 1)
   await f.service.finishRun('task-a', 'run-a')
   await assert.rejects(tools.execute('video_from_image', input()))
+})
+
+test('real run cannot finish a saved video while billing is reconciling and restores original billing on a later run', async () => {
+  const f = await setup()
+  f.state.runtime.executionMode = 'real'
+  f.runInput.employee.video = f.state.runtime
+  let settled = false
+  const source = f.options.gateway(scope)
+  const real = (receipt: VideoReceipt): VideoReceipt => ({ ...receipt, mock: false,
+    billingStatus: receipt.status === 'SUCCEEDED' ? settled ? 'SETTLED' : 'RECONCILING' : 'RESERVED',
+    recovery: { ...receipt.recovery, canQuery: receipt.status !== 'SUCCEEDED' || !settled }, amountCny: '0.900000' })
+  const options: MockVideoHostOptions = { ...f.options, mock: false, tracker: { floorMs: 1, maxAttempts: 2, budgetMs: 1000 }, gateway: () => ({
+    quote: async (value, signal) => ({ ...await source.quote(value, signal), currency: 'CNY', amount: '0.900000' }),
+    submit: async (value, signal) => real(await source.submit(value, signal)),
+    findReceipt: async (id, signal) => { const receipt = await source.findReceipt(id, signal); return receipt ? real(receipt) : null },
+    getReceipt: async (id, signal) => real(await source.getReceipt(id, signal)), content: source.content.bind(source),
+    uploadReference: async (bytes, signal) => ({ ...await source.uploadReference(bytes, signal), mock: false }),
+  }) }
+  const service = new VideoRunService(options)
+  const tools = await service.prepareRun(f.runInput)
+  assert.ok(tools)
+  const job = await tools.execute('video_from_image', input()) as { jobId: string }
+  await assert.rejects(service.waitForRun('task-a', 'run-a'), { code: 'INVALID_STATE' })
+  const pending = await f.store.getJob(scope, 'task-a', job.jobId)
+  assert.equal(pending?.saveStatus, 'SAVED'); assert.equal(pending?.receipt?.billingStatus, 'RECONCILING')
+  await service.finishRun('task-a', 'run-a')
+  settled = true
+  const next = new VideoRunService(options)
+  assert.ok(await next.prepareRun({ ...f.runInput, runId: 'run-b' }))
+  await next.waitForRun('task-a', 'run-b')
+  const result = await f.store.getJob(scope, 'task-a', job.jobId)
+  assert.equal(result?.receipt?.billingStatus, 'SETTLED'); assert.equal(result?.trackingStatus, 'STOPPED')
+  assert.equal(f.gateway.calls.submit, 1); assert.equal(f.gateway.calls.quote, 1); assert.equal(f.gateway.calls.content, 1)
+  await next.finishRun('task-a', 'run-b')
 })
 
 test('missing, malformed, disabled and empty-tools video cannot expose or execute tools', async () => {

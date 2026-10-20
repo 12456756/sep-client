@@ -106,6 +106,7 @@ async function run(): Promise<void> {
     assert.equal(original!.receipt!.receiptId, frozen!.receipt!.receiptId)
     const output = done.outputs[0]!
     const preview = await host.preview('task-v1', generated.jobId, output.outputId)
+    assert.ok(preview.bytes)
     assert.equal(createHash('sha256').update(preview.bytes).digest('hex'), fixture.mediaFixture.sha256)
     const safeView = JSON.stringify(await host.getTaskVideo('task-v1'))
     for (const privateField of ['modelId', 'receiptId', 'referenceIds', 'creativeBrief', 'relativePath']) assert.equal(safeView.includes(privateField), false)

@@ -66,6 +66,26 @@ function setup(t: TestContext, recover: VideoTrackerPort['recover'], options: Pa
 }
 
 describe('VideoTracker bounded scope polling', () => {
+  for (const status of ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'] as const) {
+    for (const billingStatus of ['RESERVED', 'RECONCILING'] as const) {
+      it(`continues ${status}/${billingStatus} reconciliation with a null server poll hint`, async t => {
+        let rounds = 0
+        const { tracker, clock, calls } = setup(t, async () => {
+          const current = job()
+          return [{ ...current, executionMode: 'real', saveStatus: 'SAVED',
+            trackingStatus: rounds++ === 0 ? 'ACTIVE' : 'STOPPED',
+            receipt: { ...current.receipt!, mock: false, status, billingStatus: rounds === 1 ? billingStatus : 'SETTLED', pollAfterMs: null,
+              recovery: { canQuery: rounds === 1, canCancel: false, canDownload: false } } }]
+        })
+        const running = tracker.start()
+        await flush()
+        assert.deepEqual(calls, [0]); assert.deepEqual(clock.pending, [10, 20_000])
+        await clock.advance(9); assert.deepEqual(calls, [0])
+        await clock.advance(1); await running
+        assert.deepEqual(calls, [0, 10]); assert.deepEqual(clock.pending, [])
+      })
+    }
+  }
   it('honors the slowest sibling hint even above maxDelayMs, without polling early', async t => {
     let first = true
     const { tracker, clock, calls } = setup(t, async () => {

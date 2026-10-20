@@ -54,6 +54,7 @@ export type VideoProfile = z.infer<typeof videoProfileSchema>
 export const videoRuntimeProfileSchema = videoProfileBaseSchema.omit({ modelId: true, enabled: true, verified: true })
 export const videoRuntimeSchema = z.object({
   protocolVersion: z.literal(1),
+  executionMode: z.enum(['mock', 'real']).optional(),
   executionAvailable: z.boolean(),
   defaultProfileId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/).nullable(),
   tools: z.array(z.enum(['video_from_image', 'video_generate', 'video_get_job', 'video_cancel_job'])),
@@ -95,7 +96,7 @@ export const videoOutputSchema = z.object({
   outputId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
   kind: z.literal('video'),
   mimeType: z.enum(['video/mp4', 'video/webm']),
-  byteLength: z.number().int().positive().max(2 * 1024 * 1024 * 1024),
+  byteLength: z.number().int().positive().max(256 * 1024 * 1024),
   sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
   durationSeconds: z.number().positive().max(600),
   width: z.number().int().positive().max(16384),
@@ -106,8 +107,7 @@ export const videoOutputSchema = z.object({
 }).strict()
 export type VideoOutput = z.infer<typeof videoOutputSchema>
 
-export const videoReceiptSchema = z.object({
-  mock: z.literal(true),
+const videoReceiptBaseSchema = z.object({
   receiptId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
   clientRequestId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
   profileId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
@@ -116,17 +116,33 @@ export const videoReceiptSchema = z.object({
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED', 'SUBMISSION_UNKNOWN']),
   pollAfterMs: z.number().int().nonnegative().nullable(),
   outputs: z.array(videoOutputSchema).max(4),
-  billingStatus: z.literal('MOCK_NOT_CHARGED'),
   errorCode: z.string().nullable(),
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict(),
-}).strict().superRefine((value, context) => {
+}).strict()
+const decimalCny = z.string().regex(/^\d+\.\d{6}$/)
+const decimalUsd = z.string().regex(/^\d+(?:\.\d{1,12})?$/)
+export const videoRealBillingStatusSchema = z.enum(['NOT_RESERVED', 'RESERVED', 'SETTLED', 'RELEASED', 'RECONCILING'])
+export const videoBillingStatusSchema = z.union([z.literal('MOCK_NOT_CHARGED'), videoRealBillingStatusSchema])
+export const videoMockReceiptSchema = videoReceiptBaseSchema.extend({ mock: z.literal(true), billingStatus: z.literal('MOCK_NOT_CHARGED') }).strict()
+export const videoRealReceiptSchema = videoReceiptBaseSchema.extend({
+  mock: z.literal(false), billingStatus: videoRealBillingStatusSchema,
+  amountCny: decimalCny.optional(), actualCostCny: decimalCny.optional(), amountUsd: decimalUsd.optional(),
+}).strict()
+export const videoReceiptSchema = z.discriminatedUnion('mock', [videoMockReceiptSchema, videoRealReceiptSchema]).superRefine((value, context) => {
   const delivered = value.status === 'SUCCEEDED' || value.status === 'PARTIAL_SUCCEEDED'
   const terminal = delivered || ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(value.status)
-  if (new Set(value.outputs.map(output => output.outputId)).size !== value.outputs.length || delivered && value.outputs.length === 0 || value.recovery.canDownload && !delivered || terminal && (value.pollAfterMs !== null || value.recovery.canQuery)) {
+  const billingPending = !value.mock && videoBillingPending(value.billingStatus)
+  if (new Set(value.outputs.map(output => output.outputId)).size !== value.outputs.length || delivered && value.outputs.length === 0 || value.recovery.canDownload && !delivered ||
+    terminal && (value.pollAfterMs !== null || value.recovery.canQuery !== billingPending) ||
+    !value.mock && (!terminal && !value.recovery.canQuery || value.recovery.canCancel)) {
     context.addIssue({ code: 'custom', message: 'Inconsistent video receipt state.' })
   }
 })
 export type VideoReceipt = z.infer<typeof videoReceiptSchema>
+
+export function videoBillingPending(status: VideoReceipt['billingStatus']): boolean {
+  return status === 'RESERVED' || status === 'RECONCILING'
+}
 
 export interface VideoQuote {
   quoteId: string
@@ -135,6 +151,10 @@ export interface VideoQuote {
   status: 'quoted' | 'unavailable'
   amount: string | null
   currency: string | null
+  amountUsd?: string
+  pricingVersion?: string
+  usdToCnyRate?: number
+  funding?: { creditCny: string; memberWalletCny: string; personalCny: string }
 }
 
 export interface VideoGatewayPort {
@@ -146,7 +166,7 @@ export interface VideoGatewayPort {
 }
 
 
-export const videoQuoteResponseSchema = z.object({
+export const videoMockQuoteResponseSchema = z.object({
   mock: z.literal(true),
   quoteId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
   expiresAt: z.string().datetime({ offset: true }),
@@ -156,8 +176,14 @@ export const videoQuoteResponseSchema = z.object({
   pricingVersion: z.literal('mock-video-v1'),
   billingStatus: z.literal('MOCK_NOT_CHARGED'),
 }).strict()
+export const videoRealQuoteResponseSchema = videoMockQuoteResponseSchema.omit({ mock: true, amountCny: true, pricingVersion: true, billingStatus: true }).extend({
+  mock: z.literal(false), amountCny: decimalCny, amountUsd: decimalUsd, pricingVersion: z.string().min(1).max(128),
+  usdToCnyRate: z.number().finite().positive(), funding: z.object({ creditCny: decimalCny, memberWalletCny: decimalCny, personalCny: decimalCny }).strict(),
+  billingStatus: z.literal('NOT_RESERVED'),
+}).strict()
+export const videoQuoteResponseSchema = z.discriminatedUnion('mock', [videoMockQuoteResponseSchema, videoRealQuoteResponseSchema])
 
-export const videoReferenceSchema = z.object({
+export const videoMockReferenceSchema = z.object({
   mock: z.literal(true),
   referenceId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
   expiresAt: z.string().datetime({ offset: true }),
@@ -167,11 +193,17 @@ export const videoReferenceSchema = z.object({
   width: z.number().int().positive().max(4096),
   height: z.number().int().positive().max(4096),
 }).strict()
+export const videoRealReferenceSchema = videoMockReferenceSchema.extend({ mock: z.literal(false) }).strict()
+export const videoReferenceSchema = z.discriminatedUnion('mock', [videoMockReferenceSchema, videoRealReferenceSchema])
 
-export const videoProfilesResponseSchema = z.object({
+export const videoMockProfilesResponseSchema = z.object({
   mock: z.literal(true),
   protocolVersion: z.literal(1),
   persistence: z.enum(['memory', 'database']),
   billingStatus: z.literal('MOCK_NOT_CHARGED'),
   profiles: z.array(videoRuntimeProfileSchema).min(1).max(64),
 }).strict()
+export const videoRealProfilesResponseSchema = videoMockProfilesResponseSchema.extend({
+  mock: z.literal(false), persistence: z.literal('database'), billingStatus: z.literal('NOT_RESERVED'),
+}).strict()
+export const videoProfilesResponseSchema = z.discriminatedUnion('mock', [videoMockProfilesResponseSchema, videoRealProfilesResponseSchema])

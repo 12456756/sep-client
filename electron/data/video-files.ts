@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { dirname, isAbsolute, join, relative, resolve, sep, parse } from 'node:path'
 import type { ZodType } from 'zod'
 
-export const MAX_VIDEO_BYTES = 2 * 1024 * 1024 * 1024
+export const MAX_VIDEO_BYTES = 256 * 1024 * 1024
 const MAX_MANIFEST_BYTES = 1024 * 1024
 
 export class VideoPersistenceError extends Error {

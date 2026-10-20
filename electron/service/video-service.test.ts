@@ -41,6 +41,45 @@ async function finish(service: VideoService, job: LocalVideoJob): Promise<LocalV
 }
 
 describe('VideoService mock submission, disk recovery and original delivery', () => {
+  it('reopens a saved real output and reconciles RESERVED then RECONCILING without regeneration or redownload', async () => {
+    const f = await fixture()
+    let terminalQueries = 0
+    const real = (receipt: VideoReceipt): VideoReceipt => {
+      const delivered = receipt.status === 'SUCCEEDED'
+      const billingStatus = !delivered || terminalQueries === 1 ? 'RESERVED' : terminalQueries === 2 ? 'RECONCILING' : 'SETTLED'
+      return { ...receipt, mock: false, billingStatus, outputs: receipt.outputs.map(output => ({ ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 })),
+        recovery: { ...receipt.recovery, canQuery: billingStatus !== 'SETTLED' }, amountCny: '0.900000', amountUsd: '0.12', ...(billingStatus === 'SETTLED' ? { actualCostCny: '0.800000' } : {}) }
+    }
+    const gateway: VideoGatewayPort = {
+      quote: async (request, signal) => ({ ...await f.gateway.quote(request, signal), amount: '0.900000', currency: 'CNY' }),
+      submit: async (request, signal) => real(await f.gateway.submit(request, signal)),
+      findReceipt: async (id, signal) => { const receipt = await f.gateway.findReceipt(id, signal); return receipt ? real(receipt) : null },
+      getReceipt: async (id, signal) => { const receipt = await f.gateway.getReceipt(id, signal); if (receipt.status === 'SUCCEEDED') terminalQueries++; return real(receipt) },
+      content: f.gateway.content.bind(f.gateway),
+    }
+    const reopen = () => new VideoService({ scope, executionMode: 'real', store: new VideoStore(f.root), gateway })
+    const service = reopen()
+    const original = await service.generate('task-a', input())
+    await service.resume('task-a', original.jobId)
+    const saved = await service.resume('task-a', original.jobId)
+    assert.equal(saved.receipt?.status, 'SUCCEEDED'); assert.equal(saved.receipt?.billingStatus, 'RESERVED')
+    assert.equal(saved.saveStatus, 'SAVED'); assert.equal(saved.trackingStatus, 'ACTIVE')
+    service.close()
+    const restored = reopen()
+    const [pending] = await restored.recover()
+    assert.equal(pending.receipt?.billingStatus, 'RECONCILING'); assert.equal(pending.trackingStatus, 'ACTIVE')
+    assert.equal(pending.receipt?.receiptId, saved.receipt?.receiptId)
+    const settled = await restored.resume('task-a', original.jobId)
+    assert.equal(settled.receipt?.billingStatus, 'SETTLED'); assert.equal(settled.trackingStatus, 'STOPPED')
+    assert.equal(settled.receipt?.outputs[0].durationSeconds, 4.458333)
+    assert.equal(settled.receipt?.outputs[0].width, 1344); assert.equal(settled.receipt?.outputs[0].height, 768)
+    assert.equal(settled.request.parameters.durationSeconds, 5)
+    const queries = f.gateway.calls.getReceipt
+    await restored.recover()
+    assert.equal(f.gateway.calls.getReceipt, queries)
+    assert.equal(f.gateway.calls.submit, 1); assert.equal(f.gateway.calls.quote, 1); assert.equal(f.gateway.calls.content, 1)
+    restored.close()
+  })
   for (const scenario of ['failed', 'partial', 'submission-unknown', 'expired', 'rejected', 'corrupt-download'] as const) {
     it(`restores the ${scenario} gateway scenario from disk without another submission`, async () => {
       const f = await fixture(scenario)

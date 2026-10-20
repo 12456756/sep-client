@@ -1,7 +1,15 @@
 import { execFileSync } from 'node:child_process'
 import { it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { isVideoMockEnabled } from './config'
+import { isVideoMockEnabled, isVideoRealEnabled } from './config'
+
+it('real video is explicit, disabled by default and cannot coexist with mock', () => {
+  for (const value of [undefined, '', 'false', '1', 'TRUE', ' true', 'true ']) assert.equal(isVideoRealEnabled({ SEP_VIDEO_REAL_ENABLED: value }), false)
+  assert.equal(isVideoRealEnabled({ SEP_VIDEO_REAL_ENABLED: 'true' }), true)
+  const both = { SEP_VIDEO_REAL_ENABLED: 'true', SEP_VIDEO_MOCK_ENABLED: 'true' }
+  assert.throws(() => isVideoRealEnabled(both), /mutually exclusive/)
+  assert.throws(() => isVideoMockEnabled(both), /mutually exclusive/)
+})
 
 it('requires an explicit exact true opt-in for mock video', () => {
   for (const value of [undefined, '', 'false', '1', 'TRUE', ' true', 'true ']) {

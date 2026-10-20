@@ -6,7 +6,7 @@ import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import type { MediaAssetView } from '../../shared/media'
 import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
 import { videoGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../shared/video-host'
-import { videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema, type VideoRuntime } from '../../shared/video-media'
+import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema, type VideoRuntime } from '../../shared/video-media'
 
 type Command = 'import' | 'generate' | 'export' | 'resume' | 'retry'
 type JobAction = 'resume' | 'retry'
@@ -19,7 +19,7 @@ const jobSchema = z.object({
   parameters: videoParametersSchema, generationStatus: z.string().max(80),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
-  billingStatus: z.literal('MOCK_NOT_CHARGED'), createdAt: z.number().finite(), updatedAt: z.number().finite(),
+  billingStatus: videoBillingStatusSchema, amountCny: z.string().optional(), actualCostCny: z.string().optional(), amountUsd: z.string().optional(), createdAt: z.number().finite(), updatedAt: z.number().finite(),
   error: z.string().nullable(), outputs: z.array(videoOutputSchema).max(4),
   savedOutputIds: z.array(localId).max(4).optional(),
 })
@@ -31,13 +31,14 @@ const referenceSchema = z.object({
 })
 
 function safeView(value: unknown, taskId: string): VideoTaskView | null {
-  const result = z.object({ mock: z.literal(true), runtime: videoRuntimeSchema, jobs: z.array(z.unknown()) }).safeParse(value)
+  const result = z.object({ mock: z.boolean(), runtime: videoRuntimeSchema, jobs: z.array(z.unknown()) }).safeParse(value)
   if (!result.success) return null
+  if ((result.data.runtime.executionMode ?? 'mock') !== (result.data.mock ? 'mock' : 'real')) return null
   const jobs = result.data.jobs.flatMap(value => {
     const job = jobSchema.safeParse(value)
-    return job.success && job.data.taskId === taskId ? [job.data] : []
+    return job.success && job.data.taskId === taskId && (job.data.billingStatus === 'MOCK_NOT_CHARGED') === result.data.mock ? [job.data] : []
   })
-  return { mock: true, runtime: result.data.runtime, jobs }
+  return { mock: result.data.mock, runtime: result.data.runtime, jobs }
 }
 
 function safeReferences(values: unknown, taskId: string): MediaAssetView[] {
@@ -95,7 +96,7 @@ export function VideoCreationForm({ taskId, runtime, references, busy, pending =
     aspectRatio: caps.aspectRatios.includes(choices.aspectRatio!) ? choices.aspectRatio! : caps.aspectRatios[0],
     resolution: caps.resolutions.includes(choices.resolution!) ? choices.resolution! : caps.resolutions[0],
     frameRate: caps.frameRates.includes(choices.frameRate!) ? choices.frameRate! : caps.frameRates[0],
-    audio: caps.supportsAudio && choices.audio === true,
+    audio: caps.supportsAudio && (choices.audio ?? true),
     outputFormat: caps.outputFormats.includes(choices.outputFormat!) ? choices.outputFormat! : caps.outputFormats[0],
   } : null
   const input = videoGenerationInputSchema.safeParse({ profileId: profile?.profileId, operation,
@@ -155,13 +156,13 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
     const unfinished = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
     const downloadable = job.outputs.some(output => !output.expiresAt || Date.parse(output.expiresAt) > Date.now())
     const retry = generated && downloadable && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)
-    const resume = job.trackingStatus !== 'ACTIVE' && (unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
+    const resume = job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
     return <article className="media-job" key={job.jobId} aria-label={`视频任务 ${job.jobId}`}>
       <div className="media-job-heading"><strong>{job.operation === 'image-to-video' ? '图片生成视频' : '文字生成视频'}</strong><span>{job.parameters.durationSeconds} 秒 · {job.parameters.aspectRatio}</span></div>
       <small className="media-job-id">配置 {job.profileId} · {job.parameters.resolution} · {job.parameters.frameRate} fps · {job.parameters.audio ? '含音频' : '无音频'}</small>
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[generation, mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
-      <small>Mock · 不收费 · MOCK_NOT_CHARGED</small>
+      <small>{job.billingStatus === 'MOCK_NOT_CHARGED' ? 'Mock · 不收费 · MOCK_NOT_CHARGED' : `${({ NOT_RESERVED: '尚未预占', RESERVED: '费用已预占', SETTLED: '已结算', RELEASED: '预占已释放', RECONCILING: '账务核对中' } as const)[job.billingStatus]}${job.actualCostCny ? ` · 实付 ¥${job.actualCostCny}` : job.amountCny ? ` · 报价 ¥${job.amountCny}` : ''}`}</small>
       {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">提交结果不明，请恢复跟踪原任务，不会自动重新生成。</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后，请手动恢复跟踪。</p>}
       {job.error && <p className="media-notice media-tone-error">{job.error}</p>}
@@ -190,8 +191,8 @@ export function VideoTaskContent({ taskId, view: value, references, busy, pendin
   const view = safeView(value, taskId)
   if (!view) return null
   return <section className="artifact-section media-artifacts video-artifacts" aria-label="视频创作与成果">
-    <h3><Film size={15} />视频创作与成果<span className="video-mock-badge">Mock · 不收费</span></h3>
-    <p className="media-notice">仅供 Mock 视频验证 · MOCK_NOT_CHARGED</p>
+    <h3><Film size={15} />视频创作与成果{view.mock && <span className="video-mock-badge">Mock · 不收费</span>}</h3>
+    {view.mock && <p className="media-notice">仅供 Mock 视频验证 · MOCK_NOT_CHARGED</p>}
     {error && <p className="media-notice media-tone-error" role="alert">{error}<button type="button" className="media-icon-button" disabled={!!pending} title="重新读取视频任务" aria-label="重新读取视频任务" onClick={onRefresh}><RefreshCw size={14} /></button></p>}
     <VideoCreationForm taskId={taskId} runtime={view.runtime} references={references} busy={busy} pending={pending} notice={notice} onImport={onImport} onGenerate={onGenerate} />
     {view.jobs.length ? <><h4>视频任务与成果</h4><VideoJobList jobs={view.jobs} busy={busy} onAction={onAction} onPreview={onPreview} onExport={onExport} /></> : <p className="artifact-empty">尚无视频任务</p>}
@@ -204,6 +205,7 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, notice, onClose,
   const dialog = useRef<HTMLDialogElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
   const [url, setUrl] = useState<string | null>(null)
+  const [opened, setOpened] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
@@ -214,12 +216,15 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, notice, onClose,
     let active = true
     let objectUrl: string | null = null
     setUrl(null)
+    setOpened(false)
     setError(null)
     const load = async () => {
       try {
         const result = await window.electronAPI.previewVideoOutput({ taskId, jobId: selection.jobId, outputId: selection.outputId })
         if (!active) return
         if (!result.success || !result.data) { setError(failure(result, '视频预览读取失败')); return }
+        if ('opened' in result.data && result.data.opened === true) { setOpened(true); return }
+        if (!('bytes' in result.data)) { setError('视频预览数据无效'); return }
         const { mime, bytes } = result.data
         if (!['video/mp4', 'video/webm'].includes(mime) || !(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
           setError('视频预览数据无效'); return
@@ -234,13 +239,13 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, notice, onClose,
     return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [taskId, selection.jobId, selection.outputId, attempt])
   return <dialog ref={dialog} className="media-preview-dialog video-preview-dialog" aria-label="本地视频预览" onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
-    <div className="media-dialog-heading"><strong>本地视频预览 · Mock · 不收费</strong><div className="media-dialog-tools">
+    <div className="media-dialog-heading"><strong>本地视频预览</strong><div className="media-dialog-tools">
       <button type="button" className="media-icon-button" title="导出视频" aria-label="导出视频" disabled={busy} onClick={onExport}><Download size={18} /></button>
       <button ref={closeButton} type="button" className="media-icon-button" title="关闭视频预览" aria-label="关闭视频预览" onClick={onClose}><X size={18} /></button>
     </div></div>
     <VideoFeedback pending={pending} notice={notice} />
     {error ? <div><p className="media-notice media-tone-error" role="alert">{error}</p><button type="button" className="media-command" onClick={() => setAttempt(value => value + 1)}>重新读取本地视频</button></div>
-      : url ? <video className="video-player" aria-label="本地视频播放器" src={url} controls preload="metadata" playsInline onError={() => setError('本地视频无法播放')} /> : <p className="media-notice" role="status">正在读取本地视频</p>}
+      : url ? <video className="video-player" aria-label="本地视频播放器" src={url} controls preload="metadata" playsInline onError={() => setError('本地视频无法播放')} /> : <p className="media-notice" role="status">{opened ? '已在系统播放器打开' : '正在读取本地视频'}</p>}
   </dialog>
 }
 

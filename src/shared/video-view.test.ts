@@ -59,6 +59,22 @@ function panel(patch: Overrides = {}): string {
     onRefresh: noop, onImport: noop, onGenerate: noop, onAction: noop, onPreview: noop, onExport: noop, ...patch,
   }))
 }
+
+test('real terminal billing stays visible and resumable while preserving measured output metadata', () => {
+  const actual = { ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }
+  const view: VideoTaskView = { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({
+    generationStatus: 'SUCCEEDED', trackingStatus: 'INTERRUPTED', saveStatus: 'SAVED', outputs: [actual],
+    billingStatus: 'RECONCILING', amountCny: '0.900000',
+  })] }
+  const html = panel({ view })
+  assert.match(html, /账务核对中/); assert.match(html, /0\.900000/); assert.match(html, /恢复跟踪/)
+  assert.match(html, /1344 × 768/); assert.match(html, /4\.458333 秒/)
+  assert.doesNotMatch(html, /Mock · 不收费|MOCK_NOT_CHARGED/)
+  for (const generationStatus of ['FAILED', 'CANCELLED', 'RESULT_EXPIRED']) {
+    assert.match(panel({ view: { ...view, jobs: [job({ generationStatus, trackingStatus: 'AUTH_REQUIRED', billingStatus: 'RESERVED' })] } }), /恢复跟踪/)
+  }
+  assert.doesNotMatch(panel({ view: { ...view, jobs: [{ ...view.jobs[0], billingStatus: 'SETTLED', trackingStatus: 'STOPPED' }] } }), /恢复跟踪/)
+})
 function jobs(value: VideoJobView): string { return panel({ view: { mock: true, runtime, jobs: [value] } }) }
 function options(html: string, label: string): string[] {
   const select = html.match(new RegExp(`<select aria-label="${label}"[^>]*>(.*?)</select>`))

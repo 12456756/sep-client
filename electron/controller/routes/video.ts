@@ -47,10 +47,10 @@ export const videoRoutes = [
   route(INVOKE_CHANNELS.VIDEO_PREVIEW, outputInput, async (ctx, input) => ({ success: true, data: await host(ctx).preview(input.taskId, input.jobId, input.outputId) }), options),
   route(INVOKE_CHANNELS.VIDEO_EXPORT, outputInput, async (ctx, input) => {
     const selection = await host(ctx).nativeSelection(input.taskId)
-    const preview = await host(ctx).preview(input.taskId, input.jobId, input.outputId)
+    const preview = await host(ctx).outputInfo(input.taskId, input.jobId, input.outputId)
     const window = ctx.window()
     if (!window) throw appError('INTERNAL_ERROR')
-    const extension = preview.mime === 'video/webm' ? 'webm' : 'mp4'
+    const extension = preview.mimeType === 'video/webm' ? 'webm' : 'mp4'
     const selected = await dialog.showSaveDialog(window, { title: '导出视频', defaultPath: `${input.outputId}.${extension}`, filters: [{ name: '视频', extensions: [extension] }] })
     if (selected.canceled || !selected.filePath) return { success: true, cancelled: true }
     await selection.export(input.jobId, input.outputId, selected.filePath)

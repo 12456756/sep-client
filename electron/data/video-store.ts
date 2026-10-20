@@ -212,6 +212,15 @@ export class VideoStore implements VideoStorePort {
     })
   }
 
+  /** Main-process native player only; never return this path over IPC. */
+  async verifiedAssetPath(scope: VideoScope, taskId: string, jobId: string, outputId: string): Promise<string> {
+    return this.locked(scope, async () => {
+      const asset = await this.asset(scope, taskId, jobId, outputId)
+      if (asset?.status !== 'SAVED' || asset.output.byteLength > MAX_VIDEO_BYTES) throw new VideoPersistenceError('Video asset is missing or oversized.')
+      return this.assetFile(scope, asset)
+    })
+  }
+
   async saveOutput(scope: VideoScope, taskId: string, jobId: string, value: VideoOutput, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<LocalVideoAsset> {
     const output = videoOutputSchema.parse(value)
     const id = this.assetId(jobId, output.outputId)

@@ -9,6 +9,7 @@ import { SkillLibraryService } from '../service/skill-library-service'
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
 import { join } from 'node:path'
+import { shell } from 'electron'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { EmploymentTokenManager } from '../common/platform/employment-token-manager'
 import { getSubscriptions, getEmployeeRuntime, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
@@ -48,7 +49,7 @@ import { SepRealMediaGateway } from '../data/sep-real-media-gateway'
 import type { MediaGatewayPort } from '../domain/media'
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 import { VideoStore } from '../data/video-store'
-import { SepMockVideoGateway } from '../data/sep-video-media-gateway'
+import { SepMockVideoGateway, SepRealVideoGateway } from '../data/sep-video-media-gateway'
 import { createVideoScopeAdapter } from '../data/video-scope-adapter'
 import { MockVideoHostService, type MockVideoHostOptions } from '../service/mock-video-host-service'
 import { VideoRunService } from '../service/video-run-service'
@@ -185,10 +186,10 @@ class BackendRuntime {
       },
     })
 
-    if (config.SEP_VIDEO_MOCK_ENABLED) {
+    if (config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED) {
       const store = new VideoStore(userDataDir)
       const videoOptions: MockVideoHostOptions = {
-        mock: true, scope: this, store,
+        mock: !config.SEP_VIDEO_REAL_ENABLED, scope: this, store,
         getTask: taskId => this.taskManager.getTask(taskId),
         authorize: async (subscriptionId, signal) => {
           signal.throwIfAborted()
@@ -197,11 +198,15 @@ class BackendRuntime {
           return employee?.video
         },
         authorizationRevision: () => this.employees.getAuthorizationRevision(),
-        gateway: scope => new SepMockVideoGateway({
-          mock: true, baseUrl: config.SEP_BASE_URL, subscriptionId: scope.subscriptionId,
-          token: (subscriptionId, signal) => this.getEmploymentToken(subscriptionId, signal),
+        gateway: scope => {
+          const transport = { baseUrl: config.SEP_BASE_URL, subscriptionId: scope.subscriptionId,
+            token: (subscriptionId: string, signal: AbortSignal) => this.getEmploymentToken(subscriptionId, signal) }
+          return config.SEP_VIDEO_REAL_ENABLED ? new SepRealVideoGateway({ ...transport, mock: false }) : new SepMockVideoGateway({ ...transport, mock: true })
+        },
+        ...createVideoScopeAdapter(userDataDir, mediaStore, store, async path => {
+          const error = await shell.openPath(path)
+          if (error) throw new Error('Local video player unavailable.')
         }),
-        ...createVideoScopeAdapter(userDataDir, mediaStore, store),
         requestApproval: async input => (await this.getTaskRuntime()).requestMediaApproval(input),
         policy: async taskId => {
           const scope = this.currentScope()

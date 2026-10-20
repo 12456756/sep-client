@@ -10,6 +10,7 @@ import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { SEP_MEDIA_MOCK_PNG_BASE64, SEP_MEDIA_MOCK_PNG_SHA256 } from '../common/platform/sep-media-gateway-contract'
 import { AppError } from '../errors/app-error'
 import type { ErrorCode } from '../errors/error-codes'
+import { inspectMediaImage } from './media-image'
 
 const id = schema.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)
 const JSON_BUDGET = 256 * 1024
@@ -21,7 +22,7 @@ export class SepVideoGatewayError extends AppError {
     const code: ErrorCode = statusCode === 401 ? 'AUTH_REQUIRED' : statusCode === 403 ? 'PERMISSION_DENIED'
       : statusCode === 404 ? 'NOT_FOUND' : statusCode === 400 ? 'INVALID_ARGUMENT' : statusCode === 409 || statusCode === 410 ? 'INVALID_STATE' : statusCode === 429 ? 'RATE_LIMITED'
         : gatewayCode === 'VIDEO_NETWORK_ERROR' ? 'NETWORK_ERROR' : gatewayCode === 'VIDEO_INVALID_REQUEST' ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
-    super(code, { message: `SEP mock video request failed (${gatewayCode}).` })
+    super(code, { message: `SEP video request failed (${gatewayCode}).` })
     this.name = gatewayCode === 'VIDEO_ABORTED' ? 'AbortError' : 'SepVideoGatewayError'
   }
 }
@@ -34,6 +35,9 @@ export interface SepMockVideoGatewayOptions {
   token: (subscriptionId: string, signal: AbortSignal) => Promise<string>
   fetch?: typeof fetch
 }
+export type SepRealVideoGatewayOptions = Omit<SepMockVideoGatewayOptions, 'mock'> & { mock: false }
+type GatewayOptions = SepMockVideoGatewayOptions | SepRealVideoGatewayOptions
+const MAX_REAL_VIDEO_BYTES = 256 * 1024 * 1024
 
 function parse<T>(contract: z.ZodType<T>, value: unknown, code = 'VIDEO_INVALID_RESPONSE'): T {
   const result = contract.safeParse(value)
@@ -51,16 +55,16 @@ async function abortable<T>(signal: AbortSignal, action: () => Promise<T>): Prom
   })
 }
 
-/** Mock HTTP adapter, instantiated per subscription. It never reads production video runtime. */
-export class SepMockVideoGateway implements VideoGatewayPort {
+/** Shared authenticated transport; mode determines the endpoint and every response contract. */
+class SepVideoGateway implements VideoGatewayPort {
   private readonly root: string
   private readonly fetcher: typeof fetch
 
-  constructor(private readonly options: SepMockVideoGatewayOptions) {
+  constructor(private readonly options: GatewayOptions) {
     try {
       const url = new URL(options.baseUrl)
-      if (options.mock !== true || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || options.baseUrl.includes('?') || options.baseUrl.includes('#')) throw new Error()
-      this.root = `${url.href.replace(/\/+$/, '')}/gateway/v1/media/video`
+      if (typeof options.mock !== 'boolean' || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || options.baseUrl.includes('?') || options.baseUrl.includes('#')) throw new Error()
+      this.root = `${url.href.replace(/\/+$/, '')}/gateway/v1/media/${options.mock ? 'video' : 'video-real'}`
     } catch {
       throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
     }
@@ -73,18 +77,26 @@ export class SepMockVideoGateway implements VideoGatewayPort {
   }
 
   async uploadReference(bytes: Uint8Array, signal: AbortSignal) {
-    if (!referenceBytes.equals(bytes)) throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
+    if (this.options.mock ? !referenceBytes.equals(bytes) : bytes.length < 24 || bytes.length > 10 * 1024 * 1024 || !Buffer.from(bytes.subarray(0, 8)).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
+    let dimensions: { width: number; height: number }
+    try {
+      const image = inspectMediaImage(bytes)
+      if (image.mime !== 'image/png' || image.width > 4096 || image.height > 4096) throw new Error()
+      dimensions = image
+    } catch { throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST') }
+    const hash = createHash('sha256').update(bytes).digest('hex')
     const body = new FormData()
-    body.append('file', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), 'mock-video-reference.png')
+    body.append('file', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), 'video-reference.png')
     const result = await this.json('/references', 'POST', body, videoReferenceSchema, signal)
-    if (result.sha256.toLowerCase() !== SEP_MEDIA_MOCK_PNG_SHA256 || result.byteLength !== bytes.length || result.width !== 1 || result.height !== 1) throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
+    if (result.sha256.toLowerCase() !== hash || result.byteLength !== bytes.length || result.width !== dimensions.width || result.height !== dimensions.height || !this.options.mock && Date.parse(result.expiresAt) <= Date.now() || this.options.mock && (result.sha256.toLowerCase() !== SEP_MEDIA_MOCK_PNG_SHA256 || result.width !== 1 || result.height !== 1)) throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
     return result
   }
 
   async quote(input: Omit<VideoRequest, 'clientRequestId' | 'quoteId'>, signal: AbortSignal): Promise<VideoQuote> {
     const request = parse(videoRequestSchema, input, 'VIDEO_INVALID_REQUEST')
     const value = await this.json('/quotes', 'POST', request, videoQuoteResponseSchema, signal)
-    return { quoteId: value.quoteId, requestHash: value.semanticSha256.toLowerCase(), expiresAt: Date.parse(value.expiresAt), status: value.pricingStatus, amount: value.amountCny, currency: 'MOCK' }
+    return { quoteId: value.quoteId, requestHash: value.semanticSha256.toLowerCase(), expiresAt: Date.parse(value.expiresAt), status: value.pricingStatus, amount: value.amountCny, currency: value.mock ? 'MOCK' : 'CNY',
+      ...(!value.mock ? { amountUsd: value.amountUsd, pricingVersion: value.pricingVersion, usdToCnyRate: value.usdToCnyRate, funding: value.funding } : {}) }
   }
 
   async submit(input: VideoRequest, signal: AbortSignal): Promise<VideoReceipt> {
@@ -113,12 +125,18 @@ export class SepMockVideoGateway implements VideoGatewayPort {
   }
 
   async cancel(receiptId: string, signal: AbortSignal): Promise<void> {
+    if (!this.options.mock) {
+      const receipt = await this.json(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}/cancel`, 'POST', {}, videoReceiptSchema, signal)
+      if (receipt.receiptId !== receiptId) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
+      return
+    }
     const response = await this.request(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}/cancel`, 'POST', {}, 'application/json', signal)
     this.discard(response)
     throw new SepVideoGatewayError('VIDEO_INVALID_RESPONSE')
   }
 
   async content(receiptId: string, outputId: string, signal: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
+    if (!this.options.mock) return this.realContent(receiptId, outputId, signal)
     const response = await this.request(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}/outputs/${parse(id, outputId, 'VIDEO_INVALID_REQUEST')}/content`, 'GET', undefined, 'video/mp4', signal)
     const length = this.length(response, videoBytes.length)
     if (this.mime(response) !== 'video/mp4' || response.headers.get('X-SEP-Media-Mock') !== 'true' || response.headers.get('X-SHA256')?.toLowerCase() !== fixture.mediaFixture.sha256) {
@@ -144,6 +162,49 @@ export class SepMockVideoGateway implements VideoGatewayPort {
           yield chunk.value
         }
         if (size !== videoBytes.length || length !== null && size !== length || hash.digest('hex') !== fixture.mediaFixture.sha256) throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
+      } catch (error) {
+        if (signal.aborted) throw new SepVideoGatewayError('VIDEO_ABORTED')
+        if (error instanceof SepVideoGatewayError) throw error
+        throw new SepVideoGatewayError('VIDEO_NETWORK_ERROR')
+      } finally {
+        signal.removeEventListener('abort', onAbort)
+        void reader.cancel().catch(() => undefined)
+        reader.releaseLock()
+      }
+    })()
+  }
+
+  private async realContent(receiptId: string, outputId: string, signal: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
+    parse(id, outputId, 'VIDEO_INVALID_REQUEST')
+    const receipt = await this.getReceipt(receiptId, signal)
+    const output = receipt.outputs.find(item => item.outputId === outputId)
+    if (!output || !receipt.recovery.canDownload || output.byteLength > MAX_REAL_VIDEO_BYTES || output.expiresAt !== null && Date.parse(output.expiresAt) <= Date.now()) throw new SepVideoGatewayError('VIDEO_INVALID_RESPONSE')
+    const response = await this.request(`/requests/${receiptId}/outputs/${outputId}/content`, 'GET', undefined, output.mimeType, signal)
+    const length = this.length(response, output.byteLength)
+    const expectedHash = output.sha256.toLowerCase()
+    const headerHash = response.headers.get('X-SHA256')
+    if (this.mime(response) !== output.mimeType || response.headers.get('X-SEP-Media-Mock') === 'true' || length !== null && length !== output.byteLength || headerHash !== null && headerHash.toLowerCase() !== expectedHash) {
+      this.discard(response)
+      throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
+    }
+    const reader = response.body?.getReader()
+    if (!reader) throw new SepVideoGatewayError('VIDEO_INVALID_RESPONSE')
+    const onAbort = () => { void reader.cancel().catch(() => undefined) }
+    signal.addEventListener('abort', onAbort, { once: true })
+    return (async function* () {
+      let size = 0
+      const hash = createHash('sha256')
+      try {
+        for (;;) {
+          const chunk = await abortable(signal, () => reader.read())
+          signal.throwIfAborted()
+          if (chunk.done) break
+          size += chunk.value.byteLength
+          if (size > output.byteLength) throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
+          hash.update(chunk.value)
+          yield chunk.value
+        }
+        if (size !== output.byteLength || hash.digest('hex') !== expectedHash) throw new SepVideoGatewayError('VIDEO_INTEGRITY_MISMATCH')
       } catch (error) {
         if (signal.aborted) throw new SepVideoGatewayError('VIDEO_ABORTED')
         if (error instanceof SepVideoGatewayError) throw error
@@ -215,7 +276,9 @@ export class SepMockVideoGateway implements VideoGatewayPort {
         chunks.push(chunk.value)
       }
       if (length !== null && length !== size) throw new SepVideoGatewayError('VIDEO_INVALID_RESPONSE')
-      return parse(contract, JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))) as unknown)
+      const result = parse(contract, JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))) as unknown)
+      if (!result || typeof result !== 'object' || !('mock' in result) || result.mock !== this.options.mock) throw new SepVideoGatewayError('VIDEO_MODE_MISMATCH')
+      return result
     } catch (error) {
       if (signal.aborted) throw new SepVideoGatewayError('VIDEO_ABORTED')
       if (error instanceof SepVideoGatewayError) throw error
@@ -242,5 +305,18 @@ export class SepMockVideoGateway implements VideoGatewayPort {
 
   private discard(response: Response): void {
     void response.body?.cancel().catch(() => undefined)
+  }
+}
+
+export class SepMockVideoGateway extends SepVideoGateway {
+  constructor(options: SepMockVideoGatewayOptions) {
+    if (options.mock !== true) throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
+    super(options)
+  }
+}
+export class SepRealVideoGateway extends SepVideoGateway {
+  constructor(options: SepRealVideoGatewayOptions) {
+    if (options.mock !== false) throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
+    super(options)
   }
 }

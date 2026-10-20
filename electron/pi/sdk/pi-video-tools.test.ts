@@ -10,6 +10,8 @@ import type { PiAgentSessionConfig } from './pi-agent-runtime'
 import { buildExtensions, PiCodingAgentAdapter, sessionToolOptions } from './pi-coding-agent-adapter'
 import { setLogSink } from '../../common/logger'
 import { createPiVideoModelMock, PI_VIDEO_MODEL_MOCK_PROMPT } from '../../../scripts/pi-video-model-mock'
+import * as videoFixture from '../../../src/shared/fixtures/media-video-v1.json'
+import { videoRuntimeSchema } from '../../../src/shared/video-media'
 
 const names: VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
 const parameters = { durationSeconds: 5, aspectRatio: '16:9', resolution: '720p' as const, frameRate: 24, audio: false, outputFormat: 'video/mp4' as const }
@@ -91,6 +93,41 @@ function value(result: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>['execu
 }
 
 describe('video tools through the mocked Pi SDK extension API', () => {
+  it('accepts real job and task queries with every billing state and preserves measured output metadata', async () => {
+    for (const billingStatus of ['NOT_RESERVED', 'RESERVED', 'RECONCILING', 'SETTLED', 'RELEASED'] as const) {
+      const measured = { ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }
+      const realJob = { ...job, generationStatus: 'SUCCEEDED', billingStatus, amountCny: '0.900000',
+        actualCostCny: '0.800000', amountUsd: '0.12', outputs: [measured] }
+      const realTask = { mock: false, runtime: videoRuntimeSchema.parse({ ...videoFixture.runtime, executionMode: 'real' }), jobs: [realJob] }
+      for (const payload of [realJob, realTask]) {
+        const runtime = await sdk({}, { ...payload, ...secrets })
+        const result = await runtime.execute('video_get_job', { jobId: 'job-a' })
+        assert.deepEqual(result.details, { isError: false })
+        const parsed = JSON.parse(value(result))
+        const projected = 'jobs' in parsed ? parsed.jobs[0] : parsed
+        assert.deepEqual(projected, realJob)
+        if ('runtime' in parsed) { assert.equal(parsed.mock, false); assert.equal(parsed.runtime.executionMode, 'real') }
+        for (const secret of ['private-key', 'private.example', '/private/video.mp4', 'secret Pi prompt', 'remote-receipt', 'remote-reference']) assert.ok(!value(result).includes(secret))
+      }
+    }
+  })
+
+  it('rejects mixed mock/real task modes, invented billing and malformed costs without forwarding host data', async () => {
+    const realJob = { ...job, billingStatus: 'RECONCILING', amountCny: '0.900000' }
+    const realRuntime = videoRuntimeSchema.parse({ ...videoFixture.runtime, executionMode: 'real' })
+    for (const payload of [
+      { ...realJob, billingStatus: 'UNKNOWN' }, { ...realJob, amountCny: '-0.900000' },
+      { ...realJob, actualCostCny: sensitiveText }, { ...realJob, amountUsd: 'NaN' }, { ...job, amountCny: '0.000000' },
+      { mock: false, runtime: realRuntime, jobs: [job] }, { mock: true, runtime: realRuntime, jobs: [realJob] },
+      { mock: false, runtime: videoFixture.runtime, jobs: [realJob] },
+      { mock: true, runtime: videoFixture.runtime, jobs: [realJob] },
+    ]) {
+      const runtime = await sdk({}, payload)
+      const result = await runtime.execute('video_get_job', { jobId: 'job-a' })
+      assert.deepEqual(result.details, { isError: true })
+      assert.equal(value(result), 'Video tool request failed.')
+    }
+  })
   it('registers strict definitions independently of image tools and never advertises cancel', async () => {
     const runtime = await sdk({ mediaTools: { names: ['media_get_job'], execute: async () => null } })
     assert.deepEqual([...runtime.definitions.keys()], ['media_get_job', ...names])
@@ -285,8 +322,8 @@ describe('video tools through the mocked Pi SDK extension API', () => {
 })
 
 describe('isolated streaming video model fixture with the actual Pi SDK', () => {
-  for (const denied of [false, true]) {
-    it(`runs deterministic generation and ${denied ? 'stops on host denial' : 'queries the returned job'} without external I/O`, async () => {
+  for (const { denied, real } of [{ denied: false, real: false }, { denied: true, real: false }, { denied: false, real: true }]) {
+    it(`runs deterministic ${real ? 'real-contract' : 'mock'} generation and ${denied ? 'stops on host denial' : 'queries the returned job'} without external I/O`, async () => {
       const root = await mkdtemp(join(tmpdir(), 'sep-pi-video-'))
       const input = { ...generation, operation: 'image-to-video' as const, localAssetIds: ['asset-a'] }
       const model = createPiVideoModelMock({ generationInput: input })
@@ -311,7 +348,9 @@ describe('isolated streaming video model fixture with the actual Pi SDK', () => 
             assert.ok(signal instanceof AbortSignal)
             executions.push({ name, input })
             if (denied) throw new Error(sensitiveText)
-            return { ...job, ...secrets, operation: 'image-to-video', error: null }
+            return { ...job, ...secrets, operation: 'image-to-video', error: null,
+              ...(real ? { billingStatus: 'RECONCILING', amountCny: '0.900000', amountUsd: '0.12', generationStatus: 'SUCCEEDED',
+                outputs: [{ ...output, width: 1344, height: 768, durationSeconds: 4.458333 }] } : {}) }
           } },
         })
         await session.prompt(PI_VIDEO_MODEL_MOCK_PROMPT)

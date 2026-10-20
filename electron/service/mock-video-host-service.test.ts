@@ -6,12 +6,96 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import type { VideoGenerationInput } from '../../src/shared/video-host'
-import { videoRuntimeSchema } from '../../src/shared/video-media'
+import { videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
 import { MockVideoMediaGateway } from '../data/mock-video-media-gateway'
 import { VideoStore } from '../data/video-store'
 import type { VideoScope } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
+
+function realReceipt(receipt: VideoReceipt): VideoReceipt {
+  return { ...receipt, mock: false, billingStatus: receipt.status === 'SUCCEEDED' ? 'SETTLED' : 'RESERVED', amountCny: '0.900000', amountUsd: '0.12', ...(receipt.status === 'SUCCEEDED' ? { actualCostCny: '0.800000' } : {}) }
+}
+async function realSetup() {
+  const f = await setup()
+  f.state.runtime = { ...f.state.runtime, executionMode: 'real' }
+  const gateway = f.options.gateway(scope)
+  const options: MockVideoHostOptions = { ...f.options, mock: false, gateway: () => ({
+    quote: async (input, signal) => ({ ...await gateway.quote(input, signal), currency: 'CNY', amount: '0.900000', amountUsd: '0.12', pricingVersion: 'v2', usdToCnyRate: 7.5, funding: { creditCny: '0.900000', memberWalletCny: '0.000000', personalCny: '0.000000' } }),
+    submit: async (input, signal) => realReceipt(await gateway.submit(input, signal)),
+    findReceipt: async (id, signal) => { const value = await gateway.findReceipt(id, signal); return value ? realReceipt(value) : null },
+    getReceipt: async (id, signal) => realReceipt(await gateway.getReceipt(id, signal)),
+    content: gateway.content.bind(gateway),
+    uploadReference: async (bytes, signal) => ({ ...await gateway.uploadReference(bytes, signal), mock: false }),
+  }) }
+  return { ...f, options, host: new MockVideoHostService(options) }
+}
+
+test('real host approves actual CNY quote, freezes mode, saves and reopens without byte IPC', async () => {
+  const f = await realSetup()
+  const opened: string[] = []
+  const host = new MockVideoHostService({ ...f.options, openOutput: async (_scope, _task, jobId, _output, _signal, validate) => { validate(); opened.push(jobId) } })
+  const job = await host.generate('task-a', input())
+  assert.equal(job.billingStatus, 'RESERVED'); assert.equal(job.amountCny, '0.900000')
+  const approval = f.approvals[1].input as { mock: boolean; quote: { amount: string; currency: string; amountUsd: string } }
+  assert.equal(approval.mock, false); assert.equal(approval.quote.amount, '0.900000'); assert.equal(approval.quote.currency, 'CNY'); assert.equal(approval.quote.amountUsd, '0.12')
+  await host.resume('task-a', job.jobId)
+  const saved = await host.resume('task-a', job.jobId)
+  assert.equal(saved.saveStatus, 'SAVED'); assert.equal(saved.billingStatus, 'SETTLED'); assert.equal(saved.actualCostCny, '0.800000')
+  const [stored] = await f.store.listJobs(scope)
+  assert.equal(stored.executionMode, 'real'); assert.equal(stored.receipt?.mock, false)
+  await host.stopAll()
+  const reopened = new MockVideoHostService({ ...f.options, openOutput: async (_scope, _task, id) => { opened.push(id) } })
+  assert.equal((await reopened.getTaskVideo('task-a')).mock, false)
+  const preview = await reopened.preview('task-a', job.jobId, saved.outputs[0].outputId)
+  assert.equal('bytes' in preview, false); assert.equal(preview.opened, true)
+  assert.deepEqual(opened, [job.jobId]); assert.equal(f.gateway.calls.submit, 1)
+  await reopened.stopAll()
+})
+
+test('lost real submit response recovers original request and never repeats submission', async () => {
+  const f = await realSetup(), gateway = f.options.gateway(scope)
+  const host = new MockVideoHostService({ ...f.options, gateway: () => ({ ...gateway,
+    submit: async (input, signal) => { await gateway.submit(input, signal); throw new Error('lost response') },
+  }) })
+  const unknown = await host.generate('task-a', input())
+  assert.equal(unknown.generationStatus, 'SUBMISSION_UNKNOWN')
+  await host.stopAll()
+  const restored = new MockVideoHostService(f.options)
+  await restored.resume('task-a', unknown.jobId)
+  await restored.resume('task-a', unknown.jobId)
+  assert.equal((await restored.resume('task-a', unknown.jobId)).saveStatus, 'SAVED')
+  assert.equal(f.gateway.calls.submit, 1); assert.equal(f.gateway.calls.quote, 1)
+  await restored.stopAll()
+})
+
+test('mock and real hosts reject wrong runtime mode and never recover each other jobs', async () => {
+  const f = await setup()
+  const mockJob = await f.host.generate('task-a', input())
+  const realOptions: MockVideoHostOptions = { ...f.options, mock: false }
+  const real = new MockVideoHostService(realOptions)
+  await assert.rejects(real.getTaskVideo('task-a'), { code: 'PERMISSION_DENIED' })
+  f.state.runtime.executionMode = 'real'
+  await assert.rejects(f.host.getTaskVideo('task-a'), { code: 'PERMISSION_DENIED' })
+  assert.deepEqual((await real.getTaskVideo('task-a')).jobs, [])
+  const before = { ...f.gateway.calls }
+  await assert.rejects(real.resume('task-a', mockJob.jobId), { code: 'PERMISSION_DENIED' })
+  await assert.rejects(real.preview('task-a', mockJob.jobId, 'output-a'))
+  assert.deepEqual(f.gateway.calls, before)
+  assert.equal((await f.store.listJobs(scope)).length, 1)
+  await f.host.stopAll(); await real.stopAll()
+})
+
+test('mode revoked during real approval prevents dispatch and leaves frozen unsubmitted evidence', async () => {
+  const f = await realSetup()
+  let count = 0
+  const host = new MockVideoHostService({ ...f.options, requestApproval: async () => { if (++count === 2) f.state.runtime.executionMode = 'mock'; return true } })
+  await assert.rejects(host.generate('task-a', input()), { code: 'PERMISSION_DENIED' })
+  assert.equal(f.gateway.calls.submit, 0)
+  assert.equal((await f.store.listJobs(scope))[0].executionMode, 'real')
+  assert.equal((await f.store.listJobs(scope))[0].submission, 'NOT_SENT')
+  await host.stopAll()
+})
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -324,7 +408,10 @@ test('native selection lease rejects changed authorization before import or expo
   assert.equal(imports, 0); assert.equal(exports, 0)
   const current = await host.nativeSelection('task-a')
   await current.import(['/native/reference.png'])
-  await current.export('job-a', 'output-a', '/native/export.mp4')
+  const generated = await host.generate('task-a', input())
+  await host.resume('task-a', generated.jobId)
+  const saved = await host.resume('task-a', generated.jobId)
+  await current.export(generated.jobId, saved.outputs[0].outputId, '/native/export.mp4')
   assert.equal(imports, 1); assert.equal(exports, 1)
   await host.stopAll()
 })
@@ -336,6 +423,7 @@ test('preview reads verified saved bytes and rejects output identities from anot
   const saved = (await f.host.getTaskVideo('task-a')).jobs[0]
   const preview = await f.host.preview('task-a', job.jobId, saved.outputs[0].outputId)
   assert.equal(preview.mime, 'video/mp4')
+  assert.ok(preview.bytes)
   assert.equal(createHash('sha256').update(preview.bytes).digest('hex'), fixture.mediaFixture.sha256)
   await assert.rejects(f.host.preview('other-task', job.jobId, saved.outputs[0].outputId))
   await assert.rejects(f.host.preview('task-a', job.jobId, '../output'))

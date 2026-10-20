@@ -9,6 +9,12 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/Button';
+import { z } from 'zod';
+
+const paidVideoApprovalSchema = z.object({ mock: z.literal(false), quote: z.object({
+  amount: z.string().regex(/^\d+\.\d{6}$/), currency: z.literal('CNY'),
+  amountUsd: z.string().optional(),
+}) });
 
 interface ToolApprovalRequest {
   toolName: string;
@@ -98,6 +104,10 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
   };
 
   const inputDisplay = formatInput(request.input);
+  const paidVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image'
+    ? paidVideoApprovalSchema.safeParse(request.input) : null;
+  const realVideo = (request.toolName === 'video_generate' || request.toolName === 'video_from_image') &&
+    typeof request.input === 'object' && request.input !== null && 'mock' in request.input && request.input.mock === false;
   const shouldTruncate = inputDisplay.length > 500;
 
   return (
@@ -140,11 +150,13 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
                   ⚠️ 风险提示
                 </p>
                 <p className="text-sm text-orange-700 dark:text-orange-400 mt-1">
-                  {toolInfo.risk}
+                  {realVideo ? '真实视频请求可能产生费用，请核对报价和参数后批准。' : toolInfo.risk}
                 </p>
               </div>
             </div>
           </div>
+
+          {paidVideo?.success && <p className="mb-4 font-semibold" role="status">视频报价：¥{paidVideo.data.quote.amount} CNY{paidVideo.data.quote.amountUsd ? ` · $${paidVideo.data.quote.amountUsd} USD` : ''}</p>}
 
           {/* Tool Name */}
           <div className="mb-4">

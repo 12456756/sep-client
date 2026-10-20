@@ -81,6 +81,7 @@ function harness(options: {
     ['nativeSelection', async (...args: unknown[]) => { calls.push({ method: 'nativeSelection', args }); return selection }],
     ['generate', async (...args: unknown[]) => { calls.push({ method: 'generate', args }); return { jobId } }],
     ['preview', async (...args: unknown[]) => { calls.push({ method: 'preview', args }); return options.preview ?? { mime: 'video/mp4' } }],
+    ['outputInfo', async (...args: unknown[]) => { calls.push({ method: 'outputInfo', args }); return { mimeType: (options.preview as { mime?: string } | undefined)?.mime ?? 'video/mp4' } }],
     ['resume', async (...args: unknown[]) => { calls.push({ method: 'resume', args }) }],
     ['retrySave', async (...args: unknown[]) => { calls.push({ method: 'retrySave', args }) }],
     ['track', async (...args: unknown[]) => { calls.push({ method: 'track', args }) }],
@@ -220,7 +221,7 @@ describe('video IPC contract', () => {
     assert.deepEqual(await exporting.invoke(INVOKE_CHANNELS.VIDEO_EXPORT, { taskId, jobId, outputId }), { success: true, cancelled: true })
     assert.equal(exporting.counts.saveCalls, 1)
     assert.equal(exporting.counts.exportCalls, 0)
-    assert.deepEqual(exporting.calls.map(call => call.method), ['nativeSelection', 'preview', 'showSaveDialog'])
+    assert.deepEqual(exporting.calls.map(call => call.method), ['nativeSelection', 'outputInfo', 'showSaveDialog'])
   })
 
   it('authorizes selection before dialogs and previews export before saving in the expected order', async () => {
@@ -232,7 +233,7 @@ describe('video IPC contract', () => {
     for (const [mime, extension] of [['video/mp4', 'mp4'], ['video/webm', 'webm']]) {
       const exporting = harness({ preview: { mime }, save: { canceled: false, filePath: `/native/export.${extension}` } })
       assert.deepEqual(await exporting.invoke(INVOKE_CHANNELS.VIDEO_EXPORT, { taskId, jobId, outputId }), { success: true, cancelled: false })
-      assert.deepEqual(exporting.calls.map(call => call.method), ['nativeSelection', 'preview', 'showSaveDialog', 'export'])
+      assert.deepEqual(exporting.calls.map(call => call.method), ['nativeSelection', 'outputInfo', 'showSaveDialog', 'export'])
       const dialogArgs = exporting.calls[2].args[1] as { defaultPath: string; filters: Array<{ extensions: string[] }> }
       assert.equal(dialogArgs.defaultPath, `${outputId}.${extension}`)
       assert.deepEqual(dialogArgs.filters[0].extensions, [extension])

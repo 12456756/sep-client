@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto'
 import type { z } from 'zod'
 import { videoGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../src/shared/video-host'
-import { videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
+import { videoBillingPending, videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
 import { videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
@@ -21,9 +21,7 @@ const submissions = new Set<string>()
 export interface MockVideoHostGateway extends VideoGatewayPort {
   uploadReference(bytes: Uint8Array, signal: AbortSignal): Promise<z.infer<typeof videoReferenceSchema>>
 }
-export interface MockVideoHostOptions {
-  /** Explicit test composition only. No production adapter or runtime fallback. */
-  mock: true
+interface VideoHostOptionsBase {
   scope: ScopeSource
   store: VideoStorePort
   getTask(taskId: string): Promise<{ subscriptionId?: string | null } | null>
@@ -35,6 +33,7 @@ export interface MockVideoHostOptions {
     import(scope: VideoScope, taskId: string, paths: readonly string[], signal: AbortSignal, validate: () => void): Promise<MediaAssetView[]>
   }
   exportOutput?(scope: VideoScope, taskId: string, jobId: string, outputId: string, path: string, signal: AbortSignal, validate: () => void): Promise<void>
+  openOutput?(scope: VideoScope, taskId: string, jobId: string, outputId: string, signal: AbortSignal, validate: () => void): Promise<void>
   requestApproval: Approval
   policy?(taskId: string): Promise<TaskToolPolicy | undefined>
   /** Synchronous host generation, incremented on task binding, policy or grant changes. */
@@ -43,6 +42,7 @@ export interface MockVideoHostOptions {
   operationTimeoutMs?: number
   tracker?: Omit<VideoTrackerOptions, 'service'>
 }
+export type MockVideoHostOptions = VideoHostOptionsBase & ({ mock: true } | { mock: false })
 interface Context {
   taskId: string
   scope: VideoScope
@@ -55,13 +55,15 @@ function jobView(job: LocalVideoJob): VideoJobView {
   return {
     jobId: job.jobId, taskId: job.taskId, profileId: job.request.profileId, operation: job.request.operation,
     parameters: { ...job.request.parameters }, generationStatus: job.receipt?.status ?? (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : 'SUBMISSION_UNKNOWN'),
-    trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: 'MOCK_NOT_CHARGED',
+    trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real' ? 'NOT_RESERVED' : 'MOCK_NOT_CHARGED'),
+    ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
+      ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error,
     outputs: structuredClone(job.receipt?.outputs ?? []),
   }
 }
 
-/** Host-only mock use cases. Side effects require approval after a durable quote. */
+/** Shared host use cases. The explicit mode must match every fresh runtime authorization. */
 export class MockVideoHostService {
   private epoch = 0
   private session = new AbortController()
@@ -72,7 +74,7 @@ export class MockVideoHostService {
   private readonly now: () => number
 
   constructor(private readonly options: MockVideoHostOptions) {
-    if (options.mock !== true) throw new AppError('INVALID_ARGUMENT')
+    if (typeof options.mock !== 'boolean') throw new AppError('INVALID_ARGUMENT')
     this.now = options.now ?? Date.now
   }
   private assert(scope: VideoScope, epoch: number, signal: AbortSignal): void {
@@ -94,7 +96,7 @@ export class MockVideoHostService {
     this.assert(scope, epoch, signal)
     const result = videoRuntimeSchema.safeParse(await abortableVideo(this.options.authorize(scope.subscriptionId, signal), signal))
     this.assert(scope, epoch, signal)
-    if (!result.success || !result.data.executionAvailable || !result.data.tools.some(tool => tool !== 'video_cancel_job')) throw new AppError('PERMISSION_DENIED')
+    if (!result.success || (result.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real') || !result.data.executionAvailable || !result.data.tools.some(tool => tool !== 'video_cancel_job')) throw new AppError('PERMISSION_DENIED')
     return result.data
   }
   private signal(taskId: string, parent?: AbortSignal): AbortSignal {
@@ -139,7 +141,7 @@ export class MockVideoHostService {
         const runtime = await this.runtime(scope, epoch, bounded)
         this.profile(runtime, { ...input, localAssetIds: input.referenceIds }, input.configVersion)
         const job = (await this.options.store.listJobs(scope)).find(job => job.request.clientRequestId === input.clientRequestId)
-        if (!job) throw new AppError('NOT_FOUND')
+        if (!job || (job.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real')) throw new AppError('NOT_FOUND')
         const dispatch = await this.sideEffect(scope, epoch, job.taskId, input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate', bounded, revision)
         dispatch()
         return source.submit(input, bounded)
@@ -169,7 +171,7 @@ export class MockVideoHostService {
         })()
       }),
     }
-    const service = new VideoService({ scope, store: this.options.store, gateway, now: this.now })
+    const service = new VideoService({ scope, executionMode: this.options.mock ? 'mock' : 'real', store: this.options.store, gateway, now: this.now })
     const context: Context = {
       taskId, scope, service, tracker: new VideoTracker({ ...this.options.tracker, service: {
         resume: (id, jobId, signal) => service.resume(id, jobId, signal),
@@ -242,7 +244,7 @@ export class MockVideoHostService {
     }
     this.assert(scope, epoch, signal)
     if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
-    return { mock: true, runtime, jobs: views }
+    return { mock: this.options.mock, runtime, jobs: views }
   }
   async getReferences(taskId: string): Promise<MediaAssetView[]> {
     const signal = this.signal(taskId)
@@ -282,6 +284,10 @@ export class MockVideoHostService {
         await this.runtime(scope, epoch, signal)
         validate()
         if (!this.options.exportOutput) throw new AppError('SERVICE_UNAVAILABLE')
+        if (!this.options.mock) {
+          await this.outputInfo(taskId, jobId, outputId)
+          validate()
+        }
         await this.options.exportOutput(scope, taskId, jobId, outputId, path, signal, validate)
         validate()
       }),
@@ -295,11 +301,34 @@ export class MockVideoHostService {
     const asset = await this.options.store.getAsset(scope, taskId, jobId, outputId)
     // This preview bridge is mock-only; do not transfer a production-sized video over IPC.
     if (!asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
+    if (!this.options.mock) {
+      await this.outputInfo(taskId, jobId, outputId)
+      if (!this.options.openOutput || asset.output.byteLength > 256 * 1024 * 1024) throw new AppError('INVALID_ARGUMENT')
+      const validate = () => {
+        this.assert(scope, epoch, signal)
+        if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+      }
+      await this.operation(taskId, () => this.options.openOutput!(scope, taskId, jobId, outputId, signal, validate))
+      validate()
+      return { mime: asset.output.mimeType, opened: true as const }
+    }
     if (asset.output.byteLength > 16 * 1024 * 1024) throw new AppError('INVALID_ARGUMENT')
     const bytes = await this.options.store.readAsset(scope, taskId, jobId, outputId)
     this.assert(scope, epoch, signal)
     if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
     return { mime: asset.output.mimeType, bytes }
+  }
+  async outputInfo(taskId: string, jobId: string, outputId: string) {
+    videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
+    const signal = this.signal(taskId), revision = this.options.authorizationRevision()
+    const { scope, epoch } = await this.binding(taskId, signal)
+    const job = (await this.context(scope, epoch, taskId).service.listJobs()).find(job => job.jobId === jobId)
+    const output = job?.receipt?.outputs.find(output => output.outputId === outputId)
+    const asset = await this.options.store.getAsset(scope, taskId, jobId, outputId)
+    this.assert(scope, epoch, signal)
+    if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    if (!output || asset?.status !== 'SAVED') throw new AppError('NOT_FOUND')
+    return output
   }
   async generate(taskId: string, value: VideoGenerationInput, parent?: AbortSignal, run?: { runId: string; requestApproval: Approval }): Promise<VideoJobView> {
     const signal = this.signal(taskId, parent)
@@ -332,21 +361,22 @@ export class MockVideoHostService {
         }
         const referenceIds: string[] = []
         if (input.localAssetIds.length) {
-          await approve({ operation: 'upload-references', referenceCount: input.localAssetIds.length, mock: true })
+          await approve({ operation: 'upload-references', referenceCount: input.localAssetIds.length, mock: this.options.mock })
           for (const id of input.localAssetIds) {
             const reference = await abortableVideo(this.options.readReference(scope, taskId, id), signal)
             this.assert(scope, epoch, signal)
             if (reference.bytes.byteLength > profile.capabilities.maxInputBytes || createHash('sha256').update(reference.bytes).digest('hex') !== reference.sha256) throw new AppError('INVALID_ARGUMENT')
             const uploaded = videoReferenceSchema.parse(await context.uploadReference(taskId, toolName, reference.bytes, signal))
-            if (uploaded.sha256.toLowerCase() !== reference.sha256 || uploaded.byteLength !== reference.bytes.byteLength || Date.parse(uploaded.expiresAt) <= this.now()) throw new AppError('INVALID_STATE')
+            if (uploaded.mock !== this.options.mock || uploaded.sha256.toLowerCase() !== reference.sha256.toLowerCase() || uploaded.byteLength !== reference.bytes.byteLength || Date.parse(uploaded.expiresAt) <= this.now()) throw new AppError('INVALID_STATE')
             referenceIds.push(uploaded.referenceId)
           }
         }
         const { localAssetIds: _localAssetIds, ...semantic } = input
         const job = await context.service.prepare(taskId, { ...semantic, configVersion: profile.configVersion, referenceIds }, signal)
-        if (job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK') throw new AppError('PERMISSION_DENIED')
+        if (this.options.mock ? job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK' : job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '')) throw new AppError('PERMISSION_DENIED')
         await approve({ profile: profile.displayName, parameters: input.parameters, creativeBrief: input.creativeBrief,
-          mock: true, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt } })
+          mock: this.options.mock, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt,
+            ...(!this.options.mock ? { amountUsd: job.quote.amountUsd, funding: job.quote.funding, pricingVersion: job.quote.pricingVersion } : {}) } })
         // Approval is for the captured task/subscription and frozen configuration only.
         const current = await this.task(taskId, signal)
         if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
@@ -396,7 +426,7 @@ export class MockVideoHostService {
         if (epoch !== this.epoch) return
         if (view.jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) continue
         if (!view.jobs.some(job => job.generationStatus !== 'NOT_SUBMITTED' &&
-          (job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED' ||
+          (videoBillingPending(job.billingStatus) || job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED' ||
             ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) && job.saveStatus !== 'SAVED'))) continue
         void this.track(taskId).catch(error => {
           log.warn('mock video recovery interrupted', { taskId, errorType: error instanceof Error ? error.name : 'unknown' })
