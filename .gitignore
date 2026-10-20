@@ -47,6 +47,9 @@ coverage/
 output/
 artifacts/
 .playwright-mcp/
+.playwright-cli/
+outputs/
+unused/task-workspaces/
 
 # pi local state (per-machine, not project config)
 .pi/
