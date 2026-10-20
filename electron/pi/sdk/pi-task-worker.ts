@@ -29,6 +29,7 @@ export interface PiTaskWorkerContext {
   additionalSkillPaths?: string[]
   systemPrompt?: string
   mediaTools?: PiAgentSessionConfig['mediaTools']
+  videoTools?: PiAgentSessionConfig['videoTools']
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
   fixedSystemPrompt?: string
   arrangementNodeId?: string
@@ -141,6 +142,7 @@ export class PiTaskWorker {
         additionalSkillPaths: this.context.additionalSkillPaths,
         systemPrompt: this.context.systemPrompt,
         mediaTools: this.context.mediaTools,
+        videoTools: this.context.videoTools,
         employeeProfile: this.context.employeeProfile,
         fixedSystemPrompt: this.context.fixedSystemPrompt,
         onModelRequest: this.onModelRequest ? async kind => {

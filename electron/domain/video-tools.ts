@@ -6,3 +6,11 @@ export interface VideoHostTools {
   names: readonly VideoToolName[]
   execute(name: VideoToolName, input: unknown, signal?: AbortSignal): Promise<unknown>
 }
+
+/** Run lifecycle stays host-owned, independent of Pi sessions and IPC. */
+export interface VideoRunPort {
+  prepareRun(input: Parameters<import('./media-tools').MediaRunPort['prepareRun']>[0]): Promise<VideoHostTools | undefined>
+  waitForRun(taskId: string, runId: string): Promise<void>
+  stopTask(taskId: string): Promise<void>
+  finishRun?(taskId: string, runId: string): Promise<void>
+}

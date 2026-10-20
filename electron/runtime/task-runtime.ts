@@ -34,6 +34,7 @@ import { shouldPushTaskEvent } from './task-event-visibility'
 import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinishedInput, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
 import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
 import type { MediaRunPort } from '../domain/media-tools'
+import type { VideoRunPort } from '../domain/video-tools'
 
 const log = logger.child('task-runtime')
 
@@ -78,6 +79,7 @@ export interface TaskRuntimeOptions {
   arrangementCheckpointStore?: ArrangementCheckpointStorePort
   monitor?: TaskMonitorPort
   media?: MediaRunPort
+  video?: VideoRunPort
 }
 
 export class TaskRuntime {
@@ -93,6 +95,7 @@ export class TaskRuntime {
   private readonly arrangementCheckpointStore: ArrangementCheckpointStorePort | null
   private readonly monitor: TaskMonitorPort
   private readonly media: MediaRunPort | undefined
+  private readonly video: VideoRunPort | undefined
   private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
@@ -127,6 +130,7 @@ export class TaskRuntime {
     this.arrangementCheckpointStore = options.arrangementCheckpointStore ?? null
     this.monitor = options.monitor ?? silentTaskMonitor
     this.media = options.media
+    this.video = options.video
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvals = new ToolApprovals({
@@ -178,6 +182,7 @@ export class TaskRuntime {
       onStarted: input => this.reportMonitorStarted(input),
       onFinished: input => this.reportMonitorFinished(input),
       media: this.media,
+      video: this.video,
     })
   }
 
@@ -287,7 +292,7 @@ export class TaskRuntime {
     const plan = await this.workPlanStore.get(scope, taskId)
     if (!plan || plan.mode === 'conversation') throw new Error('The task is not an arrangement.')
     this.removeQueuedTask(taskId)
-    await this.media?.stopTask(taskId)
+    await Promise.all([this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
     const checkpoint = await this.arrangementCheckpointStore.get(scope, taskId)
     const state = checkpoint?.state ?? createArrangementExecutionState(plan.nodes)
     const stopped = stopArrangement(state)
@@ -384,7 +389,7 @@ export class TaskRuntime {
     const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
-      await this.media?.stopTask(taskId)
+      await Promise.all([this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
       const task = await this.taskManager.getTask(taskId)
       if (task?.status === TaskStatus.PENDING && task.activeRunId) {
         await this.taskManager.pauseTask(taskId)
@@ -395,7 +400,7 @@ export class TaskRuntime {
     }
     active.control = 'pause'
     this.approvals.denyRun(active.runId)
-    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId)])
+    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
     await active.completion
   }
 
@@ -422,7 +427,7 @@ export class TaskRuntime {
     const active = this.workers.active(taskId)
     if (!active) {
       this.removeQueuedTask(taskId)
-      await this.media?.stopTask(taskId)
+      await Promise.all([this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
       const task = await this.taskManager.getTask(taskId)
       if (task?.activeRunId && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.FAILED) {
         await this.taskManager.settleTaskRun(taskId, task.activeRunId, TaskStatus.PAUSED, stopReason)
@@ -445,7 +450,7 @@ export class TaskRuntime {
       data: null,
     })
     this.approvals.denyRun(active.runId)
-    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId)])
+    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
     await active.completion
   }
 
@@ -476,7 +481,7 @@ export class TaskRuntime {
         occurredAt: Date.now(),
         data: null,
       })
-      await Promise.all([active.worker.abort(), this.media?.stopTask(active.taskId)])
+      await Promise.all([active.worker.abort(), this.media?.stopTask(active.taskId), this.video?.stopTask(active.taskId)])
       await active.completion
     }))])
     await this.conversationExecutor.disposeSessions()
@@ -610,6 +615,7 @@ export class TaskRuntime {
         workspaceRoot: task.workDir ?? this.getTaskWorkspaceRoot(),
         arrangementSubscriptionId: queued.subscriptionId,
         media: this.media,
+        video: this.video,
       })
       this.activeArrangements.set(taskId, {
         taskId,

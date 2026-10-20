@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactDownloadPath, skillArtifactNameSchema } from './skill-artifact-contract'
+import { optionalVideoRuntimeSchema, videoRuntimeSnapshotSchema } from './video-runtime-contract'
 
 const identifier = z.string().min(1).max(128)
 
@@ -33,6 +34,7 @@ export const employeeRuntimeManifestSchema = z.object({
     modelId: z.string().min(1),
     allowedModels: z.array(z.string().min(1)),
     media: z.unknown().optional(),
+    video: optionalVideoRuntimeSchema.optional(),
     skillArtifactProtocolVersion: z.literal(1).optional(),
     skills: z.array(employeeRuntimeSkillSchema).superRefine((skills, ctx) => {
       const ids = new Set<string>()
@@ -73,6 +75,7 @@ export type PreparedEmployeeSkill = z.infer<typeof preparedEmployeeSkillSchema>
 export const employeeRuntimeSnapshotSchema = z.object({
   manifestVersion: z.literal(1),
   skillArtifactProtocolVersion: z.literal(1).optional(),
+  video: videoRuntimeSnapshotSchema.optional(),
   subscriptionId: identifier,
   enterpriseId: identifier,
   memberId: identifier.optional(),

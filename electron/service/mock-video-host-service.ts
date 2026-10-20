@@ -6,6 +6,7 @@ import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
 import { videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
+import { logger } from '../common/logger'
 import { abortableVideo } from '../data/video-files'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { TaskToolPolicy } from '../runtime/run-types'
@@ -13,6 +14,10 @@ import { VideoService } from './video-service'
 import { VideoTracker, type VideoTrackerOptions } from './video-tracker'
 
 type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
+const log = logger.child('mock-video-host')
+// Run and IPC hosts share the same task persistence. An instance-local gate
+// cannot protect a task while approval, upload or submit is still in flight.
+const submissions = new Set<string>()
 export interface MockVideoHostGateway extends VideoGatewayPort {
   uploadReference(bytes: Uint8Array, signal: AbortSignal): Promise<z.infer<typeof videoReferenceSchema>>
 }
@@ -39,6 +44,7 @@ export interface MockVideoHostOptions {
   tracker?: Omit<VideoTrackerOptions, 'service'>
 }
 interface Context {
+  taskId: string
   scope: VideoScope
   service: VideoService
   tracker: VideoTracker
@@ -60,8 +66,9 @@ export class MockVideoHostService {
   private epoch = 0
   private session = new AbortController()
   private readonly contexts = new Map<string, Context>()
-  private readonly submissions = new Set<string>()
   private readonly active = new Set<Promise<unknown>>()
+  private readonly taskSessions = new Map<string, AbortController>()
+  private readonly taskOperations = new Map<string, Set<Promise<unknown>>>()
   private readonly now: () => number
 
   constructor(private readonly options: MockVideoHostOptions) {
@@ -87,11 +94,14 @@ export class MockVideoHostService {
     this.assert(scope, epoch, signal)
     const result = videoRuntimeSchema.safeParse(await abortableVideo(this.options.authorize(scope.subscriptionId, signal), signal))
     this.assert(scope, epoch, signal)
-    if (!result.success) throw new AppError('PERMISSION_DENIED')
+    if (!result.success || !result.data.executionAvailable || !result.data.tools.some(tool => tool !== 'video_cancel_job')) throw new AppError('PERMISSION_DENIED')
     return result.data
   }
-  private signal(parent?: AbortSignal): AbortSignal {
-    return AbortSignal.any([this.session.signal, ...(parent ? [parent] : []), AbortSignal.timeout(this.options.operationTimeoutMs ?? 60_000)])
+  private signal(taskId: string, parent?: AbortSignal): AbortSignal {
+    videoLocalIdSchema.parse(taskId)
+    let task = this.taskSessions.get(taskId)
+    if (!task) { task = new AbortController(); this.taskSessions.set(taskId, task) }
+    return AbortSignal.any([this.session.signal, task.signal, ...(parent ? [parent] : []), AbortSignal.timeout(this.options.operationTimeoutMs ?? 60_000)])
   }
   private async sideEffect(scope: VideoScope, epoch: number, taskId: string, toolName: string, signal: AbortSignal, revision: number): Promise<() => void> {
     if (!Number.isSafeInteger(revision) || revision < 0) throw new AppError('AUTH_REQUIRED')
@@ -106,16 +116,18 @@ export class MockVideoHostService {
       if (this.options.authorizationRevision() !== revision) throw new AppError('AUTH_REQUIRED')
     }
   }
-  private context(scope: VideoScope, epoch: number): Context {
-    const key = JSON.stringify(scope)
+  private context(scope: VideoScope, epoch: number, taskId: string): Context {
+    const key = JSON.stringify([scope, taskId])
     const existing = this.contexts.get(key)
     if (existing) return existing
     const source = this.options.gateway(structuredClone(scope))
-    const session = this.session.signal
+    this.signal(taskId)
+    const session = AbortSignal.any([this.session.signal, this.taskSessions.get(taskId)!.signal])
     const authorized = async <T>(parent: AbortSignal, call: (signal: AbortSignal, revision: number) => Promise<T>): Promise<T> => {
       const signal = AbortSignal.any([parent, session, AbortSignal.timeout(this.options.operationTimeoutMs ?? 60_000)])
       const revision = this.options.authorizationRevision()
       await this.runtime(scope, epoch, signal)
+      if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
       const result = await abortableVideo(call(signal, revision), signal)
       this.assert(scope, epoch, signal)
       if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
@@ -159,7 +171,21 @@ export class MockVideoHostService {
     }
     const service = new VideoService({ scope, store: this.options.store, gateway, now: this.now })
     const context: Context = {
-      scope, service, tracker: new VideoTracker({ ...this.options.tracker, service }),
+      taskId, scope, service, tracker: new VideoTracker({ ...this.options.tracker, service: {
+        resume: (id, jobId, signal) => service.resume(id, jobId, signal),
+        recover: async signal => {
+          const jobs = (await service.listJobs()).filter(job => job.taskId === taskId)
+          if (jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) return jobs
+          const restored: LocalVideoJob[] = []
+          for (const job of jobs) {
+            signal?.throwIfAborted()
+            const current = await service.resume(taskId, job.jobId, signal)
+            restored.push(current)
+            if (current.trackingStatus === 'AUTH_REQUIRED') break
+          }
+          return restored
+        },
+      } }),
       uploadReference: (taskId, toolName, bytes, signal) => authorized(signal, async (bounded, revision) => {
         const dispatch = await this.sideEffect(scope, epoch, taskId, toolName, bounded, revision)
         dispatch()
@@ -186,15 +212,18 @@ export class MockVideoHostService {
   private async binding(taskId: string, signal: AbortSignal) {
     const { scope, epoch } = await this.task(taskId, signal)
     const runtime = await this.runtime(scope, epoch, signal)
-    return { scope, epoch, runtime, context: this.context(scope, epoch) }
+    return { scope, epoch, runtime, context: this.context(scope, epoch, taskId) }
   }
-  private operation<T>(call: () => Promise<T>): Promise<T> {
+  private operation<T>(taskId: string, call: () => Promise<T>): Promise<T> {
     const pending = Promise.resolve().then(call)
     this.active.add(pending)
-    return pending.finally(() => { this.active.delete(pending) })
+    const operations = this.taskOperations.get(taskId) ?? new Set<Promise<unknown>>()
+    this.taskOperations.set(taskId, operations)
+    operations.add(pending)
+    return pending.finally(() => { this.active.delete(pending); operations.delete(pending); if (!operations.size && this.taskOperations.get(taskId) === operations) this.taskOperations.delete(taskId) })
   }
   async getTaskVideo(taskId: string): Promise<VideoTaskView> {
-    const signal = this.signal()
+    const signal = this.signal(taskId)
     const revision = this.options.authorizationRevision()
     const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
     const jobs = (await context.service.listJobs()).filter(job => job.taskId === taskId)
@@ -216,7 +245,7 @@ export class MockVideoHostService {
     return { mock: true, runtime, jobs: views }
   }
   async getReferences(taskId: string): Promise<MediaAssetView[]> {
-    const signal = this.signal()
+    const signal = this.signal(taskId)
     const revision = this.options.authorizationRevision()
     const { scope, epoch } = await this.binding(taskId, signal)
     const assets = await this.options.references?.list(scope, taskId) ?? []
@@ -229,7 +258,7 @@ export class MockVideoHostService {
   }
   /** Native dialogs retain an authorization lease, never renderer-provided paths. */
   async nativeSelection(taskId: string) {
-    const signal = this.signal()
+    const signal = this.signal(taskId)
     const revision = this.options.authorizationRevision()
     const { scope, epoch } = await this.binding(taskId, signal)
     const validate = () => {
@@ -238,15 +267,19 @@ export class MockVideoHostService {
     }
     validate()
     return {
-      import: async (paths: readonly string[]) => this.operation(async () => {
+      import: async (paths: readonly string[]) => this.operation(taskId, async () => {
+        validate()
+        await this.runtime(scope, epoch, signal)
         validate()
         if (!this.options.references || paths.length > 4) throw new AppError('INVALID_ARGUMENT')
         const result = await this.options.references.import(scope, taskId, paths, signal, validate)
         validate()
         return result
       }),
-      export: async (jobId: string, outputId: string, path: string) => this.operation(async () => {
+      export: async (jobId: string, outputId: string, path: string) => this.operation(taskId, async () => {
         videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
+        validate()
+        await this.runtime(scope, epoch, signal)
         validate()
         if (!this.options.exportOutput) throw new AppError('SERVICE_UNAVAILABLE')
         await this.options.exportOutput(scope, taskId, jobId, outputId, path, signal, validate)
@@ -256,7 +289,7 @@ export class MockVideoHostService {
   }
   async preview(taskId: string, jobId: string, outputId: string) {
     videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
-    const signal = this.signal()
+    const signal = this.signal(taskId)
     const revision = this.options.authorizationRevision()
     const { scope, epoch } = await this.binding(taskId, signal)
     const asset = await this.options.store.getAsset(scope, taskId, jobId, outputId)
@@ -268,24 +301,33 @@ export class MockVideoHostService {
     if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
     return { mime: asset.output.mimeType, bytes }
   }
-  async generate(taskId: string, value: VideoGenerationInput, parent?: AbortSignal): Promise<VideoJobView> {
-    const signal = this.signal(parent)
+  async generate(taskId: string, value: VideoGenerationInput, parent?: AbortSignal, run?: { runId: string; requestApproval: Approval }): Promise<VideoJobView> {
+    const signal = this.signal(taskId, parent)
+    const revision = this.options.authorizationRevision()
     const input = videoGenerationInputSchema.parse(value)
-    return this.operation(async () => {
-      const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
-      const key = JSON.stringify([scope, taskId])
-      if (this.submissions.has(key)) throw new AppError('CONFLICT')
-      this.submissions.add(key)
+    return this.operation(taskId, async () => {
+      const owner = requireScope(this.options.scope)
+      const key = JSON.stringify([owner.enterpriseId, owner.memberId, taskId])
+      if (submissions.has(key)) throw new AppError('CONFLICT')
+      submissions.add(key)
       try {
+        const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
+        const jobs = await context.service.listJobs()
+        this.assert(scope, epoch, signal)
+        if (jobs.some(job => job.taskId === taskId && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
+          throw new AppError('CONFLICT', { message: '原视频提交状态尚未确认，请查询或恢复原任务，不能重复生成。' })
+        }
         const profile = this.profile(runtime, input)
         const policy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
         const toolName = input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
         if (policy && (policy.preset === 'read-only' || policy.preset !== 'full-local' && !policy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
-        const runId = randomUUID()
+        const runId = run?.runId ?? randomUUID()
         const approve = async (details: Record<string, unknown>) => {
           this.assert(scope, epoch, signal)
-          const allowed = await abortableVideo(this.options.requestApproval({ taskId, runId, subscriptionId: scope.subscriptionId, toolName, input: details }), signal)
+          if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+          const allowed = await abortableVideo((run?.requestApproval ?? this.options.requestApproval)({ taskId, runId, subscriptionId: scope.subscriptionId, toolName, input: details }), signal)
           this.assert(scope, epoch, signal)
+          if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
           if (!allowed) throw new AppError('PERMISSION_DENIED')
         }
         const referenceIds: string[] = []
@@ -309,15 +351,16 @@ export class MockVideoHostService {
         const current = await this.task(taskId, signal)
         if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
         this.profile(await this.runtime(scope, epoch, signal), input, profile.configVersion)
+        if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
         const submitted = await context.service.submit(taskId, job.jobId, signal)
         this.assert(scope, epoch, signal)
         return jobView(submitted)
-      } finally { this.submissions.delete(key) }
+      } finally { submissions.delete(key) }
     })
   }
-  async resume(taskId: string, jobId: string): Promise<VideoJobView> {
-    const signal = this.signal()
-    return this.operation(async () => {
+  async resume(taskId: string, jobId: string, parent?: AbortSignal): Promise<VideoJobView> {
+    const signal = this.signal(taskId, parent)
+    return this.operation(taskId, async () => {
       const { scope, epoch, context } = await this.binding(taskId, signal)
       const job = await context.service.resume(taskId, jobId, signal)
       this.assert(scope, epoch, signal)
@@ -325,23 +368,55 @@ export class MockVideoHostService {
     })
   }
   async retrySave(taskId: string, jobId: string): Promise<VideoJobView> {
-    const signal = this.signal()
-    return this.operation(async () => {
+    const signal = this.signal(taskId)
+    return this.operation(taskId, async () => {
       const { scope, epoch, context } = await this.binding(taskId, signal)
       const job = await context.service.retrySave(taskId, jobId, signal)
       this.assert(scope, epoch, signal)
       return jobView(job)
     })
   }
-  /** Test composition owns scheduling. This is never selected from production runtime. */
+  /** Only explicit host/run lifecycle calls wake recovery; reads never do. */
   async track(taskId: string): Promise<void> {
-    const signal = this.signal()
-    return this.operation(async () => {
+    const signal = this.signal(taskId)
+    return this.operation(taskId, async () => {
       const { scope, epoch } = await this.task(taskId, signal)
       // Let service.recover persist a grant failure as AUTH_REQUIRED. Checking
       // runtime before entering recover would leave disk jobs ACTIVE on denial.
-      await this.context(scope, epoch).tracker.wake()
+      await this.context(scope, epoch, taskId).tracker.wake()
     })
+  }
+  /** Login/startup recovery is explicit. Persisted grant failures need user resume. */
+  async resumePending(taskIds: readonly string[]): Promise<void> {
+    const epoch = this.epoch
+    for (const taskId of taskIds) {
+      if (epoch !== this.epoch) return
+      try {
+        const view = await this.getTaskVideo(taskId)
+        if (epoch !== this.epoch) return
+        if (view.jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) continue
+        if (!view.jobs.some(job => job.generationStatus !== 'NOT_SUBMITTED' &&
+          (job.trackingStatus === 'ACTIVE' || job.trackingStatus === 'INTERRUPTED' ||
+            ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) && job.saveStatus !== 'SAVED'))) continue
+        void this.track(taskId).catch(error => {
+          log.warn('mock video recovery interrupted', { taskId, errorType: error instanceof Error ? error.name : 'unknown' })
+        })
+      } catch (error) {
+        if (epoch !== this.epoch) return
+        log.warn('mock video recovery unavailable', { taskId, errorType: error instanceof Error ? error.name : 'unknown' })
+      }
+    }
+  }
+  /** Stops only local work for this task, retaining its original durable receipt. */
+  async stopTask(taskId: string): Promise<void> {
+    videoLocalIdSchema.parse(taskId)
+    const session = this.taskSessions.get(taskId)
+    session?.abort(new Error('Mock video task stopped.'))
+    const contexts = [...this.contexts.entries()].filter(([, context]) => context.taskId === taskId)
+    for (const [key, context] of contexts) { context.service.close(); this.contexts.delete(key) }
+    await Promise.allSettled(contexts.map(([, context]) => context.tracker.stop()))
+    await Promise.allSettled([...(this.taskOperations.get(taskId) ?? [])])
+    if (this.taskSessions.get(taskId) === session) this.taskSessions.delete(taskId)
   }
   async stopAll(): Promise<void> {
     this.epoch++
@@ -351,6 +426,7 @@ export class MockVideoHostService {
     this.contexts.clear()
     await Promise.allSettled(contexts.map(context => context.tracker.stop()))
     await Promise.allSettled([...this.active])
+    this.taskSessions.clear()
     this.session = new AbortController()
   }
 }

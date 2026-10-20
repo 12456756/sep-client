@@ -1,6 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { it } from 'node:test'
 import * as assert from 'node:assert/strict'
+import { isVideoMockEnabled } from './config'
+
+it('requires an explicit exact true opt-in for mock video', () => {
+  for (const value of [undefined, '', 'false', '1', 'TRUE', ' true', 'true ']) {
+    assert.equal(isVideoMockEnabled({ SEP_VIDEO_MOCK_ENABLED: value }), false)
+  }
+  assert.equal(isVideoMockEnabled({ SEP_VIDEO_MOCK_ENABLED: 'true' }), true)
+})
 
 const cases = [
   { name: 'production API path', baseUrl: 'https://LONGDAOSEP.cn:443/api/', expected: 'https://longdaosep.cn' },

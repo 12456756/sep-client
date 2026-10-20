@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import { INVOKE_CHANNELS } from './channels'
+import { AppError, appError } from '../errors/app-error'
 import type { RequestContext } from './request-context'
 import type { Route } from './router'
 
@@ -50,7 +51,7 @@ function loadRoutes(dialog: Record<string, (...args: unknown[]) => unknown> = {}
       }).strict(),
     }).strict() },
     '../../domain/video-media': { videoLocalIdSchema: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/) },
-    '../../errors/app-error': { appError: (code: string) => Object.assign(new Error(code), { code }) },
+    '../../errors/app-error': { appError, AppError },
     '../channels': { INVOKE_CHANNELS },
     '../router': { route: (channel: string, schema: z.ZodType, handle: Route['handle'], options = {}) => ({ channel, schema, handle, ...options }) },
   }).videoRoutes
@@ -114,6 +115,21 @@ const generation = {
 }
 
 describe('video IPC contract', () => {
+  it('defaults request context video to backend composition and preserves explicit harness injection', () => {
+    const { createRequestContext } = loadSource<{ createRequestContext: typeof import('./request-context').createRequestContext }>('electron/controller/request-context.ts')
+    const video = {} as NonNullable<RequestContext['video']>
+    const backend = { video } as RequestContext['backend']
+    assert.equal(createRequestContext(backend, () => null).video, video)
+    const override = {} as NonNullable<RequestContext['video']>
+    assert.equal(createRequestContext(backend, () => null, undefined, override).video, override)
+    assert.equal(createRequestContext({} as RequestContext['backend'], () => null).video, undefined)
+  })
+  it('hides missing or revoked optional video while retaining storage errors', async () => {
+    const denied = harness({ video: { getTaskVideo: async () => { throw new AppError('PERMISSION_DENIED') } } })
+    assert.deepEqual(await denied.invoke(INVOKE_CHANNELS.VIDEO_GET_TASK, taskId), { success: true, data: null })
+    const failed = harness({ video: { getTaskVideo: async () => { throw new Error('Disk unavailable') } } })
+    assert.equal((await failed.invoke(INVOKE_CHANNELS.VIDEO_GET_TASK, taskId) as { error: { code: string } }).error.code, 'INTERNAL_ERROR')
+  })
   it('declares all video routes with ordinary IPC error envelopes', () => {
     const test = harness()
     assert.deepEqual(test.routes.map(route => route.channel), channels)

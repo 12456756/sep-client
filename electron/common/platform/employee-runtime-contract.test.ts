@@ -61,11 +61,11 @@ describe('existing SEP employee runtime manifest v1', () => {
     ]) assert.throws(() => parseEmployeeRuntimeManifest(invalid), { message: 'Invalid employee runtime manifest.' })
   })
 
-  it('independently negotiates skill artifacts and SEP media runtime v1 using bearer auth', async () => {
+  it('independently negotiates skill artifacts, media and video runtime v1 using bearer auth', async () => {
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input))
       assert.equal(url.pathname, '/api/client/subscriptions/sub-1/runtime')
-      assert.equal(url.search, '?mediaProtocolVersion=1&skillArtifactProtocolVersion=1')
+      assert.equal(url.search, '?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1')
       assert.deepEqual([...new Headers(init?.headers)], [['authorization', 'Bearer access']])
       return new Response(JSON.stringify(negotiatedFixture()), { status: 200 })
     }

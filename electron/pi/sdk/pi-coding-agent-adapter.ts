@@ -711,7 +711,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
     })
   }
 
-  return [gatewayPayload, ...(mcp.tools.length ? [mcpExtension] : []), ...(mediaNames.length ? [mediaExtension] : []), toolGuard]
+  return [gatewayPayload, ...(mcp.tools.length ? [mcpExtension] : []), ...(mediaNames.length ? [mediaExtension] : []), ...(videoNames.length ? [videoExtension] : []), toolGuard]
 }
 
 class PiCodingAgentSession implements PiAgentSession {

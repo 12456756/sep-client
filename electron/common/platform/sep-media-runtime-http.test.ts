@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { parseMediaCapabilities } from './media-contract'
+import * as videoFixture from '../../../src/shared/fixtures/media-video-v1.json'
 
 test('SEP runtime contract passes through actual HTTP without enabling media execution', async t => {
   const fixtures: { media: unknown }[] = JSON.parse(readFileSync(
@@ -11,6 +12,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
   ))
   const requests: { path: string; authenticated: boolean }[] = []
   let media: unknown = fixtures[0].media
+  let video: unknown
   const server = createServer((request, response) => {
     const path = request.url ?? ''
     const authenticated = request.headers.authorization === 'Bearer fixture-access-not-a-real-token'
@@ -20,7 +22,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
       response.end(JSON.stringify({ statusCode: 401, message: 'Unauthorized' }))
       return
     }
-    if (path !== '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1') {
+    if (path !== '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1') {
       response.writeHead(404)
       response.end()
       return
@@ -30,7 +32,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
       manifestVersion: 1, subscriptionId: 'sub-http', templateVersion: '1.0',
       employee: { id: 'employee-http', name: 'Fixture employee', version: '1.0', maxSteps: 10 },
       runtime: { systemPrompt: 'Fixture instructions', modelId: 'chat-fixture', allowedModels: ['chat-fixture'], skills: [], skillArtifactProtocolVersion: 1,
-        ...(media === undefined ? {} : { media }) },
+        ...(media === undefined ? {} : { media }), ...(video === undefined ? {} : { video }) },
     }))
   })
   const previousBaseUrl = process.env['SEP_BASE_URL']
@@ -74,11 +76,28 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
   assert.equal(executableCapabilities.profiles[0]?.maxCount, 4)
   media = undefined
   assert.equal((await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')).runtime.media, undefined)
+  video = videoFixture.runtime
+  const videoManifest = await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')
+  assert.deepEqual(videoManifest.runtime.video, videoFixture.runtime)
+  assert.equal(Object.isFrozen(videoManifest.runtime.video?.profiles[0]?.capabilities), true)
+  assert.equal(videoManifest.runtime.media, undefined)
+  assert.equal(videoManifest.runtime.modelId, 'chat-fixture')
+  for (const invalidVideo of [
+    { ...videoFixture.runtime, protocolVersion: 2 },
+    { ...videoFixture.runtime, executionAvailable: false },
+    { ...videoFixture.runtime, apiKey: 'private-video-secret' },
+  ]) {
+    video = invalidVideo
+    const manifest = await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')
+    assert.equal(manifest.runtime.video, undefined)
+    assert.equal(manifest.runtime.modelId, 'chat-fixture')
+    assert.equal(JSON.stringify(manifest).includes('private-video-secret'), false)
+  }
   await assert.rejects(getEmployeeRuntime('sub-http', 'invalid-fixture-token'), error => {
     assert.equal((error as { statusCode?: number }).statusCode, 401)
     return true
   })
-  assert.equal(requests.length, 6)
-  assert.equal(requests.filter(request => request.authenticated).length, 5)
-  assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1'))
+  assert.equal(requests.length, 10)
+  assert.equal(requests.filter(request => request.authenticated).length, 9)
+  assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1'))
 })

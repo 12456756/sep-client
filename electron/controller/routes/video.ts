@@ -2,7 +2,7 @@ import { dialog } from 'electron'
 import { z } from 'zod'
 import { videoGenerationInputSchema } from '../../../src/shared/video-host'
 import { videoLocalIdSchema } from '../../domain/video-media'
-import { appError } from '../../errors/app-error'
+import { AppError, appError } from '../../errors/app-error'
 import { INVOKE_CHANNELS } from '../channels'
 import type { RequestContext } from '../request-context'
 import { route } from '../router'
@@ -21,7 +21,15 @@ function track(ctx: RequestContext, taskId: string): void {
 }
 
 export const videoRoutes = [
-  route(INVOKE_CHANNELS.VIDEO_GET_TASK, taskId, async (ctx, id) => ({ success: true, data: ctx.video ? await ctx.video.getTaskVideo(id) : null }), options),
+  route(INVOKE_CHANNELS.VIDEO_GET_TASK, taskId, async (ctx, id) => {
+    if (!ctx.video) return { success: true, data: null }
+    try { return { success: true, data: await ctx.video.getTaskVideo(id) } } catch (error) {
+      // Missing/revoked video capability hides this optional feature. Persistence
+      // failures and authentication errors must retain their ordinary IPC errors.
+      if (error instanceof AppError && error.code === 'PERMISSION_DENIED') return { success: true, data: null }
+      throw error
+    }
+  }, options),
   route(INVOKE_CHANNELS.VIDEO_GET_REFERENCES, taskId, async (ctx, id) => ({ success: true, data: await host(ctx).getReferences(id) }), options),
   route(INVOKE_CHANNELS.VIDEO_IMPORT_REFERENCES, taskId, async (ctx, id) => {
     const selection = await host(ctx).nativeSelection(id)

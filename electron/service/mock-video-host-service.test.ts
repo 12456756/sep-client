@@ -342,6 +342,77 @@ test('preview reads verified saved bytes and rejects output identities from anot
   await f.host.stopAll()
 })
 
+for (const change of ['disabled', 'empty-tools', 'missing-runtime'] as const) {
+  test(`revoked ${change} denies local previews, reads and native operations without waking recovery`, async () => {
+    const f = await setup({ tracker: { floorMs: 1 } })
+    const job = await f.host.generate('task-a', input())
+    await f.host.track('task-a')
+    const saved = (await f.host.getTaskVideo('task-a')).jobs[0]
+    const calls = { ...f.gateway.calls }
+    f.state.runtime = change === 'missing-runtime' ? undefined as unknown as typeof f.state.runtime
+      : { ...f.state.runtime, executionAvailable: change !== 'disabled', tools: [] }
+    await assert.rejects(f.host.preview('task-a', job.jobId, saved.outputs[0].outputId), { code: 'PERMISSION_DENIED' })
+    await assert.rejects(f.host.getTaskVideo('task-a'), { code: 'PERMISSION_DENIED' })
+    await assert.rejects(f.host.getReferences('task-a'), { code: 'PERMISSION_DENIED' })
+    await assert.rejects(f.host.nativeSelection('task-a'), { code: 'PERMISSION_DENIED' })
+    assert.deepEqual(f.gateway.calls, calls)
+    await f.host.stopAll()
+  })
+}
+
+test('stopTask cancels only its own approval and leaves sibling tracking and receipts intact', async () => {
+  const f = await setup()
+  let entered!: () => void
+  const waiting = new Promise<void>(resolve => { entered = resolve })
+  const host = new MockVideoHostService({ ...f.options, tracker: { floorMs: 1 },
+    requestApproval: async request => { if (request.taskId === 'stalled-task') { entered(); return new Promise<boolean>(() => undefined) }; return true },
+  })
+  const job = await host.generate('task-a', input())
+  const rejected = assert.rejects(host.generate('stalled-task', input()))
+  await waiting
+  await host.stopTask('stalled-task')
+  await rejected
+  await host.track('task-a')
+  assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus, 'SAVED')
+  assert.equal(f.gateway.calls.submit, 1)
+  await host.stopAll()
+})
+
+test('startup recovery queries original pending jobs but never auto-resumes persisted grant failures', async context => {
+  const f = await setup({ tracker: { floorMs: 1 } })
+  const generated = await f.host.generate('task-a', input())
+  await f.host.stopAll()
+  const reopened = new MockVideoHostService({ ...f.options, tracker: { floorMs: 1 } })
+  await reopened.resumePending(['task-a'])
+  await reopened.track('task-a')
+  assert.equal((await f.store.getJob(scope, 'task-a', generated.jobId))?.saveStatus, 'SAVED')
+  assert.equal(f.gateway.calls.submit, 1)
+  await reopened.stopAll()
+  await f.store.updateJob(scope, 'task-a', generated.jobId, job => ({ ...job, trackingStatus: 'AUTH_REQUIRED', error: 'PERMISSION_DENIED' }))
+  const fresh = new MockVideoHostService(f.options)
+  const tracker = context.mock.method(fresh, 'track', async () => { assert.fail('Startup must not resume a grant failure') })
+  await fresh.resumePending(['task-a'])
+  assert.equal(tracker.mock.callCount(), 0)
+  assert.equal(f.gateway.calls.submit, 1)
+  await fresh.stopAll()
+})
+
+test('separate run and IPC hosts cannot concurrently submit for the same task', async () => {
+  const f = await setup()
+  let entered!: () => void, release!: () => void
+  const waiting = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const first = new MockVideoHostService({ ...f.options, requestApproval: async () => { entered(); await gate; return true } })
+  const second = new MockVideoHostService(f.options)
+  const pending = first.generate('task-a', input())
+  await waiting
+  try {
+    await assert.rejects(second.generate('task-a', input()), { code: 'CONFLICT' })
+  } finally { release(); await pending; await first.stopAll(); await second.stopAll() }
+  assert.equal(f.gateway.calls.submit, 1)
+  assert.equal(f.gateway.calls.quote, 1)
+})
+
 test('runtime grant denial during automatic recovery persists pause until explicit resume', async () => {
   const f = await setup({ tracker: { floorMs: 1 } })
   const job = await f.host.generate('task-a', input())
