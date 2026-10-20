@@ -104,7 +104,7 @@ test('server token JSON accepts runtimeUrl/cacheDirectory metadata but still req
 })
 
 // Offline HTTP doubles are test-only. The live entry point has no fixture or mock transport.
-async function offlineServer(operation: 'text-to-video' | 'image-to-video', overCap = false, corruptFirstDownload = false) {
+async function offlineServer(operation: 'text-to-video' | 'image-to-video', overCap = false, corruptFirstDownload = false, throttleRuntime = false) {
   const bytes = Buffer.from(fixture.mediaFixture.base64, 'base64')
   const png = Buffer.from(SEP_MEDIA_MOCK_PNG_BASE64, 'base64')
   const runtimeProfile = { ...fixture.runtime.profiles[0], profileId: 'h3-live', configVersion: 'h3-live-version',
@@ -115,6 +115,7 @@ async function offlineServer(operation: 'text-to-video' | 'image-to-video', over
     defaultProfileId: runtimeProfile.profileId, tools: ['video_generate', 'video_from_image', 'video_get_job'] })
   const counts = { runtime: 0, references: 0, quotes: 0, submits: 0, queries: 0, downloads: 0 }
   let submitted: VideoRequest | undefined
+  let runtimeLimitedAt = 0
   const failures: unknown[] = []
   const server = createServer((req, res) => {
     void (async () => {
@@ -128,6 +129,12 @@ async function offlineServer(operation: 'text-to-video' | 'image-to-video', over
         counts.runtime++
         assert.equal(req.headers.authorization, 'Bearer private-access-token')
         assert.equal(url.searchParams.get('videoProtocolVersion'), '1')
+        if (throttleRuntime && submitted && !runtimeLimitedAt) {
+          runtimeLimitedAt = Date.now()
+          res.setHeader('Retry-After', '1')
+          return json({ message: 'Rate limited' }, 429)
+        }
+        if (runtimeLimitedAt) assert.ok(Date.now() - runtimeLimitedAt >= 1000, 'runtime retried before server cooldown')
         return json({ manifestVersion: 1, subscriptionId: configInput.subscriptionId, templateVersion: 'v1',
           employee: { id: 'employee-live', name: 'Live', version: 'v1', maxSteps: 5 },
           runtime: { video: runtime, systemPrompt: '', modelId: 'llm', allowedModels: ['llm'], skills: [], skillArtifactProtocolVersion: 1 } })
@@ -222,6 +229,21 @@ for (const operation of ['text-to-video', 'image-to-video'] as const) {
     } finally { await server.close(); await rm(root, { recursive: true, force: true }) }
   })
 }
+
+test('runtime 429 honors Retry-After while recovering the original paid job without another POST', async () => {
+  const server = await offlineServer('text-to-video', false, false, true)
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-live-runtime-rate-unit-'))
+  try {
+    const path = join(root, 'config.json')
+    await writeFile(path, JSON.stringify({ ...configInput, baseUrl: server.baseUrl,
+      outputRoot: join(root, 'evidence'), budgetMs: 15_000 }), { mode: 0o600 })
+    const result = await runVideoV2Live(path)
+    assert.equal(result.saveStatus, 'SAVED'); assert.equal(result.billingStatus, 'SETTLED')
+    assert.equal(server.counts.submits, 1); assert.equal(server.counts.quotes, 1)
+    assert.equal(server.counts.downloads, 1)
+    assert.deepEqual(server.failures, [])
+  } finally { await server.close(); await rm(root, { recursive: true, force: true }) }
+})
 
 test('over-cap real-contract quote is never submitted and restart never creates a replacement job', async () => {
   const server = await offlineServer('text-to-video', true)

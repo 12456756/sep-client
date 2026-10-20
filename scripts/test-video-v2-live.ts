@@ -186,8 +186,21 @@ export async function runVideoV2Live(configPath: string, env: NodeJS.ProcessEnv 
       else if (/^requests\/[A-Za-z0-9_-]+\/outputs\/[A-Za-z0-9_-]+\/content$/.test(path) && method === 'GET') counts.downloads++
       else throw new LiveVideoError('forbidden-method-or-route')
     }
-    return fetch(url, { ...init, redirect: 'error', credentials: 'omit', referrerPolicy: 'no-referrer',
-      signal: AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])]) })
+    const bounded = AbortSignal.any([signal, ...(init?.signal ? [init.signal] : [])])
+    for (;;) {
+      const response = await fetch(url, { ...init, redirect: 'error', credentials: 'omit', referrerPolicy: 'no-referrer', signal: bounded })
+      // Authorization reads can hit the server's shared runtime throttle. Respect
+      // its cooldown within the existing deadline; never retry a paid POST.
+      if (!isRuntime || response.status !== 429) return response
+      const retry = response.headers.get('retry-after')
+      const waitMs = retry && /^\d+$/.test(retry) ? Number(retry) * 1000
+        : retry ? Date.parse(retry) - Date.now() : 60_000
+      await response.body?.cancel()
+      // A huge Retry-After must not overflow Node's timer and become a 1ms retry.
+      await delay(Math.min(config.budgetMs, Number.isFinite(waitMs) ? Math.max(1000, waitMs) : 60_000), undefined, { signal: bounded })
+      bounded.throwIfAborted()
+      counts.runtime++
+    }
   }
   const gateway = new SepRealVideoGateway({ mock: false, baseUrl: base.href, subscriptionId: scope.subscriptionId,
     token: async () => config.employmentToken, fetch: transport })
