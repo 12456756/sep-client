@@ -29,6 +29,8 @@
     "test:speech:electron": "node --test poc/sensevoice/electron.integration.test.mjs",
     "test:speech:record": "node --test poc/sensevoice/recorder.integration.test.mjs",
     "test:speech:client": "node --test poc/sensevoice/client.integration.test.mjs",
+    "speech:prepare": "node scripts/prepare-speech-assets.mjs",
+    "speech:verify": "node scripts/verify-speech-assets.mjs",
     "release:config:beta": "node scripts/generate-runtime-config.mjs beta",
     "release:config:stable": "node scripts/generate-runtime-config.mjs stable",
     "package:beta": "npm run release:preflight && npm run release:config:beta && npm run release:builder:signed:beta && electron-vite build && electron-builder --config .release/electron-builder.beta.signed.json --publish never && node scripts/verify-release-signatures.mjs beta && node scripts/verify-update-manifest.mjs dist/beta && node scripts/generate-checksums.mjs dist/beta && node scripts/generate-release-notes.mjs beta dist/beta",
@@ -46,7 +48,7 @@
     "release:recover": "node scripts/publish-release.mjs recover-local",
     "test:releases": "node --test scripts/release-flow.test.mjs scripts/record-release-build.test.mjs scripts/release-version.test.mjs scripts/release-notes.test.mjs",
     "verify:release-signatures": "node scripts/verify-release-signatures.mjs",
-    "test:packaging": "node --test scripts/packaging.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
+    "test:packaging": "node --test scripts/packaging.test.mjs scripts/speech-packaging.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
     "release:builder:beta": "node scripts/generate-builder-config.mjs beta",
     "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
     "release:builder:signed:beta": "node scripts/generate-builder-config.mjs beta --signed",
@@ -124,6 +126,9 @@
     "mac": {
       "category": "public.app-category.business",
       "icon": "build/icon.icns",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "用于将您主动录制的语音在本机转换为输入文字。"
+      },
       "target": [
         {
           "target": "dmg",
@@ -159,8 +164,18 @@
     "asarUnpack": [
       "node_modules/@playwright/mcp/**/*",
       "node_modules/playwright/**/*",
-      "node_modules/playwright-core/**/*"
+      "node_modules/playwright-core/**/*",
+      "node_modules/sherpa-onnx-*/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "resources/speech/sensevoice-int8",
+        "to": "speech/sensevoice-int8",
+        "filter": ["model.int8.onnx", "tokens.txt", "MODEL_LICENSE", "RUNTIME_LICENSE", "manifest.json"]
+      }
+    ],
+    "beforePack": "scripts/speech-before-pack.cjs",
+    "afterPack": "scripts/speech-after-pack.cjs",
     "artifactName": "SEP-Client-${version}-${os}-${arch}.${ext}"
   },
   "allowScripts": {
