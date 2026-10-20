@@ -2,7 +2,8 @@ import * as assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import * as fixture from './fixtures/media-video-v1.json'
-import { videoOutputSchema, videoProfileSchema, videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema, videoRuntimeSchema, videoQuoteResponseSchema } from './video-media'
+import * as v2Fixture from './fixtures/media-video-v2.json'
+import { videoAllowedAudioModes, videoOutputSchema, videoProfileSchema, videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema, videoRuntimeSchema, videoQuoteResponseSchema } from './video-media'
 
 test('real video contracts are strict and cannot accept mock billing', () => {
   assert.equal(videoRuntimeSchema.parse({ ...fixture.runtime, executionMode: 'real' }).executionMode, 'real')
@@ -56,6 +57,55 @@ test('video runtime rejects dangling defaults, duplicate profiles and unsupporte
   assert.equal(videoRuntimeSchema.safeParse({ ...fixture.runtime, profiles: [...fixture.runtime.profiles, ...fixture.runtime.profiles] }).success, false)
   assert.equal(videoRuntimeSchema.safeParse({ ...fixture.runtime, tools: ['video_generate'] }).success, false)
   assert.equal(videoRuntimeSchema.safeParse({ ...fixture.runtime, executionAvailable: false }).success, false)
+})
+
+test('video v2 requires valid defaults while v1 remains strict and audio modes follow negotiated runtime', () => {
+  const profile = fixture.runtime.profiles[0]!
+  const v2Profile = { ...profile, capabilities: { ...profile.capabilities, supportsAudio: true, audioModes: [true], defaultAudio: true,
+    defaults: { durationSeconds: 5, aspectRatio: '9:16', resolution: '720p', frameRate: 24, audio: true, outputFormat: 'video/mp4' } } }
+  const v2 = { ...fixture.runtime, protocolVersion: 2, executionMode: 'real', profiles: [v2Profile] }
+  assert.equal(videoRuntimeSchema.safeParse(v2).success, true)
+  assert.equal(videoRuntimeSchema.safeParse({ ...v2, profiles: [{ ...v2Profile, capabilities: { ...v2Profile.capabilities,
+    defaults: { ...v2Profile.capabilities.defaults, aspectRatio: '1:1' } } }] }).success, false)
+  assert.equal(videoRuntimeSchema.safeParse({ ...fixture.runtime, profiles: [{ ...profile,
+    capabilities: { ...profile.capabilities, audioModes: [true] } }] }).success, false)
+  assert.deepEqual(videoAllowedAudioModes({ protocolVersion: 2, executionMode: 'real' }, v2Profile), [true])
+  assert.deepEqual(videoAllowedAudioModes({ protocolVersion: 1, executionMode: 'real' }, profile), [true])
+  assert.deepEqual(videoAllowedAudioModes({ protocolVersion: 1, executionMode: 'mock' }, profile), [false])
+})
+
+test('SEP backend video v2 fixture is consumed with strict defaults and audio refinement', () => {
+  const runtime = videoRuntimeSchema.parse(v2Fixture.runtime)
+  assert.deepEqual(runtime, v2Fixture.runtime)
+  const profile = runtime.profiles[0]!
+  assert.deepEqual(profile.capabilities.audioModes, [false])
+  assert.equal(profile.capabilities.defaultAudio, false)
+  assert.deepEqual(videoAllowedAudioModes(runtime, profile), [false])
+
+  const invalidDefaults = {
+    ...v2Fixture.runtime,
+    profiles: [{ ...profile, capabilities: {
+      ...profile.capabilities,
+      defaults: { ...profile.capabilities.defaults, durationSeconds: 10 },
+    } }],
+  }
+  assert.equal(videoRuntimeSchema.safeParse(invalidDefaults).success, false)
+  assert.equal(videoRuntimeSchema.safeParse({
+    ...v2Fixture.runtime,
+    profiles: [{ ...profile, capabilities: { ...profile.capabilities, defaultAudio: true } }],
+  }).success, false)
+  assert.equal(videoRuntimeSchema.safeParse({
+    ...v2Fixture.runtime,
+    profiles: [{ ...profile, capabilities: { ...profile.capabilities, providerSecret: 'secret' } }],
+  }).success, false)
+  assert.equal(videoRuntimeSchema.safeParse({
+    ...fixture.runtime,
+    profiles: [{ ...fixture.runtime.profiles[0], capabilities: {
+      ...fixture.runtime.profiles[0].capabilities,
+      audioModes: [false], defaultAudio: false,
+      defaults: { durationSeconds: 5, aspectRatio: '9:16', resolution: '720p', frameRate: 24, audio: false, outputFormat: 'video/mp4' },
+    } }],
+  }).success, false)
 })
 
 test('video receipts reject contradictory success and recovery states', () => {

@@ -22,10 +22,16 @@ export const mediaProfileSchema = z.object({
   allowedAspectRatios: z.array(z.string().min(1).max(32)).min(1).max(32),
   allowedSizes: z.array(z.string().min(1).max(64)).max(32).optional(),
   allowedQualities: z.array(z.string().min(1).max(64)).max(32).optional(),
+  defaultSize: z.string().min(1).max(64).optional(),
+  defaultQuality: z.string().min(1).max(64).optional(),
   maxCount: z.number().int().min(1).max(16),
-}).strict()
+}).strict().superRefine((profile, context) => {
+  if (profile.defaultSize !== undefined && !profile.allowedSizes?.includes(profile.defaultSize)) context.addIssue({ code: 'custom', path: ['defaultSize'], message: 'Default size must be allowed.' })
+  if (profile.defaultQuality !== undefined && !profile.allowedQualities?.includes(profile.defaultQuality)) context.addIssue({ code: 'custom', path: ['defaultQuality'], message: 'Default quality must be allowed.' })
+})
 export const mediaCapabilitiesSchema = z.object({
   protocolVersion: z.literal(1),
+  defaultProfileId: opaqueId.nullable().optional(),
   tools: z.array(z.enum(['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'])).max(4),
   profiles: z.array(mediaProfileSchema).max(64),
 }).strict()

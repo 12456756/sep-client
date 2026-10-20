@@ -12,7 +12,7 @@ function freezeVideoRuntime(video: VideoRuntime): VideoRuntime {
   return video
 }
 
-/** Strict shared v1 validation, with every nested capability frozen for queued runs. */
+/** Strict shared v1/v2 validation, with every nested capability frozen for queued runs. */
 export const videoRuntimeSnapshotSchema = videoRuntimeSchema.transform(freezeVideoRuntime)
 
 /** Video negotiation is optional; unsupported or private fragments must not disable chat. */

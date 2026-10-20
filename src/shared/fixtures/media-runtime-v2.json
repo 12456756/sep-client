@@ -1,0 +1,29 @@
+{
+  "name": "image-v2-filtered-profile",
+  "media": {
+    "protocolVersion": 2,
+    "executionAvailable": true,
+    "defaultProfileId": "product-image-standard",
+    "tools": ["image_generate"],
+    "profiles": [
+      {
+        "profileId": "product-image-standard",
+        "kind": "image",
+        "displayName": "商品图片",
+        "configVersion": "cfg_fixture_001",
+        "operations": ["generate"],
+        "executionMode": "sync-response",
+        "capabilities": {
+          "supportsReferenceImage": false,
+          "maxOutputs": 1,
+          "sizes": ["1024x1024"],
+          "maxWidth": 1024,
+          "maxHeight": 1024,
+          "qualities": ["low", "medium", "high"],
+          "defaultQuality": "medium",
+          "defaultSize": "1024x1024"
+        }
+      }
+    ]
+  }
+}

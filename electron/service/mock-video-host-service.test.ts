@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import type { VideoGenerationInput } from '../../src/shared/video-host'
-import { videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
+import { videoReceiptSchema, videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
 import { MockVideoMediaGateway } from '../data/mock-video-media-gateway'
 import { VideoStore } from '../data/video-store'
 import type { VideoScope } from '../domain/video-media'
@@ -18,7 +18,11 @@ function realReceipt(receipt: VideoReceipt): VideoReceipt {
 }
 async function realSetup() {
   const f = await setup()
-  f.state.runtime = { ...f.state.runtime, executionMode: 'real' }
+  // This delivery fixture represents a v2 silent-capable provider. The legacy
+  // real v1 H3 fixed-audio contract is exercised separately below.
+  f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, protocolVersion: 2, executionMode: 'real',
+    profiles: f.state.runtime.profiles.map(profile => ({ ...profile, capabilities: { ...profile.capabilities,
+      audioModes: [false], defaultAudio: false, defaults: fixture.quoteRequest.parameters } })) })
   const gateway = f.options.gateway(scope)
   const options: MockVideoHostOptions = { ...f.options, mock: false, gateway: () => ({
     quote: async (input, signal) => ({ ...await gateway.quote(input, signal), currency: 'CNY', amount: '0.900000', amountUsd: '0.12', pricingVersion: 'v2', usdToCnyRate: 7.5, funding: { creditCny: '0.900000', memberWalletCny: '0.000000', personalCny: '0.000000' } }),
@@ -69,14 +73,14 @@ test('lost real submit response recovers original request and never repeats subm
   await restored.stopAll()
 })
 
-test('mock and real hosts reject wrong runtime mode and never recover each other jobs', async () => {
+test('local history stays mode isolated regardless of current runtime mode', async () => {
   const f = await setup()
   const mockJob = await f.host.generate('task-a', input())
   const realOptions: MockVideoHostOptions = { ...f.options, mock: false }
   const real = new MockVideoHostService(realOptions)
-  await assert.rejects(real.getTaskVideo('task-a'), { code: 'PERMISSION_DENIED' })
+  assert.deepEqual((await real.getTaskVideo('task-a')).jobs, [])
   f.state.runtime.executionMode = 'real'
-  await assert.rejects(f.host.getTaskVideo('task-a'), { code: 'PERMISSION_DENIED' })
+  assert.equal((await f.host.getTaskVideo('task-a')).jobs[0].jobId, mockJob.jobId)
   assert.deepEqual((await real.getTaskVideo('task-a')).jobs, [])
   const before = { ...f.gateway.calls }
   await assert.rejects(real.resume('task-a', mockJob.jobId), { code: 'PERMISSION_DENIED' })
@@ -259,7 +263,9 @@ test('reauthorizes before every original query; revoked runtime never reaches th
   } })
   const job = await host.generate('task-a', input())
   revoked = true
-  await assert.rejects(host.resume('task-a', job.jobId), { code: 'PERMISSION_DENIED' })
+  const paused = await host.resume('task-a', job.jobId)
+  assert.equal(paused.trackingStatus, 'AUTH_REQUIRED')
+  assert.equal(paused.error, 'PERMISSION_DENIED')
   assert.equal(f.gateway.calls.getReceipt, 0)
   assert.equal(f.gateway.calls.submit, 1)
 })
@@ -431,7 +437,7 @@ test('preview reads verified saved bytes and rejects output identities from anot
 })
 
 for (const change of ['disabled', 'empty-tools', 'missing-runtime'] as const) {
-  test(`revoked ${change} denies local previews, reads and native operations without waking recovery`, async () => {
+  test(`${change} capabilities preserve local previews, history and exports without waking recovery`, async () => {
     const f = await setup({ tracker: { floorMs: 1 } })
     const job = await f.host.generate('task-a', input())
     await f.host.track('task-a')
@@ -439,12 +445,23 @@ for (const change of ['disabled', 'empty-tools', 'missing-runtime'] as const) {
     const calls = { ...f.gateway.calls }
     f.state.runtime = change === 'missing-runtime' ? undefined as unknown as typeof f.state.runtime
       : { ...f.state.runtime, executionAvailable: change !== 'disabled', tools: [] }
-    await assert.rejects(f.host.preview('task-a', job.jobId, saved.outputs[0].outputId), { code: 'PERMISSION_DENIED' })
-    await assert.rejects(f.host.getTaskVideo('task-a'), { code: 'PERMISSION_DENIED' })
-    await assert.rejects(f.host.getReferences('task-a'), { code: 'PERMISSION_DENIED' })
-    await assert.rejects(f.host.nativeSelection('task-a'), { code: 'PERMISSION_DENIED' })
+    const authorizations = f.state.authorizations
+    let exported = 0
+    const offline = new MockVideoHostService({ ...f.options,
+      localRuntime: () => f.state.runtime,
+      authorize: async () => { assert.fail('Local reads must not authorize over the network') },
+      exportOutput: async (_scope, _task, _job, _output, _path, _signal, validate) => { validate(); exported++ },
+    })
+    const preview = await offline.preview('task-a', job.jobId, saved.outputs[0].outputId)
+    assert.ok(preview.bytes)
+    assert.equal((await offline.getTaskVideo('task-a')).jobs[0].saveStatus, 'SAVED')
+    assert.deepEqual(await offline.getReferences('task-a'), [])
+    const selection = await offline.nativeSelection('task-a')
+    await selection.export(job.jobId, saved.outputs[0].outputId, '/native/saved.mp4')
+    assert.equal(exported, 1)
+    assert.equal(f.state.authorizations, authorizations)
     assert.deepEqual(f.gateway.calls, calls)
-    await f.host.stopAll()
+    await offline.stopAll(); await f.host.stopAll()
   })
 }
 
@@ -521,11 +538,11 @@ test('runtime grant denial during automatic recovery persists pause until explic
   await host.stopAll()
 })
 
-test('read projections reject a revision changed during runtime or reference lookup', async () => {
+test('local projections fence ownership revision changes during cached runtime or reference lookup', async () => {
   const f = await setup()
   let revision = 1
   const changedRuntime = new MockVideoHostService({ ...f.options, authorizationRevision: () => revision,
-    authorize: async () => { revision++; return f.state.runtime },
+    localRuntime: () => { revision++; return f.state.runtime },
   })
   await assert.rejects(changedRuntime.getTaskVideo('task-a'), { code: 'AUTH_REQUIRED' })
   const changedReference = new MockVideoHostService({ ...f.options, authorizationRevision: () => revision,
@@ -534,3 +551,179 @@ test('read projections reject a revision changed during runtime or reference loo
   await assert.rejects(changedReference.getReferences('task-a'), { code: 'AUTH_REQUIRED' })
   await changedRuntime.stopAll(); await changedReference.stopAll()
 })
+
+test('catalog changes do not cancel local leases but identity revocation does', async () => {
+  const f = await setup({ tracker: { floorMs: 1 } })
+  const generated = await f.host.generate('task-a', input())
+  await f.host.track('task-a')
+  const saved = (await f.host.getTaskVideo('task-a')).jobs[0]
+  let catalogRevision = 1, identityRevision = 1, exports = 0
+  const host = new MockVideoHostService({ ...f.options,
+    authorizationRevision: () => catalogRevision, localAuthorizationRevision: () => identityRevision,
+    localRuntime: () => f.state.runtime,
+    exportOutput: async (_scope, _task, _job, _output, _path, _signal, validate) => { validate(); exports++ },
+  })
+  const selection = await host.nativeSelection('task-a')
+  catalogRevision++
+  f.state.runtime = { ...f.state.runtime, executionAvailable: false, defaultProfileId: null, profiles: [], tools: [] }
+  await selection.export(generated.jobId, saved.outputs[0].outputId, '/native/video.mp4')
+  assert.equal(exports, 1)
+  identityRevision++
+  await assert.rejects(selection.export(generated.jobId, saved.outputs[0].outputId, '/native/video.mp4'), { code: 'AUTH_REQUIRED' })
+  assert.equal(exports, 1)
+  f.state.scope = null
+  await assert.rejects(host.getTaskVideo('task-a'), { code: 'AUTH_REQUIRED' })
+  assert.equal((await f.store.getJob(scope, 'task-a', generated.jobId))?.saveStatus, 'SAVED')
+  await host.stopAll(); await f.host.stopAll()
+})
+
+test('real saved outputs reopen and export offline with unavailable generation runtime', async () => {
+  const f = await realSetup()
+  const generated = await f.host.generate('task-a', input())
+  await f.host.resume('task-a', generated.jobId)
+  const saved = await f.host.resume('task-a', generated.jobId)
+  await f.host.stopAll()
+  const calls = { ...f.gateway.calls }
+  let opens = 0, exports = 0
+  const host = new MockVideoHostService({ ...f.options,
+    localRuntime: () => undefined,
+    authorize: async () => { assert.fail('Offline delivery must not fetch runtime') },
+    openOutput: async (_scope, _task, _job, _output, _signal, validate) => { validate(); opens++ },
+    exportOutput: async (_scope, _task, _job, _output, _path, _signal, validate) => { validate(); exports++ },
+  })
+  assert.equal((await host.getTaskVideo('task-a')).runtime.executionAvailable, false)
+  const result = await host.preview('task-a', generated.jobId, saved.outputs[0].outputId)
+  assert.equal(result.opened, true)
+  await (await host.nativeSelection('task-a')).export(generated.jobId, saved.outputs[0].outputId, '/native/video.mp4')
+  assert.equal(opens, 1); assert.equal(exports, 1)
+  assert.deepEqual(f.gateway.calls, calls)
+  await host.stopAll()
+})
+
+test('original recovery accepts catalog changes, preserves frozen parameters, and persists server revocation', async () => {
+  const f = await setup()
+  const generated = await f.host.generate('task-a', input())
+  const [original] = await f.store.listJobs(scope)
+  await f.host.stopAll()
+  let denied = true, recoveryChecks = 0, catalogRevision = 0
+  const host = new MockVideoHostService({ ...f.options, localAuthorizationRevision: () => 1,
+    authorizationRevision: () => catalogRevision,
+    authorize: async () => { assert.fail('Recovery must not require current generation runtime') },
+    authorizeRecovery: async id => { assert.equal(id, scope.subscriptionId); recoveryChecks++; catalogRevision++ },
+    gateway: owner => ({ ...f.options.gateway(owner), getReceipt: async (id, signal) => {
+      if (denied) throw new AppError('PERMISSION_DENIED')
+      return f.gateway.getReceipt(id, signal)
+    } }),
+    tracker: { floorMs: 1 },
+  })
+  await host.track('task-a')
+  assert.equal((await f.store.getJob(scope, 'task-a', generated.jobId))?.trackingStatus, 'AUTH_REQUIRED')
+  const before = recoveryChecks
+  denied = false
+  await host.track('task-a')
+  assert.equal(recoveryChecks, before)
+  await host.resume('task-a', generated.jobId)
+  await host.track('task-a')
+  const [restored] = await f.store.listJobs(scope)
+  assert.equal(restored.saveStatus, 'SAVED')
+  assert.deepEqual(restored.request, original.request)
+  assert.equal(restored.receipt?.receiptId, original.receipt?.receiptId)
+  assert.equal(f.gateway.calls.quote, 1); assert.equal(f.gateway.calls.submit, 1)
+  await host.stopAll()
+})
+
+test('fallback recovery permits a disabled runtime and never substitutes the new default profile', async () => {
+  const f = await setup()
+  const generated = await f.host.generate('task-a', input())
+  const [original] = await f.store.listJobs(scope)
+  f.state.runtime = { ...f.state.runtime, executionAvailable: false, defaultProfileId: null, profiles: [], tools: [] }
+  await f.host.resume('task-a', generated.jobId)
+  const saved = await f.host.resume('task-a', generated.jobId)
+  assert.equal(saved.saveStatus, 'SAVED')
+  assert.deepEqual((await f.store.listJobs(scope))[0].request, original.request)
+  await assert.rejects(f.host.generate('task-a', input()), { code: 'PERMISSION_DENIED' })
+  assert.equal(f.gateway.calls.quote, 1); assert.equal(f.gateway.calls.submit, 1)
+  await f.host.stopAll()
+})
+
+test('execution refresh is explicit and local history never silently refreshes it', async () => {
+  const f = await setup()
+  assert.equal((await f.host.getTaskVideo('task-a')).runtime.executionAvailable, false)
+  assert.equal(f.state.authorizations, 0)
+  const runtime = await f.host.authorizeExecution('task-a')
+  assert.equal(runtime.executionAvailable, true)
+  assert.equal(f.state.authorizations, 1)
+  assert.equal((await f.host.getTaskVideo('task-a')).runtime.defaultProfileId, runtime.defaultProfileId)
+  assert.equal(f.state.authorizations, 1)
+  f.state.runtime = { ...f.state.runtime, executionAvailable: false, tools: [] }
+  await assert.rejects(f.host.authorizeExecution('task-a'), { code: 'PERMISSION_DENIED' })
+  assert.equal((await f.host.getTaskVideo('task-a')).runtime.executionAvailable, false)
+  await f.host.stopAll()
+})
+
+test('native export rejects task rebinding while retaining the original local file', async () => {
+  const f = await setup({ tracker: { floorMs: 1 } })
+  const generated = await f.host.generate('task-a', input())
+  await f.host.track('task-a')
+  const saved = (await f.host.getTaskVideo('task-a')).jobs[0]
+  let exports = 0
+  const host = new MockVideoHostService({ ...f.options, exportOutput: async () => { exports++ } })
+  const selection = await host.nativeSelection('task-a')
+  f.state.subscriptionId = 'subscription-b'
+  await assert.rejects(selection.export(generated.jobId, saved.outputs[0].outputId, '/native/video.mp4'), { code: 'AUTH_REQUIRED' })
+  assert.equal(exports, 0)
+  assert.equal((await f.store.getAsset(scope, 'task-a', generated.jobId, saved.outputs[0].outputId))?.status, 'SAVED')
+  assert.deepEqual((await host.getTaskVideo('task-a')).jobs, [])
+  await host.stopAll(); await f.host.stopAll()
+})
+
+for (const version of [1, 2] as const) {
+  for (const mode of ['mock', 'real'] as const) {
+    for (const allowed of [false, true]) {
+      test(`v${version} ${mode} validates explicit audio=${allowed} without rewriting the frozen request`, async () => {
+        const f = await setup()
+        const profile = fixture.runtime.profiles[0]
+        f.state.runtime = videoRuntimeSchema.parse({ ...fixture.runtime, protocolVersion: version, executionMode: mode,
+          tools: ['video_generate', 'video_get_job'], profiles: [{ ...profile, operations: ['text-to-video'], capabilities: {
+            ...profile.capabilities, supportsTextToVideo: true, supportsImageToVideo: false, maxReferenceCount: 0, supportsAudio: allowed,
+            ...(version === 2 ? { audioModes: [allowed], defaultAudio: allowed, defaults: { ...fixture.quoteRequest.parameters, audio: allowed } } : {}),
+          } }] })
+        const quoted: boolean[] = [], submitted: boolean[] = []
+        const mock = mode === 'mock'
+        const host = new MockVideoHostService({ ...f.options, mock, gateway: owner => ({ ...f.options.gateway(owner),
+          quote: async value => {
+            quoted.push(value.parameters.audio)
+            return { quoteId: 'audio-quote', requestHash: 'a'.repeat(64), status: 'quoted' as const,
+              expiresAt: Date.now() + 60_000, amount: mock ? '0.000000' : '0.900000', currency: mock ? 'MOCK' : 'CNY' }
+          },
+          submit: async (value): Promise<VideoReceipt> => {
+            submitted.push(value.parameters.audio)
+            const receipt = { ...fixture.receipt, clientRequestId: value.clientRequestId, profileId: value.profileId, configVersion: value.configVersion,
+              operation: value.operation }
+            return mock
+              ? videoReceiptSchema.parse({ ...receipt, mock: true, billingStatus: 'MOCK_NOT_CHARGED' })
+              : videoReceiptSchema.parse({ ...receipt, mock: false, billingStatus: 'RESERVED', amountCny: '0.900000', amountUsd: '0.12' })
+          },
+        }) })
+        const expected = version === 1 ? mode === 'real' ? [true] : allowed ? [false, true] : [false] : [allowed]
+        for (const audio of [false, true]) {
+          const value: VideoGenerationInput = { ...input(), operation: 'text-to-video', localAssetIds: [], parameters: { ...input().parameters, audio } }
+          if (expected.includes(audio)) {
+            const job = await host.generate('task-a', value)
+            assert.equal(job.parameters.audio, audio)
+            const stored = await f.store.getJob(scope, 'task-a', job.jobId)
+            assert.equal(stored?.request.parameters.audio, audio)
+          } else {
+            const count = quoted.length
+            await assert.rejects(host.generate('task-a', value), { code: 'PERMISSION_DENIED' })
+            assert.equal(quoted.length, count, 'Invalid audio must fail before quote or submit')
+          }
+          assert.equal(value.parameters.audio, audio)
+        }
+        assert.deepEqual(quoted, expected)
+        assert.deepEqual(submitted, expected)
+        await host.stopAll(); await f.host.stopAll()
+      })
+    }
+  }
+}

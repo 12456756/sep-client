@@ -4,6 +4,7 @@ import { createServer } from 'node:http'
 import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
 import { parseMediaCapabilities } from './media-contract'
+import { optionalVideoRuntimeSchema } from './video-runtime-contract'
 import * as videoFixture from '../../../src/shared/fixtures/media-video-v1.json'
 
 test('SEP runtime contract passes through actual HTTP without enabling media execution', async t => {
@@ -22,7 +23,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
       response.end(JSON.stringify({ statusCode: 401, message: 'Unauthorized' }))
       return
     }
-    if (path !== '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1') {
+    if (path !== '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=2&skillArtifactProtocolVersion=1&videoProtocolVersion=2') {
       response.writeHead(404)
       response.end()
       return
@@ -82,6 +83,15 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
   assert.equal(Object.isFrozen(videoManifest.runtime.video?.profiles[0]?.capabilities), true)
   assert.equal(videoManifest.runtime.media, undefined)
   assert.equal(videoManifest.runtime.modelId, 'chat-fixture')
+  const v2VideoProfile = { ...videoFixture.runtime.profiles[0]!, capabilities: { ...videoFixture.runtime.profiles[0]!.capabilities,
+    supportsAudio: true,
+    audioModes: [true], defaultAudio: true,
+    defaults: { durationSeconds: 5, aspectRatio: '9:16', resolution: '720p', frameRate: 24, audio: true, outputFormat: 'video/mp4' } } }
+  video = { ...videoFixture.runtime, protocolVersion: 2, executionMode: 'real', profiles: [v2VideoProfile] }
+  await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')
+  const parsedV2Video = optionalVideoRuntimeSchema.parse(video)
+  assert.equal(parsedV2Video?.protocolVersion, 2)
+  assert.deepEqual(parsedV2Video?.profiles[0]?.capabilities.audioModes, [true])
   for (const invalidVideo of [
     { ...videoFixture.runtime, protocolVersion: 2 },
     { ...videoFixture.runtime, executionAvailable: false },
@@ -97,7 +107,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
     assert.equal((error as { statusCode?: number }).statusCode, 401)
     return true
   })
-  assert.equal(requests.length, 10)
-  assert.equal(requests.filter(request => request.authenticated).length, 9)
-  assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1'))
+  assert.equal(requests.length, 11)
+  assert.equal(requests.filter(request => request.authenticated).length, 10)
+  assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=2&skillArtifactProtocolVersion=1&videoProtocolVersion=2'))
 })

@@ -79,6 +79,12 @@ app.whenReady().then(async () => {
       const profiles = await gateway.profiles(signal)
       return { ...fixture.runtime, profiles: profiles.profiles }
     }, authorizationRevision: () => revision,
+    localAuthorizationRevision: () => 1,
+    recoveryAuthorizationRevision: () => revision,
+    authorizeRecovery: async () => {
+      if (!granted) throw new AppError('PERMISSION_DENIED')
+      if (disconnected) throw new AppError('NETWORK_ERROR')
+    },
     gateway: () => gateway,
     readReference: async (owner, taskId, id) => {
       const bytes = await media.readAsset(referenceOwner(owner), taskId, id)
@@ -141,7 +147,7 @@ app.whenReady().then(async () => {
     finally { await piSession?.dispose(); piSession = undefined }
   }
   const window = new BrowserWindow({ width: 1180, height: 900, show: false, title: '电商视频显式 mock 验收',
-    webPreferences: { preload: join(__dirname, '../preload/index.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: false },
+    webPreferences: { preload: join(__dirname, '../preload/index.mjs'), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false },
   })
   bridge.attach(window)
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
@@ -175,6 +181,7 @@ app.whenReady().then(async () => {
     evidence() { return { mock: true, syntheticScope: true, billing: 'MOCK_NOT_CHARGED', blocked, rendererBlocked, requests, revision, pendingApprovals: approvals.size,
       piStatus, piEvents, piModel: piModel?.audit } },
   } })
+  await host.authorizeExecution('video-task-a')
   await window.loadFile(join(__dirname, '../renderer/index.html'))
   window.show()
   void host.track('video-task-a').catch(() => undefined)

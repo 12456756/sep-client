@@ -8,7 +8,8 @@ import type { LocalMediaJob, MediaCapabilities, MediaGatewayPort, MediaGeneratio
 import type { MediaHostTools } from '../domain/media-tools'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
-import { resolveSepRealMediaSize } from '../common/platform/sep-media-runtime-contract'
+import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
+import { imageAspectRatio } from '../../src/shared/media-spec'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
@@ -225,6 +226,19 @@ export class MediaService {
       || new Set(input.localAssetIds).size !== input.localAssetIds.length) throw new AppError('INVALID_ARGUMENT', {
         message: '图片参数不受当前配置支持，请查询 media_get_capabilities，按返回的操作、比例、尺寸、数量和质量选项重试；未提供质量选项时不要传 quality。这不是权限拒绝。',
       })
+    // Resolve defaults once, before approval, quoting or persistence. Every entry
+    // point (manual UI and Pi) freezes these same effective parameters.
+    const realGateway = this.gateway().quoteRequiresUploadedReferences === true
+    const pixelSizes = profile.allowedSizes?.filter(size => imageAspectRatio(size) !== undefined)
+    const size = input.parameters.size ?? (profile.defaultSize && imageAspectRatio(profile.defaultSize) === input.parameters.aspectRatio ? profile.defaultSize
+      : pixelSizes?.find(size => imageAspectRatio(size) === input.parameters.aspectRatio))
+    if (pixelSizes?.length && !size) throw new AppError('INVALID_ARGUMENT', { message: '当前比例没有合法尺寸，请刷新模型规格。' })
+    if (size && imageAspectRatio(size) !== undefined && imageAspectRatio(size) !== input.parameters.aspectRatio) {
+      throw new AppError('INVALID_ARGUMENT', { message: '图片比例与尺寸不匹配。' })
+    }
+    const quality = input.parameters.quality ?? profile.defaultQuality
+    input = { ...input, parameters: { ...input.parameters, ...(size ? { size } : {}), ...(quality ? { quality } : {}) } }
+    if (realGateway) input = { ...input, parameters: { aspectRatio: input.parameters.aspectRatio, ...realMediaParameters(input.parameters) } }
     const gate = this.key(scope, taskId)
     if (this.submitting.has(gate)) throw new AppError('CONFLICT')
     if (this.activities.size >= 4) throw new AppError('RATE_LIMITED')
@@ -246,10 +260,8 @@ export class MediaService {
       const semantic = { profileId: profile.profileId, configVersion: profile.configVersion, operation: input.operation,
         referenceHashes, creativeBrief: input.creativeBrief, parameters: { aspectRatio: input.parameters.aspectRatio, count: input.parameters.count,
           ...(input.parameters.size ? { size: input.parameters.size } : {}), ...(input.parameters.quality ? { quality: input.parameters.quality } : {}) } }
-      const hashInput = gateway.quoteRequiresUploadedReferences ? { profileId: semantic.profileId, configVersion: semantic.configVersion,
-        operation: semantic.operation, creativeBrief: semantic.creativeBrief,
-        parameters: { size: resolveSepRealMediaSize(semantic.parameters), count: semantic.parameters.count }, references: referenceHashes } : semantic
-      const requestHash = createHash('sha256').update(JSON.stringify(hashInput)).digest('hex')
+      const requestHash = gateway.quoteRequiresUploadedReferences ? realMediaSemanticHash(semantic)
+        : createHash('sha256').update(JSON.stringify(semantic)).digest('hex')
       const automatic = binding.toolPolicy?.preset === 'full-local' && binding.toolPolicy.approvalMode === 'auto-approve'
       const uploadReferences = async () => {
         for (const id of input.localAssetIds) {

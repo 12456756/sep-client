@@ -1,0 +1,44 @@
+{
+  "name": "video-v2-mock-no-audio",
+  "runtime": {
+    "protocolVersion": 2,
+    "executionAvailable": true,
+    "defaultProfileId": "mock-video-from-image",
+    "tools": ["video_from_image", "video_get_job"],
+    "profiles": [
+      {
+        "profileId": "mock-video-from-image",
+        "kind": "video",
+        "displayName": "Mock product video",
+        "configVersion": "mock-video-v1",
+        "operations": ["image-to-video"],
+        "executionMode": "async-query",
+        "capabilities": {
+          "supportsTextToVideo": false,
+          "supportsImageToVideo": true,
+          "supportsAudio": false,
+          "durationsSeconds": [5],
+          "aspectRatios": ["9:16"],
+          "resolutions": ["720p"],
+          "frameRates": [24],
+          "maxInputBytes": 10485760,
+          "maxReferenceCount": 1,
+          "outputFormats": ["video/mp4"],
+          "supportsTaskQuery": true,
+          "supportsCancel": false,
+          "resultRetentionSeconds": 86400,
+          "audioModes": [false],
+          "defaultAudio": false,
+          "defaults": {
+            "durationSeconds": 5,
+            "aspectRatio": "9:16",
+            "resolution": "720p",
+            "frameRate": 24,
+            "audio": false,
+            "outputFormat": "video/mp4"
+          }
+        }
+      }
+    ]
+  }
+}

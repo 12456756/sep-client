@@ -4,9 +4,10 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { z } from 'zod'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import type { MediaAssetView } from '../../shared/media'
-import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
+import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile, videoFormParameters } from '../../shared/media-view'
 import { videoGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../shared/video-host'
-import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema, type VideoRuntime } from '../../shared/video-media'
+import { videoAllowedAudioModes, videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema, type VideoRuntime } from '../../shared/video-media'
+import { useMediaParameterPreferences } from './media-preference-scope'
 
 type Command = 'import' | 'generate' | 'export' | 'resume' | 'retry'
 type JobAction = 'resume' | 'retry'
@@ -67,6 +68,11 @@ export function videoOutputIsSaved(job: VideoJobView & { savedOutputIds?: string
     (job.savedOutputIds === undefined ? job.saveStatus === 'SAVED' : job.savedOutputIds.includes(outputId))
 }
 
+function videoJobCanDownload(job: VideoJobView): boolean {
+  const recovery = job as VideoJobView & { canDownload?: boolean }
+  return recovery.canDownload !== false
+}
+
 function VideoFeedback({ pending, notice, id }: { pending: Command | null; notice: Notice | null; id?: string }) {
   if (!pending && !notice) return null
   return <p id={id} className={`media-notice${notice ? ` media-tone-${notice.tone}` : ''}`} role={notice?.tone === 'error' ? 'alert' : 'status'} aria-atomic="true">
@@ -80,25 +86,33 @@ export function VideoCreationForm({ taskId, runtime, references, busy, pending =
 }) {
   const id = useId()
   const profiles = runtime.profiles.filter(profile => operations(runtime, profile).length > 0)
-  const [profileId, setProfileId] = useState(runtime.defaultProfileId || profiles[0]?.profileId || '')
-  const profile = profiles.find(profile => profile.profileId === profileId) || profiles[0]
+  const [profileId, setProfileId] = useState('')
+  const profile = selectMediaProfile(profiles, profileId, runtime.defaultProfileId)
   const availableOperations = profile ? operations(runtime, profile) : []
   const [chosenOperation, setOperation] = useState<VideoGenerationInput['operation']>('image-to-video')
   const operation = availableOperations.includes(chosenOperation) ? chosenOperation : availableOperations[0]
   const [selectedId, setSelectedId] = useState('')
   const [brief, setBrief] = useState('')
-  const [choices, setChoices] = useState<Partial<VideoGenerationInput['parameters']>>({})
+  const preferences = useMediaParameterPreferences('video', profile?.profileId)
+  const binding = JSON.stringify([preferences.key, profile, operation, runtime.protocolVersion, runtime.executionMode])
+  const [choices, setChoices] = useState<{ binding: string; parameters: Partial<VideoGenerationInput['parameters']> }>({ binding: '', parameters: {} })
   const caps = profile?.capabilities
+  const audioModes = profile ? videoAllowedAudioModes(runtime, profile) : []
   const localReferences = safeReferences(references, taskId)
   const selected = localReferences.find(asset => asset.localAssetId === selectedId && asset.status === 'SAVED' && caps && asset.size <= caps.maxInputBytes)
-  const parameters: VideoGenerationInput['parameters'] | null = caps ? {
-    durationSeconds: caps.durationsSeconds.includes(choices.durationSeconds!) ? choices.durationSeconds! : caps.durationsSeconds[0],
-    aspectRatio: caps.aspectRatios.includes(choices.aspectRatio!) ? choices.aspectRatio! : caps.aspectRatios[0],
-    resolution: caps.resolutions.includes(choices.resolution!) ? choices.resolution! : caps.resolutions[0],
-    frameRate: caps.frameRates.includes(choices.frameRate!) ? choices.frameRate! : caps.frameRates[0],
-    audio: caps.supportsAudio && (choices.audio ?? true),
-    outputFormat: caps.outputFormats.includes(choices.outputFormat!) ? choices.outputFormat! : caps.outputFormats[0],
-  } : null
+  const parameters = profile ? videoFormParameters(runtime, profile, choices.binding === binding ? choices.parameters : preferences.parameters) : null
+  useEffect(() => {
+    setSelectedId('')
+  }, [binding])
+  useEffect(() => {
+    if (profile && profileId !== profile.profileId) setProfileId(profile.profileId)
+  }, [profile, profileId])
+  function changeParameters(patch: Partial<VideoGenerationInput['parameters']>): void {
+    if (!profile) return
+    const next = videoFormParameters(runtime, profile, { ...parameters, ...patch })
+    setChoices({ binding, parameters: next ?? {} })
+    if (next) preferences.save(next)
+  }
   const input = videoGenerationInputSchema.safeParse({ profileId: profile?.profileId, operation,
     localAssetIds: operation === 'image-to-video' && selected ? [selected.localAssetId] : [], creativeBrief: brief, parameters })
   const problem = !runtime.executionAvailable || !profile || !operation ? '当前没有可用的视频生成配置'
@@ -110,13 +124,13 @@ export function VideoCreationForm({ taskId, runtime, references, busy, pending =
     event.preventDefault()
     if (!disabled && !problem && input.success) onGenerate(input.data)
   }}>
-    <label htmlFor={`${id}-profile`}>视频配置</label>
-    <select id={`${id}-profile`} value={profile?.profileId || ''} disabled={disabled} onChange={event => { setProfileId(event.target.value); setChoices({}); setSelectedId('') }}>
+    <label htmlFor={`${id}-profile`}>视频模型</label>
+    <select id={`${id}-profile`} value={profile?.profileId || ''} disabled={disabled} onChange={event => { setProfileId(event.target.value); setSelectedId('') }}>
       {!profile && <option value="">尚未配置</option>}
       {profiles.map(profile => <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>)}
     </select>
-    <label htmlFor={`${id}-operation`}>视频创作方式</label>
-    <select id={`${id}-operation`} value={operation || ''} disabled={disabled} onChange={event => setOperation(event.target.value as VideoGenerationInput['operation'])}>
+    <label htmlFor={`${id}-operation`}>视频创作方式{availableOperations.length === 1 ? '（固定）' : ''}</label>
+    <select id={`${id}-operation`} value={operation || ''} disabled={disabled || availableOperations.length === 1} onChange={event => setOperation(event.target.value as VideoGenerationInput['operation'])}>
       {availableOperations.map(value => <option key={value} value={value}>{value === 'image-to-video' ? '图片生成视频' : '文字生成视频'}</option>)}
     </select>
     {operation === 'image-to-video' && <>
@@ -129,12 +143,12 @@ export function VideoCreationForm({ taskId, runtime, references, busy, pending =
       </fieldset>
     </>}
     {caps && parameters && <div className="media-specs">
-      <label>时长<select aria-label="视频时长" value={parameters.durationSeconds} disabled={disabled} onChange={event => setChoices(value => ({ ...value, durationSeconds: Number(event.target.value) }))}>{caps.durationsSeconds.map(value => <option key={value} value={value}>{value} 秒</option>)}</select></label>
-      <label>比例<select aria-label="视频比例" value={parameters.aspectRatio} disabled={disabled} onChange={event => setChoices(value => ({ ...value, aspectRatio: event.target.value }))}>{caps.aspectRatios.map(value => <option key={value}>{value}</option>)}</select></label>
-      <label>分辨率<select aria-label="视频分辨率" value={parameters.resolution} disabled={disabled} onChange={event => setChoices(value => ({ ...value, resolution: event.target.value as typeof parameters.resolution }))}>{caps.resolutions.map(value => <option key={value}>{value}</option>)}</select></label>
-      <label>帧率<select aria-label="视频帧率" value={parameters.frameRate} disabled={disabled} onChange={event => setChoices(value => ({ ...value, frameRate: Number(event.target.value) }))}>{caps.frameRates.map(value => <option key={value} value={value}>{value} fps</option>)}</select></label>
-      <label>音频<select aria-label="视频音频" value={String(parameters.audio)} disabled={disabled || !caps.supportsAudio} onChange={event => setChoices(value => ({ ...value, audio: event.target.value === 'true' }))}><option value="false">无音频</option>{caps.supportsAudio && <option value="true">生成音频</option>}</select></label>
-      <label>格式<select aria-label="视频输出格式" value={parameters.outputFormat} disabled={disabled} onChange={event => setChoices(value => ({ ...value, outputFormat: event.target.value as typeof parameters.outputFormat }))}>{caps.outputFormats.map(value => <option key={value} value={value}>{value === 'video/mp4' ? 'MP4' : 'WebM'}</option>)}</select></label>
+      <label>时长{caps.durationsSeconds.length === 1 ? '（固定）' : ''}<select aria-label="视频时长" value={parameters.durationSeconds} disabled={disabled || caps.durationsSeconds.length === 1} onChange={event => changeParameters({ durationSeconds: Number(event.target.value) })}>{caps.durationsSeconds.map(value => <option key={value} value={value}>{value} 秒</option>)}</select></label>
+      <label>比例{caps.aspectRatios.length === 1 ? '（固定）' : ''}<select aria-label="视频比例" value={parameters.aspectRatio} disabled={disabled || caps.aspectRatios.length === 1} onChange={event => changeParameters({ aspectRatio: event.target.value })}>{caps.aspectRatios.map(value => <option key={value}>{value}</option>)}</select></label>
+      <label>分辨率{caps.resolutions.length === 1 ? '（固定）' : ''}<select aria-label="视频分辨率" value={parameters.resolution} disabled={disabled || caps.resolutions.length === 1} onChange={event => changeParameters({ resolution: event.target.value as typeof parameters.resolution })}>{caps.resolutions.map(value => <option key={value}>{value}</option>)}</select></label>
+      <label>帧率{caps.frameRates.length === 1 ? '（固定）' : ''}<select aria-label="视频帧率" value={parameters.frameRate} disabled={disabled || caps.frameRates.length === 1} onChange={event => changeParameters({ frameRate: Number(event.target.value) })}>{caps.frameRates.map(value => <option key={value} value={value}>{value} fps</option>)}</select></label>
+      <label>音频{audioModes.length === 1 ? '（固定）' : ''}<select aria-label="视频音频" value={String(parameters.audio)} disabled={disabled || audioModes.length === 1} onChange={event => changeParameters({ audio: event.target.value === 'true' })}>{audioModes.map(value => <option key={String(value)} value={String(value)}>{value ? '含音频' : '无音频'}</option>)}</select></label>
+      <label>格式{caps.outputFormats.length === 1 ? '（固定）' : ''}<select aria-label="视频输出格式" value={parameters.outputFormat} disabled={disabled || caps.outputFormats.length === 1} onChange={event => changeParameters({ outputFormat: event.target.value as typeof parameters.outputFormat })}>{caps.outputFormats.map(value => <option key={value} value={value}>{value === 'video/mp4' ? 'MP4' : 'WebM'}</option>)}</select></label>
     </div>}
     <label htmlFor={`${id}-brief`}>视频创作需求</label>
     <textarea id={`${id}-brief`} rows={4} maxLength={4000} value={brief} disabled={disabled} placeholder="画面内容、镜头运动、商品特征与动作要求" onChange={event => setBrief(event.target.value)} />
@@ -154,7 +168,7 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
       : { label: job.generationStatus === 'NOT_SUBMITTED' ? '尚未提交' : '未知生成状态', tone: 'warning' }
     const generated = ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)
     const unfinished = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
-    const downloadable = job.outputs.some(output => !output.expiresAt || Date.parse(output.expiresAt) > Date.now())
+    const downloadable = videoJobCanDownload(job) && job.outputs.some(output => !videoOutputIsSaved(job, output.outputId) && (!output.expiresAt || Date.parse(output.expiresAt) > Date.now()))
     const retry = generated && downloadable && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)
     const resume = job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
     return <article className="media-job" key={job.jobId} aria-label={`视频任务 ${job.jobId}`}>

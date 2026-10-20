@@ -16,11 +16,14 @@ export interface MediaProfile {
   allowedAspectRatios: string[]
   allowedSizes?: string[]
   allowedQualities?: string[]
+  defaultSize?: string
+  defaultQuality?: string
   maxCount: number
 }
 
 export interface MediaCapabilities {
   protocolVersion: 1
+  defaultProfileId?: string | null
   tools: MediaToolName[]
   profiles: MediaProfile[]
 }

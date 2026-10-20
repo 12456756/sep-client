@@ -70,7 +70,9 @@ test('run facade binds two host approvals to real run and awaits original output
 
 test('real run cannot finish a saved video while billing is reconciling and restores original billing on a later run', async () => {
   const f = await setup()
-  f.state.runtime.executionMode = 'real'
+  f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, protocolVersion: 2, executionMode: 'real',
+    profiles: f.state.runtime.profiles.map(profile => ({ ...profile, capabilities: { ...profile.capabilities,
+      audioModes: [false], defaultAudio: false, defaults: fixture.quoteRequest.parameters } })) })
   f.runInput.employee.video = f.state.runtime
   let settled = false
   const source = f.options.gateway(scope)

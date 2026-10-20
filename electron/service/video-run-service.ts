@@ -80,9 +80,10 @@ export class VideoRunService implements VideoRunPort {
     const run: Run = { taskId: input.taskId, host, controller, pending: new Set(), jobs: new Set() }
     this.runs.set(key, run)
     try {
+      const executionRuntime = await abortableVideo(host.authorizeExecution(input.taskId, controller.signal), controller.signal)
       const restored = await abortableVideo(host.getTaskVideo(input.taskId), controller.signal)
       validate()
-      allowed = allowed.filter(name => restored.runtime.tools.includes(name))
+      allowed = allowed.filter(name => executionRuntime.tools.includes(name))
       if (!allowed.length) { await this.finishRun(input.taskId, input.runId); return undefined }
       for (const job of restored.jobs) {
         if (videoBillingPending(job.billingStatus) || job.generationStatus !== 'NOT_SUBMITTED' && (!['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)) && job.saveStatus !== 'SAVED') run.jobs.add(job.jobId)

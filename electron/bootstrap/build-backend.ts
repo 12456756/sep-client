@@ -56,6 +56,7 @@ import { SepMockVideoGateway, SepRealVideoGateway } from '../data/sep-video-medi
 import { createVideoScopeAdapter } from '../data/video-scope-adapter'
 import { MockVideoHostService, type MockVideoHostOptions } from '../service/mock-video-host-service'
 import { VideoRunService } from '../service/video-run-service'
+import { AppError } from '../errors/app-error'
 
 const log = logger.child('build-backend')
 
@@ -208,6 +209,14 @@ class BackendRuntime {
           return employee?.video
         },
         authorizationRevision: () => this.employees.getAuthorizationRevision(),
+        localAuthorizationRevision: () => this.employees.getLocalAuthorizationRevision(),
+        recoveryAuthorizationRevision: () => this.employees.getRecoveryAuthorizationRevision(),
+        localRuntime: subscriptionId => this.employees.resolveVideo(subscriptionId),
+        authorizeRecovery: async (subscriptionId, signal) => {
+          signal.throwIfAborted()
+          if (!await this.employees.authorizeRecovery(subscriptionId)) throw new AppError('PERMISSION_DENIED')
+          signal.throwIfAborted()
+        },
         gateway: scope => {
           const transport = { baseUrl: config.SEP_BASE_URL, subscriptionId: scope.subscriptionId,
             token: (subscriptionId: string, signal: AbortSignal) => this.getEmploymentToken(subscriptionId, signal) }

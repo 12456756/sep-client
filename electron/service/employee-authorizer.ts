@@ -12,7 +12,9 @@
  */
 import { createHash } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import type { Subscription } from '../common/platform/platform-api'
+import { AuthApiError, type Subscription } from '../common/platform/platform-api'
+import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
+import { AppError } from '../errors/app-error'
 import { employeeRuntimeSnapshotSchema, parseEmployeeRuntimeManifest, preparedEmployeeSkillSchema, type EmployeeRuntimeSkill, type PreparedEmployeeSkill } from '../common/platform/employee-runtime-contract'
 import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-contract'
 // import type 会被编译擦除，所以不构成对 runtime/ 的运行时依赖；
@@ -98,7 +100,11 @@ export function resolveEmployeeRuntime(
 export class EmployeeAuthorizer {
   private generation = 0
   private authorizationRevision = 0
+  private localAuthorizationRevision = 0
+  private recoveryAuthorizationRevision = 0
   private readonly videoAuthorizationFingerprints = new Map<string, string>()
+  private readonly videoRuntimes = new Map<string, EmployeeRuntimeConfig['video']>()
+  private readonly employeeGrants = new Map<string, string | null>()
   private directoryTail: Promise<void> = Promise.resolve()
   private directoryScope: string | undefined
 
@@ -124,6 +130,45 @@ export class EmployeeAuthorizer {
     return this.authorizationRevision
   }
 
+  /** Local files and original receipt tracking do not depend on generation model capabilities. */
+  getLocalAuthorizationRevision(): number {
+    return this.localAuthorizationRevision
+  }
+
+  getRecoveryAuthorizationRevision(): number {
+    return this.recoveryAuthorizationRevision
+  }
+
+  /** Presentation-only cached capability snapshot, with no skill or network IO. */
+  resolveVideo(subscriptionId: string): EmployeeRuntimeConfig['video'] {
+    if (this.directoryScope !== this.scopeKey() || !this.employeeGrants.get(subscriptionId)) return undefined
+    return this.videoRuntimes.get(subscriptionId)
+  }
+
+  private observeGrant(subscriptionId: string, employeeId: string | null): void {
+    const previous = this.employeeGrants.get(subscriptionId)
+    if (previous !== undefined && previous !== null && previous !== employeeId) {
+      // Employee grant changes fence network execution/recovery only. Local files
+      // are owned by the signed-in enterprise/member and remain readable offline.
+      this.authorizationRevision++
+      this.recoveryAuthorizationRevision++
+      this.videoRuntimes.delete(subscriptionId)
+    }
+    this.employeeGrants.set(subscriptionId, employeeId)
+  }
+
+  private observeDirectory(instances: readonly Subscription[]): void {
+    const active = new Map(instances.filter(instance => instance.status === 'ACTIVE' && instance.employeeId)
+      .map(instance => [instance.subscriptionId, instance.employeeId!]))
+    for (const id of new Set([...this.employeeGrants.keys(), ...active.keys()])) this.observeGrant(id, active.get(id) ?? null)
+  }
+
+  private grantDenied(error: unknown): boolean {
+    return error instanceof AuthApiError && (error.isUnauthorized || error.isForbidden) ||
+      error instanceof AuthenticationRequiredError || error instanceof AppError &&
+      (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
+  }
+
   /**
    * 身份变化时的唯一收尾：丢掉平台目录的 TTL 缓存与技能缓存。
    *
@@ -135,7 +180,11 @@ export class EmployeeAuthorizer {
   clear(): void {
     this.generation += 1
     this.authorizationRevision += 1
+    this.localAuthorizationRevision += 1
+    this.recoveryAuthorizationRevision += 1
     this.videoAuthorizationFingerprints.clear()
+    this.videoRuntimes.clear()
+    this.employeeGrants.clear()
     this.directoryScope = undefined
     this.directory.invalidate()
     this.skills.invalidate()
@@ -182,10 +231,27 @@ export class EmployeeAuthorizer {
       // The directory's in-flight request is not identity-keyed. Drain it before a new scope reads.
       const instances = await (refresh ? this.directory.refresh(token) : this.directory.list(token))
       if (!isCurrent()) { this.directory.invalidate(); return [] }
+      this.observeDirectory(instances)
       return instances
+    } catch (error) {
+      if (isCurrent() && this.grantDenied(error)) {
+        for (const id of this.employeeGrants.keys()) this.observeGrant(id, null)
+      }
+      throw error
     } finally {
       release()
     }
+  }
+
+  /** Online employee grant only; original receipt access must not prepare skills or select a chat/video model. */
+  async authorizeRecovery(subscriptionId: string): Promise<boolean> {
+    const scope = this.captureScope()
+    if (!scope) return false
+    const token = await this.session.getValidAccessToken()
+    if (!scope.isCurrent()) return false
+    const instances = await this.scopedDirectory(token, scope.isCurrent)
+    if (!scope.isCurrent()) return false
+    return instances.some(instance => instance.subscriptionId === subscriptionId && instance.status === 'ACTIVE' && !!instance.employeeId)
   }
 
   /**
@@ -203,9 +269,13 @@ export class EmployeeAuthorizer {
     const instance = instances.find(item => item.subscriptionId === subscriptionId)
     const employee = resolveEmployeeRuntime(instances, subscriptionId, this.gatewayUrl, modelId)
     if (!instance || !employee || !instance.employeeId) return null
-    const rawManifest = this.runtimeProvider
-      ? await this.runtimeProvider.getRuntime(subscriptionId, accessToken)
-      : undefined
+    let rawManifest: unknown
+    try {
+      rawManifest = this.runtimeProvider ? await this.runtimeProvider.getRuntime(subscriptionId, accessToken) : undefined
+    } catch (error) {
+      if (scope.isCurrent() && this.grantDenied(error)) this.observeGrant(subscriptionId, null)
+      throw error
+    }
     if (!scope.isCurrent()) return null
     const manifest = this.runtimeProvider ? parseEmployeeRuntimeManifest(rawManifest) : undefined
     if (manifest && (manifest.subscriptionId !== subscriptionId || manifest.employee.id !== instance.employeeId)) {
@@ -216,6 +286,7 @@ export class EmployeeAuthorizer {
       const previous = this.videoAuthorizationFingerprints.get(subscriptionId)
       if (previous !== undefined && previous !== fingerprint) this.authorizationRevision += 1
       this.videoAuthorizationFingerprints.set(subscriptionId, fingerprint)
+      this.videoRuntimes.set(subscriptionId, manifest.runtime.video)
     }
     // Runtime may still advertise retired models that the current directory excludes.
     const selectedModel = manifest

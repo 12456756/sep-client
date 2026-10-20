@@ -19,6 +19,7 @@ import { mediaJobActions } from '../../src/shared/media-view'
 import type { LocalMediaJob } from '../domain/media'
 import { AppError } from '../errors/app-error'
 import { config } from '../common/config'
+import { realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { ToolApprovals } from '../runtime/run-approvals'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { MediaService, type MediaServiceOptions } from './media-service'
@@ -123,7 +124,13 @@ async function realFixture(initial: {
       const body = typeof init?.body === 'string' ? JSON.parse(init.body) as Record<string, unknown> : null
       calls.push({ path, method, body })
       if (path === '/quotes' && method === 'POST') return json({ mock: false, quoteId: 'real-quote',
-        expiresAt: new Date(Date.now() + 60_000).toISOString(), semanticSha256: 'a'.repeat(64), pricingStatus: 'quoted',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(), semanticSha256: realMediaSemanticHash({
+          profileId: String(body!.profileId), configVersion: String(body!.configVersion), operation: body!.operation as 'generate',
+          referenceHashes: [], creativeBrief: String(body!.creativeBrief), parameters: {
+            aspectRatio: ({ '1024x1024': '1:1', '1536x1024': '3:2', '1024x1536': '2:3' } as Record<string, string>)[(body!.parameters as { size: string }).size]!,
+            ...(body!.parameters as { size: string; count: number; quality: string }),
+          },
+        }), pricingStatus: 'quoted',
         amountCny: '0.120000', pricingVersion: 'price-v1', billingStatus: 'NOT_RESERVED',
         funding: { creditCny: '0.120000', memberWalletCny: '0.000000', personalCny: '0.000000' } })
       if (path === '/requests' && method === 'POST') {
@@ -152,6 +159,37 @@ async function realFixture(initial: {
 }
 
 describe('real media billing recovery and canonical sizes', () => {
+  it('rejects mismatched size and ratio before quote, approval or submission', async () => {
+    const f = await realFixture({})
+    await assert.rejects(f.generate({ aspectRatio: '1:1', size: '1536x1024', count: 1 }), code('INVALID_ARGUMENT'))
+    assert.deepEqual(f.calls, [])
+    assert.deepEqual(f.approvalRequests, [])
+  })
+
+  it('freezes v2 quality defaults into approval, quote, submission and recovery', async () => {
+    const f = await realFixture({ billingStatus: 'SETTLED' })
+    const runtime = f.employee.media as { protocolVersion: number; profiles: { capabilities: Record<string, unknown> }[] }
+    runtime.protocolVersion = 2
+    Object.assign(runtime.profiles[0].capabilities, { qualities: ['low', 'medium', 'high'], defaultQuality: 'high', defaultSize: '1536x1024' })
+    const first = await f.generate({ aspectRatio: '3:2', count: 1 })
+    await f.service.waitForRun('task-a', first.runId)
+    const saved = (await f.store.getJob(owner, 'task-a', first.jobId))!
+    assert.deepEqual(saved.input.parameters, { aspectRatio: '3:2', size: '1536x1024', count: 1, quality: 'high' })
+    assert.deepEqual((f.approvalRequests[0].input as { parameters: unknown }).parameters, saved.input.parameters)
+    const quoted = f.calls.find(call => call.path === '/quotes')!.body!
+    const submitted = f.calls.find(call => call.path === '/requests')!.body!
+    assert.deepEqual(quoted.parameters, { size: '1536x1024', count: 1, quality: 'high' })
+    assert.deepEqual(submitted.parameters, quoted.parameters)
+    assert.equal(saved.requestHash, realMediaSemanticHash(saved.request))
+    Object.assign(runtime.profiles[0].capabilities, { qualities: ['low'], defaultQuality: 'low' })
+    const before = f.calls.length
+    await f.service.retrySave('task-a', first.jobId)
+    const restored = (await f.store.getJob(owner, 'task-a', first.jobId))!
+    assert.equal(restored.input.parameters.quality, 'high')
+    assert.equal(restored.requestHash, saved.requestHash)
+    assert.equal(f.calls.slice(before).filter(call => call.method === 'POST').length, 0)
+  })
+
   it('explains unadvertised quality as an input error without quoting or submitting', async () => {
     const f = await realFixture({})
     await assert.rejects(f.generate({ aspectRatio: '2:3', count: 1, quality: 'high' }), error => {
@@ -166,7 +204,7 @@ describe('real media billing recovery and canonical sizes', () => {
 
   for (const [aspectRatio, explicitSize, expectedSize] of [
     ['1:1', undefined, '1024x1024'], ['3:2', undefined, '1536x1024'], ['2:3', undefined, '1024x1536'],
-    ['1:1', '1536x1024', '1536x1024'],
+    ['3:2', '1536x1024', '1536x1024'],
   ] as const) {
     it(`uses the same quote and submission hash for ${aspectRatio} ${explicitSize ?? 'default size'}`, async () => {
       const f = await realFixture({ billingStatus: 'SETTLED' })
@@ -177,8 +215,8 @@ describe('real media billing recovery and canonical sizes', () => {
       assert.deepEqual(quoted.parameters, { size: expectedSize, count: 1, quality: 'medium' })
       assert.deepEqual(submitted.parameters, quoted.parameters)
       const job = (await f.store.getJob(owner, 'task-a', view.jobId))!
-      const expectedHash = createHash('sha256').update(JSON.stringify({ profileId: 'image-prod', configVersion: 'cfg-v1',
-        operation: 'generate', creativeBrief: input().creativeBrief, parameters: { size: expectedSize, count: 1 }, references: [] })).digest('hex')
+      const expectedHash = realMediaSemanticHash({ profileId: 'image-prod', configVersion: 'cfg-v1',
+        operation: 'generate', creativeBrief: input().creativeBrief, parameters: { aspectRatio, size: expectedSize, count: 1 }, referenceHashes: [] })
       assert.equal(job.requestHash, expectedHash)
       assert.equal(job.quote.requestHash, expectedHash)
       assert.equal(job.request.requestHash, expectedHash)
@@ -425,9 +463,7 @@ describe('MediaService authorization and request semantics', () => {
     const quoted = gateway.calls.quote[0].request
     assert.equal(quoted.referenceIds.length, 1)
     assert.deepEqual(quoted.referenceIds, gateway.calls.submit[0].request.referenceIds)
-    assert.equal(quoted.requestHash, createHash('sha256').update(JSON.stringify({ profileId: quoted.profileId, configVersion: quoted.configVersion,
-      operation: quoted.operation, creativeBrief: quoted.creativeBrief,
-      parameters: { size: '1024x1024', count: 1 }, references: [MOCK_MEDIA_PNG_SHA256] })).digest('hex'))
+    assert.equal(quoted.requestHash, realMediaSemanticHash(quoted))
   })
 
   it('does not upload or quote when the separate SEP reference transfer approval is denied', async () => {

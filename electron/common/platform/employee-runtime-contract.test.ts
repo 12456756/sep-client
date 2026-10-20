@@ -65,7 +65,7 @@ describe('existing SEP employee runtime manifest v1', () => {
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input))
       assert.equal(url.pathname, '/api/client/subscriptions/sub-1/runtime')
-      assert.equal(url.search, '?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1')
+      assert.equal(url.search, '?mediaProtocolVersion=2&skillArtifactProtocolVersion=1&videoProtocolVersion=2')
       assert.deepEqual([...new Headers(init?.headers)], [['authorization', 'Bearer access']])
       return new Response(JSON.stringify(negotiatedFixture()), { status: 200 })
     }

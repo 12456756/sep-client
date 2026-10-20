@@ -1,0 +1,11 @@
+{
+  "request": {
+    "profileId": "image-prod",
+    "configVersion": "cfg-v2",
+    "operation": "edit",
+    "referenceHashes": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+    "creativeBrief": "商品照片，保留纹理 🌱",
+    "parameters": { "size": "1536x1024", "count": 2, "quality": "high" }
+  },
+  "semanticSha256": "15d794a81bf261dd305411b2b7518a36fccbfc918e172394cd98fa2bb87d1aa2"
+}

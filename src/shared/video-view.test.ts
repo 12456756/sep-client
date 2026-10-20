@@ -5,6 +5,8 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { MediaAssetView } from './media'
 import type { VideoJobView, VideoTaskView } from './video-host'
 import type { VideoOutput, VideoRuntime } from './video-media'
+import { videoAllowedAudioModes } from './video-media'
+import { videoFormParameters } from './media-view'
 
 // Dynamic import keeps TSX outside the shared Node tsconfig's compilation graph.
 const { VideoTaskContent, VideoTaskPanel, VideoArtifactsPanel, videoOutputIsSaved } = await import(new URL('../components/workspace/VideoArtifactsPanel.tsx', import.meta.url).href)
@@ -81,6 +83,36 @@ function options(html: string, label: string): string[] {
   assert.ok(select, label)
   return Array.from(select[1].matchAll(/<option(?: value="([^"]*)")?[^>]*>(.*?)<\/option>/g), match => match[1] || match[2])
 }
+
+test('video defaults and choices are validated independently against the current model', () => {
+  const v2 = { ...runtime, protocolVersion: 2 as const }
+  const configured = { ...runtime.profiles[0], capabilities: { ...runtime.profiles[0].capabilities,
+    durationsSeconds: [4, 8], aspectRatios: ['16:9', '9:16'], frameRates: [24, 30],
+    audioModes: [false, true], defaultAudio: false,
+    defaults: { durationSeconds: 8, aspectRatio: '9:16', resolution: '720p' as const, frameRate: 30, audio: false, outputFormat: 'video/mp4' as const },
+  } }
+  const expected = { durationSeconds: 8, aspectRatio: '9:16', resolution: '720p', frameRate: 30, audio: false, outputFormat: 'video/mp4' }
+  assert.deepEqual(videoFormParameters(v2, configured), expected)
+  assert.deepEqual(videoFormParameters(v2, configured, { durationSeconds: 99, aspectRatio: '4:3', resolution: '4k', frameRate: 120, audio: false, outputFormat: 'video/webm' }), expected)
+  assert.equal(videoFormParameters(v2, configured, { audio: true })?.audio, true)
+  const fixed = { ...configured, capabilities: { ...configured.capabilities, audioModes: [true], durationsSeconds: [4] } }
+  assert.deepEqual(videoFormParameters(v2, fixed, { durationSeconds: 8, audio: false }), { ...expected, durationSeconds: 4, audio: true })
+  assert.equal(videoFormParameters(v2, { ...fixed, capabilities: { ...fixed.capabilities, audioModes: [] } }), null)
+})
+
+test('legacy real H3 audio stays fixed true while mock respects supportsAudio', () => {
+  const caps = runtime.profiles[0].capabilities
+  assert.deepEqual(videoAllowedAudioModes({ ...runtime, executionMode: 'real' }, { capabilities: caps }), [true])
+  assert.deepEqual(videoAllowedAudioModes(runtime, { capabilities: caps }), [false])
+  assert.deepEqual(videoAllowedAudioModes(runtime, { capabilities: { ...caps, supportsAudio: true } }), [false, true])
+  const silent = { capabilities: { ...caps, audioModes: [false], defaultAudio: false } }
+  assert.deepEqual(videoAllowedAudioModes({ ...runtime, protocolVersion: 2, executionMode: 'real' }, silent), [false])
+  assert.equal(videoFormParameters({ ...runtime, executionMode: 'real' }, runtime.profiles[0], { audio: false })?.audio, true)
+  const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [] } })
+  assert.deepEqual(options(html, '视频音频'), ['true'])
+  assert.match(html, /音频（固定）<select aria-label="视频音频"[^>]*disabled=""/)
+  for (const label of ['视频分辨率', '视频帧率', '视频输出格式']) assert.match(html, new RegExp(`aria-label="${label}"[^>]*disabled=""`))
+})
 
 test('video panel stays hidden for a disabled host and SSR never reads IPC', () => {
   assert.equal(panel({ view: null }), '')
@@ -247,6 +279,25 @@ test('expired original downloads cannot offer recovery but saved local files rem
   const saved = jobs(job({ generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVED', outputs: [expired] }))
   assert.match(saved, /预览视频成果 1/)
   assert.match(saved, /导出视频成果 1/)
+})
+
+test('saved unexpired outputs cannot authorize retry of an expired missing output', () => {
+  const partial = { ...job({ generationStatus: 'PARTIAL_SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVE_FAILED',
+    outputs: [{ ...output, expiresAt: '2000-01-01T00:00:00.000Z' }, { ...output, outputId: 'output-2', expiresAt: null }],
+  }), savedOutputIds: ['output-2'] }
+  const html = jobs(partial)
+  assert.doesNotMatch(html, />恢复跟踪<|>重新保存</)
+  assert.match(html, /预览视频成果 2|导出视频成果 2/)
+  assert.doesNotMatch(html, /预览视频成果 1|导出视频成果 1/)
+  const expiredSaved = jobs({ ...partial, outputs: partial.outputs.map(item => ({ ...item, expiresAt: '2000-01-01T00:00:00.000Z' })) })
+  assert.match(expiredSaved, /预览视频成果 2|导出视频成果 2/)
+})
+
+test('authoritative canDownload false suppresses retry without hiding already saved local outputs', () => {
+  const saved = { ...job({ generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVED', outputs: [output] }), canDownload: false } as VideoJobView & { canDownload: boolean }
+  const html = jobs(saved)
+  assert.match(html, /预览视频成果 1|导出视频成果 1/)
+  assert.doesNotMatch(html, /重新保存|恢复跟踪/)
 })
 
 test('unsafe cross-task identifiers, output URLs, invalid MIME and real-charge payloads are rejected', () => {
