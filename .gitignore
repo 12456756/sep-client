@@ -56,3 +56,6 @@ resources/speech/sensevoice-int8/*.onnx
 resources/speech/sensevoice-int8/tokens.txt
 resources/speech/sensevoice-int8/test_wavs/
 resources/speech/sensevoice-int8/*.download
+
+# Explicit video mock integration build
+out-video-mock/

@@ -24,6 +24,7 @@ import type { ToolApprovals } from './run-approvals'
 import type { MonitorTaskContentInput, MonitorTaskQueuedInput, MonitorTaskStartedInput, MonitorTaskFinishedInput } from '../domain/task-monitor'
 import { logger } from '../common/logger'
 import type { MediaRunPort } from '../domain/media-tools'
+import type { VideoRunPort } from '../domain/video-tools'
 
 const log = logger.child('conversation-executor')
 
@@ -46,6 +47,7 @@ export interface ConversationExecutorOptions {
   onStarted?: (input: MonitorTaskStartedInput) => void
   onFinished?: (input: MonitorTaskFinishedInput) => void
   media?: MediaRunPort
+  video?: VideoRunPort
 }
 
 export class ConversationExecutor {
@@ -117,9 +119,13 @@ export class ConversationExecutor {
         taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
+      const videoTools = await this.options.video?.prepareRun({
+        taskId, runId: runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
+        requestApproval: request => this.options.approvals.request(request),
+      })
       if (active.control !== 'none') {
         // stopTask may have won before prepareRun published its tracking state.
-        await this.options.media?.stopTask(taskId)
+        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
         await this.finalize(active, queued, scope, runCreated)
         return
       }
@@ -137,6 +143,7 @@ export class ConversationExecutor {
           additionalSkillPaths: employee.additionalSkillPaths,
           systemPrompt: employee.systemPrompt,
           mediaTools,
+          videoTools,
           toolPolicy,
           employeeProfile: employee.employeeProfile,
         },
@@ -191,12 +198,12 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       await worker.run(queued.workerPrompt ?? queued.prompt)
-      if (active.control === 'none') await this.options.media?.waitForRun(taskId, runId)
+      if (active.control === 'none') await Promise.all([this.options.media?.waitForRun(taskId, runId), this.options.video?.waitForRun(taskId, runId)])
       await this.options.events.drain(taskId)
       if (!this.options.workers.isCurrent(active)) return
       await this.finalize(active, queued, scope, runCreated)
     } catch (error) {
-      await this.options.media?.stopTask(taskId).catch(() => undefined)
+      await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)]).catch(() => undefined)
       log.error('conversation run failed', {
         taskId,
         runId,
@@ -215,6 +222,7 @@ export class ConversationExecutor {
         this.options.onFinished?.({ taskId, runId, status: 'FAILED', error: 'The conversation could not be started.', completedAt: Date.now() })
       }
     } finally {
+      await this.options.video?.finishRun?.(taskId, runId)
       this.options.events.forgetRun(runId)
       await worker?.dispose().catch(() => undefined)
       releaseWorkspace()

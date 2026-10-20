@@ -15,6 +15,7 @@ import { ArrangementExecutor, buildArrangementNodePrompt } from './arrangement-e
 import { silentTaskMonitor, type TaskMonitorPort, type MonitorTaskQueuedInput, type MonitorTaskContentInput } from '../domain/task-monitor'
 import type { MonitorParticipation } from '../common/platform/client-monitor-contract'
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
+import type { VideoHostTools, VideoRunPort } from '../domain/video-tools'
 
 const scope: TaskOwnerScope = { memberId: 'member-arrangement', enterpriseId: 'enterprise-arrangement' }
 const employee: EmployeeRuntimeConfig = {
@@ -131,6 +132,82 @@ describe('TaskRuntime arrangement integration', () => {
       await runtime.executeTask(task.id)
       await waitFor(() => waiting)
       const approval = prepared!.requestApproval({ taskId: task.id, runId: prepared!.runId, subscriptionId: employee.subscriptionId, toolName: 'media_generate_image', input: { quote: { amount: '1', currency: 'credits' } } })
+      await waitFor(() => approvalRequested)
+      await runtime.pauseTask(task.id)
+      assert.equal(await approval, false)
+      assert.deepEqual(stopped, [task.id])
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
+    } finally { deliver(); await runtime.stopAll() }
+  })
+
+  it('passes per-node prompts and video bindings and blocks downstream nodes until video delivery', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-video-'))
+    directories.push(userDataDir)
+    const manager = new TaskManager(userDataDir)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('video arrangement', 'work', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    const prepared: Array<Parameters<VideoRunPort['prepareRun']>[0]> = []
+    const started: string[] = []
+    let waiting = false
+    let deliver!: () => void
+    const delivery = new Promise<void>(resolve => { deliver = resolve })
+    const host: VideoHostTools = { names: ['video_get_job'], execute: async () => null }
+    const runtime = new TaskRuntime({
+      taskManager: manager, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: new MemoryCheckpointStore(),
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+      resolveEmployee: () => employee,
+      authorizeEmployee: async (subscriptionId, modelId) => ({ ...employee, subscriptionId, modelId: modelId ?? employee.modelId, systemPrompt: `Instructions for ${modelId}` }),
+      video: {
+        async prepareRun(input) { prepared.push(input); return host },
+        async waitForRun(taskId, runId) { assert.equal(taskId, task.id); if (runId === prepared[0]?.runId) { waiting = true; await delivery } },
+        async stopTask() { deliver() },
+      },
+      createWorker: options => {
+        assert.equal(options.context.systemPrompt, `Instructions for ${options.context.modelId}`)
+        assert.equal(options.context.videoTools, host)
+        return { async run() { started.push(options.context.modelId) }, async abort() {}, async dispose() {} }
+      },
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => waiting)
+      assert.deepEqual(started, ['node-model-a'])
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.RUNNING)
+      assert.equal(prepared[0].toolPolicy?.preset, 'workspace-edit')
+      deliver()
+      await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+      assert.deepEqual(started, ['node-model-a', 'node-model-b'])
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)
+    } finally { deliver(); await runtime.stopAll() }
+  })
+
+  it('pauses an arrangement awaiting video and denies a pending node video approval', async () => {
+    const userDataDir = await mkdtemp(join(tmpdir(), 'sep-arrangement-video-pause-'))
+    directories.push(userDataDir)
+    const manager = new TaskManager(userDataDir)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('video pause', 'work', undefined, employee.subscriptionId)
+    const arrangement = plan(task.id)
+    let prepared: Parameters<VideoRunPort['prepareRun']>[0] | undefined
+    let waiting = false
+    let deliver!: () => void
+    const delivery = new Promise<void>(resolve => { deliver = resolve })
+    const stopped: string[] = []
+    let approvalRequested = false
+    const runtime = new TaskRuntime({
+      taskManager: manager, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: new MemoryCheckpointStore(),
+      getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => { approvalRequested = true },
+      resolveEmployee: () => employee, authorizeEmployee: async () => employee,
+      video: { async prepareRun(input) { prepared = input; return undefined }, async waitForRun() { waiting = true; await delivery }, async stopTask(id) { stopped.push(id); deliver() } },
+      createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => waiting)
+      const approval = prepared!.requestApproval({ taskId: task.id, runId: prepared!.runId, subscriptionId: employee.subscriptionId, toolName: 'video_from_image', input: { quote: { amount: '1', currency: 'credits' } } })
       await waitFor(() => approvalRequested)
       await runtime.pauseTask(task.id)
       assert.equal(await approval, false)

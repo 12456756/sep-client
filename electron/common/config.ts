@@ -1,5 +1,18 @@
 import { runtimeConfig } from './runtime-config'
 
+/** Mock video is opt-in even in development; only the exact value enables it. */
+export function isVideoMockEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  assertVideoMode(env)
+  return env['SEP_VIDEO_MOCK_ENABLED'] === 'true'
+}
+function assertVideoMode(env: NodeJS.ProcessEnv): void {
+  if (env['SEP_VIDEO_MOCK_ENABLED'] === 'true' && env['SEP_VIDEO_REAL_ENABLED'] === 'true') throw new Error('Video mock and real modes are mutually exclusive.')
+}
+export function isVideoRealEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  assertVideoMode(env)
+  return env['SEP_VIDEO_REAL_ENABLED'] === 'true'
+}
+
 const SEP_BASE_URL = (process.env['SEP_BASE_URL'] || runtimeConfig.sepBaseUrl).replace(/\/+$/, '')
 
 /**
@@ -28,6 +41,8 @@ const SEP_WEB_ORIGIN = new URL(
 ).origin
 
 export const config = {
+  SEP_VIDEO_MOCK_ENABLED: isVideoMockEnabled(),
+  SEP_VIDEO_REAL_ENABLED: isVideoRealEnabled(),
   SEP_BASE_URL,
   SEP_API_BASE_URL: SEP_BASE_URL,
   SEP_ASSET_BASE_URL,

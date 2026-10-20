@@ -22,6 +22,8 @@ import { config } from '../common/config'
 import { ToolApprovals } from '../runtime/run-approvals'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { MediaService, type MediaServiceOptions } from './media-service'
+import { EmployeeAuthorizer } from './employee-authorizer'
+import { EmployeeDirectory } from './employee-directory'
 
 const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const other = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
@@ -334,6 +336,34 @@ function notSentJob(): LocalMediaJob {
 }
 
 describe('MediaService authorization and request semantics', () => {
+  it('edits from a completed task when the runtime default model has been retired', async () => {
+    const f = await fixture({ getTask: async () => ({ subscriptionId: 'subscription-a', status: 'completed' }) })
+    const directory = new EmployeeDirectory(async () => [{
+      id: 'subscription-a', subscriptionId: 'subscription-a', employeeId: 'employee-a', name: 'Designer',
+      status: 'ACTIVE', templateVersion: '1', template: { id: 'employee-a', name: 'Designer', avatar: null },
+      allowedModels: ['current-model'], department: null, upgradeAvailable: false,
+    }])
+    const authorizer = new EmployeeAuthorizer({ getValidAccessToken: async () => 'mock-token', getMeta: () => owner }, directory,
+      { prepare: async () => ({ skillPaths: [], skills: [] }), invalidate() {} }, 'mock://no-network', {
+        getRuntime: async () => ({ manifestVersion: 1, subscriptionId: 'subscription-a', templateVersion: '1',
+          employee: { id: 'employee-a', name: 'Designer', version: '1', maxSteps: 10 },
+          runtime: { systemPrompt: 'Designer', modelId: 'old-template-model', allowedModels: ['retired-model', 'current-model'],
+            media: MOCK_MEDIA_CAPABILITIES, skills: [] } }),
+      })
+    f.options.authorize = subscriptionId => authorizer.authorize(subscriptionId)
+    const selected = join(f.directory, 'reference.png')
+    await writeFile(selected, MOCK_MEDIA_PNG)
+    const [asset] = await f.service.importReferences('task-a', [selected])
+    const view = await f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId] }))
+    await f.service.waitForRun('task-a', view.runId)
+    assert.equal(f.gateway.calls.submit.length, 1)
+    assert.equal(f.gateway.calls.submit[0].request.operation, 'edit')
+    const saved = await f.service.getTaskMedia('task-a')
+    assert.equal(saved.jobs[0].generationStatus, 'SUCCEEDED')
+    assert.equal(saved.jobs[0].saveStatus, 'SAVED')
+    assert.ok(saved.assets.some(output => output.source === 'output' && output.status === 'SAVED'))
+  })
+
   it('offers original download recovery after a saved local image is deleted without generating again', async () => {
     const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
     const generated = await f.service.generateTaskMedia('task-a', input())

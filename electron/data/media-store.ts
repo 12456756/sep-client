@@ -208,7 +208,7 @@ export class MediaStore implements MediaStorePort {
     }
   }
 
-  private async write(file: string, value: unknown): Promise<void> {
+  private async write(file: string, value: unknown, beforePublish?: () => void): Promise<void> {
     if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_MANIFEST_BYTES) throw new MediaPersistenceError('Media manifest exceeds the supported size.')
     // Only publication is tracked, not the WriteChain operation: writers read before publishing.
     await this.publishing(dirname(file), async () => {
@@ -216,7 +216,23 @@ export class MediaStore implements MediaStorePort {
       await mkdir(dirname(file), { recursive: true, mode: 0o700 })
       await this.assertPath(file)
       // No stale backup rollback: a MAYBE_SENT request must never reappear as NOT_SENT.
-      await writeJsonAtomic(file, value, { backup: false })
+      if (!beforePublish) {
+        await writeJsonAtomic(file, value, { backup: false })
+        return
+      }
+      const part = `${file}.${randomUUID()}.tmp`
+      let created = false
+      try {
+        await this.assertPath(part)
+        const handle = await open(part, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
+        created = true
+        try { await handle.writeFile(JSON.stringify(value), 'utf8'); await handle.sync() } finally { await handle.close() }
+        await this.assertPath(file)
+        // Authorization must be checked after staging, with no await before publication.
+        beforePublish()
+        await rename(part, file)
+        created = false
+      } finally { if (created) await rm(part, { force: true }) }
     })
   }
 
@@ -347,10 +363,14 @@ export class MediaStore implements MediaStorePort {
     return this.verifiedBytes(scope, asset)
   }
 
-  async importReference(scope: TaskOwnerScope, taskId: string, selectedPath: string): Promise<LocalMediaAsset> {
+  async importReference(scope: TaskOwnerScope, taskId: string, selectedPath: string, signal: AbortSignal = new AbortController().signal, validate?: () => void): Promise<LocalMediaAsset> {
+    signal.throwIfAborted()
+    validate?.()
     this.paths.mediaRoot(scope, taskId)
     if (!isAbsolute(selectedPath)) throw new MediaPersistenceError('A native absolute selection path is required.')
     const bytes = await this.bytes(selectedPath, true)
+    signal.throwIfAborted()
+    validate?.()
     const image = inspectMediaImage(bytes)
     const hash = sha256(bytes)
     const id = assetId('reference', hash)
@@ -362,16 +382,18 @@ export class MediaStore implements MediaStorePort {
         }
         try { await this.verifiedBytes(scope, existing) } catch (error) {
           if (!missing(error)) throw error
-          return this.persistAsset(scope, existing, (async function* () { yield bytes })(), new AbortController().signal)
+          return this.persistAsset(scope, existing, (async function* () { yield bytes })(), signal, validate)
         }
-        await this.write(this.file(scope, taskId, 'assets', id), existing)
+        signal.throwIfAborted()
+        validate?.()
+        await this.write(this.file(scope, taskId, 'assets', id), existing, () => { signal.throwIfAborted(); validate?.(); signal.throwIfAborted() })
         return existing
       }
       const file = this.file(scope, taskId, 'files', id, `.${extensions[image.mime]}`)
       try { await this.bytes(file); throw new MediaPersistenceError('Orphaned media reference requires its commit evidence.') } catch (error) { if (!missing(error)) throw error }
       const asset: LocalMediaAsset = { ...image, version: 1, owner: { ...scope }, taskId, localAssetId: id, jobId: null, outputId: null,
         source: 'reference', status: 'SAVED', sha256: hash, relativePath: `files/${id}.${extensions[image.mime]}`, createdAt: Date.now() }
-      return this.persistAsset(scope, asset, (async function* () { yield bytes })(), new AbortController().signal)
+      return this.persistAsset(scope, asset, (async function* () { yield bytes })(), signal, validate)
     })
   }
 
@@ -476,9 +498,10 @@ export class MediaStore implements MediaStorePort {
     try { return await Promise.race([operation, aborted]) } finally { signal.removeEventListener('abort', onAbort) }
   }
 
-  private async persistAsset(scope: TaskOwnerScope, asset: LocalMediaAsset, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<LocalMediaAsset> {
+  private async persistAsset(scope: TaskOwnerScope, asset: LocalMediaAsset, stream: AsyncIterable<Uint8Array>, signal: AbortSignal, validate?: () => void): Promise<LocalMediaAsset> {
     const file = this.assetFile(scope, asset)
     const part = `${file}.${randomUUID()}.part`
+    const beforePublish = (): void => { signal.throwIfAborted(); validate?.(); signal.throwIfAborted() }
     try {
       const hash = await this.streamPart(part, stream, signal)
       if (hash !== asset.sha256) throw new MediaPersistenceError('Reference image changed during copying.')
@@ -486,10 +509,14 @@ export class MediaStore implements MediaStorePort {
       const commit = await this.json(`${manifest}.commit`, assetSchema)
       if (commit && !isDeepStrictEqual(commit, asset)) throw new MediaPersistenceError('Recovered reference differs from its original commit.')
       await this.publishing(dirname(manifest), async () => {
-        if (!commit) await this.write(`${manifest}.commit`, asset)
+        signal.throwIfAborted()
+        validate?.()
+        if (!commit) await this.write(`${manifest}.commit`, asset, beforePublish)
         await this.assertPath(file)
+        signal.throwIfAborted()
+        validate?.()
         await rename(part, file)
-        await this.write(manifest, asset)
+        await this.write(manifest, asset, beforePublish)
       })
       return asset
     } finally { await rm(part, { force: true }) }

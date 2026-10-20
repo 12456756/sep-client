@@ -9,6 +9,7 @@ import { SkillLibraryService } from '../service/skill-library-service'
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
 import { join } from 'node:path'
+import { shell } from 'electron'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { EmploymentTokenManager } from '../common/platform/employment-token-manager'
 import { getSubscriptions, getEmployeeRuntime, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
@@ -50,6 +51,11 @@ import type { SpeechRuntimePort } from '../domain/speech'
 import { SepRealMediaGateway } from '../data/sep-real-media-gateway'
 import type { MediaGatewayPort } from '../domain/media'
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
+import { VideoStore } from '../data/video-store'
+import { SepMockVideoGateway, SepRealVideoGateway } from '../data/sep-video-media-gateway'
+import { createVideoScopeAdapter } from '../data/video-scope-adapter'
+import { MockVideoHostService, type MockVideoHostOptions } from '../service/mock-video-host-service'
+import { VideoRunService } from '../service/video-run-service'
 
 const log = logger.child('build-backend')
 
@@ -87,6 +93,8 @@ class BackendRuntime {
   readonly media: MediaService
   readonly speech: SpeechService
   private readonly speechRuntime: LazyAsync<SpeechRuntimePort>
+  readonly video?: MockVideoHostService
+  private readonly videoRuns?: VideoRunService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -112,23 +120,7 @@ class BackendRuntime {
     this.authSession = new AuthSessionManager()
     const realMediaGateway = mediaGateway ?? new SepRealMediaGateway({
       baseUrl: config.SEP_BASE_URL,
-      token: async (subscriptionId, signal) => {
-        let entry = this.employmentTokens.get(subscriptionId)
-        if (!entry) {
-          const manager = new EmploymentTokenManager({ getRefreshToken: () => this.authSession.getRefreshToken() })
-          const initialized = manager.initialize(subscriptionId)
-          entry = { manager, initialized }
-          this.employmentTokens.set(subscriptionId, entry)
-        }
-        signal.throwIfAborted()
-        try { await entry.initialized } catch (error) {
-          if (this.employmentTokens.get(subscriptionId) === entry) this.employmentTokens.delete(subscriptionId)
-          entry.manager.stop()
-          throw error
-        }
-        signal.throwIfAborted()
-        return entry.manager.getValidToken()
-      },
+      token: (subscriptionId, signal) => this.getEmploymentToken(subscriptionId, signal),
     })
     this.notifications = new NotificationService({
       scope: this,
@@ -185,9 +177,10 @@ class BackendRuntime {
       { getRuntime: getEmployeeRuntime },
     )
 
+    const mediaStore = new MediaStore(userDataDir)
     this.media = new MediaService({
       scope: this,
-      store: new MediaStore(userDataDir),
+      store: mediaStore,
       gateway: realMediaGateway,
       capabilities: mediaCapabilities,
       getTask: taskId => this.taskManager.getTask(taskId),
@@ -202,6 +195,41 @@ class BackendRuntime {
         return { ...plan.permissions, approvalMode: plan.permissions.approvalMode ?? 'confirm-each', workspaceDir: task?.workDir ?? join(userDataDir, 'task-workspaces') }
       },
     })
+
+    if (config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED) {
+      const store = new VideoStore(userDataDir)
+      const videoOptions: MockVideoHostOptions = {
+        mock: !config.SEP_VIDEO_REAL_ENABLED, scope: this, store,
+        getTask: taskId => this.taskManager.getTask(taskId),
+        authorize: async (subscriptionId, signal) => {
+          signal.throwIfAborted()
+          const employee = await this.employees.authorize(subscriptionId)
+          signal.throwIfAborted()
+          return employee?.video
+        },
+        authorizationRevision: () => this.employees.getAuthorizationRevision(),
+        gateway: scope => {
+          const transport = { baseUrl: config.SEP_BASE_URL, subscriptionId: scope.subscriptionId,
+            token: (subscriptionId: string, signal: AbortSignal) => this.getEmploymentToken(subscriptionId, signal) }
+          return config.SEP_VIDEO_REAL_ENABLED ? new SepRealVideoGateway({ ...transport, mock: false }) : new SepMockVideoGateway({ ...transport, mock: true })
+        },
+        ...createVideoScopeAdapter(userDataDir, mediaStore, store, async path => {
+          const error = await shell.openPath(path)
+          if (error) throw new Error('Local video player unavailable.')
+        }),
+        requestApproval: async input => (await this.getTaskRuntime()).requestMediaApproval(input),
+        policy: async taskId => {
+          const scope = this.currentScope()
+          if (!scope) return undefined
+          const plan = await this.workPlans.get(scope, taskId)
+          if (!plan) return undefined
+          const task = await this.taskManager.getTask(taskId)
+          return { ...plan.permissions, approvalMode: plan.permissions.approvalMode ?? 'confirm-each', workspaceDir: task?.workDir ?? join(userDataDir, 'task-workspaces') }
+        },
+      }
+      this.video = new MockVideoHostService(videoOptions)
+      this.videoRuns = new VideoRunService(videoOptions, this.video)
+    }
 
     this.skills = new SkillLibraryService({
       scope: this, token: () => this.authSession.getValidAccessToken(),
@@ -351,6 +379,7 @@ class BackendRuntime {
     for (const entry of this.employmentTokens.values()) entry.manager.stop()
     this.employmentTokens.clear()
     await this.media.stopAll()
+    await this.videoRuns?.stopAll()
     await this.runtime.peek()?.stopAll()
     await this.clientMonitor.stop()
   }
@@ -358,6 +387,7 @@ class BackendRuntime {
   async resumeClientMonitor(): Promise<void> {
     await this.clientMonitor.resumePending()
     await this.media.resumePending()
+    if (this.video) await this.video.resumePending((await this.taskManager.getAllTasks()).map(task => task.id))
   }
 
   /**
@@ -430,6 +460,23 @@ class BackendRuntime {
     })
   }
 
+  private async getEmploymentToken(subscriptionId: string, signal: AbortSignal): Promise<string> {
+    signal.throwIfAborted()
+    let entry = this.employmentTokens.get(subscriptionId)
+    if (!entry) {
+      const manager = new EmploymentTokenManager({ getRefreshToken: () => this.authSession.getRefreshToken() })
+      entry = { manager, initialized: manager.initialize(subscriptionId) }
+      this.employmentTokens.set(subscriptionId, entry)
+    }
+    try { await entry.initialized } catch (error) {
+      if (this.employmentTokens.get(subscriptionId) === entry) this.employmentTokens.delete(subscriptionId)
+      entry.manager.stop()
+      throw error
+    }
+    signal.throwIfAborted()
+    return entry.manager.getValidToken()
+  }
+
   private async loadTaskRuntime(): Promise<TaskRuntime> {
     if (!this.isEncryptionAvailable()) {
       log.warn('safeStorage encryption is not available on this platform')
@@ -452,6 +499,7 @@ class BackendRuntime {
       arrangementCheckpointStore: this.arrangementCheckpoints,
       monitor: this.clientMonitor,
       media: this.media,
+      video: this.videoRuns,
     })
     log.info('task runtime loaded')
     return runtime

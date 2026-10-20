@@ -17,6 +17,7 @@ import { notificationRoutes } from './notifications'
 import { updateRoutes } from './update'
 import { mediaRoutes } from './media'
 import { speechRoutes } from './speech'
+import { videoRoutes } from './video'
 
 export const routes: readonly Route[] = [
   ...speechRoutes,
@@ -31,6 +32,7 @@ export const routes: readonly Route[] = [
   ...systemRoutes,
   ...updateRoutes,
   ...mediaRoutes,
+  ...videoRoutes,
 ]
 
 export const listeners: readonly Listener[] = [...systemListeners]

@@ -9,6 +9,12 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/Button';
+import { z } from 'zod';
+
+const paidVideoApprovalSchema = z.object({ mock: z.literal(false), quote: z.object({
+  amount: z.string().regex(/^\d+\.\d{6}$/), currency: z.literal('CNY'),
+  amountUsd: z.string().optional(),
+}) });
 
 interface ToolApprovalRequest {
   toolName: string;
@@ -25,6 +31,16 @@ const TIMEOUT_SECONDS = 60;
 
 // 高风险工具的说明
 const TOOL_DESCRIPTIONS: Record<string, { title: string; description: string; risk: string }> = {
+  video_from_image: {
+    title: '参考图生成视频',
+    description: '员工请求传输所选参考图或按已确认参数生成视频',
+    risk: '请核对参考图、创意和报价。标记为 mock 的任务使用模拟数据，不扣费。',
+  },
+  video_generate: {
+    title: '生成视频',
+    description: '员工请求按已确认的创意和参数生成视频',
+    risk: '请核对创意、参数和报价后批准。标记为 mock 的任务不扣费。',
+  },
   bash: {
     title: 'Shell 命令执行',
     description: 'AI 请求在您的系统上执行 Shell 命令',
@@ -88,6 +104,10 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
   };
 
   const inputDisplay = formatInput(request.input);
+  const paidVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image'
+    ? paidVideoApprovalSchema.safeParse(request.input) : null;
+  const realVideo = (request.toolName === 'video_generate' || request.toolName === 'video_from_image') &&
+    typeof request.input === 'object' && request.input !== null && 'mock' in request.input && request.input.mock === false;
   const shouldTruncate = inputDisplay.length > 500;
 
   return (
@@ -130,11 +150,13 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalD
                   ⚠️ 风险提示
                 </p>
                 <p className="text-sm text-orange-700 dark:text-orange-400 mt-1">
-                  {toolInfo.risk}
+                  {realVideo ? '真实视频请求可能产生费用，请核对报价和参数后批准。' : toolInfo.risk}
                 </p>
               </div>
             </div>
           </div>
+
+          {paidVideo?.success && <p className="mb-4 font-semibold" role="status">视频报价：¥{paidVideo.data.quote.amount} CNY{paidVideo.data.quote.amountUsd ? ` · $${paidVideo.data.quote.amountUsd} USD` : ''}</p>}
 
           {/* Tool Name */}
           <div className="mb-4">

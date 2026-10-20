@@ -20,6 +20,20 @@ import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-c
 // 那是个零依赖的类型模块，import 它不会把 pi SDK 拉进服务层（B2）。
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 
+function videoAuthorizationFingerprint(video: EmployeeRuntimeConfig['video']): string {
+  // Video arrays enumerate sets of tools, profiles, operations and supported parameters.
+  // Ignore response key/list ordering and duplicate capabilities, after strict parsing.
+  function normalize(value: unknown): string {
+    if (Array.isArray(value)) return `[${[...new Set(value.map(normalize))].sort().join(',')}]`
+    if (value !== null && typeof value === 'object') {
+      return `{${Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+        .map(([key, child]) => `${JSON.stringify(key)}:${normalize(child)}`).join(',')}}`
+    }
+    return JSON.stringify(value) ?? 'null'
+  }
+  return createHash('sha256').update(normalize(video ?? null)).digest('hex')
+}
+
 /** 只用会话的这两件事，按最小需要声明，测试才好替。 */
 export interface SessionTokens {
   getValidAccessToken(): Promise<string>
@@ -83,6 +97,8 @@ export function resolveEmployeeRuntime(
 
 export class EmployeeAuthorizer {
   private generation = 0
+  private authorizationRevision = 0
+  private readonly videoAuthorizationFingerprints = new Map<string, string>()
   private directoryTail: Promise<void> = Promise.resolve()
   private directoryScope: string | undefined
 
@@ -103,6 +119,11 @@ export class EmployeeAuthorizer {
     return this.readDirectory(false)
   }
 
+  /** Host fence for external invalidation and observed video policy changes. */
+  getAuthorizationRevision(): number {
+    return this.authorizationRevision
+  }
+
   /**
    * 身份变化时的唯一收尾：丢掉平台目录的 TTL 缓存与技能缓存。
    *
@@ -113,6 +134,8 @@ export class EmployeeAuthorizer {
    */
   clear(): void {
     this.generation += 1
+    this.authorizationRevision += 1
+    this.videoAuthorizationFingerprints.clear()
     this.directoryScope = undefined
     this.directory.invalidate()
     this.skills.invalidate()
@@ -188,8 +211,16 @@ export class EmployeeAuthorizer {
     if (manifest && (manifest.subscriptionId !== subscriptionId || manifest.employee.id !== instance.employeeId)) {
       throw new Error('Employee runtime identity mismatch.')
     }
+    if (manifest) {
+      const fingerprint = videoAuthorizationFingerprint(manifest.runtime.video)
+      const previous = this.videoAuthorizationFingerprints.get(subscriptionId)
+      if (previous !== undefined && previous !== fingerprint) this.authorizationRevision += 1
+      this.videoAuthorizationFingerprints.set(subscriptionId, fingerprint)
+    }
+    // Runtime may still advertise retired models that the current directory excludes.
     const selectedModel = manifest
-      ? modelId ?? (manifest.runtime.allowedModels.includes(manifest.runtime.modelId) ? manifest.runtime.modelId : manifest.runtime.allowedModels[0])
+      ? modelId ?? ([manifest.runtime.modelId, ...manifest.runtime.allowedModels].find(candidate =>
+        manifest.runtime.allowedModels.includes(candidate) && instance.allowedModels.includes(candidate)))
       : employee.modelId
     if (!selectedModel || (manifest && !manifest.runtime.allowedModels.includes(selectedModel)) || !instance.allowedModels.includes(selectedModel)) return null
     const skillArtifactProtocolVersion = manifest?.runtime.skillArtifactProtocolVersion
@@ -249,6 +280,7 @@ export class EmployeeAuthorizer {
       manifestVersion: manifest.manifestVersion,
       ...(skillArtifactProtocolVersion !== undefined ? { skillArtifactProtocolVersion } : {}),
       subscriptionId,
+      ...(manifest.runtime.video !== undefined ? { video: manifest.runtime.video } : {}),
       enterpriseId: scope.enterpriseId,
       memberId: scope.memberId,
       employeeId: manifest.employee.id,
@@ -270,6 +302,7 @@ export class EmployeeAuthorizer {
       additionalSkillPaths: [...prepared.skillPaths],
       systemPrompt: manifest.runtime.systemPrompt,
       ...(manifest.runtime.media !== undefined ? { media: manifest.runtime.media } : {}),
+      ...(runtimeSnapshot.video !== undefined ? { video: runtimeSnapshot.video } : {}),
       runtimeSnapshot,
     }
   }

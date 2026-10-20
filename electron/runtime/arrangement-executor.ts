@@ -32,6 +32,7 @@ import type { EmployeeRuntimeConfig, TaskToolPolicy, TaskWorkerPort } from './ru
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../domain/model-request-progress'
 import type { MediaRunPort } from '../domain/media-tools'
+import type { VideoRunPort } from '../domain/video-tools'
 
 export interface ArrangementExecutionResult {
   status: ArrangementExecutionState['status']
@@ -53,6 +54,7 @@ export interface ArrangementExecutionOptions {
   workspaceRoot: string
   arrangementSubscriptionId: string
   media?: MediaRunPort
+  video?: VideoRunPort
 }
 
 export interface ArrangementNodeEvent {
@@ -152,6 +154,7 @@ export class ArrangementExecutor {
     await Promise.all([
       ...[...this.activeWorkers.values()].map(worker => worker.abort().catch(() => undefined)),
       this.taskId ? this.options.media?.stopTask(this.taskId) : undefined,
+      this.taskId ? this.options.video?.stopTask(this.taskId) : undefined,
     ])
   }
 
@@ -242,11 +245,11 @@ export class ArrangementExecutor {
         current = { ...current, status: 'failed', nodes: current.nodes.map(node => ['ready', 'pending', 'running', 'interrupted'].includes(node.status) ? { ...node, status: 'blocked' as const } : node) }
         await this.persist(plan, taskId, arrangementRunId, current)
         await this.emitStateEvent(plan, taskId, arrangementRunId, current)
-        await this.options.media?.stopTask(taskId)
+        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
         return { status: 'failed', state: current, error: error && !error.ok ? error.error : undefined }
       }
       if (current.status === 'waiting-user') {
-        await this.options.media?.stopTask(taskId)
+        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
         return { status: current.status, state: current, error: current.nodes.find(node => node.status === 'failed')?.error ?? undefined }
       }
     }
@@ -358,8 +361,12 @@ export class ArrangementExecutor {
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.onApprovalRequest(request),
       })
+      const videoTools = await this.options.video?.prepareRun({
+        taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
+        requestApproval: request => this.options.onApprovalRequest(request),
+      })
       if (this.abortRequested) {
-        await this.options.media?.stopTask(taskId)
+        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
         throw new Error('Arrangement execution was interrupted.')
       }
       this.checkExecutionControl()
@@ -374,7 +381,7 @@ export class ArrangementExecutor {
           employeeProfile: employee.employeeProfile,
           arrangementNodeId: node.id,
           ...(structured ? { fixedSystemPrompt: buildArrangementNodePrompt(plan, node, dependencies) } : {}),
-          systemPrompt: employee.systemPrompt, mediaTools, toolPolicy,
+          systemPrompt: employee.systemPrompt, mediaTools, videoTools, toolPolicy,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
@@ -382,7 +389,7 @@ export class ArrangementExecutor {
         onModelRequest: structured ? kind => saveModelRequestProgress(kind, recovery !== null) : undefined,
         ...(structured ? { onResponseSettled: async (response: { text: string; stopReason?: string }): Promise<{ continueWith: string } | void> => {
           this.checkExecutionControl()
-          await this.options.media?.waitForRun(taskId, nodeRunId)
+          await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
           this.checkExecutionControl()
           this.validationCancellation.signal.throwIfAborted()
           if (delivery.validationAttempts >= MAX_DELIVERY_VALIDATIONS) throw new DeliveryExecutionError('本节点交付校验已达到 5 次失败上限，停止自动修正。')
@@ -447,7 +454,7 @@ export class ArrangementExecutor {
       const runPromise = worker.run(structured ? startMessage + pendingCorrection : prompt)
       if (this.abortRequested) await worker.abort()
       await runPromise
-      if (!this.abortRequested) await this.options.media?.waitForRun(taskId, nodeRunId)
+      if (!this.abortRequested) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       this.checkExecutionControl()
       if (!accepted) throw new DeliveryExecutionError('节点未经过最终交付校验，不能确认完成。')
@@ -475,6 +482,7 @@ export class ArrangementExecutor {
       })
       return { ok: false, nodeId: node.id, error: message, terminal }
     } finally {
+      await this.options.video?.finishRun?.(taskId, nodeRunId)
       this.activeWorkers.delete(nodeRunId)
       await worker?.dispose().catch(() => undefined)
     }

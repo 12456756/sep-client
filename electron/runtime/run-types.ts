@@ -20,6 +20,7 @@ export interface EmployeeRuntimeConfig {
   additionalSkillPaths?: string[]
   systemPrompt?: string
   media?: unknown
+  video?: import('../../src/shared/video-media').VideoRuntime
   runtimeSnapshot?: import('../common/platform/employee-runtime-contract').EmployeeRuntimeSnapshot
   employeeProfile?: EmployeeProfile
 }

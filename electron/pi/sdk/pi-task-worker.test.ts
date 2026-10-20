@@ -72,8 +72,9 @@ describe('PiTaskWorker', () => {
     let received: PiAgentSessionConfig | undefined
     const session = new FakeSession()
     const mediaTools = { names: ['media_get_job'] as const, execute: async () => null }
+    const videoTools = { names: ['video_get_job'] as const, execute: async () => null }
     const worker = new PiTaskWorker({
-      context: { ...context(await makeDirectory()), systemPrompt: 'Trusted employee instructions.', mediaTools },
+      context: { ...context(await makeDirectory()), systemPrompt: 'Trusted employee instructions.', mediaTools, videoTools },
       getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onApprovalRequest: async () => false,
       onEvent: () => {}, runtime: { async createSession(config) { received = config; return session } },
       createTokenManager: () => new FakeTokenManager(),
@@ -82,6 +83,7 @@ describe('PiTaskWorker', () => {
       await worker.run('hello')
       assert.equal(received?.systemPrompt, 'Trusted employee instructions.')
       assert.equal(received?.mediaTools, mediaTools)
+      assert.equal(received?.videoTools, videoTools)
     } finally { await worker.dispose() }
   })
 
@@ -93,10 +95,14 @@ describe('PiTaskWorker', () => {
       { names: ['media_get_job'] as const, execute: async () => 'first' },
       { names: ['media_get_capabilities'] as const, execute: async () => 'second' },
     ]
+    const videoFacades = [
+      { names: ['video_get_job'] as const, execute: async () => 'first-video' },
+      undefined,
+    ]
     try {
       for (let index = 0; index < facades.length; index++) {
         const worker = new PiTaskWorker({
-          context: { ...context(root), runId: `run-${index}`, systemPrompt: `Instructions ${index}`, mediaTools: facades[index] },
+          context: { ...context(root), runId: `run-${index}`, systemPrompt: `Instructions ${index}`, mediaTools: facades[index], videoTools: videoFacades[index] },
           sessionAdapter: adapter, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {},
           onApprovalRequest: async () => false, onEvent: () => {}, createTokenManager: () => new FakeTokenManager(),
         })
@@ -106,6 +112,8 @@ describe('PiTaskWorker', () => {
       assert.equal(configs.length, 2)
       assert.equal(configs[0].mediaTools, facades[0])
       assert.equal(configs[1].mediaTools, facades[1])
+      assert.equal(configs[0].videoTools, videoFacades[0])
+      assert.equal(configs[1].videoTools, undefined)
       assert.equal(configs[1].systemPrompt, 'Instructions 1')
       assert.equal(configs[1].resumeSessionFile, 'session-a.jsonl')
     } finally { await adapter.dispose() }

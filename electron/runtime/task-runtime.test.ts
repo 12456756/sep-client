@@ -15,6 +15,7 @@ import { effectivePermissionPolicy, type WorkPlan } from '../domain/arrangement-
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { SEP_TEST_SUBSCRIPTION } from './sep-platform-fixtures'
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
+import type { VideoHostTools, VideoRunPort } from '../domain/video-tools'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 
 const temporaryDirectories: string[] = []
@@ -150,6 +151,129 @@ describe('TaskRuntime media lifecycle', () => {
       taskManager: manager, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {},
       onApprovalRequest: () => {}, resolveEmployee: () => employee,
       media: { async prepareRun() { return undefined }, async waitForRun() { throw new Error('Image delivery is incomplete.') }, async stopTask() { stopped = true } },
+      createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
+    })
+    await runtime.executeTask(task.id)
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    assert.equal((await manager.getTask(task.id))?.status, TaskStatus.FAILED)
+    assert.equal(stopped, true)
+    await runtime.stopAll()
+  })
+})
+
+describe('TaskRuntime video lifecycle', () => {
+  async function fixture() {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-video', 'enterprise-video')
+    const task = await manager.createTask('video', 'create an video', join(userData, 'workspace'), 'employee-video')
+    const employee: EmployeeRuntimeConfig = {
+      subscriptionId: 'employee-video', modelId: 'model-video', gatewayUrl: 'http://gateway', systemPrompt: 'Trusted video instructions.',
+    }
+    return { manager, task, employee }
+  }
+
+  it('passes the prompt and facade, binds approvals, and waits for delivery before finalizing', async () => {
+    const { manager, task, employee } = await fixture()
+    const host: VideoHostTools = { names: ['video_get_job'], execute: async () => null }
+    let prepared: Parameters<VideoRunPort['prepareRun']>[0] | undefined
+    let context: PiTaskWorkerOptions['context'] | undefined
+    let waiting = false
+    let deliver!: () => void
+    const delivery = new Promise<void>(resolve => { deliver = resolve })
+    const requests: ToolAuthorizationRequest[] = []
+    const runtime = new TaskRuntime({
+      taskManager: manager, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {},
+      onApprovalRequest: request => requests.push(request), resolveEmployee: () => employee,
+      video: {
+        async prepareRun(input) { prepared = input; return host },
+        async waitForRun(taskId, runId) { assert.equal(taskId, task.id); assert.equal(runId, context?.runId); waiting = true; await delivery },
+        async stopTask() { deliver() },
+      },
+      createWorker: options => {
+        context = options.context
+        assert.equal(context.systemPrompt, employee.systemPrompt)
+        assert.equal(context.videoTools, host)
+        return { async run() {}, async abort() {}, async dispose() {} }
+      },
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => waiting)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.RUNNING)
+      assert.equal(prepared?.employee, employee)
+      assert.equal(prepared?.runId, context?.runId)
+      const input = { taskId: task.id, runId: context!.runId, subscriptionId: employee.subscriptionId, toolName: 'video_from_video', input: { quote: { amount: '1', currency: 'credits' } } }
+      const approved = prepared!.requestApproval(input)
+      await waitFor(() => requests.length === 1)
+      assert.equal(runtime.respondToApproval({ requestId: requests[0].requestId, approved: true }), true)
+      assert.equal(await approved, true)
+      const boundRequest = runtime.requestMediaApproval
+      const denied = boundRequest(input)
+      await waitFor(() => requests.length === 2)
+      assert.equal(runtime.respondToApproval({ requestId: requests[1].requestId, approved: false }), true)
+      assert.equal(await denied, false)
+      deliver()
+      await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)
+    } finally { deliver(); await runtime.stopAll() }
+  })
+
+  for (const control of ['pause', 'cancel', 'shutdown'] as const) {
+    it(`${control} stops local video tracking while delivery is pending`, async () => {
+      const { manager, task, employee } = await fixture()
+      let waiting = false
+      let deliver!: () => void
+      const delivery = new Promise<void>(resolve => { deliver = resolve })
+      const stopped: string[] = []
+      const runtime = new TaskRuntime({
+        taskManager: manager, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {},
+        onApprovalRequest: () => {}, resolveEmployee: () => employee,
+        video: { async prepareRun() { return undefined }, async waitForRun() { waiting = true; await delivery }, async stopTask(id) { stopped.push(id); deliver() } },
+        createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
+      })
+      try {
+        await runtime.executeTask(task.id)
+        await waitFor(() => waiting)
+        if (control === 'pause') await runtime.pauseTask(task.id)
+        else if (control === 'cancel') await runtime.cancelTask(task.id)
+        else await runtime.stopAll()
+        assert.deepEqual(stopped, [task.id])
+        assert.equal((await manager.getTask(task.id))?.status, control === 'shutdown' ? TaskStatus.INTERRUPTED : TaskStatus.PAUSED)
+      } finally { deliver(); await runtime.stopAll() }
+    })
+  }
+
+  it('does not start a worker when pause wins during video preparation', async () => {
+    const { manager, task, employee } = await fixture()
+    let preparing = false
+    let finishPreparation!: (value: VideoHostTools | undefined) => void
+    const preparation = new Promise<VideoHostTools | undefined>(resolve => { finishPreparation = resolve })
+    let workersCreated = 0
+    const runtime = new TaskRuntime({
+      taskManager: manager, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {},
+      onApprovalRequest: () => {}, resolveEmployee: () => employee,
+      video: { async prepareRun() { preparing = true; return preparation }, async waitForRun() { assert.fail('Paused setup must not wait for delivery.') }, async stopTask() { finishPreparation(undefined) } },
+      createWorker: () => { workersCreated++; return { async run() {}, async abort() {}, async dispose() {} } },
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => preparing)
+      await runtime.pauseTask(task.id)
+      assert.equal(workersCreated, 0)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
+      assert.equal((await manager.getTask(task.id))?.activeRunId, null)
+    } finally { finishPreparation(undefined); await runtime.stopAll() }
+  })
+
+  it('does not mark a run completed when video delivery fails', async () => {
+    const { manager, task, employee } = await fixture()
+    let stopped = false
+    const runtime = new TaskRuntime({
+      taskManager: manager, getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {},
+      onApprovalRequest: () => {}, resolveEmployee: () => employee,
+      video: { async prepareRun() { return undefined }, async waitForRun() { throw new Error('Video delivery is incomplete.') }, async stopTask() { stopped = true } },
       createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
     })
     await runtime.executeTask(task.id)
