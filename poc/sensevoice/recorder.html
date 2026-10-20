@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'">
+  <title>SenseVoice - &#35821;&#38899;&#36755;&#20837;&#39564;&#35777;</title>
+  <link rel="stylesheet" href="./recorder.css">
+</head>
+<body>
+  <main>
+    <header>
+      <img id="brand" width="32" height="32" alt="SEP">
+      <div><h1>&#35821;&#38899;&#36755;&#20837;&#39564;&#35777;</h1><p>SenseVoice INT8 <span>CPU / 16 kHz</span></p></div>
+      <span class="limit">30 s</span>
+    </header>
+    <section class="capture" aria-label="&#24405;&#38899;">
+      <div class="status-line"><span id="status" role="status" aria-live="polite">&#23601;&#32490;</span><strong id="duration">00:00.0</strong></div>
+      <canvas id="waveform" width="1200" height="160" aria-label="&#38899;&#39057;&#27874;&#24418;"></canvas>
+      <div class="controls">
+        <button id="start" class="primary"><span class="icon" data-icon="mic"></span>&#24320;&#22987;&#24405;&#38899;</button>
+        <button id="stop" disabled><span class="icon" data-icon="stop"></span>&#20572;&#27490;&#24182;&#35782;&#21035;</button>
+        <button id="cancel" disabled><span class="icon" data-icon="cancel"></span>&#21462;&#28040;</button>
+      </div>
+      <p id="error" role="alert" hidden></p>
+      <p id="quality" hidden></p>
+    </section>
+    <section class="metrics" aria-label="&#38899;&#39057;&#21442;&#25968;">
+      <div><span>&#37319;&#38598;&#37319;&#26679;&#29575;</span><strong id="source-rate">--</strong></div>
+      <div><span>&#27169;&#22411;&#37319;&#26679;&#29575;</span><strong id="output-rate">--</strong></div>
+      <div><span>&#37319;&#26679;&#25968;</span><strong id="sample-count">--</strong></div>
+      <div><span>&#38899;&#37327; RMS</span><strong id="rms">--</strong></div>
+      <div><span>&#27169;&#22411;&#21152;&#36733;</span><strong id="load-time">--</strong></div>
+      <div><span>&#35782;&#21035;&#32791;&#26102;</span><strong id="decode-time">--</strong></div>
+    </section>
+    <section class="result">
+      <div class="section-head"><h2>&#35782;&#21035;&#32467;&#26524;</h2><button id="clear" class="icon-only" title="&#28165;&#31354;" aria-label="&#28165;&#31354;"><span class="icon" data-icon="clear"></span></button></div>
+      <textarea id="transcript" readonly aria-label="&#35782;&#21035;&#25991;&#23383;" spellcheck="false"></textarea>
+      <div class="playbacks">
+        <button id="play-source" disabled><span class="icon" data-icon="play"></span>&#21407;&#22987;&#38899;&#39057;</button>
+        <button id="play-processed" disabled><span class="icon" data-icon="play"></span>16 kHz &#38899;&#39057;</button>
+        <button id="stop-playback" class="icon-only" disabled title="&#20572;&#27490;&#22238;&#25918;" aria-label="&#20572;&#27490;&#22238;&#25918;"><span class="icon" data-icon="stop"></span></button>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="./recorder.mjs"></script>
+</body>
+</html>

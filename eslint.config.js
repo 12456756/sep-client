@@ -12,6 +12,8 @@ export default [
       'node_modules/**',
       '.omx/**',
       'coverage/**',
+      'artifacts/sensevoice/recorder/**',
+      'artifacts/sensevoice/client-tests/**',
     ],
   },
   eslint.configs.recommended,

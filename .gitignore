@@ -50,3 +50,9 @@ artifacts/
 
 # pi local state (per-machine, not project config)
 .pi/
+
+# Local speech POC assets (pinned metadata is tracked)
+resources/speech/sensevoice-int8/*.onnx
+resources/speech/sensevoice-int8/tokens.txt
+resources/speech/sensevoice-int8/test_wavs/
+resources/speech/sensevoice-int8/*.download

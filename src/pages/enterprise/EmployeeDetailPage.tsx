@@ -10,10 +10,13 @@ import { AvailabilityChip, Empty } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { EMPLOYEE_AVAILABILITY, relativeTime } from '../../features/enterprise/vocabulary';
+import { useSpeechInput } from '../../features/speech/use-speech-input';
+import { SpeechInputActions, SpeechInputFeedback } from '../../components/speech/SpeechInputActions';
 
 export function EmployeeDetailPage({ workspace, employeeId }: { workspace: EnterpriseWorkspace; employeeId: string }) {
   const employee = workspace.employees.find(item => item.id === employeeId);
   const [draft, setDraft] = useState('');
+  const speech = useSpeechInput({ contextKey: `employee:${employeeId}`, value: draft, onChange: setDraft, disabled: workspace.busy || !employee?.assignedToMe });
 
   if (!employee) {
     return (
@@ -25,7 +28,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
 
   const skills = workspace.skills.filter(skill => employee.skillIds.includes(skill.capability.id));
   const send = () => {
-    if (!draft.trim()) return;
+    if (!draft.trim() || workspace.busy || speech.busy) return;
     void workspace.startConversation(employee.id, draft).then(() => setDraft(''));
   };
 
@@ -72,16 +75,21 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
           {employee.assignedToMe ? (
             <div className="ent-detail-composer">
               <textarea
+                {...speech.inputProps}
                 className="ent-textarea"
                 value={draft}
                 placeholder={`直接告诉 ${employee.name} 你想完成什么`}
                 onChange={event => setDraft(event.target.value)}
-                onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) send(); }}
+                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (!event.defaultPrevented && !event.nativeEvent.isComposing && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); } }}
               />
-              <button type="button" className="ent-btn primary" onClick={send} disabled={workspace.busy || !draft.trim()}>
-                <Send size={14} aria-hidden />
-                交给他开始
-              </button>
+              <div className="ent-detail-composer-actions">
+                <SpeechInputActions speech={speech} disabled={workspace.busy} />
+                <button type="button" className="ent-btn primary" onClick={send} disabled={workspace.busy || speech.busy || !draft.trim()}>
+                  <Send size={14} aria-hidden />
+                  交给他开始
+                </button>
+              </div>
+              <SpeechInputFeedback speech={speech} />
             </div>
           ) : null}
         </section>

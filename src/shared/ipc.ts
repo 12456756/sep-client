@@ -1,4 +1,5 @@
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
+import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type {
@@ -270,6 +271,11 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  getSpeechPermission: () => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
+  setSpeechEnabled: (input: { enabled: boolean }) => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
+  beginSpeechRecording: (input: { recordingId: string }) => Promise<IpcCommandResult & { data?: SpeechStart }>
+  recognizeSpeech: (input: SpeechAudio) => Promise<IpcCommandResult & { data?: SpeechResult }>
+  cancelSpeechRecording: (input: { recordingId: string }) => Promise<IpcCommandResult>
   getTaskMedia: (taskId: string) => Promise<IpcCommandResult & { data?: MediaTaskView }>
   importMediaReferences: (taskId: string) => Promise<IpcCommandResult & { data?: MediaAssetView[] }>
   generateTaskMedia: (input: { taskId: string; input: MediaGenerationInput }) => Promise<IpcCommandResult & { data?: MediaJobView }>

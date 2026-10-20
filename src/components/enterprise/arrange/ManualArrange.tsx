@@ -16,6 +16,8 @@ import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { createDraftStep, validateGraph } from '../../../features/enterprise/work-graph';
 import { EmployeeFace } from '../EmployeeFace';
+import { useSpeechInput } from '../../../features/speech/use-speech-input';
+import { SpeechInputActions, SpeechInputFeedback } from '../../speech/SpeechInputActions';
 
 export interface ManualDraft {
   title: string;
@@ -58,6 +60,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
   const [selectedId, setSelectedId] = useState<string | null>(seed?.steps[0]?.id ?? null);
   const [adding, setAdding] = useState(false);
   const [saved, setSaved] = useState(false);
+  const speech = useSpeechInput<HTMLInputElement>({ contextKey: 'manual-goal', value: goal, onChange: value => { setGoal(value); setSaved(false); }, disabled: busy });
   /** 正在拖的那一张：从第几个开始、跟着指针走了多远、一格多高、是否已经松手在归位。 */
   const [drag, setDrag] = useState<{ id: string; from: number; dy: number; rowH: number; settling: boolean } | null>(null);
   const list = useRef<HTMLUListElement>(null);
@@ -268,6 +271,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
 
       <footer className="ent-mn-composer">
         <input
+          {...speech.inputProps}
           className="ent-mn-goal"
           value={goal}
           placeholder="描述这项工作"
@@ -286,7 +290,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
           <button
             type="button"
             className="ent-arr-second"
-            disabled={!steps.length || saved}
+            disabled={!steps.length || saved || speech.busy}
             onClick={() => { onSave(draft()); setSaved(true); }}
           >
             <BookmarkPlus size={14} aria-hidden />
@@ -294,17 +298,19 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
           </button>
           <span className="ent-arr-gap" />
           {problem ? <span className="ent-arr-problem">{problem}</span> : null}
+          <SpeechInputActions speech={speech} disabled={busy} />
           <button
             type="button"
             className="ent-arr-primary"
-            disabled={busy || !steps.length || Boolean(problem)}
+            disabled={busy || speech.busy || !steps.length || Boolean(problem)}
             title={problem ?? (steps.length ? undefined : '先把一位同事拖进来')}
-            onClick={() => onStart(draft())}
+            onClick={() => { if (!speech.busy) onStart(draft()); }}
           >
             {busy ? '安排中…' : '开始'}
             <ArrowRight size={15} aria-hidden />
           </button>
         </div>
+        <SpeechInputFeedback speech={speech} />
       </footer>
     </section>
   );

@@ -65,10 +65,10 @@ describe('app shutdown wiring', () => {
 describe('startup ordering', () => {
   it('opens the window only after the backend is assembled', () => {
     const composed = mainSource.indexOf('await createBackend({')
-    // 带分号才是调用点；函数声明是 `openMainWindow(): void`，不能算进来。
-    const opened = mainSource.indexOf('openMainWindow();')
+    const opened = mainSource.indexOf('openMainWindow(backend.speech);')
     assert.ok(composed >= 0, 'whenReady 必须 await createBackend()')
     assert.ok(opened > composed, '窗口必须在组装成功之后才创建（C3）')
+    assert.match(mainSource, /createMainWindow\(\{[^}]*speech/, '主窗口必须使用后端的麦克风授权守卫')
   })
 
   it('surfaces an assembly failure instead of leaving a broken window', () => {

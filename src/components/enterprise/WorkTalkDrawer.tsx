@@ -6,6 +6,8 @@ import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpris
 import { EmployeeFace } from './EmployeeFace';
 import { MessageContent } from './MessageContent';
 import '../../styles/conversation.css';
+import { useSpeechInput } from '../../features/speech/use-speech-input';
+import { SpeechInputActions, SpeechInputFeedback } from '../speech/SpeechInputActions';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -39,6 +41,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
   const [draft, setDraft] = useState('');
   const [stopping, setStopping] = useState(false);
   const [reason, setReason] = useState('');
+  const speech = useSpeechInput({ contextKey: `work:${work.id}`, value: draft, onChange: setDraft, disabled: workspace.busy || stopping });
   const over = work.status === 'completed' || work.status === 'paused' || work.status === 'failed';
 
   const followsLatest = useRef(true);
@@ -71,7 +74,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
 
   const send = () => {
     const text = draft.trim();
-    if (!text || workspace.busy) return;
+    if (!text || workspace.busy || speech.busy) return;
     followsLatest.current = true;
     setHasNewContent(false);
     void workspace.sendMessage(work.id, text);
@@ -153,12 +156,13 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
           ) : (
             <div className="ent-ask">
               <textarea
+                {...speech.inputProps}
                 className="ent-ask-input"
                 value={draft}
                 placeholder={over ? '这项工作已经结束，说一句会重新开始跟进' : `告诉 ${work.currentEmployeeName} 下一步要做什么（Ctrl + Enter 发送）`}
                 aria-label="给员工的下一句话"
                 onChange={event => setDraft(event.target.value)}
-                onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); } }}
+                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (!event.defaultPrevented && !event.nativeEvent.isComposing && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); } }}
               />
               <div className="ent-ask-bar">
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
@@ -186,10 +190,12 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                     终止
                   </button>
                 )}
-                <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy} aria-label="发送">
+                <SpeechInputActions speech={speech} disabled={workspace.busy} />
+                <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || speech.busy} aria-label="发送">
                   <Send size={15} aria-hidden />
                 </button>
               </div>
+              <SpeechInputFeedback speech={speech} />
             </div>
           )}
         </div>

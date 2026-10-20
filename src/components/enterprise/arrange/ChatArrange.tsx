@@ -9,6 +9,8 @@ import type { SiliconEmployee } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { EmployeeFace } from '../EmployeeFace';
+import { useSpeechInput } from '../../../features/speech/use-speech-input';
+import { SpeechInputActions, SpeechInputFeedback } from '../../speech/SpeechInputActions';
 
 interface Props {
   employees: SiliconEmployee[];
@@ -28,7 +30,8 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const [text, setText] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const pick = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLTextAreaElement>(null);
+  const speech = useSpeechInput({ contextKey: `chat:${employeeId}`, value: text, onChange: setText, disabled: busy });
+  const input = speech.inputProps.ref;
   const employee = employees.find(item => item.id === employeeId);
   const ready = Boolean(employee && text.trim());
   const found = employees.filter(item => {
@@ -58,7 +61,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   };
 
   const start = () => {
-    if (ready && !busy) {
+    if (ready && !busy && !speech.busy) {
       setSubmitted(true);
       onStart(employeeId, text.trim());
     }
@@ -75,13 +78,15 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-chat-ask">
         <textarea
-          ref={input}
+          {...speech.inputProps}
           className="ent-chat-input"
           value={text}
           placeholder="随心输入"
           aria-label="工作目标"
           onChange={event => setText(event.target.value)}
           onKeyDown={event => {
+            speech.inputProps.onKeyDown(event);
+            if (event.defaultPrevented || event.nativeEvent.isComposing || speech.busy) return;
             if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && ready) {
               event.preventDefault();
               start();
@@ -129,10 +134,12 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
             onChange={onSettingsChange}
           />
           <span className="ent-arr-gap" />
-          <button type="button" className="ent-chat-send" aria-label="开始工作" disabled={!ready || busy} onClick={start}>
+          <SpeechInputActions speech={speech} disabled={busy} />
+          <button type="button" className="ent-chat-send" aria-label="开始工作" disabled={!ready || busy || speech.busy} onClick={start}>
             <ArrowUp size={17} aria-hidden />
           </button>
         </div>
+        <SpeechInputFeedback speech={speech} />
       </div>
     </section>
   );

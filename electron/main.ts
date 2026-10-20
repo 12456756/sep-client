@@ -14,6 +14,7 @@ import { createAppUpdater } from './bootstrap/create-app-updater';
 import { createMainWindow } from './bootstrap/main-window';
 import { RendererBridge } from './bootstrap/renderer-bridge';
 import { installShutdownHandler } from './bootstrap/shutdown';
+import type { SpeechPermissionGate } from './bootstrap/speech-permissions';
 import { logger } from './common/logger';
 import { createRequestContext } from './controller/request-context';
 import { registerRoutes } from './controller/router';
@@ -42,8 +43,8 @@ function presentFatalOnce(error: unknown): void {
   reportFatal('应用遇到未预期的错误', error, { stage: 'uncaught-exception' });
 }
 
-function openMainWindow(): void {
-  const window = createMainWindow({ onClosed: () => bridge.attach(null) });
+function openMainWindow(speech: SpeechPermissionGate): void {
+  const window = createMainWindow({ onClosed: () => bridge.attach(null), speech });
   bridge.attach(window);
 }
 
@@ -70,7 +71,10 @@ app.whenReady().then(async () => {
       isUpdateInstallPrepared: () => updater.isInstallPrepared(),
       describeState: () => ({ runtimeLoaded: backend.peekTaskRuntime() !== null }),
     });
-    openMainWindow();
+    openMainWindow(backend.speech);
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) openMainWindow(backend.speech);
+    });
     updater.startAutomaticCheck();
   } catch (error) {
     reportFatal('无法启动任务运行时', error, { stage: 'compose-backend' });
@@ -79,10 +83,6 @@ app.whenReady().then(async () => {
   }
 
   // 任务运行时延迟到首次任务执行时初始化（SDK 加载边界，见 AGENTS.md）。
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) openMainWindow();
-  });
 });
 
 app.on('window-all-closed', () => {

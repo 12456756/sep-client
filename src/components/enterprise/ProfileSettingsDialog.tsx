@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ClientProfile } from '../../shared/profile-wallet-contracts'
 import type { UploadInput } from '../../shared/ipc'
 import { EmployeeFace } from './EmployeeFace'
+import { SpeechSettings } from '../speech/SpeechSettings'
 
 interface Props {
   profile: ClientProfile | null
@@ -82,6 +83,7 @@ export function ProfileSettingsDialog({
               <input ref={logoInput} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={event => { void choose('logo', event.target.files?.[0]); event.target.value = '' }} />
             </div>
           ) : null}
+          <SpeechSettings />
           {localError || error ? <p className="ent-profile-error" role="alert">{localError || error}</p> : null}
           <button type="button" className="ent-profile-refresh" disabled={uploading !== null} onClick={refreshProfile}>
             <RefreshCw size={14} aria-hidden />刷新资料

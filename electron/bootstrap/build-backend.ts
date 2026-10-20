@@ -44,6 +44,9 @@ import { ClientMonitorHistoryService } from '../service/client-monitor-history-s
 import { ClientMonitorService } from '../service/client-monitor-service'
 import { MediaStore } from '../data/media-store'
 import { MediaService } from '../service/media-service'
+import { SpeechService } from '../service/speech-service'
+import { SpeechSettingsStore } from '../data/speech-settings-store'
+import type { SpeechRuntimePort } from '../domain/speech'
 import { SepRealMediaGateway } from '../data/sep-real-media-gateway'
 import type { MediaGatewayPort } from '../domain/media'
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
@@ -82,6 +85,8 @@ class BackendRuntime {
   readonly clientMonitor: ClientMonitorService
   readonly notifications: NotificationService
   readonly media: MediaService
+  readonly speech: SpeechService
+  private readonly speechRuntime: LazyAsync<SpeechRuntimePort>
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -99,6 +104,11 @@ class BackendRuntime {
     this.isEncryptionAvailable = isEncryptionAvailable
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
+    this.speechRuntime = loadOnce(async () => (await import('./create-speech-runtime')).createSpeechRuntime())
+    this.speech = new SpeechService({
+      scope: this, settings: new SpeechSettingsStore(userDataDir),
+      runtime: () => this.speechRuntime.get(), stopRuntime: () => this.speechRuntime.peek()?.stop(),
+    })
     this.authSession = new AuthSessionManager()
     const realMediaGateway = mediaGateway ?? new SepRealMediaGateway({
       baseUrl: config.SEP_BASE_URL,
@@ -336,6 +346,7 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.speech.stop()
     this.notifications.stop()
     for (const entry of this.employmentTokens.values()) entry.manager.stop()
     this.employmentTokens.clear()

@@ -96,6 +96,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
           </div>
         ) : null}
         <GoalComposer
+          busy={busy || planning}
           value={goal}
           onChange={setGoal}
           placeholder="随心输入"

@@ -16,6 +16,11 @@ const runtimePlatform = process.platform === 'darwin' || process.platform === 'w
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
 
 const electronAPI = {
+  getSpeechPermission: () => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_PERMISSION),
+  setSpeechEnabled: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_SET_ENABLED, input),
+  beginSpeechRecording: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_BEGIN, input),
+  recognizeSpeech: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_RECOGNIZE, input),
+  cancelSpeechRecording: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_CANCEL, input),
   getUpdateState: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_GET_STATE),
   checkForUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_CHECK),
   downloadUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_DOWNLOAD),

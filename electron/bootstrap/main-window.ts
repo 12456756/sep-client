@@ -6,6 +6,8 @@
  */
 import { BrowserWindow, Menu, shell } from 'electron'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { installSpeechPermissions, type SpeechPermissionGate } from './speech-permissions'
 import { logger } from '../common/logger'
 import { externalWebLink } from '../common/external-web-link'
 import { getWindowChromeConfig } from '../common/window-layout'
@@ -13,11 +15,12 @@ import { getWindowChromeConfig } from '../common/window-layout'
 const log = logger.child('main-window')
 
 export interface MainWindowOptions {
+  speech?: SpeechPermissionGate
   /** 窗口关闭时通知调用方断开推送。 */
   onClosed: () => void
 }
 
-export function createMainWindow({ onClosed }: MainWindowOptions): BrowserWindow {
+export function createMainWindow({ onClosed, speech }: MainWindowOptions): BrowserWindow {
   Menu.setApplicationMenu(null)
 
   const windowChrome = getWindowChromeConfig(process.platform)
@@ -52,6 +55,11 @@ export function createMainWindow({ onClosed }: MainWindowOptions): BrowserWindow
     }
     return { action: 'deny' }
   })
+
+  const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+    ? new URL(process.env['ELECTRON_RENDERER_URL']).href
+    : pathToFileURL(join(__dirname, '../renderer/index.html')).href
+  installSpeechPermissions(window, rendererUrl, speech)
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     log.debug('loading renderer from dev server')

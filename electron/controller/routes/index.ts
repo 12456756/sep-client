@@ -16,8 +16,10 @@ import { profileWalletRoutes } from './profile-wallet'
 import { notificationRoutes } from './notifications'
 import { updateRoutes } from './update'
 import { mediaRoutes } from './media'
+import { speechRoutes } from './speech'
 
 export const routes: readonly Route[] = [
+  ...speechRoutes,
   ...authRoutes,
   ...skillRoutes,
   ...taskRoutes,

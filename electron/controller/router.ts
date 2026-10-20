@@ -38,6 +38,7 @@ export const NO_INPUT = z.undefined()
 export type ErrorShape = 'authenticated' | 'auth' | 'ipc' | 'reject'
 
 export interface Route {
+  readonly trustedMainFrame?: boolean
   readonly channel: InvokeChannel
   readonly schema: z.ZodType
   readonly handle: (ctx: RequestContext, input: never) => unknown
@@ -47,6 +48,7 @@ export interface Route {
 }
 
 export interface RouteOptions {
+  trustedMainFrame?: boolean
   invalidMessage?: string
   errorShape?: ErrorShape
 }
@@ -64,6 +66,7 @@ export function route<TSchema extends z.ZodType>(
   options: RouteOptions = {},
 ): Route {
   return {
+    ...(options.trustedMainFrame ? { trustedMainFrame: true } : {}),
     channel,
     schema,
     handle: handle as Route['handle'],
@@ -113,8 +116,14 @@ export function registerRoutes(
   tables: { routes: readonly Route[]; listeners: readonly Listener[] },
 ): void {
   for (const entry of tables.routes) {
-    ipcMain.handle(entry.channel, async (_event, raw: unknown) => {
+    ipcMain.handle(entry.channel, async (event, raw: unknown) => {
       try {
+        if (entry.trustedMainFrame) {
+          const window = ctx.window()
+          if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
+            throw appError('INVALID_ARGUMENT', { message: '无法从此页面使用语音输入。' })
+          }
+        }
         const parsed = entry.schema.safeParse(raw)
         if (!parsed.success) {
           log.warn('rejected invalid request', {

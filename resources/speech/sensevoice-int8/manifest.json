@@ -1,0 +1,27 @@
+{
+  "model": "SenseVoiceSmall ONNX INT8 2024-07-17",
+  "repository": "https://huggingface.co/csukuangfj/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17",
+  "revision": "2365baeacb507f821a0c8120fcee3d484dba7a07",
+  "runtimeLicense": "Apache-2.0",
+  "modelLicense": "FunASR Model Open Source License Agreement (separate from the runtime license)",
+  "modelLicenseSource": "https://github.com/modelscope/FunASR/blob/main/MODEL_LICENSE",
+  "expectedText": "\u5f00\u653e\u65f6\u95f4\u65e9\u4e0a9\u70b9\u81f3\u4e0b\u53485\u70b9\u3002",
+  "referenceSource": "https://k2-fsa.github.io/sherpa/onnx/sense-voice/pretrained.html",
+  "files": [
+    {
+      "path": "model.int8.onnx",
+      "bytes": 239233841,
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+    },
+    {
+      "path": "tokens.txt",
+      "bytes": 315894,
+      "gitSha1": "2cfc92fc2ff26aaa690b7c01fd96b41109413881"
+    },
+    {
+      "path": "test_wavs/zh.wav",
+      "bytes": 178988,
+      "gitSha1": "24a2bfc5c039f9d97db2cf1f2461699b582e0a90"
+    }
+  ]
+}
