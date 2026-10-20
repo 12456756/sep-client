@@ -229,6 +229,51 @@ describe('PiTaskWorker', () => {
     })
   }
 
+  it('validates complete settled JSON without using the truncated event copy', async () => {
+    const submission = JSON.stringify({
+      nodeId: 'node-a', summary: 'Bearer settlement-private-marker',
+      finalDeliverables: Array.from({ length: 16 }, (_, index) => ({
+        id: `file-${index}`, path: `deliverables/${index}-${'p'.repeat(600)}.txt`,
+      })),
+    })
+    assert.ok(submission.length > 8_192)
+    const server = createServer((request, response) => {
+      request.resume()
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      writeChunk(response, { role: 'assistant', content: submission })
+      writeChunk(response, {}, 'stop')
+      response.end('data: [DONE]\n\n')
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    const events: unknown[] = []
+    let settlements = 0
+    const worker = new PiTaskWorker({
+      context: { ...context(await makeDirectory()), gatewayUrl: `http://127.0.0.1:${address.port}/v1` },
+      runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
+      createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'test-refresh', onAuthenticationRequired: () => {},
+      onApprovalRequest: async () => false, onEvent: event => { events.push(event) },
+      onResponseSettled: async response => {
+        settlements++
+        assert.equal(response.text, submission)
+        assert.deepEqual(JSON.parse(response.text), JSON.parse(submission))
+        assert.equal(response.stopReason, 'stop')
+      },
+    })
+    try {
+      await worker.run('Return the complete final manifest.')
+      assert.equal(settlements, 1)
+      assert.doesNotMatch(JSON.stringify(events), /settlement-private-marker/)
+      assert.match(JSON.stringify(events), /truncated/)
+    } finally {
+      await worker.dispose()
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+    }
+  })
+
   it('owns one run session and emits events with explicit context', async () => {
     const runtime = new FakeRuntime()
     const events: string[] = []

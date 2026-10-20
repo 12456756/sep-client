@@ -236,6 +236,9 @@ ${recommendationOnly ? '待授权员工推荐' : '已授权员工匹配'}
 用户目标：
 ${draft.goal}
 
+已确认输入材料：
+${JSON.stringify(draft.confirmedInputs, null, 2)}
+
 已有意图快照：
 ${JSON.stringify(draft.intentAnalysis ?? null, null, 2)}
 

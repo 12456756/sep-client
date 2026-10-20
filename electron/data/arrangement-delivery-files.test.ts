@@ -1,6 +1,8 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, symlink, open } from 'node:fs/promises'
+import { execFileSync } from 'node:child_process'
+import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
@@ -68,6 +70,27 @@ describe('final delivery file validation', () => {
     await rm(join(f.root, 'deliverables'), { recursive: true })
     await symlink(outside, join(f.root, 'deliverables'), 'junction')
     assert.equal((await validateDeliveryFiles(f.root, f.node, f.submission, 'run')).ok, false)
+  })
+  it('rejects named pipes without waiting for a writer', async t => {
+    if (process.platform === 'win32') return t.skip('Named pipes require POSIX')
+    const f = await fixture()
+    execFileSync('mkfifo', [f.file])
+    const validation = validateDeliveryFiles(f.root, f.node, f.submission, 'run')
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const result = await Promise.race([
+      validation,
+      new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 1_000) }),
+    ])
+    clearTimeout(timer)
+    if (result === null) {
+      // Release a blocked reader so a regression cannot hang the test process.
+      const writer = await open(f.file, constants.O_WRONLY | constants.O_NONBLOCK)
+      await writer.close()
+      await validation
+    }
+    assert.notEqual(result, null, 'Validation blocked opening a FIFO')
+    assert.ok(result && !result.ok)
+    assert.equal(result.issues[0]?.code, 'NOT_A_FILE')
   })
   it('checks Office structure instead of trusting a docx extension', async () => {
     const f = await fixture('docx')

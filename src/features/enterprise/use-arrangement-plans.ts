@@ -14,7 +14,7 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
   const [events, setEvents] = useState<Record<string, TaskExecutionEvent[]>>({});
   const [executions, setExecutions] = useState<Record<string, ArrangementExecutionSnapshot | null>>({});
   const [error, setError] = useState<string | null>(null);
-  const requested = useRef(new Map<string, string>());
+  const requested = useRef(new Map<string, { key: string }>());
   const mounted = useRef(false);
   const scope = useRef({ key: scopeKey, generation: 0 });
   if (scope.current.key !== scopeKey) scope.current = { key: scopeKey, generation: scope.current.generation + 1 };
@@ -41,6 +41,10 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
   }, []);
 
   useEffect(() => {
+    const taskIds = new Set(tasks.map(task => task.id));
+    for (const id of requested.current.keys()) {
+      if (!taskIds.has(id)) requested.current.delete(id);
+    }
     for (const task of tasks) {
       // Raw creation events precede plan persistence; the classified query waits for that commit.
       if (!task.workType) {
@@ -49,9 +53,10 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
       }
       const typeKey = task.workType.state === 'resolved' ? task.workType.kind : task.workType.state;
       const requestKey = runtimeKey(task.id, task.activeRunId ?? '') + ':' + task.status + ':' + typeKey;
-      if (requested.current.get(task.id) === requestKey) continue;
-      requested.current.set(task.id, requestKey);
-      const isCurrent = () => mounted.current && scope.current.generation === generation && requested.current.get(task.id) === requestKey;
+      if (requested.current.get(task.id)?.key === requestKey) continue;
+      const request = { key: requestKey };
+      requested.current.set(task.id, request);
+      const isCurrent = () => mounted.current && scope.current.generation === generation && requested.current.get(task.id) === request;
       void (async () => {
         try {
           const result = await window.electronAPI.getArrangementPlan(task.id);

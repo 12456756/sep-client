@@ -250,7 +250,8 @@ export class PiTaskWorker {
         if (this.finalFailure) throw new Error(this.finalFailure)
         this.checkCancellation()
         stage = 'response-settlement'
-        const correction = await this.onResponseSettled?.(this.settledResponse)
+        // Delivery JSON must use the complete reply, not the redacted, bounded event projection.
+        const correction = await this.onResponseSettled?.(session.getSettledResponse?.() ?? this.settledResponse)
         this.checkCancellation()
         if (!correction) break
         nextPrompt = correction.continueWith

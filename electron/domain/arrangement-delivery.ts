@@ -37,7 +37,7 @@ const submissionSchema = z.object({
 export type DeliverySubmission = z.infer<typeof submissionSchema>
 export type DeliverySubmissionResult = { ok: true; submission: DeliverySubmission } | { ok: false; issues: DeliveryIssue[] }
 
-export function deliveryPathKey(path: string): string { return path.replace(/\\/g, '/').toLowerCase() }
+export function deliveryPathKey(path: string): string { return path.replace(/\\/g, '/').normalize('NFC').toLowerCase() }
 
 export function deliveryPlanIssues(nodes: readonly ArrangementNode[]): DeliveryIssue[] {
   const paths = new Set<string>()

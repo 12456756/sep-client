@@ -1,6 +1,6 @@
 import { after, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ScopePath, TaskScopeError } from './scope-path'
@@ -52,6 +52,36 @@ describe('readable workspace directories', () => {
     await writeFile(join(workspaceRoot, `${names.enterpriseName} (2)`, 'Bob'), 'occupied')
     assert.deepEqual(await store.resolve({ ...scope, memberId: 'bob' }, { ...names, memberName: 'Bob' }), { enterpriseName: `${names.enterpriseName} (2)`, memberName: 'Bob (2)' })
   })
+
+  it('does not reuse untracked names with canonically equivalent Unicode', async () => {
+    const { paths, store } = await harness()
+    const decomposed = 'Cafe\u0301'
+    await mkdir(join(paths.workspaceBaseRoot(), decomposed), { recursive: true })
+    const resolved = await store.resolve(scope, { enterpriseName: 'Café', memberName: 'Alice' })
+    assert.equal(resolved.enterpriseName, 'Café (2)')
+    await mkdir(join(paths.workspaceBaseRoot(), resolved.enterpriseName, decomposed), { recursive: true })
+    const member = await store.resolve({ ...scope, memberId: 'other' }, { enterpriseName: 'Café', memberName: 'Café' })
+    assert.equal(member.memberName, 'Café (2)')
+  })
+
+  for (const level of ['enterprise', 'member'] as const) {
+    it(`rejects a bound ${level} directory replaced by a symlink`, async () => {
+      const { root, paths, store } = await harness()
+      const resolved = await store.resolve(scope, names)
+      const enterprise = join(paths.workspaceBaseRoot(), resolved.enterpriseName)
+      const member = join(enterprise, resolved.memberName)
+      const outside = join(root, 'outside')
+      await mkdir(member, { recursive: true })
+      await mkdir(outside)
+      const target = level === 'enterprise' ? enterprise : member
+      await rm(target, { recursive: true })
+      await symlink(outside, target, 'junction')
+      await assert.rejects(store.resolve(scope, names), /workspace directory/i)
+      if (level === 'enterprise') {
+        await assert.rejects(store.resolve({ ...scope, memberId: 'new-member' }, names), /workspace directory/i)
+      }
+    })
+  }
 
   it('handles empty, traversal, reserved, control-character and long names within the workspace root', async () => {
     const { paths, store } = await harness()

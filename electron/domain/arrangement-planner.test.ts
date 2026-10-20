@@ -94,6 +94,14 @@ describe('arrangement recommendation output contract', () => {
     assert.ok(JSON.stringify(example).includes('modelId'))
   })
 
+  it('includes confirmed input materials and constraints in every planning phase', () => {
+    const confirmedInputs = ['使用 inputs/customer-brief.docx 中的要求', '预算不超过 10000 元']
+    for (const employee of [authorized, { ...authorized, source: 'platform' as const, canExecute: false, allowedModels: [] }]) {
+      const prompt = buildArrangementPlannerPrompt({ ...draft, confirmedInputs }, [employee])
+      assert.ok(prompt.includes(JSON.stringify(confirmedInputs, null, 2)))
+    }
+  })
+
   it('does not copy existing executable nodes into the recommendation example', () => {
     const existingNode = { id: 'existing-node', subscriptionId: 'subscription-existing', modelId: 'model-a',
       title: '整理客户材料', instruction: '整理材料', expectedOutput: '客户材料', dependsOn: [], skillIds: [], requiresUserConfirmation: false }
