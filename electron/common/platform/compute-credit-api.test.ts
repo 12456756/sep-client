@@ -39,4 +39,19 @@ describe('SEP compute credit API', () => {
     await assert.rejects(() => api.getComputeUsageBreakdown('access', 14))
     assert.equal(calls, 0)
   })
+
+  it('preserves usage pagination and date filters and validates returned model statistics', async () => {
+    const calls: URL[] = []
+    globalThis.fetch = async input => {
+      const url = new URL(String(input)); calls.push(url)
+      if (url.pathname.endsWith('/usage-records')) return response({ total: 45, page: 2, pageSize: 10, totalPages: 5, records: [{ id: 'image-1', modelId: 'gpt-image-2', costCNY: '0.4200', inputTokens: 0, outputTokens: 0 }] })
+      return response({ rangeDays: 7, totalCNY: '0.4200', byModel: [{ key: 'gpt-image-2', label: 'gpt-image-2', costCNY: '0.4200', callCount: 1, pct: 100 }] })
+    }
+    const page = await api.getComputeUsageRecords('access', { page: 2, pageSize: 10, startDate: '2026-10-01', endDate: '2026-10-16' })
+    assert.equal(page.records[0].modelId, 'gpt-image-2')
+    assert.equal(calls[0].searchParams.get('page'), '2')
+    assert.equal(calls[0].searchParams.get('startDate'), '2026-10-01')
+    assert.equal(calls[0].searchParams.get('endDate'), '2026-10-16')
+    assert.equal((await api.getComputeUsageBreakdown('access', 7)).byModel?.[0].callCount, 1)
+  })
 })

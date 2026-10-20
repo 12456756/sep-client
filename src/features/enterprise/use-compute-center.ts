@@ -6,20 +6,29 @@ import type {
   WalletTransactionsResult,
 } from '../../shared/ipc'
 import type { ComputeBreakdownDays, ComputePageQuery, ComputeUsageQuery } from '../../shared/compute-credit-contracts'
+import {
+  beginComputeLoad,
+  beginComputeRequest,
+  correctComputePageQuery,
+  createComputeRequestState,
+  failComputeLoad,
+  finishComputeLoad,
+  invalidateComputeRequest,
+  isCurrentComputeRequest,
+  resolveComputeQuery,
+  type ComputeLoadResult,
+  type ComputeLoadState,
+} from './compute-request-state'
 
 export type ComputeCenterTab = 'overview' | 'usage' | 'wallet'
 
-interface LoadState<T> {
-  data: T | null
-  loading: boolean
-  error: string | null
-}
-
 export interface ComputeCenterState {
-  overview: LoadState<ComputeCenterOverview>
-  walletTransactions: LoadState<NonNullable<WalletTransactionsResult['data']>>
-  usageRecords: LoadState<NonNullable<ComputeUsageRecordsResult['data']>>
-  breakdown: LoadState<NonNullable<ComputeUsageBreakdownResult['data']>>
+  overview: ComputeLoadState<ComputeCenterOverview>
+  walletTransactions: ComputeLoadState<NonNullable<WalletTransactionsResult['data']>>
+  usageRecords: ComputeLoadState<NonNullable<ComputeUsageRecordsResult['data']>>
+  breakdown: ComputeLoadState<NonNullable<ComputeUsageBreakdownResult['data']>>
+  usageQuery: ComputeUsageQuery
+  walletQuery: ComputePageQuery
   refresh: () => void
   loadWalletTransactions: (query?: ComputePageQuery) => void
   loadUsageRecords: (query?: ComputeUsageQuery) => void
@@ -28,61 +37,96 @@ export interface ComputeCenterState {
 
 const DEFAULT_PAGE: ComputePageQuery = { page: 1, pageSize: 20 }
 const DEFAULT_USAGE_QUERY: ComputeUsageQuery = { page: 1, pageSize: 20 }
+const DEFAULT_ERROR = '暂时无法获取算力数据，请稍后重试。'
 
-function failureMessage(result: { success: boolean; error?: { message: string } }): string | null {
-  return result.success ? null : result.error?.message ?? '暂时无法获取算力数据，请稍后重试。'
+function useComputeRequest<T>(initialLoading = false) {
+  const [state, setState] = useState<ComputeLoadState<T>>({ data: null, loading: initialLoading, error: null })
+  const request = useRef(createComputeRequestState())
+  const mounted = useRef(false)
+
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      request.current = invalidateComputeRequest(request.current)
+    }
+  }, [])
+
+  const run = useCallback(async (
+    load: (isCurrent: () => boolean) => Promise<ComputeLoadResult<T>>,
+    fallbackError: string,
+  ): Promise<void> => {
+    if (!mounted.current) return
+    request.current = beginComputeRequest(request.current)
+    const version = request.current.version
+    const isCurrent = () => isCurrentComputeRequest(request.current, version, mounted.current)
+    setState(beginComputeLoad)
+    try {
+      const result = await load(isCurrent)
+      if (isCurrent()) setState(current => isCurrent() ? finishComputeLoad(current, result, fallbackError) : current)
+    } catch {
+      if (isCurrent()) setState(current => isCurrent() ? failComputeLoad(current, fallbackError) : current)
+    }
+  }, [])
+
+  return { state, run, request }
 }
 
 export function useComputeCenter(activeTab: ComputeCenterTab): ComputeCenterState {
-  const [overview, setOverview] = useState<LoadState<ComputeCenterOverview>>({ data: null, loading: true, error: null })
-  const [walletTransactions, setWalletTransactions] = useState<ComputeCenterState['walletTransactions']>({ data: null, loading: false, error: null })
-  const [usageRecords, setUsageRecords] = useState<ComputeCenterState['usageRecords']>({ data: null, loading: false, error: null })
-  const [breakdown, setBreakdown] = useState<ComputeCenterState['breakdown']>({ data: null, loading: false, error: null })
-  const breakdownRequest = useRef(0)
+  const { state: overview, run: runOverview } = useComputeRequest<ComputeCenterOverview>(true)
+  const { state: walletTransactions, run: runWallet, request: walletRequest } = useComputeRequest<NonNullable<WalletTransactionsResult['data']>>()
+  const { state: usageRecords, run: runUsage, request: usageRequest } = useComputeRequest<NonNullable<ComputeUsageRecordsResult['data']>>()
+  const { state: breakdown, run: runBreakdown } = useComputeRequest<NonNullable<ComputeUsageBreakdownResult['data']>>()
+  const [usageQuery, setUsageQuery] = useState<ComputeUsageQuery>({ ...DEFAULT_USAGE_QUERY })
+  const [walletQuery, setWalletQuery] = useState<ComputePageQuery>({ ...DEFAULT_PAGE })
+  // Refs make back-to-back loads/refreshes observe the latest query before React renders.
+  const usageQueryRef = useRef(usageQuery)
+  const walletQueryRef = useRef(walletQuery)
 
   const loadOverview = useCallback(() => {
-    setOverview(current => ({ ...current, loading: true, error: null }))
-    void window.electronAPI.getComputeCenterOverview().then(result => {
-      const error = failureMessage(result)
-      setOverview({ data: result.success ? result.data ?? null : null, loading: false, error })
-    }).catch(() => setOverview({ data: null, loading: false, error: '暂时无法获取算力数据，请稍后重试。' }))
-  }, [])
+    void runOverview(() => window.electronAPI.getComputeCenterOverview(), DEFAULT_ERROR)
+  }, [runOverview])
 
-  const loadWalletTransactions = useCallback((query: ComputePageQuery = DEFAULT_PAGE) => {
-    setWalletTransactions(current => ({ ...current, loading: true, error: null }))
-    void window.electronAPI.getPersonalWalletTransactions(query).then(result => {
-      const error = failureMessage(result)
-      setWalletTransactions({ data: result.success ? result.data ?? null : null, loading: false, error })
-    }).catch(() => setWalletTransactions({ data: null, loading: false, error: '个人钱包流水加载失败，请稍后重试。' }))
-  }, [])
+  const loadWalletTransactions = useCallback((query?: ComputePageQuery) => {
+    const nextQuery = resolveComputeQuery(walletQueryRef.current, query)
+    void runWallet(async isCurrent => {
+      walletQueryRef.current = nextQuery
+      setWalletQuery(nextQuery)
+      const result = await window.electronAPI.getPersonalWalletTransactions(nextQuery)
+      if (!isCurrent() || !result.success || !result.data) return result
+      const corrected = correctComputePageQuery(nextQuery, result.data)
+      if (!corrected) return result
+      walletQueryRef.current = corrected
+      setWalletQuery(corrected)
+      // A logical load has at most one corrective fetch, even if totals keep shrinking.
+      return window.electronAPI.getPersonalWalletTransactions(corrected)
+    }, '个人钱包流水加载失败，请稍后重试。')
+  }, [runWallet])
 
-  const loadUsageRecords = useCallback((query: ComputeUsageQuery = DEFAULT_USAGE_QUERY) => {
-    setUsageRecords(current => ({ ...current, loading: true, error: null }))
-    void window.electronAPI.getComputeUsageRecords(query).then(result => {
-      const error = failureMessage(result)
-      setUsageRecords({ data: result.success ? result.data ?? null : null, loading: false, error })
-    }).catch(() => setUsageRecords({ data: null, loading: false, error: '消费明细加载失败，请稍后重试。' }))
-  }, [])
+  const loadUsageRecords = useCallback((query?: ComputeUsageQuery) => {
+    const nextQuery = resolveComputeQuery(usageQueryRef.current, query)
+    void runUsage(async isCurrent => {
+      usageQueryRef.current = nextQuery
+      setUsageQuery(nextQuery)
+      const result = await window.electronAPI.getComputeUsageRecords(nextQuery)
+      if (!isCurrent() || !result.success || !result.data) return result
+      const corrected = correctComputePageQuery(nextQuery, result.data)
+      if (!corrected) return result
+      usageQueryRef.current = corrected
+      setUsageQuery(corrected)
+      return window.electronAPI.getComputeUsageRecords(corrected)
+    }, '消费明细加载失败，请稍后重试。')
+  }, [runUsage])
 
   const loadBreakdown = useCallback((days: ComputeBreakdownDays) => {
-    const requestId = ++breakdownRequest.current
-    setBreakdown({ data: null, loading: true, error: null })
-    void window.electronAPI.getComputeUsageBreakdown(days).then(result => {
-      if (requestId !== breakdownRequest.current) return
-      const error = failureMessage(result)
-      setBreakdown({ data: result.success ? result.data ?? null : null, loading: false, error })
-    }).catch(() => {
-      if (requestId === breakdownRequest.current) {
-        setBreakdown({ data: null, loading: false, error: '消费趋势加载失败，请稍后重试。' })
-      }
-    })
-  }, [])
+    void runBreakdown(() => window.electronAPI.getComputeUsageBreakdown(days), '消费趋势加载失败，请稍后重试。')
+  }, [runBreakdown])
 
   useEffect(() => { loadOverview() }, [loadOverview])
   useEffect(() => {
-    if (activeTab === 'wallet' && !walletTransactions.data && !walletTransactions.loading) loadWalletTransactions()
-    if (activeTab === 'usage' && !usageRecords.data && !usageRecords.loading) loadUsageRecords()
-  }, [activeTab, loadUsageRecords, loadWalletTransactions, usageRecords.data, usageRecords.loading, walletTransactions.data, walletTransactions.loading])
+    if (activeTab === 'wallet' && !walletRequest.current.attempted) loadWalletTransactions()
+    if (activeTab === 'usage' && !usageRequest.current.attempted) loadUsageRecords()
+  }, [activeTab, loadUsageRecords, loadWalletTransactions, usageRequest, walletRequest])
 
   const refresh = useCallback(() => {
     loadOverview()
@@ -90,5 +134,5 @@ export function useComputeCenter(activeTab: ComputeCenterTab): ComputeCenterStat
     if (activeTab === 'usage') loadUsageRecords()
   }, [activeTab, loadOverview, loadUsageRecords, loadWalletTransactions])
 
-  return { overview, walletTransactions, usageRecords, breakdown, refresh, loadWalletTransactions, loadUsageRecords, loadBreakdown }
+  return { overview, walletTransactions, usageRecords, breakdown, usageQuery, walletQuery, refresh, loadWalletTransactions, loadUsageRecords, loadBreakdown }
 }

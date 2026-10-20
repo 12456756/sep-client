@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { formatComputeAmount, formatComputePercent, formatAllowanceValue, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown, sumComputeAmounts } from './compute-center-model'
+import { formatComputeAmount, formatComputePercent, formatAllowanceValue, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown, sumComputeAmounts, computeModelLabel, getComputeDistribution, computeUsageDateError } from './compute-center-model'
 
 describe('compute center display model', () => {
   it('formats decimal strings for display without merging enterprise and wallet balances', () => {
@@ -57,5 +57,32 @@ describe('compute center display model', () => {
   it('sums all enterprise funding sources separately from personal and unpaid amounts', () => {
     assert.equal(sumComputeAmounts(['0.1200', '0.2300', '0.0500']), '0.4000')
     assert.equal(sumComputeAmounts([undefined, null]), undefined)
+  })
+
+  it('retains sub-cent charges and six decimal ledger precision', () => {
+    assert.equal(formatComputeAmount('0.000123'), '¥0.000123')
+    assert.equal(formatComputeAmount('0.0042'), '¥0.0042')
+    assert.equal(sumComputeAmounts(['0.000001', '0.000002']), '0.000003')
+    assert.equal(sumComputeAmounts(['99999999999999.999999', '0.000001']), '100000000000000.000000')
+  })
+
+  it('labels legacy image usage without inventing an actual model name', () => {
+    assert.equal(computeModelLabel('media-real'), '图片生成 / 编辑（历史未记录模型）')
+    assert.equal(computeModelLabel('gpt-image-2'), 'gpt-image-2')
+    assert.equal(computeModelLabel(undefined), '未记录模型')
+  })
+
+  it('reads server aggregate dimensions rather than deriving totals from a single page', () => {
+    const row = { key: 'media-real', label: 'media-real', costCNY: '0.12', callCount: 2, pct: 60 }
+    assert.deepEqual(getComputeDistribution({ byModel: [row] }, 'byModel'), [row])
+    assert.deepEqual(getComputeDistribution({}, 'byModel'), [])
+    assert.deepEqual(getComputeDistribution({ byModel: [{ key: 'bad', costCNY: 'secret' }] }, 'byModel'), [])
+  })
+
+  it('validates real calendar dates and rejects inverted usage ranges', () => {
+    assert.equal(computeUsageDateError('2026-10-01', '2026-10-16'), null)
+    assert.equal(computeUsageDateError('', ''), null)
+    assert.ok(computeUsageDateError('2026-10-17', '2026-10-16'))
+    assert.ok(computeUsageDateError('2026-02-30', ''))
   })
 })

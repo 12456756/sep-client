@@ -1,4 +1,5 @@
 import type { ComputeAllowance, ComputeBreakdownDays, ComputeUsageBreakdown, PersonalWallet } from '../../shared/compute-credit-contracts'
+import { computeBreakdownRowSchema, type ComputeBreakdownRow } from '../../shared/compute-credit-contracts'
 
 export interface ComputeTrendPoint {
   label: string
@@ -10,7 +11,7 @@ export function formatComputeAmount(value: string | null | undefined): string {
   if (value === undefined) return '—'
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return '—'
-  return `¥${parsed.toFixed(2)}`
+  return `¥${parsed !== 0 && Math.abs(parsed) < 0.01 ? parsed.toFixed(6).replace(/0+$/, '') : parsed.toFixed(2)}`
 }
 
 export function formatAllowanceValue(value: string | null | undefined): string {
@@ -27,11 +28,38 @@ export function formatOptionalComputeAmount(value: string | null | undefined): s
 
 /** Add optional monetary fields without losing sub-cent precision before display rounding. */
 export function sumComputeAmounts(values: Array<string | null | undefined>): string | undefined {
-  const numbers = values
-    .filter((value): value is string => value !== null && value !== undefined)
-    .map(Number)
-    .filter(Number.isFinite)
-  return numbers.length ? numbers.reduce((sum, value) => sum + value, 0).toFixed(4) : undefined
+  const decimals = values.filter((value): value is string => typeof value === 'string' && /^-?\d+(?:\.\d+)?$/.test(value))
+  if (!decimals.length) return undefined
+  const precision = Math.max(4, ...decimals.map(value => value.split('.')[1]?.length ?? 0))
+  const total = decimals.reduce((sum, value) => {
+    const [integer, fraction = ''] = value.replace(/^-/, '').split('.')
+    const amount = BigInt(integer + fraction.padEnd(precision, '0'))
+    return sum + (value.startsWith('-') ? -amount : amount)
+  }, 0n)
+  const digits = (total < 0n ? -total : total).toString().padStart(precision + 1, '0')
+  return `${total < 0n ? '-' : ''}${digits.slice(0, -precision)}.${digits.slice(-precision)}`
+}
+
+export function computeModelLabel(model: string | null | undefined): string {
+  return model === 'media-real' ? '图片生成 / 编辑（历史未记录模型）' : model || '未记录模型'
+}
+
+export type ComputeDistribution = 'byModel' | 'byEmployee' | 'byMember' | 'byDepartment'
+
+export function getComputeDistribution(value: unknown, dimension: ComputeDistribution): ComputeBreakdownRow[] {
+  const rows = asRecord(value)[dimension]
+  if (!Array.isArray(rows)) return []
+  return rows.flatMap(row => {
+    const parsed = computeBreakdownRowSchema.safeParse(row)
+    return parsed.success ? [parsed.data] : []
+  })
+}
+
+export function computeUsageDateError(start: string, end: string): string | null {
+  for (const value of [start, end]) {
+    if (value && (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value)) return '请选择有效日期。'
+  }
+  return start && end && start > end ? '开始日期不能晚于结束日期。' : null
 }
 
 export function formatComputePercent(value: number | null): number {
