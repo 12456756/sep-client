@@ -55,10 +55,10 @@ describe('arrangement planner', () => {
   })
 
   it('parses a valid plan and rejects unauthorized employees and models', () => {
-    const result = parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-a', title: 'Research', instruction: 'Research sources', expectedOutput: 'Sources', dependsOn: [], skillIds: ['skill-a'], requiresUserConfirmation: false }] }), draft, employees)
+    const result = parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-a', title: 'Research', instruction: 'Research sources', expectedOutput: 'Sources', knowledgeQuery: 'Internal research policy', dependsOn: [], skillIds: ['skill-a'], requiresUserConfirmation: false }] }), draft, employees)
     assert.equal(result.nodes[0]?.subscriptionId, 'sub-a')
-    assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Bad', nodes: [{ id: 'node-1', subscriptionId: 'sub-x', modelId: 'm-a', title: 'x', instruction: 'x', expectedOutput: 'x', dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }), draft, employees))
-    assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Bad', nodes: [{ id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-x', title: 'x', instruction: 'x', expectedOutput: 'x', dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }), draft, employees))
+    assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Bad', nodes: [{ id: 'node-1', subscriptionId: 'sub-x', modelId: 'm-a', title: 'x', instruction: 'x', expectedOutput: 'x', knowledgeQuery: 'Internal policy', dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }), draft, employees))
+    assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Bad', nodes: [{ id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-x', title: 'x', instruction: 'x', expectedOutput: 'x', knowledgeQuery: 'Internal policy', dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }), draft, employees))
   })
 
   it('plans employee work without task-level skill selection', () => {
@@ -70,7 +70,7 @@ describe('arrangement planner', () => {
   })
 
   it('does not expose reasoning in the parsed result', () => {
-    const result = parseArrangementPlannerOutput('```json\n{"title":"Report","reasoning":"secret chain","nodes":[{"id":"node-1","subscriptionId":"sub-a","modelId":"m-a","title":"Research","instruction":"Research","expectedOutput":"Sources","dependsOn":[],"skillIds":[],"requiresUserConfirmation":false}]}\n```', draft, employees)
+    const result = parseArrangementPlannerOutput('```json\n{"title":"Report","reasoning":"secret chain","nodes":[{"id":"node-1","subscriptionId":"sub-a","modelId":"m-a","title":"Research","instruction":"Research","expectedOutput":"Sources","knowledgeQuery":"Internal research policy","dependsOn":[],"skillIds":[],"requiresUserConfirmation":false}]}\n```', draft, employees)
     assert.equal('reasoning' in result, false)
   })
 

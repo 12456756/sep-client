@@ -7,6 +7,8 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  KNOWLEDGE_REQUEST: 'knowledge:request',
+  KNOWLEDGE_CANCEL: 'knowledge:cancel',
   SPEECH_PERMISSION: 'speech:permission',
   SPEECH_SET_ENABLED: 'speech:set-enabled',
   SPEECH_BEGIN: 'speech:begin',

@@ -140,7 +140,7 @@ function planningHarness(plan: (input: PlannerInput) => Promise<ArrangementPlann
 
 const plannedNode = {
   id: 'planned-1', subscriptionId: 'sub-a', modelId: 'model-a', title: 'Collect data',
-  instruction: 'Collect data', expectedOutput: 'data', dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+  instruction: 'Collect data', expectedOutput: 'data', knowledgeQuery: 'Internal data collection policies', dependsOn: [], skillIds: [], requiresUserConfirmation: false,
 }
 
 function awaitingEmployeeDraft(): ArrangementDraft {

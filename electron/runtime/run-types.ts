@@ -56,6 +56,7 @@ export interface ActiveRun {
   subscriptionId: string
   releaseWorkspace: () => void
   worker: TaskWorkerPort
+  abortController?: AbortController
   controlReason?: string
   control: ControlIntent
   completion: Promise<void>

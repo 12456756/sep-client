@@ -10,6 +10,7 @@ import type { Backend } from '../bootstrap/build-backend'
 import type { MockVideoHostService } from '../service/mock-video-host-service'
 
 export interface RequestContext {
+  readonly knowledge: Backend['knowledge']
   /** 服务层句柄。任务类路由只该用这几个。 */
   readonly notifications: Backend['notifications']
   readonly skills: Backend['skills']
@@ -40,6 +41,7 @@ export function createRequestContext(
   video?: MockVideoHostService,
 ): RequestContext {
   return {
+    knowledge: backend.knowledge,
     notifications: backend.notifications,
     skills: backend.skills,
     tasks: backend.tasks,

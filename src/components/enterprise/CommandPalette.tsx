@@ -81,6 +81,14 @@ export function CommandPalette({
       },
       {
         id: "theme",
+        label: "知识库",
+        hint: "企业资料、文档与检索",
+        keywords: "知识库 资料 文档 检索",
+        icon: Search,
+        action: () => onNavigate({ name: "knowledge" }),
+      },
+      {
+        id: "appearance",
         label: darkMode ? "切换到浅色主题" : "切换到深色主题",
         hint: "只影响当前客户端外观",
         keywords: "主题 深色 浅色 外观",

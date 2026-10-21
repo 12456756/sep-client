@@ -89,6 +89,7 @@ class FakeWorker implements TaskWorkerPort {
               title: 'Research market',
               instruction: 'Collect relevant market facts.',
               expectedOutput: 'A source-backed fact set.',
+              knowledgeQuery: 'Relevant market policies, data and internal research methods',
               dependsOn: [],
               skillIds: ['skill-a'],
               requiresUserConfirmation: false,
@@ -100,6 +101,7 @@ class FakeWorker implements TaskWorkerPort {
               title: 'Write report',
               instruction: 'Turn the facts into a report.',
               expectedOutput: 'A concise market report.',
+              knowledgeQuery: 'Internal report standards and approved market definitions',
               dependsOn: ['node-research'],
               skillIds: [],
               requiresUserConfirmation: false,
@@ -128,9 +130,9 @@ describe('PiArrangementPlanner', () => {
     { text: '{"title":"private-model-response","nodes":[', phase: 'json-parse', reason: 'invalid-json' },
     { text: '{"nodes":[]}', phase: 'output-validation', reason: 'invalid-output-shape' },
     { text: '{"title":"Plan","nodes":[]}', phase: 'output-validation', reason: 'empty-plan' },
-    { text: '{"title":"Plan","nodes":[{"subscriptionId":"unknown","modelId":"model-research","title":"Research","instruction":"Research"}]}', phase: 'employee-validation', reason: 'employee-unavailable' },
-    { text: '{"title":"Plan","nodes":[{"subscriptionId":"sub-research","modelId":"unknown","title":"Research","instruction":"Research"}]}', phase: 'model-validation', reason: 'model-not-allowed' },
-    { text: '{"title":"Plan","nodes":[{"id":"node-1","subscriptionId":"sub-research","modelId":"model-research","title":"Research","instruction":"Research","dependsOn":["missing"]}]}', phase: 'dag-validation', reason: 'invalid-draft' },
+    { text: '{"title":"Plan","nodes":[{"subscriptionId":"unknown","modelId":"model-research","title":"Research","instruction":"Research","knowledgeQuery":"internal research policy"}]}', phase: 'employee-validation', reason: 'employee-unavailable' },
+    { text: '{"title":"Plan","nodes":[{"subscriptionId":"sub-research","modelId":"unknown","title":"Research","instruction":"Research","knowledgeQuery":"internal research policy"}]}', phase: 'model-validation', reason: 'model-not-allowed' },
+    { text: '{"title":"Plan","nodes":[{"id":"node-1","subscriptionId":"sub-research","modelId":"model-research","title":"Research","instruction":"Research","knowledgeQuery":"internal research policy","dependsOn":["missing"]}]}', phase: 'dag-validation', reason: 'invalid-draft' },
   ]) {
     it(`logs precise and private-safe failures at ${scenario.phase}: ${scenario.reason}`, async () => {
       const logs: LogRecord[] = []
@@ -226,6 +228,7 @@ describe('PiArrangementPlanner', () => {
       nodes: [{
         id: 'node-research', subscriptionId: 'sub-research', modelId: 'model-research',
         title: 'Research market', instruction: 'Collect relevant market facts.', expectedOutput: 'Facts',
+        knowledgeQuery: 'Relevant internal market research materials',
         dependsOn: [], skillIds: [], requiresUserConfirmation: false,
       }],
     })
@@ -433,6 +436,7 @@ for (const invalidTools of [false, true]) {
           sendChunk(response, { role: 'assistant', content: JSON.stringify({ title: 'Market report', nodes: [{
             id: 'node-1', subscriptionId: 'sub-research', modelId: 'model-research', title: 'Research',
             instruction: 'Research the market', expectedOutput: 'Facts', dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+            knowledgeQuery: 'Internal market research methods and historical results',
           }] }) })
           sendChunk(response, {}, 'stop')
         }

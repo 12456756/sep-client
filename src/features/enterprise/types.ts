@@ -276,6 +276,7 @@ export type AppRoute =
   | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped'; workType?: 'all' | 'conversation' | 'arrangement'; search?: string }
   | { name: 'work'; workId: string }
   | { name: 'skills'; skillId?: string }
+  | { name: 'knowledge'; kbId?: string }
   | { name: 'compute-center' };
 
 export type AppRouteName = AppRoute['name'];
