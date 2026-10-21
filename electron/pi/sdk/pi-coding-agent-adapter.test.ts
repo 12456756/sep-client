@@ -55,21 +55,24 @@ describe('provider request diagnostics', () => {
       messages: [historical, historical, historical],
     }, 42)
     assert.deepEqual(fields, {
-      requestId: 42, model: 'model-a', messageCount: 3, outputLimit: 16_384, temperature: 0.2,
+      requestId: 42, model: 'model-a', messageCount: 3, outputBudgetSource: 'platform', temperature: 0.2,
       stream: true, includeUsage: true, toolCount: 2, tools: 'read, write',
     })
   })
 
   it('tolerates absent metadata and malformed tool definitions', () => {
     assert.deepEqual(buildGatewayRequestLogFields({ tools: [null, {}, { function: { name: 12 } }] }, 7), {
-      requestId: 7, model: undefined, messageCount: 0, outputLimit: undefined,
+      requestId: 7, model: undefined, messageCount: 0, outputBudgetSource: 'platform',
       temperature: undefined, stream: undefined, includeUsage: undefined, toolCount: 0,
     })
   })
 
-  it('reads the SDK output budget before the shared gateway conversion', () => {
-    assert.equal(buildGatewayRequestLogFields({ max_completion_tokens: 2048 }, 42).outputLimit, 2048)
-    assert.equal(buildGatewayRequestLogFields({ max_tokens: 128, max_completion_tokens: 2048 }, 42).outputLimit, 128)
+  it('does not report SDK internal budgets as effective gateway limits', () => {
+    for (const payload of [{ max_completion_tokens: 2048 }, { max_tokens: 128, max_completion_tokens: 2048 }]) {
+      const fields = buildGatewayRequestLogFields(payload, 42)
+      assert.equal(fields.outputLimit, undefined)
+      assert.equal(fields.outputBudgetSource, 'platform')
+    }
   })
 })
 describe('provider thinking diagnostics', () => {
@@ -124,12 +127,11 @@ describe('SEP gateway payload compatibility', () => {
     ])
   })
 
-  it('maps SDK completion limits to gateway max_tokens without losing the budget', () => {
+  it('omits SDK output budgets so the platform controls the output limit', () => {
     const base = { model: 'deepseek', messages: [{ role: 'user', content: 'hello' }] }
-    assert.deepEqual(normalizeGatewayPayload({ ...base, max_completion_tokens: 4096 }), { ...base, max_tokens: 4096 })
-    assert.deepEqual(normalizeGatewayPayload({ ...base, max_tokens: 128, max_completion_tokens: 4096 }), { ...base, max_tokens: 128 })
-    for (const invalid of [0, -1, 1.5, '4096', NaN]) {
-      assert.deepEqual(normalizeGatewayPayload({ ...base, max_completion_tokens: invalid }), base)
+    for (const limit of [1, 4096, 16384, 32768, 0, -1, 1.5, '4096', NaN]) {
+      assert.deepEqual(normalizeGatewayPayload({ ...base, max_completion_tokens: limit }), base)
+      assert.deepEqual(normalizeGatewayPayload({ ...base, max_tokens: limit }), base)
     }
   })
 
@@ -157,18 +159,18 @@ describe('SEP gateway payload compatibility', () => {
     })
   })
 
-  it('maps the SDK output limit to the gateway field without duplicates', () => {
+  it('removes the SDK summary budget rather than imposing it on the gateway', () => {
     assert.deepEqual(normalizeGatewayPayload({
       model: 'model-a', messages: [], max_completion_tokens: 16384,
-    }), { model: 'model-a', messages: [], max_tokens: 16384 })
+    }), { model: 'model-a', messages: [] })
   })
 
-  it('preserves a valid gateway limit and falls back to the SDK limit otherwise', () => {
+  it('removes both budget fields even when both are present', () => {
     const base = { model: 'model-a', messages: [] }
     assert.deepEqual(normalizeGatewayPayload({ ...base, max_tokens: 128, max_completion_tokens: 4096 }),
-      { ...base, max_tokens: 128 })
+      base)
     assert.deepEqual(normalizeGatewayPayload({ ...base, max_tokens: 0, max_completion_tokens: 16384 }),
-      { ...base, max_tokens: 16384 })
+      base)
   })
 
   for (const includeUsage of [true, false]) {

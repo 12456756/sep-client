@@ -253,7 +253,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     },
   }))
 }
-const GATEWAY_MAX_OUTPUT_TOKENS = 4096
+const GATEWAY_CONTEXT_WINDOW = 128_000
 const OPENAI_COMPLETIONS_API_MODULE = '@earendil-works/pi-ai/api/openai-completions'
 const HAN_CHARACTER = /\p{Script=Han}/u
 
@@ -319,11 +319,6 @@ function toolResultText(value: unknown): string {
   return value == null ? '' : String(value)
 }
 
-function gatewayOutputLimit(context: Record<string, unknown>): number | undefined {
-  return typeof context.max_tokens === 'number' ? context.max_tokens
-    : typeof context.max_completion_tokens === 'number' ? context.max_completion_tokens : undefined
-}
-
 export function buildGatewayThinkingLogFields(content: readonly AssistantMessage['content'][number][]): {
   thinkingLength: number
   estimatedThinkingTokens: number
@@ -355,7 +350,7 @@ export function buildGatewayRequestLogFields(context: Record<string, unknown>, r
     requestId,
     model: context.model,
     messageCount: Array.isArray(context.messages) ? context.messages.length : 0,
-    outputLimit: gatewayOutputLimit(context),
+    outputBudgetSource: 'platform',
     temperature: context.temperature,
     stream: context.stream,
     includeUsage: context.stream_options && typeof context.stream_options === 'object'
@@ -416,16 +411,13 @@ export function normalizeGatewayPayload(payload: unknown): unknown {
   })
 
   const source = payload as Record<string, unknown>
-  const maxTokens = Number.isInteger(source.max_tokens) && (source.max_tokens as number) > 0
-    ? source.max_tokens
-    : source.max_completion_tokens
   const streamOptions = source.stream_options && typeof source.stream_options === 'object'
     ? source.stream_options as Record<string, unknown> : undefined
   return {
     model: typeof source.model === 'string' ? source.model : '',
     messages,
     ...(typeof source.temperature === 'number' ? { temperature: source.temperature } : {}),
-    ...(Number.isInteger(maxTokens) && (maxTokens as number) > 0 ? { max_tokens: maxTokens } : {}),
+    // Omit SDK-generated budgets for execution and compaction; the platform owns the limit.
     ...(typeof source.stream === 'boolean' ? { stream: source.stream } : {}),
     ...(typeof streamOptions?.include_usage === 'boolean'
       ? { stream_options: { include_usage: streamOptions.include_usage } } : {}),
@@ -534,7 +526,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
     allowedTools: [...config.toolPolicy.allowedTools, ...mcp.permissions.keys()],
   } : undefined
   const gatewayPayload: ExtensionFactory = pi => {
-    let activeRequest: { requestId: number; startedAt: number; outputLimit?: number; platformRequestId?: string; providerStatus?: number } | undefined
+    let activeRequest: { requestId: number; startedAt: number; platformRequestId?: string; providerStatus?: number } | undefined
     let latestInputSequence = 0
     log.trace('provider payload hook registered')
     pi.on('turn_start', () => { activeRequest = undefined })
@@ -543,7 +535,6 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
       activeRequest = { requestId, startedAt: Date.now() }
       try {
         const context = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {}
-        activeRequest.outputLimit = gatewayOutputLimit(context)
         if (isLogLevelEnabled('info')) {
           const { tools, ...fields } = buildGatewayRequestLogFields(context, requestId)
           log.info('model request overview', {
@@ -607,7 +598,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
         model: response.model,
         stopReason: response.stopReason,
         elapsedMs: request ? Date.now() - request.startedAt : undefined,
-        outputLimit: request?.outputLimit,
+        outputBudgetSource: 'platform',
         contentLength,
         ...(isLogLevelEnabled('info') ? buildGatewayThinkingLogFields(response.content) : {}),
         toolCount: calls.length,
@@ -841,7 +832,6 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           : context
         return streamSimple({ ...model, api: 'openai-completions' }, requestContext, {
           ...options,
-          maxTokens: GATEWAY_MAX_OUTPUT_TOKENS,
           maxRetries: 0,
           onPayload: async (payload, requestModel) => {
             const replacement = await options?.onPayload?.(payload, requestModel)
@@ -863,8 +853,10 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         reasoning: false,
         input: ['text'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128_000,
-        maxTokens: GATEWAY_MAX_OUTPUT_TOKENS,
+        contextWindow: GATEWAY_CONTEXT_WINDOW,
+        // Pi requires positive numeric metadata. This is not a provider output budget:
+        // normalizeGatewayPayload removes all output limits before sending to the gateway.
+        maxTokens: GATEWAY_CONTEXT_WINDOW,
       }],
     })
     const model = modelRuntime.getModel('sep-gateway', config.modelId)
