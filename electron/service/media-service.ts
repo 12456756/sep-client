@@ -20,21 +20,22 @@ const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED
 const explicitStop = Symbol('explicit-media-stop')
 type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
 interface TaskBinding { subscriptionId?: string | null }
+export type MediaEmployeeRuntime = Pick<EmployeeRuntimeConfig, 'subscriptionId' | 'media' | 'runtimeSnapshot' | 'systemPrompt'>
 export interface MediaServiceOptions {
   scope: ScopeSource
   store: MediaStorePort
   gateway?: MediaGatewayPort
   getTask: (taskId: string) => Promise<TaskBinding | null>
-  authorize: (subscriptionId: string) => Promise<EmployeeRuntimeConfig | null>
+  authorize: (subscriptionId: string) => Promise<MediaEmployeeRuntime | null>
   requestApproval: Approval
   policy?: (taskId: string) => Promise<TaskToolPolicy | undefined>
-  capabilities?: (employee: EmployeeRuntimeConfig) => unknown
+  capabilities?: (employee: MediaEmployeeRuntime) => unknown
   pollFloorMs?: number
   maxAttempts?: number
   operationTimeoutMs?: number
 }
 interface RunInput {
-  taskId: string; runId: string; subscriptionId: string; employee: EmployeeRuntimeConfig
+  taskId: string; runId: string; subscriptionId: string; employee: MediaEmployeeRuntime
   toolPolicy?: TaskToolPolicy; requestApproval: Approval
 }
 interface Activity { taskId: string; controller: AbortController; promise: Promise<void> }
@@ -71,7 +72,7 @@ export class MediaService {
     if (!this.options.gateway) throw new AppError('SERVICE_UNAVAILABLE', { message: '图片网关尚未接通，当前不能生成图片。' })
     return this.options.gateway
   }
-  private capabilities(employee: EmployeeRuntimeConfig): MediaCapabilities | null {
+  private capabilities(employee: MediaEmployeeRuntime): MediaCapabilities | null {
     if (!this.options.gateway) return null
     const raw = this.options.capabilities?.(employee) ?? employee.media
     if (raw === undefined || raw === null) return null
@@ -122,7 +123,7 @@ export class MediaService {
     const { scope, subscriptionId } = await this.task(taskId), epoch = this.epoch
     const key = this.key(scope, taskId)
     if (!this.caps.has(key)) {
-      let employee: EmployeeRuntimeConfig | null = null
+      let employee: MediaEmployeeRuntime | null = null
       let authorized = true
       try { if (this.options.gateway) employee = await this.options.authorize(subscriptionId) } catch {
         // Historical reads survive transient grant failures; a later refresh retries authorization.

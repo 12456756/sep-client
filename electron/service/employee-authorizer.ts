@@ -254,21 +254,15 @@ export class EmployeeAuthorizer {
     return instances.some(instance => instance.subscriptionId === subscriptionId && instance.status === 'ACTIVE' && !!instance.employeeId)
   }
 
-  /**
-   * 入队前授权一次：刷目录、备好技能。结果随队列条目携带，调度循环内不再重算（C4）。
-   * 返回值必须带 `additionalSkillPaths`——换成 `resolve()` 的结果会让排队过的 run
-   * 静默丢掉技能路径。
-   */
-  async authorize(subscriptionId: string, modelId?: string): Promise<EmployeeRuntimeConfig | null> {
+  private async readRuntime(subscriptionId: string) {
     const scope = this.captureScope()
     if (!scope) return null
     const accessToken = await this.session.getValidAccessToken()
     if (!scope.isCurrent()) return null
     const instances = await this.scopedDirectory(accessToken, scope.isCurrent)
     if (!scope.isCurrent()) return null
-    const instance = instances.find(item => item.subscriptionId === subscriptionId)
-    const employee = resolveEmployeeRuntime(instances, subscriptionId, this.gatewayUrl, modelId)
-    if (!instance || !employee || !instance.employeeId) return null
+    const instance = instances.find(item => item.subscriptionId === subscriptionId && item.status === 'ACTIVE')
+    if (!instance?.employeeId) return null
     let rawManifest: unknown
     try {
       rawManifest = this.runtimeProvider ? await this.runtimeProvider.getRuntime(subscriptionId, accessToken) : undefined
@@ -288,6 +282,23 @@ export class EmployeeAuthorizer {
       this.videoAuthorizationFingerprints.set(subscriptionId, fingerprint)
       this.videoRuntimes.set(subscriptionId, manifest.runtime.video)
     }
+    return { scope, accessToken, instance, employeeId: instance.employeeId, manifest }
+  }
+
+  /** Online capabilities only: media tools must not prepare skills or select a chat model. */
+  async authorizeRuntime(subscriptionId: string): Promise<Pick<EmployeeRuntimeConfig, 'subscriptionId' | 'media' | 'video'> | null> {
+    const current = await this.readRuntime(subscriptionId)
+    if (!current?.scope.isCurrent()) return null
+    return { subscriptionId, media: current.manifest?.runtime.media, video: current.manifest?.runtime.video }
+  }
+
+  /** Full preparation is only for run admission; the queue carries the prepared skills. */
+  async authorize(subscriptionId: string, modelId?: string): Promise<EmployeeRuntimeConfig | null> {
+    const current = await this.readRuntime(subscriptionId)
+    if (!current?.scope.isCurrent()) return null
+    const { scope, accessToken, instance, employeeId, manifest } = current
+    const employee = resolveEmployeeRuntime([instance], subscriptionId, this.gatewayUrl, modelId)
+    if (!employee) return null
     // Runtime may still advertise retired models that the current directory excludes.
     const selectedModel = manifest
       ? modelId ?? ([manifest.runtime.modelId, ...manifest.runtime.allowedModels].find(candidate =>
@@ -317,7 +328,7 @@ export class EmployeeAuthorizer {
       prepared = await this.skills.prepare({
         enterpriseId: scope.enterpriseId,
         subscriptionId,
-        employeeId: instance.employeeId,
+        employeeId,
         memberId: scope.memberId,
         accessToken,
         ...(approvedSkills ? { runtimeSkills: approvedSkills } : {}),

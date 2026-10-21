@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { SkillVersionStore } from '../../data/skill-version-store'
+import { WriteChain } from '../../data/write-chain'
 import { getEmployeeSkills, previewSkill, type SkillVersion } from '../../common/platform/platform-api'
 import { employeeRuntimeSkillSchema, type EmployeeRuntimeSkill, type PreparedEmployeeSkill } from '../../common/platform/employee-runtime-contract'
 import { downloadSkillArtifact } from '../../common/platform/skill-artifact-api'
@@ -104,16 +105,67 @@ function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approved
   return { content, name: metadata.name, description: metadata.description, files }
 }
 
+const preparations = new WriteChain()
+
+async function reusePackage(packageRoot: string, entryPath: string, cache: Buffer): Promise<boolean> {
+  assertSkillPathParents(packageRoot)
+  let directory: Awaited<ReturnType<typeof lstat>>
+  try { directory = await lstat(packageRoot) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  try {
+    const entryFile = join(packageRoot, entryPath)
+    if (!directory.isDirectory() || directory.isSymbolicLink() || !(await readFile(join(dirname(entryFile), packageManifestName))).equals(cache)) throw new Error()
+    verifyPackageCache(entryFile, cache)
+  } catch { throw new Error('Immutable skill entry integrity mismatch.') }
+  return true
+}
+
 export class SkillStore {
+  private generation = 0
+  private readonly revisions = new Map<string, number>()
   constructor(private readonly rootDir: string, private readonly versions?: SkillVersionStore) {}
 
   prepare(input: SkillStoreRequest): Promise<SkillStoreResult> {
-    // Refresh platform skill metadata on every authorization; no skill update event exists.
-    return this.install(input)
+    const generation = this.generation, revision = this.revisions.get(input.subscriptionId)
+    const current = { ...input, isCurrent: () => generation === this.generation && revision === this.revisions.get(input.subscriptionId) && (input.isCurrent?.() ?? true) }
+    const key = JSON.stringify([resolve(this.rootDir), input.enterpriseId, input.memberId ?? 'anonymous', input.subscriptionId, generation, revision])
+    // Each authorization keeps its own input; queued preparations reuse the installed package.
+    return preparations.run(key, () => this.install(current))
   }
 
-  invalidate(_subscriptionId?: string): void {
-    // Kept for the provisioner contract; installed local versions remain immutable.
+  invalidate(subscriptionId?: string): void {
+    if (subscriptionId) this.revisions.set(subscriptionId, (this.revisions.get(subscriptionId) ?? 0) + 1)
+    else { this.generation++; this.revisions.clear() }
+  }
+
+  private async artifactEntry(input: SkillStoreRequest, skillRoot: string, artifact: SkillArtifactAvailable, content: string): Promise<ReturnType<typeof approvedEntry>> {
+    const parent = join(skillRoot, safeSegment(artifact.capabilityId))
+    const versionKey = createHash('sha256').update(JSON.stringify([artifact.versionId, artifact.artifactSha256])).digest('hex')
+    const path = join(parent, `${versionKey}.artifact`)
+    assertSkillPathParents(path)
+    let cached = false
+    try {
+      const file = await lstat(path)
+      if (!file.isFile() || file.nlink !== 1 || file.size !== artifact.byteLength) throw new Error('Approved skill artifact integrity mismatch.')
+      cached = true
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    const bytes = cached ? await readFile(path) : await downloadSkillArtifact(input.subscriptionId, artifact, input.accessToken)
+    checkCurrent(input)
+    const entry = approvedEntry(bytes, artifact, content)
+    if (!cached) {
+      await mkdir(parent, { recursive: true, mode: 0o700 })
+      assertSkillPathParents(parent)
+      const temporary = await mkdtemp(join(parent, '.artifact-'))
+      try {
+        await writeFile(join(temporary, 'package'), bytes, { mode: 0o600, flag: 'wx' })
+        checkCurrent(input)
+        await rename(join(temporary, 'package'), path)
+      } finally { await rm(temporary, { recursive: true, force: true }) }
+    }
+    return entry
   }
 
   private async install(input: SkillStoreRequest): Promise<SkillStoreResult> {
@@ -180,11 +232,10 @@ export class SkillStore {
           artifact.approvedContentSha256 !== createHash('sha256').update(runtimeSkill.content).digest('hex')) {
           throw new Error('Approved skill artifact identity or content mismatch.')
         }
-        const bytes = await downloadSkillArtifact(input.subscriptionId, artifact, input.accessToken)
+        if (!isOwnerLocalVersion && selected && selected !== platformVersionId && !isAutomaticSelection) throw new Error('Selected skill version is not the currently approved runtime version.')
+        const entry = await this.artifactEntry(input, skillRoot, artifact, runtimeSkill.content)
         checkCurrent(input)
-        const entry = approvedEntry(bytes, artifact, runtimeSkill.content)
         if (!isOwnerLocalVersion) {
-          if (selected && selected !== platformVersionId && !isAutomaticSelection) throw new Error('Selected skill version is not the currently approved runtime version.')
           const nameKey = skillNameComparisonKey(entry.name)
           if (names.has(nameKey)) throw new Error('Installed skill names collide.')
           names.add(nameKey)
@@ -201,33 +252,31 @@ export class SkillStore {
           assertSkillPathParents(parent)
           await mkdir(parent, { recursive: true, mode: 0o700 })
           assertSkillPathParents(parent)
-          const temporary = await mkdtemp(join(parent, '.staging-'))
           const installedFiles = artifact.format === 'single-file'
             ? [...entry.files, { path: 'manifest.json', bytes: Buffer.from(JSON.stringify(snapshot)) }]
             : entry.files
           const cache = Buffer.from(JSON.stringify({ ...snapshot, ...packageCache(installedFiles, artifact.entryPath) }))
-          try {
-            for (const file of installedFiles) {
-              const path = join(temporary, file.path)
-              if (file.directory) { await mkdir(path, { recursive: true, mode: 0o700 }); continue }
-              await mkdir(dirname(path), { recursive: true, mode: 0o700 })
-              await writeFile(path, file.bytes, { mode: 0o600, flag: 'wx' })
-            }
-            const stagedEntry = join(temporary, artifact.entryPath)
-            await writeFile(join(dirname(stagedEntry), packageManifestName), cache, { mode: 0o600, flag: 'wx' })
-            verifyPackageCache(stagedEntry, cache)
-            checkCurrent(input)
-            try { await rename(temporary, packageRoot) }
-            catch (error) {
-              const code = (error as NodeJS.ErrnoException).code
-              if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
-              try {
-                const directory = await lstat(packageRoot)
-                if (!directory.isDirectory() || directory.isSymbolicLink() || !(await readFile(join(target, packageManifestName))).equals(cache)) throw new Error('Cache mismatch.')
-                verifyPackageCache(join(target, 'SKILL.md'), cache)
-              } catch { throw new Error('Immutable skill entry integrity mismatch.') }
-            }
-          } finally { await rm(temporary, { recursive: true, force: true }) }
+          if (!await reusePackage(packageRoot, artifact.entryPath, cache)) {
+            const temporary = await mkdtemp(join(parent, '.staging-'))
+            try {
+              for (const file of installedFiles) {
+                const path = join(temporary, file.path)
+                if (file.directory) { await mkdir(path, { recursive: true, mode: 0o700 }); continue }
+                await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+                await writeFile(path, file.bytes, { mode: 0o600, flag: 'wx' })
+              }
+              const stagedEntry = join(temporary, artifact.entryPath)
+              await writeFile(join(dirname(stagedEntry), packageManifestName), cache, { mode: 0o600, flag: 'wx' })
+              verifyPackageCache(stagedEntry, cache)
+              checkCurrent(input)
+              try { await rename(temporary, packageRoot) }
+              catch (error) {
+                const code = (error as NodeJS.ErrnoException).code
+                if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
+                if (!await reusePackage(packageRoot, artifact.entryPath, cache)) throw error
+              }
+            } finally { await rm(temporary, { recursive: true, force: true }) }
+          }
           checkCurrent(input)
           if (scope && this.versions) {
             await this.versions.savePlatform(scope, { subscriptionId: input.subscriptionId, employeeId: input.employeeId,

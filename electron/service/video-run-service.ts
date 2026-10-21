@@ -1,5 +1,4 @@
-import { videoGenerationInputSchema, videoToolGenerationInputSchema, videoToolJobInputSchema } from '../../src/shared/video-host'
-import { videoFormParameters } from '../../src/shared/media-view'
+import { videoToolJobInputSchema } from '../../src/shared/video-host'
 import { videoBillingPending, videoRuntimeSchema } from '../../src/shared/video-media'
 import { videoLocalIdSchema } from '../domain/video-media'
 import type { VideoHostTools, VideoRunPort, VideoToolName } from '../domain/video-tools'
@@ -33,7 +32,7 @@ export class VideoRunService implements VideoRunPort {
     const stop = this.stops.get(input.taskId) ?? 0
     const runtime = videoRuntimeSchema.safeParse(input.employee.video)
     if (input.employee.subscriptionId !== input.subscriptionId || !runtime.success || (runtime.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real') || !runtime.data.executionAvailable) return undefined
-    let allowed = names.filter(name => runtime.data.tools.includes(name) && (!input.toolPolicy || input.toolPolicy.preset === 'full-local' ||
+    const allowed = names.filter(name => runtime.data.tools.includes(name) && (!input.toolPolicy || input.toolPolicy.preset === 'full-local' ||
       (input.toolPolicy.preset !== 'read-only' && input.toolPolicy.allowedTools.includes(name))))
     if (!allowed.length) return undefined
     const revision = this.options.authorizationRevision()
@@ -55,6 +54,7 @@ export class VideoRunService implements VideoRunPort {
       if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
     }
     const host = new MockVideoHostService({ ...this.options,
+      localRuntime: subscriptionId => this.options.localRuntime ? this.options.localRuntime(subscriptionId) : runtime.data,
       authorize: async (subscriptionId, signal) => {
         validate()
         const runtime = await abortableVideo(this.options.authorize(subscriptionId, signal), signal)
@@ -80,11 +80,8 @@ export class VideoRunService implements VideoRunPort {
     const run: Run = { taskId: input.taskId, host, controller, pending: new Set(), jobs: new Set() }
     this.runs.set(key, run)
     try {
-      const executionRuntime = await abortableVideo(host.authorizeExecution(input.taskId, controller.signal), controller.signal)
       const restored = await abortableVideo(host.getTaskVideo(input.taskId), controller.signal)
       validate()
-      allowed = allowed.filter(name => executionRuntime.tools.includes(name))
-      if (!allowed.length) { await this.finishRun(input.taskId, input.runId); return undefined }
       for (const job of restored.jobs) {
         if (videoBillingPending(job.billingStatus) || job.generationStatus !== 'NOT_SUBMITTED' && (!['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)) && job.saveStatus !== 'SAVED') run.jobs.add(job.jobId)
       }
@@ -106,9 +103,6 @@ export class VideoRunService implements VideoRunPort {
       if (!allowed.includes(name)) throw new AppError('PERMISSION_DENIED')
       const signal = AbortSignal.any([controller.signal, ...(parent ? [parent] : [])])
       signal.throwIfAborted()
-      const current = videoRuntimeSchema.safeParse(await abortableVideo(this.options.authorize(input.subscriptionId, signal), signal))
-      validate()
-      if (!current.success || (current.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real') || !current.data.executionAvailable || !current.data.tools.includes(name)) throw new AppError('PERMISSION_DENIED')
       if (name === 'video_get_job') {
         const args = videoToolJobInputSchema.parse(raw)
         const view = await abortableVideo(host.getTaskVideo(input.taskId), signal)
@@ -116,27 +110,13 @@ export class VideoRunService implements VideoRunPort {
         if (!args.jobId) {
           const referenceAssets = await abortableVideo(host.getReferences(input.taskId), signal)
           validate()
-          return { ...view, runtime: current.data, referenceAssets }
+          return { ...view, referenceAssets }
         }
         const job = view.jobs.find(job => job.jobId === args.jobId)
         if (!job) throw new AppError('NOT_FOUND')
         return job
       }
-      const requestResult = videoToolGenerationInputSchema.safeParse(raw)
-      if (!requestResult.success) throw new AppError('INVALID_ARGUMENT')
-      const request = requestResult.data
-      const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
-      if (request.operation !== undefined && request.operation !== operation || request.localAssetIds.length !== (operation === 'image-to-video' ? 1 : 0)) throw new AppError('INVALID_ARGUMENT')
-      const profiles = current.data.profiles.filter(profile => profile.operations.includes(operation) &&
-        (operation === 'image-to-video' ? profile.capabilities.supportsImageToVideo : profile.capabilities.supportsTextToVideo))
-      const profile = request.profileId ? profiles.find(profile => profile.profileId === request.profileId)
-        : profiles.find(profile => profile.profileId === current.data.defaultProfileId) ?? profiles[0]
-      if (!profile) throw new AppError('PERMISSION_DENIED')
-      const parameters = videoFormParameters(current.data, profile, request.parameters)
-      // Normalization must not silently downgrade explicitly requested specifications.
-      if (!parameters || Object.entries(request.parameters ?? {}).some(([key, value]) => parameters[key as keyof typeof parameters] !== value)) throw new AppError('INVALID_ARGUMENT')
-      const value = videoGenerationInputSchema.parse({ ...request, profileId: profile.profileId, operation, parameters })
-      const job = await host.generate(input.taskId, value, signal, { runId: input.runId, requestApproval: request => { validate(); return input.requestApproval(request) } })
+      const job = await host.generateTool(input.taskId, name, raw, signal, { runId: input.runId, requestApproval: request => { validate(); return input.requestApproval(request) } })
       run.jobs.add(job.jobId)
       validate()
       if (job.trackingStatus === 'AUTH_REQUIRED') throw new AppError(job.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED')

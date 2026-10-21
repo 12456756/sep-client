@@ -54,7 +54,6 @@ import { SpeechSettingsStore } from '../data/speech-settings-store'
 import type { SpeechRuntimePort } from '../domain/speech'
 import { SepRealMediaGateway } from '../data/sep-real-media-gateway'
 import type { MediaGatewayPort } from '../domain/media'
-import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 import { VideoStore } from '../data/video-store'
 import { SepMockVideoGateway, SepRealVideoGateway } from '../data/sep-video-media-gateway'
 import { createVideoScopeAdapter } from '../data/video-scope-adapter'
@@ -76,7 +75,7 @@ export interface BackendOptions {
   isEncryptionAvailable?: () => boolean
   /** Explicit local/test adapter until SEP media HTTP schemas are finalized. */
   mediaGateway?: MediaGatewayPort
-  mediaCapabilities?: (employee: EmployeeRuntimeConfig) => unknown
+  mediaCapabilities?: import('../service/media-service').MediaServiceOptions['capabilities']
 }
 
 /**
@@ -202,7 +201,7 @@ class BackendRuntime {
       gateway: realMediaGateway,
       capabilities: mediaCapabilities,
       getTask: taskId => this.taskManager.getTask(taskId),
-      authorize: subscriptionId => this.employees.authorize(subscriptionId),
+      authorize: subscriptionId => this.employees.authorizeRuntime(subscriptionId),
       requestApproval: async input => (await this.getTaskRuntime()).requestMediaApproval(input),
       policy: async taskId => {
         const scope = this.currentScope()
@@ -221,7 +220,7 @@ class BackendRuntime {
         getTask: taskId => this.taskManager.getTask(taskId),
         authorize: async (subscriptionId, signal) => {
           signal.throwIfAborted()
-          const employee = await this.employees.authorize(subscriptionId)
+          const employee = await this.employees.authorizeRuntime(subscriptionId)
           signal.throwIfAborted()
           return employee?.video
         },

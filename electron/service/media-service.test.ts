@@ -388,7 +388,7 @@ describe('MediaService authorization and request semantics', () => {
           runtime: { systemPrompt: 'Designer', modelId: 'old-template-model', allowedModels: ['retired-model', 'current-model'],
             media: MOCK_MEDIA_CAPABILITIES, skills: [] } }),
       })
-    f.options.authorize = subscriptionId => authorizer.authorize(subscriptionId)
+    f.options.authorize = subscriptionId => authorizer.authorizeRuntime(subscriptionId)
     const selected = join(f.directory, 'reference.png')
     await writeFile(selected, MOCK_MEDIA_PNG)
     const [asset] = await f.service.importReferences('task-a', [selected])

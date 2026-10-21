@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, writeFile, lstat } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, writeFile, lstat, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -12,6 +12,7 @@ import type { EmployeeRuntimeSkill } from '../../common/platform/employee-runtim
 import type { SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 import { zipFixture, zipDescriptor } from './skill-package-zip.fixture'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
+import { packageManifestName } from './skill-package-zip'
 
 const originalFetch = globalThis.fetch
 
@@ -67,10 +68,11 @@ function installPlatformMock(state: { versionId: string; version: string; conten
   return { metadataRequests: () => metadataRequests, previewRequests: () => previewRequests }
 }
 
-async function createStore(): Promise<{ versions: SkillVersionStore; skills: SkillStore }> {
+async function createStore(): Promise<{ versions: SkillVersionStore; skills: SkillStore; runtimeRoot: string }> {
   const root = await mkdtemp(join(tmpdir(), 'sep-skill-store-'))
   const versions = new SkillVersionStore(join(root, 'skill-data'))
-  return { versions, skills: new SkillStore(join(root, 'runtime'), versions) }
+  const runtimeRoot = join(root, 'runtime')
+  return { versions, skills: new SkillStore(runtimeRoot, versions), runtimeRoot }
 }
 
 const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
@@ -167,7 +169,7 @@ describe('SkillStore', () => {
     await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [malicious] }), /content mismatch/)
   })
 
-  it('installs exact approved bytes, freezes descriptor, and reauthorizes downloads even when cached', async () => {
+  it('installs exact approved bytes and reuses the authenticated package without another download', async () => {
     const runtime = artifactFixture()
     const downloads = serveArtifact(runtime)
     const { skills } = await createStore()
@@ -180,10 +182,146 @@ describe('SkillStore', () => {
     assert.deepEqual(loaded.diagnostics, [])
     assert.equal(loaded.skills[0]?.name, runtime.artifact.installationDirectory)
     assert.equal((await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [runtime] })).skillPaths[0], prepared.skillPaths[0])
-    assert.equal(downloads(), 2)
-    serveArtifact(runtime, { status: 404 })
-    await assert.rejects(skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [runtime] }))
+    assert.equal(downloads(), 1)
+    const unavailable = serveArtifact(runtime, { status: 404 })
+    assert.equal((await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [runtime] })).skillPaths[0], prepared.skillPaths[0])
+    assert.equal(downloads(), 1)
+    assert.equal(unavailable(), 0)
     assert.equal(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'), 'utf8'), runtime.content)
+  })
+
+  it('reuses packages after store recreation but still requires current metadata authorization', async () => {
+    const runtime = artifactFixture()
+    serveArtifact(runtime)
+    const { skills, versions, runtimeRoot } = await createStore()
+    const first = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    const downloads = serveArtifact(runtime, { status: 429 })
+    const restarted = new SkillStore(runtimeRoot, versions)
+    assert.deepEqual(await restarted.prepare({ ...request(), runtimeSkills: [runtime] }), first)
+    assert.equal(downloads(), 0)
+    globalThis.fetch = async () => new Response('{}', { status: 403 })
+    await assert.rejects(restarted.prepare({ ...request(), runtimeSkills: [runtime] }), { statusCode: 403 })
+  })
+
+  it('does not retain a failed download and allows a later explicit preparation', async () => {
+    const runtime = artifactFixture()
+    const { skills } = await createStore()
+    const failed = serveArtifact(runtime, { status: 429 })
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), { statusCode: 429 })
+    assert.equal(failed(), 1)
+    const downloads = serveArtifact(runtime)
+    await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    assert.equal(downloads(), 1)
+  })
+
+  it('keeps concurrent preparations isolated between members', async () => {
+    const runtime = artifactFixture(), downloads = serveArtifact(runtime)
+    const { skills } = await createStore()
+    const [first, other] = await Promise.all([
+      skills.prepare({ ...request(), runtimeSkills: [runtime] }),
+      skills.prepare({ ...request(), memberId: 'member-b', runtimeSkills: [runtime] }),
+    ])
+    assert.notEqual(first.skillPaths[0], other.skillPaths[0])
+    assert.equal(downloads(), 2)
+  })
+
+  it('keeps different authorized versions distinct when preparations overlap', async () => {
+    const first = artifactFixture()
+    const second = artifactFixture(first.content.replace('# Approved', '# Updated'))
+    second.versionId = 'version-v2'
+    second.version = '2.0'
+    second.artifact.versionId = second.versionId
+    second.artifact.downloadPath = '/client/subscriptions/sub-a/skills/cap-a/versions/version-v2/artifact'
+    const firstDownloads = serveArtifact(first), firstFetch = globalThis.fetch
+    const secondDownloads = serveArtifact(second), secondFetch = globalThis.fetch
+    globalThis.fetch = async (input, init) => {
+      const path = new URL(String(input)).pathname
+      if (path.endsWith('/skills')) return jsonResponse(skillsPayload(second.versionId, second.version, [{
+        id: first.versionId, capabilityId: 'cap-a', version: first.version, scope: 'PLATFORM', status: 'PLATFORM_APPROVED',
+      }]))
+      return path.includes('/version-v1/') ? firstFetch(input, init) : secondFetch(input, init)
+    }
+    const { runtimeRoot } = await createStore()
+    const skills = new SkillStore(runtimeRoot)
+    const prepared = await Promise.all([first, second].map(runtime => skills.prepare({ ...request(), runtimeSkills: [runtime] })))
+    assert.equal(prepared[0].skills[0]?.baseSkillVersionId, first.versionId)
+    assert.equal(prepared[1].skills[0]?.baseSkillVersionId, second.versionId)
+    assert.notEqual(prepared[0].skillPaths[0], prepared[1].skillPaths[0])
+    assert.equal(firstDownloads(), 1)
+    assert.equal(secondDownloads(), 1)
+  })
+
+  it('rejects a corrupted raw package without redownloading or silently repairing it', async () => {
+    const runtime = artifactFixture(), downloads = serveArtifact(runtime)
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    const key = createHash('sha256').update(JSON.stringify([runtime.versionId, runtime.artifact.artifactSha256])).digest('hex')
+    const changed = Buffer.from(runtime.content)
+    changed[changed.length - 2] ^= 1
+    await writeFile(join(prepared.skillPaths[0]!, '../..', `${key}.artifact`), changed)
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /integrity mismatch/)
+    assert.equal(downloads(), 1)
+  })
+
+  for (const subscriptionId of [undefined, 'sub-a']) {
+    it(`invalidates an in-flight preparation ${subscriptionId ? 'for a subscription' : 'after logout'} without sharing stale results`, async () => {
+      const runtime = artifactFixture(), downloads = serveArtifact(runtime)
+      const fetch = globalThis.fetch
+      let entered!: () => void, release!: () => void
+      const started = new Promise<void>(resolve => { entered = resolve })
+      const gate = new Promise<void>(resolve => { release = resolve })
+      let first = true
+      globalThis.fetch = async (input, init) => {
+        const response = await fetch(input, init)
+        if (String(input).endsWith('/artifact') && first) { first = false; entered(); await gate }
+        return response
+      }
+      const { skills } = await createStore()
+      const old = assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /scope changed/)
+      await started
+      skills.invalidate(subscriptionId)
+      const fresh = skills.prepare({ ...request(), runtimeSkills: [runtime] })
+      let timeout!: ReturnType<typeof setTimeout>
+      try {
+        const result = await Promise.race([fresh, new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('Fresh authorization waited for an invalidated download.')), 2000)
+        })])
+        assert.equal(result.skills[0]?.source, 'approved')
+      } finally { clearTimeout(timeout); release(); await old }
+      assert.equal(downloads(), 2)
+    })
+  }
+
+  it('migrates an old installation without the raw package by downloading it once', async () => {
+    const runtime = artifactFixture(), downloads = serveArtifact(runtime)
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    const key = createHash('sha256').update(JSON.stringify([runtime.versionId, runtime.artifact.artifactSha256])).digest('hex')
+    await rm(join(prepared.skillPaths[0]!, '../..', `${key}.artifact`))
+    await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    assert.equal(downloads(), 2)
+  })
+
+  it('rejects a forged installed snapshot even when its file hashes are changed together', async () => {
+    const content = '---\nname: orders\ndescription: Orders\n---\nRead [guide](references/guide.md).'
+    const files = [{ path: 'SKILL.md', bytes: Buffer.from(content) }, { path: 'references/guide.md', bytes: Buffer.from('Approved guide') }]
+    const bytes = zipFixture(files)
+    const runtime = { ...artifactFixture(content), artifact: zipDescriptor(bytes, files) }
+    const downloads = serveArtifact(runtime, { bytes })
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    const path = prepared.skillPaths[0]!, manifestPath = join(path, packageManifestName)
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { files: { path: string; sha256: string; byteLength: number }[] }
+    const changed = Buffer.from('Forged guide')
+    await writeFile(join(path, 'references/guide.md'), changed)
+    const file = manifest.files.find(file => file.path === 'references/guide.md')!
+    file.sha256 = createHash('sha256').update(changed).digest('hex')
+    file.byteLength = changed.length
+    await writeFile(manifestPath, JSON.stringify(manifest))
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /integrity mismatch/)
+    assert.equal(downloads(), 1)
   })
 
   it('refuses missing, BLOCKED, foreign, and mismatched approved artifacts without falling back', async () => {
@@ -241,7 +379,7 @@ describe('SkillStore', () => {
     await writeFile(join(path, 'references/guide.md'), 'Tampered guide')
     await assert.rejects(loader.reload(), /integrity mismatch/)
     await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /integrity mismatch/)
-    assert.equal(downloads(), 4)
+    assert.equal(downloads(), 1)
     assert.deepEqual(await readdir(join(path, '../..')), ['订单-处理'])
   })
 

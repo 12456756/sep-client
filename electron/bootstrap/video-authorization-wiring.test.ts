@@ -10,4 +10,5 @@ test('production video hosts wire distinct local, recovery and execution authori
   assert.match(source, /authorizeRecovery:[\s\S]*?this\.employees\.authorizeRecovery\(subscriptionId\)[\s\S]*?PERMISSION_DENIED/)
   assert.match(source, /new MockVideoHostService\(videoOptions\)/)
   assert.match(source, /new VideoRunService\(videoOptions, this\.video\)/)
+  assert.match(source, /authorize:[\s\S]*?this\.employees\.authorizeRuntime\(subscriptionId\)/)
 })

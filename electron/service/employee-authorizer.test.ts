@@ -215,6 +215,55 @@ function digest(content: string): string {
   return createHash('sha256').update(content).digest('hex')
 }
 
+describe('media runtime authorization without skill preparation', () => {
+  it('reads current media capabilities without downloading skills or selecting a chat model', async () => {
+    const manifest = runtimeManifest()
+    const media = { profileId: 'image-profile' }
+    const skills = fakeSkills()
+    const directory = new EmployeeDirectory(async () => [{ ...subscription('sub-a'), allowedModels: [] }])
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, {
+      getRuntime: async () => ({ ...manifest, runtime: { ...manifest.runtime, media, video: videoFixture.runtime } }),
+    })
+    const runtime = await authorizer.authorizeRuntime('sub-a')
+    assert.deepEqual(runtime?.media, media)
+    assert.deepEqual(runtime?.video, videoFixture.runtime)
+    assert.equal(skills.prepared(), 0)
+    assert.equal(await authorizer.authorize('sub-a'), null)
+  })
+
+  it('refreshes capabilities and invalidates a changed video grant without preparing skills', async () => {
+    let video = structuredClone(videoFixture.runtime)
+    const skills = fakeSkills()
+    const directory = new EmployeeDirectory(async () => [subscription('sub-a')])
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, {
+      getRuntime: async () => ({ ...runtimeManifest(), runtime: { ...runtimeManifest().runtime, video } }),
+    })
+    await authorizer.authorizeRuntime('sub-a')
+    const revision = authorizer.getAuthorizationRevision()
+    video = { ...video, executionAvailable: false, tools: [] }
+    assert.equal((await authorizer.authorizeRuntime('sub-a'))?.video?.executionAvailable, false)
+    assert.ok(authorizer.getAuthorizationRevision() > revision)
+    assert.equal(skills.prepared(), 0)
+  })
+
+  it('rejects stale runtime results and inactive subscriptions', async () => {
+    const runtime = deferred<unknown>(), started = deferred<void>()
+    const skills = fakeSkills()
+    const directory = new EmployeeDirectory(async () => [subscription('sub-a')])
+    const authorizer = new EmployeeAuthorizer(session, directory, skills, GATEWAY, {
+      getRuntime: () => { started.resolve(); return runtime.promise },
+    })
+    const pending = authorizer.authorizeRuntime('sub-a')
+    await started.promise
+    authorizer.clear()
+    runtime.resolve(runtimeManifest())
+    assert.equal(await pending, null)
+    const inactive = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [{ ...subscription('sub-a'), status: 'PAUSED' }]), skills, GATEWAY)
+    assert.equal(await inactive.authorizeRuntime('sub-a'), null)
+    assert.equal(skills.prepared(), 0)
+  })
+})
+
 function artifactManifest() {
   const manifest = runtimeManifest()
   const content = '---\nname: cap-a\ndescription: Orders\n---\n# Approved source\n'

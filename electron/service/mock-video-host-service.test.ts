@@ -374,17 +374,17 @@ test('rejects changes during final policy lookup using the synchronous host revi
 
 test('a task rebound during final runtime authorization cannot reach the submit adapter', async () => {
   const f = await setup()
-  let approvals = 0, postApprovalAuthorizations = 0
+  let approvals = 0
   const host = new MockVideoHostService({ ...f.options,
     requestApproval: async () => { approvals++; return true },
     authorize: async () => {
-      if (approvals === 2 && ++postApprovalAuthorizations === 2) f.state.subscriptionId = 'subscription-b'
+      if (approvals === 2) f.state.subscriptionId = 'subscription-b'
       return f.state.runtime
     },
   })
-  await host.generate('task-a', input())
+  await assert.rejects(host.generate('task-a', input()), { code: 'AUTH_REQUIRED' })
   assert.equal(f.gateway.calls.submit, 0)
-  assert.equal((await f.store.listJobs(scope))[0].trackingStatus, 'AUTH_REQUIRED')
+  assert.equal((await f.store.listJobs(scope))[0].submission, 'NOT_SENT')
 })
 
 test('never returns old-scope results when logout happens during receipt persistence', async context => {

@@ -13,6 +13,8 @@ import { createPiVideoModelMock, PI_VIDEO_MODEL_MOCK_PROMPT } from '../../../scr
 import * as videoFixture from '../../../src/shared/fixtures/media-video-v1.json'
 import { videoRuntimeSchema } from '../../../src/shared/video-media'
 import { AppError } from '../../errors/app-error'
+import { AuthApiError } from '../../common/platform/platform-api'
+import { SepVideoGatewayError } from '../../data/sep-video-media-gateway'
 
 const names: VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
 const parameters = { durationSeconds: 5, aspectRatio: '16:9', resolution: '720p' as const, frameRate: 24, audio: false, outputFormat: 'video/mp4' as const }
@@ -122,6 +124,66 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       assert.ok(!value(result).includes('private.example'))
     }
   })
+
+  it('maps Skill download rate limits and keeps structured diagnostics sanitized', async () => {
+    const records: Array<Record<string, unknown>> = []
+    const restore = setLogSink(record => { records.push(record.fields) })
+    try {
+      const runtime = await sdk({}, new AuthApiError({ statusCode: 429, message: 'secret token body' }, 'skills'))
+      const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
+      const error = JSON.parse(value(result)).error
+      assert.equal(error.code, 'RATE_LIMITED')
+      assert.match(error.message, /Skill preparation is rate limited/)
+      assert.ok(!value(result).includes('secret token body'))
+      assert.deepEqual(records.at(-1), {
+        runId: 'run-a', tool: 'video_generate', toolCallId: 'call-a', exceptionType: 'AuthApiError', code: 'RATE_LIMITED',
+        httpStatus: 429, resource: 'skills', stage: 'skill-preparation',
+      })
+    } finally { restore() }
+  })
+
+  it('maps unknown errors to a fixed business code without exposing secrets', async () => {
+    const records: Array<Record<string, unknown>> = []
+    const restore = setLogSink(record => { records.push(record.fields) })
+    try {
+      const runtime = await sdk({}, Object.assign(new Error(sensitiveText), { name: sensitiveText, statusCode: 700 }))
+      const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
+      const error = JSON.parse(value(result)).error
+      assert.equal(error.code, 'INTERNAL_ERROR')
+      assert.ok(!value(result).includes('private-key'))
+      assert.equal(records.at(-1)?.code, 'INTERNAL_ERROR')
+      assert.equal(records.at(-1)?.exceptionType, 'Error')
+      assert.equal(records.at(-1)?.httpStatus, undefined)
+      assert.ok(!JSON.stringify(records).includes('private-key'))
+    } finally { restore() }
+  })
+
+  it('does not forward free-form AppError diagnostic metadata', async () => {
+    const records: Array<Record<string, unknown>> = []
+    const restore = setLogSink(record => { records.push(record.fields) })
+    try {
+      const runtime = await sdk({}, new AppError('INTERNAL_ERROR', { details: { stage: sensitiveText, resource: sensitiveText, statusCode: 503 } }))
+      await runtime.execute('video_generate', { creativeBrief: 'A product video' })
+      assert.deepEqual(records.at(-1), {
+        runId: 'run-a', tool: 'video_generate', toolCallId: 'call-a', exceptionType: 'AppError', code: 'INTERNAL_ERROR', httpStatus: 503,
+      })
+      assert.ok(!JSON.stringify(records).includes('private-key'))
+    } finally { restore() }
+  })
+
+  it('retains safe HTTP status from real video gateway errors', async () => {
+    for (const [statusCode, code] of [[429, 'RATE_LIMITED'], [503, 'SERVICE_UNAVAILABLE']] as const) {
+      const records: Array<Record<string, unknown>> = []
+      const restore = setLogSink(record => { records.push(record.fields) })
+      try {
+        const runtime = await sdk({}, new SepVideoGatewayError('VIDEO_UPSTREAM_ERROR', statusCode))
+        const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
+        assert.equal(JSON.parse(value(result)).error.code, code)
+        assert.equal(records.at(-1)?.httpStatus, statusCode)
+        assert.equal(records.at(-1)?.exceptionType, 'SepVideoGatewayError')
+      } finally { restore() }
+    }
+  })
   it('accepts real job and task queries with every billing state and preserves measured output metadata', async () => {
     for (const billingStatus of ['NOT_RESERVED', 'RESERVED', 'RECONCILING', 'SETTLED', 'RELEASED'] as const) {
       const measured = { ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }
@@ -154,7 +216,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       const runtime = await sdk({}, payload)
       const result = await runtime.execute('video_get_job', { jobId: 'job-a' })
       assert.deepEqual(result.details, { isError: true })
-      assert.equal(value(result), 'Video tool request failed.')
+      assert.equal(JSON.parse(value(result)).error.code, 'INTERNAL_ERROR')
     }
   })
   it('registers strict definitions independently of image tools and never advertises cancel', async () => {
@@ -333,7 +395,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
     ]) {
       const runtime = await sdk({}, result)
       const failure = await runtime.execute('video_get_job', { jobId: 'job-a' })
-      assert.equal(value(failure), 'Video tool request failed.')
+      assert.equal(JSON.parse(value(failure)).error.code, 'INTERNAL_ERROR')
       assert.deepEqual(failure.details, { isError: true })
       assert.deepEqual(await runtime.emit('tool_result', { toolName: 'video_get_job', details: failure.details }), [{ isError: true }])
       assert.deepEqual(await runtime.emit('tool_result', { toolName: 'video_unknown', details: failure.details }), [undefined])

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
-import { videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
+import { videoReceiptSchema, videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
 import type { VideoGenerationInput } from '../../src/shared/video-host'
 import { VideoStore } from '../data/video-store'
 import { MockVideoMediaGateway, type MockVideoScenario } from '../data/mock-video-media-gateway'
@@ -14,6 +14,8 @@ import type { VideoScope } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 import { VideoRunService } from './video-run-service'
+import { EmployeeAuthorizer } from './employee-authorizer'
+import { EmployeeDirectory } from './employee-directory'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -28,13 +30,14 @@ async function setup(scenario: MockVideoScenario = 'success') {
   directories.push(root)
   const store = new VideoStore(root), gateway = new MockVideoMediaGateway(scenario)
   const state = { revision: 0, runtime: videoRuntimeSchema.parse(fixture.runtime), granted: true, subscriptionId: scope.subscriptionId,
-    policy: undefined as Parameters<VideoRunPort['prepareRun']>[0]['toolPolicy'], uploads: 0 }
+    policy: undefined as Parameters<VideoRunPort['prepareRun']>[0]['toolPolicy'], uploads: 0, authorizations: 0 }
   const approvals: Parameters<MockVideoHostOptions['requestApproval']>[0][] = []
   const options: MockVideoHostOptions = {
     mock: true, scope: { currentScope: () => ({ enterpriseId: scope.enterpriseId, memberId: scope.memberId }) }, store,
     authorizationRevision: () => state.revision,
     getTask: async () => ({ subscriptionId: state.subscriptionId }),
-    authorize: async () => { if (!state.granted) throw new AppError('PERMISSION_DENIED'); return state.runtime },
+    authorize: async () => { state.authorizations++; if (!state.granted) throw new AppError('PERMISSION_DENIED'); return state.runtime },
+    authorizeRecovery: async () => { if (!state.granted) throw new AppError('PERMISSION_DENIED') },
     policy: async () => state.policy,
     gateway: owner => { assert.equal(owner.subscriptionId, scope.subscriptionId); return {
       quote: gateway.quote.bind(gateway), submit: gateway.submit.bind(gateway), findReceipt: gateway.findReceipt.bind(gateway),
@@ -79,6 +82,7 @@ test('run resolves the authorized profile and defaults without model-supplied co
     assert.equal(f.approvals.length, 2)
     await f.service.waitForRun('task-a', 'run-a')
     assert.equal(f.gateway.calls.submit, 1)
+    assert.equal(f.state.authorizations, 2, 'Only quote preparation and the post-approval check refresh runtime')
   } finally { await f.service.finishRun('task-a', 'run-a') }
 })
 
@@ -101,13 +105,68 @@ test('an empty video status query returns current video profiles and task-local 
   const service = new VideoRunService(f.options)
   const tools = await service.prepareRun(f.runInput)
   assert.ok(tools)
+  f.state.granted = false
   try {
     const result = await tools.execute('video_get_job', {}) as { runtime: unknown; jobs: unknown[]; referenceAssets: { localAssetId: string }[] }
     assert.deepEqual(result.runtime, f.state.runtime)
     assert.deepEqual(result.jobs, [])
     assert.equal(result.referenceAssets[0].localAssetId, 'asset-a')
     assert.equal(f.gateway.calls.submit, 0)
+    assert.equal(f.state.authorizations, 0, 'Local queries work without online authorization')
   } finally { await service.finishRun('task-a', 'run-a') }
+})
+
+test('text-to-video uses lightweight runtime authorization twice and never prepares skills', async () => {
+  const f = await setup()
+  f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, tools: ['video_generate', 'video_get_job'],
+    profiles: f.state.runtime.profiles.map(profile => ({ ...profile, operations: ['text-to-video'],
+      capabilities: { ...profile.capabilities, supportsTextToVideo: true, supportsImageToVideo: false } })) })
+  f.runInput.employee.video = f.state.runtime
+  const directory = new EmployeeDirectory(async () => [{
+    id: scope.subscriptionId, subscriptionId: scope.subscriptionId, employeeId: 'employee-a', name: 'Creator', status: 'ACTIVE',
+    templateVersion: '1', template: { id: 'employee-a', name: 'Creator', avatar: null },
+    allowedModels: [], department: null, upgradeAvailable: false,
+  }])
+  const authorizer = new EmployeeAuthorizer({ getValidAccessToken: async () => 'mock-token', getMeta: () => scope }, directory, {
+    prepare: async () => { assert.fail('Video execution must not download skills') }, invalidate() {},
+  }, 'mock://no-network', {
+    getRuntime: async () => ({ manifestVersion: 1, subscriptionId: scope.subscriptionId, templateVersion: '1',
+      employee: { id: 'employee-a', name: 'Creator', version: '1', maxSteps: 10 },
+      runtime: { modelId: 'retired-chat-model', allowedModels: [], systemPrompt: '', skills: [], video: f.state.runtime } }),
+  })
+  let quotes = 0, submissions = 0
+  const service = new VideoRunService({ ...f.options,
+    authorize: async id => { f.state.authorizations++; return (await authorizer.authorizeRuntime(id))?.video },
+    gateway: () => ({ ...f.options.gateway(scope),
+      quote: async request => {
+        quotes++
+        assert.equal(request.operation, 'text-to-video')
+        assert.deepEqual(request.referenceIds, [])
+        assert.deepEqual(request.parameters, input().parameters)
+        return { quoteId: 'text-quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.000000', currency: 'MOCK' }
+      },
+      submit: async request => {
+        submissions++
+        assert.equal(f.state.authorizations, 2)
+        assert.equal((await f.store.listJobs(scope))[0].submission, 'MAYBE_SENT')
+        return videoReceiptSchema.parse({ ...fixture.receipt, clientRequestId: request.clientRequestId, operation: request.operation,
+          status: 'SUCCEEDED', pollAfterMs: null, recovery: { canQuery: false, canCancel: false, canDownload: true },
+          outputs: [{ ...fixture.output, expiresAt: new Date(Date.now() + 60_000).toISOString() }] })
+      },
+      content: async () => (async function* () { yield Buffer.from(fixture.mediaFixture.base64, 'base64') })(),
+    }),
+  })
+  try {
+    const tools = await service.prepareRun(f.runInput)
+    assert.ok(tools)
+    const result = await tools.execute('video_generate', { creativeBrief: 'A product video' }) as { jobId: string }
+    await service.waitForRun('task-a', 'run-a')
+    assert.equal(f.state.authorizations, 2)
+    assert.equal(quotes, 1)
+    assert.equal(submissions, 1)
+    assert.equal(f.state.uploads, 0)
+    assert.equal((await f.store.getJob(scope, 'task-a', result.jobId))?.saveStatus, 'SAVED')
+  } finally { await service.stopAll() }
 })
 
 test('real run cannot finish a saved video while billing is reconciling and restores original billing on a later run', async () => {

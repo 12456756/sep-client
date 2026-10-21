@@ -24,7 +24,7 @@ import { videoBillingStatusSchema, videoOutputSchema, videoParametersSchema, vid
 import { mediaToolGenerationInputSchema } from '../../../src/shared/media-host'
 import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId } from '../../common/platform/media-contract'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
-import { videoToolFailureFrom } from '../../errors/video-tool-error'
+import { videoToolFailureDiagnostic, videoToolFailureFrom } from '../../errors/video-tool-error'
 import { AppError } from '../../errors/app-error'
 import type {
   PiAgentEvent,
@@ -173,12 +173,20 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
           return { content: [{ type: 'text', text: redactText(text, 65_536) }], details: { isError: false } }
         } catch (error) {
           // Neither validation diagnostics nor transport errors may echo the Pi prompt or host internals.
-          const business = !signal?.aborted && videoToolFailureFrom(error)
-          if (business) {
-            log.warn('video tool rejected', { tool: name, code: business.error.code })
-            return failure(JSON.stringify(business))
-          }
-          return failure(signal?.aborted ? 'Video tool request cancelled.' : 'Video tool request failed.')
+          if (signal?.aborted) return failure('Video tool request cancelled.')
+          const business = videoToolFailureFrom(error)
+          const diagnostic = videoToolFailureDiagnostic(error)
+          log.warn('video tool rejected', {
+            runId: config.runId,
+            toolCallId: _toolCallId,
+            tool: name,
+            exceptionType: diagnostic.exceptionType,
+            code: diagnostic.code,
+            ...(diagnostic.httpStatus === undefined ? {} : { httpStatus: diagnostic.httpStatus }),
+            ...(diagnostic.resource === undefined ? {} : { resource: diagnostic.resource }),
+            ...(diagnostic.stage === undefined ? {} : { stage: diagnostic.stage }),
+          })
+          return failure(JSON.stringify(business))
         }
       },
     } satisfies ToolDefinition

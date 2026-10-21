@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto'
 import type { z } from 'zod'
-import { videoGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../src/shared/video-host'
+import { videoGenerationInputSchema, videoToolGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../src/shared/video-host'
+import { videoFormParameters } from '../../src/shared/media-view'
 import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
@@ -14,6 +15,7 @@ import { VideoService } from './video-service'
 import { VideoTracker, type VideoTrackerOptions } from './video-tracker'
 
 type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
+type GenerationRun = { runId: string; requestApproval: Approval }
 const log = logger.child('mock-video-host')
 // Run and IPC hosts share the same task persistence. An instance-local gate
 // cannot protect a task while approval, upload or submit is still in flight.
@@ -157,7 +159,7 @@ export class MockVideoHostService {
         this.assert(scope, epoch, signal)
         await abortableVideo(this.options.authorizeRecovery(scope.subscriptionId, signal), signal)
         this.assert(scope, epoch, signal)
-      } else await this.runtime(scope, epoch, signal, execution)
+      } else if (!execution) await this.runtime(scope, epoch, signal, false)
       const current = await this.task(taskId, signal)
       if (JSON.stringify(current.scope) !== JSON.stringify(scope) || revision !== revisionNow()) throw new AppError('AUTH_REQUIRED')
       const result = await abortableVideo(call(signal, revision), signal)
@@ -168,11 +170,7 @@ export class MockVideoHostService {
     const gateway: VideoGatewayPort = {
       quote: (input, signal) => authorized(signal, bounded => source.quote(input, bounded)),
       submit: (input, signal) => authorized(signal, async (bounded, revision) => {
-        const runtime = await this.runtime(scope, epoch, bounded)
-        this.profile(runtime, { ...input, localAssetIds: input.referenceIds }, input.configVersion)
-        const job = (await this.options.store.listJobs(scope)).find(job => job.request.clientRequestId === input.clientRequestId)
-        if (!job || (job.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real')) throw new AppError('NOT_FOUND')
-        const dispatch = await this.sideEffect(scope, epoch, job.taskId, input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate', bounded, revision)
+        const dispatch = await this.sideEffect(scope, epoch, taskId, input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate', bounded, revision)
         dispatch()
         return source.submit(input, bounded)
       }),
@@ -379,10 +377,30 @@ export class MockVideoHostService {
     if (!output || asset?.status !== 'SAVED') throw new AppError('NOT_FOUND')
     return output
   }
-  async generate(taskId: string, value: VideoGenerationInput, parent?: AbortSignal, run?: { runId: string; requestApproval: Approval }): Promise<VideoJobView> {
+  async generate(taskId: string, value: VideoGenerationInput, parent?: AbortSignal, run?: GenerationRun): Promise<VideoJobView> {
+    const input = videoGenerationInputSchema.parse(value)
+    return this.generateRequest(taskId, () => input, parent, run)
+  }
+  async generateTool(taskId: string, name: 'video_generate' | 'video_from_image', raw: unknown, parent?: AbortSignal, run?: GenerationRun): Promise<VideoJobView> {
+    const parsed = videoToolGenerationInputSchema.safeParse(raw)
+    if (!parsed.success) throw new AppError('INVALID_ARGUMENT')
+    const request = parsed.data
+    const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
+    if (request.operation !== undefined && request.operation !== operation || request.localAssetIds.length !== (operation === 'image-to-video' ? 1 : 0)) throw new AppError('INVALID_ARGUMENT')
+    return this.generateRequest(taskId, runtime => {
+      const profiles = runtime.profiles.filter(profile => profile.operations.includes(operation) &&
+        (operation === 'image-to-video' ? profile.capabilities.supportsImageToVideo : profile.capabilities.supportsTextToVideo))
+      const profile = request.profileId ? profiles.find(profile => profile.profileId === request.profileId)
+        : profiles.find(profile => profile.profileId === runtime.defaultProfileId) ?? profiles[0]
+      if (!profile) throw new AppError('PERMISSION_DENIED')
+      const parameters = videoFormParameters(runtime, profile, request.parameters)
+      if (!parameters || Object.entries(request.parameters ?? {}).some(([key, value]) => parameters[key as keyof typeof parameters] !== value)) throw new AppError('INVALID_ARGUMENT')
+      return { ...request, profileId: profile.profileId, operation, parameters }
+    }, parent, run)
+  }
+  private async generateRequest(taskId: string, resolve: (runtime: VideoRuntime) => VideoGenerationInput, parent?: AbortSignal, run?: GenerationRun): Promise<VideoJobView> {
     const signal = this.signal(taskId, parent)
     const revision = this.options.authorizationRevision()
-    const input = videoGenerationInputSchema.parse(value)
     return this.operation(taskId, async () => {
       const owner = requireScope(this.options.scope)
       const key = JSON.stringify([owner.enterpriseId, owner.memberId, taskId])
@@ -390,6 +408,7 @@ export class MockVideoHostService {
       submissions.add(key)
       try {
         const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
+        const input = resolve(runtime)
         const jobs = await context.service.listJobs()
         this.assert(scope, epoch, signal)
         if (jobs.some(job => job.taskId === taskId && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
@@ -427,9 +446,9 @@ export class MockVideoHostService {
           mock: this.options.mock, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt,
             ...(!this.options.mock ? { amountUsd: job.quote.amountUsd, funding: job.quote.funding, pricingVersion: job.quote.pricingVersion } : {}) } })
         // Approval is for the captured task/subscription and frozen configuration only.
+        this.profile(await this.runtime(scope, epoch, signal), input, profile.configVersion)
         const current = await this.task(taskId, signal)
         if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
-        this.profile(await this.runtime(scope, epoch, signal), input, profile.configVersion)
         if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
         const submitted = await context.service.submit(taskId, job.jobId, signal)
         this.assert(scope, epoch, signal)
