@@ -253,15 +253,28 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
       <div className="login-container">
         <div className="login-card">
-          <div className="login-card-header">
-            <div className="login-logo">
-              <img src={logoImage} alt="硅基员工平台" />
+          <section className="login-brand-panel" aria-label="硅基员工平台">
+            <div className="login-brand-content">
+              <img className="login-brand-image" src={logoImage} alt="硅基员工平台标志" />
+              <p className="login-brand-name">硅基员工平台</p>
+              <h1>让每一位员工，<br /><span>都有一个 AI 同行者</span></h1>
+              <p className="login-brand-values">
+                <span>AI 驱动</span><i aria-hidden="true">·</i>
+                <span>智能协作</span><i aria-hidden="true">·</i>
+                <span>安全可信</span>
+              </p>
             </div>
-            <h1 className="login-title">硅基员工平台</h1>
-            <p className="login-subtitle">数字员工 AI 工作台</p>
-          </div>
+          </section>
 
-          <form onSubmit={handleSubmit} className="login-form">
+          <section className="login-form-panel">
+            <div className="login-form-shell">
+              <header className="login-card-header">
+                <p className="login-form-eyebrow">欢迎回来</p>
+                <h2 className="login-title">登录硅基员工平台</h2>
+                <p className="login-subtitle">进入你的数字员工工作台</p>
+              </header>
+
+              <form onSubmit={handleSubmit} className="login-form">
             <div ref={accountPickerRef} className="login-field">
               <div className="login-field-label-row">
                 <label htmlFor="login-email">邮箱</label>
@@ -423,12 +436,14 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 </>
               )}
             </button>
-          </form>
+              </form>
 
-          <footer className="login-form-footer">
-            <ShieldCheck size={14} strokeWidth={1.8} aria-hidden="true" />
-            <span>你的数据将通过安全连接传输</span>
-          </footer>
+              <footer className="login-form-footer">
+                <ShieldCheck size={14} strokeWidth={1.8} aria-hidden="true" />
+                <span>你的数据将通过安全连接传输</span>
+              </footer>
+            </div>
+          </section>
         </div>
       </div>
     </main>

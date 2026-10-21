@@ -10,13 +10,18 @@ describe('speech media permission boundary', () => {
     let request!: NonNullable<Parameters<Session['setPermissionRequestHandler']>[0]>
     let enabled = false
     let stops = 0
+    let blurStops = 0
     const url = 'file:///trusted/index.html'
     const contents = Object.assign(new EventEmitter(), { getURL: () => url, session: {
       setPermissionCheckHandler: (callback: typeof check) => { check = callback },
       setPermissionRequestHandler: (callback: typeof request) => { request = callback },
     } })
     const window = Object.assign(new EventEmitter(), { isDestroyed: () => false, webContents: contents })
-    installSpeechPermissions(window as unknown as BrowserWindow, url, { canUseMicrophone: () => enabled, stop: () => { stops++ } })
+    installSpeechPermissions(window as unknown as BrowserWindow, url, {
+      canUseMicrophone: () => enabled,
+      stop: () => { stops++ },
+      stopForWindowBlur: () => { blurStops++ },
+    })
     const owner = contents as unknown as WebContents
     const audio = { isMainFrame: true, mediaType: 'audio' } as const
     assert.equal(check(owner, 'media', '', audio), false)
@@ -34,7 +39,8 @@ describe('speech media permission boundary', () => {
     window.emit('blur')
     window.emit('closed')
     contents.emit('render-process-gone')
-    assert.equal(stops, 3)
+    assert.equal(blurStops, 1)
+    assert.equal(stops, 2)
     let prevented = false
     contents.emit('will-navigate', { preventDefault: () => { prevented = true } }, 'https://untrusted.invalid')
     assert.equal(prevented, true)

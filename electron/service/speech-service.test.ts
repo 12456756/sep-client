@@ -172,6 +172,24 @@ describe('speech authorization and session isolation', () => {
     await pending
     assert.equal(f.permission, 'prompt')
   })
+
+  it('keeps a consent result when the window blurs while the dialog is open', async () => {
+    const f = fixture()
+    let allow!: (value: boolean) => void
+    const pending = f.service.setEnabled(true, () => new Promise(resolve => { allow = resolve }))
+    await new Promise(resolve => setImmediate(resolve))
+    f.service.stopForWindowBlur()
+    allow(true)
+    assert.equal(await pending, 'granted')
+    assert.equal(f.permission, 'granted')
+  })
+
+  it('still stops an active recording when the window blurs', async () => {
+    const f = fixture('granted')
+    await f.service.begin('a', f.ask)
+    f.service.stopForWindowBlur()
+    assert.equal(f.service.canUseMicrophone(), false)
+  })
 })
 
 describe('macOS speech service authorization', () => {

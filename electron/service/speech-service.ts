@@ -146,4 +146,14 @@ export class SpeechService {
     this.active = null
     this.options.stopRuntime()
   }
+
+  /**
+   * Window blur must stop capture, but it must not invalidate a consent dialog
+   * opened by the settings page. Electron can emit blur while that dialog is
+   * visible, before the user's choice is returned.
+   */
+  stopForWindowBlur(): void {
+    if (this.prompting) return
+    this.stop()
+  }
 }
