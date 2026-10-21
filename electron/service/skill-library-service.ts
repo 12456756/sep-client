@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
-import { AuthApiError, SkillSubmissionResponseError, type EmployeeSkill, type PersonalSkillVersionRequest, type SkillVersion } from '../common/platform/platform-api'
+import { z } from 'zod'
+import { AuthApiError, SkillSubmissionResponseError, type PersonalSkillVersionRequest, type SkillVersion } from '../common/platform/platform-api'
+import { skillVersionSchema } from '../../src/shared/platform-supplement-contracts'
 import { canUseSkillVersion } from '../common/platform/skill-version-policy'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
@@ -10,7 +12,7 @@ import type { SkillSubmissionStore } from '../data/skill-submission-store'
 import type { LocalSkillSubmission, SaveSkillInput, SaveSkillResult, SkillLibraryItem } from '../../src/shared/skill-library'
 
 interface SkillPlatform {
-  skills(employeeId: string, token: string): Promise<{ subscriptionId: string; skills: { capability: EmployeeSkill['capability']; currentVersion: SkillVersion; versions: SkillVersion[] }[] }>
+  skills(employeeId: string, token: string): Promise<unknown>
   list(input: { capabilityId: string }, token: string, signal?: AbortSignal): Promise<SkillVersion[]>
   preview(versionId: string, token: string): Promise<{ content: string }>
   create(input: PersonalSkillVersionRequest, key: string, token: string): Promise<SkillVersion>
@@ -24,6 +26,16 @@ interface Options {
   platform: SkillPlatform
 }
 const log = logger.child('skill-library')
+const libraryIdSchema = z.string().min(1).refine(id => id.trim().length > 0)
+const libraryVersionSchema = skillVersionSchema.extend({ id: libraryIdSchema, capabilityId: libraryIdSchema })
+const libraryEntrySchema = z.object({
+  capability: z.object({ id: libraryIdSchema, name: z.string(), description: z.string(), type: z.string() }),
+  currentVersion: libraryVersionSchema.nullable(),
+  versions: z.array(libraryVersionSchema),
+}).refine(skill => [skill.currentVersion, ...skill.versions].every(version => !version || version.capabilityId === skill.capability.id), {
+  path: ['versions'], message: 'Skill version capability mismatch',
+})
+const libraryCatalogSchema = z.object({ subscriptionId: z.string().min(1), skills: z.array(z.unknown()) })
 
 export class SkillLibraryService {
   private snapshot: { scope: TaskOwnerScope; items: SkillLibraryItem[] } | null = null
@@ -35,25 +47,43 @@ export class SkillLibraryService {
   }
 
   async list(): Promise<SkillLibraryItem[]> {
+    return (await this.listWithDiagnostics()).items
+  }
+
+  async listWithDiagnostics(): Promise<{ items: SkillLibraryItem[]; skippedCount: number }> {
     const scope = requireScope(this.options.scope)
     const token = await this.options.token()
     const subscriptions = await this.options.subscriptions()
     const catalogs = await Promise.all(subscriptions.map(async subscription => {
-      const response = await this.options.platform.skills(subscription.employeeId, token)
+      const response = libraryCatalogSchema.parse(await this.options.platform.skills(subscription.employeeId, token))
       if (response.subscriptionId !== subscription.subscriptionId) throw new Error('员工技能与订阅不匹配。')
       return { subscription, skills: response.skills }
     }))
     this.checkScope(scope)
     const items = new Map<string, SkillLibraryItem>()
+    let skippedCount = 0
     for (const { subscription, skills } of catalogs) {
-      for (const skill of skills) {
+      for (const [index, raw] of skills.entries()) {
+        const parsed = libraryEntrySchema.safeParse(raw)
+        if (!parsed.success) {
+          skippedCount++
+          const capability = z.object({ capability: z.object({ id: z.string() }) }).safeParse(raw)
+          log.warn('skill library entry skipped', {
+            employeeId: subscription.employeeId, subscriptionId: subscription.subscriptionId,
+            index, capabilityId: capability.success ? capability.data.capability.id : undefined,
+            issuePaths: parsed.error.issues.slice(0, 8).map(issue => issue.path.join('.')),
+            issueCodes: parsed.error.issues.slice(0, 8).map(issue => issue.code),
+          })
+          continue
+        }
+        const skill = parsed.data
         const previous = items.get(skill.capability.id)
         const selected = await this.options.versions.selected(scope, subscription.subscriptionId, skill.capability.id)
         const local = selected ? await this.options.versions.load(scope, subscription.subscriptionId, skill.capability.id, selected) : null
-        const versions = [...new Map([...(previous?.versions ?? []), skill.currentVersion, ...skill.versions].map(version => [version.id, version])).values()]
+        const versions = [...new Map([...(previous?.versions ?? []), ...(skill.currentVersion ? [skill.currentVersion] : []), ...skill.versions].map(version => [version.id, version])).values()]
         items.set(skill.capability.id, {
           capability: skill.capability, versions, usableVersionIds: [], localVersions: [],
-          bindings: [...(previous?.bindings ?? []), { ...subscription, currentVersion: skill.currentVersion, selectedVersionId: local?.localSubmissionId ?? local?.baseSkillVersionId ?? skill.currentVersion.id }],
+          bindings: [...(previous?.bindings ?? []), { ...subscription, currentVersion: skill.currentVersion, selectedVersionId: local?.localSubmissionId ?? local?.baseSkillVersionId ?? skill.currentVersion?.id ?? null }],
         })
       }
     }
@@ -73,7 +103,7 @@ export class SkillLibraryService {
     }))
     this.checkScope(scope)
     this.snapshot = { scope: { ...scope }, items: result }
-    return result
+    return { items: result, skippedCount }
   }
 
   private async authorized(capabilityId: string): Promise<{ item: SkillLibraryItem; scope: TaskOwnerScope; token: string }> {

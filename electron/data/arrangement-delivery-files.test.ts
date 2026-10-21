@@ -1,13 +1,13 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile, symlink, open } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, readFile, symlink, open } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { constants } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync, strToU8 } from 'fflate'
 import { PDFDocument } from 'pdf-lib'
-import { validateDeliveryFiles, revalidateDeliveryFiles } from './arrangement-delivery-files'
+import { validateDeliveryFiles, revalidateDeliveryFiles, resolveDeliveryFiles } from './arrangement-delivery-files'
 import type { ArrangementNode } from '../domain/arrangement-plan'
 
 const roots: string[] = []
@@ -42,6 +42,76 @@ function officePackage(format: 'docx' | 'xlsx' | 'pptx'): Uint8Array {
 }
 
 describe('final delivery file validation', () => {
+  it('freezes accepted bytes outside the workspace and uses them after the visible file changes or disappears', async () => {
+    const f = await fixture()
+    const taskDirectory = await mkdtemp(join(tmpdir(), 'sep-delivery-data-'))
+    roots.push(taskDirectory)
+    await writeFile(f.file, 'Original findings')
+    const result = await validateDeliveryFiles(f.root, f.node, f.submission, 'run-a', undefined, { taskDirectory })
+    assert.ok(result.ok)
+    assert.equal(result.files[0]!.snapshot?.source, 'confirmed')
+    for (const removed of [false, true]) {
+      if (removed) await rm(f.file)
+      else await writeFile(f.file, 'Re-saved workspace file')
+      const resolved = await resolveDeliveryFiles(f.root, result.files, undefined, { taskDirectory, allowWorkspaceChanges: true })
+      assert.deepEqual(resolved.issues, [])
+      assert.equal(await readFile(resolved.readPaths[0]!, 'utf8'), 'Original findings')
+      assert.ok(!resolved.readPaths[0]!.startsWith(f.root))
+      assert.deepEqual(resolved.files, result.files)
+    }
+  })
+
+  it('recovers a legacy Office file with changed bytes while preserving its original receipt and recording the new version', async () => {
+    const f = await fixture('xlsx')
+    await writeFile(f.file, officePackage('xlsx'))
+    const original = await validateDeliveryFiles(f.root, f.node, f.submission, 'old-run')
+    assert.ok(original.ok)
+    const files = original.files
+    const entries = { ...Object.fromEntries(Object.entries((await import('fflate')).unzipSync(await readFile(f.file)))),
+      'docProps/core.xml': strToU8('<properties><modified>updated</modified></properties>') }
+    await writeFile(f.file, zipSync(entries))
+    const taskDirectory = join(f.root, 'task-data')
+    const recovered = await resolveDeliveryFiles(f.root, files, undefined, { taskDirectory, allowWorkspaceChanges: true })
+    assert.deepEqual(recovered.issues, [])
+    assert.equal(recovered.warnings[0]?.code, 'LEGACY_DELIVERY_UPDATED')
+    assert.equal(recovered.files[0]!.sha256, files[0]!.sha256)
+    assert.equal(recovered.files[0]!.snapshot?.source, 'workspace-recovery')
+    assert.notEqual(recovered.files[0]!.snapshot?.sha256, files[0]!.sha256)
+    assert.equal(files[0]!.snapshot, undefined, 'must not mutate the existing checkpoint')
+    await writeFile(f.file, 'now corrupt')
+    const retried = await resolveDeliveryFiles(f.root, recovered.files, undefined, { taskDirectory, allowWorkspaceChanges: true })
+    assert.deepEqual(retried.issues, [])
+    assert.deepEqual(retried.files, recovered.files)
+    assert.deepEqual(await readFile(retried.readPaths[0]!), await readFile(recovered.readPaths[0]!))
+  })
+
+  it('never falls back to a changed working file when a registered snapshot is corrupt or missing', async () => {
+    const f = await fixture()
+    const taskDirectory = join(f.root, 'task-data')
+    await writeFile(f.file, 'Original')
+    const accepted = await validateDeliveryFiles(f.root, f.node, f.submission, 'run', undefined, { taskDirectory })
+    assert.ok(accepted.ok)
+    const resolved = await resolveDeliveryFiles(f.root, accepted.files, undefined, { taskDirectory })
+    await writeFile(resolved.readPaths[0]!, 'corrupt snapshot')
+    assert.ok((await resolveDeliveryFiles(f.root, accepted.files, undefined, { taskDirectory, allowWorkspaceChanges: true })).issues.length)
+    await rm(resolved.readPaths[0]!)
+    assert.ok((await resolveDeliveryFiles(f.root, accepted.files, undefined, { taskDirectory, allowWorkspaceChanges: true })).issues.length)
+  })
+
+  it('still rejects missing, empty, corrupt Office and unsafe legacy files in compatibility mode', async () => {
+    const f = await fixture('xlsx')
+    await writeFile(f.file, officePackage('xlsx'))
+    const accepted = await validateDeliveryFiles(f.root, f.node, f.submission, 'run')
+    assert.ok(accepted.ok)
+    for (const content of ['', 'not an Excel file']) {
+      await writeFile(f.file, content)
+      assert.ok((await resolveDeliveryFiles(f.root, accepted.files, undefined, { taskDirectory: join(f.root, 'data'), allowWorkspaceChanges: true })).issues.length)
+    }
+    await rm(f.file)
+    assert.ok((await resolveDeliveryFiles(f.root, accepted.files, undefined, { allowWorkspaceChanges: true })).issues.length)
+    await assert.rejects(resolveDeliveryFiles(f.root, accepted.files, AbortSignal.abort(), { allowWorkspaceChanges: true }), { name: 'AbortError' })
+  })
+
   it('registers real final files and detects later mutation or removal', async () => {
     const f = await fixture()
     await writeFile(f.file, 'Findings: market opportunity')

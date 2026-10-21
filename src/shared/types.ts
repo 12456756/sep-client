@@ -394,6 +394,7 @@ export interface ArrangementFinalFileSnapshot {
   sha256: string
   nodeRunId: string
   validatedAt: number
+  snapshot?: { sha256: string; size: number; source: 'confirmed' | 'workspace-recovery' }
 }
 
 export interface ArrangementNodeExecutionSnapshot {

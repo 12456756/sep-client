@@ -9,6 +9,7 @@ const FOCUS_REFRESH_COOLDOWN_MS = 30_000;
 export function useSkillLibrary(scopeKey: string, enabled = true) {
   const [skills, setSkills] = useState<SkillLibraryItem[]>([]);
   const [skillsLoading, setLoading] = useState(enabled);
+  const [skillsWarning, setSkillsWarning] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<SkillLoadError | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const generation = useRef(0);
@@ -40,6 +41,7 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
         }
         if (generation.current === request) {
           setSkills(result.data);
+          setSkillsWarning(result.skippedCount ? '部分技能数据异常，已跳过；其他技能仍可正常使用。' : null);
           loadErrorRef.current = null;
           setLoadError(null);
         }
@@ -65,6 +67,7 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
 
   useEffect(() => {
     setSkills([]);
+    setSkillsWarning(null);
     setLoading(false);
     loadErrorRef.current = null;
     setLoadError(null);
@@ -142,6 +145,7 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
   return {
     skills,
     skillsLoading,
+    skillsWarning,
     skillsError,
     skillsErrorKind: (loadError?.kind ?? null) as SkillLoadErrorKind | null,
     skillsRetrySeconds,

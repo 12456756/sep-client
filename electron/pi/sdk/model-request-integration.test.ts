@@ -13,7 +13,7 @@ import { setLogLevel, setLogSink, type LogRecord } from '../../common/logger'
 let restoreLog: (() => void) | undefined
 afterEach(() => { restoreLog?.(); restoreLog = undefined; setLogLevel('debug') })
 
-interface RequestBody { messages: Array<{ role: string; content: string }>; max_tokens?: number }
+interface RequestBody { messages: Array<{ role: string; content: string }>; max_tokens?: number; max_completion_tokens?: number }
 
 const gatewayRequestSchema = z.object({
   model: z.string(),
@@ -25,7 +25,6 @@ const gatewayRequestSchema = z.object({
     tool_call_id: z.string().optional(),
     name: z.string().optional(),
   }).strict()),
-  max_tokens: z.number().int().positive(),
   stream: z.literal(true),
   stream_options: z.object({ include_usage: z.literal(true) }).strict(),
   temperature: z.number().optional(),
@@ -134,7 +133,10 @@ describe('real SDK model request awareness', () => {
         assert.match(outcome.result?.summary ?? '', /preserve the completed research/)
       }
       const finalRequest = f.requests.at(-1)!
-      assert.ok((finalRequest.max_tokens ?? 0) > 1, 'Execution after compaction must have output space')
+      for (const request of f.requests) {
+        assert.equal('max_tokens' in request, false, 'Execution and compaction must use the platform budget')
+        assert.equal('max_completion_tokens' in request, false)
+      }
       assert.match(finalRequest.messages.find(message => message.role === 'system')!.content, /Fixed node contract/)
       assert.ok(finalRequest.messages.some(message => message.content?.includes('preserve the completed research')))
       assert.equal(f.progress()?.executionRounds, overflow ? 2 : 3)
@@ -149,7 +151,8 @@ describe('real SDK model request awareness', () => {
     const overview = f.logs.find(record => record.message === 'model request overview')!
     assert.equal(overview.level, 'info')
     assert.equal(overview.fields.runId, 'run')
-    assert.equal(typeof overview.fields.outputLimit, 'number')
+    assert.equal(overview.fields.outputLimit, undefined)
+    assert.equal(overview.fields.outputBudgetSource, 'platform')
     assert.equal(overview.fields.includeUsage, true)
     const requestId = overview.fields.requestId
     const user = f.logs.find(record => record.message === 'model input added: user')!
@@ -222,8 +225,27 @@ describe('real SDK model request awareness', () => {
     assert.equal(thinking[0]!.fields.runId, completed[0]!.fields.runId)
     assert.equal(thinking[0]!.fields.requestId, completed[0]!.fields.requestId)
     assert.ok(f.logs.indexOf(thinking[0]!) < f.logs.indexOf(bodies[0]!))
-    assert.deepEqual(f.requests.map(request => request.max_tokens), [4096, 4096])
+    assert.ok(f.requests.every(request => !('max_tokens' in request) && !('max_completion_tokens' in request)))
   })
+
+  for (const finishReason of ['stop', 'length']) {
+    it(`accepts output beyond 4096 and preserves the platform ${finishReason} reason`, { timeout: 30_000 }, async t => {
+      const text = 'Full output. '.repeat(500)
+      const f = await fixture(t, (_body, response) => {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        chunk(response, { role: 'assistant', content: text })
+        chunk(response, {}, finishReason)
+        response.end(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 6000, total_tokens: 6010 } })}\n\ndata: [DONE]\n\n`)
+      })
+      await f.session.prompt('Produce the complete result.')
+      assert.deepEqual(f.payloadErrors, [])
+      const completed = f.logs.find(record => record.message === 'model response completed')!
+      assert.equal(completed.fields.contentLength, text.length)
+      assert.equal(completed.fields.stopReason, finishReason)
+      assert.equal((completed.fields.usage as { output: number }).output, 6000)
+      assert.equal(f.logs.find(record => record.message === 'model response content')!.fields.content, text)
+    })
+  }
 
   it('logs only newly added inputs and responses while preserving the full provider context', { timeout: 30_000 }, async t => {
     let turn = 0

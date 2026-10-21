@@ -10,6 +10,7 @@ export interface TaskToolPolicy {
   commandPolicy: 'disabled' | 'restricted' | 'confirm-each'
   approvalMode: 'confirm-each' | 'auto-approve'
   workspaceDir: string
+  readableDeliveryPaths?: readonly string[]
 }
 
 export interface EmployeeRuntimeConfig {

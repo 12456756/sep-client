@@ -18,6 +18,11 @@ export const finalDeliveryFileSchema = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   nodeRunId: z.string().min(1).max(128),
   validatedAt: z.number().int().positive(),
+  snapshot: z.object({
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    size: z.number().int().positive().max(64 * 1024 * 1024),
+    source: z.enum(['confirmed', 'workspace-recovery']),
+  }).strict().optional(),
 }).strict()
 export type FinalDeliveryFile = z.infer<typeof finalDeliveryFileSchema>
 

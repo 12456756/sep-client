@@ -1,13 +1,13 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile, readdir, writeFile, lstat, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile, lstat, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadSkills } from '@earendil-works/pi-coding-agent'
 import type { SkillVersion } from '../../common/platform/platform-api'
 import { SkillVersionStore } from '../../data/skill-version-store'
-import { SkillStore } from './pi-skill-packages'
+import { SkillStore, publishSkillDirectory } from './pi-skill-packages'
 import type { EmployeeRuntimeSkill } from '../../common/platform/employee-runtime-contract'
 import type { SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 import { zipFixture, zipDescriptor } from './skill-package-zip.fixture'
@@ -20,6 +20,26 @@ const originalFetch = globalThis.fetch
 
 afterEach(() => {
   globalThis.fetch = originalFetch
+})
+
+describe('publishSkillDirectory', () => {
+  it('treats Windows EPERM as a collision only when the immutable target directory exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-skill-publish-'))
+    const source = join(root, '.staging')
+    const target = join(root, 'installed')
+    await mkdir(target)
+    const expected = new Error('EPERM') as NodeJS.ErrnoException
+    expected.code = 'EPERM'
+    let verified = false
+    await publishSkillDirectory(source, target, async () => { verified = true }, async () => { throw expected })
+    assert.equal(verified, true)
+
+    const missingTarget = join(root, 'missing')
+    await assert.rejects(
+      publishSkillDirectory(source, missingTarget, async () => {}, async () => { throw expected }),
+      error => error === expected,
+    )
+  })
 })
 
 function jsonResponse(value: unknown): Response {
@@ -185,8 +205,10 @@ describe('SkillStore', () => {
         assert.equal(envelope.code, 'SKILL_CONTENT_MISMATCH')
         assert.match(envelope.message, /技能/)
         assert.notEqual(envelope.message, '操作未能完成。')
-        assert.deepEqual(records[0]?.fields.details, { capabilityId: 'cap-a', versionId: 'version-v1', format: 'single-file' })
-        assert.equal(records[0]?.fields.code, 'SKILL_CONTENT_MISMATCH')
+        const failure = records.find(record => record.fields.code === 'SKILL_CONTENT_MISMATCH')
+        assert.deepEqual(failure?.fields.details, { capabilityId: 'cap-a', versionId: 'version-v1', format: 'single-file' })
+        const comparison = records.find(record => record.fields.approvedContentSha256 === runtime.artifact.approvedContentSha256)
+        assert.equal(comparison?.fields.entrySha256, runtime.artifact.entrySha256)
         assert.ok(error instanceof Error && error.cause instanceof Error)
         assert.equal(error.cause.message, 'Approved skill artifact content mismatch.')
         assert.doesNotMatch(JSON.stringify({ envelope, records }), /Private|access-token/)
@@ -234,6 +256,23 @@ describe('SkillStore', () => {
     await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [malicious] }), { code: 'SKILL_CONTENT_MISMATCH' })
   })
 
+  it('accepts a differently formatted legacy wrapper while retaining exact authenticated bytes', async () => {
+    const content = '# Approved instructions\r\n'
+    const wrapper = '---\nname: orders\ndescription: Platform generated summary\n---\n\n# Approved instructions\n'
+    const runtime = artifactFixture(wrapper)
+    runtime.content = content
+    runtime.artifact.approvedContentSha256 = createHash('sha256').update(content).digest('hex')
+    serveArtifact(runtime, { bytes: Buffer.from(wrapper) })
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+    assert.equal(await readFile(join(prepared.skillPaths[0], 'SKILL.md'), 'utf8'), wrapper)
+    assert.equal(prepared.skills[0].sha256, runtime.artifact.entrySha256)
+
+    runtime.content = '# Different instructions\n'
+    runtime.artifact.approvedContentSha256 = createHash('sha256').update(runtime.content).digest('hex')
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 }), { code: 'SKILL_CONTENT_MISMATCH' })
+  })
+
   it('installs exact approved bytes and reuses the authenticated package without another download', async () => {
     const runtime = artifactFixture()
     const downloads = serveArtifact(runtime)
@@ -271,8 +310,8 @@ describe('SkillStore', () => {
   it('does not retain a failed download and allows a later explicit preparation', async () => {
     const runtime = artifactFixture()
     const { skills } = await createStore()
-    const failed = serveArtifact(runtime, { status: 429 })
-    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), { statusCode: 429 })
+    const failed = serveArtifact(runtime, { status: 500 })
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), { statusCode: 500 })
     assert.equal(failed(), 1)
     const downloads = serveArtifact(runtime)
     await skills.prepare({ ...request(), runtimeSkills: [runtime] })
@@ -388,6 +427,42 @@ describe('SkillStore', () => {
     await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /integrity mismatch/)
     assert.equal(downloads(), 1)
   })
+
+  for (const changedOwner of [false, true]) {
+    it(`handles rate limiting during real skill preparation${changedOwner ? ' without resending after logout' : ' and installs after recovery'}`, async t => {
+      const runtime = artifactFixture()
+      serveArtifact(runtime)
+      const fetcher = globalThis.fetch
+      const { skills, versions } = await createStore()
+      t.mock.timers.enable({ apis: ['setTimeout'] })
+      let current = true
+      let calls = 0
+      let reached!: () => void
+      const limited = new Promise<void>(resolve => { reached = resolve })
+      globalThis.fetch = async (input, init) => {
+        if (String(input).endsWith('/artifact') && ++calls === 1) {
+          reached()
+          return new Response(null, { status: 429, headers: { 'Retry-After': '3' } })
+        }
+        return fetcher(input, init)
+      }
+      const pending = skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1, isCurrent: () => current })
+      const rejected = changedOwner ? assert.rejects(pending, /scope changed/) : null
+      await limited
+      await new Promise<void>(resolve => setImmediate(resolve))
+      current = !changedOwner
+      t.mock.timers.tick(3000)
+      if (rejected) {
+        await rejected
+        assert.equal(calls, 1)
+        assert.deepEqual(await versions.selections(scope, 'sub-a'), {})
+      } else {
+        const prepared = await pending
+        assert.equal(calls, 2)
+        assert.equal(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'), 'utf8'), runtime.content)
+      }
+    })
+  }
 
   it('refuses missing, BLOCKED, foreign, and mismatched approved artifacts without falling back', async () => {
     const runtime = artifactFixture()

@@ -1,13 +1,73 @@
 import { createHash } from 'node:crypto'
 import { Buffer } from 'node:buffer'
 import { config } from '../config'
+import { logger } from '../logger'
 import { AuthApiError } from './platform-api'
 import {
   maxSkillArtifactBytes, skillArtifactAvailableSchema, skillArtifactParamsSchema,
   skillArtifactDownloadPath, type AvailableDescriptor,
 } from './skill-artifact-contract'
 
-export async function downloadSkillArtifact(subscriptionId: string, artifact: AvailableDescriptor, accessToken: string): Promise<Buffer> {
+const MAX_RATE_LIMIT_RETRIES = 3
+const MAX_RETRY_WAIT_MS = 5 * 60_000
+
+export interface SkillArtifactDownloadOptions {
+  signal?: AbortSignal
+  assertCurrent?: () => void
+}
+
+function retryDelay(value: string | null, attempt: number): number {
+  if (value !== null && /^\d+(?:\.\d+)?$/.test(value.trim())) return Math.ceil(Number(value) * 1000)
+  // Date.parse also accepts some invalid numeric hints as calendar dates.
+  if (value && /[a-z]/i.test(value) && value.includes(',')) {
+    const date = Date.parse(value)
+    if (Number.isFinite(date)) return Math.max(0, date - Date.now())
+  }
+  return 2000 * 2 ** attempt
+}
+
+function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const cleanup = (): void => signal?.removeEventListener('abort', abort)
+    const abort = (): void => { clearTimeout(timer); cleanup(); reject(signal?.reason) }
+    const timer = setTimeout(() => { cleanup(); resolve() }, delayMs)
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
+  })
+}
+
+async function fetchArtifact(expected: AvailableDescriptor, accessToken: string, options: SkillArtifactDownloadOptions): Promise<Response> {
+  let waited = 0
+  for (let attempt = 0; ; attempt++) {
+    options.signal?.throwIfAborted()
+    options.assertCurrent?.()
+    const timeout = AbortSignal.timeout(30_000)
+    const response = await fetch(`${config.SEP_BASE_URL}${expected.downloadPath}`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      credentials: 'omit',
+      redirect: 'error',
+      signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+    })
+    if (response.status !== 429 || response.redirected) return response
+    // Release the rejected response before waiting; never read upstream error bodies.
+    await response.body?.cancel().catch(() => {})
+    options.signal?.throwIfAborted()
+    options.assertCurrent?.()
+    const delayMs = retryDelay(response.headers.get('Retry-After'), attempt)
+    if (attempt >= MAX_RATE_LIMIT_RETRIES || !Number.isFinite(delayMs) || waited + delayMs > MAX_RETRY_WAIT_MS) {
+      throw new AuthApiError({ statusCode: 429, message: '技能下载限流，自动等待重试仍未成功或等待时间超限，请稍后重试。' }, 'skills')
+    }
+    waited += delayMs
+    logger.child('skill-artifact').warn('skill artifact rate limited; waiting before retry', {
+      capabilityId: expected.capabilityId, versionId: expected.versionId,
+      statusCode: 429, retry: attempt + 1, maxRetries: MAX_RATE_LIMIT_RETRIES, delayMs,
+    })
+    await waitForRetry(delayMs, options.signal)
+  }
+}
+
+export async function downloadSkillArtifact(subscriptionId: string, artifact: AvailableDescriptor, accessToken: string, options: SkillArtifactDownloadOptions = {}): Promise<Buffer> {
   const descriptor = skillArtifactAvailableSchema.safeParse(artifact)
   const params = skillArtifactParamsSchema.safeParse({ subscriptionId, capabilityId: artifact?.capabilityId, versionId: artifact?.versionId })
   if (!descriptor.success || !params.success) throw new Error('Invalid skill artifact download descriptor.')
@@ -17,13 +77,7 @@ export async function downloadSkillArtifact(subscriptionId: string, artifact: Av
   }
   if (typeof accessToken !== 'string' || accessToken.trim().length === 0) throw new Error('Skill artifact access token is required.')
 
-  const response = await fetch(`${config.SEP_BASE_URL}${expected.downloadPath}`, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${accessToken}` },
-    credentials: 'omit',
-    redirect: 'error',
-    signal: AbortSignal.timeout(30_000),
-  })
+  const response = await fetchArtifact(expected, accessToken, options)
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   try {
     if (response.redirected || (response.status >= 300 && response.status < 400)) {

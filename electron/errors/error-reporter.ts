@@ -39,10 +39,15 @@ export function reportError(
   const { authenticated, ...fields } = context
   const result = toEnvelope(error, { authenticated })
   const spec = errorCodeSpec(result.code)
+  const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error
+    && typeof error.statusCode === 'number' && Number.isFinite(error.statusCode)
+    ? error.statusCode
+    : undefined
   const payload: LogFields = {
     ...fields,
     operation,
     code: result.code,
+    ...(statusCode === undefined ? {} : { statusCode }),
     cause: describeError(error),
     ...(error instanceof AppError && error.details ? { details: error.details } : {}),
   }

@@ -4,8 +4,10 @@
  * 方案要求归并三套原子写时**保留 task-store 的 `.bak` + quarantine 语义为默认行为**
  * 这些行为是数据层所有 JSON 存储共同依赖的持久化约束。
  */
-import { afterEach, describe, it } from 'node:test'
+import { afterEach, describe, it, type TestContext } from 'node:test'
 import * as assert from 'node:assert/strict'
+import { promises as fs } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -36,6 +38,13 @@ function parseOk(value: unknown): { ok: true; n: number } | null {
   return record?.ok === true && typeof record.n === 'number' ? { ok: true, n: record.n } : null
 }
 
+async function withRename(context: TestContext, implementation: typeof fs.rename, run: () => Promise<void>): Promise<void> {
+  const mocked = context.mock.method(fs, 'rename', implementation)
+  syncBuiltinESMExports()
+  try { await run() }
+  finally { mocked.mock.restore(); syncBuiltinESMExports() }
+}
+
 describe('writeJsonAtomic', () => {
   it('creates the file and its parent directories', async () => {
     const file = join(await workDir(), 'nested', 'deep', 'value.json')
@@ -63,6 +72,52 @@ describe('writeJsonAtomic', () => {
     const dir = await workDir()
     await writeJsonAtomic(join(dir, 'value.json'), { ok: true, n: 1 })
     assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), [])
+  })
+
+  it('retries transient rename failures without deleting the previous primary file', async context => {
+    const file = join(await workDir(), 'value.json')
+    await writeJsonAtomic(file, { ok: true, n: 1 })
+    const rename = fs.rename
+    let attempts = 0
+    await withRename(context, async (source, destination) => {
+      assert.deepEqual(await readJsonFile(file), { ok: true, n: 1 })
+      if (++attempts < 3) throw Object.assign(new Error('temporarily locked'), { code: 'EPERM' })
+      await rename(source, destination)
+    }, () => writeJsonAtomic(file, { ok: true, n: 2 }))
+    assert.equal(attempts, 3)
+    assert.deepEqual(await readJsonFile(file), { ok: true, n: 2 })
+    assert.deepEqual(await readJsonFile(backupPath(file)), { ok: true, n: 1 })
+  })
+
+  it('bounds rename retries and preserves the old primary and backup on failure', async context => {
+    const directory = await workDir(), file = join(directory, 'value.json')
+    await writeJsonAtomic(file, { ok: true, n: 1 })
+    const error = Object.assign(new Error('locked'), { code: 'EPERM' })
+    let attempts = 0
+    await withRename(context, async () => { attempts++; throw error }, async () => {
+      await assert.rejects(writeJsonAtomic(file, { ok: true, n: 2 }), candidate => candidate === error)
+    })
+    assert.equal(attempts, 5)
+    assert.deepEqual(await readJsonFile(file), { ok: true, n: 1 })
+    assert.deepEqual(await readJsonFile(backupPath(file)), { ok: true, n: 1 })
+    assert.deepEqual((await readdir(directory)).filter(name => name.endsWith('.tmp')), [])
+  })
+
+  it('does not retry unrelated filesystem errors', async context => {
+    const file = join(await workDir(), 'value.json')
+    const error = Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+    let attempts = 0
+    await withRename(context, async () => { attempts++; throw error }, async () => {
+      await assert.rejects(writeJsonAtomic(file, { ok: true, n: 1 }), candidate => candidate === error)
+    })
+    assert.equal(attempts, 1)
+  })
+
+  it('serializes writes to the same file and retains the immediately previous backup', async () => {
+    const file = join(await workDir(), 'value.json')
+    await Promise.all(Array.from({ length: 12 }, (_, n) => writeJsonAtomic(file, { ok: true, n })))
+    assert.deepEqual(await readJsonFile(file), { ok: true, n: 11 })
+    assert.deepEqual(await readJsonFile(backupPath(file)), { ok: true, n: 10 })
   })
 })
 

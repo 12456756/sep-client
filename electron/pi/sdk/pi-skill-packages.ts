@@ -10,7 +10,8 @@ import { downloadSkillArtifact } from '../../common/platform/skill-artifact-api'
 import { skillArtifactSchema, skillArtifactNameSchema, skillArtifactFrontmatterSchema, skillNameComparisonKey, maxSkillEntryBytes, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 import { z } from 'zod'
 import { AppError } from '../../errors/app-error'
-import { parseSkillMarkdown, validatedSkillMarkdown, validateSkillResources, approvedPackageBody, rawSkillMarkdownBody } from './skill-package-parser'
+import { parseSkillMarkdown, validatedSkillMarkdown, validateSkillResources, approvedPackageBody, matchesApprovedSkillMarkdown } from './skill-package-parser'
+import { logger } from '../../common/logger'
 import { readSkillZip, packageCache, packageManifestName, packageSha256, safePackagePath, verifyPackageCache, assertSkillPathParents, type SkillPackageFile } from './skill-package-zip'
 
 export interface SkillStoreRequest {
@@ -50,6 +51,30 @@ type SkillMetadata = z.infer<typeof metadataSchema>['skills'][number]
 
 function checkCurrent(input: SkillStoreRequest): void {
   if (input.isCurrent && !input.isCurrent()) throw new Error('Employee preparation scope changed.')
+}
+
+export async function publishSkillDirectory(
+  source: string,
+  target: string,
+  verifyExisting: () => Promise<void>,
+  move: typeof rename = rename,
+): Promise<void> {
+  try {
+    await move(source, target)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    let collision = code === 'EEXIST' || code === 'ENOTEMPTY'
+    if (code === 'EPERM') {
+      try {
+        const destination = await lstat(target)
+        collision = destination.isDirectory() && !destination.isSymbolicLink()
+      } catch {
+        collision = false
+      }
+    }
+    if (!collision) throw error
+    await verifyExisting()
+  }
 }
 
 function fallbackName(capabilityId: string): string {
@@ -93,17 +118,13 @@ function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approved
   catch { throw new Error('Approved skill entry is not valid UTF-8.') }
   const parsed = validatedSkillMarkdown(content)
   const metadata = parsed.metadata
-  let matchesApprovedContent = content === approvedContent
-  if (!matchesApprovedContent && artifact.format === 'zip') matchesApprovedContent = approvedPackageBody(content) === approvedContent
-  if (!matchesApprovedContent && artifact.format === 'single-file') {
-    const approved = parseSkillMarkdown(approvedContent)
-    if (!approved.hasFrontmatter) {
-      // SEP may wrap raw instructions and normalize their parsing prefix and line endings.
-      const body = rawSkillMarkdownBody(content)
-      matchesApprovedContent = body === approvedContent || body === approved.body
-    }
-  }
-  if (!matchesApprovedContent) {
+  if (content !== approvedContent && !matchesApprovedSkillMarkdown(content, approvedContent)
+    && !(artifact.format === 'zip' && approvedPackageBody(content) === approvedContent)) {
+    logger.child('skill-packages').warn('approved skill content comparison failed', {
+      capabilityId: artifact.capabilityId, versionId: artifact.versionId, format: artifact.format,
+      approvedContentSha256: artifact.approvedContentSha256, entrySha256: artifact.entrySha256,
+      approvedByteLength: Buffer.byteLength(approvedContent, 'utf8'), entryByteLength: entry.bytes.length,
+    })
     throw new AppError('SKILL_CONTENT_MISMATCH', {
       cause: new Error('Approved skill artifact content mismatch.'),
       details: { capabilityId: artifact.capabilityId, versionId: artifact.versionId, format: artifact.format },
@@ -163,7 +184,7 @@ export class SkillStore {
       if (!file.isFile() || file.nlink !== 1 || file.size !== artifact.byteLength) throw new Error('Approved skill artifact integrity mismatch.')
       cached = true
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-    const bytes = cached ? await readFile(path) : await downloadSkillArtifact(input.subscriptionId, artifact, input.accessToken)
+    const bytes = cached ? await readFile(path) : await downloadSkillArtifact(input.subscriptionId, artifact, input.accessToken, { assertCurrent: () => checkCurrent(input) })
     checkCurrent(input)
     const entry = approvedEntry(bytes, artifact, content)
     if (!cached) {
@@ -280,12 +301,9 @@ export class SkillStore {
               await writeFile(join(dirname(stagedEntry), packageManifestName), cache, { mode: 0o600, flag: 'wx' })
               verifyPackageCache(stagedEntry, cache)
               checkCurrent(input)
-              try { await rename(temporary, packageRoot) }
-              catch (error) {
-                const code = (error as NodeJS.ErrnoException).code
-                if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
-                if (!await reusePackage(packageRoot, artifact.entryPath, cache)) throw error
-              }
+              await publishSkillDirectory(temporary, packageRoot, async () => {
+                if (!await reusePackage(packageRoot, artifact.entryPath, cache)) throw new Error('Immutable skill entry integrity mismatch.')
+              })
             } finally { await rm(temporary, { recursive: true, force: true }) }
           }
           checkCurrent(input)
@@ -376,14 +394,10 @@ export class SkillStore {
         await writeFile(join(temporary, 'SKILL.md'), entry.content, { encoding: 'utf8', mode: 0o600 })
         await writeFile(join(temporary, 'manifest.json'), JSON.stringify(snapshot), { encoding: 'utf8', mode: 0o600 })
         checkCurrent(input)
-        try {
-          await rename(temporary, target)
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code
-          if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
+        await publishSkillDirectory(temporary, target, async () => {
           const existing = await readFile(join(target, 'SKILL.md'), 'utf8')
           if (existing !== entry.content) throw new Error('Immutable skill entry integrity mismatch.')
-        }
+        })
       } finally {
         // Only this operation's private staging tree can be deleted; published paths stay alive.
         await rm(temporary, { recursive: true, force: true })

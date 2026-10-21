@@ -1,19 +1,32 @@
 import { posix } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { skillArtifactFrontmatterSchema, maxSkillEntryBytes } from '../../common/platform/skill-artifact-contract'
 // @ts-expect-error The existing js-yaml dependency has no TypeScript declarations.
 import { load as loadYaml, CORE_SCHEMA } from 'js-yaml'
 
-export function parseSkillMarkdown(content: string): { frontmatter: unknown; body: string; hasFrontmatter: boolean; compatibilityPrefix: boolean } {
+export function parseSkillMarkdown(content: string): { frontmatter: unknown; body: string; rawBody: string; hasFrontmatter: boolean; compatibilityPrefix: boolean } {
   if (Buffer.byteLength(content, 'utf8') > maxSkillEntryBytes || !content.trim() || Buffer.from(content, 'utf8').toString('utf8') !== content) throw new Error('Approved skill entry is empty, invalid UTF-8 or exceeds the byte limit.')
   const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/^(?:[\t ]*\n)+/, '')
-  if (!/^---[\t ]*(?:\n|$)/.test(normalized)) return { frontmatter: {}, body: normalized, hasFrontmatter: false, compatibilityPrefix: normalized !== content.replace(/\r\n?/g, '\n') }
+  if (!/^---[\t ]*(?:\n|$)/.test(normalized)) return { frontmatter: {}, body: normalized, rawBody: normalized, hasFrontmatter: false, compatibilityPrefix: normalized !== content.replace(/\r\n?/g, '\n') }
   const match = /^---[\t ]*\n([\s\S]*?)\n---[\t ]*(?:\n|$)/.exec(normalized)
   if (!match) throw new Error('Invalid skill YAML frontmatter.')
   try {
     const frontmatter: unknown = loadYaml(match[1], { schema: CORE_SCHEMA })
-    return { frontmatter: frontmatter ?? {}, body: normalized.slice(match[0].length).trim(), hasFrontmatter: true,
+    return { frontmatter: frontmatter ?? {}, body: normalized.slice(match[0].length).trim(), rawBody: normalized.slice(match[0].length), hasFrontmatter: true,
       compatibilityPrefix: normalized !== content.replace(/\r\n?/g, '\n') }
   } catch { throw new Error('Invalid skill YAML frontmatter.') }
+}
+
+/** Compare meaning-bearing metadata and body, without rewriting authenticated source bytes. */
+export function matchesApprovedSkillMarkdown(content: string, approvedContent: string): boolean {
+  const actual = validatedSkillMarkdown(content)
+  const approved = parseSkillMarkdown(approvedContent)
+  const metadataMatches = approved.hasFrontmatter
+    ? isDeepStrictEqual(actual.frontmatter, approved.frontmatter)
+    : Object.keys(actual.metadata).every(key => key === 'name' || key === 'description')
+  // Ignore only outer blank lines; indentation and Markdown hard-break spaces remain significant.
+  const body = (value: string): string => value.replace(/^(?:\uFEFF|[\t ]*\n)+/, '').replace(/(?:\n[\t ]*)+$/, '')
+  return metadataMatches && body(actual.rawBody) === body(approved.rawBody)
 }
 
 /** Extract source bytes after frontmatter without trimming or normalizing the body. */

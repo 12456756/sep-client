@@ -9,6 +9,7 @@ import type { ArrangementPlannerEmployee, ArrangementPlanningProgress } from '..
 import { AppError } from '../errors/app-error'
 import { setLogSink, type LogRecord } from '../common/logger'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
+import { PiCodingAgentAdapter } from '../pi/sdk/pi-coding-agent-adapter'
 import type { TaskWorkerPort } from './run-types'
 import { PiArrangementPlanner } from './pi-arrangement-planner'
 
@@ -66,16 +67,16 @@ class FakeWorker implements TaskWorkerPort {
   readonly prompts: string[] = []
   readonly abortCalls: number[] = []
   readonly disposeCalls: number[] = []
-  constructor(private readonly onEvent: PiTaskWorkerOptions['onEvent']) {}
+  constructor(private readonly options: PiTaskWorkerOptions) {}
 
   async run(prompt: string): Promise<void> {
     this.prompts.push(prompt)
-    await this.onEvent({
+    const event = {
       taskId: 'planning-a',
       runId: 'planning-a',
       subscriptionId: 'sub-research',
       sequence: 1,
-      type: 'text_delta',
+      type: 'text_delta' as const,
       occurredAt: Date.now(),
       data: {
         text: JSON.stringify({
@@ -109,7 +110,9 @@ class FakeWorker implements TaskWorkerPort {
           ],
         }),
       },
-    })
+    }
+    await this.options.onEvent(event)
+    await this.options.onResponseSettled?.({ text: event.data.text, stopReason: 'stop' })
   }
 
   async abort(): Promise<void> {
@@ -122,6 +125,65 @@ class FakeWorker implements TaskWorkerPort {
 }
 
 describe('PiArrangementPlanner', () => {
+  const validOutput = JSON.stringify({ title: 'Final plan', nodes: [{
+    id: 'node-research', subscriptionId: 'sub-research', modelId: 'model-research',
+    title: 'Research', instruction: 'Research the market', knowledgeQuery: 'Internal market research methods',
+    dependsOn: [],
+  }] })
+
+  for (const scenario of [
+    { name: 'missing settlement', response: undefined, reason: 'empty-response' },
+    { name: 'empty final reply', response: { text: '', stopReason: 'stop' }, reason: 'empty-response' },
+    { name: 'whitespace final reply', response: { text: '  \n', stopReason: 'stop' }, reason: 'empty-response' },
+    { name: 'thinking only at length limit', response: { text: '', stopReason: 'length' }, reason: 'output-truncated' },
+    { name: 'partial JSON at length limit', response: { text: '{"title":', stopReason: 'length' }, reason: 'output-truncated' },
+    { name: 'valid JSON at length limit', response: { text: validOutput, stopReason: 'length' }, reason: 'output-truncated' },
+    { name: 'aborted reply', response: { text: validOutput, stopReason: 'aborted' }, reason: 'response-not-settled' },
+    { name: 'error reply', response: { text: validOutput, stopReason: 'error' }, reason: 'response-not-settled' },
+    { name: 'tool turn', response: { text: validOutput, stopReason: 'toolUse' }, reason: 'response-not-settled' },
+  ]) {
+    it(`does not parse input, thinking, or old fragments on ${scenario.name}`, async () => {
+      const progress: ArrangementPlanningProgress[] = []
+      const planner = new PiArrangementPlanner({
+        gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+        getRefreshToken: () => 'test-token', onAuthenticationRequired() {},
+        createWorker: options => ({
+          async run() {
+            const base = { taskId: 'planning-final', runId: 'planning-final', subscriptionId: 'sub-research', occurredAt: Date.now() }
+            await options.onEvent({ ...base, sequence: 1, type: 'message_end',
+              data: { message: { role: 'user', content: [{ type: 'text', text: validOutput }] } } })
+            await options.onEvent({ ...base, sequence: 2, type: 'text_delta', data: { text: validOutput } })
+            await options.onEvent({ ...base, sequence: 3, type: 'message_end',
+              data: { message: { role: 'assistant', content: [{ type: 'thinking', thinking: validOutput }] } } })
+            if (scenario.response) await options.onResponseSettled?.(scenario.response)
+          },
+          async abort() {}, async dispose() {},
+        }),
+      })
+      await assert.rejects(planner.plan({ planningId: 'planning-final', draft, employees, onProgress: event => progress.push(event) }),
+        error => error instanceof AppError && error.code === 'PLANNING_FAILED' &&
+          error.details?.phase === 'response-assembly' && error.details?.reason === scenario.reason)
+      assert.equal(progress.length, 0)
+    })
+  }
+
+  it('uses only the last settled assistant reply after retry fragments', async () => {
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'test-token', onAuthenticationRequired() {},
+      createWorker: options => ({
+        async run() {
+          await options.onEvent({ taskId: 'planning-final', runId: 'planning-final', subscriptionId: 'sub-research',
+            sequence: 1, occurredAt: Date.now(), type: 'text_delta', data: { text: '{"title":"old incomplete reply"' } })
+          await options.onResponseSettled?.({ text: validOutput, stopReason: 'stop' })
+        },
+        async abort() {}, async dispose() {},
+      }),
+    })
+    const result = await planner.plan({ planningId: 'planning-final', draft, employees, onProgress() {} })
+    assert.equal(result.title, 'Final plan')
+  })
+
   for (const scenario of [
     { text: undefined, phase: 'response-assembly', reason: 'empty-response' },
     { text: '', phase: 'response-assembly', reason: 'empty-response' },
@@ -144,6 +206,7 @@ describe('PiArrangementPlanner', () => {
           async run() {
             if (scenario.text !== undefined) await options.onEvent({ taskId: 'planning-log', runId: 'planning-log', subscriptionId: 'sub-research', sequence: 1,
               type: 'text_delta', occurredAt: Date.now(), data: { text: scenario.text } })
+            await options.onResponseSettled?.({ text: scenario.text ?? '', stopReason: 'stop' })
           },
           async abort() {}, async dispose() {},
         }),
@@ -221,7 +284,7 @@ describe('PiArrangementPlanner', () => {
     } finally { restore() }
   })
 
-  it('parses the assistant message when the adapter only emits message_end', async () => {
+  it('uses the settled reply rather than the message_end projection', async () => {
     let worker: TaskWorkerPort | undefined
     const output = JSON.stringify({
       title: 'Message-end report',
@@ -241,8 +304,9 @@ describe('PiArrangementPlanner', () => {
             await options.onEvent({
               taskId: 'planning-a', runId: 'planning-a', subscriptionId: 'sub-research', sequence: 1,
               type: 'message_end', occurredAt: Date.now(),
-              data: { message: { role: 'assistant', content: [{ type: 'text', text: output }] } },
+              data: { message: { role: 'assistant', content: [{ type: 'text', text: 'truncated-event-copy' }] } },
             })
+            await options.onResponseSettled?.({ text: output, stopReason: 'stop' })
           },
           async abort() {},
           async dispose() {},
@@ -266,7 +330,7 @@ describe('PiArrangementPlanner', () => {
       onAuthenticationRequired: () => {},
       createWorker: options => {
         capturedOptions = options
-        worker = new FakeWorker(options.onEvent)
+        worker = new FakeWorker(options)
         return worker
       },
     })
@@ -316,7 +380,7 @@ describe('PiArrangementPlanner', () => {
       getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {},
       createWorker: options => {
         capturedOptions = options
-        return new FakeWorker(options.onEvent)
+        return new FakeWorker(options)
       },
     })
 
@@ -363,7 +427,7 @@ describe('PiArrangementPlanner', () => {
       getRefreshToken: () => 'refresh-token',
       onAuthenticationRequired: () => {},
       createWorker: options => {
-        worker = new FakeWorker(options.onEvent)
+        worker = new FakeWorker(options)
         worker.run = async () => await new Promise<void>(resolve => { releaseRun = resolve })
         return worker
       },
@@ -387,7 +451,7 @@ describe('PiArrangementPlanner', () => {
       getRefreshToken: () => 'refresh-token',
       onAuthenticationRequired: () => {},
       createWorker: options => {
-        worker = new FakeWorker(options.onEvent)
+        worker = new FakeWorker(options)
         worker.run = async () => await new Promise<void>(resolve => { releaseRun = resolve })
         return worker
       },
@@ -413,6 +477,50 @@ describe('PiArrangementPlanner', () => {
 
 function sendChunk(response: ServerResponse, delta: Record<string, unknown>, finishReason: string | null = null): void {
   response.write(`data: ${JSON.stringify({ id: 'planner-response', object: 'chat.completion.chunk', created: 1, model: 'model-research', choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`)
+}
+
+for (const scenario of ['thinking-stop', 'thinking-length', 'long-final'] as const) {
+  it(`real SDK planner reads only the final assistant body: ${scenario}`, { timeout: 15000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-planner-final-'))
+    const instruction = 'Research the market. '.repeat(600).trim()
+    const output = JSON.stringify({ title: 'Complete report', nodes: [{
+      id: 'node-research', subscriptionId: 'sub-research', modelId: 'model-research',
+      title: 'Research', instruction, knowledgeQuery: 'Internal market research methods', dependsOn: [],
+    }] })
+    assert.ok(output.length > 8192)
+    let requests = 0
+    const server = createServer((request, response) => {
+      request.resume()
+      requests++
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      if (scenario === 'long-final') sendChunk(response, { role: 'assistant', content: output })
+      else sendChunk(response, { role: 'assistant', reasoning_content: 'Considering the requested plan.' })
+      sendChunk(response, {}, scenario === 'thinking-length' ? 'length' : 'stop')
+      response.end('data: [DONE]\n\n')
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: `http://127.0.0.1:${address.port}/v1`, workspaceRoot: root,
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {},
+      createWorker: options => new PiTaskWorker({ ...options,
+        runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
+        createTokenManager: () => ({ initialize: async () => {}, getValidToken: async () => 'mock', stop() {} }),
+      }),
+    })
+    try {
+      const result = planner.plan({ planningId: 'planning-final-sdk', draft, employees, onProgress() {} })
+      if (scenario === 'long-final') assert.equal((await result).nodes[0]?.instruction, instruction)
+      else await assert.rejects(result, error => error instanceof AppError && error.details?.phase === 'response-assembly' &&
+        error.details?.reason === (scenario === 'thinking-length' ? 'output-truncated' : 'empty-response'))
+      assert.equal(requests, 1)
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>(resolve => server.close(() => resolve()))
+      await rm(root, { recursive: true, force: true })
+    }
+  })
 }
 
 for (const invalidTools of [false, true]) {

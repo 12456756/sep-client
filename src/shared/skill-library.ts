@@ -3,8 +3,8 @@ import type { PersonalSkillVersionRequest, SkillVersion } from './platform-suppl
 export interface SkillBinding {
   subscriptionId: string
   employeeId: string
-  currentVersion: SkillVersion
-  selectedVersionId: string
+  currentVersion: SkillVersion | null
+  selectedVersionId: string | null
 }
 
 export interface LocalSkillSubmission {

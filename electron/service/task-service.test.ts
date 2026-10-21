@@ -120,6 +120,44 @@ import type { ClientTask } from '../../src/shared/types'
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const task: ClientTask = { id: 'task-a', title: 'Task', prompt: 'plain', status: 'pending', workDir: null, createdAt: 1, startedAt: null, completedAt: null, error: null, files: [], logs: [], ownerId: scope.memberId, ownerEnterpriseId: scope.enterpriseId, subscriptionId: 'sub-a', activeRunId: null }
 const missing = { state: 'missing' as const }
+
+describe('task timeline admission', () => {
+  it('returns an empty timeline for the exact queued run before its record is created', async () => {
+    const service = harness({
+      taskManager: { async getTask() { return { ...task, activeRunId: 'queued-run' } } },
+      taskRunStore: { async get() { return null } },
+    })
+    assert.deepEqual(await service.timeline(task.id, 'queued-run'), [])
+  })
+
+  it('still rejects missing historical runs and missing records of started or finished tasks', async () => {
+    for (const status of ['pending', 'running', 'failed', 'completed'] as const) {
+      const service = harness({
+        taskManager: { async getTask() { return { ...task, status, activeRunId: 'queued-run' } } },
+        taskRunStore: { async get() { return null } },
+      })
+      await assert.rejects(service.timeline(task.id, 'old-run'), { code: 'NOT_FOUND' })
+      if (status !== 'pending') await assert.rejects(service.timeline(task.id, 'queued-run'), { code: 'NOT_FOUND' })
+    }
+  })
+
+  it('reads persisted events even while the task is pending', async () => {
+    const events = [{ type: 'arrangement_node_completed' }]
+    const service = harness({
+      taskManager: { async getTask() { return { ...task, activeRunId: 'queued-run' } } },
+      taskRunStore: { async get() { return { runId: 'queued-run' } }, events: {
+        async getTimeline(receivedScope: unknown, taskId: string, runId: string) {
+          assert.deepEqual(receivedScope, scope)
+          assert.equal(taskId, task.id)
+          assert.equal(runId, 'queued-run')
+          return events
+        },
+      } },
+    })
+    assert.deepEqual(await service.timeline(task.id, 'queued-run'), events)
+  })
+})
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>(r => { resolve = r })

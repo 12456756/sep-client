@@ -316,7 +316,7 @@ export interface ElectronAPI {
   platform: RuntimePlatform
   windowChrome: WindowChromeRuntime
   setWindowTheme: (theme: WindowTheme) => Promise<IpcCommandResult>
-  listSkillLibrary: () => Promise<IpcCommandResult & { data?: SkillLibraryItem[] }>
+  listSkillLibrary: () => Promise<IpcCommandResult & { data?: SkillLibraryItem[]; skippedCount?: number }>
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult & { data?: string }>
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult>
   savePersonalSkill: (input: SaveSkillInput) => Promise<IpcCommandResult & { data?: SaveSkillResult }>

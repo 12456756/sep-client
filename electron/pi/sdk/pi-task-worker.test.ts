@@ -274,6 +274,71 @@ describe('PiTaskWorker', () => {
     }
   })
 
+  for (const stopReason of ['stop', 'length']) {
+    it(`keeps a thinking-only final reply empty after correction (${stopReason})`, async () => {
+      let requests = 0
+      const server = createServer((request, response) => {
+        request.resume()
+        requests++
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        if (requests === 1) writeChunk(response, { role: 'assistant', content: 'previous assistant reply' })
+        else writeChunk(response, { role: 'assistant', reasoning_content: 'Still considering the task.' })
+        writeChunk(response, {}, requests === 1 ? 'stop' : stopReason)
+        response.end('data: [DONE]\n\n')
+      })
+      await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+      const address = server.address()
+      assert.ok(address && typeof address !== 'string')
+      const results: Array<{ text: string; stopReason?: string }> = []
+      const worker = new PiTaskWorker({
+        context: { ...context(await makeDirectory()), gatewayUrl: `http://127.0.0.1:${address.port}/v1` },
+        runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
+        createTokenManager: () => new FakeTokenManager(), getRefreshToken: () => 'mock',
+        onAuthenticationRequired() {}, onApprovalRequest: async () => false, onEvent() {},
+        onResponseSettled: async response => {
+          results.push(response)
+          if (results.length === 1) return { continueWith: 'Correct the final delivery.' }
+        },
+      })
+      try {
+        await worker.run('User input is not an assistant reply.')
+        assert.deepEqual(results, [
+          { text: 'previous assistant reply', stopReason: 'stop' }, { text: '', stopReason },
+        ])
+        assert.equal(requests, 2)
+      } finally {
+        await worker.dispose()
+        server.closeAllConnections()
+        await new Promise<void>(resolve => server.close(() => resolve()))
+      }
+    })
+  }
+
+  it('ignores user messages and earlier tool-turn text when the final turn is empty', async () => {
+    const runtime = new FakeRuntime()
+    runtime.session.prompt = async () => {
+      const listener = runtime.session.listener
+      listener?.({ type: 'turn_start', data: {} })
+      listener?.({ type: 'turn_end', data: { message: { role: 'assistant', stopReason: 'toolUse',
+        content: [{ type: 'text', text: 'old tool turn text' }] } } })
+      listener?.({ type: 'turn_start', data: {} })
+      listener?.({ type: 'message_end', data: { message: { role: 'user', content: [{ type: 'text', text: 'user input' }] } } })
+      listener?.({ type: 'turn_end', data: { message: { role: 'assistant', stopReason: 'stop',
+        content: [{ type: 'thinking', thinking: 'Only thinking.' }] } } })
+      listener?.({ type: 'agent_end', data: {} })
+    }
+    const results: Array<{ text: string; stopReason?: string }> = []
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onApprovalRequest: async () => false,
+      onEvent() {}, onResponseSettled: async response => { results.push(response) },
+    })
+    try {
+      await worker.run('start')
+      assert.deepEqual(results, [{ text: '', stopReason: 'stop' }])
+    } finally { await worker.dispose() }
+  })
+
   it('owns one run session and emits events with explicit context', async () => {
     const runtime = new FakeRuntime()
     const events: string[] = []

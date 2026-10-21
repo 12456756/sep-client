@@ -29,6 +29,7 @@ export function SkillsPage({ workspace, skillId }: Props) {
       <button className="ent-btn" disabled={workspace.skillsLoading || !canRetry} onClick={() => void workspace.refreshSkills()}><RefreshCw size={15} aria-hidden />{refreshLabel}</button>
     </div>
     {hasCachedSkills ? <p className="skill-caption">共 {workspace.skills.length} 个技能 · 修改保存为个人版本，不覆盖企业发布版</p> : null}
+    {workspace.skillsWarning ? <div className="ent-banner info" role="status">{workspace.skillsWarning}</div> : null}
     {hasError ? <div className="ent-banner danger skill-state-banner" role="alert">
       <div><strong>{workspace.skillsError}</strong>{hasCachedSkills ? <span>已保留上次成功加载的技能列表。</span> : null}{isRateLimited && workspace.skillsRetrySeconds !== null && workspace.skillsRetrySeconds > 0 ? <span> 倒计时结束后可再次请求。</span> : null}</div>
       <button className="ent-btn sm" disabled={!canRetry} onClick={() => void workspace.refreshSkills()}>{isRateLimited && workspace.skillsRetrySeconds && workspace.skillsRetrySeconds > 0 ? `${workspace.skillsRetrySeconds} 秒后重试` : '重试'}</button>
@@ -45,7 +46,7 @@ function SkillCard({ skill, workspace }: { skill: SkillLibraryItem; workspace: E
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const selected = selectedSkillVersion(skill);
-  const publicVersions = [...new Set(skill.bindings.map(binding => skillVersionLabel(binding.currentVersion)))];
+  const publicVersions = [...new Set(skill.bindings.map(binding => binding.currentVersion ? skillVersionLabel(binding.currentVersion) : '暂无可用版本'))];
   const select = async (versionId: string): Promise<void> => {
     setSaving(true); setError('');
     try { await workspace.selectSkillVersion(skill.capability.id, versionId); }
@@ -63,7 +64,7 @@ function SkillCard({ skill, workspace }: { skill: SkillLibraryItem; workspace: E
         return <span className="skill-employee" key={binding.subscriptionId} title={`${employee?.name ?? binding.employeeId} · ${active ? skillVersionLabel(active) : local?.request.changeSummary || (local ? '个人修改版' : '版本不可用')}`}><EmployeeFace employee={employee} name={employee?.name ?? binding.employeeId} size="sm" round /><span>{employee?.name ?? binding.employeeId}</span></span>;
       })}</div></div>
       <label className="skill-active-version"><span className="skill-caption">当前使用版本</span><select className="ent-select" aria-label={`${skill.capability.name}当前使用版本`} value={selected} disabled={saving} onChange={event => void select(event.target.value)}>
-        {!selected ? <option value="" disabled>员工使用不同版本</option> : !skill.versions.some(version => version.id === selected) && !skill.localVersions.some(version => version.idempotencyKey === selected) ? <option value={selected} disabled>已选版本不可用，请重新选择</option> : null}
+        {!selected ? <option value="" disabled>{skill.bindings.some(binding => binding.selectedVersionId) ? '员工使用不同版本' : '未选择版本'}</option> : !skill.versions.some(version => version.id === selected) && !skill.localVersions.some(version => version.idempotencyKey === selected) ? <option value={selected} disabled>已选版本不可用，请重新选择</option> : null}
         {skill.versions.map(version => <option key={version.id} value={version.id} disabled={!skill.usableVersionIds.includes(version.id)}>{skillVersionLabel(version)}{!skill.usableVersionIds.includes(version.id) ? ` · ${skillVersionStatus(version.status)}` : ''}</option>)}
         {skill.localVersions.map(version => <option key={version.idempotencyKey} value={version.idempotencyKey} disabled={!skill.usableVersionIds.includes(version.idempotencyKey)}>{version.request.changeSummary || '个人修改版'} · {localSkillVersionStatus(skill, version)}</option>)}
       </select></label>

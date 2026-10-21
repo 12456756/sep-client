@@ -5,7 +5,10 @@ import { NO_INPUT, route } from '../router'
 
 const versionInput = z.object({ capabilityId: skillVersionIdSchema, versionId: skillVersionIdSchema }).strict()
 export const skillRoutes = [
-  route(INVOKE_CHANNELS.SKILL_LIBRARY_LIST, NO_INPUT, async ctx => ({ success: true, data: await ctx.skills.list() })),
+  route(INVOKE_CHANNELS.SKILL_LIBRARY_LIST, NO_INPUT, async ctx => {
+    const { items, skippedCount } = await ctx.skills.listWithDiagnostics()
+    return { success: true, data: items, skippedCount }
+  }),
   route(INVOKE_CHANNELS.SKILL_LIBRARY_PREVIEW, versionInput, async (ctx, input) => ({ success: true, data: await ctx.skills.preview(input) })),
   route(INVOKE_CHANNELS.SKILL_LIBRARY_SELECT, versionInput, async (ctx, input) => { await ctx.skills.select(input); return { success: true } }),
   route(INVOKE_CHANNELS.SKILL_LIBRARY_SAVE, z.object({ request: personalSkillVersionRequestSchema, idempotencyKey: idempotencyKeySchema }).strict(), async (ctx, input) => ({ success: true, data: await ctx.skills.save(input) })),

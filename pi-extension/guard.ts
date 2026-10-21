@@ -27,6 +27,8 @@ export interface ToolPolicy {
   workspaceDir: string
   /** Canonical paths fixed by the host from this run's approved skill snapshot. */
   approvedSkillPaths?: readonly ApprovedSkillReadPath[]
+  /** Exact host-verified delivery snapshot files; never a directory-wide write grant. */
+  readableDeliveryPaths?: readonly string[]
 }
 
 export type RegisteredToolPermissions = ReadonlyMap<string, 'confirm-each' | 'auto-approve'>
@@ -87,7 +89,7 @@ export function evaluateToolCall(
     const optionalPath = toolName === 'grep' || toolName === 'find' || toolName === 'ls'
     const candidatePath = path ?? (optionalPath ? policy.workspaceDir : null)
     if (!candidatePath || (!isAllowedPath(candidatePath, policy)
-      && !(toolName === 'read' && isApprovedSkillRead(candidatePath, policy)))) {
+      && !(toolName === 'read' && (isApprovedSkillRead(candidatePath, policy) || isApprovedDeliveryRead(candidatePath, policy))))) {
       return {
         allowed: false,
         requiresApproval: false,
@@ -128,6 +130,21 @@ function isAllowedPath(candidate: string, policy: ToolPolicy): boolean {
 function containsNativePath(root: string, candidate: string): boolean {
   const remainder = relative(root, candidate)
   return remainder === '' || (!isAbsolute(remainder) && remainder !== '..' && !remainder.startsWith(`..${sep}`))
+}
+
+function isApprovedDeliveryRead(candidate: string, policy: ToolPolicy): boolean {
+  if (!policy.readableDeliveryPaths?.length) return false
+  try {
+    const absolute = resolve(policy.workspaceDir, candidate)
+    const actual = realpathSync(absolute)
+    if (!statSync(actual).isFile()) return false
+    if (policy.deniedPaths.some(path => {
+      const denied = resolve(policy.workspaceDir, path)
+      if (containsNativePath(denied, absolute) || containsNativePath(denied, actual)) return true
+      try { return containsNativePath(realpathSync(denied), actual) } catch { return false }
+    })) return false
+    return policy.readableDeliveryPaths.some(path => path === actual && realpathSync(path) === path)
+  } catch { return false }
 }
 
 function isApprovedSkillRead(candidate: string, policy: ToolPolicy): boolean {

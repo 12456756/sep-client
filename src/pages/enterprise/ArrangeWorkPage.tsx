@@ -9,7 +9,7 @@ import { AutoArrange } from '../../components/enterprise/arrange/AutoArrange';
 import { ChatArrange } from '../../components/enterprise/arrange/ChatArrange';
 import { ManualArrange, type ManualDraft } from '../../components/enterprise/arrange/ManualArrange';
 import { Empty } from '../../components/enterprise/atoms';
-import { defaultRunSettings, type RunSettings } from '../../features/enterprise/run-settings';
+import { defaultAutoRunSettings, defaultConversationRunSettings, defaultRunSettings, type RunSettings } from '../../features/enterprise/run-settings';
 import type { ArrangeMode, SiliconEmployee, WorkDraftStep, WorkTemplate } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
@@ -38,11 +38,14 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   /** 只有现在能派活的同事参与安排。暂时不可用的员工选了也开不了工。 */
   const employees = workspace.myEmployees.filter(item => item.availability !== 'unavailable');
   const availableModels = Array.from(new Set(employees.flatMap(item => item.allowedModels)));
+  const orchestrationModels = (employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)));
   const template = templateId ? workspace.templates.find(item => item.id === templateId) : undefined;
 
-  const [settings, setSettings] = useState<RunSettings>(defaultRunSettings);
-  const [chatEmployeeId, setChatEmployeeId] = useState(employeeId ?? '');
   const activeMode = mode === 'pick' ? 'chat' : mode;
+  const [settings, setSettings] = useState<RunSettings>(() => activeMode === 'auto'
+    ? defaultAutoRunSettings(orchestrationModels[0] ?? '')
+    : activeMode === 'chat' ? defaultConversationRunSettings() : defaultRunSettings());
+  const [chatEmployeeId, setChatEmployeeId] = useState(employeeId ?? '');
   const isOrchestration = activeMode === 'auto' || activeMode === 'manual';
   const [autoStartError, setAutoStartError] = useState<string | null>(null);
   /** 正在淡出的目标画面。给「点了卡片但还没换页」这 200ms 用。 */
@@ -71,8 +74,16 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
     setLeaving(null);
     setAutoStartError(null);
     setChatEmployeeId(employeeId ?? '');
-    setSettings(current => ({ ...current, modelId: '' }));
-  }, [mode, employeeId]);
+    setSettings(current => ({ ...current, modelId: activeMode === 'auto' ? orchestrationModels[0] ?? '' : '' }));
+  }, [mode, employeeId, activeMode, orchestrationModels[0]]);
+
+  useEffect(() => {
+    if (activeMode === 'auto') {
+      setSettings(current => ({ ...current, permissions: defaultAutoRunSettings().permissions }));
+    } else if (activeMode === 'chat') {
+      setSettings(current => ({ ...current, permissions: defaultConversationRunSettings().permissions }));
+    }
+  }, [activeMode]);
 
   const go = (next: ArrangeMode) => {
     if (reduced) { workspace.navigate({ name: 'arrange', mode: next }); return; }
@@ -181,7 +192,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
             busy={workspace.busy}
             onStart={startAuto}
             settings={settings}
-            models={(employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)))}
+            models={orchestrationModels}
             onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
             onChooseFolder={workspace.chooseFolder}
           />
@@ -205,7 +216,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
             }}
             onStart={startManual}
             settings={settings}
-            models={(employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)))}
+            models={orchestrationModels}
             onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
             onChooseFolder={workspace.chooseFolder}
           />
