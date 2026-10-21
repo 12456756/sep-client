@@ -90,6 +90,7 @@ const electronAPI = {
   retryTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_RETRY, input),
   getTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET, taskId),
   getTaskMedia: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_GET_TASK, taskId),
+  setMediaReferenceSelection: input => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION, input),
   importMediaReferences: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_IMPORT_REFERENCES, taskId),
   generateTaskMedia: input => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_GENERATE, input),
   previewMediaAsset: input => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_PREVIEW, input),

@@ -12,6 +12,7 @@ import { setLogSink } from '../../common/logger'
 import { createPiVideoModelMock, PI_VIDEO_MODEL_MOCK_PROMPT } from '../../../scripts/pi-video-model-mock'
 import * as videoFixture from '../../../src/shared/fixtures/media-video-v1.json'
 import { videoRuntimeSchema } from '../../../src/shared/video-media'
+import { AppError } from '../../errors/app-error'
 
 const names: VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
 const parameters = { durationSeconds: 5, aspectRatio: '16:9', resolution: '720p' as const, frameRate: 24, audio: false, outputFormat: 'video/mp4' as const }
@@ -93,6 +94,34 @@ function value(result: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>['execu
 }
 
 describe('video tools through the mocked Pi SDK extension API', () => {
+  it('accepts a brief without a profile or technical specifications', async () => {
+    const runtime = await sdk()
+    const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
+    assert.deepEqual(result.details, { isError: false })
+    assert.deepEqual(runtime.calls[0].input, { creativeBrief: 'A product video', localAssetIds: [] })
+  })
+
+  it('allows video discovery without guessing a job id and strips arbitrary reference fields', async () => {
+    const asset = { localAssetId: 'asset-a', taskId: 'task-a', jobId: null, outputId: null, source: 'reference', mime: 'image/png', size: 30, width: 1, height: 1, status: 'SAVED' }
+    const runtime = await sdk({}, { mock: true, runtime: videoFixture.runtime, jobs: [], referenceAssets: [{ ...asset, ...secrets }] })
+    const result = await runtime.execute('video_get_job', {})
+    assert.deepEqual(result.details, { isError: false })
+    assert.deepEqual(JSON.parse(value(result)).referenceAssets, [asset])
+    assert.ok(!value(result).includes('private-key'))
+  })
+
+  it('reports fixed business codes without echoing exception messages or inventing missing models', async () => {
+    for (const code of ['INVALID_ARGUMENT', 'PERMISSION_DENIED', 'AUTH_REQUIRED', 'NETWORK_ERROR', 'CONFLICT', 'SERVICE_UNAVAILABLE'] as const) {
+      const runtime = await sdk({}, new AppError(code, { message: sensitiveText }))
+      const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
+      assert.deepEqual(result.details, { isError: true })
+      const error = JSON.parse(value(result)).error
+      assert.equal(error.code, code)
+      assert.ok(error.message.length > 20)
+      assert.ok(!value(result).includes('private-key'))
+      assert.ok(!value(result).includes('private.example'))
+    }
+  })
   it('accepts real job and task queries with every billing state and preserves measured output metadata', async () => {
     for (const billingStatus of ['NOT_RESERVED', 'RESERVED', 'RECONCILING', 'SETTLED', 'RELEASED'] as const) {
       const measured = { ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }
@@ -138,12 +167,13 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       assert.equal((definition.parameters as Record<string, unknown>).additionalProperties, false)
     }
     const schema = runtime.definitions.get('video_from_image')!.parameters as Record<string, unknown>
-    assert.deepEqual(schema.required, ['profileId', 'operation', 'localAssetIds', 'creativeBrief', 'parameters'])
+    assert.deepEqual(schema.required, ['localAssetIds', 'creativeBrief'])
+    assert.deepEqual((runtime.definitions.get('video_generate')!.parameters as Record<string, unknown>).required, ['creativeBrief'])
     const fields = schema.properties as Record<string, Record<string, unknown>>
     assert.equal(fields.operation.const, 'image-to-video')
     assert.equal(fields.localAssetIds.maxItems, 1)
     assert.equal(fields.parameters.additionalProperties, false)
-    assert.deepEqual((runtime.definitions.get('video_get_job')!.parameters as Record<string, unknown>).required, ['jobId'])
+    assert.equal((runtime.definitions.get('video_get_job')!.parameters as Record<string, unknown>).required, undefined)
     assert.equal(runtime.definitions.has('video_cancel_job'), false)
     assert.ok(!JSON.stringify([...runtime.definitions.values()]).includes('secret Pi prompt'))
   })
@@ -192,7 +222,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
     for (const input of invalid) {
       const result = await runtime.execute('video_generate', input)
       assert.deepEqual(result.details, { isError: true })
-      assert.equal(value(result), 'Invalid video tool input.')
+      assert.equal(JSON.parse(value(result)).error.code, 'INVALID_ARGUMENT')
     }
     for (const localAssetIds of [[], ['asset-a', 'asset-a'], ['asset-a', 'asset-b'], ['/private/file']]) {
       const result = await runtime.execute('video_from_image', { ...generation, operation: 'image-to-video', localAssetIds })
@@ -204,7 +234,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
 
   it('requires a strict local jobId object and ignores an already aborted call', async () => {
     const runtime = await sdk()
-    for (const input of [{}, { jobId: '../job' }, { jobId: 'job-a', receiptId: 'remote-receipt' }, { jobId: 'a'.repeat(129) }]) {
+    for (const input of [{ jobId: '../job' }, { jobId: 'job-a', receiptId: 'remote-receipt' }, { jobId: 'a'.repeat(129) }]) {
       assert.deepEqual((await runtime.execute('video_get_job', input)).details, { isError: true })
     }
     const signal = AbortSignal.abort(new Error(sensitiveText))

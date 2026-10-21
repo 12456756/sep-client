@@ -1,15 +1,13 @@
 /// <reference types="vite/client" />
-import { Download, Film, ImagePlus, LoaderCircle, Play, RefreshCw, X } from 'lucide-react'
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { Download, Film, LoaderCircle, Play, RefreshCw, X } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
-import type { MediaAssetView } from '../../shared/media'
-import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile, videoFormParameters } from '../../shared/media-view'
-import { videoGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../shared/video-host'
-import { videoAllowedAudioModes, videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema, type VideoRuntime } from '../../shared/video-media'
-import { useMediaParameterPreferences } from './media-preference-scope'
+import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
+import type { VideoJobView, VideoTaskView } from '../../shared/video-host'
+import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../shared/video-media'
 
-type Command = 'import' | 'generate' | 'export' | 'resume' | 'retry'
+type Command = 'export' | 'resume' | 'retry'
 type JobAction = 'resume' | 'retry'
 type Notice = { message: string; tone: 'error' | 'success' }
 type OutputSelection = { jobId: string; outputId: string }
@@ -24,12 +22,6 @@ const jobSchema = z.object({
   error: z.string().nullable(), outputs: z.array(videoOutputSchema).max(4),
   savedOutputIds: z.array(localId).max(4).optional(),
 })
-const referenceSchema = z.object({
-  localAssetId: localId, taskId: localId, jobId: localId.nullable(), outputId: localId.nullable(),
-  source: z.literal('reference'), mime: z.enum(['image/png', 'image/jpeg', 'image/webp']),
-  size: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive(),
-  status: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
-})
 
 function safeView(value: unknown, taskId: string): VideoTaskView | null {
   const result = z.object({ mock: z.boolean(), runtime: videoRuntimeSchema, jobs: z.array(z.unknown()) }).safeParse(value)
@@ -42,22 +34,6 @@ function safeView(value: unknown, taskId: string): VideoTaskView | null {
   return { mock: result.data.mock, runtime: result.data.runtime, jobs }
 }
 
-function safeReferences(values: unknown, taskId: string): MediaAssetView[] {
-  if (!Array.isArray(values)) return []
-  const ids = new Set<string>()
-  return values.flatMap(value => {
-    const result = referenceSchema.safeParse(value)
-    if (!result.success || result.data.taskId !== taskId || ids.has(result.data.localAssetId)) return []
-    ids.add(result.data.localAssetId)
-    return [result.data]
-  })
-}
-
-function operations(runtime: VideoRuntime, profile: VideoRuntime['profiles'][number]): VideoGenerationInput['operation'][] {
-  return profile.operations.filter(operation => operation === 'image-to-video'
-    ? runtime.tools.includes('video_from_image') && profile.capabilities.supportsImageToVideo
-    : runtime.tools.includes('video_generate') && profile.capabilities.supportsTextToVideo)
-}
 
 function failure(result: IpcCommandResult, fallback: string): string {
   return result.error?.message || fallback
@@ -80,83 +56,6 @@ function VideoFeedback({ pending, notice, id }: { pending: Command | null; notic
   </p>
 }
 
-export function VideoCreationForm({ taskId, runtime, references, busy, pending = null, notice = null, onImport, onGenerate }: {
-  taskId: string; runtime: VideoRuntime; references: MediaAssetView[]; busy: boolean; pending?: Command | null; notice?: Notice | null
-  onImport: () => void; onGenerate: (input: VideoGenerationInput) => void
-}) {
-  const id = useId()
-  const profiles = runtime.profiles.filter(profile => operations(runtime, profile).length > 0)
-  const [profileId, setProfileId] = useState('')
-  const profile = selectMediaProfile(profiles, profileId, runtime.defaultProfileId)
-  const availableOperations = profile ? operations(runtime, profile) : []
-  const [chosenOperation, setOperation] = useState<VideoGenerationInput['operation']>('image-to-video')
-  const operation = availableOperations.includes(chosenOperation) ? chosenOperation : availableOperations[0]
-  const [selectedId, setSelectedId] = useState('')
-  const [brief, setBrief] = useState('')
-  const preferences = useMediaParameterPreferences('video', profile?.profileId)
-  const binding = JSON.stringify([preferences.key, profile, operation, runtime.protocolVersion, runtime.executionMode])
-  const [choices, setChoices] = useState<{ binding: string; parameters: Partial<VideoGenerationInput['parameters']> }>({ binding: '', parameters: {} })
-  const caps = profile?.capabilities
-  const audioModes = profile ? videoAllowedAudioModes(runtime, profile) : []
-  const localReferences = safeReferences(references, taskId)
-  const selected = localReferences.find(asset => asset.localAssetId === selectedId && asset.status === 'SAVED' && caps && asset.size <= caps.maxInputBytes)
-  const parameters = profile ? videoFormParameters(runtime, profile, choices.binding === binding ? choices.parameters : preferences.parameters) : null
-  useEffect(() => {
-    setSelectedId('')
-  }, [binding])
-  useEffect(() => {
-    if (profile && profileId !== profile.profileId) setProfileId(profile.profileId)
-  }, [profile, profileId])
-  function changeParameters(patch: Partial<VideoGenerationInput['parameters']>): void {
-    if (!profile) return
-    const next = videoFormParameters(runtime, profile, { ...parameters, ...patch })
-    setChoices({ binding, parameters: next ?? {} })
-    if (next) preferences.save(next)
-  }
-  const input = videoGenerationInputSchema.safeParse({ profileId: profile?.profileId, operation,
-    localAssetIds: operation === 'image-to-video' && selected ? [selected.localAssetId] : [], creativeBrief: brief, parameters })
-  const problem = !runtime.executionAvailable || !profile || !operation ? '当前没有可用的视频生成配置'
-    : operation === 'image-to-video' && !selected ? '请选择一张已保存的本地参考图'
-      : !brief.trim() ? '请填写视频创作需求' : !input.success ? '请检查视频参数和创作需求' : null
-  const disabled = busy || !runtime.executionAvailable || !profile
-
-  return <form className="media-creation video-creation" onSubmit={event => {
-    event.preventDefault()
-    if (!disabled && !problem && input.success) onGenerate(input.data)
-  }}>
-    <label htmlFor={`${id}-profile`}>视频模型</label>
-    <select id={`${id}-profile`} value={profile?.profileId || ''} disabled={disabled} onChange={event => { setProfileId(event.target.value); setSelectedId('') }}>
-      {!profile && <option value="">尚未配置</option>}
-      {profiles.map(profile => <option key={profile.profileId} value={profile.profileId}>{profile.displayName}</option>)}
-    </select>
-    <label htmlFor={`${id}-operation`}>视频创作方式{availableOperations.length === 1 ? '（固定）' : ''}</label>
-    <select id={`${id}-operation`} value={operation || ''} disabled={disabled || availableOperations.length === 1} onChange={event => setOperation(event.target.value as VideoGenerationInput['operation'])}>
-      {availableOperations.map(value => <option key={value} value={value}>{value === 'image-to-video' ? '图片生成视频' : '文字生成视频'}</option>)}
-    </select>
-    {operation === 'image-to-video' && <>
-      <div className="media-subheading"><span>本地参考图 · 单选</span><button type="button" className="media-command" disabled={disabled} onClick={onImport}><ImagePlus size={14} />从系统选择视频参考图</button></div>
-      <fieldset className="video-references" disabled={disabled}><legend className="sr-only">选择一张视频参考图</legend>
-        {localReferences.length ? localReferences.map((asset, index) => <label className="media-reference-select video-reference" key={asset.localAssetId}>
-          <input type="radio" name={`${id}-reference`} aria-label={`视频参考图 ${index + 1}`} checked={selected?.localAssetId === asset.localAssetId} disabled={asset.status !== 'SAVED' || !caps || asset.size > caps.maxInputBytes} onChange={() => setSelectedId(asset.localAssetId)} />
-          <span>视频参考图 {index + 1}<small>{asset.width} × {asset.height} · {asset.mime} · {mediaSaveLabels[asset.status].label}{caps && asset.size > caps.maxInputBytes ? ' · 超出当前配置大小限制' : ''}</small></span>
-        </label>) : <p className="artifact-empty">尚无本地视频参考图</p>}
-      </fieldset>
-    </>}
-    {caps && parameters && <div className="media-specs">
-      <label>时长{caps.durationsSeconds.length === 1 ? '（固定）' : ''}<select aria-label="视频时长" value={parameters.durationSeconds} disabled={disabled || caps.durationsSeconds.length === 1} onChange={event => changeParameters({ durationSeconds: Number(event.target.value) })}>{caps.durationsSeconds.map(value => <option key={value} value={value}>{value} 秒</option>)}</select></label>
-      <label>比例{caps.aspectRatios.length === 1 ? '（固定）' : ''}<select aria-label="视频比例" value={parameters.aspectRatio} disabled={disabled || caps.aspectRatios.length === 1} onChange={event => changeParameters({ aspectRatio: event.target.value })}>{caps.aspectRatios.map(value => <option key={value}>{value}</option>)}</select></label>
-      <label>分辨率{caps.resolutions.length === 1 ? '（固定）' : ''}<select aria-label="视频分辨率" value={parameters.resolution} disabled={disabled || caps.resolutions.length === 1} onChange={event => changeParameters({ resolution: event.target.value as typeof parameters.resolution })}>{caps.resolutions.map(value => <option key={value}>{value}</option>)}</select></label>
-      <label>帧率{caps.frameRates.length === 1 ? '（固定）' : ''}<select aria-label="视频帧率" value={parameters.frameRate} disabled={disabled || caps.frameRates.length === 1} onChange={event => changeParameters({ frameRate: Number(event.target.value) })}>{caps.frameRates.map(value => <option key={value} value={value}>{value} fps</option>)}</select></label>
-      <label>音频{audioModes.length === 1 ? '（固定）' : ''}<select aria-label="视频音频" value={String(parameters.audio)} disabled={disabled || audioModes.length === 1} onChange={event => changeParameters({ audio: event.target.value === 'true' })}>{audioModes.map(value => <option key={String(value)} value={String(value)}>{value ? '含音频' : '无音频'}</option>)}</select></label>
-      <label>格式{caps.outputFormats.length === 1 ? '（固定）' : ''}<select aria-label="视频输出格式" value={parameters.outputFormat} disabled={disabled || caps.outputFormats.length === 1} onChange={event => changeParameters({ outputFormat: event.target.value as typeof parameters.outputFormat })}>{caps.outputFormats.map(value => <option key={value} value={value}>{value === 'video/mp4' ? 'MP4' : 'WebM'}</option>)}</select></label>
-    </div>}
-    <label htmlFor={`${id}-brief`}>视频创作需求</label>
-    <textarea id={`${id}-brief`} rows={4} maxLength={4000} value={brief} disabled={disabled} placeholder="画面内容、镜头运动、商品特征与动作要求" onChange={event => setBrief(event.target.value)} />
-    {problem && <p className="media-notice">{problem}</p>}
-    <button type="submit" className="media-command media-primary" disabled={disabled || !!problem} aria-describedby={pending || notice ? `${id}-feedback` : undefined}><Film size={14} />提交视频生成</button>
-    <VideoFeedback id={`${id}-feedback`} pending={pending} notice={notice} />
-  </form>
-}
 
 export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
   jobs: VideoJobView[]; busy: boolean; onAction: (job: VideoJobView, action: JobAction) => void
@@ -197,19 +96,19 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
 }
 
 /** Presentation only: no IPC, remote URLs or eager media reads. */
-export function VideoTaskContent({ taskId, view: value, references, busy, pending, notice, error, onRefresh, onImport, onGenerate, onAction, onPreview, onExport }: {
-  taskId: string; view: VideoTaskView | null; references: MediaAssetView[]; busy: boolean; pending: Command | null; notice: Notice | null; error: string | null
-  onRefresh: () => void; onImport: () => void; onGenerate: (input: VideoGenerationInput) => void
+export function VideoTaskContent({ taskId, view: value, busy, pending, notice, error, onRefresh, onAction, onPreview, onExport }: {
+  taskId: string; view: VideoTaskView | null; busy: boolean; pending: Command | null; notice: Notice | null; error: string | null
+  onRefresh: () => void
   onAction: (job: VideoJobView, action: JobAction) => void; onPreview: (selection: OutputSelection) => void; onExport: (selection: OutputSelection) => void
 }) {
   const view = safeView(value, taskId)
   if (!view) return null
-  return <section className="artifact-section media-artifacts video-artifacts" aria-label="视频创作与成果">
-    <h3><Film size={15} />视频创作与成果{view.mock && <span className="video-mock-badge">Mock · 不收费</span>}</h3>
+  return <section className="artifact-section media-artifacts video-artifacts" aria-label="视频成果">
+    <h3><Film size={15} />视频成果{view.mock && <span className="video-mock-badge">Mock · 不收费</span>}</h3>
     {view.mock && <p className="media-notice">仅供 Mock 视频验证 · MOCK_NOT_CHARGED</p>}
     {error && <p className="media-notice media-tone-error" role="alert">{error}<button type="button" className="media-icon-button" disabled={!!pending} title="重新读取视频任务" aria-label="重新读取视频任务" onClick={onRefresh}><RefreshCw size={14} /></button></p>}
-    <VideoCreationForm taskId={taskId} runtime={view.runtime} references={references} busy={busy} pending={pending} notice={notice} onImport={onImport} onGenerate={onGenerate} />
-    {view.jobs.length ? <><h4>视频任务与成果</h4><VideoJobList jobs={view.jobs} busy={busy} onAction={onAction} onPreview={onPreview} onExport={onExport} /></> : <p className="artifact-empty">尚无视频任务</p>}
+    <VideoFeedback pending={pending} notice={notice} />
+    {view.jobs.length ? <VideoJobList jobs={view.jobs} busy={busy} onAction={onAction} onPreview={onPreview} onExport={onExport} /> : <p className="artifact-empty">尚无视频任务</p>}
   </section>
 }
 
@@ -265,7 +164,6 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, notice, onClose,
 
 function VideoTaskController({ taskId }: { taskId: string }) {
   const [view, setView] = useState<VideoTaskView | null>(null)
-  const [references, setReferences] = useState<MediaAssetView[]>([])
   const [pending, setPending] = useState<Command | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -284,17 +182,13 @@ function VideoTaskController({ taskId }: { taskId: string }) {
       const result = await window.electronAPI.getTaskVideo(taskId)
       if (!current()) return
       if (!result.success) { setError(failure(result, '读取视频任务失败')); return }
-      if (result.data === null) { setView(null); setReferences([]); setPreview(null); setError(null); return }
+      if (result.data === null) { setView(null); setPreview(null); setError(null); return }
       const next = safeView(result.data, taskId)
-      if (!next) { setView(null); setReferences([]); setPreview(null); setError('视频任务数据无效'); return }
+      if (!next) { setView(null); setPreview(null); setError('视频任务数据无效'); return }
       setView(next)
       setError(null)
-      const refs = await window.electronAPI.getVideoReferences(taskId)
-      if (!current()) return
-      setReferences(refs.success ? safeReferences(refs.data, taskId) : [])
-      if (!refs.success) setError(failure(refs, '读取视频参考图失败'))
     } catch {
-      if (current()) { setReferences([]); setError('读取视频任务失败，请稍后重试') }
+      if (current()) setError('读取视频任务失败，请稍后重试')
     }
   }, [taskId])
 
@@ -329,7 +223,7 @@ function VideoTaskController({ taskId }: { taskId: string }) {
       if (command !== 'export') await refresh(true)
     } catch {
       if (alive.current && lifetime.current === epoch) {
-        setNotice({ message: command === 'generate' ? '未收到提交结果，请查看原任务记录，不要重复提交。' : '视频操作失败，请稍后重试', tone: 'error' })
+        setNotice({ message: '视频操作失败，请稍后重试', tone: 'error' })
         if (command !== 'export') await refresh(true)
       }
     } finally {
@@ -342,9 +236,8 @@ function VideoTaskController({ taskId }: { taskId: string }) {
   useEffect(() => { if (preview && !previewAvailable) setPreview(null) }, [preview, previewAvailable])
   const busy = pending !== null || error !== null
   return <>
-    <VideoTaskContent taskId={taskId} view={view} references={references} busy={busy} pending={pending} notice={notice} error={error}
-      onRefresh={() => { void refresh() }} onImport={() => { void run('import', api => api.importVideoReferences(taskId)) }}
-      onGenerate={input => { void run('generate', api => api.generateTaskVideo({ taskId, input })) }}
+    <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending} notice={notice} error={error}
+      onRefresh={() => { void refresh() }}
       onAction={(job, action) => { void run(action, api => action === 'resume' ? api.resumeVideoTracking({ taskId, jobId: job.jobId }) : api.retryVideoSave({ taskId, jobId: job.jobId })) }}
       onPreview={setPreview} onExport={exportOutput} />
     {preview && previewAvailable && <VideoPreviewDialog key={`${taskId}:${preview.jobId}:${preview.outputId}`} taskId={taskId} selection={preview} busy={busy} pending={pending} notice={notice} onClose={() => setPreview(null)} onExport={() => exportOutput(preview)} />}

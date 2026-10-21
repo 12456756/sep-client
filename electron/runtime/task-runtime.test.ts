@@ -398,6 +398,73 @@ describe('SEP platform-shaped conversation fixture', () => {
 })
 
 describe('conversation task lifecycle', () => {
+  for (const control of ['pause', 'cancel', 'shutdown'] as const) {
+    it(`does not start a worker when knowledge retrieval resolves after ${control}`, async () => {
+      const userData = await makeUserDataDir()
+      const manager = new TaskManager(userData)
+      await manager.initialize()
+      await manager.setCurrentUser('member-a', 'enterprise-a')
+      const task = await manager.createTask('chat', 'question', undefined, 'employee-a')
+      let signal: AbortSignal | undefined
+      let resolveSearch!: () => void
+      const search = new Promise<void>(resolve => { resolveSearch = resolve })
+      let started = false
+      const runtime = new TaskRuntime({
+        taskManager: manager, taskRunStore: new TaskRunStore(userData),
+        getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+        resolveEmployee: subscriptionId => ({ subscriptionId, modelId: 'model-a', gatewayUrl: 'http://gateway' }),
+        knowledgeSearch: async (_query, searchSignal) => {
+          signal = searchSignal
+          await search
+          return { status: 'NO_MATCH', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1, results: [] }
+        },
+        createWorker: () => ({
+          async run() { started = true }, async abort() {}, async dispose() {},
+        }),
+      })
+      await runtime.executeTask(task.id, { conversation: true })
+      await waitFor(() => signal !== undefined)
+      const stopping = control === 'pause' ? runtime.pauseTask(task.id)
+        : control === 'cancel' ? runtime.cancelTask(task.id) : runtime.stopAll()
+      await waitFor(() => signal?.aborted === true)
+      resolveSearch()
+      await stopping
+      assert.equal(started, false, 'a late search response must not start the cancelled worker')
+      const settled = await manager.getTask(task.id)
+      assert.equal(settled?.activeRunId, null)
+      assert.equal(settled?.status, control === 'shutdown' ? TaskStatus.INTERRUPTED : TaskStatus.PAUSED)
+    })
+  }
+
+  it('bounds retrieval queries without truncating a long user message sent to the worker', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const prompt = 'a'.repeat(1_500)
+    const task = await manager.createTask('chat', prompt, undefined, 'employee-a')
+    let query = ''
+    let workerPrompt = ''
+    const runtime = new TaskRuntime({
+      taskManager: manager, taskRunStore: new TaskRunStore(userData),
+      getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+      resolveEmployee: subscriptionId => ({ subscriptionId, modelId: 'model-a', gatewayUrl: 'http://gateway' }),
+      knowledgeSearch: async value => {
+        query = value
+        assert.ok(value.length <= 1_000)
+        return { status: 'NO_MATCH', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1, results: [] }
+      },
+      createWorker: () => ({
+        async run(value) { workerPrompt = value }, async abort() {}, async dispose() {},
+      }),
+    })
+    await runtime.executeTask(task.id, { conversation: true })
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    assert.equal(query, prompt.slice(0, 1_000))
+    assert.ok(workerPrompt.startsWith(prompt))
+    assert.match(workerPrompt, /没有检索到匹配资料/)
+  })
+
   it('keeps a conversation task open and reuses its shared session file across turns', async () => {
     const userData = await makeUserDataDir()
     const manager = new TaskManager(userData)

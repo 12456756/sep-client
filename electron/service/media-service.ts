@@ -7,6 +7,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import type { LocalMediaJob, MediaCapabilities, MediaGatewayPort, MediaGenerationInput, MediaReceipt, MediaStorePort } from '../domain/media'
 import type { MediaHostTools } from '../domain/media-tools'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
+import { mediaToolGenerationInputSchema } from '../../src/shared/media-host'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
 import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { imageAspectRatio } from '../../src/shared/media-spec'
@@ -44,6 +45,7 @@ export class MediaService {
   private sessionController = new AbortController()
   private readonly activities = new Map<string, Activity>()
   private readonly caps = new Map<string, MediaCapabilities | null>()
+  private readonly selectedReferences = new Map<string, string[]>()
   private readonly submitting = new Set<string>()
   private readonly recoveryQueue = new Map<string, { taskId: string; jobId: string }>()
   private readonly taskStops = new Map<string, number>()
@@ -135,7 +137,18 @@ export class MediaService {
     return { capabilities, unavailableReason: capabilities ? null : !this.options.gateway
       ? 'SEP 图片执行接口尚未接通，当前不能生成图片，普通对话不受影响。'
       : '当前员工未提供可用的图片能力，普通对话不受影响。',
-      assets: assets.map(asset => this.viewAsset(asset)), jobs: jobs.map(job => this.viewJob(job, assets)), archived }
+      assets: assets.map(asset => this.viewAsset(asset)), selectedReferenceIds: this.selectedReferences.get(key) ?? [],
+      jobs: jobs.map(job => this.viewJob(job, assets)), archived }
+  }
+  async setReferenceSelection(taskId: string, assetIds: readonly string[]): Promise<void> {
+    const { scope } = await this.task(taskId), epoch = this.epoch
+    if (new Set(assetIds).size !== assetIds.length || assetIds.length > 16) throw new AppError('INVALID_ARGUMENT')
+    if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE')
+    const assets = await this.options.store.listAssets(scope, taskId)
+    this.assert(scope, epoch)
+    const available = new Set(assets.filter(asset => asset.source === 'reference' && asset.status === 'SAVED').map(asset => asset.localAssetId))
+    if (assetIds.some(assetId => !available.has(assetId))) throw new AppError('INVALID_ARGUMENT')
+    this.selectedReferences.set(this.key(scope, taskId), [...assetIds])
   }
   async importReferences(taskId: string, paths: readonly string[]): Promise<MediaAssetView[]> {
     const { scope } = await this.task(taskId), epoch = this.epoch
@@ -182,11 +195,45 @@ export class MediaService {
       if (!capabilities.tools.includes(name)) throw new AppError('PERMISSION_DENIED')
       if (name === 'media_get_capabilities') {
         z.object({}).strict().parse(raw)
-        const referenceAssets = (await this.options.store.listAssets(scope, input.taskId)).map(asset => this.viewAsset(asset))
+        const selected = new Set(this.selectedReferences.get(this.key(scope, input.taskId)) ?? [])
+        const referenceAssets = (await this.options.store.listAssets(scope, input.taskId))
+          .filter(asset => selected.has(asset.localAssetId)).map(asset => this.viewAsset(asset))
         this.assert(scope, epoch)
         return { capabilities, referenceAssets }
       }
-      if (name === 'media_generate_image') return this.generate(input.taskId, parseMediaInput(raw), { ...input, capabilities }, signal)
+      if (name === 'media_generate_image') {
+        const requested = mediaToolGenerationInputSchema.parse(raw)
+        const profile = requested.profileId
+          ? capabilities.profiles.find(item => item.profileId === requested.profileId)
+          : capabilities.profiles.find(item => item.profileId === capabilities.defaultProfileId) ?? capabilities.profiles[0]
+        if (!profile) throw new AppError('INVALID_ARGUMENT', { message: '当前授权配置没有可用的图片模型。' })
+        const localAssetIds = requested.localAssetIds ?? this.selectedReferences.get(this.key(scope, input.taskId)) ?? []
+        const operation = requested.operation ?? (localAssetIds.length && profile.operations.includes('edit')
+          ? 'edit' : profile.operations.includes('generate') ? 'generate' : 'edit')
+        const requestedParameters = requested.parameters ?? {}
+        const ratios = profile.allowedAspectRatios.filter(ratio => !profile.allowedSizes?.length || profile.allowedSizes.some(size => {
+          const mapped = imageAspectRatio(size)
+          return mapped === undefined || mapped === ratio
+        }))
+        if (requestedParameters.aspectRatio && !ratios.includes(requestedParameters.aspectRatio)) throw new AppError('INVALID_ARGUMENT')
+        const sizes = (profile.allowedSizes ?? []).filter(size => {
+          const ratio = imageAspectRatio(size)
+          return ratio === undefined || profile.allowedAspectRatios.includes(ratio)
+        })
+        const size = requestedParameters.size
+        if (size && !sizes.includes(size)) throw new AppError('INVALID_ARGUMENT')
+        const aspectRatio = requestedParameters.aspectRatio ?? (size && imageAspectRatio(size)) ??
+          (profile.defaultSize && imageAspectRatio(profile.defaultSize)) ?? ratios[0]
+        const defaultSize = profile.defaultSize && sizes.includes(profile.defaultSize) ? profile.defaultSize : sizes[0]
+        const quality = requestedParameters.quality ?? profile.defaultQuality ?? profile.allowedQualities?.[0]
+        const count = requestedParameters.count ?? 1
+        if (!aspectRatio || (quality && !profile.allowedQualities?.includes(quality)) || (size && imageAspectRatio(size) && imageAspectRatio(size) !== aspectRatio)) {
+          throw new AppError('INVALID_ARGUMENT')
+        }
+        const normalized = parseMediaInput({ profileId: profile.profileId, operation, localAssetIds, creativeBrief: requested.creativeBrief,
+          parameters: { aspectRatio, count, ...(size ?? defaultSize ? { size: size ?? defaultSize } : {}), ...(quality ? { quality } : {}) } })
+        return this.generate(input.taskId, normalized, { ...input, capabilities }, signal)
+      }
       const args = z.object({ jobId: mediaId, cancelUpstream: z.boolean().optional() }).strict().parse(raw)
       if (name === 'media_cancel_job') await this.cancel(input.taskId, args.jobId, args.cancelUpstream ?? false, input, signal)
       return this.getJobView(input.taskId, args.jobId)
@@ -559,7 +606,7 @@ export class MediaService {
     }
   }
   async stopAll(): Promise<void> {
-    this.epoch++; this.caps.clear(); this.taskStops.clear(); this.jobStops.clear()
+    this.epoch++; this.caps.clear(); this.selectedReferences.clear(); this.taskStops.clear(); this.jobStops.clear()
     this.recoveryQueue.clear()
     this.sessionController.abort()
     this.sessionController = new AbortController()

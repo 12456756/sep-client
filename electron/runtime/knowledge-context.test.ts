@@ -26,6 +26,21 @@ describe('knowledge context', () => {
     assert.notEqual(noMatch, unavailable)
   })
 
+  for (const oversized of ['content', 'metadata', 'query'] as const) {
+    it(`caps the entire context including oversized ${oversized} and retains its closing marker`, () => {
+      const large = 'x'.repeat(30_000)
+      const context = formatKnowledgeContext(oversized === 'query' ? large : 'question', {
+        status: 'MATCHED', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1,
+        results: [{ sourceId: 'source', knowledgeBaseId: 'kb', knowledgeBaseName: 'Policies',
+          documentId: 'doc', documentName: oversized === 'metadata' ? large : 'Handbook', versionId: 'v1',
+          content: oversized === 'content' ? large : 'Reference', location: {} }],
+      })
+      assert.ok(context.length <= 20_000, `context was ${context.length} characters`)
+      assert.match(context, /截断/)
+      assert.ok(context.endsWith('</sep-knowledge-context>'))
+    })
+  }
+
   it('redacts only the marked knowledge block in model-input logs', () => {
     const input = 'User question\n<sep-knowledge-context>secret query\nprivate document text</sep-knowledge-context>\nContinue'
     const safe = redactKnowledgeContextForLog(input)

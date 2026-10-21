@@ -54,7 +54,7 @@ export const knowledgeBasePageSchema = z.object({
   capabilities: flags, limits: z.record(z.string(), z.unknown()),
 })
 export function restoreKnowledgeFilename(value: string): string {
-  if (!/[\u0080-\u00ff]/.test(value) || value.includes('\uFFFD')) return value
+  if (!/[\u0080-\u00ff]/.test(value) || [...value].some(character => character.codePointAt(0)! > 0xff)) return value
   try {
     const bytes = Uint8Array.from(value, character => character.codePointAt(0)!)
     const restored = new TextDecoder('utf-8', { fatal: true }).decode(bytes)

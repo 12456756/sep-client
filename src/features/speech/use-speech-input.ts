@@ -113,6 +113,7 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
 
   return {
     owner, busy, active, available, phase: owns ? snapshot.phase : 'idle', seconds: owns ? snapshot.seconds : 0,
+    isComposing: () => composing.current,
     error: owns ? snapshot.error : null, notice: owns ? snapshot.notice : null,
     start: () => {
       input.current?.focus()

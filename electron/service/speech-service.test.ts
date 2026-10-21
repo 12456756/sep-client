@@ -26,6 +26,39 @@ function fixture(initial: SpeechPermission = 'prompt') {
 }
 
 describe('speech authorization and session isolation', () => {
+  it('restores consent when a recording is cancelled during grant persistence', async () => {
+    let persisted: SpeechPermission = 'prompt'
+    let finishWrite!: () => void
+    const writing = new Promise<void>(resolve => { finishWrite = resolve })
+    let startedWrite!: () => void
+    const started = new Promise<void>(resolve => { startedWrite = resolve })
+    const service = new SpeechService({
+      scope: { currentScope: () => ({ enterpriseId: 'e', memberId: 'u' }) },
+      settings: { read: async () => persisted, write: async value => {
+        if (value === 'granted') { startedWrite(); await writing }
+        persisted = value
+      } },
+      microphone: new SpeechSystemAccess({ platform: 'win32', status: () => 'granted', request: async () => true, open: async () => {} }),
+      runtime: async () => assert.fail('Must not load runtime'), stopRuntime: () => {},
+    })
+    const pending = service.begin('a', async () => true)
+    await started
+    service.cancel('a')
+    finishWrite()
+    assert.equal((await pending).ready, false)
+    assert.equal(await service.getPermission(), 'prompt')
+    assert.equal(persisted, 'prompt')
+  })
+  it('releases the recording slot when system access is revoked before recognition', async () => {
+    const f = fixture('granted')
+    try {
+      await f.service.begin('a', f.ask)
+      f.setSystemStatus('denied')
+      await assert.rejects(f.service.recognize({ recordingId: 'a', sampleRate: 16000, samples: new Float32Array(1600) }))
+      f.setSystemStatus('granted')
+      assert.equal((await f.service.begin('b', f.ask)).ready, true)
+    } finally { f.service.stop() }
+  })
   it('persists first consent without starting a microphone session', async () => {
     const f = fixture()
     assert.deepEqual(await f.service.begin('first', f.ask), { recordingId: 'first', ready: false, permission: 'granted' })

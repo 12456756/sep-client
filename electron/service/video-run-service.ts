@@ -1,5 +1,5 @@
-import { z } from 'zod'
-import { videoGenerationInputSchema } from '../../src/shared/video-host'
+import { videoGenerationInputSchema, videoToolGenerationInputSchema, videoToolJobInputSchema } from '../../src/shared/video-host'
+import { videoFormParameters } from '../../src/shared/media-view'
 import { videoBillingPending, videoRuntimeSchema } from '../../src/shared/video-media'
 import { videoLocalIdSchema } from '../domain/video-media'
 import type { VideoHostTools, VideoRunPort, VideoToolName } from '../domain/video-tools'
@@ -110,15 +110,32 @@ export class VideoRunService implements VideoRunPort {
       validate()
       if (!current.success || (current.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real') || !current.data.executionAvailable || !current.data.tools.includes(name)) throw new AppError('PERMISSION_DENIED')
       if (name === 'video_get_job') {
-        const args = z.object({ jobId: videoLocalIdSchema }).strict().parse(raw)
+        const args = videoToolJobInputSchema.parse(raw)
         const view = await abortableVideo(host.getTaskVideo(input.taskId), signal)
         validate()
+        if (!args.jobId) {
+          const referenceAssets = await abortableVideo(host.getReferences(input.taskId), signal)
+          validate()
+          return { ...view, runtime: current.data, referenceAssets }
+        }
         const job = view.jobs.find(job => job.jobId === args.jobId)
         if (!job) throw new AppError('NOT_FOUND')
         return job
       }
-      const value = videoGenerationInputSchema.parse(raw)
-      if ((name === 'video_from_image') !== (value.operation === 'image-to-video')) throw new AppError('INVALID_ARGUMENT')
+      const requestResult = videoToolGenerationInputSchema.safeParse(raw)
+      if (!requestResult.success) throw new AppError('INVALID_ARGUMENT')
+      const request = requestResult.data
+      const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
+      if (request.operation !== undefined && request.operation !== operation || request.localAssetIds.length !== (operation === 'image-to-video' ? 1 : 0)) throw new AppError('INVALID_ARGUMENT')
+      const profiles = current.data.profiles.filter(profile => profile.operations.includes(operation) &&
+        (operation === 'image-to-video' ? profile.capabilities.supportsImageToVideo : profile.capabilities.supportsTextToVideo))
+      const profile = request.profileId ? profiles.find(profile => profile.profileId === request.profileId)
+        : profiles.find(profile => profile.profileId === current.data.defaultProfileId) ?? profiles[0]
+      if (!profile) throw new AppError('PERMISSION_DENIED')
+      const parameters = videoFormParameters(current.data, profile, request.parameters)
+      // Normalization must not silently downgrade explicitly requested specifications.
+      if (!parameters || Object.entries(request.parameters ?? {}).some(([key, value]) => parameters[key as keyof typeof parameters] !== value)) throw new AppError('INVALID_ARGUMENT')
+      const value = videoGenerationInputSchema.parse({ ...request, profileId: profile.profileId, operation, parameters })
       const job = await host.generate(input.taskId, value, signal, { runId: input.runId, requestApproval: request => { validate(); return input.requestApproval(request) } })
       run.jobs.add(job.jobId)
       validate()

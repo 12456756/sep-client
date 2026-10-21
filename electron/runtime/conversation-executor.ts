@@ -202,14 +202,19 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
-      if (queued.conversation && this.options.knowledgeSearch) {
+      if (queued.conversation && this.options.knowledgeSearch && active.control === 'none') {
+        const knowledgeQuery = queued.prompt.trim().slice(0, 1_000).trimEnd()
         let result: KnowledgeSearchResult | null = null
         try {
-          result = await this.options.knowledgeSearch(queued.prompt, knowledgeCancellation.signal)
+          result = await this.options.knowledgeSearch(knowledgeQuery, knowledgeCancellation.signal)
         } catch (error) {
           if (knowledgeCancellation.signal.aborted) throw error
         }
-        workerPrompt = `${workerPrompt}\n\n${formatKnowledgeContext(queued.prompt, result)}`
+        workerPrompt = `${workerPrompt}\n\n${formatKnowledgeContext(knowledgeQuery, result)}`
+      }
+      if (active.control !== 'none') {
+        await this.finalize(active, queued, scope, runCreated)
+        return
       }
       await worker.run(workerPrompt)
       if (active.control === 'none') await Promise.all([this.options.media?.waitForRun(taskId, runId), this.options.video?.waitForRun(taskId, runId)])

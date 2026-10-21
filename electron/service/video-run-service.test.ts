@@ -68,6 +68,48 @@ test('run facade binds two host approvals to real run and awaits original output
   await assert.rejects(tools.execute('video_from_image', input()))
 })
 
+test('run resolves the authorized profile and defaults without model-supplied configuration', async () => {
+  const f = await setup(), tools = await f.service.prepareRun(f.runInput)
+  assert.ok(tools)
+  try {
+    const job = await tools.execute('video_from_image', { creativeBrief: input().creativeBrief, localAssetIds: ['asset-a'] }) as { jobId: string }
+    const stored = await f.store.getJob(scope, 'task-a', job.jobId)
+    assert.equal(stored?.request.profileId, f.state.runtime.defaultProfileId)
+    assert.deepEqual(stored?.request.parameters, input().parameters)
+    assert.equal(f.approvals.length, 2)
+    await f.service.waitForRun('task-a', 'run-a')
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { await f.service.finishRun('task-a', 'run-a') }
+})
+
+test('unsupported explicit specifications fail before quoting, approval or upload', async () => {
+  const f = await setup(), tools = await f.service.prepareRun(f.runInput)
+  assert.ok(tools)
+  try {
+    await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 12 } }), { code: 'INVALID_ARGUMENT' })
+    await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 'invalid' } }), { code: 'INVALID_ARGUMENT' })
+    assert.equal(f.gateway.calls.quote, 0)
+    assert.equal(f.state.uploads, 0)
+    assert.equal(f.approvals.length, 0)
+  } finally { await f.service.finishRun('task-a', 'run-a') }
+})
+
+test('an empty video status query returns current video profiles and task-local references', async () => {
+  const f = await setup()
+  f.options.references = { list: async () => [{ localAssetId: 'asset-a', taskId: 'task-a', jobId: null, outputId: null,
+    source: 'reference', mime: 'image/png', size: 30, width: 1, height: 1, status: 'SAVED' }], import: async () => [] }
+  const service = new VideoRunService(f.options)
+  const tools = await service.prepareRun(f.runInput)
+  assert.ok(tools)
+  try {
+    const result = await tools.execute('video_get_job', {}) as { runtime: unknown; jobs: unknown[]; referenceAssets: { localAssetId: string }[] }
+    assert.deepEqual(result.runtime, f.state.runtime)
+    assert.deepEqual(result.jobs, [])
+    assert.equal(result.referenceAssets[0].localAssetId, 'asset-a')
+    assert.equal(f.gateway.calls.submit, 0)
+  } finally { await service.finishRun('task-a', 'run-a') }
+})
+
 test('real run cannot finish a saved video while billing is reconciling and restores original billing on a later run', async () => {
   const f = await setup()
   f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, protocolVersion: 2, executionMode: 'real',

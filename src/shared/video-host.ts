@@ -16,6 +16,18 @@ export const videoGenerationInputSchema = z.object({
 })
 export type VideoGenerationInput = z.infer<typeof videoGenerationInputSchema>
 
+/** Model requests describe intent; the host resolves the current authorized configuration. */
+export const videoToolGenerationInputSchema = z.object({
+  creativeBrief: z.string().trim().min(1).max(4000),
+  localAssetIds: z.array(id).max(1).default([]),
+  parameters: videoParametersSchema.partial().optional(),
+  // Retain previously persisted tool calls without requiring new calls to know these fields.
+  profileId: id.optional(),
+  operation: videoOperationSchema.optional(),
+}).strict().refine(value => new Set(value.localAssetIds).size === value.localAssetIds.length)
+
+export const videoToolJobInputSchema = z.object({ jobId: id.optional() }).strict()
+
 /** No disk paths, remote reference IDs, prompts, quotes or upstream metadata. */
 export interface VideoJobView {
   jobId: string

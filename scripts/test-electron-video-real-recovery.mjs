@@ -98,7 +98,7 @@ try {
       args: [resolve('out/video-real-recovery/main/index.mjs')], env, timeout: 30_000 })
     page = await application.firstWindow()
     await page.getByRole('heading', { name: '真实视频 · 原任务保存与恢复验收', exact: true }).waitFor({ timeout: 25_000 })
-    await page.getByRole('region', { name: '视频创作与成果' }).nth(1).waitFor({ timeout: 25_000 })
+    await page.getByRole('region', { name: '视频成果', exact: true }).nth(1).waitFor({ timeout: 25_000 })
     const before = await inspect()
     assert.equal(before.identities.length, 2)
     if (baseline) assert.deepEqual(before.identities, baseline)

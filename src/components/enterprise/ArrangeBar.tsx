@@ -10,7 +10,7 @@
  */
 
 import { MapPin, Send, X } from 'lucide-react';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { isSubmitEnter } from '../../shared/composer-shortcut';
 import type { SiliconEmployee } from '../../features/enterprise/types';
 
@@ -40,6 +40,7 @@ function siteLabel(path: string): string {
 }
 
 export function ArrangeBar({ employees, busy, onSend, onChooseSite }: Props) {
+  const composing = useRef(false);
   const [text, setText] = useState('');
   const [site, setSite] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
@@ -65,7 +66,9 @@ export function ArrangeBar({ employees, busy, onSend, onChooseSite }: Props) {
           placeholder={`告诉我你想让员工做什么，例如：${sample}，帮我整理一下上周的运营数据`}
           aria-label="要安排的工作"
           onChange={event => { setText(event.target.value); setNotice(null); }}
-          onKeyDown={event => { if (isSubmitEnter(event)) { event.preventDefault(); send(); } }}
+          onCompositionStart={() => { composing.current = true; }}
+          onCompositionEnd={() => { composing.current = false; }}
+          onKeyDown={event => { if (isSubmitEnter(event, composing.current)) { event.preventDefault(); send(); } }}
         />
 
         <div className="ent-arrangebar-foot">

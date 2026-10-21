@@ -26,7 +26,8 @@ async function launch() {
   application.process().stderr.on('data', chunk => { evidence.errors.push(String(chunk).slice(0, 2000)) })
   page = await application.firstWindow()
   page.on('pageerror', error => evidence.errors.push(error.message))
-  await page.getByRole('region', { name: '视频创作与成果' }).waitFor({ timeout: 20_000 })
+  await page.getByRole('region', { name: '视频成果', exact: true }).waitFor({ timeout: 20_000 })
+  assert.equal(await page.getByRole('region', { name: '视频成果', exact: true }).locator('form, select, textarea').count(), 0)
   await control(({ dialog }, path) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] }) }, referencePath)
 }
 async function close() {

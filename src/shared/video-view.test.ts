@@ -10,6 +10,8 @@ import { videoFormParameters } from './media-view'
 
 // Dynamic import keeps TSX outside the shared Node tsconfig's compilation graph.
 const { VideoTaskContent, VideoTaskPanel, VideoArtifactsPanel, videoOutputIsSaved } = await import(new URL('../components/workspace/VideoArtifactsPanel.tsx', import.meta.url).href)
+const { canImportVideoReference } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
+const { VideoCreationForm } = await import(new URL('../testing/VideoCreationForm.tsx', import.meta.url).href)
 
 const runtime: VideoRuntime = {
   protocolVersion: 1, executionAvailable: true, defaultProfileId: 'video-profile',
@@ -57,10 +59,20 @@ type Overrides = {
 }
 function panel(patch: Overrides = {}): string {
   return render(React.createElement(VideoTaskContent, {
-    taskId: 'task-1', view: { mock: true, runtime, jobs: [] }, references: [], busy: false, pending: null, notice: null, error: null,
-    onRefresh: noop, onImport: noop, onGenerate: noop, onAction: noop, onPreview: noop, onExport: noop, ...patch,
+    taskId: 'task-1', view: { mock: true, runtime, jobs: [] }, busy: false, pending: null, notice: null, error: null,
+    onRefresh: noop, onAction: noop, onPreview: noop, onExport: noop, ...patch,
   }))
 }
+function form(patch: Overrides = {}): string {
+  return render(React.createElement(VideoCreationForm, { taskId: 'task-1', runtime: patch.view?.runtime ?? runtime,
+    references: patch.references ?? [], busy: patch.busy ?? false, onImport: noop, onGenerate: noop }))
+}
+
+test('video results panel has no duplicate creation form or technical configuration', () => {
+  const html = panel()
+  assert.match(html, /视频成果/)
+  assert.doesNotMatch(html, /<form|<select|<textarea|视频模型|视频时长|提交视频生成|从系统选择视频参考图/)
+})
 
 test('real terminal billing stays visible and resumable while preserving measured output metadata', () => {
   const actual = { ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }
@@ -108,7 +120,7 @@ test('legacy real H3 audio stays fixed true while mock respects supportsAudio', 
   const silent = { capabilities: { ...caps, audioModes: [false], defaultAudio: false } }
   assert.deepEqual(videoAllowedAudioModes({ ...runtime, protocolVersion: 2, executionMode: 'real' }, silent), [false])
   assert.equal(videoFormParameters({ ...runtime, executionMode: 'real' }, runtime.profiles[0], { audio: false })?.audio, true)
-  const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [] } })
+  const html = form({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [] } })
   assert.deepEqual(options(html, '视频音频'), ['true'])
   assert.match(html, /音频（固定）<select aria-label="视频音频"[^>]*disabled=""/)
   for (const label of ['视频分辨率', '视频帧率', '视频输出格式']) assert.match(html, new RegExp(`aria-label="${label}"[^>]*disabled=""`))
@@ -118,9 +130,16 @@ test('video panel stays hidden for a disabled host and SSR never reads IPC', () 
   assert.equal(panel({ view: null }), '')
   assert.equal(VideoArtifactsPanel, VideoTaskPanel)
   assert.equal(render(React.createElement(VideoTaskPanel, { taskId: 'task-1' })), '')
-  assert.match(panel(), /视频创作与成果/)
+  assert.match(panel(), /视频成果/)
   assert.match(panel(), /Mock · 不收费/)
   assert.match(panel(), /MOCK_NOT_CHARGED/)
+})
+
+test('video reference import is available only for an authorized image-to-video profile', () => {
+  assert.equal(canImportVideoReference(runtime), true)
+  assert.equal(canImportVideoReference({ ...runtime, executionAvailable: false }), false)
+  assert.equal(canImportVideoReference({ ...runtime, tools: ['video_generate', 'video_get_job'] }), false)
+  assert.equal(canImportVideoReference({ ...runtime, profiles: [{ ...runtime.profiles[0], capabilities: { ...runtime.profiles[0].capabilities, supportsImageToVideo: false } }] }), false)
 })
 
 test('null host views cannot retain stale controls, jobs or command notices', () => {
@@ -131,15 +150,14 @@ test('null host views cannot retain stale controls, jobs or command notices', ()
 test('unavailable runtimes retain saved results while disabling creation', () => {
   const unavailable: VideoRuntime = { protocolVersion: 1, executionAvailable: false, defaultProfileId: null, tools: [], profiles: [] }
   const html = panel({ view: { mock: true, runtime: unavailable, jobs: [job({ generationStatus: 'SUCCEEDED', saveStatus: 'SAVED', outputs: [output] })] } })
-  assert.match(html, /当前没有可用的视频生成配置/)
-  assert.match(html, /type="submit"[^>]*disabled=""/)
+  assert.doesNotMatch(html, /<form|<select|<textarea|type="submit"/)
   assert.match(html, /预览视频成果 1/)
   assert.match(html, /导出视频成果 1/)
   assert.doesNotMatch(html, /从系统选择视频参考图|type="radio"/)
 })
 
 test('creation controls use exactly the runtime profile values, with no invented parameters', () => {
-  const html = panel({ references: [reference] })
+  const html = form({ references: [reference] })
   assert.deepEqual(options(html, '视频时长'), ['5', '8'])
   assert.deepEqual(options(html, '视频比例'), ['16:9', '9:16'])
   assert.deepEqual(options(html, '视频分辨率'), ['720p'])
@@ -159,7 +177,7 @@ test('default profile and enabled operations drive the form, including audio and
     capabilities: { ...runtime.profiles[0].capabilities, supportsImageToVideo: false, supportsAudio: true,
       durationsSeconds: [12], aspectRatios: ['4:3'], resolutions: ['1080p'], frameRates: [30], outputFormats: ['video/webm'] },
   }
-  const html = panel({ view: { mock: true, runtime: { ...runtime, defaultProfileId: textProfile.profileId, profiles: [...runtime.profiles, textProfile] }, jobs: [] } })
+  const html = form({ view: { mock: true, runtime: { ...runtime, defaultProfileId: textProfile.profileId, profiles: [...runtime.profiles, textProfile] }, jobs: [] } })
   assert.match(html, /value="text-profile" selected=""/)
   assert.deepEqual(options(html, '视频时长'), ['12'])
   assert.deepEqual(options(html, '视频比例'), ['4:3'])
@@ -171,24 +189,23 @@ test('default profile and enabled operations drive the form, including audio and
 })
 
 test('tool grants restrict otherwise supported operations and read-only runtimes disable generation', () => {
-  const limited = panel({ view: { mock: true, runtime: { ...runtime, tools: ['video_generate', 'video_get_job'] }, jobs: [] } })
+  const limited = form({ view: { mock: true, runtime: { ...runtime, tools: ['video_generate', 'video_get_job'] }, jobs: [] } })
   assert.match(limited, /文字生成视频/)
   assert.doesNotMatch(limited, /图片生成视频|type="radio"|从系统选择视频参考图/)
   const disabled = panel({ view: { mock: true, runtime: { ...runtime, executionAvailable: false, tools: [] }, jobs: [job()] } })
-  assert.match(disabled, /当前没有可用的视频生成配置/)
-  assert.match(disabled, /type="submit"[^>]*disabled=""/)
+  assert.doesNotMatch(disabled, /<form|<select|<textarea/)
   assert.match(disabled, /正在生成/)
 })
 
 test('reference selection is a single native radio group, scoped to this task and local references', () => {
-  const html = panel({ references: [reference, { ...reference, localAssetId: 'reference-2' },
+  const html = form({ references: [reference, { ...reference, localAssetId: 'reference-2' },
     { ...reference, localAssetId: 'wrong-task', taskId: 'task-2' }, { ...reference, localAssetId: 'an-output', source: 'output' }, reference] })
   const radios = Array.from(html.matchAll(/<input type="radio" name="([^"]+)"/g))
   assert.equal(radios.length, 2)
   assert.equal(new Set(radios.map(match => match[1])).size, 1)
   assert.match(html, /aria-label="视频参考图 1"/)
   assert.doesNotMatch(html, /checkbox|<img|<video|(?:src|href)=/)
-  const unavailable = panel({ references: [{ ...reference, status: 'MISSING' }, { ...reference, localAssetId: 'too-large', size: 4096 }] })
+  const unavailable = form({ references: [{ ...reference, status: 'MISSING' }, { ...reference, localAssetId: 'too-large', size: 4096 }] })
   assert.equal(Array.from(unavailable.matchAll(/<input type="radio"[^>]*disabled=""/g)).length, 2)
   assert.match(unavailable, /本地文件缺失/)
   assert.match(unavailable, /超出当前配置大小限制/)
@@ -316,24 +333,23 @@ test('unsafe cross-task identifiers, output URLs, invalid MIME and real-charge p
   assert.equal(panel({ view: { mock: true, runtime: { ...runtime, profiles: [{ ...runtime.profiles[0], profileId: 'file:///secret' }] }, jobs: [] } }), '')
 })
 
-test('plain error and profile text are escaped and feedback stays beside submit', () => {
+test('plain errors are escaped and feedback stays above results without revealing configuration text', () => {
   const attack = '<script>alert("unsafe")</script>'
   const html = panel({ view: { mock: true, runtime: { ...runtime, profiles: [{ ...runtime.profiles[0], displayName: attack }] }, jobs: [job({ error: attack })] },
-    busy: true, pending: 'generate', notice: { message: attack, tone: 'error' } })
+    busy: true, pending: 'export', notice: { message: attack, tone: 'error' } })
   assert.doesNotMatch(html, /<script>|dangerouslySetInnerHTML|(?:src|href)=/)
-  assert.equal(html.split('&lt;script&gt;').length - 1, 3)
-  assert.match(html, /提交视频生成<\/button><p[^>]*role="alert" aria-atomic="true">&lt;script&gt;/)
-  assert.match(html, /aria-describedby="[^"]+"/)
+  assert.equal(html.split('&lt;script&gt;').length - 1, 2)
+  assert.match(html, /role="alert" aria-atomic="true">&lt;script&gt;/)
+  assert.doesNotMatch(html, /<form|<select|<textarea/)
   assert.ok(html.indexOf('role="alert"') < html.indexOf('video-jobs'))
 })
 
 test('pending commands and export feedback are visible and disable all mutations', () => {
-  for (const pending of ['import', 'generate', 'export', 'resume', 'retry']) {
+  for (const pending of ['export', 'resume', 'retry']) {
     const html = panel({ busy: true, pending, references: [reference], view: { mock: true, runtime, jobs: [job({ generationStatus: 'SUCCEEDED', trackingStatus: 'INTERRUPTED', saveStatus: 'MISSING', outputs: [output] })] } })
     assert.match(html, /role="status" aria-atomic="true"/)
     assert.equal(html.split('正在处理视频操作').length - 1, 1)
-    assert.match(html, /<fieldset[^>]*disabled=""/)
-    assert.match(html, /<textarea[^>]*disabled=""/)
+    assert.doesNotMatch(html, /<fieldset|<textarea|<select/)
     assert.doesNotMatch(html, /<button(?![^>]*disabled="")[^>]*>/)
   }
   assert.match(panel({ notice: { message: '视频已导出', tone: 'success' } }), /media-tone-success" role="status" aria-atomic="true">视频已导出/)

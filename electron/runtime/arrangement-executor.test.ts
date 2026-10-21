@@ -373,6 +373,34 @@ describe('TaskRuntime arrangement controls', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })
 
+  it('does not prepare tool hosts after knowledge retrieval resolves for an aborted node', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-search-abort-'))
+    directories.push(root)
+    const arrangement = plan('task')
+    arrangement.nodes[0].knowledgeQuery = 'Internal policy'
+    let prepared = 0
+    let workers = 0
+    const executor = new ArrangementExecutor({
+      scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
+      workspaceRoot: root, arrangementSubscriptionId: employee.subscriptionId,
+      getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+      async onEvent() {}, async authorizeEmployee() { return employee },
+      knowledgeSearch: async (_query, signal) => {
+        await executor.abort()
+        assert.equal(signal?.aborted, true)
+        return { status: 'NO_MATCH', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1, results: [] }
+      },
+      media: { async prepareRun() { prepared++; return undefined }, async waitForRun() {}, async stopTask() {} },
+      createWorker: () => {
+        workers++
+        return { async run() {}, async abort() {}, async dispose() {} }
+      },
+    })
+    await executor.execute(arrangement, 'task', 'run')
+    assert.equal(prepared, 0)
+    assert.equal(workers, 0)
+  })
+
   it('attributes exact dependency prompts, partial outputs and approvals to distinct node attempts under each parent run', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-monitor-'))
     directories.push(root)

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ToolApprovalDialog } from '../components/ToolApprovalDialog'
-import { VideoCreationForm, VideoTaskPanel } from '../components/workspace/VideoArtifactsPanel'
+import { VideoTaskPanel } from '../components/workspace/VideoArtifactsPanel'
+import { VideoCreationForm } from './VideoCreationForm'
 import { MediaCreationForm } from '../components/workspace/MediaArtifactsPanel'
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope'
 import type { MediaGenerationInput, MediaProfile } from '../shared/media'
@@ -79,9 +80,27 @@ function VideoMockWindow() {
     <h1 style={{ fontSize: 24 }}>电商视频工作台</h1>
     <p style={{ color: '#625c5c', marginBottom: 24 }}>隔离验收窗口 · 模拟企业与任务 · 显式 mock · 不调用真实模型、不扣费</p>
     <VideoTaskPanel taskId="video-task-a" />
+    <ManualVideoFixture />
     <MediaParameterFixture />
     <ToolApprovalDialog request={request} onApprove={approve} onDeny={deny} />
   </main>
 }
 
 createRoot(document.getElementById('root')!).render(<VideoMockWindow />)
+
+function ManualVideoFixture() {
+  const [view, setView] = useState<Awaited<ReturnType<typeof window.electronAPI.getTaskVideo>>['data']>(null)
+  const [references, setReferences] = useState<Awaited<ReturnType<typeof window.electronAPI.getVideoReferences>>['data']>([])
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState<{ message: string; tone: 'error' } | null>(null)
+  useEffect(() => { void window.electronAPI.getTaskVideo('video-task-a').then(result => setView(result.data)) }, [])
+  if (!view) return null
+  return <section aria-label="视频提交验收"><VideoCreationForm taskId="video-task-a" runtime={view.runtime} references={references ?? []} busy={busy} notice={notice}
+    onImport={() => { void window.electronAPI.importVideoReferences('video-task-a').then(result => { if (result.success) setReferences(result.data) }) }}
+    onGenerate={input => {
+      setBusy(true); setNotice(null)
+      void window.electronAPI.generateTaskVideo({ taskId: 'video-task-a', input }).then(result => {
+        if (!result.success) setNotice({ message: result.error?.message ?? '视频提交失败', tone: 'error' })
+      }).finally(() => setBusy(false))
+    }} /></section>
+}
