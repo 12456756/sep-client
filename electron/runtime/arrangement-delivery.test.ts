@@ -14,7 +14,7 @@ import type { TaskExecutionEvent } from '../../src/shared/types'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>, media?: ArrangementExecutionOptions['media'], onEvent?: (event: TaskExecutionEvent) => void) {
+async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; stopReason?: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>, media?: ArrangementExecutionOptions['media'], onEvent?: (event: TaskExecutionEvent) => void) {
   const root = await mkdtemp(join(tmpdir(), 'sep-node-delivery-'))
   roots.push(root)
   await mkdir(join(root, 'deliverables'))
@@ -53,7 +53,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
           const progress = await options.onModelRequest?.('execution')
           assert.equal(saved?.state.nodes.find(node => node.nodeId === options.context.arrangementNodeId)?.modelRequestProgress?.executionRounds, progress?.executionRounds)
           const response = await onSubmit(options.context.modelId, iteration, root)
-          const correction = await options.onResponseSettled?.({ text: response.text, stopReason: 'stop' })
+          const correction = await options.onResponseSettled?.({ text: response.text, stopReason: response.stopReason ?? 'stop' })
           if (!correction) { await response.afterAccept?.(); return }
           prompt = correction.continueWith
         }
@@ -66,6 +66,44 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
 function submission(id: string): string { return JSON.stringify({ nodeId: id, summary: 'private summary '+id, finalDeliverables: [{ id: 'report', path: `deliverables/${id}.txt` }] }) }
 
 describe('automatic arrangement final file handover', () => {
+  it('accepts a complete long final reply and hands its validated file to the next node', async () => {
+    const summary = 'Detailed findings. '.repeat(200).trim()
+    const f = await fixture(async (id, _iteration, root) => {
+      const files = f.plan.nodes.find(node => node.id === id)!.deliverables!
+      for (const file of files) await writeFile(join(root, file.path), 'Final findings '+id)
+      const text = JSON.stringify({ nodeId: id, summary, finalDeliverables: files.map(({ id, path }) => ({ id, path })) })
+      assert.ok(text.length > 8192)
+      return { text }
+    })
+    for (const node of f.plan.nodes) node.deliverables = Array.from({ length: 24 }, (_, index) => ({
+      ...node.deliverables![0]!, id: `report-${index}`, path: `deliverables/${node.id}-${index}-${'p'.repeat(160)}.txt`,
+    }))
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(result.state.nodes.map(node => node.delivery?.validationAttempts), [1, 1])
+    assert.equal(result.state.nodes[0]?.delivery?.summary, summary)
+    assert.ok(f.contexts[1]?.fixedSystemPrompt?.includes(f.plan.nodes[0]!.deliverables![0]!.path))
+  })
+
+  for (const scenario of [
+    { text: '', stopReason: 'stop', issue: 'INVALID_SUBMISSION' },
+    { text: '', stopReason: 'length', issue: 'OUTPUT_TRUNCATED' },
+    { text: submission('a'), stopReason: 'length', issue: 'OUTPUT_TRUNCATED' },
+  ]) {
+    it(`rejects ${scenario.stopReason} with ${scenario.text ? 'valid JSON' : 'empty body'} even when files exist`, async () => {
+      const f = await fixture(async (id, _iteration, root) => {
+        await writeFile(join(root, `deliverables/${id}.txt`), 'Existing findings')
+        return scenario
+      })
+      const result = await f.executor.execute(f.plan, 'task', 'run')
+      assert.equal(result.status, 'failed')
+      assert.equal(result.state.nodes[0]?.delivery?.issues[0]?.code, scenario.issue)
+      assert.equal(result.state.nodes[0]?.delivery?.validationAttempts, 5)
+      assert.equal(result.state.nodes[1]?.status, 'blocked')
+      assert.equal(f.events.some(event => event.type === 'arrangement_node_completed'), false)
+    })
+  }
+
   it('waits for pending media outputs before validating final delivery', async () => {
     const nodesByRun = new Map<string, string>()
     const savedRuns = new Set<string>()

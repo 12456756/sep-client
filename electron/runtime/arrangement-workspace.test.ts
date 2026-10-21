@@ -120,10 +120,10 @@ for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: fal
           assert.equal((await manager.getAllTasks()).length, 0)
           assert.ok(!prompt.includes(names.enterpriseName))
           assert.ok(!prompt.includes(names.memberName))
-          await options.onEvent({
+          const event = {
             taskId: options.context.taskId, runId: options.context.runId,
             subscriptionId: employee.subscriptionId, sequence: 1,
-            type: 'text_delta', occurredAt: Date.now(),
+            type: 'text_delta' as const, occurredAt: Date.now(),
             data: { text: JSON.stringify({
               title: 'Research report',
               nodes: ['research', 'report'].map((id, index) => ({
@@ -136,7 +136,9 @@ for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: fal
                 dependsOn: index === 0 ? [] : ['research'], requiresUserConfirmation: false,
               })),
             }) },
-          })
+          }
+          await options.onEvent(event)
+          await options.onResponseSettled?.({ text: event.data.text, stopReason: 'stop' })
         },
         async abort() {}, async dispose() {},
       }),

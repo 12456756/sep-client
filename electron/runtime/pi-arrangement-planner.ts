@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { logger, type LogFields } from '../common/logger'
-import { planningErrorFields, planningFailure, type PlanningPhase } from '../errors/planning-diagnostics'
+import { planningErrorFields, type PlanningPhase } from '../errors/planning-diagnostics'
 import { AppError } from '../errors/app-error'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import {
@@ -107,6 +107,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       // must not turn unexpected tool calls into an unbounded agent loop.
       let rejectToolCall!: (error: AppError) => void
       const invalidToolCall = new Promise<never>((_resolve, reject) => { rejectToolCall = reject })
+      let settledResponse: { text: string; stopReason?: string } = { text: '' }
       const worker = this.createWorker(planningId, plannerEmployee, plannerModelId, event => {
         workerEvents.push(event)
         if (event.type === 'tool_execution_start') {
@@ -116,7 +117,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
           }))
           return
         }
-      })
+      }, async response => { settledResponse = response })
       let abortHandler: (() => void) | null = null
       const abortPromise = new Promise<never>((_resolve, reject) => {
         abortHandler = (): void => {
@@ -142,22 +143,30 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
         await Promise.race([runPromise, abortPromise, invalidToolCall])
         throwIfAborted(planningSignal)
         nextPhase('response-assembly', summarizeWorkerEvents(workerEvents))
-        const deltas = workerEvents
-          .filter(event => event.type === 'text_delta')
-          .map(event => readTextDelta(event.data))
-          .filter((value): value is string => value !== null)
-          .join('')
-        const messageText = workerEvents
-          .filter(event => event.type === 'message_end')
-          .map(event => readMessageText(event.data))
-          .filter((value): value is string => value !== null)
-          .join('')
-        const text = deltas || messageText
+        // Event projections are bounded diagnostics, not authoritative model output.
+        const { text, stopReason } = settledResponse
         Object.assign(context, {
-          textDeltaLength: deltas.length, messageTextLength: messageText.length,
+          stopReason,
           responseLength: text.length, responseFingerprint: createHash('sha256').update(text).digest('hex'),
         })
-        if (!text.trim()) throw planningFailure('response-assembly', 'empty-response')
+        if (stopReason === 'length') {
+          throw new AppError('PLANNING_FAILED', {
+            message: '规划模型输出达到上限，回复未完整生成，请联系管理员检查平台输出预算后重试。',
+            details: { phase: 'response-assembly', reason: 'output-truncated' },
+          })
+        }
+        if (stopReason && stopReason !== 'stop') {
+          throw new AppError('PLANNING_FAILED', {
+            message: '规划模型未正常结束，未生成可用的规划结果，请重试。',
+            details: { phase: 'response-assembly', reason: 'response-not-settled' },
+          })
+        }
+        if (!text.trim()) {
+          throw new AppError('PLANNING_FAILED', {
+            message: '规划模型没有返回正文，无法生成规划，请重试或联系管理员检查模型响应。',
+            details: { phase: 'response-assembly', reason: 'empty-response' },
+          })
+        }
         const result = parseArrangementPlannerOutput(text, draft, employees, nextPhase)
         nextPhase('finalization', { nodeCount: result.nodes.length, unresolvedStepCount: result.unresolvedSteps?.length ?? 0 })
         if (result.intentAnalysis) {
@@ -237,6 +246,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     plannerEmployee: ArrangementPlannerEmployee,
     modelId: string,
     onEvent: PiTaskWorkerOptions['onEvent'],
+    onResponseSettled: PiTaskWorkerOptions['onResponseSettled'],
   ): TaskWorkerPort {
     const workspaceDir = this.options.workspaceRoot
     const context: PiTaskWorkerOptions['context'] = {
@@ -266,6 +276,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       onAuthenticationRequired: this.options.onAuthenticationRequired,
       onApprovalRequest: async () => false,
       onEvent,
+      onResponseSettled,
       runtime: this.options.runtime,
     }
     return this.options.createWorker?.(workerOptions) ?? new PiTaskWorker(workerOptions)
@@ -357,6 +368,7 @@ function readMessageText(data: unknown): string | null {
   if (!data || typeof data !== 'object') return null
   const message = (data as { message?: unknown }).message
   if (!message || typeof message !== 'object') return null
+  if ((message as { role?: unknown }).role !== 'assistant') return null
   const content = (message as { content?: unknown }).content
   if (!Array.isArray(content)) return null
   const text = content
