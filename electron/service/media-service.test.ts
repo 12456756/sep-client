@@ -1373,6 +1373,25 @@ describe('MediaService review lifecycle regressions', () => {
     assert.deepEqual(job?.input.parameters, { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' })
   })
 
+  it('uses selected references for generation when the authorized profile does not support editing', async () => {
+    const f = await fixture()
+    const capabilities = structuredClone(MOCK_MEDIA_CAPABILITIES)
+    capabilities.profiles[0].operations = ['generate']
+    f.employee.media = capabilities
+    const referencePath = join(f.directory, 'generation-reference.png')
+    await writeFile(referencePath, MOCK_MEDIA_PNG)
+    const reference = await f.store.importReference(owner, 'task-a', referencePath)
+    await f.service.setReferenceSelection('task-a', [reference.localAssetId])
+
+    const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'generate-with-reference', subscriptionId: f.employee.subscriptionId,
+      employee: f.employee, requestApproval: f.options.requestApproval })
+    const result = await tools!.execute('media_generate_image', { creativeBrief: 'Create a new image using this visual reference' }) as { jobId: string }
+    await f.service.waitForRun('task-a', 'generate-with-reference')
+    const job = await f.store.getJob(owner, 'task-a', result.jobId)
+    assert.equal(job?.input.operation, 'generate')
+    assert.deepEqual(job?.input.localAssetIds, [reference.localAssetId])
+  })
+
   it('releases generation reservations even when initial and error-state persistence both fail', async context => {
     const f = await fixture({ policy: async () => policy() })
     const stub = context.mock.method(f.store, 'saveJob', async () => { throw new Error('Disk full') })

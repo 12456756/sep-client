@@ -208,7 +208,8 @@ export class MediaService {
           : capabilities.profiles.find(item => item.profileId === capabilities.defaultProfileId) ?? capabilities.profiles[0]
         if (!profile) throw new AppError('INVALID_ARGUMENT', { message: '当前授权配置没有可用的图片模型。' })
         const localAssetIds = requested.localAssetIds ?? this.selectedReferences.get(this.key(scope, input.taskId)) ?? []
-        const operation = requested.operation ?? (localAssetIds.length ? 'edit' : 'generate')
+        const operation = requested.operation ?? (localAssetIds.length && profile.operations.includes('edit')
+          ? 'edit' : profile.operations.includes('generate') ? 'generate' : 'edit')
         const requestedParameters = requested.parameters ?? {}
         const ratios = profile.allowedAspectRatios.filter(ratio => !profile.allowedSizes?.length || profile.allowedSizes.some(size => {
           const mapped = imageAspectRatio(size)
