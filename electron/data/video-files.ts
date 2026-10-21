@@ -96,6 +96,8 @@ export class VideoFiles {
 
   async syncDirectory(directory: string): Promise<void> {
     await this.assertPath(directory)
+    // Node cannot fsync directory handles on Windows; file data is synced before rename.
+    if (process.platform === 'win32') return
     const handle = await open(directory, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
     try { await handle.sync() } finally { await handle.close() }
   }
@@ -125,7 +127,8 @@ export class VideoFiles {
   async quarantine(file: string, directory: string, evidence: { manifest: Uint8Array; commit: Uint8Array }, signal: AbortSignal): Promise<void> {
     signal.throwIfAborted()
     await this.assertPath(file)
-    const source = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+    // Windows file fsync requires a writable handle, including preserved corrupt bytes.
+    const source = await open(file, (process.platform === 'win32' ? constants.O_RDWR : constants.O_RDONLY) | (constants.O_NOFOLLOW ?? 0))
     try {
       const stat = await source.stat()
       if (!stat.isFile() || stat.nlink !== 1) throw new VideoPersistenceError('Invalid video quarantine source.')
