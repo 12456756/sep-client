@@ -6,6 +6,7 @@ export type KnowledgeSearchPort = (query: string, signal?: AbortSignal) => Promi
 const OPEN_MARKER = '<sep-knowledge-context>'
 const CLOSE_MARKER = '</sep-knowledge-context>'
 const MAX_CONTEXT_CHARACTERS = 20_000
+const TRUNCATION_NOTICE = '检索内容已按客户端上下文长度限制截断；以上并非完整原文。'
 
 function escapeMarkers(value: string): string {
   return value.replace(/<(?=\/?sep-knowledge-context>)/gi, '&lt;')
@@ -30,27 +31,29 @@ export function formatKnowledgeContext(query: string, result: KnowledgeSearchRes
     lines.push('检索状态为匹配，但没有返回资料片段；本次没有可引用内容。')
   } else {
     lines.push(`检索状态：${result.status}${result.partial ? '（部分结果）' : ''}${result.degraded ? '（降级检索）' : ''}`)
-    let remaining = MAX_CONTEXT_CHARACTERS
+    let remaining = MAX_CONTEXT_CHARACTERS - lines.join('\n').length - CLOSE_MARKER.length - TRUNCATION_NOTICE.length - 3
     let truncated = false
     for (const [index, item] of result.results.entries()) {
       if (remaining <= 0) { truncated = true; break }
-      const content = escapeMarkers(item.content)
-      const excerpt = content.slice(0, remaining)
-      if (excerpt.length < content.length) truncated = true
       const source = [
         `资料 ${index + 1}：${escapeMarkers(item.documentName)}`,
         `知识库：${escapeMarkers(item.knowledgeBaseName)}`,
         ...(item.location.sectionPath?.length ? [`位置：${item.location.sectionPath.map(escapeMarkers).join(' / ')}`] : []),
-        excerpt,
+        escapeMarkers(item.content),
       ].join('\n')
-      lines.push(source)
-      remaining -= source.length
+      const excerpt = source.slice(0, remaining)
+      if (excerpt.length < source.length) truncated = true
+      lines.push(excerpt)
+      remaining -= excerpt.length + 1
     }
-    if (truncated) lines.push('检索内容已按客户端上下文长度限制截断；以上并非完整原文。')
+    if (truncated) lines.push(TRUNCATION_NOTICE)
   }
 
   lines.push(CLOSE_MARKER)
-  return lines.join('\n')
+  const context = lines.join('\n')
+  if (context.length <= MAX_CONTEXT_CHARACTERS) return context
+  const suffix = `\n${TRUNCATION_NOTICE}\n${CLOSE_MARKER}`
+  return context.slice(0, MAX_CONTEXT_CHARACTERS - suffix.length) + suffix
 }
 
 export function redactKnowledgeContextForLog(input: string | null): string | null {

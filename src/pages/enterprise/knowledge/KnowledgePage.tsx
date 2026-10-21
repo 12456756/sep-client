@@ -35,7 +35,7 @@ function KnowledgeList({ client, open }: { client: KnowledgeClient; open(id: str
     {result.loading ? <p role="status">正在加载知识库…</p> : null}
     {result.data && !result.data.items.length ? <div className="kb-empty"><BookOpen size={34} /><h2>{keyword ? '没有找到匹配的知识库' : '暂无可访问的知识库'}</h2><p>{canCreate ? '新建知识库并上传企业资料。' : '请联系企业管理员为你授权知识库。'}</p></div> : null}
     <div className="kb-grid">{result.data?.items.map(base => <button className="kb-card" key={base.id} onClick={() => open(base.id)}><span className="kb-card-icon"><BookOpen size={23} /></span><h2>{base.name}</h2><p>{base.description || '暂无说明'}</p><footer><span>{base.documentCount ?? '—'} 份文档</span><span>{base.readyDocumentCount ?? '—'} 份已就绪</span></footer></button>)}</div>
-    {result.data ? <KnowledgePager page={page} total={result.data.total} onChange={setPage} disabled={result.loading} /> : null}
+    {result.data ? <KnowledgePager page={result.data.page} pageSize={result.data.pageSize} total={result.data.total} onChange={setPage} disabled={result.loading} /> : null}
     {creating ? <BaseEditor client={client} onClose={() => setCreating(false)} onSaved={() => { setCreating(false); refresh(value => value + 1) }} /> : null}
   </>
 }

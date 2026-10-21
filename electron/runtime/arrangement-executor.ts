@@ -361,6 +361,7 @@ export class ArrangementExecutor {
         }
         knowledgeContext = formatKnowledgeContext(node.knowledgeQuery, result)
       }
+      this.checkExecutionControl()
       if (this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.create(this.options.scope, {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,

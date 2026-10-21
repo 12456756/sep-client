@@ -13,7 +13,7 @@ describe('knowledge contracts', () => {
       assert.equal(doc.filename, original)
       assert.equal(knowledgeDocumentSchema.parse(doc).originalName, original)
     }
-    for (const name of [original, 'caf\u00e9.md', 'M\u00fcnchen.txt', 'a\ufffd.md', 'literal%20name.md']) {
+    for (const name of [original, 'caf\u00e9.md', 'M\u00fcnchen.txt', '\u4e2d\u00c3\u00a9.md', 'a\ufffd.md', 'literal%20name.md']) {
       assert.equal(knowledgeDocumentSchema.parse({ id: 'doc', originalName: name, status: 'READY', searchable: true }).originalName, name)
     }
   })

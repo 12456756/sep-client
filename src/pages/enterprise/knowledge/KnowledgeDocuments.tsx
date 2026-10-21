@@ -90,6 +90,7 @@ function KnowledgeUploads({ client, kbId, replacement, onUploaded, onCloseReplac
           update(item.id, { status: 'accepted' }); if (mounted.current) onUploaded()
         } catch (error) {
           update(item.id, { status: isKnowledgeCancelled(error) ? 'cancelled' : 'failed', error })
+          if (isKnowledgeCancelled(error)) break
           if (error instanceof KnowledgeClientError && [401, 403, 404].includes(error.detail.statusCode ?? 0)) break
         }
       }
@@ -143,6 +144,6 @@ function KnowledgeDocumentDetail({ client, kbId, docId, name, onClose }: { clien
     {preview.loading ? <p role="status">正在读取解析内容…</p> : null}
     {!doc.loading && doc.data && !doc.data.searchable && !previewVersion ? <p className="kb-info">文档暂未就绪，处理完成后可以预览。</p> : null}
     <div className="kb-preview">{preview.data?.items.map((item, index) => <article key={item.chunkId ?? item.id ?? index}>{item.location?.pageStart != null ? <small>第 {item.location.pageStart} 页</small> : null}<p>{item.content}</p></article>)}</div>
-    {preview.data ? <KnowledgePager page={page} total={preview.data.total} pageSize={20} disabled={preview.loading} onChange={setPage} /> : null}
+    {preview.data ? <KnowledgePager page={preview.data.page} total={preview.data.total} pageSize={preview.data.pageSize} disabled={preview.loading} onChange={setPage} /> : null}
   </Dialog.Content></Dialog.Portal></Dialog.Root>
 }

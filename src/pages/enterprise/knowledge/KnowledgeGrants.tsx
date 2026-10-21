@@ -21,7 +21,7 @@ export function KnowledgeGrants({ client, base }: { client: KnowledgeClient; bas
     <KnowledgeErrorNotice error={grants.error || mutation.error} onRetry={() => refresh(value => value + 1)} />
     {grants.loading ? <p role="status">正在加载授权成员…</p> : grants.data && !grants.data.items.length ? <div className="kb-empty"><Users size={30} /><p>暂无匹配的授权成员。</p></div> : null}
     <div className="kb-doc-list">{grants.data?.items.map(grant => <article className="kb-doc-row" key={grant.id ?? grantMemberId(grant)}><Users size={19} /><div className="kb-doc-main"><strong>{grantName(grant)}</strong><p>{grant.email ?? grant.member?.email ?? grant.member?.user?.email}</p></div><button className="ent-btn sm kb-danger" disabled={mutation.busy} onClick={() => { mutation.clearError(); setRevoking(grant) }}>撤销授权</button></article>)}</div>
-    {grants.data ? <KnowledgePager page={page} total={grants.data.total} onChange={setPage} /> : null}
+    {grants.data ? <KnowledgePager page={grants.data.page} pageSize={grants.data.pageSize} total={grants.data.total} onChange={setPage} /> : null}
     {adding ? <MemberPicker client={client} base={base} existing={grants.data?.items.map(grantMemberId) ?? []} onClose={() => setAdding(false)} onSaved={() => { setAdding(false); refresh(value => value + 1) }} /> : null}
     {revoking ? <KnowledgeDialog title="撤销成员授权" description={`成员：${grantName(revoking)}`} onClose={() => setRevoking(null)} busy={mutation.busy}>
       <p>撤权后该成员无法继续读取此知识库。之前已展示的资料或历史对话不会自动收回。</p><KnowledgeErrorNotice error={mutation.error} />
@@ -45,7 +45,7 @@ function MemberPicker({ client, base, existing, onClose, onSaved }: { client: Kn
       return <label key={member.memberId}><input type="checkbox" disabled={mutation.busy || granted || selected.length >= 100 && !selected.includes(member.memberId)} checked={granted || selected.includes(member.memberId)} onChange={event => setSelected(ids => event.target.checked ? [...ids, member.memberId] : ids.filter(id => id !== member.memberId))} /><span><strong>{memberName(member)}</strong><small>{member.email ?? member.user?.email}</small></span>{granted ? <small>已授权</small> : null}</label>
     })}</div>
     {members.data && !members.data.items.length ? <p>没有匹配的成员。</p> : null}
-    {members.data ? <KnowledgePager page={page} total={members.data.total} disabled={mutation.busy} onChange={setPage} /> : null}
+    {members.data ? <KnowledgePager page={members.data.page} pageSize={members.data.pageSize} total={members.data.total} disabled={mutation.busy} onChange={setPage} /> : null}
     <footer><span>已选择 {selected.length} 人</span><button className="ent-btn" disabled={mutation.busy} onClick={onClose}>取消</button><button className="ent-btn primary" disabled={mutation.busy || !selected.length} onClick={() => void mutation.perform(async () => { await client.run({ action: 'grant', kbId: base.id, memberIds: selected }); onSaved() })}>{mutation.busy ? '正在授权…' : '确认授权'}</button></footer>
   </KnowledgeDialog>
 }

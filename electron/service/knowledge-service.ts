@@ -23,12 +23,14 @@ export class KnowledgeService {
       return generation === this.generation && current?.memberId === owner.memberId && current.enterpriseId === owner.enterpriseId
     }
     try {
+      if (signal.aborted) throw new KnowledgeApiError(499)
       const result = await this.options.api.execute(request, signal)
       if (!sameOwner()) throw new AppError('AUTH_REQUIRED')
       signal.throwIfAborted()
       return result as KnowledgeData<R['action']>
     } catch (error) {
-      if (error instanceof KnowledgeApiError && error.statusCode === 401 && sameOwner() && !control.signal.aborted) this.options.onAuthenticationRequired?.()
+      if (signal.aborted) throw new KnowledgeApiError(499)
+      if (error instanceof KnowledgeApiError && error.statusCode === 401 && sameOwner()) this.options.onAuthenticationRequired?.()
       throw error
     } finally { this.active.delete(request.requestId) }
   }

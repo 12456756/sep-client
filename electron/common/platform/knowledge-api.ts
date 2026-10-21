@@ -106,14 +106,16 @@ export class KnowledgeApi {
     const endpoint = definition(request)
     const control = external ?? new AbortController().signal
     let refreshed = false
+    let forceRefresh = false
     let retries = 0
     let waited = 0
     for (;;) {
-      control.throwIfAborted()
+      if (control.aborted) throw new KnowledgeApiError(499)
       const timeout = AbortSignal.timeout(endpoint.file ? this.options.uploadTimeoutMs ?? 60_000 : this.options.requestTimeoutMs ?? 15_000)
       const signal = AbortSignal.any([control, timeout])
       try {
-        const token = await knowledgeAbortable(this.options.getAccessToken(refreshed), signal)
+        const token = await knowledgeAbortable(this.options.getAccessToken(forceRefresh), signal)
+        forceRefresh = false
         signal.throwIfAborted()
         const headers: Record<string, string> = {
           Authorization: 'Bearer ' + token, ...platformSourceHeaders(this.options.webOrigin ?? config.SEP_WEB_ORIGIN),
@@ -130,7 +132,10 @@ export class KnowledgeApi {
         } else if (endpoint.body !== undefined) { headers['Content-Type'] = 'application/json'; body = JSON.stringify(endpoint.body) }
         headers['Cache-Control'] = 'no-store'
         const response = await knowledgeAbortable(this.fetcher(this.baseUrl + endpoint.path, { method: endpoint.method, headers, body, signal, redirect: 'error' }), signal)
-        if (response.status === 401 && !refreshed) { await response.body?.cancel(); refreshed = true; continue }
+        if (response.status === 401 && !refreshed) {
+          if (response.body) await knowledgeAbortable(response.body.cancel(), signal)
+          refreshed = true; forceRefresh = true; continue
+        }
         if (!response.ok) {
           const error = await this.responseError(response, signal)
           if (response.status === 429 && request.action !== 'createBase' && retries < 3) {
@@ -185,11 +190,16 @@ export class KnowledgeApi {
       for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length }
       if (bytes.length === 0) return undefined
       try { return JSON.parse(new TextDecoder().decode(bytes)) as unknown } catch { throw new KnowledgeApiError(502, 'INVALID_RESPONSE') }
-    } finally { await reader.cancel().catch(() => undefined); reader.releaseLock() }
+    } finally {
+      // Releasing a request must not wait for an unresponsive stream's cancel hook.
+      void reader.cancel().catch(() => undefined)
+      reader.releaseLock()
+    }
   }
   private async responseError(response: Response, signal: AbortSignal): Promise<KnowledgeApiError> {
     let value: Record<string, unknown> = {}
-    try { const raw = await this.readJson(response, signal); if (raw && typeof raw === 'object') value = raw as Record<string, unknown> } catch { /* Never expose untrusted response bodies. */ }
+    try { const raw = await this.readJson(response, signal); if (raw && typeof raw === 'object') value = raw as Record<string, unknown> }
+    catch { signal.throwIfAborted() /* Never expose untrusted response bodies. */ }
     const safeId = (input: unknown): string | undefined => typeof input === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(input) ? input : undefined
     const code = response.status === 403 && typeof value.message === 'string' && /Origin|Referer|CSRF/.test(value.message) ? 'SOURCE_REJECTED' : safeId(value.code)
     const retry = response.headers.get('Retry-After')

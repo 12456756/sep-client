@@ -14,19 +14,20 @@ export function useKnowledgeClient(): { client: KnowledgeClient; pending: number
 export function useKnowledgeQuery<R extends KnowledgeCommand>(client: KnowledgeClient, input: R | null, revision = 0) {
   const group = useId()
   const key = JSON.stringify(input)
-  const [state, setState] = useState<{ data: KnowledgeData<R['action']> | null; error: unknown; loading: boolean }>({ data: null, error: null, loading: !!input })
+  const identity = useMemo(() => ({ client, key, revision }), [client, key, revision])
+  const [state, setState] = useState<{ identity: object; data: KnowledgeData<R['action']> | null; error: unknown; loading: boolean }>({ identity, data: null, error: null, loading: !!input })
   useEffect(() => {
-    if (key === 'null') { setState({ data: null, error: null, loading: false }); return }
+    if (key === 'null') { setState({ identity, data: null, error: null, loading: false }); return }
     let active = true
-    setState({ data: null, error: null, loading: true })
+    setState({ identity, data: null, error: null, loading: true })
     void client.run(JSON.parse(key) as R, group).then(data => {
-      if (active) setState({ data, error: null, loading: false })
+      if (active) setState({ identity, data, error: null, loading: false })
     }).catch((error: unknown) => {
-      if (active) setState({ data: null, error: isKnowledgeCancelled(error) ? null : error, loading: false })
+      if (active) setState({ identity, data: null, error: isKnowledgeCancelled(error) ? null : error, loading: false })
     })
     return () => { active = false; client.cancelGroup(group) }
-  }, [client, group, key, revision])
-  return state
+  }, [client, group, key, revision, identity])
+  return state.identity === identity ? state : { data: null, error: null, loading: !!input }
 }
 export function useKnowledgeMutation() {
   const [busy, setBusy] = useState(false)

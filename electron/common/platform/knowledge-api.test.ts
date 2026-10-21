@@ -6,6 +6,77 @@ import { setLogSink, type LogRecord } from '../logger'
 const requestId = 'c49b8f02-2143-4a61-9d62-459c2cb82193'
 const noMatch = { status: 'NO_MATCH', results: [], actualStrategy: 'LEXICAL', degraded: false, partial: false, durationMs: 1 }
 describe('knowledge platform adapter', () => {
+  it('returns cancellation for a pre-aborted call without looking up a token', async () => {
+    let calls = 0
+    const api = new KnowledgeApi({ getAccessToken: async () => { calls++; return 'token' } })
+    await assert.rejects(api.execute({ requestId, action: 'search', query: 'policy', topK: 5 }, AbortSignal.abort()),
+      (error: unknown) => error instanceof KnowledgeApiError && error.statusCode === 499)
+    assert.equal(calls, 0)
+  })
+  it('does not wait indefinitely for an error stream to acknowledge cancellation', async () => {
+    const controller = new AbortController()
+    let reading!: () => void
+    const started = new Promise<void>(resolve => { reading = resolve })
+    const api = new KnowledgeApi({ getAccessToken: async () => 'token', fetch: async () => new Response(new ReadableStream({
+      pull() { reading() }, cancel: () => new Promise(() => undefined),
+    }), { status: 429 }) })
+    const pending = api.execute({ requestId, action: 'search', query: 'policy', topK: 5 }, controller.signal)
+    await started
+    controller.abort()
+    const outcome = await Promise.race([
+      pending.then(() => 'success', error => error),
+      new Promise(resolve => setTimeout(() => resolve('hung'), 100)),
+    ])
+    assert.ok(outcome instanceof KnowledgeApiError, 'cancelled error-body read must settle promptly')
+    assert.equal(outcome.statusCode, 499)
+  })
+  it('times out a stalled 429 error body instead of sleeping and replaying it', async () => {
+    let waits = 0
+    const api = new KnowledgeApi({
+      getAccessToken: async () => 'token', requestTimeoutMs: 10,
+      fetch: async () => new Response(new ReadableStream(), { status: 429 }),
+      sleep: async () => { waits++ },
+    })
+    const keepAlive = setTimeout(() => undefined, 1000)
+    try {
+      await assert.rejects(api.execute({ requestId, action: 'search', query: 'policy', topK: 5 }),
+        (error: unknown) => error instanceof KnowledgeApiError && error.statusCode === 408)
+      assert.equal(waits, 0)
+    } finally { clearTimeout(keepAlive) }
+  })
+  it('bounds disposal of a 401 body before refreshing credentials', async () => {
+    const controller = new AbortController()
+    let cancelling!: () => void
+    const started = new Promise<void>(resolve => { cancelling = resolve })
+    let calls = 0
+    const api = new KnowledgeApi({ getAccessToken: async () => 'token', fetch: async () => {
+      calls++
+      return new Response(new ReadableStream({ cancel: () => { cancelling(); return new Promise(() => undefined) } }), { status: 401 })
+    } })
+    const pending = api.execute({ requestId, action: 'search', query: 'policy', topK: 5 }, controller.signal)
+    await started
+    controller.abort()
+    const outcome = await Promise.race([
+      pending.then(() => 'success', error => error),
+      new Promise(resolve => setTimeout(() => resolve('hung'), 100)),
+    ])
+    assert.ok(outcome instanceof KnowledgeApiError, '401 disposal must remain cancellable')
+    assert.equal(outcome.statusCode, 499)
+    assert.equal(calls, 1)
+  })
+  it('forces only one token refresh when a 401 is followed by a 429 retry', async () => {
+    const refresh: boolean[] = []
+    let calls = 0
+    const api = new KnowledgeApi({
+      getAccessToken: async force => { refresh.push(!!force); return 'token' }, sleep: async () => undefined,
+      fetch: async () => {
+        calls++
+        return calls === 1 ? new Response('{}', { status: 401 }) : calls === 2 ? new Response('{}', { status: 429 }) : Response.json(noMatch)
+      },
+    })
+    await api.execute({ requestId, action: 'search', query: 'policy', topK: 5 })
+    assert.deepEqual(refresh, [false, true, false])
+  })
   it('reads platform preview text as content and retains pagination and version lock', async () => {
     const api = new KnowledgeApi({ getAccessToken: async () => 'token', fetch: async () => Response.json({
       page: 2, pageSize: 20, total: 25, versionId: 'v1', documentName: 'guide.md',
