@@ -36,6 +36,11 @@ describe('node final delivery protocol', () => {
     assert.equal(parseDeliverySubmission(node, JSON.stringify(submission), 'length').ok, false)
     assert.equal(parseDeliverySubmission({ ...node, deliverables: undefined }, JSON.stringify(submission)).ok, false)
   })
+  it('rejects canonically equivalent final paths across nodes', () => {
+    const first = { ...node, deliverables: [{ ...node.deliverables![0]!, path: 'deliverables/Café.txt' }] }
+    const second = { ...node, id: 'second', deliverables: [{ ...node.deliverables![0]!, path: 'deliverables/Cafe\u0301.txt' }] }
+    assert.ok(deliveryPlanIssues([first, second]).some(issue => issue.code === 'DUPLICATE_DELIVERY'))
+  })
   it('rejects Windows path aliases, duplicate final paths and missing required files', () => {
     for (const path of ['deliverables./report.txt', 'deliverables /report.txt', 'CON/report.txt']) {
       assert.ok(deliveryPlanIssues([{ ...node, deliverables: [{ ...node.deliverables![0]!, path }] }]).length > 0, path)

@@ -60,6 +60,16 @@ export const walletTransactionSchema = z.object({
 export const computeUsageRecordSchema = z.object({
   id: z.string().optional(),
   createdAt: z.string().optional(),
+  memberId: z.string().nullable().optional(),
+  memberName: z.string().nullable().optional(),
+  employeeId: z.string().nullable().optional(),
+  employeeName: z.string().nullable().optional(),
+  modelId: z.string().optional(),
+  modelName: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
+  inputTokens: z.number().int().nonnegative().optional(),
+  outputTokens: z.number().int().nonnegative().optional(),
+  fallbackPricing: z.boolean().optional(),
   costCNY: moneyStringSchema.optional(),
   creditPaidCNY: moneyStringSchema.optional(),
   memberWalletPaidCNY: moneyStringSchema.optional(),
@@ -85,6 +95,15 @@ export const computeUsageRecordsPageSchema = z.object({
   records: z.array(computeUsageRecordSchema),
 }).passthrough()
 
+export const computeBreakdownRowSchema = z.object({
+  key: z.string(),
+  label: z.string(),
+  hint: z.string().nullable().optional(),
+  costCNY: moneyStringSchema,
+  callCount: z.number().int().nonnegative(),
+  pct: z.number().finite().min(0).max(100),
+}).passthrough()
+
 export const computeUsageBreakdownSchema = z.object({
   days: z.number().int().positive().optional(),
   rangeDays: z.number().int().positive().optional(),
@@ -98,6 +117,10 @@ export const computeUsageBreakdownSchema = z.object({
   series: z.array(z.unknown()).optional(),
   daily: z.array(z.unknown()).optional(),
   trend: z.array(computeTrendPointSchema).optional(),
+  byModel: z.array(computeBreakdownRowSchema).optional(),
+  byEmployee: z.array(computeBreakdownRowSchema).optional(),
+  byMember: z.array(computeBreakdownRowSchema).optional(),
+  byDepartment: z.array(computeBreakdownRowSchema).optional(),
 }).passthrough()
 
 export const computePageQuerySchema = z.object({
@@ -121,6 +144,7 @@ export type WalletTransactionsPage = z.infer<typeof walletTransactionsPageSchema
 export type ComputeUsageRecord = z.infer<typeof computeUsageRecordSchema>
 export type ComputeUsageRecordsPage = z.infer<typeof computeUsageRecordsPageSchema>
 export type ComputeUsageBreakdown = z.infer<typeof computeUsageBreakdownSchema>
+export type ComputeBreakdownRow = z.infer<typeof computeBreakdownRowSchema>
 export type ComputePageQuery = z.infer<typeof computePageQuerySchema>
 export type ComputeUsageQuery = z.infer<typeof computeUsageQuerySchema>
 export type ComputeBreakdownDays = z.infer<typeof computeBreakdownDaysSchema>

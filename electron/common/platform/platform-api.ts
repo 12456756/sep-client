@@ -344,11 +344,11 @@ export async function getSubscriptions(accessToken: string): Promise<Subscriptio
   return normalizeSubscriptions(data)
 }
 
-/** Independently negotiates skill artifacts, media and video configuration v1. */
+/** Independently negotiates skill artifacts, media and video configuration v2. */
 export async function getEmployeeRuntime(subscriptionId: string, accessToken: string): Promise<EmployeeRuntimeManifest> {
   const id = skillVersionIdSchema.parse(subscriptionId)
   const manifest = parseEmployeeRuntimeManifest(await getJson<unknown>(
-    `/client/subscriptions/${encodeURIComponent(id)}/runtime?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1`, accessToken, 'subscriptions',
+    `/client/subscriptions/${encodeURIComponent(id)}/runtime?mediaProtocolVersion=2&skillArtifactProtocolVersion=1&videoProtocolVersion=2`, accessToken, 'subscriptions',
   ))
   if (manifest.subscriptionId !== id) throw new Error('Employee runtime subscription mismatch.')
   if (manifest.runtime.skillArtifactProtocolVersion !== 1 || manifest.runtime.skills.some(skill => skill.artifact === undefined)) {

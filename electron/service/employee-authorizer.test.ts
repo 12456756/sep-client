@@ -29,6 +29,9 @@ import { join } from 'node:path'
 import { VideoStore } from '../data/video-store'
 import { MockVideoMediaGateway } from '../data/mock-video-media-gateway'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
+import { VideoService } from './video-service'
+import { videoRequestSchema } from '../../src/shared/video-media'
+import { AppError } from '../errors/app-error'
 
 const GATEWAY = 'http://gateway.test'
 
@@ -256,11 +259,22 @@ async function videoAuthorizationHost(authorizer: EmployeeAuthorizer, overrides:
   const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-video-authorization-'))
   const gateway = new MockVideoMediaGateway()
   const effects = { imports: 0, exports: 0 }
+  const store = new VideoStore(root)
+  const archive = new VideoService({ scope: { enterpriseId: 'enterprise-1', memberId: 'member-1', subscriptionId: 'sub-a' },
+    store, gateway: new MockVideoMediaGateway() })
+  let saved = await archive.generate('task-a', videoRequestSchema.parse(videoFixture.quoteRequest))
+  saved = await archive.resume('task-a', saved.jobId)
+  saved = await archive.resume('task-a', saved.jobId)
+  archive.close()
   const host = new MockVideoHostService({
     mock: true, scope: { currentScope: () => ({ enterpriseId: 'enterprise-1', memberId: 'member-1' }) },
-    store: new VideoStore(root), getTask: async () => ({ subscriptionId: 'sub-a' }),
+    store, getTask: async () => ({ subscriptionId: 'sub-a' }),
     authorize: async id => (await authorizer.authorize(id))?.video,
     authorizationRevision: () => authorizer.getAuthorizationRevision(),
+    localAuthorizationRevision: () => authorizer.getLocalAuthorizationRevision(),
+    recoveryAuthorizationRevision: () => authorizer.getRecoveryAuthorizationRevision(),
+    localRuntime: id => authorizer.resolveVideo(id),
+    authorizeRecovery: async id => { if (!await authorizer.authorizeRecovery(id)) throw new AppError('PERMISSION_DENIED') },
     gateway: () => ({
       quote: gateway.quote.bind(gateway), submit: gateway.submit.bind(gateway),
       findReceipt: gateway.findReceipt.bind(gateway), getReceipt: gateway.getReceipt.bind(gateway), content: gateway.content.bind(gateway),
@@ -271,10 +285,128 @@ async function videoAuthorizationHost(authorizer: EmployeeAuthorizer, overrides:
     exportOutput: async () => { effects.exports++ }, requestApproval: async () => true,
     ...overrides,
   })
-  return { host, gateway, effects, async dispose() { await host.stopAll(); await rm(root, { recursive: true, force: true }) } }
+  return { host, gateway, effects, store, saved, async dispose() { await host.stopAll(); await rm(root, { recursive: true, force: true }) } }
 }
 
 describe('observed video authorization revision', () => {
+  it('keeps catalog edits outside the local ownership fence while retaining the execution fence', async () => {
+    const { manifest, authorizer } = videoAuthorizer()
+    assert.ok(await authorizer.authorize('sub-a'))
+    const local = authorizer.getLocalAuthorizationRevision()
+    const execution = authorizer.getAuthorizationRevision()
+    for (const video of [
+      { ...videoFixture.runtime, profiles: [{ ...videoFixture.runtime.profiles[0], configVersion: 'updated-version' }] },
+      { ...videoFixture.runtime, defaultProfileId: null },
+      { ...videoFixture.runtime, executionAvailable: false, profiles: [], tools: [], defaultProfileId: null },
+      undefined,
+    ]) {
+      manifest.runtime.video = video
+      assert.ok(await authorizer.authorize('sub-a'))
+      assert.equal(authorizer.getLocalAuthorizationRevision(), local)
+    }
+    assert.ok(authorizer.getAuthorizationRevision() > execution)
+    assert.equal(authorizer.resolveVideo('sub-a'), undefined)
+    authorizer.clear()
+    assert.equal(authorizer.getLocalAuthorizationRevision(), local + 1)
+  })
+
+  it('observes directory grant removal and employee replacement but ignores model and display edits', async () => {
+    let served = [subscription('sub-a')]
+    const directory = new EmployeeDirectory(async () => served)
+    const authorizer = new EmployeeAuthorizer(session, directory, fakeSkills(), GATEWAY)
+    assert.equal(await authorizer.authorizeRecovery('sub-a'), true)
+    assert.equal(authorizer.getLocalAuthorizationRevision(), 0)
+    served = [{ ...served[0]!, name: 'Renamed', allowedModels: [] }]
+    await authorizer.refresh()
+    assert.equal(await authorizer.authorizeRecovery('sub-a'), true, 'Original receipts do not select a current chat model')
+    assert.equal(authorizer.getLocalAuthorizationRevision(), 0)
+    served = [{ ...served[0]!, employeeId: 'replacement-employee' }]
+    await authorizer.refresh()
+    assert.equal(authorizer.getLocalAuthorizationRevision(), 0)
+    assert.equal(authorizer.getRecoveryAuthorizationRevision(), 1)
+    served = []
+    await authorizer.refresh()
+    assert.equal(await authorizer.authorizeRecovery('sub-a'), false)
+    assert.equal(authorizer.getLocalAuthorizationRevision(), 0)
+    assert.equal(authorizer.getRecoveryAuthorizationRevision(), 2)
+    await authorizer.refresh()
+    assert.equal(authorizer.getRecoveryAuthorizationRevision(), 2, 'Repeated missing grants do not churn the fence')
+  })
+
+  it('preserves local ownership on directory denial and advances only the network recovery fence', async () => {
+    let failure: AppError | undefined
+    const directory = new EmployeeDirectory(async () => { if (failure) throw failure; return [subscription('sub-a')] })
+    const authorizer = new EmployeeAuthorizer(session, directory, fakeSkills(), GATEWAY)
+    await authorizer.refresh()
+    failure = new AppError('NETWORK_ERROR')
+    await assert.rejects(authorizer.refresh(), { code: 'NETWORK_ERROR' })
+    assert.equal(authorizer.getLocalAuthorizationRevision(), 0)
+    failure = new AppError('PERMISSION_DENIED')
+    await assert.rejects(authorizer.refresh(), { code: 'PERMISSION_DENIED' })
+    assert.equal(authorizer.getLocalAuthorizationRevision(), 0)
+    assert.equal(authorizer.getRecoveryAuthorizationRevision(), 1)
+    await assert.rejects(authorizer.refresh(), { code: 'PERMISSION_DENIED' })
+    assert.equal(authorizer.getRecoveryAuthorizationRevision(), 1)
+  })
+
+  it('continues original tracking across an observed capability edit without resubmitting', async t => {
+    const { manifest, authorizer } = videoAuthorizer()
+    await authorizer.authorize('sub-a')
+    const f = await videoAuthorizationHost(authorizer, { tracker: { floorMs: 1 } })
+    t.after(f.dispose)
+    const scope = f.saved.scope
+    const original = new VideoService({ scope, store: f.store, gateway: f.gateway })
+    const pending = await original.generate('task-a', videoRequestSchema.parse(videoFixture.quoteRequest))
+    original.close()
+    const getReceipt = f.gateway.getReceipt.bind(f.gateway)
+    let changed = false
+    t.mock.method(f.gateway, 'getReceipt', async (...args: Parameters<typeof getReceipt>) => {
+      if (!changed) {
+        changed = true
+        manifest.runtime.video = { ...videoFixture.runtime, executionAvailable: false, profiles: [], tools: [], defaultProfileId: null }
+        await authorizer.authorize('sub-a')
+      }
+      return getReceipt(...args)
+    })
+    await f.host.track('task-a')
+    const restored = await f.store.getJob(scope, 'task-a', pending.jobId)
+    assert.equal(restored?.saveStatus, 'SAVED')
+    assert.deepEqual(restored?.request, pending.request)
+    assert.equal(f.gateway.calls.submit, 1); assert.equal(f.gateway.calls.quote, 1)
+    assert.equal(authorizer.getLocalAuthorizationRevision(), 0)
+    assert.equal(authorizer.getAuthorizationRevision(), 1)
+  })
+
+  it('persists observed employee revocation, preserves local bytes, and requires explicit recovery after restoration', async t => {
+    const base = artifactManifest()
+    const manifest = { ...base, runtime: { ...base.runtime, skills: [], video: videoFixture.runtime } }
+    let served = [{ ...subscription('sub-a'), allowedModels: ['first', 'preferred'] }]
+    const directory = new EmployeeDirectory(async () => served)
+    const authorizer = new EmployeeAuthorizer(session, directory, { async prepare() { return { skillPaths: [], skills: [] } }, invalidate() {} }, GATEWAY,
+      { async getRuntime() { return manifest } })
+    await authorizer.authorize('sub-a')
+    const f = await videoAuthorizationHost(authorizer, { tracker: { floorMs: 1 } })
+    t.after(f.dispose)
+    const original = new VideoService({ scope: f.saved.scope, store: f.store, gateway: f.gateway })
+    const pending = await original.generate('task-a', videoRequestSchema.parse(videoFixture.quoteRequest))
+    original.close()
+    served = []
+    await authorizer.refresh()
+    await f.host.track('task-a')
+    assert.equal((await f.store.getJob(f.saved.scope, 'task-a', pending.jobId))?.trackingStatus, 'AUTH_REQUIRED')
+    assert.equal(f.gateway.calls.getReceipt, 0)
+    const selection = await f.host.nativeSelection('task-a')
+    await selection.export(f.saved.jobId, f.saved.receipt!.outputs[0].outputId, '/native/saved.mp4')
+    served = [{ ...subscription('sub-a'), allowedModels: ['first', 'preferred'] }]
+    await authorizer.refresh()
+    await f.host.track('task-a')
+    assert.equal(f.gateway.calls.getReceipt, 0, 'Restoration must not automatically resume a persisted grant failure')
+    await f.host.resume('task-a', pending.jobId)
+    await f.host.track('task-a')
+    assert.equal((await f.store.getJob(f.saved.scope, 'task-a', pending.jobId))?.saveStatus, 'SAVED')
+    assert.equal(f.gateway.calls.submit, 1)
+  })
+
   it('normalizes video sets, response object order and shared-schema defaults without invalidating leases', async () => {
     const { manifest, authorizer } = videoAuthorizer()
     const video = structuredClone(videoFixture.runtime)
@@ -411,8 +543,8 @@ describe('observed video authorization revision', () => {
   })
 
   for (const operation of ['import', 'export'] as const) {
-    it(`rejects an old native ${operation} lease when another authorize observes revocation during the dialog wait`, async t => {
-      const { manifest, authorizer } = videoAuthorizer()
+    it(`rejects an old native ${operation} lease after identity invalidation during the dialog wait`, async t => {
+      const { authorizer } = videoAuthorizer()
       const f = await videoAuthorizationHost(authorizer)
       t.after(f.dispose)
       const selection = await f.host.nativeSelection('task-a')
@@ -421,11 +553,11 @@ describe('observed video authorization revision', () => {
         waiting.resolve()
         await dialog.promise
         if (operation === 'import') return selection.import(['/native/reference.png'])
-        return selection.export('job-a', 'output-a', '/native/output.mp4')
+        return selection.export(f.saved.jobId, f.saved.receipt!.outputs[0].outputId, '/native/output.mp4')
       })()
       const rejected = assert.rejects(pending, { code: 'AUTH_REQUIRED' })
       await waiting.promise
-      manifest.runtime.video = undefined
+      authorizer.clear()
       assert.ok(await authorizer.authorize('sub-a'))
       dialog.resolve()
       await rejected
@@ -456,7 +588,7 @@ describe('observed video authorization revision', () => {
     assert.equal(f.gateway.calls.submit, 0)
   })
 
-  it('rejects the export commit fence after another authorize observes a profile configuration change', async t => {
+  it('preserves an export commit after another authorize observes a profile configuration change', async t => {
     const { manifest, authorizer } = videoAuthorizer()
     const exporting = deferred<void>(), waiting = deferred<void>()
     let commits = 0
@@ -470,13 +602,13 @@ describe('observed video authorization revision', () => {
     })
     t.after(f.dispose)
     const selection = await f.host.nativeSelection('task-a')
-    const rejected = assert.rejects(selection.export('job-a', 'output-a', '/native/output.mp4'), { code: 'AUTH_REQUIRED' })
+    const pending = selection.export(f.saved.jobId, f.saved.receipt!.outputs[0].outputId, '/native/output.mp4')
     await waiting.promise
     manifest.runtime.video = { ...videoFixture.runtime, profiles: [{ ...videoFixture.runtime.profiles[0], configVersion: 'new-config' }] }
     assert.ok(await authorizer.authorize('sub-a'))
     exporting.resolve()
-    await rejected
-    assert.equal(commits, 0)
+    await pending
+    assert.equal(commits, 1)
   })
 
   it('keeps a native lease usable when another authorize observes only chat changes', async t => {
@@ -489,7 +621,7 @@ describe('observed video authorization revision', () => {
     manifest.employee.maxSteps++
     assert.ok(await authorizer.authorize('sub-a'))
     await selection.import(['/native/reference.png'])
-    await selection.export('job-a', 'output-a', '/native/output.mp4')
+    await selection.export(f.saved.jobId, f.saved.receipt!.outputs[0].outputId, '/native/output.mp4')
     assert.deepEqual(f.effects, { imports: 1, exports: 1 })
     assert.equal(authorizer.getAuthorizationRevision(), 0)
   })

@@ -1,20 +1,11 @@
-import { AlertCircle, ArrowDownLeft, ArrowUpRight, ChevronRight, Coins, Gauge, Info, RefreshCw, Wallet, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
-import { formatAllowanceValue, formatComputeAmount, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown, sumComputeAmounts } from '../../features/enterprise/compute-center-model'
+import { AlertCircle, ChevronRight, Coins, Gauge, Info, RefreshCw, Wallet, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { formatAllowanceValue, formatComputeAmount, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown } from '../../features/enterprise/compute-center-model'
 import { useComputeCenter, type ComputeCenterTab } from '../../features/enterprise/use-compute-center'
-import type { ComputeUsageRecord, WalletTransaction } from '../../shared/compute-credit-contracts'
+import { ComputeUsageTab, ComputeWalletTab, type ComputeDetail } from '../../components/enterprise/ComputeUsageTables'
+import { ComputeUsageAnalysis } from '../../components/enterprise/ComputeUsageAnalysis'
 
 type DrawerState = { title: string; children: React.ReactNode } | null
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
-}
-
-function valueText(value: unknown, fallback = '—'): string {
-  if (typeof value === 'string' && value.length) return value
-  if (typeof value === 'number') return String(value)
-  return fallback
-}
 
 function TrendChart({ data }: { data: unknown }): React.JSX.Element {
   const points = getComputeTrendPoints(data)
@@ -46,10 +37,29 @@ function ErrorBlock({ message, onRetry }: { message: string; onRetry: () => void
 }
 
 function DetailDrawer({ drawer, onClose }: { drawer: DrawerState; onClose: () => void }): React.JSX.Element | null {
+  const panel = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!drawer) return
+    const previous = document.activeElement
+    const element = panel.current
+    element?.querySelector<HTMLButtonElement>('button')?.focus()
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Tab') return
+      const controls = element?.querySelectorAll<HTMLElement>('button, [href], input, select, [tabindex="0"]')
+      if (!controls?.length) return
+      const first = controls[0]
+      const last = controls[controls.length - 1]
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus() }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
+    }
+    document.addEventListener('keydown', keydown)
+    return () => { document.removeEventListener('keydown', keydown); if (previous instanceof HTMLElement && previous.isConnected) previous.focus() }
+  }, [drawer, onClose])
   if (!drawer) return null
   return (
     <div className="compute-drawer-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
-      <aside className="compute-drawer" role="dialog" aria-modal="true" aria-label={drawer.title}>
+      <aside ref={panel} className="compute-drawer" role="dialog" aria-modal="true" aria-label={drawer.title}>
         <div className="compute-drawer-head"><div><h2>{drawer.title}</h2></div><button type="button" className="compute-icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button></div>
         <div className="compute-drawer-body">{drawer.children}</div>
       </aside>
@@ -141,7 +151,7 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
   const monthlyUsed = allowance.monthlyUsedCNY !== undefined ? allowance.monthlyUsedCNY : allowance.period === 'MONTH' ? allowance.usedCNY : undefined
   const monthlyRemaining = allowance.monthlyRemainingCNY !== undefined ? allowance.monthlyRemainingCNY : allowance.period === 'MONTH' ? allowance.remainingCNY : undefined
   const monthlyIsCurrentPeriod = allowance.period === 'MONTH' && allowance.monthlyLimitCNY === undefined
-  const trendTotal = trend ? formatComputeAmount(getComputeTrendTotal(trend)) : '—'
+  const trendTotal = !trendLoading && !trendError && trend ? formatOptionalComputeAmount(getComputeTrendTotal(trend)) : '—'
 
   const allowanceDetail = (
     <DetailRows entries={[
@@ -151,6 +161,7 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
 
   return (
     <div className="compute-overview">
+      {state.overview.error ? <ErrorBlock message={state.overview.error} onRetry={state.refresh} /> : null}
       {/* 结论层：三个数字，一眼看完 */}
       <section className="compute-summary" aria-label="算力总览">
         <div className="compute-summary-item">
@@ -204,49 +215,30 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
           {trendLoading ? <LoadingBlock /> : trendError ? <ErrorBlock message={trendError} onRetry={onRetryTrend} /> : <TrendChart data={trend} />}
         </section>
       </div>
+      <ComputeUsageAnalysis data={trend} loading={trendLoading} error={trendError} />
     </div>
   )
-}
-
-function UsageTab({ state, onDrawer }: { state: ReturnType<typeof useComputeCenter>; onDrawer: (drawer: DrawerState) => void }): React.JSX.Element {
-  const page = state.usageRecords.data
-  if (state.usageRecords.loading && !page) return <LoadingBlock />
-  if (state.usageRecords.error && !page) return <ErrorBlock message={state.usageRecords.error} onRetry={() => state.loadUsageRecords()} />
-  const records = page?.records ?? []
-  return <section className="compute-list-card"><div className="compute-list-head"><div className="compute-card-title"><h3>消费明细</h3></div><button type="button" className="compute-icon-button" onClick={() => state.loadUsageRecords()} aria-label="刷新消费明细"><RefreshCw size={16} /></button></div>{records.length ? <div className="compute-table-wrap"><table className="compute-table"><thead><tr><th>时间</th><th>成员 / 员工 / 模型</th><th>企业承担</th><th>个人钱包</th><th>欠费</th><th>总消费</th><th /></tr></thead><tbody>{records.map((record, index) => <UsageRow key={valueText(record.id, String(index))} record={record} onOpen={() => onDrawer({ title: '消费记录详情', children: <DetailRows entries={[
-    ['时间', valueText(record.createdAt)], ['成员', valueText(asRecord(record).memberName ?? asRecord(record).memberId, '当前成员')], ['硅基员工', valueText(asRecord(record).employeeName ?? asRecord(record).employeeId)], ['模型', valueText(asRecord(record).modelName ?? asRecord(record).modelId)], ['总消费', formatComputeAmount(record.costCNY ?? null)], ['企业赠送额度承担', formatComputeAmount(record.creditPaidCNY ?? null)], ['成员企业充值承担', formatComputeAmount(record.memberWalletPaidCNY ?? null)], ['企业公共钱包承担', formatComputeAmount(record.walletPaidCNY ?? null)], ['个人钱包承担', formatComputeAmount(record.personalPaidCNY ?? null)], ['欠费', formatComputeAmount(record.unpaidCNY ?? null)],
-  ]} /> })} />)}</tbody></table></div> : <div className="compute-empty">暂无消费记录</div>}</section>
-}
-
-function UsageRow({ record, onOpen }: { record: ComputeUsageRecord; onOpen: () => void }): React.JSX.Element {
-  const raw = asRecord(record)
-  const enterprisePaid = sumComputeAmounts([record.creditPaidCNY, record.memberWalletPaidCNY, record.walletPaidCNY])
-  return <tr><td>{valueText(record.createdAt)}</td><td><strong>{valueText(raw.memberName ?? raw.memberId, '当前成员')}</strong><small>{valueText(raw.employeeName ?? raw.employeeId, '算力调用')} · {valueText(raw.modelName ?? raw.modelId, '')}</small></td><td>{formatComputeAmount(enterprisePaid)}</td><td>{formatComputeAmount(record.personalPaidCNY ?? null)}</td><td>{formatComputeAmount(record.unpaidCNY ?? null)}</td><td><strong>{formatComputeAmount(record.costCNY ?? null)}</strong></td><td><button type="button" className="compute-link" onClick={onOpen}>详情</button></td></tr>
-}
-
-function WalletTab({ state, onDrawer }: { state: ReturnType<typeof useComputeCenter>; onDrawer: (drawer: DrawerState) => void }): React.JSX.Element {
-  const page = state.walletTransactions.data
-  if (state.walletTransactions.loading && !page) return <LoadingBlock />
-  if (state.walletTransactions.error && !page) return <ErrorBlock message={state.walletTransactions.error} onRetry={() => state.loadWalletTransactions()} />
-  const records = page?.records ?? []
-  return <section className="compute-list-card"><div className="compute-list-head"><div className="compute-card-title"><h3>钱包流水</h3></div><button type="button" className="compute-icon-button" onClick={() => state.loadWalletTransactions()} aria-label="刷新钱包流水"><RefreshCw size={16} /></button></div>{records.length ? <div className="compute-table-wrap"><table className="compute-table"><thead><tr><th>时间</th><th>类型</th><th>说明</th><th>发生金额</th><th>余额</th><th /></tr></thead><tbody>{records.map(record => <WalletRow key={record.id} record={record} onOpen={() => onDrawer({ title: '钱包流水详情', children: <DetailRows entries={[
-    ['流水类型', record.type], ['说明', valueText(record.description)], ['发生金额', formatComputeAmount(record.amountCNY)], ['交易后余额', formatComputeAmount(record.balanceAfterCNY)], ['关联记录', valueText(record.relatedId)], ['时间', record.createdAt],
-  ]} /> })} />)}</tbody></table></div> : <div className="compute-empty">暂无钱包流水</div>}</section>
-}
-
-function WalletRow({ record, onOpen }: { record: WalletTransaction; onOpen: () => void }): React.JSX.Element {
-  const positive = record.type === 'DEPOSIT' || record.type === 'REFUND'
-  return <tr><td>{record.createdAt}</td><td><span className={`compute-type ${positive ? 'positive' : 'negative'}`}>{positive ? <ArrowDownLeft size={13} /> : <ArrowUpRight size={13} />}{record.type === 'DEPOSIT' ? '充值' : record.type === 'CONSUME' ? '消费' : record.type === 'REFUND' ? '退款' : '调整'}</span></td><td>{valueText(record.description)}</td><td className={positive ? 'compute-money-positive' : 'compute-money-negative'}>{formatComputeAmount(record.amountCNY)}</td><td>{formatComputeAmount(record.balanceAfterCNY)}</td><td><button type="button" className="compute-link" onClick={onOpen}>详情</button></td></tr>
 }
 
 export function ComputeCenterPage(): React.JSX.Element {
   const [tab, setTab] = useState<ComputeCenterTab>('overview')
   const [drawer, setDrawer] = useState<DrawerState>(null)
+  const openDetail = (detail: ComputeDetail): void => setDrawer({ title: detail.title, children: <DetailRows entries={detail.entries} /> })
+  const closeDrawer = useMemo(() => () => setDrawer(null), [])
   const state = useComputeCenter(tab)
   const [days, setDays] = useState<7 | 30 | 90>(30)
   const trend = useMemo(() => selectComputeBreakdown(days, state.overview.data?.breakdown, state.breakdown.data), [days, state.breakdown.data, state.overview.data?.breakdown])
-  const trendLoading = days === 30 ? state.overview.loading && !state.overview.data : state.breakdown.loading
+  const trendLoading = days === 30 ? state.overview.loading : state.breakdown.loading
   const trendError = days === 30 ? state.overview.error : state.breakdown.error
-  const content = tab === 'overview' ? <OverviewTab state={state} days={days} trend={trend} trendLoading={trendLoading} trendError={trendError} onRetryTrend={() => days === 30 ? state.refresh() : state.loadBreakdown(days)} onDrawer={setDrawer} /> : tab === 'usage' ? <UsageTab state={state} onDrawer={setDrawer} /> : <WalletTab state={state} onDrawer={setDrawer} />
-  return <div className="compute-page"><div className="compute-section-head"><div className="compute-tabs" role="tablist" aria-label="算力中心分区"><button type="button" role="tab" aria-selected={tab === 'overview'} className={tab === 'overview' ? 'active' : ''} onClick={() => setTab('overview')}>概览</button><button type="button" role="tab" aria-selected={tab === 'usage'} className={tab === 'usage' ? 'active' : ''} onClick={() => setTab('usage')}>消费明细</button><button type="button" role="tab" aria-selected={tab === 'wallet'} className={tab === 'wallet' ? 'active' : ''} onClick={() => setTab('wallet')}>个人钱包</button></div>{tab === 'overview' ? <button type="button" className="compute-refresh-button" onClick={() => { state.refresh(); if (days !== 30) state.loadBreakdown(days) }}><RefreshCw size={15} />刷新</button> : null}</div>{tab === 'overview' ? <div className="compute-range">{([7, 30, 90] as const).map(option => <button type="button" key={option} className={days === option ? 'active' : ''} onClick={() => { setDays(option); if (option !== 30) state.loadBreakdown(option) }}>{option} 天</button>)}</div> : null}{content}<DetailDrawer drawer={drawer} onClose={() => setDrawer(null)} /></div>
+  const content = tab === 'overview' ? <OverviewTab state={state} days={days} trend={trend} trendLoading={trendLoading} trendError={trendError} onRetryTrend={() => days === 30 ? state.refresh() : state.loadBreakdown(days)} onDrawer={setDrawer} /> : tab === 'usage' ? <ComputeUsageTab state={state} onDetail={openDetail} /> : <ComputeWalletTab state={state} onDetail={openDetail} />
+  return <div className="compute-page">
+    <div className="compute-section-head">
+      <div className="compute-tabs" role="tablist" aria-label="算力中心分区">
+        {([{ key: 'overview', label: '概览' }, { key: 'usage', label: '消费明细' }, { key: 'wallet', label: '个人钱包' }] as const).map(item => <button key={item.key} type="button" role="tab" aria-selected={tab === item.key} className={tab === item.key ? 'active' : ''} onClick={() => setTab(item.key)}>{item.label}</button>)}
+      </div>
+      {tab === 'overview' ? <button type="button" className="compute-refresh-button" disabled={state.overview.loading || state.breakdown.loading} onClick={() => { state.refresh(); if (days !== 30) state.loadBreakdown(days) }}><RefreshCw size={15} />刷新</button> : null}
+    </div>
+    {tab === 'overview' ? <div className="compute-range" role="group" aria-label="统计时间范围">{([7, 30, 90] as const).map(option => <button type="button" key={option} aria-pressed={days === option} className={days === option ? 'active' : ''} onClick={() => { setDays(option); if (option !== 30) state.loadBreakdown(option) }}>{option} 天</button>)}</div> : null}
+    {content}<DetailDrawer drawer={drawer} onClose={closeDrawer} />
+  </div>
 }

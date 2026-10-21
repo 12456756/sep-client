@@ -14,7 +14,7 @@ import type { TaskExecutionEvent } from '../../src/shared/types'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>, media?: ArrangementExecutionOptions['media']) {
+async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>, media?: ArrangementExecutionOptions['media'], onEvent?: (event: TaskExecutionEvent) => void) {
   const root = await mkdtemp(join(tmpdir(), 'sep-node-delivery-'))
   roots.push(root)
   await mkdir(join(root, 'deliverables'))
@@ -42,6 +42,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
     async onEvent(event) {
       if (event.type === 'arrangement_node_completed') assert.equal(saved?.state.nodes.find(node => node.nodeId === (event.data as { nodeId: string }).nodeId)?.status, 'completed')
       events.push(event)
+      onEvent?.(event)
     },
     createWorker: options => {
       contexts.push(options.context)
@@ -236,16 +237,28 @@ describe('automatic arrangement final file handover', () => {
     assert.equal(second.state.nodes[0]?.modelRequestProgress?.countingScope, 'since-resume')
     assert.equal((await new ArrangementCheckpointStore(f.root).get(f.plan.owner, 'task'))?.state.nodes[0]?.modelRequestProgress?.countingScope, 'since-resume')
   })
-  it('does not start a parallel sibling whose authorization finishes after terminal failure', async () => {
+  it('does not start a parallel sibling whose authorization finishes after terminal failure', { timeout: 5_000 }, async () => {
     let release!: () => void
+    let terminalFailureObserved = false
     const gate = new Promise<void>(resolve => { release = resolve })
-    const f = await fixture(async (id, iteration) => {
-      if (id === 'a' && iteration === 5) setTimeout(release, 20)
-      return { text: submission(id) }
-    }, async id => { if (id === 'b') await gate })
+    const f = await fixture(async id => ({ text: submission(id) }), async id => {
+      if (id === 'b') {
+        await gate
+        assert.ok(terminalFailureObserved)
+      }
+    }, undefined, event => {
+      if (event.type === 'arrangement_node_failed' && (event.data as { nodeId?: string }).nodeId === 'a') {
+        // The terminal flag is set before this event. File I/O can take much
+        // longer than a fixed timer when the complete test suite runs in parallel.
+        terminalFailureObserved = true
+        release()
+      }
+    })
     f.plan.nodes[1]!.dependsOn = []
     assert.equal((await f.executor.execute(f.plan, 'task', 'run')).status, 'failed')
+    assert.ok(terminalFailureObserved)
     assert.equal(f.contexts.length, 1)
+    assert.equal(f.contexts[0]?.arrangementNodeId, 'a')
   })
   it('preserves completed nodes when rejecting an incomplete legacy plan on resume', async () => {
     const f = await fixture(async id => ({ text: submission(id) }))

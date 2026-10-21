@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { SepRealMediaGateway } from './sep-real-media-gateway'
 import { AppError } from '../errors/app-error'
 import { toLocalMediaCapabilities } from '../common/platform/sep-media-runtime-contract'
+import { realMediaSemanticHash } from '../common/platform/real-media-semantics'
 
 const token = 'fixture-employment-token-not-real'
 const request = { profileId: 'image-prod', configVersion: 'cfg-v1', operation: 'generate' as const, referenceIds: [], referenceHashes: [],
@@ -227,13 +228,17 @@ describe('SepRealMediaGateway', () => {
   })
 
   it('rejects fake, unavailable, malformed and expired quote responses', async () => {
-    const valid = { mock: false, quoteId: 'quote-1', expiresAt: new Date(Date.now() + 60_000).toISOString(), semanticSha256: 'a'.repeat(64),
+    const valid = { mock: false, quoteId: 'quote-1', expiresAt: new Date(Date.now() + 60_000).toISOString(), semanticSha256: realMediaSemanticHash(request),
       pricingStatus: 'quoted', amountCny: '0.120000', pricingVersion: 'price-v1', billingStatus: 'NOT_RESERVED',
       funding: { creditCny: '1.000000', memberWalletCny: '2.000000', personalCny: '3.000000' } }
     const good = create(async () => json(valid))
     const quote = await good.gateway.quote('subscription-1', request, signal())
     assert.equal(quote.amount, '0.120000')
     assert.equal(quote.currency, 'CNY')
+    assert.equal(quote.requestHash, valid.semanticSha256)
+    const mismatch = create(async () => json({ ...valid, semanticSha256: 'a'.repeat(64) }))
+    await assert.rejects(mismatch.gateway.quote('subscription-1', request, signal()), safeError('PERMISSION_DENIED'))
+    await assert.rejects(good.gateway.quote('subscription-1', { ...request, parameters: { ...request.parameters, quality: 'low' } }, signal()), safeError('PERMISSION_DENIED'))
     for (const invalid of [{ ...valid, mock: true }, { ...valid, pricingStatus: 'unavailable' }, { ...valid, amountCny: 'unknown' },
       { ...valid, expiresAt: 'not-a-date' }]) {
       const { gateway } = create(async () => json(invalid))

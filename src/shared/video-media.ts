@@ -13,7 +13,7 @@ export const videoParametersSchema = z.object({
 }).strict()
 export type VideoParameters = z.infer<typeof videoParametersSchema>
 
-const videoCapabilitiesBaseSchema = z.object({
+const videoCapabilitiesV1Schema = z.object({
   supportsTextToVideo: z.boolean().default(false),
   supportsImageToVideo: z.boolean().default(false),
   supportsAudio: z.boolean().default(false),
@@ -28,10 +28,34 @@ const videoCapabilitiesBaseSchema = z.object({
   supportsCancel: z.boolean(),
   resultRetentionSeconds: z.number().int().positive().max(7 * 24 * 60 * 60),
 }).strict()
-export const videoCapabilitiesSchema = videoCapabilitiesBaseSchema.superRefine((value, context) => {
+const videoCapabilitiesV1RefinedSchema = videoCapabilitiesV1Schema.superRefine((value, context) => {
   if (value.supportsImageToVideo && value.maxReferenceCount < 1) context.addIssue({ code: 'custom', path: ['maxReferenceCount'], message: 'Image-to-video requires a reference slot.' })
 })
-export type VideoCapabilities = z.infer<typeof videoCapabilitiesSchema>
+
+const videoDefaultsSchema = z.object({
+  durationSeconds: z.number().int().positive().max(600), aspectRatio: z.string().regex(/^\d+:\d+$/),
+  resolution: z.enum(['480p', '720p', '1080p', '4k']), frameRate: z.number().int().positive().max(120),
+  audio: z.boolean(), outputFormat: z.enum(['video/mp4', 'video/webm']),
+}).strict()
+const videoCapabilitiesV2Schema = videoCapabilitiesV1Schema.extend({
+  audioModes: z.array(z.boolean()).min(1).max(2), defaultAudio: z.boolean(), defaults: videoDefaultsSchema,
+}).strict().superRefine((value, context) => {
+  if (value.supportsImageToVideo && value.maxReferenceCount < 1) context.addIssue({ code: 'custom', path: ['maxReferenceCount'], message: 'Image-to-video requires a reference slot.' })
+  if (!value.audioModes.includes(value.defaultAudio) || value.defaultAudio !== value.defaults.audio) context.addIssue({ code: 'custom', path: ['defaultAudio'], message: 'Audio default must match an available mode and defaults.' })
+  if (!value.durationsSeconds.includes(value.defaults.durationSeconds) || !value.aspectRatios.includes(value.defaults.aspectRatio)
+    || !value.resolutions.includes(value.defaults.resolution) || !value.frameRates.includes(value.defaults.frameRate)
+    || !value.outputFormats.includes(value.defaults.outputFormat)) context.addIssue({ code: 'custom', path: ['defaults'], message: 'Video defaults must be available in capabilities.' })
+  if (value.supportsAudio !== value.audioModes.includes(true)) context.addIssue({ code: 'custom', path: ['audioModes'], message: 'Audio modes must agree with supportsAudio.' })
+})
+export const videoCapabilitiesSchema = z.union([videoCapabilitiesV1RefinedSchema, videoCapabilitiesV2Schema])
+export type VideoCapabilities = Omit<z.infer<typeof videoCapabilitiesV1RefinedSchema>, 'supportsTextToVideo' | 'supportsImageToVideo' | 'supportsAudio'> & {
+  supportsTextToVideo: boolean
+  supportsImageToVideo: boolean
+  supportsAudio: boolean
+  audioModes?: boolean[]
+  defaultAudio?: boolean
+  defaults?: z.infer<typeof videoDefaultsSchema>
+}
 
 const videoProfileBaseSchema = z.object({
   profileId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
@@ -41,7 +65,7 @@ const videoProfileBaseSchema = z.object({
   configVersion: z.string().trim().min(1).max(80),
   operations: z.array(videoOperationSchema).min(1).max(2),
   executionMode: z.literal('async-query'),
-  capabilities: videoCapabilitiesSchema,
+  capabilities: videoCapabilitiesV1RefinedSchema,
   enabled: z.boolean(),
   verified: z.boolean(),
 }).strict()
@@ -52,7 +76,7 @@ export const videoProfileSchema = videoProfileBaseSchema.superRefine((value, con
 export type VideoProfile = z.infer<typeof videoProfileSchema>
 
 export const videoRuntimeProfileSchema = videoProfileBaseSchema.omit({ modelId: true, enabled: true, verified: true })
-export const videoRuntimeSchema = z.object({
+const videoRuntimeV1Schema = z.object({
   protocolVersion: z.literal(1),
   executionMode: z.enum(['mock', 'real']).optional(),
   executionAvailable: z.boolean(),
@@ -71,7 +95,46 @@ export const videoRuntimeSchema = z.object({
     if (tool === 'video_from_image' && !value.profiles.some(profile => profile.operations.includes('image-to-video')) || tool === 'video_generate' && !value.profiles.some(profile => profile.operations.includes('text-to-video')) || tool === 'video_cancel_job' && !value.profiles.some(profile => profile.capabilities.supportsCancel)) context.addIssue({ code: 'custom', path: ['tools'], message: 'Video tool capability is unavailable.' })
   }
 })
-export type VideoRuntime = z.infer<typeof videoRuntimeSchema>
+const videoRuntimeV2ProfileSchema = videoProfileBaseSchema.omit({ modelId: true, enabled: true, verified: true }).extend({
+  capabilities: videoCapabilitiesV2Schema,
+}).strict().superRefine((value, context) => {
+  if (value.operations.includes('image-to-video') && !value.capabilities.supportsImageToVideo) context.addIssue({ code: 'custom', path: ['capabilities', 'supportsImageToVideo'], message: 'Profile operation requires image-to-video capability.' })
+  if (value.operations.includes('text-to-video') && !value.capabilities.supportsTextToVideo) context.addIssue({ code: 'custom', path: ['capabilities', 'supportsTextToVideo'], message: 'Profile operation requires text-to-video capability.' })
+})
+const videoRuntimeV2Schema = z.object({
+  protocolVersion: z.literal(2), executionMode: z.enum(['mock', 'real']).optional(), executionAvailable: z.boolean(),
+  defaultProfileId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/).nullable(),
+  tools: z.array(z.enum(['video_from_image', 'video_generate', 'video_get_job', 'video_cancel_job'])),
+  profiles: z.array(videoRuntimeV2ProfileSchema).max(64),
+}).strict().superRefine((value, context) => {
+  if (!value.executionAvailable && value.tools.length > 0) context.addIssue({ code: 'custom', path: ['tools'], message: 'Disabled video runtime cannot expose tools.' })
+  if (value.executionAvailable && value.profiles.length === 0) context.addIssue({ code: 'custom', path: ['profiles'], message: 'Executable video runtime requires a profile.' })
+  if (new Set(value.profiles.map(profile => profile.profileId)).size !== value.profiles.length) context.addIssue({ code: 'custom', path: ['profiles'], message: 'Duplicate video profiles.' })
+  if (value.defaultProfileId !== null && !value.profiles.some(profile => profile.profileId === value.defaultProfileId)) context.addIssue({ code: 'custom', path: ['defaultProfileId'], message: 'Default video profile is unavailable.' })
+  for (const profile of value.profiles) {
+    if (profile.operations.includes('image-to-video') && !profile.capabilities.supportsImageToVideo || profile.operations.includes('text-to-video') && !profile.capabilities.supportsTextToVideo) context.addIssue({ code: 'custom', path: ['profiles'], message: 'Video profile capability mismatch.' })
+  }
+  for (const tool of value.tools) {
+    if (tool === 'video_from_image' && !value.profiles.some(profile => profile.operations.includes('image-to-video')) || tool === 'video_generate' && !value.profiles.some(profile => profile.operations.includes('text-to-video')) || tool === 'video_cancel_job' && !value.profiles.some(profile => profile.capabilities.supportsCancel)) context.addIssue({ code: 'custom', path: ['tools'], message: 'Video tool capability is unavailable.' })
+  }
+})
+export const videoRuntimeSchema = z.union([videoRuntimeV1Schema, videoRuntimeV2Schema])
+export type VideoRuntimeProfile = Omit<z.infer<typeof videoRuntimeProfileSchema>, 'capabilities'> & { capabilities: VideoCapabilities }
+export interface VideoRuntime {
+  protocolVersion: 1 | 2
+  executionMode?: 'mock' | 'real'
+  executionAvailable: boolean
+  defaultProfileId: string | null
+  tools: Array<'video_from_image' | 'video_generate' | 'video_get_job' | 'video_cancel_job'>
+  profiles: VideoRuntimeProfile[]
+}
+
+export function videoAllowedAudioModes(runtime: Pick<VideoRuntime, 'protocolVersion' | 'executionMode'>,
+  profile: { capabilities: Pick<VideoCapabilities, 'supportsAudio'> & { audioModes?: boolean[] } }): boolean[] {
+  if (runtime.protocolVersion === 2) return profile.capabilities.audioModes ? [...new Set(profile.capabilities.audioModes)] : []
+  if (runtime.executionMode === 'real') return [true]
+  return profile.capabilities.supportsAudio ? [false, true] : [false]
+}
 
 const videoRequestBaseSchema = z.object({
   profileId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),

@@ -11,6 +11,7 @@
 
 import { AlertTriangle, Command, LayoutGrid, Moon, Network, Sun } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
@@ -52,7 +53,13 @@ interface Props {
   canManage?: boolean;
 }
 
-export function ClientAppPage({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
+export function ClientAppPage(props: Props) {
+  return <MediaPreferenceScopeContext.Provider key={JSON.stringify([props.enterpriseId, props.userId])} value={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
+    <ClientAppContent {...props} />
+  </MediaPreferenceScopeContext.Provider>;
+}
+
+function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;

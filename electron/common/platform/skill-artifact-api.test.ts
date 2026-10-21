@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
+import { gzipSync } from 'node:zlib'
 import { config } from '../config'
 import { AuthApiError } from './platform-api'
 import { downloadSkillArtifact } from './skill-artifact-api'
@@ -105,13 +106,14 @@ describe('skill artifact authenticated download', () => {
     await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /redirects are forbidden/)
   })
 
-  it('requires matching MIME, length and X-SHA256 headers before reading bytes', async () => {
+  it('requires matching MIME, valid optional identity length and X-SHA256 headers before reading bytes', async () => {
     const cases = [
       { field: 'Content-Type', value: null }, { field: 'Content-Type', value: 'text/plain' },
       { field: 'Content-Type', value: 'application/zip' }, { field: 'Content-Type', value: 'application/json' },
-      { field: 'Content-Length', value: null }, { field: 'Content-Length', value: '0' },
+      { field: 'Content-Length', value: '0' },
       { field: 'Content-Length', value: String(bytes.length + 1) }, { field: 'Content-Length', value: `${bytes.length}.0` },
       { field: 'Content-Length', value: `${bytes.length}e0` }, { field: 'Content-Length', value: String(maxSkillArtifactBytes + 1) },
+      { field: 'Content-Length', value: '9007199254740992' },
       { field: 'X-SHA256', value: null }, { field: 'X-SHA256', value: digest.toUpperCase() },
       { field: 'X-SHA256', value: 'b'.repeat(64) },
     ]
@@ -127,6 +129,58 @@ describe('skill artifact authenticated download', () => {
       assert.equal(cancelled, true, field)
     }
   })
+
+  it('accepts a missing transport length only when the actual body length and hash match', async () => {
+    const responseHeaders = new Headers(headers())
+    responseHeaders.delete('Content-Length')
+    for (const body of [bytes, bytes.subarray(1), Buffer.alloc(bytes.length), Buffer.concat([bytes, bytes])]) {
+      globalThis.fetch = async () => new Response(body, { headers: responseHeaders })
+      if (body === bytes) assert.deepEqual(await downloadSkillArtifact('sub-1', artifact, 'access'), bytes)
+      else await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /body length mismatch|SHA256 mismatch|byte limit exceeded/)
+    }
+  })
+
+  it('rejects excessive declared compressed wire lengths before reading or decoding the body', async () => {
+    let cancelled = false
+    globalThis.fetch = async () => new Response(new ReadableStream({ cancel() { cancelled = true } }), {
+      headers: { ...headers(), 'Content-Encoding': 'gzip', 'Content-Length': String(maxSkillArtifactBytes + 1024 * 1024 + 1) },
+    })
+    await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /content length mismatch/)
+    assert.equal(cancelled, true)
+  })
+
+  for (const encoding of ['identity', 'gzip']) {
+    for (const framing of ['content-length', 'chunked']) {
+      it(`validates decoded bytes over real HTTP with ${encoding} ${framing}`, async t => {
+        let body = bytes
+        const server = createServer((_request, response) => {
+          const wire = encoding === 'gzip' ? gzipSync(body) : body
+          const responseHeaders: Record<string, string> = {
+            'Content-Type': 'text/markdown; charset=utf-8', 'X-SHA256': digest, 'Content-Encoding': encoding,
+          }
+          if (framing === 'content-length') responseHeaders['Content-Length'] = String(wire.length)
+          response.writeHead(200, responseHeaders)
+          response.write(wire.subarray(0, 5))
+          response.end(wire.subarray(5))
+        })
+        server.listen(0, '127.0.0.1')
+        await once(server, 'listening')
+        t.after(async () => {
+          server.closeAllConnections()
+          await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+        })
+        const address = server.address()
+        assert.ok(address && typeof address !== 'string')
+        globalThis.fetch = async (_input, init) => originalFetch(`http://127.0.0.1:${address.port}${artifact.downloadPath}`, init)
+        assert.deepEqual(await downloadSkillArtifact('sub-1', artifact, 'access'), bytes)
+        // Transport compression must not weaken decoded length or integrity checks.
+        for (const invalid of [bytes.subarray(1), Buffer.alloc(bytes.length), Buffer.concat([bytes, bytes])]) {
+          body = invalid
+          await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /content length mismatch|body length mismatch|SHA256 mismatch|byte limit exceeded/)
+        }
+      })
+    }
+  }
 
   it('counts streamed bytes independently of the advertised length and cancels overflow immediately', async () => {
     let cancelled = false

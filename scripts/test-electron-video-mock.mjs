@@ -52,7 +52,11 @@ async function waitJob(predicate, timeout = 20_000) {
 }
 async function approve() { await page.getByRole('button', { name: '允许工具执行', exact: true }).click({ timeout: 20_000 }) }
 async function form() {
-  if (!await page.getByLabel('视频参考图 1', { exact: true }).count()) await page.getByRole('button', { name: '从系统选择视频参考图', exact: true }).click()
+  if (!await page.getByLabel('视频参考图 1', { exact: true }).count()) {
+    const importer = page.getByRole('button', { name: /从系统选择视频参考图/ })
+    await importer.waitFor({ state: 'visible', timeout: 20_000 })
+    await importer.click()
+  }
   await page.getByLabel('视频参考图 1', { exact: true }).check()
   await page.getByLabel('视频创作需求', { exact: true }).fill('商品缓慢旋转，固定镜头；仅 mock，不扣费。')
 }
@@ -63,6 +67,57 @@ async function submit() {
 }
 function article(job) { return page.getByRole('article', { name: `视频任务 ${job.jobId}`, exact: true }) }
 async function waitArticle(job, text) { await article(job).getByText(text, { exact: true }).waitFor({ timeout: 20_000 }) }
+async function verifyParameterForms() {
+  const image = page.getByRole('region', { name: '图片参数联动验收', exact: true })
+  const value = async label => image.getByLabel(label, { exact: true }).inputValue()
+  assert.equal(await value('图片模型'), 'image-synthetic-b')
+  assert.equal(await value('图片尺寸'), '1536x1024')
+  assert.equal(await value('图片比例'), '3:2')
+  assert.equal(await value('图片质量'), 'high')
+  await image.getByLabel('图片比例', { exact: true }).selectOption('2:3')
+  assert.equal(await value('图片尺寸'), '1024x1536')
+  await image.getByLabel('图片尺寸', { exact: true }).selectOption('1024x1024')
+  assert.equal(await value('图片比例'), '1:1')
+  await image.getByLabel('图片质量', { exact: true }).selectOption('low')
+  await image.getByLabel('创作需求', { exact: true }).fill('仅验证本地参数，不生成')
+  await image.getByRole('button', { name: '提交图片生成', exact: true }).click()
+  const submitted = JSON.parse(await image.getByTestId('image-parameters-submit').textContent())
+  assert.equal(submitted.parameters.quality, 'low')
+  assert.equal(submitted.parameters.size, '1024x1024')
+  await image.getByRole('button', { name: '切换参数偏好身份' }).click()
+  assert.equal(await value('图片质量'), 'high')
+  await image.getByRole('button', { name: '切换参数偏好身份' }).click()
+  assert.equal(await value('图片质量'), 'low')
+  await image.getByRole('button', { name: '收紧图片规格' }).click()
+  assert.equal(await value('图片质量'), 'medium')
+  assert.equal(await value('图片尺寸'), '1024x1024')
+  assert.equal(await image.getByLabel('图片质量', { exact: true }).isDisabled(), true)
+  await image.getByRole('button', { name: '移除默认图片模型' }).click()
+  assert.equal(await value('图片模型'), 'image-synthetic-a')
+  await image.getByRole('button', { name: '恢复默认图片模型' }).click()
+  await image.getByRole('button', { name: '恢复图片规格' }).click()
+  await page.getByRole('button', { name: '展开固定音轨验收' }).click()
+  const video = page.getByRole('region', { name: '固定音轨参数验收', exact: true })
+  const audio = video.getByLabel('视频音频', { exact: true })
+  assert.equal(await audio.inputValue(), 'true')
+  assert.equal(await audio.isDisabled(), true)
+  assert.equal(await audio.locator('option').count(), 1)
+  for (const label of ['视频时长', '视频比例', '视频分辨率', '视频帧率', '视频输出格式']) {
+    assert.equal(await video.getByLabel(label, { exact: true }).isDisabled(), true)
+  }
+  await video.getByLabel('视频创作需求', { exact: true }).fill('仅本地固定音轨验收')
+  await video.getByRole('button', { name: '提交视频生成', exact: true }).click()
+  const fixed = JSON.parse(await video.getByTestId('video-fixed-audio-submit').textContent())
+  assert.equal(fixed.parameters.audio, true)
+  assert.equal(fixed.parameters.durationSeconds, 4)
+  await page.screenshot({ path: join(output, '05-media-parameters-desktop.png'), fullPage: true })
+  await page.setViewportSize({ width: 390, height: 844 })
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'No narrow-screen horizontal overflow')
+  await page.screenshot({ path: join(output, '06-media-parameters-narrow.png'), fullPage: true })
+  await page.setViewportSize({ width: 1180, height: 900 })
+  await page.getByRole('button', { name: '收起固定音轨验收' }).click()
+  evidence.phases.push({ name: 'quality-size-ratio-identity-capability-fixed-audio', submitted, fixed })
+}
 try {
   server.state.phase = 'initial'
   await launch(); await form()
@@ -182,6 +237,32 @@ try {
   assert.equal(server.state.counts.submit, beforeReconnect)
   evidence.phases.push({ name: 'disconnect-reconnect-original-task', jobId: interrupted.jobId, noResubmit: true })
 
+  await verifyParameterForms()
+  const beforePreferenceRestart = { submit: server.state.counts.submit, quotes: server.state.counts.quotes }
+  await close()
+  await launch()
+  const restoredForm = page.getByRole('region', { name: '图片参数联动验收', exact: true })
+  assert.equal(await restoredForm.getByLabel('图片模型', { exact: true }).inputValue(), 'image-synthetic-b')
+  assert.equal(await restoredForm.getByLabel('图片质量', { exact: true }).inputValue(), 'low')
+  assert.equal(await restoredForm.getByLabel('图片尺寸', { exact: true }).inputValue(), '1024x1024')
+  assert.equal(server.state.counts.submit, beforePreferenceRestart.submit)
+  assert.equal(server.state.counts.quotes, beforePreferenceRestart.quotes)
+  evidence.phases.push({ name: 'parameter-preferences-process-restart', noQuoteOrSubmit: true })
+  // Saved bytes belong to the local member, not the current employee grant.
+  await control(() => { globalThis.__sepVideoTest.setDisconnected(true); globalThis.__sepVideoTest.setGranted(false) })
+  const requestsBeforeLocal = await control(() => globalThis.__sepVideoTest.evidence().requests)
+  const offlineView = (await ipc('getTaskVideo', 'video-task-a')).data
+  assert.ok(offlineView.jobs.find(job => job.jobId === first.jobId).savedOutputIds.length)
+  await article(first).getByRole('button', { name: '预览视频成果 1', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.readyState >= 2)
+  const offlineExport = join(output, 'offline-revoked-export.mp4')
+  await control(({ dialog }, path) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: path }) }, offlineExport)
+  await page.getByRole('button', { name: '导出视频', exact: true }).click()
+  await page.getByText('视频已导出', { exact: true }).first().waitFor()
+  assert.equal(createHash('sha256').update(await readFile(offlineExport)).digest('hex'), fixture.mediaFixture.sha256)
+  assert.deepEqual(await control(() => globalThis.__sepVideoTest.evidence().requests), requestsBeforeLocal)
+  await page.getByRole('button', { name: '关闭视频预览' }).click()
+  evidence.phases.push({ name: 'offline-revoked-local-preview-export', noNetwork: true })
   await page.screenshot({ path: join(output, '04-final-jobs.png'), fullPage: true })
   const main = await control(() => globalThis.__sepVideoTest.evidence())
   assert.equal(main.blocked, 0); assert.equal(main.rendererBlocked, 0)

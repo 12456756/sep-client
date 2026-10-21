@@ -106,7 +106,7 @@ describe('independent optional video runtime v1', () => {
     globalThis.fetch = async (input, init) => {
       const url = new URL(String(input))
       assert.equal(url.pathname, '/api/client/subscriptions/sub-video/runtime')
-      assert.equal(url.search, '?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1')
+      assert.equal(url.search, '?mediaProtocolVersion=2&skillArtifactProtocolVersion=1&videoProtocolVersion=2')
       assert.deepEqual([...new Headers(init?.headers)], [['authorization', 'Bearer access']])
       const value = manifest(fixture.runtime)
       return new Response(JSON.stringify({ ...value, runtime: { ...value.runtime, media: { protocolVersion: 2 } } }))

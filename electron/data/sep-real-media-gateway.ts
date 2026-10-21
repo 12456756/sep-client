@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { z, type ZodType } from 'zod'
 import type { ImageMime, MediaGatewayPort, MediaQuote, MediaRequest } from '../domain/media'
-import { resolveSepRealMediaSize } from '../common/platform/sep-media-runtime-contract'
+import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { config } from '../common/config'
 import { platformSourceHeaders } from '../common/platform/platform-source-headers'
 import { AppError } from '../errors/app-error'
@@ -74,10 +74,8 @@ export class SepRealMediaGateway implements MediaGatewayPort {
 
   async quote(subscriptionId: string, request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>, signal: AbortSignal): Promise<MediaQuote> {
     const raw = await this.json(subscriptionId, '/quotes', 'POST', this.body(request), quoteSchema, signal)
-    const { size, count } = this.body(request).parameters
-    const parameters = { size, count }
-    const requestHash = createHash('sha256').update(JSON.stringify({ profileId: request.profileId, configVersion: request.configVersion,
-      operation: request.operation, creativeBrief: request.creativeBrief, parameters, references: request.referenceHashes })).digest('hex')
+    const requestHash = realMediaSemanticHash(request)
+    if (raw.semanticSha256 !== requestHash) throw new AppError('PERMISSION_DENIED', { message: '图片报价与本次模型、输入或规格不匹配，请重新报价。' })
     const expiresAt = Date.parse(raw.expiresAt)
     if (expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED', { message: 'Media quote has expired.' })
     return { quoteId: raw.quoteId, requestHash, expiresAt, status: 'quoted', amount: raw.amountCny,
@@ -145,11 +143,9 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
 
   private body(request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>) {
-    const size = resolveSepRealMediaSize(request.parameters)
-    if (!['1024x1024','1536x1024','1024x1536'].includes(size) || request.parameters.count > 4) throw new AppError('INVALID_ARGUMENT')
+    const parameters = realMediaParameters(request.parameters)
     return { profileId: this.safeId(request.profileId), configVersion: this.safeId(request.configVersion), operation: request.operation,
-      referenceIds: request.referenceIds.map(value => this.safeId(value)), creativeBrief: request.creativeBrief,
-      parameters: { size, count: request.parameters.count, quality: request.parameters.quality ?? 'medium' } }
+      referenceIds: request.referenceIds.map(value => this.safeId(value)), creativeBrief: request.creativeBrief.trim(), parameters }
   }
   private safeId(value: string) { const parsed = id.safeParse(value); if (!parsed.success) throw new AppError('INVALID_ARGUMENT'); return parsed.data }
   private normalReceipt(value: z.infer<typeof receiptSchema>) {

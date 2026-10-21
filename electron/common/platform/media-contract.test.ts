@@ -2,6 +2,7 @@ import * as assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { readFileSync } from 'node:fs'
 import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities } from './media-contract'
+import * as mediaV2Fixture from '../../../src/shared/fixtures/media-runtime-v2.json'
 
 const sepFixtures: { name: string; media: Record<string, unknown> }[] = JSON.parse(readFileSync(
   new URL('./fixtures/sep-media-runtime-v1.json', import.meta.url), 'utf8',
@@ -22,6 +23,37 @@ test('formal SEP runtime rejects unsupported execution and malformed configurati
     { ...configured, tools: ['media_generate_image'] },
     { ...configured, profiles: [{ modelId: 'private-model', apiKey: 'secret' }] },
   ]) assert.throws(() => parseMediaCapabilities(invalid), { message: 'Invalid or unsupported SEP media runtime.' })
+})
+
+test('SEP image v2 defaults map into optional local fields while preserving protocol 1', () => {
+  const wire = { protocolVersion: 2, executionAvailable: true, defaultProfileId: 'image-v2', tools: ['image_generate'], profiles: [{
+    profileId: 'image-v2', kind: 'image', displayName: 'Image v2', configVersion: 'cfg-v2', operations: ['generate'], executionMode: 'sync-response',
+    capabilities: { supportsReferenceImage: false, maxOutputs: 2, sizes: ['1024x1024', '1536x1024'], maxWidth: 1536, maxHeight: 1024,
+      qualities: ['low', 'medium', 'high'], defaultQuality: 'high', defaultSize: '1536x1024' },
+  }] }
+  const local = parseMediaCapabilities(wire)
+  assert.equal(local.protocolVersion, 1)
+  assert.equal(local.defaultProfileId, 'image-v2')
+  assert.equal(local.profiles[0]?.defaultQuality, 'high')
+  assert.equal(local.profiles[0]?.defaultSize, '1536x1024')
+  assert.throws(() => parseMediaCapabilities({ ...wire, protocolVersion: 1 }))
+  assert.equal(mediaCapabilitiesSchema.safeParse({ ...capabilities, profiles: [{ ...capabilities.profiles[0], defaultSize: '1024x1024' }] }).success, false)
+})
+
+test('SEP backend image v2 fixture is consumed with strict defaults', () => {
+  const local = parseMediaCapabilities(mediaV2Fixture.media)
+  assert.equal(local.protocolVersion, 1)
+  assert.equal(local.defaultProfileId, 'product-image-standard')
+  assert.deepEqual(local.profiles[0]?.allowedQualities, ['low', 'medium', 'high'])
+  assert.equal(local.profiles[0]?.defaultQuality, 'medium')
+  assert.equal(local.profiles[0]?.defaultSize, '1024x1024')
+  assert.throws(() => parseMediaCapabilities({
+    ...mediaV2Fixture.media,
+    profiles: [{ ...mediaV2Fixture.media.profiles[0], capabilities: {
+      ...mediaV2Fixture.media.profiles[0].capabilities,
+      defaultQuality: 'ultra',
+    } }],
+  }))
 })
 
 const capabilities = { protocolVersion: 1, tools: ['media_generate_image'], profiles: [{

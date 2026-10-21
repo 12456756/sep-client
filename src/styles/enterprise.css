@@ -298,8 +298,8 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
-  height: 60px;
-  padding: 0 4px;
+  min-height: 60px;
+  padding: 10px 16px 10px 4px;
   transition: gap var(--duration-normal) var(--ent-ease);
 }
 
@@ -309,11 +309,12 @@
 }
 
 .ent-side-brand strong {
-  overflow: hidden;
+  flex: 1;
+  min-width: 0;
   font-size: 16px;
   font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
   transition: opacity var(--duration-fast) var(--ent-ease);
 }
 
@@ -455,8 +456,8 @@
 
 .ent-top-head { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .ent-top-breadcrumb { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
-.ent-top-title { overflow: hidden; font-size: var(--ent-fs-page); font-weight: 600; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
-.ent-top-sub { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-body); text-overflow: ellipsis; white-space: nowrap; }
+.ent-top-title { font-size: var(--ent-fs-page); font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.ent-top-sub { color: var(--ent-ink-3); font-size: var(--ent-fs-body); line-height: 1.5; overflow-wrap: anywhere; }
 .ent-top-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; margin-left: auto; }
 .ent-top-actions-group { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
 /* 抬头上的控件不能跟着拖窗口，否则点不动。 */
@@ -470,6 +471,12 @@
 .ent-view-switch button:hover { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
 .ent-view-switch button.active { color: #fff; background: var(--ent-brand-solid); box-shadow: 0 1px 3px rgb(40 50 90 / 12%); font-weight: 600; }
 .ent-view-switch button.active:hover { color: #fff; background: var(--ent-brand-hover); }
+
+@media (max-width: 640px) {
+  .ent-top { flex-wrap: wrap; row-gap: 8px; }
+  .ent-top-head { flex-basis: 100%; }
+  .ent-top-actions { width: 100%; justify-content: flex-end; }
+}
 
 @media (max-width: 1080px) {
   .ent-top { padding-left: 20px; }

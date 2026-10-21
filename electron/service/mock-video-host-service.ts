@@ -1,7 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto'
 import type { z } from 'zod'
 import { videoGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../src/shared/video-host'
-import { videoBillingPending, videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
+import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
 import { videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
@@ -26,6 +26,10 @@ interface VideoHostOptionsBase {
   store: VideoStorePort
   getTask(taskId: string): Promise<{ subscriptionId?: string | null } | null>
   authorize(subscriptionId: string, signal: AbortSignal): Promise<unknown>
+  /** Identity/subscription check for original receipts, independent of generation capabilities. */
+  authorizeRecovery?(subscriptionId: string, signal: AbortSignal): Promise<void>
+  /** Cached presentation only; local history must never trigger a network authorization. */
+  localRuntime?(subscriptionId: string): unknown
   gateway(scope: VideoScope): MockVideoHostGateway
   readReference(scope: VideoScope, taskId: string, localAssetId: string): Promise<{ bytes: Uint8Array; sha256: string }>
   references?: {
@@ -38,6 +42,10 @@ interface VideoHostOptionsBase {
   policy?(taskId: string): Promise<TaskToolPolicy | undefined>
   /** Synchronous host generation, incremented on task binding, policy or grant changes. */
   authorizationRevision(): number
+  /** Local ownership only: employee grant changes must not revoke saved files. */
+  localAuthorizationRevision?(): number
+  /** Identity and employee grants, never generation model catalogs. */
+  recoveryAuthorizationRevision?(): number
   now?: () => number
   operationTimeoutMs?: number
   tracker?: Omit<VideoTrackerOptions, 'service'>
@@ -71,6 +79,7 @@ export class MockVideoHostService {
   private readonly active = new Set<Promise<unknown>>()
   private readonly taskSessions = new Map<string, AbortController>()
   private readonly taskOperations = new Map<string, Set<Promise<unknown>>>()
+  private readonly runtimes = new Map<string, VideoRuntime>()
   private readonly now: () => number
 
   constructor(private readonly options: MockVideoHostOptions) {
@@ -92,11 +101,26 @@ export class MockVideoHostService {
     this.assert(scope, epoch, signal)
     return { scope, epoch }
   }
-  private async runtime(scope: VideoScope, epoch: number, signal: AbortSignal): Promise<VideoRuntime> {
+  private localRevision(): number {
+    return this.options.localAuthorizationRevision?.() ?? this.options.authorizationRevision()
+  }
+  private recoveryRevision(): number {
+    return this.options.recoveryAuthorizationRevision?.() ?? this.localRevision()
+  }
+  private localRuntime(scope: VideoScope): VideoRuntime {
+    const value = this.options.localRuntime ? this.options.localRuntime(scope.subscriptionId) : this.runtimes.get(JSON.stringify(scope))
+    const result = videoRuntimeSchema.safeParse(value)
+    if (result.success && (result.data.executionMode ?? 'mock') === (this.options.mock ? 'mock' : 'real')) return result.data
+    return { protocolVersion: 1, executionMode: this.options.mock ? 'mock' : 'real', executionAvailable: false,
+      defaultProfileId: null, tools: [], profiles: [] }
+  }
+  private async runtime(scope: VideoScope, epoch: number, signal: AbortSignal, execution = true): Promise<VideoRuntime> {
     this.assert(scope, epoch, signal)
     const result = videoRuntimeSchema.safeParse(await abortableVideo(this.options.authorize(scope.subscriptionId, signal), signal))
     this.assert(scope, epoch, signal)
-    if (!result.success || (result.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real') || !result.data.executionAvailable || !result.data.tools.some(tool => tool !== 'video_cancel_job')) throw new AppError('PERMISSION_DENIED')
+    if (!result.success || (result.data.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real')) throw new AppError('PERMISSION_DENIED')
+    this.runtimes.set(JSON.stringify(scope), result.data)
+    if (execution && (!result.data.executionAvailable || !result.data.tools.some(tool => tool !== 'video_cancel_job'))) throw new AppError('PERMISSION_DENIED')
     return result.data
   }
   private signal(taskId: string, parent?: AbortSignal): AbortSignal {
@@ -125,14 +149,20 @@ export class MockVideoHostService {
     const source = this.options.gateway(structuredClone(scope))
     this.signal(taskId)
     const session = AbortSignal.any([this.session.signal, this.taskSessions.get(taskId)!.signal])
-    const authorized = async <T>(parent: AbortSignal, call: (signal: AbortSignal, revision: number) => Promise<T>): Promise<T> => {
+    const authorized = async <T>(parent: AbortSignal, call: (signal: AbortSignal, revision: number) => Promise<T>, execution = true): Promise<T> => {
       const signal = AbortSignal.any([parent, session, AbortSignal.timeout(this.options.operationTimeoutMs ?? 60_000)])
-      const revision = this.options.authorizationRevision()
-      await this.runtime(scope, epoch, signal)
-      if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+      const revisionNow = () => execution ? this.options.authorizationRevision() : this.recoveryRevision()
+      const revision = revisionNow()
+      if (!execution && this.options.authorizeRecovery) {
+        this.assert(scope, epoch, signal)
+        await abortableVideo(this.options.authorizeRecovery(scope.subscriptionId, signal), signal)
+        this.assert(scope, epoch, signal)
+      } else await this.runtime(scope, epoch, signal, execution)
+      const current = await this.task(taskId, signal)
+      if (JSON.stringify(current.scope) !== JSON.stringify(scope) || revision !== revisionNow()) throw new AppError('AUTH_REQUIRED')
       const result = await abortableVideo(call(signal, revision), signal)
       this.assert(scope, epoch, signal)
-      if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+      if (revision !== revisionNow()) throw new AppError('AUTH_REQUIRED')
       return result
     }
     const gateway: VideoGatewayPort = {
@@ -146,13 +176,13 @@ export class MockVideoHostService {
         dispatch()
         return source.submit(input, bounded)
       }),
-      findReceipt: (id, signal) => authorized(signal, bounded => source.findReceipt(id, bounded)),
-      getReceipt: (id, signal) => authorized(signal, bounded => source.getReceipt(id, bounded)),
+      findReceipt: (id, signal) => authorized(signal, bounded => source.findReceipt(id, bounded), false),
+      getReceipt: (id, signal) => authorized(signal, bounded => source.getReceipt(id, bounded), false),
       content: (receiptId, outputId, signal) => authorized(signal, async (bounded, revision) => {
         const stream = await source.content(receiptId, outputId, bounded)
         const assert = () => {
           this.assert(scope, epoch, bounded)
-          if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+          if (revision !== this.recoveryRevision()) throw new AppError('AUTH_REQUIRED')
         }
         return (async function* () {
           const iterator = stream[Symbol.asyncIterator]()
@@ -169,7 +199,7 @@ export class MockVideoHostService {
             if (!complete && iterator.return) void iterator.return().catch(() => undefined)
           }
         })()
-      }),
+      }, false),
     }
     const service = new VideoService({ scope, executionMode: this.options.mock ? 'mock' : 'real', store: this.options.store, gateway, now: this.now })
     const context: Context = {
@@ -206,7 +236,7 @@ export class MockVideoHostService {
       !profile.capabilities.durationsSeconds.includes(parameters.durationSeconds) ||
       !profile.capabilities.aspectRatios.includes(parameters.aspectRatio) || !profile.capabilities.resolutions.includes(parameters.resolution) ||
       !profile.capabilities.frameRates.includes(parameters.frameRate) || !profile.capabilities.outputFormats.includes(parameters.outputFormat) ||
-      parameters.audio && !profile.capabilities.supportsAudio || input.localAssetIds.length > profile.capabilities.maxReferenceCount) {
+      !videoAllowedAudioModes(runtime, profile).includes(parameters.audio) || input.localAssetIds.length > profile.capabilities.maxReferenceCount) {
       throw new AppError('PERMISSION_DENIED')
     }
     return profile
@@ -216,6 +246,10 @@ export class MockVideoHostService {
     const runtime = await this.runtime(scope, epoch, signal)
     return { scope, epoch, runtime, context: this.context(scope, epoch, taskId) }
   }
+  private async localBinding(taskId: string, signal: AbortSignal) {
+    const { scope, epoch } = await this.task(taskId, signal)
+    return { scope, epoch, context: this.context(scope, epoch, taskId) }
+  }
   private operation<T>(taskId: string, call: () => Promise<T>): Promise<T> {
     const pending = Promise.resolve().then(call)
     this.active.add(pending)
@@ -224,10 +258,21 @@ export class MockVideoHostService {
     operations.add(pending)
     return pending.finally(() => { this.active.delete(pending); operations.delete(pending); if (!operations.size && this.taskOperations.get(taskId) === operations) this.taskOperations.delete(taskId) })
   }
+  /** Explicit online execution refresh; history reads never call this method. */
+  async authorizeExecution(taskId: string, parent?: AbortSignal): Promise<VideoRuntime> {
+    const signal = this.signal(taskId, parent)
+    const revision = this.options.authorizationRevision()
+    const { scope, epoch, runtime } = await this.binding(taskId, signal)
+    const current = await this.task(taskId, signal)
+    this.assert(scope, epoch, signal)
+    if (JSON.stringify(current.scope) !== JSON.stringify(scope) || revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    return runtime
+  }
   async getTaskVideo(taskId: string): Promise<VideoTaskView> {
     const signal = this.signal(taskId)
-    const revision = this.options.authorizationRevision()
-    const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
+    const revision = this.localRevision()
+    const { scope, epoch, context } = await this.localBinding(taskId, signal)
+    const runtime = this.localRuntime(scope)
     const jobs = (await context.service.listJobs()).filter(job => job.taskId === taskId)
     const views: VideoJobView[] = []
     for (const job of jobs) {
@@ -243,16 +288,16 @@ export class MockVideoHostService {
       views.push({ ...jobView(job), savedOutputIds })
     }
     this.assert(scope, epoch, signal)
-    if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
     return { mock: this.options.mock, runtime, jobs: views }
   }
   async getReferences(taskId: string): Promise<MediaAssetView[]> {
     const signal = this.signal(taskId)
-    const revision = this.options.authorizationRevision()
-    const { scope, epoch } = await this.binding(taskId, signal)
+    const revision = this.localRevision()
+    const { scope, epoch } = await this.localBinding(taskId, signal)
     const assets = await this.options.references?.list(scope, taskId) ?? []
     this.assert(scope, epoch, signal)
-    if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
     return assets.filter(asset => asset.source === 'reference' && asset.taskId === taskId).map(asset => ({
       localAssetId: asset.localAssetId, taskId: asset.taskId, jobId: null, outputId: null,
       source: 'reference', mime: asset.mime, size: asset.size, width: asset.width, height: asset.height, status: asset.status,
@@ -261,16 +306,22 @@ export class MockVideoHostService {
   /** Native dialogs retain an authorization lease, never renderer-provided paths. */
   async nativeSelection(taskId: string) {
     const signal = this.signal(taskId)
-    const revision = this.options.authorizationRevision()
-    const { scope, epoch } = await this.binding(taskId, signal)
+    const revision = this.localRevision()
+    const { scope, epoch } = await this.localBinding(taskId, signal)
     const validate = () => {
       this.assert(scope, epoch, signal)
-      if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+      if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
+    }
+    const validateTask = async () => {
+      const current = await this.task(taskId, signal)
+      validate()
+      if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
     }
     validate()
     return {
       import: async (paths: readonly string[]) => this.operation(taskId, async () => {
         validate()
+        await validateTask()
         await this.runtime(scope, epoch, signal)
         validate()
         if (!this.options.references || paths.length > 4) throw new AppError('INVALID_ARGUMENT')
@@ -281,13 +332,10 @@ export class MockVideoHostService {
       export: async (jobId: string, outputId: string, path: string) => this.operation(taskId, async () => {
         videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
         validate()
-        await this.runtime(scope, epoch, signal)
-        validate()
+        await validateTask()
         if (!this.options.exportOutput) throw new AppError('SERVICE_UNAVAILABLE')
-        if (!this.options.mock) {
-          await this.outputInfo(taskId, jobId, outputId)
-          validate()
-        }
+        await this.outputInfo(taskId, jobId, outputId)
+        validate()
         await this.options.exportOutput(scope, taskId, jobId, outputId, path, signal, validate)
         validate()
       }),
@@ -296,18 +344,19 @@ export class MockVideoHostService {
   async preview(taskId: string, jobId: string, outputId: string) {
     videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
     const signal = this.signal(taskId)
-    const revision = this.options.authorizationRevision()
-    const { scope, epoch } = await this.binding(taskId, signal)
+    const revision = this.localRevision()
+    const { scope, epoch } = await this.localBinding(taskId, signal)
+    await this.outputInfo(taskId, jobId, outputId)
     const asset = await this.options.store.getAsset(scope, taskId, jobId, outputId)
-    // This preview bridge is mock-only; do not transfer a production-sized video over IPC.
+    // Real outputs open through the native adapter; never transfer their bytes over IPC.
     if (!asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
     if (!this.options.mock) {
-      await this.outputInfo(taskId, jobId, outputId)
       if (!this.options.openOutput || asset.output.byteLength > 256 * 1024 * 1024) throw new AppError('INVALID_ARGUMENT')
       const validate = () => {
         this.assert(scope, epoch, signal)
-        if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+        if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
       }
+      validate()
       await this.operation(taskId, () => this.options.openOutput!(scope, taskId, jobId, outputId, signal, validate))
       validate()
       return { mime: asset.output.mimeType, opened: true as const }
@@ -315,18 +364,18 @@ export class MockVideoHostService {
     if (asset.output.byteLength > 16 * 1024 * 1024) throw new AppError('INVALID_ARGUMENT')
     const bytes = await this.options.store.readAsset(scope, taskId, jobId, outputId)
     this.assert(scope, epoch, signal)
-    if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
     return { mime: asset.output.mimeType, bytes }
   }
   async outputInfo(taskId: string, jobId: string, outputId: string) {
     videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
-    const signal = this.signal(taskId), revision = this.options.authorizationRevision()
-    const { scope, epoch } = await this.binding(taskId, signal)
+    const signal = this.signal(taskId), revision = this.localRevision()
+    const { scope, epoch } = await this.localBinding(taskId, signal)
     const job = (await this.context(scope, epoch, taskId).service.listJobs()).find(job => job.jobId === jobId)
     const output = job?.receipt?.outputs.find(output => output.outputId === outputId)
     const asset = await this.options.store.getAsset(scope, taskId, jobId, outputId)
     this.assert(scope, epoch, signal)
-    if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+    if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
     if (!output || asset?.status !== 'SAVED') throw new AppError('NOT_FOUND')
     return output
   }
@@ -391,7 +440,7 @@ export class MockVideoHostService {
   async resume(taskId: string, jobId: string, parent?: AbortSignal): Promise<VideoJobView> {
     const signal = this.signal(taskId, parent)
     return this.operation(taskId, async () => {
-      const { scope, epoch, context } = await this.binding(taskId, signal)
+      const { scope, epoch, context } = await this.localBinding(taskId, signal)
       const job = await context.service.resume(taskId, jobId, signal)
       this.assert(scope, epoch, signal)
       return jobView(job)
@@ -400,7 +449,7 @@ export class MockVideoHostService {
   async retrySave(taskId: string, jobId: string): Promise<VideoJobView> {
     const signal = this.signal(taskId)
     return this.operation(taskId, async () => {
-      const { scope, epoch, context } = await this.binding(taskId, signal)
+      const { scope, epoch, context } = await this.localBinding(taskId, signal)
       const job = await context.service.retrySave(taskId, jobId, signal)
       this.assert(scope, epoch, signal)
       return jobView(job)
@@ -454,6 +503,7 @@ export class MockVideoHostService {
     const contexts = [...this.contexts.values()]
     for (const context of contexts) context.service.close()
     this.contexts.clear()
+    this.runtimes.clear()
     await Promise.allSettled(contexts.map(context => context.tracker.stop()))
     await Promise.allSettled([...this.active])
     this.taskSessions.clear()

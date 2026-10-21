@@ -1,4 +1,67 @@
-import type { MediaGenerationStatus, MediaJobView, MediaOperation, MediaProfile, MediaSaveStatus, MediaTrackingStatus } from './media'
+import type { MediaGenerationInput, MediaGenerationStatus, MediaJobView, MediaOperation, MediaProfile, MediaSaveStatus, MediaTrackingStatus } from './media'
+import { imageAspectRatio } from './media-spec'
+import { videoAllowedAudioModes } from './video-media'
+import type { VideoParameters, VideoRuntime } from './video-media'
+
+/** Preserve an explicit available choice; otherwise use the server default before list order. */
+export function selectMediaProfile<T extends { profileId: string }>(profiles: readonly T[], selectedId?: string, defaultProfileId?: string | null): T | undefined {
+  return profiles.find(profile => profile.profileId === selectedId) ?? profiles.find(profile => profile.profileId === defaultProfileId) ?? profiles[0]
+}
+
+export function imageFormAspectRatios(profile: MediaProfile): string[] {
+  return [...new Set(profile.allowedAspectRatios)].filter(ratio => !profile.allowedSizes?.length || profile.allowedSizes.some(size => {
+    const mapped = imageAspectRatio(size)
+    // Legacy local mock profiles may advertise an opaque size rather than pixels.
+    return mapped === undefined || mapped === ratio
+  }))
+}
+
+export function imageFormSizes(profile: MediaProfile): string[] {
+  return [...new Set(profile.allowedSizes ?? [])].filter(size => {
+    const ratio = imageAspectRatio(size)
+    return ratio === undefined || profile.allowedAspectRatios.includes(ratio)
+  })
+}
+
+/** Normalize both controls and submitted values, including after capability changes. */
+export function imageFormParameters(profile: MediaProfile, choices: Partial<MediaGenerationInput['parameters']> = {}, preferred: 'size' | 'aspectRatio' = 'size'): MediaGenerationInput['parameters'] | null {
+  const ratios = imageFormAspectRatios(profile)
+  const sizes = imageFormSizes(profile)
+  if (!ratios.length || profile.maxCount < 1 || profile.allowedSizes?.length && !sizes.length) return null
+  const chosenSize = choices.size && sizes.includes(choices.size) ? choices.size : undefined
+  const defaultSize = profile.defaultSize && sizes.includes(profile.defaultSize) ? profile.defaultSize : undefined
+  let size: string | undefined = chosenSize ?? defaultSize ?? sizes[0]
+  const chosenRatio = choices.aspectRatio && ratios.includes(choices.aspectRatio) ? choices.aspectRatio : undefined
+  let aspectRatio = chosenRatio ?? (size && imageAspectRatio(size)) ?? ratios[0]
+  const mapped = size && imageAspectRatio(size)
+  if (mapped && mapped !== aspectRatio) {
+    if ((preferred === 'aspectRatio' || !chosenSize) && chosenRatio) size = sizes.find(value => !imageAspectRatio(value) || imageAspectRatio(value) === aspectRatio) ?? sizes[0]
+    else aspectRatio = mapped
+  }
+  const qualities = profile.allowedQualities ?? []
+  const quality = choices.quality && qualities.includes(choices.quality) ? choices.quality
+    : profile.defaultQuality && qualities.includes(profile.defaultQuality) ? profile.defaultQuality : qualities[0]
+  const count = Number.isFinite(choices.count) ? Math.trunc(choices.count!) : 1
+  return { aspectRatio, count: Math.min(profile.maxCount, Math.max(1, count)), ...(size ? { size } : {}), ...(quality ? { quality } : {}) }
+}
+
+type VideoFormProfile = VideoRuntime['profiles'][number]
+export function videoFormParameters(runtime: Pick<VideoRuntime, 'protocolVersion' | 'executionMode'>, profile: VideoFormProfile, choices: Partial<VideoParameters> = {}): VideoParameters | null {
+  const caps = profile.capabilities
+  const audioModes = videoAllowedAudioModes(runtime, profile)
+  if (![caps.durationsSeconds, caps.aspectRatios, caps.resolutions, caps.frameRates, caps.outputFormats, audioModes].every(values => values.length)) return null
+  function pick<T>(values: T[], chosen: T | undefined, fallback: T | undefined): T {
+    return chosen !== undefined && values.includes(chosen) ? chosen : fallback !== undefined && values.includes(fallback) ? fallback : values[0]
+  }
+  return {
+    durationSeconds: pick(caps.durationsSeconds, choices.durationSeconds, caps.defaults?.durationSeconds),
+    aspectRatio: pick(caps.aspectRatios, choices.aspectRatio, caps.defaults?.aspectRatio),
+    resolution: pick(caps.resolutions, choices.resolution, caps.defaults?.resolution),
+    frameRate: pick(caps.frameRates, choices.frameRate, caps.defaults?.frameRate),
+    audio: pick(audioModes, choices.audio, caps.defaultAudio ?? caps.defaults?.audio ?? caps.supportsAudio),
+    outputFormat: pick(caps.outputFormats, choices.outputFormat, caps.defaults?.outputFormat),
+  }
+}
 
 export interface MediaStatusLabel {
   label: string

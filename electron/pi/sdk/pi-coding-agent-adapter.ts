@@ -722,6 +722,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
 class PiCodingAgentSession implements PiAgentSession {
   private readonly listeners = new Set<(event: PiAgentEvent) => void>()
   private readonly unsubscribe: () => void
+  private settledResponse: { text: string; stopReason?: string } = { text: '' }
 
   constructor(
     private readonly session: Awaited<ReturnType<typeof createAgentSession>>['session'],
@@ -731,6 +732,13 @@ class PiCodingAgentSession implements PiAgentSession {
     private readonly requestTracker: ModelRequestTracker | null,
   ) {
     this.unsubscribe = session.subscribe(event => {
+      if (event.type === 'turn_start') this.settledResponse = { text: '' }
+      if (event.type === 'turn_end' && event.message.role === 'assistant') {
+        this.settledResponse = {
+          text: event.message.content.filter(part => part.type === 'text').map(part => part.text).join(''),
+          stopReason: event.message.stopReason,
+        }
+      }
       this.requestTracker?.observe(event)
       if (event.type === 'auto_retry_end' && event.success === true) retryWait.reset()
       const delayMs = event.type === 'auto_retry_start' || event.type === 'summarization_retry_scheduled'
@@ -755,7 +763,12 @@ class PiCodingAgentSession implements PiAgentSession {
     return this.session.sessionFile ?? null
   }
 
+  getSettledResponse(): { text: string; stopReason?: string } {
+    return { ...this.settledResponse }
+  }
+
   async prompt(text: string): Promise<void> {
+    this.settledResponse = { text: '' }
     this.requestTracker?.startPrompt()
     this.retryWait.reset()
     this.settingsManager.setRetryEnabled(true)

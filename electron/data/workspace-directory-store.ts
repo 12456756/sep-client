@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises'
+import { lstat, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { diagnoseJsonWithBackup, writeJsonAtomic } from './atomic-file'
@@ -39,12 +39,22 @@ const indexSchema = z.object({
 
 const writes = new WriteChain()
 
+async function assertWorkspaceDirectory(path: string): Promise<void> {
+  const info = await lstat(path).catch((error: unknown) => {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return null
+    throw error
+  })
+  if (info && (!info.isDirectory() || info.isSymbolicLink())) {
+    throw new TaskPersistenceError('Workspace directory associations point to an unsafe directory.')
+  }
+}
+
 async function allocateName(parent: string, base: string, assigned: string[]): Promise<string> {
   const entries = await readdir(parent).catch((error: unknown) => {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return []
     throw error
   })
-  const occupied = new Set([...assigned, ...entries].map(name => name.toLowerCase()))
+  const occupied = new Set([...assigned, ...entries].map(name => name.normalize('NFC').toLowerCase()))
   for (let index = 1; ; index += 1) {
     const suffix = index === 1 ? '' : ` (${index})`
     const characters = Array.from(base)
@@ -68,6 +78,7 @@ export class WorkspaceDirectoryStore {
     this.paths.scopeKey(scope)
     const file = this.paths.workspaceDirectoryIndexFile()
     return writes.run(file, async () => {
+      await assertWorkspaceDirectory(this.paths.workspaceBaseRoot())
       const result = await diagnoseJsonWithBackup(file, value => {
         const parsed = indexSchema.safeParse(value)
         return parsed.success ? parsed.data : null
@@ -86,6 +97,7 @@ export class WorkspaceDirectoryStore {
         index.enterprises.push(enterprise)
         changed = true
       }
+      await assertWorkspaceDirectory(join(this.paths.workspaceBaseRoot(), enterprise.directory))
       let member = enterprise.members.find(item => item.memberId === scope.memberId)
       if (!member) {
         const directory = await allocateName(
@@ -97,6 +109,7 @@ export class WorkspaceDirectoryStore {
         enterprise.members.push(member)
         changed = true
       }
+      await assertWorkspaceDirectory(join(this.paths.workspaceBaseRoot(), enterprise.directory, member.directory))
       if (changed) await writeJsonAtomic(file, index)
       return { enterpriseName: enterprise.directory, memberName: member.directory }
     })

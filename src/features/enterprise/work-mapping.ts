@@ -219,7 +219,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
   const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
 
   const stepStates = deriveStepStates(meta?.steps.length ?? 0, status, legacyProgress);
-  const effectiveExecution = mergeExecutionSnapshots(arrangementExecution, executionFromEvents(plan, arrangementEvents));
+  const effectiveExecution = executionFromEvents(plan, arrangementEvents, arrangementExecution);
   const steps: WorkStep[] = (meta?.steps ?? []).map((step, index) => ({
     ...step,
     employeeName: nameOf(step.employeeId),
@@ -234,8 +234,9 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     ?? steps[0]?.employeeId
     ?? '';
 
-  const deliverables = kind === 'flow'
-    ? finalDeliverables(plan, effectiveExecution)
+  const deliverables = kind === 'flow' && (effectiveExecution?.nodes.some(node => node.finalFiles.length)
+    || plan?.nodes.some(node => node.deliverables?.length))
+    ? finalDeliverables(plan, effectiveExecution, task.workDir ?? plan?.workspace.path ?? null)
     : task.files.map((file, index) => ({
       id: `${task.id}-file-${index}`,
       name: file.split(/[\\/]/).pop() || file,
@@ -364,12 +365,24 @@ export function getArrangementDisplayEvents(
   return completed.length ? [...completed, ...current] : current;
 }
 
-function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: TaskExecutionEvent[]): ArrangementExecutionSnapshot | null {
+function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: TaskExecutionEvent[], persisted?: ArrangementExecutionSnapshot | null): ArrangementExecutionSnapshot | null {
   if (!plan || plan.mode === 'conversation') return null
-  const nodes: ArrangementExecutionSnapshot['nodes'] = plan.nodes.map(node => ({ nodeId: node.id, status: 'pending', finalFiles: [] }))
+  // Replay only events newer than the checkpoint, using it as the base for unchanged nodes.
+  const nodes: ArrangementExecutionSnapshot['nodes'] = plan.nodes.map(node => {
+    const saved = persisted?.nodes.find(item => item.nodeId === node.id)
+    return saved ? { ...saved, finalFiles: [...saved.finalFiles] } : { nodeId: node.id, status: 'pending', finalFiles: [] }
+  })
+  let status = persisted?.status ?? 'running'
+  let activeRunId = persisted?.activeRunId ?? null
+  let updatedAt = persisted?.updatedAt ?? 0
   let changed = false
   for (const event of events) {
-    const data = event.data as { nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status'] }>; finalDeliverables?: unknown } | null
+    if (persisted && event.occurredAt <= persisted.updatedAt) continue
+    const data = event.data as { status?: string; nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status'] }>; finalDeliverables?: unknown } | null
+    if (event.type === 'arrangement_state_changed' && data?.status) {
+      status = data.status as typeof status
+      changed = true
+    }
     if (Array.isArray(data?.nodeStates)) {
       for (const saved of data.nodeStates) {
         const target = nodes.find(node => node.nodeId === saved.nodeId)
@@ -380,34 +393,18 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
       const target = nodes.find(node => node.nodeId === data.nodeId)
       if (target) { target.status = data.nodeStatus as typeof target.status; changed = true }
     }
-    if (event.type === 'arrangement_node_completed' && data?.nodeId && Array.isArray(data.finalDeliverables)) {
+    if (data?.nodeId && ['arrangement_node_started', 'arrangement_node_completed', 'arrangement_node_failed'].includes(event.type)) {
       const target = nodes.find(node => node.nodeId === data.nodeId)
-      if (target) target.finalFiles = data.finalDeliverables.filter(isFinalFile)
+      if (target) {
+        target.status = event.type === 'arrangement_node_started' ? 'running' : event.type === 'arrangement_node_completed' ? 'completed' : 'failed'
+        if (event.type === 'arrangement_node_completed' && Array.isArray(data.finalDeliverables)) target.finalFiles = data.finalDeliverables.filter(isFinalFile)
+        changed = true
+      }
     }
+    activeRunId = event.runId
+    updatedAt = Math.max(updatedAt, event.occurredAt)
   }
-  return changed ? { activeRunId: events.at(-1)?.runId ?? null, status: 'running', nodes, updatedAt: events.at(-1)?.occurredAt ?? 0 } : null
-}
-
-function mergeExecutionSnapshots(
-  persisted: ArrangementExecutionSnapshot | null | undefined,
-  live: ArrangementExecutionSnapshot | null,
-): ArrangementExecutionSnapshot | null {
-  if (!persisted) return live
-  if (!live) return persisted
-  return {
-    ...persisted,
-    activeRunId: live.activeRunId ?? persisted.activeRunId,
-    status: live.status,
-    updatedAt: Math.max(persisted.updatedAt, live.updatedAt),
-    nodes: persisted.nodes.map(node => {
-      const current = live.nodes.find(item => item.nodeId === node.nodeId)
-      return current ? {
-        ...node,
-        status: current.status,
-        finalFiles: current.finalFiles.length ? current.finalFiles : node.finalFiles,
-      } : node
-    }),
-  }
+  return changed ? { activeRunId, status, nodes, updatedAt } : persisted ?? null
 }
 
 function isFinalFile(value: unknown): value is ArrangementFinalFileSnapshot {
@@ -417,15 +414,18 @@ function isFinalFile(value: unknown): value is ArrangementFinalFileSnapshot {
     && typeof item.size === 'number' && typeof item.sha256 === 'string' && typeof item.nodeRunId === 'string' && typeof item.validatedAt === 'number'
 }
 
-function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution: ArrangementExecutionSnapshot | null): WorkDeliverable[] {
+function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution: ArrangementExecutionSnapshot | null, workspace: string | null): WorkDeliverable[] {
   if (!plan || !execution) return []
   const files: WorkDeliverable[] = []
   for (const node of plan.nodes) {
     const state = execution.nodes.find(item => item.nodeId === node.id)
+    if (state?.status !== 'completed') continue
     for (const file of state?.finalFiles ?? []) files.push({
       id: `${node.id}:${file.id}`,
       name: file.path.split(/[\\/]/).pop() || file.path,
-      path: file.path,
+      path: workspace && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(file.path)
+        ? `${workspace.replace(/[\\/]+$/, '')}${workspace.includes('\\') ? '\\' : '/'}${file.path.replace(/[\\/]/g, workspace.includes('\\') ? '\\' : '/')}`
+        : file.path,
       note: `节点最终交付物 · ${node.title}`,
       nodeId: node.id,
       nodeTitle: node.title,
@@ -438,9 +438,9 @@ function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution:
 function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskExecutionEvent[], execution: ArrangementExecutionSnapshot | null): WorkStepState {
   const saved = execution?.nodes.find(node => node.nodeId === nodeId)?.status
   if (saved === 'completed') return 'done'
-  if (saved === 'running') return 'running'
+  if (saved === 'running') return status === 'paused' || status === 'failed' ? 'failed' : 'running'
   if (saved === 'failed' || saved === 'interrupted' || saved === 'stopped' || saved === 'blocked') return 'failed'
-  if (saved === 'ready') return 'pending'
+  if (saved === 'ready' || saved === 'pending') return 'pending'
   if (status === 'completed') return 'done';
   let state: WorkStepState = 'pending';
   for (const event of events) {

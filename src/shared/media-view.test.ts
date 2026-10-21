@@ -3,7 +3,8 @@ import { test } from 'node:test'
 import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { MediaAssetView, MediaJobView, MediaProfile } from './media'
-import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels } from './media-view'
+import { imageFormAspectRatios, imageFormParameters, imageFormSizes, mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from './media-view'
+import { imageAspectRatio } from './media-spec'
 
 // Shared tests also compile under the Node tsconfig, which intentionally has no JSX setting.
 const { MediaArtifactsPanel, MediaAssetGrid, MediaCommandFeedback, MediaCreationForm, MediaJobList } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
@@ -23,6 +24,62 @@ function job(patch: Partial<MediaJobView> = {}): MediaJobView {
     billingStatus: 'pending', error: null, createdAt: 1, updatedAt: 1, assets: [], canCancelUpstream: false, ...patch }
 }
 const noop = () => {}
+
+test('model selection honors the default after loading or removal while preserving valid explicit choices', () => {
+  const alternate = { ...profile, profileId: 'preferred' }
+  assert.equal(selectMediaProfile([profile, alternate], '', 'preferred'), alternate)
+  assert.equal(selectMediaProfile([profile, alternate], profile.profileId, 'preferred'), profile)
+  assert.equal(selectMediaProfile([profile, alternate], 'removed', 'preferred'), alternate)
+  assert.equal(selectMediaProfile([profile], 'removed', 'missing'), profile)
+  assert.equal(selectMediaProfile([], 'removed', 'preferred'), undefined)
+})
+
+const pixelProfile = {
+  ...profile, allowedAspectRatios: ['1:1', '3:2', '2:3'], allowedSizes: ['1024x1024', '1536x1024', '1024x1536'],
+  allowedQualities: ['low', 'medium', 'high'], defaultSize: '1536x1024', defaultQuality: 'high',
+}
+
+test('image defaults come from advertised capabilities rather than list order or an invented quality', () => {
+  assert.deepEqual(imageFormParameters(pixelProfile), { aspectRatio: '3:2', size: '1536x1024', quality: 'high', count: 1 })
+  assert.equal(imageFormParameters({ ...pixelProfile, defaultQuality: 'unknown' })?.quality, 'low')
+  const noQuality = imageFormParameters({ ...pixelProfile, allowedQualities: undefined })
+  assert.ok(noQuality)
+  assert.equal(Object.hasOwn(noQuality, 'quality'), false)
+  assert.deepEqual(imageFormParameters({ ...profile, allowedSizes: undefined, allowedQualities: undefined }), { aspectRatio: '1:1', count: 1 })
+})
+
+test('image size and aspect ratio changes map in both directions and preserve valid quality/count', () => {
+  const initial = imageFormParameters(pixelProfile)!
+  const portrait = imageFormParameters(pixelProfile, { ...initial, aspectRatio: '2:3', count: 3 }, 'aspectRatio')!
+  assert.deepEqual(portrait, { aspectRatio: '2:3', size: '1024x1536', count: 3, quality: 'high' })
+  assert.deepEqual(imageFormParameters(pixelProfile, { ...portrait, size: '1024x1024' }), { aspectRatio: '1:1', size: '1024x1024', count: 3, quality: 'high' })
+  assert.equal(imageFormParameters(pixelProfile, { aspectRatio: '1:1' })?.size, '1024x1024')
+  assert.equal(imageAspectRatio('1536x1024'), '3:2')
+  assert.equal(imageAspectRatio('0x10'), undefined)
+  assert.equal(imageAspectRatio('1024'), undefined)
+})
+
+test('image choices are revalidated when a model or capability loses previous specs', () => {
+  const changed = { ...pixelProfile, allowedAspectRatios: ['1:1'], allowedSizes: ['1024x1024'], allowedQualities: ['medium'], maxCount: 1 }
+  assert.deepEqual(imageFormParameters(changed, { aspectRatio: '2:3', size: '1024x1536', count: 4, quality: 'high' }), { aspectRatio: '1:1', size: '1024x1024', count: 1, quality: 'medium' })
+  assert.equal(imageFormParameters(pixelProfile, { count: NaN })?.count, 1)
+  assert.equal(imageFormParameters(pixelProfile, { count: -4 })?.count, 1)
+  assert.equal(imageFormParameters(pixelProfile, { count: 2.8 })?.count, 2)
+  assert.equal(imageFormParameters({ ...pixelProfile, allowedAspectRatios: ['16:9'] }), null)
+  assert.deepEqual(imageFormSizes({ ...pixelProfile, allowedSizes: ['1024x1024', '1920x1080'] }), ['1024x1024'])
+  assert.deepEqual(imageFormAspectRatios({ ...pixelProfile, allowedSizes: ['1536x1024'] }), ['3:2'])
+})
+
+test('image SSR selects the server default model and its quality, and marks single-value specs fixed', () => {
+  const preferred = { ...pixelProfile, profileId: 'preferred', allowedQualities: ['high'], maxCount: 1 }
+  const html = render(React.createElement(MediaCreationForm, { profiles: [profile, preferred], defaultProfileId: preferred.profileId,
+    references: [], archived: false, busy: false, taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))
+  assert.match(html, /value="preferred" selected=""/)
+  assert.match(html, /aria-label="图片质量"[^>]*disabled=""[^>]*><option selected="">high/)
+  assert.match(html, /数量（固定）<input[^>]*readOnly=""/i)
+  assert.match(html, /<option selected="">1536x1024/)
+  assert.doesNotMatch(html, /<option value="">默认/)
+})
 function render(element: React.ReactElement): string {
   const previous = Reflect.get(globalThis, 'React')
   Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
@@ -119,7 +176,7 @@ test('authoritative gateway recovery flags hide unavailable tracking and expired
 test('SSR creation controls provide system reference selection, specs and no fee-confirmation modal', () => {
   const html = render(React.createElement(MediaCreationForm, { profiles: [profile], references: [], archived: false, busy: false,
     taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))
-  for (const text of ['图片配置', '编辑参考图', '从系统选择参考图', '图片比例', '图片数量', '图片尺寸', '图片质量', '创作需求']) assert.match(html, new RegExp(text))
+  for (const text of ['图片模型', '编辑参考图', '从系统选择参考图', '图片比例', '图片数量', '图片尺寸', '图片质量', '创作需求']) assert.match(html, new RegExp(text))
   assert.match(html, /max="4"/)
   assert.match(html, /disabled=""[^>]*>.*提交图片生成/)
   assert.doesNotMatch(html, /role="dialog"|确认费用|视频|type="file"/)

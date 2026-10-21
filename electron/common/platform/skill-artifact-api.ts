@@ -38,7 +38,11 @@ export async function downloadSkillArtifact(subscriptionId: string, artifact: Av
     const expectedMime = expected.format === 'zip' ? 'application/zip' : 'text/markdown'
     if (mime !== expectedMime) throw new Error('Skill artifact MIME mismatch.')
     const length = response.headers.get('Content-Length')
-    if (length === null || !/^[1-9]\d*$/.test(length) || Number(length) !== expected.byteLength) {
+    const encoding = response.headers.get('Content-Encoding')?.trim().toLowerCase()
+    // Fetch decodes compressed bodies; their wire length is not the artifact length.
+    if (length !== null && (!/^[1-9]\d*$/.test(length) || !Number.isSafeInteger(Number(length))
+      || Number(length) > maxSkillArtifactBytes + 1024 * 1024
+      || ((!encoding || encoding === 'identity') && Number(length) !== expected.byteLength))) {
       throw new Error('Skill artifact content length mismatch.')
     }
     if (response.headers.get('X-SHA256') !== expected.artifactSha256) throw new Error('Skill artifact checksum header mismatch.')

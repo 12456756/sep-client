@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { buildWorkItem, encodeWorkPrompt, getArrangementDisplayEvents } from './work-mapping'
-import type { ArrangementPlanSnapshot, ClientTask, TaskExecutionEvent } from '../../shared/types'
+import type { ArrangementExecutionSnapshot, ArrangementPlanSnapshot, ClientTask, TaskExecutionEvent } from '../../shared/types'
 
 const prompt = encodeWorkPrompt('整理资料', {
   kind: 'conversation', goal: '请整理这份资料', steps: [], participants: ['employee-a'],
@@ -107,6 +107,78 @@ describe('arrangement retry display regressions', () => {
     const stopped: TaskExecutionEvent = { ...failed, sequence: 2, type: 'stop_requested', data: { reason: 'user stopped' } }
     const work = buildWorkItem({ task: { ...task, status: 'paused', error: 'user stopped' }, employees: [], plan, arrangementEvents: [failed, stopped] })
     assert.equal(work.status, 'paused')
+  })
+
+  const finalFile = { id: 'report', path: 'deliverables/report.md', format: 'md', size: 10, sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 4 }
+  const persisted: ArrangementExecutionSnapshot = {
+    activeRunId: 'run-a', status: 'completed', updatedAt: 10,
+    nodes: [{ nodeId: 'node-a', status: 'completed', finalFiles: [finalFile] }],
+  }
+
+  it('does not replay older running events over a newer completed checkpoint', () => {
+    const work = buildWorkItem({ task, employees: [], plan, arrangementExecution: persisted,
+      arrangementEvents: [{ ...failed, data: { nodeId: 'node-a', nodeStatus: 'running', status: 'running' } }] })
+    assert.equal(work.steps[0]?.state, 'done')
+    assert.equal(work.arrangementExecution?.status, 'completed')
+  })
+
+  it('applies only changed nodes when a newer partial event follows a checkpoint', () => {
+    const parallelPlan = { ...plan, nodes: [plan.nodes[0], { ...plan.nodes[0], id: 'node-b' }] }
+    const work = buildWorkItem({ task, employees: [], plan: parallelPlan,
+      arrangementExecution: { ...persisted, nodes: [...persisted.nodes, { nodeId: 'node-b', status: 'pending', finalFiles: [] }] },
+      arrangementEvents: [{ ...failed, occurredAt: 11, data: { nodeId: 'node-b', nodeStatus: 'running', status: 'running' } }] })
+    assert.deepEqual(work.steps.map(step => step.state), ['done', 'running'])
+  })
+
+  it('binds completion events and their final files even before the next state snapshot', () => {
+    const work = buildWorkItem({ task, employees: [], plan, arrangementEvents: [
+      { ...failed, data: { nodeId: 'node-a', nodeStatus: 'running', status: 'running' } },
+      { ...failed, sequence: 2, occurredAt: 4, type: 'arrangement_node_completed', data: { nodeId: 'node-a', finalDeliverables: [finalFile] } },
+    ] })
+    assert.equal(work.steps[0]?.state, 'done')
+    assert.equal(work.deliverables.length, 1)
+  })
+
+  it('retains terminal execution status from state events', () => {
+    const work = buildWorkItem({ task, employees: [], plan, arrangementEvents: [
+      { ...failed, data: { status: 'completed', nodeStates: [{ nodeId: 'node-a', status: 'completed' }] } },
+    ] })
+    assert.equal(work.arrangementExecution?.status, 'completed')
+  })
+
+  it('does not animate persisted running nodes after work is stopped', () => {
+    const work = buildWorkItem({ task: { ...task, status: 'paused' }, employees: [], plan,
+      arrangementExecution: { ...persisted, status: 'running', nodes: [{ nodeId: 'node-a', status: 'running', finalFiles: [] }] } })
+    assert.equal(work.steps[0]?.state, 'failed')
+  })
+
+  it('does not show invalidated final files from failed nodes', () => {
+    const work = buildWorkItem({ task, employees: [], plan,
+      arrangementExecution: { ...persisted, status: 'waiting-user', nodes: [{ ...persisted.nodes[0], status: 'failed' }] } })
+    assert.deepEqual(work.deliverables, [])
+  })
+
+  it('copies final file paths relative to the actual workspace on both platforms', () => {
+    for (const [workDir, expected] of [['/work/project/', '/work/project/deliverables/report.md'], ['C:\\Work\\Project\\', 'C:\\Work\\Project\\deliverables\\report.md']]) {
+      const work = buildWorkItem({ task: { ...task, workDir }, employees: [], plan, arrangementExecution: persisted })
+      assert.equal(work.deliverables[0]?.path, expected)
+    }
+  })
+
+  it('preserves existing file results for legacy workflows and plans without delivery contracts', () => {
+    const legacyTask = { ...task, files: ['/work/result.md'], prompt: encodeWorkPrompt('goal', {
+      kind: 'flow', goal: 'goal', steps: [], participants: [], sharedContext: { goal: 'goal', confirmedInputs: [], previousResults: [], userNotes: [] },
+    }) }
+    for (const legacyPlan of [undefined, { ...plan, mode: 'manual' as const }]) {
+      const work = buildWorkItem({ task: legacyTask, employees: [], plan: legacyPlan })
+      assert.deepEqual(work.deliverables.map(file => file.path), ['/work/result.md'])
+    }
+  })
+
+  it('does not expose process files for plans with structured delivery contracts', () => {
+    const structuredPlan = { ...plan, nodes: [{ ...plan.nodes[0], deliverables: [{ ...finalFile, name: 'Report', contentOutline: ['result'], acceptanceCriteria: ['complete'] }] }] }
+    const work = buildWorkItem({ task: { ...task, files: ['/work/process.log'] }, employees: [], plan: structuredPlan })
+    assert.deepEqual(work.deliverables, [])
   })
 })
 
