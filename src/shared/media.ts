@@ -73,6 +73,7 @@ export interface MediaTaskView {
   capabilities: MediaCapabilities | null
   unavailableReason: string | null
   assets: MediaAssetView[]
+  selectedReferenceIds: string[]
   jobs: MediaJobView[]
   archived: boolean
 }

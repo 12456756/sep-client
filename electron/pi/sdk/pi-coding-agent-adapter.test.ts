@@ -347,8 +347,8 @@ describe('trusted media host tools with the real Pi SDK', () => {
       assert.match(prompt, /不要求员工资料逐项列明这些手段/)
       assert.match(prompt, /工具可用性、费用及审批限制保持不变/)
       const tool = bodies[0].tools!.find(tool => tool.function.name === 'media_generate_image')!
-      assert.match(tool.function.description, /First call media_get_capabilities/)
-      assert.match(tool.function.description, /do not invent quality values/)
+      assert.match(tool.function.description, /host selects the authorized image profile/)
+      assert.match(tool.function.description, /selected in the image panel/)
       assert.equal(executions.length, 1)
     })
   }
@@ -361,10 +361,10 @@ describe('trusted media host tools with the real Pi SDK', () => {
     assert.deepEqual(tools.map(tool => tool.function.name).filter(name => name.startsWith('media_')), mediaNames)
     const generation = tools.find(tool => tool.function.name === 'media_generate_image')!.function.parameters
     assert.equal(generation.additionalProperties, false)
-    assert.deepEqual(generation.required, ['profileId', 'operation', 'localAssetIds', 'creativeBrief', 'parameters'])
+    assert.deepEqual(generation.required, ['creativeBrief'])
     const properties = generation.properties as Record<string, Record<string, unknown>>
     assert.equal(properties.parameters.additionalProperties, false)
-    assert.deepEqual(properties.parameters.required, ['aspectRatio', 'count'])
+    assert.equal(properties.parameters.required, undefined)
     const nested = properties.parameters.properties as Record<string, Record<string, unknown>>
     assert.equal(nested.count.type, 'integer')
     assert.equal(nested.count.maximum, 16)
@@ -376,10 +376,11 @@ describe('trusted media host tools with the real Pi SDK', () => {
   })
 
   it('executes generation through the host without a duplicate raw-input approval', async () => {
-    const { bodies, executions, approvals } = await mediaSession({}, { name: 'media_generate_image', input: generationInput }, { ...jobView, apiKey: 'private-key', url: 'https://secret.example', quote: { amount: '123' } })
+    const request = { creativeBrief: 'A product photo' }
+    const { bodies, executions, approvals } = await mediaSession({}, { name: 'media_generate_image', input: request }, { ...jobView, apiKey: 'private-key', url: 'https://secret.example', quote: { amount: '123' } })
     assert.equal(approvals, 0)
     assert.equal(executions.length, 1)
-    assert.deepEqual(executions[0].input, generationInput)
+    assert.deepEqual(executions[0].input, request)
     assert.ok(executions[0].signal instanceof AbortSignal)
     const text = JSON.stringify(bodies[1].messages)
     assert.ok(text.includes('job-a'))
@@ -422,7 +423,8 @@ describe('trusted media host tools with the real Pi SDK', () => {
   })
 
   it('rejects malformed generation input before the host executes', async () => {
-    for (const input of [{ ...generationInput, url: 'https://unsafe.example' }, { ...generationInput, parameters: { count: 1 } }, { ...generationInput, parameters: { aspectRatio: '1:1', count: 0 } }]) {
+    for (const input of [{ ...generationInput, url: 'https://unsafe.example' }, { ...generationInput, parameters: { aspectRatio: '1:1', count: 0 } },
+      { creativeBrief: 'A product photo', localAssetIds: ['asset-a', 'asset-a'] }]) {
       const { executions } = await mediaSession({}, { name: 'media_generate_image', input })
       assert.deepEqual(executions, [])
     }

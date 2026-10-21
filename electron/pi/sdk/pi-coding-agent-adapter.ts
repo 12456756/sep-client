@@ -21,6 +21,7 @@ import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
 import { videoToolGenerationInputSchema, videoToolJobInputSchema } from '../../../src/shared/video-host'
 import { videoBillingStatusSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../../src/shared/video-media'
+import { mediaToolGenerationInputSchema } from '../../../src/shared/media-host'
 import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId } from '../../common/platform/media-contract'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import { videoToolFailureFrom } from '../../errors/video-tool-error'
@@ -223,26 +224,26 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
   const parameters = {
     media_get_capabilities: Type.Object({}, { additionalProperties: false }),
     media_generate_image: Type.Object({
-      profileId: Type.String({ minLength: 1, maxLength: 256 }),
-      operation: Type.Union([Type.Literal('generate'), Type.Literal('edit')]),
-      localAssetIds: Type.Array(id, { maxItems: 16 }),
+      profileId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+      operation: Type.Optional(Type.Union([Type.Literal('generate'), Type.Literal('edit')])),
+      localAssetIds: Type.Optional(Type.Array(id, { maxItems: 16 })),
       creativeBrief: Type.String({ minLength: 1, maxLength: 20_000 }),
-      parameters: Type.Object({
-        aspectRatio: Type.String({ minLength: 1, maxLength: 32 }), count: Type.Integer({ minimum: 1, maximum: 16 }),
+      parameters: Type.Optional(Type.Object({
+        aspectRatio: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })), count: Type.Optional(Type.Integer({ minimum: 1, maximum: 16 })),
         size: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
         quality: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-      }, { additionalProperties: false }),
+      }, { additionalProperties: false })),
     }, { additionalProperties: false }),
     media_get_job: Type.Object({ jobId: id }, { additionalProperties: false }),
     media_cancel_job: Type.Object({ jobId: id, cancelUpstream: Type.Boolean() }, { additionalProperties: false }),
   }
   const validators = {
-    media_get_capabilities: emptyMediaInputSchema, media_generate_image: mediaGenerationInputSchema,
+    media_get_capabilities: emptyMediaInputSchema, media_generate_image: mediaToolGenerationInputSchema,
     media_get_job: mediaJobInputSchema, media_cancel_job: mediaCancelInputSchema,
   }
   const descriptions = {
-    media_get_capabilities: 'Get available image profiles and their supported operations.',
-    media_generate_image: 'Generate or edit images using a supported profile and task-local reference assets. First call media_get_capabilities; use only advertised operations, aspect ratios, sizes, qualities and counts. Omit optional size or quality unless advertised by the profile; do not invent quality values. INVALID_ARGUMENT means unsupported input, not denied permission: correct parameters using capabilities. The host validates cost and obtains approval before submission.',
+    media_get_capabilities: 'Get the currently authorized image capability and the task reference images selected in the image panel.',
+    media_generate_image: "Create an image from the user's creative brief. The host selects the authorized image profile and fills supported defaults. Use the task reference images selected in the image panel when relevant; request localAssetIds only when the user names a different saved referenceAssets item. Specify profile, operation or supported parameters only when the user explicitly asks. The host validates cost and obtains approval before submission.",
     media_get_job: 'Get the business status and task-local assets of an image job.',
     media_cancel_job: 'Stop tracking an image job, optionally requesting upstream cancellation through the host approval policy.',
   }

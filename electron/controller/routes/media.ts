@@ -10,6 +10,10 @@ const jobInput = z.object({ taskId: mediaId, jobId: mediaId }).strict()
 
 export const mediaRoutes = [
   route(INVOKE_CHANNELS.MEDIA_GET_TASK, mediaId, async (ctx, taskId) => ({ success: true, data: await ctx.media.getTaskMedia(taskId) })),
+  route(INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION, z.object({ taskId: mediaId, assetIds: z.array(mediaId).max(16) }).strict(), async (ctx, input) => {
+    await ctx.media.setReferenceSelection(input.taskId, input.assetIds)
+    return { success: true }
+  }),
   route(INVOKE_CHANNELS.MEDIA_IMPORT_REFERENCES, mediaId, async (ctx, taskId) => {
     // Authorize before opening a dialog; renderer cannot nominate filesystem paths.
     const selection = await ctx.media.nativeSelection(taskId)

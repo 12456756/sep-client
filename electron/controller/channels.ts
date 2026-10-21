@@ -24,6 +24,7 @@ export const INVOKE_CHANNELS = {
   VIDEO_RESUME: 'video:resume',
   VIDEO_RETRY_SAVE: 'video:retry-save',
   MEDIA_GET_TASK: 'media:get-task',
+  MEDIA_SET_REFERENCE_SELECTION: 'media:set-reference-selection',
   MEDIA_IMPORT_REFERENCES: 'media:import-references',
   MEDIA_GENERATE: 'media:generate',
   MEDIA_PREVIEW: 'media:preview',

@@ -7,8 +7,8 @@ import { videoRuntimeSchema } from '../../shared/video-media'
 import { VideoTaskPanel } from './VideoArtifactsPanel'
 import { useMediaParameterPreferences } from './media-preference-scope'
 
-type Command = 'import' | 'video-import' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
-type JobAction = Exclude<Command, 'import' | 'video-import' | 'generate' | 'export'>
+type Command = 'import' | 'video-import' | 'selection' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
+type JobAction = Exclude<Command, 'import' | 'video-import' | 'selection' | 'generate' | 'export'>
 type CommandNotice = { message: string; tone: 'error' | 'success' }
 type CommandFeedback = { pending: Command | null; notice: CommandNotice | null }
 const POLL_INTERVAL = 3000
@@ -237,7 +237,7 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
       if (active) timer = setTimeout(() => { void poll() }, POLL_INTERVAL)
     }
     if (typeof window !== 'undefined' && typeof window.electronAPI?.getTaskMedia === 'function') void poll()
-    else setView({ capabilities: null, unavailableReason: '图片服务尚未配置，普通聊天仍可使用', assets: [], jobs: [], archived: false })
+    else setView({ capabilities: null, unavailableReason: '图片服务尚未配置，普通聊天仍可使用', assets: [], selectedReferenceIds: [], jobs: [], archived: false })
     return () => {
       alive.current = false
       active = false
@@ -281,8 +281,6 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
       }
     })
   }
-  const profiles = view?.capabilities?.tools.includes('media_generate_image') ? view.capabilities.profiles : []
-  const defaultProfileId = view?.capabilities?.defaultProfileId
   const references = view?.assets.filter(asset => asset.taskId === taskId && asset.source === 'reference') || []
   const jobs = view?.jobs.filter(job => job.taskId === taskId) || []
   const outputs = new Map<string, MediaAssetView>()
@@ -295,13 +293,18 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
     <h3><ImageIcon size={15} />图片创作与成果</h3>
     {error && <p className="media-notice media-tone-error" role="alert">{error}<button type="button" className="media-icon-button" title="重新读取图片任务" aria-label="重新读取图片任务" onClick={() => { void refresh() }}><RefreshCw size={14} /></button></p>}
     {!view && !error && <p className="artifact-empty" role="status">正在读取图片能力</p>}
-    {!preview && !profiles.length && <MediaCommandFeedback {...feedback} />}
+    {!preview && !view?.capabilities?.tools.includes('media_generate_image') && <MediaCommandFeedback {...feedback} />}
     {view && <>
-      {(!profiles.length || view.unavailableReason) && <p className="media-notice">{view.unavailableReason || '图片能力尚未配置，普通聊天仍可使用'}</p>}
-      {!!profiles.length && <MediaCreationForm taskId={taskId} profiles={profiles} defaultProfileId={defaultProfileId} references={references} archived={view.archived} busy={busy} feedback={preview ? undefined : feedback} onImport={() => { void run('import', api => api.importMediaReferences(taskId)) }} onGenerate={input => { void run('generate', api => api.generateTaskMedia({ taskId, input })) }} onPreview={setPreview} />}
-      {!profiles.length && videoReferenceAvailable && <div className="media-subheading"><span>视频参考图</span><button type="button" className="media-command" disabled={busy || view.archived} onClick={() => { void run('video-import', api => api.importVideoReferences(taskId)) }}><ImagePlus size={14} />导入视频参考图</button></div>}
-      {!profiles.length && references.length > 0 && <MediaAssetGrid taskId={taskId} assets={references} references onPreview={setPreview} disabled />}
-      {!!jobs.length && <><h4>图片任务</h4><MediaJobList jobs={jobs} archived={view.archived || !profiles.length} busy={busy} onAction={jobAction} /></>}
+      {!view.capabilities?.tools.includes('media_generate_image') && <p className="media-notice">{view.unavailableReason || '图片能力尚未配置，普通聊天仍可使用'}</p>}
+      <div className="media-subheading"><span>创作参考图</span><button type="button" className="media-command" disabled={busy || view.archived} onClick={() => { void run('import', api => api.importMediaReferences(taskId)) }}><ImagePlus size={14} />导入参考图</button></div>
+      {references.length > 0 ? <MediaAssetGrid taskId={taskId} assets={references} references selected={view.selectedReferenceIds} disabled={busy || view.archived} onSelect={assetId => {
+        const selected = new Set(view.selectedReferenceIds)
+        if (selected.has(assetId)) selected.delete(assetId)
+        else selected.add(assetId)
+        void run('selection', api => api.setMediaReferenceSelection({ taskId, assetIds: [...selected] }))
+      }} onPreview={setPreview} /> : <p className="artifact-empty">尚无参考图</p>}
+      {!view.capabilities?.tools.includes('media_generate_image') && videoReferenceAvailable && <div className="media-subheading"><span>视频参考图</span><button type="button" className="media-command" disabled={busy || view.archived} onClick={() => { void run('video-import', api => api.importVideoReferences(taskId)) }}><ImagePlus size={14} />导入视频参考图</button></div>}
+      {!!jobs.length && <><h4>图片任务</h4><MediaJobList jobs={jobs} archived={view.archived} busy={busy} onAction={jobAction} /></>}
       {outputs.size > 0 && <><h4>图片成果</h4><MediaAssetGrid taskId={taskId} assets={[...outputs.values()]} onPreview={setPreview} onExport={exportAsset} disabled={busy} /></>}
     </>}
     {preview && <MediaPreviewDialog key={preview.localAssetId} taskId={taskId} asset={preview} busy={busy} feedback={feedback} onClose={() => setPreview(null)} onExport={() => exportAsset(preview)} />}
