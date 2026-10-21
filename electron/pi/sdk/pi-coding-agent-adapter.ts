@@ -19,10 +19,12 @@ import { Type } from 'typebox'
 import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
-import { videoGenerationInputSchema } from '../../../src/shared/video-host'
+import { videoToolGenerationInputSchema, videoToolJobInputSchema } from '../../../src/shared/video-host'
 import { videoBillingStatusSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../../src/shared/video-media'
 import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId } from '../../common/platform/media-contract'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
+import { videoToolFailureFrom } from '../../errors/video-tool-error'
+import { AppError } from '../../errors/app-error'
 import type {
   PiAgentEvent,
   PiAgentRuntime,
@@ -83,7 +85,6 @@ function registeredVideoNames(config: PiAgentSessionConfig): VideoToolName[] {
 }
 
 const videoId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
-const videoJobInputSchema = z.object({ jobId: videoId }).strict()
 const videoJobResultSchema = z.object({
   jobId: videoId, taskId: videoId, profileId: videoId,
   operation: z.enum(['image-to-video', 'text-to-video']),
@@ -104,6 +105,12 @@ const videoTaskResultSchema = z.object({
   mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
     runtime.profiles.every(profile => profile.capabilities.aspectRatios.every(ratio => ratio.length <= 32))),
   jobs: z.array(videoJobResultSchema).max(50),
+  referenceAssets: z.array(z.object({
+    localAssetId: videoId, taskId: videoId, jobId: z.null(), outputId: z.null(), source: z.literal('reference'),
+    mime: z.enum(['image/png', 'image/jpeg', 'image/webp']), size: z.number().int().positive(),
+    width: z.number().int().positive(), height: z.number().int().positive(),
+    status: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
+  })).max(100).optional(),
 }).refine(task => (task.runtime.executionMode ?? 'mock') === (task.mock ? 'mock' : 'real') &&
   task.jobs.every(job => (job.billingStatus === 'MOCK_NOT_CHARGED') === task.mock))
 
@@ -128,32 +135,34 @@ function safeVideoResult(result: unknown, names: readonly VideoToolName[]): unkn
 function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly VideoToolName[]): ToolDefinition[] {
   const id = Type.String({ pattern: '^[A-Za-z0-9_-]{1,128}$' })
   const parameters = Type.Object({
-    durationSeconds: Type.Integer({ minimum: 1, maximum: 600 }),
-    aspectRatio: Type.String({ pattern: '^\\d+:\\d+$' }),
-    resolution: Type.Union(['480p', '720p', '1080p', '4k'].map(value => Type.Literal(value))),
-    frameRate: Type.Integer({ minimum: 1, maximum: 120 }), audio: Type.Boolean(),
-    outputFormat: Type.Union([Type.Literal('video/mp4'), Type.Literal('video/webm')]),
+    durationSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 600 })),
+    aspectRatio: Type.Optional(Type.String({ pattern: '^\\d+:\\d+$' })),
+    resolution: Type.Optional(Type.Union(['480p', '720p', '1080p', '4k'].map(value => Type.Literal(value)))),
+    frameRate: Type.Optional(Type.Integer({ minimum: 1, maximum: 120 })), audio: Type.Optional(Type.Boolean()),
+    outputFormat: Type.Optional(Type.Union([Type.Literal('video/mp4'), Type.Literal('video/webm')])),
   }, { additionalProperties: false })
   return names.map(name => {
     const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
     return {
       name, label: name, executionMode: 'sequential',
       description: name === 'video_get_job'
-        ? 'Get the business status of a task-local video job.'
-        : `Generate a video using ${operation} and an advertised video profile. The host validates cost and obtains approval before submission.`,
-      parameters: name === 'video_get_job' ? Type.Object({ jobId: id }, { additionalProperties: false })
+        ? 'Get a task-local video job by jobId, or call with {} to list current VIDEO profiles, supported specifications, jobs and referenceAssets. Image capabilities do not describe video availability.'
+        : `Generate a video using ${operation}. Supply creativeBrief; the host selects the authorized video profile and backend defaults. Do not require users to configure profileId or technical parameters. Only specify parameters explicitly requested by the user, using video_get_job with {} to check supported values. ${name === 'video_from_image' ? 'Supply one SAVED task-local referenceAssets localAssetId; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report tool error codes, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
+      parameters: name === 'video_get_job' ? Type.Object({ jobId: Type.Optional(id) }, { additionalProperties: false })
         : Type.Object({
-          profileId: id, operation: Type.Literal(operation),
-          localAssetIds: Type.Array(id, { minItems: name === 'video_from_image' ? 1 : 0, maxItems: name === 'video_from_image' ? 1 : 0 }),
-          creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters,
+          profileId: Type.Optional(id), operation: Type.Optional(Type.Literal(operation)),
+          localAssetIds: name === 'video_from_image' ? Type.Array(id, { minItems: 1, maxItems: 1 }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
+          creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters: Type.Optional(parameters),
         }, { additionalProperties: false }),
       async execute(_toolCallId, input, signal) {
         const failure = (message: string) => ({ content: [{ type: 'text' as const, text: message }], details: { isError: true } })
         try {
           // Recheck the facade and task policy at dispatch, including direct SDK execution.
           if (!registeredVideoNames(config).includes(name)) return failure('Video tool is not enabled for this run.')
-          const parsed = name === 'video_get_job' ? videoJobInputSchema.safeParse(input) : videoGenerationInputSchema.safeParse(input)
-          if (!parsed.success || ('operation' in parsed.data && parsed.data.operation !== operation)) return failure('Invalid video tool input.')
+          const parsed = name === 'video_get_job' ? videoToolJobInputSchema.safeParse(input) : videoToolGenerationInputSchema.safeParse(input)
+          if (!parsed.success || ('creativeBrief' in parsed.data && (parsed.data.operation !== undefined && parsed.data.operation !== operation || parsed.data.localAssetIds.length !== (name === 'video_from_image' ? 1 : 0)))) {
+            return failure(JSON.stringify(videoToolFailureFrom(new AppError('INVALID_ARGUMENT'))))
+          }
           if (signal?.aborted) return failure('Video tool request cancelled.')
           const result = await config.videoTools!.execute(name, parsed.data, signal)
           if (signal?.aborted) return failure('Video tool request cancelled.')
@@ -161,8 +170,13 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
           const text = JSON.stringify(value)
           if (text.length > 65_536) return failure('Video tool result exceeds the safe limit.')
           return { content: [{ type: 'text', text: redactText(text, 65_536) }], details: { isError: false } }
-        } catch {
+        } catch (error) {
           // Neither validation diagnostics nor transport errors may echo the Pi prompt or host internals.
+          const business = !signal?.aborted && videoToolFailureFrom(error)
+          if (business) {
+            log.warn('video tool rejected', { tool: name, code: business.error.code })
+            return failure(JSON.stringify(business))
+          }
           return failure(signal?.aborted ? 'Video tool request cancelled.' : 'Video tool request failed.')
         }
       },

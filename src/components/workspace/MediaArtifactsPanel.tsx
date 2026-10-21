@@ -3,19 +3,26 @@ import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaOperation, MediaPreview, MediaProfile, MediaTaskView } from '../../shared/media'
 import { imageFormAspectRatios, imageFormParameters, imageFormSizes, mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from '../../shared/media-view'
+import { videoRuntimeSchema } from '../../shared/video-media'
 import { VideoTaskPanel } from './VideoArtifactsPanel'
 import { useMediaParameterPreferences } from './media-preference-scope'
 
-type Command = 'import' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
-type JobAction = Exclude<Command, 'import' | 'generate' | 'export'>
+type Command = 'import' | 'video-import' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
+type JobAction = Exclude<Command, 'import' | 'video-import' | 'generate' | 'export'>
 type CommandNotice = { message: string; tone: 'error' | 'success' }
 type CommandFeedback = { pending: Command | null; notice: CommandNotice | null }
 const POLL_INTERVAL = 3000
 
+export function canImportVideoReference(value: unknown): boolean {
+  const result = videoRuntimeSchema.safeParse(value)
+  return result.success && result.data.executionAvailable && result.data.tools.includes('video_from_image') &&
+    result.data.profiles.some(profile => profile.operations.includes('image-to-video') && profile.capabilities.supportsImageToVideo)
+}
+
 export function MediaCommandFeedback({ pending, notice, id }: Partial<CommandFeedback> & { id?: string }) {
   if (!pending && !notice) return null
   return <p id={id} className={`media-notice${notice ? ` media-tone-${notice.tone}` : ''}`} role={notice?.tone === 'error' ? 'alert' : 'status'} aria-atomic="true">
-    {notice ? notice.message : <><LoaderCircle size={13} aria-hidden="true" />正在处理图片操作</>}
+    {notice ? notice.message : <><LoaderCircle size={13} aria-hidden="true" />{pending === 'video-import' ? '正在导入视频参考图' : '正在处理图片操作'}</>}
   </p>
 }
 
@@ -192,6 +199,7 @@ function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport, feedback }
 
 function MediaTaskPanel({ taskId }: { taskId: string }) {
   const [view, setView] = useState<MediaTaskView | null>(null)
+  const [videoReferenceAvailable, setVideoReferenceAvailable] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<CommandNotice | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
@@ -206,8 +214,10 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
     const epoch = lifetime.current
     const version = ++requestVersion.current
     try {
-      const result = await window.electronAPI.getTaskMedia(taskId)
+      const videoPromise = typeof window.electronAPI?.getTaskVideo === 'function' ? window.electronAPI.getTaskVideo(taskId).catch(() => null) : Promise.resolve(null)
+      const [result, videoResult] = await Promise.all([window.electronAPI.getTaskMedia(taskId), videoPromise])
       if (!alive.current || epoch !== lifetime.current || version !== requestVersion.current) return
+      setVideoReferenceAvailable(!!videoResult?.success && !!videoResult.data && canImportVideoReference(videoResult.data.runtime))
       if (result.success && result.data) {
         setView(result.data)
         setError(null)
@@ -245,12 +255,12 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
     try {
       const result = await execute(window.electronAPI)
       if (!alive.current || epoch !== lifetime.current) return
-      if (!result.success) setNotice({ message: failure(result, '图片操作失败'), tone: 'error' })
+      if (!result.success) setNotice({ message: failure(result, command === 'video-import' ? '导入视频参考图失败' : '图片操作失败'), tone: 'error' })
       else if (command === 'export' && !result.cancelled) setNotice({ message: '图片已导出', tone: 'success' })
       if (command !== 'export') await refresh()
     } catch {
       if (alive.current && epoch === lifetime.current) {
-        setNotice({ message: command === 'generate' || command === 'redo' ? '未收到操作结果，请查看任务记录；不要重复提交。' : '图片操作失败，请稍后重试', tone: 'error' })
+        setNotice({ message: command === 'generate' || command === 'redo' ? '未收到操作结果，请查看任务记录；不要重复提交。' : command === 'video-import' ? '导入视频参考图失败，请稍后重试' : '图片操作失败，请稍后重试', tone: 'error' })
         if (command !== 'export') await refresh()
       }
     } finally {
@@ -289,6 +299,7 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
     {view && <>
       {(!profiles.length || view.unavailableReason) && <p className="media-notice">{view.unavailableReason || '图片能力尚未配置，普通聊天仍可使用'}</p>}
       {!!profiles.length && <MediaCreationForm taskId={taskId} profiles={profiles} defaultProfileId={defaultProfileId} references={references} archived={view.archived} busy={busy} feedback={preview ? undefined : feedback} onImport={() => { void run('import', api => api.importMediaReferences(taskId)) }} onGenerate={input => { void run('generate', api => api.generateTaskMedia({ taskId, input })) }} onPreview={setPreview} />}
+      {!profiles.length && videoReferenceAvailable && <div className="media-subheading"><span>视频参考图</span><button type="button" className="media-command" disabled={busy || view.archived} onClick={() => { void run('video-import', api => api.importVideoReferences(taskId)) }}><ImagePlus size={14} />导入视频参考图</button></div>}
       {!profiles.length && references.length > 0 && <MediaAssetGrid taskId={taskId} assets={references} references onPreview={setPreview} disabled />}
       {!!jobs.length && <><h4>图片任务</h4><MediaJobList jobs={jobs} archived={view.archived || !profiles.length} busy={busy} onAction={jobAction} /></>}
       {outputs.size > 0 && <><h4>图片成果</h4><MediaAssetGrid taskId={taskId} assets={[...outputs.values()]} onPreview={setPreview} onExport={exportAsset} disabled={busy} /></>}
