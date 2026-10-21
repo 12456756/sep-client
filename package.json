@@ -48,7 +48,8 @@
     "release:recover": "node scripts/publish-release.mjs recover-local",
     "test:releases": "node --test scripts/release-flow.test.mjs scripts/record-release-build.test.mjs scripts/release-version.test.mjs scripts/release-notes.test.mjs",
     "verify:release-signatures": "node scripts/verify-release-signatures.mjs",
-    "test:packaging": "node --test scripts/packaging.test.mjs scripts/speech-packaging.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
+    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
+    "verify:packaged-runtime": "node scripts/verify-packaged-runtime.mjs",
     "release:builder:beta": "node scripts/generate-builder-config.mjs beta",
     "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
     "release:builder:signed:beta": "node scripts/generate-builder-config.mjs beta --signed",
@@ -61,6 +62,7 @@
   "dependencies": {
     "@dicebear/core": "9.4.3",
     "@dicebear/toon-head": "9.4.3",
+    "@earendil-works/pi-ai": "0.83.0",
     "@earendil-works/pi-coding-agent": "0.83.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@playwright/mcp": "0.0.82",
@@ -91,7 +93,6 @@
     "zustand": "^5.0.1"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.83.0",
     "@tailwindcss/vite": "^4.0.0",
     "@types/express": "^5.0.3",
     "@types/node": "^22.9.0",

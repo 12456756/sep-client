@@ -40,7 +40,7 @@ export function SpeechSettings() {
         return
       }
       if (revision === permissionRevision.current) {
-        const next = resolveSpeechPermission(response, enabled)
+        const next = resolveSpeechPermission(response, previous)
         setPermission(next)
         if (enabled && next !== 'granted') setError('语音输入未授权，可重新开启或检查系统麦克风设置。')
       }

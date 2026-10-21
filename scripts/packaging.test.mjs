@@ -68,7 +68,22 @@ test('release scripts keep channel selection and do not force cross-platform pac
     assert.doesNotMatch(pkg.scripts['package:' + channel], /npm run build|--mac --win/)
   }
   assert.equal(pkg.dependencies['@earendil-works/pi-coding-agent'], '0.83.0')
-  assert.equal(pkg.devDependencies['@earendil-works/pi-ai'], '0.83.0')
+  assert.equal(pkg.dependencies['@earendil-works/pi-ai'], '0.83.0')
+})
+
+test('dynamically imported Pi provider is a pinned production dependency', () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
+  const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'))
+  const name = '@earendil-works/pi-ai'
+  assert.equal(pkg.dependencies[name], '0.83.0')
+  assert.equal(pkg.devDependencies[name], undefined)
+  assert.equal(lock.packages[''].dependencies[name], pkg.dependencies[name])
+  assert.equal(lock.packages[''].devDependencies[name], undefined)
+  assert.equal(lock.packages[`node_modules/${name}`].version, pkg.dependencies[name])
+  assert.notEqual(lock.packages[`node_modules/${name}`].dev, true)
+  const hook = readFileSync(resolve(root, pkg.build.afterPack), 'utf8')
+  assert.match(hook, /verify-packaged-runtime\.mjs/)
+  assert.match(hook, /verifyAfterPack\(context\)/)
 })
 
 test('notification WebSocket transport is a direct production dependency', () => {

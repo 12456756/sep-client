@@ -2,8 +2,8 @@ import { speechPermissionSchema, type SpeechPermission } from '../../shared/spee
 
 export function resolveSpeechPermission(
   response: { data?: { permission?: unknown } },
-  enabled: boolean,
+  current: SpeechPermission | null,
 ): SpeechPermission {
   const parsed = speechPermissionSchema.safeParse(response.data?.permission)
-  return parsed.success ? parsed.data : enabled ? 'granted' : 'denied'
+  return parsed.success ? parsed.data : current ?? 'prompt'
 }
