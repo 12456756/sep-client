@@ -1,11 +1,12 @@
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from '../../src/shared/speech-contracts'
-import type { SpeechRuntimePort, SpeechSettingsPort } from '../domain/speech'
+import type { SpeechRuntimePort, SpeechSettingsPort, SpeechSystemAccessPort } from '../domain/speech'
 import { appError } from '../errors/app-error'
 import { requireScope, type ScopeSource } from './scope-guard'
 
 interface Options {
   scope: ScopeSource
   settings: SpeechSettingsPort
+  microphone: SpeechSystemAccessPort
   runtime: () => Promise<SpeechRuntimePort>
   stopRuntime: () => void
 }
@@ -50,7 +51,7 @@ export class SpeechService {
     const revision = this.revision
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
-      const allowed = await Promise.race([ask(), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 60_000); timer.unref() })])
+      const allowed = await Promise.race([this.options.microphone.authorize(ask), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 60_000); timer.unref() })])
       if (revision !== this.revision || this.scopeKey() !== scope) return this.permission ?? 'denied'
       const permission = allowed ? 'granted' : 'denied'
       await this.options.settings.write(permission)
@@ -63,16 +64,25 @@ export class SpeechService {
   }
 
   async setEnabled(enabled: boolean, ask: () => Promise<boolean>): Promise<SpeechPermission> {
-    this.scopeKey()
+    const scope = this.scopeKey()
+    const revision = this.revision
     if (!enabled) {
-      this.revision++
       this.permission = 'denied'
       this.stop()
       await this.options.settings.write('denied')
       return 'denied'
     }
     await this.load()
-    return this.permission === 'granted' ? 'granted' : this.requestConsent(ask)
+    if (revision !== this.revision || this.scopeKey() !== scope) return this.permission!
+    if (this.permission !== 'granted') return this.requestConsent(ask)
+    await this.options.microphone.prepare()
+    if (revision !== this.revision || this.scopeKey() !== scope) return this.permission
+    return this.permission
+  }
+
+  async openSystemSettings(): Promise<void> {
+    this.scopeKey()
+    await this.options.microphone.openSettings()
   }
 
   async begin(recordingId: string, ask: () => Promise<boolean>): Promise<SpeechStart> {
@@ -88,7 +98,9 @@ export class SpeechService {
         return { recordingId, ready: false, permission }
       }
       if (this.permission !== 'granted') throw appError('INVALID_ARGUMENT', { message: '语音输入已关闭，请在设置中开启。' })
+      const ready = await this.options.microphone.prepare()
       if (this.active !== recording || this.scopeKey() !== scope) return { recordingId, ready: false, permission: this.permission }
+      if (!ready) return { recordingId, ready: false, permission: this.permission }
       recording.phase = 'recording'
       this.lease = setTimeout(() => this.cancel(recordingId), 50_000)
       this.lease.unref()
@@ -100,7 +112,7 @@ export class SpeechService {
 
   canUseMicrophone(): boolean {
     const scope = this.options.scope.currentScope()
-    return Boolean(scope && this.permission === 'granted' && this.active?.phase === 'recording'
+    return Boolean(scope && this.permission === 'granted' && this.options.microphone.canRecord() && this.active?.phase === 'recording'
       && this.active.scope === JSON.stringify([scope.enterpriseId, scope.memberId]))
   }
 
@@ -129,6 +141,7 @@ export class SpeechService {
   }
 
   stop(): void {
+    this.revision++
     clearTimeout(this.lease)
     this.active = null
     this.options.stopRuntime()

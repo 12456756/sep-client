@@ -10,6 +10,16 @@ import { DebugLogger } from 'builder-util'
 import { createBuilderConfig } from './generate-builder-config.mjs'
 
 const root = process.cwd()
+test('macOS packaging declares microphone purpose and signed audio input access', () => {
+  const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
+  assert.ok(pkg.build.mac.extendInfo?.NSMicrophoneUsageDescription)
+  const entitlements = readFileSync(resolve(root, 'build/entitlements.mac.plist'), 'utf8')
+  assert.match(entitlements, /<key>com\.apple\.security\.device\.audio-input<\/key>\s*<true\/>/)
+  for (const channel of ['beta', 'stable']) {
+    const generated = createBuilderConfig(pkg.build, channel)
+    assert.deepEqual(generated.mac.extendInfo, pkg.build.mac.extendInfo)
+  }
+})
 function fixture() {
   const dir = mkdtempSync(resolve(tmpdir(), 'sep-packaging-test-'))
   for (const folder of ['scripts', 'config', 'electron/common', 'dist']) mkdirSync(resolve(dir, folder), { recursive: true })

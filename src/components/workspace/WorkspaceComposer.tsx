@@ -1,5 +1,6 @@
 import { ArrowUp, Bot, ChevronRight, FileText, FolderOpen, LoaderCircle, Paperclip, Plus, ShieldCheck, Sparkles, Wrench, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { isSubmitEnter } from '../../shared/composer-shortcut';
 import type { AvailableEmployee, AvailableSkill, AvailableWorkflow, ConversationDraft, LocalWorkspaceBinding, Task } from '../../features/workspace/useWorkspaceDemo';
 import { WorkspaceEmployeeAvatar } from './WorkspaceEmployeeAvatar';
 
@@ -140,7 +141,7 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
     </div>}
     {mode === 'conversation' && selectedSkillIds.length > 0 && <div className="composer-chip-strip" aria-label="已添加技能">{selectedSkillIds.map(id => { const skill = skills.find(item => item.id === id); if (!skill) return null; return <span className="composer-skill-chip" key={id}><button type="button" className="composer-chip-remove" onClick={() => removeSkill(id)} aria-label={`移除技能${skill.name}`} title={`移除技能${skill.name}`}><X size={12} /></button><Wrench size={13} /><span>{skill.name}</span></span>; })}</div>}
     {attachments.length > 0 && <div className="composer-chip-strip composer-attachment-strip" aria-label="已添加文件">{attachments.map(name => <span className="composer-file-chip" key={name}><FileText size={13} /><span title={name}>{name}</span><button type="button" className="composer-chip-remove" onClick={() => setAttachments(items => items.filter(item => item !== name))} aria-label={`移除文件${name}`} title={`移除文件${name}`}><X size={12} /></button></span>)}</div>}
-    {mode === 'conversation' && <textarea value={text} onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); } }} placeholder={employee ? `交代给${employee.displayName}的工作…` : '先添加一位硅基员工'} aria-label="对话消息" rows={compact ? 3 : 5} />}
+    {mode === 'conversation' && <textarea value={text} onChange={event => setText(event.target.value)} onKeyDown={event => { if (isSubmitEnter(event)) { event.preventDefault(); submit(); } }} placeholder={employee ? `交代给${employee.displayName}的工作…` : '先添加一位硅基员工'} aria-label="对话消息" rows={compact ? 3 : 5} />}
     <div className="workspace-composer-footer"><div className="workspace-composer-tools">
       <div className="composer-add-wrap" ref={addMenuRef}>
         <button className="workspace-add-button" type="button" onClick={() => { setAddMenuOpen(value => !value); setAddPanel(null); }} aria-expanded={addMenuOpen} aria-label="添加内容" title="添加文件、技能或硅基员工"><span className={`composer-add-icon ${addMenuOpen ? 'is-hidden' : ''}`}><Plus size={20} /></span><span className={`composer-add-icon ${addMenuOpen ? '' : 'is-hidden'}`}><X size={19} /></span></button>

@@ -20,6 +20,10 @@ async function askPermission(ctx: RequestContext): Promise<boolean> {
 const trusted = { trustedMainFrame: true } as const
 
 export const speechRoutes = [
+  route(INVOKE_CHANNELS.SPEECH_OPEN_SYSTEM_SETTINGS, NO_INPUT, async ctx => {
+    await ctx.speech.openSystemSettings()
+    return { success: true }
+  }, trusted),
   route(INVOKE_CHANNELS.SPEECH_PERMISSION, NO_INPUT, async ctx => ({ success: true, data: { permission: await ctx.speech.getPermission() } }), trusted),
   route(INVOKE_CHANNELS.SPEECH_SET_ENABLED, z.object({ enabled: z.boolean() }).strict(), async (ctx, input) => ({
     success: true, data: { permission: await ctx.speech.setEnabled(input.enabled, () => askPermission(ctx)) },

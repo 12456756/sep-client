@@ -33,10 +33,10 @@ interface Active {
 
 function microphoneError(error: unknown): string {
   const name = error instanceof Error ? error.name : ''
-  if (name === 'NotAllowedError' || name === 'SecurityError') return '未获得麦克风权限，请检查 Windows 麦克风隐私设置。'
+  if (name === 'NotAllowedError' || name === 'SecurityError') return '未获得麦克风权限，请检查系统麦克风隐私设置。'
   if (name === 'NotFoundError') return '未找到麦克风，请连接麦克风后重试。'
   if (name === 'NotReadableError') return '无法读取麦克风，请检查设备是否被其他程序占用。'
-  return '录音失败，请检查麦克风连接和 Windows 输入音量后重试。'
+  return '录音失败，请检查麦克风连接和系统输入音量后重试。'
 }
 
 export class SpeechInputController {

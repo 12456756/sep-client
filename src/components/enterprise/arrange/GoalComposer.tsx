@@ -1,4 +1,5 @@
 import { ArrowUp } from 'lucide-react';
+import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
@@ -47,10 +48,9 @@ export function GoalComposer({
           onChange={event => onChange(event.target.value)}
           onKeyDown={event => {
             speech.inputProps.onKeyDown(event);
-            if (event.defaultPrevented || event.nativeEvent.isComposing || speech.busy) return;
-            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !submitDisabled) {
+            if (isSubmitEnter(event)) {
               event.preventDefault();
-              onSubmit();
+              if (!submitDisabled && !busy && !speech.busy) onSubmit();
             }
           }}
         />

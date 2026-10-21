@@ -123,6 +123,9 @@
     },
     "mac": {
       "category": "public.app-category.business",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "用于将你的语音在本机转换为文字。"
+      },
       "icon": "build/icon.icns",
       "target": [
         {

@@ -276,6 +276,7 @@ export interface ElectronAPI {
   requestKnowledge: <R extends KnowledgeRequestInput>(input: R) => Promise<KnowledgeResult<R['action']>>
   cancelKnowledgeRequests: (requestIds: string[]) => Promise<IpcCommandResult>
   getSpeechPermission: () => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
+  openSpeechSystemSettings: () => Promise<IpcCommandResult>
   setSpeechEnabled: (input: { enabled: boolean }) => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
   beginSpeechRecording: (input: { recordingId: string }) => Promise<IpcCommandResult & { data?: SpeechStart }>
   recognizeSpeech: (input: SpeechAudio) => Promise<IpcCommandResult & { data?: SpeechResult }>

@@ -11,6 +11,7 @@
 
 import { MapPin, Send, X } from 'lucide-react';
 import { useState } from 'react';
+import { isSubmitEnter } from '../../shared/composer-shortcut';
 import type { SiliconEmployee } from '../../features/enterprise/types';
 
 interface Props {
@@ -64,7 +65,7 @@ export function ArrangeBar({ employees, busy, onSend, onChooseSite }: Props) {
           placeholder={`告诉我你想让员工做什么，例如：${sample}，帮我整理一下上周的运营数据`}
           aria-label="要安排的工作"
           onChange={event => { setText(event.target.value); setNotice(null); }}
-          onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); } }}
+          onKeyDown={event => { if (isSubmitEnter(event)) { event.preventDefault(); send(); } }}
         />
 
         <div className="ent-arrangebar-foot">
@@ -93,7 +94,7 @@ export function ArrangeBar({ employees, busy, onSend, onChooseSite }: Props) {
             className="ent-ask-send"
             onClick={send}
             disabled={!text.trim() || busy}
-            title="发出这项工作（Ctrl + Enter）"
+            title="发出这项工作"
             aria-label="发出这项工作"
           >
             <Send size={15} aria-hidden />

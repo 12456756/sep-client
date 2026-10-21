@@ -20,6 +20,7 @@ const electronAPI = {
   requestKnowledge: (input: KnowledgeRequestInput) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_REQUEST, input),
   cancelKnowledgeRequests: (requestIds: string[]) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_CANCEL, requestIds),
   getSpeechPermission: () => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_PERMISSION),
+  openSpeechSystemSettings: () => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_OPEN_SYSTEM_SETTINGS),
   setSpeechEnabled: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_SET_ENABLED, input),
   beginSpeechRecording: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_BEGIN, input),
   recognizeSpeech: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_RECOGNIZE, input),

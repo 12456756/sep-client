@@ -14,6 +14,7 @@ export const INVOKE_CHANNELS = {
   SPEECH_BEGIN: 'speech:begin',
   SPEECH_RECOGNIZE: 'speech:recognize',
   SPEECH_CANCEL: 'speech:cancel',
+  SPEECH_OPEN_SYSTEM_SETTINGS: 'speech:open-system-settings',
   VIDEO_GET_TASK: 'video:get-task',
   VIDEO_IMPORT_REFERENCES: 'video:import-references',
   VIDEO_GET_REFERENCES: 'video:get-references',

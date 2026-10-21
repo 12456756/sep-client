@@ -12,7 +12,8 @@ import { KnowledgeApi } from '../common/platform/knowledge-api'
  */
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { shell } from 'electron'
+import { shell, systemPreferences } from 'electron'
+import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { EmploymentTokenManager } from '../common/platform/employment-token-manager'
 import { getSubscriptions, getEmployeeRuntime, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
@@ -119,6 +120,12 @@ class BackendRuntime {
     this.speechRuntime = loadOnce(async () => (await import('./create-speech-runtime')).createSpeechRuntime())
     this.speech = new SpeechService({
       scope: this, settings: new SpeechSettingsStore(userDataDir),
+      microphone: new SpeechSystemAccess({
+        platform: process.platform,
+        status: () => systemPreferences.getMediaAccessStatus('microphone'),
+        request: () => systemPreferences.askForMediaAccess('microphone'),
+        open: url => shell.openExternal(url),
+      }),
       runtime: () => this.speechRuntime.get(), stopRuntime: () => this.speechRuntime.peek()?.stop(),
     })
     this.authSession = new AuthSessionManager()

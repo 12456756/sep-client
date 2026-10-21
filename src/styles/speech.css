@@ -11,6 +11,11 @@
 .speech-settings { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--ent-border, #dfe5e5); }
 .speech-settings label { display: flex; align-items: center; gap: 10px; font-size: 14px; }
 .speech-settings input { accent-color: #397c66; width: 16px; height: 16px; }
+.speech-system-settings { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; max-width: 100%; padding: 6px 0; border: 0; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.speech-system-settings svg { flex-shrink: 0; }
+.speech-system-settings:hover:not(:disabled) { text-decoration: underline; }
+.speech-system-settings:focus-visible { outline: 2px solid #39846c; outline-offset: 3px; }
+.speech-system-settings:disabled { opacity: 0.5; cursor: default; }
 .ent-detail-composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
 @keyframes speech-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .speech-spin { animation: none; } }
