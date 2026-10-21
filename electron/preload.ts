@@ -16,6 +16,8 @@ const runtimePlatform = process.platform === 'darwin' || process.platform === 'w
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
 
 const electronAPI = {
+  requestKnowledge: input => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_REQUEST, input),
+  cancelKnowledgeRequests: ids => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_CANCEL, ids),
   getUpdateState: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_GET_STATE),
   checkForUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_CHECK),
   downloadUpdate: () => ipcRenderer.invoke(INVOKE_CHANNELS.UPDATE_DOWNLOAD),

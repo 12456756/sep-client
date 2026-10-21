@@ -7,6 +7,8 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  KNOWLEDGE_REQUEST: 'knowledge:request',
+  KNOWLEDGE_CANCEL: 'knowledge:cancel',
   UPDATE_GET_STATE: 'update:get-state',
   UPDATE_CHECK: 'update:check',
   UPDATE_DOWNLOAD: 'update:download',

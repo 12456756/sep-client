@@ -2,6 +2,8 @@ import { NotificationService } from '../service/notification-service'
 import { NotificationSocket } from '../common/platform/notification-socket'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { SkillLibraryService } from '../service/skill-library-service'
+import { KnowledgeService } from '../service/knowledge-service'
+import { KnowledgeApi } from '../common/platform/knowledge-api'
 /**
  * 后端组合根。
  *
@@ -9,6 +11,7 @@ import { SkillLibraryService } from '../service/skill-library-service'
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { getSubscriptions, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
 import { config } from '../common/config'
@@ -61,6 +64,7 @@ export interface BackendOptions {
  * 用 `createBackend()` 创建——这个类不导出，避免出现第二个装配入口。
  */
 class BackendRuntime {
+  readonly knowledge: KnowledgeService
   readonly authSession: AuthSessionManager
   readonly taskManager: TaskManager
   readonly taskRunStore: TaskRunStore
@@ -89,6 +93,12 @@ class BackendRuntime {
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.authSession = new AuthSessionManager()
+    this.knowledge = new KnowledgeService({
+      scope: this,
+      api: new KnowledgeApi({ getAccessToken: force => this.authSession.getValidAccessToken(force) }),
+      onAuthenticationRequired: () => this.invalidateAuthentication(),
+    })
+    this.authSession.subscribeAccessToken(token => { if (token === null) this.knowledge.clear() })
     this.notifications = new NotificationService({
       scope: this,
       getAccessToken: forceRefresh => this.authSession.getValidAccessToken(forceRefresh),
@@ -284,6 +294,7 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.knowledge.clear()
     this.notifications.stop()
     await this.runtime.peek()?.stopAll()
     await this.clientMonitor.stop()
@@ -323,6 +334,7 @@ class BackendRuntime {
    */
   invalidateAuthentication(): void {
     if (this.authenticationCleanup) return
+    this.knowledge.clear()
     this.authenticationCleanup = (async () => {
       // C7：必须有界。stopAll 会等每个 active run 的 abort 与 completion，
       // 无界等待会让"重新登录"这件事永远卡住，且清理只做了一半（scope 还在，token 已废）。
@@ -384,6 +396,9 @@ class BackendRuntime {
       workPlanStore: this.workPlans,
       arrangementCheckpointStore: this.arrangementCheckpoints,
       monitor: this.clientMonitor,
+      knowledgeSearch: (query, signal) => this.knowledge.execute({
+        action: 'search', requestId: randomUUID(), query, topK: 5,
+      }, signal),
     })
     log.info('task runtime loaded')
     return runtime

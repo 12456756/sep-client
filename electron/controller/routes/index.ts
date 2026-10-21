@@ -15,8 +15,10 @@ import { computeCreditRoutes } from './compute-credit'
 import { profileWalletRoutes } from './profile-wallet'
 import { notificationRoutes } from './notifications'
 import { updateRoutes } from './update'
+import { knowledgeRoutes } from './knowledge'
 
 export const routes: readonly Route[] = [
+  ...knowledgeRoutes,
   ...authRoutes,
   ...skillRoutes,
   ...taskRoutes,

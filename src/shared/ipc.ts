@@ -1,4 +1,5 @@
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
+import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type {
   ComputeAllowance,
@@ -269,6 +270,8 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  requestKnowledge: <R extends KnowledgeRequestInput>(input: R) => Promise<KnowledgeResult<R['action']>>
+  cancelKnowledgeRequests: (requestIds: string[]) => Promise<IpcCommandResult>
   getUpdateState: () => Promise<UpdateStateResult>
   checkForUpdate: () => Promise<IpcCommandResult>
   downloadUpdate: () => Promise<IpcCommandResult>

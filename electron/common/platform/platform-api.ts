@@ -155,45 +155,6 @@ export interface SkillPreviewResponse {
   [key: string]: unknown
 }
 
-export interface KnowledgeBaseGrant {
-  id: string
-  knowledgeBase: {
-    id: string
-    name: string
-  }
-}
-
-export interface KnowledgeBaseGrantsResponse {
-  grants: KnowledgeBaseGrant[]
-}
-
-export type KnowledgeSearchStrategy = 'auto' | 'lexical' | 'vector' | 'hybrid'
-
-export interface KnowledgeBaseSearchRequest {
-  query: string
-  subscriptionId: string
-  topK?: number
-  scoreThreshold?: number
-  strategy?: KnowledgeSearchStrategy
-}
-
-export interface KnowledgeBaseSearchResult {
-  chunkId: string
-  knowledgeBaseId: string
-  source: string
-  score: number
-  content: string
-}
-
-export interface KnowledgeBaseSearchResponse {
-  query: string
-  subscriptionId: string
-  strategy: KnowledgeSearchStrategy
-  durationMs: number
-  count: number
-  results: KnowledgeBaseSearchResult[]
-}
-
 export interface EmployeeStatus {
   employeeId: string
   status: string
@@ -412,24 +373,6 @@ export function previewSkill(versionId: string, accessToken: string): Promise<Sk
     accessToken,
     'skills',
   )
-}
-
-export function getKnowledgeBaseGrants(
-  subscriptionId: string,
-  accessToken: string,
-): Promise<KnowledgeBaseGrantsResponse> {
-  return getJson<KnowledgeBaseGrantsResponse>(
-    `/knowledge-bases/grants/by-subscription/${encodeURIComponent(subscriptionId)}`,
-    accessToken,
-    'knowledge',
-  )
-}
-
-export function searchKnowledgeBases(
-  request: KnowledgeBaseSearchRequest,
-  accessToken: string,
-): Promise<KnowledgeBaseSearchResponse> {
-  return postJson<KnowledgeBaseSearchResponse>('/knowledge-bases/search', request, accessToken, 'knowledge')
 }
 
 export function getEmployeeStatus(accessToken: string): Promise<EmployeeStatus[]> {

@@ -9,6 +9,7 @@ import type { AppUpdater } from '../bootstrap/app-updater'
 import type { Backend } from '../bootstrap/build-backend'
 
 export interface RequestContext {
+  readonly knowledge: Backend['knowledge']
   /** 服务层句柄。任务类路由只该用这几个。 */
   readonly notifications: Backend['notifications']
   readonly skills: Backend['skills']
@@ -34,6 +35,7 @@ export function createRequestContext(
   updater?: AppUpdater,
 ): RequestContext {
   return {
+    knowledge: backend.knowledge,
     notifications: backend.notifications,
     skills: backend.skills,
     tasks: backend.tasks,

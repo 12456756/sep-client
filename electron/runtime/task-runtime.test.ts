@@ -158,6 +158,7 @@ describe('conversation task lifecycle', () => {
     const task = await manager.createTask('chat', 'first', undefined, 'employee-a')
     const employee: EmployeeRuntimeConfig = { subscriptionId: 'employee-a', modelId: 'model-a', gatewayUrl: 'http://gateway' }
     const sessionFiles: string[] = []
+    const knowledgeQueries: string[] = []
     let count = 0
     const runtime = new TaskRuntime({
       taskManager: manager,
@@ -166,10 +167,17 @@ describe('conversation task lifecycle', () => {
       onAuthenticationRequired: () => {},
       onEvent: () => {},
       onApprovalRequest: () => {},
+      knowledgeSearch: async query => {
+        knowledgeQueries.push(query)
+        return { status: 'MATCHED', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1,
+          results: [{ sourceId: 'source', knowledgeBaseId: 'kb', knowledgeBaseName: 'Internal', documentId: 'doc',
+            documentName: 'Handbook', versionId: 'v1', content: `Reference for ${query}`, location: {} }] }
+      },
       resolveEmployee: id => id === employee.subscriptionId ? employee : null,
       createWorker: options => ({
-        async run() {
+        async run(prompt) {
           count++
+          assert.match(prompt, /Reference for/)
           const file = join(options.context.sessionDir, 'shared-session.jsonl')
           await mkdir(options.context.sessionDir, { recursive: true })
           await writeFile(file, '{}\n', { encoding: 'utf8' })
@@ -188,6 +196,7 @@ describe('conversation task lifecycle', () => {
     await runtime.continueConversation(task.id, 'second')
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal(count, 2)
+    assert.deepEqual(knowledgeQueries, ['first', 'second'])
     assert.equal(sessionFiles[1], sessionFiles[0])
     const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
     const messages = await projectTaskMessages({ listRuns: id => runStore.list(scope, id), getTimeline: (id, runId) => runStore.events.getTimeline(scope, id, runId) }, task.id, 'legacy')

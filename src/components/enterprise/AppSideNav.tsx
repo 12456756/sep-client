@@ -11,7 +11,7 @@
  * titleBarOverlay 画在右上角，那一侧的留白见 enterprise.css 的 .ent-top）。
  */
 
-import { Building2, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, Gauge, GraduationCap, LayoutGrid, ListTodo, LogOut, RefreshCw, Settings, ShieldCheck, Users } from 'lucide-react';
+import { BookOpen, Building2, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, Gauge, GraduationCap, LayoutGrid, ListTodo, LogOut, RefreshCw, Settings, ShieldCheck, Users } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { AppRoute, AppRouteName } from '../../features/enterprise/types';
 import type { EmployeeAvatarSource } from '../../shared/types';
@@ -44,6 +44,7 @@ const MAIN: { name: AppRouteName; label: string; icon: typeof Users; route: AppR
   { name: 'arrange', label: '安排工作', icon: ListTodo, route: { name: 'arrange' } },
   { name: 'records', label: '工作记录', icon: ClipboardList, route: { name: 'records' } },
   { name: 'skills', label: '员工技能', icon: GraduationCap, route: { name: 'skills' } },
+  { name: 'knowledge', label: '知识库', icon: BookOpen, route: { name: 'knowledge' } },
   { name: 'compute-center', label: '算力中心', icon: Gauge, route: { name: 'compute-center' } },
 ];
 

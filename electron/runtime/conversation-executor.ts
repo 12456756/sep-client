@@ -22,6 +22,7 @@ import type { EventPipeline } from './run-events'
 import type { ToolApprovals } from './run-approvals'
 import type { MonitorTaskContentInput, MonitorTaskQueuedInput, MonitorTaskStartedInput, MonitorTaskFinishedInput } from '../domain/task-monitor'
 import { logger } from '../common/logger'
+import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 
 const log = logger.child('conversation-executor')
 
@@ -43,6 +44,7 @@ export interface ConversationExecutorOptions {
   onOutput?: (input: MonitorTaskContentInput) => void
   onStarted?: (input: MonitorTaskStartedInput) => void
   onFinished?: (input: MonitorTaskFinishedInput) => void
+  knowledgeSearch?: KnowledgeSearchPort
 }
 
 export class ConversationExecutor {
@@ -83,6 +85,7 @@ export class ConversationExecutor {
     let worker: TaskWorkerPort | null = null
     let active: ActiveRun | null = null
     let runCreated = false
+    const knowledgeCancellation = new AbortController()
 
     try {
       const runPaths = scope && this.options.taskRunStore
@@ -138,6 +141,7 @@ export class ConversationExecutor {
         subscriptionId: queued.subscriptionId,
         releaseWorkspace,
         worker,
+        abortController: knowledgeCancellation,
         control: 'none',
         completion: completion.promise,
       }
@@ -173,7 +177,17 @@ export class ConversationExecutor {
 
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
-      await worker.run(queued.workerPrompt ?? queued.prompt)
+      let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (queued.conversation && this.options.knowledgeSearch) {
+        let result: KnowledgeSearchResult | null = null
+        try {
+          result = await this.options.knowledgeSearch(queued.prompt, knowledgeCancellation.signal)
+        } catch (error) {
+          if (knowledgeCancellation.signal.aborted) throw error
+        }
+        workerPrompt = `${workerPrompt}\n\n${formatKnowledgeContext(queued.prompt, result)}`
+      }
+      await worker.run(workerPrompt)
       await this.options.events.drain(taskId)
       if (!this.options.workers.isCurrent(active)) return
       await this.finalize(active, queued, scope, runCreated)

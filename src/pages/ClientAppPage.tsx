@@ -30,6 +30,7 @@ import { WorkDetailPage } from './enterprise/WorkDetailPage';
 import { WorkRecordsPage } from './enterprise/WorkRecordsPage';
 import { ComputeCenterPage } from './enterprise/ComputeCenterPage';
 import { OrganizationPage } from './enterprise/OrganizationPage';
+import { KnowledgePage } from './enterprise/knowledge/KnowledgePage';
 import '../styles/enterprise.css';
 import '../styles/notifications.css';
 import '../styles/updates.css';
@@ -127,6 +128,7 @@ export function ClientAppPage({ update, userId, userName, enterpriseId, enterpri
       }
       case 'records': return { title: '工作记录', breadcrumb: ['个人'], subtitle: '优先展示需要你处理的工作' };
       case 'skills': return { title: '员工技能', breadcrumb: ['个人'], subtitle: '查看技能原文、管理个人版本，选择员工使用的技能版本' };
+      case 'knowledge': return { title: '知识库', breadcrumb: ['企业'], subtitle: '企业资料、文档版本与成员访问权限' };
       case 'compute-center': return { title: '算力中心', subtitle: '企业额度、个人钱包与消费情况' };
       default: return { title: overview.name };
     }
@@ -282,6 +284,8 @@ function PageBody({ workspace }: { workspace: ReturnType<typeof useEnterpriseWor
       return <SkillsPage workspace={workspace} skillId={route.skillId} />;
     case 'compute-center':
       return <ComputeCenterPage />;
+    case 'knowledge':
+      return <KnowledgePage kbId={route.kbId} navigate={workspace.navigate} />;
     default:
       return <HomePage workspace={workspace} />;
   }

@@ -14,13 +14,13 @@ import type { TaskExecutionEvent } from '../../src/shared/types'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>) {
+async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>, knowledgeSearch?: NonNullable<ConstructorParameters<typeof ArrangementExecutor>[0]['knowledgeSearch']>) {
   const root = await mkdtemp(join(tmpdir(), 'sep-node-delivery-'))
   roots.push(root)
   await mkdir(join(root, 'deliverables'))
   const plan: WorkPlan = { id: 'task', schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1,
     owner: { memberId: 'member', enterpriseId: 'enterprise' }, mode: 'auto', title: 'Plan', goal: 'Research then plan', conversation: null,
-    nodes: ['a', 'b'].map((id, index) => ({ id, title: id, subscriptionId: 'employee', modelId: id,
+    nodes: ['a', 'b'].map((id, index) => ({ id, title: id, subscriptionId: 'employee', modelId: id, knowledgeQuery: `Internal guidance for ${id}`,
       objective: 'Complete '+id, instruction: 'Do '+id, expectedOutput: id+' file', dependsOn: index ? ['a'] : [], skillIds: [], requiresUserConfirmation: false,
       deliverables: [{ id: 'report', name: id+' report', format: 'txt', path: `deliverables/${id}.txt`, contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }] })),
     workspace: { mode: 'shared', path: root }, permissions: { preset: 'workspace-edit', allowedTools: ['read', 'write'], allowedPaths: [], deniedPaths: [], requireApprovalFor: [], commandPolicy: 'disabled' },
@@ -36,7 +36,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
     checkpointStore: { get: (scope, taskId) => checkpoints.get(scope, taskId), async save(scope, value) {
       await checkpoints.save(scope, value)
       saved = structuredClone(value)
-    } }, workspaceRoot: root, arrangementSubscriptionId: 'employee',
+    } }, workspaceRoot: root, arrangementSubscriptionId: 'employee', knowledgeSearch,
     getRefreshToken: () => 'mock', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
     async authorizeEmployee(_id, modelId) { await onAuthorize?.(modelId!); return { subscriptionId: 'employee', modelId: modelId!, gatewayUrl: 'http://invalid', employeeProfile: { name: 'Researcher' }, additionalSkillPaths: [join(root, 'skills')] } },
     async onEvent(event) {
@@ -65,6 +65,47 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
 function submission(id: string): string { return JSON.stringify({ nodeId: id, summary: 'private summary '+id, finalDeliverables: [{ id: 'report', path: `deliverables/${id}.txt` }] }) }
 
 describe('automatic arrangement final file handover', () => {
+  it('searches once per node and reuses each result through delivery corrections', async () => {
+    const queries: string[] = []
+    const f = await fixture(async (id, iteration, root) => {
+      if (id === 'a' && iteration === 1) return { text: 'not-json' }
+      await writeFile(join(root, `deliverables/${id}.txt`), `Final findings ${id}`)
+      return { text: submission(id) }
+    }, undefined, async query => {
+      queries.push(query)
+      return { status: 'MATCHED', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1,
+        results: [{ sourceId: 'source', knowledgeBaseId: 'kb', knowledgeBaseName: 'Internal', documentId: 'doc',
+          documentName: 'Guidance', versionId: 'v1', content: `Reference for ${query}`, location: {} }] }
+    })
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(queries, ['Internal guidance for a', 'Internal guidance for b'])
+    assert.match(f.contexts[0]?.fixedSystemPrompt ?? '', /Reference for Internal guidance for a/)
+    assert.match(f.contexts[1]?.fixedSystemPrompt ?? '', /Reference for Internal guidance for b/)
+    assert.equal(f.contexts.length, 2)
+  })
+
+  it('retrieves fresh knowledge when a failed node is manually retried', async () => {
+    const queries: string[] = []
+    let repair = false
+    const f = await fixture(async (id, _iteration, root) => {
+      if (!repair) return { text: 'not-json' }
+      await writeFile(join(root, `deliverables/${id}.txt`), `Final findings ${id}`)
+      return { text: submission(id) }
+    }, undefined, async query => {
+      queries.push(query)
+      return { status: 'NO_MATCH', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1, results: [] }
+    })
+    const failed = await f.executor.execute(f.plan, 'task', 'first-run')
+    assert.equal(failed.status, 'failed')
+    assert.deepEqual(queries, ['Internal guidance for a'])
+    repair = true
+    const retried = f.executor.retry(failed.state, f.plan, 'a')
+    const result = await f.executor.execute(f.plan, 'task', 'manual-retry', retried)
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(queries, ['Internal guidance for a', 'Internal guidance for a', 'Internal guidance for b'])
+  })
+
   it('keeps the node and run running during four corrections and accepts the fifth submission', async () => {
     const f = await fixture(async (id, iteration, root) => {
       if (id === 'a') {

@@ -33,6 +33,7 @@ import { createArrangementExecutionState, resumeArrangement, retryArrangementNod
 import { shouldPushTaskEvent } from './task-event-visibility'
 import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinishedInput, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
 import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
+import type { KnowledgeSearchPort } from '../common/knowledge-context'
 
 const log = logger.child('task-runtime')
 
@@ -76,6 +77,7 @@ export interface TaskRuntimeOptions {
   workPlanStore?: WorkPlanStorePort
   arrangementCheckpointStore?: ArrangementCheckpointStorePort
   monitor?: TaskMonitorPort
+  knowledgeSearch?: KnowledgeSearchPort
 }
 
 export class TaskRuntime {
@@ -90,6 +92,7 @@ export class TaskRuntime {
   private readonly workPlanStore: WorkPlanStorePort | null
   private readonly arrangementCheckpointStore: ArrangementCheckpointStorePort | null
   private readonly monitor: TaskMonitorPort
+  private readonly knowledgeSearch?: KnowledgeSearchPort
   private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
@@ -123,6 +126,7 @@ export class TaskRuntime {
     this.workPlanStore = options.workPlanStore ?? null
     this.arrangementCheckpointStore = options.arrangementCheckpointStore ?? null
     this.monitor = options.monitor ?? silentTaskMonitor
+    this.knowledgeSearch = options.knowledgeSearch
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvals = new ToolApprovals({
@@ -173,6 +177,7 @@ export class TaskRuntime {
       onOutput: input => this.reportMonitorOutput(input),
       onStarted: input => this.reportMonitorStarted(input),
       onFinished: input => this.reportMonitorFinished(input),
+      knowledgeSearch: this.knowledgeSearch,
     })
   }
 
@@ -387,6 +392,7 @@ export class TaskRuntime {
       return
     }
     active.control = 'pause'
+    active.abortController?.abort()
     this.approvals.denyRun(active.runId)
     await active.worker.abort()
     await active.completion
@@ -427,6 +433,7 @@ export class TaskRuntime {
     }
     active.control = 'cancel'
     active.controlReason = stopReason
+    active.abortController?.abort()
     await this.enqueueEvent({
       taskId,
       runId: active.runId,
@@ -459,6 +466,7 @@ export class TaskRuntime {
     })
     await Promise.all([Promise.all(arrangementStops), Promise.all(this.workers.list().map(async active => {
       active.control = 'interrupt'
+      active.abortController?.abort()
       await this.enqueueEvent({
         taskId: active.taskId,
         runId: active.runId,
@@ -590,6 +598,7 @@ export class TaskRuntime {
         authorizeEmployee: this.authorizeEmployee,
         workspaceRoot: task.workDir ?? this.getTaskWorkspaceRoot(),
         arrangementSubscriptionId: queued.subscriptionId,
+        knowledgeSearch: this.knowledgeSearch,
       })
       this.activeArrangements.set(taskId, {
         taskId,
