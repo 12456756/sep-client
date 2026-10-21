@@ -81,7 +81,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
                 value={draft}
                 placeholder={`直接告诉 ${employee.name} 你想完成什么`}
                 onChange={event => setDraft(event.target.value)}
-                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event)) { event.preventDefault(); send(); } }}
+                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
               <div className="ent-detail-composer-actions">
                 <SpeechInputActions speech={speech} disabled={workspace.busy} />

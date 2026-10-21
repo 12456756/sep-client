@@ -25,7 +25,7 @@ export function SpeechSettings() {
     if (busy) return
     const previous = permission
     if (!enabled) speechInput.cancel()
-    setPermission(enabled ? 'granted' : 'denied')
+    if (!enabled) setPermission('denied')
     setBusy(true)
     setError(null)
     try {
@@ -35,7 +35,9 @@ export function SpeechSettings() {
         setError(response.error?.message || '语音设置未能保存，请重试。')
         return
       }
-      setPermission(speechPermissionSchema.parse(response.data?.permission))
+      const next = speechPermissionSchema.parse(response.data?.permission)
+      setPermission(next)
+      if (enabled && next !== 'granted') setError('语音输入未授权，可重新开启或检查系统麦克风设置。')
     } catch {
       setPermission(enabled ? previous : 'denied')
       setError('语音设置未能保存，请重试。')

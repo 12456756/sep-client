@@ -15,8 +15,10 @@ const directory = resolve(process.env.SEP_SPEECH_TEST_DIR!)
 app.setPath('userData', resolve(process.env.SEP_SPEECH_TEST_PROFILE!))
 app.commandLine.appendSwitch('use-fake-device-for-media-stream')
 app.commandLine.appendSwitch('use-file-for-fake-audio-capture', join(root, 'resources/speech/sensevoice-int8/test_wavs/zh.wav'))
+// Only this test harness opts out: the macOS audio sandbox cannot read the WAV fixture.
+if (process.platform === 'darwin') app.commandLine.appendSwitch('disable-features', 'AudioServiceSandbox')
 
-const speechSystemTest = { status: 'granted', requests: 0, opened: [] as string[], confirms: 0 }
+const speechSystemTest = { status: 'granted', requests: 0, opened: [] as string[], confirms: 0, decline: false }
 Object.assign(globalThis, { speechSystemTest })
 const microphone = new SpeechSystemAccess({
   platform: process.env.SEP_SPEECH_TEST_PLATFORM === 'darwin' ? 'darwin' : 'win32',
@@ -26,7 +28,7 @@ const microphone = new SpeechSystemAccess({
 })
 Object.defineProperty(dialog, 'showMessageBox', { value: async () => {
   speechSystemTest.confirms++
-  return { response: process.env.SEP_SPEECH_TEST_DENY === '1' ? 1 : 0, checkboxChecked: false }
+  return { response: speechSystemTest.decline || process.env.SEP_SPEECH_TEST_DENY === '1' ? 1 : 0, checkboxChecked: false }
 } })
 
 void app.whenReady().then(async () => {

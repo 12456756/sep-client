@@ -1,4 +1,4 @@
-/* global window, document, navigator, KeyboardEvent, CompositionEvent */
+/* global window, document, navigator, KeyboardEvent, CompositionEvent, AudioContext */
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -14,6 +14,7 @@ const root = resolve('.')
 const directory = resolve('artifacts/sensevoice/client-tests')
 let application, page, profile
 const errors = []
+const undoShortcut = process.platform === 'darwin' ? 'Meta+z' : 'Control+z'
 
 async function surface(name) {
   await page.getByLabel('测试入口').selectOption(name)
@@ -61,8 +62,53 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
     await input.press('End')
     await page.keyboard.press('Space')
     assert.equal(await input.inputValue(), 'undo ')
-    await page.keyboard.press('Control+z')
+    await page.keyboard.press(undoShortcut)
     assert.equal(await input.inputValue(), 'undo')
+  })
+  it('releases tracks and AudioContext when microphone startup fails', async () => {
+    await surface('chat')
+    await page.evaluate(() => {
+      const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+      const resume = AudioContext.prototype.resume
+      const state = { stream: null, context: null, restore: () => {
+        navigator.mediaDevices.getUserMedia = getUserMedia
+        AudioContext.prototype.resume = resume
+      } }
+      window.speechCaptureTest = state
+      navigator.mediaDevices.getUserMedia = async constraints => { state.stream = await getUserMedia(constraints); return state.stream }
+      AudioContext.prototype.resume = function () { state.context = this; return Promise.reject(new Error('startup failed')) }
+    })
+    try {
+      await page.getByRole('button', { name: '语音输入', exact: true }).click()
+      await page.getByRole('alert').waitFor()
+      await finished()
+      await page.waitForFunction(() => window.speechCaptureTest.context?.state === 'closed')
+      assert.equal(await page.evaluate(() => window.speechCaptureTest.stream.getTracks().every(track => track.readyState === 'ended')), true)
+    } finally { await page.evaluate(() => { window.speechCaptureTest.restore(); delete window.speechCaptureTest }) }
+    await page.getByRole('button', { name: '语音输入', exact: true }).click()
+    await recording()
+    await page.getByRole('button', { name: '取消语音输入', exact: true }).click()
+    await finished()
+  })
+  it('stops late getUserMedia tracks after cancellation without opening an AudioContext', async () => {
+    await page.evaluate(() => {
+      const getUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
+      const state = { stream: null, release: null, restore: () => { navigator.mediaDevices.getUserMedia = getUserMedia } }
+      window.speechCaptureTest = state
+      navigator.mediaDevices.getUserMedia = async constraints => {
+        state.stream = await getUserMedia(constraints)
+        await new Promise(resolve => { state.release = resolve })
+        return state.stream
+      }
+    })
+    try {
+      await page.getByRole('button', { name: '语音输入', exact: true }).click()
+      await page.waitForFunction(() => Boolean(window.speechCaptureTest.release))
+      await page.getByRole('button', { name: '取消语音输入', exact: true }).click()
+      await page.evaluate(() => window.speechCaptureTest.release())
+      await page.waitForFunction(() => window.speechCaptureTest.stream.getTracks().every(track => track.readyState === 'ended'))
+      assert.equal(await recordState(), 'idle')
+    } finally { await page.evaluate(() => { window.speechCaptureTest.release?.(); window.speechCaptureTest.restore(); delete window.speechCaptureTest }) }
   })
   it('short Space, fast typing and IME Space preserve ordinary editing without recording', async () => {
     const input = page.getByLabel('工作目标')
@@ -93,9 +139,10 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
     await page.getByRole('button', { name: '停止录音', exact: true }).click()
     await finished()
     const text = await input.inputValue()
-    assert.ok(text.startsWith('前文') && text.endsWith('后文') && text.length > 4, text)
+    assert.ok(text.startsWith('前文') && text.endsWith('后文') && text.length > 4,
+      `${text}; feedback: ${await page.locator('.speech-feedback').allTextContents()}`)
     assert.equal(await page.getByTestId('sent').textContent(), '0')
-    await input.press('Control+z')
+    await input.press(undoShortcut)
     assert.equal(await input.inputValue(), '前文后文')
   })
   it('holding focused Space starts recording and key release stops without adding a space', async () => {
@@ -144,6 +191,12 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
         }, extra)
         assert.equal(Number(await page.getByTestId('sent').textContent()), before, `${name}: ${JSON.stringify(extra)}`)
       }
+      await input.evaluate(element => {
+        element.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+        element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, isComposing: false, bubbles: true, cancelable: true }))
+        element.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
+      })
+      assert.equal(Number(await page.getByTestId('sent').textContent()), before, `${name}: composition lifecycle`)
       await input.press('Enter')
       await page.waitForFunction(expected => Number(document.querySelector('[data-testid="sent"]').textContent) === expected, before + 1)
       assert.equal(Number(await page.getByTestId('sent').textContent()), before + 1, `${name}: send`)
@@ -166,8 +219,9 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
     const permission = page.getByRole('checkbox', { name: '允许语音输入' })
     await permission.uncheck()
     await page.waitForFunction(async () => (await window.electronAPI.getSpeechPermission()).data.permission === 'denied')
-    await permission.check()
+    await permission.click()
     await page.waitForFunction(async () => (await window.electronAPI.getSpeechPermission()).data.permission === 'granted')
+    await page.waitForFunction(() => document.querySelector('.speech-settings input').checked && !document.querySelector('.speech-settings input').disabled)
     const clipboard = await application.evaluate(({ clipboard }) => clipboard.availableFormats().map(format => ({ format, bytes: [...clipboard.readBuffer(format)] })))
     try {
       await page.getByTestId('copy').click()
@@ -176,6 +230,21 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
       await application.evaluate(({ clipboard }, saved) => { clipboard.clear(); for (const item of saved) clipboard.writeBuffer(item.format, Buffer.from(item.bytes)) }, clipboard)
     }
     assert.deepEqual(errors, [])
+  })
+  it('reports a declined settings authorization without claiming access was granted', async () => {
+    await surface('settings')
+    const permission = page.getByRole('checkbox', { name: '允许语音输入' })
+    await permission.uncheck()
+    await page.waitForFunction(() => !document.querySelector('.speech-settings input').disabled)
+    await application.evaluate(() => { globalThis.speechSystemTest.decline = true })
+    try {
+      await permission.click()
+      await page.waitForFunction(() => !document.querySelector('.speech-settings input').disabled)
+      assert.equal(await permission.isChecked(), false)
+      assert.match(await page.getByRole('alert').textContent(), /授权/)
+    } finally { await application.evaluate(() => { globalThis.speechSystemTest.decline = false }) }
+    await permission.click()
+    await page.waitForFunction(() => document.querySelector('.speech-settings input').checked && !document.querySelector('.speech-settings input').disabled)
   })
   it('system revocation blocks recording, retains app consent, and opens settings only on explicit action', async () => {
     await surface('chat')
@@ -201,8 +270,9 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
     assert.deepEqual(await application.evaluate(() => globalThis.speechSystemTest.opened), ['ms-settings:privacy-microphone'])
     assert.equal(await application.evaluate(() => globalThis.speechSystemTest.requests), 0)
     await application.evaluate(() => { globalThis.speechSystemTest.status = 'granted' })
-    await permission.check()
+    await permission.click()
     await page.waitForFunction(async () => (await window.electronAPI.getSpeechPermission()).data.permission === 'granted')
+    await page.waitForFunction(() => document.querySelector('.speech-settings input').checked && !document.querySelector('.speech-settings input').disabled)
     await surface('chat')
     await page.getByRole('button', { name: '语音输入', exact: true }).click()
     await recording()

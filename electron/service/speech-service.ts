@@ -56,6 +56,8 @@ export class SpeechService {
       const permission = allowed ? 'granted' : 'denied'
       await this.options.settings.write(permission)
       if (revision === this.revision) this.permission = permission
+      // Cancellation can arrive after the write has already started.
+      else await this.options.settings.write(this.permission ?? 'denied')
       return this.permission ?? 'denied'
     } finally {
       clearTimeout(timer)
@@ -118,12 +120,13 @@ export class SpeechService {
 
   async recognize(input: SpeechAudio): Promise<SpeechResult> {
     const recording = this.active
-    if (!recording || recording.id !== input.recordingId || recording.scope !== this.scopeKey() || !this.canUseMicrophone()) {
+    if (!recording || recording.id !== input.recordingId || recording.scope !== this.scopeKey() || recording.phase !== 'recording') {
       throw appError('INVALID_ARGUMENT', { message: '本次录音已取消，请重新录音。' })
     }
-    recording.phase = 'recognizing'
-    clearTimeout(this.lease)
     try {
+      if (!this.canUseMicrophone()) throw appError('INVALID_ARGUMENT', { message: '本次录音已取消，请重新录音。' })
+      recording.phase = 'recognizing'
+      clearTimeout(this.lease)
       const runtime = await this.options.runtime()
       if (this.active !== recording) throw appError('INVALID_ARGUMENT', { message: '本次录音已取消。' })
       const result = await runtime.recognize(input)
@@ -132,7 +135,10 @@ export class SpeechService {
       }
       return result
     } finally {
-      if (this.active === recording) this.active = null
+      if (this.active === recording) {
+        clearTimeout(this.lease)
+        this.active = null
+      }
     }
   }
 

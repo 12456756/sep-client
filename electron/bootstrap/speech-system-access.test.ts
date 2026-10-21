@@ -20,6 +20,26 @@ function fixture(platform: NodeJS.Platform = 'darwin', initial = 'not-determined
 }
 
 describe('platform-specific system microphone access', () => {
+  it('shares concurrent native prompts and recovers cleanly after system denial', async () => {
+    let finish!: (allowed: boolean) => void
+    let requests = 0
+    let status = 'not-determined'
+    const access = new SpeechSystemAccess({ platform: 'darwin', status: () => status,
+      request: () => { requests++; return new Promise(resolve => { finish = resolve }) }, open: async () => {} })
+    const first = access.prepare()
+    const second = access.prepare()
+    const rejected = Promise.all([assert.rejects(first, /未允许/), assert.rejects(second, /未允许/)])
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(requests, 1)
+    status = 'denied'
+    finish(false)
+    await rejected
+    assert.equal(access.canRecord(), false)
+    await assert.rejects(access.prepare(), /未允许/)
+    assert.equal(requests, 1)
+    status = 'granted'
+    assert.equal(await access.prepare(), true)
+  })
   it('macOS asks the system once and never opens an extra application consent dialog', async () => {
     const f = fixture()
     assert.equal(f.access.canRecord(), false)

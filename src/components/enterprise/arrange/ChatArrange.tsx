@@ -87,7 +87,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
           onChange={event => setText(event.target.value)}
           onKeyDown={event => {
             speech.inputProps.onKeyDown(event);
-            if (isSubmitEnter(event)) {
+            if (isSubmitEnter(event, speech.isComposing())) {
               event.preventDefault();
               start();
             }

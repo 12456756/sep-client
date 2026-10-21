@@ -10,13 +10,13 @@ function deferred<T>() {
 }
 
 function fixture() {
-  let starts = 0, cancels = 0, recognitions = 0
+  let starts = 0, cancels = 0, recognitions = 0, backendCancels = 0
   const results: string[] = []
   let capturedOptions!: CaptureOptions
   const api: SpeechClientApi = {
     beginSpeechRecording: async ({ recordingId }) => ({ success: true, data: { recordingId, ready: true, permission: 'granted' } }),
     recognizeSpeech: async ({ recordingId }) => { recognitions++; return { success: true, data: { recordingId, text: '识别文字', silent: false } } },
-    cancelSpeechRecording: async () => ({ success: true }),
+    cancelSpeechRecording: async () => { backendCancels++; return { success: true } },
   }
   const capture: MicrophoneCapture = { stop: async () => ({ sampleRate: 16000, samples: new Float32Array(1600).fill(0.1) }), cancel: () => { cancels++ } }
   const controller = new SpeechInputController({
@@ -24,10 +24,47 @@ function fixture() {
     capture: async options => { starts++; capturedOptions = options; return capture },
     id: () => 'test-recording',
   })
-  return { api, controller, results, capture, get options() { return capturedOptions }, get starts() { return starts }, get cancels() { return cancels }, get recognitions() { return recognitions }, result: (text: string) => results.push(text) }
+  return { api, controller, results, capture, get options() { return capturedOptions }, get starts() { return starts }, get cancels() { return cancels }, get backendCancels() { return backendCancels }, get recognitions() { return recognitions }, result: (text: string) => results.push(text) }
 }
 
 describe('shared speech input lifecycle', () => {
+  it('cleans up a rejected microphone startup and can immediately retry', async () => {
+    const f = fixture()
+    const failure = Object.assign(new Error('permission denied'), { name: 'NotAllowedError' })
+    const starting = deferred<MicrophoneCapture>()
+    let signal!: AbortSignal
+    let calls = 0
+    const controller = new SpeechInputController({ api: () => f.api, capture: async options => { signal = options.signal; return ++calls === 1 ? starting.promise : f.capture } })
+    const pending = controller.start('one', f.result)
+    await new Promise(resolve => setImmediate(resolve))
+    starting.reject(failure)
+    await pending
+    assert.equal(controller.getSnapshot().phase, 'idle')
+    assert.match(controller.getSnapshot().error ?? '', /权限/)
+    assert.equal(signal.aborted, true)
+    assert.equal(f.backendCancels, 1)
+    assert.deepEqual(f.results, [])
+    await controller.start('two', f.result)
+    assert.equal(controller.getSnapshot().phase, 'recording')
+    controller.cancel()
+  })
+  it('cancels late capture resources without disturbing a newer owner', async () => {
+    const f = fixture()
+    const late = deferred<MicrophoneCapture>()
+    let calls = 0
+    const controller = new SpeechInputController({ api: () => f.api, capture: async () => ++calls === 1 ? late.promise : f.capture })
+    const pending = controller.start('one', f.result)
+    await new Promise(resolve => setImmediate(resolve))
+    controller.cancel('one')
+    await controller.start('two', f.result)
+    let lateCancels = 0
+    late.resolve({ ...f.capture, cancel: () => { lateCancels++ } })
+    await pending
+    assert.equal(lateCancels, 1)
+    assert.equal(controller.getSnapshot().owner, 'two')
+    assert.equal(controller.getSnapshot().phase, 'recording')
+    controller.cancel()
+  })
   it('all owners share a single recording slot and results return only to its owner', async () => {
     const f = fixture()
     await f.controller.start('one', f.result)

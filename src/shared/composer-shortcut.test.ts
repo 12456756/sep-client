@@ -20,6 +20,7 @@ describe('composer send shortcut', () => {
   it('does not send while selecting IME candidates', () => {
     assert.equal(isSubmitEnter({ ...enter, nativeEvent: { isComposing: true, keyCode: 13 } }), false)
     assert.equal(isSubmitEnter({ ...enter, nativeEvent: { isComposing: false, keyCode: 229 } }), false)
+    assert.equal(isSubmitEnter(enter, true), false)
   })
 
   it('does not resend for held keys or already handled events', () => {

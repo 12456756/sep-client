@@ -163,7 +163,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 placeholder={over ? '这项工作已经结束，说一句会重新开始跟进' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
                 aria-label="给员工的下一句话"
                 onChange={event => setDraft(event.target.value)}
-                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event)) { event.preventDefault(); send(); } }}
+                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
               <div className="ent-ask-bar">
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，

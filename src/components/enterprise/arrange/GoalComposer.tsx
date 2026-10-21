@@ -48,7 +48,7 @@ export function GoalComposer({
           onChange={event => onChange(event.target.value)}
           onKeyDown={event => {
             speech.inputProps.onKeyDown(event);
-            if (isSubmitEnter(event)) {
+            if (isSubmitEnter(event, speech.isComposing())) {
               event.preventDefault();
               if (!submitDisabled && !busy && !speech.busy) onSubmit();
             }
