@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { lstat, open, realpath } from 'node:fs/promises'
-import { isAbsolute, relative, resolve, sep } from 'node:path'
+import { link, lstat, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { unzipSync } from 'fflate'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { PDFDocument } from 'pdf-lib'
@@ -12,6 +12,46 @@ const MAX_BYTES = 64 * 1024 * 1024
 const MAX_XML_BYTES = 8 * 1024 * 1024
 const TEXT_FORMATS = new Set(['txt', 'md', 'csv', 'tsv', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'yaml', 'yml', 'sql'])
 type FileResult = { ok: true; files: FinalDeliveryFile[] } | { ok: false; issues: DeliveryIssue[] }
+
+export interface DeliveryFileOptions {
+  taskDirectory?: string
+  allowWorkspaceChanges?: boolean
+}
+
+export interface ResolvedDeliveryFiles {
+  files: FinalDeliveryFile[]
+  readPaths: string[]
+  issues: DeliveryIssue[]
+  warnings: DeliveryIssue[]
+}
+
+function snapshotRelativePath(file: FinalDeliveryFile): string {
+  const extension = /^[a-z0-9]{1,32}$/i.test(file.format) ? file.format.toLowerCase() : 'bin'
+  return `delivery-snapshots/${file.snapshot!.sha256}.${extension}`
+}
+
+async function saveSnapshot(taskDirectory: string, file: FinalDeliveryFile, bytes: Buffer, source: 'confirmed' | 'workspace-recovery', signal?: AbortSignal): Promise<FinalDeliveryFile> {
+  const snapshot = { sha256: createHash('sha256').update(bytes).digest('hex'), size: bytes.length, source }
+  const saved = { ...file, snapshot }
+  await mkdir(taskDirectory, { recursive: true })
+  const root = await realpath(taskDirectory)
+  const directory = join(root, 'delivery-snapshots')
+  await mkdir(directory, { recursive: true })
+  if ((await lstat(directory)).isSymbolicLink() || await realpath(directory) !== directory) throw new Error('UNSAFE_PATH')
+  const target = resolve(root, snapshotRelativePath(saved))
+  const temporary = join(directory, `${randomUUID()}.tmp`)
+  try {
+    signal?.throwIfAborted()
+    await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 })
+    signal?.throwIfAborted()
+    // Publishing must not overwrite a previously archived version, even after a crash.
+    try { await link(temporary, target) }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    const verified = await readWorkspaceFile(root, snapshotRelativePath(saved), signal)
+    if (verified.length !== snapshot.size || createHash('sha256').update(verified).digest('hex') !== snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
+    return saved
+  } finally { await rm(temporary, { force: true }) }
+}
 
 async function readWorkspaceFile(workspace: string, path: string, signal?: AbortSignal): Promise<Buffer> {
   signal?.throwIfAborted()
@@ -104,13 +144,15 @@ function fileIssue(error: unknown, id: string, path: string): DeliveryIssue {
     NOT_A_FILE: '交付路径不是普通文件。', EMPTY_FILE: '文件为空，请写入实际成果。',
     FILE_TOO_LARGE: '文件或解压内容超过 64 MiB（单个 XML 超过 8 MiB），请精简成果。', FILE_CHANGED: '校验时文件仍在变化，请完成保存后再提交。',
     INVALID_FORMAT: '文件内容不能按规定文档格式解析，请重新生成有效文档。',
+    SNAPSHOT_CHANGED: '交付快照已损坏，不能使用变化后的文件代替已确认快照。',
+    SNAPSHOT_UNAVAILABLE: '交付快照缺失或无法读取，请恢复快照后继续。',
   }
   const missing = !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
   return { code: missing ? 'FILE_MISSING' : messages[code] ? code : 'INVALID_FORMAT', deliverableId: id, path,
     message: missing ? '规定的最终交付文件不存在，请实际生成并保存文件。' : messages[code] ?? '文件无法读取或内容格式无效，请重新保存有效文件。' }
 }
 
-export async function validateDeliveryFiles(workspace: string, node: ArrangementNode, submission: DeliverySubmission, nodeRunId: string, signal?: AbortSignal): Promise<FileResult> {
+export async function validateDeliveryFiles(workspace: string, node: ArrangementNode, submission: DeliverySubmission, nodeRunId: string, signal?: AbortSignal, options: DeliveryFileOptions = {}): Promise<FileResult> {
   const files: FinalDeliveryFile[] = []
   const issues: DeliveryIssue[] = []
   for (const submitted of submission.finalDeliverables) {
@@ -121,20 +163,46 @@ export async function validateDeliveryFiles(workspace: string, node: Arrangement
       const bytes = await readWorkspaceFile(workspace, expected.path, signal)
       await validateFormat(bytes, expected.format)
       signal?.throwIfAborted()
-      files.push({ id: expected.id, path: expected.path, format: expected.format, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), nodeRunId, validatedAt: Date.now() })
+      const file = { id: expected.id, path: expected.path, format: expected.format, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), nodeRunId, validatedAt: Date.now() }
+      files.push(options.taskDirectory ? await saveSnapshot(options.taskDirectory, file, bytes, 'confirmed', signal) : file)
     } catch (error) { signal?.throwIfAborted(); issues.push(fileIssue(error, expected.id, expected.path)) }
   }
   return issues.length ? { ok: false, issues } : { ok: true, files }
 }
 
-export async function revalidateDeliveryFiles(workspace: string, files: readonly FinalDeliveryFile[], signal?: AbortSignal): Promise<DeliveryIssue[]> {
-  const issues: DeliveryIssue[] = []
+export async function resolveDeliveryFiles(workspace: string, files: readonly FinalDeliveryFile[], signal?: AbortSignal, options: DeliveryFileOptions = {}): Promise<ResolvedDeliveryFiles> {
+  const result: ResolvedDeliveryFiles = { files: [], readPaths: [], issues: [], warnings: [] }
   for (const file of files) {
-    if (!finalDeliveryFileSchema.safeParse(file).success) { issues.push({ code: 'INVALID_DELIVERY_RECORD', message: '前置最终交付记录不完整。' }); continue }
+    signal?.throwIfAborted()
+    if (!finalDeliveryFileSchema.safeParse(file).success || !isSafeDeliveryPath(file.path)) { result.issues.push({ code: 'INVALID_DELIVERY_RECORD', message: '前置最终交付记录不完整或路径无效。' }); continue }
     try {
+      if (file.snapshot) {
+        if (!options.taskDirectory) throw new Error('SNAPSHOT_UNAVAILABLE')
+        let bytes: Buffer
+        try { bytes = await readWorkspaceFile(options.taskDirectory, snapshotRelativePath(file), signal) }
+        catch (error) { signal?.throwIfAborted(); if (error instanceof Error && error.message === 'UNSAFE_PATH') throw error; throw new Error('SNAPSHOT_UNAVAILABLE') }
+        if (bytes.length !== file.snapshot.size || createHash('sha256').update(bytes).digest('hex') !== file.snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
+        result.files.push(file)
+        result.readPaths.push(resolve(await realpath(options.taskDirectory), snapshotRelativePath(file)))
+        continue
+      }
       const bytes = await readWorkspaceFile(workspace, file.path, signal)
-      if (bytes.length !== file.size || createHash('sha256').update(bytes).digest('hex') !== file.sha256) issues.push({ code: 'PREDECESSOR_FILE_CHANGED', deliverableId: file.id, path: file.path, message: '已确认的前置最终文件被修改，不能将其作为有效前置成果。' })
-    } catch (error) { signal?.throwIfAborted(); issues.push(fileIssue(error, file.id, file.path)) }
+      const changed = bytes.length !== file.size || createHash('sha256').update(bytes).digest('hex') !== file.sha256
+      if (changed && !options.allowWorkspaceChanges) {
+        result.issues.push({ code: 'PREDECESSOR_FILE_CHANGED', deliverableId: file.id, path: file.path, message: '已确认的前置最终文件被修改，不能将其作为有效前置成果。' })
+        continue
+      }
+      await validateFormat(bytes, file.format)
+      const saved = options.taskDirectory ? await saveSnapshot(options.taskDirectory, file, bytes, changed ? 'workspace-recovery' : 'confirmed', signal) : file
+      if (changed) result.warnings.push({ code: 'LEGACY_DELIVERY_UPDATED', deliverableId: file.id, path: file.path,
+        message: '历史任务没有交付快照，已使用当前格式有效的文件继续；该恢复版本不等同于原验收版本。' })
+      result.files.push(saved)
+      result.readPaths.push(saved.snapshot ? resolve(await realpath(options.taskDirectory!), snapshotRelativePath(saved)) : resolve(await realpath(workspace), file.path))
+    } catch (error) { signal?.throwIfAborted(); result.issues.push(fileIssue(error, file.id, file.path)) }
   }
-  return issues
+  return result
+}
+
+export async function revalidateDeliveryFiles(workspace: string, files: readonly FinalDeliveryFile[], signal?: AbortSignal, options: DeliveryFileOptions = {}): Promise<DeliveryIssue[]> {
+  return (await resolveDeliveryFiles(workspace, files, signal, options)).issues
 }

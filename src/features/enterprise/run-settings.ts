@@ -17,6 +17,14 @@ export function defaultRunSettings(): RunSettings {
   return { workDir: '', modelId: '', permissions: { preset: 'read-only', approvalMode: 'confirm-each' } };
 }
 
+export function defaultAutoRunSettings(modelId = ''): RunSettings {
+  return { workDir: '', modelId, permissions: { preset: 'full-local', approvalMode: 'auto-approve' } };
+}
+
+export function defaultConversationRunSettings(): RunSettings {
+  return { ...defaultRunSettings(), permissions: { preset: 'full-local', approvalMode: 'auto-approve' } };
+}
+
 export function conversationDocument(
   title: string, prompt: string, subscriptionId: string, modelId: string,
   settings: { workDir?: string; permissions?: ArrangementDraftDocument['permissions'] } = {},
@@ -26,6 +34,6 @@ export function conversationDocument(
     confirmedInputs: [], sharedSkillIds: [], nodes: [], lastPlanning: null,
     conversation: { participants: [{ subscriptionId, modelId }], activeSubscriptionId: subscriptionId },
     workspace: { mode: 'shared', path: settings.workDir?.trim() || null },
-    permissions: { ...(settings.permissions ?? defaultRunSettings().permissions) },
+    permissions: { ...(settings.permissions ?? defaultConversationRunSettings().permissions) },
   };
 }

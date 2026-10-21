@@ -7,7 +7,7 @@ import type { SkillLibraryItem } from '../../../shared/skill-library';
 
 interface Props { workspace: EnterpriseWorkspace; skill: SkillLibraryItem }
 export function SkillDetail({ workspace, skill }: Props) {
-  const [versionId, setVersionId] = useState(selectedSkillVersion(skill) || skill.bindings[0]?.currentVersion.id || '');
+  const [versionId, setVersionId] = useState(selectedSkillVersion(skill) || skill.bindings[0]?.currentVersion?.id || '');
   const [source, setSource] = useState('');
   const [content, setContent] = useState('');
   const [editing, setEditing] = useState(false);
@@ -30,6 +30,7 @@ export function SkillDetail({ workspace, skill }: Props) {
   useEffect(() => {
     let active = true;
     setLoading(true); setError(''); setEditing(false); setSource(''); setContent('');
+    if (!versionId) { setLoading(false); return; }
     const saved = savedSources.current.get(versionId);
     if (saved !== undefined) { setSource(saved); setContent(saved); setLoading(false); return; }
     void previewSkillSource(skill.capability.id, versionId).then(text => {
@@ -77,15 +78,16 @@ export function SkillDetail({ workspace, skill }: Props) {
   const view = (id: string): void => { if (mayLeave()) { setEditing(false); setContent(source); setVersionId(id); setNotice(''); } };
   return <div className="ent-page skill-detail">
     <div className="skill-detail-heading"><button className="ent-icon-btn" aria-label="返回技能列表" disabled={busy} onClick={() => { if (mayLeave()) workspace.navigate({ name: 'skills' }); }}><ArrowLeft size={18} /></button><div><h1>{skill.capability.name}</h1><p>{skill.capability.description}</p></div><button className="ent-btn" onClick={() => history.current?.scrollIntoView({ behavior: 'auto', block: 'start' })}><History size={15} />版本历史</button></div>
-    <div className="ent-banner info"><Info size={16} aria-hidden /><span>正在查看 {title}。修改将保存为新的个人版本并上传审核，不会覆盖原发布版，也不会自动切换使用版本。</span></div>
+    <div className="ent-banner info"><Info size={16} aria-hidden /><span>{versionId ? `正在查看 ${title}。修改将保存为新的个人版本并上传审核，不会覆盖原发布版，也不会自动切换使用版本。` : '未选择版本。'}</span></div>
     {notice ? <div className="ent-banner info" role="status">{notice}</div> : null}
     {error && !saveOpen ? <div className="ent-banner danger" role="alert">{error}<button className="ent-btn" onClick={() => setReload(value => value + 1)}>重新读取</button></div> : null}
     <section className="skill-editor-panel">
-      <header><h2><FileText size={17} aria-hidden />技能原文 <span>SKILL.md</span></h2><button className="ent-btn" disabled={loading || busy || Boolean(error)} onClick={() => setEditing(true)}><Pencil size={14} aria-hidden />{editing ? '修改中' : '修改'}</button></header>
+      <header><h2><FileText size={17} aria-hidden />技能原文 <span>SKILL.md</span></h2><button className="ent-btn" disabled={!versionId || loading || busy || Boolean(error)} onClick={() => setEditing(true)}><Pencil size={14} aria-hidden />{editing ? '修改中' : '修改'}</button></header>
       {loading ? <p role="status">正在读取原文…</p> : <textarea ref={editor} className={`skill-source${editing ? ' editing' : ''}`} aria-label="Skill 原始内容" value={content} readOnly={!editing || busy} maxLength={500000} spellCheck={false} onChange={event => setContent(event.target.value)} />}
       <footer><span className="skill-caption">{content.length.toLocaleString()} 字符 · 保留 Markdown 与 frontmatter 原文</span>{editing ? <div><button className="ent-btn" disabled={busy} onClick={() => { if (mayLeave()) { setContent(source); setEditing(false); } }}>取消修改</button><button className="ent-btn primary" disabled={busy || !content.length || !dirty} onClick={() => setSaveOpen(true)}><Save size={14} />保存为个人版本</button></div> : <span className="skill-caption">只读浏览 · 点击「修改」直接编辑原文</span>}</footer>
     </section>
     <section className="skill-history" ref={history}><header><div><h2>版本列表</h2><p>本地修改无需等待审核，可返回列表切换使用；企业发布版本保持不变。</p></div><button className="ent-btn" disabled={workspace.skillsLoading || busy} onClick={() => void workspace.refreshSkills()}><RefreshCw size={14} />刷新审核状态</button></header>
+      {workspace.skillsWarning ? <p role="status" className="skill-caption">{workspace.skillsWarning}</p> : null}
       {workspace.skillsError ? <p role="alert" className="skill-error">{workspace.skillsError}</p> : null}
       {skill.versions.map(item => <div className={`skill-version-row${versionId === item.id ? ' active' : ''}`} key={item.id}>
         <div className="skill-version-icon"><FileText size={20} /></div><div className="skill-version-info"><strong title={item.version}>{skillVersionLabel(item)} <span className="skill-badge">{item.scope === 'PERSONAL' ? '个人' : item.scope === 'ENTERPRISE' ? '企业' : '平台'}</span></strong><small>{skillVersionStatus(item.status)}{item.createdAt ? ` · ${new Date(item.createdAt).toLocaleString()}` : ''}</small>{item.rejectionReason ? <small className="skill-error">驳回原因：{item.rejectionReason}</small> : null}</div>

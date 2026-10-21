@@ -641,7 +641,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 /* 权限下拉带盾牌图标，和目录按钮同一行的视觉重量 */
 .ent-rs-permission { gap: 4px; padding-left: 4px; color: var(--ent-ink-3); }
 .ent-rs-permission svg { flex: 0 0 auto; }
-.ent-rs-permission select { max-width: 116px; padding-left: 2px; }
+.ent-rs-permission select { max-width: 148px; padding-left: 2px; white-space: nowrap; }
 
 /* 自动放行：带可见文字，不再是一个没有说明的空方框 */
 .ent-rs-approval {

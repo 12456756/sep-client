@@ -5,11 +5,26 @@
  * 损坏文件会被隔离，不能阻止其他任务继续启动。
  */
 import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { WriteChain } from './write-chain'
 
 /** 持久化文件一律 0600：userData 目录之外不该有人读得到。 */
 const FILE_MODE = 0o600
+const writes = new WriteChain()
+const renameRetryDelays = [20, 50, 100, 200] as const
+
+async function replaceFile(source: string, target: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try { await rename(source, target); return }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      const delay = renameRetryDelays[attempt]
+      if (delay === undefined || !['EPERM', 'EACCES', 'EBUSY'].includes(code ?? '')) throw error
+      await new Promise<void>(done => setTimeout(done, delay))
+    }
+  }
+}
 
 export async function pathExists(path: string): Promise<boolean> {
   try {
@@ -39,13 +54,24 @@ export interface AtomicWriteOptions {
 export async function writeJsonAtomic(
   file: string,
   value: unknown,
-  { backup = true }: AtomicWriteOptions = {},
+  options: AtomicWriteOptions = {},
+): Promise<void> {
+  const content = JSON.stringify(value)
+  const resolved = resolve(file)
+  await writes.run(process.platform === 'win32' ? resolved.toLowerCase() : resolved,
+    () => writeJsonFile(file, content, options))
+}
+
+async function writeJsonFile(
+  file: string,
+  content: string,
+  { backup = true }: AtomicWriteOptions,
 ): Promise<void> {
   const temporaryFile = `${file}.${randomUUID()}.tmp`
   const backupFile = backupPath(file)
   try {
     await mkdir(dirname(file), { recursive: true })
-    await writeFile(temporaryFile, JSON.stringify(value), { encoding: 'utf8', mode: FILE_MODE })
+    await writeFile(temporaryFile, content, { encoding: 'utf8', mode: FILE_MODE })
     try {
       await chmod(temporaryFile, FILE_MODE)
     } catch {
@@ -53,10 +79,9 @@ export async function writeJsonAtomic(
     }
     if (backup && await pathExists(file)) {
       await copyFile(file, backupFile)
-      // Windows 上 rename 覆盖已存在的文件会失败，所以先删。
-      await rm(file, { force: true })
     }
-    await rename(temporaryFile, file)
+    // Keep the old primary readable until replacement succeeds, including during lock retries.
+    await replaceFile(temporaryFile, file)
   } catch (error) {
     try {
       await rm(temporaryFile, { force: true })

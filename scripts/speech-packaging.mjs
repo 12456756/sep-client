@@ -22,9 +22,9 @@ export async function afterPack(context) {
     throw new Error('Unexpected test or temporary files in packaged speech resources')
   }
   const archive = join(resources, 'app.asar')
-  const files = listPackage(archive)
+  const files = new Set(listPackage(archive).map(file => file.replaceAll('\\', '/')))
   for (const file of ['/out/main/speech-worker.js', '/node_modules/sherpa-onnx-node/sherpa-onnx.js']) {
-    if (!files.includes(file)) throw new Error(`Missing packaged speech entry: ${file}`)
+    if (!files.has(file)) throw new Error(`Missing packaged speech entry: ${file}`)
   }
   await access(join(resources, 'app.asar.unpacked', 'node_modules', 'sherpa-onnx-node', 'sherpa-onnx.js'))
   await verifySpeechNative(join(resources, 'app.asar.unpacked', 'node_modules'), platform, architectures[context.arch])

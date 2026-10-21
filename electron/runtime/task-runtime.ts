@@ -29,7 +29,7 @@ import { AppError } from '../errors/app-error'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor } from './arrangement-executor'
-import { createArrangementExecutionState, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
+import { createArrangementExecutionState, interruptArrangement, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
 import { shouldPushTaskEvent } from './task-event-visibility'
 import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinishedInput, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
 import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
@@ -324,7 +324,7 @@ export class TaskRuntime {
     plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
     nodeId?: string,
   ): Promise<void> {
-    if (this.arrangementRetries.has(task.id) || task.activeRunId) {
+    if (this.arrangementRetries.has(task.id) || task.activeRunId || this.activeArrangements.has(task.id)) {
       throw new AppError('INVALID_STATE', { message: '这项编排正在执行或提交重试，请等待当前操作完成。' })
     }
     this.arrangementRetries.add(task.id)
@@ -348,8 +348,16 @@ export class TaskRuntime {
       nextState = retryArrangementNode(checkpoint.state, plan.nodes, nodeId)
       if (nextState === checkpoint.state) throw new AppError('INVALID_STATE', { message: '没有可重试的失败节点。' })
     } else {
-      if (nodeId || checkpoint.state.status !== 'interrupted') throw new AppError('INVALID_STATE', { message: '当前编排状态不支持重试。' })
-      nextState = resumeArrangement(checkpoint.state)
+      // A failed admission/write can leave an inactive checkpoint with its pre-execution status.
+      const stale = !checkpoint.activeRunId &&
+        (task.status === TaskStatus.FAILED || task.status === TaskStatus.INTERRUPTED) &&
+        (checkpoint.state.status === 'running' || checkpoint.state.status === 'queued')
+      const interrupted = stale ? interruptArrangement(checkpoint.state, 'runtime-error') : checkpoint.state
+      if (interrupted.status !== 'interrupted' || (nodeId && !interrupted.nodes.some(node =>
+        node.nodeId === nodeId && (node.status === 'interrupted' || node.status === 'ready')))) {
+        throw new AppError('INVALID_STATE', { message: '当前编排状态不支持重试。' })
+      }
+      nextState = resumeArrangement(interrupted)
     }
     // Authorization must not consume the failed checkpoint before admission.
     const primary = plan.nodes[0]
@@ -679,6 +687,19 @@ export class TaskRuntime {
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      if (scope && this.arrangementCheckpointStore) {
+        try {
+          const checkpoint = await this.arrangementCheckpointStore.get(scope, taskId)
+          if (checkpoint?.planHash === plan.planHash && (!checkpoint.activeRunId || checkpoint.activeRunId === runId)
+            && (checkpoint.state.status === 'running' || checkpoint.state.status === 'queued')) {
+            await this.saveArrangementCheckpoint(scope, taskId, plan.planHash, null,
+              interruptArrangement(checkpoint.state, 'runtime-error'))
+          }
+        } catch (persistenceError) {
+          log.warn('failed to persist arrangement interruption', { taskId, runId,
+            cause: redactText(persistenceError instanceof Error ? persistenceError.message : String(persistenceError)) })
+        }
+      }
       if (parentCreated && scope && this.taskRunStore) {
         await this.taskRunStore.finish(scope, taskId, runId, 'failed', message).catch(() => undefined)
       }

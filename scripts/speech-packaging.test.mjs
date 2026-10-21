@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { createPackage } from '@electron/asar'
+import { afterPack } from './speech-packaging.mjs'
 import { createBuilderConfig } from './generate-builder-config.mjs'
 import { speechDirectory, speechFiles, speechNativePackage, verifySpeechAssets, verifySpeechNative } from './speech-assets.mjs'
 
@@ -23,6 +25,42 @@ async function fixture(t) {
   for (const file of ['MODEL_LICENSE', 'RUNTIME_LICENSE']) await copyFile(join(speechDirectory, file), join(directory, file))
   return { directory, manifest }
 }
+
+test('afterPack accepts native archive paths and rejects a missing speech worker', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-speech-after-pack-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const resources = join(root, 'resources')
+  const source = join(root, 'source')
+  await mkdir(join(source, 'out', 'main'), { recursive: true })
+  await mkdir(join(source, 'node_modules', 'sherpa-onnx-node'), { recursive: true })
+  await writeFile(join(source, 'out', 'main', 'speech-worker.js'), 'worker fixture')
+  await writeFile(join(source, 'node_modules', 'sherpa-onnx-node', 'sherpa-onnx.js'), 'runtime fixture')
+  await writeFile(join(source, 'package.json'), JSON.stringify({ version: 'test' }))
+  const packagedSpeech = join(resources, 'speech', 'sensevoice-int8')
+  await mkdir(packagedSpeech, { recursive: true })
+  for (const name of ['model.int8.onnx', 'tokens.txt', 'MODEL_LICENSE', 'RUNTIME_LICENSE', 'manifest.json']) {
+    await copyFile(join(speechDirectory, name), join(packagedSpeech, name))
+  }
+  const modules = join(resources, 'app.asar.unpacked', 'node_modules')
+  await cp(join(source, 'node_modules'), modules, { recursive: true })
+  await mkdir(join(modules, 'sherpa-onnx-win-x64'))
+  for (const name of ['sherpa-onnx-node', 'sherpa-onnx-win-x64']) {
+    await writeFile(join(modules, name, 'package.json'), JSON.stringify({ version: '1.13.8' }))
+  }
+  for (const file of ['sherpa-onnx.node', 'onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'sherpa-onnx-c-api.dll', 'sherpa-onnx-cxx-api.dll']) {
+    await writeFile(join(modules, 'sherpa-onnx-win-x64', file), 'native fixture')
+  }
+  const context = { appOutDir: root, electronPlatformName: 'win32', arch: 1 }
+  await createPackage(source, join(resources, 'app.asar'))
+  await afterPack(context)
+  await rm(join(source, 'out', 'main', 'speech-worker.js'))
+  await createPackage(source, join(resources, 'missing-worker.asar'))
+  const missingContext = { ...context, appOutDir: join(root, 'missing') }
+  await mkdir(join(root, 'missing', 'resources'), { recursive: true })
+  await cp(join(resources, 'speech'), join(root, 'missing', 'resources', 'speech'), { recursive: true })
+  await copyFile(join(resources, 'missing-worker.asar'), join(root, 'missing', 'resources', 'app.asar'))
+  await assert.rejects(afterPack(missingContext), /Missing packaged speech entry: \/out\/main\/speech-worker.js/)
+})
 
 test('speech packaging verifies both pinned hash formats and retained licenses', async t => {
   const { directory, manifest } = await fixture(t)

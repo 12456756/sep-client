@@ -93,6 +93,63 @@ it('recovers a crashed arrangement on startup and resumes only its unfinished no
   assert.equal((await f.checkpoints.get(scope, f.task.id))!.state.nodes[0]!.output, 'A completed')
 })
 
+for (const nodeStatus of ['ready', 'running'] as const) {
+  it(`recovers a failed task with an inactive running checkpoint and a ${nodeStatus} node`, async () => {
+    const f = await crashedFixture()
+    await f.runs.finish(scope, f.task.id, 'parent-run', 'failed', 'EPERM')
+    await f.runs.finish(scope, f.task.id, 'node-b-run', 'failed', 'previous model failure')
+    await f.manager.settleTaskRun(f.task.id, 'parent-run', TaskStatus.FAILED, 'EPERM')
+    const checkpoint = (await f.checkpoints.get(scope, f.task.id))!
+    checkpoint.activeRunId = null
+    checkpoint.state.nodes[1]!.status = nodeStatus
+    await f.checkpoints.save(scope, checkpoint)
+    const attempts: string[] = []
+    const runtime = new TaskRuntime({ taskManager: f.manager, taskRunStore: f.runs,
+      workPlanStore: { async get() { return f.plan }, async save() {} }, arrangementCheckpointStore: f.checkpoints,
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+      resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'a', gatewayUrl: 'http://invalid' }),
+      authorizeEmployee: async (_id, modelId) => ({ subscriptionId: 'employee', modelId: modelId ?? 'a', gatewayUrl: 'http://invalid' }),
+      createWorker: options => ({ async run() {
+        attempts.push(options.context.modelId)
+        assert.equal(options.context.resumeSessionFile, f.sessionFile)
+        await options.onSessionCreated?.({ sessionId: 'crashed-b', sessionFile: f.sessionFile })
+      }, async abort() {}, async dispose() {} }),
+    })
+    await runtime.retryTask(f.task.id)
+    await waitFor(async () => (await f.manager.getTask(f.task.id))?.status === TaskStatus.COMPLETED)
+    assert.deepEqual(attempts, ['b'])
+    assert.equal((await f.checkpoints.get(scope, f.task.id))!.state.nodes[0]!.output, 'A completed')
+  })
+}
+
+it('marks an arrangement interrupted after its checkpoint write fails outside a worker', async () => {
+  const f = await fixture()
+  let rejected = false
+  const runtime = new TaskRuntime({ taskManager: f.manager, taskRunStore: f.runs,
+    workPlanStore: { async get() { return f.plan }, async save() {} },
+    arrangementCheckpointStore: {
+      get: (owner, taskId) => f.checkpoints.get(owner, taskId),
+      async save(owner, checkpoint) {
+        if (!rejected && checkpoint.state.nodes.some(node => node.status === 'running')) {
+          rejected = true
+          throw Object.assign(new Error('checkpoint locked'), { code: 'EPERM' })
+        }
+        await f.checkpoints.save(owner, checkpoint)
+      },
+    },
+    getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+    resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'a', gatewayUrl: 'http://invalid' }),
+    authorizeEmployee: async () => ({ subscriptionId: 'employee', modelId: 'a', gatewayUrl: 'http://invalid' }),
+    createWorker: () => { throw new Error('worker must not start before checkpoint is saved') },
+  })
+  await runtime.executeTask(f.task.id)
+  await waitFor(async () => (await f.manager.getTask(f.task.id))?.status === TaskStatus.FAILED)
+  const checkpoint = (await f.checkpoints.get(scope, f.task.id))!
+  assert.equal(checkpoint.activeRunId, null)
+  assert.equal(checkpoint.state.status, 'interrupted')
+  assert.equal(checkpoint.state.interruptionReason, 'runtime-error')
+})
+
 it('blocks admission when checkpoint recovery fails and repairs it on the next recovery attempt', async () => {
   const f = await crashedFixture()
   const original = (await f.checkpoints.get(scope, f.task.id))!

@@ -26,6 +26,28 @@ describe('employee system prompt', () => {
     })
   })
 
+  it('identifies image and video tools as common tools for every employee', () => {
+    for (const profile of [{ name: '培训师', description: '制作员工培训材料' }, { name: 'Employee' }]) {
+      const prompt = buildEmployeeSystemPrompt(profile)
+      assert.match(prompt, /图片和视频工具是每个员工都可以使用的通用执行工具/)
+      assert.match(prompt, /不是其他员工或某个专门岗位的专属能力/)
+      assert.match(prompt, /不得仅因涉及图片或视频，就建议切换员工、转交其他员工/)
+      assert.match(prompt, /本轮实际提供且获授权的工具/)
+    }
+  })
+
+  it('explains image and video operations without claiming unfinished jobs are delivered', () => {
+    const prompt = buildEmployeeSystemPrompt({ name: 'Employee' })
+    assert.match(prompt, /media_generate_image.*generate.*edit/)
+    assert.match(prompt, /media_get_capabilities/)
+    assert.match(prompt, /video_generate.*文生视频/)
+    assert.match(prompt, /video_from_image.*图生视频/)
+    assert.match(prompt, /media_get_job.*video_get_job/)
+    assert.match(prompt, /返回任务 ID 不代表生成完成/)
+    assert.match(prompt, /不得虚构图片、视频、文件路径或生成成功/)
+    assert.match(prompt, /工具可用性、费用及审批限制保持不变/)
+  })
+
   it('includes only the four identity fields and keeps profile text inside the data section', () => {
     const profile = {
       name: 'Employee & helper', position: 'Analyst', functionalCategory: 'Finance',

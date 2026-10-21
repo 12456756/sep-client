@@ -1,5 +1,8 @@
-import { describe, it } from 'node:test'
+import { after, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, realpathSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { evaluateToolCall, type ToolPolicy } from './guard'
 
 const policy: ToolPolicy = {
@@ -19,6 +22,49 @@ const unrestrictedPolicy: ToolPolicy = {
   deniedPaths: ['src/private'],
   commandPolicy: 'disabled',
 }
+
+describe('delivery snapshot read permissions', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'sep-delivery-guard-')))
+  const workspace = join(root, 'workspace')
+  const snapshot = join(root, 'private', 'result.xlsx')
+  const adjacent = join(root, 'private', 'other.xlsx')
+  mkdirSync(workspace)
+  mkdirSync(join(root, 'private'))
+  writeFileSync(snapshot, 'snapshot')
+  writeFileSync(adjacent, 'other')
+  const snapshotPolicy = { ...policy, workspaceDir: workspace, readableDeliveryPaths: [snapshot] }
+  after(() => rmSync(root, { recursive: true, force: true }))
+
+  it('grants only reads of the exact host-approved file', () => {
+    assert.equal(evaluateToolCall('read', { path: snapshot }, snapshotPolicy).allowed, true)
+    for (const tool of ['write', 'edit', 'ls', 'grep', 'find']) {
+      assert.equal(evaluateToolCall(tool, { path: snapshot }, snapshotPolicy).allowed, false)
+    }
+    assert.equal(evaluateToolCall('read', { path: adjacent }, snapshotPolicy).allowed, false)
+    assert.equal(evaluateToolCall('ls', { path: join(root, 'private') }, snapshotPolicy).allowed, false)
+    assert.equal(evaluateToolCall('read', { path: snapshot }, { ...snapshotPolicy, allowedTools: [] }).allowed, false)
+  })
+
+  it('respects denied paths even for an approved snapshot', () => {
+    for (const denied of [snapshot, join(root, 'private')]) {
+      assert.equal(evaluateToolCall('read', { path: snapshot }, { ...snapshotPolicy, deniedPaths: [denied] }).allowed, false)
+    }
+  })
+
+  it('revokes an approved path if it is replaced by a directory link', () => {
+    const original = join(root, 'original')
+    const replacement = join(root, 'replacement')
+    mkdirSync(original)
+    mkdirSync(replacement)
+    const approved = join(original, 'result.xlsx')
+    writeFileSync(approved, 'approved')
+    writeFileSync(join(replacement, 'result.xlsx'), 'replacement')
+    rmSync(approved)
+    rmdirSync(original)
+    symlinkSync(replacement, original, process.platform === 'win32' ? 'junction' : 'dir')
+    assert.equal(evaluateToolCall('read', { path: approved }, { ...snapshotPolicy, readableDeliveryPaths: [approved] }).allowed, false)
+  })
+})
 
 describe('tool guard task policy', () => {
   it('auto-approves allowed high-risk tools only after path and command checks', () => {

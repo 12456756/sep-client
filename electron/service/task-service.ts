@@ -175,10 +175,11 @@ export class TaskService {
   }
 
   async timeline(taskId: string, runId: string): Promise<TaskExecutionEvent[]> {
-    await this.requireTask(taskId)
+    const task = await this.requireTask(taskId)
     const scope = this.scope()
-    // 先确认 run 存在，否则"空时间线"与"记录不存在"对用户是同一个结果。
+    // Admission publishes the queued run ID before the executor creates its record.
     if (!await this.deps.taskRunStore.get(scope, taskId, runId)) {
+      if (task.status === 'pending' && task.activeRunId === runId) return []
       throw new AppError('NOT_FOUND', { message: '未找到该执行记录。' })
     }
     return this.deps.taskRunStore.events.getTimeline(scope, taskId, runId)

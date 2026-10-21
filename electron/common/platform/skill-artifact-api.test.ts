@@ -27,6 +27,136 @@ function headers(value: SkillArtifactAvailable = artifact): Record<string, strin
     'Content-Length': String(value.byteLength), 'X-SHA256': value.artifactSha256 }
 }
 
+async function flush(): Promise<void> {
+  await new Promise<void>(resolve => setImmediate(resolve))
+}
+
+describe('skill artifact rate limit recovery', () => {
+  it('waits for Retry-After and releases the rejected body before requesting the same artifact', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    let calls = 0
+    let cancelled = false
+    globalThis.fetch = async (url, init) => {
+      assert.equal(String(url), `${config.SEP_BASE_URL}${artifact.downloadPath}`)
+      assert.equal(new Headers(init?.headers).get('authorization'), 'Bearer ordinary-access')
+      if (++calls === 1) return new Response(new ReadableStream({ cancel() { cancelled = true } }), {
+        status: 429, headers: { 'Retry-After': '3' },
+      })
+      assert.equal(cancelled, true)
+      return new Response(bytes, { headers: headers() })
+    }
+    const pending = downloadSkillArtifact('sub-1', artifact, 'ordinary-access')
+    await flush()
+    assert.equal(cancelled, true)
+    t.mock.timers.tick(2999)
+    await flush()
+    assert.equal(calls, 1)
+    t.mock.timers.tick(1)
+    assert.deepEqual(await pending, bytes)
+    assert.equal(calls, 2)
+  })
+
+  it('backs off for 2, 4 and 8 seconds and stops after three retries', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    let calls = 0
+    globalThis.fetch = async () => { calls++; return new Response(null, { status: 429 }) }
+    const rejected = assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), error => {
+      assert.ok(error instanceof AuthApiError)
+      assert.equal(error.statusCode, 429)
+      return true
+    })
+    await flush()
+    for (const [index, delay] of [2000, 4000, 8000].entries()) {
+      t.mock.timers.tick(delay - 1)
+      await flush()
+      assert.equal(calls, index + 1)
+      t.mock.timers.tick(1)
+      await flush()
+      assert.equal(calls, index + 2)
+    }
+    await rejected
+  })
+
+  it('supports HTTP date retry hints without retrying before the specified time', async t => {
+    const now = Date.UTC(2026, 9, 21)
+    t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now })
+    let calls = 0
+    globalThis.fetch = async () => ++calls === 1
+      ? new Response(null, { status: 429, headers: { 'Retry-After': new Date(now + 90_000).toUTCString() } })
+      : new Response(bytes, { headers: headers() })
+    const pending = downloadSkillArtifact('sub-1', artifact, 'access')
+    await flush()
+    t.mock.timers.tick(89_999)
+    await flush()
+    assert.equal(calls, 1)
+    t.mock.timers.tick(1)
+    assert.deepEqual(await pending, bytes)
+  })
+
+  it('does not shorten excessive server hints or exceed the cumulative five minute wait budget', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    for (const hint of ['301', '9'.repeat(400)]) {
+      let calls = 0
+      globalThis.fetch = async () => { calls++; return new Response(null, { status: 429, headers: { 'Retry-After': hint } }) }
+      await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), error => error instanceof AuthApiError && error.statusCode === 429)
+      assert.equal(calls, 1)
+    }
+    let calls = 0
+    globalThis.fetch = async () => { calls++; return new Response(null, { status: 429, headers: { 'Retry-After': '180' } }) }
+    const rejected = assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), error => error instanceof AuthApiError && error.statusCode === 429)
+    await flush()
+    t.mock.timers.tick(180_000)
+    await rejected
+    assert.equal(calls, 2)
+  })
+
+  it('uses fallback backoff for malformed hints and does not retry a subsequent permission failure', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    for (const hint of ['garbage', '-1', '1e3']) {
+      let calls = 0
+      globalThis.fetch = async () => ++calls === 1
+        ? new Response(null, { status: 429, headers: { 'Retry-After': hint } })
+        : new Response(null, { status: 403 })
+      const rejected = assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), error => error instanceof AuthApiError && error.statusCode === 403)
+      await flush()
+      t.mock.timers.tick(1999)
+      await flush()
+      assert.equal(calls, 1)
+      t.mock.timers.tick(1)
+      await rejected
+      assert.equal(calls, 2)
+    }
+  })
+
+  it('cancels waiting and never sends another request after cancellation', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    const controller = new AbortController()
+    let calls = 0
+    globalThis.fetch = async () => { calls++; return new Response(null, { status: 429, headers: { 'Retry-After': '90' } }) }
+    const rejected = assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access', { signal: controller.signal }), { name: 'AbortError' })
+    await flush()
+    controller.abort()
+    await rejected
+    t.mock.timers.tick(90_000)
+    assert.equal(calls, 1)
+  })
+
+  it('does not resend a stale access token if the owner changes while waiting', async t => {
+    t.mock.timers.enable({ apis: ['setTimeout'] })
+    let current = true
+    let calls = 0
+    globalThis.fetch = async () => { calls++; return new Response(null, { status: 429 }) }
+    const rejected = assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access', {
+      assertCurrent: () => { if (!current) throw new Error('scope changed') },
+    }), /scope changed/)
+    await flush()
+    current = false
+    t.mock.timers.tick(2000)
+    await rejected
+    assert.equal(calls, 1)
+  })
+})
+
 describe('skill artifact authenticated download', () => {
   it('returns exact Buffer bytes using only the ordinary access token and configured API prefix', async () => {
     let calls = 0

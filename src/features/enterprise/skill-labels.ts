@@ -11,7 +11,7 @@ export function skillVersionStatus(status: string): string {
 }
 export function selectedSkillVersion(skill: SkillLibraryItem): string {
   const ids = new Set(skill.bindings.map(binding => binding.selectedVersionId));
-  return ids.size === 1 ? [...ids][0] : '';
+  return ids.size === 1 ? [...ids][0] ?? '' : '';
 }
 
 export function localSkillVersionStatus(skill: SkillLibraryItem, local: LocalSkillSubmission): string {

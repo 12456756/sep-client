@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ArrangementExecutor, type ArrangementExecutionOptions } from './arrangement-executor'
@@ -351,13 +351,46 @@ describe('automatic arrangement final file handover', () => {
     assert.equal((await f.executor.execute(f.plan, 'task', 'run')).status, 'completed')
     assert.match(f.prompts[1]!, /INVALID_SUBMISSION/)
   })
-  it('refuses mutated predecessor files and legacy automatic plans without contracts', async () => {
+  it('hands over the frozen predecessor even if a later tool overwrites the workspace original', async () => {
     const f = await fixture(async (id, _iteration, root) => {
       await writeFile(join(root, `deliverables/${id}.txt`), 'Original')
       return { text: submission(id), afterAccept: id === 'a' ? () => writeFile(join(root, 'deliverables/a.txt'), 'mutated') : undefined }
     })
-    assert.equal((await f.executor.execute(f.plan, 'task', 'run')).status, 'failed')
-    assert.equal(f.contexts.length, 1)
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.equal(f.contexts.length, 2)
+    const prompt = f.contexts[1]!.fixedSystemPrompt!
+    const path = prompt.match(/读取快照：([^\n]+)/)?.[1]
+    assert.ok(path)
+    assert.equal(await readFile(path, 'utf8'), 'Original')
+    assert.equal(await readFile(join(f.root, 'deliverables/a.txt'), 'utf8'), 'mutated')
+    assert.match(prompt, /需要补充公式、缓存值、格式或其他内容时，先复制到本节点自己的文件路径/)
+  })
+
+  it('recovers an updated legacy predecessor without rerunning its completed node and persists the recovery version', async () => {
+    const f = await fixture(async (id, _iteration, root) => {
+      assert.equal(id, 'b')
+      await writeFile(join(root, 'deliverables/b.txt'), 'B findings')
+      return { text: submission(id) }
+    })
+    const { createHash } = await import('node:crypto')
+    const state = createArrangementExecutionState(f.plan.nodes)
+    state.nodes[0] = { ...state.nodes[0]!, status: 'completed', output: 'Original summary', delivery: {
+      validationAttempts: 1, issues: [], finalFiles: [{ id: 'report', path: 'deliverables/a.txt', format: 'txt',
+        size: 8, sha256: createHash('sha256').update('Original').digest('hex'), nodeRunId: 'old-a', validatedAt: Date.now() }],
+    } }
+    state.nodes[1]!.status = 'ready'
+    await writeFile(join(f.root, 'deliverables/a.txt'), 'Current valid findings')
+    const result = await f.executor.execute(f.plan, 'task', 'resume', state)
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(f.contexts.map(context => context.modelId), ['b'])
+    assert.equal(result.state.nodes[0]?.output, 'Original summary')
+    assert.equal(result.state.nodes[0]?.delivery?.finalFiles[0]?.snapshot?.source, 'workspace-recovery')
+    assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.finalFiles[0]?.snapshot?.source, 'workspace-recovery')
+    assert.match(f.contexts[0]!.fixedSystemPrompt!, /历史任务恢复版本/)
+  })
+
+  it('still refuses legacy automatic plans without delivery contracts', async () => {
     const old = await fixture(async id => ({ text: submission(id) }))
     old.plan.nodes[0]!.deliverables = undefined
     assert.equal((await old.executor.execute(old.plan, 'task', 'run')).status, 'failed')

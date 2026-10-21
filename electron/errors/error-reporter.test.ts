@@ -43,6 +43,16 @@ describe('reportError', () => {
     assert.equal(String(fields['cause']).includes('Bearer abc'), false, '日志里的令牌未脱敏')
   })
 
+  it('logs the upstream status code alongside the sanitized cause', () => {
+    capture()
+    const error = Object.assign(new Error('Platform returned an unavailable response'), { statusCode: 502 })
+
+    reportError('skill-library:list', error)
+
+    assert.equal(captured[0]?.fields['statusCode'], 502)
+    assert.equal(captured[0]?.fields['cause'], 'Error: Platform returned an unavailable response')
+  })
+
   it('carries AppError details into the log only', () => {
     capture()
     const envelope = reportError('task:create', appError('INVALID_ARGUMENT', {

@@ -137,7 +137,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
                   <small>{skill.capability.description}</small>
                   <span>
 
-                    <em>企业版本 {skill.bindings.find(binding => binding.subscriptionId === employee.id)?.currentVersion.version}</em>
+                    <em>企业版本 {skill.bindings.find(binding => binding.subscriptionId === employee.id)?.currentVersion?.version ?? '暂无可用版本'}</em>
                   </span>
                 </button>
               ))}
