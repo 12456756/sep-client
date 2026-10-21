@@ -1,5 +1,6 @@
 import { ArrowDown, ChevronDown, Send, StopCircle, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { isSubmitEnter } from '../../shared/composer-shortcut';
 import type { WorkItem } from '../../features/enterprise/types';
 import { useDrawer } from '../../features/enterprise/use-drawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
@@ -159,10 +160,10 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 {...speech.inputProps}
                 className="ent-ask-input"
                 value={draft}
-                placeholder={over ? '这项工作已经结束，说一句会重新开始跟进' : `告诉 ${work.currentEmployeeName} 下一步要做什么（Ctrl + Enter 发送）`}
+                placeholder={over ? '这项工作已经结束，说一句会重新开始跟进' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
                 aria-label="给员工的下一句话"
                 onChange={event => setDraft(event.target.value)}
-                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (!event.defaultPrevented && !event.nativeEvent.isComposing && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); } }}
+                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event)) { event.preventDefault(); send(); } }}
               />
               <div className="ent-ask-bar">
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，

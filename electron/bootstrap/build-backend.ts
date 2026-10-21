@@ -2,6 +2,8 @@ import { NotificationService } from '../service/notification-service'
 import { NotificationSocket } from '../common/platform/notification-socket'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { SkillLibraryService } from '../service/skill-library-service'
+import { KnowledgeService } from '../service/knowledge-service'
+import { KnowledgeApi } from '../common/platform/knowledge-api'
 /**
  * 后端组合根。
  *
@@ -9,7 +11,9 @@ import { SkillLibraryService } from '../service/skill-library-service'
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
 import { join } from 'node:path'
-import { shell } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { shell, systemPreferences } from 'electron'
+import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { EmploymentTokenManager } from '../common/platform/employment-token-manager'
 import { getSubscriptions, getEmployeeRuntime, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
@@ -80,6 +84,7 @@ export interface BackendOptions {
  * 用 `createBackend()` 创建——这个类不导出，避免出现第二个装配入口。
  */
 class BackendRuntime {
+  readonly knowledge: KnowledgeService
   readonly authSession: AuthSessionManager
   readonly taskManager: TaskManager
   readonly taskRunStore: TaskRunStore
@@ -116,9 +121,21 @@ class BackendRuntime {
     this.speechRuntime = loadOnce(async () => (await import('./create-speech-runtime')).createSpeechRuntime())
     this.speech = new SpeechService({
       scope: this, settings: new SpeechSettingsStore(userDataDir),
+      microphone: new SpeechSystemAccess({
+        platform: process.platform,
+        status: () => systemPreferences.getMediaAccessStatus('microphone'),
+        request: () => systemPreferences.askForMediaAccess('microphone'),
+        open: url => shell.openExternal(url),
+      }),
       runtime: () => this.speechRuntime.get(), stopRuntime: () => this.speechRuntime.peek()?.stop(),
     })
     this.authSession = new AuthSessionManager()
+    this.knowledge = new KnowledgeService({
+      scope: this,
+      api: new KnowledgeApi({ getAccessToken: force => this.authSession.getValidAccessToken(force) }),
+      onAuthenticationRequired: () => this.invalidateAuthentication(),
+    })
+    this.authSession.subscribeAccessToken(token => { if (token === null) this.knowledge.clear() })
     const realMediaGateway = mediaGateway ?? new SepRealMediaGateway({
       baseUrl: config.SEP_BASE_URL,
       token: (subscriptionId, signal) => this.getEmploymentToken(subscriptionId, signal),
@@ -383,6 +400,7 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.knowledge.clear()
     this.speech.stop()
     this.notifications.stop()
     for (const entry of this.employmentTokens.values()) entry.manager.stop()
@@ -429,6 +447,7 @@ class BackendRuntime {
    */
   invalidateAuthentication(): void {
     if (this.authenticationCleanup) return
+    this.knowledge.clear()
     this.authenticationCleanup = (async () => {
       // C7：必须有界。stopAll 会等每个 active run 的 abort 与 completion，
       // 无界等待会让"重新登录"这件事永远卡住，且清理只做了一半（scope 还在，token 已废）。
@@ -507,6 +526,9 @@ class BackendRuntime {
       workPlanStore: this.workPlans,
       arrangementCheckpointStore: this.arrangementCheckpoints,
       monitor: this.clientMonitor,
+      knowledgeSearch: (query, signal) => this.knowledge.execute({
+        action: 'search', requestId: randomUUID(), query, topK: 5,
+      }, signal),
       media: this.media,
       video: this.videoRuns,
     })

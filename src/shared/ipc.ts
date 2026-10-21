@@ -1,4 +1,5 @@
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
+import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
@@ -272,7 +273,10 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  requestKnowledge: <R extends KnowledgeRequestInput>(input: R) => Promise<KnowledgeResult<R['action']>>
+  cancelKnowledgeRequests: (requestIds: string[]) => Promise<IpcCommandResult>
   getSpeechPermission: () => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
+  openSpeechSystemSettings: () => Promise<IpcCommandResult>
   setSpeechEnabled: (input: { enabled: boolean }) => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
   beginSpeechRecording: (input: { recordingId: string }) => Promise<IpcCommandResult & { data?: SpeechStart }>
   recognizeSpeech: (input: SpeechAudio) => Promise<IpcCommandResult & { data?: SpeechResult }>

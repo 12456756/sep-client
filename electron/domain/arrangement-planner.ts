@@ -95,6 +95,7 @@ export function buildArrangementPlannerPrompt(
       title: '具体节点工作名称', objective: '该节点需要达成的具体业务目标',
       instruction: '该节点的完整执行说明，包括工作范围、主要工作内容、专业要求和禁止事项。',
       expectedOutput: '该节点最终必须交付的具体成果说明。',
+      knowledgeQuery: '与本节点工作直接相关的内部政策、业务标准、历史数据或内部方法',
       deliverables: [{
         id: 'deliverable-1', name: '具体交付物名称', format: 'docx', path: 'deliverables/具体文件名.docx',
         contentOutline: ['交付物必须包含的章节、表格或内容组成'], acceptanceCriteria: ['交付物必须满足的可检查条件'],
@@ -209,6 +210,7 @@ ${JSON.stringify(outputExample, null, 2)}
    - subscriptionId 和 modelId 必须来自 employeeCatalog。
    - objective、instruction、expectedOutput 和 deliverables 必须相互一致。
    - 每个节点至少包含一个 deliverable。
+   - 每个执行节点必须提供非空 knowledgeQuery，写成可直接提交给企业知识库的检索问题；只检索该节点需要的内部政策、标准、数据或方法，不要把整个用户目标原样复制给每个节点。
    - 待授权推荐阶段 nodes 必须返回 []。
 4. deliverables
    - 每项交付物都是该节点必须实际完成的成果。
@@ -249,6 +251,7 @@ ${JSON.stringify(draft.unresolvedSteps ?? [], null, 2)}
 ${JSON.stringify(draft.nodes.map(node => ({
     id: node.id, stepId: node.stepId, subscriptionId: node.subscriptionId, modelId: node.modelId,
     title: node.title, objective: node.objective, instruction: node.instruction, expectedOutput: node.expectedOutput,
+    knowledgeQuery: node.knowledgeQuery,
     deliverables: node.deliverables, dependsOn: node.dependsOn, requiresUserConfirmation: node.requiresUserConfirmation,
   })), null, 2)}
 
@@ -293,6 +296,7 @@ export function parseArrangementPlannerOutput(
       title: stringField(item.title) ?? '',
       instruction: stringField(item.instruction) ?? '',
       expectedOutput: stringField(item.expectedOutput) ?? '',
+      knowledgeQuery: stringField(item.knowledgeQuery) ?? '',
       ...contract.data,
       dependsOn: stringArray(item.dependsOn),
       skillIds: [],
@@ -300,7 +304,7 @@ export function parseArrangementPlannerOutput(
       ...(stringField(item.stepId) ? { stepId: stringField(item.stepId)! } : {}),
     }
   })
-  if (nodes.some(node => !node.title || !node.instruction)) throw planningFailure('output-validation', 'missing-node-fields')
+  if (nodes.some(node => !node.title || !node.instruction || !node.knowledgeQuery)) throw planningFailure('output-validation', 'missing-node-fields')
   onPhase?.('employee-validation')
   for (const node of nodes) {
     const employee = employeeById.get(node.subscriptionId)

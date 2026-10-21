@@ -86,6 +86,8 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
     await page.getByRole('button', { name: '语音输入', exact: true }).click()
     await recording()
     assert.equal(await page.getByRole('button', { name: '开始工作', exact: true }).isDisabled(), true)
+    await input.press('Enter')
+    assert.equal(await page.getByTestId('sent').textContent(), '0')
     await page.waitForTimeout(6200)
     await page.screenshot({ path: join(directory, 'recording-desktop.png'), fullPage: true })
     await page.getByRole('button', { name: '停止录音', exact: true }).click()
@@ -123,6 +125,30 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
     assert.equal(await page.getByLabel('给员工的下一句话').inputValue(), '保留工作草稿')
     assert.equal(await page.getByTestId('sent').textContent(), '0')
   })
+  it('Enter sends and Shift+Enter edits a newline without sending or interfering with IME', async () => {
+    for (const name of ['chat', 'auto', 'employee', 'work']) {
+      await surface(name)
+      const input = name === 'employee' ? page.locator('textarea') : page.getByLabel(name === 'work' ? '给员工的下一句话' : '工作目标')
+      const before = Number(await page.getByTestId('sent').textContent())
+      await input.fill('')
+      await input.press('Enter')
+      assert.equal(Number(await page.getByTestId('sent').textContent()), before, `${name}: empty input`)
+      await input.fill('第一行')
+      await input.press('End')
+      await input.press('Shift+Enter')
+      await input.press('x')
+      assert.equal(await input.inputValue(), '第一行\nx', `${name}: newline`)
+      for (const extra of [{ isComposing: true }, { keyCode: 229 }, { repeat: true }]) {
+        await input.evaluate((element, init) => {
+          element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true, ...init }))
+        }, extra)
+        assert.equal(Number(await page.getByTestId('sent').textContent()), before, `${name}: ${JSON.stringify(extra)}`)
+      }
+      await input.press('Enter')
+      await page.waitForFunction(expected => Number(document.querySelector('[data-testid="sent"]').textContent) === expected, before + 1)
+      assert.equal(Number(await page.getByTestId('sent').textContent()), before + 1, `${name}: send`)
+    }
+  })
   it('all five entry points have a shared microphone and sending remains manual', async () => {
     for (const name of ['chat', 'auto', 'manual', 'employee', 'work']) {
       await surface(name)
@@ -151,6 +177,38 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
     }
     assert.deepEqual(errors, [])
   })
+  it('system revocation blocks recording, retains app consent, and opens settings only on explicit action', async () => {
+    await surface('chat')
+    const input = page.getByLabel('工作目标')
+    await input.fill('保留草稿')
+    await application.evaluate(() => { globalThis.speechSystemTest.status = 'denied' })
+    await page.getByRole('button', { name: '语音输入', exact: true }).click()
+    await finished()
+    assert.match(await page.getByRole('alert').textContent(), /Windows.*设置/)
+    assert.equal(await input.inputValue(), '保留草稿')
+    assert.equal((await page.evaluate(() => window.electronAPI.getSpeechPermission())).data.permission, 'granted')
+    assert.deepEqual(await application.evaluate(() => globalThis.speechSystemTest.opened), [])
+    await surface('settings')
+    const permission = page.getByRole('checkbox', { name: '允许语音输入' })
+    await permission.uncheck()
+    await page.waitForFunction(async () => (await window.electronAPI.getSpeechPermission()).data.permission === 'denied')
+    await permission.click()
+    await page.getByRole('alert').filter({ hasText: 'Windows' }).waitFor()
+    assert.equal(await permission.isChecked(), false)
+    await page.screenshot({ path: join(directory, 'system-permission-settings.png'), fullPage: true })
+    await page.getByRole('button', { name: '打开系统麦克风设置', exact: true }).click()
+    await page.waitForFunction(() => !document.querySelector('.speech-settings button').disabled)
+    assert.deepEqual(await application.evaluate(() => globalThis.speechSystemTest.opened), ['ms-settings:privacy-microphone'])
+    assert.equal(await application.evaluate(() => globalThis.speechSystemTest.requests), 0)
+    await application.evaluate(() => { globalThis.speechSystemTest.status = 'granted' })
+    await permission.check()
+    await page.waitForFunction(async () => (await window.electronAPI.getSpeechPermission()).data.permission === 'granted')
+    await surface('chat')
+    await page.getByRole('button', { name: '语音输入', exact: true }).click()
+    await recording()
+    await page.getByRole('button', { name: '取消语音输入', exact: true }).click()
+    await finished()
+  })
   it('keeps speech controls inside the supported desktop viewport', async () => {
     await surface('chat')
     for (const width of [1200, 960]) {
@@ -159,5 +217,38 @@ describe('production speech input in Electron (virtual microphone)', { timeout: 
       assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width)
       await page.screenshot({ path: join(directory, `chat-${width}.png`), fullPage: true })
     }
+  })
+})
+
+describe('macOS authorization policy in Electron (simulated OS APIs)', { timeout: 60_000 }, () => {
+  let macApplication, macPage, macProfile
+  before(async () => {
+    macProfile = await mkdtemp(join(tmpdir(), 'sep-speech-mac-policy-test-'))
+    const env = { ...process.env, SEP_SPEECH_TEST_ROOT: root, SEP_SPEECH_TEST_DIR: directory,
+      SEP_SPEECH_TEST_PROFILE: macProfile, SEP_SPEECH_TEST_PLATFORM: 'darwin' }
+    delete env.ELECTRON_RUN_AS_NODE
+    macApplication = await _electron.launch({ executablePath: electron, args: [join(directory, 'main.mjs')], env })
+    macPage = await macApplication.firstWindow()
+    await macPage.getByLabel('工作目标').waitFor()
+    await macApplication.evaluate(() => { globalThis.speechSystemTest.status = 'not-determined' })
+  })
+  after(async () => { await macApplication?.close(); if (macProfile) await rm(macProfile, { recursive: true, force: true }) })
+  it('uses system consent once, requires a new gesture, and rejects revoked access', async () => {
+    await macPage.getByRole('button', { name: '语音输入', exact: true }).click()
+    await macPage.getByText('麦克风已授权。', { exact: true }).waitFor()
+    assert.equal(await macPage.getByRole('button', { name: '停止录音', exact: true }).count(), 0)
+    assert.deepEqual(await macApplication.evaluate(() => ({ requests: globalThis.speechSystemTest.requests,
+      confirms: globalThis.speechSystemTest.confirms })), { requests: 1, confirms: 0 })
+    await macPage.getByRole('button', { name: '语音输入', exact: true }).click()
+    await macPage.getByRole('button', { name: '停止录音', exact: true }).waitFor()
+    await macPage.getByRole('button', { name: '取消语音输入', exact: true }).click()
+    await macApplication.evaluate(() => { globalThis.speechSystemTest.status = 'denied' })
+    await macPage.getByRole('button', { name: '语音输入', exact: true }).click()
+    await macPage.getByRole('alert').filter({ hasText: 'macOS' }).waitFor()
+    assert.equal(await macApplication.evaluate(() => globalThis.speechSystemTest.requests), 1)
+    const response = await macPage.evaluate(() => window.electronAPI.openSpeechSystemSettings())
+    assert.equal(response.success, true)
+    assert.deepEqual(await macApplication.evaluate(() => globalThis.speechSystemTest.opened),
+      ['x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone'])
   })
 })

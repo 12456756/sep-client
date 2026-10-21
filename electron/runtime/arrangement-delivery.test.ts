@@ -20,7 +20,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
   await mkdir(join(root, 'deliverables'))
   const plan: WorkPlan = { id: 'task', schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1,
     owner: { memberId: 'member', enterpriseId: 'enterprise' }, mode: 'auto', title: 'Plan', goal: 'Research then plan', conversation: null,
-    nodes: ['a', 'b'].map((id, index) => ({ id, title: id, subscriptionId: 'employee', modelId: id,
+    nodes: ['a', 'b'].map((id, index) => ({ id, title: id, subscriptionId: 'employee', modelId: id, knowledgeQuery: `Internal guidance for ${id}`,
       objective: 'Complete '+id, instruction: 'Do '+id, expectedOutput: id+' file', dependsOn: index ? ['a'] : [], skillIds: [], requiresUserConfirmation: false,
       deliverables: [{ id: 'report', name: id+' report', format: 'txt', path: `deliverables/${id}.txt`, contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }] })),
     workspace: { mode: 'shared', path: root }, permissions: { preset: 'workspace-edit', allowedTools: ['read', 'write'], allowedPaths: [], deniedPaths: [], requireApprovalFor: [], commandPolicy: 'disabled' },

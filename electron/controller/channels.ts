@@ -7,11 +7,14 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  KNOWLEDGE_REQUEST: 'knowledge:request',
+  KNOWLEDGE_CANCEL: 'knowledge:cancel',
   SPEECH_PERMISSION: 'speech:permission',
   SPEECH_SET_ENABLED: 'speech:set-enabled',
   SPEECH_BEGIN: 'speech:begin',
   SPEECH_RECOGNIZE: 'speech:recognize',
   SPEECH_CANCEL: 'speech:cancel',
+  SPEECH_OPEN_SYSTEM_SETTINGS: 'speech:open-system-settings',
   VIDEO_GET_TASK: 'video:get-task',
   VIDEO_IMPORT_REFERENCES: 'video:import-references',
   VIDEO_GET_REFERENCES: 'video:get-references',

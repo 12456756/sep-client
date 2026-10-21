@@ -78,6 +78,7 @@ export function isSafeDeliveryPath(value: string): boolean {
 
 export const arrangementNodeWorkContractSchema = z.object({
   objective: deliveryText.optional(),
+  knowledgeQuery: z.string().trim().min(1).max(1_000).optional(),
   deliverables: z.array(z.object({
     id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
     name: deliveryText,
@@ -98,6 +99,8 @@ export interface ArrangementNode {
   title: string
   /** Optional for plans created before structured planning contracts. */
   objective?: string
+  /** Search phrase planned for this node; absent on legacy/manual nodes. */
+  knowledgeQuery?: string
   instruction: string
   expectedOutput: string
   deliverables?: ArrangementDeliverable[]

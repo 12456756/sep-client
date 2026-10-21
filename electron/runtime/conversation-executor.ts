@@ -25,6 +25,7 @@ import type { MonitorTaskContentInput, MonitorTaskQueuedInput, MonitorTaskStarte
 import { logger } from '../common/logger'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
+import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 
 const log = logger.child('conversation-executor')
 
@@ -48,6 +49,7 @@ export interface ConversationExecutorOptions {
   onFinished?: (input: MonitorTaskFinishedInput) => void
   media?: MediaRunPort
   video?: VideoRunPort
+  knowledgeSearch?: KnowledgeSearchPort
 }
 
 export class ConversationExecutor {
@@ -88,6 +90,7 @@ export class ConversationExecutor {
     let worker: TaskWorkerPort | null = null
     let active: ActiveRun | null = null
     let runCreated = false
+    const knowledgeCancellation = new AbortController()
 
     try {
       const runPaths = scope && this.options.taskRunStore
@@ -108,6 +111,7 @@ export class ConversationExecutor {
       // Register before async host preparation so pause/shutdown can stop setup too.
       active = {
         taskId, runId, subscriptionId: queued.subscriptionId, releaseWorkspace, control: 'none', completion: completion.promise,
+        abortController: knowledgeCancellation,
         worker: {
           async run(prompt) { await worker?.run(prompt) },
           async abort() { await worker?.abort() },
@@ -197,7 +201,17 @@ export class ConversationExecutor {
 
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
-      await worker.run(queued.workerPrompt ?? queued.prompt)
+      let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (queued.conversation && this.options.knowledgeSearch) {
+        let result: KnowledgeSearchResult | null = null
+        try {
+          result = await this.options.knowledgeSearch(queued.prompt, knowledgeCancellation.signal)
+        } catch (error) {
+          if (knowledgeCancellation.signal.aborted) throw error
+        }
+        workerPrompt = `${workerPrompt}\n\n${formatKnowledgeContext(queued.prompt, result)}`
+      }
+      await worker.run(workerPrompt)
       if (active.control === 'none') await Promise.all([this.options.media?.waitForRun(taskId, runId), this.options.video?.waitForRun(taskId, runId)])
       await this.options.events.drain(taskId)
       if (!this.options.workers.isCurrent(active)) return

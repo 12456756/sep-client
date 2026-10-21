@@ -129,6 +129,7 @@ for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: fal
               nodes: ['research', 'report'].map((id, index) => ({
                 id, subscriptionId: employee.subscriptionId, modelId: 'model-a', title: id,
                 instruction: `Complete ${id}`, expectedOutput: `${id} result`,
+                knowledgeQuery: `Internal guidance for ${id}`,
                 objective: `Deliver ${id} results`,
                 deliverables: [{ id: 'result', name: `${id} result`, format: 'txt', path: `${id}-result.txt`,
                   contentOutline: ['Research findings'], acceptanceCriteria: ['Contains research findings'] }],

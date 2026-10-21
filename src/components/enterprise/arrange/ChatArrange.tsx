@@ -5,6 +5,7 @@
 
 import { ArrowUp, ChevronDown, MessageSquare, Search } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
@@ -86,8 +87,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
           onChange={event => setText(event.target.value)}
           onKeyDown={event => {
             speech.inputProps.onKeyDown(event);
-            if (event.defaultPrevented || event.nativeEvent.isComposing || speech.busy) return;
-            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && ready) {
+            if (isSubmitEnter(event)) {
               event.preventDefault();
               start();
             }

@@ -5,6 +5,7 @@
 
 import { ArrowLeft, MessageSquareText, Send, SlidersHorizontal, XCircle } from 'lucide-react';
 import { useState } from 'react';
+import { isSubmitEnter } from '../../shared/composer-shortcut';
 import { PermissionPanel } from '../../components/enterprise/PermissionPanel';
 import { AvailabilityChip, Empty } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
@@ -80,7 +81,7 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
                 value={draft}
                 placeholder={`直接告诉 ${employee.name} 你想完成什么`}
                 onChange={event => setDraft(event.target.value)}
-                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (!event.defaultPrevented && !event.nativeEvent.isComposing && event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); send(); } }}
+                onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event)) { event.preventDefault(); send(); } }}
               />
               <div className="ent-detail-composer-actions">
                 <SpeechInputActions speech={speech} disabled={workspace.busy} />

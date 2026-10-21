@@ -18,8 +18,10 @@ import { updateRoutes } from './update'
 import { mediaRoutes } from './media'
 import { speechRoutes } from './speech'
 import { videoRoutes } from './video'
+import { knowledgeRoutes } from './knowledge'
 
 export const routes: readonly Route[] = [
+  ...knowledgeRoutes,
   ...speechRoutes,
   ...authRoutes,
   ...skillRoutes,

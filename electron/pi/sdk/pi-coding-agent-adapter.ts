@@ -31,6 +31,7 @@ import type {
 } from './pi-agent-runtime'
 import { MAX_RUN_AUTO_RETRIES } from './pi-agent-runtime'
 import { redactText, redactValue } from '../../common/redact'
+import { redactKnowledgeContextForLog } from '../../common/knowledge-context'
 import {
   BUILTIN_TOOL_NAMES,
   READ_ONLY_TOOLS,
@@ -585,7 +586,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
         const inputSequence = ++latestInputSequence
         if (!isLogLevelEnabled('debug')) return
         const role = response.role === 'toolResult' ? 'tool' : response.role
-        const content = gatewayContent(response.content)
+        const content = redactKnowledgeContextForLog(gatewayContent(response.content))
         log.debug(`model input added: ${role}`, {
           displayTitle: role === 'tool' ? '模型输入（工具返回）' : role === 'user' ? '模型输入（用户消息）' : '模型输入（补充消息）',
           runId: config.runId, inputSequence, role, content, contentLength: content?.length ?? 0,
@@ -626,7 +627,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
         const toolSummary = calls.length ? `调用工具：${calls.map(call => call.name).join('、')}` : ''
         log.debug('model response content', {
           displayTitle: '模型输出', runId: config.runId, requestId: request?.requestId,
-          content: [text, toolSummary].filter(Boolean).join('\n\n') || '（本轮没有正文输出）',
+          content: redactKnowledgeContextForLog([text, toolSummary].filter(Boolean).join('\n\n')) || '（本轮没有正文输出）',
         })
       }
       if (calls.length === 0) return

@@ -35,6 +35,7 @@ import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinish
 import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
+import type { KnowledgeSearchPort } from '../common/knowledge-context'
 
 const log = logger.child('task-runtime')
 
@@ -80,6 +81,7 @@ export interface TaskRuntimeOptions {
   monitor?: TaskMonitorPort
   media?: MediaRunPort
   video?: VideoRunPort
+  knowledgeSearch?: KnowledgeSearchPort
 }
 
 export class TaskRuntime {
@@ -96,6 +98,7 @@ export class TaskRuntime {
   private readonly monitor: TaskMonitorPort
   private readonly media: MediaRunPort | undefined
   private readonly video: VideoRunPort | undefined
+  private readonly knowledgeSearch: KnowledgeSearchPort | undefined
   private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
@@ -131,6 +134,7 @@ export class TaskRuntime {
     this.monitor = options.monitor ?? silentTaskMonitor
     this.media = options.media
     this.video = options.video
+    this.knowledgeSearch = options.knowledgeSearch
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvals = new ToolApprovals({
@@ -183,6 +187,7 @@ export class TaskRuntime {
       onFinished: input => this.reportMonitorFinished(input),
       media: this.media,
       video: this.video,
+      knowledgeSearch: this.knowledgeSearch,
     })
   }
 
@@ -399,6 +404,7 @@ export class TaskRuntime {
       return
     }
     active.control = 'pause'
+    active.abortController?.abort()
     this.approvals.denyRun(active.runId)
     await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
     await active.completion
@@ -440,6 +446,7 @@ export class TaskRuntime {
     }
     active.control = 'cancel'
     active.controlReason = stopReason
+    active.abortController?.abort()
     await this.enqueueEvent({
       taskId,
       runId: active.runId,
@@ -472,6 +479,7 @@ export class TaskRuntime {
     })
     await Promise.all([Promise.all(arrangementStops), Promise.all(this.workers.list().map(async active => {
       active.control = 'interrupt'
+      active.abortController?.abort()
       await this.enqueueEvent({
         taskId: active.taskId,
         runId: active.runId,
@@ -616,6 +624,7 @@ export class TaskRuntime {
         arrangementSubscriptionId: queued.subscriptionId,
         media: this.media,
         video: this.video,
+        knowledgeSearch: this.knowledgeSearch,
       })
       this.activeArrangements.set(taskId, {
         taskId,

@@ -9,6 +9,7 @@
  * 各自所属层，映射逻辑集中在这里。
  */
 import { AuthApiError } from '../common/platform/platform-api'
+import { KnowledgeApiError } from '../common/platform/knowledge-api'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
 import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
 import {
@@ -28,6 +29,9 @@ export interface IpcErrorEnvelope {
   message: string
   statusCode: number
   retryable?: boolean
+  platformCode?: string
+  requestId?: string
+  retryAfterMs?: number
 }
 
 export interface IpcFailure {
@@ -66,6 +70,13 @@ function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
  * 结果是同一个错误在两条路径上给出不同的码。
  */
 export function toEnvelope(error: unknown, context: { authenticated?: boolean } = {}): IpcErrorEnvelope {
+  if (error instanceof KnowledgeApiError) {
+    const status = error.statusCode
+    const code: ErrorCode = status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED'
+      : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 0 || status === 408 ? 'NETWORK_ERROR'
+      : status >= 500 ? 'SERVICE_UNAVAILABLE' : status === 400 || status === 413 || status === 415 ? 'INVALID_ARGUMENT' : 'INVALID_STATE'
+    return { ...envelope(code, error.message), statusCode: status, platformCode: error.platformCode, requestId: error.requestId, retryAfterMs: error.retryAfterMs }
+  }
   if (error instanceof AppError) return envelope(error.code, error.userMessage)
   if (error instanceof AuthenticationRequiredError) return envelope('AUTH_REQUIRED')
   if (error instanceof AuthApiError) {

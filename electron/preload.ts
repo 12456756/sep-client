@@ -1,6 +1,7 @@
 import type { NotificationUpdate } from '../src/shared/notification-contracts';
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 import type { ElectronAPI, UpdateState } from '../src/shared/ipc';
+import type { KnowledgeRequestInput } from '../src/shared/knowledge-contracts';
 import type {
   ArrangementPlanningProgress,
   ClientTask,
@@ -16,7 +17,10 @@ const runtimePlatform = process.platform === 'darwin' || process.platform === 'w
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
 
 const electronAPI = {
+  requestKnowledge: (input: KnowledgeRequestInput) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_REQUEST, input),
+  cancelKnowledgeRequests: (requestIds: string[]) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_CANCEL, requestIds),
   getSpeechPermission: () => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_PERMISSION),
+  openSpeechSystemSettings: () => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_OPEN_SYSTEM_SETTINGS),
   setSpeechEnabled: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_SET_ENABLED, input),
   beginSpeechRecording: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_BEGIN, input),
   recognizeSpeech: input => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_RECOGNIZE, input),
