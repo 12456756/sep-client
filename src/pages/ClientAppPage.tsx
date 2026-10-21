@@ -16,8 +16,6 @@ import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { NotificationCenter } from '../components/enterprise/NotificationCenter';
-import { UpdateNotice } from '../components/enterprise/UpdateNotice';
-import type { UpdateModel } from '../features/update/use-update';
 import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
@@ -39,7 +37,6 @@ import '../styles/arrange.css';
 import '../styles/compute-center.css';
 
 interface Props {
-  update: UpdateModel;
   userId: string;
   userName: string;
   enterpriseId: string;
@@ -58,12 +55,11 @@ export function ClientAppPage(props: Props) {
   </MediaPreferenceScopeContext.Provider>;
 }
 
-function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
+function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [updateOpen, setUpdateOpen] = useState(false);
   const profile = profileWorkspace.profile;
   const userAvatar = displayedUserAvatar(profile, initialUserAvatar ?? null, userName);
   const displayUserName = profile?.user.name || userName;
@@ -143,7 +139,6 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
         onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
         onNavigate={workspace.navigate}
         onOpenSettings={() => setSettingsOpen(true)}
-        onCheckUpdate={() => { setUpdateOpen(true); void update.check(); }}
         onLogout={() => { void onLogout(); }}
       />
       <div className="ent-shell-main">
@@ -194,8 +189,6 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
               >
                 {darkMode ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
               </button>
-              <UpdateNotice update={update} open={updateOpen} onOpenChange={setUpdateOpen}
-                onOpenWorkRecords={() => workspace.navigate({ name: 'records' })} />
               <NotificationCenter onOpenAction={async notification => {
                 if (notification.category === 'USAGE_ALERT' || notification.type === 'CONTRIBUTION_REWARD_CREDITED') {
                   workspace.navigate({ name: 'compute-center' });
