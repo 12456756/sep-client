@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import { SEP_MEDIA_MOCK_PNG_BASE64 } from '../common/platform/sep-media-gateway-contract'
+import { config } from '../common/config'
 import { SepMockVideoGateway, SepRealVideoGateway } from './sep-video-media-gateway'
 
 const signal = new AbortController().signal
@@ -34,6 +35,8 @@ test('real adapter uses only SEP video-real paths and preserves actual quote met
     assert.equal(init?.redirect, 'manual')
     assert.equal(init?.credentials, 'omit')
     assert.equal((init?.headers as Record<string, string>).Authorization, 'Bearer employment-token')
+    assert.equal(new Headers(init?.headers).get('Origin'), config.SEP_WEB_ORIGIN)
+    assert.equal(new Headers(init?.headers).get('Referer'), `${config.SEP_WEB_ORIGIN}/`)
     if (String(url).endsWith('/profiles')) return json({ mock: false, protocolVersion: 1, persistence: 'database', billingStatus: 'NOT_RESERVED', profiles: fixture.runtime.profiles })
     if (String(url).endsWith('/quotes')) return json(quote)
     return json(receipt)
@@ -71,6 +74,9 @@ test('real PNG upload is bounded and verifies the returned byte hash and dimensi
   const adapter = gateway(async (_url, init) => {
     calls++
     assert.ok(init?.body instanceof FormData)
+    assert.equal(new Headers(init.headers).get('Origin'), config.SEP_WEB_ORIGIN)
+    assert.equal(new Headers(init.headers).get('Referer'), `${config.SEP_WEB_ORIGIN}/`)
+    assert.equal(new Headers(init.headers).get('Content-Type'), null)
     return json({ mock: false, referenceId: 'ref-real', mimeType: 'image/png', byteLength: png.length,
       sha256: wrongHash ? '0'.repeat(64) : createHash('sha256').update(png).digest('hex'), width: 1, height: 1,
       expiresAt: new Date(Date.now() + 60_000).toISOString() })
@@ -80,6 +86,41 @@ test('real PNG upload is bounded and verifies the returned byte hash and dimensi
   assert.equal((await adapter.uploadReference(png, signal)).mock, false)
   wrongHash = true
   await assert.rejects(adapter.uploadReference(png, signal), { gatewayCode: 'VIDEO_INTEGRITY_MISMATCH' })
+})
+
+test('real video quote supplies the configured web origin independently of the API origin', async () => {
+  let calls = 0
+  const adapter = new SepRealVideoGateway({ mock: false, baseUrl: 'https://api.sep.invalid/api',
+    webOrigin: 'https://web.sep.invalid/workspace', subscriptionId: 'sub-1', token: async () => 'offline-token',
+    fetch: async (url, init) => {
+      calls++
+      assert.equal(String(url), 'https://api.sep.invalid/api/gateway/v1/media/video-real/quotes')
+      const headers = new Headers(init?.headers)
+      if (headers.get('Origin') !== 'https://web.sep.invalid' || headers.get('Referer') !== 'https://web.sep.invalid/') {
+        return json({ message: 'Missing Origin or Referer header' }, 403)
+      }
+      return json(quote)
+    } })
+  assert.equal((await adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal)).amount, '0.900000')
+  assert.equal(calls, 1)
+})
+
+test('video transport rejects invalid web origins before token lookup or network access', () => {
+  for (const webOrigin of ['not-a-url', 'file:///tmp/sep', 'https://user:password@web.sep.invalid']) {
+    assert.throws(() => new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', webOrigin,
+      subscriptionId: 'sub-1', token: async () => assert.fail('Must not acquire a token'),
+      fetch: async () => assert.fail('Must not send a request') }), { gatewayCode: 'VIDEO_INVALID_REQUEST' })
+  }
+})
+
+test('quote rejection is identified before approval and never exposes or retries the response body', async () => {
+  let calls = 0
+  const adapter = gateway(async () => { calls++; return json({ message: 'private-response-body' }, 403) })
+  await assert.rejects(adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal), {
+    gatewayCode: 'VIDEO_HTTP_ERROR', code: 'PERMISSION_DENIED', statusCode: 403,
+    details: { resource: 'video', stage: 'video-quote' },
+  })
+  assert.equal(calls, 1)
 })
 
 test('real and mock responses cannot cross modes, and POST failures are never retried', async () => {

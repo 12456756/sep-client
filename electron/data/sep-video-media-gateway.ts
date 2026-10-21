@@ -11,18 +11,22 @@ import { SEP_MEDIA_MOCK_PNG_BASE64, SEP_MEDIA_MOCK_PNG_SHA256 } from '../common/
 import { AppError } from '../errors/app-error'
 import type { ErrorCode } from '../errors/error-codes'
 import { inspectMediaImage } from './media-image'
+import { config } from '../common/config'
+import { platformSourceHeaders } from '../common/platform/platform-source-headers'
 
 const id = schema.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)
 const JSON_BUDGET = 256 * 1024
 const referenceBytes = Buffer.from(SEP_MEDIA_MOCK_PNG_BASE64, 'base64')
 const videoBytes = Buffer.from(fixture.mediaFixture.base64, 'base64')
+type VideoRequestStage = 'video-authorization' | 'video-quote' | 'video-submit'
 
 export class SepVideoGatewayError extends AppError {
-  constructor(readonly gatewayCode: string, readonly statusCode = 0) {
+  constructor(readonly gatewayCode: string, readonly statusCode = 0, stage?: VideoRequestStage) {
     const code: ErrorCode = statusCode === 401 ? 'AUTH_REQUIRED' : statusCode === 403 ? 'PERMISSION_DENIED'
       : statusCode === 404 ? 'NOT_FOUND' : statusCode === 400 ? 'INVALID_ARGUMENT' : statusCode === 409 || statusCode === 410 ? 'INVALID_STATE' : statusCode === 429 ? 'RATE_LIMITED'
         : gatewayCode === 'VIDEO_NETWORK_ERROR' ? 'NETWORK_ERROR' : gatewayCode === 'VIDEO_INVALID_REQUEST' ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
-    super(code, { message: `SEP video request failed (${gatewayCode}).` })
+    super(code, { message: `SEP video request failed (${gatewayCode}).`,
+      details: { resource: 'video', ...(stage ? { stage } : {}) } })
     this.name = gatewayCode === 'VIDEO_ABORTED' ? 'AbortError' : 'SepVideoGatewayError'
   }
 }
@@ -31,6 +35,7 @@ export interface SepMockVideoGatewayOptions {
   mock: true
   /** SEP API root, e.g. http://127.0.0.1:3001/api. Never a provider URL. */
   baseUrl: string
+  webOrigin?: string
   subscriptionId: string
   token: (subscriptionId: string, signal: AbortSignal) => Promise<string>
   fetch?: typeof fetch
@@ -59,12 +64,16 @@ async function abortable<T>(signal: AbortSignal, action: () => Promise<T>): Prom
 class SepVideoGateway implements VideoGatewayPort {
   private readonly root: string
   private readonly fetcher: typeof fetch
+  private readonly sourceHeaders: { Origin: string; Referer: string }
 
   constructor(private readonly options: GatewayOptions) {
     try {
       const url = new URL(options.baseUrl)
       if (typeof options.mock !== 'boolean' || !['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || options.baseUrl.includes('?') || options.baseUrl.includes('#')) throw new Error()
       this.root = `${url.href.replace(/\/+$/, '')}/gateway/v1/media/${options.mock ? 'video' : 'video-real'}`
+      const web = new URL(options.webOrigin ?? config.SEP_WEB_ORIGIN)
+      if (!['http:', 'https:'].includes(web.protocol) || web.username || web.password) throw new Error()
+      this.sourceHeaders = platformSourceHeaders(web.origin)
     } catch {
       throw new SepVideoGatewayError('VIDEO_INVALID_REQUEST')
     }
@@ -225,19 +234,19 @@ class SepVideoGateway implements VideoGatewayPort {
       if (signal.aborted) throw new SepVideoGatewayError('VIDEO_ABORTED')
       if (error instanceof AppError) {
         if (error.code === 'NETWORK_ERROR') throw new SepVideoGatewayError('VIDEO_NETWORK_ERROR')
-        if (error.code === 'PERMISSION_DENIED') throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 403)
-        if (error.code === 'RATE_LIMITED') throw new SepVideoGatewayError('VIDEO_AUTH_RATE_LIMITED', 429)
-        if (error.code === 'SERVICE_UNAVAILABLE') throw new SepVideoGatewayError('VIDEO_AUTH_UNAVAILABLE', 503)
+        if (error.code === 'PERMISSION_DENIED') throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 403, 'video-authorization')
+        if (error.code === 'RATE_LIMITED') throw new SepVideoGatewayError('VIDEO_AUTH_RATE_LIMITED', 429, 'video-authorization')
+        if (error.code === 'SERVICE_UNAVAILABLE') throw new SepVideoGatewayError('VIDEO_AUTH_UNAVAILABLE', 503, 'video-authorization')
       }
-      throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 401)
+      throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 401, 'video-authorization')
     }
-    if (typeof token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 401)
+    if (typeof token !== 'string' || !/^[A-Za-z0-9._~+/-]+=*$/.test(token) || token.length > 16_384) throw new SepVideoGatewayError('VIDEO_AUTH_FAILED', 401, 'video-authorization')
     const multipart = body instanceof FormData
     let response: Response
     try {
       response = await abortable(signal, () => this.fetcher(`${this.root}${path}`, {
         method, signal, redirect: 'manual', credentials: 'omit', referrerPolicy: 'no-referrer',
-        headers: { Authorization: `Bearer ${token}`, Accept: accept, ...(body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : {}) },
+        headers: { ...this.sourceHeaders, Authorization: `Bearer ${token}`, Accept: accept, ...(body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : {}) },
         body: body === undefined ? undefined : multipart ? body : JSON.stringify(body),
       }))
     } catch {
@@ -250,7 +259,8 @@ class SepVideoGateway implements VideoGatewayPort {
     if (!response.ok) {
       this.discard(response)
       // Do not surface provider bodies, URLs or credentials in errors. Never retry a POST.
-      throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status)
+      throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status,
+        path === '/quotes' ? 'video-quote' : path === '/requests' ? 'video-submit' : undefined)
     }
     return response
   }

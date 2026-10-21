@@ -57,6 +57,12 @@ function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnost
 export function videoToolFailureFrom(error: unknown): MediaToolFailure {
   if (error instanceof AuthApiError) return authFailure(error).failure
   if (!(error instanceof AppError)) return mediaToolFailure('INTERNAL_ERROR', 'Video operation failed. Do not infer a missing profile or automatically resubmit a paid request.')
+  if (error.code === 'PERMISSION_DENIED' && error.details?.stage === 'video-quote') {
+    return mediaToolFailure(error.code, 'The video quote request was denied by SEP before local approval or video submission. This is not a local approval rejection. Do not infer a missing video model or automatically retry a paid request.')
+  }
+  if (error.code === 'PERMISSION_DENIED' && error.details?.stage === 'video-authorization') {
+    return mediaToolFailure(error.code, 'Video authentication token acquisition was denied before the gateway request or local approval. Do not automatically retry a paid request.')
+  }
   return mediaToolFailure(error.code, VIDEO_MESSAGES[error.code] ?? 'Video operation failed. Do not infer a missing profile or automatically resubmit a paid request.')
 }
 

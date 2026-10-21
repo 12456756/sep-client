@@ -9,7 +9,8 @@ import { employeeRuntimeSkillSchema, type EmployeeRuntimeSkill, type PreparedEmp
 import { downloadSkillArtifact } from '../../common/platform/skill-artifact-api'
 import { skillArtifactSchema, skillArtifactNameSchema, skillArtifactFrontmatterSchema, skillNameComparisonKey, maxSkillEntryBytes, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 import { z } from 'zod'
-import { parseSkillMarkdown, validatedSkillMarkdown, validateSkillResources, approvedPackageBody } from './skill-package-parser'
+import { AppError } from '../../errors/app-error'
+import { parseSkillMarkdown, validatedSkillMarkdown, validateSkillResources, approvedPackageBody, rawSkillMarkdownBody } from './skill-package-parser'
 import { readSkillZip, packageCache, packageManifestName, packageSha256, safePackagePath, verifyPackageCache, assertSkillPathParents, type SkillPackageFile } from './skill-package-zip'
 
 export interface SkillStoreRequest {
@@ -92,12 +93,22 @@ function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approved
   catch { throw new Error('Approved skill entry is not valid UTF-8.') }
   const parsed = validatedSkillMarkdown(content)
   const metadata = parsed.metadata
-  let expectedContent = approvedContent
-  if (artifact.format === 'single-file' && !parseSkillMarkdown(approvedContent).hasFrontmatter) {
-    const summary = Array.from(approvedContent.trim().replace(/\s+/g, ' ')).slice(0, 300).join('')
-    expectedContent = `---\nname: ${JSON.stringify(artifact.installationDirectory)}\ndescription: ${JSON.stringify(`Use for tasks matching these approved instructions: ${summary}`)}\n---\n${approvedContent}`
+  let matchesApprovedContent = content === approvedContent
+  if (!matchesApprovedContent && artifact.format === 'zip') matchesApprovedContent = approvedPackageBody(content) === approvedContent
+  if (!matchesApprovedContent && artifact.format === 'single-file') {
+    const approved = parseSkillMarkdown(approvedContent)
+    if (!approved.hasFrontmatter) {
+      // SEP may wrap raw instructions and normalize their parsing prefix and line endings.
+      const body = rawSkillMarkdownBody(content)
+      matchesApprovedContent = body === approvedContent || body === approved.body
+    }
   }
-  if (content !== expectedContent && !(artifact.format === 'zip' && approvedPackageBody(content) === approvedContent)) throw new Error('Approved skill artifact content mismatch.')
+  if (!matchesApprovedContent) {
+    throw new AppError('SKILL_CONTENT_MISMATCH', {
+      cause: new Error('Approved skill artifact content mismatch.'),
+      details: { capabilityId: artifact.capabilityId, versionId: artifact.versionId, format: artifact.format },
+    })
+  }
   if (!safePackagePath(metadata.name) || skillNameComparisonKey(metadata.name) !== skillNameComparisonKey(artifact.installationDirectory)
     || artifact.format === 'zip' && dirname(artifact.entryPath) !== '.' && skillNameComparisonKey(basename(dirname(artifact.entryPath))) !== skillNameComparisonKey(metadata.name)) throw new Error('Invalid approved skill frontmatter or directory.')
   validateSkillResources(parsed.body, artifact.entryPath, new Set(files.filter(file => !file.directory).map(file => file.path)))

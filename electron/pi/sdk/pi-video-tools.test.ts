@@ -184,6 +184,24 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       } finally { restore() }
     }
   })
+
+  it('distinguishes SEP quote denial from local approval denial without leaking response details', async () => {
+    const records: Array<Record<string, unknown>> = []
+    const restore = setLogSink(record => { records.push(record.fields) })
+    try {
+      const gatewayError = new SepVideoGatewayError('VIDEO_HTTP_ERROR', 403, 'video-quote')
+      const runtime = await sdk({}, gatewayError)
+      const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
+      const error = JSON.parse(value(result)).error
+      assert.equal(error.code, 'PERMISSION_DENIED')
+      assert.match(error.message, /quote request was denied by SEP before local approval/)
+      assert.deepEqual(records.at(-1), { runId: 'run-a', tool: 'video_generate', toolCallId: 'call-a',
+        exceptionType: 'SepVideoGatewayError', code: 'PERMISSION_DENIED', httpStatus: 403, resource: 'video', stage: 'video-quote' })
+      assert.doesNotMatch(value(result), /VIDEO_HTTP_ERROR|Bearer|private/)
+      const local = await sdk({}, new AppError('PERMISSION_DENIED'))
+      assert.doesNotMatch(JSON.parse(value(await local.execute('video_generate', { creativeBrief: 'A product video' }))).error.message, /quote request/)
+    } finally { restore() }
+  })
   it('accepts real job and task queries with every billing state and preserves measured output metadata', async () => {
     for (const billingStatus of ['NOT_RESERVED', 'RESERVED', 'RECONCILING', 'SETTLED', 'RELEASED'] as const) {
       const measured = { ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }

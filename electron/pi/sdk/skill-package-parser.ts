@@ -16,13 +16,18 @@ export function parseSkillMarkdown(content: string): { frontmatter: unknown; bod
   } catch { throw new Error('Invalid skill YAML frontmatter.') }
 }
 
-/** Legacy package approval stores the raw body with trimStart, not a rewritten entry. */
-export function approvedPackageBody(content: string): string {
-  validatedSkillMarkdown(content)
+/** Extract source bytes after frontmatter without trimming or normalizing the body. */
+export function rawSkillMarkdownBody(content: string): string {
   const input = content.replace(/^\uFEFF/, '').replace(/^(?:[\t ]*(?:\r\n?|\n))+/, '')
   const match = /^---[\t ]*(?:\r\n?|\n)[\s\S]*?(?:\r\n?|\n)---[\t ]*(?:(?:\r\n?|\n)|$)([\s\S]*)$/.exec(input)
   if (!match) throw new Error('Invalid skill YAML frontmatter.')
-  return match[1].trimStart()
+  return match[1]
+}
+
+/** Legacy package approval stores the raw body with trimStart, not a rewritten entry. */
+export function approvedPackageBody(content: string): string {
+  validatedSkillMarkdown(content)
+  return rawSkillMarkdownBody(content).trimStart()
 }
 
 export function validatedSkillMarkdown(content: string) {

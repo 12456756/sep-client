@@ -13,6 +13,8 @@ import type { SkillArtifactAvailable } from '../../common/platform/skill-artifac
 import { zipFixture, zipDescriptor } from './skill-package-zip.fixture'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { packageManifestName } from './skill-package-zip'
+import { reportError } from '../../errors/error-reporter'
+import { setLogSink, type LogRecord } from '../../common/logger'
 
 const originalFetch = globalThis.fetch
 
@@ -119,11 +121,11 @@ describe('SkillStore', () => {
     assert.equal(downloads, 0)
   })
 
-  function artifactFixture(content = '---\nname: orders\ndescription: Approved order operations\n---\n# Approved\n'): EmployeeRuntimeSkill & { artifact: SkillArtifactAvailable } {
+  function artifactFixture(content = '---\nname: orders\ndescription: Approved order operations\n---\n# Approved\n', approvedContent = content): EmployeeRuntimeSkill & { artifact: SkillArtifactAvailable } {
     const hash = createHash('sha256').update(content).digest('hex')
-    return { capabilityId: 'cap-a', name: 'Orders', description: 'Orders', versionId: 'version-v1', version: '1.0', content,
+    return { capabilityId: 'cap-a', name: 'Orders', description: 'Orders', versionId: 'version-v1', version: '1.0', content: approvedContent,
       artifact: { protocolVersion: 1, status: 'AVAILABLE', capabilityId: 'cap-a', versionId: 'version-v1',
-        approvedContentSha256: hash, format: 'single-file', installationDirectory: 'orders', entryPath: 'SKILL.md',
+        approvedContentSha256: createHash('sha256').update(approvedContent).digest('hex'), format: 'single-file', installationDirectory: 'orders', entryPath: 'SKILL.md',
         entrySha256: hash, artifactSha256: hash, byteLength: Buffer.byteLength(content), fileCount: 1,
         downloadPath: '/client/subscriptions/sub-a/skills/cap-a/versions/version-v1/artifact' } }
   }
@@ -144,6 +146,69 @@ describe('SkillStore', () => {
     }
     return () => downloads
   }
+
+  it('accepts authenticated YAML wrappers and backend parsing prefixes while preserving exact installed bytes', async () => {
+    for (const [approved, body] of [
+      ['# Approved\n  Keep indentation.\n', '# Approved\n  Keep indentation.\n'],
+      ['\uFEFF\n \t\n# Approved\r\n  Keep indentation.\r\n', '# Approved\n  Keep indentation.\n'],
+      ['\n\n  # Approved\n\n  Keep indentation.\n', '  # Approved\n\n  Keep indentation.\n'],
+    ]) {
+      const wrapper = `---\ndescription: >-\n  Backend generated summary with\n  folded YAML formatting.\nname: 'orders'\n---\n${body}`
+      const runtime = artifactFixture(wrapper, approved)
+      const downloads = serveArtifact(runtime, { bytes: Buffer.from(wrapper) })
+      const { skills } = await createStore()
+      const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+      assert.equal(prepared.skills[0]?.content, wrapper)
+      assert.equal(prepared.skills[0]?.artifact?.approvedContentSha256, runtime.artifact.approvedContentSha256)
+      assert.equal(prepared.skills[0]?.sha256, runtime.artifact.entrySha256)
+      assert.equal(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'), 'utf8'), wrapper)
+      const loaded = loadSkills({ cwd: tmpdir(), agentDir: tmpdir(), skillPaths: prepared.skillPaths, includeDefaults: false })
+      assert.deepEqual(loaded.diagnostics, [])
+      assert.equal(loaded.skills[0]?.name, 'orders')
+      assert.equal(loaded.skills[0]?.description, 'Backend generated summary with folded YAML formatting.')
+      await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+      assert.equal(downloads(), 1)
+    }
+  })
+
+  it('reports content mismatches with identifiers but no approved or downloaded instructions', async () => {
+    const approved = '# Private approved instructions\n'
+    const wrapper = '---\nname: orders\ndescription: Backend summary\n---\n# Private substituted instructions\n'
+    const runtime = artifactFixture(wrapper, approved)
+    serveArtifact(runtime, { bytes: Buffer.from(wrapper) })
+    const { skills } = await createStore()
+    const records: LogRecord[] = []
+    const restore = setLogSink(record => records.push(record))
+    try {
+      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), error => {
+        const envelope = reportError('arrange:confirm-and-start', error)
+        assert.equal(envelope.code, 'SKILL_CONTENT_MISMATCH')
+        assert.match(envelope.message, /技能/)
+        assert.notEqual(envelope.message, '操作未能完成。')
+        assert.deepEqual(records[0]?.fields.details, { capabilityId: 'cap-a', versionId: 'version-v1', format: 'single-file' })
+        assert.equal(records[0]?.fields.code, 'SKILL_CONTENT_MISMATCH')
+        assert.ok(error instanceof Error && error.cause instanceof Error)
+        assert.equal(error.cause.message, 'Approved skill artifact content mismatch.')
+        assert.doesNotMatch(JSON.stringify({ envelope, records }), /Private|access-token/)
+        assert.doesNotMatch(JSON.stringify(envelope), /cap-a|version-v1/)
+        return true
+      })
+    } finally { restore() }
+  })
+
+  it('does not accept rewritten approved frontmatter or whitespace changes inside the approved body', async () => {
+    const content = '---\nname: orders\ndescription: Approved\ndisable-model-invocation: true\n---\n# Approved\n'
+    for (const [approved, wrapper] of [
+      [content, content.replace('true', 'false')],
+      [content, content.replace('description: Approved', 'description: Changed')],
+      ['# Approved\n  Indented.\n', '---\nname: orders\ndescription: Approved\n---\n# Approved\nIndented.\n'],
+    ]) {
+      const runtime = artifactFixture(wrapper, approved)
+      serveArtifact(runtime, { bytes: Buffer.from(wrapper) })
+      const { skills } = await createStore()
+      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), { code: 'SKILL_CONTENT_MISMATCH' })
+    }
+  })
 
   it('authenticates a backend-wrapped legacy entry while retaining the approved raw hash', async () => {
     const content = '\uFEFF\n# Legacy 中文 instructions\r\n'
@@ -166,7 +231,7 @@ describe('SkillStore', () => {
     malicious.content = content
     malicious.artifact.approvedContentSha256 = runtime.artifact.approvedContentSha256
     serveArtifact(malicious, { bytes: Buffer.from(substituted) })
-    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [malicious] }), /content mismatch/)
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [malicious] }), { code: 'SKILL_CONTENT_MISMATCH' })
   })
 
   it('installs exact approved bytes and reuses the authenticated package without another download', async () => {
@@ -419,7 +484,7 @@ describe('SkillStore', () => {
       assert.equal(loader.getSkills().skills[0]?.name, name)
       runtime.content = body.replace('guide', 'different')
       runtime.artifact.approvedContentSha256 = createHash('sha256').update(runtime.content).digest('hex')
-      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /content mismatch/)
+      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), { code: 'SKILL_CONTENT_MISMATCH' })
     })
   }
 
@@ -429,10 +494,11 @@ describe('SkillStore', () => {
       const entryPath = malformed ? 'orders/SKILL.md' : 'foreign/SKILL.md'
       const files = [{ path: entryPath, bytes: malformed ? Buffer.concat([Buffer.from(content), Buffer.from([0xff])]) : Buffer.from(content) }]
       const bytes = zipFixture(files)
-      const runtime = { ...artifactFixture(content), artifact: zipDescriptor(bytes, files, entryPath) }
+      const runtime = { ...artifactFixture(content), artifact: { ...zipDescriptor(bytes, files, entryPath),
+        approvedContentSha256: createHash('sha256').update(content).digest('hex') } }
       serveArtifact(runtime, { bytes })
       const { skills } = await createStore()
-      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /directory|content mismatch|UTF-8/)
+      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), malformed ? /UTF-8/ : /directory/)
     }
   })
 
