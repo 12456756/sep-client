@@ -10,7 +10,9 @@ function assertVideoMode(env: NodeJS.ProcessEnv): void {
 }
 export function isVideoRealEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   assertVideoMode(env)
-  return env['SEP_VIDEO_REAL_ENABLED'] === 'true'
+  const value = env['SEP_VIDEO_REAL_ENABLED']
+  if (value === undefined || value === '') return env['SEP_VIDEO_MOCK_ENABLED'] !== 'true'
+  return value === 'true'
 }
 
 const SEP_BASE_URL = (process.env['SEP_BASE_URL'] || runtimeConfig.sepBaseUrl).replace(/\/+$/, '')

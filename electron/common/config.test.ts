@@ -3,9 +3,12 @@ import { it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { isVideoMockEnabled, isVideoRealEnabled } from './config'
 
-it('real video is explicit, disabled by default and cannot coexist with mock', () => {
-  for (const value of [undefined, '', 'false', '1', 'TRUE', ' true', 'true ']) assert.equal(isVideoRealEnabled({ SEP_VIDEO_REAL_ENABLED: value }), false)
+it('real video is enabled by default, can be explicitly disabled and cannot coexist with mock', () => {
+  assert.equal(isVideoRealEnabled({}), true)
+  assert.equal(isVideoRealEnabled({ SEP_VIDEO_REAL_ENABLED: '' }), true)
+  for (const value of ['false', '1', 'TRUE', ' true', 'true ']) assert.equal(isVideoRealEnabled({ SEP_VIDEO_REAL_ENABLED: value }), false)
   assert.equal(isVideoRealEnabled({ SEP_VIDEO_REAL_ENABLED: 'true' }), true)
+  assert.equal(isVideoRealEnabled({ SEP_VIDEO_MOCK_ENABLED: 'true' }), false)
   const both = { SEP_VIDEO_REAL_ENABLED: 'true', SEP_VIDEO_MOCK_ENABLED: 'true' }
   assert.throws(() => isVideoRealEnabled(both), /mutually exclusive/)
   assert.throws(() => isVideoMockEnabled(both), /mutually exclusive/)
