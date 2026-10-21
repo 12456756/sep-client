@@ -27,14 +27,14 @@ console.log(JSON.stringify({ module: specifier, electron: process.versions.elect
 
 export async function verifyPackagedRuntime(archivePath) {
   const archive = realpathSync(resolve(archivePath))
-  const entries = new Set(listPackage(archive))
+  const entries = new Set(listPackage(archive).map(entry => entry.replaceAll('\\', '/')))
   const app = JSON.parse(extractFile(archive, 'package.json').toString())
   if (app.dependencies?.[provider] !== expectedVersion || app.devDependencies?.[provider]) {
     throw new Error(`Packaged ${provider} must be a production dependency pinned to ${expectedVersion}`)
   }
   const metadataPath = `node_modules/${provider}/package.json`
   if (!entries.has(`/${metadataPath}`)) throw new Error(`Missing packaged runtime dependency: ${metadataPath}`)
-  const metadata = JSON.parse(extractFile(archive, metadataPath).toString())
+  const metadata = JSON.parse(extractFile(archive, join('node_modules', provider, 'package.json')).toString())
   if (metadata.version !== expectedVersion) throw new Error(`Expected packaged ${provider}@${expectedVersion}, got ${metadata.version}`)
   const worker = [...entries].find(entry => /^\/out\/main\/chunks\/pi-task-worker-[^/]+\.js$/.test(entry))
   if (!worker) throw new Error('Missing packaged Pi task worker')
