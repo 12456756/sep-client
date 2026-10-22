@@ -74,6 +74,16 @@ export const arrangementMediaArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A
 const mediaArtifactKindSchema = z.enum(['document', 'image', 'video', 'data', 'other'])
 const mediaOperationSchema = z.enum(['generate', 'edit', 'image-to-video', 'text-to-video'])
 
+export const arrangementMediaMimeByFormat: Readonly<Record<string, readonly string[]>> = {
+  png: ['image/png'], jpg: ['image/jpeg'], jpeg: ['image/jpeg'], webp: ['image/webp'],
+  mp4: ['video/mp4'], webm: ['video/webm'],
+}
+
+export function arrangementMediaKindForFormat(format: string): 'image' | 'video' | undefined {
+  const mime = arrangementMediaMimeByFormat[format.toLowerCase()]?.[0]
+  return mime?.startsWith('image/') ? 'image' : mime?.startsWith('video/') ? 'video' : undefined
+}
+
 export const arrangementMediaRequirementSchema = z.object({
   id: arrangementId,
   kind: z.enum(['image', 'video']),
@@ -96,7 +106,7 @@ export const arrangementMediaRequirementSchema = z.object({
     audio: z.boolean().optional(),
     outputFormat: z.string().trim().min(1).max(64).optional(),
     count: z.number().int().positive().safe().optional(),
-  }).strict().optional(),
+  }).catchall(z.json()).optional(),
 }).strict().superRefine((requirement, context) => {
   const expectedKind = requirement.operation === 'image-to-video' || requirement.operation === 'text-to-video' ? 'video' : 'image'
   if (requirement.kind !== expectedKind) context.addIssue({ code: 'custom', path: ['kind'], message: 'Media operation and output kind do not match.' })

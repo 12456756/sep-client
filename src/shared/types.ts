@@ -196,6 +196,7 @@ export type ArrangementArtifactKind = 'document' | 'image' | 'video' | 'data' | 
 export type ArrangementMediaPhase = 'preparing' | 'awaiting-approval' | 'submitted' | 'tracking' | 'saving' | 'materializing' | 'ready' | 'blocked'
 export type ArrangementMediaOutputStatus = 'pending' | 'saving' | 'saved' | 'save-failed' | 'missing' | 'expired'
 export type ArrangementMediaPendingAction = 'approve' | 'resume' | 'retry-save' | 'export' | 'select-input'
+export type ArrangementMediaPreferenceValue = string | number | boolean | null | ArrangementMediaPreferenceValue[] | { [key: string]: ArrangementMediaPreferenceValue }
 
 export interface ArrangementMediaRequirement {
   id: string
@@ -205,6 +206,7 @@ export interface ArrangementMediaRequirement {
   inputFrom?: { nodeId?: string; deliverableId?: string; artifactId?: string }
   inputSelection?: 'single' | 'any' | 'all' | 'model' | 'user'
   preferred?: {
+    [key: string]: ArrangementMediaPreferenceValue | undefined
     aspectRatio?: string
     resolution?: string
     durationSeconds?: number

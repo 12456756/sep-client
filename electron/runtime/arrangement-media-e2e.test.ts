@@ -19,7 +19,8 @@ import { VideoStore } from '../data/video-store'
 import { createVideoScopeAdapter } from '../data/video-scope-adapter'
 import { WorkPlanStore } from '../data/work-plan-store'
 import { ScopePath } from '../data/scope-path'
-import type { WorkPlan } from '../domain/arrangement-plan'
+import type { ArrangementDraft, WorkPlan } from '../domain/arrangement-plan'
+import { parseArrangementPlannerOutput } from '../domain/arrangement-planner'
 import { buildExtensions } from '../pi/sdk/pi-coding-agent-adapter'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { ArrangementMediaService } from '../service/arrangement-media-service'
@@ -63,6 +64,7 @@ async function toolsFor(options: PiTaskWorkerOptions) {
 }
 
 interface Scenario {
+  plannerShape?: '14:43' | '14:50'
   confirmation?: boolean
   textVideo?: boolean
   imageGateway?: MockMediaGatewayOptions
@@ -107,6 +109,30 @@ async function fixture(scenario: Scenario = {}) {
     workspace: { mode: 'shared', path: workspace }, confirmedInputs: [], planHash: 'media-plan-hash', createdAt: Date.now(),
     permissions: { preset: 'workspace-edit', allowedTools: ['read', 'write', 'media_get_capabilities', 'media_generate_image', 'media_get_job', 'video_from_image', 'video_generate', 'video_get_job'],
       allowedPaths: [], deniedPaths: [], requireApprovalFor: [], commandPolicy: 'disabled', approvalMode: 'confirm-each' },
+  }
+  if (scenario.plannerShape) {
+    const planningDraft: ArrangementDraft = {
+      id: 'draft', schemaVersion: 1, revision: 1, owner: scope, mode: 'auto', status: 'planning',
+      title: plan.title, goal: plan.goal, confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [],
+      workspace: plan.workspace, permissions: { preset: 'workspace-edit' }, createdAt: 1, updatedAt: 1, lastPlanning: null,
+    }
+    const output = { title: plan.title, nodes: plan.nodes.map(node => ({
+      ...node, knowledgeQuery: 'Product media requirements',
+      deliverables: node.deliverables!.map(file => ({ ...file, artifact: scenario.plannerShape === '14:50' ? undefined : {
+        ...file.artifact, operation: node.id === 'image' ? 'text-to-image' : 'image-to-video',
+      } })),
+      mediaRequirements: node.mediaRequirements!.map(requirement => ({
+        kind: requirement.kind, operation: node.id === 'image' ? 'text-to-image' : 'image-to-video',
+        ...(scenario.plannerShape === '14:43' ? {
+          inputFrom: requirement.inputFrom ? [requirement.inputFrom] : undefined,
+          inputSelection: requirement.inputFrom ? 'specified' : 'none',
+        } : { inputSelection: requirement.inputFrom ? { inputFrom: [requirement.inputFrom] } : {} }),
+        preferred: node.id === 'image' ? { style: 'Photography', scene: 'Window light' } : { durationSeconds: 5, cameraMotion: 'Slow push' },
+      })),
+    })) }
+    plan.nodes = parseArrangementPlannerOutput(JSON.stringify(output), planningDraft, [imageNode, videoNode].map(node => ({
+      subscriptionId: node.subscriptionId, employeeId: node.subscriptionId, name: node.title, allowedModels: [node.modelId], status: 'ACTIVE',
+    }))).nodes
   }
   await plans.save(scope, plan)
   const imageGateway = new MockMediaGateway(scenario.imageGateway), videoGateway = new MockVideoMediaGateway(scenario.videoScenario)
@@ -160,6 +186,11 @@ async function fixture(scenario: Scenario = {}) {
         let aborted = false
         return { async run() {
         const node = options.context.arrangementNodeId!
+        if (scenario.plannerShape) {
+          assert.match(options.context.fixedSystemPrompt!, /【本节点媒体要求】/)
+          assert.ok(options.context.fixedSystemPrompt!.includes(node === 'image' ? 'Photography' : 'Slow push'))
+          assert.match(options.context.fixedSystemPrompt!, /MEDIA_ARTIFACT_ID/)
+        }
         started.push(node)
         const execute = await toolsFor(options)
         if (node === 'image') await assert.rejects(options.context.mediaTools!.execute('media_get_job', { jobId: 'foreign-job' }))
@@ -211,6 +242,19 @@ async function fixture(scenario: Scenario = {}) {
   return { ...active, root, workspace, task, plan, plans, runs, checkpoints, links, images, videos,
     imageGateway, videoGateway, started, approvals, uploads, authorization, settled, restart, held: () => held }
 }
+
+for (const plannerShape of ['14:43', '14:50'] as const) test(`backend E2E: ${plannerShape} planner shape reaches actual image and video delivery`, async () => {
+  const f = await fixture({ plannerShape })
+  await f.runtime.executeTask(f.task.id)
+  const task = await f.settled()
+  assert.equal(task?.status, TaskStatus.COMPLETED, task?.error ?? undefined)
+  assert.deepEqual(f.started, ['image', 'video'])
+  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/picture.png')), MOCK_MEDIA_PNG)
+  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/movie.mp4')), MOCK_VIDEO_BYTES)
+  assert.deepEqual(f.uploads, [hash(MOCK_MEDIA_PNG)])
+  assert.equal(f.imageGateway.calls.submit.length, 1)
+  assert.equal(f.videoGateway.calls.submit, 1)
+})
 
 test('backend E2E: image to video crosses employees, preserves hashes and automatically publishes frozen files', async () => {
   const f = await fixture()

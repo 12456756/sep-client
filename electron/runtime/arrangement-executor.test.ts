@@ -325,6 +325,19 @@ describe('TaskRuntime arrangement integration', () => {
 })
 
 describe('arrangement node prompt media contract', () => {
+  it('passes structured preferences and declared references to the employee in manual and auto plans', () => {
+    const base = plan('task-media-preferences')
+    const mediaRequirements = [{ id: 'motion', kind: 'video' as const, operation: 'image-to-video' as const,
+      inputFrom: { nodeId: 'image', deliverableId: 'poster' }, inputSelection: 'single' as const,
+      preferred: { durationSeconds: 5, cameraMotion: 'Slow push', scene: { lighting: 'Warm light' } } }]
+    for (const mode of ['auto', 'manual'] as const) {
+      const prompt = buildArrangementNodePrompt({ ...base, mode }, { ...base.nodes[0]!, mediaRequirements }, [])
+      assert.ok(prompt.includes(JSON.stringify(mediaRequirements, null, 2)))
+      assert.match(prompt, /不得把任意偏好字段直接作为工具参数/)
+      assert.match(prompt, /不得擅自选图/)
+    }
+  })
+
   it('requests an explicit asset mapping only for media-backed final deliverables', () => {
     const base = plan('task-prompt')
     const node = {

@@ -70,6 +70,18 @@ describe('arrangement work contract IPC', () => {
     assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...mediaNode, mediaRequirements: [{ ...mediaNode.mediaRequirements[0], preferred: { count: 0 } }] }] }).success, false)
   })
 
+  it('preserves open JSON preferences while rejecting malformed standard parameters and operations', () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
+    const preferred = { style: 'Photography', scene: { lighting: 'Window', props: ['Cup', 'Table'] }, cameraMotion: 'Slow push', durationSeconds: 86400, count: 500 }
+    const mediaNode = { ...node, mediaRequirements: [{ id: 'image', kind: 'image', operation: 'generate', preferred }] }
+    const input = { ...document, nodes: [mediaNode] }
+    assert.deepEqual(route.schema.parse(input), input)
+    for (const invalid of [{ durationSeconds: 0 }, { audio: 'yes' }, { count: 0 }, { frameRate: Infinity }, { style: () => {} }]) {
+      assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...node, mediaRequirements: [{ ...mediaNode.mediaRequirements[0], preferred: invalid }] }] }).success, false)
+    }
+    assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...node, mediaRequirements: [{ id: 'image', kind: 'image', operation: 'text-to-image' }] }] }).success, false)
+  })
+
   it('accepts legacy nodes and rejects malformed delivery metadata', () => {
     const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
     const { objective: _objective, deliverables: _deliverables, ...legacy } = node

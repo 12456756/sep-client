@@ -74,7 +74,7 @@ export interface ArrangementNodeEvent {
 }
 
 export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output?: string | null; files?: readonly (FinalDeliveryFile & { readPath?: string })[] }[], knowledgeContext = ''): string {
-  if (plan.mode === 'auto' || node.deliverables?.length) {
+  if (plan.mode === 'auto' || node.deliverables?.length || node.mediaRequirements?.length) {
     const mediaDeliverables = (node.deliverables ?? []).filter(file =>
       (file.artifact?.kind === 'image' || file.artifact?.kind === 'video') && file.artifact.source === 'media-output',
     )
@@ -116,6 +116,13 @@ ${dependencies.length ? dependencies.map(dependency => `前置节点：${depende
 不得用聊天摘要或过程文件代替前置最终成果，不得覆盖前置节点的最终交付文件。
 提供读取快照时，必须读取该快照，不要改用工作目录中同名的文件，也不要重跑前置节点的生成脚本。需要补充公式、缓存值、格式或其他内容时，先复制到本节点自己的文件路径，再处理副本；不得修改快照。
 ${knowledgeContext ? `\n【本节点知识库参考】\n${knowledgeContext}\n` : ''}
+${node.mediaRequirements?.length ? `
+【本节点媒体要求】
+${JSON.stringify(node.mediaRequirements, null, 2)}
+按以上 operation 和 inputFrom 完成媒体操作。前置资产使用后端提供的参考资产，不得猜测资产 ID、路径或重新生成前置成果。
+preferred 中的风格、场景、比例、时长等是业务偏好；先读取媒体能力清单，再选择支持的参数，不得把任意偏好字段直接作为工具参数。
+inputSelection 是选图意图；当前每项需求只解析一个明确来源。多张候选未确定或用户尚未选图时，应说明缺少的选择，不得擅自选图或声称已完成。
+` : ''}
 
 【本节点交付】
 预期输出：${node.expectedOutput}

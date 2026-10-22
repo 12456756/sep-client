@@ -4,7 +4,7 @@ import { copyFile, lstat, mkdir, open, realpath, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { inspectMediaImage } from './media-image'
 import { MAX_VIDEO_BYTES } from './video-files'
-import { isSafeDeliveryPath, type ArrangementDeliverable } from '../domain/arrangement-plan'
+import { arrangementMediaMimeByFormat, isSafeDeliveryPath, type ArrangementDeliverable } from '../domain/arrangement-plan'
 import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
 
 export interface ArrangementMediaSource {
@@ -14,11 +14,6 @@ export interface ArrangementMediaSource {
   size: number
   mime: string
   stream: () => AsyncIterable<Uint8Array>
-}
-
-const MIME_BY_FORMAT: Record<string, string[]> = {
-  png: ['image/png'], jpg: ['image/jpeg'], jpeg: ['image/jpeg'], webp: ['image/webp'],
-  mp4: ['video/mp4'], webm: ['video/webm'],
 }
 
 function fail(message: string): never { throw new Error(message) }
@@ -160,7 +155,7 @@ export async function materializeArrangementMedia(
   signal.throwIfAborted(); validate?.()
   if (!isSafeDeliveryPath(deliverable.path)) fail('UNSAFE_PATH')
   const format = extension(deliverable)
-  if (!MIME_BY_FORMAT[format]?.includes(source.mime)) fail('MEDIA_MIME_MISMATCH')
+  if (!arrangementMediaMimeByFormat[format]?.includes(source.mime)) fail('MEDIA_MIME_MISMATCH')
   if (source.kind === 'image' && source.size > 32 * 1024 * 1024) fail('MEDIA_TOO_LARGE')
   if (source.kind === 'video' && source.size > MAX_VIDEO_BYTES) fail('MEDIA_TOO_LARGE')
   if (!/^[a-f0-9]{64}$/i.test(source.sha256) || !Number.isSafeInteger(source.size) || source.size <= 0) fail('MEDIA_INTEGRITY_MISMATCH')
@@ -226,7 +221,7 @@ export async function resolveArrangementMediaFile(workspace: string, file: Final
     const root = await realpath(taskDirectory); const path = snapshotPath(root, file.snapshot.sha256, file.format)
     if (file.snapshot.sha256 !== file.sha256 || file.snapshot.size !== file.size) fail('SNAPSHOT_CHANGED')
     await assertSafeExistingPath(root, path)
-    if (await existingMatches(path, source, signal)) { await readAndVerify(path, { ...source, kind: file.sourceArtifact?.kind ?? 'image', mime: MIME_BY_FORMAT[file.format.toLowerCase()]?.[0] ?? '' }, signal); return path }
+    if (await existingMatches(path, source, signal)) { await readAndVerify(path, { ...source, kind: file.sourceArtifact?.kind ?? 'image', mime: arrangementMediaMimeByFormat[file.format.toLowerCase()]?.[0] ?? '' }, signal); return path }
     try { await lstat(path); fail('SNAPSHOT_CHANGED') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
     fail('SNAPSHOT_UNAVAILABLE')
   }
