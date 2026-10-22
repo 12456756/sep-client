@@ -98,6 +98,54 @@ async function assertPublicationPending(reads: Promise<unknown>): Promise<void> 
   } finally { clearTimeout(timer) }
 }
 
+describe('MediaStore output reference derivation', () => {
+  it('derives a reusable task-local reference without changing the source output', async () => {
+    const { store } = await fixture()
+    await store.saveJob(owner, job())
+    const source = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    const reference = await store.deriveReferenceFromOutput(owner, 'task-a', source.localAssetId, signal())
+    assert.equal(reference.source, 'reference')
+    assert.equal(reference.sha256, source.sha256)
+    assert.equal(reference.jobId, null)
+    assert.equal(reference.outputId, null)
+    assert.deepEqual(reference.derivedFrom, { localAssetId: source.localAssetId, jobId: source.jobId, outputId: source.outputId, sha256: source.sha256 })
+    assert.deepEqual(await store.getAsset(owner, 'task-a', source.localAssetId), source)
+    assert.deepEqual(await store.readAsset(owner, 'task-a', reference.localAssetId), png)
+    assert.deepEqual(await store.deriveReferenceFromOutput(owner, 'task-a', source.localAssetId, signal()), reference)
+    assert.equal((await store.listAssets(owner, 'task-a')).length, 2)
+  })
+
+  it('reuses an imported reference with the same hash and preserves its identity', async () => {
+    const { store, selected } = await fixture()
+    const imported = await store.importReference(owner, 'task-a', selected)
+    await store.saveJob(owner, job())
+    const source = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    assert.deepEqual(await store.deriveReferenceFromOutput(owner, 'task-a', source.localAssetId, signal()), imported)
+    assert.equal((await store.getAsset(owner, 'task-a', source.localAssetId))?.source, 'output')
+  })
+
+  it('rejects foreign owners, other tasks, missing sources, references and cancellation', async () => {
+    const { store, selected } = await fixture()
+    await store.saveJob(owner, job())
+    const source = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    const reference = await store.importReference(owner, 'task-a', selected)
+    await assert.rejects(store.deriveReferenceFromOutput(other, 'task-a', source.localAssetId, signal()))
+    await assert.rejects(store.deriveReferenceFromOutput({ ...owner, enterpriseId: 'other-enterprise' }, 'task-a', source.localAssetId, signal()))
+    await assert.rejects(store.deriveReferenceFromOutput(owner, 'other-task', source.localAssetId, signal()))
+    await assert.rejects(store.deriveReferenceFromOutput(owner, 'task-a', reference.localAssetId, signal()))
+    await assert.rejects(store.deriveReferenceFromOutput(owner, 'task-a', source.localAssetId, AbortSignal.abort()))
+  })
+
+  it('refuses corrupted source bytes and does not create a reference', async () => {
+    const { store, paths } = await fixture()
+    await store.saveJob(owner, job())
+    const source = await store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    await writeFile(join(paths.mediaRoot(owner, 'task-a'), source.relativePath), Buffer.from('damaged image'))
+    await assert.rejects(store.deriveReferenceFromOutput(owner, 'task-a', source.localAssetId, signal()))
+    assert.equal((await readdir(join(paths.mediaRoot(owner, 'task-a'), 'assets'))).filter(name => name.startsWith('ref_')).length, 0)
+  })
+})
+
 describe('MediaStore concurrent publication', () => {
   it('reads the opened old manifest after atomic replacement unlinks its inode', { timeout: 5000 }, async context => {
     const { store, root, paths } = await fixture()

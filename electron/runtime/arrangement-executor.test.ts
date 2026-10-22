@@ -324,6 +324,23 @@ describe('TaskRuntime arrangement integration', () => {
   })
 })
 
+describe('arrangement node prompt media contract', () => {
+  it('requests an explicit asset mapping only for media-backed final deliverables', () => {
+    const base = plan('task-prompt')
+    const node = {
+      ...base.nodes[0]!,
+      deliverables: [{ id: 'video', name: 'Video', format: 'mp4', path: 'deliverables/video.mp4', contentOutline: ['Video'], acceptanceCriteria: ['Playable video'], artifact: { kind: 'video' as const, source: 'media-output' as const, operation: 'text-to-video' as const } }],
+    }
+    const prompt = buildArrangementNodePrompt(base, node, [])
+    assert.match(prompt, /mediaDeliverables/)
+    assert.match(prompt, /MEDIA_ARTIFACT_ID/)
+    assert.match(prompt, /明确的 deliverableId 和媒体工具返回的 artifactId/)
+
+    const documentNode = { ...node, deliverables: [{ ...node.deliverables[0]!, artifact: undefined }] }
+    assert.doesNotMatch(buildArrangementNodePrompt(base, documentNode, []), /MEDIA_ARTIFACT_ID/)
+  })
+})
+
 
 
 function twoNodePlan(taskId: string): WorkPlan {
@@ -372,6 +389,39 @@ function arrangementRetryApi(runtime: TaskRuntime): { retryTask(taskId: string, 
 describe('TaskRuntime arrangement controls', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })
+
+  it('rejects unwired media delivery and input contracts before preparing paid tools or starting a worker', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-media-gate-'))
+    directories.push(root)
+    const contracts: Array<Partial<WorkPlan['nodes'][number]>> = [
+      { deliverables: [{ id: 'poster', name: 'Poster', format: 'png', path: 'deliverables/poster.png', contentOutline: ['Poster'], acceptanceCriteria: ['Valid image'], artifact: { kind: 'image', source: 'media-output' } }] },
+      { deliverables: [{ id: 'video', name: 'Video', format: 'mp4', path: 'deliverables/video.mp4', contentOutline: ['Video'], acceptanceCriteria: ['Playable video'], artifact: { kind: 'video', source: 'workspace' } }] },
+      { mediaRequirements: [{ id: 'motion', kind: 'video', operation: 'image-to-video', inputFrom: { artifactId: 'asset_abc-123' } }] },
+    ]
+    for (const contract of contracts) {
+      const arrangement = plan('task')
+      arrangement.nodes[0] = { ...arrangement.nodes[0]!, ...contract }
+      let prepared = 0
+      let workers = 0
+      const executor = new ArrangementExecutor({
+        scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
+        workspaceRoot: root, arrangementSubscriptionId: employee.subscriptionId,
+        getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+        async onEvent() {}, async authorizeEmployee() { return employee },
+        media: { async prepareRun() { prepared++; return undefined }, async waitForRun() {}, async stopTask() {} },
+        video: { async prepareRun() { prepared++; return undefined }, async waitForRun() {}, async stopTask() {} },
+        createWorker: () => {
+          workers++
+          return { async run() {}, async abort() {}, async dispose() {} }
+        },
+      })
+      const result = await executor.execute(arrangement, 'task', 'run')
+      assert.equal(result.status, 'failed')
+      assert.match(result.error ?? '', /尚未接通/)
+      assert.equal(prepared, 0)
+      assert.equal(workers, 0)
+    }
+  })
 
   it('does not prepare tool hosts after knowledge retrieval resolves for an aborted node', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-search-abort-'))

@@ -50,8 +50,11 @@ const assetSchema = z.object({
   size: z.number().int().positive().max(MAX_MEDIA_BYTES), width: z.number().int().positive().max(MAX_MEDIA_DIMENSION),
   height: z.number().int().positive().max(MAX_MEDIA_DIMENSION), status: z.literal('SAVED'), relativePath: z.string().min(1).max(256),
   sha256: hashSchema, createdAt: timestamp,
+  derivedFrom: z.object({ localAssetId: mediaId, jobId: mediaId, outputId: opaqueId, sha256: hashSchema }).strict().optional(),
 }).strict().refine(asset => asset.width * asset.height <= MAX_MEDIA_PIXELS &&
-  (asset.source === 'output' ? asset.jobId !== null && asset.outputId !== null : asset.jobId === null && asset.outputId === null), 'Invalid asset identity or dimensions.')
+  (asset.source === 'output' ? asset.jobId !== null && asset.outputId !== null && !asset.derivedFrom : asset.jobId === null && asset.outputId === null) &&
+  (!asset.derivedFrom || (asset.derivedFrom.sha256 === asset.sha256 &&
+    asset.derivedFrom.localAssetId === assetId('output', JSON.stringify([asset.derivedFrom.jobId, asset.derivedFrom.outputId])))), 'Invalid asset identity, derivation or dimensions.')
 const snapshotSchema = z.object({
   version: z.literal(1), owner: ownerSchema, taskId: mediaId, runId: mediaId, subscriptionId: opaqueId,
   systemPrompt: z.string().max(2_000_000), skills: z.array(z.object({ path: z.string().min(1).max(4096), sha256: hashSchema, version: opaqueId }).strict()).max(256),
@@ -371,10 +374,35 @@ export class MediaStore implements MediaStorePort {
     const bytes = await this.bytes(selectedPath, true)
     signal.throwIfAborted()
     validate?.()
+    return this.saveReference(scope, taskId, bytes, signal, validate)
+  }
+
+  async deriveReferenceFromOutput(scope: TaskOwnerScope, taskId: string, id: string, signal: AbortSignal, validate?: () => void): Promise<LocalMediaAsset> {
+    signal.throwIfAborted()
+    validate?.()
+    const source = await this.assetRecord(scope, taskId, id)
+    if (!source || source.source !== 'output' || !source.jobId || !source.outputId) {
+      throw new MediaPersistenceError('A saved task-owned image output is required.')
+    }
+    const bytes = await this.verifiedBytes(scope, source)
+    const job = await this.getJob(scope, taskId, source.jobId)
+    const output = job?.outputs.find(item => item.outputId === source.outputId)
+    if (!output) throw new MediaPersistenceError('Source output is not authorized by its original media job.')
+    this.validateOutput(output, source)
+    signal.throwIfAborted()
+    validate?.()
+    return this.saveReference(scope, taskId, bytes, signal, validate, {
+      localAssetId: source.localAssetId, jobId: source.jobId, outputId: source.outputId, sha256: source.sha256,
+    })
+  }
+
+  private async saveReference(scope: TaskOwnerScope, taskId: string, bytes: Buffer, signal: AbortSignal, validate?: () => void, derivedFrom?: LocalMediaAsset['derivedFrom']): Promise<LocalMediaAsset> {
     const image = inspectMediaImage(bytes)
     const hash = sha256(bytes)
     const id = assetId('reference', hash)
     return writes.run(this.key(scope, taskId), async () => {
+      signal.throwIfAborted()
+      validate?.()
       const existing = await this.assetRecord(scope, taskId, id)
       if (existing) {
         if (!isDeepStrictEqual(existing, { ...existing, ...image, sha256: hash })) {
@@ -393,6 +421,7 @@ export class MediaStore implements MediaStorePort {
       try { await this.bytes(file); throw new MediaPersistenceError('Orphaned media reference requires its commit evidence.') } catch (error) { if (!missing(error)) throw error }
       const asset: LocalMediaAsset = { ...image, version: 1, owner: { ...scope }, taskId, localAssetId: id, jobId: null, outputId: null,
         source: 'reference', status: 'SAVED', sha256: hash, relativePath: `files/${id}.${extensions[image.mime]}`, createdAt: Date.now() }
+      if (derivedFrom) asset.derivedFrom = derivedFrom
       return this.persistAsset(scope, asset, (async function* () { yield bytes })(), signal, validate)
     })
   }

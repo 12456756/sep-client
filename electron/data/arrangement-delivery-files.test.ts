@@ -42,6 +42,40 @@ function officePackage(format: 'docx' | 'xlsx' | 'pptx'): Uint8Array {
 }
 
 describe('final delivery file validation', () => {
+  it('does not approve media mappings or typed media through the ordinary workspace validator', async () => {
+    const f = await fixture('png')
+    await writeFile(f.file, 'A filename and an asset ID do not prove a valid image')
+    for (const artifact of [
+      { kind: 'image' as const, source: 'media-output' as const },
+      { kind: 'image' as const, source: 'workspace' as const },
+      { kind: 'video' as const, source: 'either' as const },
+      undefined,
+    ]) {
+      const mediaNode: ArrangementNode = { ...f.node, deliverables: [{ ...f.node.deliverables![0]!, artifact }] }
+      const submitted = { ...f.submission, mediaDeliverables: [{ deliverableId: 'report', artifactId: 'asset_abc-123' }] }
+      const result = await validateDeliveryFiles(f.root, mediaNode, submitted, 'run')
+      assert.ok(!result.ok)
+      assert.equal(result.issues[0]?.code, 'MEDIA_DELIVERY_NOT_READY')
+      if (artifact) {
+        const unmapped = await validateDeliveryFiles(f.root, mediaNode, f.submission, 'run')
+        assert.ok(!unmapped.ok)
+        assert.equal(unmapped.issues[0]?.code, 'MEDIA_DELIVERY_NOT_READY')
+      }
+    }
+  })
+
+  it('never replaces a media source receipt with changed workspace bytes during recovery', async () => {
+    const f = await fixture()
+    await writeFile(f.file, 'Original findings')
+    const accepted = await validateDeliveryFiles(f.root, f.node, f.submission, 'run')
+    assert.ok(accepted.ok)
+    const mediaFile = { ...accepted.files[0]!, sourceArtifact: { kind: 'image' as const, artifactId: 'asset_abc-123', sha256: accepted.files[0]!.sha256 } }
+    await writeFile(f.file, 'Changed findings')
+    const result = await resolveDeliveryFiles(f.root, [mediaFile], undefined, { allowWorkspaceChanges: true })
+    assert.equal(result.files.length, 0)
+    assert.equal(result.issues[0]?.code, 'PREDECESSOR_FILE_CHANGED')
+  })
+
   it('freezes accepted bytes outside the workspace and uses them after the visible file changes or disappears', async () => {
     const f = await fixture()
     const taskDirectory = await mkdtemp(join(tmpdir(), 'sep-delivery-data-'))

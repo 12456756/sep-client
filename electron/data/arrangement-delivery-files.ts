@@ -153,6 +153,11 @@ function fileIssue(error: unknown, id: string, path: string): DeliveryIssue {
 }
 
 export async function validateDeliveryFiles(workspace: string, node: ArrangementNode, submission: DeliverySubmission, nodeRunId: string, signal?: AbortSignal, options: DeliveryFileOptions = {}): Promise<FileResult> {
+  signal?.throwIfAborted()
+  // Enable these contracts only after scoped asset materialization and media validation are wired.
+  if (submission.mediaDeliverables?.length || node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')) {
+    return { ok: false, issues: [{ code: 'MEDIA_DELIVERY_NOT_READY', message: '编排媒体资产物化与类型验收尚未接通，当前不能确认此媒体交付。已保存的资产无需重新生成。' }] }
+  }
   const files: FinalDeliveryFile[] = []
   const issues: DeliveryIssue[] = []
   for (const submitted of submission.finalDeliverables) {
@@ -188,7 +193,7 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
       }
       const bytes = await readWorkspaceFile(workspace, file.path, signal)
       const changed = bytes.length !== file.size || createHash('sha256').update(bytes).digest('hex') !== file.sha256
-      if (changed && !options.allowWorkspaceChanges) {
+      if (changed && (!options.allowWorkspaceChanges || file.sourceArtifact)) {
         result.issues.push({ code: 'PREDECESSOR_FILE_CHANGED', deliverableId: file.id, path: file.path, message: '已确认的前置最终文件被修改，不能将其作为有效前置成果。' })
         continue
       }

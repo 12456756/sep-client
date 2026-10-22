@@ -69,6 +69,58 @@ export interface ArrangementCandidateMatch {
 }
 
 const deliveryText = z.string().trim().min(1).max(4_000)
+const arrangementId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+export const arrangementMediaArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/)
+const mediaArtifactKindSchema = z.enum(['document', 'image', 'video', 'data', 'other'])
+const mediaOperationSchema = z.enum(['generate', 'edit', 'image-to-video', 'text-to-video'])
+
+export const arrangementMediaRequirementSchema = z.object({
+  id: arrangementId,
+  kind: z.enum(['image', 'video']),
+  operation: mediaOperationSchema,
+  required: z.boolean().optional(),
+  inputFrom: z.object({
+    nodeId: arrangementId.optional(),
+    deliverableId: arrangementId.optional(),
+    artifactId: arrangementMediaArtifactIdSchema.optional(),
+  }).strict().superRefine((source, context) => {
+    if (!source.nodeId && !source.artifactId) context.addIssue({ code: 'custom', message: 'A media input must name a planned node or an existing artifact.' })
+    if (source.deliverableId && !source.nodeId) context.addIssue({ code: 'custom', path: ['deliverableId'], message: 'A planned deliverable must name its source node.' })
+  }).optional(),
+  inputSelection: z.enum(['single', 'any', 'all', 'model', 'user']).optional(),
+  preferred: z.object({
+    aspectRatio: z.string().trim().min(1).max(128).optional(),
+    resolution: z.string().trim().min(1).max(128).optional(),
+    durationSeconds: z.number().finite().positive().optional(),
+    frameRate: z.number().finite().positive().optional(),
+    audio: z.boolean().optional(),
+    outputFormat: z.string().trim().min(1).max(64).optional(),
+    count: z.number().int().positive().safe().optional(),
+  }).strict().optional(),
+}).strict().superRefine((requirement, context) => {
+  const expectedKind = requirement.operation === 'image-to-video' || requirement.operation === 'text-to-video' ? 'video' : 'image'
+  if (requirement.kind !== expectedKind) context.addIssue({ code: 'custom', path: ['kind'], message: 'Media operation and output kind do not match.' })
+  if (requirement.operation === 'text-to-video' && requirement.inputFrom) {
+    context.addIssue({ code: 'custom', path: ['inputFrom'], message: 'Text-to-video cannot declare an image input.' })
+  }
+})
+
+export const arrangementDeliverableArtifactSchema = z.object({
+  kind: mediaArtifactKindSchema,
+  source: z.enum(['workspace', 'media-output', 'either']).optional(),
+  operation: mediaOperationSchema.optional(),
+}).strict().superRefine((artifact, context) => {
+  if (artifact.source === 'media-output' && artifact.kind !== 'image' && artifact.kind !== 'video') {
+    context.addIssue({ code: 'custom', path: ['source'], message: 'Only image and video deliverables can be sourced from media output.' })
+  }
+  if (artifact.operation) {
+    const expectedKind = artifact.operation === 'image-to-video' || artifact.operation === 'text-to-video' ? 'video' : 'image'
+    if (artifact.kind !== expectedKind) context.addIssue({ code: 'custom', path: ['operation'], message: 'Media operation and deliverable kind do not match.' })
+  }
+})
+
+export type ArrangementMediaRequirement = z.infer<typeof arrangementMediaRequirementSchema>
+
 export function isSafeDeliveryPath(value: string): boolean {
   return !!value && !/^[\\/]/.test(value) && !/[<>:"|?*]/.test(value) &&
     [...value].every(character => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127) &&
@@ -86,8 +138,16 @@ export const arrangementNodeWorkContractSchema = z.object({
     path: z.string().trim().min(1).max(1_024).refine(isSafeDeliveryPath),
     contentOutline: z.array(deliveryText).min(1).max(128),
     acceptanceCriteria: z.array(deliveryText).min(1).max(128),
+    artifact: arrangementDeliverableArtifactSchema.optional(),
   }).strict().refine(value => value.path.toLowerCase().endsWith(`.${value.format.toLowerCase()}`)))
     .min(1).max(32).optional(),
+  mediaRequirements: z.array(arrangementMediaRequirementSchema).min(1).superRefine((requirements, context) => {
+    const requirementIds = new Set<string>()
+    for (const requirement of requirements) {
+      if (requirementIds.has(requirement.id)) context.addIssue({ code: 'custom', message: 'Media requirement IDs must be unique within a node.' })
+      requirementIds.add(requirement.id)
+    }
+  }).optional(),
 })
 
 export type ArrangementDeliverable = NonNullable<z.infer<typeof arrangementNodeWorkContractSchema>['deliverables']>[number]
@@ -104,6 +164,7 @@ export interface ArrangementNode {
   instruction: string
   expectedOutput: string
   deliverables?: ArrangementDeliverable[]
+  mediaRequirements?: ArrangementMediaRequirement[]
   dependsOn: string[]
   skillIds: string[]
   requiresUserConfirmation: boolean
@@ -268,6 +329,20 @@ export function validateArrangementNodes(nodes: readonly ArrangementNode[]): voi
     for (const dependency of node.dependsOn) {
       if (dependency === node.id || !byId.has(dependency) || dependencies.has(dependency)) throw new AppError('INVALID_ARGUMENT')
       dependencies.add(dependency)
+    }
+    for (const requirement of node.mediaRequirements ?? []) {
+      const source = requirement.inputFrom
+      if (!source) continue
+      if (!source.nodeId) continue
+      if (!dependencies.has(source.nodeId)) throw new AppError('INVALID_ARGUMENT')
+      const sourceNode = byId.get(source.nodeId)
+      if (!sourceNode) throw new AppError('INVALID_ARGUMENT')
+      if (source.deliverableId) {
+        const deliverable = sourceNode.deliverables?.find(item => item.id === source.deliverableId)
+        if (!deliverable) throw new AppError('INVALID_ARGUMENT')
+        const expectedInputKind = requirement.operation === 'image-to-video' ? 'image' : requirement.kind
+        if (deliverable.artifact && deliverable.artifact.kind !== expectedInputKind) throw new AppError('INVALID_ARGUMENT')
+      }
     }
   }
   const visiting = new Set<string>()

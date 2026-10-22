@@ -175,6 +175,11 @@ expectedOutput：简洁说明该节点必须交付的具体成果，与 delivera
 交付物路径只是执行阶段的计划路径，规划阶段不得声称文件已经存在。
 后续节点负责加工前置成果时，应明确本节点新增的业务价值，避免重复生成同一份成果。
 整个计划必须覆盖用户要求的最终交付物，不能只规划研究或分析而遗漏最终制作、保存和交付。
+用户要求生成图片或视频时，将媒体本身列为交付物，并在 deliverable 的 artifact 中声明 kind、source 和 operation；source 为 media-output 表示最终资产来自本节点的媒体任务，source 为 workspace 表示员工通过普通文件工作流交付。
+节点确实需要调用生图、图片编辑、图生视频或文生视频时，才填写 mediaRequirements；不要因普通文档中提到图片或视频就自动添加媒体任务。
+图生视频等需要前置图片的场景，在媒体需求的 inputFrom 中填写上游 nodeId 与 deliverableId，并将该 nodeId 同时列入 dependsOn；引用用户已选定的任务内现存资产时只填写 artifactId，不要伪造来源节点。
+preferred 只表达用户偏好，不代表当前员工或供应商一定支持；不得猜测供应商型号或 manifest 能力范围，实际支持情况留给预检和运行时确认。
+只有用户明确要求检查中间结果时才把 requiresUserConfirmation 设为 true；媒体操作本身不默认触发确认。
 
 【六、依赖与补充规划】
 dependsOn 只声明完成本节点前必须完成的节点；依赖必须真实、无自依赖、无循环。
@@ -211,6 +216,7 @@ ${JSON.stringify(outputExample, null, 2)}
    - objective、instruction、expectedOutput 和 deliverables 必须相互一致。
    - 每个节点至少包含一个 deliverable。
    - 每个执行节点必须提供非空 knowledgeQuery，写成可直接提交给企业知识库的检索问题；只检索该节点需要的内部政策、标准、数据或方法，不要把整个用户目标原样复制给每个节点。
+   - 只有本节点需要执行媒体操作时才返回 mediaRequirements；媒体最终交付物在 deliverables[].artifact 中声明类型及来源。
    - 待授权推荐阶段 nodes 必须返回 []。
 4. deliverables
    - 每项交付物都是该节点必须实际完成的成果。
@@ -219,11 +225,16 @@ ${JSON.stringify(outputExample, null, 2)}
    - contentOutline 必须符合具体行业和业务场景。
    - acceptanceCriteria 必须是可检查的条件。
    - 不得只写“内容完整”“质量较高”“符合要求”等无法验证的描述。
-5. unresolvedSteps
+5. mediaRequirements
+   - 仅为需要执行的图片生成、图片编辑、文生视频或图生视频操作返回。
+   - operation、kind、required、inputSelection 和 preferred 按 schema 填写；preferred 表达偏好，不承诺能力支持。
+   - inputFrom.nodeId 必须同时出现在 dependsOn；inputFrom.deliverableId 必须属于该来源节点。用户选择已有资产时可只填 inputFrom.artifactId。
+   - 不得返回供应商 profile、内部文件路径、临时 URL 或凭据。
+6. unresolvedSteps
    - 保存当前不能执行的工作步骤。
    - 没有未解决步骤时必须返回 []。
    - 待授权员工推荐阶段，即使已经找到候选员工，也必须保留对应 unresolvedSteps。
-6. candidateMatches
+7. candidateMatches
    - 只用于推荐待授权员工。
    - 没有候选推荐时必须返回 []。
    - employeeId 必须来自 employeeCatalog。
@@ -251,7 +262,7 @@ ${JSON.stringify(draft.unresolvedSteps ?? [], null, 2)}
 ${JSON.stringify(draft.nodes.map(node => ({
     id: node.id, stepId: node.stepId, subscriptionId: node.subscriptionId, modelId: node.modelId,
     title: node.title, objective: node.objective, instruction: node.instruction, expectedOutput: node.expectedOutput,
-    knowledgeQuery: node.knowledgeQuery,
+    knowledgeQuery: node.knowledgeQuery, mediaRequirements: node.mediaRequirements,
     deliverables: node.deliverables, dependsOn: node.dependsOn, requiresUserConfirmation: node.requiresUserConfirmation,
   })), null, 2)}
 

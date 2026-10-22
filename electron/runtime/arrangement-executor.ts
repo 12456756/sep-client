@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
 import { validateDeliveryFiles, resolveDeliveryFiles } from '../data/arrangement-delivery-files'
-import { MAX_DELIVERY_VALIDATIONS, DeliveryExecutionError, buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
+import { MAX_DELIVERY_VALIDATIONS, DeliveryExecutionError, buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission, parseRecordedDeliverySubmission, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunStorePort } from '../data/task-run-store'
@@ -71,7 +71,17 @@ export interface ArrangementNodeEvent {
 }
 
 export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output?: string | null; files?: readonly (FinalDeliveryFile & { readPath?: string })[] }[], knowledgeContext = ''): string {
-  if (plan.mode === 'auto' || node.deliverables?.length) return `你正在执行编排工作计划中的一个节点，是该节点的硅基员工。
+  if (plan.mode === 'auto' || node.deliverables?.length) {
+    const mediaDeliverables = (node.deliverables ?? []).filter(file =>
+      (file.artifact?.kind === 'image' || file.artifact?.kind === 'video') && file.artifact.source === 'media-output',
+    )
+    const ending = {
+      nodeId: node.id,
+      summary: '本节点工作结果的简要说明',
+      finalDeliverables: (node.deliverables ?? []).map(file => ({ id: file.id, path: file.path })),
+      ...(mediaDeliverables.length ? { mediaDeliverables: mediaDeliverables.map(file => ({ deliverableId: file.id, artifactId: 'MEDIA_ARTIFACT_ID' })) } : {}),
+    }
+    return `你正在执行编排工作计划中的一个节点，是该节点的硅基员工。
 
 【当前工作】
 总体目标：${plan.goal}
@@ -109,15 +119,17 @@ ${knowledgeContext ? `\n【本节点知识库参考】\n${knowledgeContext}\n` :
 交付清单：${JSON.stringify(node.deliverables ?? [], null, 2)}
 全部交付物都必须实际保存到指定路径。可以产生过程文件，但最终提交清单不得包含资料、草稿和临时文件。
 只能使用分配的共享工作区，不要重放或虚构前置节点的工具调用。
+${mediaDeliverables.length ? '标记为 media-output 的图片或视频交付物必须来自本节点已保存的媒体资产。结束 JSON 的 mediaDeliverables 必须为每个此类交付物填写明确的 deliverableId 和媒体工具返回的 artifactId；不得猜测 ID、使用其他节点未声明的资产或提交本地路径。' : ''}
 
 【节点结束】
 生成文件不等于工作结束；还有规定工作未完成时，应继续执行。
 只有确认本节点全部工作完成、最终文件已保存，才允许提交最终 JSON。
 执行中、进度说明、等待处理、修正过程中，不得以 JSON 作为回复；工具调用的 JSON 参数和要求生成的 JSON 文件不受此限制。
 确认节点工作结束后，只返回以下严格 JSON，不附加其他文字、Markdown 或推理过程：
-${JSON.stringify({ nodeId: node.id, summary: '本节点工作结果的简要说明', finalDeliverables: (node.deliverables ?? []).map(file => ({ id: file.id, path: file.path })) }, null, 2)}
+${JSON.stringify(ending, null, 2)}
 提交只是申请结束，后端校验通过才算完成。收到校验失败原因后，修复问题，保留有效成果，不重复已完成的操作。
 修复并重新确认节点全部工作结束后，再提交完整最终 JSON。最多校验 5 次（首次提交加 4 次修正）。`
+  }
   const dependencyText = dependencies.length === 0
     ? '没有可用的前置节点输出。'
     : dependencies.map(({ node: dependency, output }) => [
@@ -334,10 +346,14 @@ export class ArrangementExecutor {
     let accepted = !structured
     try {
       this.checkExecutionControl()
+      if (node.mediaRequirements?.some(requirement => requirement.inputFrom) ||
+        node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')) {
+        throw new DeliveryExecutionError('编排媒体资产流转和最终交付尚未接通，当前节点暂不可执行。请保留已保存的媒体资产，待接入后继续，不要重新提交生成请求。')
+      }
       if (structured) {
         for (const dependency of dependencies) {
           const progress = state.nodes.find(item => item.nodeId === dependency.node.id)
-          const complete = progress?.status === 'completed' && parseDeliverySubmission(dependency.node, JSON.stringify({ nodeId: dependency.node.id, summary: 'verified', finalDeliverables: dependency.files.map(file => ({ id: file.id, path: file.path })) })).ok
+          const complete = progress?.status === 'completed' && parseRecordedDeliverySubmission(dependency.node, dependency.files).ok
           if (!complete) throw new DeliveryExecutionError(`前置节点 ${dependency.node.id} 缺少已确认的最终交付记录，不能启动下游节点。`)
           const resolved = await resolveDeliveryFiles(workspaceDir, dependency.files, this.validationCancellation.signal, fileOptions)
           if (resolved.issues.length) throw new DeliveryExecutionError(`前置最终文件失效：${resolved.issues.map(issue => `${issue.path ?? ''} ${issue.message}`).join('\n')}`)
@@ -353,7 +369,7 @@ export class ArrangementExecutor {
         }
         prompt = buildArrangementNodePrompt(plan, node, dependencies)
         if (delivery.finalFiles.length) {
-          const complete = parseDeliverySubmission(node, JSON.stringify({ nodeId: node.id, summary: delivery.summary ?? 'verified', finalDeliverables: delivery.finalFiles.map(file => ({ id: file.id, path: file.path })) })).ok
+          const complete = parseRecordedDeliverySubmission(node, delivery.finalFiles, delivery.summary ?? 'verified').ok
           const resolved = complete ? await resolveDeliveryFiles(workspaceDir, delivery.finalFiles, this.validationCancellation.signal, fileOptions) : null
           const issues = resolved?.issues ?? [{ message: '交付记录与计划不一致。' }]
           if (issues.length) throw new DeliveryExecutionError(`已验收最终文件失效：${issues.map(issue => issue.message).join('\n')}`)
