@@ -72,6 +72,17 @@ test('run facade binds two host approvals to real run and awaits original output
   await assert.rejects(tools.execute('video_from_image', input()))
 })
 
+test('arrangement media mode auto-approves upload and quote without approval requests', async () => {
+  const f = await setup(), tools = await f.service.prepareRun({ ...f.runInput, autoApproveMedia: true })
+  assert.ok(tools)
+  const job = await tools.execute('video_from_image', input()) as { jobId: string }
+  assert.equal(typeof job.jobId, 'string')
+  assert.equal(f.approvals.length, 0)
+  await f.service.waitForRun('task-a', 'run-a')
+  assert.equal(f.gateway.calls.submit, 1)
+  await f.service.finishRun('task-a', 'run-a')
+})
+
 test('run resolves the authorized profile and defaults without model-supplied configuration', async () => {
   const f = await setup(), tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
@@ -257,12 +268,16 @@ test('real rejection keeps its business code at run completion and does not pois
     uploadReference: async (bytes, signal) => ({ ...await source.uploadReference(bytes, signal), mock: false }),
   }) })
   try {
-    const tools = await service.prepareRun(f.runInput)
+    const failures: unknown[] = []
+    const tools = await service.prepareRun({ ...f.runInput, onTerminalFailure: error => { failures.push(error) } })
     assert.ok(tools)
     const failed = await tools.execute('video_from_image', input()) as { error: string; generationStatus: string }
     assert.equal(failed.error, 'INSUFFICIENT_FUNDS')
     assert.equal(failed.generationStatus, 'FAILED')
     await assert.rejects(service.waitForRun('task-a', 'run-a'), { code: 'INSUFFICIENT_FUNDS' })
+    await assert.rejects(service.waitForRun('task-a', 'run-a'), { code: 'INSUFFICIENT_FUNDS' })
+    assert.equal(failures.length, 1)
+    assert.equal((failures[0] as AppError).code, 'INSUFFICIENT_FUNDS')
     assert.equal(f.gateway.calls.findReceipt, 0)
     await service.finishRun('task-a', 'run-a')
     reject = false

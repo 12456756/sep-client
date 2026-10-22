@@ -16,8 +16,18 @@ interface Run {
   pending: Set<Promise<unknown>>
   jobs: Set<string>
   tracking?: Promise<void>
+  terminalFailureNotified: boolean
+  onTerminalFailure?: RunInput['onTerminalFailure']
 }
 const names: readonly VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
+const TERMINAL_FAILURE_CODES = new Set([
+  'PERMISSION_DENIED', 'AUTH_REQUIRED', 'INSUFFICIENT_FUNDS', 'VIDEO_BUDGET_EXCEEDED',
+  'MEDIA_FORBIDDEN', 'QUOTE_EXPIRED', 'VIDEO_CONCURRENCY_LIMIT',
+])
+
+function terminalVideoFailure(error: unknown): boolean {
+  return error instanceof AppError && TERMINAL_FAILURE_CODES.has(error.code)
+}
 
 /** Explicit mode composition, with no Pi dependency or synthetic capability fallback. */
 export class VideoRunService implements VideoRunPort {
@@ -79,7 +89,7 @@ export class VideoRunService implements VideoRunPort {
       requestApproval: request => { validate(); return input.requestApproval({ ...request, runId: input.runId }) },
     })
     validate()
-    const run: Run = { taskId: input.taskId, host, controller, pending: new Set(), jobs: new Set() }
+    const run: Run = { taskId: input.taskId, host, controller, pending: new Set(), jobs: new Set(), terminalFailureNotified: false, onTerminalFailure: input.onTerminalFailure }
     this.runs.set(key, run)
     try {
       const restored = await abortableVideo(host.getTaskVideo(input.taskId), controller.signal)
@@ -98,7 +108,10 @@ export class VideoRunService implements VideoRunPort {
       throw error
     }
     const activity = <T>(call: () => Promise<T>): Promise<T> => {
-      const pending = Promise.resolve().then(() => { validate(); return call() })
+      const pending = Promise.resolve().then(() => { validate(); return call() }).catch(async error => {
+        await this.notifyTerminalFailure(run, error)
+        throw error
+      })
       run.pending.add(pending)
       return pending.finally(() => run.pending.delete(pending))
     }
@@ -120,7 +133,10 @@ export class VideoRunService implements VideoRunPort {
         return job
       }
       const job = await host.generateTool(input.taskId, name, raw, signal, { runId: input.runId, onJobCreated: input.onJobCreated,
-        requestApproval: request => { validate(); return input.requestApproval(request) } })
+        requestApproval: request => {
+          validate()
+          return input.autoApproveMedia ? Promise.resolve(true) : input.requestApproval(request)
+        } })
       run.jobs.add(job.jobId)
       validate()
       if (job.trackingStatus === 'AUTH_REQUIRED') throw new AppError(videoErrorMessage(job.error) && isErrorCode(job.error)
@@ -145,9 +161,17 @@ export class VideoRunService implements VideoRunPort {
     for (const id of run.jobs) {
       const job = view.jobs.find(job => job.jobId === id)
       if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED' || videoBillingPending(job.billingStatus)) {
-        throw new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
+        const error = new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
+        await this.notifyTerminalFailure(run, error)
+        throw error
       }
     }
+  }
+
+  private async notifyTerminalFailure(run: Run, error: unknown): Promise<void> {
+    if (!terminalVideoFailure(error) || run.terminalFailureNotified) return
+    run.terminalFailureNotified = true
+    await run.onTerminalFailure?.(error)
   }
 
   async stopTask(taskId: string): Promise<void> {

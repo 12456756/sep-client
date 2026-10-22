@@ -274,7 +274,7 @@ test('backend E2E: image to video crosses employees, preserves hashes and automa
     assert.equal(file.sha256, file.sourceArtifact!.sha256)
     assert.equal(file.snapshot!.sha256, file.sha256)
   }
-  assert.ok(f.approvals.length >= 3)
+  assert.equal(f.approvals.length, 1, 'video upload and quote approvals are covered by the arrangement media authorization')
   assert.equal(f.imageGateway.calls.submit.length, 1); assert.equal(f.videoGateway.calls.submit, 1)
 })
 
@@ -304,25 +304,20 @@ test('backend E2E: text-to-video requires no reference image', async () => {
   assert.deepEqual(await readFile(join(f.workspace, 'deliverables/movie.mp4')), MOCK_VIDEO_BYTES)
 })
 
-test('backend E2E: workspace conflict survives restart and retries local publication without another model call or charge', async () => {
+test('backend E2E: workspace conflict keeps the existing file and publishes a suffixed media file', async () => {
   const f = await fixture()
   await mkdir(join(f.workspace, 'deliverables'), { recursive: true })
   await writeFile(join(f.workspace, 'deliverables/movie.mp4'), 'Existing user file')
   await f.runtime.executeTask(f.task.id)
-  assert.equal((await f.settled())?.status, TaskStatus.PAUSED)
+  assert.equal((await f.settled())?.status, TaskStatus.COMPLETED)
   const checkpoint = (await f.checkpoints.get(scope, f.task.id))!
   assert.equal(checkpoint.state.nodes[0]!.status, 'completed')
-  assert.ok(checkpoint.state.nodes[1]!.delivery!.pendingSubmission)
+  assert.equal(checkpoint.state.nodes[1]!.status, 'completed')
   assert.equal(await readFile(join(f.workspace, 'deliverables/movie.mp4'), 'utf8'), 'Existing user file')
-  const restored = await f.restart()
-  await rm(join(f.workspace, 'deliverables/movie.mp4'))
-  await restored.runtime.retryTask(f.task.id)
-  const final = await f.settled(restored)
-  assert.equal(final?.status, TaskStatus.COMPLETED, final?.error ?? undefined)
+  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/movie-2.mp4')), MOCK_VIDEO_BYTES)
   assert.deepEqual(f.started, ['image', 'video'])
   assert.equal(f.imageGateway.calls.submit.length, 1); assert.equal(f.videoGateway.calls.submit, 1)
   assert.equal(f.imageGateway.calls.quote.length, 1); assert.equal(f.videoGateway.calls.quote, 1)
-  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/movie.mp4')), MOCK_VIDEO_BYTES)
 })
 
 test('backend E2E: lost image submission response is recovered using its original request', async () => {

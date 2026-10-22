@@ -138,9 +138,10 @@ export function parseRecordedDeliverySubmission(node: ArrangementNode, files: re
     }
   }
   const mediaDeliverables = files.flatMap(file => file.sourceArtifact ? [{ deliverableId: file.id, artifactId: file.sourceArtifact.artifactId }] : [])
+  const finalDeliverables = files.map(file => ({ id: file.id, path: file.sourceArtifact ? node.deliverables!.find(item => item.id === file.id)?.path ?? file.path : file.path }))
   return parseDeliverySubmission(node, JSON.stringify({
     nodeId: node.id, summary,
-    finalDeliverables: files.map(file => ({ id: file.id, path: file.path })),
+    finalDeliverables,
     ...(mediaDeliverables.length ? { mediaDeliverables } : {}),
   }))
 }

@@ -31,6 +31,9 @@ import { TaskCreationGate } from './task-creation-gate'
 import { deliveryPlanIssues } from '../domain/arrangement-delivery'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import type { ArrangementExecutionSnapshot } from '../../src/shared/types'
+import type { ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
+import type { ArrangementMediaAssetsPort } from '../domain/arrangement-media-runtime'
+import type { VideoStorePort } from '../domain/video-media'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -50,6 +53,9 @@ export interface ArrangementServiceDependencies {
     get(requestId: string): Promise<EmployeeAccessRequest>
   }
   arrangementCheckpoints?: ArrangementCheckpointStorePort
+  arrangementMediaLinks?: ArrangementMediaLinkStorePort
+  arrangementMediaAssets?: ArrangementMediaAssetsPort
+  videoStore?: VideoStorePort
 }
 
 export interface ArrangementContext {
@@ -134,6 +140,7 @@ export class ArrangementService {
     if (!this.deps.arrangementCheckpoints) return null
     const checkpoint = await this.deps.arrangementCheckpoints.get(scope, taskId)
     if (!checkpoint) return null
+    const media = await this.mediaSummary(scope, taskId)
     return {
       activeRunId: checkpoint.activeRunId,
       status: checkpoint.state.status,
@@ -144,7 +151,34 @@ export class ArrangementService {
         ...(node.pendingConfirmation ? { pendingConfirmation: true } : {}),
         finalFiles: node.delivery?.finalFiles ? structuredClone(node.delivery.finalFiles) : [],
       })),
+      ...(media.length ? { media } : {}),
     }
+  }
+
+  private async mediaSummary(scope: { memberId: string; enterpriseId: string }, taskId: string) {
+    if (!this.deps.arrangementMediaLinks) return []
+    const links = await this.deps.arrangementMediaLinks.list(scope, taskId)
+    return Promise.all(links.map(async link => {
+      const assets = this.deps.arrangementMediaAssets ? await this.deps.arrangementMediaAssets.outputs(scope, taskId, link).catch(() => []) : []
+      const assetById = new Map(assets.map(asset => [asset.artifactId, asset]))
+      const videoAssets = link.kind === 'video' && this.deps.videoStore
+        ? await this.deps.videoStore.listAssets({ ...scope, subscriptionId: link.subscriptionId }, taskId).catch(() => []) : []
+      const outputIds = new Map(videoAssets.map(asset => [asset.localAssetId, asset.output.outputId]))
+      const outputs = link.outputs.map(output => {
+        const asset = assetById.get(output.artifactId)
+        return { artifactId: output.artifactId, ...(asset ? { mime: asset.mime, size: asset.size } : {}), status: output.status, ...(link.kind === 'video' && outputIds.has(output.artifactId) ? { outputId: outputIds.get(output.artifactId) } : {}) }
+      })
+      const materialization = link.materializations[link.materializations.length - 1]
+      const phase = materialization?.status === 'conflict' ? 'blocked' as const
+        : outputs.some(output => output.status === 'saved') ? 'ready' as const
+          : outputs.some(output => ['saving', 'pending'].includes(output.status)) ? 'saving' as const
+            : 'tracking' as const
+      const pendingActions = phase === 'blocked' ? ['retry-save' as const]
+        : outputs.some(output => output.status === 'saved') ? ['export' as const] : []
+      return { nodeId: link.nodeId, nodeRunId: link.nodeRunId, kind: link.kind, operation: link.operation,
+        jobId: link.jobId, phase, inputs: link.inputs.map(input => ({ artifactId: input.artifactId, ...(input.sourceNodeId ? { sourceNodeId: input.sourceNodeId } : {}) })),
+        outputs, pendingActions }
+    }))
   }
 
   async createDraft(input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>): Promise<ArrangementDraft> {

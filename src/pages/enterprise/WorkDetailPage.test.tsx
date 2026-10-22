@@ -11,6 +11,7 @@ import * as ts from 'typescript';
 import * as atoms from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
+import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import type { WorkItem } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
@@ -27,6 +28,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/WorkPlanDrawer': { WorkPlanDrawer: () => null },
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
+  '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion },
   '../../features/enterprise/vocabulary': vocabulary,
@@ -75,5 +77,13 @@ describe('WorkDetailPage media entry', () => {
 
   it('does not introduce conversation media operations into flow work', () => {
     assert.doesNotMatch(renderDetail({ ...work, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' } }), /aria-label="图片创作与成果"/);
+  });
+
+  it('mounts arrangement media results when the execution snapshot has media', () => {
+    const flow = { ...work, kind: 'flow' as const, workType: { state: 'resolved' as const, kind: 'arrangement' as const },
+      arrangementExecution: { activeRunId: null, status: 'completed' as const, nodes: [], updatedAt: 1, media: [{ nodeId: 'image', nodeRunId: 'run-1', kind: 'image' as const, operation: 'generate' as const,
+        inputs: [], pendingActions: [],
+        phase: 'ready' as const, jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' as const }] }] } };
+    assert.match(renderDetail(flow), /编排媒体成果/);
   });
 });

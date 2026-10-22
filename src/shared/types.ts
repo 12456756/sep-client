@@ -244,7 +244,7 @@ export interface ArrangementMediaSummary {
   jobId: string
   phase: ArrangementMediaPhase
   inputs: Array<{ artifactId: string; sourceNodeId?: string }>
-  outputs: Array<{ artifactId: string; mime?: string; size?: number; status: ArrangementMediaOutputStatus }>
+  outputs: Array<{ artifactId: string; mime?: string; size?: number; status: ArrangementMediaOutputStatus; outputId?: string }>
   pendingActions: ArrangementMediaPendingAction[]
 }
 

@@ -220,13 +220,15 @@ export class ArrangementMediaService implements ArrangementMediaPort {
           const link = [...links.values()].find(link => link.kind === deliverable?.artifact?.kind &&
             link.outputs.some(output => output.artifactId === mapping.artifactId && output.status === 'saved'))
           if (!deliverable || !link || deliverable.artifact?.source === 'workspace') throw new ArrangementMediaSubmissionError('媒体交付必须来自当前节点已保存的输出，请查询原任务并修正资产映射，不要重新生成。')
-          const materialization = { deliverableId: deliverable.id, path: deliverable.path, sourceArtifactId: mapping.artifactId, status: 'pending' as const }
           const prior = link.materializations.find(item => item.deliverableId === deliverable.id)
+          const materialization = { deliverableId: deliverable.id, path: prior?.path ?? deliverable.path, sourceArtifactId: mapping.artifactId, status: 'pending' as const }
           await save({ ...link, materializations: [...link.materializations.filter(item => item.deliverableId !== deliverable.id), { ...materialization, ...(prior?.sha256 ? { sha256: prior.sha256 } : {}) }] })
-          const file = await this.options.assets.materialize(scope, input.taskId, plan.workspace.path!, deliverable, link,
+          const materializeDeliverable = materialization.path === deliverable.path ? deliverable : { ...deliverable, path: materialization.path }
+          const file = await this.options.assets.materialize(scope, input.taskId, plan.workspace.path!, materializeDeliverable, link,
             mapping.artifactId, input.nodeRunId, input.signal, assert)
-          await save({ ...links.get(link.kind + ':' + link.jobId)!, materializations: [
-            ...link.materializations.filter(item => item.deliverableId !== deliverable.id), { ...materialization, sha256: file.sha256, status: 'saved' },
+          const currentLink = links.get(link.kind + ':' + link.jobId)!
+          await save({ ...currentLink, materializations: [
+            ...currentLink.materializations.filter(item => item.deliverableId !== deliverable.id), { ...materialization, path: file.path, sha256: file.sha256, status: 'saved' },
           ] })
           files.push(file)
         }

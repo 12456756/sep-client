@@ -9,6 +9,7 @@ import { Empty, StepStateChip, WorkStatusChip } from '../../components/enterpris
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { WorkConversation, WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
+import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
@@ -208,6 +209,9 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           </section>
 
           {isConversation ? <MediaArtifactsPanel taskId={work.id} /> : null}
+          {!isConversation && work.arrangementExecution?.media?.length ? (
+            <ArrangementMediaPanel taskId={work.id} media={work.arrangementExecution.media} />
+          ) : null}
 
           {/*
             对话式工作没有步骤报表，工作过程就放在侧栏；

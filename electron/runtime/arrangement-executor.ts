@@ -355,6 +355,7 @@ export class ArrangementExecutor {
     let delivery: NodeDeliveryProgress = checkpoint.delivery ?? { validationAttempts: 0, issues: [], finalFiles: [] }
     let accepted = !structured
     let mediaSession: ArrangementMediaSession | undefined
+    let terminalMediaFailure: unknown
     try {
       this.checkExecutionControl()
       const requiresMediaBridge = !!node.mediaRequirements?.length ||
@@ -448,10 +449,17 @@ export class ArrangementExecutor {
         requestApproval: request => this.options.onApprovalRequest(request),
         onJobCreated: mediaSession?.onJobCreated,
       })
+      const requiresVideoBridge = node.mediaRequirements?.some(item => item.kind === 'video') === true ||
+        node.deliverables?.some(file => file.artifact?.kind === 'video') === true
       const rawVideoTools = await this.options.video?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.onApprovalRequest(request),
         onJobCreated: mediaSession?.onJobCreated, recoverJobIds: mediaSession?.recoverJobIds,
+        autoApproveMedia: requiresVideoBridge,
+        onTerminalFailure: async error => {
+          terminalMediaFailure ??= error
+          await worker?.abort().catch(() => undefined)
+        },
       })
       const { media: mediaTools, video: videoTools } = mediaSession?.bind(rawMediaTools, rawVideoTools) ?? { media: rawMediaTools, video: rawVideoTools }
       if (this.abortRequested) {
@@ -571,7 +579,14 @@ export class ArrangementExecutor {
       const pendingCorrection = delivery.issues.length ? `\n${buildDeliveryCorrection(delivery.validationAttempts, delivery.issues)}` : ''
       const runPromise = worker.run(structured ? withNodeWork(startMessage + pendingCorrection) : `${prompt}${knowledgeContext ? `\n\n${knowledgeContext}` : ''}`)
       if (this.abortRequested) await worker.abort()
-      await runPromise
+      let runError: unknown
+      try {
+        await runPromise
+      } catch (error) {
+        runError = error
+      }
+      if (terminalMediaFailure !== undefined) throw terminalMediaFailure
+      if (runError !== undefined) throw runError
       if (!this.abortRequested) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       this.checkExecutionControl()
@@ -585,7 +600,7 @@ export class ArrangementExecutor {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const interrupted = this.abortRequested
-      const terminal = error instanceof DeliveryExecutionError && !interrupted
+      const terminal = (error instanceof DeliveryExecutionError || terminalMediaFailure !== undefined) && !interrupted
       if (terminal) {
         this.failureRequested = true
         await Promise.all([...this.activeWorkers].filter(([id]) => id !== nodeRunId).map(([, active]) => active.abort().catch(() => undefined)))

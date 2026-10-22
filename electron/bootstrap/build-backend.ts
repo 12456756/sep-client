@@ -294,6 +294,9 @@ class BackendRuntime {
       taskMetadata: this.taskMetadataStore,
       taskManager: this.taskManager,
       arrangementCheckpoints: this.arrangementCheckpoints,
+      arrangementMediaLinks: new ArrangementMediaLinkStore(userDataDir),
+      arrangementMediaAssets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore),
+      videoStore,
       creationGate,
       execution: () => this.getTaskRuntime(),
       planner: {

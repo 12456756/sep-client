@@ -72,7 +72,7 @@ export function assertArrangementMediaLinkUpdate(previous: ArrangementMediaLink,
   }
   for (const before of previous.materializations) {
     const after = next.materializations.find(item => item.deliverableId === before.deliverableId)
-    if (!after || after.path !== before.path || after.sourceArtifactId !== before.sourceArtifactId ||
+    if (!after || (after.path !== before.path && !(before.status === 'pending' && after.status === 'saved')) || after.sourceArtifactId !== before.sourceArtifactId ||
       (before.sha256 && after.sha256 !== before.sha256)) throw new Error('Original materialization identity cannot change.')
   }
 }

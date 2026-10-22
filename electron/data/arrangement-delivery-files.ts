@@ -173,7 +173,7 @@ export async function validateDeliveryFiles(workspace: string, node: Arrangement
     if (!expected) { issues.push({ code: 'DELIVERY_MANIFEST_MISMATCH', message: '提交文件不在节点交付清单中。' }); continue }
     try {
       if (expected.artifact?.kind === 'image' || expected.artifact?.kind === 'video') {
-        const media = options.mediaFiles?.find(file => file.id === expected.id && file.path === expected.path &&
+        const media = options.mediaFiles?.find(file => file.id === expected.id &&
           file.sourceArtifact?.kind === expected.artifact?.kind && submission.mediaDeliverables?.some(mapping =>
             mapping.deliverableId === file.id && mapping.artifactId === file.sourceArtifact?.artifactId))
         if (!media || !finalDeliveryFileSchema.safeParse(media).success) throw new Error('INVALID_FORMAT')

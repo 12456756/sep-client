@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, type Stats } from 'node:fs'
 import { copyFile, lstat, mkdir, open, realpath, rm } from 'node:fs/promises'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { inspectMediaImage } from './media-image'
 import { MAX_VIDEO_BYTES } from './video-files'
 import { arrangementMediaMimeByFormat, isSafeDeliveryPath, type ArrangementDeliverable } from '../domain/arrangement-plan'
@@ -148,6 +148,22 @@ async function publishNoClobber(part: string, target: string, source: { sha256: 
   }
 }
 
+async function allocateMediaTarget(root: string, plannedPath: string, source: { sha256: string; size: number }, signal: AbortSignal): Promise<{ path: string; absolute: string }> {
+  const normalized = plannedPath.replace(/\\/g, '/')
+  const directory = dirname(normalized)
+  const name = basename(normalized)
+  const extensionName = extname(name)
+  const stem = extensionName ? name.slice(0, -extensionName.length) : name
+  for (let index = 1; index <= 10_000; index += 1) {
+    const candidate = index === 1 ? normalized : join(directory, `${stem}-${index}${extensionName}`).replace(/\\/g, '/')
+    const absolute = resolve(root, ...candidate.split('/'))
+    await assertSafeExistingPath(root, absolute)
+    const existing = await lstat(absolute).catch(() => undefined)
+    if (!existing || await existingMatches(absolute, source, signal)) return { path: candidate, absolute }
+  }
+  fail('MEDIA_DESTINATION_CONFLICT')
+}
+
 export async function materializeArrangementMedia(
   workspace: string, deliverable: ArrangementDeliverable, source: ArrangementMediaSource,
   nodeRunId: string, taskDirectory: string, signal: AbortSignal, validate?: () => void,
@@ -163,15 +179,18 @@ export async function materializeArrangementMedia(
   const taskRoot = await realpath(taskDirectory).catch(async () => {
     const parent = dirname(resolve(taskDirectory)); const canonicalParent = await realpath(parent); return resolve(canonicalParent, resolve(taskDirectory).slice(parent.length + 1))
   })
-  const target = resolve(root, ...deliverable.path.split(/[\\/]/)); const snapshot = snapshotPath(taskRoot, source.sha256.toLowerCase(), format)
-  await ensureDirectory(root, dirname(target)); await ensureDirectory(taskRoot, dirname(snapshot))
-  await assertSafeExistingPath(root, target); await assertSafeExistingPath(taskRoot, snapshot)
+  const snapshot = snapshotPath(taskRoot, source.sha256.toLowerCase(), format)
+  await ensureDirectory(root, dirname(resolve(root, ...deliverable.path.replace(/\\/g, '/').split('/')))); await ensureDirectory(taskRoot, dirname(snapshot))
+  const selected = await allocateMediaTarget(root, deliverable.path, source, signal)
+  const target = selected.absolute
+  const targetPath = selected.path
+  await ensureDirectory(root, dirname(target)); await assertSafeExistingPath(taskRoot, snapshot)
   if (await existingMatches(snapshot, source, signal)) {
     if (await existingMatches(target, source, signal)) {
       validate?.(); signal.throwIfAborted()
       await assertSafeExistingPath(taskRoot, snapshot, false); await assertSafeExistingPath(root, target, false)
       await readAndVerify(snapshot, source, signal); await readAndVerify(target, source, signal)
-      return { id: deliverable.id, path: deliverable.path, format: deliverable.format, size: source.size, sha256: source.sha256.toLowerCase(), sourceArtifact: { kind: source.kind, artifactId: source.artifactId, sha256: source.sha256.toLowerCase() }, nodeRunId, validatedAt: Date.now(), snapshot: { sha256: source.sha256.toLowerCase(), size: source.size, source: 'confirmed' } }
+      return { id: deliverable.id, path: targetPath, format: deliverable.format, size: source.size, sha256: source.sha256.toLowerCase(), sourceArtifact: { kind: source.kind, artifactId: source.artifactId, sha256: source.sha256.toLowerCase() }, nodeRunId, validatedAt: Date.now(), snapshot: { sha256: source.sha256.toLowerCase(), size: source.size, source: 'confirmed' } }
     }
     if (await lstat(target).catch(() => undefined)) fail('MEDIA_DESTINATION_CONFLICT')
   } else if (await lstat(snapshot).catch(() => undefined)) fail('SNAPSHOT_CHANGED')
@@ -206,7 +225,7 @@ export async function materializeArrangementMedia(
       await readAndVerify(target, source, signal)
       validate?.(); signal.throwIfAborted()
     } finally { await rm(targetPart, { force: true }) }
-    return { id: deliverable.id, path: deliverable.path, format: deliverable.format, size: source.size, sha256: source.sha256.toLowerCase(), sourceArtifact: { kind: source.kind, artifactId: source.artifactId, sha256: source.sha256.toLowerCase() }, nodeRunId, validatedAt: Date.now(), snapshot: { sha256: source.sha256.toLowerCase(), size: source.size, source: 'confirmed' } }
+    return { id: deliverable.id, path: targetPath, format: deliverable.format, size: source.size, sha256: source.sha256.toLowerCase(), sourceArtifact: { kind: source.kind, artifactId: source.artifactId, sha256: source.sha256.toLowerCase() }, nodeRunId, validatedAt: Date.now(), snapshot: { sha256: source.sha256.toLowerCase(), size: source.size, source: 'confirmed' } }
   } finally { if (handle) await handle.close(); await rm(part, { force: true }) }
 }
 

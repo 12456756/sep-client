@@ -30,11 +30,14 @@ describe('arrangement media files', () => {
     assert.equal(await resolveArrangementMedia(root, first, task, signal()), await import('node:fs/promises').then(fs => fs.realpath(join(task, 'delivery-snapshots', `${media.sha256}.png`))))
   })
 
-  it('rejects different bytes at an existing destination', async () => {
+  it('keeps different bytes at an existing destination and publishes a suffixed path', async () => {
     const root = await mkdtemp(join(tmpdir(), 'arrangement-media-')); const task = join(root, 'task')
     const media = source(PNG, 'image', 'image/png'); await materializeArrangementMedia(root, deliverable('png'), media, 'run-1', task, signal())
     await writeFile(join(root, 'deliverables/output.png'), Buffer.from('different'))
-    await assert.rejects(materializeArrangementMedia(root, deliverable('png'), media, 'run-1', task, signal()), /MEDIA_DESTINATION_CONFLICT/)
+    const result = await materializeArrangementMedia(root, deliverable('png'), media, 'run-2', task, signal())
+    assert.equal(result.path, 'deliverables/output-2.png')
+    assert.deepEqual(await readFile(join(root, result.path)), PNG)
+    assert.deepEqual(await readFile(join(root, 'deliverables/output.png')), Buffer.from('different'))
   })
 
   it('validates video magic and keeps the 256 MiB video ceiling separate from document limits', async () => {
