@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import type { z } from 'zod'
 import { videoBillingPending, videoReceiptSchema, videoRequestSchema, type VideoGatewayPort, type VideoReceipt } from '../../src/shared/video-media'
-import { receiptMatchesRequest, videoLocalIdSchema, videoScopeSchema, videoStoredQuoteSchema,
+import { receiptMatchesRequest, videoSubmissionRejected, videoLocalIdSchema, videoScopeSchema, videoStoredQuoteSchema,
   type LocalVideoJob, type VideoAssetState, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { abortableVideo } from '../data/video-files'
 import { WriteChain } from '../data/write-chain'
 import { AppError } from '../errors/app-error'
+import { VideoRequestError } from '../errors/video-request-error'
+import { videoErrorMessage } from '../../src/shared/video-errors'
 
 type VideoInput = z.infer<typeof videoRequestSchema>
 export interface VideoServiceOptions {
@@ -100,6 +102,9 @@ export class VideoService {
         signal.throwIfAborted()
         receipt = await abortableVideo(this.gateway.submit(structuredClone(job.request), signal), signal)
       } catch (error) {
+        if (error instanceof VideoRequestError && error.definitelyRejected) {
+          return this.update(job, { trackingStatus: 'STOPPED', error: error.businessCode })
+        }
         // Persist uncertainty, never label a lost response as failure/success or re-submit.
         return this.update(job, interrupted(error, 'SUBMISSION_UNKNOWN'))
       }
@@ -162,6 +167,7 @@ export class VideoService {
       const signal = this.signal(parent)
       signal.throwIfAborted()
       let job = await this.load(taskId, jobId)
+      if (videoSubmissionRejected(job)) return job
       // Recheck under the activity lock: another recovery may just have lost auth.
       if (automatic && job.trackingStatus === 'AUTH_REQUIRED') return job
       if (job.submission === 'NOT_SENT') return this.update(job, { trackingStatus: 'STOPPED', error: 'NOT_SUBMITTED' })
@@ -174,7 +180,7 @@ export class VideoService {
         } catch (error) {
           return this.update(job, interrupted(error, 'VIDEO_QUERY_INTERRUPTED'))
         }
-        if (!receipt) return this.update(job, { trackingStatus: 'INTERRUPTED', error: 'SUBMISSION_UNKNOWN' })
+        if (!receipt) return this.update(job, { trackingStatus: 'INTERRUPTED', error: videoErrorMessage(job.error) ? job.error : 'SUBMISSION_UNKNOWN' })
         signal.throwIfAborted()
         job = await this.accept(job, receipt)
       }

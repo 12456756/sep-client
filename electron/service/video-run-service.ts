@@ -1,8 +1,10 @@
 import { videoToolJobInputSchema } from '../../src/shared/video-host'
 import { videoBillingPending, videoRuntimeSchema } from '../../src/shared/video-media'
+import { videoErrorMessage } from '../../src/shared/video-errors'
 import { videoLocalIdSchema } from '../domain/video-media'
 import type { VideoHostTools, VideoRunPort, VideoToolName } from '../domain/video-tools'
 import { AppError } from '../errors/app-error'
+import { isErrorCode } from '../errors/error-codes'
 import { abortableVideo } from '../data/video-files'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
 
@@ -119,7 +121,8 @@ export class VideoRunService implements VideoRunPort {
       const job = await host.generateTool(input.taskId, name, raw, signal, { runId: input.runId, requestApproval: request => { validate(); return input.requestApproval(request) } })
       run.jobs.add(job.jobId)
       validate()
-      if (job.trackingStatus === 'AUTH_REQUIRED') throw new AppError(job.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED')
+      if (job.trackingStatus === 'AUTH_REQUIRED') throw new AppError(videoErrorMessage(job.error) && isErrorCode(job.error)
+        ? job.error : job.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED')
       run.tracking = host.track(input.taskId)
       void run.tracking.catch(() => undefined)
       return job
@@ -139,7 +142,9 @@ export class VideoRunService implements VideoRunPort {
     const view = await run.host.getTaskVideo(taskId)
     for (const id of run.jobs) {
       const job = view.jobs.find(job => job.jobId === id)
-      if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED' || videoBillingPending(job.billingStatus)) throw new AppError('INVALID_STATE')
+      if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED' || videoBillingPending(job.billingStatus)) {
+        throw new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
+      }
     }
   }
 

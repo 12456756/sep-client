@@ -12,6 +12,7 @@ import type { LocalVideoJob, VideoScope } from '../domain/video-media'
 import type { VideoGatewayPort, VideoReceipt } from '../../src/shared/video-media'
 import { ScopePath, encodeTaskScopeSegment } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
+import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
 
 const scope: VideoScope = { enterpriseId: 'enterprise-a', memberId: 'member-a', subscriptionId: 'subscription-a' }
 const directories: string[] = []
@@ -41,6 +42,92 @@ async function finish(service: VideoService, job: LocalVideoJob): Promise<LocalV
 }
 
 describe('VideoService mock submission, disk recovery and original delivery', () => {
+  for (const [code, status] of [['INSUFFICIENT_FUNDS', 402], ['VIDEO_BUDGET_EXCEEDED', 402], ['QUOTE_EXPIRED', 409], ['VIDEO_CONCURRENCY_LIMIT', 409]] as const) {
+    it(`persists definitive ${code} across restarts without querying or resubmitting`, async () => {
+      const f = await fixture()
+      let submissions = 0
+      const rejected = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId,
+        token: async () => 'test-token', fetch: async () => {
+          submissions++
+          return new Response(JSON.stringify({ error: { code, source: 'platform', requestId: 'req-rejected-1', message: 'private response must not persist' } }),
+            { status, headers: { 'Content-Type': 'application/json' } })
+        } })
+      const gateway: VideoGatewayPort = {
+        quote: async (value, signal) => ({ ...await f.gateway.quote(value, signal), currency: 'CNY', amount: '28.800000' }),
+        submit: rejected.submit.bind(rejected), findReceipt: f.gateway.findReceipt.bind(f.gateway),
+        getReceipt: f.gateway.getReceipt.bind(f.gateway), content: f.gateway.content.bind(f.gateway),
+      }
+      const reopen = () => new VideoService({ scope, executionMode: 'real', store: new VideoStore(f.root), gateway })
+      const first = await reopen().generate('task-a', input())
+      assert.equal(first.error, code)
+      assert.equal(first.trackingStatus, 'STOPPED')
+      assert.equal(first.submission, 'MAYBE_SENT')
+      assert.equal(first.receipt, null)
+      const restored = reopen()
+      const [recovered] = await restored.recover()
+      assert.deepEqual(recovered, first)
+      assert.deepEqual(await restored.resume('task-a', first.jobId), first)
+      await assert.rejects(restored.submit('task-a', first.jobId), /already/)
+      assert.equal(submissions, 1)
+      assert.equal(f.gateway.calls.quote, 1)
+      assert.equal(f.gateway.calls.findReceipt, 0)
+      assert.equal(f.gateway.calls.getReceipt, 0)
+      assert.doesNotMatch(JSON.stringify(first.error), /private/)
+    })
+  }
+
+  it('preserves a legacy rejection code but keeps querying when the response cannot prove platform rejection', async () => {
+    const f = await fixture()
+    let submissions = 0
+    const rejected = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId,
+      token: async () => 'test-token', fetch: async () => {
+        submissions++
+        return new Response(JSON.stringify({ error: { code: 'VIDEO_BUDGET_EXCEEDED' } }),
+          { status: 402, headers: { 'Content-Type': 'application/json' } })
+      } })
+    const gateway: VideoGatewayPort = {
+      quote: async (value, signal) => ({ ...await f.gateway.quote(value, signal), currency: 'CNY', amount: '28.800000' }),
+      submit: rejected.submit.bind(rejected), findReceipt: f.gateway.findReceipt.bind(f.gateway),
+      getReceipt: f.gateway.getReceipt.bind(f.gateway), content: f.gateway.content.bind(f.gateway),
+    }
+    const service = new VideoService({ scope, executionMode: 'real', store: f.store, gateway })
+    const first = await service.generate('task-a', input())
+    assert.equal(first.error, 'VIDEO_BUDGET_EXCEEDED')
+    assert.equal(first.trackingStatus, 'INTERRUPTED')
+    const restored = new VideoService({ scope, executionMode: 'real', store: new VideoStore(f.root), gateway })
+    const [job] = await restored.recover()
+    assert.equal(job.error, 'VIDEO_BUDGET_EXCEEDED')
+    assert.equal(job.trackingStatus, 'INTERRUPTED')
+    assert.equal(job.submission, 'MAYBE_SENT')
+    assert.equal(f.gateway.calls.findReceipt, 1)
+    assert.equal(submissions, 1)
+  })
+
+  it('keeps authorization denial recoverable because funds may already be reserved', async () => {
+    const f = await fixture()
+    const denied = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId,
+      token: async () => 'test-token', fetch: async () => new Response(JSON.stringify({ error: { code: 'MEDIA_FORBIDDEN', source: 'platform' } }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }) })
+    const real = (value: VideoReceipt): VideoReceipt => ({ ...value, mock: false, billingStatus: 'RESERVED' })
+    const gateway: VideoGatewayPort = {
+      quote: async (value, signal) => ({ ...await f.gateway.quote(value, signal), currency: 'CNY', amount: '28.800000' }),
+      submit: async (value, signal) => { await f.gateway.submit(value, signal); return denied.submit(value, signal) },
+      findReceipt: async (id, signal) => { const receipt = await f.gateway.findReceipt(id, signal); return receipt && real(receipt) },
+      getReceipt: async (id, signal) => real(await f.gateway.getReceipt(id, signal)), content: f.gateway.content.bind(f.gateway),
+    }
+    const service = new VideoService({ scope, executionMode: 'real', store: f.store, gateway })
+    const first = await service.generate('task-a', input())
+    assert.equal(first.error, 'MEDIA_FORBIDDEN')
+    assert.equal(first.trackingStatus, 'INTERRUPTED')
+    await service.recover()
+    assert.equal(f.gateway.calls.findReceipt, 1, 'post-reservation authorization errors must reconcile the original receipt')
+    const found = await service.resume('task-a', first.jobId)
+    assert.equal(found.submission, 'RECEIPTED')
+    assert.equal(found.receipt?.billingStatus, 'RESERVED')
+    assert.equal(f.gateway.calls.findReceipt, 1)
+    assert.equal(f.gateway.calls.submit, 1)
+  })
+
   it('reopens a saved real output and reconciles RESERVED then RECONCILING without regeneration or redownload', async () => {
     const f = await fixture()
     let terminalQueries = 0

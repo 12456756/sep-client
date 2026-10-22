@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { videoOutputSchema, videoReceiptSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import type { VideoOutput, VideoReceipt } from '../../src/shared/video-media'
+import { isVideoSubmissionRejectionCode } from '../../src/shared/video-errors'
 
 export const videoLocalIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const scopeSegment = z.string().min(1).max(256).refine(value => !/[\\/]/.test(value) && value !== '.' && value !== '..')
@@ -39,6 +40,11 @@ export const localVideoJobSchema = z.object({
   }
 })
 export type LocalVideoJob = z.infer<typeof localVideoJobSchema>
+
+export function videoSubmissionRejected(job: LocalVideoJob): boolean {
+  return job.submission === 'MAYBE_SENT' && job.receipt === null && job.trackingStatus === 'STOPPED' &&
+    isVideoSubmissionRejectionCode(job.error)
+}
 
 export function receiptMatchesRequest(job: Pick<LocalVideoJob, 'request' | 'executionMode'>, receipt: VideoReceipt): boolean {
   return receipt.mock === ((job.executionMode ?? 'mock') === 'mock') && receipt.clientRequestId === job.request.clientRequestId && receipt.profileId === job.request.profileId &&

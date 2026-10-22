@@ -50,6 +50,7 @@ import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 import { GatewayRetryWait } from './gateway-retry-wait'
 import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
+import { videoErrorMessage } from '../../../src/shared/video-errors'
 
 const log = logger.child('pi-gateway')
 
@@ -98,7 +99,7 @@ const videoJobResultSchema = z.object({
   actualCostCny: z.string().regex(/^\d+\.\d{6}$/).max(128).optional(),
   amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).max(128).optional(),
   // Free-form upstream messages can echo prompts, paths or credentials. Never forward them.
-  error: z.string().max(8192).nullable().transform(value => value === null ? null : 'Video job reported an error.'),
+  error: z.string().max(8192).nullable().transform(value => value === null ? null : videoErrorMessage(value) ? value : 'Video job reported an error.'),
   createdAt: z.number().nonnegative().finite(), updatedAt: z.number().nonnegative().finite(),
   outputs: z.array(videoOutputSchema.strip()).max(4),
 }).refine(job => job.billingStatus !== 'MOCK_NOT_CHARGED' || job.amountCny === undefined && job.actualCostCny === undefined && job.amountUsd === undefined)
@@ -185,6 +186,7 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
             ...(diagnostic.httpStatus === undefined ? {} : { httpStatus: diagnostic.httpStatus }),
             ...(diagnostic.resource === undefined ? {} : { resource: diagnostic.resource }),
             ...(diagnostic.stage === undefined ? {} : { stage: diagnostic.stage }),
+            ...(diagnostic.requestId === undefined ? {} : { requestId: diagnostic.requestId }),
           })
           return failure(JSON.stringify(business))
         }

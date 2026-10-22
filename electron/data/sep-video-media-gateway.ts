@@ -8,25 +8,23 @@ import {
 } from '../../src/shared/video-media'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { SEP_MEDIA_MOCK_PNG_BASE64, SEP_MEDIA_MOCK_PNG_SHA256 } from '../common/platform/sep-media-gateway-contract'
+import { VideoRequestError, type VideoErrorSource, type VideoRequestStage } from '../errors/video-request-error'
 import { AppError } from '../errors/app-error'
-import type { ErrorCode } from '../errors/error-codes'
 import { inspectMediaImage } from './media-image'
 import { config } from '../common/config'
 import { platformSourceHeaders } from '../common/platform/platform-source-headers'
+import { videoErrorMessage } from '../../src/shared/video-errors'
 
 const id = schema.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)
 const JSON_BUDGET = 256 * 1024
+const ERROR_JSON_BUDGET = 8 * 1024
 const referenceBytes = Buffer.from(SEP_MEDIA_MOCK_PNG_BASE64, 'base64')
 const videoBytes = Buffer.from(fixture.mediaFixture.base64, 'base64')
-type VideoRequestStage = 'video-authorization' | 'video-quote' | 'video-submit'
-
-export class SepVideoGatewayError extends AppError {
-  constructor(readonly gatewayCode: string, readonly statusCode = 0, stage?: VideoRequestStage) {
-    const code: ErrorCode = statusCode === 401 ? 'AUTH_REQUIRED' : statusCode === 403 ? 'PERMISSION_DENIED'
-      : statusCode === 404 ? 'NOT_FOUND' : statusCode === 400 ? 'INVALID_ARGUMENT' : statusCode === 409 || statusCode === 410 ? 'INVALID_STATE' : statusCode === 429 ? 'RATE_LIMITED'
-        : gatewayCode === 'VIDEO_NETWORK_ERROR' ? 'NETWORK_ERROR' : gatewayCode === 'VIDEO_INVALID_REQUEST' ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
-    super(code, { message: `SEP video request failed (${gatewayCode}).`,
-      details: { resource: 'video', ...(stage ? { stage } : {}) } })
+export class SepVideoGatewayError extends VideoRequestError {
+  readonly gatewayCode: string
+  constructor(gatewayCode: string, statusCode = 0, stage?: VideoRequestStage, details?: { businessCode?: string | null; source?: VideoErrorSource; requestId?: string | null }) {
+    super({ gatewayCode, statusCode, stage, ...details })
+    this.gatewayCode = gatewayCode
     this.name = gatewayCode === 'VIDEO_ABORTED' ? 'AbortError' : 'SepVideoGatewayError'
   }
 }
@@ -257,10 +255,9 @@ class SepVideoGateway implements VideoGatewayPort {
       throw new SepVideoGatewayError('VIDEO_REDIRECT_BLOCKED')
     }
     if (!response.ok) {
-      this.discard(response)
-      // Do not surface provider bodies, URLs or credentials in errors. Never retry a POST.
-      throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status,
-        path === '/quotes' ? 'video-quote' : path === '/requests' ? 'video-submit' : undefined)
+      const stage = method === 'POST' ? path === '/quotes' ? 'video-quote' : path === '/requests' ? 'video-submit' : undefined : undefined
+      const details = await this.errorDetails(response, signal)
+      throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, details)
     }
     return response
   }
@@ -301,6 +298,54 @@ class SepVideoGateway implements VideoGatewayPort {
 
   private mime(response: Response): string {
     return (response.headers.get('Content-Type') ?? '').split(';', 1)[0].trim().toLowerCase()
+  }
+
+  private async errorDetails(response: Response, signal: AbortSignal): Promise<{ businessCode: string | null; source: VideoErrorSource; requestId: string | null }> {
+    const headerRequestId = response.headers.get('x-request-id')
+    const requestId = headerRequestId && /^[A-Za-z0-9_-]{1,128}$/.test(headerRequestId) ? headerRequestId : null
+    if (this.mime(response) !== 'application/json') { this.discard(response); return { businessCode: null, source: null, requestId } }
+    try {
+      const length = this.length(response, ERROR_JSON_BUDGET)
+      const reader = response.body?.getReader()
+      if (!reader) return { businessCode: null, source: null, requestId }
+      try {
+        const chunks: Uint8Array[] = []; let size = 0
+        for (;;) {
+          const chunk = await abortable(signal, () => reader.read())
+          if (chunk.done) break
+          size += chunk.value.byteLength
+          if (size > ERROR_JSON_BUDGET) return { businessCode: null, source: null, requestId }
+          chunks.push(chunk.value)
+        }
+        if (length !== null && length !== size) return { businessCode: null, source: null, requestId }
+        const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks))) as unknown
+        if (!value || typeof value !== 'object' || Array.isArray(value) || !('error' in value) || !value.error || typeof value.error !== 'object' || Array.isArray(value.error)) {
+          return { businessCode: null, source: null, requestId }
+        }
+        const error = value.error as Record<string, unknown>
+        const rawCode = typeof error.code === 'string' ? error.code : null
+        const businessCode = rawCode && videoErrorMessage(rawCode) !== null ? rawCode : null
+        const source = error.source === 'platform' || error.source === 'upstream' ? error.source : null
+        if (error.requestId !== undefined && (typeof error.requestId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(error.requestId))) {
+          return { businessCode: null, source: null, requestId }
+        }
+        const bodyRequestId = typeof error.requestId === 'string' ? error.requestId : null
+        const safeBodyRequestId = bodyRequestId && /^[A-Za-z0-9_-]{1,128}$/.test(bodyRequestId) ? bodyRequestId : null
+        if (headerRequestId !== null && (requestId === null || safeBodyRequestId !== null && safeBodyRequestId !== requestId)) {
+          return { businessCode: null, source: null, requestId: null }
+        }
+        return { businessCode, source, requestId: safeBodyRequestId ?? requestId }
+      } finally {
+        void reader.cancel().catch(() => undefined)
+        reader.releaseLock()
+      }
+    } catch (error) {
+      this.discard(response)
+      if (signal.aborted || error instanceof SepVideoGatewayError && error.gatewayCode === 'VIDEO_ABORTED') {
+        throw new SepVideoGatewayError('VIDEO_ABORTED')
+      }
+      return { businessCode: null, source: null, requestId }
+    }
   }
 
   private length(response: Response, budget: number): number | null {

@@ -5,7 +5,7 @@ import { videoFormParameters } from '../../src/shared/media-view'
 import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
-import { videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
+import { videoSubmissionRejected, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { logger } from '../common/logger'
 import { abortableVideo } from '../data/video-files'
@@ -62,10 +62,12 @@ interface Context {
 }
 
 function jobView(job: LocalVideoJob): VideoJobView {
+  const rejected = videoSubmissionRejected(job)
   return {
     jobId: job.jobId, taskId: job.taskId, profileId: job.request.profileId, operation: job.request.operation,
-    parameters: { ...job.request.parameters }, generationStatus: job.receipt?.status ?? (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : 'SUBMISSION_UNKNOWN'),
-    trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real' ? 'NOT_RESERVED' : 'MOCK_NOT_CHARGED'),
+    parameters: { ...job.request.parameters }, generationStatus: job.receipt?.status ?? (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : rejected ? 'FAILED' : 'SUBMISSION_UNKNOWN'),
+    trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real'
+      ? job.submission === 'NOT_SENT' || rejected ? 'NOT_RESERVED' : 'RECONCILING' : 'MOCK_NOT_CHARGED'),
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error,
@@ -411,7 +413,7 @@ export class MockVideoHostService {
         const input = resolve(runtime)
         const jobs = await context.service.listJobs()
         this.assert(scope, epoch, signal)
-        if (jobs.some(job => job.taskId === taskId && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
+        if (jobs.some(job => job.taskId === taskId && !videoSubmissionRejected(job) && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
           throw new AppError('CONFLICT', { message: '原视频提交状态尚未确认，请查询或恢复原任务，不能重复生成。' })
         }
         const profile = this.profile(runtime, input)
