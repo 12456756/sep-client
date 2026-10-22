@@ -851,6 +851,13 @@ describe('TaskRuntime arrangement controls', () => {
             } else {
               assert.equal(options.context.resumeSessionFile, sessionFile)
               assert.match(prompt, /INVALID_SUBMISSION/)
+              const node = arrangement.nodes.find(item => item.id === id)!
+              for (const value of [node.objective!, node.instruction, node.expectedOutput, JSON.stringify(node.deliverables, null, 2)]) {
+                assert.ok(prompt.includes(value), `Resumed user message must contain ${value}`)
+              }
+              assert.ok(prompt.includes(`当前节点：${node.title}（${id}）`))
+              assert.match(prompt, /先核对历史操作是否属于当前节点/)
+              assert.match(prompt, /不得覆盖前置节点的最终交付文件/)
               assert.equal(checkpoints.value?.state.nodes[1]?.delivery?.validationAttempts, 0)
             }
           }

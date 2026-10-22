@@ -66,6 +66,44 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
 function submission(id: string): string { return JSON.stringify({ nodeId: id, summary: 'private summary '+id, finalDeliverables: [{ id: 'report', path: `deliverables/${id}.txt` }] }) }
 
 describe('automatic arrangement final file handover', () => {
+  it('restates only the current node work in initial and correction user messages', async () => {
+    const efficiencyPrompt = `【执行效率要求】
+完整完成本节点工作，不得省略必要操作、技能读取、安全审批和交付验收。
+
+1. 确定可行方案后立即执行，不再反复比较；只有失败或发现实质问题时才调整。
+2. 相关读取、修改和检查合并完成；无依赖且安全的操作并行执行。
+3. 已成功且结果仍有效的操作不得重复，只修复失败项、复查受影响内容。
+4. 只处理本节点任务，不扫描无关目录，不修改前置最终文件，不增加额外交付物。
+5. 全部验收条件通过后立即提交最终 JSON，不再美化、扩展或重复检查。
+
+不得假装操作、编造结果或用文字代替实际文件。`
+    const f = await fixture(async (id, iteration, root) => {
+      const prompt = f.prompts.at(-1)!
+      const node = f.plan.nodes.find(item => item.id === id)!
+      for (const value of [node.objective!, node.instruction, node.expectedOutput, JSON.stringify(node.deliverables, null, 2)]) {
+        assert.ok(prompt.includes(value), `User message must contain ${value}`)
+      }
+      assert.ok(prompt.includes(`当前节点：${node.title}（${id}）`))
+      assert.ok(prompt.includes(efficiencyPrompt))
+      assert.ok(prompt.indexOf('【当前工作】') < prompt.indexOf('【执行效率要求】'))
+      assert.ok(prompt.indexOf('【执行效率要求】') < prompt.indexOf('【员工能力与 skill】'))
+      assert.match(prompt, /先核对历史操作是否属于当前节点/)
+      if (id === 'b') {
+        assert.match(prompt, /deliverables\/a.txt/)
+        assert.match(prompt, /不得覆盖前置节点的最终交付文件/)
+        assert.doesNotMatch(prompt, /节点执行指令：Do a|private summary a/)
+      }
+      if (iteration > 1) assert.match(prompt, /INVALID_SUBMISSION/)
+      if (iteration === 1) return { text: '' }
+      await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
+      return { text: submission(id) }
+    })
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.equal(f.prompts.length, 4)
+    assert.ok(f.contexts.every(context => context.fixedSystemPrompt?.includes(efficiencyPrompt)))
+  })
+
   it('accepts a complete long final reply and hands its validated file to the next node', async () => {
     const summary = 'Detailed findings. '.repeat(200).trim()
     const f = await fixture(async (id, _iteration, root) => {

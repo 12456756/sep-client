@@ -80,6 +80,17 @@ export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode
 节点执行指令：${node.instruction}
 只承担当前节点职责，不擅自执行其他节点的工作。
 
+【执行效率要求】
+完整完成本节点工作，不得省略必要操作、技能读取、安全审批和交付验收。
+
+1. 确定可行方案后立即执行，不再反复比较；只有失败或发现实质问题时才调整。
+2. 相关读取、修改和检查合并完成；无依赖且安全的操作并行执行。
+3. 已成功且结果仍有效的操作不得重复，只修复失败项、复查受影响内容。
+4. 只处理本节点任务，不扫描无关目录，不修改前置最终文件，不增加额外交付物。
+5. 全部验收条件通过后立即提交最终 JSON，不再美化、扩展或重复检查。
+
+不得假装操作、编造结果或用文字代替实际文件。
+
 【员工能力与 skill】
 skill 是硅基员工能力的主要载体，是员工专业方法、执行流程和产出规范的能力表现，不是可忽略的附加信息。
 开始执行前，检查可用 skill 的描述，读取与当前工作相关的 SKILL.md 完整内容，按照其中的流程、约束和文件生成要求执行。
@@ -311,7 +322,9 @@ export class ArrangementExecutor {
     const fileOptions = { taskDirectory: paths?.taskDir, allowWorkspaceChanges: true }
     const dependencies: Array<{ node: ArrangementNode; output: string | null; files: (FinalDeliveryFile & { readPath?: string })[] }> = node.dependsOn.map(id => ({ node: plan.nodes.find(item => item.id === id)!, output: state.nodes.find(item => item.nodeId === id)?.output ?? null,
       files: state.nodes.find(item => item.nodeId === id)?.delivery?.finalFiles ?? [] }))
-    let prompt = buildArrangementNodePrompt(plan, node, dependencies)
+    const nodeWorkPrompt = buildArrangementNodePrompt(plan, node, dependencies)
+    const withNodeWork = (message: string): string => `${nodeWorkPrompt}\n\n【本轮执行要求】\n先核对历史操作是否属于当前节点，只复用与本节点有关的有效进度；历史记录或过程文件中的其他节点任务不能替代上述当前工作。\n${message}`
+    let prompt = nodeWorkPrompt
     let output = ''
     let worker: TaskWorkerPort | null = null
     let created = false
@@ -451,7 +464,7 @@ export class ArrangementExecutor {
             subscriptionId: node.subscriptionId, data: { validationAttempts: delivery.validationAttempts, accepted, issues: delivery.issues } })
           if (accepted) return
           if (delivery.validationAttempts >= MAX_DELIVERY_VALIDATIONS) throw new DeliveryExecutionError(`本节点连续 5 次交付校验失败，停止自动修正：${delivery.issues.map(issue => `${issue.path ?? ''} ${issue.message}`).join('\n')}`)
-          return { continueWith: buildDeliveryCorrection(delivery.validationAttempts, delivery.issues) }
+          return { continueWith: withNodeWork(buildDeliveryCorrection(delivery.validationAttempts, delivery.issues)) }
         } } : {}),
         onEvent: async event => {
           if (event.type === 'turn_start') output = ''
@@ -489,7 +502,7 @@ export class ArrangementExecutor {
         ? '沿用当前节点保存的会话和进度继续执行，按固定节点要求修复未完成事项，不要重做已完成操作。'
         : '请开始执行当前节点。'
       const pendingCorrection = delivery.issues.length ? `\n${buildDeliveryCorrection(delivery.validationAttempts, delivery.issues)}` : ''
-      const runPromise = worker.run(structured ? startMessage + pendingCorrection : `${prompt}${knowledgeContext ? `\n\n${knowledgeContext}` : ''}`)
+      const runPromise = worker.run(structured ? withNodeWork(startMessage + pendingCorrection) : `${prompt}${knowledgeContext ? `\n\n${knowledgeContext}` : ''}`)
       if (this.abortRequested) await worker.abort()
       await runPromise
       if (!this.abortRequested) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
