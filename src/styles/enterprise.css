@@ -40,6 +40,7 @@
   --ent-shell: #f5f3f5;
   --ent-panel: #ffffff;
   --ent-panel-subtle: #fbf9fa;
+  --ent-overlay: rgb(24 28 38 / 34%);
 
   --ent-line-soft: #f0ebee;
   --ent-line: #e5dfe4;
@@ -137,11 +138,13 @@
 }
 
 /* 深色主题只覆盖语义令牌，页面组件不需要分别维护两套颜色。 */
-.ent-shell.dark {
+.ent-shell.dark,
+:root:has(.ent-shell.dark) :is(.kb-overlay, .kb-dialog, .kb-document-drawer, .skill-dialog-overlay, .skill-save-dialog) {
   --ent-canvas: #11131a;
   --ent-shell: #11131a;
   --ent-panel: #1a1d26;
   --ent-panel-subtle: #20242f;
+  --ent-overlay: rgb(5 7 12 / 62%);
   --ent-line-soft: #292e3b;
   --ent-line: #333948;
   --ent-line-strong: #454c5e;
@@ -495,12 +498,13 @@
 .ent-enterprise-logo { object-fit: contain; border: 1px solid var(--ent-line-soft); background: var(--ent-panel); }
 
 /* ── 账号资料弹窗 ───────────────────────────────────────────────────── */
-.ent-profile-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 24px; background: rgb(24 28 38 / 28%); }
+.ent-profile-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--ent-overlay); }
 .ent-profile-dialog { width: min(460px, 100%); border: 1px solid var(--ent-line); border-radius: 14px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); }
 .ent-profile-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 20px 22px 16px; border-bottom: 1px solid var(--ent-line-soft); }
 .ent-profile-head h2 { margin: 3px 0 0; color: var(--ent-ink); font-size: 18px; }
 .ent-profile-close { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid transparent; border-radius: 50%; color: var(--ent-ink-3); background: transparent; cursor: pointer; }
 .ent-profile-close:hover { border-color: var(--ent-line); color: var(--ent-ink); background: var(--ent-panel-subtle); }
+.ent-profile-close:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
 .ent-profile-body { display: grid; gap: 18px; padding: 22px; }
 .ent-profile-preview { display: flex; align-items: center; gap: 13px; }
 .ent-profile-preview > div { display: grid; gap: 4px; min-width: 0; }
@@ -979,9 +983,9 @@
  * 居中弹窗会把整页盖住，用户失去「我刚点的是谁」的上下文。
  * 抽屉整体从 translateX(100%) 推到位（260ms），遮罩同时淡入（200ms）。
  */
-.ent-drawer-back { position: fixed; z-index: 60; inset: 0; background: rgb(25 30 45 / 50%); animation: ent-fade-in 200ms ease-out; }
+.ent-drawer-back { position: fixed; z-index: 60; inset: 0; background: var(--ent-overlay); animation: ent-fade-in 200ms ease-out; }
 @keyframes ent-fade-in { from { opacity: 0; } }
-.ent-drawer { position: fixed; z-index: 61; top: 0; right: 0; bottom: 0; display: flex; width: min(400px, 94vw); flex-direction: column; background: var(--ent-panel); box-shadow: var(--ent-shadow-drawer); animation: ent-drawer-in 260ms cubic-bezier(.22, 1, .36, 1); }
+.ent-drawer { position: fixed; z-index: 61; top: 0; right: 0; bottom: 0; display: flex; width: min(400px, 94vw); flex-direction: column; border-left: 1px solid var(--ent-line); background: var(--ent-panel); box-shadow: var(--ent-shadow-drawer); animation: ent-drawer-in 260ms cubic-bezier(.22, 1, .36, 1); }
 @keyframes ent-drawer-in { from { transform: translateX(100%); } }
 .ent-drawer-head { display: flex; align-items: flex-start; gap: 14px; padding: 20px 18px 16px; }
 .ent-drawer-id { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
@@ -995,6 +999,7 @@
 .ent-drawer-tabs { display: flex; gap: 24px; padding: 0 18px; box-shadow: inset 0 -1px 0 var(--ent-line); }
 .ent-drawer-tabs button { position: relative; height: 42px; padding: 0; border: 0; background: none; color: var(--ent-ink-2); font-size: var(--ent-fs-body); cursor: pointer; transition: color var(--ent-ease); }
 .ent-drawer-tabs button:hover { color: var(--ent-ink); }
+.ent-drawer-tabs button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: -2px; }
 .ent-drawer-tabs button.active { color: var(--ent-brand-ink); font-weight: 600; }
 .ent-drawer-tabs button.active::after { content: ''; position: absolute; right: 0; bottom: 0; left: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--ent-brand-solid); }
 .ent-drawer-body { min-height: 0; flex: 1; padding: 16px 18px 22px; overflow-y: auto; }
@@ -1462,32 +1467,33 @@
 .ent-node-port.out:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
 
 /* ---------------------------------------------------------------- 工作记录 */
-.ent-record-toolbar { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
-.ent-record-filter-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
-.ent-record-filter-label { flex: 0 0 auto; color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
-.ent-record-filters { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; padding: 4px; border: 1px solid var(--ent-line); border-radius: 8px; background: var(--ent-panel); }
-.ent-record-filters button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 0; border-radius: 4px; color: var(--ent-ink-2); background: transparent; font-size: var(--ent-fs-body); white-space: nowrap; cursor: pointer; transition: background 140ms ease, color 140ms ease; }
-.ent-record-filters button:hover { color: var(--ent-ink); background: var(--ent-panel-subtle); }
+.ent-record-toolbar { display: flex; flex-direction: column; gap: 9px; margin-bottom: 18px; padding-bottom: 16px; border-bottom: 1px solid color-mix(in srgb, var(--ent-line) 72%, transparent); }
+.ent-record-filter-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.ent-record-filter-label { flex: 0 0 32px; color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-record-filters { display: flex; flex-wrap: wrap; gap: 3px; max-width: 100%; padding: 3px; border: 1px solid color-mix(in srgb, var(--ent-line) 76%, transparent); border-radius: 9px; background: color-mix(in srgb, var(--ent-panel) 58%, transparent); }
+.ent-record-filters button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 31px; padding: 0 10px; border: 1px solid transparent; border-radius: 6px; color: var(--ent-ink-2); background: transparent; font-size: var(--ent-fs-body); white-space: nowrap; cursor: pointer; transition: background 140ms ease, border-color 140ms ease, color 140ms ease; }
+.ent-record-filters button:hover { color: var(--ent-ink); background: color-mix(in srgb, var(--ent-panel) 84%, transparent); }
 .ent-record-filters button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
-.ent-record-filters button.active { border-color: transparent; color: #fff; background: var(--ent-brand-solid); font-weight: 500; }
-.ent-record-filters button em { min-width: 4ch; padding: 1px 4px; border-radius: 4px; background: var(--ent-muted-bg); color: var(--ent-ink-2); font-size: var(--ent-fs-note); font-style: normal; font-variant-numeric: tabular-nums; text-align: center; }
-.ent-record-filters button.active em { background: rgb(255 255 255 / 22%); color: #fff; }
-.ent-record-search { flex: 1 1 200px; min-width: 0; max-width: 340px; margin-left: auto; }
+.ent-record-filters button.active { border-color: var(--ent-brand-border); color: var(--ent-brand-ink); background: var(--ent-brand-soft); font-weight: 600; }
+.ent-record-filters button em { min-width: 3ch; padding: 1px 4px; border-radius: 4px; background: var(--ent-muted-bg); color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-style: normal; font-variant-numeric: tabular-nums; text-align: center; }
+.ent-record-filters button.active em { background: color-mix(in srgb, var(--ent-brand-border) 44%, var(--ent-panel)); color: var(--ent-brand-ink); }
+.ent-record-search { flex: 1 1 200px; min-width: 0; max-width: 360px; margin-left: auto; border-color: color-mix(in srgb, var(--ent-line) 82%, transparent); background: color-mix(in srgb, var(--ent-panel) 86%, transparent); }
 .ent-record-search input { min-width: 0; width: 100%; }
-.ent-record-type { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 3px 7px; border: 1px solid var(--ent-line); border-radius: 4px; color: var(--ent-ink-2); background: var(--ent-panel-subtle); font-size: var(--ent-fs-note); line-height: 1.3; white-space: nowrap; }
+.ent-record-type { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; padding: 3px 8px; border: 1px solid var(--ent-line); border-radius: 999px; color: var(--ent-ink-2); background: color-mix(in srgb, var(--ent-panel-subtle) 80%, transparent); font-size: var(--ent-fs-note); line-height: 1.3; white-space: nowrap; }
+.ent-record-type.resolved { border-color: var(--ent-line-soft); }
 .ent-record-type.loading { border-style: dashed; color: var(--ent-ink-3); background: transparent; }
 .ent-record-type.unavailable { border-style: dotted; color: var(--ent-ink-3); background: var(--ent-muted-bg); }
-.ent-record-type-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 12px; color: var(--ent-ink-2); font-size: var(--ent-fs-note); line-height: 1.6; }
+.ent-record-type-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin: 0 0 12px; padding: 8px 11px; border: 1px solid var(--ent-line-soft); border-radius: var(--ent-radius-sm); color: var(--ent-ink-2); background: color-mix(in srgb, var(--ent-panel) 70%, transparent); font-size: var(--ent-fs-note); line-height: 1.6; }
 .ent-record-type-notice > svg { flex-shrink: 0; }
 .ent-record-type-notice.unavailable { color: var(--ent-ink-3); }
 .ent-record-type-notice .ent-btn { margin-left: auto; }
 
-.ent-records { display: flex; flex-direction: column; gap: 12px; }
-.ent-record { padding: 16px 18px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius); background: var(--ent-panel); box-shadow: var(--ent-shadow); transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
-.ent-record:hover { border-color: var(--ent-brand-border); box-shadow: var(--ent-shadow-lift); }
+.ent-records { display: flex; flex-direction: column; gap: 10px; }
+.ent-record { padding: 16px 18px; border: 1px solid color-mix(in srgb, var(--ent-line) 88%, transparent); border-radius: var(--ent-radius); background: color-mix(in srgb, var(--ent-panel) 92%, transparent); box-shadow: 0 1px 3px rgb(48 38 48 / 3%); transition: border-color var(--ent-ease), box-shadow var(--ent-ease), background var(--ent-ease); }
+.ent-record:hover { border-color: var(--ent-brand-border); background: var(--ent-panel); box-shadow: var(--ent-shadow); }
 .ent-record.open { border-color: var(--ent-brand-border); }
 .ent-record-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.ent-record-title { min-width: 0; max-width: 100%; padding: 0; border: 0; background: none; color: var(--ent-ink); font-size: var(--ent-fs-title); font-weight: 600; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.ent-record-title { min-width: 0; max-width: 100%; padding: 0; border: 0; background: none; color: var(--ent-ink); font-size: var(--ent-fs-module); font-weight: 600; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
 .ent-record-title:hover { color: var(--ent-brand-ink); }
 .ent-record-head .ent-tag { margin-left: auto; }
 .ent-record-goal { display: -webkit-box; margin: 7px 0 0; overflow: hidden; color: var(--ent-ink-2); font-size: var(--ent-fs-body); line-height: 1.75; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
@@ -1511,6 +1517,7 @@
 .ent-record-detail h3 + * + h3, .ent-record-detail ol + h3, .ent-record-detail ul + h3, .ent-record-detail p + h3 { margin-top: 15px; }
 .ent-record-detail .ent-hint { margin: 0; }
 .ent-record .ent-confirm { margin-top: 14px; }
+.ent-record-page > .ent-empty { border-color: color-mix(in srgb, var(--ent-line) 78%, transparent); background: color-mix(in srgb, var(--ent-panel) 72%, transparent); }
 
 @media (max-width: 980px) {
   .ent-home-summary-note { display: none; }
@@ -2211,8 +2218,8 @@
 .ent-top-command { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 8px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-sm); color: var(--ent-ink-2); background: var(--ent-panel-subtle); font: inherit; font-size: var(--ent-fs-note); cursor: pointer; transition: border-color var(--ent-ease), color var(--ent-ease), background var(--ent-ease); }
 .ent-top-command:hover { border-color: var(--ent-brand-border); color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
 .ent-top-command span { font-size: 11px; font-variant-numeric: tabular-nums; }
-.ent-command-layer { position: fixed; z-index: 80; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding: max(88px, 12vh) 24px 24px; background: rgb(20 24 40 / 28%); backdrop-filter: blur(2px); }
-.ent-command { width: min(600px, 100%); overflow: hidden; border: 1px solid var(--ent-line); border-radius: 14px; background: var(--ent-panel); box-shadow: 0 18px 50px rgb(24 30 60 / 22%); }
+.ent-command-layer { position: fixed; z-index: 80; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding: max(88px, 12vh) 24px 24px; background: var(--ent-overlay); backdrop-filter: blur(2px); }
+.ent-command { width: min(600px, 100%); overflow: hidden; border: 1px solid var(--ent-line); border-radius: 14px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); }
 .ent-command-search { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1px solid var(--ent-line-soft); color: var(--ent-brand-ink); }
 .ent-command-search input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--ent-ink); background: transparent; font: inherit; font-size: 16px; }
 .ent-command-search input::placeholder { color: var(--ent-ink-3); }
@@ -2223,6 +2230,7 @@
 .ent-command-list { max-height: min(430px, 50vh); padding: 4px 8px 8px; overflow-y: auto; }
 .ent-command-item { display: flex; width: 100%; align-items: center; gap: 10px; min-height: 52px; padding: 7px 10px; border: 0; border-radius: 8px; color: var(--ent-ink); background: transparent; font: inherit; text-align: left; cursor: pointer; }
 .ent-command-item:hover, .ent-command-item.active { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
+.ent-command-item:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: -2px; }
 .ent-command-icon { display: grid; width: 28px; height: 28px; flex: 0 0 28px; place-items: center; border-radius: 7px; color: var(--ent-brand-ink); background: var(--ent-brand-soft); }
 .ent-command-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .ent-command-copy strong { overflow: hidden; color: inherit; font-size: var(--ent-fs-body); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
