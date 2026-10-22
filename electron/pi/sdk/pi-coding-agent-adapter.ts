@@ -102,6 +102,11 @@ const videoJobResultSchema = z.object({
   error: z.string().max(8192).nullable().transform(value => value === null ? null : videoErrorMessage(value) ? value : 'Video job reported an error.'),
   createdAt: z.number().nonnegative().finite(), updatedAt: z.number().nonnegative().finite(),
   outputs: z.array(videoOutputSchema.strip()).max(4),
+  artifacts: z.array(z.object({
+    artifactId: z.string().regex(/^vout_[a-f0-9]{64}$/),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    status: z.enum(['pending', 'saving', 'saved', 'save-failed', 'missing', 'expired']),
+  })).max(4).optional(),
 }).refine(job => job.billingStatus !== 'MOCK_NOT_CHARGED' || job.amountCny === undefined && job.actualCostCny === undefined && job.amountUsd === undefined)
 const videoTaskResultSchema = z.object({
   mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&

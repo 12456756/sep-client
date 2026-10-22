@@ -7,6 +7,7 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { PDFDocument } from 'pdf-lib'
 import { isSafeDeliveryPath, type ArrangementNode } from '../domain/arrangement-plan'
 import { finalDeliveryFileSchema, type DeliveryIssue, type DeliverySubmission, type FinalDeliveryFile } from '../domain/arrangement-delivery'
+import { resolveArrangementMediaFile } from './arrangement-media-files'
 
 const MAX_BYTES = 64 * 1024 * 1024
 const MAX_XML_BYTES = 8 * 1024 * 1024
@@ -16,6 +17,8 @@ type FileResult = { ok: true; files: FinalDeliveryFile[] } | { ok: false; issues
 export interface DeliveryFileOptions {
   taskDirectory?: string
   allowWorkspaceChanges?: boolean
+  /** Main-process media coordinator receipts, never model/renderer-provided records. */
+  mediaFiles?: readonly FinalDeliveryFile[]
 }
 
 export interface ResolvedDeliveryFiles {
@@ -146,6 +149,10 @@ function fileIssue(error: unknown, id: string, path: string): DeliveryIssue {
     INVALID_FORMAT: '文件内容不能按规定文档格式解析，请重新生成有效文档。',
     SNAPSHOT_CHANGED: '交付快照已损坏，不能使用变化后的文件代替已确认快照。',
     SNAPSHOT_UNAVAILABLE: '交付快照缺失或无法读取，请恢复快照后继续。',
+    MEDIA_INTEGRITY_MISMATCH: '媒体文件与原始资产的大小或哈希不一致，请恢复原文件。',
+    MEDIA_MIME_MISMATCH: '媒体文件的真实类型与交付格式不一致。',
+    MEDIA_DESTINATION_CONFLICT: '目标路径已有不同内容，请保留现有文件并处理冲突后重试落盘。',
+    PREDECESSOR_FILE_CHANGED: '已确认的前置媒体文件被修改，不能替换原始来源。',
   }
   const missing = !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
   return { code: missing ? 'FILE_MISSING' : messages[code] ? code : 'INVALID_FORMAT', deliverableId: id, path,
@@ -155,7 +162,7 @@ function fileIssue(error: unknown, id: string, path: string): DeliveryIssue {
 export async function validateDeliveryFiles(workspace: string, node: ArrangementNode, submission: DeliverySubmission, nodeRunId: string, signal?: AbortSignal, options: DeliveryFileOptions = {}): Promise<FileResult> {
   signal?.throwIfAborted()
   // Enable these contracts only after scoped asset materialization and media validation are wired.
-  if (submission.mediaDeliverables?.length || node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')) {
+  if (!options.mediaFiles && (submission.mediaDeliverables?.length || node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video'))) {
     return { ok: false, issues: [{ code: 'MEDIA_DELIVERY_NOT_READY', message: '编排媒体资产物化与类型验收尚未接通，当前不能确认此媒体交付。已保存的资产无需重新生成。' }] }
   }
   const files: FinalDeliveryFile[] = []
@@ -165,6 +172,15 @@ export async function validateDeliveryFiles(workspace: string, node: Arrangement
     const expected = node.deliverables?.find(file => file.id === submitted.id && file.path === submitted.path)
     if (!expected) { issues.push({ code: 'DELIVERY_MANIFEST_MISMATCH', message: '提交文件不在节点交付清单中。' }); continue }
     try {
+      if (expected.artifact?.kind === 'image' || expected.artifact?.kind === 'video') {
+        const media = options.mediaFiles?.find(file => file.id === expected.id && file.path === expected.path &&
+          file.sourceArtifact?.kind === expected.artifact?.kind && submission.mediaDeliverables?.some(mapping =>
+            mapping.deliverableId === file.id && mapping.artifactId === file.sourceArtifact?.artifactId))
+        if (!media || !finalDeliveryFileSchema.safeParse(media).success) throw new Error('INVALID_FORMAT')
+        await resolveArrangementMediaFile(workspace, media, options.taskDirectory, signal)
+        files.push(media)
+        continue
+      }
       const bytes = await readWorkspaceFile(workspace, expected.path, signal)
       await validateFormat(bytes, expected.format)
       signal?.throwIfAborted()
@@ -181,6 +197,12 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
     signal?.throwIfAborted()
     if (!finalDeliveryFileSchema.safeParse(file).success || !isSafeDeliveryPath(file.path)) { result.issues.push({ code: 'INVALID_DELIVERY_RECORD', message: '前置最终交付记录不完整或路径无效。' }); continue }
     try {
+      if (file.sourceArtifact) {
+        const path = await resolveArrangementMediaFile(workspace, file, options.taskDirectory, signal)
+        result.files.push(file)
+        result.readPaths.push(path)
+        continue
+      }
       if (file.snapshot) {
         if (!options.taskDirectory) throw new Error('SNAPSHOT_UNAVAILABLE')
         let bytes: Buffer
@@ -203,7 +225,13 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
         message: '历史任务没有交付快照，已使用当前格式有效的文件继续；该恢复版本不等同于原验收版本。' })
       result.files.push(saved)
       result.readPaths.push(saved.snapshot ? resolve(await realpath(options.taskDirectory!), snapshotRelativePath(saved)) : resolve(await realpath(workspace), file.path))
-    } catch (error) { signal?.throwIfAborted(); result.issues.push(fileIssue(error, file.id, file.path)) }
+    } catch (error) {
+      signal?.throwIfAborted()
+      const issue = fileIssue(error, file.id, file.path)
+      if (file.sourceArtifact && !file.snapshot && issue.code === 'MEDIA_INTEGRITY_MISMATCH') {
+        result.issues.push(fileIssue(new Error('PREDECESSOR_FILE_CHANGED'), file.id, file.path))
+      } else result.issues.push(issue)
+    }
   }
   return result
 }

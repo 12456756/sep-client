@@ -48,6 +48,9 @@ import { ConversationContextStore } from '../domain/conversation-context'
 import { ClientMonitorHistoryService } from '../service/client-monitor-history-service'
 import { ClientMonitorService } from '../service/client-monitor-service'
 import { MediaStore } from '../data/media-store'
+import { ArrangementMediaLinkStore } from '../data/arrangement-media-link-store'
+import { ArrangementMediaAssets } from '../data/arrangement-media-assets'
+import { ArrangementMediaService } from '../service/arrangement-media-service'
 import { MediaService } from '../service/media-service'
 import { SpeechService } from '../service/speech-service'
 import { SpeechSettingsStore } from '../data/speech-settings-store'
@@ -100,6 +103,7 @@ class BackendRuntime {
   private readonly speechRuntime: LazyAsync<SpeechRuntimePort>
   readonly video?: MockVideoHostService
   private readonly videoRuns?: VideoRunService
+  private readonly arrangementMedia: ArrangementMediaService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -213,8 +217,9 @@ class BackendRuntime {
       },
     })
 
-    if (config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED) {
-      const store = new VideoStore(userDataDir)
+    const videoStore = config.SEP_VIDEO_MOCK_ENABLED || config.SEP_VIDEO_REAL_ENABLED ? new VideoStore(userDataDir) : undefined
+    if (videoStore) {
+      const store = videoStore
       const videoOptions: MockVideoHostOptions = {
         mock: !config.SEP_VIDEO_REAL_ENABLED, scope: this, store,
         getTask: taskId => this.taskManager.getTask(taskId),
@@ -255,6 +260,12 @@ class BackendRuntime {
       this.video = new MockVideoHostService(videoOptions)
       this.videoRuns = new VideoRunService(videoOptions, this.video)
     }
+    this.arrangementMedia = new ArrangementMediaService({
+      scope: this, plans: this.workPlans, checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore,
+      links: new ArrangementMediaLinkStore(userDataDir), images: mediaStore, videos: videoStore,
+      assets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore), media: this.media,
+      getTask: taskId => this.taskManager.getTask(taskId),
+    })
 
     this.skills = new SkillLibraryService({
       scope: this, token: () => this.authSession.getValidAccessToken(),
@@ -530,6 +541,7 @@ class BackendRuntime {
       }, signal),
       media: this.media,
       video: this.videoRuns,
+      arrangementMedia: this.arrangementMedia,
     })
     log.info('task runtime loaded')
     return runtime

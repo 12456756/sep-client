@@ -38,6 +38,20 @@ const document = {
 }
 
 describe('arrangement work contract IPC', () => {
+  it('validates explicit confirmation and routes only validated task and node IDs', async () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES)!
+    const input = { taskId: 'task-a', nodeIds: ['node-a', 'node-b'] }
+    assert.deepEqual(route.schema.parse(input), input)
+    for (const invalid of [
+      { ...input, taskId: '../task' }, { ...input, nodeIds: [] }, { ...input, nodeIds: ['node-a', 'node-a'] },
+      { ...input, nodeIds: ['../node'] }, { ...input, approved: true }, { ...input, nodeIds: [42] },
+    ]) assert.equal(route.schema.safeParse(invalid).success, false)
+    const calls: unknown[] = []
+    const context = { tasks: { confirmArrangementNodes: async (...args: unknown[]) => { calls.push(args) } } }
+    assert.deepEqual(await route.handle(context as never, input as never), { success: true })
+    assert.deepEqual(calls, [[input.taskId, input.nodeIds]])
+  })
+
   it('preserves the work contract when creating a manual draft', () => {
     const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
     const parsed = route.schema.parse(document) as { nodes: unknown[] }

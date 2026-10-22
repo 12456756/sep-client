@@ -62,8 +62,9 @@ export class VideoService {
   }
 
   /** Quote, then durably freeze identity and parameters before any submit call. */
-  async prepare(taskId: string, value: VideoInput, parent?: AbortSignal): Promise<LocalVideoJob> {
+  async prepare(taskId: string, value: VideoInput, parent?: AbortSignal, runId?: string): Promise<LocalVideoJob> {
     videoLocalIdSchema.parse(taskId)
+    if (runId !== undefined) videoLocalIdSchema.parse(runId)
     const signal = this.signal(parent)
     signal.throwIfAborted()
     const input = videoRequestSchema.parse(value)
@@ -73,6 +74,7 @@ export class VideoService {
     const now = this.now()
     const job: LocalVideoJob = {
       version: 1, executionMode: this.mode, scope: { ...this.scope }, taskId, jobId: `video_${randomUUID()}`,
+      ...(runId ? { runId } : {}),
       request: { ...input, clientRequestId: `video_request_${randomUUID()}`, quoteId: quote.quoteId }, quote,
       submission: 'NOT_SENT', receipt: null, trackingStatus: 'ACTIVE', saveStatus: 'PENDING', error: null, createdAt: now, updatedAt: now,
     }

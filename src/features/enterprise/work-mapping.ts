@@ -210,16 +210,18 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     : resolvedKind === 'conversation'
       ? 'conversation'
       : meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
+  const effectiveExecution = executionFromEvents(plan, arrangementEvents, arrangementExecution);
   let status = toWorkStatus(task.status);
   if (plan && plan.mode !== 'conversation' && task.status === 'paused') {
     const latestState = [...arrangementEvents].reverse().find(event => event.type === 'arrangement_state_changed' || event.type === 'stop_requested');
-    if (latestState?.type === 'arrangement_state_changed' && (latestState.data as { status?: unknown } | null)?.status === 'waiting-user') status = 'failed';
+    if (latestState?.type !== 'stop_requested' && effectiveExecution?.status === 'waiting-user') {
+      status = effectiveExecution.nodes.some(node => node.pendingConfirmation) ? 'waiting-user' : 'failed';
+    }
   }
   const legacyProgress = task.progress ?? (status === 'completed' ? 100 : 0);
   const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
 
   const stepStates = deriveStepStates(meta?.steps.length ?? 0, status, legacyProgress);
-  const effectiveExecution = executionFromEvents(plan, arrangementEvents, arrangementExecution);
   const steps: WorkStep[] = (meta?.steps ?? []).map((step, index) => ({
     ...step,
     employeeName: nameOf(step.employeeId),
@@ -378,7 +380,7 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
   let changed = false
   for (const event of events) {
     if (persisted && event.occurredAt <= persisted.updatedAt) continue
-    const data = event.data as { status?: string; nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status'] }>; finalDeliverables?: unknown } | null
+    const data = event.data as { status?: string; nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status']; pendingConfirmation?: boolean }>; finalDeliverables?: unknown } | null
     if (event.type === 'arrangement_state_changed' && data?.status) {
       status = data.status as typeof status
       changed = true
@@ -386,7 +388,7 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
     if (Array.isArray(data?.nodeStates)) {
       for (const saved of data.nodeStates) {
         const target = nodes.find(node => node.nodeId === saved.nodeId)
-        if (target) { target.status = saved.status; changed = true }
+        if (target) { target.status = saved.status; target.pendingConfirmation = saved.pendingConfirmation; changed = true }
       }
     }
     if (data?.nodeId && data.nodeStatus) {
@@ -436,8 +438,9 @@ function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution:
 
 /** Node IDs (not array position) drive parallel/out-of-order execution state. */
 function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskExecutionEvent[], execution: ArrangementExecutionSnapshot | null): WorkStepState {
-  const saved = execution?.nodes.find(node => node.nodeId === nodeId)?.status
-  if (saved === 'completed') return 'done'
+  const checkpoint = execution?.nodes.find(node => node.nodeId === nodeId)
+  const saved = checkpoint?.status
+  if (saved === 'completed') return checkpoint?.pendingConfirmation ? 'waiting-user' : 'done'
   if (saved === 'running') return status === 'paused' || status === 'failed' ? 'failed' : 'running'
   if (saved === 'failed' || saved === 'interrupted' || saved === 'stopped' || saved === 'blocked') return 'failed'
   if (saved === 'ready' || saved === 'pending') return 'pending'

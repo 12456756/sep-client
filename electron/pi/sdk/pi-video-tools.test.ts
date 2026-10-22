@@ -254,6 +254,53 @@ describe('video tools through the mocked Pi SDK extension API', () => {
     }
   })
 
+  it('preserves arrangement artifact receipts and strips host-only data from direct jobs and task queries', async () => {
+    const artifacts = [
+      { artifactId: `vout_${'a'.repeat(64)}`, sha256: 'b'.repeat(64), status: 'saved' },
+      { artifactId: `vout_${'c'.repeat(64)}`, status: 'saving' },
+    ]
+    const augmentedJob = { ...job, artifacts: artifacts.map(artifact => ({ ...artifact, ...secrets })), ...secrets }
+    for (const [name, input, payload] of [
+      ['video_generate', generation, augmentedJob],
+      ['video_get_job', { jobId: job.jobId }, { mock: true, runtime: videoFixture.runtime, jobs: [augmentedJob], ...secrets }],
+    ] as const) {
+      const runtime = await sdk({}, payload)
+      const result = await runtime.execute(name, input)
+      assert.deepEqual(result.details, { isError: false })
+      const parsed = JSON.parse(value(result))
+      const projected = 'jobs' in parsed ? parsed.jobs[0] : parsed
+      assert.deepEqual(projected, { ...job, artifacts })
+      for (const secret of ['private-key', 'private.example', '/private/video.mp4', 'secret Pi prompt', 'remote-receipt', 'remote-reference']) {
+        assert.ok(!value(result).includes(secret))
+      }
+    }
+  })
+
+  it('rejects malformed arrangement artifact receipts without forwarding host data', async () => {
+    const artifact = { artifactId: `vout_${'a'.repeat(64)}`, sha256: 'b'.repeat(64), status: 'saved' }
+    for (const artifacts of [
+      [{ ...artifact, artifactId: secrets.path }],
+      [{ ...artifact, artifactId: `vout_${'a'.repeat(63)}` }],
+      [{ ...artifact, artifactId: `iout_${'a'.repeat(64)}` }],
+      [{ ...artifact, sha256: secrets.apiKey }],
+      [{ ...artifact, status: 'SAVED' }],
+      [{ artifactId: artifact.artifactId }],
+      Array.from({ length: 5 }, () => artifact),
+    ]) {
+      for (const payload of [
+        { ...job, artifacts, ...secrets },
+        { mock: true, runtime: videoFixture.runtime, jobs: [{ ...job, artifacts, ...secrets }] },
+      ]) {
+        const runtime = await sdk({}, payload)
+        const result = await runtime.execute('video_get_job', { jobId: job.jobId })
+        assert.deepEqual(result.details, { isError: true })
+        assert.equal(JSON.parse(value(result)).error.code, 'INTERNAL_ERROR')
+        assert.doesNotMatch(value(result), /private-key|private\.example|\/private\/video\.mp4|remote-receipt/)
+        assert.ok(!value(result).includes(artifact.artifactId))
+      }
+    }
+  })
+
   it('rejects mixed mock/real task modes, invented billing and malformed costs without forwarding host data', async () => {
     const realJob = { ...job, billingStatus: 'RECONCILING', amountCny: '0.900000' }
     const realRuntime = videoRuntimeSchema.parse({ ...videoFixture.runtime, executionMode: 'real' })

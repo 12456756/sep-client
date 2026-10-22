@@ -19,6 +19,7 @@ export interface ArrangementNodeCheckpoint {
   sessionRunId?: string
   error: string | null
   output: string | null
+  pendingConfirmation?: boolean
   delivery?: NodeDeliveryProgress
   modelRequestProgress?: ModelRequestProgress
 }
@@ -54,7 +55,7 @@ export function createArrangementExecutionState(nodes: readonly ArrangementNode[
   const roots = new Set(nodes.filter(node => node.dependsOn.length === 0).map(node => node.id))
   return {
     status: 'queued',
-    nodes: nodes.map(node => ({ nodeId: node.id, status: roots.has(node.id) ? 'ready' : 'pending', attempt: 0, error: null, output: null })),
+    nodes: nodes.map(node => ({ nodeId: node.id, status: roots.has(node.id) ? 'ready' : 'pending', attempt: 0, error: null, output: null, pendingConfirmation: false })),
     failureNodeIds: [],
     interruptionReason: null,
   }
@@ -77,18 +78,35 @@ export function markArrangementNodeCompleted(
   const nextNodes = nodeMap(state)
   const current = nextNodes.get(nodeId)
   if (!current || current.status !== 'running') return state
-  nextNodes.set(nodeId, { ...current, status: 'completed', output, error: null })
+  const pendingConfirmation = planNodes.find(node => node.id === nodeId)?.requiresUserConfirmation === true
+  nextNodes.set(nodeId, { ...current, status: 'completed', output, error: null, pendingConfirmation })
   for (const node of planNodes) {
     const checkpoint = nextNodes.get(node.id)
     if (!checkpoint || checkpoint.status !== 'pending') continue
-    if (node.dependsOn.every(dependency => nextNodes.get(dependency)?.status === 'completed')) {
+    if (node.dependsOn.every(dependency => nextNodes.get(dependency)?.status === 'completed' && !nextNodes.get(dependency)?.pendingConfirmation)) {
       nextNodes.set(node.id, { ...checkpoint, status: 'ready' })
     }
   }
   const ordered = [...nextNodes.values()]
-  const status = ordered.every(node => node.status === 'completed') ? 'completed'
+  const status = ordered.some(node => node.pendingConfirmation) ? 'waiting-user'
+    : ordered.every(node => node.status === 'completed') ? 'completed'
     : ordered.some(node => node.status === 'failed') ? 'waiting-user' : 'running'
   return { ...state, status, nodes: ordered }
+}
+
+export function confirmArrangementNode(state: ArrangementExecutionState, planNodes: readonly ArrangementNode[], nodeId: string): ArrangementExecutionState {
+  if (state.status === 'stopped' || state.status === 'completed') return state
+  const current = state.nodes.find(node => node.nodeId === nodeId)
+  if (!current || current.status !== 'completed' || !current.pendingConfirmation) return state
+  const nodes = state.nodes.map(node => node.nodeId === nodeId ? { ...node, pendingConfirmation: false } : { ...node })
+  const completed = new Set(nodes.filter(node => node.status === 'completed' && !node.pendingConfirmation).map(node => node.nodeId))
+  const released = nodes.map(node => {
+    if (node.status !== 'pending') return node
+    const planNode = planNodes.find(item => item.id === node.nodeId)
+    return planNode?.dependsOn.every(id => completed.has(id)) ? { ...node, status: 'ready' as const } : node
+  })
+  const status = released.some(node => node.status === 'failed' || node.pendingConfirmation) ? 'waiting-user' : released.every(node => node.status === 'completed') ? 'completed' : 'running'
+  return { ...state, status, nodes: released }
 }
 
 export function markArrangementNodeFailed(
@@ -115,6 +133,7 @@ export function retryArrangementNode(
   nodeId?: string,
 ): ArrangementExecutionState {
   if (state.status !== 'waiting-user' && state.status !== 'failed') return state
+  if (state.nodes.some(node => node.pendingConfirmation)) return state
   const retryIds = new Set(state.nodes.filter(node => node.status === 'failed' && (!nodeId || node.nodeId === nodeId)).map(node => node.nodeId))
   if (retryIds.size === 0) return state
   const descendantsToRelease = new Set([...retryIds].flatMap(id => [...descendantNodeIds(planNodes, id)]))
@@ -159,12 +178,13 @@ export function interruptArrangement(
 
 export function resumeArrangement(state: ArrangementExecutionState): ArrangementExecutionState {
   if (state.status !== 'interrupted') return state
-  return {
+  const resumed = {
     ...state,
-    status: 'running',
+    status: state.nodes.some(node => node.pendingConfirmation) ? 'waiting-user' as const : 'running' as const,
     interruptionReason: null,
     nodes: state.nodes.map(node => node.status === 'interrupted' ? { ...node, status: 'ready' as const } : { ...node }),
   }
+  return resumed
 }
 
 

@@ -444,6 +444,7 @@ export interface ArrangementNodeExecutionSnapshot {
   nodeId: string
   status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
   finalFiles: ArrangementFinalFileSnapshot[]
+  pendingConfirmation?: boolean
 }
 
 export interface ArrangementExecutionSnapshot {

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import {
   createArrangementExecutionState,
+  confirmArrangementNode,
   interruptArrangement,
   markArrangementNodeCompleted,
   markArrangementNodeFailed,
@@ -150,6 +151,23 @@ describe('ArrangementExecutionState', () => {
     assert.equal(state.status, 'waiting-user')
   })
 
+  it('holds confirmed nodes and releases dependents only after explicit confirmation', () => {
+    const plan = [node('a'), { ...node('b', ['a']), requiresUserConfirmation: true }, node('c', ['b'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeCompleted(state, plan, 'a', 'A')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'b', 'B')
+    assert.equal(state.status, 'waiting-user')
+    assert.equal(state.nodes.find(item => item.nodeId === 'b')?.pendingConfirmation, true)
+    assert.equal(state.nodes.find(item => item.nodeId === 'c')?.status, 'pending')
+    const confirmed = confirmArrangementNode(state, plan, 'b')
+    assert.equal(confirmed.nodes.find(item => item.nodeId === 'b')?.pendingConfirmation, false)
+    assert.equal(confirmed.nodes.find(item => item.nodeId === 'c')?.status, 'ready')
+    assert.equal(confirmArrangementNode(confirmed, plan, 'b'), confirmed)
+    assert.equal(confirmArrangementNode(state, plan, 'missing'), state)
+  })
+
   it('marks running nodes interrupted and resumes only those nodes', () => {
     const plan = [node('a'), node('b')]
     let state = createArrangementExecutionState(plan)
@@ -161,6 +179,15 @@ describe('ArrangementExecutionState', () => {
     const resumed = resumeArrangement(state)
     assert.equal(resumed.status, 'running')
     assert.equal(resumed.nodes.find(item => item.nodeId === 'a')?.status, 'ready')
+  })
+
+  it('does not resume past a pending confirmation', () => {
+    const plan = [{ ...node('a'), requiresUserConfirmation: true }]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeCompleted(state, plan, 'a', 'done')
+    state = interruptArrangement(state, 'client-crash')
+    assert.equal(resumeArrangement(state).status, 'waiting-user')
   })
 })
 

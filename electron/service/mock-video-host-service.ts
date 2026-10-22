@@ -11,11 +11,12 @@ import { logger } from '../common/logger'
 import { abortableVideo } from '../data/video-files'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { TaskToolPolicy } from '../runtime/run-types'
+import type { MediaJobCreated } from '../domain/media-tools'
 import { VideoService } from './video-service'
 import { VideoTracker, type VideoTrackerOptions } from './video-tracker'
 
 type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
-type GenerationRun = { runId: string; requestApproval: Approval }
+type GenerationRun = { runId: string; requestApproval: Approval; onJobCreated?: (job: MediaJobCreated) => Promise<void> }
 const log = logger.child('mock-video-host')
 // Run and IPC hosts share the same task persistence. An instance-local gate
 // cannot protect a task while approval, upload or submit is still in flight.
@@ -442,7 +443,7 @@ export class MockVideoHostService {
           }
         }
         const { localAssetIds: _localAssetIds, ...semantic } = input
-        const job = await context.service.prepare(taskId, { ...semantic, configVersion: profile.configVersion, referenceIds }, signal)
+        const job = await context.service.prepare(taskId, { ...semantic, configVersion: profile.configVersion, referenceIds }, signal, run?.runId)
         if (this.options.mock ? job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK' : job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '')) throw new AppError('PERMISSION_DENIED')
         await approve({ profile: profile.displayName, parameters: input.parameters, creativeBrief: input.creativeBrief,
           mock: this.options.mock, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt,
@@ -451,6 +452,9 @@ export class MockVideoHostService {
         this.profile(await this.runtime(scope, epoch, signal), input, profile.configVersion)
         const current = await this.task(taskId, signal)
         if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
+        if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+        await run?.onJobCreated?.({ kind: 'video', jobId: job.jobId, operation: input.operation, localAssetIds: input.localAssetIds })
+        this.assert(scope, epoch, signal)
         if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
         const submitted = await context.service.submit(taskId, job.jobId, signal)
         this.assert(scope, epoch, signal)

@@ -14,7 +14,7 @@ export const finalDeliveryFileSchema = z.object({
   id: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   path: z.string().min(1).max(1_024),
   format: z.string().min(1).max(32),
-  size: z.number().int().positive().max(64 * 1024 * 1024),
+  size: z.number().int().positive().safe(),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   sourceArtifact: z.object({
     kind: z.enum(['image', 'video']),
@@ -25,24 +25,19 @@ export const finalDeliveryFileSchema = z.object({
   validatedAt: z.number().int().positive(),
   snapshot: z.object({
     sha256: z.string().regex(/^[a-f0-9]{64}$/),
-    size: z.number().int().positive().max(64 * 1024 * 1024),
+    size: z.number().int().positive().safe(),
     source: z.enum(['confirmed', 'workspace-recovery']),
   }).strict().optional(),
 }).strict().superRefine((file, context) => {
+  if (file.sourceArtifact?.kind !== 'video' && (file.size > 64 * 1024 * 1024 || (file.snapshot?.size ?? 0) > 64 * 1024 * 1024)) {
+    context.addIssue({ code: 'custom', path: ['size'], message: 'Document delivery exceeds the supported size.' })
+  }
   if (file.sourceArtifact && (file.sourceArtifact.sha256 !== file.sha256 ||
     (file.snapshot && (file.snapshot.sha256 !== file.sha256 || file.snapshot.size !== file.size)))) {
     context.addIssue({ code: 'custom', path: ['sourceArtifact'], message: 'Media delivery bytes must match the source artifact and its snapshot.' })
   }
 })
 export type FinalDeliveryFile = z.infer<typeof finalDeliveryFileSchema>
-
-export const nodeDeliveryProgressSchema = z.object({
-  validationAttempts: z.number().int().min(0).max(MAX_DELIVERY_VALIDATIONS),
-  issues: z.array(deliveryIssueSchema).max(128),
-  finalFiles: z.array(finalDeliveryFileSchema).max(32),
-  summary: z.string().max(4_000).optional(),
-}).strict()
-export type NodeDeliveryProgress = z.infer<typeof nodeDeliveryProgressSchema>
 
 const submissionSchema = z.object({
   nodeId: z.string().min(1).max(128),
@@ -55,6 +50,15 @@ const submissionSchema = z.object({
 }).strict()
 export type DeliverySubmission = z.infer<typeof submissionSchema>
 export type DeliverySubmissionResult = { ok: true; submission: DeliverySubmission } | { ok: false; issues: DeliveryIssue[] }
+
+export const nodeDeliveryProgressSchema = z.object({
+  validationAttempts: z.number().int().min(0).max(MAX_DELIVERY_VALIDATIONS),
+  issues: z.array(deliveryIssueSchema).max(128),
+  finalFiles: z.array(finalDeliveryFileSchema).max(32),
+  summary: z.string().max(4_000).optional(),
+  pendingSubmission: submissionSchema.optional(),
+}).strict()
+export type NodeDeliveryProgress = z.infer<typeof nodeDeliveryProgressSchema>
 
 export function deliveryPathKey(path: string): string { return path.replace(/\\/g, '/').normalize('NFC').toLowerCase() }
 

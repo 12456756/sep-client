@@ -1,11 +1,10 @@
 /**
- * 企业客户端视觉体系。取色、圆角、间距与图表样式全部按设计稿复刻。
+ * 企业客户端视觉体系。语义色与登录页品牌方向保持一致，业务状态色独立表达。
  *
  * 设计决定（与 index.css 的旧工作台样式并存，不互相覆盖）：
- * 1. 主色是龙硅红。它同时充当「正在进行」的语义色 —— 设计稿里「工作中 / 进行中」
- *    用的就是主色的浅底版本，所以这两者不再另分一支颜色。
+ * 1. 主色是品牌红；工作状态、成功、提醒和错误仍各自保留语义色。
  * 2. 状态一律「颜色 + 图标 + 文字」三者同时表达，不依赖单一颜色。
- * 3. 底是浅灰蓝，卡是纯白，卡与卡之间靠圆角 + 间距 + 一层极淡的冷色阴影分开。
+ * 3. 工作画布由低对比玫瑰灰过渡到冷灰，阅读与交互面板保持清晰表面。
  * 4. 数值一律给图形：进度条、圆环、时间轴圆点，不靠一串文字描述。
  */
 
@@ -13,23 +12,21 @@
 
 :root {
   /*
-   * 主色系统 - 与登录页保持一致的温暖橙红色
-   * 登录页主色 #cc5d40 / #b93636，这里沿用相同色系
+   * 品牌色与登录页共用取色决策，客户端保留独立语义变量。
    */
-  --ent-brand: #cc5d40;
-  --ent-brand-solid: #cc5d40;
-  --ent-brand-deep: #b93636;
-  --ent-brand-hover: #b93636;
-  --ent-brand-ink: #b63f47;
+  --ent-brand: #ae383d;
+  --ent-brand-solid: #ae383d;
+  --ent-brand-deep: #8f2d34;
+  --ent-brand-hover: #982f37;
+  --ent-brand-ink: #9e343b;
   /* 浅红三档：soft 是状态标签和气泡底，tint 是图标片底，softer 是 hover 底。 */
-  --ent-brand-soft: #fef6f0;
-  --ent-brand-tint: #fdeee4;
-  --ent-brand-softer: #fffaf7;
-  --ent-brand-border: #f3d4c7;
-  /* 第二支强调色只用在「我拥有的员工」那格的图标片上（设计稿里它比第一格偏红一档）。 */
-  --ent-accent: #d66648;
-  --ent-accent-soft: #fef6f0;
-  --ent-accent-ink: #b93636;
+  --ent-brand-soft: #f8e9e9;
+  --ent-brand-tint: #f3dddd;
+  --ent-brand-softer: #fcf5f4;
+  --ent-brand-border: #e9c4c5;
+  --ent-accent: #b44b55;
+  --ent-accent-soft: #f8ebed;
+  --ent-accent-ink: #923640;
 
   /* 最重的墨色。设计稿里没有深色面板，这一支只当文字与图标色用。 */
   --ent-dark: #202126;
@@ -38,23 +35,21 @@
   --ent-dark-ink: #f6f7fb;
   --ent-dark-ink-2: #a9aec4;
 
-  /* 温暖的米色底色系统 - 与登录页保持一致 */
-  --ent-canvas: #f5efe7;
-  --ent-shell: #f5efe7;
+  /* Shell color fallbacks; the renderer paints the continuous canvas gradient. */
+  --ent-canvas: #f0eef1;
+  --ent-shell: #f5f3f5;
   --ent-panel: #ffffff;
-  --ent-panel-subtle: #fdfbf7;
+  --ent-panel-subtle: #fbf9fa;
 
-  /* 分隔线三档 - 调整为温暖色调 */
-  --ent-line-soft: #f0ebe2;
-  --ent-line: #e8e0d5;
-  --ent-line-strong: #d9cbb8;
+  --ent-line-soft: #f0ebee;
+  --ent-line: #e5dfe4;
+  --ent-line-strong: #d2c8d0;
   /* 进度条与圆环的底槽 */
-  --ent-track: #f0ebe2;
+  --ent-track: #eee9ed;
 
-  /* 文字颜色 - 使用深棕色系 */
-  --ent-ink: #2b1f13;
-  --ent-ink-2: #5c5553;
-  --ent-ink-3: #7a6a5a;
+  --ent-ink: #302e34;
+  --ent-ink-2: #514d55;
+  --ent-ink-3: #716a72;
 
   /*
    * 语义色。空闲与已完成走绿，工作中与进行中走主色（设计稿如此），
@@ -72,8 +67,8 @@
   --ent-danger: #bf3149;
   --ent-danger-bg: #fdeaee;
   --ent-danger-line: #f2c6cf;
-  --ent-muted: #7a6a5a;
-  --ent-muted-bg: #f0ebe2;
+  --ent-muted: #716a72;
+  --ent-muted-bg: #f0edf0;
 
   /** 内容区顶部让给窗口按钮的那条。titleBarOverlay 在 main.ts 里固定 44 高。 */
   --ent-drag-h: var(--window-chrome-height);
@@ -111,16 +106,14 @@
   --ent-fs-display: 25px;
   --ent-fs-figure: 23px;
 
-  /* 阴影：温暖色调、柔和扩散 */
-  --ent-shadow: 0 2px 10px rgba(43, 31, 19, 0.04);
-  --ent-shadow-card: 0 1px 2px rgba(43, 31, 19, 0.04), 0 2px 10px rgba(43, 31, 19, 0.05);
-  --ent-shadow-lift: 0 2px 6px rgba(43, 31, 19, 0.06), 0 6px 18px rgba(43, 31, 19, 0.08);
-  --ent-shadow-drawer: -10px 0 30px rgba(43, 31, 19, 0.08);
+  --ent-shadow: 0 2px 10px rgb(48 38 48 / 4%);
+  --ent-shadow-card: 0 1px 2px rgb(48 38 48 / 4%), 0 2px 10px rgb(48 38 48 / 5%);
+  --ent-shadow-lift: 0 2px 6px rgb(48 38 48 / 6%), 0 6px 18px rgb(48 38 48 / 8%);
+  --ent-shadow-drawer: -10px 0 30px rgb(48 38 48 / 8%);
 
-  /* 光晕：温暖橙红色系 */
-  --ent-glow-warm: linear-gradient(180deg, rgba(204, 93, 64, 0.04), rgba(255, 255, 255, 0) 70%);
-  --ent-glow-edge: radial-gradient(90% 140% at 100% 0%, rgba(204, 93, 64, 0.05) 0%, rgba(255, 255, 255, 0) 65%);
-  --ent-glow-ring: 0 0 0 3px rgba(204, 93, 64, 0.15);
+  --ent-glow-warm: linear-gradient(180deg, rgb(174 56 61 / 4%), transparent 70%);
+  --ent-glow-edge: radial-gradient(90% 140% at 100% 0%, rgb(174 56 61 / 5%), transparent 65%);
+  --ent-glow-ring: 0 0 0 3px rgb(174 56 61 / 16%);
   --ent-ease: 170ms cubic-bezier(.22, 1, .36, 1);
 
   /* 间距系统 */
@@ -168,12 +161,17 @@
   --ent-danger-bg: #45232d;
   --ent-danger-line: #743646;
   --ent-muted-bg: #2b303d;
+  --ent-brand: #d7747a;
+  --ent-brand-solid: #b94a52;
+  --ent-brand-deep: #a33e47;
+  --ent-brand-hover: #cc626a;
+  --ent-brand-ink: #e58b90;
   --ent-glow-ring: 0 0 0 3px rgb(240 82 92 / 22%);
 }
 .ent-shell.dark .ent-top,
 .ent-shell.dark .ent-side { background: var(--ent-panel); }
 .ent-shell.dark .ent-top-icon { color: var(--ent-ink-2); }
-.ent-shell.dark .ent-face.placeholder { color: #c4c9ff; }
+.ent-shell.dark .ent-face.placeholder { color: #e7b9bd; }
 
 /* ── 外壳 ───────────────────────────────────────────────────────────── */
 
@@ -185,8 +183,13 @@
  * 当 Electron 的窗口拖拽区、把 Windows 的窗口按钮（titleBarOverlay 画在右上角，
  * 44 高）让开 —— 不留出右边那一段的话关闭按钮会压在标题上。
  */
-.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: var(--ent-canvas); }
-.ent-shell-main { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
+.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: linear-gradient(135deg, #ead5dc 0%, #f2dcd6 24%, #f0e6e5 48%, #eef0f4 78%, #f5f6f8 100%); }
+.ent-shell-main { position: relative; isolation: isolate; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: linear-gradient(135deg, rgb(234 213 220 / 36%), rgb(240 230 229 / 22%) 44%, rgb(238 240 244 / 48%)); }
+.ent-shell-main::before { position: absolute; z-index: 0; right: -100px; bottom: -170px; width: min(42vw, 420px); aspect-ratio: 1; content: ''; opacity: .02; background: #ae383d; -webkit-mask: url('../assets/logo.png') center / contain no-repeat; mask: url('../assets/logo.png') center / contain no-repeat; pointer-events: none; }
+.ent-shell-main > .ent-top, .ent-shell-main > .ent-error-bar, .ent-shell-main > .ent-scroll { position: relative; z-index: 1; }
+.ent-shell.dark { background: #11131a; }
+.ent-shell.dark .ent-shell-main { background: linear-gradient(135deg, #171519, #181a21 48%, #171d26); }
+.ent-shell.dark .ent-shell-main::before { background: #e8b2b6; opacity: .025; }
 
 /* 内容区域滚动容器 - 添加最大宽度约束 */
 .ent-scroll {
@@ -197,6 +200,7 @@
   max-width: 1600px;
   margin: 0 auto;
   width: 100%;
+  background: transparent;
 }
 
 /* 首页需要更宽的空间展示员工墙 */
@@ -451,7 +455,7 @@
  * 那三颗按钮由 titleBarOverlay 画在右上角，任何内容压过去都会被它盖住。
  * 首页、工作详情、安排工作不写标题（它们的第一行就是内容），这条横条仍然在。
  */
-.ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 28px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: var(--ent-panel); }
+.ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 28px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: rgb(255 255 255 / 76%); backdrop-filter: blur(14px); }
 [data-platform='win32'] .ent-top { padding-right: calc(28px + var(--window-controls-inset)); }
 
 .ent-top-head { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
@@ -618,7 +622,7 @@
 /* 发送做成圆钮：它是这一页最常按的东西，圆形 + 实心最好瞄准。 */
 .ent-ask-send { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 50%; color: #fff; background: var(--ent-brand-solid); cursor: pointer; transition: background var(--ent-ease); }
 .ent-ask-send:hover:not(:disabled) { background: var(--ent-brand-hover); }
-.ent-ask-send:active:not(:disabled) { background: #4540d4; }
+.ent-ask-send:active:not(:disabled) { background: var(--ent-brand-deep); }
 .ent-ask-send:disabled { color: var(--ent-ink-3); background: var(--ent-muted-bg); cursor: not-allowed; }
 
 /* 步骤清单（折叠块里）。状态靠颜色 + 序号底色 + 右侧状态标签三者同时表达。 */
@@ -639,7 +643,7 @@
 /* 主按钮：实心主色 + 白字，hover 只是变深一档，不做发光也不位移。 */
 .ent-btn.primary { border-color: transparent; color: #fff; background: var(--ent-brand-solid); }
 .ent-btn.primary:hover:not(:disabled) { border-color: transparent; background: var(--ent-brand-hover); }
-.ent-btn.primary:active:not(:disabled) { background: #4540d4; }
+.ent-btn.primary:active:not(:disabled) { background: var(--ent-brand-deep); }
 .ent-btn.ghost { border-color: transparent; background: transparent; color: var(--ent-ink-2); }
 .ent-btn.ghost:hover:not(:disabled) { border-color: var(--ent-line); color: var(--ent-ink); background: var(--ent-panel-subtle); }
 .ent-btn.danger { border-color: var(--ent-danger-line); color: var(--ent-danger); background: var(--ent-danger-bg); }

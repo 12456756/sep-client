@@ -12,22 +12,22 @@
  */
 
 :root {
-  --arr-title: #20232b;
-  --arr-sub: #858a98;
-  --arr-strong: #20232b;
-  --arr-desc: #858a98;
-  --arr-card-line: #e8eaf1;
-  --arr-card-hover: #f3c7cb;
-  --arr-icon-bg: #fff5f5;
-  --arr-input-line: #e8eaf1;
-  --arr-input-ink: #20232b;
-  --arr-place: #a4a5ae;
-  --arr-emp-line: #e8eaf1;
-  --arr-node-line: #e8eaf1;
-  --arr-node-on: #fffafa;
+  --arr-title: var(--ent-ink);
+  --arr-sub: var(--ent-ink-3);
+  --arr-strong: var(--ent-ink);
+  --arr-desc: var(--ent-ink-3);
+  --arr-card-line: var(--ent-line);
+  --arr-card-hover: var(--ent-brand-border);
+  --arr-icon-bg: var(--ent-brand-soft);
+  --arr-input-line: var(--ent-line);
+  --arr-input-ink: var(--ent-ink);
+  --arr-place: var(--ent-ink-3);
+  --arr-emp-line: var(--ent-line);
+  --arr-node-line: var(--ent-line);
+  --arr-node-on: var(--ent-brand-softer);
   --arr-ok: #25a36a;
-  --arr-shadow: 0 2px 10px rgb(40 50 90 / 3%);
-  --arr-shadow-lift: 0 4px 16px rgb(40 50 90 / 8%);
+  --arr-shadow: var(--ent-shadow);
+  --arr-shadow-lift: var(--ent-shadow-lift);
   --arr-ease: cubic-bezier(.22, 1, .36, 1);
 }
 
@@ -88,7 +88,7 @@
 .ent-arr-ghost:hover { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
 
 /* 底栏贴着滚动区下沿，滚到哪「确认并开始工作」都在原地。 */
-.ent-arr-foot { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 28px; padding: 14px 0 16px; background: linear-gradient(to top, var(--ent-canvas) 62%, rgb(247 248 252 / 0%)); }
+.ent-arr-foot { position: sticky; bottom: 0; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 28px; padding: 14px 0 16px; background: linear-gradient(to top, var(--ent-canvas) 62%, transparent); }
 .ent-arr-gap { flex: 1 1 auto; }
 
 /* ── 三个模式卡片 ────────────────────────────────────────────────────── */
@@ -351,7 +351,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 
 /* ── 底部运行设置 ────────────────────────────────────────────────────── */
 
-.ent-rs-shell { position: sticky; bottom: 0; z-index: 5; margin: 28px -8px -64px; padding: 10px 8px 0; background: linear-gradient(to top, var(--ent-canvas) 72%, rgb(247 248 252 / 0%)); }
+.ent-rs-shell { position: sticky; bottom: 0; z-index: 5; margin: 28px -8px -64px; padding: 10px 8px 0; background: linear-gradient(to top, var(--ent-canvas) 72%, transparent); }
 .ent-rs-summary { display: flex; width: 100%; align-items: center; gap: 10px; min-height: 46px; padding: 0 14px; border: 1px solid var(--ent-line); border-radius: 12px 12px 0 0; color: var(--ent-ink-2); background: var(--ent-panel); box-shadow: 0 -2px 12px rgb(40 50 90 / 5%); font: inherit; text-align: left; cursor: pointer; transition: border-color 180ms var(--arr-ease), box-shadow 180ms var(--arr-ease); }
 .ent-rs-summary:hover { border-color: var(--arr-card-hover); box-shadow: 0 -4px 18px rgb(40 50 90 / 9%); }
 .ent-rs-summary-title { flex: 0 0 auto; color: var(--ent-ink); font-size: 13px; font-weight: 600; }

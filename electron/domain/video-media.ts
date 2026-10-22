@@ -22,6 +22,7 @@ export const videoStoredQuoteSchema = z.object({
 export const videoSaveStatusSchema = z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING'])
 export const localVideoJobSchema = z.object({
   version: z.literal(1), scope: videoScopeSchema, taskId: videoLocalIdSchema, jobId: videoLocalIdSchema,
+  runId: videoLocalIdSchema.optional(),
   executionMode: z.enum(['mock', 'real']).optional(),
   request: videoRequestWithIdentitySchema, quote: videoStoredQuoteSchema,
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), receipt: videoReceiptSchema.nullable(),
@@ -60,7 +61,7 @@ export type LocalVideoAsset = z.infer<typeof localVideoAssetSchema>
 export type VideoAssetState = Omit<LocalVideoAsset, 'status'> & { status: 'SAVED' | 'MISSING' }
 
 export function assertVideoJobUpdate(previous: LocalVideoJob, next: LocalVideoJob): void {
-  const stable = ['version', 'scope', 'taskId', 'jobId', 'executionMode', 'request', 'quote', 'createdAt'] as const
+  const stable = ['version', 'scope', 'taskId', 'jobId', 'runId', 'executionMode', 'request', 'quote', 'createdAt'] as const
   if (stable.some(key => !isDeepStrictEqual(previous[key], next[key])) || next.updatedAt < previous.updatedAt ||
     ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(next.submission) < ['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED'].indexOf(previous.submission)) {
     throw new Error('Frozen video identity or submission state cannot change.')

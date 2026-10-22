@@ -3034,7 +3034,7 @@ select:focus-visible {
 .login-brand-values {
   position: absolute;
   z-index: 1;
-  bottom: 35px;
+  bottom: 119px;
   left: 0;
   display: flex;
   width: 100%;
@@ -3193,7 +3193,7 @@ select:focus-visible {
   .login-brand-image { width: 92px; height: 92px; margin-bottom: 22px; }
   .login-brand-content h1 { font-size: 28px; }
   .login-brand-description { margin-top: 14px; }
-  .login-brand-values { bottom: 24px; }
+  .login-brand-values { bottom: 84px; }
   .login-form-panel { padding: 36px 40px; }
   .login-card-header { margin-bottom: 20px; }
   .login-form { gap: 16px; }

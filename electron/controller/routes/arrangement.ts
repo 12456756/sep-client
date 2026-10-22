@@ -5,6 +5,7 @@ import { arrangementNodeWorkContractSchema, type ArrangementDraft } from '../../
 
 const draftId = z.string().min(1)
 const taskId = z.string().min(1)
+const confirmNodesInput = z.object({ taskId: z.string().regex(/^[A-Za-z0-9_-]+$/), nodeIds: z.array(z.string().regex(/^[A-Za-z0-9_-]+$/)).min(1) }).strict().refine(input => new Set(input.nodeIds).size === input.nodeIds.length)
 const revision = z.number().int().positive()
 const mode = z.enum(['conversation', 'auto', 'manual'])
 const permissionPreset = z.enum(['read-only', 'workspace-edit', 'full-local'])
@@ -94,6 +95,10 @@ const requestEmployeeAccessInput = z.object({ draftId, expectedRevision: revisio
 const getEmployeeAccessRequestInput = z.object({ draftId, requestId: z.string().min(1) })
 
 export const arrangementRoutes = [
+  route(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, confirmNodesInput, async (ctx, input) => {
+    await ctx.tasks.confirmArrangementNodes(input.taskId, input.nodeIds)
+    return { success: true }
+  }),
   route(INVOKE_CHANNELS.ARRANGE_GET_CONTEXT, NO_INPUT, async ctx => ({
     success: true,
     context: await ctx.arrangements.context(),

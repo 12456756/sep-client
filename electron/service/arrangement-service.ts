@@ -141,6 +141,7 @@ export class ArrangementService {
       nodes: checkpoint.state.nodes.map(node => ({
         nodeId: node.nodeId,
         status: node.status,
+        ...(node.pendingConfirmation ? { pendingConfirmation: true } : {}),
         finalFiles: node.delivery?.finalFiles ? structuredClone(node.delivery.finalFiles) : [],
       })),
     }

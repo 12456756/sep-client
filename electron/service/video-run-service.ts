@@ -85,6 +85,7 @@ export class VideoRunService implements VideoRunPort {
       const restored = await abortableVideo(host.getTaskVideo(input.taskId), controller.signal)
       validate()
       for (const job of restored.jobs) {
+        if (input.recoverJobIds && !input.recoverJobIds.includes(job.jobId)) continue
         if (videoBillingPending(job.billingStatus) || job.generationStatus !== 'NOT_SUBMITTED' && (!['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)) && job.saveStatus !== 'SAVED') run.jobs.add(job.jobId)
       }
       if (run.jobs.size) {
@@ -118,7 +119,8 @@ export class VideoRunService implements VideoRunPort {
         if (!job) throw new AppError('NOT_FOUND')
         return job
       }
-      const job = await host.generateTool(input.taskId, name, raw, signal, { runId: input.runId, requestApproval: request => { validate(); return input.requestApproval(request) } })
+      const job = await host.generateTool(input.taskId, name, raw, signal, { runId: input.runId, onJobCreated: input.onJobCreated,
+        requestApproval: request => { validate(); return input.requestApproval(request) } })
       run.jobs.add(job.jobId)
       validate()
       if (job.trackingStatus === 'AUTH_REQUIRED') throw new AppError(videoErrorMessage(job.error) && isErrorCode(job.error)
