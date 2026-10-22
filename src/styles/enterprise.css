@@ -728,6 +728,51 @@
 .ent-emp-row-name small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-emp-row-time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-align: right; }
 
+/* ── 员工列表页 ──────────────────────────────────────────────────────── */
+
+.ent-employees-page { padding-top: 26px; }
+.ent-employees-toolbar { justify-content: space-between; gap: 14px; padding-bottom: 15px; border-bottom: 1px solid var(--ent-line-soft); }
+.ent-employees-toolbar > .ent-segment { flex: 0 0 auto; }
+.ent-employees-controls { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.ent-employees-search { width: min(280px, 28vw); min-width: 200px; }
+.ent-employees-search input { min-height: 34px; }
+.ent-employees-page .ent-select.auto { min-height: 36px; }
+.ent-employees-result { display: flex; align-items: baseline; gap: 5px; margin: 14px 0 13px; }
+.ent-employees-result strong { color: var(--ent-ink); font-size: 15px; font-variant-numeric: tabular-nums; }
+.ent-employees-legend { margin-left: auto; color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
+.ent-employees-page .ent-emp-grid { grid-template-columns: repeat(auto-fill, minmax(min(100%, 310px), 1fr)); gap: 16px; align-items: stretch; }
+.ent-employees-page .ent-emp-card { min-height: 246px; padding: 18px; gap: 12px; }
+.ent-employees-page .ent-emp-card > footer { margin-top: auto; padding-top: 2px; }
+.ent-employees-page .ent-emp-card.off { border-color: var(--ent-line); }
+.ent-employees-page .ent-emp-row { grid-template-columns: 32px minmax(180px, 1.5fr) auto minmax(100px, .8fr) auto auto; min-height: 58px; padding: 10px 16px; }
+.ent-employees-page .ent-emp-row .ent-face { grid-column: 1; }
+.ent-employees-page .ent-emp-row-name { grid-column: 2; }
+.ent-employees-page .ent-emp-row .ent-chip { justify-self: start; }
+.ent-employees-page .ent-emp-row-chat { min-width: 94px; }
+.ent-employees-page .ent-emp-row-skills { min-width: 82px; }
+
+@media (max-width: 980px) {
+  .ent-employees-toolbar { align-items: flex-start; flex-direction: column; }
+  .ent-employees-controls { width: 100%; }
+  .ent-employees-search { width: auto; min-width: 0; flex: 1 1 220px; }
+  .ent-employees-page .ent-emp-row { grid-template-columns: 32px minmax(140px, 1fr) auto 88px auto auto; gap: 8px; }
+}
+
+@media (max-width: 680px) {
+  .ent-employees-page { padding: 18px 16px 28px; }
+  .ent-employees-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .ent-employees-search { width: 100%; grid-column: 1 / -1; }
+  .ent-employees-page .ent-emp-card { min-height: 0; padding: 15px; }
+  .ent-employees-legend { flex-basis: 100%; margin-left: 0; }
+  .ent-employees-page .ent-emp-row { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 8px 10px; padding: 12px; }
+  .ent-employees-page .ent-emp-row > .ent-face { grid-column: 1; grid-row: 1 / span 2; }
+  .ent-employees-page .ent-emp-row-name { grid-column: 2; grid-row: 1; }
+  .ent-employees-page .ent-emp-row > .ent-chip { grid-column: 3; grid-row: 1; }
+  .ent-employees-page .ent-emp-row-time { grid-column: 2 / -1; grid-row: 2; text-align: left; }
+  .ent-employees-page .ent-emp-row-chat { grid-column: 2; grid-row: 3; }
+  .ent-employees-page .ent-emp-row-skills { grid-column: 3; grid-row: 3; }
+}
+
 /* ── 首页 · 员工概览 ─────────────────────────────────────────────────── */
 
 /*

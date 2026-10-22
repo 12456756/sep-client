@@ -42,12 +42,8 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
   const open = (employeeId: string) => workspace.navigate({ name: 'employee', employeeId });
 
   return (
-    <div className="ent-page">
-      <div className="ent-toolbar">
-        <label className="ent-find">
-          <Search size={14} aria-hidden />
-          <input type="search" value={search} placeholder="搜索员工姓名或擅长" aria-label="搜索员工" onChange={event => setSearch(event.target.value)} />
-        </label>
+    <div className="ent-page ent-employees-page">
+      <div className="ent-toolbar ent-employees-toolbar">
         <div className="ent-segment" role="tablist" aria-label="员工范围">
           {SCOPES.map(item => (
             <button key={item.id} type="button" role="tab" aria-selected={scope === item.id} className={scope === item.id ? 'active' : undefined} onClick={() => setScope(item.id)}>
@@ -55,21 +51,28 @@ export function EmployeesPage({ workspace, scope: initialScope }: Props) {
             </button>
           ))}
         </div>
-        <select className="ent-select auto" value={availability} onChange={event => setAvailability(event.target.value as '' | EmployeeAvailability)} aria-label="按可用状态筛选">
-          <option value="">全部状态</option>
-          {(Object.keys(EMPLOYEE_AVAILABILITY) as EmployeeAvailability[]).map(key => (
-            <option key={key} value={key}>{EMPLOYEE_AVAILABILITY[key].label}</option>
-          ))}
-        </select>
-        <span className="ent-ask-spacer" />
-        <div className="ent-segment icon" role="group" aria-label="展示方式">
-          <button type="button" className={dense ? undefined : 'active'} onClick={() => setDense(false)} aria-label="卡片视图" title="卡片视图"><LayoutGrid size={14} aria-hidden /></button>
-          <button type="button" className={dense ? 'active' : undefined} onClick={() => setDense(true)} aria-label="紧凑列表" title="紧凑列表"><List size={14} aria-hidden /></button>
+        <div className="ent-employees-controls">
+          <label className="ent-find ent-employees-search">
+            <Search size={14} aria-hidden />
+            <input type="search" value={search} placeholder="搜索员工姓名或擅长" aria-label="搜索员工" onChange={event => setSearch(event.target.value)} />
+          </label>
+          <select className="ent-select auto" value={availability} onChange={event => setAvailability(event.target.value as '' | EmployeeAvailability)} aria-label="按可用状态筛选">
+            <option value="">全部状态</option>
+            {(Object.keys(EMPLOYEE_AVAILABILITY) as EmployeeAvailability[]).map(key => (
+              <option key={key} value={key}>{EMPLOYEE_AVAILABILITY[key].label}</option>
+            ))}
+          </select>
+          <div className="ent-segment icon" role="group" aria-label="展示方式">
+            <button type="button" className={dense ? undefined : 'active'} onClick={() => setDense(false)} aria-label="卡片视图" title="卡片视图"><LayoutGrid size={14} aria-hidden /></button>
+            <button type="button" className={dense ? 'active' : undefined} onClick={() => setDense(true)} aria-label="紧凑列表" title="紧凑列表"><List size={14} aria-hidden /></button>
+          </div>
         </div>
       </div>
 
-      <p className="ent-result-note">
-        共 {list.length} 名员工{scope === 'all' ? '（灰色卡片表示尚未分配给你，只能查看介绍）' : ''}
+      <p className="ent-result-note ent-employees-result" aria-live="polite">
+        <strong>{list.length}</strong>
+        <span>名员工</span>
+        {scope === 'all' ? <span className="ent-employees-legend">灰色卡片表示尚未分配给你，只能查看介绍</span> : null}
       </p>
 
       {!list.length ? (

@@ -29,8 +29,8 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false }: Prop
         </button>
         <AvailabilityChip value={employee.availability} />
         <span className="ent-emp-row-time">{relativeTime(employee.lastWorkedAt)}</span>
-        <button type="button" className="ent-btn sm" onClick={() => onChat?.(employee.id)} disabled={!employee.assignedToMe || !onChat || employee.availability === 'unavailable'}>开始对话</button>
-        <button type="button" className="ent-btn ghost sm" onClick={() => onOpen(employee.id)}>查看技能</button>
+        <button type="button" className="ent-btn sm ent-emp-row-chat" onClick={() => onChat?.(employee.id)} disabled={!employee.assignedToMe || !onChat || employee.availability === 'unavailable'}>开始对话</button>
+        <button type="button" className="ent-btn ghost sm ent-emp-row-skills" onClick={() => onOpen(employee.id)}>查看技能</button>
       </div>
     );
   }
