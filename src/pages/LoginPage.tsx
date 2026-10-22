@@ -245,25 +245,20 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   return (
     <main className="login-page">
-      <div className="login-background">
-        <div className="login-glow login-glow-1" aria-hidden="true" />
-        <div className="login-glow login-glow-2" aria-hidden="true" />
-        <div className="login-glow login-glow-3" aria-hidden="true" />
-      </div>
-
       <div className="login-container">
         <div className="login-card">
           <section className="login-brand-panel" aria-label="硅基员工平台">
+            <img className="login-brand-watermark" src={logoImage} alt="" aria-hidden="true" />
             <div className="login-brand-content">
               <img className="login-brand-image" src={logoImage} alt="硅基员工平台标志" />
-              <p className="login-brand-name">硅基员工平台</p>
               <h1>让每一位员工，<br /><span>都有一个 AI 同行者</span></h1>
-              <p className="login-brand-values">
+              <p className="login-brand-description">连接知识、工具与行动<br />让想法走向交付，让协作自然发生。</p>
+            </div>
+            <p className="login-brand-values">
                 <span>AI 驱动</span><i aria-hidden="true">·</i>
                 <span>智能协作</span><i aria-hidden="true">·</i>
                 <span>安全可信</span>
-              </p>
-            </div>
+            </p>
           </section>
 
           <section className="login-form-panel">
