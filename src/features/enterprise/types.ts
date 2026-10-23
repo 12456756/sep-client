@@ -157,6 +157,10 @@ export interface WorkDeliverable {
   note: string;
   nodeId?: string;
   nodeTitle?: string;
+  /** 原始交付物 ID，不从展示用复合 ID 或路径反推。 */
+  deliverableId?: string;
+  format?: string;
+  previewVersion?: string;
 }
 
 export type { WorkActivity, WorkActivityState } from '../../shared/work-activity'

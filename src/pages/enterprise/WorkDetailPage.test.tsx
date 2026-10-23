@@ -13,6 +13,7 @@ import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { ArrangementSteps } from '../../components/enterprise/arrange/ArrangementSteps';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
+import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
 import type { WorkItem } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
@@ -30,6 +31,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
+  '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
   '../../features/enterprise/vocabulary': vocabulary,
@@ -102,5 +104,19 @@ describe('WorkDetailPage media entry', () => {
     assert.doesNotMatch(html, /重试此节点：peer/);
     assert.match(html, /编排媒体成果/);
     assert.match(html, /进行中/);
+  });
+
+  it('offers accepted node documents while parallel arrangement nodes are still running', () => {
+    const flow = { ...work, kind: 'flow' as const, status: 'running' as const,
+      workType: { state: 'resolved' as const, kind: 'arrangement' as const },
+      deliverables: [{ id: 'node-a:report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '节点最终交付物 · A',
+        nodeId: 'node-a', nodeTitle: 'A', deliverableId: 'report', format: 'docx' }],
+      arrangementExecution: { activeRunId: 'run', status: 'running' as const, updatedAt: 1,
+        nodes: [{ nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'report.docx', format: 'docx', size: 5,
+          sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 1, snapshot: { sha256: 'a'.repeat(64), size: 5, source: 'confirmed' as const } }] },
+        { nodeId: 'node-b', status: 'running' as const, finalFiles: [] }] } };
+    const html = renderDetail(flow);
+    assert.match(html, /aria-label="预览文档：report\.docx"/);
+    assert.match(html, /复制路径/);
   });
 });

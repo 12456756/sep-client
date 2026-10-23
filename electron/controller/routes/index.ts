@@ -19,8 +19,10 @@ import { mediaRoutes } from './media'
 import { speechRoutes } from './speech'
 import { videoRoutes } from './video'
 import { knowledgeRoutes } from './knowledge'
+import { documentPreviewRoutes } from './document-preview'
 
 export const routes: readonly Route[] = [
+  ...documentPreviewRoutes,
   ...knowledgeRoutes,
   ...speechRoutes,
   ...authRoutes,

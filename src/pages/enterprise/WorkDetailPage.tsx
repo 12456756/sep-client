@@ -11,6 +11,7 @@ import { ArrangementSteps } from '../../components/enterprise/arrange/Arrangemen
 import { WorkConversation, WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
+import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
@@ -195,9 +196,12 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                             <strong title={file.name}>{file.name}</strong>
                             <small>{file.note}</small>
                           </span>
-                          <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
-                            复制路径
-                          </button>
+                          <div className="ent-wk-file-actions">
+                            {!isConversation && file.nodeId && file.deliverableId && file.format ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null}
+                            <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
+                              复制路径
+                            </button>
+                          </div>
                         </li>
                       ))}
                     </ul>

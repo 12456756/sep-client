@@ -63,6 +63,9 @@ import { createVideoScopeAdapter } from '../data/video-scope-adapter'
 import { MockVideoHostService, type MockVideoHostOptions } from '../service/mock-video-host-service'
 import { VideoRunService } from '../service/video-run-service'
 import { AppError } from '../errors/app-error'
+import { DocumentPreviewService } from '../service/document-preview-service'
+import { DocumentPreviewStore } from '../data/document-preview-store'
+import type { DocumentPreviewRuntime } from '../runtime/document-preview-runtime'
 
 const log = logger.child('build-backend')
 
@@ -95,6 +98,8 @@ class BackendRuntime {
   readonly tasks: TaskService
   readonly conversations: ConversationService
   readonly arrangements: ArrangementService
+  readonly documentPreviews: DocumentPreviewService
+  private readonly documentPreviewRuntime: LazyAsync<DocumentPreviewRuntime>
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
   readonly notifications: NotificationService
@@ -121,6 +126,7 @@ class BackendRuntime {
     this.isEncryptionAvailable = isEncryptionAvailable
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
+    this.documentPreviewRuntime = loadOnce(async () => (await import('./create-document-preview-runtime')).createDocumentPreviewRuntime())
     this.speechRuntime = loadOnce(async () => (await import('./create-speech-runtime')).createSpeechRuntime())
     this.speech = new SpeechService({
       scope: this, settings: new SpeechSettingsStore(userDataDir),
@@ -285,6 +291,14 @@ class BackendRuntime {
     }
     this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks })
+    const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
+    this.documentPreviews = new DocumentPreviewService({
+      scope: this,
+      getDelivery: (...args) => previewFiles.getDelivery(...args),
+      read: (...args) => previewFiles.read(...args),
+      render: (format, bytes, validate) => this.documentPreviewRuntime.get().then(runtime => { validate(); return runtime.render(format, bytes) }),
+      stop: () => this.documentPreviewRuntime.peek()?.stop(),
+    })
     const platformSession = this.authSession
     this.arrangements = new ArrangementService({
       scope: this,
@@ -414,6 +428,7 @@ class BackendRuntime {
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
     this.knowledge.clear()
+    this.documentPreviews.clear()
     this.speech.stop()
     this.notifications.stop()
     for (const entry of this.employmentTokens.values()) entry.manager.stop()

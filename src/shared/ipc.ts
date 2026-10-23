@@ -1,5 +1,6 @@
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
 import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
+import type { DocumentPreview, DocumentPreviewRequest } from './document-preview'
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
@@ -360,6 +361,7 @@ export interface ElectronAPI {
   getArrangementContext: () => Promise<unknown>
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
+  previewArrangementDocument: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { data?: DocumentPreview }>
   confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
   createArrangementDraft: (input: ArrangementDraftDocument) => Promise<ArrangementDraftResult>
