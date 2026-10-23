@@ -31,6 +31,14 @@ function renderRecords(works: WorkItem[], route: AppRoute = { name: 'records' })
 }
 
 describe('WorkRecordsPage', () => {
+  it('opens on all records including completed work without user actions', () => {
+    const html = renderRecords([work, { ...work, id: 'work-b', title: '已完成的报告', status: 'completed', nextUserAction: null }]);
+    assert.match(html, /<button type="button" aria-pressed="true" class="active">全部<em>2<\/em>/);
+    assert.match(html, /<button type="button" aria-pressed="false">需要我处理/);
+    assert.match(html, /已完成的报告/);
+    assert.equal((html.match(/class="ent-record"/g) ?? []).length, 2);
+  });
+
   it('renders independent native button groups and restores all route filters', () => {
     const html = renderRecords([work], { name: 'records', bucket: 'all', workType: 'conversation', search: '  合同  ' });
     assert.match(html, /role="group" aria-label="按状态筛选工作记录"/);

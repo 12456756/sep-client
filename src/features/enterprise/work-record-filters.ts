@@ -17,7 +17,7 @@ const BUCKET_MATCHERS: Record<WorkRecordBucket, (work: WorkRecord) => boolean> =
 
 export function readWorkRecordFilters(route: AppRoute): WorkRecordFilterState {
   return {
-    bucket: route.name === 'records' ? route.bucket ?? 'mine' : 'mine',
+    bucket: route.name === 'records' ? route.bucket ?? 'all' : 'all',
     workType: route.name === 'records' ? route.workType ?? 'all' : 'all',
     search: route.name === 'records' ? route.search ?? '' : '',
   }
