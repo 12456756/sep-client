@@ -38,6 +38,39 @@ test('Excel preview has sheet names, escaped values, cached results and explicit
   assert.equal(result.sections[1].title, 'Summary')
 })
 
+test('Excel preview rejects a small sparse workbook before expanding millions of empty cells', async () => {
+  const book = new ExcelJS.Workbook()
+  const sheet = book.addWorksheet('Sparse')
+  for (let row = 1; row <= 1000; row++) sheet.getCell(`XFD${row}`).value = 'value'
+  const bytes = new Uint8Array(await book.xlsx.writeBuffer())
+  assert.ok(bytes.byteLength < 64 * 1024)
+  await assert.rejects(convertDocumentPreview('xlsx', bytes), /表格预览单元格过多.*查看原件/)
+})
+
+test('Excel preview applies the cell budget across all visible sheets', async () => {
+  const book = new ExcelJS.Workbook()
+  for (const name of ['First', 'Second']) {
+    const sheet = book.addWorksheet(name)
+    for (let row = 1; row <= 4; row++) sheet.getCell(`XFD${row}`).value = name
+  }
+  await assert.rejects(convertDocumentPreview('xlsx', new Uint8Array(await book.xlsx.writeBuffer())), /表格预览单元格过多/)
+})
+
+test('Excel preview preserves sparse column positions within budget and skips hidden sheets', async () => {
+  const book = new ExcelJS.Workbook()
+  const sheet = book.addWorksheet('Visible')
+  sheet.getCell('A1').value = 'first'
+  sheet.getCell('J1').value = 'last'
+  const hidden = book.addWorksheet('Hidden', { state: 'hidden' })
+  for (let row = 1; row <= 7; row++) hidden.getCell(`XFD${row}`).value = 'hidden'
+  const result = await convertDocumentPreview('xlsx', new Uint8Array(await book.xlsx.writeBuffer()))
+  assert.equal(result.kind, 'html')
+  if (result.kind !== 'html') return
+  assert.equal(result.sections.length, 1)
+  assert.equal(result.sections[0].title, 'Visible')
+  assert.match(result.sections[0].html, /<td>first<\/td>(?:<td><\/td>){8}<td>last<\/td>/)
+})
+
 test('PowerPoint follows presentation order instead of numeric slide filenames', async () => {
   const bytes = zipSync({
     'ppt/presentation.xml': strToU8('<p:presentation xmlns:p="p" xmlns:r="r"><p:sldIdLst><p:sldId r:id="b"/><p:sldId r:id="a"/></p:sldIdLst></p:presentation>'),

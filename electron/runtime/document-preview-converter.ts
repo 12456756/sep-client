@@ -7,6 +7,7 @@ import type { DocumentPreviewContent } from '../../src/shared/document-preview'
 const escape = (text: string) => text.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
 const officeNotice = '内容预览；复杂排版、图表和分页可能与原件不同。'
+const maxSpreadsheetPreviewCells = 100_000
 const require = createRequire(import.meta.url)
 
 function officeEntries(bytes: Uint8Array, extract: boolean): Record<string, Uint8Array> {
@@ -39,8 +40,15 @@ async function spreadsheet(bytes: Uint8Array): Promise<DocumentPreviewContent> {
   const sections: { title: string; html: string }[] = []
   const notices = [officeNotice]
   let missingFormula = false
-  for (const sheet of book.worksheets) {
-    if (sheet.state !== 'visible') continue
+  let previewCells = 0
+  const sheets = book.worksheets.filter(sheet => sheet.state === 'visible').map(sheet => {
+    const columnCount = sheet.columnCount
+    // Sparse sheets still produce a rectangular table, so budget before creating empty cells.
+    previewCells += sheet.actualRowCount * columnCount
+    if (previewCells > maxSpreadsheetPreviewCells) throw new Error('表格预览单元格过多，请复制路径查看原件。')
+    return { sheet, columnCount }
+  })
+  for (const { sheet, columnCount } of sheets) {
     let rows: string[] = []
     let start = 1
     const flush = (end: number) => {
@@ -50,7 +58,7 @@ async function spreadsheet(bytes: Uint8Array): Promise<DocumentPreviewContent> {
     }
     sheet.eachRow((row, rowNumber) => {
       const cells: string[] = []
-      for (let column = 1; column <= sheet.columnCount; column++) {
+      for (let column = 1; column <= columnCount; column++) {
         const cell = row.getCell(column)
         if (cell.isMerged && cell.master.address !== cell.address) { cells.push('<td></td>'); continue }
         let text = cell.text
