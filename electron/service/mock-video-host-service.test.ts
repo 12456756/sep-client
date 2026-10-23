@@ -9,6 +9,8 @@ import type { VideoGenerationInput } from '../../src/shared/video-host'
 import { videoReceiptSchema, videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
 import { MockVideoMediaGateway } from '../data/mock-video-media-gateway'
 import { VideoStore } from '../data/video-store'
+import { ArrangementMediaLinkStore } from '../data/arrangement-media-link-store'
+import type { ArrangementMediaLink } from '../domain/arrangement-media'
 import type { VideoScope } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
@@ -172,8 +174,128 @@ async function setup(overrides: Partial<MockVideoHostOptions> = {}) {
     requestApproval: async value => { approvals.push(structuredClone(value)); return state.approve },
     ...overrides,
   }
-  return { state, store, gateway, approvals, options, host: new MockVideoHostService(options) }
+  return { root, state, store, gateway, approvals, options, host: new MockVideoHostService(options) }
 }
+
+async function arrangementOutput(real: boolean, overrides: Partial<ArrangementMediaLink> = {}) {
+  const f = await (real ? realSetup() : setup())
+  const job = await f.host.generate('task-a', input(), undefined, { runId: 'video-node-run', requestApproval: f.options.requestApproval })
+  await f.host.resume('task-a', job.jobId)
+  const saved = await f.host.resume('task-a', job.jobId)
+  const outputId = saved.outputs[0].outputId
+  const asset = (await f.store.getAsset(scope, 'task-a', job.jobId, outputId))!
+  const links = new ArrangementMediaLinkStore(f.root)
+  const link: ArrangementMediaLink = {
+    version: 1, owner: f.state.scope!, taskId: 'task-a', arrangementRunId: 'arrangement-run',
+    nodeId: 'video-node', nodeRunId: 'video-node-run', attempt: 1, subscriptionId: scope.subscriptionId,
+    kind: 'video', operation: 'image-to-video', jobId: job.jobId, inputs: [],
+    outputs: [{ artifactId: asset.localAssetId, sha256: asset.output.sha256, status: 'saved' }],
+    materializations: [], createdAt: 1, updatedAt: 1, ...overrides,
+  }
+  await links.upsert(f.state.scope!, link)
+  await f.host.stopAll()
+  f.state.subscriptionId = 'image-employee'
+  return { ...f, job, outputId, asset, links, link }
+}
+
+for (const real of [false, true]) {
+  test(`${real ? 'real' : 'mock'} arrangement preview resolves the persisted video employee without network authorization`, async () => {
+    const f = await arrangementOutput(real)
+    const calls = { ...f.gateway.calls }
+    let opened = 0
+    const host = new MockVideoHostService({ ...f.options, arrangementMediaLinks: f.links,
+      authorize: async () => { assert.fail('Saved arrangement outputs must remain available offline') },
+      openOutput: async (actualScope, taskId, jobId, outputId, signal, validate) => {
+        signal.throwIfAborted(); validate(); opened++
+        assert.deepEqual(actualScope, scope)
+        assert.ok(await f.store.verifiedAssetPath(actualScope, taskId, jobId, outputId))
+      },
+    })
+    try {
+      const preview = await host.preview('task-a', f.job.jobId, f.outputId)
+      assert.equal((await host.outputInfo('task-a', f.job.jobId, f.outputId)).outputId, f.outputId)
+      if (real) { assert.equal(preview.opened, true); assert.equal('bytes' in preview, false); assert.equal(opened, 1) }
+      else assert.deepEqual(preview.bytes, await f.store.readAsset(scope, 'task-a', f.job.jobId, f.outputId))
+      assert.deepEqual(f.gateway.calls, calls)
+    } finally { await host.stopAll() }
+  })
+
+  test(`${real ? 'real' : 'mock'} arrangement export uses the video employee after the native dialog`, async () => {
+    const f = await arrangementOutput(real)
+    let exports = 0
+    const host = new MockVideoHostService({ ...f.options, arrangementMediaLinks: f.links,
+      exportOutput: async (actualScope, taskId, jobId, outputId, _path, signal, validate) => {
+        signal.throwIfAborted(); validate(); exports++
+        assert.deepEqual(actualScope, scope)
+        assert.ok(await f.store.verifiedAssetPath(actualScope, taskId, jobId, outputId))
+      },
+    })
+    try {
+      const selection = await host.nativeSelection('task-a')
+      await selection.export(f.job.jobId, f.outputId, '/native/video.mp4')
+      assert.equal(exports, 1)
+      f.state.subscriptionId = 'different-task-employee'
+      await assert.rejects(selection.export(f.job.jobId, f.outputId, '/native/video.mp4'), { code: 'AUTH_REQUIRED' })
+      assert.equal(exports, 1)
+    } finally { await host.stopAll() }
+  })
+}
+
+test('arrangement output resolution rejects foreign tasks, owners and unknown outputs', async () => {
+  const f = await arrangementOutput(false)
+  const host = new MockVideoHostService({ ...f.options, arrangementMediaLinks: f.links })
+  try {
+    await assert.rejects(host.preview('other-task', f.job.jobId, f.outputId), { code: 'NOT_FOUND' })
+    await assert.rejects(host.preview('task-a', 'unknown-job', f.outputId), { code: 'NOT_FOUND' })
+    await assert.rejects(host.preview('task-a', f.job.jobId, 'unknown-output'), { code: 'NOT_FOUND' })
+    f.state.scope = { enterpriseId: scope.enterpriseId, memberId: 'other-member' }
+    await assert.rejects(host.preview('task-a', f.job.jobId, f.outputId), { code: 'NOT_FOUND' })
+  } finally { await host.stopAll() }
+})
+
+for (const overrides of [{ nodeRunId: 'unrelated-run' }, { outputs: [] },
+  { outputs: [{ artifactId: 'unrelated-artifact', sha256: 'a'.repeat(64), status: 'saved' as const }] },
+]) test(`arrangement output requires original run and output evidence: ${JSON.stringify(overrides)}`, async () => {
+  const f = await arrangementOutput(false, overrides)
+  const host = new MockVideoHostService({ ...f.options, arrangementMediaLinks: f.links })
+  try { await assert.rejects(host.preview('task-a', f.job.jobId, f.outputId), { code: 'NOT_FOUND' }) }
+  finally { await host.stopAll() }
+})
+
+test('arrangement output rejects a mismatched hash for the original artifact', async () => {
+  const f = await arrangementOutput(false)
+  const host = new MockVideoHostService({ ...f.options, arrangementMediaLinks: {
+    get: async () => ({ ...f.link, outputs: [{ ...f.link.outputs[0], sha256: 'a'.repeat(64) }] }),
+    list: f.links.list.bind(f.links), upsert: f.links.upsert.bind(f.links),
+  } })
+  try { await assert.rejects(host.preview('task-a', f.job.jobId, f.outputId), { code: 'NOT_FOUND' }) }
+  finally { await host.stopAll() }
+})
+
+for (const change of ['owner', 'revision', 'task', 'stop'] as const) test(`arrangement output fences ${change} changes during link lookup`, async () => {
+  const f = await arrangementOutput(true)
+  let revision = 0, opened = 0
+  const host = new MockVideoHostService({ ...f.options, localAuthorizationRevision: () => revision,
+    arrangementMediaLinks: {
+      list: f.links.list.bind(f.links), upsert: f.links.upsert.bind(f.links),
+      get: async (...args) => {
+        const link = await f.links.get(...args)
+        if (change === 'owner') f.state.scope = { ...f.state.scope!, memberId: 'other-member' }
+        else if (change === 'revision') revision++
+        else if (change === 'task') f.state.subscriptionId = 'other-employee'
+        else await host.stopTask('task-a')
+        return link
+      },
+    },
+    openOutput: async () => { opened++ },
+  })
+  try {
+    await assert.rejects(host.preview('task-a', f.job.jobId, f.outputId), error => change === 'stop'
+      ? error instanceof Error && (error.name === 'AbortError' || error.message === 'Mock video task stopped.')
+      : error instanceof AppError && error.code === 'AUTH_REQUIRED')
+    assert.equal(opened, 0)
+  } finally { await host.stopAll() }
+})
 
 test('mock host approves upload and durable zero quote, then submits only once and projects safe views', async () => {
   const f = await setup()

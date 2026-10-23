@@ -222,6 +222,7 @@ class BackendRuntime {
       const store = videoStore
       const videoOptions: MockVideoHostOptions = {
         mock: !config.SEP_VIDEO_REAL_ENABLED, scope: this, store,
+        arrangementMediaLinks: new ArrangementMediaLinkStore(userDataDir),
         getTask: taskId => this.taskManager.getTask(taskId),
         authorize: async (subscriptionId, signal) => {
           signal.throwIfAborted()

@@ -25,6 +25,7 @@ import { buildExtensions } from '../pi/sdk/pi-coding-agent-adapter'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { ArrangementMediaService } from '../service/arrangement-media-service'
 import { MediaService } from '../service/media-service'
+import { MockVideoHostService } from '../service/mock-video-host-service'
 import { VideoRunService } from '../service/video-run-service'
 import { TaskManager } from './task-manager'
 import { TaskRuntime } from './task-runtime'
@@ -275,6 +276,28 @@ test('backend E2E: image to video crosses employees, preserves hashes and automa
     assert.equal(file.snapshot!.sha256, file.sha256)
   }
   assert.equal(f.approvals.length, 1, 'video upload and quote approvals are covered by the arrangement media authorization')
+  assert.equal(f.imageGateway.calls.submit.length, 1); assert.equal(f.videoGateway.calls.submit, 1)
+
+  // Recreate the shared IPC host: its task is owned by the image employee,
+  // while the saved video belongs to the second node's employee.
+  const exportDir = await mkdtemp(join(await realpath(tmpdir()), 'sep-media-export-'))
+  cleanups.push(() => rm(exportDir, { recursive: true, force: true }))
+  const sharedHost = new MockVideoHostService({
+    mock: true, scope: { currentScope: () => f.manager.getCurrentUserScope() }, store: f.videos,
+    arrangementMediaLinks: f.links, getTask: id => f.manager.getTask(id), authorizationRevision: () => 0,
+    authorize: async () => { assert.fail('Saved video preview must not authorize generation') },
+    gateway: () => { assert.fail('Saved video preview must not construct an online gateway') },
+    requestApproval: async () => { assert.fail('Saved video preview must not request tool approval') },
+    ...createVideoScopeAdapter(f.root, f.images, f.videos),
+  })
+  cleanups.push(() => sharedHost.stopAll())
+  const videoJob = (await f.videos.getJob({ ...scope, subscriptionId: video.subscriptionId }, f.task.id, video.jobId))!
+  const outputId = videoJob.receipt!.outputs[0].outputId
+  const preview = await sharedHost.preview(f.task.id, video.jobId, outputId)
+  assert.deepEqual(preview.bytes, MOCK_VIDEO_BYTES)
+  const selectedPath = join(exportDir, 'saved-video.mp4')
+  await (await sharedHost.nativeSelection(f.task.id)).export(video.jobId, outputId, selectedPath)
+  assert.deepEqual(await readFile(selectedPath), MOCK_VIDEO_BYTES)
   assert.equal(f.imageGateway.calls.submit.length, 1); assert.equal(f.videoGateway.calls.submit, 1)
 })
 

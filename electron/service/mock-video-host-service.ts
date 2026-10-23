@@ -12,6 +12,7 @@ import { abortableVideo } from '../data/video-files'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { TaskToolPolicy } from '../runtime/run-types'
 import type { MediaJobCreated } from '../domain/media-tools'
+import type { ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
 import { VideoService } from './video-service'
 import { VideoTracker, type VideoTrackerOptions } from './video-tracker'
 
@@ -27,6 +28,8 @@ export interface MockVideoHostGateway extends VideoGatewayPort {
 interface VideoHostOptionsBase {
   scope: ScopeSource
   store: VideoStorePort
+  /** Persisted node associations are the authority for cross-employee saved outputs. */
+  arrangementMediaLinks?: ArrangementMediaLinkStorePort
   getTask(taskId: string): Promise<{ subscriptionId?: string | null } | null>
   authorize(subscriptionId: string, signal: AbortSignal): Promise<unknown>
   /** Identity/subscription check for original receipts, independent of generation capabilities. */
@@ -251,6 +254,35 @@ export class MockVideoHostService {
     const { scope, epoch } = await this.task(taskId, signal)
     return { scope, epoch, context: this.context(scope, epoch, taskId) }
   }
+  private async savedOutput(taskId: string, jobId: string, outputId: string, signal: AbortSignal) {
+    videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
+    const revision = this.localRevision()
+    const { scope: taskScope, epoch } = await this.task(taskId, signal)
+    const validate = () => {
+      this.assert(taskScope, epoch, signal)
+      if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
+    }
+    const validateTask = async () => {
+      const current = await this.task(taskId, signal)
+      validate()
+      if (JSON.stringify(current.scope) !== JSON.stringify(taskScope)) throw new AppError('AUTH_REQUIRED')
+    }
+    // IPC supplies only task/job/output IDs. Resolve the employee from trusted
+    // node evidence, never from renderer input or a scan of other employees.
+    const link = await abortableVideo(this.options.arrangementMediaLinks?.get(taskScope, taskId, 'video', jobId) ?? Promise.resolve(null), signal)
+    validate()
+    const scope = link ? videoScopeSchema.parse({ ...taskScope, subscriptionId: link.subscriptionId }) : taskScope
+    const job = await abortableVideo(this.options.store.getJob(scope, taskId, jobId), signal)
+    validate()
+    if (!job || (job.executionMode ?? 'mock') !== (this.options.mock ? 'mock' : 'real')) throw new AppError('NOT_FOUND')
+    const output = job.receipt?.outputs.find(output => output.outputId === outputId)
+    const asset = await abortableVideo(this.options.store.getAsset(scope, taskId, jobId, outputId), signal)
+    await validateTask()
+    if (!output || asset?.status !== 'SAVED') throw new AppError('NOT_FOUND')
+    if (link && (job.runId !== link.nodeRunId || !link.outputs.some(item =>
+      item.artifactId === asset.localAssetId && item.sha256 === asset.output.sha256))) throw new AppError('NOT_FOUND')
+    return { scope, output, asset, validate, validateTask }
+  }
   private operation<T>(taskId: string, call: () => Promise<T>): Promise<T> {
     const pending = Promise.resolve().then(call)
     this.active.add(pending)
@@ -308,7 +340,7 @@ export class MockVideoHostService {
   async nativeSelection(taskId: string) {
     const signal = this.signal(taskId)
     const revision = this.localRevision()
-    const { scope, epoch } = await this.localBinding(taskId, signal)
+    const { scope, epoch } = await this.task(taskId, signal)
     const validate = () => {
       this.assert(scope, epoch, signal)
       if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
@@ -335,50 +367,33 @@ export class MockVideoHostService {
         validate()
         await validateTask()
         if (!this.options.exportOutput) throw new AppError('SERVICE_UNAVAILABLE')
-        await this.outputInfo(taskId, jobId, outputId)
-        validate()
-        await this.options.exportOutput(scope, taskId, jobId, outputId, path, signal, validate)
-        validate()
+        const saved = await this.savedOutput(taskId, jobId, outputId, signal)
+        await validateTask()
+        const validateOutput = () => { validate(); saved.validate() }
+        validateOutput()
+        await this.options.exportOutput(saved.scope, taskId, jobId, outputId, path, signal, validateOutput)
+        await validateTask()
       }),
     }
   }
   async preview(taskId: string, jobId: string, outputId: string) {
-    videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
     const signal = this.signal(taskId)
-    const revision = this.localRevision()
-    const { scope, epoch } = await this.localBinding(taskId, signal)
-    await this.outputInfo(taskId, jobId, outputId)
-    const asset = await this.options.store.getAsset(scope, taskId, jobId, outputId)
+    const { scope, asset, validate, validateTask } = await this.savedOutput(taskId, jobId, outputId, signal)
     // Real outputs open through the native adapter; never transfer their bytes over IPC.
-    if (!asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
     if (!this.options.mock) {
       if (!this.options.openOutput || asset.output.byteLength > 256 * 1024 * 1024) throw new AppError('INVALID_ARGUMENT')
-      const validate = () => {
-        this.assert(scope, epoch, signal)
-        if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
-      }
       validate()
       await this.operation(taskId, () => this.options.openOutput!(scope, taskId, jobId, outputId, signal, validate))
-      validate()
+      await validateTask()
       return { mime: asset.output.mimeType, opened: true as const }
     }
     if (asset.output.byteLength > 16 * 1024 * 1024) throw new AppError('INVALID_ARGUMENT')
-    const bytes = await this.options.store.readAsset(scope, taskId, jobId, outputId)
-    this.assert(scope, epoch, signal)
-    if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
+    const bytes = await abortableVideo(this.options.store.readAsset(scope, taskId, jobId, outputId), signal)
+    await validateTask()
     return { mime: asset.output.mimeType, bytes }
   }
   async outputInfo(taskId: string, jobId: string, outputId: string) {
-    videoLocalIdSchema.parse(jobId); videoLocalIdSchema.parse(outputId)
-    const signal = this.signal(taskId), revision = this.localRevision()
-    const { scope, epoch } = await this.localBinding(taskId, signal)
-    const job = (await this.context(scope, epoch, taskId).service.listJobs()).find(job => job.jobId === jobId)
-    const output = job?.receipt?.outputs.find(output => output.outputId === outputId)
-    const asset = await this.options.store.getAsset(scope, taskId, jobId, outputId)
-    this.assert(scope, epoch, signal)
-    if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
-    if (!output || asset?.status !== 'SAVED') throw new AppError('NOT_FOUND')
-    return output
+    return (await this.savedOutput(taskId, jobId, outputId, this.signal(taskId))).output
   }
   async generate(taskId: string, value: VideoGenerationInput, parent?: AbortSignal, run?: GenerationRun): Promise<VideoJobView> {
     const input = videoGenerationInputSchema.parse(value)
