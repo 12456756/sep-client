@@ -16,6 +16,7 @@ import { ConversationExecutor } from './conversation-executor'
 import { RunQueue } from './run-queue'
 import { EventPipeline } from './run-events'
 import { createRunCompletion, WorkerRegistry } from './run-workers'
+import { cleanupRun } from './run-cleanup'
 import type {
   EmployeeRuntimeConfig,
   QueuedRun,
@@ -681,8 +682,8 @@ export class TaskRuntime {
               reason: 'employee_unavailable',
             })
             const error = 'Selected employee is unavailable.'
-            await this.taskManager.updateTaskStatus(queued.taskId, TaskStatus.FAILED, error)
-            await this.taskManager.clearTaskRun(queued.taskId, queued.runId)
+            await cleanupRun(queued.taskId, queued.runId, [['reject-admission', () =>
+              this.taskManager.settleTaskRun(queued.taskId, queued.runId, TaskStatus.FAILED, error)]])
             this.reportMonitorFinished({ taskId: queued.taskId, runId: queued.runId, status: 'FAILED', error, completedAt: Date.now() })
             continue
           }
@@ -696,6 +697,8 @@ export class TaskRuntime {
           void this.startRun(queued, task, releaseWorkspace)
         }
       } while (this.pumpRequested)
+    } catch (error) {
+      log.warn('task queue pump failed', { cause: redactText(error instanceof Error ? error.message : String(error)) })
     } finally {
       this.pumping = false
     }
@@ -712,6 +715,9 @@ export class TaskRuntime {
         return
       }
       await this.conversationExecutor.execute(queued, task, releaseWorkspace)
+    } catch (error) {
+      log.warn('task run escaped its executor', { taskId: queued.taskId, runId: queued.runId,
+        cause: redactText(error instanceof Error ? error.message : String(error)) })
     } finally {
       if (this.startingRuns.get(queued.taskId) === queued.runId) this.startingRuns.delete(queued.taskId)
       this.clearPendingFileTools(queued.taskId, queued.runId)
@@ -833,22 +839,36 @@ export class TaskRuntime {
             cause: redactText(persistenceError instanceof Error ? persistenceError.message : String(persistenceError)) })
         }
       }
-      if (parentCreated && scope && this.taskRunStore) {
-        await this.taskRunStore.finish(scope, taskId, runId, 'failed', message).catch(() => undefined)
-      }
-      await this.taskManager.settleTaskRun(taskId, runId, TaskStatus.FAILED, message).catch(() => undefined)
-      this.reportMonitorFinished({ taskId, runId, status: 'FAILED', error: message, completedAt: Date.now() })
+      await cleanupRun(taskId, runId, [['settle-failure', async () => {
+        let status: typeof TaskStatus[keyof typeof TaskStatus] = TaskStatus.FAILED
+        if (parentCreated && scope && this.taskRunStore) {
+          await cleanupRun(taskId, runId, [['run-finish', () => this.taskRunStore!.finish(scope, taskId, runId, 'failed', message)]])
+          const persisted = await this.taskRunStore.get(scope, taskId, runId).catch(() => null)
+          if (persisted && persisted.outcome !== 'running') {
+            status = persisted.outcome === 'completed' ? TaskStatus.COMPLETED
+              : persisted.outcome === 'interrupted' ? TaskStatus.INTERRUPTED
+                : persisted.outcome === 'stopped' || persisted.outcome === 'cancelled' ? TaskStatus.PAUSED : TaskStatus.FAILED
+          }
+        }
+        await this.taskManager.settleTaskRun(taskId, runId, status, status === TaskStatus.FAILED ? message : undefined)
+        this.reportMonitorFinished({ taskId, runId, status: status === TaskStatus.COMPLETED ? 'COMPLETED'
+          : status === TaskStatus.INTERRUPTED ? 'INTERRUPTED' : status === TaskStatus.PAUSED ? 'PAUSED' : 'FAILED',
+        error: status === TaskStatus.FAILED ? message : undefined, completedAt: Date.now() })
+      }]])
     } finally {
-      this.events.forgetRun(runId)
-      this.pendingArrangementApprovals.delete(runId)
-      for (const [nodeRunId, node] of this.nodeParticipations) {
-        if (node.taskId === taskId && node.parentRunId === runId) this.nodeParticipations.delete(nodeRunId)
-      }
-      if (this.activeArrangements.get(taskId)?.runId === runId) this.activeArrangements.delete(taskId)
-      releaseWorkspace()
-      await this.taskManager.clearTaskRun(taskId, runId).catch(() => undefined)
-      completion.settle()
-      void this.pump()
+      await cleanupRun(taskId, runId, [
+        ['events', () => this.events.forgetRun(runId)],
+        ['approvals', () => this.pendingArrangementApprovals.delete(runId)],
+        ['nodes', () => {
+          for (const [nodeRunId, node] of this.nodeParticipations) {
+            if (node.taskId === taskId && node.parentRunId === runId) this.nodeParticipations.delete(nodeRunId)
+          }
+        }],
+        ['registry', () => { if (this.activeArrangements.get(taskId)?.runId === runId) this.activeArrangements.delete(taskId) }],
+        ['workspace', releaseWorkspace],
+        ['completion', () => completion.settle()],
+        ['queue', () => this.pump()],
+      ])
     }
   }
 

@@ -7,6 +7,7 @@ import { withApprovedSkillReadPaths } from './run-skill-policy'
  * 节点的最终文件路径；检查点、审批和运行事件都通过注入的端口交给外层处理。
  */
 import { randomUUID } from 'node:crypto'
+import { cleanupRun } from './run-cleanup'
 import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
 import { validateDeliveryFiles, resolveDeliveryFiles } from '../data/arrangement-delivery-files'
@@ -665,9 +666,11 @@ export class ArrangementExecutor {
       }
       return { ok: false, nodeId: node.id, error: message, terminal, failure }
     } finally {
-      await this.options.video?.finishRun?.(taskId, nodeRunId)
-      this.activeWorkers.delete(nodeRunId)
-      await worker?.dispose().catch(() => undefined)
+      await cleanupRun(taskId, nodeRunId, [
+        ['video', () => this.options.video?.finishRun?.(taskId, nodeRunId)],
+        ['registry', () => this.activeWorkers.delete(nodeRunId)],
+        ['worker', () => worker?.dispose()],
+      ])
     }
   }
 

@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { TaskStatus } from '../../src/shared/types'
 import { ConversationContextStore, type ConversationMessage } from '../domain/conversation-context'
-import type { TaskRunStorePort } from '../data/task-run-store'
+import type { TaskRunStorePort, TaskRunOutcome } from '../data/task-run-store'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { TaskManager } from './task-manager'
 import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
@@ -19,6 +19,7 @@ import { ConversationRecoveryError } from './conversation-recovery-error'
 import { withApprovedSkillReadPaths } from './run-skill-policy'
 import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, TaskWorkerPort } from './run-types'
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
+import { cleanupRun } from './run-cleanup'
 import type { EventPipeline } from './run-events'
 import type { ToolApprovals } from './run-approvals'
 import type { MonitorTaskContentInput, MonitorTaskQueuedInput, MonitorTaskStartedInput, MonitorTaskFinishedInput } from '../domain/task-monitor'
@@ -242,17 +243,15 @@ export class ConversationExecutor {
         this.options.onFinished?.({ taskId, runId, status: 'FAILED', error: 'The conversation could not be started.', completedAt: Date.now() })
       }
     } finally {
-      await this.options.video?.finishRun?.(taskId, runId)
-      this.options.events.forgetRun(runId)
-      await worker?.dispose().catch(() => undefined)
-      releaseWorkspace()
-      if (active) this.options.workers.forget(active)
-      const currentTask = await this.options.taskManager.getTask(taskId).catch(() => null)
-      if (currentTask?.activeRunId === runId) {
-        await this.options.taskManager.clearTaskRun(taskId, runId).catch(() => undefined)
-      }
-      completion.settle()
-      this.options.requestPump()
+      await cleanupRun(taskId, runId, [
+        ['video', () => this.options.video?.finishRun?.(taskId, runId)],
+        ['events', () => this.options.events.forgetRun(runId)],
+        ['worker', () => worker?.dispose()],
+        ['workspace', releaseWorkspace],
+        ['registry', () => { if (active) this.options.workers.forget(active) }],
+        ['completion', () => completion.settle()],
+        ['queue', () => this.options.requestPump()],
+      ])
     }
   }
 
@@ -341,20 +340,28 @@ export class ConversationExecutor {
     runCreated: boolean,
     failure?: unknown,
   ): Promise<void> {
-    const outcome = active.control === 'cancel'
+    let outcome: TaskRunOutcome = active.control === 'cancel'
       ? 'cancelled'
       : active.control === 'interrupt'
         ? 'interrupted'
         : active.control === 'pause'
           ? 'stopped'
           : failure ? 'failed' : 'completed'
-    const error = active.control === 'cancel'
+    let error = active.control === 'cancel'
       ? active.controlReason
       : failure instanceof Error ? failure.message : failure ? String(failure) : undefined
 
+    let finalizationFailure: unknown
+    const persist = async (stage: string, operation: () => unknown): Promise<void> => {
+      try { await operation() } catch (cause) {
+        finalizationFailure ??= cause
+        log.warn('conversation finalization failed', { taskId: active.taskId, runId: active.runId, stage,
+          error: cause instanceof Error ? cause.message : String(cause) })
+      }
+    }
     if (active.control !== 'none' || failure) {
       for (const [toolId, tool] of this.options.events.pendingSideEffects(active.runId)) {
-        await this.options.events.enqueue({
+        await persist('side-effect-evidence', () => this.options.events.enqueue({
           taskId: active.taskId,
           runId: active.runId,
           subscriptionId: active.subscriptionId,
@@ -362,12 +369,12 @@ export class ConversationExecutor {
           type: 'SIDE_EFFECT_UNKNOWN',
           occurredAt: Date.now(),
           data: { toolId, toolName: tool.toolName, startedAt: tool.startedAt, replayAllowed: false },
-        })
+        }))
       }
     }
     if (runCreated) {
       if (queued.degradedRecovery) {
-        await this.options.events.enqueue({
+        await persist('recovery-event', () => this.options.events.enqueue({
           taskId: active.taskId,
           runId: active.runId,
           subscriptionId: active.subscriptionId,
@@ -375,9 +382,9 @@ export class ConversationExecutor {
           type: outcome === 'completed' ? 'recovery_finished' : 'recovery_failed',
           occurredAt: Date.now(),
           data: { degradedRecovery: true, replayedTools: false, error },
-        })
+        }))
       }
-      await this.options.events.enqueue({
+      await persist('outcome-event', () => this.options.events.enqueue({
         taskId: active.taskId,
         runId: active.runId,
         subscriptionId: active.subscriptionId,
@@ -385,17 +392,17 @@ export class ConversationExecutor {
         type: `run_${outcome}`,
         occurredAt: Date.now(),
         data: error ? { error } : null,
-      })
+      }))
     }
     const response = this.options.events.takeResponse(active.runId)
     if (response) {
-      this.options.onOutput?.({
+      await cleanupRun(active.taskId, active.runId, [['monitor-output', () => this.options.onOutput?.({
         taskId: active.taskId,
         runId: active.runId,
         content: response,
         messageId: `${active.runId}-assistant`,
         completeness: outcome === 'completed' ? 'complete' : 'partial',
-      })
+      })]])
     }
     if (response && scope && queued.conversation) {
       const message: ConversationMessage = {
@@ -409,24 +416,47 @@ export class ConversationExecutor {
         content: response,
         createdAt: Date.now(),
       }
-      await this.conversationStore(scope, active.taskId).appendMessage(message)
+      await persist('conversation-message', () => this.conversationStore(scope, active.taskId).appendMessage(message))
+    }
+    if (finalizationFailure && active.control === 'none') {
+      outcome = 'failed'
+      error = 'The run could not persist its final result.'
     }
     if (runCreated && scope && this.options.taskRunStore) {
-      await this.options.taskRunStore.finish(scope, active.taskId, active.runId, outcome, error)
+      try {
+        const changed = await this.options.taskRunStore.finish(scope, active.taskId, active.runId, outcome, error)
+        // finish() is idempotent. A retry must use the already durable outcome.
+        const record = changed ? null : await this.options.taskRunStore.get(scope, active.taskId, active.runId)
+        if (record && record.outcome !== 'running') {
+          outcome = record.outcome
+          error = record.error ?? undefined
+        }
+      } catch (cause) {
+        log.warn('conversation run finish failed', { taskId: active.taskId, runId: active.runId,
+          error: cause instanceof Error ? cause.message : String(cause) })
+        const record = await this.options.taskRunStore.get(scope, active.taskId, active.runId).catch(() => null)
+        if (record && record.outcome !== 'running') {
+          outcome = record.outcome
+          error = record.error ?? undefined
+        } else if (active.control === 'none') {
+          outcome = 'failed'
+          error = 'The run could not persist its final result.'
+        }
+      }
     }
     if (this.options.workers.isCurrent(active)) {
-      const nextStatus = active.control === 'interrupt'
+      const nextStatus = outcome === 'interrupted'
         ? TaskStatus.INTERRUPTED
-        : active.control === 'pause' || active.control === 'cancel'
+        : outcome === 'stopped' || outcome === 'cancelled'
           ? TaskStatus.PAUSED
-          : failure
+          : outcome === 'failed'
             ? TaskStatus.FAILED
             : TaskStatus.COMPLETED
       await this.options.taskManager.settleTaskRun(active.taskId, active.runId, nextStatus, error)
-      this.options.onFinished?.({ taskId: active.taskId, runId: active.runId,
+      await cleanupRun(active.taskId, active.runId, [['monitor-finished', () => this.options.onFinished?.({ taskId: active.taskId, runId: active.runId,
         status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : outcome === 'interrupted' ? 'INTERRUPTED' : 'PAUSED',
         error, completedAt: Date.now(),
-      })
+      })]])
     }
   }
 
