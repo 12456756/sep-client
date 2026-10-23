@@ -107,7 +107,7 @@ describe('employee presentation timeline', () => {
 });
 
 describe('AutoArrangeAnimation', () => {
-  it('uses the upper-middle layout only for the analyzing screen', () => {
+  it('keeps analysis positioning separate from scrollable waiting and terminal content', () => {
     const previousWindow = Reflect.get(globalThis, 'window');
     const previousReact = Reflect.get(globalThis, 'React');
     Object.defineProperty(globalThis, 'window', {
@@ -129,6 +129,10 @@ describe('AutoArrangeAnimation', () => {
         }));
 
       assert.ok(render('planning').includes('ent-arr-auto ent-aa-analyzing'));
+      assert.doesNotMatch(render('planning'), /ent-aa-content/);
+      assert.match(render('awaiting-employee'), /class="ent-arr-auto ent-aa-content"/);
+      assert.match(render('planning', 'arrangement_planning_failed'), /class="ent-arr-auto ent-aa-content"/);
+      assert.match(render('planning', 'arrangement_planning_cancelled'), /class="ent-arr-auto ent-aa-content"/);
       assert.doesNotMatch(render('awaiting-employee'), /ent-aa-analyzing/);
       assert.doesNotMatch(render('planning', 'arrangement_planning_failed'), /ent-aa-analyzing/);
       assert.doesNotMatch(render('planning', 'arrangement_planning_cancelled'), /ent-aa-analyzing/);

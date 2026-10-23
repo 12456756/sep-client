@@ -445,6 +445,9 @@ function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution:
       note: `节点最终交付物 · ${node.title}`,
       nodeId: node.id,
       nodeTitle: node.title,
+      deliverableId: file.id,
+      format: file.format,
+      previewVersion: `${file.nodeRunId}:${file.snapshot?.sha256 ?? file.sha256}`,
     })
   }
   return files

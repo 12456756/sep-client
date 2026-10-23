@@ -239,3 +239,16 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
 export async function revalidateDeliveryFiles(workspace: string, files: readonly FinalDeliveryFile[], signal?: AbortSignal, options: DeliveryFileOptions = {}): Promise<DeliveryIssue[]> {
   return (await resolveDeliveryFiles(workspace, files, signal, options)).issues
 }
+
+/** Preview is strictly read-only: unlike predecessor recovery it must never archive new bytes. */
+export async function readDeliveryPreviewFile(workspace: string, file: FinalDeliveryFile, taskDirectory: string): Promise<{ bytes: Buffer; source: 'snapshot' | 'recovered-snapshot' | 'verified-original' }> {
+  if (!finalDeliveryFileSchema.safeParse(file).success || file.sourceArtifact) throw new Error('INVALID_DELIVERY_RECORD')
+  const snapshot = file.snapshot
+  const bytes = snapshot
+    ? await readWorkspaceFile(taskDirectory, snapshotRelativePath(file))
+    : await readWorkspaceFile(workspace, file.path)
+  if (bytes.length !== (snapshot?.size ?? file.size) || createHash('sha256').update(bytes).digest('hex') !== (snapshot?.sha256 ?? file.sha256)) {
+    throw new Error('PREVIEW_FILE_CHANGED')
+  }
+  return { bytes, source: snapshot ? snapshot.source === 'workspace-recovery' ? 'recovered-snapshot' : 'snapshot' : 'verified-original' }
+}

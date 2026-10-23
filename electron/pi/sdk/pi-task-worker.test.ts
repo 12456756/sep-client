@@ -766,7 +766,7 @@ it('cleans a cancelled shared-session setup before admitting the next turn', asy
 
 
 for (const recover of [true, false]) {
-  it(`real SDK returns unknown-tool errors to the model and ${recover ? 'allows correction' : 'stops an identical invalid batch loop'}`, { timeout: 20000 }, async () => {
+  it(`real SDK returns unknown-tool errors to the model and ${recover ? 'allows correction' : 'allows correction after four identical invalid batches'}`, { timeout: 20000 }, async () => {
     const requests: Array<{ messages: Array<Record<string, unknown>> }> = []
     const logs: LogRecord[] = []
     const restoreLog = setLogSink(record => { logs.push(record) })
@@ -811,9 +811,8 @@ for (const recover of [true, false]) {
       onEvent: event => { events.push(event) },
     })
     try {
-      if (recover) await worker.run('List files')
-      else await assert.rejects(worker.run('List files'), /Repeated unknown-tool loop/)
-      assert.equal(requests.length, recover ? 2 : 3)
+      await worker.run('List files')
+      assert.equal(requests.length, recover ? 2 : 5)
       for (let round = 1; round < requests.length; round++) {
         const messages = requests[round]!.messages
         const unknownResult = messages.find(message => message.tool_call_id === `unknown-${round}`)
@@ -825,6 +824,7 @@ for (const recover of [true, false]) {
       assert.ok(endings.some(event => event.toolName === 'ls' && event.success))
       assert.ok(endings.some(event => event.toolName === 'tool' && !event.success))
       assert.equal(events.some(event => event.type === 'auto_retry_start'), false)
+      assert.equal(events.some(event => event.type === 'tool_loop_detected'), false)
       const audit = logs.find(record => record.message === 'provider returned unavailable tool calls')
       assert.ok(audit, 'streamed tool names must be audited after SDK assembly, not through nonexistent response.body')
       assert.deepEqual(audit.fields['toolNames'], ['tool'])
@@ -839,27 +839,41 @@ for (const recover of [true, false]) {
 }
 
 
-it('stops a successful identical-tool loop instead of issuing unbounded provider requests', async () => {
-  const runtime = new FakeRuntime()
-  runtime.session.prompt = async () => {
-    for (let round = 0; round < 4; round += 1) {
-      const call = { type: 'toolCall', id: `ls-${round}`, name: 'ls', arguments: { path: '.' } }
-      const result = { role: 'toolResult', toolCallId: call.id, toolName: 'ls', isError: false, content: [{ type: 'text', text: 'test.txt' }] }
+for (const scenario of [
+  { name: 'ls', arguments: { path: '.' }, text: 'test.txt' },
+  { name: 'video_get_job', arguments: { jobId: 'video-test' }, text: '{"status":"RUNNING"}' },
+  { name: 'video_get_job', arguments: { jobId: 'video-test' }, text: '{"status":"SUCCEEDED","tracking":"SAVED"}' },
+]) {
+  it(`allows six identical successful tool turns for ${scenario.name}: ${scenario.text}`, async () => {
+    const runtime = new FakeRuntime()
+    const events: Array<{ type: string }> = []
+    const responses: Array<{ text: string; stopReason?: string }> = []
+    runtime.session.prompt = async () => {
+      for (let round = 0; round < 6; round += 1) {
+        const call = { type: 'toolCall', id: `call-${round}`, name: scenario.name, arguments: scenario.arguments }
+        const result = { role: 'toolResult', toolCallId: call.id, toolName: scenario.name, isError: false, content: [{ type: 'text', text: scenario.text }] }
+        runtime.session.listener?.({ type: 'turn_start', data: {} })
+        runtime.session.listener?.({ type: 'tool_execution_end', data: { toolId: call.id, toolName: scenario.name, success: true } })
+        runtime.session.listener?.({ type: 'turn_end', data: { message: { content: [call] }, toolResults: [result] } })
+      }
       runtime.session.listener?.({ type: 'turn_start', data: {} })
-      runtime.session.listener?.({ type: 'tool_execution_end', data: { toolId: call.id, toolName: 'ls', success: true } })
-      runtime.session.listener?.({ type: 'turn_end', data: { message: { content: [call] }, toolResults: [result] } })
+      runtime.session.listener?.({ type: 'turn_end', data: { message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'Done' }] } } })
     }
-  }
-  const worker = new PiTaskWorker({
-    context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
-    getRefreshToken: () => 'test-refresh', onAuthenticationRequired: () => {},
-    onApprovalRequest: async () => false, onEvent: () => {},
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'test-refresh', onAuthenticationRequired: () => {},
+      onApprovalRequest: async () => false, onEvent: event => { events.push(event) },
+      onResponseSettled: async response => { responses.push(response) },
+    })
+    try {
+      await worker.run('Complete after repeated tool calls')
+      assert.equal(runtime.session.aborted, false)
+      assert.equal(events.filter(event => event.type === 'tool_execution_end').length, 6)
+      assert.equal(events.some(event => event.type === 'tool_loop_detected'), false)
+      assert.deepEqual(responses, [{ text: 'Done', stopReason: 'stop' }])
+    } finally { await worker.dispose() }
   })
-  try {
-    await assert.rejects(worker.run('List files'), /Repeated tool loop/)
-    assert.equal(runtime.session.aborted, true)
-  } finally { await worker.dispose() }
-})
+}
 
 for (const progress of ['arguments', 'results', 'valid-turn', 'ordinary-error', 'same-turn'] as const) {
   it(`does not stop tool recovery with ${progress}`, async () => {

@@ -122,7 +122,10 @@ try {
   await status.getByRole('button', { name: /需要我处理/ }).waitFor();
   await page.waitForFunction(() => window.recordTest.workspace.works.length === 5);
   await page.waitForFunction(() => window.recordTest.workspace.works.find(work => work.id === 'arrangement')?.steps[0]?.title === '读取已保存的编排计划');
-  assert.equal(await cards.count(), 1, 'First entry defaults to needs-me');
+  assert.equal(await status.getByRole('button', { name: /^全部/ }).getAttribute('aria-pressed'), 'true');
+  assert.equal(await cards.count(), 5, 'First entry defaults to all records');
+  await status.getByRole('button', { name: /需要我处理/ }).click();
+  assert.equal(await cards.count(), 1, 'Needs-me remains an explicit filter');
   await status.getByRole('button', { name: /^全部/ }).click();
   assert.equal(await cards.count(), 5);
   await type.getByRole('button', { name: /^编排/ }).click();

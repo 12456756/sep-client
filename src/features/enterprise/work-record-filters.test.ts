@@ -39,13 +39,15 @@ const records: Fixture[] = [
 const base: WorkRecordFilterState = { bucket: 'all', workType: 'all', search: '' }
 
 describe('work record filters', () => {
-  it('reads route state with mine/all/empty defaults and supports reset', () => {
-    assert.deepEqual(readWorkRecordFilters({ name: 'records' }), { bucket: 'mine', workType: 'all', search: '' })
+  it('defaults to all records while preserving explicit filters and supporting reset', () => {
+    assert.deepEqual(readWorkRecordFilters({ name: 'records' }), { bucket: 'all', workType: 'all', search: '' })
+    assert.deepEqual(readWorkRecordFilters({ name: 'records', bucket: 'mine' }), { bucket: 'mine', workType: 'all', search: '' })
+    assert.equal(filterWorkRecords(records, readWorkRecordFilters({ name: 'records' })).length, records.length)
     assert.deepEqual(readWorkRecordFilters({ name: 'records', bucket: 'done', workType: 'arrangement', search: '  合同  ' }), {
       bucket: 'done', workType: 'arrangement', search: '  合同  ',
     })
     assert.deepEqual(resetWorkRecordFilters(), { bucket: 'all', workType: 'all', search: '' })
-    assert.deepEqual(readWorkRecordFilters({ name: 'home' }), { bucket: 'mine', workType: 'all', search: '' })
+    assert.deepEqual(readWorkRecordFilters({ name: 'home' }), { bucket: 'all', workType: 'all', search: '' })
   })
 
   it('uses intersection filtering, trims only the query boundary, and sorts updatedAt descending', () => {

@@ -754,15 +754,17 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-/* Results grow downward inside the full-width workbench scroll area. */
-.ent-arr-auto.ent-aa-result {
+/* Results and stopped planning content grow inside the existing workbench scroller. */
+.ent-arr-auto.ent-aa-result,
+.ent-arr-auto.ent-aa-content {
   height: auto;
   min-height: 100%;
   flex: 0 0 auto;
   justify-content: flex-start;
   overflow-anchor: none;
 }
-.ent-aa-result > * {
+.ent-aa-result > *,
+.ent-aa-content > * {
   flex-shrink: 0;
 }
 .ent-arr-chat > .ent-rs-env,

@@ -183,7 +183,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
   const at = phase === 'analyzing' ? 0 : phase === 'planning' ? 1 : phase === 'matching' ? 2 : 3;
   if (draft.status === 'awaiting-employee') {
     return (
-      <section className="ent-arr-auto" aria-busy={planning}>
+      <section className="ent-arr-auto ent-aa-content" aria-busy={planning}>
         <header className="ent-aa-head" aria-live="polite">
           <h1>还缺少员工，当前编排已暂停</h1>
           <p>员工申请是异步处理的，不会阻塞客户端其他功能。</p>
@@ -195,7 +195,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
   if (terminalEvent) {
     const cancelled = terminalEvent.type === 'arrangement_planning_cancelled';
     return (
-      <section className="ent-arr-auto" aria-busy={false}>
+      <section className="ent-arr-auto ent-aa-content" aria-busy={false}>
         <header className="ent-aa-head" aria-live="polite">
           <h1>{cancelled ? '自动编排已取消' : '自动编排未能完成'}</h1>
         </header>
