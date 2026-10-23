@@ -1,4 +1,4 @@
-import { readJsonWithBackup, writeJsonAtomic } from './atomic-file'
+import { diagnoseJsonWithBackup, readJsonWithBackup, writeJsonAtomic } from './atomic-file'
 import { ScopePath, isSafeId, type TaskOwnerScope } from './scope-path'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
 import { nodeDeliveryProgressSchema } from '../domain/arrangement-delivery'
@@ -11,13 +11,14 @@ export interface ArrangementCheckpoint {
   owner: TaskOwnerScope
   planHash: string
   activeRunId: string | null
+  lastRunId?: string | null
   state: ArrangementExecutionState
   updatedAt: number
 }
 
 export interface ArrangementCheckpointStorePort {
   save(scope: TaskOwnerScope, checkpoint: ArrangementCheckpoint): Promise<void>
-  get(scope: TaskOwnerScope, taskId: string): Promise<ArrangementCheckpoint | null>
+  get(scope: TaskOwnerScope, taskId: string, options?: { readOnly?: boolean }): Promise<ArrangementCheckpoint | null>
 }
 
 function parseCheckpoint(value: unknown, scope: TaskOwnerScope, taskId: string): ArrangementCheckpoint | null {
@@ -27,6 +28,7 @@ function parseCheckpoint(value: unknown, scope: TaskOwnerScope, taskId: string):
     checkpoint.version !== 1 || checkpoint.taskId !== taskId || typeof checkpoint.planHash !== 'string' ||
     !checkpoint.owner || checkpoint.owner.memberId !== scope.memberId || checkpoint.owner.enterpriseId !== scope.enterpriseId ||
     (checkpoint.activeRunId !== null && typeof checkpoint.activeRunId !== 'string') ||
+    (checkpoint.lastRunId != null && (typeof checkpoint.lastRunId !== 'string' || !isSafeId(checkpoint.lastRunId))) ||
     !checkpoint.state || typeof checkpoint.state !== 'object' || typeof checkpoint.updatedAt !== 'number'
   ) return null
   const state = checkpoint.state as ArrangementExecutionState
@@ -47,6 +49,7 @@ function parseCheckpoint(value: unknown, scope: TaskOwnerScope, taskId: string):
     owner: { ...scope },
     planHash: checkpoint.planHash,
     activeRunId: checkpoint.activeRunId ?? null,
+    ...(checkpoint.lastRunId !== undefined ? { lastRunId: checkpoint.lastRunId } : {}),
     state: structuredClone(state),
     updatedAt: checkpoint.updatedAt,
   }
@@ -63,7 +66,11 @@ export class ArrangementCheckpointStore implements ArrangementCheckpointStorePor
     await writeJsonAtomic(this.paths.arrangementCheckpointFile(scope, checkpoint.taskId), checkpoint)
   }
 
-  async get(scope: TaskOwnerScope, taskId: string): Promise<ArrangementCheckpoint | null> {
+  async get(scope: TaskOwnerScope, taskId: string, options?: { readOnly?: boolean }): Promise<ArrangementCheckpoint | null> {
+    if (options?.readOnly) {
+      const result = await diagnoseJsonWithBackup(this.paths.arrangementCheckpointFile(scope, taskId), value => parseCheckpoint(value, scope, taskId))
+      return result.state === 'found' ? result.value : null
+    }
     return readJsonWithBackup(this.paths.arrangementCheckpointFile(scope, taskId), value => parseCheckpoint(value, scope, taskId))
   }
 }

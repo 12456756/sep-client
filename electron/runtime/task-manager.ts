@@ -14,6 +14,7 @@ import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
 import { ArrangementCheckpointStore, type ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { MediaStore } from '../data/media-store'
 import { interruptArrangement } from '../domain/arrangement-execution'
+import { classifyTaskLifecycle, type TaskLifecycleFinding, type TaskLifecycleRuntimeEvidence } from '../domain/task-lifecycle'
 import {
   assertTaskTransition,
   canTransitionTask,
@@ -32,6 +33,21 @@ export { TaskPersistenceError } from '../data/task-store'
 export { TaskScopeError } from '../data/scope-path'
 export { TaskAdmissionError, InvalidTaskTransitionError } from '../domain/task-state-machine'
 export type { ClientTask as Task, ClientTaskLog as TaskLog } from '../../src/shared/types'
+
+export interface TaskLifecycleAuditFinding {
+  taskId: string
+  taskStatus: ClientTaskStatus
+  activeRunId: string | null
+  finding: TaskLifecycleFinding
+  reconciled: boolean
+}
+
+export interface TaskLifecycleAuditResult {
+  scanned: number
+  limit: number
+  findings: TaskLifecycleAuditFinding[]
+  reconciled: number
+}
 
 type Task = ClientTask
 
@@ -63,6 +79,8 @@ export class TaskManager {
    * 属于上一个 scope（C8）。clearCurrentUser 是同步的，所以世代号也必须同步递增。
    */
   private generation = 0
+  private lifecycleAuditCursor = 0
+  private readonly lifecycleMissingSince = new Map<string, { runId: string | null; since: number }>()
 
   constructor(
     userDataDir: string,
@@ -104,6 +122,7 @@ export class TaskManager {
       this.currentWorkspaceNames = undefined
       this.tasks.clear()
       this.hiddenTaskIds.clear()
+      this.lifecycleMissingSince.clear()
       this.notifyTaskListUpdate()
 
       const loadedTasks = (await this.store.load(scope)).map(cloneTask)
@@ -137,6 +156,7 @@ export class TaskManager {
         task.currentRunStartedAt = null
         task.queuedAt = null
         if (!pausedWithActiveRun) task.status = TaskStatus.INTERRUPTED
+        task.stateRevision = (task.stateRevision ?? 0) + 1
         task.activeRunId = null
         const recoveryMessage = pausedWithActiveRun
           ? 'Previous session ended; paused task run was detached.'
@@ -217,6 +237,7 @@ export class TaskManager {
     this.currentWorkspaceNames = undefined
     this.tasks.clear()
     this.hiddenTaskIds.clear()
+    this.lifecycleMissingSince.clear()
     this.persistenceDegraded = false
     this.notifyTaskListUpdate()
   }
@@ -227,6 +248,75 @@ export class TaskManager {
 
   getCurrentUserScope(): TaskOwnerScope | null {
     return this.currentUser ? { ...this.currentUser } : null
+  }
+
+  /** Bounded, scope-local inspection of current admissions and execution snapshots. */
+  async auditTaskLifecycles(options: {
+    runtime?: (taskId: string) => TaskLifecycleRuntimeEvidence | null
+    limit?: number
+    now?: number
+    missingGraceMs?: number
+    reconcile?: boolean
+    budgetMs?: number
+  } = {}): Promise<TaskLifecycleAuditResult> {
+    const scope = await this.requireCurrentUser()
+    const generation = this.generation
+    const limit = Number.isFinite(options.limit) ? Math.max(1, Math.min(50, Math.floor(options.limit!))) : 50
+    const started = performance.now()
+    const budgetMs = Number.isFinite(options.budgetMs) ? Math.max(1, Math.min(2_000, options.budgetMs!)) : 2_000
+    const now = options.now ?? Date.now()
+    const missingGraceMs = Math.max(0, options.missingGraceMs ?? 60_000)
+    const candidates = Array.from(this.tasks.values()).filter(task =>
+      task.activeRunId !== null || isTaskExecutionStatus(task.status) || task.status === TaskStatus.PENDING)
+    const count = Math.min(limit, candidates.length)
+    const selected = Array.from({ length: count }, (_, index) => candidates[(this.lifecycleAuditCursor + index) % candidates.length]!)
+    const findings: TaskLifecycleAuditFinding[] = []
+    let reconciled = 0
+
+    for (const snapshot of selected) {
+      if (this.generation !== generation || this.currentUser !== scope || performance.now() - started >= budgetMs) break
+      this.lifecycleAuditCursor = (this.lifecycleAuditCursor + 1) % candidates.length
+      const task = cloneTask(snapshot)
+      const activeRunId = task.activeRunId
+      const [run, checkpoint] = await Promise.all([
+        activeRunId ? this.runStore.get(scope, task.id, activeRunId) : Promise.resolve(null),
+        this.checkpoints.get(scope, task.id, { readOnly: true }),
+      ])
+      if (this.generation !== generation || this.currentUser !== scope) break
+      const runtime = options.runtime?.(task.id) ?? null
+      const ownsCurrentRun = runtime !== null && runtime.runId === activeRunId
+      if (ownsCurrentRun || !activeRunId && !isTaskExecutionStatus(task.status)) this.lifecycleMissingSince.delete(task.id)
+      let missingForMs: number | null = null
+      if (options.runtime !== undefined && !ownsCurrentRun && (activeRunId !== null || isTaskExecutionStatus(task.status))) {
+        const previous = this.lifecycleMissingSince.get(task.id)
+        if (!previous || previous.runId !== activeRunId || now < previous.since) {
+          this.lifecycleMissingSince.set(task.id, { runId: activeRunId, since: now })
+          missingForMs = 0
+        } else {
+          missingForMs = Math.max(0, now - previous.since)
+        }
+      }
+      const classified = classifyTaskLifecycle({
+        task, runtime,
+        run,
+        checkpoint: checkpoint ? { activeRunId: checkpoint.activeRunId, lastRunId: checkpoint.lastRunId ?? null,
+          status: checkpoint.state.status, updatedAt: checkpoint.updatedAt } : null,
+        missingForMs,
+        missingGraceMs,
+      })
+      let didReconcile = false
+      if (options.reconcile && options.runtime && run && classified.kind === 'terminal-evidence') {
+        didReconcile = await this.reconcileTaskLifecycle({
+          scope, generation, taskId: task.id, expectedRunId: task.activeRunId, expectedRevision: task.stateRevision ?? 0,
+          expectedStatus: task.status, targetStatus: classified.targetStatus, endedAt: classified.endedAt,
+          startedAt: classified.startedAt, runtime: options.runtime,
+          error: classified.targetStatus === TaskStatus.FAILED ? describeError(run.error ?? 'The task run failed.') : undefined,
+        })
+        if (didReconcile) reconciled++
+      }
+      findings.push({ taskId: task.id, taskStatus: task.status, activeRunId, finding: classified, reconciled: didReconcile })
+    }
+    return { scanned: findings.length, limit, findings, reconciled }
   }
 
   isPersistenceDegraded(): boolean {
@@ -525,6 +615,71 @@ export class TaskManager {
     return removed
   }
 
+  private async reconcileTaskLifecycle(input: {
+    scope: TaskOwnerScope
+    generation: number
+    taskId: string
+    expectedRunId: string | null
+    expectedRevision: number
+    expectedStatus: ClientTaskStatus
+    targetStatus: ClientTaskStatus
+    endedAt: number
+    startedAt: number
+    error?: string
+    runtime: (taskId: string) => TaskLifecycleRuntimeEvidence | null
+  }): Promise<boolean> {
+    let changed = false
+    await this.serialize(async () => {
+      const matches = (): boolean => {
+        const task = this.tasks.get(input.taskId)
+        return this.currentUser === input.scope && this.generation === input.generation &&
+          !this.hiddenTaskIds.has(input.taskId) && !!task && task.activeRunId === input.expectedRunId &&
+          task.status === input.expectedStatus && (task.stateRevision ?? 0) === input.expectedRevision &&
+          input.runtime(input.taskId) === null
+      }
+      if (!matches() || !input.expectedRunId) return
+      if (this.persistenceDegraded) throw new TaskPersistenceError('Task history needs recovery before it can be changed.')
+      const [run, checkpoint] = await Promise.all([
+        this.runStore.get(input.scope, input.taskId, input.expectedRunId),
+        this.checkpoints.get(input.scope, input.taskId, { readOnly: true }),
+      ])
+      if (!matches()) return
+      const current = this.tasks.get(input.taskId)!
+      const evidence = classifyTaskLifecycle({ task: current, run, runtime: null,
+        checkpoint: checkpoint ? { activeRunId: checkpoint.activeRunId, lastRunId: checkpoint.lastRunId ?? null,
+          status: checkpoint.state.status, updatedAt: checkpoint.updatedAt } : null,
+        missingForMs: null, missingGraceMs: 60_000 })
+      if (evidence.kind !== 'terminal-evidence' || evidence.targetStatus !== input.targetStatus ||
+          evidence.endedAt !== input.endedAt || evidence.startedAt !== input.startedAt) return
+      const nextTasks = cloneTasks(this.tasks)
+      const task = nextTasks.get(input.taskId)!
+      if (task.activeRunId !== input.expectedRunId || task.status !== input.expectedStatus ||
+          (task.stateRevision ?? 0) !== input.expectedRevision ||
+          task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED ||
+          isTaskTerminal(task.status)) return
+      // Durable terminal evidence can repair a snapshot that missed intermediate transitions.
+      task.status = input.targetStatus
+      task.activeRunId = null
+      task.error = input.error ?? null
+      task.lastRunId = input.expectedRunId
+      task.lastRunStartedAt = input.startedAt
+      task.lastRunEndedAt = input.endedAt
+      task.currentRunStartedAt = null
+      task.queuedAt = null
+      task.completedAt = input.targetStatus === TaskStatus.COMPLETED || input.targetStatus === TaskStatus.FAILED
+        ? input.endedAt : null
+      task.logs.push({ timestamp: Date.now(), message: `Task lifecycle reconciled as ${input.targetStatus}.`, level: 'warning' })
+      task.stateRevision = (task.stateRevision ?? 0) + 1
+      await this.store.save(input.scope, Array.from(nextTasks.values()))
+      if (this.currentUser !== input.scope || this.generation !== input.generation) return
+      this.tasks = nextTasks
+      this.lifecycleMissingSince.delete(input.taskId)
+      changed = true
+    })
+    if (changed) this.notifyTaskUpdate(input.taskId)
+    return changed
+  }
+
   async getTasksByStatus(status: ClientTaskStatus): Promise<Task[]> {
     return (await this.getAllTasks()).filter(task => task.status === status)
   }
@@ -561,6 +716,17 @@ export class TaskManager {
       if (this.persistenceDegraded) throw new TaskPersistenceError('Task history needs recovery before it can be changed.')
       const nextTasks = cloneTasks(this.tasks)
       mutate(nextTasks)
+      for (const [id, task] of nextTasks) {
+        const previous = this.tasks.get(id)
+        if (!previous) {
+          task.stateRevision = Math.max(0, task.stateRevision ?? 0)
+          continue
+        }
+        const lifecycleChanged = previous.status !== task.status || previous.activeRunId !== task.activeRunId ||
+          previous.queuedAt !== task.queuedAt || previous.currentRunStartedAt !== task.currentRunStartedAt ||
+          previous.completedAt !== task.completedAt || previous.executionHealth !== task.executionHealth
+        task.stateRevision = lifecycleChanged ? (previous.stateRevision ?? 0) + 1 : previous.stateRevision ?? 0
+      }
       await this.store.save(scope, Array.from(nextTasks.values()))
       this.tasks = nextTasks
     })

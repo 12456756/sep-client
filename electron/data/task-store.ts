@@ -86,6 +86,7 @@ function parseTask(value: unknown): ClientTask | null {
     ownerEnterpriseId: item.ownerEnterpriseId,
     subscriptionId: typeof item.subscriptionId === 'string' ? item.subscriptionId : null,
     activeRunId: typeof item.activeRunId === 'string' ? item.activeRunId : null,
+    stateRevision: typeof item.stateRevision === 'number' && Number.isSafeInteger(item.stateRevision) && item.stateRevision >= 0 ? item.stateRevision : 0,
     queuedAt: typeof item.queuedAt === 'number' && Number.isFinite(item.queuedAt) ? item.queuedAt : null,
     currentRunStartedAt: typeof item.currentRunStartedAt === 'number' && Number.isFinite(item.currentRunStartedAt) ? item.currentRunStartedAt : null,
     lastRunId: typeof item.lastRunId === 'string' ? item.lastRunId : null,

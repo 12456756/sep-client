@@ -1,9 +1,10 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { ArrangementCheckpointStore } from './arrangement-checkpoint-store'
+import { ScopePath } from './scope-path'
 import { createArrangementExecutionState } from '../domain/arrangement-execution'
 
 const roots: string[] = []
@@ -87,6 +88,40 @@ describe('ArrangementCheckpointStore', () => {
     })
     assert.equal((await store.get(scope, 'task-a'))?.planHash, 'plan-a')
     assert.equal(await store.get({ memberId: 'other', enterpriseId: scope.enterpriseId }, 'task-a'), null)
+  })
+
+  it('preserves corrupt primary files while reading backup evidence in read-only mode', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-checkpoint-'))
+    roots.push(root)
+    const store = new ArrangementCheckpointStore(root)
+    const paths = new ScopePath(root)
+    const checkpoint = { version: 1 as const, taskId: 'task-a', owner: scope, planHash: 'plan-a',
+      activeRunId: null, lastRunId: 'run-a', state: createArrangementExecutionState([]), updatedAt: 1 }
+    await store.save(scope, checkpoint)
+    await store.save(scope, { ...checkpoint, updatedAt: 2 })
+    const file = paths.arrangementCheckpointFile(scope, 'task-a')
+    await writeFile(file, '{broken')
+    const backup = await readFile(`${file}.bak`, 'utf8')
+    const entries = await readdir(paths.taskDir(scope, 'task-a'))
+    assert.equal((await store.get(scope, 'task-a', { readOnly: true }))?.lastRunId, 'run-a')
+    assert.equal(await readFile(file, 'utf8'), '{broken')
+    assert.equal(await readFile(`${file}.bak`, 'utf8'), backup)
+    assert.deepEqual(await readdir(paths.taskDir(scope, 'task-a')), entries)
+    await writeFile(`${file}.bak`, '{also-broken')
+    assert.equal(await store.get(scope, 'task-a', { readOnly: true }), null)
+    assert.deepEqual(await readdir(paths.taskDir(scope, 'task-a')), entries)
+  })
+
+  it('validates the persisted parent run binding', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-checkpoint-'))
+    roots.push(root)
+    const store = new ArrangementCheckpointStore(root)
+    for (const [index, lastRunId] of ['', '../other-run', 123].entries()) {
+      const taskId = `bad-parent-${index}`
+      await store.save(scope, { version: 1, taskId, owner: scope, planHash: 'plan-a', activeRunId: null,
+        lastRunId: lastRunId as string, state: createArrangementExecutionState([]), updatedAt: 1 })
+      assert.equal(await store.get(scope, taskId, { readOnly: true }), null)
+    }
   })
 })
 

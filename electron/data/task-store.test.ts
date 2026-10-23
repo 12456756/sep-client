@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { TaskStatus, type ClientTask } from '../../src/shared/types'
 import { TaskPersistenceError, TaskStore } from './task-store'
+import { TaskRunStore } from './task-run-store'
 import { TaskScopeError } from './scope-path'
 import { TaskAdmissionError, TaskManager } from '../runtime/task-manager'
 
@@ -226,6 +227,75 @@ describe('TaskManager user scope', () => {
     await reloaded.initialize()
     const persisted = await reloaded.load(scope)
     assert.equal(persisted[0]?.logs.length, 1)
+  })
+
+  it('audits a bounded rotating set and is read-only by default', async () => {
+    const userData = await makeUserDataDir()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    for (let index = 0; index < 5; index++) {
+      const item = await manager.createTask('stale-' + index, 'prompt')
+      await manager.admitTask(item.id, 'run-' + index)
+      await manager.updateTaskStatus(item.id, TaskStatus.RUNNING)
+    }
+    const first = await manager.auditTaskLifecycles({ limit: 2, now: 9_999_999, missingGraceMs: 0 })
+    const second = await manager.auditTaskLifecycles({ limit: 2, now: 9_999_999, missingGraceMs: 0 })
+    assert.equal(first.scanned, 2)
+    assert.equal(second.scanned, 2)
+    assert.equal(first.findings.every(item => item.finding.kind === 'missing' || item.finding.kind === 'suspected-lost'), true)
+    assert.equal(second.findings.some(item => first.findings.some(previous => previous.taskId === item.taskId)), false)
+    assert.equal((await manager.getAllTasks()).every(item => item.status === TaskStatus.RUNNING), true)
+  })
+
+  it('reconciles a matching completed conversation run without executing it again', async () => {
+    const userData = await makeUserDataDir()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const created = await manager.createTask('recoverable', 'prompt')
+    await manager.admitTask(created.id, 'run-complete')
+    await manager.updateTaskStatus(created.id, TaskStatus.RUNNING)
+    const runStore = new TaskRunStore(userData)
+    await runStore.create(scope, { taskId: created.id, runId: 'run-complete', subscriptionId: 'sub', modelId: 'model',
+      runtimeKey: 'sub:model', workspaceDir: 'workspace', prompt: 'prompt', executionKind: 'conversation' })
+    await runStore.finish(scope, created.id, 'run-complete', 'completed')
+    const endedAt = (await runStore.get(scope, created.id, 'run-complete'))!.endedAt!
+    const result = await manager.auditTaskLifecycles({ now: endedAt + 1, runtime: () => null, reconcile: true })
+    const recovered = await manager.getTask(created.id)
+    assert.equal(result.reconciled, 1)
+    assert.equal(recovered?.status, TaskStatus.COMPLETED)
+    assert.equal(recovered?.activeRunId, null)
+    assert.equal(recovered?.lastRunId, 'run-complete')
+    assert.equal(recovered?.lastRunEndedAt, endedAt)
+  })
+
+  it('diagnoses missing ownership after grace without modifying unknown results or intentional pauses', async () => {
+    const userData = await makeUserDataDir()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const manager = new TaskManager(userData)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const lost = await manager.createTask('lost', 'prompt')
+    await manager.admitTask(lost.id, 'run-lost')
+    await manager.updateTaskStatus(lost.id, TaskStatus.RUNNING)
+    const runs = new TaskRunStore(userData)
+    await runs.create(scope, { taskId: lost.id, runId: 'run-lost', subscriptionId: 'sub', modelId: 'model', runtimeKey: 'r', workspaceDir: 'w', prompt: 'p' })
+    const lostAt = (await runs.get(scope, lost.id, 'run-lost'))!.startedAt + 60_001
+    const waiting = await manager.createTask('paused', 'prompt')
+    await manager.admitTask(waiting.id, 'run-paused')
+    await manager.pauseTask(waiting.id)
+    const first = await manager.auditTaskLifecycles({ runtime: () => null, now: lostAt - 60_000, missingGraceMs: 60_000, reconcile: true })
+    assert.equal(first.findings.find(item => item.taskId === lost.id)?.finding.kind, 'missing')
+    const result = await manager.auditTaskLifecycles({ runtime: () => null, now: lostAt, missingGraceMs: 60_000, reconcile: true })
+    assert.equal(result.findings.find(item => item.taskId === lost.id)?.finding.kind, 'suspected-lost')
+    assert.equal(result.reconciled, 0)
+    assert.equal((await manager.getTask(lost.id))?.status, TaskStatus.RUNNING)
+    assert.equal((await runs.get(scope, lost.id, 'run-lost'))?.outcome, 'running')
+    assert.equal((await manager.getTask(waiting.id))?.status, TaskStatus.PAUSED)
+    assert.equal((await manager.getTask(waiting.id))?.activeRunId, 'run-paused')
   })
 
   it('recovers a task admitted before a crash even if it never reached running', async () => {

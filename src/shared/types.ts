@@ -104,6 +104,7 @@ export interface ClientTask {
   ownerEnterpriseId: string
   subscriptionId?: string | null
   activeRunId: string | null
+  stateRevision?: number
   queuedAt?: number | null
   currentRunStartedAt?: number | null
   lastRunId?: string | null

@@ -37,6 +37,7 @@ import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
 import type { ArrangementMediaPort } from '../domain/arrangement-media-runtime'
 import type { KnowledgeSearchPort } from '../common/knowledge-context'
+import type { TaskLifecycleRuntimeEvidence } from '../domain/task-lifecycle'
 
 const log = logger.child('task-runtime')
 
@@ -118,6 +119,9 @@ export class TaskRuntime {
   private readonly pendingFileTools = new Map<string, PendingFileToolState>()
   private readonly nodeParticipations = new Map<string, { taskId: string; parentRunId: string; participation: MonitorParticipation }>()
   private readonly pendingArrangementApprovals = new Map<string, Set<string>>()
+  private lifecycleAuditTimer: ReturnType<typeof setInterval> | null = null
+  private lifecycleAuditRunning = false
+  private readonly startingRuns = new Map<string, string>()
 
   constructor(options: TaskRuntimeOptions) {
     this.taskManager = options.taskManager
@@ -193,9 +197,53 @@ export class TaskRuntime {
       video: this.video,
       knowledgeSearch: this.knowledgeSearch,
     })
+    this.startLifecycleAudit()
+  }
+
+  /** Read-only current-process ownership snapshot for lifecycle auditing. */
+  private snapshotLifecycleRuntime(): ReadonlyMap<string, TaskLifecycleRuntimeEvidence> {
+    const snapshot = new Map<string, TaskLifecycleRuntimeEvidence>()
+    for (const queued of this.admission.snapshot()) snapshot.set(queued.taskId, { runId: queued.runId, phase: 'queued' })
+    for (const [taskId, runId] of this.startingRuns) snapshot.set(taskId, { runId, phase: 'starting' })
+    for (const active of this.workers.list()) {
+      snapshot.set(active.taskId, { runId: active.runId, phase: active.control === 'none' ? 'running' : 'finalizing' })
+    }
+    for (const arrangement of this.activeArrangements.values()) {
+      snapshot.set(arrangement.taskId, { runId: arrangement.runId, phase: arrangement.control === 'none' ? 'running' : 'finalizing' })
+    }
+    return snapshot
+  }
+
+  private startLifecycleAudit(): void {
+    if (this.lifecycleAuditTimer) return
+    this.lifecycleAuditTimer = setInterval(() => { void this.runLifecycleAudit() }, 30_000)
+    this.lifecycleAuditTimer.unref?.()
+  }
+
+  private async runLifecycleAudit(): Promise<void> {
+    if (!this.taskManager.hasCurrentUser() || this.lifecycleAuditRunning) return
+    this.lifecycleAuditRunning = true
+    try {
+      const report = await this.taskManager.auditTaskLifecycles({
+        runtime: taskId => this.snapshotLifecycleRuntime().get(taskId) ?? null, limit: 50, missingGraceMs: 60_000,
+        reconcile: process.env['SEP_TASK_LIFECYCLE_RECONCILE'] === '1',
+      })
+      const findings = report.findings.filter(item => item.finding.kind !== 'live' && item.finding.kind !== 'protected' && item.finding.kind !== 'not-started')
+      if (findings.length > 0) {
+        log.warn('task lifecycle audit found inconsistent records', {
+          scanned: report.scanned, reconciled: report.reconciled,
+          findings: findings.map(item => ({ taskId: item.taskId, status: item.taskStatus, kind: item.finding.kind, reason: item.finding.reason, reconciled: item.reconciled })),
+        })
+      }
+    } catch (error) {
+      log.warn('task lifecycle audit failed', { cause: redactText(error instanceof Error ? error.message : String(error)) })
+    } finally {
+      this.lifecycleAuditRunning = false
+    }
   }
 
   async executeTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {
+    this.startLifecycleAudit()
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED) {
@@ -258,6 +306,7 @@ export class TaskRuntime {
     prompt: string,
     recovery: { mode?: SessionRecoveryMode; confirmed?: boolean } = {},
   ): Promise<void> {
+    this.startLifecycleAudit()
     return this.conversationExecutor.continue(taskId, prompt, recovery)
   }
 
@@ -457,10 +506,12 @@ export class TaskRuntime {
     planHash: string,
     activeRunId: string | null,
     state: ArrangementExecutionState,
+    lastRunId?: string,
   ): Promise<void> {
     if (!this.arrangementCheckpointStore) throw new Error('Arrangement checkpoint storage is unavailable.')
     await this.arrangementCheckpointStore.save(scope, {
       version: 1, taskId, owner: { ...scope }, planHash, activeRunId,
+      ...(lastRunId ? { lastRunId } : {}),
       state: structuredClone(state), updatedAt: Date.now(),
     })
   }
@@ -545,6 +596,8 @@ export class TaskRuntime {
   }
 
   async stopAll(): Promise<void> {
+    if (this.lifecycleAuditTimer) clearInterval(this.lifecycleAuditTimer)
+    this.lifecycleAuditTimer = null
     this.approvals.denyAll()
     const arrangementStops = Array.from(this.activeArrangements.values()).map(async activeArrangement => {
       activeArrangement.control = 'interrupt'
@@ -639,6 +692,7 @@ export class TaskRuntime {
             releaseWorkspace()
             continue
           }
+          this.startingRuns.set(queued.taskId, queued.runId)
           void this.startRun(queued, task, releaseWorkspace)
         }
       } while (this.pumpRequested)
@@ -659,6 +713,7 @@ export class TaskRuntime {
       }
       await this.conversationExecutor.execute(queued, task, releaseWorkspace)
     } finally {
+      if (this.startingRuns.get(queued.taskId) === queued.runId) this.startingRuns.delete(queued.taskId)
       this.clearPendingFileTools(queued.taskId, queued.runId)
     }
   }
@@ -689,6 +744,7 @@ export class TaskRuntime {
           runtimeKey: `${queued.subscriptionId}:${queued.employee.modelId}`,
           workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
           prompt: plan.goal,
+          executionKind: 'arrangement',
         })
         parentCreated = true
       }
@@ -723,7 +779,7 @@ export class TaskRuntime {
       this.reportMonitorStarted({ taskId, runId, startedAt: Date.now() })
       const result = await arrangement.execute(plan, taskId, runId)
       await this.events.drain(taskId)
-      if (scope && this.arrangementCheckpointStore) await this.saveArrangementCheckpoint(scope, taskId, plan.planHash, null, result.state)
+      if (scope && this.arrangementCheckpointStore) await this.saveArrangementCheckpoint(scope, taskId, plan.planHash, null, result.state, runId)
       const arrangementOutput = this.arrangementOutput(plan, result.state)
       if (arrangementOutput) this.reportMonitorOutput({ taskId, runId, content: arrangementOutput, completeness: result.status === 'completed' ? 'complete' : 'partial' })
       const activeArrangement = this.activeArrangements.get(taskId)

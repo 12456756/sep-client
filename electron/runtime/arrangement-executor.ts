@@ -679,7 +679,7 @@ export class ArrangementExecutor {
     if (!this.options.scope || !this.options.checkpointStore) return
     const checkpoint: ArrangementCheckpoint = {
       version: 1, taskId, owner: { ...this.options.scope }, planHash: plan.planHash,
-      activeRunId: arrangementRunId, state: structuredClone(state), updatedAt: Date.now(),
+      activeRunId: arrangementRunId, lastRunId: arrangementRunId, state: structuredClone(state), updatedAt: Date.now(),
     }
     const scope = this.options.scope
     const store = this.options.checkpointStore

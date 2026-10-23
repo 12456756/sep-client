@@ -180,6 +180,7 @@ export class ConversationExecutor {
           runtimeKey: `${queued.subscriptionId}:${employee.modelId}`,
           workspaceDir: task.workDir ?? this.options.workspaceRoot(),
           prompt: queued.prompt,
+          executionKind: 'conversation',
         })
         runCreated = true
         if (queued.conversation) {
