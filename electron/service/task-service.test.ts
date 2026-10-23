@@ -158,6 +158,43 @@ describe('task timeline admission', () => {
   })
 })
 
+describe('task start failure recording', () => {
+  it('records sanitized failure details when initial execution cannot start', async () => {
+    const failure = new Error('Bearer private-secret')
+    let recorded: { taskId: string; error: string } | undefined
+    const service = harness({
+      taskManager: {
+        async getTask() { return task },
+        async recordStartFailure(taskId: string, error: string) { recorded = { taskId, error }; return true },
+      },
+      taskMetadataStore: { async load() { return null } },
+      execution: async () => ({ async executeTask() { throw failure } }),
+    })
+
+    await assert.rejects(service.execute(task.id), error => error === failure)
+    assert.deepEqual(recorded, { taskId: task.id, error: 'Error: Bearer [redacted]' })
+  })
+
+  it('records retry admission failures and keeps the retry context', async () => {
+    const failure = new Error('worker unavailable')
+    let recorded: { taskId: string; error: string } | undefined
+    let retryOptions: unknown
+    const service = harness({
+      taskManager: {
+        async getTask() { return { ...task, subscriptionId: 'sub-a' } },
+        async recordStartFailure(taskId: string, error: string) { recorded = { taskId, error }; return true },
+      },
+      taskMetadataStore: { async load() { return { version: 1, taskId: task.id, kind: 'conversation', participantSubscriptionIds: ['sub-a'], currentSubscriptionId: 'sub-a', createdAt: 1 } } },
+      employees: { async authorize() { return true } },
+      execution: async () => ({ async retryTask(_taskId: string, options: unknown) { retryOptions = options; throw failure } }),
+    })
+
+    await assert.rejects(service.retry(task.id), error => error === failure)
+    assert.deepEqual(retryOptions, { conversation: true })
+    assert.deepEqual(recorded, { taskId: task.id, error: 'Error: worker unavailable' })
+  })
+})
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>(r => { resolve = r })

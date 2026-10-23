@@ -72,6 +72,7 @@ export const TaskStatus = {
 } as const
 
 export type ClientTaskStatus = typeof TaskStatus[keyof typeof TaskStatus]
+export type ClientTaskExecutionHealth = 'start-failed'
 export type ClientTaskLogLevel = 'info' | 'warning' | 'error'
 
 export type WorkKind = 'conversation' | 'arrangement'
@@ -103,6 +104,14 @@ export interface ClientTask {
   ownerEnterpriseId: string
   subscriptionId?: string | null
   activeRunId: string | null
+  queuedAt?: number | null
+  currentRunStartedAt?: number | null
+  lastRunId?: string | null
+  lastRunStartedAt?: number | null
+  lastRunEndedAt?: number | null
+  /** Present only when a start attempt failed before a run was admitted. */
+  executionHealth?: ClientTaskExecutionHealth
+  startFailureAt?: number | null
   /** Query projection only; raw runtime events may omit this field. */
   workType?: WorkTypeReadResult
 }

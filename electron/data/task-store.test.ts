@@ -45,6 +45,23 @@ afterEach(async () => {
 })
 
 describe('TaskStore', () => {
+  it('persists start failure health and queue time across reloads', async () => {
+    const userData = await makeUserDataDir()
+    const store = new TaskStore(userData)
+    await store.initialize()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const original = task(scope, 'legacy-pending')
+    original.executionHealth = 'start-failed'
+    original.startFailureAt = 10
+    original.error = 'authorization unavailable'
+    original.queuedAt = 8
+    await store.save(scope, [original])
+    const [loaded] = await store.load(scope)
+    assert.equal(loaded?.executionHealth, 'start-failed')
+    assert.equal(loaded?.startFailureAt, 10)
+    assert.equal(loaded?.queuedAt, 8)
+  })
+
   it('isolates task files by enterprise and member', async () => {
     const userData = await makeUserDataDir()
     const store = new TaskStore(userData)
@@ -138,6 +155,41 @@ describe('TaskStore', () => {
   })
 })
 
+describe('TaskManager start failure lifecycle', () => {
+  it('preserves the run start time when a run resumes after approval', async t => {
+    let now = 100
+    t.mock.method(Date, 'now', () => now++)
+    const manager = new TaskManager(await makeUserDataDir())
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const created = await manager.createTask('Task', 'Prompt')
+    await manager.admitTask(created.id, 'run-a')
+    await manager.updateTaskStatus(created.id, TaskStatus.RUNNING)
+    const firstStart = (await manager.getTask(created.id))?.currentRunStartedAt
+    await manager.updateTaskStatus(created.id, TaskStatus.WAITING_APPROVAL)
+    await manager.updateTaskStatus(created.id, TaskStatus.RUNNING)
+    assert.equal((await manager.getTask(created.id))?.currentRunStartedAt, firstStart)
+  })
+
+  it('records a pre-admission failure and clears it when the task is admitted', async () => {
+    const manager = new TaskManager(await makeUserDataDir())
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const created = await manager.createTask('Task', 'Prompt')
+    assert.equal(await manager.recordStartFailure(created.id, 'authorization unavailable'), true)
+    const failed = await manager.getTask(created.id)
+    assert.equal(failed?.executionHealth, 'start-failed')
+    assert.equal(failed?.error, 'authorization unavailable')
+    assert.equal(failed?.startedAt, null)
+    assert.equal(failed?.activeRunId, null)
+    await manager.admitTask(created.id, 'run-retry')
+    const admitted = await manager.getTask(created.id)
+    assert.equal(admitted?.executionHealth, undefined)
+    assert.equal(admitted?.error, null)
+    assert.equal(admitted?.activeRunId, 'run-retry')
+  })
+})
+
 describe('TaskManager user scope', () => {
   it('clears the previous user before loading another scope', async () => {
     const userData = await makeUserDataDir()
@@ -167,6 +219,8 @@ describe('TaskManager user scope', () => {
     const recovered = await manager.getAllTasks()
     assert.deepEqual(recovered.map(item => item.status), [TaskStatus.INTERRUPTED, TaskStatus.INTERRUPTED])
     assert.equal(recovered[0]?.logs.length, 1)
+    assert.equal(recovered[0]?.lastRunStartedAt, 2)
+    assert.ok(Number.isFinite(recovered[0]?.lastRunEndedAt))
 
     const reloaded = new TaskStore(userData)
     await reloaded.initialize()
@@ -180,6 +234,7 @@ describe('TaskManager user scope', () => {
     await store.initialize()
     const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
     const admitted = task(scope, 'admitted', TaskStatus.PENDING)
+    admitted.startedAt = 2
     admitted.activeRunId = 'run-a'
     await store.save(scope, [admitted])
 
@@ -189,6 +244,28 @@ describe('TaskManager user scope', () => {
     const recovered = await manager.getTask('admitted')
     assert.equal(recovered?.status, TaskStatus.INTERRUPTED)
     assert.equal(recovered?.activeRunId, null)
+    assert.equal(recovered?.lastRunStartedAt, null, 'a retry admitted before its worker starts must not inherit the previous run start')
+    assert.ok(Number.isFinite(recovered?.lastRunEndedAt))
+  })
+
+  it('clears a paused task run left behind by a crash during pause cleanup', async () => {
+    const userData = await makeUserDataDir()
+    const store = new TaskStore(userData)
+    await store.initialize()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const paused = task(scope, 'paused-with-run', TaskStatus.PAUSED)
+    paused.startedAt = 1
+    paused.activeRunId = 'run-a'
+    await store.save(scope, [paused])
+
+    const manager = new TaskManager(userData)
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const recovered = await manager.getTask(paused.id)
+    assert.equal(recovered?.status, TaskStatus.PAUSED)
+    assert.equal(recovered?.activeRunId, null)
+    assert.equal(recovered?.lastRunId, 'run-a')
+    assert.equal(recovered?.lastRunStartedAt, null)
+    assert.ok(Number.isFinite(recovered?.lastRunEndedAt))
   })
 
   it('rejects operations without an active scope', async () => {

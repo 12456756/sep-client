@@ -270,6 +270,10 @@ export class TaskRuntime {
     if (!task) throw new Error('Task not found.')
     const scope = this.taskManager.getCurrentUserScope()
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
+    if (task.status === TaskStatus.PENDING && task.executionHealth === 'start-failed' && !task.activeRunId) {
+      await this.executeTask(taskId, options)
+      return
+    }
     if (arrangement && arrangement.mode !== 'conversation') {
       await this.retryArrangement(task, arrangement, options.nodeId)
       return

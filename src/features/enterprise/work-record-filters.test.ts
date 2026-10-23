@@ -26,7 +26,7 @@ const records: Fixture[] = [
   },
   {
     id: 'loading', title: '等待分类', goal: '分类尚未返回', currentEmployeeName: '小王',
-    status: 'running', nextUserAction: null, updatedAt: 20,
+    status: 'running', isActive: true, nextUserAction: null, updatedAt: 20,
     workType: { state: 'loading' },
   },
   {
@@ -102,11 +102,18 @@ describe('work record filters', () => {
   it('keeps mine overlapping other statuses and covers every status bucket', () => {
     const statuses: Fixture[] = ['arranging', 'running', 'waiting-user', 'completed', 'failed', 'paused'].map((status, index) => ({
       ...records[0], id: status, status: status as Fixture['status'], updatedAt: index,
+      isActive: status === 'running',
       nextUserAction: status === 'failed' ? '重新试一次' : null,
     }))
-    assert.deepEqual(countWorkRecordStatuses(statuses, base), { all: 6, active: 2, mine: 2, done: 1, stopped: 2 })
+    assert.deepEqual(countWorkRecordStatuses(statuses, base), { all: 6, active: 1, mine: 2, done: 1, stopped: 2 })
     assert.deepEqual(filterWorkRecords(statuses, { ...base, bucket: 'mine' }).map(record => record.id), ['failed', 'waiting-user'])
     assert.equal(filterWorkRecords(records, { ...base, bucket: 'done', workType: 'conversation' }).length, 0)
+  })
+
+  it('does not count arranged but unstarted work as active', () => {
+    const arranging = { ...records[0]!, status: 'arranging' as const, isActive: false, nextUserAction: '检查安排并开始工作' }
+    assert.deepEqual(filterWorkRecords([arranging], { ...base, bucket: 'active' }), [])
+    assert.equal(countWorkRecordStatuses([arranging], base).active, 0)
   })
 
   it('counts loading and unavailable separately within status/search, independent of type', () => {

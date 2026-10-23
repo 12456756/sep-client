@@ -14,6 +14,21 @@ const task: ClientTask = {
 }
 
 describe('arrangement retry display regressions', () => {
+  it('projects a historical pending task as arranging without execution timestamps', () => {
+    const work = buildWorkItem({ task: { ...task, status: 'pending', startedAt: null, completedAt: null, activeRunId: null, createdAt: 1 }, employees: [] })
+    assert.equal(work.status, 'arranging')
+    assert.equal(work.startedAt, null)
+    assert.equal(work.completedAt, null)
+  })
+
+  it('does not project a running status without an admitted run as active work', () => {
+    for (const taskStatus of ['running', 'waiting_approval'] as const) {
+      const work = buildWorkItem({ task: { ...task, status: taskStatus, activeRunId: null }, employees: [] })
+      assert.equal(work.status, 'arranging')
+      assert.equal(work.isActive, false)
+    }
+  })
+
   const plan: ArrangementPlanSnapshot = {
     id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1,
     owner: { memberId: 'member-a', enterpriseId: 'enterprise-a' },

@@ -408,6 +408,34 @@ describe('ArrangementService', () => {
     assert.equal(starts, 1)
   })
 
+  it('records an automatic start failure on the created task', async () => {
+    let stored: ArrangementDraft | null = null
+    const task = { id: 'task-a', workDir: null, status: 'pending', activeRunId: null }
+    let recorded: { taskId: string; error: string } | undefined
+    const failure = new Error('worker initialization failed')
+    const service = new ArrangementService(serviceDeps({
+      drafts: {
+        async list() { return [] },
+        async get() { return stored },
+        async create(_scope: TaskOwnerScope, input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { stored = persisted(input); return stored },
+        async update(_scope: TaskOwnerScope, _id: string, revision: number, patch: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>) { stored = persisted(patch, revision + 1); return stored },
+        async delete() { return false },
+      },
+      employees: { async list() { return [employee()] } },
+      taskManager: {
+        async createTask() { return task },
+        async getTask() { return task },
+        async recordStartFailure(taskId: string, error: string) { recorded = { taskId, error }; return true },
+      },
+      workPlans: { async save() {}, async get() { return null } },
+      execution: async () => ({ async executeTask() { throw failure } }),
+    }))
+
+    await service.createDraft(draft())
+    await assert.rejects(service.confirmAndStart('draft-a', 1, 'auto-start-key'), error => error === failure)
+    assert.deepEqual(recorded, { taskId: task.id, error: 'Error: worker initialization failed' })
+  })
+
   it('creates an idempotent employee access request and keeps the draft paused', async () => {
     let stored = awaitingEmployeeDraft()
     const created: Array<{ input: EmployeeAccessRequestInput; key: string }> = []

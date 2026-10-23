@@ -10,7 +10,7 @@ const work: WorkItem = {
   id: 'work-a', title: '整理合同', goal: '整理采购合同', kind: 'conversation',
   workType: { state: 'resolved', kind: 'conversation' }, status: 'waiting-user', progress: 0,
   currentEmployeeId: 'employee-a', currentEmployeeName: '小周', steps: [], nextUserAction: '确认结果',
-  createdAt: 1, updatedAt: 2, participants: [], deliverables: [], timeline: [], messages: [], activities: [],
+  createdAt: 1, startedAt: 1, completedAt: null, updatedAt: 2, participants: [], deliverables: [], timeline: [], messages: [], activities: [],
   sharedContext: { goal: '整理采购合同', confirmedInputs: [], previousResults: [], userNotes: [] },
   stopReason: null, workDir: null,
 };

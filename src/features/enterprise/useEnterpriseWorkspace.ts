@@ -50,7 +50,7 @@ import { TaskReadCache, mergeInitialTaskQuery, mergeTaskList, mergeTaskUpdate } 
  */
 function busyEmployeeIds(works: WorkItem[]): Set<string> {
   const busy = new Set<string>();
-  works.filter(work => work.status === 'running').forEach(work => {
+    works.filter(work => work.isActive === true).forEach(work => {
     busy.add(work.currentEmployeeId);
     work.participants.forEach(id => busy.add(id));
     work.steps.forEach(step => busy.add(step.employeeId));
@@ -391,7 +391,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     // TODO 平台接口未开放：企业员工总数。至少不小于我可用的数量。
     totalEmployees: myEmployees.length,
     availableToMe: myEmployees.length,
-    activeWorkCount: works.filter(work => work.status === 'running' || work.status === 'arranging').length,
+    activeWorkCount: works.filter(work => work.isActive === true).length,
     needsMeCount: works.filter(work => work.status === 'waiting-user' || work.status === 'failed').length,
   }), [enterpriseId, enterpriseName, organizationData, myEmployees.length, works]);
 

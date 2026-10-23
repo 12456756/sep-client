@@ -8,6 +8,7 @@ import type { TaskExecutionPort } from './task-service'
 import { TaskStatus } from '../../src/shared/types'
 import { AppError } from '../errors/app-error'
 import { logger, type LogFields } from '../common/logger'
+import { describeError } from '../common/redact'
 import { planningErrorFields, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
 import {
   effectivePermissionPolicy,
@@ -595,7 +596,12 @@ export class ArrangementService {
     const task = await this.deps.taskManager.getTask(confirmed.plan.id)
     if (!task) throw new AppError('NOT_FOUND')
     if (task.status === TaskStatus.PENDING && task.activeRunId === null) {
-      await (await this.deps.execution()).executeTask(task.id, { conversation: confirmed.plan.mode === 'conversation' })
+      try {
+        await (await this.deps.execution()).executeTask(task.id, { conversation: confirmed.plan.mode === 'conversation' })
+      } catch (error) {
+        try { await this.deps.taskManager.recordStartFailure?.(task.id, describeError(error)) } catch { /* preserve the original start error */ }
+        throw error
+      }
       return { plan: confirmed.plan, execution: { id: task.id, status: 'queued' } }
     }
     if (task.status === TaskStatus.PENDING && task.activeRunId !== null) {

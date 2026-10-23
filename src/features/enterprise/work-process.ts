@@ -28,10 +28,11 @@ export function processActivityLabel(activity: WorkActivity): string {
   return activity.text.replace(/^(?:开始执行|已完成)：/, '')
 }
 
-export function currentWorkOperation(status: WorkStatus, activities: readonly WorkActivity[]): string {
+export function currentWorkOperation(status: WorkStatus, activities: readonly WorkActivity[], isActive = false, queuedAt: number | null = null): string {
   if (status === 'completed') return '本轮工作已完成'
   if (status === 'paused') return '工作已终止'
   if (status === 'failed') return '工作已中断'
+  if (status === 'arranging') return isActive || queuedAt !== null ? '正在排队，请稍候' : '尚未开始'
   const waiting = activities.filter(activity => activity.state === 'waiting-user').at(-1)
   if (waiting) return `等待你的确认：${processActivityLabel(waiting)}`
   if (status === 'waiting-user') return '等待你的确认'
@@ -40,5 +41,5 @@ export function currentWorkOperation(status: WorkStatus, activities: readonly Wo
     const label = processActivityLabel(running)
     return label.startsWith('正在') ? label : `正在${label}`
   }
-  return status === 'arranging' ? '正在准备工作' : '正在处理，请稍候'
+  return '正在处理，请稍候'
 }

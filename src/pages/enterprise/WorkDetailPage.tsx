@@ -45,21 +45,28 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const finished = work.status === 'completed';
   /** 这项工作已经不会自己往前走了。耗时、结束时间、能不能终止都按它算。 */
   const over = finished || work.status === 'paused' || work.status === 'failed';
+  const runStartedAt = work.isActive
+    ? work.currentRunStartedAt ?? null
+    : over ? work.lastRunId ? work.lastRunStartedAt ?? null : work.lastRunStartedAt ?? work.startedAt : null;
+  const runEndedAt = work.lastRunEndedAt ?? work.completedAt;
   const percent = Math.round(work.progress);
-  const doing = currentWorkOperation(work.status, work.activities);
+  const doing = currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt);
   const next = work.steps.find(step => step.state === 'pending');
   const [panel, setPanel] = useState<Panel>(null);
   const facts = {
     start: (
       <span className="ent-wk-infobar-item">
-        <small>开始</small>
-        <strong>{dayTimeText(work.createdAt)}</strong>
+        <small>{runStartedAt === null ? '创建' : '开始'}</small>
+        <strong>{dayTimeText(runStartedAt ?? work.createdAt)}</strong>
       </span>
     ),
     elapsed: (
       <span className="ent-wk-infobar-item">
-        <small>{over ? '耗时' : '已运行'}</small>
-        <strong>{over ? durationText(work.updatedAt - work.createdAt) : durationText(Date.now() - work.createdAt)}</strong>
+        <small>{work.executionHealth === 'start-failed' ? '启动失败' : runStartedAt === null ? '排队等待' : over ? '本轮耗时' : '本轮已运行'}</small>
+        <strong>{runStartedAt === null
+          ? work.executionHealth === 'start-failed' ? '未启动' : work.isActive && work.queuedAt ? durationText(Date.now() - work.queuedAt) : work.status === 'arranging' ? '尚未开始' : '未知'
+          : over ? runEndedAt === null ? '未知' : durationText(runEndedAt - runStartedAt)
+            : durationText(Date.now() - runStartedAt)}</strong>
       </span>
     ),
     directory: (
@@ -412,7 +419,7 @@ function Process({ work, workspace }: { work: WorkItem; workspace: EnterpriseWor
   return (
     <section className="ent-panel ent-work-process">
       <h2>工作过程</h2>
-      <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities)}</p>
+      <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt)}</p>
       {work.activities.length ? (
         <ol className="ent-wk-activity-list" aria-label="工作执行记录" tabIndex={0}>
           {work.activities.map(activity => <WorkActivityRow key={`${activity.runId}:${activity.id}`} activity={activity} />)}
@@ -444,7 +451,7 @@ function ArrangementProcess({ work, workspace }: { work: WorkItem; workspace: En
   return (
     <section className="ent-panel ent-work-process">
       <h2>工作过程</h2>
-      <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities)}</p>
+      <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt)}</p>
       {work.steps.length ? (
         <ArrangementSteps work={work} busy={workspace.busy} onRetry={workspace.retryWork} />
       ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}

@@ -19,6 +19,7 @@ import { requireScope, type ScopeSource } from './scope-guard'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { JsonReadDiagnostic } from '../data/atomic-file'
+import { describeError } from '../common/redact'
 import { TaskCreationGate } from './task-creation-gate'
 import { resolveWorkType } from './work-type'
 
@@ -103,7 +104,12 @@ export class TaskService {
   /** 首次执行。是不是对话任务由元数据决定，而不是由调用方声明。 */
   async execute(taskId: string): Promise<void> {
     const conversation = await this.isConversation(taskId)
-    await (await this.deps.execution()).executeTask(taskId, { conversation })
+    try {
+      await (await this.deps.execution()).executeTask(taskId, { conversation })
+    } catch (error) {
+      try { await this.deps.taskManager.recordStartFailure?.(taskId, describeError(error)) } catch { /* preserve the original start error */ }
+      throw error
+    }
   }
 
   /** 重试。与 execute 一样要先确认任务归属与员工可用性。 */
@@ -111,7 +117,12 @@ export class TaskService {
     const task = await this.requireTask(taskId)
     const conversation = await this.isConversation(taskId)
     if (conversation) await this.requireAuthorizedEmployee(task.subscriptionId)
-    await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}) })
+    try {
+      await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}) })
+    } catch (error) {
+      try { await this.deps.taskManager.recordStartFailure?.(taskId, describeError(error)) } catch { /* preserve the original retry error */ }
+      throw error
+    }
   }
 
   async confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void> {

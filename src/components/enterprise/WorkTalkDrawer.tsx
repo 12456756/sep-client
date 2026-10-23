@@ -50,12 +50,14 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
   const latestMessage = work.messages.at(-1);
   const latestMessageId = latestMessage?.id;
   const latestContent = latestMessage?.content;
-  const isReplying = work.status === 'running' || work.status === 'arranging';
+  const isReplying = work.isActive === true;
   const hasStreamingReply = work.messages.some(message => message.id === `${work.id}-streaming`);
   const statusText = work.status === 'completed' ? '本轮回复已完成，可继续提问'
     : work.status === 'paused' ? '工作已终止，已收到的内容仍保留'
       : work.status === 'failed' ? '本轮回复中断，请查看提示后重试'
         : work.status === 'waiting-user' ? '等待你的确认'
+          : work.status === 'arranging' && !isReplying ? '尚未开始'
+            : work.status === 'arranging' ? '正在排队，请稍候'
           : hasStreamingReply ? '正在回复…' : '正在处理，请稍候…';
 
   const scrollToLatest = () => {

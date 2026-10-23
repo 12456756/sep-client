@@ -121,17 +121,28 @@ export class TaskManager {
       const interruptedRuns = new Map<string, string>()
       let recovered = false
       for (const task of loadedTasks) {
+        const pausedWithActiveRun = task.status === TaskStatus.PAUSED && task.activeRunId !== null
         if (
           task.status !== TaskStatus.RUNNING &&
           task.status !== TaskStatus.WAITING_APPROVAL &&
-          !(task.status === TaskStatus.PENDING && task.activeRunId)
+          !(task.status === TaskStatus.PENDING && task.activeRunId) &&
+          !pausedWithActiveRun
         ) continue
-        assertTaskTransition(task.status, TaskStatus.INTERRUPTED)
+        if (!pausedWithActiveRun) assertTaskTransition(task.status, TaskStatus.INTERRUPTED)
         if (task.activeRunId) interruptedRuns.set(task.id, task.activeRunId)
-        task.status = TaskStatus.INTERRUPTED
+        task.lastRunId = task.activeRunId
+        task.lastRunStartedAt = task.currentRunStartedAt ??
+          (task.status === TaskStatus.RUNNING || task.status === TaskStatus.WAITING_APPROVAL ? task.startedAt : null)
+        task.lastRunEndedAt = Date.now()
+        task.currentRunStartedAt = null
+        task.queuedAt = null
+        if (!pausedWithActiveRun) task.status = TaskStatus.INTERRUPTED
         task.activeRunId = null
-        if (!task.logs.some(log => log.message === 'Previous session ended; task interrupted.')) {
-          task.logs.push({ timestamp: Date.now(), message: 'Previous session ended; task interrupted.', level: 'warning' })
+        const recoveryMessage = pausedWithActiveRun
+          ? 'Previous session ended; paused task run was detached.'
+          : 'Previous session ended; task interrupted.'
+        if (!task.logs.some(log => log.message === recoveryMessage)) {
+          task.logs.push({ timestamp: Date.now(), message: recoveryMessage, level: 'warning' })
         }
         recovered = true
       }
@@ -142,7 +153,7 @@ export class TaskManager {
       this.persistenceDegraded = false
 
       for (const task of loadedTasks) {
-        if (task.status !== TaskStatus.INTERRUPTED) continue
+        if (task.status !== TaskStatus.INTERRUPTED && !interruptedRuns.has(task.id)) continue
         try {
           const checkpoint = await this.checkpoints.get(scope, task.id)
           if (!checkpoint) continue
@@ -285,9 +296,32 @@ export class TaskManager {
       if (nextTask.status !== TaskStatus.PENDING) {
         throw new TaskAdmissionError(`Task cannot be admitted while it is ${nextTask.status}.`)
       }
+      nextTask.executionHealth = undefined
+      nextTask.startFailureAt = null
+      nextTask.error = null
       nextTask.activeRunId = runId
+      nextTask.queuedAt = Date.now()
+      nextTask.currentRunStartedAt = null
     })
     this.notifyTaskUpdate(taskId)
+  }
+
+  /** Records a failure before admission without pretending that a run executed. */
+  async recordStartFailure(taskId: string, error: string): Promise<boolean> {
+    await this.requireTask(taskId)
+    const safeError = describeError(error)
+    let changed = false
+    await this.commit(nextTasks => {
+      const task = nextTasks.get(taskId)
+      if (!task || task.status !== TaskStatus.PENDING || task.activeRunId !== null) return
+      task.executionHealth = 'start-failed'
+      task.startFailureAt = Date.now()
+      task.error = safeError
+      task.logs.push({ timestamp: task.startFailureAt, message: `启动失败：${safeError}`, level: 'error' })
+      changed = true
+    })
+    if (changed) this.notifyTaskUpdate(taskId)
+    return changed
   }
 
   async setTaskEmployee(taskId: string, subscriptionId: string): Promise<Task> {
@@ -311,6 +345,14 @@ export class TaskManager {
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask || (expectedRunId && nextTask.activeRunId !== expectedRunId)) return
+      const runId = nextTask.activeRunId
+      if (runId) {
+        nextTask.lastRunId = runId
+        nextTask.lastRunStartedAt = nextTask.currentRunStartedAt
+        nextTask.lastRunEndedAt = Date.now()
+        nextTask.currentRunStartedAt = null
+        nextTask.queuedAt = null
+      }
       nextTask.activeRunId = null
       changed = true
     })
@@ -332,6 +374,11 @@ export class TaskManager {
       task.status = status
       task.activeRunId = null
       task.error = error ?? null
+      task.lastRunId = runId
+      task.lastRunStartedAt = task.currentRunStartedAt
+      task.lastRunEndedAt = Date.now()
+      task.currentRunStartedAt = null
+      task.queuedAt = null
       task.completedAt = status === TaskStatus.COMPLETED || status === TaskStatus.FAILED ? Date.now() : null
       if (status === TaskStatus.PENDING) task.startedAt = null
       changed = true
@@ -361,9 +408,16 @@ export class TaskManager {
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) return
       assertTaskTransition(nextTask.status, status)
-      if (status === TaskStatus.RUNNING && !nextTask.startedAt) nextTask.startedAt = Date.now()
+      if (status === TaskStatus.RUNNING) {
+        const now = Date.now()
+        if (!nextTask.startedAt) nextTask.startedAt = now
+        if (nextTask.currentRunStartedAt == null) nextTask.currentRunStartedAt = now
+        nextTask.queuedAt = null
+      }
       if (status === TaskStatus.COMPLETED || status === TaskStatus.FAILED) nextTask.completedAt = Date.now()
       if (status === TaskStatus.RUNNING) {
+        nextTask.executionHealth = undefined
+        nextTask.startFailureAt = null
         nextTask.error = null
         nextTask.completedAt = null
       }
@@ -371,6 +425,10 @@ export class TaskManager {
         nextTask.error = null
         nextTask.completedAt = null
         nextTask.startedAt = null
+        nextTask.executionHealth = undefined
+        nextTask.startFailureAt = null
+        nextTask.queuedAt = null
+        nextTask.currentRunStartedAt = null
       }
       nextTask.status = status
       if (error) nextTask.error = error

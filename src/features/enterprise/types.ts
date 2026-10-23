@@ -179,6 +179,14 @@ export interface WorkItem {
   /** 分类读取状态，不能从执行状态推断。 */
   workType: WorkTypeReadResult | { state: 'loading' };
   status: WorkStatus;
+  /** Whether a current run owns this task; an unstarted arrangement is not active. */
+  isActive?: boolean;
+  executionHealth?: 'start-failed';
+  queuedAt?: number | null;
+  currentRunStartedAt?: number | null;
+  lastRunId?: string | null;
+  lastRunStartedAt?: number | null;
+  lastRunEndedAt?: number | null;
   progress: number;
   currentEmployeeId: string;
   currentEmployeeName: string;
@@ -186,6 +194,8 @@ export interface WorkItem {
   /** 当前需要用户做什么。空表示无需用户介入。 */
   nextUserAction: string | null;
   createdAt: number;
+  startedAt: number | null;
+  completedAt: number | null;
   updatedAt: number;
   participants: string[];
   deliverables: WorkDeliverable[];

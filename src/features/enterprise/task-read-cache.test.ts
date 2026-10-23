@@ -19,6 +19,62 @@ describe('task query/event reconciliation', () => {
     assert.deepEqual(mergeTaskUpdate([task(), ...current], task('other'), removed).map(item => item.id), ['other'])
   })
 
+  it('does not let a stale running snapshot reactivate a user-paused task', () => {
+    const paused = { ...task(), status: 'paused' as const, activeRunId: null, lastRunId: 'run-a', lastRunEndedAt: 10 }
+    const stale = { ...task(), queuedAt: 9 }
+    assert.deepEqual(mergeTaskUpdate([paused], stale), [paused])
+    assert.deepEqual(mergeTaskList([paused], [stale]), [paused])
+    const pausing = { ...paused, activeRunId: 'run-a' }
+    assert.deepEqual(mergeTaskUpdate([pausing], task()), [pausing])
+    assert.deepEqual(mergeTaskList([pausing], [task()]), [pausing])
+  })
+
+  it('accepts a later explicit retry after a terminal run', () => {
+    const paused = { ...task(), status: 'paused' as const, activeRunId: null, lastRunId: 'run-a', lastRunEndedAt: 10 }
+    const retry = { ...task(), activeRunId: 'run-b', queuedAt: 11 }
+    assert.equal(mergeTaskUpdate([paused], retry)[0]?.activeRunId, 'run-b')
+    assert.equal(mergeTaskList([paused], [retry])[0]?.activeRunId, 'run-b')
+    const started = { ...task(), activeRunId: 'run-b', queuedAt: null, currentRunStartedAt: 11 }
+    assert.equal(mergeTaskUpdate([paused], started)[0]?.activeRunId, 'run-b')
+  })
+
+  it('accepts a new run after an explicit retry has returned the task to pending', () => {
+    const pending = { ...task(), status: 'pending' as const, activeRunId: null }
+    const admitted = { ...pending, activeRunId: 'run-b' }
+    assert.equal(mergeTaskUpdate([pending], admitted)[0]?.activeRunId, 'run-b')
+  })
+
+  it('does not let an older terminal snapshot replace a newer active run', () => {
+    const current = { ...task(), activeRunId: 'run-new' }
+    const stale = { ...current, status: 'paused' as const, activeRunId: null, lastRunId: 'run-old' }
+    assert.deepEqual(mergeTaskUpdate([current], stale), [current])
+    assert.deepEqual(mergeTaskList([current], [stale]), [current])
+    const settled = { ...current, status: 'completed' as const, activeRunId: null, lastRunId: 'run-new' }
+    assert.equal(mergeTaskUpdate([current], settled)[0]?.status, 'completed')
+    assert.deepEqual(mergeTaskUpdate([current], { ...current, activeRunId: 'run-old' }), [current])
+    assert.deepEqual(mergeTaskList([current], [{ ...current, activeRunId: null, status: 'pending' }]), [current])
+  })
+
+  it('does not restore an old terminal run over a newer terminal or retry preparation', () => {
+    const current = { ...task(), status: 'paused' as const, activeRunId: null, lastRunId: 'run-new', lastRunEndedAt: 20 }
+    const oldTerminal = { ...current, status: 'completed' as const, lastRunId: 'run-old', lastRunEndedAt: 10 }
+    assert.deepEqual(mergeTaskUpdate([current], oldTerminal), [current])
+    assert.deepEqual(mergeTaskList([current], [oldTerminal]), [current])
+    const retrying = { ...current, status: 'pending' as const, startedAt: null }
+    const sameOldRun = { ...retrying, status: 'failed' as const }
+    assert.deepEqual(mergeTaskUpdate([retrying], sameOldRun), [retrying])
+    const oldEventAfterRetryStarted = { ...retrying, status: 'running' as const, activeRunId: 'run-new' }
+    assert.deepEqual(mergeTaskUpdate([retrying], oldEventAfterRetryStarted), [retrying])
+  })
+
+  it('keeps a live run when an initial query returns an older lifecycle snapshot', () => {
+    const live = { ...task(), activeRunId: 'run-new', queuedAt: 20 }
+    const stale = { ...task(), activeRunId: null, status: 'pending' as const, queuedAt: 10 }
+    const [merged] = mergeInitialTaskQuery([live], [stale], new Set(), false)
+    assert.equal(merged?.activeRunId, 'run-new')
+    assert.equal(merged?.queuedAt, 20)
+  })
+
   it('does not restore deleted records from a query started before deletion', () => {
     const removed = new Set(['task-a'])
     for (const receivedList of [false, true]) {

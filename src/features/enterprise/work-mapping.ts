@@ -172,7 +172,7 @@ function nextUserAction(status: WorkStatus, steps: WorkStep[]): string | null {
     const current = steps.find(step => step.state === 'waiting-user');
     return current ? `确认「${current.title}」的结果后继续` : '确认当前结果后继续';
   }
-  if (status === 'failed') return '查看中断原因，决定重试或换其他员工';
+  if (status === 'failed') return '查看启动或中断原因，决定重试或换其他员工';
   if (status === 'arranging') return '检查安排并开始工作';
   return null;
 }
@@ -212,13 +212,17 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
       : meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
   const effectiveExecution = executionFromEvents(plan, arrangementEvents, arrangementExecution);
   let status = toWorkStatus(task.status);
+  if ((task.status === 'running' || task.status === 'waiting_approval') && task.activeRunId === null) status = 'arranging';
+  if (task.status === 'pending' && task.executionHealth === 'start-failed') status = 'failed';
   if (plan && plan.mode !== 'conversation' && task.status === 'paused') {
     const latestState = [...arrangementEvents].reverse().find(event => event.type === 'arrangement_state_changed' || event.type === 'stop_requested');
     if (latestState?.type !== 'stop_requested' && effectiveExecution?.status === 'waiting-user') {
       status = effectiveExecution.nodes.some(node => node.pendingConfirmation) ? 'waiting-user' : 'failed';
     }
   }
-  const legacyProgress = task.progress ?? (status === 'completed' ? 100 : 0);
+  const legacyProgress = task.status === 'pending' && task.activeRunId === null
+    ? 0
+    : task.progress ?? (status === 'completed' ? 100 : 0);
   const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
 
   const stepStates = deriveStepStates(meta?.steps.length ?? 0, status, legacyProgress);
@@ -252,13 +256,22 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     kind,
     workType,
     status,
+    isActive: task.activeRunId !== null && (task.status === 'running' || task.status === 'waiting_approval' || task.status === 'pending'),
+    executionHealth: task.executionHealth,
+    queuedAt: task.queuedAt ?? null,
+    currentRunStartedAt: task.currentRunStartedAt ?? null,
+    lastRunId: task.lastRunId ?? null,
+    lastRunStartedAt: task.lastRunStartedAt ?? null,
+    lastRunEndedAt: task.lastRunEndedAt ?? null,
     progress,
     currentEmployeeId,
     currentEmployeeName: nameOf(currentEmployeeId),
     steps,
     nextUserAction: nextUserAction(status, steps),
     createdAt: task.createdAt,
-    updatedAt: task.completedAt ?? task.startedAt ?? task.createdAt,
+    startedAt: task.startedAt,
+    completedAt: task.completedAt,
+    updatedAt: task.completedAt ?? task.lastRunEndedAt ?? task.currentRunStartedAt ?? task.queuedAt ?? task.startedAt ?? task.createdAt,
     participants: meta?.participants.length ? meta.participants : [currentEmployeeId].filter(Boolean),
     deliverables,
     arrangementExecution: kind === 'flow' ? effectiveExecution : undefined,

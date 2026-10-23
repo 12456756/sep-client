@@ -285,7 +285,7 @@ function deskOf(
   today: number,
 ): Desk {
   const myWorks = works.filter(work => involves(work, employee.id));
-  const working = myWorks.some(work => work.status === 'running');
+  const working = myWorks.some(work => work.isActive === true);
   const done = myWorks.filter(work => work.status === 'completed' && work.updatedAt >= today).length;
   const total = myWorks.filter(work => work.createdAt >= today).length;
 

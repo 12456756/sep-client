@@ -20,7 +20,10 @@ describe('user-facing work process', () => {
     assert.equal(currentWorkOperation('completed', [activity('ls')]), '本轮工作已完成')
     assert.equal(currentWorkOperation('paused', [activity('ls')]), '工作已终止')
     assert.equal(currentWorkOperation('failed', [activity('ls')]), '工作已中断')
-    assert.equal(currentWorkOperation('arranging', []), '正在准备工作')
+    assert.equal(currentWorkOperation('arranging', []), '尚未开始')
+    assert.equal(currentWorkOperation('arranging', [activity('ls')]), '尚未开始')
+    assert.equal(currentWorkOperation('arranging', [], true), '正在排队，请稍候')
+    assert.equal(currentWorkOperation('arranging', [], false, 1), '正在排队，请稍候')
   })
   it('keeps real step titles but does not show raw session errors', () => {
     assert.equal(processActivityLabel({ ...activity(''), toolName: undefined, text: '开始执行：整理资料' }), '整理资料')

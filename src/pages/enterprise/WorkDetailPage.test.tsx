@@ -51,7 +51,7 @@ const work: WorkItem = {
   id: 'work-media', title: '商品图片', goal: '制作商品图片', kind: 'conversation',
   workType: { state: 'resolved', kind: 'conversation' }, status: 'completed', progress: 100,
   currentEmployeeId: 'employee-a', currentEmployeeName: '电商员工', steps: [], nextUserAction: null,
-  createdAt: 1, updatedAt: 2, participants: [], deliverables: [], timeline: [], messages: [], activities: [],
+  createdAt: 1, startedAt: 1, completedAt: 2, updatedAt: 2, isActive: false, participants: [], deliverables: [], timeline: [], messages: [], activities: [],
   sharedContext: { goal: '制作商品图片', confirmedInputs: [], previousResults: [], userNotes: [] },
   stopReason: null, workDir: null,
 };
@@ -69,6 +69,31 @@ function renderDetail(item: WorkItem): string {
 }
 
 describe('WorkDetailPage media entry', () => {
+  it('shows a pending task as waiting to start, not running time', () => {
+    const pending = { ...work, status: 'arranging' as const, isActive: false, createdAt: Date.now() - 7 * 24 * 60 * 60 * 1000, updatedAt: Date.now(), startedAt: null, completedAt: null }
+    const html = renderDetail(pending)
+    assert.match(html, /排队等待/)
+    assert.doesNotMatch(html, /已运行/)
+    assert.match(html, />尚未开始</)
+  })
+
+  it('does not use an older run start as the current duration while a retry is pending', () => {
+    const pendingRetry = { ...work, status: 'arranging' as const, isActive: false, createdAt: 1, startedAt: null, completedAt: null,
+      lastRunId: 'run-old', lastRunStartedAt: 2, lastRunEndedAt: 3, updatedAt: 3 }
+    const html = renderDetail(pendingRetry)
+    assert.match(html, />尚未开始</)
+    assert.doesNotMatch(html, /本轮已运行/)
+  })
+
+  it('shows the queue state when a run is admitted but has not reached a worker', () => {
+    const queued = { ...work, status: 'arranging' as const, isActive: true, queuedAt: Date.now() - 5_000, currentRunStartedAt: null,
+      createdAt: 1, startedAt: 1, completedAt: null, lastRunId: 'run-old', lastRunStartedAt: 2 }
+    const html = renderDetail(queued)
+    assert.match(html, /正在排队/)
+    assert.match(html, /排队等待/)
+    assert.doesNotMatch(html, /本轮已运行/)
+  })
+
   it('mounts the shared media panel exactly once on the actual conversation route', () => {
     const html = renderDetail(work);
     assert.equal((html.match(/aria-label="图片创作与成果"/g) ?? []).length, 1);

@@ -21,7 +21,7 @@ const employee: SiliconEmployee = {
 const work: WorkItem = {
   id: 'work-a', title: '测试工作', goal: '测试工作', kind: 'conversation', workType: { state: 'resolved', kind: 'conversation' },
   status: 'completed', progress: 100, currentEmployeeId: employee.id, currentEmployeeName: employee.name, steps: [], nextUserAction: null,
-  createdAt: 1, updatedAt: 2, participants: [], deliverables: [], timeline: [], messages: [], activities: [],
+  createdAt: 1, startedAt: 1, completedAt: 2, updatedAt: 2, participants: [], deliverables: [], timeline: [], messages: [], activities: [],
   sharedContext: { goal: '', confirmedInputs: [], previousResults: [], userNotes: [] }, stopReason: null, workDir: null,
 }
 

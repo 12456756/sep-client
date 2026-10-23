@@ -5,11 +5,11 @@ export type WorkRecordFilterState = Required<Omit<RecordsRoute, 'name'>>
 export type WorkRecordBucket = WorkRecordFilterState['bucket']
 export type WorkRecordTypeFilter = WorkRecordFilterState['workType']
 export type WorkRecord = Pick<WorkItem,
-  'title' | 'goal' | 'currentEmployeeName' | 'status' | 'nextUserAction' | 'updatedAt' | 'workType'>
+  'title' | 'goal' | 'currentEmployeeName' | 'status' | 'isActive' | 'nextUserAction' | 'updatedAt' | 'workType'>
 
 const BUCKET_MATCHERS: Record<WorkRecordBucket, (work: WorkRecord) => boolean> = {
   all: () => true,
-  active: work => work.status === 'running' || work.status === 'arranging',
+  active: work => work.isActive === true,
   mine: work => work.status === 'waiting-user' || Boolean(work.nextUserAction),
   done: work => work.status === 'completed',
   stopped: work => work.status === 'failed' || work.status === 'paused',
