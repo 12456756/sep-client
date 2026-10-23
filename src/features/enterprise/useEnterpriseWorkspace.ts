@@ -200,7 +200,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
-  retryWork: (workId: string) => Promise<void>;
+  retryWork: (workId: string, nodeId?: string) => Promise<void>;
   deleteWork: (workId: string) => Promise<void>;
   /** 把当前安排好的工作存成常用工作，返回是否存成功。 */
   saveFlow: (flow: Omit<SavedWorkFlow, 'id' | 'savedAt'>) => boolean;
@@ -227,6 +227,8 @@ const NOTICE_DURATION_MS = 5_000;
 export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses }: Options): EnterpriseWorkspace {
   const [tasks, setTasks] = useState<ClientTask[]>([]);
   const scopeKey = JSON.stringify([userId, enterpriseId]);
+  const deletedRecords = useMemo(() => ({ scopeKey, ids: new Set<string>() }), [scopeKey]);
+  const deletedTaskIds = deletedRecords.ids;
   const scopedTasks = useMemo(() => tasks.filter(task => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId), [tasks, userId, enterpriseId]);
   const arrangement = useArrangementPlans(scopedTasks, scopeKey);
   const { recordEvent: recordArrangementEvent } = arrangement;
@@ -435,7 +437,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   useEffect(() => {
     let active = true;
     const api = window.electronAPI;
-    const belongsToScope = (task: ClientTask) => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId;
+    const belongsToScope = (task: ClientTask) => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId
+      && !deletedTaskIds.has(task.id);
     setTasks([]);
     streamingText.current.clear();
     runtimeActivities.current.clear();
@@ -463,7 +466,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         const settled = task.activeRunId === null;
         try {
           const result = await api.getTaskMessages(task.id);
-          if (!active || messageVersions.get(task.id) !== version || !result.success || !result.messages) return;
+          if (!active || deletedTaskIds.has(task.id) || messageVersions.get(task.id) !== version || !result.success || !result.messages) return;
           const messages = result.messages;
           // Early admission snapshots may not contain the new run yet. Only a new
           // persisted user message can acknowledge one optimistic send (not old identical text).
@@ -494,7 +497,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       if (!active || !result.success) return;
       const list = (result.tasks ?? []).filter(belongsToScope);
       setTasks(current => {
-        const next = mergeInitialTaskQuery(current, list, pushedTaskIds, receivedTaskList);
+        const next = mergeInitialTaskQuery(current, list, pushedTaskIds, receivedTaskList, deletedTaskIds);
         typeCache.retain(next);
         next.forEach(typeCache.ensure.bind(typeCache));
         return next.map(task => typeCache.preserve(task));
@@ -509,7 +512,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       const list = incoming.filter(belongsToScope);
       receivedTaskList = true;
       setTasks(current => {
-        const next = mergeTaskList(current, list);
+        const next = mergeTaskList(current, list, deletedTaskIds);
         typeCache.retain(next);
         list.forEach(typeCache.ensure.bind(typeCache));
         return next.map(task => typeCache.preserve(task));
@@ -521,14 +524,14 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       pushedTaskIds.add(task.id);
       refreshMessages(task);
       setTasks(current => {
-        const next = mergeTaskUpdate(current, task);
+        const next = mergeTaskUpdate(current, task, deletedTaskIds);
         typeCache.retain(next);
         typeCache.ensure(task);
         return next.map(item => typeCache.preserve(item));
       });
     });
     const unsubscribePi = api.onPiEvent(event => {
-      if (!active) return;
+      if (!active || deletedTaskIds.has(event.taskId)) return;
       recordArrangementEvent(event);
       latestRunByTask.current.set(event.taskId, event.runId);
       const key = runtimeKey(event.taskId, event.runId);
@@ -553,7 +556,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       typeCache.dispose();
       if (taskTypeCache.current === typeCache) taskTypeCache.current = null;
     };
-  }, [recordArrangementEvent, scopeKey, userId, enterpriseId]);
+  }, [recordArrangementEvent, scopeKey, userId, enterpriseId, deletedTaskIds]);
 
   const retryWorkTypes = useCallback(() => {
     const cache = taskTypeCache.current;
@@ -716,20 +719,27 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     return ok;
   }, [run]);
 
-  const retryWork = useCallback(async (workId: string) => {
-    await run(() => window.electronAPI.retryTask(workId), '重试失败，请稍后再试');
+  const retryWork = useCallback(async (workId: string, nodeId?: string) => {
+    await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId } : workId), '重试失败，请稍后再试');
   }, [run]);
 
   const deleteWork = useCallback(async (workId: string) => {
+    const cache = taskTypeCache.current;
     const ok = await run(() => window.electronAPI.deleteTask(workId), '删除失败，请重试');
-    if (ok) {
+    if (ok && taskTypeCache.current === cache) {
+      // Only successful deletions suppress snapshots already in flight before the IPC reply.
+      deletedTaskIds.add(workId);
       messagesByTask.current.delete(workId);
       pendingMessages.current.delete(workId);
       clearRuntimeState(workId);
-      setTasks(current => current.filter(task => task.id !== workId));
+      setTasks(current => {
+        const next = current.filter(task => task.id !== workId);
+        cache?.retain(next);
+        return next;
+      });
       setRoute(current => (current.name === 'work' && current.workId === workId ? { name: 'records' } : current));
     }
-  }, [clearRuntimeState, run]);
+  }, [clearRuntimeState, deletedTaskIds, run]);
 
   // ── 常用工作 ──────────────────────────────────────────────────────────
   /** 写盘失败（无痕模式、配额满）不阻断界面：内存里仍然保留，只是下次打开会丢。 */

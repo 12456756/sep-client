@@ -85,7 +85,7 @@ export interface SiliconEmployee {
 
 export type WorkStatus = 'arranging' | 'running' | 'waiting-user' | 'completed' | 'failed' | 'paused';
 
-export type WorkStepState = 'pending' | 'running' | 'waiting-user' | 'done' | 'failed' | 'skipped';
+export type WorkStepState = 'pending' | 'running' | 'waiting-user' | 'done' | 'failed' | 'blocked' | 'interrupted' | 'stopped' | 'skipped';
 
 /** 一个工作步骤只表达业务信息：由谁完成、完成什么、需要什么、产出什么。 */
 export interface WorkStep {

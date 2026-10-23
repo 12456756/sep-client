@@ -396,7 +396,8 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
     if (data?.nodeId && ['arrangement_node_started', 'arrangement_node_completed', 'arrangement_node_failed'].includes(event.type)) {
       const target = nodes.find(node => node.nodeId === data.nodeId)
       if (target) {
-        target.status = event.type === 'arrangement_node_started' ? 'running' : event.type === 'arrangement_node_completed' ? 'completed' : 'failed'
+        target.status = event.type === 'arrangement_node_started' ? 'running' : event.type === 'arrangement_node_completed' ? 'completed'
+          : data.status === 'PAUSED' ? 'interrupted' : data.status === 'CANCELLED' ? 'stopped' : 'failed'
         if (event.type === 'arrangement_node_completed' && Array.isArray(data.finalDeliverables)) target.finalFiles = data.finalDeliverables.filter(isFinalFile)
         changed = true
       }
@@ -438,8 +439,11 @@ function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution:
 function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskExecutionEvent[], execution: ArrangementExecutionSnapshot | null): WorkStepState {
   const saved = execution?.nodes.find(node => node.nodeId === nodeId)?.status
   if (saved === 'completed') return 'done'
-  if (saved === 'running') return status === 'paused' || status === 'failed' ? 'failed' : 'running'
-  if (saved === 'failed' || saved === 'interrupted' || saved === 'stopped' || saved === 'blocked') return 'failed'
+  if (saved === 'running') return status === 'paused' || status === 'failed' ? 'interrupted' : 'running'
+  if (saved === 'failed') return 'failed'
+  if (saved === 'blocked') return 'blocked'
+  if (saved === 'interrupted') return 'interrupted'
+  if (saved === 'stopped') return 'stopped'
   if (saved === 'ready' || saved === 'pending') return 'pending'
   if (status === 'completed') return 'done';
   let state: WorkStepState = 'pending';
@@ -449,21 +453,27 @@ function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskEx
       const saved = data.nodeStates.find(node => node.nodeId === nodeId)?.status;
       if (saved === 'completed') state = 'done';
       else if (saved === 'running') state = 'running';
-      else if (saved === 'failed' || saved === 'interrupted') state = 'failed';
+      else if (saved === 'failed') state = 'failed';
+      else if (saved === 'blocked') state = 'blocked';
+      else if (saved === 'interrupted') state = 'interrupted';
+      else if (saved === 'stopped') state = 'stopped';
       else if (saved) state = 'pending';
     }
     if (data?.nodeId !== nodeId) continue;
     if (event.type === 'arrangement_node_started') state = 'running';
     if (event.type === 'arrangement_node_completed') state = 'done';
-    if (event.type === 'arrangement_node_failed') state = 'failed';
+    if (event.type === 'arrangement_node_failed') state = data.status === 'PAUSED' ? 'interrupted' : data.status === 'CANCELLED' ? 'stopped' : 'failed';
     if (event.type === 'arrangement_state_changed') {
       if (data.nodeStatus === 'waiting-user') state = 'waiting-user';
       if (data.nodeStatus === 'completed') state = 'done';
       if (data.nodeStatus === 'failed') state = 'failed';
+      if (data.nodeStatus === 'blocked') state = 'blocked';
+      if (data.nodeStatus === 'interrupted') state = 'interrupted';
+      if (data.nodeStatus === 'stopped') state = 'stopped';
       if (data.nodeStatus === 'pending') state = 'pending';
     }
   }
   // A stopped/interrupted run must not leave an active animation behind.
-  if ((status === 'paused' || status === 'failed') && state === 'running') return 'failed';
+  if ((status === 'paused' || status === 'failed') && state === 'running') return 'interrupted';
   return state;
 }

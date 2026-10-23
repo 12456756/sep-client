@@ -35,7 +35,7 @@ describe('ArrangementExecutionState', () => {
     let state = createArrangementExecutionState(plan)
     state = markArrangementNodeRunning(state, 'a')
     state = markArrangementNodeFailed(state, plan, 'a', 'boom')
-    assert.equal(state.status, 'waiting-user')
+    assert.equal(state.status, 'running')
     assert.equal(state.nodes.find(item => item.nodeId === 'b')?.status, 'blocked')
     assert.equal(state.nodes.find(item => item.nodeId === 'c')?.status, 'blocked')
     assert.equal(state.nodes.find(item => item.nodeId === 'independent')?.status, 'ready')
@@ -109,21 +109,38 @@ describe('ArrangementExecutionState', () => {
       assert.deepEqual(retried.nodes[0], state.nodes[0])
       assert.deepEqual(retried.nodes[2], state.nodes[2])
       assert.equal(retried.nodes[3]?.status, 'blocked')
-      assert.equal(retried.nodes[4]?.status, status === 'failed' ? 'ready' : 'blocked')
+      assert.equal(retried.nodes[4]?.status, 'blocked')
       assert.deepEqual(retried.failureNodeIds, ['b'])
       assert.deepEqual(state, original)
     })
   }
 
-  it('releases terminally blocked independent branches according to their dependencies', () => {
+  it('does not release unrelated blocked branches during a targeted retry', () => {
     const plan = [node('a'), node('b', ['a']), node('independent'), node('later', ['independent'])]
     const state = createArrangementExecutionState(plan)
     state.status = 'failed'
     state.failureNodeIds = ['a']
     state.nodes[0]!.status = 'failed'
     for (const item of state.nodes.slice(1)) item.status = 'blocked'
-    const retried = retryArrangementNode(state, plan)
-    assert.deepEqual(retried.nodes.map(item => item.status), ['ready', 'pending', 'ready', 'pending'])
+    const retried = retryArrangementNode(state, plan, 'a')
+    assert.deepEqual(retried.nodes.map(item => item.status), ['ready', 'pending', 'blocked', 'blocked'])
+  })
+
+  it('allows a targeted retry while an independent node runs without changing that node', () => {
+    const plan = [node('a'), node('b'), node('child', ['a']), node('join', ['a', 'b'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeFailed(state, plan, 'a', 'failed')
+    assert.equal(state.status, 'running')
+    const b = structuredClone(state.nodes[1])
+    assert.equal(retryArrangementNode(state, plan), state)
+    state = retryArrangementNode(state, plan, 'a')
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeCompleted(state, plan, 'a', 'recovered')
+    assert.deepEqual(state.nodes[1], b)
+    assert.equal(state.nodes[2]?.status, 'ready')
+    assert.equal(state.nodes[3]?.status, 'pending')
   })
 
   it('does not retry completed, stopped, active, interrupted, or non-failed nodes', () => {

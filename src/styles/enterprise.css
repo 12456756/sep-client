@@ -1136,7 +1136,11 @@
 .ent-wk-activity-copy small { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-wk-activity time { color: var(--ent-ink-3); font-size: var(--ent-fs-note); font-variant-numeric: tabular-nums; }
 .ent-arrangement-step-list { display: flex; flex-direction: column; gap: 7px; margin: 0 0 14px; padding: 0; list-style: none; }
-.ent-arrangement-step { display: grid; min-height: 48px; grid-template-columns: 24px minmax(0, 1fr); align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid #e8ebf2; border-radius: var(--ent-radius-xs); background: var(--ent-panel); }
+.ent-arrangement-step { display: grid; min-height: 48px; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid #e8ebf2; border-radius: var(--ent-radius-xs); background: var(--ent-panel); }
+.ent-arrangement-step-retry { white-space: nowrap; }
+@media (max-width: 480px) {
+  .ent-arrangement-step-retry { grid-column: 2 / -1; justify-self: start; }
+}
 .ent-arrangement-step.running { border-color: #c9d7ff; background: #f3f6ff; }
 .ent-arrangement-step.failed { border-color: #f2c9c7; background: #fff5f4; }
 .ent-arrangement-step.done { border-color: #cce6d4; background: #f4fbf6; }

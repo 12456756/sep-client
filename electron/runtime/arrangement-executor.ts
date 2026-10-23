@@ -35,6 +35,7 @@ import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
 import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import { logger } from '../common/logger'
+import { AppError } from '../errors/app-error'
 
 export interface ArrangementExecutionResult {
   status: ArrangementExecutionState['status']
@@ -69,6 +70,10 @@ export interface ArrangementNodeEvent {
   attempt?: number
   data?: unknown
 }
+
+type NodeExecutionResult =
+  | { ok: true; nodeId: string; output: string | null; completion: ArrangementNodeEvent }
+  | { ok: false; nodeId: string; error: string; terminal: boolean; failure: ArrangementNodeEvent }
 
 export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output?: string | null; files?: readonly (FinalDeliveryFile & { readPath?: string })[] }[], knowledgeContext = ''): string {
   if (plan.mode === 'auto' || node.deliverables?.length) return `你正在执行编排工作计划中的一个节点，是该节点的硅基员工。
@@ -156,9 +161,10 @@ export class ArrangementExecutor {
   private readonly activeWorkers = new Map<string, TaskWorkerPort>()
   private readonly checkpointWrites = new WriteChain()
   private readonly requestProgressWrites = new WriteChain()
+  private readonly stateWrites = new WriteChain()
   private abortRequested = false
   private stopRequested = false
-  private failureRequested = false
+  private liveRetryHandler: ((nodeId: string) => Promise<boolean>) | null = null
   private validationCancellation = new AbortController()
   private taskId: string | null = null
 
@@ -179,11 +185,15 @@ export class ArrangementExecutor {
     await this.abort()
   }
 
+  retryFailedNode(nodeId: string): Promise<boolean> {
+    return this.liveRetryHandler?.(nodeId) ?? Promise.resolve(false)
+  }
+
   async execute(plan: WorkPlan, taskId: string, arrangementRunId: string, requestedState?: ArrangementExecutionState): Promise<ArrangementExecutionResult> {
     this.taskId = taskId
     this.abortRequested = false
     this.stopRequested = false
-    this.failureRequested = false
+    this.liveRetryHandler = null
     this.validationCancellation = new AbortController()
     const state = await this.loadState(plan, taskId, arrangementRunId, requestedState)
     if (plan.mode === 'auto') {
@@ -204,81 +214,125 @@ export class ArrangementExecutor {
     }
     await this.persist(plan, taskId, arrangementRunId, state)
     await this.emitStateEvent(plan, taskId, arrangementRunId, state)
-    if (state.status === 'completed' || state.status === 'stopped' || state.status === 'waiting-user' || state.status === 'failed') return { status: state.status, state }
-
     let current = state
     const nodes = nodeMap(plan)
-    while (!this.abortRequested) {
-      const ready = current.nodes.filter(node => node.status === 'ready')
-      if (ready.length === 0) {
-        if (current.nodes.some(node => node.status === 'running')) {
-          current = interruptArrangement(current, 'runtime-error')
-          await this.persist(plan, taskId, arrangementRunId, current)
-          await this.emitStateEvent(plan, taskId, arrangementRunId, current)
-        }
-        return { status: current.status, state: current }
+    if (state.status === 'completed' || state.status === 'stopped' || state.status === 'waiting-user' || state.status === 'failed') return { status: state.status, state }
+    const inFlight = new Map<string, Promise<NodeExecutionResult>>()
+    const results: Array<{ nodeId: string; result: NodeExecutionResult } | { error: unknown }> = []
+    const terminalFailures = new Set<string>()
+    let acceptingRetries = true
+    let wakeScheduler!: () => void
+    let wake = new Promise<void>(resolve => { wakeScheduler = resolve })
+    const signalScheduler = () => { wakeScheduler(); wake = new Promise<void>(resolve => { wakeScheduler = resolve }) }
+    const mutate = <T>(operation: () => Promise<T>): Promise<T> => this.stateWrites.run(taskId, operation)
+    this.liveRetryHandler = async nodeId => mutate(async () => {
+      if (this.abortRequested || !acceptingRetries) return false
+      if (!current.nodes.some(node => node.nodeId === nodeId && node.status === 'failed')) {
+        throw new AppError('INVALID_STATE', { message: '只能重试当前失败的节点。' })
       }
-
-      const batch = ready.map(checkpoint => {
-        current = markArrangementNodeRunning(current, checkpoint.nodeId)
-        return { checkpoint: current.nodes.find(node => node.nodeId === checkpoint.nodeId)!, node: nodes.get(checkpoint.nodeId)! }
-      })
+      const next = retryArrangementNode(current, plan.nodes, nodeId)
+      if (next === current) return false
+      current = next
+      terminalFailures.delete(nodeId)
       await this.persist(plan, taskId, arrangementRunId, current)
-      const results = await Promise.all(batch.map(item => this.executeNode(plan, taskId, arrangementRunId, item.node, item.checkpoint, current, async sessionRunId => {
-        current = { ...current, nodes: current.nodes.map(node => node.nodeId === item.node.id ? { ...node, sessionRunId } : node) }
-        await this.persist(plan, taskId, arrangementRunId, current)
-      }, (kind, recoveredSession) => this.requestProgressWrites.run(taskId, async () => {
-        this.checkExecutionControl()
-        const previous = current.nodes.find(node => node.nodeId === item.node.id)!.modelRequestProgress
-        const next = advanceModelRequestProgress(previous, kind, recoveredSession ? 'since-resume' : undefined)
-        current = { ...current, nodes: current.nodes.map(node => node.nodeId === item.node.id ? { ...node, modelRequestProgress: next } : node) }
-        await this.persist(plan, taskId, arrangementRunId, current)
-        this.checkExecutionControl()
-        return next
-      }), async delivery => {
-        current = { ...current, nodes: current.nodes.map(node => node.nodeId === item.node.id ? { ...node, delivery } : node) }
-        await this.persist(plan, taskId, arrangementRunId, current)
-      }, async (nodeId, files) => {
-        current = { ...current, nodes: current.nodes.map(node => node.nodeId === nodeId && node.delivery
-          ? { ...node, delivery: { ...node.delivery, finalFiles: files } } : node) }
-        await this.persist(plan, taskId, arrangementRunId, current)
-      })))
+      await this.emitStateEvent(plan, taskId, arrangementRunId, current, nodeId)
+      signalScheduler()
+      return true
+    })
 
-      if (this.abortRequested) {
-        current = this.stopRequested
-          ? stopArrangement(current)
-          : interruptArrangement(current, 'client-exit')
-        await this.persist(plan, taskId, arrangementRunId, current)
-        return { status: current.status, state: current }
-      }
-
-      for (const result of results) {
-        if (result.ok) current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
-        else current = markArrangementNodeFailed(current, plan.nodes, result.nodeId, result.error)
-        if (this.failureRequested) current = { ...current, status: 'failed' }
-        await this.persist(plan, taskId, arrangementRunId, current)
-        if (result.ok) await this.emitNodeEvent(taskId, arrangementRunId, result.completion)
-        await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.nodeId)
-      }
-      if (results.some(result => !result.ok && result.terminal)) {
-        const error = results.find(result => !result.ok && result.terminal)
-        current = { ...current, status: 'failed', nodes: current.nodes.map(node => ['ready', 'pending', 'running', 'interrupted'].includes(node.status) ? { ...node, status: 'blocked' as const } : node) }
-        await this.persist(plan, taskId, arrangementRunId, current)
-        await this.emitStateEvent(plan, taskId, arrangementRunId, current)
-        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
-        return { status: 'failed', state: current, error: error && !error.ok ? error.error : undefined }
-      }
-      if (current.status === 'waiting-user') {
-        await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
-        return { status: current.status, state: current, error: current.nodes.find(node => node.status === 'failed')?.error ?? undefined }
+    const startReadyNodes = async () => {
+      for (const checkpoint of current.nodes.filter(node => node.status === 'ready')) {
+        if (this.abortRequested) break
+        const node = nodes.get(checkpoint.nodeId)
+        if (!node || inFlight.has(checkpoint.nodeId)) continue
+        let running!: ArrangementExecutionState['nodes'][number]
+        await mutate(async () => {
+          if (this.abortRequested) return
+          current = markArrangementNodeRunning(current, checkpoint.nodeId)
+          running = current.nodes.find(item => item.nodeId === checkpoint.nodeId)!
+          await this.persist(plan, taskId, arrangementRunId, current)
+          await this.emitStateEvent(plan, taskId, arrangementRunId, current, checkpoint.nodeId)
+        })
+        if (!running || running.status !== 'running') continue
+        const updateNode = async (operation: (state: ArrangementExecutionState) => ArrangementExecutionState) => mutate(async () => {
+          current = operation(current)
+          await this.persist(plan, taskId, arrangementRunId, current)
+        })
+        const promise = this.executeNode(plan, taskId, arrangementRunId, node, running, current,
+          sessionRunId => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, sessionRunId } : item) })),
+          (kind, recoveredSession) => this.requestProgressWrites.run(taskId, async () => {
+            this.checkExecutionControl()
+            let progress!: ModelRequestProgress
+            await updateNode(state => {
+              const previous = state.nodes.find(item => item.nodeId === node.id)!.modelRequestProgress
+              progress = advanceModelRequestProgress(previous, kind, recoveredSession ? 'since-resume' : undefined)
+              return { ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, modelRequestProgress: progress } : item) }
+            })
+            return progress
+          }),
+          delivery => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, delivery } : item) })),
+          (nodeId, files) => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === nodeId && item.delivery
+            ? { ...item, delivery: { ...item.delivery, finalFiles: files } } : item) })))
+        inFlight.set(node.id, promise)
+        void promise.then(result => { results.push({ nodeId: node.id, result }); signalScheduler() },
+          error => { results.push({ error }); signalScheduler() })
       }
     }
 
-    current = this.stopRequested
-      ? stopArrangement(current)
-      : interruptArrangement(current, 'client-exit')
-    await this.persist(plan, taskId, arrangementRunId, current)
-    return { status: current.status, state: current }
+    try {
+      await startReadyNodes()
+      while (true) {
+        if (this.abortRequested) {
+          const abortedResults = await Promise.all(inFlight.values())
+          for (const result of abortedResults) {
+            if (!result.ok) await this.emitNodeEvent(taskId, arrangementRunId, result.failure)
+          }
+          current = this.stopRequested ? stopArrangement(current) : interruptArrangement(current, 'client-exit')
+          await this.persist(plan, taskId, arrangementRunId, current)
+          await this.emitStateEvent(plan, taskId, arrangementRunId, current)
+          return { status: current.status, state: current }
+        }
+        await startReadyNodes()
+        const settled = await mutate(async () => {
+          if (inFlight.size || current.nodes.some(node => node.status === 'ready') || this.abortRequested) return false
+          // Closing admission and finalizing share the same queue as live retries.
+          acceptingRetries = false
+          if (current.nodes.some(node => node.status === 'running')) current = interruptArrangement(current, 'runtime-error')
+          else current = { ...current, status: current.nodes.every(node => node.status === 'completed') ? 'completed'
+            : terminalFailures.size ? 'failed' : 'waiting-user' }
+          await this.persist(plan, taskId, arrangementRunId, current)
+          await this.emitStateEvent(plan, taskId, arrangementRunId, current)
+          return true
+        })
+        if (settled) return { status: current.status, state: current, error: current.nodes.find(node => node.status === 'failed')?.error ?? undefined }
+        if (this.abortRequested || current.nodes.some(node => node.status === 'ready')) continue
+        const winner = results.shift()
+        if (!winner) { await wake; continue }
+        if ('error' in winner) throw winner.error
+        inFlight.delete(winner.nodeId)
+        await mutate(async () => {
+          const result = winner.result
+          if (result.ok) current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
+          else {
+            current = markArrangementNodeFailed(current, plan.nodes, result.nodeId, result.error)
+            if (result.terminal) terminalFailures.add(result.nodeId)
+            if (current.status === 'waiting-user' && terminalFailures.size) current = { ...current, status: 'failed' }
+          }
+          await this.persist(plan, taskId, arrangementRunId, current)
+          if (result.ok) await this.emitNodeEvent(taskId, arrangementRunId, result.completion)
+          else await this.emitNodeEvent(taskId, arrangementRunId, result.failure)
+          await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.nodeId)
+        })
+      }
+    } catch (error) {
+      acceptingRetries = false
+      await this.abort()
+      await Promise.allSettled(inFlight.values())
+      throw error
+    } finally {
+      acceptingRetries = false
+      this.liveRetryHandler = null
+    }
   }
 
   retry(state: ArrangementExecutionState, plan: WorkPlan, nodeId: string): ArrangementExecutionState {
@@ -312,7 +366,7 @@ export class ArrangementExecutor {
     saveModelRequestProgress: (kind: ModelRequestKind, recoveredSession: boolean) => Promise<ModelRequestProgress>,
     saveDelivery: (delivery: NodeDeliveryProgress) => Promise<void>,
     savePredecessorFiles: (nodeId: string, files: FinalDeliveryFile[]) => Promise<void>,
-  ): Promise<{ ok: true; nodeId: string; output: string | null; completion: ArrangementNodeEvent } | { ok: false; nodeId: string; error: string; terminal: boolean }> {
+  ): Promise<NodeExecutionResult> {
     const nodeRunId = randomUUID()
     const workspaceDir = plan.workspace.path ?? this.options.workspaceRoot
     const paths = this.options.scope && this.options.taskRunStore
@@ -497,7 +551,6 @@ export class ArrangementExecutor {
       })
       // Start the worker before the second abort check: an abort can arrive while
       // the worker is being constructed, before it has installed its own stop hook.
-      if (this.failureRequested) throw new Error('Another node failed delivery validation.')
       const startMessage = recovery
         ? '沿用当前节点保存的会话和进度继续执行，按固定节点要求修复未完成事项，不要重做已完成操作。'
         : '请开始执行当前节点。'
@@ -519,19 +572,15 @@ export class ArrangementExecutor {
       const message = error instanceof Error ? error.message : String(error)
       const interrupted = this.abortRequested
       const terminal = error instanceof DeliveryExecutionError && !interrupted
-      if (terminal) {
-        this.failureRequested = true
-        await Promise.all([...this.activeWorkers].filter(([id]) => id !== nodeRunId).map(([, active]) => active.abort().catch(() => undefined)))
-      }
       if (created && this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message).catch(() => undefined)
       }
-      await this.emitNodeEvent(taskId, arrangementRunId, {
+      const failure: ArrangementNodeEvent = {
         type: 'arrangement_node_failed', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
         attempt: checkpoint.attempt, data: { ...metadata(), output: output || null, error: message,
           status: interrupted ? this.stopRequested ? 'CANCELLED' : 'PAUSED' : 'FAILED', completedAt: new Date().toISOString() },
-      })
-      return { ok: false, nodeId: node.id, error: message, terminal }
+      }
+      return { ok: false, nodeId: node.id, error: message, terminal, failure }
     } finally {
       await this.options.video?.finishRun?.(taskId, nodeRunId)
       this.activeWorkers.delete(nodeRunId)
@@ -541,7 +590,6 @@ export class ArrangementExecutor {
 
   private checkExecutionControl(): void {
     if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
-    if (this.failureRequested) throw new Error('Another node failed delivery validation.')
   }
 
   private async persist(plan: WorkPlan, taskId: string, arrangementRunId: string, state: ArrangementExecutionState): Promise<void> {

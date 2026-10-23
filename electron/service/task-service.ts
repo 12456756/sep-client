@@ -122,9 +122,14 @@ export class TaskService {
     await (await this.deps.execution()).cancelTask(taskId, reason)
   }
 
-  /** 删除。任务正在执行时不允许删（判断在 TaskManager 的 commit 闭包内，C9）。 */
+  /** Media records retain receipts; ordinary running-task deletion is guarded inside TaskManager's commit. */
   async delete(taskId: string): Promise<void> {
-    if (await this.deps.media?.archiveIfMedia(taskId)) return
+    const scope = this.scope()
+    if (await this.deps.media?.archiveIfMedia(taskId)) {
+      this.assertScope(scope)
+      this.deps.taskManager.hideTaskRecord(taskId, scope)
+      return
+    }
     if (!await this.deps.taskManager.deleteTask(taskId)) {
       throw new AppError('INVALID_STATE', { message: '任务正在执行，无法删除。' })
     }

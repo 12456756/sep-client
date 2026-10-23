@@ -12,6 +12,7 @@ import { ScopePath, TaskScopeError, type TaskOwnerScope, type WorkspaceDirectory
 import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
 import { ArrangementCheckpointStore, type ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
+import { MediaStore } from '../data/media-store'
 import { interruptArrangement } from '../domain/arrangement-execution'
 import {
   assertTaskTransition,
@@ -47,6 +48,8 @@ export class TaskManager {
   private readonly workspaceDirectories: WorkspaceDirectoryStore
   private currentWorkspaceNames: WorkspaceDirectoryNames | undefined
   private tasks = new Map<string, Task>()
+  /** Cached from the existing durable archive markers, scoped to the current owner. */
+  private readonly hiddenTaskIds = new Set<string>()
   private readonly notifier: TaskNotifier
   private currentUser: TaskOwnerScope | null = null
   private initialized = false
@@ -67,6 +70,7 @@ export class TaskManager {
     store: TaskStorePort = new TaskStore(userDataDir),
     runStore: TaskRunStorePort = new TaskRunStore(userDataDir),
     private readonly checkpoints: ArrangementCheckpointStorePort = new ArrangementCheckpointStore(userDataDir),
+    private readonly mediaArchive: Pick<MediaStore, 'isArchived'> = new MediaStore(userDataDir),
   ) {
     this.paths = new ScopePath(userDataDir)
     this.workspaceDirectories = new WorkspaceDirectoryStore(userDataDir)
@@ -95,12 +99,25 @@ export class TaskManager {
     // ——旧 scope 的数据被写成新 scope 的内容，新 scope 的内存状态又被回滚。
     await this.serialize(async () => {
       this.generation += 1
+      const generation = this.generation
       this.currentUser = null
       this.currentWorkspaceNames = undefined
       this.tasks.clear()
+      this.hiddenTaskIds.clear()
       this.notifyTaskListUpdate()
 
       const loadedTasks = (await this.store.load(scope)).map(cloneTask)
+      const archived = await Promise.all(loadedTasks.map(async task => {
+        try {
+          return await this.mediaArchive.isArchived(scope, task.id) ? task.id : null
+        } catch (error) {
+          // An unreadable deletion marker must not republish a possibly deleted record.
+          log.warn('task archive visibility unavailable', { taskId: task.id, cause: describeError(error) })
+          return task.id
+        }
+      }))
+      if (this.generation !== generation) throw new TaskScopeError('Task scope changed while loading record visibility.')
+      for (const id of archived) if (id !== null) this.hiddenTaskIds.add(id)
       const interruptedRuns = new Map<string, string>()
       let recovered = false
       for (const task of loadedTasks) {
@@ -188,6 +205,7 @@ export class TaskManager {
     this.currentUser = null
     this.currentWorkspaceNames = undefined
     this.tasks.clear()
+    this.hiddenTaskIds.clear()
     this.persistenceDegraded = false
     this.notifyTaskListUpdate()
   }
@@ -426,6 +444,16 @@ export class TaskManager {
     return deleted
   }
 
+  /** Called only after the service has durably archived the record. History stays readable internally. */
+  hideTaskRecord(taskId: string, scope: TaskOwnerScope): void {
+    if (!this.currentUser || this.currentUser.memberId !== scope.memberId || this.currentUser.enterpriseId !== scope.enterpriseId) {
+      throw new TaskScopeError()
+    }
+    if (!this.tasks.has(taskId)) throw new TaskScopeError('Task not found.')
+    this.hiddenTaskIds.add(taskId)
+    this.notifyTaskListUpdate()
+  }
+
   async clearCompletedTasks(): Promise<number> {
     let removed = 0
     await this.commit(nextTasks => {
@@ -516,12 +544,13 @@ export class TaskManager {
 
   private notifyTaskUpdate(taskId: string): void {
     const task = this.tasks.get(taskId)
-    if (task) this.notifier.taskUpdated(cloneTask(task))
+    if (task && !this.hiddenTaskIds.has(taskId)) this.notifier.taskUpdated(cloneTask(task))
   }
 
   private notifyTaskListUpdate(): void {
     const tasks = this.currentUser
-      ? Array.from(this.tasks.values()).sort((a, b) => b.createdAt - a.createdAt).map(cloneTask)
+      ? Array.from(this.tasks.values()).filter(task => !this.hiddenTaskIds.has(task.id))
+        .sort((a, b) => b.createdAt - a.createdAt).map(cloneTask)
       : []
     this.notifier.taskListUpdated(tasks)
   }

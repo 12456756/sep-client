@@ -57,6 +57,9 @@ export const WORK_STEP_STATE: Record<WorkStepState, StatusPresentation> = {
   'waiting-user': { label: '等待你确认', tone: 'attention', hint: '这一步的结果需要你确认' },
   done: { label: '已完成', tone: 'ready', hint: '这一步已产出结果' },
   failed: { label: '未完成', tone: 'danger', hint: '这一步中断了' },
+  blocked: { label: '等待前置节点', tone: 'muted', hint: '前置节点完成后才会开始' },
+  interrupted: { label: '已中断', tone: 'muted', hint: '这一步因任务中断而暂停' },
+  stopped: { label: '已停止', tone: 'muted', hint: '这一步已停止' },
   skipped: { label: '已跳过', tone: 'muted', hint: '这一步被跳过' },
 };
 

@@ -87,7 +87,8 @@ export function markArrangementNodeCompleted(
   }
   const ordered = [...nextNodes.values()]
   const status = ordered.every(node => node.status === 'completed') ? 'completed'
-    : ordered.some(node => node.status === 'failed') ? 'waiting-user' : 'running'
+    : ordered.some(node => node.status === 'running' || node.status === 'ready') ? 'running'
+      : ordered.some(node => node.status === 'failed') ? 'waiting-user' : 'running'
   return { ...state, status, nodes: ordered }
 }
 
@@ -106,7 +107,8 @@ export function markArrangementNodeFailed(
     if (node.status === 'ready' || node.status === 'pending') return { ...node, status: node.status }
     return { ...node }
   })
-  return { ...state, status: 'waiting-user', nodes, failureNodeIds: [...new Set([...state.failureNodeIds, nodeId])] }
+  const active = nodes.some(node => node.status === 'running' || node.status === 'ready')
+  return { ...state, status: active ? 'running' : 'waiting-user', nodes, failureNodeIds: [...new Set([...state.failureNodeIds, nodeId])] }
 }
 
 export function retryArrangementNode(
@@ -114,7 +116,7 @@ export function retryArrangementNode(
   planNodes: readonly ArrangementNode[],
   nodeId?: string,
 ): ArrangementExecutionState {
-  if (state.status !== 'waiting-user' && state.status !== 'failed') return state
+  if (state.status !== 'waiting-user' && state.status !== 'failed' && !(state.status === 'running' && nodeId)) return state
   const retryIds = new Set(state.nodes.filter(node => node.status === 'failed' && (!nodeId || node.nodeId === nodeId)).map(node => node.nodeId))
   if (retryIds.size === 0) return state
   const descendantsToRelease = new Set([...retryIds].flatMap(id => [...descendantNodeIds(planNodes, id)]))
@@ -125,7 +127,7 @@ export function retryArrangementNode(
     // Only an explicit retry renews validation; pause/resume preserves its budget.
     if (retryIds.has(node.nodeId)) return { ...node, status: 'ready' as const, error: null,
       ...(node.delivery ? { delivery: { ...node.delivery, validationAttempts: 0 } } : {}) }
-    if ((state.status === 'failed' || descendantsToRelease.has(node.nodeId)) && !stillBlocked.has(node.nodeId) && node.status === 'blocked') {
+    if (descendantsToRelease.has(node.nodeId) && !stillBlocked.has(node.nodeId) && node.status === 'blocked') {
       const ready = planNodes.find(item => item.id === node.nodeId)!.dependsOn.every(id => completedIds.has(id))
       return { ...node, status: ready ? 'ready' as const : 'pending' as const }
     }

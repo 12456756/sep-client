@@ -324,11 +324,31 @@ export class TaskRuntime {
     plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
     nodeId?: string,
   ): Promise<void> {
-    if (this.arrangementRetries.has(task.id) || task.activeRunId || this.activeArrangements.has(task.id)) {
+    const scope = this.taskManager.getCurrentUserScope()
+    if (this.arrangementRetries.has(task.id)) {
       throw new AppError('INVALID_STATE', { message: '这项编排正在执行或提交重试，请等待当前操作完成。' })
     }
     this.arrangementRetries.add(task.id)
-    try { await this.prepareArrangementRetry(task, plan, nodeId) }
+    try {
+      const active = this.activeArrangements.get(task.id)
+      if (active) {
+        if (!nodeId || active.control !== 'none') throw new AppError('INVALID_STATE', { message: '当前编排仍在执行，只能重试已失败的指定节点。' })
+        if (await active.executor.retryFailedNode(nodeId)) return
+        const liveCheckpoint = scope && this.arrangementCheckpointStore
+          ? await this.arrangementCheckpointStore.get(scope, task.id)
+          : null
+        if (liveCheckpoint?.state.nodes.find(node => node.nodeId === nodeId)?.status !== 'failed') {
+          throw new AppError('INVALID_STATE', { message: '只能重试当前失败的节点。' })
+        }
+        await active.completion
+        const latest = await this.taskManager.getTask(task.id)
+        if (!latest) throw new Error('Task not found.')
+        await this.prepareArrangementRetry(latest, plan, nodeId)
+        return
+      }
+      if (task.activeRunId) throw new AppError('INVALID_STATE', { message: '这项编排正在执行或提交重试，请等待当前操作完成。' })
+      await this.prepareArrangementRetry(task, plan, nodeId)
+    }
     finally { this.arrangementRetries.delete(task.id) }
   }
 
