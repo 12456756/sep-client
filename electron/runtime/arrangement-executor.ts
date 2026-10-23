@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
 import { validateDeliveryFiles, resolveDeliveryFiles } from '../data/arrangement-delivery-files'
-import { MAX_DELIVERY_VALIDATIONS, DeliveryExecutionError, buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
+import { MAX_DELIVERY_VALIDATIONS, DeliveryExecutionError, buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission, parseRecordedDeliverySubmission, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunStorePort } from '../data/task-run-store'
@@ -33,6 +33,8 @@ import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../domain/model-request-progress'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
+import type { ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
+import { ArrangementMediaSubmissionError } from '../domain/arrangement-media-runtime'
 import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
@@ -58,6 +60,7 @@ export interface ArrangementExecutionOptions {
   arrangementSubscriptionId: string
   media?: MediaRunPort
   video?: VideoRunPort
+  arrangementMedia?: ArrangementMediaPort
   knowledgeSearch?: KnowledgeSearchPort
 }
 
@@ -76,7 +79,17 @@ type NodeExecutionResult =
   | { ok: false; nodeId: string; error: string; terminal: boolean; failure: ArrangementNodeEvent }
 
 export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output?: string | null; files?: readonly (FinalDeliveryFile & { readPath?: string })[] }[], knowledgeContext = ''): string {
-  if (plan.mode === 'auto' || node.deliverables?.length) return `你正在执行编排工作计划中的一个节点，是该节点的硅基员工。
+  if (plan.mode === 'auto' || node.deliverables?.length || node.mediaRequirements?.length) {
+    const mediaDeliverables = (node.deliverables ?? []).filter(file =>
+      (file.artifact?.kind === 'image' || file.artifact?.kind === 'video') && file.artifact.source === 'media-output',
+    )
+    const ending = {
+      nodeId: node.id,
+      summary: '本节点工作结果的简要说明',
+      finalDeliverables: (node.deliverables ?? []).map(file => ({ id: file.id, path: file.path })),
+      ...(mediaDeliverables.length ? { mediaDeliverables: mediaDeliverables.map(file => ({ deliverableId: file.id, artifactId: 'MEDIA_ARTIFACT_ID' })) } : {}),
+    }
+    return `你正在执行编排工作计划中的一个节点，是该节点的硅基员工。
 
 【当前工作】
 总体目标：${plan.goal}
@@ -108,21 +121,30 @@ ${dependencies.length ? dependencies.map(dependency => `前置节点：${depende
 不得用聊天摘要或过程文件代替前置最终成果，不得覆盖前置节点的最终交付文件。
 提供读取快照时，必须读取该快照，不要改用工作目录中同名的文件，也不要重跑前置节点的生成脚本。需要补充公式、缓存值、格式或其他内容时，先复制到本节点自己的文件路径，再处理副本；不得修改快照。
 ${knowledgeContext ? `\n【本节点知识库参考】\n${knowledgeContext}\n` : ''}
+${node.mediaRequirements?.length ? `
+【本节点媒体要求】
+${JSON.stringify(node.mediaRequirements, null, 2)}
+按以上 operation 和 inputFrom 完成媒体操作。前置资产使用后端提供的参考资产，不得猜测资产 ID、路径或重新生成前置成果。
+preferred 中的风格、场景、比例、时长等是业务偏好；先读取媒体能力清单，再选择支持的参数，不得把任意偏好字段直接作为工具参数。
+inputSelection 是选图意图；当前每项需求只解析一个明确来源。多张候选未确定或用户尚未选图时，应说明缺少的选择，不得擅自选图或声称已完成。
+` : ''}
 
 【本节点交付】
 预期输出：${node.expectedOutput}
 交付清单：${JSON.stringify(node.deliverables ?? [], null, 2)}
 全部交付物都必须实际保存到指定路径。可以产生过程文件，但最终提交清单不得包含资料、草稿和临时文件。
 只能使用分配的共享工作区，不要重放或虚构前置节点的工具调用。
+${mediaDeliverables.length ? '标记为 media-output 的图片或视频交付物必须来自本节点已保存的媒体资产。结束 JSON 的 mediaDeliverables 必须为每个此类交付物填写明确的 deliverableId 和媒体工具返回的 artifactId；不得猜测 ID、使用其他节点未声明的资产或提交本地路径。' : ''}
 
 【节点结束】
 生成文件不等于工作结束；还有规定工作未完成时，应继续执行。
 只有确认本节点全部工作完成、最终文件已保存，才允许提交最终 JSON。
 执行中、进度说明、等待处理、修正过程中，不得以 JSON 作为回复；工具调用的 JSON 参数和要求生成的 JSON 文件不受此限制。
 确认节点工作结束后，只返回以下严格 JSON，不附加其他文字、Markdown 或推理过程：
-${JSON.stringify({ nodeId: node.id, summary: '本节点工作结果的简要说明', finalDeliverables: (node.deliverables ?? []).map(file => ({ id: file.id, path: file.path })) }, null, 2)}
+${JSON.stringify(ending, null, 2)}
 提交只是申请结束，后端校验通过才算完成。收到校验失败原因后，修复问题，保留有效成果，不重复已完成的操作。
 修复并重新确认节点全部工作结束后，再提交完整最终 JSON。最多校验 5 次（首次提交加 4 次修正）。`
+  }
   const dependencyText = dependencies.length === 0
     ? '没有可用的前置节点输出。'
     : dependencies.map(({ node: dependency, output }) => [
@@ -298,8 +320,9 @@ export class ArrangementExecutor {
           // Closing admission and finalizing share the same queue as live retries.
           acceptingRetries = false
           if (current.nodes.some(node => node.status === 'running')) current = interruptArrangement(current, 'runtime-error')
-          else current = { ...current, status: current.nodes.every(node => node.status === 'completed') ? 'completed'
-            : terminalFailures.size ? 'failed' : 'waiting-user' }
+          else current = { ...current, status: current.nodes.some(node => node.pendingConfirmation) ? 'waiting-user'
+            : current.nodes.every(node => node.status === 'completed') ? 'completed'
+              : terminalFailures.size ? 'failed' : 'waiting-user' }
           await this.persist(plan, taskId, arrangementRunId, current)
           await this.emitStateEvent(plan, taskId, arrangementRunId, current)
           return true
@@ -316,7 +339,7 @@ export class ArrangementExecutor {
           else {
             current = markArrangementNodeFailed(current, plan.nodes, result.nodeId, result.error)
             if (result.terminal) terminalFailures.add(result.nodeId)
-            if (current.status === 'waiting-user' && terminalFailures.size) current = { ...current, status: 'failed' }
+            if (current.status === 'waiting-user' && terminalFailures.size && !current.nodes.some(node => node.pendingConfirmation)) current = { ...current, status: 'failed' }
           }
           await this.persist(plan, taskId, arrangementRunId, current)
           if (result.ok) await this.emitNodeEvent(taskId, arrangementRunId, result.completion)
@@ -386,12 +409,22 @@ export class ArrangementExecutor {
     const metadata = () => ({ title: node.title, modelId: node.modelId, ...(startedAt ? { startedAt } : {}) })
     let delivery: NodeDeliveryProgress = checkpoint.delivery ?? { validationAttempts: 0, issues: [], finalFiles: [] }
     let accepted = !structured
+    let mediaSession: ArrangementMediaSession | undefined
+    let terminalMediaFailure: unknown
     try {
       this.checkExecutionControl()
+      const requiresMediaBridge = !!node.mediaRequirements?.length ||
+        !!node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')
+      if (requiresMediaBridge && !this.options.arrangementMedia) {
+        throw new DeliveryExecutionError('编排媒体资产流转和最终交付尚未接通，当前节点暂不可执行。请保留已保存的媒体资产，待接入后继续，不要重新提交生成请求。')
+      }
+      if (node.deliverables?.some(file => (file.artifact?.kind === 'image' || file.artifact?.kind === 'video') && file.artifact.source === 'workspace')) {
+        throw new DeliveryExecutionError('当前媒体交付需要已保存的媒体库资产；工作区原生媒体文件的专用验收尚未接通，请调整交付来源后继续。')
+      }
       if (structured) {
         for (const dependency of dependencies) {
           const progress = state.nodes.find(item => item.nodeId === dependency.node.id)
-          const complete = progress?.status === 'completed' && parseDeliverySubmission(dependency.node, JSON.stringify({ nodeId: dependency.node.id, summary: 'verified', finalDeliverables: dependency.files.map(file => ({ id: file.id, path: file.path })) })).ok
+          const complete = progress?.status === 'completed' && !progress.pendingConfirmation && parseRecordedDeliverySubmission(dependency.node, dependency.files).ok
           if (!complete) throw new DeliveryExecutionError(`前置节点 ${dependency.node.id} 缺少已确认的最终交付记录，不能启动下游节点。`)
           const resolved = await resolveDeliveryFiles(workspaceDir, dependency.files, this.validationCancellation.signal, fileOptions)
           if (resolved.issues.length) throw new DeliveryExecutionError(`前置最终文件失效：${resolved.issues.map(issue => `${issue.path ?? ''} ${issue.message}`).join('\n')}`)
@@ -407,7 +440,7 @@ export class ArrangementExecutor {
         }
         prompt = buildArrangementNodePrompt(plan, node, dependencies)
         if (delivery.finalFiles.length) {
-          const complete = parseDeliverySubmission(node, JSON.stringify({ nodeId: node.id, summary: delivery.summary ?? 'verified', finalDeliverables: delivery.finalFiles.map(file => ({ id: file.id, path: file.path })) })).ok
+          const complete = parseRecordedDeliverySubmission(node, delivery.finalFiles, delivery.summary ?? 'verified').ok
           const resolved = complete ? await resolveDeliveryFiles(workspaceDir, delivery.finalFiles, this.validationCancellation.signal, fileOptions) : null
           const issues = resolved?.issues ?? [{ message: '交付记录与计划不一致。' }]
           if (issues.length) throw new DeliveryExecutionError(`已验收最终文件失效：${issues.map(issue => issue.message).join('\n')}`)
@@ -432,7 +465,7 @@ export class ArrangementExecutor {
             nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
             data: { ...metadata(), output: output || null, finalDeliverables: delivery.finalFiles, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
         }
-        if (delivery.validationAttempts >= MAX_DELIVERY_VALIDATIONS) throw new DeliveryExecutionError('本节点交付校验已达到 5 次失败上限，停止自动修正。')
+        if (!delivery.pendingSubmission && delivery.validationAttempts >= MAX_DELIVERY_VALIDATIONS) throw new DeliveryExecutionError('本节点交付校验已达到 5 次失败上限，停止自动修正。')
       }
       const recovery = this.options.scope && this.options.taskRunStore
         ? await recoverArrangementSession(this.options.taskRunStore, this.options.scope, taskId, node, checkpoint, workspaceDir)
@@ -462,19 +495,49 @@ export class ArrangementExecutor {
       }
       const toolPolicy = { ...withApprovedSkillReadPaths(toToolPolicy(plan.permissions, workspaceDir), employee)!,
         readableDeliveryPaths: dependencies.flatMap(dependency => dependency.files.flatMap(file => file.readPath ? [file.readPath] : [])) }
-      const mediaTools = await this.options.media?.prepareRun({
+      if (requiresMediaBridge) mediaSession = await this.options.arrangementMedia!.prepareNode({
+        taskId, arrangementRunId, nodeRunId, attempt: checkpoint.attempt, planHash: plan.planHash, node,
+        signal: this.validationCancellation.signal,
+      })
+      const rawMediaTools = await this.options.media?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.onApprovalRequest(request),
+        onJobCreated: mediaSession?.onJobCreated,
       })
-      const videoTools = await this.options.video?.prepareRun({
+      const requiresVideoBridge = node.mediaRequirements?.some(item => item.kind === 'video') === true ||
+        node.deliverables?.some(file => file.artifact?.kind === 'video') === true
+      const rawVideoTools = await this.options.video?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.onApprovalRequest(request),
+        onJobCreated: mediaSession?.onJobCreated, recoverJobIds: mediaSession?.recoverJobIds,
+        autoApproveMedia: requiresVideoBridge,
+        onTerminalFailure: async error => {
+          terminalMediaFailure ??= error
+          await worker?.abort().catch(() => undefined)
+        },
       })
+      const { media: mediaTools, video: videoTools } = mediaSession?.bind(rawMediaTools, rawVideoTools) ?? { media: rawMediaTools, video: rawVideoTools }
       if (this.abortRequested) {
         await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
         throw new Error('Arrangement execution was interrupted.')
       }
       this.checkExecutionControl()
+      if (delivery.pendingSubmission && mediaSession) {
+        const parsed = parseDeliverySubmission(node, JSON.stringify(delivery.pendingSubmission))
+        if (!parsed.ok) throw new DeliveryExecutionError('待恢复的媒体交付清单与计划不一致。')
+        await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
+        const mediaFiles = await mediaSession.materialize(parsed.submission)
+        const result = await validateDeliveryFiles(workspaceDir, node, parsed.submission, nodeRunId, this.validationCancellation.signal, { ...fileOptions, mediaFiles })
+        if (!result.ok) throw new Error(result.issues.map(issue => issue.message).join('\n'))
+        this.checkExecutionControl()
+        output = parsed.submission.summary
+        delivery = { ...delivery, issues: [], finalFiles: result.files, summary: output, pendingSubmission: undefined }
+        await saveDelivery(delivery)
+        if (created && this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
+        return { ok: true, nodeId: node.id, output, completion: { type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id,
+          nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
+          data: { ...metadata(), output, finalDeliverables: result.files, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
+      }
       worker = this.options.createWorker({
         context: {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -485,7 +548,8 @@ export class ArrangementExecutor {
           additionalSkillPaths: employee.additionalSkillPaths,
           employeeProfile: employee.employeeProfile,
           arrangementNodeId: node.id,
-          ...(structured ? { fixedSystemPrompt: buildArrangementNodePrompt(plan, node, dependencies, knowledgeContext) } : {}),
+          ...(structured ? { fixedSystemPrompt: buildArrangementNodePrompt(plan, node, dependencies, knowledgeContext) +
+            (mediaSession ? `\n【已授权媒体输入与原任务】\n${mediaSession.inputPrompt}\n媒体最终文件由主进程根据 mediaDeliverables 自动保存，勿自行写入或覆盖计划中的媒体路径。查询媒体任务可获得可提交的资产 ID；恢复时使用原任务，不重新生成。` : '') } : {}),
           systemPrompt: employee.systemPrompt, mediaTools, videoTools, toolPolicy,
         },
         getRefreshToken: this.options.getRefreshToken,
@@ -501,17 +565,29 @@ export class ArrangementExecutor {
           delivery = { ...delivery, validationAttempts: delivery.validationAttempts + 1, finalFiles: [], summary: undefined }
           await saveDelivery(delivery)
           const parsed = parseDeliverySubmission(node, response.text, response.stopReason)
-          const result = parsed.ok
-            ? await validateDeliveryFiles(workspaceDir, node, parsed.submission, nodeRunId, this.validationCancellation.signal, fileOptions)
-            : parsed
+          if (parsed.ok && mediaSession) {
+            delivery = { ...delivery, pendingSubmission: parsed.submission }
+            await saveDelivery(delivery)
+          }
+          const result = await (async () => {
+            try {
+              const mediaFiles = parsed.ok && mediaSession ? await mediaSession.materialize(parsed.submission) : undefined
+              return parsed.ok
+                ? await validateDeliveryFiles(workspaceDir, node, parsed.submission, nodeRunId, this.validationCancellation.signal, { ...fileOptions, mediaFiles })
+                : parsed
+            } catch (error) {
+              if (!(error instanceof ArrangementMediaSubmissionError)) throw error
+              return { ok: false as const, issues: [{ code: 'MEDIA_DELIVERY_MANIFEST_MISMATCH', message: error.message }] }
+            }
+          })()
           this.validationCancellation.signal.throwIfAborted()
           this.checkExecutionControl()
           if (result.ok && parsed.ok) {
             output = parsed.submission.summary
             accepted = true
-            delivery = { ...delivery, issues: [], finalFiles: result.files, summary: output }
+            delivery = { ...delivery, issues: [], finalFiles: result.files, summary: output, pendingSubmission: undefined }
           } else {
-            delivery = { ...delivery, issues: result.ok ? [] : result.issues }
+            delivery = { ...delivery, issues: result.ok ? [] : result.issues, pendingSubmission: undefined }
           }
           await saveDelivery(delivery)
           await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_delivery_checked', arrangementRunId, nodeId: node.id, nodeRunId,
@@ -557,7 +633,14 @@ export class ArrangementExecutor {
       const pendingCorrection = delivery.issues.length ? `\n${buildDeliveryCorrection(delivery.validationAttempts, delivery.issues)}` : ''
       const runPromise = worker.run(structured ? withNodeWork(startMessage + pendingCorrection) : `${prompt}${knowledgeContext ? `\n\n${knowledgeContext}` : ''}`)
       if (this.abortRequested) await worker.abort()
-      await runPromise
+      let runError: unknown
+      try {
+        await runPromise
+      } catch (error) {
+        runError = error
+      }
+      if (terminalMediaFailure !== undefined) throw terminalMediaFailure
+      if (runError !== undefined) throw runError
       if (!this.abortRequested) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
       this.checkExecutionControl()
@@ -571,7 +654,7 @@ export class ArrangementExecutor {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const interrupted = this.abortRequested
-      const terminal = error instanceof DeliveryExecutionError && !interrupted
+      const terminal = (error instanceof DeliveryExecutionError || terminalMediaFailure !== undefined) && !interrupted
       if (created && this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message).catch(() => undefined)
       }
@@ -607,7 +690,7 @@ export class ArrangementExecutor {
     await this.emitNodeEvent(taskId, arrangementRunId, {
       type: 'arrangement_state_changed', arrangementRunId, nodeId,
       data: { status: state.status, nodeId, nodeStatus: state.nodes.find(node => node.nodeId === nodeId)?.status, planHash: plan.planHash,
-        nodeStates: state.nodes.map(node => ({ nodeId: node.nodeId, status: node.status })) },
+        nodeStates: state.nodes.map(node => ({ nodeId: node.nodeId, status: node.status, pendingConfirmation: node.pendingConfirmation })) },
     })
   }
 

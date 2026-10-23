@@ -360,6 +360,7 @@ export interface ElectronAPI {
   getArrangementContext: () => Promise<unknown>
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
+  confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
   createArrangementDraft: (input: ArrangementDraftDocument) => Promise<ArrangementDraftResult>
   getArrangementDraft: (draftId: string) => Promise<ArrangementDraftResult>

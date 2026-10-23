@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import {
   createArrangementExecutionState,
+  confirmArrangementNode,
   interruptArrangement,
   markArrangementNodeCompleted,
   markArrangementNodeFailed,
@@ -167,6 +168,66 @@ describe('ArrangementExecutionState', () => {
     assert.equal(state.status, 'waiting-user')
   })
 
+  it('holds confirmed nodes and releases dependents only after explicit confirmation', () => {
+    const plan = [node('a'), { ...node('b', ['a']), requiresUserConfirmation: true }, node('c', ['b'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeCompleted(state, plan, 'a', 'A')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'b', 'B')
+    assert.equal(state.status, 'waiting-user')
+    assert.equal(state.nodes.find(item => item.nodeId === 'b')?.pendingConfirmation, true)
+    assert.equal(state.nodes.find(item => item.nodeId === 'c')?.status, 'pending')
+    const confirmed = confirmArrangementNode(state, plan, 'b')
+    assert.equal(confirmed.nodes.find(item => item.nodeId === 'b')?.pendingConfirmation, false)
+    assert.equal(confirmed.nodes.find(item => item.nodeId === 'c')?.status, 'ready')
+    assert.equal(confirmArrangementNode(confirmed, plan, 'b'), confirmed)
+    assert.equal(confirmArrangementNode(state, plan, 'missing'), state)
+  })
+
+  it('keeps independent nodes runnable while a completed node awaits confirmation', () => {
+    const plan = [{ ...node('a'), requiresUserConfirmation: true }, node('b'), node('c', ['a'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeCompleted(state, plan, 'a')
+    assert.equal(state.status, 'running')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'b')
+    assert.equal(state.status, 'waiting-user')
+    assert.equal(state.nodes.find(item => item.nodeId === 'c')?.status, 'pending')
+  })
+
+  it('retries only a failed peer without confirming another node or releasing its children', () => {
+    const plan = [{ ...node('a'), requiresUserConfirmation: true }, node('b'), node('c', ['a', 'b'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'a')
+    state = markArrangementNodeFailed(state, plan, 'b', 'failure')
+    assert.equal(retryArrangementNode(state, plan), state)
+    state = retryArrangementNode(state, plan, 'b')
+    assert.equal(state.nodes.find(item => item.nodeId === 'a')?.pendingConfirmation, true)
+    assert.equal(state.nodes.find(item => item.nodeId === 'b')?.status, 'ready')
+    assert.equal(state.nodes.find(item => item.nodeId === 'c')?.status, 'pending')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'b')
+    assert.equal(state.status, 'waiting-user')
+    assert.equal(state.nodes.find(item => item.nodeId === 'c')?.status, 'pending')
+  })
+
+  it('runs confirmed dependents even when an independent node remains failed', () => {
+    const plan = [{ ...node('a'), requiresUserConfirmation: true }, node('b'), node('c', ['a'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'a')
+    state = markArrangementNodeFailed(state, plan, 'b', 'failure')
+    state = confirmArrangementNode(state, plan, 'a')
+    assert.equal(state.status, 'running')
+    assert.equal(state.nodes.find(item => item.nodeId === 'c')?.status, 'ready')
+    assert.equal(state.nodes.find(item => item.nodeId === 'b')?.status, 'failed')
+  })
+
   it('marks running nodes interrupted and resumes only those nodes', () => {
     const plan = [node('a'), node('b')]
     let state = createArrangementExecutionState(plan)
@@ -178,6 +239,28 @@ describe('ArrangementExecutionState', () => {
     const resumed = resumeArrangement(state)
     assert.equal(resumed.status, 'running')
     assert.equal(resumed.nodes.find(item => item.nodeId === 'a')?.status, 'ready')
+  })
+
+  it('does not resume past a pending confirmation', () => {
+    const plan = [{ ...node('a'), requiresUserConfirmation: true }]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeCompleted(state, plan, 'a', 'done')
+    state = interruptArrangement(state, 'client-crash')
+    assert.equal(resumeArrangement(state).status, 'waiting-user')
+  })
+
+  it('resumes an interrupted independent peer without approving a completed node', () => {
+    const plan = [{ ...node('a'), requiresUserConfirmation: true }, node('b'), node('c', ['a'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'a')
+    state = resumeArrangement(interruptArrangement(state, 'client-crash'))
+    assert.equal(state.status, 'running')
+    assert.equal(state.nodes.find(item => item.nodeId === 'a')?.pendingConfirmation, true)
+    assert.equal(state.nodes.find(item => item.nodeId === 'b')?.status, 'ready')
+    assert.equal(state.nodes.find(item => item.nodeId === 'c')?.status, 'pending')
   })
 })
 

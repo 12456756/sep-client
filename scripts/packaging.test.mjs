@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { test } from 'node:test'
 import { getConfig, validateConfiguration } from 'app-builder-lib/out/util/config/config.js'
 import { DebugLogger } from 'builder-util'
 import { createBuilderConfig } from './generate-builder-config.mjs'
+import signAdhoc from './mac-adhoc-sign.cjs'
 
 const root = process.cwd()
 test('macOS packaging declares microphone purpose and signed audio input access', () => {
@@ -18,6 +19,41 @@ test('macOS packaging declares microphone purpose and signed audio input access'
   for (const channel of ['beta', 'stable']) {
     const generated = createBuilderConfig(pkg.build, channel)
     assert.deepEqual(generated.mac.extendInfo, pkg.build.mac.extendInfo)
+  }
+})
+
+test('local packages require ad hoc signing even with certificate discovery disabled', () => {
+  const base = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).build
+  for (const channel of ['beta', 'stable']) {
+    const config = createBuilderConfig(base, channel, { env: { CSC_IDENTITY_AUTO_DISCOVERY: 'false' } })
+    assert.equal(config.mac.sign, 'scripts/mac-adhoc-sign.cjs')
+    assert.equal(config.mac.identity, undefined)
+    assert.equal(config.mac.notarize, false)
+    assert.equal(config.dmg.sign, false)
+  }
+})
+
+test('ad hoc signing seals renamed applications and rejects changed resources', { skip: process.platform !== 'darwin' }, async () => {
+  const dir = mkdtempSync(resolve(tmpdir(), 'sep-adhoc-test-'))
+  const app = resolve(dir, 'Renamed Client.app')
+  const contents = resolve(app, 'Contents')
+  try {
+    mkdirSync(resolve(contents, 'MacOS'), { recursive: true })
+    mkdirSync(resolve(contents, 'Resources'), { recursive: true })
+    cpSync('/usr/bin/true', resolve(contents, 'MacOS/Client'))
+    writeFileSync(resolve(contents, 'Info.plist'), '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleIdentifier</key><string>cn.longdao.adhoc-test</string><key>CFBundleExecutable</key><string>Client</string><key>CFBundlePackageType</key><string>APPL</string></dict></plist>')
+    const resource = resolve(contents, 'Resources/test.txt')
+    writeFileSync(resource, 'original')
+    await signAdhoc({ app, platform: 'darwin', optionsForFile: () => ({ entitlements: resolve(root, 'build/entitlements.mac.plist') }) })
+    assert.equal(spawnSync('codesign', ['--verify', '--deep', '--strict', app]).status, 0)
+    const signature = spawnSync('codesign', ['-dv', '--verbose=4', app], { encoding: 'utf8' })
+    assert.equal(signature.status, 0)
+    assert.match(signature.stderr, /Signature=adhoc/)
+    assert.match(signature.stderr, /Identifier=cn\.longdao\.adhoc-test/)
+    writeFileSync(resource, 'modified')
+    assert.notEqual(spawnSync('codesign', ['--verify', '--deep', '--strict', app]).status, 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 function fixture() {

@@ -37,6 +37,7 @@ function parseCheckpoint(value: unknown, scope: TaskOwnerScope, taskId: string):
       !Number.isInteger(node.attempt) || node.attempt < 0 ||
       (node.error !== null && typeof node.error !== 'string') ||
       (node.output !== null && typeof node.output !== 'string') ||
+      (node.pendingConfirmation !== undefined && typeof node.pendingConfirmation !== 'boolean') ||
       (node.sessionRunId !== undefined && (typeof node.sessionRunId !== 'string' || !isSafeId(node.sessionRunId))) ||
       (node.delivery !== undefined && !nodeDeliveryProgressSchema.safeParse(node.delivery).success) ||
       (node.modelRequestProgress !== undefined && !modelRequestProgressSchema.safeParse(node.modelRequestProgress).success))) return null

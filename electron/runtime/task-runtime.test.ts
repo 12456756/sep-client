@@ -701,7 +701,7 @@ describe('TaskRuntime public surface', () => {
     assert.deepEqual(
       declared.sort(),
       [
-        'cancelTask', 'continueConversation', 'executeTask', 'pauseTask',
+        'cancelTask', 'confirmArrangementNodes', 'continueConversation', 'executeTask', 'pauseTask',
         'respondToApproval', 'retryTask', 'stopAll', 'stopArrangement', 'switchConversationEmployee',
       ],
       'public method set changed: runtime must expose only the documented methods',

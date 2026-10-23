@@ -16,6 +16,7 @@ import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-ho
 import { VideoRunService } from './video-run-service'
 import { EmployeeAuthorizer } from './employee-authorizer'
 import { EmployeeDirectory } from './employee-directory'
+import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -69,6 +70,17 @@ test('run facade binds two host approvals to real run and awaits original output
   assert.equal(f.state.uploads, 1)
   await f.service.finishRun('task-a', 'run-a')
   await assert.rejects(tools.execute('video_from_image', input()))
+})
+
+test('arrangement media mode auto-approves upload and quote without approval requests', async () => {
+  const f = await setup(), tools = await f.service.prepareRun({ ...f.runInput, autoApproveMedia: true })
+  assert.ok(tools)
+  const job = await tools.execute('video_from_image', input()) as { jobId: string }
+  assert.equal(typeof job.jobId, 'string')
+  assert.equal(f.approvals.length, 0)
+  await f.service.waitForRun('task-a', 'run-a')
+  assert.equal(f.gateway.calls.submit, 1)
+  await f.service.finishRun('task-a', 'run-a')
 })
 
 test('run resolves the authorized profile and defaults without model-supplied configuration', async () => {
@@ -230,6 +242,54 @@ test('new run restores uncertain original receipt without another submission', a
   assert.equal(f.gateway.calls.quote, 1)
   assert.equal(f.gateway.calls.findReceipt, 1)
   await f.service.stopAll()
+})
+
+test('real rejection keeps its business code at run completion and does not poison the next explicit run', async () => {
+  const f = await setup()
+  f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, protocolVersion: 2, executionMode: 'real',
+    profiles: f.state.runtime.profiles.map(profile => ({ ...profile, capabilities: { ...profile.capabilities,
+      audioModes: [false], defaultAudio: false, defaults: fixture.quoteRequest.parameters } })) })
+  f.runInput.employee.video = f.state.runtime
+  const source = f.options.gateway(scope)
+  let reject = true, deniedSubmissions = 0
+  const denied = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId,
+    token: async () => 'test-token', fetch: async () => {
+      deniedSubmissions++
+      return new Response(JSON.stringify({ error: { code: 'INSUFFICIENT_FUNDS', source: 'platform', requestId: 'req-rejected-1' } }),
+        { status: 402, headers: { 'Content-Type': 'application/json' } })
+    } })
+  const real = (receipt: VideoReceipt): VideoReceipt => ({ ...receipt, mock: false,
+    billingStatus: receipt.status === 'SUCCEEDED' ? 'SETTLED' : 'RESERVED', amountCny: '28.800000' })
+  const service = new VideoRunService({ ...f.options, mock: false, gateway: () => ({
+    quote: async (value, signal) => ({ ...await source.quote(value, signal), currency: 'CNY', amount: '28.800000' }),
+    submit: async (value, signal) => reject ? denied.submit(value, signal) : real(await source.submit(value, signal)),
+    findReceipt: async (id, signal) => { const receipt = await source.findReceipt(id, signal); return receipt && real(receipt) },
+    getReceipt: async (id, signal) => real(await source.getReceipt(id, signal)), content: source.content.bind(source),
+    uploadReference: async (bytes, signal) => ({ ...await source.uploadReference(bytes, signal), mock: false }),
+  }) })
+  try {
+    const failures: unknown[] = []
+    const tools = await service.prepareRun({ ...f.runInput, onTerminalFailure: error => { failures.push(error) } })
+    assert.ok(tools)
+    const failed = await tools.execute('video_from_image', input()) as { error: string; generationStatus: string }
+    assert.equal(failed.error, 'INSUFFICIENT_FUNDS')
+    assert.equal(failed.generationStatus, 'FAILED')
+    await assert.rejects(service.waitForRun('task-a', 'run-a'), { code: 'INSUFFICIENT_FUNDS' })
+    await assert.rejects(service.waitForRun('task-a', 'run-a'), { code: 'INSUFFICIENT_FUNDS' })
+    assert.equal(failures.length, 1)
+    assert.equal((failures[0] as AppError).code, 'INSUFFICIENT_FUNDS')
+    assert.equal(f.gateway.calls.findReceipt, 0)
+    await service.finishRun('task-a', 'run-a')
+    reject = false
+    const next = await service.prepareRun({ ...f.runInput, runId: 'run-b' })
+    assert.ok(next)
+    await next.execute('video_from_image', input())
+    await service.waitForRun('task-a', 'run-b')
+    assert.equal(deniedSubmissions, 1)
+    assert.equal(f.gateway.calls.submit, 1)
+    assert.equal(f.gateway.calls.quote, 2)
+    assert.equal(f.approvals.length, 4)
+  } finally { await service.stopAll() }
 })
 
 test('new run cannot quote or submit again while an original MAYBE_SENT is unresolved', async context => {

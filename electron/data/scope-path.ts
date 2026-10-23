@@ -177,6 +177,10 @@ export class ScopePath {
     return join(this.taskDir(scope, taskId), 'arrangement-checkpoint.json')
   }
 
+  arrangementMediaLinksFile(scope: TaskOwnerScope, taskId: string): string {
+    return join(this.taskDir(scope, taskId), 'arrangement-media-links.json')
+  }
+
   metadataFile(scope: TaskOwnerScope, taskId: string): string {
     return join(this.taskDir(scope, taskId), 'metadata.json')
   }

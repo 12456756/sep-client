@@ -125,6 +125,29 @@ class FakeWorker implements TaskWorkerPort {
 }
 
 describe('PiArrangementPlanner', () => {
+  it('emits employee selection after normalizing a media plan instead of failing the entire plan', async () => {
+    const progress: ArrangementPlanningProgress[] = []
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'test-token', onAuthenticationRequired() {},
+      createWorker: options => ({
+        async run() {
+          await options.onResponseSettled?.({ stopReason: 'stop', text: JSON.stringify({ title: 'Product image', nodes: [{
+            id: 'image', subscriptionId: 'sub-research', modelId: 'model-research', title: 'Product image',
+            instruction: 'Generate the product image', knowledgeQuery: 'Product photography standards', dependsOn: [],
+            mediaRequirements: [{ kind: 'image', operation: 'text-to-image', inputSelection: 'none', preferred: { style: 'Photography' } }],
+            deliverables: [{ id: 'picture', name: 'Picture', format: 'png', path: 'deliverables/picture.png', contentOutline: ['Product'], acceptanceCriteria: ['Readable image'] }],
+          }] }) })
+        },
+        async abort() {}, async dispose() {},
+      }),
+    })
+    const result = await planner.plan({ planningId: 'planning-media', draft, employees, onProgress: event => progress.push(event) })
+    assert.equal(result.nodes[0]!.mediaRequirements![0]!.operation, 'generate')
+    assert.equal(result.nodes[0]!.deliverables![0]!.artifact!.source, 'media-output')
+    assert.deepEqual(progress.filter(event => event.type === 'arrangement_employee_selected').map(event => event.data.subscriptionId), ['sub-research'])
+  })
+
   const validOutput = JSON.stringify({ title: 'Final plan', nodes: [{
     id: 'node-research', subscriptionId: 'sub-research', modelId: 'model-research',
     title: 'Research', instruction: 'Research the market', knowledgeQuery: 'Internal market research methods',

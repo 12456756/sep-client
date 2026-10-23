@@ -5,17 +5,18 @@ import { videoFormParameters } from '../../src/shared/media-view'
 import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
-import { videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
+import { videoSubmissionRejected, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { logger } from '../common/logger'
 import { abortableVideo } from '../data/video-files'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { TaskToolPolicy } from '../runtime/run-types'
+import type { MediaJobCreated } from '../domain/media-tools'
 import { VideoService } from './video-service'
 import { VideoTracker, type VideoTrackerOptions } from './video-tracker'
 
 type Approval = (input: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>) => Promise<boolean>
-type GenerationRun = { runId: string; requestApproval: Approval }
+type GenerationRun = { runId: string; requestApproval: Approval; onJobCreated?: (job: MediaJobCreated) => Promise<void> }
 const log = logger.child('mock-video-host')
 // Run and IPC hosts share the same task persistence. An instance-local gate
 // cannot protect a task while approval, upload or submit is still in flight.
@@ -62,10 +63,12 @@ interface Context {
 }
 
 function jobView(job: LocalVideoJob): VideoJobView {
+  const rejected = videoSubmissionRejected(job)
   return {
     jobId: job.jobId, taskId: job.taskId, profileId: job.request.profileId, operation: job.request.operation,
-    parameters: { ...job.request.parameters }, generationStatus: job.receipt?.status ?? (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : 'SUBMISSION_UNKNOWN'),
-    trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real' ? 'NOT_RESERVED' : 'MOCK_NOT_CHARGED'),
+    parameters: { ...job.request.parameters }, generationStatus: job.receipt?.status ?? (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : rejected ? 'FAILED' : 'SUBMISSION_UNKNOWN'),
+    trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real'
+      ? job.submission === 'NOT_SENT' || rejected ? 'NOT_RESERVED' : 'RECONCILING' : 'MOCK_NOT_CHARGED'),
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error,
@@ -411,7 +414,7 @@ export class MockVideoHostService {
         const input = resolve(runtime)
         const jobs = await context.service.listJobs()
         this.assert(scope, epoch, signal)
-        if (jobs.some(job => job.taskId === taskId && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
+        if (jobs.some(job => job.taskId === taskId && !videoSubmissionRejected(job) && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
           throw new AppError('CONFLICT', { message: '原视频提交状态尚未确认，请查询或恢复原任务，不能重复生成。' })
         }
         const profile = this.profile(runtime, input)
@@ -440,7 +443,7 @@ export class MockVideoHostService {
           }
         }
         const { localAssetIds: _localAssetIds, ...semantic } = input
-        const job = await context.service.prepare(taskId, { ...semantic, configVersion: profile.configVersion, referenceIds }, signal)
+        const job = await context.service.prepare(taskId, { ...semantic, configVersion: profile.configVersion, referenceIds }, signal, run?.runId)
         if (this.options.mock ? job.quote.amount !== '0.000000' || job.quote.currency !== 'MOCK' : job.quote.currency !== 'CNY' || !/^\d+\.\d{6}$/.test(job.quote.amount ?? '')) throw new AppError('PERMISSION_DENIED')
         await approve({ profile: profile.displayName, parameters: input.parameters, creativeBrief: input.creativeBrief,
           mock: this.options.mock, quote: { amount: job.quote.amount, currency: job.quote.currency, expiresAt: job.quote.expiresAt,
@@ -449,6 +452,9 @@ export class MockVideoHostService {
         this.profile(await this.runtime(scope, epoch, signal), input, profile.configVersion)
         const current = await this.task(taskId, signal)
         if (JSON.stringify(current.scope) !== JSON.stringify(scope)) throw new AppError('AUTH_REQUIRED')
+        if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+        await run?.onJobCreated?.({ kind: 'video', jobId: job.jobId, operation: input.operation, localAssetIds: input.localAssetIds })
+        this.assert(scope, epoch, signal)
         if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
         const submitted = await context.service.submit(taskId, job.jobId, signal)
         this.assert(scope, epoch, signal)

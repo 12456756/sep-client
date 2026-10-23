@@ -324,6 +324,36 @@ describe('TaskRuntime arrangement integration', () => {
   })
 })
 
+describe('arrangement node prompt media contract', () => {
+  it('passes structured preferences and declared references to the employee in manual and auto plans', () => {
+    const base = plan('task-media-preferences')
+    const mediaRequirements = [{ id: 'motion', kind: 'video' as const, operation: 'image-to-video' as const,
+      inputFrom: { nodeId: 'image', deliverableId: 'poster' }, inputSelection: 'single' as const,
+      preferred: { durationSeconds: 5, cameraMotion: 'Slow push', scene: { lighting: 'Warm light' } } }]
+    for (const mode of ['auto', 'manual'] as const) {
+      const prompt = buildArrangementNodePrompt({ ...base, mode }, { ...base.nodes[0]!, mediaRequirements }, [])
+      assert.ok(prompt.includes(JSON.stringify(mediaRequirements, null, 2)))
+      assert.match(prompt, /不得把任意偏好字段直接作为工具参数/)
+      assert.match(prompt, /不得擅自选图/)
+    }
+  })
+
+  it('requests an explicit asset mapping only for media-backed final deliverables', () => {
+    const base = plan('task-prompt')
+    const node = {
+      ...base.nodes[0]!,
+      deliverables: [{ id: 'video', name: 'Video', format: 'mp4', path: 'deliverables/video.mp4', contentOutline: ['Video'], acceptanceCriteria: ['Playable video'], artifact: { kind: 'video' as const, source: 'media-output' as const, operation: 'text-to-video' as const } }],
+    }
+    const prompt = buildArrangementNodePrompt(base, node, [])
+    assert.match(prompt, /mediaDeliverables/)
+    assert.match(prompt, /MEDIA_ARTIFACT_ID/)
+    assert.match(prompt, /明确的 deliverableId 和媒体工具返回的 artifactId/)
+
+    const documentNode = { ...node, deliverables: [{ ...node.deliverables[0]!, artifact: undefined }] }
+    assert.doesNotMatch(buildArrangementNodePrompt(base, documentNode, []), /MEDIA_ARTIFACT_ID/)
+  })
+})
+
 
 
 function twoNodePlan(taskId: string): WorkPlan {
@@ -372,6 +402,56 @@ function arrangementRetryApi(runtime: TaskRuntime): { retryTask(taskId: string, 
 describe('TaskRuntime arrangement controls', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })
+
+  it('settles as paused for confirmation without rerunning the independent completed node', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-parallel-confirmation-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('parallel confirmation', 'goal', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.workspace.path = root
+    arrangement.nodes[0]!.requiresUserConfirmation = true
+    arrangement.nodes[1]!.dependsOn = []
+    arrangement.nodes.push({ ...arrangement.nodes[1]!, id: 'child', dependsOn: ['node-a'] })
+    const checkpoints = new MemoryCheckpointStore()
+    const started: string[] = []
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+      async run() { started.push(options.context.arrangementNodeId!) }, async abort() {}, async dispose() {},
+    }))
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
+      assert.equal(checkpoints.value?.state.status, 'waiting-user')
+      assert.equal(checkpoints.value?.state.nodes.find(node => node.nodeId === 'node-a')?.pendingConfirmation, true)
+      assert.equal(checkpoints.value?.state.nodes.find(node => node.nodeId === 'child')?.status, 'pending')
+      assert.deepEqual([...started].sort(), ['node-a', 'node-b'])
+      await runtime.confirmArrangementNodes(task.id, ['node-a'])
+      await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+      assert.deepEqual(started, ['node-a', 'node-b', 'child'])
+    } finally { await runtime.stopAll() }
+  })
+
+  it('does not report all-completed nodes as final before user confirmation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-final-confirmation-'))
+    directories.push(root)
+    const arrangement = plan('task')
+    arrangement.nodes[0]!.requiresUserConfirmation = true
+    const executor = new ArrangementExecutor({
+      scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
+      workspaceRoot: root, arrangementSubscriptionId: employee.subscriptionId,
+      getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+      async onEvent() {}, async authorizeEmployee() { return employee },
+      createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
+    })
+    const result = await executor.execute(arrangement, 'task', 'run')
+    assert.equal(result.status, 'waiting-user')
+    assert.equal(result.state.nodes[0]!.status, 'completed')
+    assert.equal(result.state.nodes[0]!.pendingConfirmation, true)
+  })
 
   for (const failure of ['request', 'delivery'] as const) {
     it(`retries a ${failure} failure while a parallel node keeps its original run`, async () => {
@@ -555,6 +635,39 @@ describe('TaskRuntime arrangement controls', () => {
       await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
       assert.equal(attempts, 2)
     } finally { await runtime.stopAll() }
+  })
+
+  it('rejects unwired media delivery and input contracts before preparing paid tools or starting a worker', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-media-gate-'))
+    directories.push(root)
+    const contracts: Array<Partial<WorkPlan['nodes'][number]>> = [
+      { deliverables: [{ id: 'poster', name: 'Poster', format: 'png', path: 'deliverables/poster.png', contentOutline: ['Poster'], acceptanceCriteria: ['Valid image'], artifact: { kind: 'image', source: 'media-output' } }] },
+      { deliverables: [{ id: 'video', name: 'Video', format: 'mp4', path: 'deliverables/video.mp4', contentOutline: ['Video'], acceptanceCriteria: ['Playable video'], artifact: { kind: 'video', source: 'workspace' } }] },
+      { mediaRequirements: [{ id: 'motion', kind: 'video', operation: 'image-to-video', inputFrom: { artifactId: 'asset_abc-123' } }] },
+    ]
+    for (const contract of contracts) {
+      const arrangement = plan('task')
+      arrangement.nodes[0] = { ...arrangement.nodes[0]!, ...contract }
+      let prepared = 0
+      let workers = 0
+      const executor = new ArrangementExecutor({
+        scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
+        workspaceRoot: root, arrangementSubscriptionId: employee.subscriptionId,
+        getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+        async onEvent() {}, async authorizeEmployee() { return employee },
+        media: { async prepareRun() { prepared++; return undefined }, async waitForRun() {}, async stopTask() {} },
+        video: { async prepareRun() { prepared++; return undefined }, async waitForRun() {}, async stopTask() {} },
+        createWorker: () => {
+          workers++
+          return { async run() {}, async abort() {}, async dispose() {} }
+        },
+      })
+      const result = await executor.execute(arrangement, 'task', 'run')
+      assert.equal(result.status, 'failed')
+      assert.match(result.error ?? '', /尚未接通/)
+      assert.equal(prepared, 0)
+      assert.equal(workers, 0)
+    }
   })
 
   it('does not prepare tool hosts after knowledge retrieval resolves for an aborted node', async () => {

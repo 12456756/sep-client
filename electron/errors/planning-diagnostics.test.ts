@@ -1,9 +1,16 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { AppError } from './app-error'
-import { planningErrorFields } from './planning-diagnostics'
+import { planningContractFailure, planningErrorFields } from './planning-diagnostics'
 
 describe('planning diagnostic error metadata', () => {
+  it('reports contract paths without exposing unknown field names or values', () => {
+    const error = planningContractFailure(1, [{ path: ['mediaRequirements', 0, 'preferred', 'private-prompt'], code: 'invalid_type' }])
+    assert.match(error.message, /第 2 个节点/)
+    assert.deepEqual(planningErrorFields(error).validationIssues, [{ path: 'mediaRequirements.0.preferred.field', code: 'invalid_type' }])
+    assert.doesNotMatch(JSON.stringify(planningErrorFields(error)), /private-prompt/)
+  })
+
   for (const status of [401, 403, 429, 500, 503]) {
     it(`recognizes provider ${status} without logging its body`, () => {
       const error = new Error(`${status}: {"token":"private-token","message":"private-response"}`)

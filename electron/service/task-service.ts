@@ -31,6 +31,7 @@ import { resolveWorkType } from './work-type'
 export interface TaskExecutionPort {
   executeTask(taskId: string, options?: { conversation?: boolean }): Promise<void>
   retryTask(taskId: string, options?: { conversation?: boolean; nodeId?: string }): Promise<void>
+  confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void>
   continueConversation(
     taskId: string,
     prompt: string,
@@ -111,6 +112,11 @@ export class TaskService {
     const conversation = await this.isConversation(taskId)
     if (conversation) await this.requireAuthorizedEmployee(task.subscriptionId)
     await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}) })
+  }
+
+  async confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void> {
+    await this.requireTask(taskId)
+    await (await this.deps.execution()).confirmArrangementNodes(taskId, nodeIds)
   }
 
   async pause(taskId: string): Promise<void> {

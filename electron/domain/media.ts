@@ -70,6 +70,8 @@ export interface LocalMediaAsset extends MediaAssetView {
   relativePath: string
   sha256: string
   createdAt: number
+  /** Newly derived references retain their first source; reused references keep their identity. */
+  derivedFrom?: { localAssetId: string; jobId: string; outputId: string; sha256: string }
 }
 
 export interface LocalMediaJob {
@@ -124,6 +126,7 @@ export interface MediaStorePort {
   getAsset(scope: TaskOwnerScope, taskId: string, assetId: string): Promise<LocalMediaAsset | null>
   readAsset(scope: TaskOwnerScope, taskId: string, assetId: string): Promise<Uint8Array>
   importReference(scope: TaskOwnerScope, taskId: string, selectedPath: string): Promise<LocalMediaAsset>
+  deriveReferenceFromOutput(scope: TaskOwnerScope, taskId: string, assetId: string, signal: AbortSignal, validate?: () => void): Promise<LocalMediaAsset>
   saveOutput(scope: TaskOwnerScope, taskId: string, jobId: string, output: MediaOutput, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<LocalMediaAsset>
   exportAsset(scope: TaskOwnerScope, taskId: string, assetId: string, selectedPath: string): Promise<void>
   saveSnapshot(scope: TaskOwnerScope, snapshot: MediaRunSnapshot): Promise<void>

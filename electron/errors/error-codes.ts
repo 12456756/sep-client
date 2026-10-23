@@ -33,6 +33,11 @@ export const ERROR_CODES = {
   NETWORK_ERROR: { status: 0, retryable: true, level: 'warn', message: '网络连接失败，请检查网络后重试。' },
   RATE_LIMITED: { status: 429, retryable: true, level: 'warn', message: '操作过于频繁，请稍后重试。' },
   SERVICE_UNAVAILABLE: { status: 503, retryable: true, level: 'error', message: '服务暂时不可用，请稍后重试。' },
+  INSUFFICIENT_FUNDS: { status: 402, retryable: false, level: 'warn', message: '可用资金不足。' },
+  VIDEO_BUDGET_EXCEEDED: { status: 402, retryable: false, level: 'warn', message: '已超过企业视频预算。' },
+  MEDIA_FORBIDDEN: { status: 403, retryable: false, level: 'warn', message: '当前账号没有视频生成权限。' },
+  QUOTE_EXPIRED: { status: 409, retryable: false, level: 'warn', message: '本次视频报价已过期。' },
+  VIDEO_CONCURRENCY_LIMIT: { status: 409, retryable: false, level: 'warn', message: '视频任务数已达到并发上限，请稍后重试。' },
   INTERNAL_ERROR: { status: 500, retryable: false, level: 'error', message: '操作未能完成。' },
 } as const
 

@@ -710,9 +710,12 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   }, [myEmployees, run]);
 
   const confirmStep = useCallback(async (workId: string) => {
-    // 平台暂无按步骤确认接口，先用继续执行表达「我确认了，继续」。
-    await run(() => window.electronAPI.continueTask({ taskId: workId, prompt: '我已确认当前结果，请继续下一步。' }), '确认没能提交，请重试');
-  }, [run]);
+    const work = works.find(item => item.id === workId);
+    const execution = work?.arrangementExecution ?? arrangement.executions[workId];
+    const nodeIds = execution?.nodes.filter(node => node.pendingConfirmation).map(node => node.nodeId) ?? [];
+    if (nodeIds.length) await run(() => window.electronAPI.confirmArrangementNodes({ taskId: workId, nodeIds }), '确认没能提交，请重试');
+    else if (work?.workType.state === 'resolved' && work.workType.kind === 'conversation') await run(() => window.electronAPI.continueTask({ taskId: workId, prompt: '我已确认当前结果，请继续下一步。' }), '确认没能提交，请重试');
+  }, [arrangement.executions, run, works]);
 
   const stopWork = useCallback(async (workId: string, reason: string) => {
     const ok = await run(() => window.electronAPI.cancelTask(workId, reason), '终止失败，请重试');

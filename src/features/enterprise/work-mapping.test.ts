@@ -49,6 +49,30 @@ describe('arrangement retry display regressions', () => {
     assert.equal(work.steps[0]?.state, 'failed')
   })
 
+  it('shows explicit confirmation from either a checkpoint or a newer event as waiting for the user', () => {
+    const confirmationPlan = { ...plan, nodes: [{ ...plan.nodes[0]!, requiresUserConfirmation: true }] }
+    const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-user', updatedAt: 4,
+      nodes: [{ nodeId: 'node-a', status: 'completed', pendingConfirmation: true, finalFiles: [] }] }
+    const event: TaskExecutionEvent = { ...failed, occurredAt: 5,
+      data: { status: 'waiting-user', nodeStates: execution.nodes } }
+    for (const input of [{ arrangementExecution: execution }, { arrangementEvents: [event] }]) {
+      const work = buildWorkItem({ task: { ...task, status: 'paused', activeRunId: null }, employees: [], plan: confirmationPlan, ...input })
+      assert.equal(work.status, 'waiting-user')
+      assert.equal(work.steps[0]?.state, 'waiting-user')
+      assert.equal(work.arrangementExecution?.nodes[0]?.pendingConfirmation, true)
+    }
+  })
+
+  it('removes the pending confirmation when a newer authoritative event confirms the node', () => {
+    const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-user', updatedAt: 4,
+      nodes: [{ nodeId: 'node-a', status: 'completed', pendingConfirmation: true, finalFiles: [] }] }
+    const work = buildWorkItem({ task, employees: [], plan, arrangementExecution: execution, arrangementEvents: [{
+      ...failed, occurredAt: 5, data: { status: 'completed', nodeStates: [{ nodeId: 'node-a', status: 'completed', pendingConfirmation: false }] },
+    }] })
+    assert.equal(work.steps[0]?.state, 'done')
+    assert.equal(work.arrangementExecution?.nodes[0]?.pendingConfirmation, false)
+  })
+
   it('keeps completed predecessors visible from the retry checkpoint snapshot', () => {
     const snapshot: TaskExecutionEvent = { ...failed, runId: 'retry-run', data: {
       status: 'running', nodeStates: [{ nodeId: 'node-a', status: 'completed' }],

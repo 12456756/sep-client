@@ -95,7 +95,7 @@ export function WorkRecordsPage({ workspace }: Props) {
   };
 
   return (
-    <div className="ent-page">
+    <div className="ent-page ent-record-page">
       <div className="ent-record-toolbar">
         <div className="ent-record-filter-row">
           <span className="ent-record-filter-label">状态</span>

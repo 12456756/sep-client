@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { buildArrangementPlannerPrompt, parseArrangementPlannerOutput, type ArrangementPlannerEmployee } from './arrangement-planner'
-import type { ArrangementDraft } from './arrangement-plan'
+import { arrangementNodeWorkContractSchema, type ArrangementDraft } from './arrangement-plan'
+import { planningErrorFields } from '../errors/planning-diagnostics'
 
 const intentAnalysis = {
   summary: '选择员工完成法务客户接待',
@@ -126,6 +127,9 @@ describe('arrangement recommendation output contract', () => {
     assert.equal(typeof node.objective, 'string')
     assert.deepEqual(Object.keys((node.deliverables as Array<Record<string, unknown>>)[0]!), ['id', 'name', 'format', 'path', 'contentOutline', 'acceptanceCriteria'])
     assert.ok(prompt.includes('\n  "intentAnalysis": {\n'))
+    assert.match(prompt, /mediaRequirements/)
+    assert.match(prompt, /inputFrom\.nodeId 必须同时出现在 dependsOn/)
+    assert.match(prompt, /不得猜测供应商型号或 manifest 能力范围/)
   })
 
   it('includes complete existing work requirements in later matching input without skill selection', () => {
@@ -151,6 +155,132 @@ describe('arrangement node work contract parsing', () => {
     const result = parse({ objective: 'Identify market opportunities', deliverables: [deliverable] })
     assert.equal(result.nodes[0]?.objective, 'Identify market opportunities')
     assert.deepEqual(result.nodes[0]?.deliverables, [deliverable])
+  })
+
+  it('preserves media requirements and typed image/video deliverables from planner output', () => {
+    const result = parseArrangementPlannerOutput(JSON.stringify({
+      title: 'Create an image and video',
+      nodes: [
+        { ...node, id: 'image', title: 'Create image', dependsOn: [], objective: 'Create image', deliverables: [{
+          ...deliverable, id: 'poster', format: 'png', path: 'deliverables/poster.png',
+          artifact: { kind: 'image', source: 'media-output', operation: 'generate' },
+        }] },
+        { ...node, id: 'video', title: 'Animate image', dependsOn: ['image'], objective: 'Animate image', deliverables: [{
+          ...deliverable, id: 'video', format: 'mp4', path: 'deliverables/video.mp4',
+          artifact: { kind: 'video', source: 'media-output', operation: 'image-to-video' },
+        }], mediaRequirements: [{
+          id: 'source-poster', kind: 'video', operation: 'image-to-video',
+          inputFrom: { nodeId: 'image', deliverableId: 'poster' },
+        }] },
+      ],
+    }), draft, [authorized])
+    assert.deepEqual(result.nodes[1]?.mediaRequirements, [{
+      id: 'source-poster', kind: 'video', operation: 'image-to-video', inputFrom: { nodeId: 'image', deliverableId: 'poster' },
+    }])
+    assert.deepEqual(result.nodes[0]?.deliverables?.[0]?.artifact, { kind: 'image', source: 'media-output', operation: 'generate' })
+  })
+
+  const imageFile = { ...deliverable, id: 'poster', format: 'png', path: 'deliverables/poster.png' }
+  const videoFile = { ...deliverable, id: 'video', format: 'mp4', path: 'deliverables/video.mp4' }
+  const source = { nodeId: 'image', deliverableId: 'poster' }
+  function parseMediaPair(imageRequirement: unknown, videoRequirement: unknown, withArtifacts = false) {
+    return parseArrangementPlannerOutput(JSON.stringify({ title: 'Product media', nodes: [
+      { ...node, id: 'image', mediaRequirements: [imageRequirement], deliverables: [{ ...imageFile,
+        ...(withArtifacts ? { artifact: { kind: 'image', source: 'media-output', operation: 'text-to-image' } } : {}) }], requiresUserConfirmation: true },
+      { ...node, id: 'video', dependsOn: ['image'], mediaRequirements: [videoRequirement], deliverables: [{ ...videoFile,
+        ...(withArtifacts ? { artifact: { kind: 'video', source: 'media-output', operation: 'image-to-video' } } : {}) }] },
+    ] }), draft, [authorized])
+  }
+
+  it('recovers the 14:43 planner response shape without losing references, preferences or confirmation', () => {
+    const result = parseMediaPair(
+      { kind: 'image', operation: 'text-to-image', required: true, inputSelection: 'none', preferred: { aspectRatio: '16:9', orientation: 'landscape', subject: 'Product', scene: 'Window light', style: 'Photography' } },
+      { kind: 'video', operation: 'image-to-video', required: true, inputSelection: 'specified', inputFrom: [source], preferred: { durationSeconds: 5, cameraMotion: 'Slow push', atmosphere: 'Steam', consistency: 'Keep appearance' } },
+      true,
+    )
+    assert.equal(result.nodes.length, 2)
+    assert.equal(result.nodes[0]!.requiresUserConfirmation, true)
+    assert.equal(result.nodes[0]!.mediaRequirements![0]!.id, 'media-1')
+    assert.equal(result.nodes[0]!.mediaRequirements![0]!.operation, 'generate')
+    assert.equal(result.nodes[0]!.mediaRequirements![0]!.preferred!.style, 'Photography')
+    assert.equal(result.nodes[0]!.deliverables![0]!.artifact!.operation, 'generate')
+    assert.deepEqual(result.nodes[1]!.mediaRequirements![0]!.inputFrom, source)
+    assert.equal(result.nodes[1]!.mediaRequirements![0]!.inputSelection, 'single')
+    assert.equal(result.nodes[1]!.mediaRequirements![0]!.preferred!.cameraMotion, 'Slow push')
+  })
+
+  it('recovers the 14:50 response shape and fills the omitted media delivery mappings', () => {
+    const result = parseMediaPair(
+      { kind: 'image', operation: 'text-to-image', inputSelection: {}, preferred: { style: 'Photo', prompt: 'Product on table' } },
+      { kind: 'video', operation: 'image-to-video', inputSelection: { inputFrom: [source] }, preferred: { prompt: 'Slow motion', durationSeconds: 5 } },
+    )
+    assert.equal(result.nodes[0]!.mediaRequirements![0]!.inputSelection, undefined)
+    assert.deepEqual(result.nodes[0]!.deliverables![0]!.artifact, { kind: 'image', source: 'media-output', operation: 'generate' })
+    assert.deepEqual(result.nodes[1]!.deliverables![0]!.artifact, { kind: 'video', source: 'media-output', operation: 'image-to-video' })
+    assert.deepEqual(result.nodes[1]!.mediaRequirements![0]!.inputFrom, source)
+  })
+
+  it('avoids generated ID collisions and keeps explicit workspace delivery intent', () => {
+    const result = parse({ deliverables: [{ ...imageFile, artifact: { kind: 'image', source: 'workspace' } }], mediaRequirements: [
+      { id: 'media-1', kind: 'image', operation: 'generate' }, { operation: 'text-to-image' },
+    ] })
+    assert.deepEqual(result.nodes[0]!.mediaRequirements!.map(requirement => requirement.id), ['media-1', 'media-2'])
+    assert.deepEqual(result.nodes[0]!.deliverables![0]!.artifact, { kind: 'image', source: 'workspace' })
+  })
+
+  it('requires explicit delivery metadata when multiple media operations make inference ambiguous', () => {
+    const mediaRequirements = [
+      { id: 'generate', kind: 'image', operation: 'generate' },
+      { id: 'edit', kind: 'image', operation: 'edit', inputFrom: { artifactId: 'asset-selected' } },
+    ]
+    assert.throws(() => parse({ deliverables: [imageFile], mediaRequirements }), /deliverables.0.artifact/)
+    const result = parse({ deliverables: [{ ...imageFile, artifact: { kind: 'image', source: 'media-output', operation: 'edit' } }], mediaRequirements })
+    assert.equal(result.nodes[0]!.deliverables![0]!.artifact!.operation, 'edit')
+  })
+
+  it('rejects missing required image inputs and unsupported direct-media formats before execution', () => {
+    for (const operation of ['edit', 'image-to-video']) {
+      assert.throws(() => parse({ mediaRequirements: [{ id: 'input', kind: operation === 'edit' ? 'image' : 'video', operation }] }), /mediaRequirements.0.inputFrom/)
+    }
+    for (const format of ['mov', 'gif', 'avif']) {
+      assert.throws(() => parse({ deliverables: [{ ...videoFile, format, path: `deliverables/file.${format}`, artifact: { kind: 'video', source: 'media-output' } }] }), /deliverables.0.format/)
+    }
+    assert.throws(() => parse({ deliverables: [{ ...imageFile, artifact: { kind: 'video', source: 'media-output' } }] }), /deliverables.0.format/)
+    const converted = { ...videoFile, format: 'mov', path: 'deliverables/file.mov', artifact: { kind: 'video', source: 'workspace' } }
+    assert.deepEqual(parse({ deliverables: [converted] }).nodes[0]!.deliverables, [converted])
+  })
+
+  it('rejects multiple, conflicting, undeclared and malformed media sources instead of guessing', () => {
+    for (const extra of [
+      { inputFrom: [source, { nodeId: 'other' }] },
+      { inputFrom: source, inputSelection: { inputFrom: [{ nodeId: 'other' }] } },
+      { inputFrom: { nodeId: 'outside' } },
+      { inputFrom: { ...source, deliverableId: 'missing' } },
+      { inputFrom: { deliverableId: 'poster' } },
+      { inputFrom: { ...source, arbitrary: true } },
+      { inputFrom: source, kind: 'image' },
+    ]) assert.throws(() => parseMediaPair({ kind: 'image', operation: 'generate' }, { kind: 'video', operation: 'image-to-video', ...extra }))
+  })
+
+  it('reports the node and safe field path when an unrecognized value still fails validation', () => {
+    assert.throws(() => parse({ mediaRequirements: [{ id: 'image', kind: 'image', operation: 'generate', inputSelection: 'private-selection' }] }), error => {
+      assert.ok(error instanceof Error)
+      assert.match(error.message, /第 1 个节点/)
+      const fields = planningErrorFields(error)
+      assert.deepEqual(fields.validationIssues, [{ path: 'mediaRequirements.0.inputSelection', code: 'invalid_value' }])
+      assert.doesNotMatch(JSON.stringify(fields), /private-selection/)
+      return true
+    })
+  })
+
+  it('publishes schema-valid examples for every supported media operation', () => {
+    const prompt = buildArrangementPlannerPrompt(draft, [authorized])
+    const start = prompt.indexOf('媒体结构示例（四项是独立场景，按用户实际需求选用，不要全部添加）：\n')
+    const exampleStart = prompt.indexOf('[', start)
+    const exampleEnd = prompt.indexOf('\n以上为节点中的媒体字段', exampleStart)
+    const examples = JSON.parse(prompt.slice(exampleStart, exampleEnd)) as Array<Record<string, unknown>>
+    assert.equal(examples.length, 4)
+    for (const example of examples) assert.equal(arrangementNodeWorkContractSchema.safeParse(example).success, true)
   })
 
   it('preserves the per-node knowledge query generated by planning', () => {
