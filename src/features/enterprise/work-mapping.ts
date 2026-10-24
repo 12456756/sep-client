@@ -201,7 +201,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
   const meta: WorkMeta | null = plan && plan.mode !== 'conversation' ? {
     kind: 'flow', goal: plan.goal,
     steps: plan.nodes.map(node => ({ id: node.id, employeeId: node.subscriptionId, title: node.title,
-      input: node.instruction, output: node.expectedOutput, dependsOn: [...node.dependsOn], needsConfirm: node.requiresUserConfirmation })),
+      input: node.instruction, output: node.expectedOutput, dependsOn: [...node.dependsOn], needsConfirm: false })),
     participants: [...new Set(plan.nodes.map(node => node.subscriptionId))],
     sharedContext: { goal: plan.goal, confirmedInputs: [...plan.confirmedInputs], previousResults: [], userNotes: [] },
   } : legacyMeta;

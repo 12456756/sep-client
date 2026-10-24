@@ -10,6 +10,7 @@ import { redactText } from '../../common/redact'
 import { withTimeout } from '../../common/with-timeout'
 import type { McpServerConfig } from './pi-agent-runtime'
 import { parseMcpServers } from './pi-mcp-config'
+import { utf8ChildEnvironment } from './pi-text-encoding'
 
 const log = logger.child('pi-mcp')
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -105,7 +106,8 @@ interface Connection {
 function makeConnection(config: McpServerConfig, workspaceDir: string): Connection {
   const transport = config.transport.type === 'stdio'
     ? new StdioClientTransport({
-      command: config.transport.command, args: config.transport.args, env: config.transport.env,
+      command: config.transport.command, args: config.transport.args,
+      env: utf8ChildEnvironment(config.transport.env ?? {}) as Record<string, string>,
       cwd: config.transport.cwd ?? workspaceDir, stderr: 'pipe', maxBufferSize: 1_048_576,
     })
     : new StreamableHTTPClientTransport(new URL(config.transport.url), {

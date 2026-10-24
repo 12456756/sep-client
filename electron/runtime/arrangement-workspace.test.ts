@@ -38,7 +38,7 @@ async function waitFor(check: () => Promise<boolean>): Promise<void> {
 }
 
 for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: false }, { manual: true, invalidDelivery: false }, { manual: false, invalidDelivery: true }]) {
-  it(`plans, confirms and ${invalidDelivery ? 'fails undelivered work' : 'executes an arrangement'} in a ${manual ? 'manual' : 'name-based default'} workspace`, async t => {
+  it(`plans, confirms and ${invalidDelivery ? 'repairs delivery beyond five validations' : 'executes an arrangement'} in a ${manual ? 'manual' : 'name-based default'} workspace`, async t => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-workspace-'))
     const runs = new TaskRunStore(root)
     const manager = new TaskManager(root, null, undefined, runs)
@@ -84,7 +84,8 @@ for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: fal
             taskId: context.taskId, runId: context.runId, subscriptionId: context.subscriptionId,
             sequence: 1, type: 'text_delta', occurredAt: Date.now(), data: { text: 'research result' },
           })
-          for (let validation = 0; validation < 5; validation++) {
+          for (let validation = 0; validation < 8; validation++) {
+            if (invalidDelivery && validation === 7) await writeFile(artifact, `${nodeId} result`, 'utf8')
             assert.equal((await manager.getTask(context.taskId))?.status, TaskStatus.RUNNING)
             const checkpoint = await checkpoints.get(scope, context.taskId)
             assert.equal(checkpoint?.state.status, 'running')
@@ -95,9 +96,10 @@ for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: fal
             if (!correction) return
             assert.equal((await manager.getTask(context.taskId))?.status, TaskStatus.RUNNING)
             assert.equal((await checkpoints.get(scope, context.taskId))?.state.nodes.find(node => node.nodeId === nodeId)?.status, 'running')
-            assert.match(correction.continueWith, /FILE_MISSING/)
+            assert.match(correction.continueWith, /实际交付文件未通过校验/)
+            assert.equal((await checkpoints.get(scope, context.taskId))?.state.nodes.find(node => node.nodeId === nodeId)?.delivery?.issues[0]?.code, 'FILE_MISSING')
           }
-          assert.fail('Failed delivery must throw on the fifth validation')
+          assert.fail('The repaired eighth submission must be accepted')
         },
         async abort() {}, async dispose() {},
       }),
@@ -171,18 +173,18 @@ for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: fal
     assert.equal((await metadata.load(scope, taskId))?.kind, 'arrangement')
     await waitFor(async () => {
       const task = await manager.getTask(taskId)
-      if (!invalidDelivery) assert.notEqual(task?.status, TaskStatus.FAILED, task?.error ?? undefined)
+      assert.notEqual(task?.status, TaskStatus.FAILED, task?.error ?? undefined)
       assert.notEqual(task?.status, TaskStatus.PAUSED, task?.error ?? undefined)
-      return task?.status === (invalidDelivery ? TaskStatus.FAILED : TaskStatus.COMPLETED) && task.activeRunId === null
+      return task?.status === TaskStatus.COMPLETED && task.activeRunId === null
     })
-    assert.deepEqual(executed, invalidDelivery ? [workspace] : [workspace, workspace])
-    assert.equal((await checkpoints.get(scope, taskId))?.state.status, invalidDelivery ? 'failed' : 'completed')
-    if (invalidDelivery) assert.equal((await checkpoints.get(scope, taskId))?.state.nodes[0]?.delivery?.validationAttempts, 5)
+    assert.deepEqual(executed, [workspace, workspace])
+    assert.equal((await checkpoints.get(scope, taskId))?.state.status, 'completed')
+    if (invalidDelivery) assert.deepEqual((await checkpoints.get(scope, taskId))?.state.nodes.map(node => node.delivery?.validationAttempts), [8, 8])
     const records = await runs.list(scope, taskId)
-    assert.equal(records.length, invalidDelivery ? 2 : 3)
+    assert.equal(records.length, 3)
     for (const record of records) {
       assert.equal(record.workspaceDir, workspace)
-      assert.equal(record.outcome, invalidDelivery ? 'failed' : 'completed')
+      assert.equal(record.outcome, 'completed')
       assert.deepEqual(record.owner, scope)
     }
     const paths = new ScopePath(root)
@@ -192,6 +194,6 @@ for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: fal
     await restarted.initialize()
     await restarted.setCurrentUser(scope.memberId, scope.enterpriseId, names)
     assert.equal((await restarted.getTask(taskId))?.workDir, workspace)
-    assert.equal((await restarted.getTask(taskId))?.status, invalidDelivery ? TaskStatus.FAILED : TaskStatus.COMPLETED)
+    assert.equal((await restarted.getTask(taskId))?.status, TaskStatus.COMPLETED)
   })
 }

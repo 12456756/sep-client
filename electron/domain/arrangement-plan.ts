@@ -177,7 +177,8 @@ export interface ArrangementNode {
   mediaRequirements?: ArrangementMediaRequirement[]
   dependsOn: string[]
   skillIds: string[]
-  requiresUserConfirmation: boolean
+  /** @deprecated Legacy field accepted in stored drafts but ignored by automatic execution. */
+  requiresUserConfirmation?: boolean
   stepId?: string
 }
 

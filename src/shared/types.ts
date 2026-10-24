@@ -275,7 +275,8 @@ export interface ArrangementNodeSnapshot {
   mediaRequirements?: ArrangementMediaRequirement[]
   dependsOn: string[]
   skillIds: string[]
-  requiresUserConfirmation: boolean
+  /** @deprecated Legacy field accepted for compatibility; automatic arrangement ignores it. */
+  requiresUserConfirmation?: boolean
 }
 
 export interface ArrangementPermissionSnapshot {
@@ -324,7 +325,8 @@ export interface ArrangementDraftNode {
   mediaRequirements?: ArrangementMediaRequirement[]
   dependsOn: string[]
   skillIds: string[]
-  requiresUserConfirmation: boolean
+  /** @deprecated Legacy field accepted for compatibility; automatic arrangement ignores it. */
+  requiresUserConfirmation?: boolean
 }
 
 export type ArrangementEmployeeAccessRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'CANCELLED'

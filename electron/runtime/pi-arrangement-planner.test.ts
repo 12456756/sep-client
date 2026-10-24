@@ -6,6 +6,7 @@ import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import type { ArrangementDraft } from '../domain/arrangement-plan'
 import type { ArrangementPlannerEmployee, ArrangementPlanningProgress } from '../domain/arrangement-planner'
+import { ARRANGEMENT_PLANNER_RULES, buildArrangementPlannerInput, buildArrangementPlannerRepairPrompt } from '../domain/arrangement-planner-prompts'
 import { AppError } from '../errors/app-error'
 import { setLogSink, type LogRecord } from '../common/logger'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
@@ -377,7 +378,8 @@ describe('PiArrangementPlanner', () => {
     ])
     assert.equal(worker?.prompts.length, 1)
     assert.match(worker?.prompts[0] ?? '', /Prepare a market report\./)
-    assert.match(worker?.prompts[0] ?? '', /不得调用工具/)
+    assert.doesNotMatch(worker?.prompts[0] ?? '', /不调用工具/)
+    assert.match(capturedOptions?.context.transformSystemPrompt?.('You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.') ?? '', /不调用工具/)
     assert.equal(capturedOptions?.context.taskId, 'planning-a')
     assert.equal(capturedOptions?.context.runId, 'planning-a')
     assert.equal(capturedOptions?.context.subscriptionId, 'sub-writer')
@@ -502,7 +504,7 @@ function sendChunk(response: ServerResponse, delta: Record<string, unknown>, fin
   response.write(`data: ${JSON.stringify({ id: 'planner-response', object: 'chat.completion.chunk', created: 1, model: 'model-research', choices: [{ index: 0, delta, finish_reason: finishReason }] })}\n\n`)
 }
 
-for (const scenario of ['thinking-stop', 'thinking-length', 'long-final'] as const) {
+for (const scenario of ['thinking-stop', 'thinking-length', 'long-final', 'network-retry'] as const) {
   it(`real SDK planner reads only the final assistant body: ${scenario}`, { timeout: 15000 }, async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-planner-final-'))
     const instruction = 'Research the market. '.repeat(600).trim()
@@ -511,15 +513,25 @@ for (const scenario of ['thinking-stop', 'thinking-length', 'long-final'] as con
       title: 'Research', instruction, knowledgeQuery: 'Internal market research methods', dependsOn: [],
     }] })
     assert.ok(output.length > 8192)
-    let requests = 0
+    const requests: Array<{ messages: Array<{ role: string; content: string }> }> = []
     const server = createServer((request, response) => {
-      request.resume()
-      requests++
-      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
-      if (scenario === 'long-final') sendChunk(response, { role: 'assistant', content: output })
-      else sendChunk(response, { role: 'assistant', reasoning_content: 'Considering the requested plan.' })
-      sendChunk(response, {}, scenario === 'thinking-length' ? 'length' : 'stop')
-      response.end('data: [DONE]\n\n')
+      request.setEncoding('utf8')
+      let body = ''
+      request.on('data', chunk => { body += String(chunk) })
+      request.on('end', () => {
+        requests.push(JSON.parse(body))
+        if (scenario === 'network-retry' && requests.length === 1) {
+          response.writeHead(503, { 'Content-Type': 'application/json' })
+          response.end(JSON.stringify({ error: { message: 'temporary unavailable' } }))
+          return
+        }
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        const valid = scenario === 'long-final' || requests.length > 1
+        if (valid) sendChunk(response, { role: 'assistant', content: output })
+        else sendChunk(response, { role: 'assistant', reasoning_content: 'Considering the requested plan.' })
+        sendChunk(response, {}, !valid && scenario === 'thinking-length' ? 'length' : 'stop')
+        response.end('data: [DONE]\n\n')
+      })
     })
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
@@ -534,10 +546,23 @@ for (const scenario of ['thinking-stop', 'thinking-length', 'long-final'] as con
     })
     try {
       const result = planner.plan({ planningId: 'planning-final-sdk', draft, employees, onProgress() {} })
-      if (scenario === 'long-final') assert.equal((await result).nodes[0]?.instruction, instruction)
-      else await assert.rejects(result, error => error instanceof AppError && error.details?.phase === 'response-assembly' &&
-        error.details?.reason === (scenario === 'thinking-length' ? 'output-truncated' : 'empty-response'))
-      assert.equal(requests, 1)
+      assert.equal((await result).nodes[0]?.instruction, instruction)
+      assert.equal(requests.length, scenario === 'long-final' ? 1 : 2)
+      for (const request of requests) {
+        const system = request.messages.find(message => message.role === 'system')?.content ?? ''
+        assert.ok(system.startsWith('你运行在 Pi 中。'))
+        assert.equal(system.split(ARRANGEMENT_PLANNER_RULES).length - 1, 1, `Unexpected system prompt: ${JSON.stringify(system)}`)
+        assert.match(system, /可用工具：\n无/)
+        assert.match(system, /主要文档：.*README\.md/)
+        assert.ok(system.includes(`当前工作目录：${root.replace(/\\/g, '/')}`))
+        assert.doesNotMatch(system, /expert coding assistant|Current working directory:/)
+        assert.equal(request.messages.filter(message => message.role === 'user' && message.content.startsWith('目前是自动编排的第一阶段')).length, 1)
+      }
+      if (scenario === 'thinking-stop' || scenario === 'thinking-length') {
+        const repair = requests[1]!.messages.filter(message => message.role === 'user').at(-1)?.content
+        assert.equal(repair, buildArrangementPlannerRepairPrompt('response-assembly', buildArrangementPlannerInput(draft, employees, 'authorized')))
+      }
+      if (scenario === 'network-retry') assert.deepEqual(requests[1]!.messages, requests[0]!.messages)
     } finally {
       server.closeAllConnections()
       await new Promise<void>(resolve => server.close(() => resolve()))
@@ -551,6 +576,7 @@ for (const invalidTools of [false, true]) {
     const root = await mkdtemp(join(tmpdir(), 'sep-planner-no-tools-'))
     const requests: Array<{ tools?: unknown[] }> = []
     const server = createServer((request, response) => {
+      request.setEncoding('utf8')
       let body = ''
       request.on('data', chunk => { body += String(chunk) })
       request.on('end', () => {

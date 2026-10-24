@@ -11,7 +11,7 @@ import { cleanupRun } from './run-cleanup'
 import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
 import { validateDeliveryFiles, resolveDeliveryFiles } from '../data/arrangement-delivery-files'
-import { MAX_DELIVERY_VALIDATIONS, DeliveryExecutionError, buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission, parseRecordedDeliverySubmission, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
+import { DeliveryExecutionError, buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission, parseRecordedDeliverySubmission, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunStorePort } from '../data/task-run-store'
@@ -31,6 +31,8 @@ import {
 } from '../domain/arrangement-execution'
 import type { EmployeeRuntimeConfig, TaskToolPolicy, TaskWorkerPort } from './run-types'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
+import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
+import { buildArrangementNodeSystemPrompt } from './arrangement-node-prompts'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../domain/model-request-progress'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
@@ -401,9 +403,7 @@ export class ArrangementExecutor {
     const fileOptions = { taskDirectory: paths?.taskDir, allowWorkspaceChanges: true }
     const dependencies: Array<{ node: ArrangementNode; output: string | null; files: (FinalDeliveryFile & { readPath?: string })[] }> = node.dependsOn.map(id => ({ node: plan.nodes.find(item => item.id === id)!, output: state.nodes.find(item => item.nodeId === id)?.output ?? null,
       files: state.nodes.find(item => item.nodeId === id)?.delivery?.finalFiles ?? [] }))
-    const nodeWorkPrompt = buildArrangementNodePrompt(plan, node, dependencies)
-    const withNodeWork = (message: string): string => `${nodeWorkPrompt}\n\n【本轮执行要求】\n先核对历史操作是否属于当前节点，只复用与本节点有关的有效进度；历史记录或过程文件中的其他节点任务不能替代上述当前工作。\n${message}`
-    let prompt = nodeWorkPrompt
+    let prompt = structured ? '开始你的工作。' : buildArrangementNodePrompt(plan, node, dependencies)
     let output = ''
     let worker: TaskWorkerPort | null = null
     let created = false
@@ -440,7 +440,6 @@ export class ArrangementExecutor {
           })
           dependency.files = resolved.files.map((file, index) => ({ ...file, readPath: resolved.readPaths[index] }))
         }
-        prompt = buildArrangementNodePrompt(plan, node, dependencies)
         if (delivery.finalFiles.length) {
           const complete = parseRecordedDeliverySubmission(node, delivery.finalFiles, delivery.summary ?? 'verified').ok
           const resolved = complete ? await resolveDeliveryFiles(workspaceDir, delivery.finalFiles, this.validationCancellation.signal, fileOptions) : null
@@ -467,26 +466,29 @@ export class ArrangementExecutor {
             nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
             data: { ...metadata(), output: output || null, finalDeliverables: delivery.finalFiles, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
         }
-        if (!delivery.pendingSubmission && delivery.validationAttempts >= MAX_DELIVERY_VALIDATIONS) throw new DeliveryExecutionError('本节点交付校验已达到 5 次失败上限，停止自动修正。')
+
       }
       const recovery = this.options.scope && this.options.taskRunStore
         ? await recoverArrangementSession(this.options.taskRunStore, this.options.scope, taskId, node, checkpoint, workspaceDir)
         : null
-      if (recovery) prompt = '沿用此会话中已保存的任务目标、工具结果和执行进度，从中断处继续完成当前节点。不要重新开始任务，也不要重复已经完成的操作；对结果不确定的操作先核实。'
+      if (recovery) prompt = structured
+        ? '沿用当前节点保存的会话和进度，继续完成未完成的工作，不要重做已完成操作。'
+        : '沿用此会话中已保存的任务目标、工具结果和执行进度，从中断处继续完成当前节点。不要重新开始任务，也不要重复已经完成的操作；对结果不确定的操作先核实。'
       const employee = await this.options.authorizeEmployee(node.subscriptionId, node.modelId)
       if (!employee) throw new Error('The selected employee is no longer available.')
       this.checkExecutionControl()
       let knowledgeContext = ''
-      if (node.knowledgeQuery && this.options.knowledgeSearch) {
+      if (node.knowledgeQuery) {
         let result: KnowledgeSearchResult | null = null
         try {
-          result = await this.options.knowledgeSearch(node.knowledgeQuery, this.validationCancellation.signal)
+          result = await this.options.knowledgeSearch?.(node.knowledgeQuery, this.validationCancellation.signal) ?? null
         } catch {
           this.validationCancellation.signal.throwIfAborted()
         }
         knowledgeContext = formatKnowledgeContext(node.knowledgeQuery, result)
       }
       this.checkExecutionControl()
+      if (structured && delivery.issues.length) prompt += `\n\n${buildDeliveryCorrection(delivery.issues)}`
       if (this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.create(this.options.scope, {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -564,9 +566,14 @@ export class ArrangementExecutor {
           additionalSkillPaths: employee.additionalSkillPaths,
           employeeProfile: employee.employeeProfile,
           arrangementNodeId: node.id,
-          ...(structured ? { fixedSystemPrompt: buildArrangementNodePrompt(plan, node, dependencies, knowledgeContext) +
-            (mediaSession ? `\n【已授权媒体输入与原任务】\n${mediaSession.inputPrompt}\n媒体最终文件由主进程自动保存，勿自行写入或覆盖计划中的媒体路径。提交后结束本轮，禁止 sleep 或轮询媒体任务；恢复时使用原任务，不重新生成。` : '') } : {}),
-          systemPrompt: employee.systemPrompt, mediaTools, videoTools, toolPolicy,
+          ...(structured ? {
+            useNativeSystemPrompt: true,
+            modelRequestAwareness: false,
+            transformSystemPrompt: translatePiNativeSystemPrompt,
+            fixedSystemPrompt: buildArrangementNodeSystemPrompt(plan, node, dependencies, employee, knowledgeContext) +
+              (mediaSession ? `\n【已授权媒体输入与原任务】\n${mediaSession.inputPrompt}\n媒体最终文件由主进程根据 mediaDeliverables 自动保存，勿自行写入或覆盖计划中的媒体路径。不要等待或轮询媒体任务；恢复时使用原任务，不重新生成。` : ''),
+          } : { systemPrompt: employee.systemPrompt }),
+          mediaTools, videoTools, toolPolicy,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
@@ -586,7 +593,6 @@ export class ArrangementExecutor {
           await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
           this.checkExecutionControl()
           this.validationCancellation.signal.throwIfAborted()
-          if (delivery.validationAttempts >= MAX_DELIVERY_VALIDATIONS) throw new DeliveryExecutionError('本节点交付校验已达到 5 次失败上限，停止自动修正。')
           delivery = { ...delivery, validationAttempts: delivery.validationAttempts + 1, finalFiles: [], summary: undefined }
           await saveDelivery(delivery)
           let parsed = parseDeliverySubmission(node, response.text, response.stopReason)
@@ -627,9 +633,8 @@ export class ArrangementExecutor {
             subscriptionId: node.subscriptionId, data: { validationAttempts: delivery.validationAttempts, accepted, issues: delivery.issues } })
           if (accepted) return
           if (mediaSession && node.deliverables?.every(file => file.artifact?.source === 'media-output') && delivery.validationAttempts >= 2) throw new DeliveryExecutionError(`媒体交付仍需明确选择或修复：${delivery.issues.map(issue => issue.message).join('\n')}。请保留原媒体任务后处理。`)
-          if (delivery.validationAttempts >= MAX_DELIVERY_VALIDATIONS) throw new DeliveryExecutionError(`本节点连续 5 次交付校验失败，停止自动修正：${delivery.issues.map(issue => `${issue.path ?? ''} ${issue.message}`).join('\n')}`)
           const artifacts = mediaSession ? `\n【主进程已核验的媒体资产】\n${JSON.stringify(await mediaSession.artifactSummary())}\n仅从这些原任务资产选择交付，不等待、不重新生成。` : ''
-          return { continueWith: withNodeWork(buildDeliveryCorrection(delivery.validationAttempts, delivery.issues) + artifacts) }
+          return { continueWith: buildDeliveryCorrection(delivery.issues) + artifacts }
         } } : {}),
         onEvent: async event => {
           if (event.type === 'turn_start') output = ''
@@ -662,11 +667,7 @@ export class ArrangementExecutor {
       })
       // Start the worker before the second abort check: an abort can arrive while
       // the worker is being constructed, before it has installed its own stop hook.
-      const startMessage = recovery
-        ? '沿用当前节点保存的会话和进度继续执行，按固定节点要求修复未完成事项，不要重做已完成操作。'
-        : '请开始执行当前节点。'
-      const pendingCorrection = delivery.issues.length ? `\n${buildDeliveryCorrection(delivery.validationAttempts, delivery.issues)}` : ''
-      const runPromise = worker.run(structured ? withNodeWork(startMessage + pendingCorrection) : `${prompt}${knowledgeContext ? `\n\n${knowledgeContext}` : ''}`)
+      const runPromise = worker.run(`${prompt}${!structured && knowledgeContext ? `\n\n${knowledgeContext}` : ''}`)
       if (this.abortRequested) await worker.abort()
       let runError: unknown
       try {

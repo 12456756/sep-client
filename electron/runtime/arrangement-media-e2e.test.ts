@@ -192,7 +192,7 @@ async function fixture(scenario: Scenario = {}) {
         return { async run() {
         const node = options.context.arrangementNodeId!
         if (scenario.plannerShape) {
-          assert.match(options.context.fixedSystemPrompt!, /【本节点媒体要求】/)
+          assert.match(options.context.fixedSystemPrompt!, /本节点媒体要求：/)
           assert.ok(options.context.fixedSystemPrompt!.includes(node === 'image' ? 'Photography' : 'Slow push'))
           assert.match(options.context.fixedSystemPrompt!, /MEDIA_ARTIFACT_ID/)
         }

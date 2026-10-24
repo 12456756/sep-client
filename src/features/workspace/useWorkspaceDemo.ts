@@ -415,7 +415,6 @@ export function useWorkspaceDemo(options: { subscriptionId?: string; employeeNam
         expectedOutput: node.expectedOutput,
         dependsOn: node.dependsOn,
         skillIds: [],
-        requiresUserConfirmation: false,
       };
     });
     if (nodes.some(node => !node.modelId)) { setError('??????????'); return; }

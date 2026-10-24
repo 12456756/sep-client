@@ -30,7 +30,7 @@ const node = {
   id: 'node-1', stepId: 'step-1', subscriptionId: 'sub-a', modelId: 'model-a', title: 'Research',
   objective: 'Identify market opportunities', instruction: 'Compare competitors', expectedOutput: 'Word report',
   deliverables: [{ id: 'report', name: 'Report', format: 'docx', path: 'deliverables/report.docx', contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }],
-  dependsOn: [], skillIds: [], requiresUserConfirmation: false,
+  dependsOn: [], skillIds: [],
 }
 const document = {
   mode: 'manual', title: 'Report', goal: 'Build report', confirmedInputs: [], sharedSkillIds: [], conversation: null,

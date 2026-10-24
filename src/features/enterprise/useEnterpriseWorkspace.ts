@@ -652,7 +652,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         expectedOutput: step.output || step.title,
         dependsOn: step.dependsOn.filter(dep => kept.has(dep)),
         skillIds: [...step.skillIds],
-        requiresUserConfirmation: step.needsConfirm,
       };
     });
     if (nodes.some(node => !node.modelId)) { setError('???????'); return; }

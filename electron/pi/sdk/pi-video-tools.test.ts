@@ -319,7 +319,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
   })
   it('registers strict definitions independently of image tools and never advertises cancel', async () => {
     const runtime = await sdk({ mediaTools: { names: ['media_get_job'], execute: async () => null } })
-    assert.deepEqual([...runtime.definitions.keys()], ['media_get_job', ...names])
+    assert.deepEqual([...runtime.definitions.keys()], ['bash', 'read', 'media_get_job', ...names])
     assert.deepEqual(runtime.options.tools, ['read', 'bash', 'edit', 'write', 'media_get_job', ...names])
     for (const name of names) {
       const definition = runtime.definitions.get(name)!
@@ -345,7 +345,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       assert.deepEqual(runtime.options.tools, [])
     }
     const runtime = await sdk({ videoTools: { names: ['video_get_job', 'video_cancel_job'] as unknown as VideoToolName[], execute: async () => job } })
-    assert.deepEqual([...runtime.definitions.keys()], ['video_get_job'])
+    assert.deepEqual([...runtime.definitions.keys()], ['bash', 'read', 'video_get_job'])
   })
 
   it('forwards validated generation, query and AbortSignal without a duplicate Pi approval', async () => {
@@ -425,7 +425,8 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       const runtime = await sdk({ toolPolicy })
       const expected = toolPolicy.preset === 'full-local' ? names
         : toolPolicy.preset === 'read-only' ? ['video_get_job'] : [...names].filter(name => name === 'video_get_job' || toolPolicy.allowedTools.includes(name))
-      assert.deepEqual([...runtime.definitions.keys()], expected)
+      const encodingTools = ['bash', 'read', 'grep'].filter(name => runtime.options.tools?.includes(name))
+      assert.deepEqual([...runtime.definitions.keys()], [...encodingTools, ...expected])
       for (const name of [...names, 'video_cancel_job', 'video_unknown']) {
         const [decision] = await runtime.emit('tool_call', { toolName: name, input: generation })
         assert.equal((decision as { block: boolean }).block, !expected.includes(name))

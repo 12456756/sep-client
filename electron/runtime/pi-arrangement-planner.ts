@@ -5,13 +5,19 @@ import { planningErrorFields, type PlanningPhase } from '../errors/planning-diag
 import { AppError } from '../errors/app-error'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import {
-  buildArrangementPlannerPrompt,
   parseArrangementPlannerOutput,
   type ArrangementPlannerEmployee,
   type ArrangementPlannerPort,
   type ArrangementPlanningProgress,
   type ArrangementPlanningResult,
 } from '../domain/arrangement-planner'
+import {
+  buildArrangementPlannerInput,
+  buildArrangementPlannerUserPrompt,
+  buildArrangementPlannerRepairPrompt,
+  isArrangementPlannerValidationPhase,
+} from '../domain/arrangement-planner-prompts'
+import { transformArrangementPlannerSystemPrompt } from '../pi/sdk/pi-planner-system-prompt'
 import type { PiAgentRuntime } from '../pi/sdk/pi-agent-runtime'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import type { TaskToolPolicy, TaskWorkerPort } from './run-types'
@@ -101,13 +107,16 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       const plannerModelId = selectedModelId ?? plannerEmployee.allowedModels[0] ?? ''
       context.modelId = plannerModelId
       context.subscriptionId = plannerEmployee.subscriptionId
-      const prompt = buildArrangementPlannerPrompt(draft, employees)
+      const planningData = buildArrangementPlannerInput(draft, employees, input.planningStage ?? input.diagnosticContext?.employeeScope ?? 'authorized')
+      const prompt = buildArrangementPlannerUserPrompt(planningData)
 
       // A planner returns JSON, never executes tools. Even a non-compliant gateway
       // must not turn unexpected tool calls into an unbounded agent loop.
       let rejectToolCall!: (error: AppError) => void
       const invalidToolCall = new Promise<never>((_resolve, reject) => { rejectToolCall = reject })
       let settledResponse: { text: string; stopReason?: string } = { text: '' }
+      let plannedResult: ArrangementPlanningResult | undefined
+      let validationError: unknown
       const worker = this.createWorker(planningId, plannerEmployee, plannerModelId, event => {
         workerEvents.push(event)
         if (event.type === 'tool_execution_start') {
@@ -117,7 +126,32 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
           }))
           return
         }
-      }, async response => { settledResponse = response })
+      }, async response => {
+        throwIfAborted(planningSignal)
+        settledResponse = response
+        plannedResult = undefined
+        validationError = undefined
+        nextPhase('response-assembly', summarizeWorkerEvents(workerEvents))
+        Object.assign(context, {
+          stopReason: response.stopReason,
+          responseLength: response.text.length,
+          responseFingerprint: createHash('sha256').update(response.text).digest('hex'),
+        })
+        try {
+          validateSettledResponse(response)
+          plannedResult = parseArrangementPlannerOutput(response.text, draft, employees, nextPhase)
+        } catch (error) {
+          validationError = error
+          if (!(error instanceof AppError) || error.code !== 'PLANNING_FAILED' ||
+            !isArrangementPlannerValidationPhase(error.details?.phase) ||
+            response.stopReason === 'error' || response.stopReason === 'aborted') throw error
+          throwIfAborted(planningSignal)
+          log.warn('planning output rejected; requesting correction', { ...context, ...planningErrorFields(error) })
+          const continueWith = buildArrangementPlannerRepairPrompt(error.details.phase, planningData)
+          nextPhase('provider-request', { promptLength: continueWith.length })
+          return { continueWith }
+        }
+      })
       let abortHandler: (() => void) | null = null
       const abortPromise = new Promise<never>((_resolve, reject) => {
         abortHandler = (): void => {
@@ -142,32 +176,11 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       try {
         await Promise.race([runPromise, abortPromise, invalidToolCall])
         throwIfAborted(planningSignal)
-        nextPhase('response-assembly', summarizeWorkerEvents(workerEvents))
-        // Event projections are bounded diagnostics, not authoritative model output.
-        const { text, stopReason } = settledResponse
-        Object.assign(context, {
-          stopReason,
-          responseLength: text.length, responseFingerprint: createHash('sha256').update(text).digest('hex'),
-        })
-        if (stopReason === 'length') {
-          throw new AppError('PLANNING_FAILED', {
-            message: '规划模型输出达到上限，回复未完整生成，请联系管理员检查平台输出预算后重试。',
-            details: { phase: 'response-assembly', reason: 'output-truncated' },
-          })
-        }
-        if (stopReason && stopReason !== 'stop') {
-          throw new AppError('PLANNING_FAILED', {
-            message: '规划模型未正常结束，未生成可用的规划结果，请重试。',
-            details: { phase: 'response-assembly', reason: 'response-not-settled' },
-          })
-        }
-        if (!text.trim()) {
-          throw new AppError('PLANNING_FAILED', {
-            message: '规划模型没有返回正文，无法生成规划，请重试或联系管理员检查模型响应。',
-            details: { phase: 'response-assembly', reason: 'empty-response' },
-          })
-        }
-        const result = parseArrangementPlannerOutput(text, draft, employees, nextPhase)
+        // A conforming worker follows continueWith until validation succeeds.
+        if (validationError) throw validationError
+        if (!plannedResult) validateSettledResponse(settledResponse)
+        if (!plannedResult) throw new AppError('PLANNING_FAILED', { details: { phase: 'response-assembly', reason: 'empty-response' } })
+        const result = plannedResult
         nextPhase('finalization', { nodeCount: result.nodes.length, unresolvedStepCount: result.unresolvedSteps?.length ?? 0 })
         if (result.intentAnalysis) {
           onProgress({
@@ -259,6 +272,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       agentDir: this.options.getAgentDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'agent'),
       sessionDir: this.options.getSessionDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'sessions'),
       additionalSkillPaths: this.options.additionalSkillPaths ? [...this.options.additionalSkillPaths] : undefined,
+      transformSystemPrompt: transformArrangementPlannerSystemPrompt,
       toolPolicy: {
         ...PLANNER_POLICY,
         allowedPaths: [workspaceDir],
@@ -280,6 +294,27 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       runtime: this.options.runtime,
     }
     return this.options.createWorker?.(workerOptions) ?? new PiTaskWorker(workerOptions)
+  }
+}
+
+function validateSettledResponse(response: { text: string; stopReason?: string }): void {
+  if (response.stopReason === 'length') {
+    throw new AppError('PLANNING_FAILED', {
+      message: '规划模型输出达到上限，回复未完整生成。',
+      details: { phase: 'response-assembly', reason: 'output-truncated' },
+    })
+  }
+  if (response.stopReason && response.stopReason !== 'stop') {
+    throw new AppError('PLANNING_FAILED', {
+      message: '规划模型未正常结束，未生成可用的规划结果。',
+      details: { phase: 'response-assembly', reason: 'response-not-settled' },
+    })
+  }
+  if (!response.text.trim()) {
+    throw new AppError('PLANNING_FAILED', {
+      message: '规划模型没有返回正文，无法生成规划。',
+      details: { phase: 'response-assembly', reason: 'empty-response' },
+    })
   }
 }
 

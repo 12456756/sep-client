@@ -334,7 +334,7 @@ export class ArrangementService {
       const plannerEmployees: ArrangementPlannerEmployee[] = authorized
       nextPhase('round-1')
       let result = await this.deps.planner!.plan({
-        planningId, draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
+        planningId, planningStage: 'authorized', draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
         modelId, plannerModelId: modelId,
         diagnosticContext,
         onProgress: event => this.emitPlanning(event),
@@ -350,11 +350,11 @@ export class ArrangementService {
         const enterpriseCandidates = await this.deps.candidateEmployees.listEnterprise()
         context.employeeCount = enterpriseCandidates.length
         if (enterpriseCandidates.length) {
-          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
+          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes, candidateMatches }
           employees = enterpriseCandidates
           nextPhase('round-2')
           result = await this.deps.planner!.plan({
-            planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            planningId, planningStage: 'enterprise', draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
             modelId, plannerModelId: modelId,
             diagnosticContext,
             onProgress: event => this.emitPlanning(event),
@@ -376,11 +376,11 @@ export class ArrangementService {
         const platform = await this.deps.candidateEmployees.listPlatform()
         context.employeeCount = platform.length
         if (platform.length) {
-          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes }
+          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes, candidateMatches }
           employees = platform
           nextPhase('round-3')
           result = await this.deps.planner!.plan({
-            planningId, draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            planningId, planningStage: 'platform', draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
             modelId, plannerModelId: modelId,
             diagnosticContext,
             onProgress: event => this.emitPlanning(event),
