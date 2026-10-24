@@ -449,6 +449,18 @@ describe('trusted media host tools with the real Pi SDK', () => {
     assert.ok(!JSON.stringify(business.bodies[1]).includes('private-token'))
   })
 
+  it('preserves only whitelisted media error metadata through the SDK projection', async () => {
+    const result = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, {
+      ok: false, error: { code: 'INVALID_ARGUMENT', message: '规格不可用', businessCode: 'MEDIA_SIZE_UNSUPPORTED', field: 'parameters.size', stage: 'image-quote', recovery: 'query_original', secret: 'private-token' },
+    })
+    const text = JSON.stringify(result.bodies[1].messages.at(-1))
+    assert.match(text, /MEDIA_SIZE_UNSUPPORTED/)
+    assert.match(text, /parameters\.size/)
+    assert.match(text, /image-quote/)
+    assert.match(text, /query_original/)
+    assert.doesNotMatch(text, /private-token|secret/)
+  })
+
   it('returns capability and reference-asset business views without exposing raw host fields', async () => {
     const { bodies, executions, approvals } = await mediaSession({}, { name: 'media_get_capabilities', input: {} }, {
       capabilities: { protocolVersion: 1, tools: ['media_get_capabilities'], profiles: [] }, referenceAssets: [],

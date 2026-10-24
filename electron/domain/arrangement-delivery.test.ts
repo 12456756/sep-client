@@ -122,4 +122,12 @@ describe('node final delivery protocol', () => {
     assert.equal(parseDeliverySubmission(node, JSON.stringify(submission), 'toolUse').ok, false)
     assert.equal(parseDeliverySubmission(node, ' '.repeat(128_001)).ok, false)
   })
+  it('reports unsupported media delivery choices before execution', () => {
+    const workspaceMedia = { ...node, deliverables: [{ ...node.deliverables![0]!, format: 'png', path: 'deliverables/poster.png', artifact: { kind: 'image' as const, source: 'workspace' as const } }] }
+    assert.equal(deliveryPlanIssues([workspaceMedia]).find(issue => issue.code === 'WORKSPACE_MEDIA_UNSUPPORTED')?.deliverableId, 'report')
+    const jpgMedia = { ...node, deliverables: [{ ...node.deliverables![0]!, format: 'jpg', path: 'deliverables/poster.jpg', artifact: { kind: 'image' as const, source: 'media-output' as const } }] }
+    assert.equal(deliveryPlanIssues([jpgMedia]).find(issue => issue.code === 'MEDIA_FORMAT_UNSUPPORTED')?.deliverableId, 'report')
+    const eitherPng = { ...node, deliverables: [{ ...node.deliverables![0]!, format: 'png', path: 'deliverables/poster.png', artifact: { kind: 'image' as const, source: 'either' as const } }] }
+    assert.equal(deliveryPlanIssues([eitherPng]).some(issue => issue.code === 'MEDIA_FORMAT_UNSUPPORTED'), false)
+  })
 })

@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { createHash } from 'node:crypto'
 import { inflateSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import type { MediaGenerationInput } from '../../src/shared/media'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import { MOCK_MEDIA_CAPABILITIES, MOCK_MEDIA_PNG, MOCK_MEDIA_PNG_SHA256, MockMediaGateway } from '../data/mock-media-gateway'
@@ -16,7 +17,7 @@ import { inspectMediaImage } from '../data/media-image'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { ScopePath } from '../data/scope-path'
 import { mediaJobActions } from '../../src/shared/media-view'
-import type { LocalMediaJob } from '../domain/media'
+import type { LocalMediaAsset, LocalMediaJob } from '../domain/media'
 import { AppError } from '../errors/app-error'
 import { config } from '../common/config'
 import { realMediaSemanticHash } from '../common/platform/real-media-semantics'
@@ -25,6 +26,8 @@ import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types
 import { MediaService, type MediaServiceOptions } from './media-service'
 import { EmployeeAuthorizer } from './employee-authorizer'
 import { EmployeeDirectory } from './employee-directory'
+import { PiCodingAgentAdapter } from '../pi/sdk/pi-coding-agent-adapter'
+import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
 
 const owner = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const other = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
@@ -373,6 +376,167 @@ function notSentJob(): LocalMediaJob {
   }
 }
 
+describe('media capability and handoff regressions', () => {
+  for (const scenario of ['prompt', 'reference-count', 'reference-mime', 'reference-bytes', 'reference-width'] as const) {
+    it(`does not duplicate backend business limits for real ${scenario}`, async context => {
+      const f = await realFixture()
+      const runtime = f.employee.media as { profiles: { capabilities: { supportsReferenceImage: boolean } }[] }
+      runtime.profiles[0].capabilities.supportsReferenceImage = true
+      const reference: LocalMediaAsset = { version: 1, owner, taskId: 'task-a', localAssetId: 'reference-a',
+        jobId: null, outputId: null, source: 'reference', relativePath: 'references/reference-a.png',
+        mime: scenario === 'reference-mime' ? 'image/jpeg' : 'image/png', status: 'SAVED',
+        size: scenario === 'reference-bytes' ? 5 * 1024 * 1024 + 1 : MOCK_MEDIA_PNG.length,
+        width: scenario === 'reference-width' ? 4097 : 1, height: 1, sha256: MOCK_MEDIA_PNG_SHA256, createdAt: Date.now() }
+      context.mock.method(f.store, 'getAsset', async (_scope: TaskOwnerScope, _taskId: string, id: string) => ({ ...reference, localAssetId: id }))
+      const requested = input({ profileId: 'image-prod',
+        creativeBrief: scenario === 'prompt' ? 'x'.repeat(4001) : 'Edit this reference',
+        localAssetIds: scenario === 'prompt' ? [] : scenario === 'reference-count'
+          ? Array.from({ length: 5 }, (_, index) => `reference-${index}`) : ['reference-a'] })
+      if (scenario === 'prompt') {
+        const view = await f.service.generateTaskMedia('task-a', requested)
+        await f.service.waitForRun('task-a', view.runId)
+      } else {
+        await assert.rejects(f.service.generateTaskMedia('task-a', requested))
+      }
+      // The backend remains authoritative for prompt/reference limits. The
+      // client must reach that boundary instead of rejecting these values as
+      // a second business-rule whitelist. File safety checks are covered by
+      // MediaStore/import tests and are intentionally unchanged here.
+      assert.ok(f.calls.length > 0 || f.approvalRequests.length > 0)
+    })
+  }
+
+  it('accepts a real prompt at the UTF-16 boundary without changing its content', async () => {
+    const f = await realFixture({ billingStatus: 'SETTLED' })
+    const creativeBrief = '😀'.repeat(2000)
+    const job = await f.service.generateTaskMedia('task-a', input({ profileId: 'image-prod', creativeBrief }))
+    await f.service.waitForRun('task-a', job.runId)
+    assert.equal(f.calls.find(call => call.path === '/requests')?.body?.creativeBrief, creativeBrief)
+  })
+
+  it('keeps an accepted download alive after the real SDK hands off its tool turn', { timeout: 20_000 }, async context => {
+    const entered = deferred<void>(), release = deferred<void>()
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const content = f.gateway.content.bind(f.gateway)
+    context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+      entered.resolve()
+      await release.promise
+      return content(...args)
+    })
+    let requests = 0
+    const server = createServer((request, response) => {
+      request.resume()
+      request.on('end', () => {
+        requests++
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        const chunk = (delta: unknown, finishReason: string | null = null) => response.write(`data: ${JSON.stringify({
+          id: 'media-handoff', object: 'chat.completion.chunk', created: 1, model: 'model-a',
+          choices: [{ index: 0, delta, finish_reason: finishReason }],
+        })}\n\n`)
+        chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'generate-image', type: 'function',
+          function: { name: 'media_generate_image', arguments: JSON.stringify({ creativeBrief: 'Product photograph' }) } }] })
+        chunk({}, 'tool_calls')
+        response.end('data: [DONE]\n\n')
+      })
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'sdk-handoff', subscriptionId: f.employee.subscriptionId,
+      employee: f.employee, toolPolicy: policy(), requestApproval: f.options.requestApproval })
+    assert.ok(tools)
+    let toolSignal: AbortSignal | undefined
+    const worker = new PiTaskWorker({
+      context: { taskId: 'task-a', runId: 'sdk-handoff', subscriptionId: f.employee.subscriptionId, modelId: 'model-a',
+        gatewayUrl: `http://127.0.0.1:${address.port}/v1`, workspaceDir: f.directory,
+        agentDir: join(f.directory, 'agent'), sessionDir: join(f.directory, 'sessions'), toolPolicy: policy(),
+        mediaTools: { names: tools.names, execute: async (name, raw, signal) => {
+          toolSignal = signal
+          const result = await tools.execute(name, raw, signal)
+          await entered.promise
+          return result
+        } } },
+      runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
+      createTokenManager: () => ({ async initialize() {}, async getValidToken() { return 'local-fixture' }, stop() {} }),
+      getRefreshToken: () => 'local-fixture', onAuthenticationRequired() {}, onApprovalRequest: async () => true, onEvent() {},
+      shouldYieldAfterToolTurn: () => f.gateway.calls.submit.length > 0,
+    })
+    try {
+      await worker.run('Generate a product image and leave saving to the host.')
+      await entered.promise
+      assert.equal(toolSignal?.aborted, true, 'The real SDK cancels its tool signal during handoff.')
+      release.resolve()
+      await f.service.waitForRun('task-a', 'sdk-handoff')
+      const [job] = await f.store.listJobs(owner, 'task-a')
+      assert.equal(job.saveStatus, 'SAVED')
+      assert.equal(requests, 1)
+      assert.equal(f.gateway.calls.submit.length, 1)
+      assert.equal(f.gateway.calls.quote.length, 1)
+    } finally {
+      release.resolve()
+      await worker.dispose()
+      server.closeAllConnections()
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    }
+  })
+
+  for (const action of ['handoff', 'stopTask', 'stopAll'] as const) {
+    it(`preserves the tracker cancellation owner during ${action}`, async context => {
+      const entered = deferred<void>(), release = deferred<void>()
+      const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+      let downloadSignal: AbortSignal | undefined
+      const content = f.gateway.content.bind(f.gateway)
+      context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+        downloadSignal = args[3]
+        entered.resolve()
+        await release.promise
+        return content(...args)
+      })
+      const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'handoff', subscriptionId: f.employee.subscriptionId,
+        employee: f.employee, toolPolicy: policy(), requestApproval: f.options.requestApproval })
+      const toolController = new AbortController()
+      const view = await tools!.execute('media_generate_image', { creativeBrief: 'Product photograph' }, toolController.signal) as { jobId: string }
+      await entered.promise
+      toolController.abort()
+      if (action === 'handoff') {
+        assert.equal(downloadSignal?.aborted, false)
+        release.resolve()
+        await f.service.waitForRun('task-a', 'handoff')
+        assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.saveStatus, 'SAVED')
+      } else {
+        if (action === 'stopTask') await f.service.stopTask('task-a')
+        else await f.service.stopAll()
+        assert.equal(downloadSignal?.aborted, true)
+        release.resolve()
+        const stopped = await f.store.getJob(owner, 'task-a', view.jobId)
+        assert.equal(stopped?.saveStatus, 'SAVE_FAILED')
+        assert.equal(stopped?.trackingStatus, action === 'stopAll' ? 'INTERRUPTED' : 'STOPPED')
+        await f.service.retrySave('task-a', view.jobId)
+        await f.service.waitForRun('task-a', 'handoff')
+        assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.clientRequestId, stopped?.clientRequestId)
+      }
+      release.resolve()
+      assert.equal(f.gateway.calls.submit.length, 1)
+      assert.equal(f.gateway.calls.quote.length, 1)
+    })
+  }
+
+  it('resolves a ratio-only tool request without the conflicting profile default size', async () => {
+    const f = await realFixture({ billingStatus: 'SETTLED' })
+    const runtime = f.employee.media as { protocolVersion: number; profiles: { capabilities: Record<string, unknown> }[] }
+    runtime.protocolVersion = 2
+    Object.assign(runtime.profiles[0].capabilities, { qualities: ['medium'], defaultQuality: 'medium', defaultSize: '1024x1024' })
+    const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'ratio-only', subscriptionId: f.employee.subscriptionId,
+      employee: f.employee, toolPolicy: policy(), requestApproval: f.options.requestApproval })
+    const result = await tools!.execute('media_generate_image', { creativeBrief: 'Wide product photo', parameters: { aspectRatio: '3:2' } }) as { jobId: string }
+    await f.service.waitForRun('task-a', 'ratio-only')
+    const saved = await f.store.getJob(owner, 'task-a', result.jobId)
+    assert.deepEqual(saved?.input.parameters, { aspectRatio: '3:2', size: '1536x1024', count: 1, quality: 'medium' })
+    assert.deepEqual(f.calls.find(call => call.path === '/requests')?.body?.parameters,
+      f.calls.find(call => call.path === '/quotes')?.body?.parameters)
+  })
+})
+
 describe('MediaService authorization and request semantics', () => {
   it('edits from a completed task when the runtime default model has been retired', async () => {
     const f = await fixture({ getTask: async () => ({ subscriptionId: 'subscription-a', status: 'completed' }) })
@@ -693,6 +857,58 @@ describe('MediaService authorization and request semantics', () => {
     try { await assert.rejects(f.service.generateTaskMedia('task-a', input())) } finally { clearTimeout(timer) }
     assert.equal(f.gateway.calls.submit.length, 0)
     assert.deepEqual(await f.store.listJobs(owner), [])
+  })
+
+  it('re-quotes once when manual approval outlives the quote and submits with the original request identity', async context => {
+    const gateway = new MockMediaGateway()
+    let quotes = 0
+    context.mock.method(gateway, 'quote', async (_subscriptionId: string, request: Parameters<MockMediaGateway['quote']>[1], signal: AbortSignal) => {
+      signal.throwIfAborted()
+      quotes++
+      return { quoteId: `quote-${quotes}`, requestHash: request.requestHash, expiresAt: quotes === 1 ? Date.now() - 1 : Date.now() + 60_000,
+        status: 'quoted' as const, amount: '0', currency: 'MOCK', authorized: true, budgetAuthorized: true, allowUnknownCost: false }
+    })
+    let approvals = 0
+    const f = await fixture({ requestApproval: async () => { approvals++; return true } }, gateway)
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', view.runId)
+    assert.equal(quotes, 2)
+    assert.equal(approvals, 1)
+    assert.equal(gateway.calls.submit.length, 1)
+    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.quote.quoteId, 'quote-2')
+  })
+
+  it('requires fresh approval when a re-quote changes price or currency', async context => {
+    const gateway = new MockMediaGateway()
+    let quotes = 0
+    context.mock.method(gateway, 'quote', async (_subscriptionId: string, request: Parameters<MockMediaGateway['quote']>[1], signal: AbortSignal) => {
+      signal.throwIfAborted()
+      quotes++
+      return { quoteId: `quote-${quotes}`, requestHash: request.requestHash, expiresAt: quotes === 1 ? Date.now() - 1 : Date.now() + 60_000,
+        status: 'quoted' as const, amount: quotes === 1 ? '0' : '1', currency: quotes === 1 ? 'MOCK' : 'CNY', authorized: true, budgetAuthorized: true, allowUnknownCost: false }
+    })
+    let approvals = 0
+    const f = await fixture({ requestApproval: async () => { approvals++; return true } }, gateway)
+    const view = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', view.runId)
+    assert.equal(quotes, 2)
+    assert.equal(approvals, 2)
+    assert.equal(gateway.calls.submit.length, 1)
+  })
+
+  it('does not retry indefinitely when the replacement quote is already expired', async context => {
+    const gateway = new MockMediaGateway()
+    let quotes = 0
+    context.mock.method(gateway, 'quote', async (_subscriptionId: string, request: Parameters<MockMediaGateway['quote']>[1], signal: AbortSignal) => {
+      signal.throwIfAborted()
+      quotes++
+      return { quoteId: `quote-${quotes}`, requestHash: request.requestHash, expiresAt: Date.now() - 1,
+        status: 'quoted' as const, amount: '0', currency: 'MOCK', authorized: true, budgetAuthorized: true, allowUnknownCost: false }
+    })
+    const f = await fixture({ requestApproval: async () => true }, gateway)
+    await assert.rejects(f.service.generateTaskMedia('task-a', input()), code('PERMISSION_DENIED'))
+    assert.equal(quotes, 2)
+    assert.equal(gateway.calls.submit.length, 0)
   })
 
   it('hashes semantic parameters, configuration and reference content rather than quote/request/run IDs', async () => {
@@ -1259,7 +1475,7 @@ describe('MediaService mock permission changes and recovery failures', () => {
     })
   }
 
-  it('rejects a quote that expires during human approval before uploading references or persisting a generation job', async context => {
+  it('re-quotes when a quote expires during human approval before uploading references', async context => {
     const f = await fixture()
     const referencePath = join(f.directory, 'reference.png')
     await writeFile(referencePath, MOCK_MEDIA_PNG)
@@ -1276,11 +1492,11 @@ describe('MediaService mock permission changes and recovery failures', () => {
       context.mock.method(Date, 'now', () => 4_000_000_000_000)
       return true
     }
-    await assert.rejects(f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [reference.localAssetId] })), code('PERMISSION_DENIED'))
-    assert.equal(f.gateway.calls.quote.length, 1)
-    assert.equal(f.gateway.calls.uploadReference.length, 0)
-    assert.equal(f.gateway.calls.submit.length, 0)
-    assert.equal((await f.store.listJobs(owner, 'task-a')).length, 0)
+    const view = await f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [reference.localAssetId] }))
+    await f.service.waitForRun('task-a', view.runId)
+    assert.equal(f.gateway.calls.quote.length, 2)
+    assert.equal(f.gateway.calls.uploadReference.length, 1)
+    assert.equal(f.gateway.calls.submit.length, 1)
   })
 })
 

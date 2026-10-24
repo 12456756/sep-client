@@ -75,7 +75,7 @@ export function toLocalMediaCapabilities(value: unknown): MediaCapabilities {
       configVersion: profile.configVersion, operations: profile.operations, executionMode: profile.executionMode,
       capabilities: { referenceImage: profile.capabilities.supportsReferenceImage, cancel: true, recoverByRequestId: true },
       allowedAspectRatios: profile.capabilities.sizes.map(size => imageAspectRatio(size)!).filter(Boolean),
-      allowedSizes: profile.capabilities.sizes, maxCount: Math.min(4, profile.capabilities.maxOutputs),
+      allowedSizes: profile.capabilities.sizes, maxCount: profile.capabilities.maxOutputs,
       ...('qualities' in profile.capabilities ? { allowedQualities: profile.capabilities.qualities, defaultQuality: profile.capabilities.defaultQuality, defaultSize: profile.capabilities.defaultSize } : {}),
     })),
   }

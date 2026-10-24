@@ -5,6 +5,7 @@ import { realMediaParameters, realMediaSemanticHash } from '../common/platform/r
 import { config } from '../common/config'
 import { platformSourceHeaders } from '../common/platform/platform-source-headers'
 import { AppError } from '../errors/app-error'
+import { isErrorCode, type ErrorCode } from '../errors/error-codes'
 import { inspectMediaImage } from './media-image'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
@@ -31,6 +32,10 @@ const receiptSchema = z.object({ mock: z.literal(false), receiptId: id, clientRe
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict() }).strict()
 const MAX_JSON = 64 * 1024
 const MAX_CONTENT = 25 * 1024 * 1024
+const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,95}$/
+const SAFE_ERROR_FIELD = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/
+const SAFE_ERROR_RECOVERY = /^[a-z][a-z0-9_-]{0,63}$/
+const SAFE_ERROR_STAGES = new Set(['image-authorization', 'image-quote', 'image-submit', 'image-query', 'image-content'])
 
 export interface SepRealMediaGatewayOptions {
   baseUrl: string
@@ -58,12 +63,14 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
 
   async uploadReference(subscriptionId: string, input: { bytes: Uint8Array; mime: ImageMime; sha256: string }, signal: AbortSignal) {
-    if (input.mime !== 'image/png' || input.bytes.byteLength === 0 || input.bytes.byteLength > 5 * 1024 * 1024
-      || createHash('sha256').update(input.bytes).digest('hex') !== input.sha256 || inspectMediaImage(input.bytes).mime !== 'image/png') {
+    let inspected: ReturnType<typeof inspectMediaImage>
+    try { inspected = inspectMediaImage(input.bytes) } catch { throw new AppError('INVALID_ARGUMENT') }
+    if (input.bytes.byteLength === 0 || createHash('sha256').update(input.bytes).digest('hex') !== input.sha256 || inspected.mime !== input.mime) {
       throw new AppError('INVALID_ARGUMENT')
     }
     const form = new FormData()
-    form.set('file', new Blob([input.bytes], { type: 'image/png' }), 'reference.png')
+    const extension = input.mime === 'image/jpeg' ? 'jpg' : input.mime === 'image/webp' ? 'webp' : 'png'
+    form.set('file', new Blob([input.bytes], { type: input.mime }), `reference.${extension}`)
     const raw = await this.json(subscriptionId, '/references', 'POST', form, referenceSchema, signal)
     return { referenceId: raw.referenceId, sha256: raw.sha256, expiresAt: Date.parse(raw.expiresAt) }
   }
@@ -103,11 +110,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   async content(subscriptionId: string, receiptId: string, outputId: string, signal: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
     const response = await this.request(subscriptionId, `/requests/${this.safeId(receiptId)}/outputs/${this.safeId(outputId)}/content`, 'GET', undefined, signal)
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined)
-      if (response.status === 401) throw new AppError('AUTH_REQUIRED')
-      if (response.status === 403) throw new AppError('PERMISSION_DENIED')
-      if (response.status === 429) throw new AppError('RATE_LIMITED')
-      throw new AppError('SERVICE_UNAVAILABLE')
+      throw await this.httpError(response, 'image-content')
     }
     const expectedHash = response.headers.get('X-SHA256')
     const length = Number(response.headers.get('Content-Length'))
@@ -156,13 +159,9 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
   private async json<T>(subscriptionId: string, path: string, method: 'GET' | 'POST', body: unknown, schema: ZodType<T>, signal: AbortSignal): Promise<T> {
     const response = await this.request(subscriptionId, path, method, body, signal)
-    if (response.status === 404) { await response.body?.cancel().catch(() => undefined); throw new AppError('NOT_FOUND') }
+    if (response.status === 404) throw await this.httpError(response, 'image-query')
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined)
-      if (response.status === 401) throw new AppError('AUTH_REQUIRED')
-      if (response.status === 403) throw new AppError('PERMISSION_DENIED')
-      if (response.status === 429) throw new AppError('RATE_LIMITED')
-      throw new AppError('SERVICE_UNAVAILABLE')
+      throw await this.httpError(response, method === 'POST' ? path === '/quotes' ? 'image-quote' : 'image-submit' : 'image-query')
     }
     const length = Number(response.headers.get('Content-Length'))
     const responseBody = response.body
@@ -197,6 +196,31 @@ export class SepRealMediaGateway implements MediaGatewayPort {
         reader.releaseLock()
       }
     }
+  }
+  private async httpError(response: Response, stage: string): Promise<AppError> {
+    const status = response.status
+    let payload: unknown
+    const contentType = response.headers.get('Content-Type')?.split(';')[0]?.trim().toLowerCase()
+    const length = Number(response.headers.get('Content-Length'))
+    if (contentType === 'application/json' && (!Number.isFinite(length) || length <= MAX_JSON) && response.body) {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+      try {
+        reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0
+        while (true) { const { done, value } = await reader.read(); if (done) break; size += value.byteLength; if (size > MAX_JSON) throw new Error(); chunks.push(value) }
+        reader.releaseLock(); payload = JSON.parse(Buffer.concat(chunks, size).toString('utf8'))
+      } catch { if (reader) await reader.cancel().catch(() => undefined); else await response.body.cancel().catch(() => undefined) }
+      finally { reader?.releaseLock() }
+    } else await response.body?.cancel().catch(() => undefined)
+    const error = payload && typeof payload === 'object' && !Array.isArray(payload) ? (payload as Record<string, unknown>).error : undefined
+    const code = error && typeof error === 'object' && typeof (error as Record<string, unknown>).code === 'string' && SAFE_ERROR_CODE.test((error as Record<string, unknown>).code as string)
+      ? (error as Record<string, unknown>).code as string : undefined
+    const field = error && typeof error === 'object' && typeof (error as Record<string, unknown>).field === 'string' && SAFE_ERROR_FIELD.test((error as Record<string, unknown>).field as string)
+      ? (error as Record<string, unknown>).field as string : undefined
+    const recovery = error && typeof error === 'object' && typeof (error as Record<string, unknown>).recovery === 'string' && SAFE_ERROR_RECOVERY.test((error as Record<string, unknown>).recovery as string)
+      ? (error as Record<string, unknown>).recovery as string : undefined
+    const mapped: ErrorCode = code && isErrorCode(code) ? code : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED' : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 400 ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
+    const message = mapped === 'AUTH_REQUIRED' ? '图片服务认证已失效，请重新登录。' : mapped === 'PERMISSION_DENIED' ? '图片服务拒绝了当前授权或请求。' : mapped === 'INVALID_ARGUMENT' ? '图片服务拒绝了当前输入或规格。' : mapped === 'NOT_FOUND' ? '未找到对应的图片任务或资源。' : mapped === 'RATE_LIMITED' ? '图片服务请求过于频繁，请稍后重试。' : '图片服务暂时不可用，请查询原请求，不要自动重新生成。'
+    return new AppError(mapped, { message, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}) } })
   }
   private async request(subscriptionId: string, path: string, method: 'GET'|'POST', body: unknown, signal: AbortSignal) {
     this.safeId(subscriptionId); signal.throwIfAborted()

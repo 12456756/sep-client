@@ -214,6 +214,20 @@ describe('SepRealMediaGateway', () => {
     assert.equal(calls.length, 6)
   })
 
+  it('maps a bounded, structured backend error without exposing its message or URL', async () => {
+    const gateway = new SepRealMediaGateway({ baseUrl: 'https://sep.example/api/', token: async () => token,
+      fetch: async () => json({ error: { code: 'INVALID_ARGUMENT', field: 'parameters.size', recovery: 'query_original', message: `${privateDetail}` } }, 400) })
+    await assert.rejects(gateway.quote('subscription-1', request, signal()), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'INVALID_ARGUMENT')
+      assert.equal(error.details?.field, 'parameters.size')
+      assert.equal(error.details?.businessCode, 'INVALID_ARGUMENT')
+      assert.equal(error.details?.recovery, 'query_original')
+      assert.doesNotMatch(error.message, /fixture-employment-token|private\.example|private-secret/)
+      return true
+    })
+  })
+
   it('posts once and queries the original client request ID after an unknown result', async () => {
     const { gateway, calls } = create(async (_input, init) => init?.method === 'POST' ? json(receipt, 202) : json(receipt))
     const result = await gateway.submit('subscription-1', { ...request, clientRequestId: 'request-1', quoteId: 'quote-1' }, signal())
@@ -225,6 +239,21 @@ describe('SepRealMediaGateway', () => {
     assert.equal(found?.clientRequestId, 'request-1')
     assert.equal(calls[1]?.url, 'https://sep.example/api/gateway/v1/media/real/requests/by-client-id/request-1')
     assert.equal(calls[1]?.method, 'GET')
+  })
+
+  it('preserves safe recovery details from a failed content response', async () => {
+    const { gateway } = create(async () => json({ error: {
+      code: 'MEDIA_RESULT_EXPIRED', field: 'outputId', recovery: 'query_original', message: privateDetail,
+    } }, 410))
+    await assert.rejects(gateway.content('subscription-1', 'receipt-1', 'output-1', signal()), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.details?.businessCode, 'MEDIA_RESULT_EXPIRED')
+      assert.equal(error.details?.field, 'outputId')
+      assert.equal(error.details?.stage, 'image-content')
+      assert.equal(error.details?.recovery, 'query_original')
+      assert.doesNotMatch(`${error.message} ${JSON.stringify(error)}`, /fixture-employment-token|private\.example|private-secret/)
+      return true
+    })
   })
 
   it('rejects fake, unavailable, malformed and expired quote responses', async () => {

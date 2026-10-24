@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { arrangementMediaArtifactIdSchema, arrangementNodeWorkContractSchema, type ArrangementNode } from './arrangement-plan'
+import { arrangementMediaArtifactIdSchema, arrangementMediaMimeByFormat, arrangementNodeWorkContractSchema, type ArrangementNode } from './arrangement-plan'
 
 export const deliveryIssueSchema = z.object({
   code: z.string().min(1).max(80),
@@ -77,6 +77,13 @@ export function deliveryPlanIssues(nodes: readonly ArrangementNode[]): DeliveryI
     for (const file of node.deliverables) {
       const key = deliveryPathKey(file.path)
       if (ids.has(file.id) || paths.has(key)) issues.push({ code: 'DUPLICATE_DELIVERY', deliverableId: file.id, path: file.path, message: '交付物 ID 或最终文件路径重复；不同节点不得覆盖同一最终文件。' })
+      if (file.artifact?.source === 'workspace' && (file.artifact.kind === 'image' || file.artifact.kind === 'video')) {
+        issues.push({ code: 'WORKSPACE_MEDIA_UNSUPPORTED', deliverableId: file.id, path: file.path, message: '当前媒体编排尚不支持从工作区原生文件交付图片或视频，请改用媒体输出来源后再生成。' })
+      }
+      if (file.artifact?.source !== 'workspace' && file.artifact?.kind === 'image' &&
+        !arrangementMediaMimeByFormat[file.format.toLowerCase()]?.includes('image/png')) {
+        issues.push({ code: 'MEDIA_FORMAT_UNSUPPORTED', deliverableId: file.id, path: file.path, message: '当前媒体输出图片只能在生成前确认 PNG 交付；JPG、JPEG 或 WebP 不能在生成后静默转换，请调整格式或来源。' })
+      }
       ids.add(file.id)
       paths.add(key)
     }

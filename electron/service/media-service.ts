@@ -33,6 +33,8 @@ export interface MediaServiceOptions {
   pollFloorMs?: number
   maxAttempts?: number
   operationTimeoutMs?: number
+  /** Submission may outlive ordinary control-plane calls while SEP waits on its upstream. */
+  submissionTimeoutMs?: number
 }
 interface RunInput {
   taskId: string; runId: string; subscriptionId: string; employee: MediaEmployeeRuntime
@@ -87,10 +89,10 @@ export class MediaService {
       return null
     }
   }
-  private async network<T>(scope: TaskOwnerScope, parent: AbortSignal, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  private async network<T>(scope: TaskOwnerScope, parent: AbortSignal, call: (signal: AbortSignal) => Promise<T>, timeoutMs = this.options.operationTimeoutMs ?? 60_000): Promise<T> {
     const epoch = this.epoch
     this.assert(scope, epoch)
-    const signal = AbortSignal.any([parent, this.sessionController.signal, AbortSignal.timeout(this.options.operationTimeoutMs ?? 60_000)])
+    const signal = AbortSignal.any([parent, this.sessionController.signal, AbortSignal.timeout(timeoutMs)])
     signal.throwIfAborted()
     let onAbort: () => void = () => undefined
     try {
@@ -242,14 +244,14 @@ export class MediaService {
         if (size && !sizes.includes(size)) throw new AppError('INVALID_ARGUMENT')
         const aspectRatio = requestedParameters.aspectRatio ?? (size && imageAspectRatio(size)) ??
           (profile.defaultSize && imageAspectRatio(profile.defaultSize)) ?? ratios[0]
-        const defaultSize = profile.defaultSize && sizes.includes(profile.defaultSize) ? profile.defaultSize : sizes[0]
         const quality = requestedParameters.quality ?? profile.defaultQuality ?? profile.allowedQualities?.[0]
         const count = requestedParameters.count ?? 1
         if (!aspectRatio || (quality && !profile.allowedQualities?.includes(quality)) || (size && imageAspectRatio(size) && imageAspectRatio(size) !== aspectRatio)) {
           throw new AppError('INVALID_ARGUMENT')
         }
+        const toolSize = size ?? sizes.find(value => imageAspectRatio(value) === undefined)
         const normalized = parseMediaInput({ profileId: profile.profileId, operation, localAssetIds, creativeBrief: requested.creativeBrief,
-          parameters: { aspectRatio, count, ...(size ?? defaultSize ? { size: size ?? defaultSize } : {}), ...(quality ? { quality } : {}) } })
+          parameters: { aspectRatio, count, ...(toolSize ? { size: toolSize } : {}), ...(quality ? { quality } : {}) } })
         return this.generate(input.taskId, normalized, { ...input, capabilities }, signal)
       }
       const args = z.object({ jobId: mediaId, cancelUpstream: z.boolean().optional() }).strict().parse(raw)
@@ -349,18 +351,36 @@ export class MediaService {
         }
         await uploadReferences()
       }
-      const quote = mediaQuoteSchema.parse(await this.network(scope, parent, s => gateway.quote(binding.subscriptionId, { ...semantic, referenceIds, requestHash }, s)))
-      // Keep legacy quote fields readable; unknown prices cannot authorize generation in either approval mode.
-      if (quote.requestHash !== requestHash || quote.expiresAt <= Date.now() || !quote.authorized || !quote.budgetAuthorized
-        || quote.status !== 'quoted' || quote.amount === null || !quote.currency?.trim()) throw new AppError('PERMISSION_DENIED')
-      if (!automatic) {
+      const quoteRequest = { ...semantic, referenceIds, requestHash }
+      const readQuote = async () => {
+        const next = mediaQuoteSchema.parse(await this.network(scope, parent, s => gateway.quote(binding.subscriptionId, quoteRequest, s)))
+        // Keep legacy quote fields readable; unknown prices cannot authorize generation.
+        if (next.requestHash !== requestHash || !next.authorized || !next.budgetAuthorized
+          || next.status !== 'quoted' || next.amount === null || !next.currency?.trim()) throw new AppError('PERMISSION_DENIED')
+        return next
+      }
+      let quote = await readQuote()
+      let approvalAccepted = automatic
+      const approve = async () => {
         const allowed = await this.network(scope, parent, () => binding.requestApproval({ taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
           toolName: 'media_generate_image', input: { profile: profile.displayName, operation: input.operation, referenceCount: input.localAssetIds.length,
             transmission: '参考图片将上传到 SEP 图片网关', parameters: input.parameters, creativeBrief: input.creativeBrief,
             quote: { status: quote.status, amount: quote.amount, currency: quote.currency, expiresAt: quote.expiresAt } } }))
         if (!allowed) throw new AppError('PERMISSION_DENIED')
+        approvalAccepted = true
       }
-      if (quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED', { message: '报价授权已过期，请重新发起。' })
+      if (!automatic) await approve()
+      // Human approval can outlive a short quote. Re-quote at most once using the
+      // same semantic hash; a price/currency change requires fresh approval.
+      if (quote.expiresAt <= Date.now()) {
+        const previous = quote
+        quote = await readQuote()
+        if (quote.amount !== previous.amount || quote.currency !== previous.currency) {
+          approvalAccepted = automatic
+          if (!automatic) await approve()
+        }
+      }
+      if (!approvalAccepted || quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED', { message: '报价授权已过期，请重新发起。' })
       if (!gateway.quoteRequiresUploadedReferences) await uploadReferences()
       const now = Date.now(), clientRequestId = randomUUID()
       job = { version: 1, owner: scope, jobId, taskId, runId: binding.runId, subscriptionId: binding.subscriptionId,
@@ -375,7 +395,11 @@ export class MediaService {
       job = { ...job, submission: 'MAYBE_SENT' }
       await this.options.store.saveJob(scope, job)
       try {
-        this.acceptReceipt(job, await this.network(scope, parent, s => gateway.submit(binding.subscriptionId, job!.request, s)))
+        // SEP can spend up to 180s waiting on its upstream image provider. Keep this
+        // phase separate from ordinary control-plane calls so a slow accepted submit
+        // becomes an UNKNOWN request that is queried by its original id instead of
+        // being mistaken for a local failure or retried with a new id.
+        this.acceptReceipt(job, await this.network(scope, parent, s => gateway.submit(binding.subscriptionId, job!.request, s), this.options.submissionTimeoutMs ?? 190_000))
       } catch {
         job.generationStatus = 'SUBMISSION_UNKNOWN'
         job.error = '提交结果尚未确认，仅查询原请求，不会再次生成。'
@@ -384,7 +408,9 @@ export class MediaService {
       await this.options.store.saveJob(scope, job)
       this.assert(scope, epoch)
       const submitted = job
-      const tracking = this.track(scope, submitted, parent, epoch).finally(finish)
+      // Once the submitted job is durable, model handoff cannot cancel host-owned saving.
+      // Explicit task/session stops still abort the activity controller.
+      const tracking = this.track(scope, submitted, controller.signal, epoch).finally(finish)
       this.activities.set(activityKey, { taskId, controller, promise: tracking })
       trackingStarted = true
       void tracking.finally(() => this.releaseActivity(activityKey, controller)).catch(() => undefined)
