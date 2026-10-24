@@ -12,6 +12,7 @@ import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpo
 import type { EmployeeRuntimeConfig, TaskWorkerPort } from './run-types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { ArrangementExecutor, buildArrangementNodePrompt } from './arrangement-executor'
+import { buildArrangementNodeSystemPrompt } from './arrangement-node-prompts'
 import { silentTaskMonitor, type TaskMonitorPort, type MonitorTaskQueuedInput, type MonitorTaskContentInput } from '../domain/task-monitor'
 import type { MonitorParticipation } from '../common/platform/client-monitor-contract'
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
@@ -327,6 +328,37 @@ describe('TaskRuntime arrangement integration', () => {
   })
 })
 
+describe('arrangement node prompt media contract', () => {
+  it('passes structured preferences and declared references to the employee in manual and auto plans', () => {
+    const base = plan('task-media-preferences')
+    const mediaRequirements = [{ id: 'motion', kind: 'video' as const, operation: 'image-to-video' as const,
+      inputFrom: { nodeId: 'image', deliverableId: 'poster' }, inputSelection: 'single' as const,
+      preferred: { durationSeconds: 5, cameraMotion: 'Slow push', scene: { lighting: 'Warm light' } } }]
+    for (const mode of ['auto', 'manual'] as const) {
+      const workPlan = { ...base, mode }
+      const prompt = buildArrangementNodeSystemPrompt(workPlan, { ...base.nodes[0]!, mediaRequirements }, [], employee)
+      assert.ok(prompt.includes(JSON.stringify(mediaRequirements, null, 2)))
+      assert.match(prompt, /不得把任意偏好字段直接作为工具参数/)
+      assert.match(prompt, /不得擅自选图/)
+    }
+  })
+
+  it('requests an explicit asset mapping only for media-backed final deliverables', () => {
+    const base = plan('task-prompt')
+    const node = {
+      ...base.nodes[0]!,
+      deliverables: [{ id: 'video', name: 'Video', format: 'mp4', path: 'deliverables/video.mp4', contentOutline: ['Video'], acceptanceCriteria: ['Playable video'], artifact: { kind: 'video' as const, source: 'media-output' as const, operation: 'text-to-video' as const } }],
+    }
+    const prompt = buildArrangementNodeSystemPrompt(base, node, [], employee)
+    assert.match(prompt, /mediaDeliverables/)
+    assert.match(prompt, /MEDIA_ARTIFACT_ID/)
+    assert.match(prompt, /明确的 deliverableId 和媒体工具返回的 artifactId/)
+
+    const documentNode = { ...node, deliverables: [{ ...node.deliverables[0]!, artifact: undefined }] }
+    assert.doesNotMatch(buildArrangementNodeSystemPrompt(base, documentNode, [], employee), /MEDIA_ARTIFACT_ID/)
+  })
+})
+
 
 
 function twoNodePlan(taskId: string): WorkPlan {
@@ -376,6 +408,273 @@ describe('TaskRuntime arrangement controls', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })
 
+  it('settles as paused for confirmation without rerunning the independent completed node', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-parallel-confirmation-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('parallel confirmation', 'goal', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.workspace.path = root
+    arrangement.nodes[0]!.requiresUserConfirmation = true
+    arrangement.nodes[1]!.dependsOn = []
+    arrangement.nodes.push({ ...arrangement.nodes[1]!, id: 'child', dependsOn: ['node-a'] })
+    const checkpoints = new MemoryCheckpointStore()
+    const started: string[] = []
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+      async run() { started.push(options.context.arrangementNodeId!) }, async abort() {}, async dispose() {},
+    }))
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
+      assert.equal(checkpoints.value?.state.status, 'waiting-user')
+      assert.equal(checkpoints.value?.state.nodes.find(node => node.nodeId === 'node-a')?.pendingConfirmation, true)
+      assert.equal(checkpoints.value?.state.nodes.find(node => node.nodeId === 'child')?.status, 'pending')
+      assert.deepEqual([...started].sort(), ['node-a', 'node-b'])
+      await runtime.confirmArrangementNodes(task.id, ['node-a'])
+      await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+      assert.deepEqual(started, ['node-a', 'node-b', 'child'])
+    } finally { await runtime.stopAll() }
+  })
+
+  it('does not report all-completed nodes as final before user confirmation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-final-confirmation-'))
+    directories.push(root)
+    const arrangement = plan('task')
+    arrangement.nodes[0]!.requiresUserConfirmation = true
+    const executor = new ArrangementExecutor({
+      scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
+      workspaceRoot: root, arrangementSubscriptionId: employee.subscriptionId,
+      getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+      async onEvent() {}, async authorizeEmployee() { return employee },
+      createWorker: () => ({ async run() {}, async abort() {}, async dispose() {} }),
+    })
+    const result = await executor.execute(arrangement, 'task', 'run')
+    assert.equal(result.status, 'waiting-user')
+    assert.equal(result.state.nodes[0]!.status, 'completed')
+    assert.equal(result.state.nodes[0]!.pendingConfirmation, true)
+  })
+
+  for (const failure of ['request', 'delivery'] as const) {
+    it(`retries a ${failure} failure while a parallel node keeps its original run`, async () => {
+      const root = await mkdtemp(join(tmpdir(), 'sep-live-node-retry-'))
+      directories.push(root)
+      const runStore = new TaskRunStore(root)
+      const manager = new TaskManager(root, null, undefined, runStore)
+      await manager.initialize()
+      await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+      const task = await manager.createTask('parallel retry', 'goal', undefined, employee.subscriptionId)
+      const arrangement = twoNodePlan(task.id)
+      arrangement.workspace.path = root
+      arrangement.nodes[1]!.dependsOn = []
+      arrangement.nodes.push({ ...arrangement.nodes[0]!, id: 'child', dependsOn: ['node-a'] },
+        { ...arrangement.nodes[1]!, id: 'peer-child', dependsOn: ['node-b'] })
+      if (failure === 'delivery') arrangement.nodes[0]!.deliverables = [{
+        id: 'report', name: 'Report', format: 'txt', path: 'report.txt', contentOutline: ['result'], acceptanceCriteria: ['complete'],
+      }]
+      const checkpoints = new MemoryCheckpointStore()
+      const attempts = new Map<string, number>()
+      const aborted: string[] = []
+      let releasePeer!: () => void
+      let releaseRetry!: () => void
+      const peer = new Promise<void>(resolve => { releasePeer = resolve })
+      const retry = new Promise<void>(resolve => { releaseRetry = resolve })
+      const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+        async run() {
+          const id = options.context.arrangementNodeId!
+          const attempt = (attempts.get(id) ?? 0) + 1
+          attempts.set(id, attempt)
+          if (id === 'node-b') await peer
+          if (id === 'node-a') {
+            if (attempt === 1) {
+              if (failure === 'request') throw new Error('request failed')
+              for (let i = 0; i < 5; i++) await options.onResponseSettled?.({ text: '', stopReason: 'stop' })
+              assert.fail('Invalid delivery must fail this node')
+            }
+            await retry
+            if (failure === 'delivery') {
+              await writeFile(join(root, 'report.txt'), 'accepted result')
+              await options.onResponseSettled?.({ text: JSON.stringify({ nodeId: id, summary: 'recovered',
+                finalDeliverables: [{ id: 'report', path: 'report.txt' }] }), stopReason: 'stop' })
+            }
+          }
+        },
+        async abort() { aborted.push(options.context.arrangementNodeId!); releasePeer(); releaseRetry() },
+        async dispose() {},
+      }))
+      try {
+        await runtime.executeTask(task.id)
+        await waitFor(() => checkpoints.value?.state.nodes[0]?.status === 'failed' && attempts.get('node-b') === 1)
+        const parentRun = (await manager.getTask(task.id))!.activeRunId
+        const originalPeer = structuredClone(checkpoints.value!.state.nodes[1])
+        assert.equal((await manager.getTask(task.id))!.status, TaskStatus.RUNNING)
+        assert.equal(checkpoints.value?.state.nodes[2]?.status, 'blocked')
+        assert.deepEqual(aborted, [])
+        for (const nodeId of ['node-b', 'child', 'missing']) {
+          await assert.rejects(runtime.retryTask(task.id, { nodeId }), { code: 'INVALID_STATE' })
+        }
+        await assert.rejects(runtime.retryTask(task.id), { code: 'INVALID_STATE' })
+        const retried = await Promise.allSettled([
+          runtime.retryTask(task.id, { nodeId: 'node-a' }), runtime.retryTask(task.id, { nodeId: 'node-a' }),
+        ])
+        assert.equal(retried.filter(result => result.status === 'fulfilled').length, 1)
+        await waitFor(() => attempts.get('node-a') === 2)
+        await assert.rejects(runtime.retryTask(task.id, { nodeId: 'node-a' }), { code: 'INVALID_STATE' })
+        assert.deepEqual(checkpoints.value?.state.nodes[1], originalPeer)
+        assert.equal(attempts.get('child'), undefined)
+        releaseRetry()
+        await waitFor(() => checkpoints.value?.state.nodes[2]?.status === 'completed')
+        assert.equal(attempts.get('node-b'), 1)
+        assert.equal((await manager.getTask(task.id))!.activeRunId, parentRun)
+        const recovered = structuredClone(checkpoints.value!.state.nodes[0])
+        releasePeer()
+        await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+        assert.deepEqual(checkpoints.value?.state.nodes[0], recovered)
+        assert.deepEqual([...attempts].sort(), [['child', 1], ['node-a', 2], ['node-b', 1], ['peer-child', 1]])
+        assert.deepEqual(aborted, [])
+      } finally {
+        releasePeer(); releaseRetry()
+        await runtime.stopAll()
+      }
+    })
+  }
+
+  it('runs an independent branch to completion without retrying another failed branch', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-independent-branch-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('branches', 'goal', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.nodes[1]!.dependsOn = []
+    arrangement.nodes.push({ ...arrangement.nodes[1]!, id: 'peer-child', dependsOn: ['node-b'] })
+    const checkpoints = new MemoryCheckpointStore()
+    const started: string[] = []
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+      async run() { const id = options.context.arrangementNodeId!; started.push(id); if (id === 'node-a') throw new Error('failed') },
+      async abort() {}, async dispose() {},
+    }))
+    await runtime.executeTask(task.id)
+    await waitFor(async () => !(await manager.getTask(task.id))?.activeRunId)
+    assert.equal(checkpoints.value?.state.nodes[2]?.status, 'completed')
+    assert.deepEqual(started, ['node-a', 'node-b', 'peer-child'])
+    assert.deepEqual(checkpoints.value?.state.failureNodeIds, ['node-a'])
+  })
+
+  it('keeps repeated failures retryable and releases only satisfied dependencies', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-repeat-node-retry-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('repeat retry', 'goal', undefined, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.nodes[1]!.dependsOn = []
+    arrangement.nodes.push({ ...arrangement.nodes[0]!, id: 'child', dependsOn: ['node-a'] },
+      { ...arrangement.nodes[0]!, id: 'join', dependsOn: ['node-a', 'node-b'] },
+      { ...arrangement.nodes[0]!, id: 'peer', dependsOn: [] })
+    const checkpoints = new MemoryCheckpointStore()
+    const attempts = new Map<string, number>()
+    let releasePeer!: () => void
+    const peer = new Promise<void>(resolve => { releasePeer = resolve })
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, options => ({
+      async run() {
+        const id = options.context.arrangementNodeId!
+        const attempt = (attempts.get(id) ?? 0) + 1
+        attempts.set(id, attempt)
+        if (id === 'peer') await peer
+        if ((id === 'node-a' && attempt < 3) || (id === 'node-b' && attempt === 1)) throw new Error('failed again')
+      }, async abort() { releasePeer() }, async dispose() {},
+    }))
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => checkpoints.value?.state.nodes.filter(node => node.status === 'failed').length === 2)
+      await runtime.retryTask(task.id, { nodeId: 'node-a' })
+      await waitFor(() => checkpoints.value?.state.nodes[0]?.status === 'failed' && attempts.get('node-a') === 2)
+      await runtime.retryTask(task.id, { nodeId: 'node-a' })
+      await waitFor(() => checkpoints.value?.state.nodes[2]?.status === 'completed')
+      assert.equal(checkpoints.value?.state.nodes[3]?.status, 'blocked')
+      assert.equal(attempts.get('node-b'), 1)
+      assert.equal(attempts.get('peer'), 1)
+      const completedChild = structuredClone(checkpoints.value!.state.nodes[2])
+      releasePeer()
+      await waitFor(async () => !(await manager.getTask(task.id))?.activeRunId)
+      await runtime.retryTask(task.id, { nodeId: 'node-b' })
+      await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+      assert.deepEqual(checkpoints.value?.state.nodes[2], completedChild)
+      assert.deepEqual([...attempts].sort(), [['child', 1], ['join', 1], ['node-a', 3], ['node-b', 2], ['peer', 1]])
+    } finally { releasePeer(); await runtime.stopAll() }
+  })
+
+  it('accepts a node retry that arrives while the parent run is finalizing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-settle-node-retry-'))
+    directories.push(root)
+    const runStore = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runStore)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('settle retry', 'goal', undefined, employee.subscriptionId)
+    const arrangement = plan(task.id)
+    const checkpoints = new MemoryCheckpointStore()
+    let attempts = 0
+    let waitingEvents = 0
+    let retry: Promise<void> | undefined
+    const runtime = runtimeForArrangement(manager, runStore, checkpoints, arrangement, () => ({
+      async run() { if (++attempts === 1) throw new Error('failed') }, async abort() {}, async dispose() {},
+    }), silentTaskMonitor, event => {
+      if (event.type === 'arrangement_state_changed' && (event.data as { status?: string }).status === 'waiting-user' && ++waitingEvents === 2) {
+        retry = runtime.retryTask(task.id, { nodeId: 'node-a' })
+        void retry.catch(() => undefined)
+      }
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => retry !== undefined)
+      await retry
+      await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+      assert.equal(attempts, 2)
+    } finally { await runtime.stopAll() }
+  })
+
+  it('rejects unwired media delivery and input contracts before preparing paid tools or starting a worker', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-media-gate-'))
+    directories.push(root)
+    const contracts: Array<Partial<WorkPlan['nodes'][number]>> = [
+      { deliverables: [{ id: 'poster', name: 'Poster', format: 'png', path: 'deliverables/poster.png', contentOutline: ['Poster'], acceptanceCriteria: ['Valid image'], artifact: { kind: 'image', source: 'media-output' } }] },
+      { deliverables: [{ id: 'video', name: 'Video', format: 'mp4', path: 'deliverables/video.mp4', contentOutline: ['Video'], acceptanceCriteria: ['Playable video'], artifact: { kind: 'video', source: 'workspace' } }] },
+      { mediaRequirements: [{ id: 'motion', kind: 'video', operation: 'image-to-video', inputFrom: { artifactId: 'asset_abc-123' } }] },
+    ]
+    for (const contract of contracts) {
+      const arrangement = plan('task')
+      arrangement.nodes[0] = { ...arrangement.nodes[0]!, ...contract }
+      let prepared = 0
+      let workers = 0
+      const executor = new ArrangementExecutor({
+        scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
+        workspaceRoot: root, arrangementSubscriptionId: employee.subscriptionId,
+        getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+        async onEvent() {}, async authorizeEmployee() { return employee },
+        media: { async prepareRun() { prepared++; return undefined }, async waitForRun() {}, async stopTask() {} },
+        video: { async prepareRun() { prepared++; return undefined }, async waitForRun() {}, async stopTask() {} },
+        createWorker: () => {
+          workers++
+          return { async run() {}, async abort() {}, async dispose() {} }
+        },
+      })
+      const result = await executor.execute(arrangement, 'task', 'run')
+      assert.equal(result.status, 'failed')
+      assert.match(result.error ?? '', /尚未接通/)
+      assert.equal(prepared, 0)
+      assert.equal(workers, 0)
+    }
+  })
+
   it('does not prepare tool hosts after knowledge retrieval resolves for an aborted node', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-search-abort-'))
     directories.push(root)
@@ -402,6 +701,39 @@ describe('TaskRuntime arrangement controls', () => {
     await executor.execute(arrangement, 'task', 'run')
     assert.equal(prepared, 0)
     assert.equal(workers, 0)
+  })
+
+  it('does not launch a queued node retry when explicit stop wins the race', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-stop-node-retry-'))
+    directories.push(root)
+    const arrangement = twoNodePlan('task')
+    arrangement.nodes[1]!.dependsOn = []
+    const attempts: string[] = []
+    let failed = false
+    let releasePeer!: () => void
+    const peer = new Promise<void>(resolve => { releasePeer = resolve })
+    const executor = new ArrangementExecutor({
+      scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
+      workspaceRoot: root, arrangementSubscriptionId: employee.subscriptionId,
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
+      async authorizeEmployee() { return employee },
+      async onEvent(event) { if (event.type === 'arrangement_node_failed' && (event.data as { nodeId?: string }).nodeId === 'node-a') failed = true },
+      createWorker: options => ({
+        async run() { const id = options.context.arrangementNodeId!; attempts.push(id); if (id === 'node-a') throw new Error('failed'); await peer },
+        async abort() { releasePeer() }, async dispose() {},
+      }),
+    })
+    const execution = executor.execute(arrangement, 'task', 'parent')
+    try {
+      await waitFor(() => failed && attempts.includes('node-b'))
+      const retry = executor.retryFailedNode('node-a')
+      await executor.stop()
+      assert.equal(await retry, false)
+      const result = await execution
+      assert.equal(result.status, 'stopped')
+      assert.deepEqual(attempts, ['node-a', 'node-b'])
+      assert.ok(result.state.nodes.every(node => node.status === 'stopped'))
+    } finally { releasePeer(); await executor.stop(); await execution }
   })
 
   it('attributes exact dependency prompts, partial outputs and approvals to distinct node attempts under each parent run', async () => {

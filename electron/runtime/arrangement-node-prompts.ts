@@ -32,6 +32,13 @@ export function buildArrangementNodeSystemPrompt(
       "id": ${JSON.stringify(file.id)}, // 交付清单中此项的真实 ID。
       "path": ${JSON.stringify(file.path)} // 此交付物的指定工作区相对路径。
     }`).join(',\n')
+  const mediaDeliverables = (node.deliverables ?? []).filter(file =>
+    (file.artifact?.kind === 'image' || file.artifact?.kind === 'video') && file.artifact.source === 'media-output',
+  )
+  const mediaFiles = mediaDeliverables.map(file => `    {
+      "deliverableId": ${JSON.stringify(file.id)}, // 计划中此媒体交付物的真实 ID。
+      "artifactId": "MEDIA_ARTIFACT_ID" // 媒体工具实际返回的资产 ID，不是本地路径。
+    }`).join(',\n')
 
   return `# 硅基员工节点执行要求
 
@@ -68,6 +75,13 @@ ${dependenciesText}
 预期输出：${node.expectedOutput}
 
 交付清单：${JSON.stringify(node.deliverables ?? [], null, 2)}
+${node.mediaRequirements?.length ? `
+本节点媒体要求：
+${JSON.stringify(node.mediaRequirements, null, 2)}
+按以上 operation 和 inputFrom 完成媒体操作。前置资产使用后端提供的参考资产，不得猜测资产 ID、路径或重新生成前置成果。
+preferred 中的风格、场景、比例、时长等是业务偏好；先读取媒体能力清单，再选择支持的参数，不得把任意偏好字段直接作为工具参数。
+inputSelection 是选图意图；当前每项需求只解析一个明确来源。多张候选未确定或用户尚未选图时，应说明缺少的选择，不得擅自选图或声称已完成。
+` : ''}
 
 **必须严格按照当前节点的目标、执行指令及交付清单开展工作。**
 
@@ -93,6 +107,7 @@ ${dependenciesText}
 ## 五、最终输出
 
 所有规定交付物必须真实生成，并保存至指定工作区路径。不得虚构文件或用文字代替规定成果。
+${mediaDeliverables.length ? '标记为 media-output 的图片或视频交付物必须来自本节点已保存的媒体资产。结束 JSON 的 mediaDeliverables 必须为每个此类交付物填写明确的 deliverableId 和媒体工具返回的 artifactId；不得猜测 ID、使用其他节点未声明的资产或提交本地路径。媒体最终文件由主进程根据映射保存到指定路径，不得自行写入或覆盖计划中的媒体路径。' : ''}
 
 只有确认全部交付物已保存且符合验收要求后，才允许返回以下严格 JSON。
 以下示例中的注释仅解释字段含义，实际输出必须删除全部注释，返回合法 JSON：
@@ -102,7 +117,10 @@ ${dependenciesText}
   "summary": "本节点实际完成的工作及成果简述", // 只描述实际完成的工作和结果，不得将计划或未完成事项写成已完成。
   "finalDeliverables": [ // 全部规定且实际保存的最终交付文件。
 ${finalFiles}
-  ]
+  ]${mediaDeliverables.length ? `,
+  "mediaDeliverables": [ // 媒体最终交付物与实际资产的完整映射，由主进程保存文件。
+${mediaFiles}
+  ]` : ''}
 }
 
 finalDeliverables 必须包含全部规定交付物，不得包含过程文件或额外成果。

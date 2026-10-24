@@ -2,6 +2,11 @@ import { mkdir } from 'node:fs/promises'
 import { lazyStream, type AssistantMessage, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
+  createBashToolDefinition,
+  createGrepToolDefinition,
+  createReadToolDefinition,
+  defineTool,
+  getShellConfig,
   loadSkills,
   DefaultResourceLoader,
   ModelRuntime,
@@ -14,6 +19,7 @@ import {
   type ToolCallEventResult,
   type ToolDefinition,
   type Skill,
+  type BashOperations,
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import { z } from 'zod'
@@ -51,10 +57,15 @@ import { GatewayRetryWait } from './gateway-retry-wait'
 import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
+import { videoErrorMessage } from '../../../src/shared/video-errors'
 
 const log = logger.child('pi-gateway')
 
 export type PiSkill = Skill
+export type PiBashOperations = BashOperations
+export type PiToolDefinition = ToolDefinition
+export type PiEncodingToolSdk = Pick<typeof import('@earendil-works/pi-coding-agent'),
+  'createBashToolDefinition' | 'createGrepToolDefinition' | 'createReadToolDefinition' | 'defineTool' | 'getShellConfig'>
 export type PiLoadSkills = typeof loadSkills
 export type PiResourceLoaderOptions = ConstructorParameters<typeof DefaultResourceLoader>[0]
 
@@ -99,9 +110,14 @@ const videoJobResultSchema = z.object({
   actualCostCny: z.string().regex(/^\d+\.\d{6}$/).max(128).optional(),
   amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).max(128).optional(),
   // Free-form upstream messages can echo prompts, paths or credentials. Never forward them.
-  error: z.string().max(8192).nullable().transform(value => value === null ? null : 'Video job reported an error.'),
+  error: z.string().max(8192).nullable().transform(value => value === null ? null : videoErrorMessage(value) ? value : 'Video job reported an error.'),
   createdAt: z.number().nonnegative().finite(), updatedAt: z.number().nonnegative().finite(),
   outputs: z.array(videoOutputSchema.strip()).max(4),
+  artifacts: z.array(z.object({
+    artifactId: z.string().regex(/^vout_[a-f0-9]{64}$/),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    status: z.enum(['pending', 'saving', 'saved', 'save-failed', 'missing', 'expired']),
+  })).max(4).optional(),
 }).refine(job => job.billingStatus !== 'MOCK_NOT_CHARGED' || job.amountCny === undefined && job.actualCostCny === undefined && job.amountUsd === undefined)
 const videoTaskResultSchema = z.object({
   mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
@@ -186,6 +202,7 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
             ...(diagnostic.httpStatus === undefined ? {} : { httpStatus: diagnostic.httpStatus }),
             ...(diagnostic.resource === undefined ? {} : { resource: diagnostic.resource }),
             ...(diagnostic.stage === undefined ? {} : { stage: diagnostic.stage }),
+            ...(diagnostic.requestId === undefined ? {} : { requestId: diagnostic.requestId }),
           })
           return failure(JSON.stringify(business))
         }
@@ -531,7 +548,9 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
   }
   const encodingTools: ExtensionFactory = pi => {
     const selected = sessionToolOptions(config.toolPolicy, config.disableTools).tools ?? []
-    for (const tool of encodingToolDefinitions(config.workspaceDir)) {
+    for (const tool of encodingToolDefinitions(config.workspaceDir, {
+      createBashToolDefinition, createGrepToolDefinition, createReadToolDefinition, defineTool, getShellConfig,
+    })) {
       if (selected.includes(tool.name)) pi.registerTool(tool)
     }
   }

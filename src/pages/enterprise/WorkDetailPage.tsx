@@ -7,8 +7,11 @@ import {
 import { useEffect, useMemo, useState } from 'react';
 import { Empty, StepStateChip, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
+import { ArrangementSteps } from '../../components/enterprise/arrange/ArrangementSteps';
 import { WorkConversation, WorkTalkDrawer } from '../../components/enterprise/WorkTalkDrawer';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
+import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
+import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
@@ -167,7 +170,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                   </div>
                 )}
               </section>
-              <Process work={work} />
+              <Process work={work} workspace={workspace} />
             </div>
           )}
         </div>
@@ -193,9 +196,12 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                             <strong title={file.name}>{file.name}</strong>
                             <small>{file.note}</small>
                           </span>
-                          <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
-                            复制路径
-                          </button>
+                          <div className="ent-wk-file-actions">
+                            {!isConversation && file.nodeId && file.deliverableId && file.format ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null}
+                            <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
+                              复制路径
+                            </button>
+                          </div>
                         </li>
                       ))}
                     </ul>
@@ -208,12 +214,15 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           </section>
 
           {isConversation ? <MediaArtifactsPanel taskId={work.id} /> : null}
+          {!isConversation && work.arrangementExecution?.media?.length ? (
+            <ArrangementMediaPanel taskId={work.id} media={work.arrangementExecution.media} />
+          ) : null}
 
           {/*
             对话式工作没有步骤报表，工作过程就放在侧栏；
             流程工作的过程报表在主栏，这里不再重复一份。
           */}
-          {isConversation ? <Process work={work} /> : null}
+          {isConversation ? <Process work={work} workspace={workspace} /> : null}
 
           {/* 工作信息折叠：低频信息不占首屏。多人协作时「谁做到哪一步」也在里面的工作步骤里。 */}
           <MoreInfo work={work} />
@@ -270,10 +279,10 @@ function NeedsYou({ work, workspace, onTalk }: { work: WorkItem; workspace: Ente
             补充说明
           </button>
         ) : null}
-        <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
+        {!(work.kind === 'flow' && work.arrangementExecution?.nodes.some(node => node.status === 'failed')) ? <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
           <RotateCcw size={13} aria-hidden />
           重新试一次
-        </button>
+        </button> : null}
       </div>
     );
   }
@@ -402,8 +411,8 @@ function Donut({ percent }: { percent: number }) {
 
 /** 工作过程。多人协作时上面一排页签按人筛，单人工作不出现页签。 */
 /** 用户只看结构化动作；原始日志仍由后台保留，不在详情页呈现。 */
-function Process({ work }: { work: WorkItem }) {
-  if (work.kind === 'flow') return <ArrangementProcess work={work} />;
+function Process({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
+  if (work.kind === 'flow') return <ArrangementProcess work={work} workspace={workspace} />;
   return (
     <section className="ent-panel ent-work-process">
       <h2>工作过程</h2>
@@ -435,29 +444,13 @@ function Process({ work }: { work: WorkItem }) {
   );
 }
 
-function ArrangementProcess({ work }: { work: WorkItem }) {
+function ArrangementProcess({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   return (
     <section className="ent-panel ent-work-process">
       <h2>工作过程</h2>
       <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities)}</p>
       {work.steps.length ? (
-        <ol className="ent-arrangement-step-list" aria-label="节点完成情况">
-          {work.steps.map(step => {
-            const label = step.state === 'done' ? '已完成'
-              : step.state === 'running' ? '进行中'
-                : step.state === 'waiting-user' ? '等待确认'
-                  : step.state === 'failed' ? '失败'
-                    : step.state === 'skipped' ? '已跳过' : '未开始';
-            return (
-              <li key={step.id} className={`ent-arrangement-step ${step.state}`}>
-                <span className="ent-arrangement-step-icon" aria-hidden>
-                  {step.state === 'done' ? <CheckCircle2 size={15} /> : step.state === 'failed' ? <XCircle size={15} /> : step.state === 'running' ? <LoaderCircle size={15} className="ent-spin" /> : <span />}
-                </span>
-                <span className="ent-arrangement-step-copy"><strong>{step.title}</strong><small>{step.employeeName} · {label}</small></span>
-              </li>
-            );
-          })}
-        </ol>
+        <ArrangementSteps work={work} busy={workspace.busy} onRetry={workspace.retryWork} />
       ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}
     </section>
   );

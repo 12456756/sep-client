@@ -11,6 +11,25 @@ const task = (id = 'task-a'): ClientTask => ({
 const type: WorkTypeReadResult = { state: 'resolved', kind: 'arrangement' }
 
 describe('task query/event reconciliation', () => {
+  it('ignores delayed single and list events for a successfully deleted record', () => {
+    const removed = new Set(['task-a'])
+    const current = [task('other')]
+    assert.deepEqual(mergeTaskUpdate(current, task(), removed), current)
+    assert.deepEqual(mergeTaskList(current, [task(), task('other')], removed).map(item => item.id), ['other'])
+    assert.deepEqual(mergeTaskUpdate([task(), ...current], task('other'), removed).map(item => item.id), ['other'])
+  })
+
+  it('does not restore deleted records from a query started before deletion', () => {
+    const removed = new Set(['task-a'])
+    for (const receivedList of [false, true]) {
+      const current = [task(), task('other')]
+      const next = mergeInitialTaskQuery(current, [task()], new Set(), receivedList, removed)
+      assert.deepEqual(next.map(item => item.id), ['other'])
+    }
+    // A new account gets a new deletion set, not the previous account tombstones.
+    assert.deepEqual(mergeTaskUpdate([], task(), new Set()), [task()])
+  })
+
   it('preserves queried type on both raw single and list updates', () => {
     const current = [{ ...task(), workType: type }]
     assert.deepEqual(mergeTaskUpdate(current, { ...task(), title: '实时标题' })[0].workType, type)

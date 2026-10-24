@@ -12,6 +12,7 @@ import { VideoStore } from '../data/video-store'
 import type { VideoScope } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
+import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
 
 function realReceipt(receipt: VideoReceipt): VideoReceipt {
   return { ...receipt, mock: false, billingStatus: receipt.status === 'SUCCEEDED' ? 'SETTLED' : 'RESERVED', amountCny: '0.900000', amountUsd: '0.12', ...(receipt.status === 'SUCCEEDED' ? { actualCostCny: '0.800000' } : {}) }
@@ -64,6 +65,7 @@ test('lost real submit response recovers original request and never repeats subm
   }) })
   const unknown = await host.generate('task-a', input())
   assert.equal(unknown.generationStatus, 'SUBMISSION_UNKNOWN')
+  assert.equal(unknown.billingStatus, 'RECONCILING')
   await host.stopAll()
   const restored = new MockVideoHostService(f.options)
   await restored.resume('task-a', unknown.jobId)
@@ -71,6 +73,39 @@ test('lost real submit response recovers original request and never repeats subm
   assert.equal((await restored.resume('task-a', unknown.jobId)).saveStatus, 'SAVED')
   assert.equal(f.gateway.calls.submit, 1); assert.equal(f.gateway.calls.quote, 1)
   await restored.stopAll()
+})
+
+test('real host exposes definitive rejection and skips original lookup on restart while allowing an explicit new request', async () => {
+  const f = await realSetup()
+  let submissions = 0
+  const denied = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId,
+    token: async () => 'test-token', fetch: async () => {
+      submissions++
+      return new Response(JSON.stringify({ error: { code: 'VIDEO_BUDGET_EXCEEDED', source: 'platform', requestId: 'req-rejected-1' } }),
+        { status: 402, headers: { 'Content-Type': 'application/json' } })
+    } })
+  const options: MockVideoHostOptions = { ...f.options, gateway: owner => ({ ...f.options.gateway(owner), submit: denied.submit.bind(denied) }) }
+  const host = new MockVideoHostService(options)
+  const job = await host.generate('task-a', input())
+  assert.equal(job.generationStatus, 'FAILED')
+  assert.equal(job.trackingStatus, 'STOPPED')
+  assert.equal(job.error, 'VIDEO_BUDGET_EXCEEDED')
+  assert.equal(job.billingStatus, 'NOT_RESERVED')
+  await host.stopAll()
+  const restored = new MockVideoHostService(options)
+  try {
+    await restored.resumePending(['task-a'])
+    await restored.track('task-a')
+    assert.deepEqual(await restored.resume('task-a', job.jobId), job)
+    assert.equal(f.gateway.calls.findReceipt, 0)
+    assert.equal(f.gateway.calls.getReceipt, 0)
+    assert.equal(submissions, 1)
+    const next = await restored.generate('task-a', input())
+    assert.notEqual(next.jobId, job.jobId)
+    assert.equal(submissions, 2)
+    assert.equal(f.gateway.calls.quote, 2)
+    assert.equal(f.approvals.length, 4)
+  } finally { await restored.stopAll(); await f.host.stopAll() }
 })
 
 test('local history stays mode isolated regardless of current runtime mode', async () => {

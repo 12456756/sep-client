@@ -5,7 +5,7 @@ import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import { SEP_MEDIA_MOCK_PNG_BASE64 } from '../common/platform/sep-media-gateway-contract'
 import { config } from '../common/config'
-import { SepMockVideoGateway, SepRealVideoGateway } from './sep-video-media-gateway'
+import { SepMockVideoGateway, SepRealVideoGateway, SepVideoGatewayError } from './sep-video-media-gateway'
 
 const signal = new AbortController().signal
 const bytes = Buffer.from('non-fixture video output')
@@ -121,6 +121,121 @@ test('quote rejection is identified before approval and never exposes or retries
     details: { resource: 'video', stage: 'video-quote' },
   })
   assert.equal(calls, 1)
+})
+
+test('video submission keeps safe business errors and only marks proven pre-reserve rejection', async () => {
+  const adapter = gateway(async () => json({ error: { code: 'VIDEO_BUDGET_EXCEEDED', source: 'platform', requestId: 'req_safe-1', message: 'private' } }, 402))
+  let error: unknown
+  try { await adapter.submit(videoRequestWithIdentitySchema.parse(fixture.request), signal) } catch (caught) { error = caught }
+  assert.ok(error instanceof SepVideoGatewayError)
+  assert.equal(error.businessCode, 'VIDEO_BUDGET_EXCEEDED')
+  assert.equal(error.definitelyRejected, true)
+  assert.equal(error.requestId, 'req_safe-1')
+  assert.equal(error.message, '已超过企业视频预算。')
+
+  const uncertain = gateway(async () => json({ error: { code: 'VIDEO_BUDGET_EXCEEDED', requestId: 'bad id' } }, 402))
+  let uncertainError: unknown
+  try { await uncertain.submit(videoRequestWithIdentitySchema.parse(fixture.request), signal) } catch (caught) { uncertainError = caught }
+  assert.ok(uncertainError instanceof SepVideoGatewayError)
+  assert.equal(uncertainError.businessCode, null)
+  assert.equal(uncertainError.definitelyRejected, false)
+  assert.equal(uncertainError.requestId, null)
+})
+
+test('submit parses only a trusted platform rejection into a definitive business error', async () => {
+  const trusted = gateway(async () => json({ error: { code: 'INSUFFICIENT_FUNDS', source: 'platform', requestId: 'platform-request-1', message: 'private details' } }, 402))
+  const request = videoRequestWithIdentitySchema.parse(fixture.request)
+  await assert.rejects(trusted.submit(request, signal), error => error instanceof SepVideoGatewayError &&
+    error.code === 'INSUFFICIENT_FUNDS' && error.definitelyRejected === true && error.requestId === 'platform-request-1' &&
+    !error.message.includes('private details'))
+
+  const untrusted = gateway(async () => json({ error: { code: 'INSUFFICIENT_FUNDS', source: 'upstream' } }, 402))
+  await assert.rejects(untrusted.submit(request, signal), error => error instanceof SepVideoGatewayError &&
+    error.code === 'INSUFFICIENT_FUNDS' && error.definitelyRejected === false)
+})
+
+test('malformed or non-json submit errors remain uncertain and never trust arbitrary codes', async () => {
+  const request = videoRequestWithIdentitySchema.parse(fixture.request)
+  const cases = [
+    { response: json({ error: { code: 'INSUFFICIENT_FUNDS', source: 'platform' } }, 400), businessCode: 'INSUFFICIENT_FUNDS' },
+    { response: json({ error: { code: 'UNKNOWN_INTERNAL', source: 'platform' } }, 402), businessCode: null },
+    { response: new Response('<html>gateway failure</html>', { status: 402, headers: { 'Content-Type': 'text/html' } }), businessCode: null },
+  ] as const
+  for (const { response, businessCode } of cases) {
+    const adapter = gateway(async () => response)
+    await assert.rejects(adapter.submit(request, signal), error => error instanceof SepVideoGatewayError &&
+      error.definitelyRejected === false && error.businessCode === businessCode)
+  }
+})
+
+test('aborting while reading a non-success body remains an abort and releases the reader', async () => {
+  const controller = new AbortController()
+  let cancelled = false
+  const body = new ReadableStream<Uint8Array>({
+    start(stream) { stream.enqueue(new TextEncoder().encode('{"error":')) },
+    pull() { return new Promise<void>(() => undefined) },
+    cancel() { cancelled = true },
+  })
+  const adapter = gateway(async () => new Response(body, { status: 402, headers: { 'Content-Type': 'application/json' } }))
+  const pending = adapter.submit(videoRequestWithIdentitySchema.parse(fixture.request), controller.signal)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  controller.abort()
+  await assert.rejects(pending, { gatewayCode: 'VIDEO_ABORTED' })
+  assert.equal(cancelled, true)
+})
+
+test('definitive rejection requires matching status, platform source, submit stage and a safe request ID', async () => {
+  const request = videoRequestWithIdentitySchema.parse(fixture.request)
+  const valid = { code: 'INSUFFICIENT_FUNDS', source: 'platform', requestId: 'req-verified-1' }
+  for (const [status, error] of [
+    [402, { ...valid, requestId: undefined }],
+    [402, { ...valid, requestId: 'bad id' }],
+    [402, { ...valid, requestId: 123 }],
+    [402, { ...valid, requestId: 'x'.repeat(129) }],
+    [402, { ...valid, source: undefined }],
+    [402, { ...valid, source: 'upstream' }],
+    [402, { ...valid, source: { value: 'platform' } }],
+    [402, { ...valid, code: undefined }],
+    [402, { ...valid, code: 'UNKNOWN_INTERNAL' }],
+    [403, valid], [409, valid], [500, valid],
+  ] as const) {
+    let calls = 0
+    const adapter = gateway(async () => { calls++; return json({ error }, status) })
+    await assert.rejects(adapter.submit(request, signal), caught => caught instanceof SepVideoGatewayError && !caught.definitelyRejected)
+    assert.equal(calls, 1)
+  }
+  const adapter = gateway(async () => json({ error: valid }, 402))
+  await assert.rejects(adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal), error =>
+    error instanceof SepVideoGatewayError && !error.definitelyRejected && error.stage === 'video-quote')
+  await assert.rejects(adapter.getReceipt(receipt.receiptId, signal), error => error instanceof SepVideoGatewayError && !error.definitelyRejected)
+
+  const headerOnly = gateway(async () => new Response(JSON.stringify({ error: { ...valid, requestId: undefined } }), {
+    status: 402, headers: { 'Content-Type': 'application/json', 'x-request-id': 'req-header-1' },
+  }))
+  await assert.rejects(headerOnly.submit(request, signal), error => error instanceof SepVideoGatewayError && error.definitelyRejected && error.requestId === 'req-header-1')
+})
+
+test('invalid, oversized or conflicting error evidence stays uncertain without leaking its contents', async () => {
+  const request = videoRequestWithIdentitySchema.parse(fixture.request)
+  const valid = { code: 'INSUFFICIENT_FUNDS', source: 'platform', requestId: 'req-safe-1' }
+  const bodies: Array<{ body: string | Uint8Array<ArrayBuffer>; headers?: Record<string, string> }> = [
+    { body: JSON.stringify({ error: valid }), headers: { 'Content-Type': 'text/html' } },
+    { body: JSON.stringify({ error: [] }) },
+    { body: JSON.stringify([{ error: valid }]) },
+    { body: '{"error":' },
+    { body: new Uint8Array([0xff, 0xfe]) },
+    { body: JSON.stringify({ error: { ...valid, message: 'private'.repeat(1500) } }) },
+    { body: JSON.stringify({ error: valid }), headers: { 'Content-Length': '9000' } },
+    { body: JSON.stringify({ error: valid }), headers: { 'Content-Length': '1' } },
+    { body: JSON.stringify({ error: valid }), headers: { 'x-request-id': 'conflicting-safe-id' } },
+    { body: JSON.stringify({ error: valid }), headers: { 'x-request-id': 'bad id' } },
+    { body: JSON.stringify({ error: { ...valid, requestId: 'bad id' } }), headers: { 'x-request-id': 'req-safe-1' } },
+  ]
+  for (const { body, headers } of bodies) {
+    const adapter = gateway(async () => new Response(body, { status: 402, headers: { 'Content-Type': 'application/json', ...headers } }))
+    await assert.rejects(adapter.submit(request, signal), error => error instanceof SepVideoGatewayError &&
+      !error.definitelyRejected && error.businessCode === null && !JSON.stringify(error).includes('private'))
+  }
 })
 
 test('real and mock responses cannot cross modes, and POST failures are never retried', async () => {

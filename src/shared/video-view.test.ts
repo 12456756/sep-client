@@ -227,6 +227,91 @@ test('uncertain submission offers original tracking recovery and never a replace
   assert.match(auth, /认证恢复后，请手动恢复跟踪/)
 })
 
+test('definitive business rejection shows its cause without recovery or regeneration actions', () => {
+  const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' },
+    jobs: [job({ generationStatus: 'FAILED', trackingStatus: 'STOPPED',
+      billingStatus: 'NOT_RESERVED', error: 'VIDEO_BUDGET_EXCEEDED' })] } })
+  assert.match(html, /已超过企业视频预算/)
+  assert.match(html, /提交被拒绝/)
+  assert.match(html, /尚未预占/)
+  assert.doesNotMatch(html, /生成失败|恢复跟踪|重新保存|重新生成|提交结果不明|Video job reported/)
+})
+
+function realJobs(patch: Partial<VideoJobView>): string {
+  return panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({
+    billingStatus: 'NOT_RESERVED', ...patch,
+  })] } })
+}
+
+test('only stopped failed jobs with a controlled rejection code show submission rejected', () => {
+  for (const error of ['INSUFFICIENT_FUNDS', 'VIDEO_BUDGET_EXCEEDED', 'QUOTE_EXPIRED', 'VIDEO_CONCURRENCY_LIMIT']) {
+    const html = realJobs({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', error })
+    assert.match(html, /提交被拒绝/)
+    assert.doesNotMatch(html, /生成失败|恢复跟踪|重新生成/)
+    for (const patch of [
+      { generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'STOPPED' as const },
+      { generationStatus: 'FAILED', trackingStatus: 'INTERRUPTED' as const },
+    ]) assert.doesNotMatch(realJobs({ ...patch, error }), /提交被拒绝/)
+  }
+  assert.match(realJobs({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', error: 'UNKNOWN_ERROR' }), /生成失败/)
+})
+
+test('unknown and legacy submissions never claim generation failure or uncharged funds', () => {
+  for (const billingStatus of ['NOT_RESERVED', 'RECONCILING'] as const) {
+    for (const error of [null, 'SUBMISSION_UNKNOWN', 'UNKNOWN_ERROR', '生成失败，未扣费', 'VIDEO_BUDGET_EXCEEDED']) {
+      const html = realJobs({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED', billingStatus,
+        actualCostCny: '28.800000', amountCny: '28.800000', error })
+      assert.match(html, /提交结果不明/)
+      assert.match(html, /账务待确认/)
+      assert.match(html, /报价 ¥28\.800000/)
+      assert.match(html, /恢复跟踪/)
+      assert.doesNotMatch(html, /生成失败|未扣费|不收费|尚未预占|实付|已结算|提交被拒绝|任务未能完成/)
+    }
+  }
+})
+
+test('actual payment requires settled billing and a valid nonnegative decimal amount including zero', () => {
+  for (const actualCostCny of ['28.800000', '0.000000', '0', '0.00']) {
+    const html = realJobs({ billingStatus: 'SETTLED', actualCostCny, amountCny: '30.000000' })
+    assert.ok(html.includes(`实付 ¥${actualCostCny}`))
+    assert.match(html, /已结算/)
+    assert.doesNotMatch(html, /报价 ¥30/)
+  }
+  for (const actualCostCny of [undefined, '', ' ', '-1.000000', '-0.000000', 'NaN', 'Infinity', '1e2', '0x10', '1.0000001', '1,000.00', '<script>', '9'.repeat(400)]) {
+    const html = realJobs({ billingStatus: 'SETTLED', actualCostCny, amountCny: '28.800000' })
+    assert.match(html, /结算金额待核对/)
+    assert.match(html, /报价 ¥28\.800000/)
+    assert.doesNotMatch(html, /实付|已结算|尚无视频任务/)
+  }
+})
+
+test('unsettled billing displays quote and reservation facts, never actual payment', () => {
+  const labels = { NOT_RESERVED: '尚未预占', RESERVED: '费用已预占', RELEASED: '预占已释放', RECONCILING: '账务核对中' } as const
+  for (const billingStatus of Object.keys(labels) as (keyof typeof labels)[]) {
+    const html = realJobs({ billingStatus, actualCostCny: '24.000000', amountCny: '28.800000' })
+    assert.ok(html.includes(labels[billingStatus]))
+    assert.match(html, /报价 ¥28\.800000/)
+    assert.doesNotMatch(html, /实付|已结算|24\.000000/)
+  }
+  for (const amountCny of ['', '-1.000000', 'NaN', 'Infinity', '1e2', '<script>']) {
+    const html = realJobs({ billingStatus: 'RECONCILING', amountCny })
+    assert.match(html, /账务核对中/)
+    assert.doesNotMatch(html, /报价|实付|尚无视频任务/)
+  }
+  assert.match(jobs(job({ actualCostCny: '28.800000' })), /Mock · 不收费/)
+  assert.doesNotMatch(jobs(job({ actualCostCny: '28.800000' })), /实付|28\.800000/)
+})
+
+test('uncertain real submission retains the cause and displays pending billing with original recovery', () => {
+  const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' },
+    jobs: [job({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED',
+      billingStatus: 'RECONCILING', error: 'MEDIA_FORBIDDEN' })] } })
+  assert.match(html, /当前账号没有视频生成权限/)
+  assert.match(html, /账务待确认/)
+  assert.match(html, /恢复跟踪/)
+  assert.doesNotMatch(html, /尚未预占|未产生扣费|重新保存/)
+})
+
 test('terminal, not-submitted and unknown generation states do not offer invalid recovery', () => {
   for (const generationStatus of ['FAILED', 'CANCELLED', 'RESULT_EXPIRED', 'NOT_SUBMITTED', 'future-status', '__proto__']) {
     const html = jobs(job({ generationStatus, trackingStatus: 'STOPPED', saveStatus: 'SAVE_FAILED', outputs: [output] }))
@@ -333,12 +418,12 @@ test('unsafe cross-task identifiers, output URLs, invalid MIME and real-charge p
   assert.equal(panel({ view: { mock: true, runtime: { ...runtime, profiles: [{ ...runtime.profiles[0], profileId: 'file:///secret' }] }, jobs: [] } }), '')
 })
 
-test('plain errors are escaped and feedback stays above results without revealing configuration text', () => {
+test('unknown video errors use fixed copy and feedback stays above results without revealing configuration text', () => {
   const attack = '<script>alert("unsafe")</script>'
   const html = panel({ view: { mock: true, runtime: { ...runtime, profiles: [{ ...runtime.profiles[0], displayName: attack }] }, jobs: [job({ error: attack })] },
     busy: true, pending: 'export', notice: { message: attack, tone: 'error' } })
   assert.doesNotMatch(html, /<script>|dangerouslySetInnerHTML|(?:src|href)=/)
-  assert.equal(html.split('&lt;script&gt;').length - 1, 2)
+  assert.equal(html.split('&lt;script&gt;').length - 1, 1)
   assert.match(html, /role="alert" aria-atomic="true">&lt;script&gt;/)
   assert.doesNotMatch(html, /<form|<select|<textarea/)
   assert.ok(html.indexOf('role="alert"') < html.indexOf('video-jobs'))

@@ -1,4 +1,4 @@
-import type { ArrangementDraft } from './arrangement-plan'
+import type { ArrangementDraft, ArrangementMediaRequirement } from './arrangement-plan'
 import type { ArrangementPlannerEmployee } from './arrangement-planner'
 
 export type ArrangementPlanningStage = 'authorized' | 'enterprise' | 'platform'
@@ -14,12 +14,19 @@ export interface ArrangementPlannerInput {
   unresolvedSteps: NonNullable<ArrangementDraft['unresolvedSteps']>
   existingNodes: Array<Pick<ArrangementDraft['nodes'][number],
     'id' | 'stepId' | 'subscriptionId' | 'modelId' | 'title' | 'objective' | 'instruction' |
-    'expectedOutput' | 'knowledgeQuery' | 'deliverables' | 'dependsOn'>>
+    'expectedOutput' | 'knowledgeQuery' | 'deliverables' | 'dependsOn' | 'mediaRequirements'>>
   existingCandidateMatches: NonNullable<ArrangementDraft['candidateMatches']>
   employeeCatalog: Array<Pick<ArrangementPlannerEmployee,
     'subscriptionId' | 'employeeId' | 'name' | 'description' | 'position' | 'functionalCategory' |
     'capabilities' | 'canApply' | 'allowedModels' | 'source' | 'canExecute'>>
 }
+
+const mediaExamples: ArrangementMediaRequirement[] = [
+    { id: 'generate-image', kind: 'image', operation: 'generate', required: true, preferred: { aspectRatio: '16:9', style: '真实商品摄影', scene: '窗边自然光' } },
+    { id: 'edit-image', kind: 'image', operation: 'edit', inputFrom: { artifactId: 'USER_SELECTED_ASSET_ID' }, inputSelection: 'single', preferred: { prompt: '保留商品外观，调整背景' } },
+    { id: 'animate-image', kind: 'video', operation: 'image-to-video', inputFrom: { nodeId: 'image-node', deliverableId: 'image-file' }, inputSelection: 'single', preferred: { durationSeconds: 5, cameraMotion: '缓慢推进' } },
+    { id: 'generate-video', kind: 'video', operation: 'text-to-video', preferred: { aspectRatio: '16:9', durationSeconds: 10 } },
+  ]
 
 export const ARRANGEMENT_PLANNER_RULES = `# 硅基员工自动编排规划 Agent
 
@@ -277,6 +284,38 @@ candidateMatches 中每项结构：
 - objective、instruction、expectedOutput 和 deliverables 必须相互一致。
 - 不得增加未定义字段。
 
+## 图片与视频交付协议
+
+用户要求生成图片或视频时，将媒体本身列为交付物，并在 deliverable 的 artifact 中声明 kind、source 和 operation；source 为 media-output 表示最终资产来自本节点的媒体任务，source 为 workspace 表示员工通过普通文件工作流交付。
+节点确实需要调用生图、图片编辑、图生视频或文生视频时，才填写 mediaRequirements；不要因普通文档中提到图片或视频就自动添加媒体任务。
+图生视频等需要前置图片的场景，在媒体需求的 inputFrom 中填写上游 nodeId 与 deliverableId，并将该 nodeId 同时列入 dependsOn；引用用户已选定的任务内现存资产时只填写 artifactId，不要伪造来源节点。
+preferred 只表达用户偏好，不代表当前员工或供应商一定支持；不得猜测供应商型号或 manifest 能力范围，实际支持情况留给预检和运行时确认。
+
+5. mediaRequirements
+   - 仅为需要执行的图片生成、图片编辑、文生视频或图生视频操作返回。
+   - 每项必须有节点内唯一的 id（字母、数字、下划线或连字符），以及 kind 和 operation。
+   - kind 只能为 image 或 video；operation 只能为 generate（文生图）、edit（图片编辑）、image-to-video（图生视频）、text-to-video（文生视频）。
+   - required 是可选布尔值；inputSelection 可选 single、any、all、model、user，无输入时省略，不填写 none、specified 或对象。
+   - inputFrom 是单个对象，不是数组，也不嵌套在 inputSelection 中。当前每项需求只解析一个明确来源，多张输入可拆成多项需求；未确定来源时说明缺少的选择，不承诺自动多图选择。
+   - preferred 表达偏好，不承诺能力支持。标准字段包括字符串 aspectRatio、resolution、outputFormat，正数 durationSeconds、frameRate，正整数 count，布尔 audio；可补充 style、scene、subject、prompt、cameraMotion 等 JSON 描述，不限于这些偏好名称。
+   - inputFrom.nodeId 必须同时出现在 dependsOn；inputFrom.deliverableId 必须属于该来源节点。用户选择已有资产时可只填 inputFrom.artifactId。
+   - deliverables[].artifact 的 kind 必须与媒体类型一致，source 使用 media-output、workspace 或 either；operation 使用上面的规范值。直接交付媒体工具的产物时必须标记 media-output。
+   - 当前媒体原文件保存支持 PNG、JPEG、WebP、MP4、WebM；其他格式需另行安排转换交付，不得只改文件扩展名。
+   - 不得返回供应商 profile、内部文件路径、临时 URL 或凭据。
+
+媒体结构示例（四项是独立场景，按用户实际需求选用，不要全部添加）：
+${JSON.stringify(mediaExamples.map(requirement => ({
+    mediaRequirements: [requirement],
+    dependsOn: requirement.inputFrom?.nodeId ? [requirement.inputFrom.nodeId] : [],
+    deliverables: [{
+      id: requirement.kind === 'image' ? 'image-file' : 'video-file', name: requirement.kind === 'image' ? '商品图片' : '商品视频',
+      format: requirement.kind === 'image' ? 'png' : 'mp4', path: requirement.kind === 'image' ? 'deliverables/product.png' : 'deliverables/product.mp4',
+      contentOutline: ['用户要求的主体与场景'], acceptanceCriteria: ['实际生成并保存可读取的媒体文件'],
+      artifact: { kind: requirement.kind, source: 'media-output', operation: requirement.operation },
+    }],
+  })), null, 2)}
+以上为节点中的媒体字段，按实际业务需要使用。
+
 # 七、校验失败后的修正
 
 收到程序返回的输出校验错误时：
@@ -306,6 +345,7 @@ export function buildArrangementPlannerInput(
       id: node.id, stepId: node.stepId, subscriptionId: node.subscriptionId, modelId: node.modelId,
       title: node.title, objective: node.objective, instruction: node.instruction, expectedOutput: node.expectedOutput,
       knowledgeQuery: node.knowledgeQuery, deliverables: node.deliverables, dependsOn: node.dependsOn,
+      ...(node.mediaRequirements?.length ? { mediaRequirements: node.mediaRequirements } : {}),
     })),
     existingCandidateMatches: draft.candidateMatches ?? [],
     employeeCatalog: employees.map(employee => ({

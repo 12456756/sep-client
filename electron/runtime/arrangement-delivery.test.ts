@@ -353,28 +353,33 @@ describe('automatic arrangement final file handover', () => {
     assert.equal(second.state.nodes[0]?.modelRequestProgress?.countingScope, 'since-resume')
     assert.equal((await new ArrangementCheckpointStore(f.root).get(f.plan.owner, 'task'))?.state.nodes[0]?.modelRequestProgress?.countingScope, 'since-resume')
   })
-  it('does not start a parallel sibling whose authorization finishes after terminal failure', { timeout: 5_000 }, async () => {
+  it('lets an independent sibling finish after another node hits a delivery storage error', { timeout: 5_000 }, async () => {
     let release!: () => void
     let terminalFailureObserved = false
     const gate = new Promise<void>(resolve => { release = resolve })
-    const f = await fixture(async () => { throw new DeliveryExecutionError('Final delivery storage is unavailable.') }, async id => {
+    const f = await fixture(async (id, _iteration, root) => {
+      if (id === 'a') throw new DeliveryExecutionError('Final delivery storage is unavailable.')
+      if (id === 'b') await writeFile(join(root, 'deliverables/b.txt'), 'Independent final result')
+      return { text: submission(id) }
+    }, async id => {
       if (id === 'b') {
         await gate
         assert.ok(terminalFailureObserved)
       }
     }, undefined, event => {
       if (event.type === 'arrangement_node_failed' && (event.data as { nodeId?: string }).nodeId === 'a') {
-        // The terminal flag is set before this event. File I/O can take much
-        // longer than a fixed timer when the complete test suite runs in parallel.
         terminalFailureObserved = true
         release()
       }
     })
     f.plan.nodes[1]!.dependsOn = []
-    assert.equal((await f.executor.execute(f.plan, 'task', 'run')).status, 'failed')
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'failed')
     assert.ok(terminalFailureObserved)
-    assert.equal(f.contexts.length, 1)
-    assert.equal(f.contexts[0]?.arrangementNodeId, 'a')
+    assert.equal(f.contexts.length, 2)
+    assert.deepEqual(result.state.nodes.map(node => node.status), ['failed', 'completed'])
+    assert.equal(result.state.nodes[1]?.delivery?.validationAttempts, 1)
+    assert.equal(result.state.nodes[1]?.delivery?.finalFiles.length, 1)
   })
   it('preserves completed nodes when rejecting an incomplete legacy plan on resume', async () => {
     const f = await fixture(async id => ({ text: submission(id) }))

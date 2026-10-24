@@ -76,7 +76,11 @@ export class TaskReadCache {
   }
 }
 
-export function mergeTaskUpdate(current: readonly ClientTask[], incoming: ClientTask): ClientTask[] {
+export function mergeTaskUpdate(current: readonly ClientTask[], incoming: ClientTask, deletedIds?: ReadonlySet<string>): ClientTask[] {
+  if (deletedIds?.size) {
+    current = current.filter(task => !deletedIds.has(task.id))
+    if (deletedIds.has(incoming.id)) return [...current]
+  }
   const index = current.findIndex(task => task.id === incoming.id)
   if (index === -1) return [incoming, ...current]
   const next = [...current]
@@ -84,12 +88,17 @@ export function mergeTaskUpdate(current: readonly ClientTask[], incoming: Client
   return next
 }
 
-export function mergeTaskList(current: readonly ClientTask[], incoming: readonly ClientTask[]): ClientTask[] {
+export function mergeTaskList(current: readonly ClientTask[], incoming: readonly ClientTask[], deletedIds?: ReadonlySet<string>): ClientTask[] {
   const byId = new Map(current.map(task => [task.id, task]))
-  return incoming.map(task => ({ ...task, workType: mergeWorkType(byId.get(task.id)?.workType, task.workType) }))
+  return incoming.filter(task => !deletedIds?.has(task.id))
+    .map(task => ({ ...task, workType: mergeWorkType(byId.get(task.id)?.workType, task.workType) }))
 }
 
-export function mergeInitialTaskQuery(current: readonly ClientTask[], queried: readonly ClientTask[], pushedIds: ReadonlySet<string>, receivedList: boolean): ClientTask[] {
+export function mergeInitialTaskQuery(current: readonly ClientTask[], queried: readonly ClientTask[], pushedIds: ReadonlySet<string>, receivedList: boolean, deletedIds?: ReadonlySet<string>): ClientTask[] {
+  if (deletedIds?.size) {
+    current = current.filter(task => !deletedIds.has(task.id))
+    queried = queried.filter(task => !deletedIds.has(task.id))
+  }
   const queriedById = new Map(queried.map(task => [task.id, task]))
   const liveWithTypes = current.map(task => ({ ...task, workType: mergeWorkType(task.workType, queriedById.get(task.id)?.workType) }))
   if (receivedList) return liveWithTypes

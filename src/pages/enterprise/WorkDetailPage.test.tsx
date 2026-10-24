@@ -10,25 +10,30 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import * as ts from 'typescript';
 import * as atoms from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
+import { ArrangementSteps } from '../../components/enterprise/arrange/ArrangementSteps';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
+import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
+import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
 import type { WorkItem } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
-import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import * as vocabulary from '../../features/enterprise/vocabulary';
 
-// Isolate the CSS-importing drawer modules, but render the real page and media panel.
+// Isolate CSS drawers and the browser-only motion hook; render the real page and media panel.
 const dependencies: Record<string, unknown> = {
   'lucide-react': icons,
   react: React,
   'react/jsx-runtime': jsxRuntime,
   '../../components/enterprise/atoms': atoms,
   '../../components/enterprise/EmployeeFace': { EmployeeFace },
+  '../../components/enterprise/arrange/ArrangementSteps': { ArrangementSteps },
   '../../components/enterprise/WorkPlanDrawer': { WorkPlanDrawer: () => null },
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
+  '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
+  '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
   '../../features/enterprise/work-process': workProcess,
-  '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion },
+  '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
   '../../features/enterprise/vocabulary': vocabulary,
 };
 const filename = fileURLToPath(new URL('./WorkDetailPage.tsx', import.meta.url));
@@ -75,5 +80,43 @@ describe('WorkDetailPage media entry', () => {
 
   it('does not introduce conversation media operations into flow work', () => {
     assert.doesNotMatch(renderDetail({ ...work, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' } }), /aria-label="图片创作与成果"/);
+  });
+
+  it('mounts arrangement media results when the execution snapshot has media', () => {
+    const flow = { ...work, kind: 'flow' as const, workType: { state: 'resolved' as const, kind: 'arrangement' as const },
+      arrangementExecution: { activeRunId: null, status: 'completed' as const, nodes: [], updatedAt: 1, media: [{ nodeId: 'image', nodeRunId: 'run-1', kind: 'image' as const, operation: 'generate' as const,
+        inputs: [], pendingActions: [],
+        phase: 'ready' as const, jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' as const }] }] } };
+    assert.match(renderDetail(flow), /编排媒体成果/);
+  });
+
+  it('keeps the failed-node retry visible alongside running peers and saved media', () => {
+    const flow: WorkItem = { ...work, kind: 'flow', status: 'running',
+      workType: { state: 'resolved', kind: 'arrangement' },
+      steps: ['failed', 'peer'].map(id => ({ id, title: id, employeeId: 'employee-a', employeeName: '员工',
+        input: '', output: '', dependsOn: [], needsConfirm: false, state: id === 'failed' ? 'failed' : 'running' })),
+      arrangementExecution: { activeRunId: 'parent', status: 'running', updatedAt: 1,
+        nodes: [{ nodeId: 'failed', status: 'failed', finalFiles: [] }, { nodeId: 'peer', status: 'running', finalFiles: [] }],
+        media: [{ nodeId: 'peer', nodeRunId: 'run-1', kind: 'image', operation: 'generate', inputs: [], pendingActions: [],
+          phase: 'ready', jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' }] }] } };
+    const html = renderDetail(flow);
+    assert.equal((html.match(/aria-label="重试此节点：failed"/g) ?? []).length, 1);
+    assert.doesNotMatch(html, /重试此节点：peer/);
+    assert.match(html, /编排媒体成果/);
+    assert.match(html, /进行中/);
+  });
+
+  it('offers accepted node documents while parallel arrangement nodes are still running', () => {
+    const flow = { ...work, kind: 'flow' as const, status: 'running' as const,
+      workType: { state: 'resolved' as const, kind: 'arrangement' as const },
+      deliverables: [{ id: 'node-a:report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '节点最终交付物 · A',
+        nodeId: 'node-a', nodeTitle: 'A', deliverableId: 'report', format: 'docx' }],
+      arrangementExecution: { activeRunId: 'run', status: 'running' as const, updatedAt: 1,
+        nodes: [{ nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'report.docx', format: 'docx', size: 5,
+          sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 1, snapshot: { sha256: 'a'.repeat(64), size: 5, source: 'confirmed' as const } }] },
+        { nodeId: 'node-b', status: 'running' as const, finalFiles: [] }] } };
+    const html = renderDetail(flow);
+    assert.match(html, /aria-label="预览文档：report\.docx"/);
+    assert.match(html, /复制路径/);
   });
 });

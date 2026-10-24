@@ -11,6 +11,7 @@ import { installSpeechPermissions, type SpeechPermissionGate } from './speech-pe
 import { logger } from '../common/logger'
 import { externalWebLink } from '../common/external-web-link'
 import { getWindowChromeConfig } from '../common/window-layout'
+import appIcon from '../../build/icon.png?asset'
 
 const log = logger.child('main-window')
 
@@ -32,6 +33,7 @@ export function createMainWindow({ onClosed, speech }: MainWindowOptions): Brows
     center: true,
     show: false,
     title: '硅基员工平台',
+    icon: appIcon,
     backgroundColor: '#f7f8fc',
     autoHideMenuBar: true,
     titleBarStyle: windowChrome.titleBarStyle,

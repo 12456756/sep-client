@@ -210,16 +210,18 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     : resolvedKind === 'conversation'
       ? 'conversation'
       : meta?.kind ?? (task.prompt.startsWith(LEGACY_WORKFLOW_MARKER) ? 'flow' : 'conversation');
+  const effectiveExecution = executionFromEvents(plan, arrangementEvents, arrangementExecution);
   let status = toWorkStatus(task.status);
   if (plan && plan.mode !== 'conversation' && task.status === 'paused') {
     const latestState = [...arrangementEvents].reverse().find(event => event.type === 'arrangement_state_changed' || event.type === 'stop_requested');
-    if (latestState?.type === 'arrangement_state_changed' && (latestState.data as { status?: unknown } | null)?.status === 'waiting-user') status = 'failed';
+    if (latestState?.type !== 'stop_requested' && effectiveExecution?.status === 'waiting-user') {
+      status = effectiveExecution.nodes.some(node => node.pendingConfirmation) ? 'waiting-user' : 'failed';
+    }
   }
   const legacyProgress = task.progress ?? (status === 'completed' ? 100 : 0);
   const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
 
   const stepStates = deriveStepStates(meta?.steps.length ?? 0, status, legacyProgress);
-  const effectiveExecution = executionFromEvents(plan, arrangementEvents, arrangementExecution);
   const steps: WorkStep[] = (meta?.steps ?? []).map((step, index) => ({
     ...step,
     employeeName: nameOf(step.employeeId),
@@ -378,7 +380,7 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
   let changed = false
   for (const event of events) {
     if (persisted && event.occurredAt <= persisted.updatedAt) continue
-    const data = event.data as { status?: string; nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status'] }>; finalDeliverables?: unknown } | null
+    const data = event.data as { status?: string; nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status']; pendingConfirmation?: boolean }>; finalDeliverables?: unknown } | null
     if (event.type === 'arrangement_state_changed' && data?.status) {
       status = data.status as typeof status
       changed = true
@@ -386,7 +388,7 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
     if (Array.isArray(data?.nodeStates)) {
       for (const saved of data.nodeStates) {
         const target = nodes.find(node => node.nodeId === saved.nodeId)
-        if (target) { target.status = saved.status; changed = true }
+        if (target) { target.status = saved.status; target.pendingConfirmation = saved.pendingConfirmation; changed = true }
       }
     }
     if (data?.nodeId && data.nodeStatus) {
@@ -396,7 +398,8 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
     if (data?.nodeId && ['arrangement_node_started', 'arrangement_node_completed', 'arrangement_node_failed'].includes(event.type)) {
       const target = nodes.find(node => node.nodeId === data.nodeId)
       if (target) {
-        target.status = event.type === 'arrangement_node_started' ? 'running' : event.type === 'arrangement_node_completed' ? 'completed' : 'failed'
+        target.status = event.type === 'arrangement_node_started' ? 'running' : event.type === 'arrangement_node_completed' ? 'completed'
+          : data.status === 'PAUSED' ? 'interrupted' : data.status === 'CANCELLED' ? 'stopped' : 'failed'
         if (event.type === 'arrangement_node_completed' && Array.isArray(data.finalDeliverables)) target.finalFiles = data.finalDeliverables.filter(isFinalFile)
         changed = true
       }
@@ -429,6 +432,9 @@ function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution:
       note: `节点最终交付物 · ${node.title}`,
       nodeId: node.id,
       nodeTitle: node.title,
+      deliverableId: file.id,
+      format: file.format,
+      previewVersion: `${file.nodeRunId}:${file.snapshot?.sha256 ?? file.sha256}`,
     })
   }
   return files
@@ -436,10 +442,14 @@ function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution:
 
 /** Node IDs (not array position) drive parallel/out-of-order execution state. */
 function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskExecutionEvent[], execution: ArrangementExecutionSnapshot | null): WorkStepState {
-  const saved = execution?.nodes.find(node => node.nodeId === nodeId)?.status
-  if (saved === 'completed') return 'done'
-  if (saved === 'running') return status === 'paused' || status === 'failed' ? 'failed' : 'running'
-  if (saved === 'failed' || saved === 'interrupted' || saved === 'stopped' || saved === 'blocked') return 'failed'
+  const checkpoint = execution?.nodes.find(node => node.nodeId === nodeId)
+  const saved = checkpoint?.status
+  if (saved === 'completed') return checkpoint?.pendingConfirmation ? 'waiting-user' : 'done'
+  if (saved === 'running') return status === 'paused' || status === 'failed' ? 'interrupted' : 'running'
+  if (saved === 'failed') return 'failed'
+  if (saved === 'blocked') return 'blocked'
+  if (saved === 'interrupted') return 'interrupted'
+  if (saved === 'stopped') return 'stopped'
   if (saved === 'ready' || saved === 'pending') return 'pending'
   if (status === 'completed') return 'done';
   let state: WorkStepState = 'pending';
@@ -449,21 +459,27 @@ function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskEx
       const saved = data.nodeStates.find(node => node.nodeId === nodeId)?.status;
       if (saved === 'completed') state = 'done';
       else if (saved === 'running') state = 'running';
-      else if (saved === 'failed' || saved === 'interrupted') state = 'failed';
+      else if (saved === 'failed') state = 'failed';
+      else if (saved === 'blocked') state = 'blocked';
+      else if (saved === 'interrupted') state = 'interrupted';
+      else if (saved === 'stopped') state = 'stopped';
       else if (saved) state = 'pending';
     }
     if (data?.nodeId !== nodeId) continue;
     if (event.type === 'arrangement_node_started') state = 'running';
     if (event.type === 'arrangement_node_completed') state = 'done';
-    if (event.type === 'arrangement_node_failed') state = 'failed';
+    if (event.type === 'arrangement_node_failed') state = data.status === 'PAUSED' ? 'interrupted' : data.status === 'CANCELLED' ? 'stopped' : 'failed';
     if (event.type === 'arrangement_state_changed') {
       if (data.nodeStatus === 'waiting-user') state = 'waiting-user';
       if (data.nodeStatus === 'completed') state = 'done';
       if (data.nodeStatus === 'failed') state = 'failed';
+      if (data.nodeStatus === 'blocked') state = 'blocked';
+      if (data.nodeStatus === 'interrupted') state = 'interrupted';
+      if (data.nodeStatus === 'stopped') state = 'stopped';
       if (data.nodeStatus === 'pending') state = 'pending';
     }
   }
   // A stopped/interrupted run must not leave an active animation behind.
-  if ((status === 'paused' || status === 'failed') && state === 'running') return 'failed';
+  if ((status === 'paused' || status === 'failed') && state === 'running') return 'interrupted';
   return state;
 }

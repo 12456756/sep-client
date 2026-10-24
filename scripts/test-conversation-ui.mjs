@@ -113,10 +113,16 @@ try {
   const bounds=await page.getByRole('dialog').boundingBox();
   assert.ok(bounds.x>=0 && bounds.x+bounds.width<=width+1);
   await page.screenshot({path:join(tmpdir(),`sep-conversation-${width}.png`)});
+  await page.evaluate(async()=>{window.failDelete=true;await window.workspace.deleteWork('work-1');});
+  assert.equal(await page.evaluate(()=>window.workspace.works.length),1,'failed deletion must leave the record visible');
+  await page.evaluate(()=>{window.failDelete=false;});
   await page.evaluate(()=>window.workspace.deleteWork('work-1'));
   await page.getByRole('button',{name:'开始测试'}).waitFor();
   assert.equal(await page.evaluate(()=>window.deletedTaskId),'work-1');
   assert.equal(await page.evaluate(()=>window.workspace.works.length),0,'successful deletion removes the stopped record');
+  await page.evaluate(()=>window.pushDeletedRecord());
+  await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>window.workspace.works.length),0,'late single/list/runtime updates must not restore deleted records');
   assert.deepEqual(errors,[]);
   log('PASS',width,'raw goal, early/multiple deltas, retry retention, final history/status, optimistic send/early history/deduplication/repeated text/failure rollback, cancellation busy/error/reason, notification auto-dismiss/reset, stopped record deletion, focus/layout');
   await page.close();

@@ -1,6 +1,7 @@
 import { buildArrangementPlannerInput, buildArrangementPlannerUserPrompt, type ArrangementPlanningStage } from './arrangement-planner-prompts'
-import { planningFailure, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
-import { arrangementNodeWorkContractSchema, validateArrangementDraft, type ArrangementCandidateMatch, type ArrangementDraft, type ArrangementIntentAnalysis, type ArrangementNode, type ArrangementUnresolvedStep } from './arrangement-plan'
+import { planningContractFailure, planningFailure, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
+import { arrangementMediaKindForFormat, arrangementNodeWorkContractSchema, validateArrangementDraft, type ArrangementCandidateMatch, type ArrangementDraft, type ArrangementIntentAnalysis, type ArrangementNode, type ArrangementUnresolvedStep } from './arrangement-plan'
+import { normalizePlannerMediaContract } from './arrangement-planner-media'
 
 export interface ArrangementPlannerCapability {
   id: string
@@ -108,12 +109,26 @@ export function parseArrangementPlannerOutput(
   if (record.nodes.length === 0 && unresolvedSteps.length === 0) throw planningFailure('output-validation', 'empty-plan')
   const nodes = record.nodes.map((candidate, index) => {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFailure('output-validation', 'invalid-node')
-    const item = candidate as Record<string, unknown>
+    const item = normalizePlannerMediaContract(candidate as Record<string, unknown>)
     const subscriptionId = stringField(item.subscriptionId)
     const modelId = stringField(item.modelId)
     if (!subscriptionId || !modelId) throw planningFailure('output-validation', 'missing-node-fields')
     const contract = arrangementNodeWorkContractSchema.safeParse(item)
-    if (!contract.success) throw planningFailure('output-validation', 'invalid-node-work-contract')
+    if (!contract.success) throw planningContractFailure(index, contract.error.issues)
+    for (const [requirementIndex, requirement] of (contract.data.mediaRequirements ?? []).entries()) {
+      if (requirement.required !== false && !requirement.inputFrom && (requirement.operation === 'edit' || requirement.operation === 'image-to-video')) {
+        throw planningContractFailure(index, [{ path: ['mediaRequirements', requirementIndex, 'inputFrom'], code: 'custom' }], '请指定已选图片或上游图片交付物后重新规划。')
+      }
+    }
+    for (const [fileIndex, file] of (contract.data.deliverables ?? []).entries()) {
+      const kind = arrangementMediaKindForFormat(file.format)
+      if (!file.artifact && kind && contract.data.mediaRequirements?.some(requirement => requirement.kind === kind)) {
+        throw planningContractFailure(index, [{ path: ['deliverables', fileIndex, 'artifact'], code: 'custom' }], '请明确该交付物的媒体来源与操作后重新规划。')
+      }
+      if (file.artifact?.source === 'media-output' && (!kind || kind !== file.artifact.kind)) {
+        throw planningContractFailure(index, [{ path: ['deliverables', fileIndex, 'format'], code: 'custom' }], '媒体原文件的格式需与类型一致，当前支持 PNG、JPEG、WebP、MP4、WebM；其他格式请另行安排转换。')
+      }
+    }
     return {
       id: stringField(item.id) ?? `node-${index + 1}`,
       subscriptionId,

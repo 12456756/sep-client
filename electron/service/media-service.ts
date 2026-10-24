@@ -5,7 +5,7 @@ import type { MediaAssetView, MediaJobView, MediaTaskView } from '../../src/shar
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { LocalMediaJob, MediaCapabilities, MediaGatewayPort, MediaGenerationInput, MediaReceipt, MediaStorePort } from '../domain/media'
-import type { MediaHostTools } from '../domain/media-tools'
+import type { MediaHostTools, MediaJobCreated } from '../domain/media-tools'
 import type { EmployeeRuntimeConfig, TaskToolPolicy } from '../runtime/run-types'
 import { mediaToolGenerationInputSchema } from '../../src/shared/media-host'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
@@ -37,6 +37,7 @@ export interface MediaServiceOptions {
 interface RunInput {
   taskId: string; runId: string; subscriptionId: string; employee: MediaEmployeeRuntime
   toolPolicy?: TaskToolPolicy; requestApproval: Approval
+  onJobCreated?: (job: MediaJobCreated) => Promise<void>
 }
 interface Activity { taskId: string; controller: AbortController; promise: Promise<void> }
 
@@ -256,7 +257,7 @@ export class MediaService {
     if (stopVersion !== (this.taskStops.get(stopKey) ?? 0)) throw new AppError('INVALID_STATE')
     return this.generate(taskId, parseMediaInput(raw), { runId, subscriptionId, toolPolicy, capabilities, requestApproval: this.options.requestApproval })
   }
-  private async generate(taskId: string, input: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; requestApproval: Approval }, signal?: AbortSignal): Promise<MediaJobView> {
+  private async generate(taskId: string, input: MediaGenerationInput, binding: { runId: string; subscriptionId: string; toolPolicy?: TaskToolPolicy; capabilities: MediaCapabilities; requestApproval: Approval; onJobCreated?: RunInput['onJobCreated'] }, signal?: AbortSignal): Promise<MediaJobView> {
     const epoch = this.epoch, initialScope = this.scope(), stopKey = this.key(initialScope, taskId)
     const stopVersion = this.taskStops.get(stopKey) ?? 0
     const { scope } = await this.task(taskId)
@@ -352,6 +353,8 @@ export class MediaService {
         trackingStatus: 'ACTIVE', saveStatus: 'PENDING', outputs: [], billingStatus: 'UNKNOWN', nextPollAt: now, attempts: 0, error: null, createdAt: now, updatedAt: now }
       this.assert(scope, epoch); parent.throwIfAborted()
       await this.options.store.saveJob(scope, job)
+      await binding.onJobCreated?.({ kind: 'image', jobId, operation: input.operation, localAssetIds: input.localAssetIds })
+      this.assert(scope, epoch); parent.throwIfAborted()
       if (quote.expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED')
       job = { ...job, submission: 'MAYBE_SENT' }
       await this.options.store.saveJob(scope, job)

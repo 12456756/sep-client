@@ -10,6 +10,8 @@ import type { PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../../domain/model-request-progress'
 import { setLogLevel, setLogSink, type LogRecord } from '../../common/logger'
 
+import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
+
 let restoreLog: (() => void) | undefined
 afterEach(() => { restoreLog?.(); restoreLog = undefined; setLogLevel('debug') })
 
@@ -43,7 +45,7 @@ function chunk(response: ServerResponse, delta: Record<string, unknown>, finishR
 }
 
 async function fixture(t: TestContext, handle: (body: RequestBody, response: ServerResponse, root: string) => void,
-  persist?: PiAgentSessionConfig['onModelRequest']) {
+  persist?: PiAgentSessionConfig['onModelRequest'], overrides: Partial<PiAgentSessionConfig> = {}) {
   const logs: LogRecord[] = []
   restoreLog = setLogSink(record => { logs.push(record) })
   const root = await mkdtemp(join(tmpdir(), 'sep-model-awareness-'))
@@ -53,6 +55,7 @@ async function fixture(t: TestContext, handle: (body: RequestBody, response: Ser
   let progress: ModelRequestProgress | undefined
   const resources: { session?: PiAgentSession } = {}
   const server = createServer((request, response) => {
+    request.setEncoding('utf8')
     let body = ''
     request.on('data', data => { body += String(data) })
     request.on('end', () => {
@@ -88,6 +91,7 @@ async function fixture(t: TestContext, handle: (body: RequestBody, response: Ser
       progress = persist ? await persist(kind) : advanceModelRequestProgress(progress, kind)
       return progress
     },
+    ...overrides,
   }
   let session = await new PiCodingAgentAdapter().createSession(config)
   resources.session = session
@@ -102,6 +106,80 @@ async function fixture(t: TestContext, handle: (body: RequestBody, response: Ser
 }
 
 describe('real SDK model request awareness', () => {
+  it('retains the native Chinese system and node contract on start, tool continuation, retry, correction and resume', { timeout: 30_000 }, async t => {
+    let calls = 0
+    const f = await fixture(t, (_body, response) => {
+      if (++calls === 1) {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        chunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'read-input', type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: 'input.txt' }) } }] })
+        chunk(response, {}, 'tool_calls')
+        response.end('data: [DONE]\n\n')
+      } else if (calls === 2) {
+        response.writeHead(503, { 'Content-Type': 'application/json', 'Retry-After': '0' })
+        response.end(JSON.stringify({ error: { message: 'Try again', type: 'server_error' } }))
+      } else answer(response, 'Result')
+    }, undefined, {
+      systemPrompt: 'OLD_EMPLOYEE_OVERRIDE', employeeProfile: { name: '研究员工', description: '研究职责' }, additionalSkillPaths: [],
+      useNativeSystemPrompt: true, modelRequestAwareness: false,
+      transformSystemPrompt: translatePiNativeSystemPrompt,
+      fixedSystemPrompt: '# 硅基员工节点执行要求\n员工：研究员工\n节点：node-a\n知识库：实际检索片段',
+    })
+    await writeFile(join(f.root, 'input.txt'), 'Actual data')
+    await f.session.prompt('请开始执行当前节点。')
+    await f.session.prompt('交付校验失败，请修正。')
+    await writeFile(join(f.root, 'agent', 'SYSTEM.md'), 'OLD_DISCOVERED_OVERRIDE')
+    await f.reopen()
+    await f.session.prompt('继续完成未完成工作。')
+    assert.deepEqual(f.kinds, ['execution', 'execution', 'retry', 'execution', 'execution'])
+    assert.equal(f.progress()?.requestAttempts, 5)
+    assert.equal(f.progress()?.executionRetries, 1)
+    for (const request of f.requests) {
+      const system = request.messages.find(message => message.role === 'system')!.content
+      assert.ok(system.startsWith('你运行在 Pi 中。你通过读取文件、执行命令、编辑代码和创建新文件来帮助用户。'))
+      assert.equal(system.split('# 硅基员工节点执行要求').length, 2)
+      for (const text of ['可用工具：', '主要文档：', '附加文档：', '示例：', '当前工作目录：', f.root.replace(/\\/g, '/'), '研究员工', 'node-a', '实际检索片段']) assert.ok(system.includes(text), text)
+      assert.doesNotMatch(system, /OLD_EMPLOYEE_OVERRIDE|OLD_DISCOVERED_OVERRIDE|employee_profile|responsibility_judgment|当前节点执行情况|自动编排规划 Agent|expert coding assistant/)
+    }
+    assert.deepEqual(f.payloadErrors, [])
+  })
+
+  it('passes recovered local text to the next model request without rerunning tools', { timeout: 30_000 }, async t => {
+    let calls = 0
+    const f = await fixture(t, (_body, response) => {
+      if (++calls > 1) { answer(response, 'done'); return }
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      chunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'read-legacy', type: 'function', function: { name: 'read', arguments: JSON.stringify({ path: 'legacy.txt' }) } }] })
+      chunk(response, {}, 'tool_calls')
+      response.end('data: [DONE]\n\n')
+    })
+    const text = '\u4e2d\u6587\u6d4b\u8bd5'.repeat(10)
+    await writeFile(join(f.root, 'legacy.txt'), Buffer.from('d6d0cec4b2e2cad4'.repeat(10), 'hex'))
+    await f.session.prompt('Read legacy.txt once.')
+    assert.equal(calls, 2)
+    assert.equal(f.requests[1].messages.find(message => message.role === 'tool')?.content, text)
+    assert.deepEqual(f.payloadErrors, [])
+  })
+
+  it('keeps encoding overrides behind approvals and disables them for planners', { timeout: 30_000 }, async t => {
+    let approvals = 0
+    let calls = 0
+    const f = await fixture(t, (_body, response) => {
+      if (++calls > 1) { answer(response, 'denied'); return }
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      chunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'denied-bash', type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: 'echo should-not-run' }) } }] })
+      chunk(response, {}, 'tool_calls')
+      response.end('data: [DONE]\n\n')
+    }, undefined, { authorizeTool: async () => { approvals++; return false } })
+    await f.session.prompt('Run command.')
+    assert.equal(approvals, 1)
+    assert.match(f.requests[1].messages.find(message => message.role === 'tool')?.content ?? '', /denied/i)
+    const planner = await fixture(t, (body, response) => {
+      assert.equal('tools' in body, false)
+      answer(response, 'plan')
+    }, undefined, { disableTools: true })
+    await planner.session.prompt('Plan only.')
+  })
+
   for (const overflow of [false, true]) {
     it(`normalizes ${overflow ? 'overflow recovery' : 'threshold'} compaction requests for a strict gateway and continues execution`, { timeout: 30_000 }, async t => {
       let executionRequests = 0

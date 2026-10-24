@@ -2,7 +2,7 @@
  * 首页重新设计 - 紧凑且信息丰富的硅基员工工作台
  */
 
-import { ArrowRight, Users, Zap, Moon, Clock } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Coffee, Moon, RefreshCw, Users, Zap, Clock } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { EmployeeWorksDrawer } from '../../components/enterprise/EmployeeWorksDrawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
@@ -51,7 +51,7 @@ export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace
       {/* 顶部横幅 - 欢迎语和关键指标 */}
       <header className="home-banner">
         <div className="banner-left">
-          <h1>👋 {workspace.userName}，下午好</h1>
+          <h1>{workspace.userName}，下午好</h1>
           <p>你的硅基团队正在待命</p>
         </div>
         <div className="banner-stats">
@@ -92,7 +92,7 @@ export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace
           <section className="employee-section">
             <div className="section-header">
               <h2>
-                <span className="icon">⚡</span>
+                <span className="icon"><Zap size={17} aria-hidden /></span>
                 工作中
                 <span className="count">{groupedDesks.working.length}</span>
               </h2>
@@ -120,7 +120,7 @@ export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace
                     </div>
                     <div className="card-body">
                       <div className="status-row">
-                        <span className="status-badge running">🔄 执行中</span>
+                        <span className="status-badge running"><RefreshCw size={12} aria-hidden /> 执行中</span>
                         <span className="progress-value">{progress}%</span>
                       </div>
                       <div className="progress-bar">
@@ -144,7 +144,7 @@ export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace
           <section className="employee-section">
             <div className="section-header">
               <h2>
-                <span className="icon">⚠️</span>
+                <span className="icon"><AlertTriangle size={16} aria-hidden /></span>
                 需要关注
                 <span className="count">{groupedDesks.needsAttention.length}</span>
               </h2>
@@ -176,7 +176,7 @@ export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace
                     </div>
                     <div className="card-body">
                       <div className="status-row">
-                        <span className="status-badge warning">⚠️ {flagText}</span>
+                        <span className="status-badge warning"><AlertTriangle size={12} aria-hidden /> {flagText}</span>
                       </div>
                     </div>
                   </div>
@@ -191,7 +191,7 @@ export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace
           <section className="employee-section">
             <div className="section-header">
               <h2>
-                <span className="icon">💤</span>
+                <span className="icon"><Coffee size={16} aria-hidden /></span>
                 空闲中
                 <span className="count">{groupedDesks.idle.length}</span>
               </h2>
@@ -218,7 +218,7 @@ export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace
                     <div className="employee-info">
                       <strong className="name">{desk.employee.name}</strong>
                       <span className="role">{desk.employee.roleName}</span>
-                      <span className="status-badge">💤 休息中</span>
+                      <span className="status-badge"><Coffee size={12} aria-hidden /> 休息中</span>
                       <span className="last-worked">
                         <Clock size={11} />
                         {lastWorked}
@@ -234,7 +234,7 @@ export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace
         {/* 空状态 */}
         {desks.length === 0 && (
           <div className="empty-state">
-            <div className="empty-icon">👥</div>
+            <div className="empty-icon"><Users size={38} aria-hidden /></div>
             <h3>还没有硅基员工</h3>
             <p>联系管理员为你分配团队成员</p>
           </div>

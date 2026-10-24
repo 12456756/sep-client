@@ -4,6 +4,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createEncodingBashOperations } from './pi-bash-operations'
+import { getShellConfig } from '@earendil-works/pi-coding-agent'
+import * as sdk from '@earendil-works/pi-coding-agent'
 import { encodingToolDefinitions } from './pi-text-tools'
 import { utf8ChildEnvironment } from './pi-text-encoding'
 
@@ -17,7 +19,7 @@ describe('encoding bash operations using real child processes', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'pi-bash-encoding-'))
     try {
       const chunks: Buffer[] = []
-      const result = await createEncodingBashOperations().exec(command(`
+      const result = await createEncodingBashOperations(getShellConfig).exec(command(`
         require('fs').appendFileSync('count.txt', '1');
         process.stdout.write(Buffer.from('d6d0cec4b2e2cad4'.repeat(10) + '0a', 'hex'));
         setTimeout(() => process.stdout.write(Buffer.from([0xff,0x81,10])), 100);
@@ -32,7 +34,7 @@ describe('encoding bash operations using real child processes', () => {
     const chunks: Buffer[] = []
     let completed = false
     let observedBeforeCompletion = false
-    const pending = createEncodingBashOperations().exec(command(`
+    const pending = createEncodingBashOperations(getShellConfig).exec(command(`
       process.stdout.write('start\\n');
       setTimeout(() => process.stdout.write(Buffer.from([0xe4])), 100);
       setTimeout(() => process.stderr.write('stderr\\n'), 200);
@@ -46,7 +48,7 @@ describe('encoding bash operations using real child processes', () => {
   })
 
   it('retains nonzero exit codes, timeout, cancellation and invalid-timeout behavior', async () => {
-    const operations = createEncodingBashOperations()
+    const operations = createEncodingBashOperations(getShellConfig)
     assert.equal((await operations.exec(command('process.exit(7)'), process.cwd(), { onData() {} })).exitCode, 7)
     for (const timeout of [0, -1, NaN, Infinity, 3_000_000]) {
       await assert.rejects(operations.exec('unused', process.cwd(), { onData() {}, timeout }), /Invalid timeout/)
@@ -65,7 +67,7 @@ describe('encoding bash operations using real child processes', () => {
   })
 
   it('preserves SDK truncation, temp output and failure formatting', async () => {
-    const tool = encodingToolDefinitions(process.cwd()).find(tool => tool.name === 'bash')!
+    const tool = encodingToolDefinitions(process.cwd(), sdk).find(tool => tool.name === 'bash')!
     const result = await tool.execute('call', { command: command("process.stdout.write('row\\n'.repeat(6000))") }, undefined, undefined, undefined as never)
     const details = result.details as { fullOutputPath: string; truncation: { truncated: boolean } }
     assert.equal(details.truncation.truncated, true)

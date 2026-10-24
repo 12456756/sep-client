@@ -38,6 +38,15 @@ export function createBuilderConfig(build, channel, { signed = false, env = proc
     if (signing.mac) config.mac = { ...config.mac, ...signing.mac }
     if (signing.win) config.win = { ...config.win, ...signing.win }
     if (signing.dmg) config.dmg = { ...config.dmg, ...signing.dmg }
+  } else {
+    config.mac = {
+      ...config.mac,
+      identity: undefined,
+      sign: 'scripts/mac-adhoc-sign.cjs',
+      hardenedRuntime: false,
+      notarize: false,
+    }
+    config.dmg = { ...config.dmg, sign: false }
   }
   return config
 }

@@ -278,8 +278,10 @@ it('does not wait on another scope and keeps one broken record from failing the 
 it('archives media tasks without deleting their history and filters them from the active list', async () => {
   const archived = new Set<string>()
   let deletions = 0
+  const hidden: string[] = []
   const service = harness({
-    taskManager: { async getTask() { return task }, async getAllTasks() { return [task] }, async deleteTask() { deletions++; return true } },
+    taskManager: { async getTask() { return task }, async getAllTasks() { return [task] }, async deleteTask() { deletions++; return true },
+      hideTaskRecord(id: string, receivedScope: unknown) { assert.deepEqual(receivedScope, scope); hidden.push(id) } },
     media: {
       async archiveIfMedia(id: string) { archived.add(id); return true },
       async isArchived(id: string) { return archived.has(id) },
@@ -287,8 +289,27 @@ it('archives media tasks without deleting their history and filters them from th
   })
   await service.delete(task.id)
   assert.equal(deletions, 0)
+  assert.deepEqual(hidden, [task.id])
   assert.deepEqual(await service.list(), [])
   assert.equal((await service.get(task.id)).id, task.id)
+})
+
+it('does not hide a record when archival fails or the authenticated owner changes', async () => {
+  for (const changedScope of [false, true]) {
+    let activeScope = scope
+    let hidden = false
+    const service = harness({
+      scope: { currentScope: () => activeScope },
+      taskManager: { hideTaskRecord() { hidden = true } },
+      media: { async archiveIfMedia() {
+        if (!changedScope) throw new Error('archive write failed')
+        activeScope = { ...scope, memberId: 'member-b' }
+        return true
+      } },
+    })
+    await assert.rejects(service.delete(task.id), changedScope ? { code: 'AUTH_REQUIRED' } : /archive write failed/)
+    assert.equal(hidden, false)
+  }
 })
 
 it('preserves ordinary task deletion and the running-task guard when media is absent', async () => {

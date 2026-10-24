@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { constants } from 'node:fs'
 import { access } from 'node:fs/promises'
-import { getShellConfig, type BashOperations } from '@earendil-works/pi-coding-agent'
+import type { PiBashOperations, PiEncodingToolSdk } from './pi-coding-agent-adapter'
 import { OrderedToolOutput } from './pi-text-encoding'
 
 const active = new Set<number>()
@@ -74,7 +74,7 @@ function waitForExit(child: ChildProcess): Promise<number | null> {
 }
 
 /** SDK operation hook: retain its bash schema, accumulator, truncation, updates and error formatting. */
-export function createEncodingBashOperations(): BashOperations {
+export function createEncodingBashOperations(getShellConfig: PiEncodingToolSdk['getShellConfig']): PiBashOperations {
   return {
     async exec(command, cwd, { onData, signal, timeout, env }) {
       if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0 || timeout * 1000 > 2_147_483_647)) {

@@ -44,6 +44,26 @@ describe('arrangement planner prompt separation', () => {
     assert.doesNotMatch(JSON.stringify(input), /skillIds|requiresUserConfirmation/)
   })
 
+  it('preserves existing media requirements in every stage and correction input', () => {
+    const source = structuredClone(draft)
+    source.nodes = [{
+      id: 'n1', title: 'Video', subscriptionId: 'sub', modelId: 'model', instruction: 'Animate the poster',
+      expectedOutput: 'Video', dependsOn: ['image'], skillIds: [],
+      mediaRequirements: [{ id: 'animate', kind: 'video', operation: 'image-to-video',
+        inputFrom: { nodeId: 'image', deliverableId: 'poster' }, preferred: { durationSeconds: 5 } }],
+    }]
+    for (const stage of ['authorized', 'enterprise', 'platform'] as const) {
+      const input = buildArrangementPlannerInput(source, [], stage)
+      assert.deepEqual(input.existingNodes[0]?.mediaRequirements, source.nodes[0]!.mediaRequirements)
+      const requirement = JSON.stringify(input.existingNodes[0]!.mediaRequirements, null, 2)
+      for (const phase of ['response-assembly', 'json-extraction', 'json-parse', 'output-validation', 'employee-validation', 'model-validation', 'dag-validation'] as const) {
+        assert.ok(buildArrangementPlannerRepairPrompt(phase, input).includes(JSON.stringify(input, null, 2)))
+      }
+      assert.ok(buildArrangementPlannerUserPrompt(input).includes(JSON.stringify(input, null, 2)))
+      assert.match(requirement, /poster/)
+    }
+  })
+
   for (const [phase, phrase] of [
     ['response-assembly', '响应完整性检查'], ['json-extraction', '未能提取到规划 JSON'],
     ['json-parse', 'JSON 语法错误'], ['output-validation', '输出结构与节点工作要求检查'],

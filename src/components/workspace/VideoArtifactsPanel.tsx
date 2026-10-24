@@ -6,6 +6,7 @@ import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
 import type { VideoJobView, VideoTaskView } from '../../shared/video-host'
 import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../shared/video-media'
+import { isVideoSubmissionRejectionCode, videoErrorMessage } from '../../shared/video-errors'
 
 type Command = 'export' | 'resume' | 'retry'
 type JobAction = 'resume' | 'retry'
@@ -49,6 +50,20 @@ function videoJobCanDownload(job: VideoJobView): boolean {
   return recovery.canDownload !== false
 }
 
+function validVideoAmount(value: string | undefined): string | undefined {
+  return value !== undefined && /^\d+(?:\.\d{1,6})?$/.test(value) && Number.isFinite(Number(value)) ? value : undefined
+}
+
+function videoBillingLabel(job: VideoJobView): string {
+  if (job.billingStatus === 'MOCK_NOT_CHARGED') return 'Mock · 不收费 · MOCK_NOT_CHARGED'
+  const actual = job.billingStatus === 'SETTLED' ? validVideoAmount(job.actualCostCny) : undefined
+  const quote = validVideoAmount(job.amountCny)
+  const status = job.billingStatus === 'SETTLED' && actual === undefined ? '结算金额待核对'
+    : job.billingStatus === 'NOT_RESERVED' && job.generationStatus === 'SUBMISSION_UNKNOWN' ? '账务待确认'
+      : { NOT_RESERVED: '尚未预占', RESERVED: '费用已预占', SETTLED: '已结算', RELEASED: '预占已释放', RECONCILING: '账务核对中' }[job.billingStatus]
+  return `${status}${actual !== undefined ? ` · 实付 ¥${actual}` : quote !== undefined ? ` · 报价 ¥${quote}` : ''}`
+}
+
 function VideoFeedback({ pending, notice, id }: { pending: Command | null; notice: Notice | null; id?: string }) {
   if (!pending && !notice) return null
   return <p id={id} className={`media-notice${notice ? ` media-tone-${notice.tone}` : ''}`} role={notice?.tone === 'error' ? 'alert' : 'status'} aria-atomic="true">
@@ -62,23 +77,25 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
   onPreview: (selection: OutputSelection) => void; onExport: (selection: OutputSelection) => void
 }) {
   return <div className="media-jobs video-jobs">{jobs.map(job => {
-    const generation = Object.hasOwn(mediaGenerationLabels, job.generationStatus)
+    const explicitlyRejected = job.generationStatus === 'FAILED' && job.trackingStatus === 'STOPPED' && isVideoSubmissionRejectionCode(job.error)
+    const generation = explicitlyRejected ? { label: '提交被拒绝', tone: 'error' }
+      : Object.hasOwn(mediaGenerationLabels, job.generationStatus)
       ? mediaGenerationLabels[job.generationStatus as keyof typeof mediaGenerationLabels]
       : { label: job.generationStatus === 'NOT_SUBMITTED' ? '尚未提交' : '未知生成状态', tone: 'warning' }
     const generated = ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)
     const unfinished = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
     const downloadable = videoJobCanDownload(job) && job.outputs.some(output => !videoOutputIsSaved(job, output.outputId) && (!output.expiresAt || Date.parse(output.expiresAt) > Date.now()))
     const retry = generated && downloadable && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)
-    const resume = job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
+    const resume = !explicitlyRejected && job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
     return <article className="media-job" key={job.jobId} aria-label={`视频任务 ${job.jobId}`}>
       <div className="media-job-heading"><strong>{job.operation === 'image-to-video' ? '图片生成视频' : '文字生成视频'}</strong><span>{job.parameters.durationSeconds} 秒 · {job.parameters.aspectRatio}</span></div>
       <small className="media-job-id">配置 {job.profileId} · {job.parameters.resolution} · {job.parameters.frameRate} fps · {job.parameters.audio ? '含音频' : '无音频'}</small>
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[generation, mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
-      <small>{job.billingStatus === 'MOCK_NOT_CHARGED' ? 'Mock · 不收费 · MOCK_NOT_CHARGED' : `${({ NOT_RESERVED: '尚未预占', RESERVED: '费用已预占', SETTLED: '已结算', RELEASED: '预占已释放', RECONCILING: '账务核对中' } as const)[job.billingStatus]}${job.actualCostCny ? ` · 实付 ¥${job.actualCostCny}` : job.amountCny ? ` · 报价 ¥${job.amountCny}` : ''}`}</small>
-      {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">提交结果不明，请恢复跟踪原任务，不会自动重新生成。</p>}
+      <small>{videoBillingLabel(job)}</small>
+      {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">提交结果不明{['NOT_RESERVED', 'RECONCILING'].includes(job.billingStatus) ? '，账务待确认' : ''}，请恢复跟踪原任务，不会自动重新生成。</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后，请手动恢复跟踪。</p>}
-      {job.error && <p className="media-notice media-tone-error">{job.error}</p>}
+      {job.error && <p className="media-notice media-tone-error">{videoErrorMessage(job.error) || (job.generationStatus === 'SUBMISSION_UNKNOWN' ? '提交结果待确认。' : '视频任务未能完成。')}</p>}
       <div className="media-job-actions">
         {resume && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />恢复跟踪</button>}
         {retry && <button type="button" className="media-command" disabled={busy} title="重新保存原结果，不重新生成" onClick={() => onAction(job, 'retry')}><Download size={13} />重新保存</button>}

@@ -1,6 +1,7 @@
 import { AppError } from './app-error'
 import { AuthApiError } from '../common/platform/platform-api'
 import { mediaToolFailure, type MediaToolFailure } from './media-tool-error'
+import { videoErrorMessage } from '../../src/shared/video-errors'
 
 /** Fixed diagnostics: never forward arbitrary exception messages, causes or provider responses. */
 export interface VideoToolFailureDiagnostic {
@@ -9,6 +10,7 @@ export interface VideoToolFailureDiagnostic {
   httpStatus?: number
   resource?: string
   stage?: string
+  requestId?: string
 }
 
 const SAFE_EXCEPTION_TYPES = new Set(['Error', 'TypeError', 'AuthApiError', 'AppError', 'ZodError', 'SepVideoGatewayError'])
@@ -21,6 +23,10 @@ function safeExceptionType(value: unknown): string {
 
 function safeStatus(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 599 ? value : undefined
+}
+
+function safeRequestId(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value) ? value : undefined
 }
 
 const VIDEO_MESSAGES: Partial<Record<AppError['code'], string>> = {
@@ -57,6 +63,8 @@ function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnost
 export function videoToolFailureFrom(error: unknown): MediaToolFailure {
   if (error instanceof AuthApiError) return authFailure(error).failure
   if (!(error instanceof AppError)) return mediaToolFailure('INTERNAL_ERROR', 'Video operation failed. Do not infer a missing profile or automatically resubmit a paid request.')
+  const businessMessage = videoErrorMessage(error.code)
+  if (businessMessage) return mediaToolFailure(error.code, businessMessage)
   if (error.code === 'PERMISSION_DENIED' && error.details?.stage === 'video-quote') {
     return mediaToolFailure(error.code, 'The video quote request was denied by SEP before local approval or video submission. This is not a local approval rejection. Do not infer a missing video model or automatically retry a paid request.')
   }
@@ -77,6 +85,7 @@ export function videoToolFailureDiagnostic(error: unknown): VideoToolFailureDiag
       ...(status === undefined ? {} : { httpStatus: status }),
       ...(typeof error.details?.stage === 'string' && SAFE_STAGES.has(error.details.stage) ? { stage: error.details.stage } : {}),
       ...(typeof error.details?.resource === 'string' && SAFE_RESOURCES.has(error.details.resource) ? { resource: error.details.resource } : {}),
+      ...(safeRequestId(error.details?.requestId) ? { requestId: safeRequestId(error.details?.requestId) } : {}),
     }
   }
   const candidate = error instanceof Error ? error.name : undefined

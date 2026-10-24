@@ -38,10 +38,48 @@ const document = {
 }
 
 describe('arrangement work contract IPC', () => {
+  it('validates explicit confirmation and routes only validated task and node IDs', async () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES)!
+    const input = { taskId: 'task-a', nodeIds: ['node-a', 'node-b'] }
+    assert.deepEqual(route.schema.parse(input), input)
+    for (const invalid of [
+      { ...input, taskId: '../task' }, { ...input, nodeIds: [] }, { ...input, nodeIds: ['node-a', 'node-a'] },
+      { ...input, nodeIds: ['../node'] }, { ...input, approved: true }, { ...input, nodeIds: [42] },
+    ]) assert.equal(route.schema.safeParse(invalid).success, false)
+    const calls: unknown[] = []
+    const context = { tasks: { confirmArrangementNodes: async (...args: unknown[]) => { calls.push(args) } } }
+    assert.deepEqual(await route.handle(context as never, input as never), { success: true })
+    assert.deepEqual(calls, [[input.taskId, input.nodeIds]])
+  })
+
   it('preserves the work contract when creating a manual draft', () => {
     const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
     const parsed = route.schema.parse(document) as { nodes: unknown[] }
     assert.deepEqual(parsed.nodes, [node])
+  })
+
+  it('preserves media intent and media deliverable metadata through IPC validation', () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
+    const mediaNode = {
+      ...node,
+      mediaRequirements: [{ id: 'image-motion', kind: 'video', operation: 'image-to-video', inputFrom: { nodeId: 'node-1', artifactId: 'asset_abc-123' } }],
+      deliverables: [{ ...node.deliverables[0], artifact: { kind: 'video', source: 'media-output', operation: 'image-to-video' } }],
+    }
+    const parsed = route.schema.parse({ ...document, nodes: [mediaNode] }) as { nodes: unknown[] }
+    assert.deepEqual(parsed.nodes, [mediaNode])
+    assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...mediaNode, mediaRequirements: [{ ...mediaNode.mediaRequirements[0], preferred: { count: 0 } }] }] }).success, false)
+  })
+
+  it('preserves open JSON preferences while rejecting malformed standard parameters and operations', () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
+    const preferred = { style: 'Photography', scene: { lighting: 'Window', props: ['Cup', 'Table'] }, cameraMotion: 'Slow push', durationSeconds: 86400, count: 500 }
+    const mediaNode = { ...node, mediaRequirements: [{ id: 'image', kind: 'image', operation: 'generate', preferred }] }
+    const input = { ...document, nodes: [mediaNode] }
+    assert.deepEqual(route.schema.parse(input), input)
+    for (const invalid of [{ durationSeconds: 0 }, { audio: 'yes' }, { count: 0 }, { frameRate: Infinity }, { style: () => {} }]) {
+      assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...node, mediaRequirements: [{ ...mediaNode.mediaRequirements[0], preferred: invalid }] }] }).success, false)
+    }
+    assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...node, mediaRequirements: [{ id: 'image', kind: 'image', operation: 'text-to-image' }] }] }).success, false)
   })
 
   it('accepts legacy nodes and rejects malformed delivery metadata', () => {
@@ -53,5 +91,13 @@ describe('arrangement work contract IPC', () => {
       { deliverables: [{ ...node.deliverables[0], path: '../outside.docx' }] },
       { deliverables: [{ ...node.deliverables[0], contentOutline: [42] }] },
     ]) assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...node, ...extra }] }).success, false)
+  })
+
+  it('rejects duplicate media requirement IDs at the IPC boundary without imposing a fixed requirement count', () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
+    const requirement = { id: 'image', kind: 'image', operation: 'generate' }
+    assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...node, mediaRequirements: [requirement, requirement] }] }).success, false)
+    const mediaRequirements = Array.from({ length: 65 }, (_, index) => ({ ...requirement, id: 'image-' + index }))
+    assert.equal(route.schema.safeParse({ ...document, nodes: [{ ...node, mediaRequirements }] }).success, true)
   })
 })

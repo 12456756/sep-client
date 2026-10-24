@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createReadToolDefinition } from '@earendil-works/pi-coding-agent'
+import * as sdk from '@earendil-works/pi-coding-agent'
 import { encodingToolDefinitions } from './pi-text-tools'
 
 const chinese = '\u4e2d\u6587\u6d4b\u8bd5'
@@ -14,7 +15,7 @@ describe('encoding-compatible Pi tools', () => {
     try {
       const bytes = Buffer.from(('d6d0cec4b2e2cad4'.repeat(10) + '0a').repeat(3), 'hex')
       await writeFile(join(cwd, 'legacy.txt'), bytes)
-      const tool = encodingToolDefinitions(cwd).find(tool => tool.name === 'read')!
+      const tool = encodingToolDefinitions(cwd, sdk).find(tool => tool.name === 'read')!
       const result = await tool.execute('call', { path: 'legacy.txt', offset: 2, limit: 1 }, undefined, undefined, {} as never)
       assert.deepEqual(result.content, [{ type: 'text', text: chinese.repeat(10) + '\n\n[2 more lines in file. Use offset=3 to continue.]' }])
       assert.deepEqual(await readFile(join(cwd, 'legacy.txt')), bytes)
@@ -25,7 +26,7 @@ describe('encoding-compatible Pi tools', () => {
     const cwd = await mkdtemp(join(tmpdir(), 'pi-encoding-image-'))
     try {
       await writeFile(join(cwd, 'pixel.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMioAAAAASUVORK5CYII=', 'base64'))
-      const tool = encodingToolDefinitions(cwd).find(tool => tool.name === 'read')!
+      const tool = encodingToolDefinitions(cwd, sdk).find(tool => tool.name === 'read')!
       const result = await tool.execute('call', { path: 'pixel.png' }, undefined, undefined, {} as never)
       const baseline = await createReadToolDefinition(cwd).execute('call', { path: 'pixel.png' }, undefined, undefined, {} as never)
       assert.deepEqual(result, baseline)
@@ -38,7 +39,7 @@ describe('encoding-compatible Pi tools', () => {
     try {
       const bytes = Buffer.from([0xff, 0x81, 0x0a])
       await writeFile(join(cwd, 'bad.txt'), bytes)
-      const tool = encodingToolDefinitions(cwd).find(tool => tool.name === 'read')!
+      const tool = encodingToolDefinitions(cwd, sdk).find(tool => tool.name === 'read')!
       const result = await tool.execute('call', { path: 'bad.txt' }, undefined, undefined, {} as never)
       assert.deepEqual(result.content, [{ type: 'text', text: bytes.toString('utf8') }])
       await assert.rejects(tool.execute('call', { path: 'missing.txt' }, undefined, undefined, {} as never))

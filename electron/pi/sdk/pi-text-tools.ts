@@ -1,12 +1,10 @@
 import { constants } from 'node:fs'
 import { access, readFile, stat } from 'node:fs/promises'
-import {
-  createBashToolDefinition, createGrepToolDefinition, createReadToolDefinition, defineTool, type ToolDefinition,
-} from '@earendil-works/pi-coding-agent'
+import type { PiEncodingToolSdk, PiToolDefinition } from './pi-coding-agent-adapter'
 import { createEncodingBashOperations } from './pi-bash-operations'
 import { decodeToolText, utf8ChildEnvironment } from './pi-text-encoding'
 
-function encodingReadTool(cwd: string): ReturnType<typeof createReadToolDefinition> {
+function encodingReadTool(cwd: string, { createReadToolDefinition }: PiEncodingToolSdk): ReturnType<PiEncodingToolSdk['createReadToolDefinition']> {
   const original = createReadToolDefinition(cwd)
   return {
     ...original,
@@ -39,13 +37,14 @@ function encodingReadTool(cwd: string): ReturnType<typeof createReadToolDefiniti
   }
 }
 
-export function encodingToolDefinitions(cwd: string): ToolDefinition[] {
+export function encodingToolDefinitions(cwd: string, sdk: PiEncodingToolSdk): PiToolDefinition[] {
+  const { createBashToolDefinition, createGrepToolDefinition, defineTool, getShellConfig } = sdk
   return [
     defineTool(createBashToolDefinition(cwd, {
-      operations: createEncodingBashOperations(),
+      operations: createEncodingBashOperations(getShellConfig),
       spawnHook: context => ({ ...context, env: utf8ChildEnvironment(context.env) }),
     })),
-    defineTool(encodingReadTool(cwd)),
+    defineTool(encodingReadTool(cwd, sdk)),
     defineTool(createGrepToolDefinition(cwd, { operations: {
       isDirectory: async path => (await stat(path)).isDirectory(),
       readFile: async path => decodeToolText(await readFile(path)),

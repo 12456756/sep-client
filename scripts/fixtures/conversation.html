@@ -11,7 +11,8 @@ const options={userId:'fixture-user',userName:'测试用户',enterpriseId:'fixtu
 const listeners={};const subscribe=name=>cb=>{listeners[name]=cb;return ()=>{delete listeners[name];};};
 
 let task; let draft; let sequence=0; let messages=[];
-window.emit=(type,data={})=>listeners.pi?.({taskId:'work-1',runId:task.activeRunId || 'run-1',subscriptionId:'sub-a',sequence:++sequence,type,occurredAt:Date.now(),data});
+window.emit=(type,data={})=>listeners.pi?.({taskId:'work-1',runId:task?.activeRunId || 'run-1',subscriptionId:'sub-a',sequence:++sequence,type,occurredAt:Date.now(),data});
+window.pushDeletedRecord=()=>{listeners.task?.(structuredClone(window.deletedRecordSnapshot));listeners.list?.([structuredClone(window.deletedRecordSnapshot)]);window.emit('text_delta',{text:'late deleted record output'});};
 window.finish=()=>{messages=[...messages,{id:'answer',role:'assistant',content:'第一段第二段',createdAt:Date.now(),runId:'run-1'}];task={...task,status:'completed',activeRunId:null,completedAt:Date.now()};listeners.task?.(task);};
 window.cancelMode='pending';window.runNumber=1;
 window.settleContinue=()=>{task={...task,status:'completed',activeRunId:null};listeners.task?.(task);};
@@ -44,7 +45,7 @@ window.electronAPI={
    };
   });
  },
- deleteTask:async taskId=>{window.deletedTaskId=taskId;if(task.status!=='paused'||task.activeRunId)return {success:false,error:{message:'任务正在执行，无法删除。'}};task=undefined;messages=[];listeners.list?.([]);return {success:true};},
+ deleteTask:async taskId=>{window.deletedTaskId=taskId;if(window.failDelete || task.status!=='paused'||task.activeRunId)return {success:false,error:{message:'任务正在执行，无法删除。'}};window.deletedRecordSnapshot=structuredClone(task);task=undefined;messages=[];listeners.list?.([]);return {success:true};},
  cancelTask:async(taskId,reason)=>{window.cancelInput={taskId,reason};return new Promise(resolve=>{window.resolveCancel=ok=>{if(ok){task={...task,status:'paused',activeRunId:null,error:reason};listeners.task?.(task);}resolve(ok?{success:true}:{success:false,error:{message:'模拟终止失败，请重试'}});};});}
 };
 function App(){const workspace=useEnterpriseWorkspace(options);window.workspace=workspace;const work=workspace.works[0];return React.createElement('div',{className:'ent-shell'},React.createElement('output',{'data-testid':'status'},work?.status || 'empty'),work?React.createElement(WorkTalkDrawer,{workspace,work,onClose:()=>{}}):React.createElement('button',{onClick:()=>workspace.startConversation('sub-a','请整理资料')},'开始测试'));}

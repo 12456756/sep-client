@@ -90,6 +90,8 @@ export const INVOKE_CHANNELS = {
   ARRANGE_GET_CONTEXT: 'arrange:get-context',
   ARRANGE_GET_PLAN: 'arrange:get-plan',
   ARRANGE_GET_EXECUTION: 'arrange:get-execution',
+  ARRANGE_PREVIEW_DOCUMENT: 'arrange:preview-document',
+  ARRANGE_CONFIRM_NODES: 'arrange:confirm-nodes',
   ARRANGE_LIST_DRAFTS: 'arrange:list-drafts',
   ARRANGE_CREATE_DRAFT: 'arrange:create-draft',
   ARRANGE_GET_DRAFT: 'arrange:get-draft',

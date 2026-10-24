@@ -130,9 +130,8 @@
 .compute-allowance-progress.recharge .compute-allowance-progress-head strong { color: var(--ent-brand-ink); }
 .compute-allowance-progress.monthly .compute-allowance-progress-head strong { color: var(--ent-ready); }
 .compute-allowance-progress.daily .compute-allowance-progress-head strong { color: var(--ent-attention); }
-.ent-shell.dark .compute-allowance-progress.recharge .compute-allowance-progress-head strong { color: #f09199; }
-.ent-shell.dark .compute-allowance-progress.monthly .compute-allowance-progress-head strong { color: #6fd39b; }
-.ent-shell.dark .compute-allowance-progress.daily .compute-allowance-progress-head strong { color: #e0b45c; }
+.ent-shell.dark .compute-allowance-progress.monthly .compute-allowance-progress-head strong { color: color-mix(in srgb, var(--ent-ready) 42%, var(--ent-ink)); }
+.ent-shell.dark .compute-allowance-progress.daily .compute-allowance-progress-head strong { color: color-mix(in srgb, var(--ent-attention) 42%, var(--ent-ink)); }
 
 /* 三条额度各有语义色：充值=品牌红（企业的钱）、每月=可用绿、每日=提醒琥珀。
  * 槽底也取该行的淡色而不是统一灰 —— 用量接近 0 时填充几乎不可见，
@@ -147,13 +146,13 @@
 }
 .compute-progress span { display: block; height: 100%; min-width: 0; margin-left: auto; border-radius: inherit; transition: width var(--motion-moderate, .3s) ease; }
 
-.compute-progress.recharge { background: #f2c7b6; box-shadow: none; }
+.compute-progress.recharge { background: color-mix(in srgb, var(--ent-brand) 22%, var(--ent-panel)); box-shadow: none; }
 .compute-progress.recharge span { background: var(--ent-brand); }
 
-.compute-progress.monthly { background: #bfe4cf; box-shadow: none; }
+.compute-progress.monthly { background: color-mix(in srgb, var(--ent-ready) 22%, var(--ent-panel)); box-shadow: none; }
 .compute-progress.monthly span { background: var(--ent-ready-solid); }
 
-.compute-progress.daily { background: #f0d78d; box-shadow: none; }
+.compute-progress.daily { background: color-mix(in srgb, var(--ent-attention) 22%, var(--ent-panel)); box-shadow: none; }
 .compute-progress.daily span { background: var(--ent-attention); }
 
 .compute-progress.is-unlimited span { background: repeating-linear-gradient(135deg, var(--ent-ready-solid) 0 6px, var(--ent-ready) 6px 12px); opacity: .8; }
@@ -194,7 +193,7 @@
 .compute-model-cell, .compute-description-cell { max-width: 300px; min-width: 140px; white-space: normal !important; overflow-wrap: anywhere; }
 .compute-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; padding: 16px 0; }
 .compute-filters label { display: grid; gap: 6px; color: var(--ent-ink-2); font-size: 12px; }
-.compute-filters input, .compute-pagination select { min-width: 0; padding: 7px 9px; border: 1px solid var(--ent-line); border-radius: 4px; background: var(--ent-panel); color: var(--ent-ink); font: inherit; }
+.compute-filters input, .compute-pagination select { min-width: 0; padding: 7px 9px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-sm); background: var(--ent-panel); color: var(--ent-ink); font: inherit; }
 .compute-filter-error, .compute-list-error { color: var(--ent-danger); font-size: 12px; }
 .compute-list-error, .compute-list-status { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; }
 .compute-list-status { color: var(--ent-ink-3); font-size: 12px; }
@@ -232,8 +231,8 @@
 
 /* ── 抽屉 ─────────────────────────────────────────────────────────── */
 
-.compute-drawer-backdrop { position: fixed; inset: 0; z-index: 20; display: flex; justify-content: flex-end; background: rgb(22 28 50 / 26%); }
-.compute-drawer { width: min(390px, 92vw); height: 100%; padding: 22px; overflow: auto; background: var(--ent-panel); box-shadow: -12px 0 40px rgb(25 32 65 / 14%); animation: compute-drawer-in .2s ease-out; }
+.compute-drawer-backdrop { position: fixed; inset: 0; z-index: 20; display: flex; justify-content: flex-end; background: var(--ent-overlay); }
+.compute-drawer { width: min(390px, 92vw); height: 100%; padding: 22px; overflow: auto; border-left: 1px solid var(--ent-line); background: var(--ent-panel); box-shadow: -12px 0 40px rgb(32 33 38 / 16%); animation: compute-drawer-in .2s ease-out; }
 .compute-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding-bottom: 18px; border-bottom: 1px solid var(--ent-line); }
 .compute-drawer-head h2 { margin: 0; font-size: 18px; font-weight: 650; }
 .compute-drawer-body { padding-top: 18px; }

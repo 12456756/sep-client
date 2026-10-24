@@ -191,6 +191,31 @@ export type ArrangementMode = 'conversation' | 'auto' | 'manual'
 export type ArrangementPermissionPreset = 'read-only' | 'workspace-edit' | 'full-local'
 export type ArrangementCommandPolicy = 'disabled' | 'restricted' | 'confirm-each'
 export type ArrangementApprovalMode = 'confirm-each' | 'auto-approve'
+export type ArrangementMediaOperation = 'generate' | 'edit' | 'image-to-video' | 'text-to-video'
+export type ArrangementArtifactKind = 'document' | 'image' | 'video' | 'data' | 'other'
+export type ArrangementMediaPhase = 'preparing' | 'awaiting-approval' | 'submitted' | 'tracking' | 'saving' | 'materializing' | 'ready' | 'blocked'
+export type ArrangementMediaOutputStatus = 'pending' | 'saving' | 'saved' | 'save-failed' | 'missing' | 'expired'
+export type ArrangementMediaPendingAction = 'approve' | 'resume' | 'retry-save' | 'export' | 'select-input'
+export type ArrangementMediaPreferenceValue = string | number | boolean | null | ArrangementMediaPreferenceValue[] | { [key: string]: ArrangementMediaPreferenceValue }
+
+export interface ArrangementMediaRequirement {
+  id: string
+  kind: 'image' | 'video'
+  operation: ArrangementMediaOperation
+  required?: boolean
+  inputFrom?: { nodeId?: string; deliverableId?: string; artifactId?: string }
+  inputSelection?: 'single' | 'any' | 'all' | 'model' | 'user'
+  preferred?: {
+    [key: string]: ArrangementMediaPreferenceValue | undefined
+    aspectRatio?: string
+    resolution?: string
+    durationSeconds?: number
+    frameRate?: number
+    audio?: boolean
+    outputFormat?: string
+    count?: number
+  }
+}
 
 export interface ArrangementParticipantSnapshot {
   subscriptionId: string
@@ -204,6 +229,23 @@ export interface ArrangementDeliverable {
   path: string
   contentOutline: string[]
   acceptanceCriteria: string[]
+  artifact?: {
+    kind: ArrangementArtifactKind
+    source?: 'workspace' | 'media-output' | 'either'
+    operation?: ArrangementMediaOperation
+  }
+}
+
+export interface ArrangementMediaSummary {
+  nodeId: string
+  nodeRunId: string
+  kind: 'image' | 'video'
+  operation: ArrangementMediaOperation
+  jobId: string
+  phase: ArrangementMediaPhase
+  inputs: Array<{ artifactId: string; sourceNodeId?: string }>
+  outputs: Array<{ artifactId: string; mime?: string; size?: number; status: ArrangementMediaOutputStatus; outputId?: string }>
+  pendingActions: ArrangementMediaPendingAction[]
 }
 
 export interface ArrangementNodeSnapshot {
@@ -215,6 +257,7 @@ export interface ArrangementNodeSnapshot {
   instruction: string
   expectedOutput: string
   deliverables?: ArrangementDeliverable[]
+  mediaRequirements?: ArrangementMediaRequirement[]
   dependsOn: string[]
   skillIds: string[]
   /** @deprecated Legacy field accepted for compatibility; automatic arrangement ignores it. */
@@ -264,6 +307,7 @@ export interface ArrangementDraftNode {
   instruction: string
   expectedOutput: string
   deliverables?: ArrangementDeliverable[]
+  mediaRequirements?: ArrangementMediaRequirement[]
   dependsOn: string[]
   skillIds: string[]
   /** @deprecated Legacy field accepted for compatibility; automatic arrangement ignores it. */
@@ -394,6 +438,7 @@ export interface ArrangementFinalFileSnapshot {
   format: string
   size: number
   sha256: string
+  sourceArtifact?: { kind: 'image' | 'video'; artifactId: string; sha256: string }
   nodeRunId: string
   validatedAt: number
   snapshot?: { sha256: string; size: number; source: 'confirmed' | 'workspace-recovery' }
@@ -403,12 +448,14 @@ export interface ArrangementNodeExecutionSnapshot {
   nodeId: string
   status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
   finalFiles: ArrangementFinalFileSnapshot[]
+  pendingConfirmation?: boolean
 }
 
 export interface ArrangementExecutionSnapshot {
   activeRunId: string | null
   status: 'queued' | 'running' | 'waiting-user' | 'interrupted' | 'completed' | 'stopped' | 'failed'
   nodes: ArrangementNodeExecutionSnapshot[]
+  media?: ArrangementMediaSummary[]
   updatedAt: number
 }
 

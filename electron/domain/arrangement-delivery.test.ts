@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { buildDeliveryCorrection, deliveryPlanIssues, nodeDeliveryProgressSchema, parseDeliverySubmission } from './arrangement-delivery'
+import { buildDeliveryCorrection, deliveryPlanIssues, finalDeliveryFileSchema, nodeDeliveryProgressSchema, parseDeliverySubmission, parseRecordedDeliverySubmission } from './arrangement-delivery'
 import type { ArrangementNode } from './arrangement-plan'
 
 const node: ArrangementNode = {
@@ -18,7 +18,7 @@ describe('node final delivery protocol', () => {
     assert.doesNotMatch(buildDeliveryCorrection([{ code: 'FILE_MISSING', message: 'missing' }]), /最多|上限|停止自动修正/)
   })
   it('uses the exact submission correction for every existing submission validation failure', () => {
-    for (const code of ['MISSING_DELIVERY_CONTRACT', 'OUTPUT_TRUNCATED', 'NODE_NOT_SETTLED', 'INVALID_SUBMISSION', 'WRONG_NODE', 'DELIVERY_MANIFEST_MISMATCH', 'MISSING_DELIVERY']) {
+    for (const code of ['MISSING_DELIVERY_CONTRACT', 'OUTPUT_TRUNCATED', 'NODE_NOT_SETTLED', 'INVALID_SUBMISSION', 'WRONG_NODE', 'DELIVERY_MANIFEST_MISMATCH', 'MISSING_DELIVERY', 'DUPLICATE_MEDIA_DELIVERY', 'MEDIA_DELIVERY_MANIFEST_MISMATCH', 'MISSING_MEDIA_DELIVERY']) {
       assert.equal(buildDeliveryCorrection([{ code, message: 'Stored diagnostic, not prompt text' }]), submissionCorrection, code)
     }
   })
@@ -36,6 +36,61 @@ describe('node final delivery protocol', () => {
   })
   it('accepts only the complete final manifest for this node', () => {
     assert.deepEqual(parseDeliverySubmission(node, JSON.stringify(submission)), { ok: true, submission })
+  })
+  it('accepts a planned media asset mapping and rejects unplanned or duplicate mappings', () => {
+    const mediaNode: ArrangementNode = {
+      ...node,
+      deliverables: [{
+        ...node.deliverables![0]!, format: 'mp4', path: 'deliverables/video.mp4',
+        artifact: { kind: 'video', source: 'media-output', operation: 'text-to-video' },
+      }],
+    }
+    const mediaSubmission = {
+      ...submission,
+      finalDeliverables: [{ id: 'report', path: 'deliverables/video.mp4' }],
+      mediaDeliverables: [{ deliverableId: 'report', artifactId: 'vout_0123456789abcdef' }],
+    }
+    assert.deepEqual(parseDeliverySubmission(mediaNode, JSON.stringify(mediaSubmission)), { ok: true, submission: mediaSubmission })
+    assert.equal(parseDeliverySubmission(mediaNode, JSON.stringify({
+      ...mediaSubmission, mediaDeliverables: [{ deliverableId: 'unknown', artifactId: 'vout_0123456789abcdef' }],
+    })).ok, false)
+    assert.equal(parseDeliverySubmission(mediaNode, JSON.stringify({
+      ...mediaSubmission, mediaDeliverables: [...mediaSubmission.mediaDeliverables, ...mediaSubmission.mediaDeliverables],
+    })).ok, false)
+    assert.equal(parseDeliverySubmission(mediaNode, JSON.stringify({
+      ...mediaSubmission, mediaDeliverables: [],
+    })).ok, false)
+  })
+  it('keeps old delivery snapshots readable and accepts an optional media source reference', () => {
+    const file = { id: 'poster', path: 'deliverables/poster.png', format: 'png', size: 120, sha256: 'a'.repeat(64), nodeRunId: 'run-1', validatedAt: 10 }
+    assert.equal(finalDeliveryFileSchema.safeParse(file).success, true)
+    assert.equal(finalDeliveryFileSchema.safeParse({
+      ...file, sourceArtifact: { kind: 'image', artifactId: 'asset_abc-123', sha256: file.sha256 },
+    }).success, true)
+    assert.equal(finalDeliveryFileSchema.safeParse({
+      ...file, sourceArtifact: { kind: 'image', artifactId: 'asset_abc-123', sha256: 'b'.repeat(64) },
+    }).success, false)
+    assert.equal(finalDeliveryFileSchema.safeParse({
+      ...file, sourceArtifact: { kind: 'image', artifactId: 'asset_abc-123', sha256: file.sha256 },
+      snapshot: { sha256: 'b'.repeat(64), size: file.size, source: 'workspace-recovery' },
+    }).success, false)
+  })
+  it('rebuilds complete media mappings from validated delivery records when resuming', () => {
+    const mediaNode: ArrangementNode = {
+      ...node,
+      deliverables: [{ ...node.deliverables![0]!, format: 'png', path: 'deliverables/poster.png', artifact: { kind: 'image', source: 'media-output' } }],
+    }
+    const file = {
+      id: 'report', path: 'deliverables/poster.png', format: 'png', size: 120, sha256: 'a'.repeat(64), nodeRunId: 'run-1', validatedAt: 10,
+      sourceArtifact: { kind: 'image' as const, artifactId: 'asset_abc-123', sha256: 'a'.repeat(64) },
+    }
+    const restored = parseRecordedDeliverySubmission(mediaNode, [file], 'Ready')
+    assert.ok(restored.ok)
+    assert.deepEqual(restored.submission.mediaDeliverables, [{ deliverableId: 'report', artifactId: 'asset_abc-123' }])
+    assert.equal(parseRecordedDeliverySubmission(mediaNode, [{ ...file, sourceArtifact: undefined }]).ok, false)
+    assert.equal(parseRecordedDeliverySubmission(mediaNode, [{ ...file, sourceArtifact: { ...file.sourceArtifact, kind: 'video' } }]).ok, false)
+    assert.equal(parseRecordedDeliverySubmission(mediaNode, [{ ...file, sourceArtifact: { ...file.sourceArtifact, sha256: 'b'.repeat(64) } }]).ok, false)
+    assert.equal(parseRecordedDeliverySubmission(node, [{ ...file, path: 'deliverables/report.txt', format: 'txt', sourceArtifact: undefined }]).ok, true)
   })
   it('rejects prose, fences, missing files, extra process files, duplicate ids and wrong paths', () => {
     const invalid = ['done', '', '```json\n'+JSON.stringify(submission)+'\n```',

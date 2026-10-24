@@ -49,6 +49,30 @@ describe('arrangement retry display regressions', () => {
     assert.equal(work.steps[0]?.state, 'failed')
   })
 
+  it('shows explicit confirmation from either a checkpoint or a newer event as waiting for the user', () => {
+    const confirmationPlan = { ...plan, nodes: [{ ...plan.nodes[0]!, requiresUserConfirmation: true }] }
+    const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-user', updatedAt: 4,
+      nodes: [{ nodeId: 'node-a', status: 'completed', pendingConfirmation: true, finalFiles: [] }] }
+    const event: TaskExecutionEvent = { ...failed, occurredAt: 5,
+      data: { status: 'waiting-user', nodeStates: execution.nodes } }
+    for (const input of [{ arrangementExecution: execution }, { arrangementEvents: [event] }]) {
+      const work = buildWorkItem({ task: { ...task, status: 'paused', activeRunId: null }, employees: [], plan: confirmationPlan, ...input })
+      assert.equal(work.status, 'waiting-user')
+      assert.equal(work.steps[0]?.state, 'waiting-user')
+      assert.equal(work.arrangementExecution?.nodes[0]?.pendingConfirmation, true)
+    }
+  })
+
+  it('removes the pending confirmation when a newer authoritative event confirms the node', () => {
+    const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-user', updatedAt: 4,
+      nodes: [{ nodeId: 'node-a', status: 'completed', pendingConfirmation: true, finalFiles: [] }] }
+    const work = buildWorkItem({ task, employees: [], plan, arrangementExecution: execution, arrangementEvents: [{
+      ...failed, occurredAt: 5, data: { status: 'completed', nodeStates: [{ nodeId: 'node-a', status: 'completed', pendingConfirmation: false }] },
+    }] })
+    assert.equal(work.steps[0]?.state, 'done')
+    assert.equal(work.arrangementExecution?.nodes[0]?.pendingConfirmation, false)
+  })
+
   it('keeps completed predecessors visible from the retry checkpoint snapshot', () => {
     const snapshot: TaskExecutionEvent = { ...failed, runId: 'retry-run', data: {
       status: 'running', nodeStates: [{ nodeId: 'node-a', status: 'completed' }],
@@ -110,6 +134,19 @@ describe('arrangement retry display regressions', () => {
   })
 
   const finalFile = { id: 'report', path: 'deliverables/report.md', format: 'md', size: 10, sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 4 }
+  it('distinguishes a failed node, a running peer and dependency-blocked nodes', () => {
+    const parallelPlan = { ...plan, nodes: [plan.nodes[0],
+      { ...plan.nodes[0], id: 'node-b' }, { ...plan.nodes[0], id: 'child', dependsOn: ['node-a'] }] }
+    const work = buildWorkItem({ task, employees: [], plan: parallelPlan, arrangementExecution: {
+      activeRunId: 'run-a', status: 'running', updatedAt: 10, nodes: [
+        { nodeId: 'node-a', status: 'failed', finalFiles: [] },
+        { nodeId: 'node-b', status: 'running', finalFiles: [] },
+        { nodeId: 'child', status: 'blocked', finalFiles: [] },
+      ],
+    } })
+    assert.equal(work.status, 'running')
+    assert.deepEqual(work.steps.map(step => step.state), ['failed', 'running', 'blocked'])
+  })
   const persisted: ArrangementExecutionSnapshot = {
     activeRunId: 'run-a', status: 'completed', updatedAt: 10,
     nodes: [{ nodeId: 'node-a', status: 'completed', finalFiles: [finalFile] }],
@@ -149,7 +186,15 @@ describe('arrangement retry display regressions', () => {
   it('does not animate persisted running nodes after work is stopped', () => {
     const work = buildWorkItem({ task: { ...task, status: 'paused' }, employees: [], plan,
       arrangementExecution: { ...persisted, status: 'running', nodes: [{ nodeId: 'node-a', status: 'running', finalFiles: [] }] } })
-    assert.equal(work.steps[0]?.state, 'failed')
+    assert.equal(work.steps[0]?.state, 'interrupted')
+  })
+
+  it('never offers a node failure when an explicit control interrupts its worker', () => {
+    for (const [status, expected] of [['PAUSED', 'interrupted'], ['CANCELLED', 'stopped']] as const) {
+      const work = buildWorkItem({ task, employees: [], plan, arrangementEvents: [{ ...failed, type: 'arrangement_node_failed', data: { nodeId: 'node-a', status } }] })
+      assert.equal(work.steps[0]?.state, expected)
+      assert.equal(work.arrangementExecution?.nodes[0]?.status, expected)
+    }
   })
 
   it('does not show invalidated final files from failed nodes', () => {

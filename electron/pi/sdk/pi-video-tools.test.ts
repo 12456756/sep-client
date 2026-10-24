@@ -142,6 +142,39 @@ describe('video tools through the mocked Pi SDK extension API', () => {
     } finally { restore() }
   })
 
+  it('preserves safe business errors in generated jobs and later job queries', async () => {
+    for (const error of ['INSUFFICIENT_FUNDS', 'VIDEO_BUDGET_EXCEEDED', 'MEDIA_FORBIDDEN', 'QUOTE_EXPIRED', 'VIDEO_CONCURRENCY_LIMIT']) {
+      const failedJob = { ...job, generationStatus: 'FAILED', trackingStatus: 'STOPPED', error }
+      for (const [name, input, payload] of [
+        ['video_generate', generation, failedJob],
+        ['video_get_job', { jobId: job.jobId }, { mock: true, runtime: videoFixture.runtime, jobs: [failedJob] }],
+      ] as const) {
+        const runtime = await sdk({}, payload)
+        const result = await runtime.execute(name, input)
+        assert.deepEqual(result.details, { isError: false })
+        const parsed = JSON.parse(value(result))
+        assert.equal(('jobs' in parsed ? parsed.jobs[0] : parsed).error, error)
+      }
+    }
+  })
+
+  it('reports a platform business rejection with a safe request ID and fixed message', async () => {
+    const records: Array<Record<string, unknown>> = []
+    const restore = setLogSink(record => { records.push(record.fields) })
+    try {
+      const error = new SepVideoGatewayError('VIDEO_HTTP_ERROR', 402, 'video-submit', {
+        businessCode: 'VIDEO_BUDGET_EXCEEDED', source: 'platform', requestId: 'req-safe-1',
+      })
+      const runtime = await sdk({}, error)
+      const result = await runtime.execute('video_generate', generation)
+      assert.deepEqual(result.details, { isError: true })
+      assert.deepEqual(JSON.parse(value(result)).error, { code: 'VIDEO_BUDGET_EXCEEDED', message: '已超过企业视频预算。' })
+      assert.deepEqual(records.at(-1), { runId: 'run-a', tool: 'video_generate', toolCallId: 'call-a',
+        exceptionType: 'SepVideoGatewayError', code: 'VIDEO_BUDGET_EXCEEDED', httpStatus: 402,
+        resource: 'video', stage: 'video-submit', requestId: 'req-safe-1' })
+    } finally { restore() }
+  })
+
   it('maps unknown errors to a fixed business code without exposing secrets', async () => {
     const records: Array<Record<string, unknown>> = []
     const restore = setLogSink(record => { records.push(record.fields) })
@@ -221,6 +254,53 @@ describe('video tools through the mocked Pi SDK extension API', () => {
     }
   })
 
+  it('preserves arrangement artifact receipts and strips host-only data from direct jobs and task queries', async () => {
+    const artifacts = [
+      { artifactId: `vout_${'a'.repeat(64)}`, sha256: 'b'.repeat(64), status: 'saved' },
+      { artifactId: `vout_${'c'.repeat(64)}`, status: 'saving' },
+    ]
+    const augmentedJob = { ...job, artifacts: artifacts.map(artifact => ({ ...artifact, ...secrets })), ...secrets }
+    for (const [name, input, payload] of [
+      ['video_generate', generation, augmentedJob],
+      ['video_get_job', { jobId: job.jobId }, { mock: true, runtime: videoFixture.runtime, jobs: [augmentedJob], ...secrets }],
+    ] as const) {
+      const runtime = await sdk({}, payload)
+      const result = await runtime.execute(name, input)
+      assert.deepEqual(result.details, { isError: false })
+      const parsed = JSON.parse(value(result))
+      const projected = 'jobs' in parsed ? parsed.jobs[0] : parsed
+      assert.deepEqual(projected, { ...job, artifacts })
+      for (const secret of ['private-key', 'private.example', '/private/video.mp4', 'secret Pi prompt', 'remote-receipt', 'remote-reference']) {
+        assert.ok(!value(result).includes(secret))
+      }
+    }
+  })
+
+  it('rejects malformed arrangement artifact receipts without forwarding host data', async () => {
+    const artifact = { artifactId: `vout_${'a'.repeat(64)}`, sha256: 'b'.repeat(64), status: 'saved' }
+    for (const artifacts of [
+      [{ ...artifact, artifactId: secrets.path }],
+      [{ ...artifact, artifactId: `vout_${'a'.repeat(63)}` }],
+      [{ ...artifact, artifactId: `iout_${'a'.repeat(64)}` }],
+      [{ ...artifact, sha256: secrets.apiKey }],
+      [{ ...artifact, status: 'SAVED' }],
+      [{ artifactId: artifact.artifactId }],
+      Array.from({ length: 5 }, () => artifact),
+    ]) {
+      for (const payload of [
+        { ...job, artifacts, ...secrets },
+        { mock: true, runtime: videoFixture.runtime, jobs: [{ ...job, artifacts, ...secrets }] },
+      ]) {
+        const runtime = await sdk({}, payload)
+        const result = await runtime.execute('video_get_job', { jobId: job.jobId })
+        assert.deepEqual(result.details, { isError: true })
+        assert.equal(JSON.parse(value(result)).error.code, 'INTERNAL_ERROR')
+        assert.doesNotMatch(value(result), /private-key|private\.example|\/private\/video\.mp4|remote-receipt/)
+        assert.ok(!value(result).includes(artifact.artifactId))
+      }
+    }
+  })
+
   it('rejects mixed mock/real task modes, invented billing and malformed costs without forwarding host data', async () => {
     const realJob = { ...job, billingStatus: 'RECONCILING', amountCny: '0.900000' }
     const realRuntime = videoRuntimeSchema.parse({ ...videoFixture.runtime, executionMode: 'real' })
@@ -239,7 +319,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
   })
   it('registers strict definitions independently of image tools and never advertises cancel', async () => {
     const runtime = await sdk({ mediaTools: { names: ['media_get_job'], execute: async () => null } })
-    assert.deepEqual([...runtime.definitions.keys()], ['media_get_job', ...names])
+    assert.deepEqual([...runtime.definitions.keys()], ['bash', 'read', 'media_get_job', ...names])
     assert.deepEqual(runtime.options.tools, ['read', 'bash', 'edit', 'write', 'media_get_job', ...names])
     for (const name of names) {
       const definition = runtime.definitions.get(name)!
@@ -265,7 +345,7 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       assert.deepEqual(runtime.options.tools, [])
     }
     const runtime = await sdk({ videoTools: { names: ['video_get_job', 'video_cancel_job'] as unknown as VideoToolName[], execute: async () => job } })
-    assert.deepEqual([...runtime.definitions.keys()], ['video_get_job'])
+    assert.deepEqual([...runtime.definitions.keys()], ['bash', 'read', 'video_get_job'])
   })
 
   it('forwards validated generation, query and AbortSignal without a duplicate Pi approval', async () => {
@@ -345,7 +425,8 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       const runtime = await sdk({ toolPolicy })
       const expected = toolPolicy.preset === 'full-local' ? names
         : toolPolicy.preset === 'read-only' ? ['video_get_job'] : [...names].filter(name => name === 'video_get_job' || toolPolicy.allowedTools.includes(name))
-      assert.deepEqual([...runtime.definitions.keys()], expected)
+      const encodingTools = ['bash', 'read', 'grep'].filter(name => runtime.options.tools?.includes(name))
+      assert.deepEqual([...runtime.definitions.keys()], [...encodingTools, ...expected])
       for (const name of [...names, 'video_cancel_job', 'video_unknown']) {
         const [decision] = await runtime.emit('tool_call', { toolName: name, input: generation })
         assert.equal((decision as { block: boolean }).block, !expected.includes(name))

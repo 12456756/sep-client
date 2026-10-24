@@ -29,12 +29,13 @@ import { AppError } from '../errors/app-error'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor } from './arrangement-executor'
-import { createArrangementExecutionState, interruptArrangement, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
+import { createArrangementExecutionState, confirmArrangementNode, interruptArrangement, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
 import { shouldPushTaskEvent } from './task-event-visibility'
 import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinishedInput, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
 import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
+import type { ArrangementMediaPort } from '../domain/arrangement-media-runtime'
 import type { KnowledgeSearchPort } from '../common/knowledge-context'
 
 const log = logger.child('task-runtime')
@@ -81,6 +82,7 @@ export interface TaskRuntimeOptions {
   monitor?: TaskMonitorPort
   media?: MediaRunPort
   video?: VideoRunPort
+  arrangementMedia?: ArrangementMediaPort
   knowledgeSearch?: KnowledgeSearchPort
 }
 
@@ -98,6 +100,7 @@ export class TaskRuntime {
   private readonly monitor: TaskMonitorPort
   private readonly media: MediaRunPort | undefined
   private readonly video: VideoRunPort | undefined
+  private readonly arrangementMedia: ArrangementMediaPort | undefined
   private readonly knowledgeSearch: KnowledgeSearchPort | undefined
   private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
@@ -134,6 +137,7 @@ export class TaskRuntime {
     this.monitor = options.monitor ?? silentTaskMonitor
     this.media = options.media
     this.video = options.video
+    this.arrangementMedia = options.arrangementMedia
     this.knowledgeSearch = options.knowledgeSearch
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
@@ -277,6 +281,53 @@ export class TaskRuntime {
     await this.executeTask(taskId, options)
   }
 
+  async confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void> {
+    if (this.arrangementRetries.has(taskId) || this.activeArrangements.has(taskId)) throw new AppError('INVALID_STATE', { message: '这项编排正在执行，请稍后再确认。' })
+    this.arrangementRetries.add(taskId)
+    try {
+      const scope = this.taskManager.getCurrentUserScope()
+      if (!scope || !this.workPlanStore || !this.arrangementCheckpointStore) throw new Error('Arrangement storage is unavailable.')
+      const task = await this.taskManager.getTask(taskId)
+      const plan = await this.workPlanStore.get(scope, taskId)
+      const checkpoint = await this.arrangementCheckpointStore.get(scope, taskId)
+      if (!task || task.status !== TaskStatus.PAUSED || task.activeRunId || !plan || plan.mode === 'conversation' || !checkpoint ||
+        checkpoint.planHash !== plan.planHash || checkpoint.activeRunId || checkpoint.state.status !== 'waiting-user') {
+        throw new AppError('INVALID_STATE', { message: '编排状态已变化，无法确认。' })
+      }
+      const uniqueIds = [...new Set(nodeIds)]
+      if (!uniqueIds.length || uniqueIds.length !== nodeIds.length) throw new AppError('INVALID_ARGUMENT')
+      if (uniqueIds.some(id => !plan.nodes.some(node => node.id === id && node.requiresUserConfirmation) ||
+        !checkpoint.state.nodes.some(node => node.nodeId === id && node.status === 'completed' && node.pendingConfirmation))) {
+        throw new AppError('INVALID_STATE', { message: '存在不可确认的节点。' })
+      }
+      const primary = plan.nodes[0]
+      if (!primary || !await this.authorizeEmployee(primary.subscriptionId)) throw new Error('The selected employee is no longer available.')
+      const currentScope = this.taskManager.getCurrentUserScope()
+      const currentTask = await this.taskManager.getTask(taskId)
+      const currentPlan = await this.workPlanStore.get(scope, taskId)
+      const currentCheckpoint = await this.arrangementCheckpointStore.get(scope, taskId)
+      if (!currentScope || currentScope.enterpriseId !== scope.enterpriseId || currentScope.memberId !== scope.memberId ||
+        currentTask?.status !== TaskStatus.PAUSED || currentTask.activeRunId || currentPlan?.planHash !== plan.planHash ||
+        JSON.stringify(currentCheckpoint) !== JSON.stringify(checkpoint)) throw new AppError('INVALID_STATE', { message: '编排状态已变化，请刷新后再确认。' })
+      let state = checkpoint.state
+      for (const nodeId of uniqueIds) state = confirmArrangementNode(state, plan.nodes, nodeId)
+      try {
+        await this.saveArrangementCheckpoint(scope, taskId, checkpoint.planHash, null, state)
+        if (state.status === 'running' || state.status === 'completed') {
+          await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
+          await this.executeTask(taskId, { conversation: false })
+        }
+      } catch (error) {
+        const current = await this.taskManager.getTask(taskId)
+        if (current && !current.activeRunId) {
+          await this.arrangementCheckpointStore.save(scope, checkpoint)
+          await this.taskManager.updateTaskStatus(taskId, task.status, task.error ?? undefined)
+        }
+        throw error
+      }
+    } finally { this.arrangementRetries.delete(taskId) }
+  }
+
   async stopArrangement(taskId: string, reason?: string): Promise<void> {
     const activeArrangement = this.activeArrangements.get(taskId)
     if (activeArrangement) {
@@ -324,11 +375,31 @@ export class TaskRuntime {
     plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
     nodeId?: string,
   ): Promise<void> {
-    if (this.arrangementRetries.has(task.id) || task.activeRunId || this.activeArrangements.has(task.id)) {
+    const scope = this.taskManager.getCurrentUserScope()
+    if (this.arrangementRetries.has(task.id)) {
       throw new AppError('INVALID_STATE', { message: '这项编排正在执行或提交重试，请等待当前操作完成。' })
     }
     this.arrangementRetries.add(task.id)
-    try { await this.prepareArrangementRetry(task, plan, nodeId) }
+    try {
+      const active = this.activeArrangements.get(task.id)
+      if (active) {
+        if (!nodeId || active.control !== 'none') throw new AppError('INVALID_STATE', { message: '当前编排仍在执行，只能重试已失败的指定节点。' })
+        if (await active.executor.retryFailedNode(nodeId)) return
+        const liveCheckpoint = scope && this.arrangementCheckpointStore
+          ? await this.arrangementCheckpointStore.get(scope, task.id)
+          : null
+        if (liveCheckpoint?.state.nodes.find(node => node.nodeId === nodeId)?.status !== 'failed') {
+          throw new AppError('INVALID_STATE', { message: '只能重试当前失败的节点。' })
+        }
+        await active.completion
+        const latest = await this.taskManager.getTask(task.id)
+        if (!latest) throw new Error('Task not found.')
+        await this.prepareArrangementRetry(latest, plan, nodeId)
+        return
+      }
+      if (task.activeRunId) throw new AppError('INVALID_STATE', { message: '这项编排正在执行或提交重试，请等待当前操作完成。' })
+      await this.prepareArrangementRetry(task, plan, nodeId)
+    }
     finally { this.arrangementRetries.delete(task.id) }
   }
 
@@ -632,6 +703,7 @@ export class TaskRuntime {
         arrangementSubscriptionId: queued.subscriptionId,
         media: this.media,
         video: this.video,
+        arrangementMedia: this.arrangementMedia,
         knowledgeSearch: this.knowledgeSearch,
       })
       this.activeArrangements.set(taskId, {
@@ -647,6 +719,7 @@ export class TaskRuntime {
       this.reportMonitorStarted({ taskId, runId, startedAt: Date.now() })
       const result = await arrangement.execute(plan, taskId, runId)
       await this.events.drain(taskId)
+      if (scope && this.arrangementCheckpointStore) await this.saveArrangementCheckpoint(scope, taskId, plan.planHash, null, result.state)
       const arrangementOutput = this.arrangementOutput(plan, result.state)
       if (arrangementOutput) this.reportMonitorOutput({ taskId, runId, content: arrangementOutput, completeness: result.status === 'completed' ? 'complete' : 'partial' })
       const activeArrangement = this.activeArrangements.get(taskId)
