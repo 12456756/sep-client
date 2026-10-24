@@ -25,7 +25,7 @@ import {
 } from '../domain/arrangement-plan'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import { requireScope, type ScopeSource } from './scope-guard'
-import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirectory, ArrangementPlannerPort, ArrangementPlanningProgress, ArrangementPlannerEmployee } from '../domain/arrangement-planner'
+import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirectory, ArrangementPlannerPort, ArrangementPlannerDraft, ArrangementPlanningProgress, ArrangementPlannerEmployee } from '../domain/arrangement-planner'
 import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementEmployeeAccessRequest } from '../domain/arrangement-plan'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 import { TaskCreationGate } from './task-creation-gate'
@@ -354,17 +354,27 @@ export class ArrangementService {
     log.info('planning phase started', { ...context, ...diagnosticContext, phase })
     try {
       const current = await this.getDraft(draftId)
+      if (current.attachmentCandidates?.some(candidate => candidate.mustUse) && !this.deps.attachments) {
+        throw new AppError('INVALID_STATE', { message: '自动编排无法读取已要求使用的附件。' })
+      }
+      const plannerAttachmentMaterials = current.attachmentCandidates?.length && this.deps.attachments
+        ? await this.deps.attachments.plannerMaterialsForDraft(draftId, current.attachmentCandidates).then(materials => materials.map(material => ({
+          ...material, attachment: { attachmentId: material.attachmentId, sha256: material.sha256 },
+          mustUse: current.attachmentCandidates?.find(candidate => candidate.attachment.attachmentId === material.attachmentId)?.mustUse ?? false,
+        })))
+        : []
+      const planningSource = { ...current, plannerAttachmentMaterials }
       context.completedNodeCount = current.nodes.length
       context.unresolvedStepCount = current.unresolvedSteps?.length ?? 0
       nextPhase('employee-loading')
       const authorized = await this.loadAuthorizedPlannerEmployees({ ...context, ...diagnosticContext })
       context.employeeCount = authorized.length
-      let planningDraft = current
+      let planningDraft: ArrangementPlannerDraft = planningSource
       let employees: ArrangementPlannerEmployee[] = authorized
       const plannerEmployees: ArrangementPlannerEmployee[] = authorized
       nextPhase('round-1')
       let result = await this.deps.planner!.plan({
-        planningId, planningStage: 'authorized', draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
+        planningId, planningStage: 'authorized', draft: { ...planningDraft, plannerAttachmentMaterials }, employees, plannerEmployees, signal: controller.signal,
         modelId, plannerModelId: modelId,
         diagnosticContext,
         onProgress: event => this.emitPlanning(event),
@@ -380,7 +390,7 @@ export class ArrangementService {
         const enterpriseCandidates = await this.deps.candidateEmployees.listEnterprise()
         context.employeeCount = enterpriseCandidates.length
         if (enterpriseCandidates.length) {
-          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes, candidateMatches }
+          planningDraft = { ...planningSource, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes, candidateMatches }
           employees = enterpriseCandidates
           nextPhase('round-2')
           result = await this.deps.planner!.plan({
@@ -406,7 +416,7 @@ export class ArrangementService {
         const platform = await this.deps.candidateEmployees.listPlatform()
         context.employeeCount = platform.length
         if (platform.length) {
-          planningDraft = { ...current, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes, candidateMatches }
+          planningDraft = { ...planningSource, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes, candidateMatches }
           employees = platform
           nextPhase('round-3')
           result = await this.deps.planner!.plan({

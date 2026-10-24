@@ -61,6 +61,15 @@ describe('arrangement planner', () => {
     assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Bad', nodes: [{ id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-x', title: 'x', instruction: 'x', expectedOutput: 'x', knowledgeQuery: 'Internal policy', dependsOn: [], skillIds: [], requiresUserConfirmation: false }] }), draft, employees))
   })
 
+  it('accepts only draft-owned attachment refs and assigns every must-use attachment', () => {
+    const attachment = { attachmentId: 'att-1', sha256: 'a'.repeat(64) }
+    const withAttachment = { ...draft, attachmentCandidates: [{ attachment, mustUse: true }] }
+    const node = { id: 'node-1', subscriptionId: 'sub-a', modelId: 'm-a', title: 'Research', instruction: 'Read source', expectedOutput: 'Summary', knowledgeQuery: 'Internal research policy', dependsOn: [], inputRefs: [{ kind: 'attachment', attachment, required: true, purpose: 'analysis' }] }
+    assert.deepEqual(parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [node] }), withAttachment, employees).nodes[0]?.inputRefs, node.inputRefs)
+    assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ ...node, inputRefs: [] }] }), withAttachment, employees))
+    assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ ...node, inputRefs: [{ ...node.inputRefs[0]!, attachment: { attachmentId: 'att-other', sha256: 'b'.repeat(64) } }] }] }), withAttachment, employees))
+  })
+
   it('plans employee work without task-level skill selection', () => {
     const prompt = buildArrangementPlannerPrompt(draft, employees)
     assert.ok(ARRANGEMENT_PLANNER_RULES.includes('由执行阶段按员工配置加载'))

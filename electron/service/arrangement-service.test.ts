@@ -42,6 +42,24 @@ describe('arrangement attachment ownership', () => {
     await assert.rejects(service.updateInputs('draft-a', 1, { attachmentCandidates: [] }), (error: unknown) => error instanceof AppError && error.code === 'DRAFT_REVISION_CONFLICT')
   })
 
+  it('provides extracted attachment summaries to auto-planning and persists validated node bindings', async () => {
+    const ref = { attachmentId: 'att-a', sha256: 'a'.repeat(64) }
+    const source = persisted({ ...autoDraft(), attachmentCandidates: [{ attachment: ref, mustUse: true }] })
+    let saved: ArrangementDraft | null = source
+    let received: ArrangementDraft | null = null
+    const planned = { title: 'Plan', nodes: [{ ...draft().nodes[0]!, inputRefs: [{ kind: 'attachment' as const, attachment: ref, required: true, purpose: 'analysis' as const }] }] }
+    const service = new ArrangementService(serviceDeps({
+      drafts: { async get() { return saved }, async update(_scope: unknown, _id: string, revision: number, patch: ArrangementDraft) { saved = { ...patch, revision: revision + 1 }; return saved } },
+      employees: { async list() { return [employee()] } },
+      attachments: { async plannerMaterialsForDraft(_id: string, candidates: unknown[]) { assert.deepEqual(candidates.length, 1); return [{ attachmentId: ref.attachmentId, sha256: ref.sha256, displayName: 'brief.docx', mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', byteLength: 12, summary: 'Launch needs and target users', warnings: [] }] } },
+      planner: { async plan(input: { draft: ArrangementDraft }) { received = input.draft; return planned } },
+    }))
+    await service.startPlanning(source.id, source.revision)
+    for (let attempt = 0; attempt < 50 && saved?.status === 'planning'; attempt++) await new Promise(resolve => setTimeout(resolve, 2))
+    assert.equal((received as (ArrangementDraft & { plannerAttachmentMaterials: Array<{ summary: string }> }) | null)?.plannerAttachmentMaterials[0]?.summary, 'Launch needs and target users')
+    assert.deepEqual(saved?.nodes[0]?.inputRefs, planned.nodes[0]?.inputRefs)
+  })
+
   it('resumes a failed confirmation using the reserved task and serializes duplicate confirmations', async () => {
     let stored = persisted(draft())
     let record: unknown = null

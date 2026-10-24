@@ -29,7 +29,7 @@ describe('arrangement planner prompt separation', () => {
     const prompt = buildArrangementPlannerUserPrompt(input)
     assert.ok(prompt.startsWith(`目前是自动编排的${heading}。`))
     assert.equal(input.planningStage, stage)
-    assert.deepEqual(Object.keys(input), ['planningStage', 'userGoal', 'confirmedInputs', 'intentSnapshot', 'unresolvedSteps', 'existingNodes', 'existingCandidateMatches', 'employeeCatalog'])
+    assert.deepEqual(Object.keys(input), ['planningStage', 'userGoal', 'confirmedInputs', 'attachments', 'intentSnapshot', 'unresolvedSteps', 'existingNodes', 'existingCandidateMatches', 'employeeCatalog'])
     assert.deepEqual(input.existingCandidateMatches, draft.candidateMatches)
     assert.ok(prompt.includes(JSON.stringify(input, null, 2)))
     assert.doesNotMatch(prompt, /核心规划原则|candidateMatches 返回|nodes 返回|private-skill|不得默认增加/)

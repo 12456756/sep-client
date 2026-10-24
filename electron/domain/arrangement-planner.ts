@@ -52,6 +52,10 @@ export interface ArrangementPlanningResult {
   candidateMatches?: ArrangementCandidateMatch[]
 }
 
+export type ArrangementPlannerDraft = ArrangementDraft & {
+  plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments']
+}
+
 export interface ArrangementCandidateDirectory {
   listEnterprise(): Promise<ArrangementPlannerEmployee[]>
   listPlatform(): Promise<ArrangementPlannerEmployee[]>
@@ -66,7 +70,7 @@ export interface ArrangementPlannerPort {
     planningId: string
     planningStage?: ArrangementPlanningStage
     modelId?: string
-    draft: ArrangementDraft
+    draft: ArrangementPlannerDraft
     employees: readonly ArrangementPlannerEmployee[]
     plannerEmployees?: readonly ArrangementPlannerEmployee[]
     plannerModelId?: string
@@ -78,7 +82,7 @@ export interface ArrangementPlannerPort {
 }
 
 export function buildArrangementPlannerPrompt(
-  draft: Pick<ArrangementDraft, 'goal' | 'confirmedInputs' | 'intentAnalysis' | 'unresolvedSteps' | 'nodes' | 'candidateMatches'>,
+  draft: Pick<ArrangementDraft, 'goal' | 'confirmedInputs' | 'intentAnalysis' | 'unresolvedSteps' | 'nodes' | 'candidateMatches' | 'attachmentCandidates'> & { plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments'] },
   employees: readonly ArrangementPlannerEmployee[],
   planningStage: ArrangementPlanningStage = 'authorized',
 ): string {
@@ -143,6 +147,20 @@ export function parseArrangementPlannerOutput(
       ...(stringField(item.stepId) ? { stepId: stringField(item.stepId)! } : {}),
     }
   })
+  const allowedAttachments = new Map((draft.attachmentCandidates ?? []).map(candidate => [candidate.attachment.attachmentId, candidate]))
+  const usedAttachmentIds = new Set((draft.nodes ?? []).flatMap(node => (node.inputRefs ?? []).flatMap(ref => ref.kind === 'attachment' ? [ref.attachment.attachmentId] : [])))
+  for (const node of nodes) {
+    if (node.inputRefs?.some(ref => ref.kind === 'deliverable')) throw planningFailure('output-validation', 'invalid-planner-input-reference')
+    for (const ref of node.inputRefs ?? []) {
+      if (ref.kind !== 'attachment') continue
+      const allowed = allowedAttachments.get(ref.attachment.attachmentId)
+      if (!allowed || allowed.attachment.sha256 !== ref.attachment.sha256) throw planningFailure('output-validation', 'invalid-attachment-reference')
+      usedAttachmentIds.add(ref.attachment.attachmentId)
+    }
+  }
+  if ((draft.attachmentCandidates ?? []).some(candidate => candidate.mustUse && !usedAttachmentIds.has(candidate.attachment.attachmentId))) {
+    throw planningFailure('output-validation', 'required-attachment-unassigned')
+  }
   if (nodes.some(node => !node.title || !node.instruction || !node.knowledgeQuery)) throw planningFailure('output-validation', 'missing-node-fields')
   onPhase?.('employee-validation')
   for (const node of nodes) {
