@@ -360,6 +360,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ent-attachment-item small { color: var(--ent-ink-3); white-space: nowrap; }
 .ent-attachment-button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--arr-card-line); border-radius: 7px; padding: 6px 9px; color: var(--ent-ink-2); background: transparent; cursor: pointer; }
+.ent-chat-askbar > .ent-attachment-composer .ent-attachment-button { transform: translateY(-2px); }
 .ent-attachment-button:disabled { opacity: .55; cursor: default; }
 .ent-attachment-error { display: inline-flex; align-items: center; gap: 5px; color: var(--ent-danger, #b42318); font-size: 12px; }
 .ent-attachment-error button { display: inline-flex; border: 0; background: transparent; color: inherit; cursor: pointer; }
