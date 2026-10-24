@@ -18,6 +18,52 @@ import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../commo
 
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
+describe('arrangement attachment ownership', () => {
+  const attachment = { attachmentId: 'att-a', sha256: 'a'.repeat(64) }
+
+  it('claims imported candidates before exposing a usable draft', async () => {
+    const calls: unknown[] = []
+    const service = new ArrangementService(serviceDeps({
+      drafts: { async create(_scope: unknown, input: ReturnType<typeof draft>) { return persisted(input) } },
+      attachments: { async claimDraft(...args: unknown[]) { calls.push(args) } },
+    }))
+    const created = await service.createDraft({ ...draft(), attachmentCandidates: [{ attachment, mustUse: true }], attachmentSessionId: 'session-a' })
+    assert.equal(created.attachmentCandidates?.length, 1)
+    assert.deepEqual(calls, [['session-a', 'draft-a', 1, [attachment]]])
+  })
+
+  it('rejects candidates without a controlled import session', async () => {
+    const service = new ArrangementService(serviceDeps({ drafts: { async create() { assert.fail('must reject before persistence') } } }))
+    await assert.rejects(service.createDraft({ ...draft(), attachmentCandidates: [{ attachment, mustUse: true }] }), /附件/)
+  })
+
+  it('refuses attachment changes against an old revision before claiming files', async () => {
+    const service = new ArrangementService(serviceDeps({ drafts: { async get() { return persisted(draft(), 2) } }, attachments: { async claimDraft() { assert.fail('must reject before claim') } } }))
+    await assert.rejects(service.updateInputs('draft-a', 1, { attachmentCandidates: [] }), (error: unknown) => error instanceof AppError && error.code === 'DRAFT_REVISION_CONFLICT')
+  })
+
+  it('resumes a failed confirmation using the reserved task and serializes duplicate confirmations', async () => {
+    let stored = persisted(draft())
+    let record: unknown = null
+    let task: { id: string; workDir: null } | null = null
+    let plan: unknown = null
+    let creates = 0
+    let fail = true
+    const service = new ArrangementService(serviceDeps({
+      employees: { async list() { return [employee()] } },
+      drafts: { async get() { return stored }, async update(_s: unknown, _id: string, _rev: number, patch: typeof stored) { stored = { ...stored, ...patch, revision: 2 }; return stored } },
+      confirmations: { async get() { return record }, async save(_s: unknown, value: unknown) { record = value } },
+      taskManager: { async getTask() { return task }, async createTask(_title: string, _prompt: string, _dir: unknown, _subscription: unknown, reservedId: string) { creates++; task = { id: reservedId, workDir: null }; return task } },
+      workPlans: { async get() { return plan }, async save(_s: unknown, value: unknown) { if (fail) { fail = false; throw new Error('disk full') }; plan = value } },
+    }))
+    await assert.rejects(service.confirmDraft(stored.id, 1, 'same'), /disk full/)
+    const results = await Promise.all([service.confirmDraft(stored.id, 1, 'same'), service.confirmDraft(stored.id, 1, 'same')])
+    assert.equal(creates, 1)
+    assert.equal(results[0].plan.id, results[1].plan.id)
+    assert.equal((record as { state: string }).state, 'committed')
+  })
+})
+
 describe('arrangement media stage projection', () => {
   for (const kind of ['image', 'video'] as const) {
     for (const stage of ['queued', 'running', 'saving', 'saved', 'delivered', 'delivered-expired', 'interrupted', 'delivery-failed', 'delivery-interrupted', 'delivery-stopped'] as const) {

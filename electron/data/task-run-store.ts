@@ -14,6 +14,7 @@ import { ScopePath, TaskScopeError, isSafeId, type ConversationSessionPaths, typ
 import { TaskEventStore, type TaskEventStorePort } from './task-event-store'
 import { WriteChain } from './write-chain'
 import { TaskPersistenceError } from './task-store'
+import type { AttachmentView } from '../../src/shared/attachment-contracts'
 
 export type { ConversationSessionPaths, TaskRunPaths } from './scope-path'
 
@@ -46,6 +47,7 @@ export interface TaskRunRecord {
   arrangementNodeId?: string
   resumedFromRunId?: string
   executionKind?: 'conversation' | 'arrangement'
+  attachmentMetadata?: AttachmentView[]
 }
 
 export interface CreateTaskRunInput {
@@ -59,6 +61,7 @@ export interface CreateTaskRunInput {
   arrangementNodeId?: string
   resumedFromRunId?: string
   executionKind?: 'conversation' | 'arrangement'
+  attachmentMetadata?: AttachmentView[]
 }
 
 export interface TaskRunStorePort {
@@ -120,6 +123,7 @@ export class TaskRunStore implements TaskRunStorePort {
       ...(input.arrangementNodeId ? { arrangementNodeId: input.arrangementNodeId } : {}),
       ...(input.resumedFromRunId ? { resumedFromRunId: input.resumedFromRunId } : {}),
       ...(input.executionKind ? { executionKind: input.executionKind } : {}),
+      ...(input.attachmentMetadata?.length ? { attachmentMetadata: structuredClone(input.attachmentMetadata) } : {}),
     }
     await Promise.all([
       mkdir(join(paths.taskDir, 'runs'), { recursive: true }),

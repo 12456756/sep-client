@@ -39,6 +39,8 @@ export interface PiTaskWorkerContext {
   arrangementNodeId?: string
   toolPolicy?: PiAgentSessionConfig['toolPolicy']
   disableTools?: boolean
+  /** Images injected into the first user prompt only; host-owned and already validated. */
+  inputImages?: readonly { data: string; mimeType: string }[]
 }
 
 interface TokenManagerPort {
@@ -248,7 +250,12 @@ export class PiTaskWorker {
         yieldStop = undefined
         this.settledResponse = { text: '' }
         stage = 'prompt'
-        try { await session.prompt(nextPrompt) } catch (error) {
+        try {
+          const images = this.context.inputImages
+            ? this.context.inputImages.map(image => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType }))
+            : undefined
+          await session.prompt(nextPrompt, images?.length ? { images } : undefined)
+        } catch (error) {
           const intentionalAbort = yielded && error instanceof Error && isHandoffAbort(error.message) &&
             (session.getSettledResponse?.().stopReason === 'aborted' || error.name === 'AbortError' && error.message === 'Gateway retry cancelled.')
           if (!intentionalAbort) throw error

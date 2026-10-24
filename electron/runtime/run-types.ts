@@ -11,6 +11,8 @@ export interface TaskToolPolicy {
   approvalMode: 'confirm-each' | 'auto-approve'
   workspaceDir: string
   readableDeliveryPaths?: readonly string[]
+  /** Exact host-verified attachment snapshots; read-only grants only. */
+  readableAttachmentPaths?: readonly string[]
 }
 
 export interface EmployeeRuntimeConfig {
@@ -49,6 +51,7 @@ export interface QueuedRun {
   workerPrompt?: string
   degradedRecovery?: { originalSessionFile: string; mode: SessionRecoveryMode }
   arrangement?: WorkPlan
+  attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]
 }
 
 export interface ActiveRun {

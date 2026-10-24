@@ -36,6 +36,7 @@ import { buildArrangementNodeSystemPrompt } from './arrangement-node-prompts'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../domain/model-request-progress'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
+import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
 import { ArrangementMediaSubmissionError } from '../domain/arrangement-media-runtime'
 import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
@@ -65,6 +66,7 @@ export interface ArrangementExecutionOptions {
   video?: VideoRunPort
   arrangementMedia?: ArrangementMediaPort
   knowledgeSearch?: KnowledgeSearchPort
+  attachmentInputs?: AttachmentInputPort
 }
 
 export interface ArrangementNodeEvent {
@@ -489,6 +491,13 @@ export class ArrangementExecutor {
       }
       this.checkExecutionControl()
       if (structured && delivery.issues.length) prompt += `\n\n${buildDeliveryCorrection(delivery.issues)}`
+      const nodeAttachmentRefs = (node.inputRefs ?? []).flatMap(ref => ref.kind === 'attachment' ? [ref.attachment] : [])
+      const attachmentInputs = this.options.scope && nodeAttachmentRefs.length && this.options.attachmentInputs
+        ? await this.options.attachmentInputs.resolveTaskInputs(this.options.scope, taskId, nodeAttachmentRefs)
+        : null
+      if (attachmentInputs?.attachments.length) {
+        prompt += `\n\n【已绑定附件】\n${attachmentInputs.attachments.map(item => `附件：${item.displayName}（${item.mediaType}，${item.byteLength} bytes）${item.extractedText ? `\n提取内容：\n${item.extractedText}` : item.readPath ? `\n文件路径：${item.readPath}` : ''}`).join('\n\n')}`
+      }
       if (this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.create(this.options.scope, {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
@@ -498,7 +507,8 @@ export class ArrangementExecutor {
         created = true
       }
       const toolPolicy = { ...withApprovedSkillReadPaths(toToolPolicy(plan.permissions, workspaceDir), employee)!,
-        readableDeliveryPaths: dependencies.flatMap(dependency => dependency.files.flatMap(file => file.readPath ? [file.readPath] : [])) }
+        readableDeliveryPaths: dependencies.flatMap(dependency => dependency.files.flatMap(file => file.readPath ? [file.readPath] : [])),
+        readableAttachmentPaths: attachmentInputs?.attachments.flatMap(item => item.readPath ? [item.readPath] : []) ?? [] }
       if (requiresMediaBridge) mediaSession = await this.options.arrangementMedia!.prepareNode({
         taskId, arrangementRunId, nodeRunId, attempt: checkpoint.attempt, planHash: plan.planHash, node,
         signal: this.validationCancellation.signal,
@@ -574,6 +584,7 @@ export class ArrangementExecutor {
               (mediaSession ? `\n【已授权媒体输入与原任务】\n${mediaSession.inputPrompt}\n媒体最终文件由主进程根据 mediaDeliverables 自动保存，勿自行写入或覆盖计划中的媒体路径。不要等待或轮询媒体任务；恢复时使用原任务，不重新生成。` : ''),
           } : { systemPrompt: employee.systemPrompt }),
           mediaTools, videoTools, toolPolicy,
+          ...(attachmentInputs?.images.length ? { inputImages: attachmentInputs.images.map(image => ({ data: Buffer.from(image.bytes).toString('base64'), mimeType: image.mediaType })) } : {}),
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,

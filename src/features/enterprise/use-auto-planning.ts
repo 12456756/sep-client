@@ -68,7 +68,7 @@ export function useAutoPlanning() {
     };
   }, []);
 
-  const start = async (goal: string, workDir: string, modelId: string): Promise<void> => {
+  const start = async (goal: string, workDir: string, modelId: string, attachmentRefs: import('../../shared/attachment-contracts').AttachmentRef[] = [], attachmentSessionId?: string, mustUseAttachments = true): Promise<void> => {
     if (!goal.trim() || !modelId || attempt.current && !attempt.current.terminal) return;
     planningModelId.current = modelId;
     const current: PlanningAttempt = { draftId: null, planningId: null, modelId, terminal: false };
@@ -81,7 +81,7 @@ export function useAutoPlanning() {
     try {
       const created = await window.electronAPI.createArrangementDraft({
         schemaVersion: 1, mode: 'auto', title: goal.trim().slice(0, 40), goal: goal.trim(),
-        confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [],
+        confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [], attachmentCandidates: attachmentRefs.map(attachment => ({ attachment, mustUse: mustUseAttachments })), attachmentSessionId,
         workspace: { mode: 'shared', path: workDir || null }, permissions: { preset: 'read-only' }, lastPlanning: null,
       });
       if (attempt.current !== current) return;
@@ -145,17 +145,17 @@ export function useAutoPlanning() {
     setDraft(result.draft);
   };
 
-  const recheck = async (): Promise<void> => {
-    const modelId = planningModelId.current;
-    if (!draft || planning || !modelId) return;
-    const current: PlanningAttempt = { draftId: draft.id, planningId: null, modelId, terminal: false };
+  const recheckDraft = async (targetDraft: ArrangementDraft, modelId: string, force = false): Promise<void> => {
+    if (planning && !force) return;
+    const current: PlanningAttempt = { draftId: targetDraft.id, planningId: null, modelId, terminal: false };
     attempt.current = current;
     setPlanning(true);
     setCancellable(false);
     setEvents([]);
     setError(null);
+    setDraft(targetDraft);
     try {
-      const planned = await window.electronAPI.planArrangementDraft({ draftId: draft.id, expectedRevision: draft.revision, modelId });
+      const planned = await window.electronAPI.planArrangementDraft({ draftId: targetDraft.id, expectedRevision: targetDraft.revision, modelId });
       if (attempt.current !== current) return;
       if (!planned.success || !planned.planningId) {
         throw new Error(errorMessage(planned, '重新检查未能启动'));
@@ -165,6 +165,12 @@ export function useAutoPlanning() {
     } catch (cause) {
       if (!current.terminal) fail(current, cause instanceof Error ? cause.message : '重新检查失败');
     }
+  };
+
+  const recheck = async (): Promise<void> => {
+    const modelId = planningModelId.current;
+    if (!draft || planning || !modelId) return;
+    await recheckDraft(draft, modelId);
   };
 
   return {
@@ -180,5 +186,6 @@ export function useAutoPlanning() {
     requestEmployeeAccess,
     refreshEmployeeAccess,
     recheck,
+    recheckDraft,
   };
 }

@@ -42,6 +42,7 @@ import { TaskService } from '../service/task-service'
 import { TaskCreationGate } from '../service/task-creation-gate'
 import { ArrangementService } from '../service/arrangement-service'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
+import { ArrangementConfirmationStore } from '../data/arrangement-confirmation-store'
 import { ClientMonitorApi } from '../common/platform/client-monitor-api'
 import { ClientMonitorStore } from '../data/client-monitor-store'
 import { ConversationContextStore } from '../domain/conversation-context'
@@ -66,6 +67,9 @@ import { AppError } from '../errors/app-error'
 import { DocumentPreviewService } from '../service/document-preview-service'
 import { DocumentPreviewStore } from '../data/document-preview-store'
 import type { DocumentPreviewRuntime } from '../runtime/document-preview-runtime'
+import { AttachmentStore } from '../data/attachment-store'
+import { AttachmentService } from '../service/attachment-service'
+import type { AttachmentExtractionRuntime } from '../runtime/attachment-extraction-runtime'
 
 const log = logger.child('build-backend')
 
@@ -98,6 +102,9 @@ class BackendRuntime {
   readonly tasks: TaskService
   readonly conversations: ConversationService
   readonly arrangements: ArrangementService
+  readonly attachments: AttachmentService
+  private readonly attachmentStore: AttachmentStore
+  private readonly attachmentExtractionRuntime: LazyAsync<AttachmentExtractionRuntime>
   readonly documentPreviews: DocumentPreviewService
   private readonly documentPreviewRuntime: LazyAsync<DocumentPreviewRuntime>
   readonly skills: SkillLibraryService
@@ -127,6 +134,7 @@ class BackendRuntime {
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.documentPreviewRuntime = loadOnce(async () => (await import('./create-document-preview-runtime')).createDocumentPreviewRuntime())
+    this.attachmentExtractionRuntime = loadOnce(async () => (await import('./create-document-preview-runtime')).createAttachmentExtractionRuntime())
     this.speechRuntime = loadOnce(async () => (await import('./create-speech-runtime')).createSpeechRuntime())
     this.speech = new SpeechService({
       scope: this, settings: new SpeechSettingsStore(userDataDir),
@@ -164,6 +172,8 @@ class BackendRuntime {
       }),
     })
     this.taskManager = new TaskManager(userDataDir, renderer)
+    this.attachmentStore = new AttachmentStore(userDataDir, undefined, async (mediaType: string, bytes: Uint8Array) => (await this.attachmentExtractionRuntime.get()).extract(mediaType, bytes))
+    this.attachments = new AttachmentService(this.attachmentStore, () => this.currentScope())
     this.taskRunStore = new TaskRunStore(userDataDir)
     this.clientMonitor = new ClientMonitorService({
       store: new ClientMonitorStore(userDataDir),
@@ -190,6 +200,7 @@ class BackendRuntime {
     })
     this.taskMetadataStore = new TaskMetadataStore(userDataDir)
     const arrangementDrafts = new ArrangementDraftStore(userDataDir)
+    const arrangementConfirmations = new ArrangementConfirmationStore(userDataDir)
     this.workPlans = new WorkPlanStore(userDataDir)
     this.arrangementCheckpoints = new ArrangementCheckpointStore(userDataDir)
     const skillVersions = new SkillVersionStore(join(userDataDir, 'skill-data', 'v1'))
@@ -270,7 +281,7 @@ class BackendRuntime {
     this.arrangementMedia = new ArrangementMediaService({
       scope: this, plans: this.workPlans, checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore,
       links: new ArrangementMediaLinkStore(userDataDir), images: mediaStore, videos: videoStore,
-      assets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore), media: this.media,
+      assets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore, this.attachments), media: this.media,
       getTask: taskId => this.taskManager.getTask(taskId),
     })
 
@@ -289,6 +300,7 @@ class BackendRuntime {
       taskMetadataStore: this.taskMetadataStore,
       employees: this.employees,
       execution: () => this.getTaskRuntime(),
+      attachments: this.attachments,
     }
     this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks })
@@ -304,16 +316,18 @@ class BackendRuntime {
     this.arrangements = new ArrangementService({
       scope: this,
       drafts: arrangementDrafts,
+      attachments: this.attachments,
       employees: this.employees,
       workPlans: this.workPlans,
       taskMetadata: this.taskMetadataStore,
       taskManager: this.taskManager,
       arrangementCheckpoints: this.arrangementCheckpoints,
       arrangementMediaLinks: new ArrangementMediaLinkStore(userDataDir),
-      arrangementMediaAssets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore),
+      arrangementMediaAssets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore, this.attachments),
       mediaStore,
       videoStore,
       creationGate,
+      confirmations: arrangementConfirmations,
       execution: () => this.getTaskRuntime(),
       planner: {
         plan: input => this.arrangementPlanner.get().then(planner => planner.plan(input)),
@@ -429,6 +443,8 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.attachmentExtractionRuntime.peek()?.stop()
+    await this.attachments.stop()
     this.knowledge.clear()
     this.documentPreviews.clear()
     this.speech.stop()
@@ -562,6 +578,7 @@ class BackendRuntime {
       media: this.media,
       video: this.videoRuns,
       arrangementMedia: this.arrangementMedia,
+      attachmentInputs: this.attachments,
     })
     log.info('task runtime loaded')
     return runtime

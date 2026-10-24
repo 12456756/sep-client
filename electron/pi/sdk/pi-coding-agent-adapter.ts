@@ -233,8 +233,14 @@ const mediaJobResultSchema = z.object({
 function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown; isError: boolean } {
   // Project business views only: quotes, provider credentials, URLs and transport DTOs never reach Pi.
   if (result && typeof result === 'object' && 'ok' in result && result.ok === false) {
-    const parsed = z.object({ ok: z.literal(false), error: z.object({ code: z.string(), message: z.string() }) }).safeParse(result)
-    if (parsed.success) return { value: mediaToolFailure(parsed.data.error.code, parsed.data.error.message), isError: true }
+    const parsed = z.object({ ok: z.literal(false), error: z.object({
+      code: z.string(), message: z.string(),
+      businessCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,95}$/).optional(),
+      field: z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/).optional(),
+      stage: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).optional(),
+      recovery: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
+    }) }).safeParse(result)
+    if (parsed.success) return { value: mediaToolFailure(parsed.data.error.code, parsed.data.error.message, parsed.data.error), isError: true }
     throw new Error('Invalid media business error.')
   }
   const value = name === 'media_get_capabilities'
@@ -812,12 +818,14 @@ class PiCodingAgentSession implements PiAgentSession {
     return { ...this.settledResponse }
   }
 
-  async prompt(text: string): Promise<void> {
+  async prompt(text: string, options?: { images?: readonly { type: 'image'; data: string; mimeType: string }[] }): Promise<void> {
     this.settledResponse = { text: '' }
     this.requestTracker?.startPrompt()
     this.retryWait.reset()
     this.settingsManager.setRetryEnabled(true)
-    await this.session.prompt(text)
+    await this.session.prompt(text, options?.images?.length ? {
+      images: options.images.map(image => ({ type: 'image', data: image.data, mimeType: image.mimeType })),
+    } : undefined)
     if (this.requestTracker?.failure) throw this.requestTracker.failure
   }
 

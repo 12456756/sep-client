@@ -36,6 +36,8 @@ import type { ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
 import type { ArrangementMediaAssetsPort } from '../domain/arrangement-media-runtime'
 import type { VideoStorePort } from '../domain/video-media'
 import type { MediaStorePort } from '../domain/media'
+import type { AttachmentService } from './attachment-service'
+import type { DraftAttachmentCandidate, NodeInputRef } from '../../src/shared/attachment-contracts'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
 
 export interface ArrangementServiceDependencies {
@@ -60,6 +62,8 @@ export interface ArrangementServiceDependencies {
   arrangementMediaAssets?: ArrangementMediaAssetsPort
   videoStore?: VideoStorePort
   mediaStore?: MediaStorePort
+  attachments?: AttachmentService
+  confirmations?: import('../data/arrangement-confirmation-store').ArrangementConfirmationStorePort
 }
 
 export interface ArrangementContext {
@@ -97,6 +101,7 @@ const log = logger.child('arrangement-service')
 
 export class ArrangementService {
   private readonly creationGate: TaskCreationGate
+  private readonly confirmationFlights = new Map<string, Promise<{ plan: WorkPlan; execution: null }>>()
 
   constructor(private readonly deps: ArrangementServiceDependencies) {
     this.creationGate = deps.creationGate ?? new TaskCreationGate()
@@ -206,7 +211,13 @@ export class ArrangementService {
 
   async createDraft(input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>): Promise<ArrangementDraft> {
     if (input.mode === 'auto' && input.nodes.length > 0) throw new AppError('INVALID_ARGUMENT')
-    return this.deps.drafts.create(requireScope(this.deps.scope), input)
+    if (input.attachmentCandidates?.length && (!input.attachmentSessionId || !this.deps.attachments)) throw new AppError('INVALID_ARGUMENT', { message: '附件需要有效的导入会话。' })
+    const scope = requireScope(this.deps.scope)
+    const draft = await this.deps.drafts.create(scope, input)
+    if (input.attachmentCandidates?.length && input.attachmentSessionId && this.deps.attachments) {
+      await this.deps.attachments.claimDraft(input.attachmentSessionId, draft.id, draft.revision, input.attachmentCandidates.map(item => item.attachment))
+    }
+    return draft
   }
 
   async updateExecutionSettings(
@@ -223,6 +234,25 @@ export class ArrangementService {
       nodes: draft.nodes.map(node => ({ ...node, modelId: settings.modelId ?? node.modelId })),
       workspace: { ...draft.workspace, path: settings.workDir ?? draft.workspace.path },
       permissions: structuredClone(settings.permissions),
+    })
+  }
+
+  async updateInputs(draftId: string, expectedRevision: number, inputs: { attachmentSessionId?: string; attachmentCandidates: DraftAttachmentCandidate[]; nodes?: Array<{ nodeId: string; inputRefs: NodeInputRef[] }> }): Promise<ArrangementDraft> {
+    const scope = requireScope(this.deps.scope)
+    const draft = await this.getDraft(draftId)
+    if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
+    if (draft.confirmedWorkPlanId || draft.status === 'planning') throw new AppError('INVALID_STATE')
+    if (inputs.attachmentCandidates.length && (!inputs.attachmentSessionId || !this.deps.attachments)) throw new AppError('INVALID_ARGUMENT')
+    const refs = inputs.attachmentCandidates.map(item => item.attachment)
+    if (inputs.attachmentSessionId && this.deps.attachments) await this.deps.attachments.claimDraft(inputs.attachmentSessionId, draftId, expectedRevision + 1, refs)
+    const nodeBindings = new Map((inputs.nodes ?? []).map(item => [item.nodeId, item.inputRefs]))
+    if ([...nodeBindings.keys()].some(id => !draft.nodes.some(node => node.id === id))) throw new AppError('INVALID_ARGUMENT')
+    return this.deps.drafts.update(scope, draftId, expectedRevision, {
+      ...draft,
+      schemaVersion: inputs.attachmentCandidates.length ? 2 : draft.schemaVersion,
+      attachmentCandidates: structuredClone(inputs.attachmentCandidates),
+      attachmentSessionId: inputs.attachmentSessionId,
+      nodes: draft.nodes.map(node => ({ ...node, ...(nodeBindings.has(node.id) ? { inputRefs: structuredClone(nodeBindings.get(node.id)) } : {}) })),
     })
   }
 
@@ -552,7 +582,16 @@ export class ArrangementService {
   }
 
   async confirmDraft(draftId: string, expectedRevision: number, idempotencyKey: string): Promise<{ plan: WorkPlan; execution: null }> {
-    void idempotencyKey
+    const flightKey = `${draftId}:${expectedRevision}`
+    const active = this.confirmationFlights.get(flightKey)
+    if (active) return active
+    const flight = this.confirmDraftOnce(draftId, expectedRevision, idempotencyKey)
+    this.confirmationFlights.set(flightKey, flight)
+    try { return await flight }
+    finally { if (this.confirmationFlights.get(flightKey) === flight) this.confirmationFlights.delete(flightKey) }
+  }
+
+  private async confirmDraftOnce(draftId: string, expectedRevision: number, idempotencyKey: string): Promise<{ plan: WorkPlan; execution: null }> {
     const scope = requireScope(this.deps.scope)
     const draft = await this.getDraft(draftId)
     if (draft.confirmedWorkPlanId) {
@@ -571,8 +610,16 @@ export class ArrangementService {
     const lease = this.creationGate.begin(scope)
     let success = false
     try {
-      const task = await this.deps.taskManager.createTask(draft.title || draft.goal, draft.goal, draft.workspace.path ?? undefined, primarySubscription)
+      const confirmation = await this.deps.confirmations?.get(scope, draftId, expectedRevision)
+      if (confirmation && confirmation.idempotencyKey !== idempotencyKey) throw new AppError('INVALID_ARGUMENT', { message: '该草稿版本已使用其他确认请求。' })
+      const taskId = confirmation?.taskId ?? randomUUID()
+      if (!confirmation) await this.deps.confirmations?.save(scope, { draftId, revision: expectedRevision, taskId, idempotencyKey, state: 'preparing' })
+      const existingTask = confirmation ? await this.deps.taskManager.getTask(taskId) : null
+      const task = existingTask ?? await this.deps.taskManager.createTask(draft.title || draft.goal, draft.goal, draft.workspace.path ?? undefined, primarySubscription, taskId)
       lease.taskCreated(task.id)
+      const inputSnapshot = draft.attachmentCandidates?.length && this.deps.attachments
+        ? await this.deps.attachments.freezeDraft(draft.id, task.id, draft.attachmentCandidates.map(item => item.attachment))
+        : undefined
       const plan = {
         id: task.id,
         schemaVersion: 1 as const,
@@ -587,6 +634,7 @@ export class ArrangementService {
         workspace: { mode: 'shared' as const, path: task.workDir },
         permissions: preflight.permissionPolicy,
         confirmedInputs: [...draft.confirmedInputs],
+        ...(inputSnapshot ? { inputSnapshot } : {}),
         planHash: `${draft.id}:${draft.revision}:${idempotencyKey}`,
         createdAt: Date.now(),
       }
@@ -606,6 +654,7 @@ export class ArrangementService {
         status: 'confirmed',
         confirmedWorkPlanId: plan.id,
       })
+      await this.deps.confirmations?.save(scope, { draftId, revision: expectedRevision, taskId: task.id, idempotencyKey, state: 'committed' })
       success = true
       return { plan, execution: null }
     } finally {

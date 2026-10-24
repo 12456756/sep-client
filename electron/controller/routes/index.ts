@@ -20,8 +20,10 @@ import { speechRoutes } from './speech'
 import { videoRoutes } from './video'
 import { knowledgeRoutes } from './knowledge'
 import { documentPreviewRoutes } from './document-preview'
+import { attachmentRoutes } from './attachments'
 
 export const routes: readonly Route[] = [
+  ...attachmentRoutes,
   ...documentPreviewRoutes,
   ...knowledgeRoutes,
   ...speechRoutes,

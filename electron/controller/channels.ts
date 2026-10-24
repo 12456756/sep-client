@@ -7,6 +7,13 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  ATTACHMENT_BEGIN: 'attachment:begin',
+  ATTACHMENT_SELECT: 'attachment:select',
+  ATTACHMENT_LIST: 'attachment:list',
+  ATTACHMENT_REMOVE: 'attachment:remove',
+  ATTACHMENT_CANCEL: 'attachment:cancel',
+  ATTACHMENT_IMPORT_FILES: 'attachment:import-files',
+  ATTACHMENT_IMPORT_IMAGE: 'attachment:import-image',
   KNOWLEDGE_REQUEST: 'knowledge:request',
   KNOWLEDGE_CANCEL: 'knowledge:cancel',
   SPEECH_PERMISSION: 'speech:permission',
@@ -96,6 +103,7 @@ export const INVOKE_CHANNELS = {
   ARRANGE_CREATE_DRAFT: 'arrange:create-draft',
   ARRANGE_GET_DRAFT: 'arrange:get-draft',
   ARRANGE_UPDATE_EXECUTION_SETTINGS: 'arrange:update-execution-settings',
+  ARRANGE_UPDATE_INPUTS: 'arrange:update-inputs',
   ARRANGE_DELETE_DRAFT: 'arrange:delete-draft',
   ARRANGE_VALIDATE_DRAFT: 'arrange:validate-draft',
   ARRANGE_PREFLIGHT_DRAFT: 'arrange:preflight-draft',

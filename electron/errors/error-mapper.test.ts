@@ -84,6 +84,16 @@ describe('toEnvelope', () => {
     assert.equal(toEnvelope(new Error('safeStorage is unavailable')).code, 'STORAGE_UNAVAILABLE')
   })
 
+  it('maps known attachment failures to actionable copy without exposing paths', () => {
+    assert.match(toEnvelope(new Error('ATTACHMENT_TOO_LARGE')).message, /20/)
+    assert.equal(toEnvelope(new Error('ATTACHMENT_REVISION_CONFLICT')).code, 'CONFLICT')
+    assert.match(toEnvelope(new Error('ATTACHMENT_SESSION_EXPIRED')).message, /重新/)
+    assert.equal(toEnvelope(new Error('ATTACHMENT_IMAGE_SIGNATURE_INVALID')).code, 'INVALID_ARGUMENT')
+    const unknown = toEnvelope(new Error('ATTACHMENT_READ /Users/private/report.txt'))
+    assert.equal(unknown.code, 'INTERNAL_ERROR')
+    assert.doesNotMatch(unknown.message, /private|report/)
+  })
+
   it('falls back to INTERNAL_ERROR without leaking the technical text', () => {
     const result = toEnvelope(new Error('ECONNRESET while calling Bearer abc'))
     assert.equal(result.code, 'INTERNAL_ERROR')

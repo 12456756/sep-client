@@ -354,6 +354,22 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 
 /* 输入框和对话区连成一体，中间只有一条线。 */
 .ent-chat-ask { display: flex; flex-direction: column; padding: 14px 18px 10px; border: 1px solid var(--arr-card-line); border-top: 0; border-radius: 0 0 16px 16px; background: var(--ent-panel); transition: border-color 200ms ease-out; }
+.ent-attachment-composer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.ent-attachment-list { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.ent-attachment-item { display: inline-flex; align-items: center; gap: 6px; max-width: min(100%, 360px); padding: 5px 7px; border: 1px solid var(--arr-card-line); border-radius: 7px; background: var(--ent-panel-muted, rgba(127,127,127,.08)); font-size: 12px; }
+.ent-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-attachment-item small { color: var(--ent-ink-3); white-space: nowrap; }
+.ent-attachment-button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--arr-card-line); border-radius: 7px; padding: 6px 9px; color: var(--ent-ink-2); background: transparent; cursor: pointer; }
+.ent-attachment-button:disabled { opacity: .55; cursor: default; }
+.ent-attachment-error { display: inline-flex; align-items: center; gap: 5px; color: var(--ent-danger, #b42318); font-size: 12px; }
+.ent-attachment-error button { display: inline-flex; border: 0; background: transparent; color: inherit; cursor: pointer; }
+.ent-attachment-usage { display: inline-flex; align-items: center; gap: 6px; color: var(--ent-ink-2); font-size: 12px; }
+.ent-message-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.ent-message-attachments > span { display: inline-flex; max-width: 320px; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid var(--arr-card-line); border-radius: 6px; background: var(--ent-panel); color: var(--ent-ink-2); font-size: 12px; overflow-wrap: anywhere; }
+.ent-message-attachments small { color: var(--ent-ink-3); white-space: nowrap; }
+.ent-attachment-summary { display: grid; gap: 6px; margin: 10px 0; padding: 8px 10px; border: 1px solid var(--arr-card-line); border-radius: 7px; font-size: 12px; }
+.ent-attachment-summary label, .ent-attachment-summary div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ent-attachment-summary small { color: var(--ent-ink-3); }
 .ent-chat-ask:focus-within { border-color: var(--arr-card-hover); }
 .ent-chat-input { width: 100%; min-height: 68px; max-height: 200px; border: 0; color: var(--arr-input-ink); background: none; font-family: inherit; font-size: 15px; line-height: 1.75; resize: none; outline: none; }
 .ent-chat-input::placeholder { color: var(--arr-place); }

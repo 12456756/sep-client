@@ -129,6 +129,7 @@ export interface WorkDraftStep {
   /** 画布坐标。 */
   x: number;
   y: number;
+  inputRefs?: import('../../shared/attachment-contracts').NodeInputRef[];
 }
 
 /** 切换员工时同步给下一位员工的共享背景。 */
@@ -147,6 +148,7 @@ export interface WorkMessage {
   employeeName?: string;
   content: string;
   createdAt: number;
+  attachments?: import('../../shared/attachment-contracts').AttachmentView[];
 }
 
 export interface WorkDeliverable {

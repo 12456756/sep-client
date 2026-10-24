@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { INVOKE_CHANNELS } from '../channels'
 import { route } from '../router'
 import { CREATE_TASK_INVALID, createTaskInput } from './task'
+import { attachmentRefSchema } from '../../../src/shared/attachment-contracts'
 
 /** 三种会话恢复模式，与服务层的 SessionRecoveryMode 同集合。 */
 const recoveryMode = z.enum(['strict', 'confirm_rebuild', 'auto_rebuild_from_task_history'])
@@ -17,6 +18,8 @@ const continueInput = z.object({
   prompt: z.string().trim().min(1),
   recoveryMode: recoveryMode.optional(),
   confirmRecovery: z.boolean().optional(),
+  attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
+  attachmentRefs: z.array(attachmentRefSchema).max(10).optional(),
 })
 
 const switchEmployeeInput = z.object({
@@ -34,8 +37,12 @@ export const conversationRoutes = [
     await ctx.conversations.continue({
       taskId: input.taskId,
       prompt: input.prompt,
+      attachmentSessionId: input.attachmentSessionId,
+      attachmentRefs: input.attachmentRefs,
       recoveryMode: input.recoveryMode,
       confirmRecovery: input.confirmRecovery === true,
+      ...(input.attachmentSessionId ? { attachmentSessionId: input.attachmentSessionId } : {}),
+      ...(input.attachmentRefs ? { attachmentRefs: input.attachmentRefs } : {}),
     })
     return { success: true }
   }, { invalidMessage: '需要有效的任务与消息内容。' }),

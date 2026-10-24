@@ -1,5 +1,5 @@
 import type { NotificationUpdate } from '../src/shared/notification-contracts';
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { ElectronAPI, UpdateState } from '../src/shared/ipc';
 import type { KnowledgeRequestInput } from '../src/shared/knowledge-contracts';
 import type {
@@ -8,6 +8,8 @@ import type {
   TaskExecutionEvent,
   ToolAuthorizationRequest,
 } from '../src/shared/types';
+import type { AttachmentImportTarget } from '../src/shared/attachment-contracts';
+import { attachmentImportLimits } from '../src/shared/attachment-contracts';
 import { EVENT_CHANNELS, INVOKE_CHANNELS, SEND_CHANNELS } from './controller/channels';
 import { getWindowChromeConfig } from './common/window-layout';
 
@@ -15,6 +17,66 @@ export type { ElectronAPI } from '../src/shared/ipc';
 
 const runtimePlatform = process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux' ? process.platform : 'unknown';
 const windowChromeConfig = getWindowChromeConfig(runtimePlatform === 'unknown' ? 'linux' : runtimePlatform);
+
+type PasteTarget = { composerId: string; sessionId: string; target: AttachmentImportTarget; isEnabled?: () => boolean; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean };
+const pasteTargets = new Map<string, PasteTarget>();
+const pasteListeners = new Set<(event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void>();
+const pasteDisposers = new Map<string, () => void>();
+
+function registerPasteTarget(input: PasteTarget): () => void {
+  pasteTargets.set(input.composerId, input);
+  const handler = (event: Event) => {
+    if (!event.isTrusted) return;
+    const target = event.target as { closest?: (selector: string) => { getAttribute?: (name: string) => string | null } | null } | null;
+    const editable = target as ({ matches?: (selector: string) => boolean; closest?: (selector: string) => { getAttribute?: (name: string) => string | null } | null } | null);
+    if (!editable?.matches?.('textarea, input:not([type]), input[type="text"], [contenteditable="true"]')) return;
+    const composerId = editable.closest?.('[data-composer-id]')?.getAttribute?.('data-composer-id');
+    if (composerId !== input.composerId) return;
+    const current = pasteTargets.get(input.composerId);
+    if (!current || current.sessionId !== input.sessionId) return;
+    if (current.isEnabled?.() === false) return;
+    const clipboardData = (event as Event & { clipboardData?: { files?: ArrayLike<unknown>; getData: (type: string) => string } }).clipboardData;
+    const files = Array.from(clipboardData?.files ?? []) as Array<{ name: string; type: string; size: number; arrayBuffer: () => Promise<ArrayBuffer> }>;
+    const text = clipboardData?.getData('text/plain') || '';
+    if (!files.length) return;
+    const operationId = crypto.randomUUID();
+    const editor = target as { selectionStart?: number; selectionEnd?: number } | null;
+    const selectionStart = typeof editor?.selectionStart === 'number' ? editor.selectionStart : 0;
+    const selectionEnd = typeof editor?.selectionEnd === 'number' ? editor.selectionEnd : selectionStart;
+    const editorVersion = Number(target?.closest?.('[data-composer-id]')?.getAttribute?.('data-editor-version') || 0);
+    let handledText = false;
+    if (text && current.onPasteEdit) {
+      try { handledText = current.onPasteEdit({ operationId, composerId: input.composerId, text, selectionStart, selectionEnd, editorVersion }) === true; } catch { return; }
+      if (!handledText) return;
+    }
+    // Preserve the browser's native text insertion for mixed image/text pastes.
+    // Attachment-only pastes have no text to preserve and are consumed here.
+    if (!text || handledText) event.preventDefault();
+    const notify = (event: { status?: 'started' | 'completed' | 'failed'; error?: string }) => { for (const callback of pasteListeners) callback({ composerId: input.composerId, sessionId: input.sessionId, operationId, text: text || undefined, ...event }); };
+    notify({ status: 'started' });
+    const entries = files.map(file => ({ file, path: (() => { try { return webUtils.getPathForFile(file as File); } catch { return ''; } })() }));
+    if (entries.length > attachmentImportLimits.maxFiles) { notify({ status: 'failed', error: '一次最多添加 10 个附件' }); return; }
+    void (async () => {
+      const paths = entries.flatMap(entry => entry.path ? [entry.path] : []);
+      const imageEntries = entries.filter(entry => !entry.path);
+      const results: Array<{ success?: boolean; error?: { message?: string } }> = [];
+      if (paths.length) results.push(await ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, { sessionId: input.sessionId, operationId, paths }));
+      for (const { file } of imageEntries) {
+        if (!file.type.startsWith('image/')) throw new Error('剪贴板没有提供可读取的附件数据');
+        if (file.size > attachmentImportLimits.maxFileBytes) throw new Error('粘贴图片超过 20 MB 限制');
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        results.push(await ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_IMPORT_IMAGE, { sessionId: input.sessionId, operationId, name: file.name || 'pasted-image', type: file.type, bytes }));
+      }
+      const failed = results.find(result => !result.success);
+      notify(failed ? { status: 'failed', error: failed.error?.message || '附件导入失败' } : { status: 'completed' });
+    })().catch((error: unknown) => notify({ status: 'failed', error: error instanceof Error ? error.message : '附件导入失败' }));
+  };
+  const doc = (globalThis as unknown as { document: { addEventListener: (type: string, listener: (event: Event) => void, capture: boolean) => void; removeEventListener: (type: string, listener: (event: Event) => void, capture: boolean) => void } }).document;
+  doc.addEventListener('paste', handler, true);
+  const dispose = () => { doc.removeEventListener('paste', handler, true); if (pasteTargets.get(input.composerId) === input) pasteTargets.delete(input.composerId); pasteDisposers.delete(input.composerId); };
+  pasteDisposers.set(input.composerId, dispose);
+  return dispose;
+}
 
 const electronAPI = {
   requestKnowledge: (input: KnowledgeRequestInput) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_REQUEST, input),
@@ -62,6 +124,13 @@ const electronAPI = {
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SELECT, input),
   savePersonalSkill: (input: import('../src/shared/skill-library').SaveSkillInput) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SAVE, input),
   retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_RETRY, input),
+  beginAttachmentImport: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_BEGIN, input),
+  selectAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_SELECT, input),
+  listAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_LIST, input),
+  removeAttachment: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_REMOVE, input),
+  cancelAttachmentImport: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_CANCEL, input),
+  bindAttachmentPaste: input => registerPasteTarget(input),
+  onAttachmentPaste: callback => { pasteListeners.add(callback); return () => pasteListeners.delete(callback); },
   login: credentials => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LOGIN, credentials),
   listRememberedAccounts: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LIST_REMEMBERED_ACCOUNTS),
   getRememberedPassword: email => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_REMEMBERED_PASSWORD, email),
@@ -151,6 +220,7 @@ const electronAPI = {
   createArrangementDraft: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT, input),
   getArrangementDraft: draftId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_DRAFT, draftId),
   updateArrangementExecutionSettings: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_UPDATE_EXECUTION_SETTINGS, input),
+  updateArrangementInputs: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_UPDATE_INPUTS, input),
   deleteArrangementDraft: draftId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_DELETE_DRAFT, draftId),
   validateArrangementDraft: draftId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_VALIDATE_DRAFT, draftId),
   preflightArrangementDraft: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PREFLIGHT_DRAFT, input),

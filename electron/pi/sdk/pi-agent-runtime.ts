@@ -14,7 +14,7 @@ export interface PiAgentSession {
   readonly sessionFile: string | null
   /** Complete host-only reply for delivery validation; never forward it as an event or log field. */
   getSettledResponse?(): { text: string; stopReason?: string }
-  prompt(text: string): Promise<void>
+  prompt(text: string, options?: { images?: readonly { type: 'image'; data: string; mimeType: string }[] }): Promise<void>
   abort(): Promise<void>
   subscribe(listener: (event: PiAgentEvent) => void): () => void
   dispose(): Promise<void>

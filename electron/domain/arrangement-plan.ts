@@ -1,5 +1,6 @@
 import { AppError } from '../errors/app-error'
 import { z } from 'zod'
+import type { DraftAttachmentCandidate, InputSnapshotRef, NodeInputRef } from '../../src/shared/attachment-contracts'
 
 export type ArrangementMode = 'conversation' | 'auto' | 'manual'
 export type DraftStatus = 'editing' | 'planning' | 'planning-failed' | 'awaiting-employee' | 'ready' | 'preflight-failed' | 'confirmed'
@@ -73,6 +74,11 @@ const arrangementId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 export const arrangementMediaArtifactIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/)
 const mediaArtifactKindSchema = z.enum(['document', 'image', 'video', 'data', 'other'])
 const mediaOperationSchema = z.enum(['generate', 'edit', 'image-to-video', 'text-to-video'])
+const attachmentRefSchema = z.object({ attachmentId: arrangementId, sha256: z.string().regex(/^[a-f0-9]{64}$/i) }).strict()
+const nodeInputRefSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('attachment'), attachment: attachmentRefSchema, required: z.boolean(), purpose: z.enum(['reference', 'analysis', 'vision', 'media-source']) }).strict(),
+  z.object({ kind: z.literal('deliverable'), nodeId: arrangementId, deliverableId: arrangementId, required: z.boolean() }).strict(),
+])
 
 export const arrangementMediaMimeByFormat: Readonly<Record<string, readonly string[]>> = {
   png: ['image/png'], jpg: ['image/jpeg'], jpeg: ['image/jpeg'], webp: ['image/webp'],
@@ -158,6 +164,7 @@ export const arrangementNodeWorkContractSchema = z.object({
       requirementIds.add(requirement.id)
     }
   }).optional(),
+  inputRefs: z.array(nodeInputRefSchema).max(64).optional(),
 })
 
 export type ArrangementDeliverable = NonNullable<z.infer<typeof arrangementNodeWorkContractSchema>['deliverables']>[number]
@@ -180,6 +187,7 @@ export interface ArrangementNode {
   /** @deprecated Legacy field accepted in stored drafts but ignored by automatic execution. */
   requiresUserConfirmation?: boolean
   stepId?: string
+  inputRefs?: NodeInputRef[]
 }
 
 export interface SharedWorkspace {
@@ -216,7 +224,7 @@ export interface EffectiveTaskPermissionPolicy {
 
 export interface ArrangementDraft {
   id: string
-  schemaVersion: 1
+  schemaVersion: 1 | 2
   revision: number
   owner: { memberId: string; enterpriseId: string }
   mode: ArrangementMode
@@ -224,6 +232,8 @@ export interface ArrangementDraft {
   title: string
   goal: string
   confirmedInputs: string[]
+  attachmentCandidates?: DraftAttachmentCandidate[]
+  attachmentSessionId?: string
   sharedSkillIds: string[]
   conversation: ConversationArrangement | null
   nodes: ArrangementNode[]
@@ -237,11 +247,12 @@ export interface ArrangementDraft {
   updatedAt: number
   lastPlanning: { planningId: string; status: 'planning' | 'ready' | 'failed' | 'cancelled'; message: string | null } | null
   confirmedWorkPlanId?: string | null
+  inputSnapshot?: InputSnapshotRef | null
 }
 
 export interface WorkPlan {
   id: string
-  schemaVersion: 1
+  schemaVersion: 1 | 2
   sourceDraftId: string
   sourceDraftRevision: number
   owner: { memberId: string; enterpriseId: string }
@@ -253,6 +264,7 @@ export interface WorkPlan {
   workspace: SharedWorkspace
   permissions: EffectiveTaskPermissionPolicy
   confirmedInputs: string[]
+  inputSnapshot?: InputSnapshotRef
   planHash: string
   createdAt: number
 }

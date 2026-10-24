@@ -7,6 +7,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { TaskStatus, type TaskExecutionEvent, type ToolAuthorizationRequest } from '../../src/shared/types'
+import type { InputSnapshotRef } from '../../src/shared/attachment-contracts'
 import { ToolApprovals } from './run-approvals'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
@@ -38,6 +39,7 @@ import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
 import type { ArrangementMediaPort } from '../domain/arrangement-media-runtime'
 import type { KnowledgeSearchPort } from '../common/knowledge-context'
+import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { TaskLifecycleRuntimeEvidence } from '../domain/task-lifecycle'
 
 const log = logger.child('task-runtime')
@@ -86,6 +88,7 @@ export interface TaskRuntimeOptions {
   video?: VideoRunPort
   arrangementMedia?: ArrangementMediaPort
   knowledgeSearch?: KnowledgeSearchPort
+  attachmentInputs?: AttachmentInputPort
 }
 
 export class TaskRuntime {
@@ -104,6 +107,7 @@ export class TaskRuntime {
   private readonly video: VideoRunPort | undefined
   private readonly arrangementMedia: ArrangementMediaPort | undefined
   private readonly knowledgeSearch: KnowledgeSearchPort | undefined
+  private readonly attachmentInputs: AttachmentInputPort | undefined
   private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
@@ -144,6 +148,7 @@ export class TaskRuntime {
     this.video = options.video
     this.arrangementMedia = options.arrangementMedia
     this.knowledgeSearch = options.knowledgeSearch
+    this.attachmentInputs = options.attachmentInputs
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvals = new ToolApprovals({
@@ -197,6 +202,7 @@ export class TaskRuntime {
       media: this.media,
       video: this.video,
       knowledgeSearch: this.knowledgeSearch,
+      attachmentInputs: this.attachmentInputs,
     })
     this.startLifecycleAudit()
   }
@@ -274,7 +280,8 @@ export class TaskRuntime {
       await this.taskManager.admitTask(taskId, runId)
       const admittedTask = await this.taskManager.getTask(taskId)
       if (!admittedTask || admittedTask.activeRunId !== runId) return
-      this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: arrangement.goal, conversation: false, arrangement })
+      this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: arrangement.goal, conversation: false, arrangement,
+        ...(arrangement.inputSnapshot?.attachments?.length ? { attachmentRefs: arrangement.inputSnapshot.attachments } : {}) })
       this.reportMonitorQueued({ taskId, runId, prompt: arrangement.goal, subscriptionId: primarySubscriptionId, title: task.title, modelId: employee.modelId, taskType: 'arrangement' })
       this.reportMonitorInput({ taskId, runId, content: arrangement.goal })
       void this.pump()
@@ -295,7 +302,8 @@ export class TaskRuntime {
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
     const isConversation = arrangement?.mode === 'conversation' || options.conversation === true
-    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: isConversation, arrangement: arrangement ?? undefined })
+    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: isConversation, arrangement: arrangement ?? undefined,
+      ...(arrangement?.inputSnapshot?.attachments?.length ? { attachmentRefs: arrangement.inputSnapshot.attachments } : {}) })
     this.reportMonitorQueued({ taskId, runId, prompt: task.prompt, subscriptionId, title: task.title, modelId: employee.modelId, taskType: isConversation ? 'conversation' : 'arrangement',
       participation: { executionId: runId, subscriptionId, title: task.title, modelId: employee.modelId } })
     this.reportMonitorInput({ taskId, runId, content: task.prompt })
@@ -305,10 +313,13 @@ export class TaskRuntime {
   async continueConversation(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef } = {},
   ): Promise<void> {
     this.startLifecycleAudit()
-    return this.conversationExecutor.continue(taskId, prompt, recovery)
+    return this.conversationExecutor.continue(taskId, prompt, {
+      ...recovery,
+      ...(recovery.inputSnapshot ? { attachmentRefs: recovery.inputSnapshot.attachments } : {}),
+    })
   }
 
   async switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void> {
@@ -771,6 +782,7 @@ export class TaskRuntime {
         video: this.video,
         arrangementMedia: this.arrangementMedia,
         knowledgeSearch: this.knowledgeSearch,
+        attachmentInputs: this.attachmentInputs,
       })
       this.activeArrangements.set(taskId, {
         taskId,

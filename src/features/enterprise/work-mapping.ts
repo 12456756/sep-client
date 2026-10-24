@@ -343,6 +343,7 @@ function buildMessages(
           ? decodeWorkMeta(message.content)?.goal ?? readableGoal(message.content)
           : message.content,
         createdAt: message.createdAt,
+        attachments: message.attachments,
       }))
     : [{ id: `${task.id}-goal`, role: 'user', content: decodeWorkMeta(task.prompt)?.goal ?? readableGoal(task.prompt), createdAt: task.createdAt }];
 

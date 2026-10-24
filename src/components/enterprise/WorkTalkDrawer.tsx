@@ -1,5 +1,5 @@
-import { ArrowDown, ChevronDown, Send, StopCircle, X } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { ArrowDown, ChevronDown, Paperclip, Send, StopCircle, X } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isSubmitEnter } from '../../shared/composer-shortcut';
 import type { WorkItem } from '../../features/enterprise/types';
 import { useDrawer } from '../../features/enterprise/use-drawer';
@@ -9,6 +9,8 @@ import { MessageContent } from './MessageContent';
 import '../../styles/conversation.css';
 import { useSpeechInput } from '../../features/speech/use-speech-input';
 import { SpeechInputActions, SpeechInputFeedback } from '../speech/SpeechInputActions';
+import { AttachmentComposer } from './attachments/AttachmentComposer';
+import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -37,9 +39,27 @@ interface ConversationProps {
   onClose?: () => void;
 }
 
+function formatAttachmentBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function WorkConversation({ work, workspace, onClose }: ConversationProps) {
   const body = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState('');
+  const [attachments, setAttachments] = useState<AttachmentView[]>([]);
+  const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(null);
+  const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const [attachmentEpoch, setAttachmentEpoch] = useState(0);
+  const composerId = useMemo(() => `conversation-${work.id}`, [work.id]);
+  const [editorVersion, setEditorVersion] = useState(0);
+  const onPasteEdit = useCallback(({ text: pasted, selectionStart, selectionEnd, editorVersion: pastedVersion }: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
+    if (pastedVersion !== editorVersion) return false;
+    setDraft(current => `${current.slice(0, selectionStart)}${pasted}${current.slice(selectionEnd)}`);
+    setEditorVersion(version => version + 1);
+    return true;
+  }, [editorVersion]);
   const [stopping, setStopping] = useState(false);
   const [reason, setReason] = useState('');
   const speech = useSpeechInput({ contextKey: `work:${work.id}`, value: draft, onChange: setDraft, disabled: workspace.busy || stopping });
@@ -75,13 +95,17 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
     else setHasNewContent(true);
   }, [latestMessageId, latestContent]);
 
-  const send = () => {
+  const send = async () => {
     const text = draft.trim();
     if (!text || workspace.busy || speech.busy) return;
     followsLatest.current = true;
     setHasNewContent(false);
-    void workspace.sendMessage(work.id, text);
+    const sent = await workspace.sendMessage(work.id, text, attachments, attachmentSession?.sessionId);
+    if (!sent) return;
     setDraft('');
+    setAttachments([]);
+    setAttachmentSession(null);
+    setAttachmentEpoch(epoch => epoch + 1);
   };
 
   return (
@@ -116,6 +140,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                     </span>
                   ) : null}
                   {message.role === 'user' ? <p>{message.content}</p> : <MessageContent content={message.content} />}
+                  {message.role === 'user' && message.attachments?.length ? <div className="ent-message-attachments" aria-label="本轮附件">{message.attachments.map(item => <span key={item.attachmentId} title={`${item.mediaType} · ${item.sha256.slice(0, 12)}`}><Paperclip size={12} aria-hidden />{item.displayName}<small>{formatAttachmentBytes(item.byteLength)}</small></span>)}</div> : null}
                   <time className="ent-message-time" dateTime={new Date(message.createdAt).toISOString()}>
                     {new Date(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
                   </time>
@@ -158,15 +183,18 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
             </div>
           ) : (
             <div className="ent-ask">
-              <textarea
+          <textarea
+            data-composer-id={composerId}
+            data-editor-version={editorVersion}
                 {...speech.inputProps}
                 className="ent-ask-input"
                 value={draft}
                 placeholder={over ? '这项工作已经结束，说一句会重新开始跟进' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
                 aria-label="给员工的下一句话"
-                onChange={event => setDraft(event.target.value)}
+                onChange={event => { setDraft(event.target.value); setEditorVersion(version => version + 1); }}
                 onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
+              <AttachmentComposer key={attachmentEpoch} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} disabled={workspace.busy || stopping} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
               <div className="ent-ask-bar">
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}
@@ -194,7 +222,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                   </button>
                 )}
                 <SpeechInputActions speech={speech} disabled={workspace.busy} />
-                <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || speech.busy} aria-label="发送">
+                <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || speech.busy || attachmentsBusy} aria-label="发送">
                   <Send size={15} aria-hidden />
                 </button>
               </div>

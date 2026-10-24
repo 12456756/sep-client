@@ -5,6 +5,7 @@ import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from '.
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
+import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from './attachment-contracts'
 import type {
   ComputeAllowance,
   PersonalWallet,
@@ -198,8 +199,10 @@ export interface ExecuteTaskInput {
 export interface ContinueTaskInput {
   taskId: string
   prompt: string
+  attachmentSessionId?: string
   recoveryMode?: 'strict' | 'confirm_rebuild' | 'auto_rebuild_from_task_history'
   confirmRecovery?: boolean
+  attachmentRefs?: import('./attachment-contracts').AttachmentRef[]
 }
 
 export interface CreateConversationInput {
@@ -207,6 +210,8 @@ export interface CreateConversationInput {
   prompt: string
   workDir?: string
   subscriptionId: string
+  attachmentRefs?: import('./attachment-contracts').AttachmentRef[]
+  attachmentSessionId?: string
 }
 
 export interface SwitchConversationEmployeeInput {
@@ -322,6 +327,13 @@ export interface ElectronAPI {
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => Promise<IpcCommandResult>
   savePersonalSkill: (input: SaveSkillInput) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
   retryPersonalSkillUpload: (input: { capabilityId: string; idempotencyKey: string }) => Promise<IpcCommandResult & { data?: SaveSkillResult }>
+  beginAttachmentImport: (input: { target: AttachmentImportTarget; idempotencyKey?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession }>
+  selectAttachments: (input: { sessionId: string; operationId?: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>
+  listAttachments: (input: { sessionId: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>
+  removeAttachment: (input: { sessionId: string; attachmentId: string; expectedRevision?: number }) => Promise<IpcCommandResult>
+  cancelAttachmentImport: (input: { sessionId: string }) => Promise<IpcCommandResult>
+  bindAttachmentPaste: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
+  onAttachmentPaste: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
   login: (credentials: LoginRequest) => Promise<LoginResult>
   listRememberedAccounts: () => Promise<RememberedAccountsResult>
   getRememberedPassword: (email: string) => Promise<PasswordAvailabilityResult>
@@ -367,6 +379,7 @@ export interface ElectronAPI {
   createArrangementDraft: (input: ArrangementDraftDocument) => Promise<ArrangementDraftResult>
   getArrangementDraft: (draftId: string) => Promise<ArrangementDraftResult>
   updateArrangementExecutionSettings: (input: { draftId: string; expectedRevision: number; settings: ArrangementExecutionSettings }) => Promise<ArrangementDraftResult>
+  updateArrangementInputs: (input: { draftId: string; expectedRevision: number; inputs: { attachmentSessionId?: string; attachmentCandidates: import('./attachment-contracts').DraftAttachmentCandidate[]; nodes?: Array<{ nodeId: string; inputRefs: import('./attachment-contracts').NodeInputRef[] }> } }) => Promise<ArrangementDraftResult>
   deleteArrangementDraft: (draftId: string) => Promise<unknown>
   validateArrangementDraft: (draftId: string) => Promise<unknown>
   preflightArrangementDraft: (input: { draftId: string; expectedRevision: number }) => Promise<ArrangementDraftPreflightResult>

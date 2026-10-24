@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
 import { arrangementNodeWorkContractSchema, type ArrangementDraft } from '../../domain/arrangement-plan'
+import { draftAttachmentCandidateSchema, nodeInputRefSchema } from '../../../src/shared/attachment-contracts'
 
 const draftId = z.string().min(1)
 const taskId = z.string().min(1)
@@ -34,12 +35,14 @@ const permissions = z.object({
   approvalMode: approvalMode.optional(),
 })
 const draftDocument = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   mode,
   status: z.enum(['editing', 'planning', 'planning-failed', 'awaiting-employee', 'ready', 'preflight-failed', 'confirmed']),
   title: z.string(),
   goal: z.string(),
   confirmedInputs: z.array(z.string()),
+  attachmentCandidates: z.array(draftAttachmentCandidateSchema).max(10).optional(),
+  attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   sharedSkillIds: z.array(z.string()),
   conversation: z.object({
     participants: z.array(participant),
@@ -76,7 +79,8 @@ const draftDocument = z.object({
 })
 
 const createInput = draftDocument.omit({ schemaVersion: true, status: true }).extend({
-  schemaVersion: z.literal(1).optional(),
+  schemaVersion: z.union([z.literal(1), z.literal(2)]).optional(),
+  attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
 })
 const executionSettingsInput = z.object({
   draftId,
@@ -117,7 +121,7 @@ export const arrangementRoutes = [
   route(INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT, createInput, async (ctx, input) => {
     const draft = await ctx.arrangements.createDraft({
       ...input,
-      schemaVersion: 1,
+      schemaVersion: input.attachmentCandidates?.length ? 2 : input.schemaVersion ?? 1,
       status: 'editing',
     } as Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>)
     return { success: true, draft }
@@ -137,6 +141,16 @@ export const arrangementRoutes = [
   route(INVOKE_CHANNELS.ARRANGE_DELETE_DRAFT, draftId, async (ctx, id) => ({
     success: true,
     deleted: await ctx.arrangements.deleteDraft(id),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_UPDATE_INPUTS, z.object({
+    draftId, expectedRevision: revision,
+    inputs: z.object({
+      attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
+      attachmentCandidates: z.array(draftAttachmentCandidateSchema).max(10),
+      nodes: z.array(z.object({ nodeId: z.string().min(1), inputRefs: z.array(nodeInputRefSchema).max(64) }).strict()).optional(),
+    }).strict(),
+  }).strict(), async (ctx, input) => ({
+    success: true, draft: await ctx.arrangements.updateInputs(input.draftId, input.expectedRevision, input.inputs),
   })),
   route(INVOKE_CHANNELS.ARRANGE_VALIDATE_DRAFT, draftId, async (ctx, id) => ({
     success: true,

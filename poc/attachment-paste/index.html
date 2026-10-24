@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Attachment native paste POC</title></head>
+<body>
+<label>Attachment editor <textarea id="editor" data-composer-id="native-poc" data-editor-version="0" rows="8" cols="70"></textarea></label>
+<label>Unrelated editor <textarea id="other" rows="3" cols="70"></textarea></label>
+<script>
+window.pasteEvidence = { events: [], edits: [], notifications: [] };
+const editor = document.getElementById('editor');
+document.addEventListener('paste', event => {
+  window.pasteEvidence.events.push({ trusted: event.isTrusted, prevented: event.defaultPrevented,
+    files: Array.from(event.clipboardData.files).map(file => ({ name: file.name, type: file.type, size: file.size })) });
+});
+window.electronAPI.onAttachmentPaste(event => window.pasteEvidence.notifications.push(event));
+window.disposePaste = window.electronAPI.bindAttachmentPaste({
+  composerId: 'native-poc', sessionId: 'session-native-poc', target: { kind: 'compose', composerId: 'native-poc' },
+  onPasteEdit: input => {
+    if (input.editorVersion !== Number(editor.dataset.editorVersion)) return false;
+    window.pasteEvidence.edits.push(input);
+    if (input.text) editor.setRangeText(input.text, input.selectionStart, input.selectionEnd, 'end');
+    editor.dataset.editorVersion = String(input.editorVersion + 1);
+    return true;
+  }
+});
+</script>
+</body></html>

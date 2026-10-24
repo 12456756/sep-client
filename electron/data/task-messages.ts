@@ -35,7 +35,8 @@ export async function projectTaskMessages(
   for (const [index, run] of runs.entries()) {
     const prompt = run.prompt || (index === 0 ? initialPrompt : '')
     if (prompt) {
-      messages.push({ id: `${run.id}-user`, role: 'user', content: prompt, createdAt: run.startedAt, runId: run.id })
+      messages.push({ id: `${run.id}-user`, role: 'user', content: prompt, createdAt: run.startedAt, runId: run.id,
+        ...(run.attachmentMetadata?.length ? { attachments: structuredClone(run.attachmentMetadata) } : {}) })
     }
     const content = joinTextDeltas(await sources.getTimeline(taskId, run.id))
     if (content) {

@@ -8,7 +8,7 @@ import type {
 } from '../../src/shared/types'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskPersistenceError, TaskStore, type TaskStorePort } from '../data/task-store'
-import { ScopePath, TaskScopeError, type TaskOwnerScope, type WorkspaceDirectoryNames } from '../data/scope-path'
+import { ScopePath, TaskScopeError, assertSafeId, type TaskOwnerScope, type WorkspaceDirectoryNames } from '../data/scope-path'
 import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
 import { ArrangementCheckpointStore, type ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
@@ -352,11 +352,14 @@ export class TaskManager {
     prompt: string,
     workDir?: string,
     subscriptionId: string | null = null,
+    reservedId?: string,
   ): Promise<Task> {
     const user = await this.requireCurrentUser()
     const generation = this.generation
     this.assertCurrentScope(user, generation)
-    const id = randomUUID()
+    const id = reservedId ?? randomUUID()
+    assertSafeId(id, 'taskId')
+    if (this.tasks.has(id)) throw new TaskScopeError('Task already exists.')
     const names = workDir?.trim() ? undefined : await this.workspaceDirectories.resolve(user, this.currentWorkspaceNames)
     this.assertCurrentScope(user, generation)
     const resolvedWorkDir = workDir?.trim() || this.paths.defaultWorkspaceDir(user, id, names)
@@ -368,9 +371,12 @@ export class TaskManager {
       subscriptionId, activeRunId: null,
     }
     try {
-      await this.commit(nextTasks => nextTasks.set(task.id, task), generation)
+      await this.commit(nextTasks => {
+        if (nextTasks.has(task.id)) throw new TaskAdmissionError('Task reservation already exists.')
+        nextTasks.set(task.id, task)
+      }, generation)
     } catch (error) {
-      if (!workDir?.trim()) await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => undefined)
+      if (!workDir?.trim() && !this.tasks.has(id)) await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => undefined)
       throw error
     }
     this.notifyTaskUpdate(task.id)

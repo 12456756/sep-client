@@ -141,6 +141,7 @@ export interface ClientTaskMessage {
   content: string
   createdAt: number
   runId: string
+  attachments?: import('./attachment-contracts').AttachmentView[]
 }
 
 export interface ClientTaskStats {
@@ -325,6 +326,7 @@ export interface ArrangementDraftNode {
   mediaRequirements?: ArrangementMediaRequirement[]
   dependsOn: string[]
   skillIds: string[]
+  inputRefs?: import('./attachment-contracts').NodeInputRef[]
   /** @deprecated Legacy field accepted for compatibility; automatic arrangement ignores it. */
   requiresUserConfirmation?: boolean
 }
@@ -380,6 +382,8 @@ export interface ArrangementDraftDocument {
     activeSubscriptionId: string | null
   } | null
   nodes: ArrangementDraftNode[]
+  attachmentCandidates?: import('./attachment-contracts').DraftAttachmentCandidate[]
+  attachmentSessionId?: string
   intentAnalysis?: ArrangementIntentAnalysis | null
   unresolvedSteps?: ArrangementUnresolvedStep[]
   candidateMatches?: ArrangementCandidateMatch[]
@@ -414,6 +418,7 @@ export interface ArrangementDraft extends ArrangementDraftDocument {
   createdAt: number
   updatedAt: number
   confirmedWorkPlanId?: string | null
+  inputSnapshot?: import('./attachment-contracts').InputSnapshotRef | null
 }
 
 export interface ArrangementDraftResult {

@@ -22,6 +22,8 @@ import type { JsonReadDiagnostic } from '../data/atomic-file'
 import { describeError } from '../common/redact'
 import { TaskCreationGate } from './task-creation-gate'
 import { resolveWorkType } from './work-type'
+import type { AttachmentRef, InputSnapshotRef } from '../../src/shared/attachment-contracts'
+import type { AttachmentService } from './attachment-service'
 
 /**
  * 服务层用到的执行能力。实现由 `runtime/task-runtime.ts` 提供；
@@ -36,7 +38,7 @@ export interface TaskExecutionPort {
   continueConversation(
     taskId: string,
     prompt: string,
-    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean },
+    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef },
   ): Promise<void>
   switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void>
   pauseTask(taskId: string): Promise<void>
@@ -55,6 +57,7 @@ export interface TaskServiceDependencies {
   /** 惰性取运行时：它必须在异步边界之后才能加载（Electron 33 / undici 边界）。 */
   execution: () => Promise<TaskExecutionPort>
   media?: { archiveIfMedia(taskId: string): Promise<boolean>; isArchived?(taskId: string): Promise<boolean> }
+  attachments?: AttachmentService
 }
 
 export interface CreateTaskInput {
@@ -62,6 +65,8 @@ export interface CreateTaskInput {
   prompt: string
   workDir?: string | undefined
   subscriptionId: string
+  attachmentSessionId?: string
+  attachmentRefs?: AttachmentRef[]
 }
 
 export class TaskService {
@@ -79,11 +84,13 @@ export class TaskService {
     const scope = this.scope()
     await this.requireAuthorizedEmployee(input.subscriptionId)
     this.assertScope(scope)
+    if (input.attachmentRefs?.length && (!input.attachmentSessionId || !this.deps.attachments)) throw new AppError('INVALID_ARGUMENT', { message: '附件需要有效的导入会话。' })
     const lease = this.creationGate.begin(scope)
     let success = false
     try {
       const task = await this.deps.taskManager.createTask(input.title, input.prompt, input.workDir, input.subscriptionId)
       lease.taskCreated(task.id)
+      if (input.attachmentRefs?.length) await this.deps.attachments!.claimTask(input.attachmentSessionId!, task.id, input.attachmentRefs)
       this.assertScope(scope)
       await this.deps.taskMetadataStore.save(scope, {
         version: 1,

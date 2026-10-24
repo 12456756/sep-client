@@ -7,6 +7,7 @@ import { AutoArrangeAnimation } from './AutoArrangeAnimation';
 import { useAutoPlanning } from '../../../features/enterprise/use-auto-planning';
 import { GoalComposer } from './GoalComposer';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
+import type { AttachmentImportSession, AttachmentView, NodeInputRef } from '../../../shared/attachment-contracts';
 
 type Props = {
   employees: SiliconEmployee[];
@@ -16,11 +17,21 @@ type Props = {
   models: string[];
   onSettingsChange: (patch: Partial<RunSettings>) => void;
   onChooseFolder: (currentPath?: string) => Promise<string | null>;
+  attachmentRefs?: AttachmentView[];
+  attachmentSession?: AttachmentImportSession | null;
+  attachmentBindingKey?: string;
 };
 
-export function AutoArrange({ employees, busy, onStart, settings, models, onSettingsChange, onChooseFolder }: Props) {
+export function AutoArrange({ employees, busy, onStart, settings, models, onSettingsChange, onChooseFolder, attachmentBindingKey }: Props) {
   const [starting, setStarting] = useState(false);
   const [goal, setGoal] = useState('');
+  const [attachmentRefs, setAttachmentRefs] = useState<AttachmentView[]>([]);
+  const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(null);
+  const [mustUseAttachments, setMustUseAttachments] = useState(true);
+  const [attachmentSaveBusy, setAttachmentSaveBusy] = useState(false);
+  const [attachmentDirty, setAttachmentDirty] = useState(false);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [attachmentsBusy, setAttachmentsBusy] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const {
@@ -36,12 +47,13 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
     requestEmployeeAccess,
     refreshEmployeeAccess,
     recheck,
+    recheckDraft,
   } = useAutoPlanning();
   const [requestingKey, setRequestingKey] = useState<string | null>(null);
   const [refreshingRequestId, setRefreshingRequestId] = useState<string | null>(null);
 
   const confirmAndStart = async (): Promise<void> => {
-    if (!draft || starting || busy || planning) return;
+    if (!draft || starting || busy || planning || attachmentDirty || attachmentsBusy) return;
     setStarting(true);
     try {
       // Saving execution settings increments the revision, including when preflight fails.
@@ -53,9 +65,53 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
     }
   };
 
+  const saveAttachmentAssignments = async (): Promise<void> => {
+    if (!draft || attachmentSaveBusy || planning) return;
+    setAttachmentSaveBusy(true);
+    setAttachmentError(null);
+    try {
+      const result = await window.electronAPI.updateArrangementInputs({
+        draftId: draft.id,
+        expectedRevision: draft.revision,
+        inputs: {
+          attachmentSessionId: attachmentSession?.sessionId,
+          attachmentCandidates: draft.attachmentCandidates ?? [],
+          nodes: draft.nodes.map(node => ({ nodeId: node.id, inputRefs: node.inputRefs ?? [] })),
+        },
+      });
+      if (!result.success || !result.draft) throw new Error(result.error?.message || '保存附件分配失败');
+      setDraft(result.draft);
+      setAttachmentDirty(false);
+      if (result.draft.mode === 'auto') {
+        setAttachmentSaveBusy(false);
+        await recheckDraft(result.draft, settings.modelId, true);
+        return;
+      }
+    } catch (cause) {
+      setAttachmentError(cause instanceof Error ? cause.message : '保存附件分配失败');
+    } finally {
+      setAttachmentSaveBusy(false);
+    }
+  };
+
+  const patchNodeAttachment = (nodeId: string, attachment: AttachmentView, update: Partial<Extract<NodeInputRef, { kind: 'attachment' }>> | null): void => {
+    if (!draft) return;
+    setDraft(current => current ? {
+      ...current,
+      nodes: current.nodes.map(node => {
+        if (node.id !== nodeId) return node;
+        const existing = node.inputRefs?.find((ref): ref is Extract<NodeInputRef, { kind: 'attachment' }> => ref.kind === 'attachment' && ref.attachment.attachmentId === attachment.attachmentId);
+        const inputRefs = (node.inputRefs ?? []).filter(ref => ref.kind !== 'attachment' || ref.attachment.attachmentId !== attachment.attachmentId);
+        if (update) inputRefs.push({ kind: 'attachment', attachment: { attachmentId: attachment.attachmentId, sha256: attachment.sha256 }, required: update.required ?? existing?.required ?? true, purpose: update.purpose ?? existing?.purpose ?? 'reference' });
+        return { ...node, inputRefs };
+      }),
+    } : current);
+    setAttachmentDirty(true);
+  };
+
   const submitGoal = () => {
     setSubmitted(true);
-    void start(goal, settings.workDir, settings.modelId);
+    void start(goal, settings.workDir, settings.modelId, attachmentRefs.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })), attachmentSession?.sessionId, mustUseAttachments);
   };
 
   const requestAccess = async (stepId: string, employeeId: string): Promise<void> => {
@@ -105,15 +161,29 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
           models={models}
           onSettingsChange={onSettingsChange}
           onChooseFolder={onChooseFolder}
-          submitDisabled={busy || planning || !goal.trim() || !settings.modelId || !employees.length}
+          submitDisabled={busy || planning || attachmentsBusy || !goal.trim() || !settings.modelId || !employees.length}
           conversation={false}
           onSubmit={submitGoal}
+          onAttachmentsChange={setAttachmentRefs}
+          onAttachmentSessionChange={setAttachmentSession}
+          onAttachmentsBusyChange={setAttachmentsBusy}
+          attachmentBindingKey={attachmentBindingKey}
         />
+        {attachmentRefs.length ? <label className="ent-attachment-usage"><input type="checkbox" checked={mustUseAttachments} onChange={event => setMustUseAttachments(event.target.checked)} />必须安排到至少一个步骤</label> : null}
         </section>
       ) : null}
       {error ? <div role="alert" className="workspace-inline-error">{error}</div> : null}
       {draft ? (
         <AutoArrangeAnimation key={draft.id} draft={draft} employees={employees} planning={planning} planningEvents={events}>
+          {draft.attachmentCandidates?.length ? <div className="ent-attachment-summary"><strong>全局附件</strong>{draft.attachmentCandidates.map(candidate => <label key={candidate.attachment.attachmentId}><input type="checkbox" checked={candidate.mustUse} disabled={planning || attachmentSaveBusy} onChange={event => { const mustUse = event.target.checked; setDraft(current => current ? { ...current, attachmentCandidates: (current.attachmentCandidates ?? []).map(item => item.attachment.attachmentId === candidate.attachment.attachmentId ? { ...item, mustUse } : item) } : current); setAttachmentDirty(true); }} />{attachmentRefs.find(item => item.attachmentId === candidate.attachment.attachmentId)?.displayName ?? candidate.attachment.attachmentId}<small>{candidate.mustUse ? '必须使用' : '可选'}</small></label>)}</div> : null}
+          {draft.attachmentCandidates?.length ? <div className="ent-attachment-summary"><strong>节点附件</strong>{draft.nodes.map(node => <div key={node.id}><span>{node.title}</span>{draft.attachmentCandidates?.map(candidate => {
+            const attachment = attachmentRefs.find(item => item.attachmentId === candidate.attachment.attachmentId);
+            if (!attachment) return null;
+            const existing = node.inputRefs?.find((ref): ref is Extract<NodeInputRef, { kind: 'attachment' }> => ref.kind === 'attachment' && ref.attachment.attachmentId === attachment.attachmentId);
+            return <label key={attachment.attachmentId}><input type="checkbox" checked={Boolean(existing)} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, event.target.checked ? {} : null)} />{attachment.displayName}{existing ? <><select aria-label={`${node.title}中${attachment.displayName}的用途`} value={existing.purpose} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, { purpose: event.target.value as Extract<NodeInputRef, { kind: 'attachment' }>['purpose'] })}><option value="reference">参考</option><option value="analysis">分析</option><option value="vision">视觉</option><option value="media-source">媒体源</option></select><small><input type="checkbox" checked={existing.required} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, { required: event.target.checked })} />节点必需</small></> : null}</label>;
+          })}</div>)}</div> : null}
+          {attachmentDirty ? <div className="ent-attachment-save"><button type="button" className="ent-arr-second" disabled={planning || attachmentSaveBusy} onClick={() => void saveAttachmentAssignments()}>{attachmentSaveBusy ? '保存附件分配中…' : '保存附件分配'}</button><span>保存后本次编排按新分配执行</span></div> : null}
+          {attachmentError ? <div role="alert" className="workspace-inline-error">{attachmentError}</div> : null}
           {draft.status === 'awaiting-employee' ? (
             <section className="ent-aa-waiting">
               <div className="ent-aa-waiting-head">
@@ -165,7 +235,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
             <button type="button" className="ent-arr-second" disabled={starting || planning || requestingKey !== null || refreshingRequestId !== null} onClick={() => { setDraft(null); setError(null); setSubmitted(false); }}>重新编排</button>
             <span className="ent-arr-gap" />
             <button type="button" className="ent-arr-ghost" disabled={starting} aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><Settings2 size={14} aria-hidden />执行设置</button>
-            {draft.nodes.length > 0 && draft.status !== 'confirmed' && draft.status !== 'awaiting-employee' ? <button type="button" className="ent-arr-primary" disabled={starting || busy} onClick={() => void confirmAndStart()}>{starting ? '正在启动…' : '确认并开始工作'}<ArrowRight size={15} aria-hidden /></button> : null}
+            {draft.nodes.length > 0 && draft.status !== 'confirmed' && draft.status !== 'awaiting-employee' ? <button type="button" className="ent-arr-primary" disabled={starting || busy || attachmentDirty || attachmentSaveBusy} onClick={() => void confirmAndStart()}>{starting ? '正在启动…' : '确认并开始工作'}<ArrowRight size={15} aria-hidden /></button> : null}
           </footer>
         </AutoArrangeAnimation>
       ) : null}

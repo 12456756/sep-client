@@ -14,6 +14,7 @@ import type { ArrangeMode, SiliconEmployee, WorkDraftStep, WorkTemplate } from '
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import { createDraftStep } from '../../features/enterprise/work-graph';
+import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
 
 interface Props {
   workspace: EnterpriseWorkspace;
@@ -118,11 +119,11 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   };
 
   const startManual = (draft: ManualDraft) => {
-    void workspace.arrangeWork({ ...draft, templateId: template?.id, workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, sharedSkillIds: [] });
+    void workspace.arrangeWork({ ...draft, templateId: template?.id, workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, sharedSkillIds: [], attachmentSessionId: draft.attachmentSession?.sessionId, attachmentCandidates: draft.attachmentRefs?.map(item => ({ attachment: { attachmentId: item.attachmentId, sha256: item.sha256 }, mustUse: draft.mustUseAttachments ?? true })) });
   };
 
-  const startChat = (id: string, text: string) => {
-    void workspace.startConversation(id, text, { workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions });
+  const startChat = (id: string, text: string, attachments: AttachmentView[], session: AttachmentImportSession | null) => {
+    void workspace.startConversation(id, text, { workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, attachmentSessionId: session?.sessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) });
   };
 
   if (!workspace.myEmployees.length) {
@@ -175,6 +176,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
             employees={employees}
             busy={workspace.busy}
             employeeId={chatEmployeeId}
+            attachmentBindingKey={workspace.attachmentScopeKey}
             onEmployeeChange={id => {
               setChatEmployeeId(id);
             }}
@@ -191,6 +193,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
             employees={employees}
             busy={workspace.busy}
             onStart={startAuto}
+            attachmentBindingKey={workspace.attachmentScopeKey}
             settings={settings}
             models={orchestrationModels}
             onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
@@ -203,13 +206,14 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
             key={`${templateId ?? 'blank'}-${seedNo}`}
             employees={employees}
             busy={workspace.busy}
+            attachmentBindingKey={workspace.attachmentScopeKey}
             seed={manualSeed}
             onSave={draft => {
               workspace.saveFlow({
                 name: draft.title,
                 goal: draft.goal,
                 version: 2,
-                steps: draft.steps,
+                steps: draft.steps.map(step => ({ ...step, inputRefs: step.inputRefs?.filter(ref => ref.kind !== 'attachment') })),
                 confirmedInputs: draft.confirmedInputs,
                 sharedSkillIds: [],
               });

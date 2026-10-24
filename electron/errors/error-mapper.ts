@@ -41,6 +41,23 @@ export interface IpcFailure {
 
 const SAFE_STORAGE = /safeStorage|secure storage|persist credentials/i
 
+const ATTACHMENT_ERRORS: Readonly<Record<string, readonly [ErrorCode, string]>> = {
+  ATTACHMENT_TOO_LARGE: ['INVALID_ARGUMENT', '单个附件不能超过 20 MiB。'],
+  ATTACHMENT_TOTAL_TOO_LARGE: ['INVALID_ARGUMENT', '附件最多 10 个，总大小不能超过 100 MiB。'],
+  ATTACHMENT_EMPTY: ['INVALID_ARGUMENT', '附件为空，请重新选择文件。'],
+  ATTACHMENT_NOT_REGULAR_FILE: ['INVALID_ARGUMENT', '请选择本地普通文件，目录和链接不能作为附件。'],
+  ATTACHMENT_IMAGE_SIGNATURE_INVALID: ['INVALID_ARGUMENT', '图片内容无效，请重新保存图片后添加。'],
+  ATTACHMENT_MEDIA_TYPE_MISMATCH: ['INVALID_ARGUMENT', '图片格式与内容不符，请重新选择。'],
+  ATTACHMENT_SESSION_EXPIRED: ['INVALID_STATE', '附件导入会话已过期，请重新添加附件。'],
+  ATTACHMENT_SESSION_NOT_FOUND: ['NOT_FOUND', '附件导入会话不可用，请重新添加附件。'],
+  ATTACHMENT_NOT_FOUND: ['NOT_FOUND', '附件已移除，请重新添加。'],
+  ATTACHMENT_REVISION_CONFLICT: ['CONFLICT', '附件列表已更新，请刷新后重试。'],
+  ATTACHMENT_REFERENCE_INVALID: ['INVALID_STATE', '附件引用已失效，请重新添加并绑定附件。'],
+  ATTACHMENT_TARGET_MISMATCH: ['INVALID_STATE', '附件属于其他输入，请在当前输入中重新添加。'],
+  ATTACHMENT_INTEGRITY_MISMATCH: ['INVALID_STATE', '附件快照已损坏，请重新添加附件。'],
+  ATTACHMENT_TASK_SNAPSHOT_CONFLICT: ['CONFLICT', '本轮附件已确认，请重新提交当前输入。'],
+}
+
 function envelope(code: ErrorCode, message?: string): IpcErrorEnvelope {
   const spec = ERROR_CODES[code]
   return {
@@ -98,6 +115,10 @@ export function toEnvelope(error: unknown, context: { authenticated?: boolean } 
   if (error instanceof InvalidTaskTransitionError) return envelope('INVALID_STATE')
   if (error instanceof TaskScopeError) return envelope('AUTH_REQUIRED')
   if (error instanceof TaskPersistenceError) return envelope('PERSISTENCE_ERROR')
+  if (error instanceof Error && Object.hasOwn(ATTACHMENT_ERRORS, error.message)) {
+    const [code, message] = ATTACHMENT_ERRORS[error.message]
+    return envelope(code, message)
+  }
   if (error instanceof Error && SAFE_STORAGE.test(error.message)) return envelope('STORAGE_UNAVAILABLE')
   return envelope('INTERNAL_ERROR')
 }

@@ -13,6 +13,8 @@ import { requireScope, type ScopeSource } from './scope-guard'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import type { CreateTaskInput, TaskExecutionPort, TaskService } from './task-service'
 import type { SessionRecoveryMode } from '../runtime/run-types'
+import type { AttachmentRef } from '../../src/shared/attachment-contracts'
+import type { AttachmentService } from './attachment-service'
 
 export interface ConversationServiceDependencies {
   scope: ScopeSource
@@ -21,6 +23,7 @@ export interface ConversationServiceDependencies {
   employees: EmployeeAuthorizer
   tasks: TaskService
   execution: () => Promise<TaskExecutionPort>
+  attachments?: AttachmentService
 }
 
 export interface ContinueConversationInput {
@@ -28,6 +31,8 @@ export interface ContinueConversationInput {
   prompt: string
   recoveryMode?: SessionRecoveryMode | undefined
   confirmRecovery?: boolean | undefined
+  attachmentSessionId?: string
+  attachmentRefs?: AttachmentRef[]
 }
 
 export class ConversationService {
@@ -43,6 +48,7 @@ export class ConversationService {
    * 那一次授权结果（C4）。
    */
   async continue(input: ContinueConversationInput): Promise<void> {
+    const scope = requireScope(this.deps.scope)
     const task = await this.deps.taskManager.getTask(input.taskId)
     if (!task || !task.subscriptionId) {
       throw new AppError('NOT_FOUND', { message: '未找到任务或其硅基员工绑定。' })
@@ -50,12 +56,20 @@ export class ConversationService {
     if (!await this.deps.employees.authorize(task.subscriptionId)) {
       throw new AppError('INVALID_ARGUMENT')
     }
+    const current = requireScope(this.deps.scope)
+    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    let inputSnapshot
+    if (input.attachmentRefs?.length) {
+      if (!input.attachmentSessionId || !this.deps.attachments) throw new AppError('INVALID_ARGUMENT', { message: '附件需要有效的导入会话。' })
+      inputSnapshot = await this.deps.attachments.claimTask(input.attachmentSessionId, input.taskId, input.attachmentRefs)
+    }
     await (await this.deps.execution()).continueConversation(input.taskId, input.prompt, {
       // 只认三种模式，其余一律按"损坏就先问用户"处理。
       mode: input.recoveryMode === 'strict' || input.recoveryMode === 'auto_rebuild_from_task_history'
         ? input.recoveryMode
         : 'confirm_rebuild',
       confirmed: input.confirmRecovery === true,
+      ...(inputSnapshot ? { inputSnapshot } : {}),
     })
   }
 

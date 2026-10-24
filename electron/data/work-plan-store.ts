@@ -13,7 +13,7 @@ function parsePlan(value: unknown, scope: TaskOwnerScope, taskId: string): WorkP
   if (!value || typeof value !== 'object') return null
   const plan = value as Partial<WorkPlan>
   if (
-    plan.schemaVersion !== 1 || plan.id !== taskId ||
+    (plan.schemaVersion !== 1 && plan.schemaVersion !== 2) || plan.id !== taskId ||
     !plan.owner || plan.owner.memberId !== scope.memberId || plan.owner.enterpriseId !== scope.enterpriseId ||
     !plan.sourceDraftId || typeof plan.sourceDraftRevision !== 'number' ||
     (plan.mode !== 'conversation' && plan.mode !== 'auto' && plan.mode !== 'manual') ||

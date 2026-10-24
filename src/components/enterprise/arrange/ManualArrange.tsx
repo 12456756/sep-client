@@ -10,7 +10,7 @@
  */
 
 import { ArrowRight, BookmarkPlus, GripVertical, ListPlus, Plus, X } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import type { SiliconEmployee, WorkDraftStep } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
@@ -18,12 +18,17 @@ import { createDraftStep, validateGraph } from '../../../features/enterprise/wor
 import { EmployeeFace } from '../EmployeeFace';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions, SpeechInputFeedback } from '../../speech/SpeechInputActions';
+import { AttachmentComposer } from '../attachments/AttachmentComposer';
+import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 
 export interface ManualDraft {
   title: string;
   goal: string;
   steps: WorkDraftStep[];
   confirmedInputs: string[];
+  attachmentRefs?: AttachmentView[];
+  attachmentSession?: AttachmentImportSession | null;
+  mustUseAttachments?: boolean;
 }
 
 interface Props {
@@ -37,6 +42,7 @@ interface Props {
   models: string[];
   onSettingsChange: (patch: Partial<RunSettings>) => void;
   onChooseFolder: (currentPath?: string) => Promise<string | null>;
+  attachmentBindingKey?: string;
 }
 
 /** 一条链：每一步都依赖上一步。加人、删人、换顺序之后都要重新串一遍。 */
@@ -52,12 +58,35 @@ function move<T>(list: T[], from: number, to: number): T[] {
   return next;
 }
 
-export function ManualArrange({ employees, busy, seed, onSave, onStart, settings, models, onSettingsChange, onChooseFolder }: Props) {
+export function ManualArrange({ employees, busy, seed, onSave, onStart, settings, models, onSettingsChange, onChooseFolder, attachmentBindingKey }: Props) {
   const [title, setTitle] = useState(seed?.title ?? '');
   const [goal, setGoal] = useState(seed?.goal ?? '');
   const [materials, setMaterials] = useState((seed?.confirmedInputs ?? []).join('\n'));
+  const [attachmentRefs, setAttachmentRefs] = useState<AttachmentView[]>([]);
+  const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(null);
+  const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const [mustUseAttachments, setMustUseAttachments] = useState(true);
+  const composerId = useRef(`manual-${crypto.randomUUID()}`);
+  const [editorVersion, setEditorVersion] = useState(0);
+  const editorVersionRef = useRef(0);
+  const activeEditor = useRef<{ value: string; update: (value: string) => void } | null>(null);
+  const pasteNodeByOperation = useRef(new Map<string, { nodeId: string | null; existingIds: Set<string> }>());
+  const activeNodeId = useRef<string | null>(null);
+  const knownAttachmentIds = useRef(new Set<string>());
   const [steps, setSteps] = useState<WorkDraftStep[]>(() => chain(seed?.steps.map(step => ({ ...step })) ?? []));
   const [selectedId, setSelectedId] = useState<string | null>(seed?.steps[0]?.id ?? null);
+  const attachmentTarget = { kind: 'compose' as const, composerId: composerId.current };
+  const onPasteEdit = useCallback(({ operationId, text, selectionStart, selectionEnd, editorVersion: pastedVersion }: { operationId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
+    const editor = activeEditor.current;
+    if (!editor || editorVersionRef.current !== pastedVersion) return false;
+    pasteNodeByOperation.current.set(operationId, { nodeId: activeNodeId.current, existingIds: new Set(knownAttachmentIds.current) });
+    const next = `${editor.value.slice(0, selectionStart)}${text}${editor.value.slice(selectionEnd)}`;
+    editor.value = next;
+    editor.update(next);
+    editorVersionRef.current += 1;
+    setEditorVersion(editorVersionRef.current);
+    return true;
+  }, []);
   const [adding, setAdding] = useState(false);
   const [saved, setSaved] = useState(false);
   const speech = useSpeechInput<HTMLInputElement>({ contextKey: 'manual-goal', value: goal, onChange: value => { setGoal(value); setSaved(false); }, disabled: busy });
@@ -74,6 +103,9 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
     goal: goal.trim() || title.trim() || fallbackTitle,
     steps,
     confirmedInputs,
+    attachmentRefs,
+    attachmentSession,
+    mustUseAttachments,
   });
 
   const replace = (next: WorkDraftStep[]) => { setSteps(chain(next)); setSaved(false); };
@@ -88,6 +120,46 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
   const patch = (id: string, change: Partial<WorkDraftStep>) => {
     setSteps(current => current.map(step => (step.id === id ? { ...step, ...change } : step)));
     setSaved(false);
+  };
+
+  const updateFocusedEditor = (value: string, update: (value: string) => void) => {
+    activeEditor.current = { value, update };
+  };
+
+  const updateEditorValue = (value: string, update: (value: string) => void) => {
+    activeEditor.current = { value, update };
+    editorVersionRef.current += 1;
+    setEditorVersion(editorVersionRef.current);
+  };
+
+  const handleAttachmentsChange = (items: AttachmentView[]) => {
+    knownAttachmentIds.current = new Set(items.map(item => item.attachmentId));
+    setAttachmentRefs(items);
+  };
+
+  const handlePasteStarted = (operationId: string) => {
+    if (!pasteNodeByOperation.current.has(operationId)) pasteNodeByOperation.current.set(operationId, { nodeId: activeNodeId.current, existingIds: new Set(knownAttachmentIds.current) });
+  };
+
+  const bindNewAttachments = (nodeId: string | null, items: AttachmentView[]) => {
+    if (!nodeId) return;
+    if (!items.length) return;
+    setSteps(previous => previous.map(step => {
+      if (step.id !== nodeId) return step;
+      const refs = [...(step.inputRefs ?? [])];
+      for (const item of items) {
+        if (refs.some(ref => ref.kind === 'attachment' && ref.attachment.attachmentId === item.attachmentId)) continue;
+        refs.push({ kind: 'attachment', attachment: { attachmentId: item.attachmentId, sha256: item.sha256 }, required: true, purpose: 'reference' });
+      }
+      return { ...step, inputRefs: refs };
+    }));
+  };
+
+  const handlePasteImported = (operationId: string, items: AttachmentView[]) => {
+    const operation = pasteNodeByOperation.current.get(operationId);
+    pasteNodeByOperation.current.delete(operationId);
+    if (!operation) return;
+    bindNewAttachments(operation.nodeId, items.filter(item => !operation.existingIds.has(item.attachmentId)));
   };
 
   const remove = (id: string) => {
@@ -242,6 +314,12 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
               employees={employees}
               order={steps.findIndex(item => item.id === selected.id) + 1}
               onPatch={change => patch(selected.id, change)}
+              attachments={attachmentRefs}
+              composerId={composerId.current}
+              editorVersion={editorVersion}
+              updateFocusedEditor={updateFocusedEditor}
+              updateEditorValue={updateEditorValue}
+              onFocusNode={nodeId => { activeNodeId.current = nodeId; }}
             />
           ) : (
             <>
@@ -260,12 +338,25 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
                 <textarea
                   className="ent-mn-input tall"
                   value={materials}
+                  data-composer-id={composerId.current}
+                  data-editor-version={editorVersion}
                   placeholder={'一行写一项，例如：\n客户资料在「客户/2026」文件夹\n上季度周报可以作为格式参考'}
-                  onChange={event => { setMaterials(event.target.value); setSaved(false); }}
+                  onFocus={() => { activeNodeId.current = null; updateFocusedEditor(materials, value => { setMaterials(value); setSaved(false); }); }}
+                  onChange={event => { setMaterials(event.target.value); updateEditorValue(event.target.value, value => { setMaterials(value); setSaved(false); }); setSaved(false); }}
                 />
               </label>
             </>
           )}
+          <AttachmentComposer target={attachmentTarget} bindingKey={attachmentBindingKey} disabled={busy} onBusyChange={setAttachmentsBusy} onPasteStarted={handlePasteStarted} onPasteImported={handlePasteImported} onSelectStarted={() => { pasteNodeByOperation.current.set('__picker__', { nodeId: null, existingIds: new Set(knownAttachmentIds.current) }); }} onSelectFinished={items => {
+            const picker = pasteNodeByOperation.current.get('__picker__');
+            pasteNodeByOperation.current.delete('__picker__');
+            if (picker && items) bindNewAttachments(picker.nodeId, items.filter(item => !picker.existingIds.has(item.attachmentId)));
+          }} onChange={items => {
+            handleAttachmentsChange(items);
+            const retained = new Set(items.map(item => item.attachmentId));
+            setSteps(current => current.map(step => ({ ...step, inputRefs: step.inputRefs?.filter(ref => ref.kind !== 'attachment' || retained.has(ref.attachment.attachmentId)) })));
+          }} onSessionChange={setAttachmentSession} onPasteEdit={onPasteEdit} />
+          {attachmentRefs.length ? <label className="ent-attachment-usage"><input type="checkbox" checked={mustUseAttachments} onChange={event => { setMustUseAttachments(event.target.checked); setSaved(false); }} />必须安排到至少一个步骤</label> : null}
         </aside>
       </div>
 
@@ -273,10 +364,13 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
         <input
           {...speech.inputProps}
           className="ent-mn-goal"
+          data-composer-id={composerId.current}
+          data-editor-version={editorVersion}
           value={goal}
           placeholder="描述这项工作"
           aria-label="工作目标"
-          onChange={event => { setGoal(event.target.value); setSaved(false); }}
+          onFocus={() => { activeNodeId.current = null; updateFocusedEditor(goal, value => { setGoal(value); setSaved(false); }); }}
+          onChange={event => { setGoal(event.target.value); updateEditorValue(event.target.value, value => { setGoal(value); setSaved(false); }); setSaved(false); }}
         />
         <div className="ent-mn-composer-bar">
           <div className="ent-mn-inline-settings">
@@ -302,7 +396,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
           <button
             type="button"
             className="ent-arr-primary"
-            disabled={busy || speech.busy || !steps.length || Boolean(problem)}
+            disabled={busy || speech.busy || attachmentsBusy || !steps.length || Boolean(problem)}
             title={problem ?? (steps.length ? undefined : '先把一位同事拖进来')}
             onClick={() => { if (!speech.busy) onStart(draft()); }}
           >
@@ -317,11 +411,17 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
 }
 
 /** 右栏：当前这一步做什么。字段顺序按用户的思考顺序排，不按数据结构排。 */
-function StepForm({ step, employees, order, onPatch }: {
+function StepForm({ step, employees, order, onPatch, attachments, composerId, editorVersion, updateFocusedEditor, updateEditorValue, onFocusNode }: {
   step: WorkDraftStep;
   employees: SiliconEmployee[];
   order: number;
   onPatch: (change: Partial<WorkDraftStep>) => void;
+  attachments: AttachmentView[];
+  composerId: string;
+  editorVersion: number;
+  updateFocusedEditor: (value: string, update: (value: string) => void) => void;
+  updateEditorValue: (value: string, update: (value: string) => void) => void;
+  onFocusNode: (nodeId: string) => void;
 }) {
   const employee = employees.find(item => item.id === step.employeeId);
   return (
@@ -340,10 +440,26 @@ function StepForm({ step, employees, order, onPatch }: {
         <textarea
           className="ent-mn-input tall"
           value={step.title}
+            data-composer-id={composerId}
+            data-editor-version={editorVersion}
           placeholder="例如：整理 618 活动的销售数据"
-          onChange={event => onPatch({ title: event.target.value })}
+          onFocus={() => { updateFocusedEditor(step.title, value => { onPatch({ title: value }); }); onFocusNode(step.id); }}
+          onChange={event => { const value = event.target.value; updateEditorValue(value, next => onPatch({ title: next })); onPatch({ title: value }); }}
         />
       </label>
+
+      {attachments.length ? <fieldset className="ent-mn-field ent-mn-attachment-bind">
+        <legend>本步骤使用的附件</legend>
+        {attachments.map(item => {
+          const existing = step.inputRefs?.find(ref => ref.kind === 'attachment' && ref.attachment.attachmentId === item.attachmentId);
+          const checked = Boolean(existing);
+          return <label key={item.attachmentId}><input type="checkbox" checked={checked} onChange={event => {
+            const refs = (step.inputRefs ?? []).filter(ref => ref.kind !== 'attachment' || ref.attachment.attachmentId !== item.attachmentId);
+            if (event.target.checked) refs.push({ kind: 'attachment', attachment: { attachmentId: item.attachmentId, sha256: item.sha256 }, required: existing?.kind === 'attachment' ? existing.required : true, purpose: existing?.kind === 'attachment' ? existing.purpose : 'reference' });
+            onPatch({ inputRefs: refs });
+          }} /><span>{item.displayName}</span>{checked ? <select value={existing?.kind === 'attachment' ? existing.purpose : 'reference'} onChange={event => { const refs = (step.inputRefs ?? []).map(ref => ref.kind === 'attachment' && ref.attachment.attachmentId === item.attachmentId ? { ...ref, purpose: event.target.value as 'reference' | 'analysis' | 'vision' | 'media-source' } : ref); onPatch({ inputRefs: refs }); }}><option value="reference">参考</option><option value="analysis">分析</option><option value="vision">视觉</option><option value="media-source">媒体源</option></select> : null}{checked ? <label><input type="checkbox" checked={existing?.kind === 'attachment' ? existing.required : true} onChange={event => onPatch({ inputRefs: (step.inputRefs ?? []).map(ref => ref.kind === 'attachment' && ref.attachment.attachmentId === item.attachmentId ? { ...ref, required: event.target.checked } : ref) })} />必需</label> : null}</label>;
+        })}
+      </fieldset> : null}
 
       <div className="ent-mn-pair">
         <label className="ent-mn-field">
@@ -351,8 +467,11 @@ function StepForm({ step, employees, order, onPatch }: {
           <input
             className="ent-mn-input"
             value={step.input}
+            data-composer-id={composerId}
+            data-editor-version={editorVersion}
             placeholder="留空表示用上一步的结果"
-            onChange={event => onPatch({ input: event.target.value })}
+            onFocus={() => { updateFocusedEditor(step.input, value => { onPatch({ input: value }); }); onFocusNode(step.id); }}
+            onChange={event => { const value = event.target.value; updateEditorValue(value, next => { onPatch({ input: next }); }); onPatch({ input: value }); }}
           />
         </label>
         <label className="ent-mn-field">
@@ -360,8 +479,11 @@ function StepForm({ step, employees, order, onPatch }: {
           <input
             className="ent-mn-input"
             value={step.output}
+            data-composer-id={composerId}
+            data-editor-version={editorVersion}
             placeholder="例如：一份销售数据汇总表"
-            onChange={event => onPatch({ output: event.target.value })}
+            onFocus={() => { updateFocusedEditor(step.output, value => { onPatch({ output: value }); }); onFocusNode(step.id); }}
+            onChange={event => { const value = event.target.value; updateEditorValue(value, next => { onPatch({ output: next }); }); onPatch({ output: value }); }}
           />
         </label>
       </div>

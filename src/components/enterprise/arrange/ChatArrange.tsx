@@ -4,7 +4,7 @@
  */
 
 import { ArrowUp, ChevronDown, MessageSquare, Search } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
@@ -12,29 +12,43 @@ import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { EmployeeFace } from '../EmployeeFace';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions, SpeechInputFeedback } from '../../speech/SpeechInputActions';
+import { AttachmentComposer } from '../attachments/AttachmentComposer';
+import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 
 interface Props {
   employees: SiliconEmployee[];
   busy: boolean;
   employeeId: string;
   onEmployeeChange: (employeeId: string) => void;
-  onStart: (employeeId: string, text: string) => void;
+  onStart: (employeeId: string, text: string, attachments: AttachmentView[], session: AttachmentImportSession | null) => void;
   settings: RunSettings;
   models: string[];
   onSettingsChange: (patch: Partial<RunSettings>) => void;
   onChooseFolder: (currentPath?: string) => Promise<string | null>;
+  attachmentBindingKey?: string;
 }
 
-export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onStart, settings, models, onSettingsChange, onChooseFolder }: Props) {
+export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onStart, settings, models, onSettingsChange, onChooseFolder, attachmentBindingKey }: Props) {
   const [pickOpen, setPickOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [text, setText] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [attachments, setAttachments] = useState<AttachmentView[]>([]);
+  const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(null);
+  const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const [editorVersion, setEditorVersion] = useState(0);
+  const composerId = useRef(`chat-${crypto.randomUUID()}`);
   const pick = useRef<HTMLDivElement>(null);
   const speech = useSpeechInput({ contextKey: `chat:${employeeId}`, value: text, onChange: setText, disabled: busy });
   const input = speech.inputProps.ref;
   const employee = employees.find(item => item.id === employeeId);
-  const ready = Boolean(employee && text.trim());
+  const ready = Boolean(employee && text.trim()) && !attachmentsBusy;
+  const onPasteEdit = useCallback(({ text: pasted, selectionStart, selectionEnd, editorVersion: pastedVersion }: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
+    if (pastedVersion !== editorVersion) return false;
+    setText(current => `${current.slice(0, selectionStart)}${pasted}${current.slice(selectionEnd)}`);
+    setEditorVersion(version => version + 1);
+    return true;
+  }, [editorVersion]);
   const found = employees.filter(item => {
     const key = query.trim();
     return !key || item.name.includes(key) || item.intro.includes(key);
@@ -64,7 +78,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const start = () => {
     if (ready && !busy && !speech.busy) {
       setSubmitted(true);
-      onStart(employeeId, text.trim());
+      onStart(employeeId, text.trim(), attachments, attachmentSession);
     }
   };
 
@@ -79,12 +93,14 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-chat-ask">
         <textarea
+          data-composer-id={composerId.current}
+          data-editor-version={editorVersion}
           {...speech.inputProps}
           className="ent-chat-input"
           value={text}
           placeholder="随心输入"
           aria-label="工作目标"
-          onChange={event => setText(event.target.value)}
+          onChange={event => { setText(event.target.value); setEditorVersion(version => version + 1); }}
           onKeyDown={event => {
             speech.inputProps.onKeyDown(event);
             if (isSubmitEnter(event, speech.isComposing())) {
@@ -93,6 +109,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
             }
           }}
         />
+        <AttachmentComposer target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
         <div className="ent-chat-askbar">
           <div className="ent-chat-who" ref={pick}>
             <button

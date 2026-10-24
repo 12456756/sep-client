@@ -76,6 +76,12 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       links.set(link.kind + ':' + link.jobId, link)
     }
     const references = new Map<string, { artifactId: string; sha256: string; sourceNodeId?: string }>()
+    for (const binding of input.node.inputRefs ?? []) {
+      if (binding.kind !== 'attachment' || binding.purpose !== 'media-source') continue
+      if (!this.options.assets.attachmentReference) throw new AppError('SERVICE_UNAVAILABLE')
+      const reference = await this.options.assets.attachmentReference(scope, input.taskId, binding.attachment, input.signal, assert)
+      references.set(reference.artifactId, reference)
+    }
     const checkpoint = await this.options.checkpoints.get(scope, input.taskId)
     for (const requirement of input.node.mediaRequirements ?? []) {
       const source = requirement.inputFrom

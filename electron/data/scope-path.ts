@@ -210,6 +210,59 @@ export class ScopePath {
     return path
   }
 
+  attachmentImportsRoot(scope: TaskOwnerScope): string {
+    return join(this.ownerRoot(scope), 'attachment-imports')
+  }
+
+  attachmentImportDir(scope: TaskOwnerScope, sessionId: string): string {
+    assertSafeId(sessionId, 'attachment sessionId')
+    const root = this.ownerRoot(scope)
+    const path = join(this.attachmentImportsRoot(scope), sessionId)
+    assertContained(root, path)
+    return path
+  }
+
+  attachmentImportManifest(scope: TaskOwnerScope, sessionId: string): string {
+    return join(this.attachmentImportDir(scope, sessionId), 'manifest.json')
+  }
+
+  attachmentBlobFile(scope: TaskOwnerScope, sessionId: string, attachmentId: string): string {
+    assertSafeId(attachmentId, 'attachmentId')
+    return join(this.attachmentImportDir(scope, sessionId), 'items', attachmentId, 'source')
+  }
+  attachmentExtractionFile(scope: TaskOwnerScope, sessionId: string, attachmentId: string): string {
+    return join(this.attachmentImportDir(scope, sessionId), 'items', attachmentId, 'extraction.json')
+  }
+
+  attachmentTaskDir(scope: TaskOwnerScope, taskId: string): string {
+    assertSafeId(taskId, 'taskId')
+    const root = this.ownerRoot(scope)
+    const path = join(root, 'attachment-tasks', taskId)
+    assertContained(root, path)
+    return path
+  }
+
+  attachmentTaskManifest(scope: TaskOwnerScope, taskId: string): string { return join(this.attachmentTaskDir(scope, taskId), 'manifest.json') }
+  attachmentTaskBlob(scope: TaskOwnerScope, taskId: string, attachmentId: string): string {
+    assertSafeId(attachmentId, 'attachmentId')
+    return join(this.attachmentTaskDir(scope, taskId), 'items', attachmentId, 'source')
+  }
+  attachmentTaskExtractionFile(scope: TaskOwnerScope, taskId: string, attachmentId: string): string {
+    assertSafeId(attachmentId, 'attachmentId')
+    return join(this.attachmentTaskDir(scope, taskId), 'items', attachmentId, 'extraction.json')
+  }
+
+  attachmentDraftManifest(scope: TaskOwnerScope, draftId: string): string {
+    assertSafeId(draftId, 'draftId')
+    return join(this.ownerRoot(scope), 'attachment-drafts', `${draftId}.json`)
+  }
+  attachmentDraftsRoot(scope: TaskOwnerScope): string { return join(this.ownerRoot(scope), 'attachment-drafts') }
+
+  attachmentJournalFile(scope: TaskOwnerScope, journalKey: string): string {
+    assertSafeId(journalKey, 'journalKey')
+    return join(this.ownerRoot(scope), 'attachment-claims', `${journalKey}.json`)
+  }
+
   /** 一个 run 的四个路径。 */
   runPaths(scope: TaskOwnerScope, taskId: string, runId: string): TaskRunPaths {
     assertSafeId(runId, 'runId')

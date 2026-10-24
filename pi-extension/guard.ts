@@ -29,6 +29,8 @@ export interface ToolPolicy {
   approvedSkillPaths?: readonly ApprovedSkillReadPath[]
   /** Exact host-verified delivery snapshot files; never a directory-wide write grant. */
   readableDeliveryPaths?: readonly string[]
+  /** Exact host-verified attachment snapshot files; read-only only. */
+  readableAttachmentPaths?: readonly string[]
 }
 
 export type RegisteredToolPermissions = ReadonlyMap<string, 'confirm-each' | 'auto-approve'>
@@ -89,7 +91,7 @@ export function evaluateToolCall(
     const optionalPath = toolName === 'grep' || toolName === 'find' || toolName === 'ls'
     const candidatePath = path ?? (optionalPath ? policy.workspaceDir : null)
     if (!candidatePath || (!isAllowedPath(candidatePath, policy)
-      && !(toolName === 'read' && (isApprovedSkillRead(candidatePath, policy) || isApprovedDeliveryRead(candidatePath, policy))))) {
+      && !(toolName === 'read' && (isApprovedSkillRead(candidatePath, policy) || isApprovedDeliveryRead(candidatePath, policy) || isApprovedAttachmentRead(candidatePath, policy))))) {
       return {
         allowed: false,
         requiresApproval: false,
@@ -144,6 +146,23 @@ function isApprovedDeliveryRead(candidate: string, policy: ToolPolicy): boolean 
       try { return containsNativePath(realpathSync(denied), actual) } catch { return false }
     })) return false
     return policy.readableDeliveryPaths.some(path => path === actual && realpathSync(path) === path)
+  } catch { return false }
+}
+
+function isApprovedAttachmentRead(candidate: string, policy: ToolPolicy): boolean {
+  if (!policy.readableAttachmentPaths?.length) return false
+  try {
+    const absolute = resolve(policy.workspaceDir, candidate)
+    const actual = realpathSync(absolute)
+    if (!statSync(actual).isFile()) return false
+    if (policy.deniedPaths.some(path => {
+      const denied = resolve(policy.workspaceDir, path)
+      if (containsNativePath(denied, absolute) || containsNativePath(denied, actual)) return true
+      try { return containsNativePath(realpathSync(denied), actual) } catch { return false }
+    })) return false
+    return policy.readableAttachmentPaths.some(path => {
+      try { return realpathSync(path) === path && actual === path } catch { return false }
+    })
   } catch { return false }
 }
 

@@ -121,7 +121,7 @@ export function registerRoutes(
         if (entry.trustedMainFrame) {
           const window = ctx.window()
           if (!window || window.isDestroyed() || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
-            throw appError('INVALID_ARGUMENT', { message: '无法从此页面使用语音输入。' })
+            throw appError('INVALID_ARGUMENT', { message: '无法从此页面执行此操作。' })
           }
         }
         const parsed = entry.schema.safeParse(raw)

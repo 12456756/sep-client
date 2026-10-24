@@ -38,6 +38,7 @@ import type { EnterpriseOrganization } from '../../shared/platform-supplement-co
 import { mapEnterpriseOrganization, mapOrganizationEmployees } from './organization-mapping';
 import type { OrganizationCarbonEmployee } from './organization-model';
 import { TaskReadCache, mergeInitialTaskQuery, mergeTaskList, mergeTaskUpdate } from './task-read-cache';
+import type { AttachmentRef, AttachmentView, DraftAttachmentCandidate } from '../../shared/attachment-contracts';
 
 /**
  * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
@@ -71,6 +72,9 @@ export interface ArrangeWorkDraft {
   confirmedInputs: string[];
   /** 整个工作共享的技能。这一版只跟着工作一起记住，不下发给员工。 */
   sharedSkillIds: string[];
+  attachmentSessionId?: string;
+  attachmentCandidates?: DraftAttachmentCandidate[];
+  mustUseAttachments?: boolean;
 }
 
 /** 从模板或已保存的常用工作带到安排工作页的初始内容。 */
@@ -93,6 +97,8 @@ export interface ConversationOptions {
   permissions?: ArrangementDraftDocument['permissions'];
   workDir?: string;
   skillIds?: string[];
+  attachmentSessionId?: string;
+  attachmentRefs?: AttachmentRef[];
 }
 
 /**
@@ -164,6 +170,7 @@ function readReviewed(enterpriseId: string): Record<string, number> {
 }
 
 export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
+  attachmentScopeKey: string;
   overview: EnterpriseOverview;
   /** 企业全部员工，含未分配给我的。 */
   employees: SiliconEmployee[];
@@ -196,7 +203,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   dismissError: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<void>;
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<void>;
-  sendMessage: (workId: string, text: string) => void;
+  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string) => Promise<boolean>;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
@@ -618,10 +625,16 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     try {
       const modelId = options?.modelId || employee.allowedModels[0];
       if (!modelId || !employee.allowedModels.includes(modelId)) throw new Error('请选择该员工允许使用的模型');
-      const document = conversationDocument(title, goal, employeeId, modelId, options);
+      const document = { ...conversationDocument(title, goal, employeeId, modelId, options), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
       const created = await api.createArrangementDraft(document);
       if (!created.success || !created.draft) throw new Error(created.error?.message || '创建对话失败');
-      const input = { draftId: created.draft.id, expectedRevision: created.draft.revision };
+      let draft = created.draft;
+      if (draft.attachmentCandidates?.length && draft.attachmentSessionId) {
+        const updated = await api.updateArrangementInputs({ draftId: draft.id, expectedRevision: draft.revision, inputs: { attachmentSessionId: draft.attachmentSessionId, attachmentCandidates: draft.attachmentCandidates } });
+        if (!updated.success || !updated.draft) throw new Error(updated.error?.message || '保存会话附件失败');
+        draft = updated.draft;
+      }
+      const input = { draftId: draft.id, expectedRevision: draft.revision };
       const preflight = await api.preflightArrangementDraft(input);
       if (!preflight.success || !preflight.preflight?.canStart) {
         throw new Error(preflight.error?.message || preflight.preflight?.blockingIssues.join('；') || '运行前检查失败');
@@ -652,6 +665,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         expectedOutput: step.output || step.title,
         dependsOn: step.dependsOn.filter(dep => kept.has(dep)),
         skillIds: [...step.skillIds],
+        inputRefs: step.inputRefs ?? [],
       };
     });
     if (nodes.some(node => !node.modelId)) { setError('???????'); return; }
@@ -664,6 +678,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       sharedSkillIds: draft.sharedSkillIds.filter(Boolean),
       conversation: null,
       nodes,
+      attachmentCandidates: draft.attachmentCandidates,
+      attachmentSessionId: draft.attachmentSessionId,
       workspace: { mode: 'shared', path: draft.workDir?.trim() || null },
       permissions: { ...(draft.permissions ?? { preset: 'read-only', approvalMode: 'confirm-each' }) },
       lastPlanning: null,
@@ -674,9 +690,15 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     try {
       const created = await api.createArrangementDraft(document);
       if (!created.success || !created.draft) throw new Error(created.error?.message || '??????');
-      const preflight = await api.preflightArrangementDraft({ draftId: created.draft.id, expectedRevision: created.draft.revision });
+      let createdDraft = created.draft;
+      if (draft.attachmentSessionId && draft.attachmentCandidates?.length) {
+        const updated = await api.updateArrangementInputs({ draftId: createdDraft.id, expectedRevision: createdDraft.revision, inputs: { attachmentSessionId: draft.attachmentSessionId, attachmentCandidates: draft.attachmentCandidates, nodes: nodes.map(node => ({ nodeId: node.id, inputRefs: node.inputRefs ?? [] })) } });
+        if (!updated.success || !updated.draft) throw new Error(updated.error?.message || '保存附件分配失败');
+        createdDraft = updated.draft;
+      }
+      const preflight = await api.preflightArrangementDraft({ draftId: createdDraft.id, expectedRevision: createdDraft.revision });
       if (!preflight.success || !preflight.preflight?.canStart) throw new Error(preflight.error?.message || preflight.preflight?.blockingIssues.join('?') || '??????');
-      const started = await api.confirmAndStartArrangement({ draftId: created.draft.id, expectedRevision: created.draft.revision, idempotencyKey: crypto.randomUUID() });
+      const started = await api.confirmAndStartArrangement({ draftId: createdDraft.id, expectedRevision: createdDraft.revision, idempotencyKey: crypto.randomUUID() });
       if (!started.success || !started.execution) throw new Error(started.error?.message || '????');
       navigate({ name: 'work', workId: started.execution.id });
     } catch (cause) {
@@ -686,20 +708,20 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     }
   }, [myEmployees, navigate]);
 
-  const sendMessage = useCallback((workId: string, text: string) => {
+  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string): Promise<boolean> => {
     const prompt = text.trim();
-    if (!prompt) return;
+    if (!prompt || attachments.length && !attachmentSessionId) return false;
     setError(null);
     const message: ClientTaskMessage = {
       id: `pending-${crypto.randomUUID()}`, role: 'user', content: prompt, createdAt: Date.now(), runId: '',
     };
     pendingMessages.current.set(workId, [...(pendingMessages.current.get(workId) ?? []), message]);
     setTasks(current => [...current]);
-    void run(() => window.electronAPI.continueTask({ taskId: workId, prompt }), '消息没能发送，请重试').then(ok => {
-      if (ok) return; // Keep the bubble until persisted history acknowledges it.
+    const ok = await run(() => window.electronAPI.continueTask({ taskId: workId, prompt, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) }), '消息没能发送，请重试');
+    if (ok) return true;
       pendingMessages.current.set(workId, (pendingMessages.current.get(workId) ?? []).filter(item => item.id !== message.id));
       setTasks(current => [...current]);
-    });
+    return false;
   }, [run]);
 
   const switchEmployee = useCallback(async (workId: string, employeeId: string) => {
@@ -821,6 +843,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
    */
   return {
     ...skillLibrary,
+    attachmentScopeKey: scopeKey,
     overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, error, busy,
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,

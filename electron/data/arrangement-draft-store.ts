@@ -49,7 +49,7 @@ function parseDraft(value: unknown, scope: TaskOwnerScope, draftId: string): Arr
   if (!value || typeof value !== 'object') return null
   const draft = value as Partial<ArrangementDraft>
   if (
-    draft.schemaVersion !== 1 ||
+    (draft.schemaVersion !== 1 && draft.schemaVersion !== 2) ||
     draft.id !== draftId ||
     !draft.owner || draft.owner.memberId !== scope.memberId || draft.owner.enterpriseId !== scope.enterpriseId ||
     typeof draft.revision !== 'number' || !Number.isInteger(draft.revision) || draft.revision < 1 ||
@@ -105,7 +105,7 @@ export class ArrangementDraftStore implements ArrangementDraftStorePort {
     const draft: ArrangementDraft = {
       ...structuredClone(input),
       id: `draft-${randomUUID()}`,
-      schemaVersion: 1,
+      schemaVersion: input.schemaVersion,
       revision: 1,
       owner: { ...scope },
       createdAt: now,
@@ -129,7 +129,7 @@ export class ArrangementDraftStore implements ArrangementDraftStorePort {
       const next: ArrangementDraft = {
         ...structuredClone(patch),
         id: current.id,
-        schemaVersion: 1,
+        schemaVersion: patch.schemaVersion,
         revision: current.revision + 1,
         owner: { ...scope },
         createdAt: current.createdAt,
