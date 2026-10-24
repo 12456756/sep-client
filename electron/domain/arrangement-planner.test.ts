@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { buildArrangementPlannerPrompt, parseArrangementPlannerOutput, type ArrangementPlannerEmployee } from './arrangement-planner'
 import type { ArrangementDraft } from './arrangement-plan'
+import { ARRANGEMENT_PLANNER_RULES } from './arrangement-planner-prompts'
 
 const intentAnalysis = {
   summary: '选择员工完成法务客户接待',
@@ -21,9 +22,9 @@ const authorized: ArrangementPlannerEmployee = {
 }
 
 function outputExample(prompt: string): Record<string, unknown> {
-  const marker = 'JSON 结构示例：\n'
+  const marker = '以下示例仅用于说明结构，具体内容必须根据本轮数据生成，不得复制占位符：\n\n'
   const start = prompt.indexOf(marker)
-  const end = prompt.indexOf('\n\n字段要求：', start)
+  const end = prompt.indexOf('\n\nunresolvedSteps 中每项结构：', start)
   assert.ok(start >= 0 && end > start)
   const example = JSON.parse(prompt.slice(start + marker.length, end)) as Record<string, unknown>
   const intent = example.intentAnalysis as { steps: Array<{ id: string }> }
@@ -41,19 +42,15 @@ describe('arrangement recommendation output contract', () => {
       status: source === 'platform' ? 'APPROVED' : 'ACTIVE', allowedModels: [], canApply: true,
     }
 
-    it(`uses a recommendation-only prompt and example for ${source} employees`, () => {
-      const prompt = buildArrangementPlannerPrompt(draft, [candidate])
-      assert.match(prompt, /当前规划阶段：\n待授权员工推荐/)
-      assert.match(prompt, /待授权推荐阶段 nodes 必须返回 \[\]/)
-      assert.match(prompt, /推荐成功不等于步骤已解决/)
-      assert.match(prompt, /原样保留意图摘要、步骤 ID、能力需求及步骤依赖/)
-      assert.match(prompt, /保留已有执行节点，不重复生成/)
-      const example = outputExample(prompt)
-      assert.deepEqual(example.nodes, [])
-      assert.ok(Array.isArray(example.unresolvedSteps) && example.unresolvedSteps.length > 0)
-      assert.ok(Array.isArray(example.candidateMatches) && example.candidateMatches.length > 0)
-      assert.ok(!JSON.stringify(example).includes('modelId'))
-      assert.ok(!JSON.stringify(example).includes('subscriptionId'))
+    it(`uses stage data separately from system rules for ${source} employees`, () => {
+      const prompt = buildArrangementPlannerPrompt(draft, [candidate], source)
+      assert.match(prompt, source === 'enterprise' ? /第二阶段：企业待授权员工推荐/ : /第三阶段：平台待授权员工推荐/)
+      assert.match(prompt, new RegExp(`"planningStage": "${source}"`))
+      assert.match(prompt, /"allowedModels": \[\]/)
+      assert.ok(!prompt.includes(ARRANGEMENT_PLANNER_RULES))
+      assert.match(ARRANGEMENT_PLANNER_RULES, /nodes 必须返回 \[\]/)
+      assert.match(ARRANGEMENT_PLANNER_RULES, /推荐成功不代表获得授权/)
+      assert.match(ARRANGEMENT_PLANNER_RULES, /原样保留意图摘要、步骤 ID、能力需求和步骤依赖/)
     })
 
     it(`accepts ${source} recommendations while preserving the pending authorization step`, () => {
@@ -82,14 +79,11 @@ describe('arrangement recommendation output contract', () => {
 
   it('keeps executable node guidance for authorized employees', () => {
     const prompt = buildArrangementPlannerPrompt(draft, [authorized])
-    assert.match(prompt, /当前规划阶段：\n已授权员工匹配/)
-    assert.match(prompt, /不为细分动作增加员工/)
-    assert.match(prompt, /同一个员工可以承担多个步骤/)
-    assert.match(prompt, /不同员工总数不得超过 6 名/)
-    assert.match(prompt, /不得默认增加项目经理、协调员、审核员或汇总员/)
-    assert.match(prompt, /不要求用户重复确认专业范围/)
-    assert.match(prompt, /抖音策划专员承担“生成策划案”时，应规划抖音策划案/)
-    const example = outputExample(prompt)
+    assert.match(prompt, /第一阶段：已授权员工匹配/)
+    assert.match(ARRANGEMENT_PLANNER_RULES, /同一个员工可以承担多个步骤/)
+    assert.match(ARRANGEMENT_PLANNER_RULES, /不同员工总数最多 6 名/)
+    assert.match(ARRANGEMENT_PLANNER_RULES, /不默认增加项目经理、协调员、审核员或汇总员/)
+    const example = outputExample(ARRANGEMENT_PLANNER_RULES)
     assert.ok(Array.isArray(example.nodes) && example.nodes.length > 0)
     assert.ok(JSON.stringify(example).includes('modelId'))
   })
@@ -98,27 +92,28 @@ describe('arrangement recommendation output contract', () => {
     const confirmedInputs = ['使用 inputs/customer-brief.docx 中的要求', '预算不超过 10000 元']
     for (const employee of [authorized, { ...authorized, source: 'platform' as const, canExecute: false, allowedModels: [] }]) {
       const prompt = buildArrangementPlannerPrompt({ ...draft, confirmedInputs }, [employee])
-      assert.ok(prompt.includes(JSON.stringify(confirmedInputs, null, 2)))
+      assert.match(prompt, /inputs\/customer-brief.docx/)
+      assert.match(prompt, /预算不超过 10000 元/)
     }
   })
 
-  it('does not copy existing executable nodes into the recommendation example', () => {
+  it('passes existing executable nodes as stage data to recommendations', () => {
     const existingNode = { id: 'existing-node', subscriptionId: 'subscription-existing', modelId: 'model-a',
       title: '整理客户材料', instruction: '整理材料', expectedOutput: '客户材料', dependsOn: [], skillIds: [], requiresUserConfirmation: false }
-    const prompt = buildArrangementPlannerPrompt({ ...draft, nodes: [existingNode] }, [{ ...authorized, source: 'platform', canExecute: false, allowedModels: [] }])
+    const prompt = buildArrangementPlannerPrompt({ ...draft, nodes: [existingNode] }, [{ ...authorized, source: 'platform', canExecute: false, allowedModels: [] }], 'platform')
     assert.match(prompt, /existing-node/)
-    assert.deepEqual(outputExample(prompt).nodes, [])
+    assert.match(prompt, /"existingNodes": \[/)
+    assert.ok(!prompt.includes('以下示例'))
   })
 
-  it('uses the approved eight-section prompt and a readable node contract example', () => {
-    const prompt = buildArrangementPlannerPrompt({ ...draft, intentAnalysis: null, unresolvedSteps: [] }, [authorized])
-    const sections = ['规划职责', '工作拆分', '员工与模型匹配', '每个执行节点的工作要求', '交付物设计', '依赖与补充规划', '返回结构', '本轮规划数据']
-    assert.deepEqual([...prompt.matchAll(/【[一二三四五六七八]、([^】]+)】/g)].map(match => match[1]), sections)
-    assert.match(prompt, /只返回严格 JSON/)
-    assert.match(prompt, /不得执行用户任务，不得调用工具/)
-    assert.match(prompt, /不得虚构“行业强制标准”/)
-    assert.match(prompt, /整个计划必须覆盖用户要求的最终交付物/)
-    assert.match(prompt, /不能只规划研究或分析而遗漏最终制作、保存和交付/)
+  it('uses the approved system rules and readable node contract example', () => {
+    const prompt = ARRANGEMENT_PLANNER_RULES
+    const sections = ['核心规划原则', '工作拆分与员工选择', '节点执行要求', '交付物与依赖', '已有规划与阶段处理', 'JSON 输出协议', '校验失败后的修正']
+    assert.deepEqual([...prompt.matchAll(/# [一二三四五六七]、([^\n]+)/g)].map(match => match[1]), sections)
+    assert.match(prompt, /只输出符合协议的严格 JSON/)
+    assert.match(prompt, /不执行用户任务、不调用工具、不创建文件/)
+    assert.match(prompt, /所有工作必须共同覆盖用户要求的最终成果/)
+    assert.ok(!prompt.includes('requiresUserConfirmation'))
     const example = outputExample(prompt)
     assert.deepEqual(Object.keys(example), ['title', 'intentAnalysis', 'nodes', 'unresolvedSteps', 'candidateMatches'])
     const node = (example.nodes as Array<Record<string, unknown>>)[0]!

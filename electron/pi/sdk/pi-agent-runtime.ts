@@ -43,6 +43,10 @@ export interface PiAgentSessionConfig {
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
   systemPrompt?: string
+  /** Keep the SDK base and employee-scoped Skills, without the old employee prompt override/appendix. */
+  useNativeSystemPrompt?: boolean
+  /** Host-only transform of the SDK-assembled prompt; preserves SDK resource loading. */
+  transformSystemPrompt?: (systemPrompt: string) => string
   mediaTools?: import('../../domain/media-tools').MediaHostTools
   videoTools?: import('../../domain/video-tools').VideoHostTools
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile
@@ -50,6 +54,8 @@ export interface PiAgentSessionConfig {
   fixedSystemPrompt?: string
   /** Must durably record the attempt before resolving; failures must prevent provider I/O. */
   onModelRequest?: (kind: ModelRequestKind) => Promise<ModelRequestProgress>
+  /** Controls prompt text only; request counting, persistence and logs remain enabled. */
+  modelRequestAwareness?: boolean
   mcpServers?: readonly McpServerConfig[]
   getAccessToken: () => Promise<string>
   authorizeTool: (request: { toolName: string; input: unknown }) => Promise<boolean>

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission } from './arrangement-delivery'
+import { buildDeliveryCorrection, deliveryPlanIssues, nodeDeliveryProgressSchema, parseDeliverySubmission } from './arrangement-delivery'
 import type { ArrangementNode } from './arrangement-plan'
 
 const node: ArrangementNode = {
@@ -9,15 +9,30 @@ const node: ArrangementNode = {
   deliverables: [{ id: 'report', name: 'Report', format: 'txt', path: 'deliverables/report.txt', contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }],
 }
 const submission = { nodeId: node.id, summary: 'Research complete', finalDeliverables: [{ id: 'report', path: 'deliverables/report.txt' }] }
+const submissionCorrection = '你的最终提交未通过校验，当前节点尚未完成。请按照当前节点要求检查并修正提交格式，确保提交对应当前节点，交付清单完整，文件标识和路径与节点要求一致。\n\n保留已经完成的工作和有效文件，不要因为提交格式有误而重新执行整个任务。修正后重新提交完整结果，不要只回复“已修复”。\n\n本次尚未检查实际文件，提交格式修正后还会继续进行文件校验。'
+const fileCorrection = '你的提交格式已通过校验，但实际交付文件未通过校验，当前节点尚未完成。请检查规定的交付文件是否已经保存、能够正常读取、内容非空，并且符合要求的文件格式和保存位置。\n\n修复存在问题的文件，保留其他有效成果，不要重复已完成的工作。完成保存后，按照当前节点要求重新提交完整结果，包含全部规定交付文件，不要只提交修复的部分，也不要只回复“已修复”。'
 
 describe('node final delivery protocol', () => {
-  it('carries prior validation issues into a new manual retry without reporting a zeroth failure', () => {
-    const issues = [{ code: 'INVALID_SUBMISSION', message: 'invalid JSON' }]
-    const prompt = buildDeliveryCorrection(0, issues)
-    assert.match(prompt, /上次执行/)
-    assert.match(prompt, /INVALID_SUBMISSION/)
-    assert.doesNotMatch(prompt, /第 0 次/)
-    assert.match(buildDeliveryCorrection(1, issues), /第 1 次交付校验失败/)
+  it('retains validation counts beyond five without imposing a correction limit', () => {
+    assert.equal(nodeDeliveryProgressSchema.parse({ validationAttempts: 20, issues: [], finalFiles: [] }).validationAttempts, 20)
+    assert.doesNotMatch(buildDeliveryCorrection([{ code: 'FILE_MISSING', message: 'missing' }]), /最多|上限|停止自动修正/)
+  })
+  it('uses the exact submission correction for every existing submission validation failure', () => {
+    for (const code of ['MISSING_DELIVERY_CONTRACT', 'OUTPUT_TRUNCATED', 'NODE_NOT_SETTLED', 'INVALID_SUBMISSION', 'WRONG_NODE', 'DELIVERY_MANIFEST_MISMATCH', 'MISSING_DELIVERY']) {
+      assert.equal(buildDeliveryCorrection([{ code, message: 'Stored diagnostic, not prompt text' }]), submissionCorrection, code)
+    }
+  })
+  it('uses the exact file correction for existing file validation failures without appending diagnostics', () => {
+    for (const code of ['FILE_MISSING', 'UNSAFE_PATH', 'NOT_A_FILE', 'EMPTY_FILE', 'FILE_TOO_LARGE', 'FILE_CHANGED', 'INVALID_FORMAT', 'SNAPSHOT_CHANGED', 'SNAPSHOT_UNAVAILABLE']) {
+      assert.equal(buildDeliveryCorrection([{ code, message: 'Stored diagnostic, not prompt text', deliverableId: 'report', path: 'deliverables/report.txt' }]), fileCorrection, code)
+    }
+  })
+  it('classifies actual parser errors as submission failures', () => {
+    for (const text of ['', JSON.stringify({ ...submission, nodeId: 'other' }), JSON.stringify({ ...submission, finalDeliverables: [{ id: 'other', path: 'other.txt' }] })]) {
+      const result = parseDeliverySubmission(node, text)
+      assert.ok(!result.ok)
+      assert.equal(buildDeliveryCorrection(result.issues), submissionCorrection)
+    }
   })
   it('accepts only the complete final manifest for this node', () => {
     assert.deepEqual(parseDeliverySubmission(node, JSON.stringify(submission)), { ok: true, submission })

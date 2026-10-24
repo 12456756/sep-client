@@ -22,7 +22,6 @@ const node = z.object({
   expectedOutput: z.string(),
   dependsOn: z.array(z.string()),
   skillIds: z.array(z.string()),
-  requiresUserConfirmation: z.boolean(),
 }).extend(arrangementNodeWorkContractSchema.shape)
 const workspace = z.object({ mode: z.literal('shared'), path: z.string().nullable() })
 const permissions = z.object({

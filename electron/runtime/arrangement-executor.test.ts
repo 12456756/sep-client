@@ -16,6 +16,7 @@ import { silentTaskMonitor, type TaskMonitorPort, type MonitorTaskQueuedInput, t
 import type { MonitorParticipation } from '../common/platform/client-monitor-contract'
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
 import type { VideoHostTools, VideoRunPort } from '../domain/video-tools'
+import { DeliveryExecutionError } from '../domain/arrangement-delivery'
 
 const scope: TaskOwnerScope = { memberId: 'member-arrangement', enterpriseId: 'enterprise-arrangement' }
 const employee: EmployeeRuntimeConfig = {
@@ -91,7 +92,9 @@ describe('TaskRuntime arrangement integration', () => {
       createWorker: options => {
         assert.equal(options.context.systemPrompt, `Instructions for ${options.context.modelId}`)
         assert.equal(options.context.mediaTools, host)
-        return { async run() { started.push(options.context.modelId) }, async abort() {}, async dispose() {} }
+        return { async run() {
+          started.push(options.context.modelId)
+        }, async abort() {}, async dispose() {} }
       },
     })
     try {
@@ -850,18 +853,19 @@ describe('TaskRuntime arrangement controls', () => {
               await options.onSessionCreated?.({ sessionId: 'logical-b', sessionFile })
             } else {
               assert.equal(options.context.resumeSessionFile, sessionFile)
-              assert.match(prompt, /INVALID_SUBMISSION/)
+              assert.match(prompt, /你的最终提交未通过校验[\s\S]*本次尚未检查实际文件/)
               const node = arrangement.nodes.find(item => item.id === id)!
+              const system = options.context.fixedSystemPrompt!
               for (const value of [node.objective!, node.instruction, node.expectedOutput, JSON.stringify(node.deliverables, null, 2)]) {
-                assert.ok(prompt.includes(value), `Resumed user message must contain ${value}`)
+                assert.ok(system.includes(value), `Resumed system must contain ${value}`)
               }
-              assert.ok(prompt.includes(`当前节点：${node.title}（${id}）`))
-              assert.match(prompt, /先核对历史操作是否属于当前节点/)
-              assert.match(prompt, /不得覆盖前置节点的最终交付文件/)
+              assert.ok(system.includes(`当前节点：${node.title}（${id}）`))
+              assert.match(prompt, /继续完成未完成的工作/)
+              assert.match(system, /不得修改前置最终成果或指定快照/)
               assert.equal(checkpoints.value?.state.nodes[1]?.delivery?.validationAttempts, 0)
             }
           }
-          for (let iteration = 1; iteration <= 5; iteration++) {
+          for (let iteration = 1; iteration <= 7; iteration++) {
             await options.onModelRequest?.('execution')
             const valid = id === 'node-a' || (failedNodeRuns > 1 && outcome === 'repaired' && iteration === 2)
             if (valid) await writeFile(join(root, `${id}.txt`), 'Saved findings '+id)
@@ -870,7 +874,8 @@ describe('TaskRuntime arrangement controls', () => {
               : '', stopReason: 'stop' })
             if (!correction) return
           }
-          assert.fail('The fifth invalid submission must stop the run')
+          // Simulate an actual terminal storage failure, not a validation limit.
+          throw new DeliveryExecutionError('Delivery storage is unavailable.')
         }, async abort() {}, async dispose() {},
       }))
       await runtime.executeTask(task.id)
@@ -882,8 +887,8 @@ describe('TaskRuntime arrangement controls', () => {
       const savedSession = await readFile(sessionFile!, 'utf8')
       const originalRun = await runStore.get(scope, task.id, original.state.nodes[1]!.sessionRunId!)
       assert.equal(original.state.status, 'failed')
-      assert.equal(original.state.nodes[1]?.delivery?.validationAttempts, 5)
-      assert.equal(original.state.nodes[1]?.modelRequestProgress?.executionRounds, 5)
+      assert.equal(original.state.nodes[1]?.delivery?.validationAttempts, 7)
+      assert.equal(original.state.nodes[1]?.modelRequestProgress?.executionRounds, 7)
       await assert.rejects(runtime.retryTask(task.id, { nodeId: 'node-a' }), { code: 'INVALID_STATE' })
       assert.deepEqual(checkpoints.value, original)
       const admit = manager.admitTask.bind(manager)
@@ -900,8 +905,8 @@ describe('TaskRuntime arrangement controls', () => {
       assert.equal(completedNodeRuns, 1)
       assert.equal(failedNodeRuns, 2)
       assert.deepEqual(checkpoints.value?.state.nodes[0], original.state.nodes[0])
-      assert.equal(checkpoints.value?.state.nodes[1]?.delivery?.validationAttempts, outcome === 'repaired' ? 2 : 5)
-      assert.equal(checkpoints.value?.state.nodes[1]?.modelRequestProgress?.executionRounds, outcome === 'repaired' ? 7 : 10)
+      assert.equal(checkpoints.value?.state.nodes[1]?.delivery?.validationAttempts, outcome === 'repaired' ? 2 : 7)
+      assert.equal(checkpoints.value?.state.nodes[1]?.modelRequestProgress?.executionRounds, outcome === 'repaired' ? 9 : 14)
       assert.equal(await readFile(sessionFile!, 'utf8'), savedSession)
       assert.deepEqual(await runStore.get(scope, task.id, originalRun!.id), originalRun)
     })

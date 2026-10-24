@@ -5,6 +5,7 @@ import {
   parseArrangementPlannerOutput,
   type ArrangementPlannerEmployee,
 } from '../domain/arrangement-planner'
+import { ARRANGEMENT_PLANNER_RULES } from '../domain/arrangement-planner-prompts'
 
 const employees: ArrangementPlannerEmployee[] = [
   { subscriptionId: 'sub-a', employeeId: 'emp-a', name: 'Researcher', description: 'Researches public information', position: 'Researcher', functionalCategory: 'Research', allowedModels: ['m-a'], status: 'ACTIVE' },
@@ -22,9 +23,9 @@ describe('arrangement planner', () => {
     assert.match(prompt, /Researches public information/)
     assert.match(prompt, /sub-a/)
     assert.match(prompt, /JSON/)
-    assert.ok(prompt.startsWith('你是 SEP 自动编排规划 Agent'))
-    assert.ok(prompt.includes('只能使用当前 employeeCatalog 中的真实员工'))
-    assert.match(prompt, /intentAnalysis/)
+    assert.ok(prompt.startsWith('目前是自动编排的第一阶段：已授权员工匹配。'))
+    assert.ok(!prompt.includes(ARRANGEMENT_PLANNER_RULES))
+    assert.match(prompt, /intentSnapshot/)
     assert.match(prompt, /unresolvedSteps/)
   })
 
@@ -44,12 +45,11 @@ describe('arrangement planner', () => {
         ...draft,
         intentAnalysis: pass.hasIntentAnalysis ? intentAnalysis : null,
         unresolvedSteps: pass.hasIntentAnalysis ? [{ stepId: 'step-1', reason: '需要行业研究员工', requiredCapabilities: ['行业研究'] }] : [],
-      }, [{ ...employees[0]!, source: pass.source, canExecute: pass.source === 'authorized' }])
+      }, [{ ...employees[0]!, source: pass.source, canExecute: pass.source === 'authorized' }], pass.source)
 
-      assert.ok(prompt.includes('一个工作步骤分配一个员工'), pass.source)
-      assert.ok(prompt.includes('应写入所属节点的 instruction，不得单独拆成步骤'), pass.source)
-      assert.ok(prompt.includes('不得另设“网络搜索”节点'), pass.source)
-      assert.ok(prompt.indexOf('【二、工作拆分】') < prompt.indexOf('【六、依赖与补充规划】'), pass.source)
+      assert.ok(ARRANGEMENT_PLANNER_RULES.includes('一个执行节点分配一个员工'), pass.source)
+      assert.ok(ARRANGEMENT_PLANNER_RULES.includes('属于工作手段，不得单独拆成步骤'), pass.source)
+      assert.ok(prompt.includes(`"planningStage": "${pass.source}"`), pass.source)
       assert.ok(prompt.includes(`"source": "${pass.source}"`), pass.source)
     }
   })
@@ -63,7 +63,7 @@ describe('arrangement planner', () => {
 
   it('plans employee work without task-level skill selection', () => {
     const prompt = buildArrangementPlannerPrompt(draft, employees)
-    assert.ok(prompt.includes('技能由执行阶段根据员工加载'))
+    assert.ok(ARRANGEMENT_PLANNER_RULES.includes('由执行阶段按员工配置加载'))
     assert.ok(!prompt.includes('用户选择的共享技能'))
     assert.ok(!prompt.includes('"skillIds"'))
     assert.ok(!prompt.includes('skill-a'))

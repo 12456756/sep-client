@@ -50,6 +50,7 @@ import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 import { GatewayRetryWait } from './gateway-retry-wait'
 import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
+import { encodingToolDefinitions } from './pi-text-tools'
 
 const log = logger.child('pi-gateway')
 
@@ -523,6 +524,17 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
 }
 
 export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): ExtensionFactory[] {
+  const systemPromptTransform: ExtensionFactory = pi => {
+    if (config.transformSystemPrompt) {
+      pi.on('before_agent_start', event => ({ systemPrompt: config.transformSystemPrompt!(event.systemPrompt) }))
+    }
+  }
+  const encodingTools: ExtensionFactory = pi => {
+    const selected = sessionToolOptions(config.toolPolicy, config.disableTools).tools ?? []
+    for (const tool of encodingToolDefinitions(config.workspaceDir)) {
+      if (selected.includes(tool.name)) pi.registerTool(tool)
+    }
+  }
   const mediaNames = registeredMediaNames(config)
   const videoNames = registeredVideoNames(config)
   const videoExtension: ExtensionFactory = pi => {
@@ -730,7 +742,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
     })
   }
 
-  return [gatewayPayload, ...(mcp.tools.length ? [mcpExtension] : []), ...(mediaNames.length ? [mediaExtension] : []), ...(videoNames.length ? [videoExtension] : []), toolGuard]
+  return [...(config.transformSystemPrompt ? [systemPromptTransform] : []), gatewayPayload, encodingTools, ...(mcp.tools.length ? [mcpExtension] : []), ...(mediaNames.length ? [mediaExtension] : []), ...(videoNames.length ? [videoExtension] : []), toolGuard]
 }
 
 class PiCodingAgentSession implements PiAgentSession {
@@ -850,9 +862,14 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           settingsManager.setRetryEnabled(false)
           throw error
         }
-        const requestContext = snapshot && snapshot.kind !== 'compaction'
-          ? { ...context, systemPrompt: [context.systemPrompt, buildModelRequestAwareness(snapshot.progress, snapshot.kind)].filter(Boolean).join('\n\n') }
-          : context
+        const systemPrompt = config.transformSystemPrompt && context.systemPrompt
+          ? config.transformSystemPrompt(context.systemPrompt) : context.systemPrompt
+        const requestContext = {
+          ...context,
+          systemPrompt: config.modelRequestAwareness !== false && snapshot && snapshot.kind !== 'compaction'
+            ? [systemPrompt, buildModelRequestAwareness(snapshot.progress, snapshot.kind)].filter(Boolean).join('\n\n')
+            : systemPrompt,
+        }
         return streamSimple({ ...model, api: 'openai-completions' }, requestContext, {
           ...options,
           maxRetries: 0,
@@ -890,7 +907,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     const servers = canUseMcp ? config.mcpServers ?? await loadHostMcpServers() : []
     const mcp = await createMcpRuntime(servers, config.workspaceDir)
     try {
-      const employeePrompt = config.employeeProfile ? buildEmployeeSystemPrompt(config.employeeProfile) : undefined
+      const employeePrompt = !config.useNativeSystemPrompt && config.employeeProfile ? buildEmployeeSystemPrompt(config.employeeProfile) : undefined
       const resourceLoader = new DefaultResourceLoader({
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
@@ -903,8 +920,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         ),
         noContextFiles: true,
         additionalSkillPaths: config.additionalSkillPaths,
-        // Use the literal override: the SDK's systemPrompt option also interprets existing paths as files.
-        systemPromptOverride: config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
+        // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
+        systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
+          : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
         appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt
           ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : [])]
           : undefined,

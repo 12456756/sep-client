@@ -106,7 +106,8 @@ export interface ArrangementNode {
   deliverables?: ArrangementDeliverable[]
   dependsOn: string[]
   skillIds: string[]
-  requiresUserConfirmation: boolean
+  /** @deprecated Legacy field accepted in stored drafts but ignored by automatic execution. */
+  requiresUserConfirmation?: boolean
   stepId?: string
 }
 

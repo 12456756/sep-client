@@ -28,6 +28,9 @@ export interface PiTaskWorkerContext {
   resumeSessionFile?: string
   additionalSkillPaths?: string[]
   systemPrompt?: string
+  useNativeSystemPrompt?: boolean
+  modelRequestAwareness?: boolean
+  transformSystemPrompt?: PiAgentSessionConfig['transformSystemPrompt']
   mediaTools?: PiAgentSessionConfig['mediaTools']
   videoTools?: PiAgentSessionConfig['videoTools']
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
@@ -141,6 +144,9 @@ export class PiTaskWorker {
         resumeSessionFile: this.context.resumeSessionFile,
         additionalSkillPaths: this.context.additionalSkillPaths,
         systemPrompt: this.context.systemPrompt,
+        useNativeSystemPrompt: this.context.useNativeSystemPrompt,
+        modelRequestAwareness: this.context.modelRequestAwareness,
+        transformSystemPrompt: this.context.transformSystemPrompt,
         mediaTools: this.context.mediaTools,
         videoTools: this.context.videoTools,
         employeeProfile: this.context.employeeProfile,

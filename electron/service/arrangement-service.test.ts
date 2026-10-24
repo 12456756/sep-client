@@ -591,7 +591,7 @@ describe('ArrangementService', () => {
       assert.equal(input.diagnosticContext?.round, 3)
       assert.deepEqual(input.employees, platformEmployees)
       assert.deepEqual(input.draft.unresolvedSteps, unresolvedSteps)
-      const prompt = buildArrangementPlannerPrompt(input.draft, input.employees)
+      const prompt = buildArrangementPlannerPrompt(input.draft, input.employees, input.planningStage)
       assert.match(prompt, /销售提案专家/)
       assert.match(prompt, /employee-180/)
       assert.match(prompt, /cap-180/)
@@ -632,9 +632,11 @@ describe('ArrangementService', () => {
     const harness = planningHarness(async input => {
       const round = input.diagnosticContext?.round ?? 1
       rounds.push(round)
+      assert.equal(input.planningStage, ['authorized', 'enterprise', 'platform'][round - 1])
       if (round === 1) return { title: '法务客户接待', intentAnalysis, unresolvedSteps, nodes: [authorizedNode] }
-      const prompt = buildArrangementPlannerPrompt(input.draft, input.employees)
-      assert.match(prompt, /当前规划阶段：\n待授权员工推荐/)
+      const prompt = buildArrangementPlannerPrompt(input.draft, input.employees, input.planningStage)
+      assert.match(prompt, round === 2 ? /第二阶段：企业待授权员工推荐/ : /第三阶段：平台待授权员工推荐/)
+      if (round === 3) assert.deepEqual(input.draft.candidateMatches?.map(match => match.employeeId), ['emp-enterprise'])
       assert.deepEqual(input.draft.nodes, [authorizedNode])
       return parseArrangementPlannerOutput(JSON.stringify({
         title: '法务客户接待', intentAnalysis, unresolvedSteps, nodes: [],

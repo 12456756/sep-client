@@ -122,7 +122,7 @@ export function retryArrangementNode(
     .flatMap(node => [...descendantNodeIds(planNodes, node.nodeId)]))
   const completedIds = new Set(state.nodes.filter(node => node.status === 'completed').map(node => node.nodeId))
   const nodes = state.nodes.map(node => {
-    // Only an explicit retry renews validation; pause/resume preserves its budget.
+    // An explicit retry starts a fresh validation count; pause/resume preserves it.
     if (retryIds.has(node.nodeId)) return { ...node, status: 'ready' as const, error: null,
       ...(node.delivery ? { delivery: { ...node.delivery, validationAttempts: 0 } } : {}) }
     if ((state.status === 'failed' || descendantsToRelease.has(node.nodeId)) && !stillBlocked.has(node.nodeId) && node.status === 'blocked') {

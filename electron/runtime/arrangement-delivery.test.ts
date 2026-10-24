@@ -11,6 +11,7 @@ import { ArrangementCheckpointStore, type ArrangementCheckpoint } from '../data/
 import { TaskRunStore } from '../data/task-run-store'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import type { TaskExecutionEvent } from '../../src/shared/types'
+import { DeliveryExecutionError } from '../domain/arrangement-delivery'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -48,7 +49,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
       contexts.push(options.context)
       return { async run(initial) {
         let prompt = initial
-        for (let iteration = 1; iteration <= 6; iteration++) {
+        for (let iteration = 1; iteration <= 12; iteration++) {
           prompts.push(prompt)
           const progress = await options.onModelRequest?.('execution')
           assert.equal(saved?.state.nodes.find(node => node.nodeId === options.context.arrangementNodeId)?.modelRequestProgress?.executionRounds, progress?.executionRounds)
@@ -66,34 +67,33 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
 function submission(id: string): string { return JSON.stringify({ nodeId: id, summary: 'private summary '+id, finalDeliverables: [{ id: 'report', path: `deliverables/${id}.txt` }] }) }
 
 describe('automatic arrangement final file handover', () => {
-  it('restates only the current node work in initial and correction user messages', async () => {
-    const efficiencyPrompt = `【执行效率要求】
-完整完成本节点工作，不得省略必要操作、技能读取、安全审批和交付验收。
-
-1. 确定可行方案后立即执行，不再反复比较；只有失败或发现实质问题时才调整。
-2. 相关读取、修改和检查合并完成；无依赖且安全的操作并行执行。
-3. 已成功且结果仍有效的操作不得重复，只修复失败项、复查受影响内容。
-4. 只处理本节点任务，不扫描无关目录，不修改前置最终文件，不增加额外交付物。
-5. 全部验收条件通过后立即提交最终 JSON，不再美化、扩展或重复检查。
-
-不得假装操作、编造结果或用文字代替实际文件。`
+  it('keeps the current node data in the native system and sends only start or actual correction in user messages', async () => {
     const f = await fixture(async (id, iteration, root) => {
       const prompt = f.prompts.at(-1)!
       const node = f.plan.nodes.find(item => item.id === id)!
+      const context = f.contexts.at(-1)!
+      const system = context.fixedSystemPrompt!
       for (const value of [node.objective!, node.instruction, node.expectedOutput, JSON.stringify(node.deliverables, null, 2)]) {
-        assert.ok(prompt.includes(value), `User message must contain ${value}`)
+        assert.ok(system.includes(value), `System must contain ${value}`)
+        assert.ok(!prompt.includes(value), `User message must not repeat ${value}`)
       }
-      assert.ok(prompt.includes(`当前节点：${node.title}（${id}）`))
-      assert.ok(prompt.includes(efficiencyPrompt))
-      assert.ok(prompt.indexOf('【当前工作】') < prompt.indexOf('【执行效率要求】'))
-      assert.ok(prompt.indexOf('【执行效率要求】') < prompt.indexOf('【员工能力与 skill】'))
-      assert.match(prompt, /先核对历史操作是否属于当前节点/)
+      assert.ok(system.includes(`当前节点：${node.title}（${id}）`))
+      assert.match(system, /员工资料：[\s\S]*"name": "Researcher"/)
+      assert.match(system, /## 四、高效率执行（强制要求）/)
+      assert.match(system, new RegExp(`检索问题：Internal guidance for ${id}`))
+      assert.match(system, /知识库检索本次不可用/)
+      assert.equal(context.useNativeSystemPrompt, true)
+      assert.equal(context.modelRequestAwareness, false)
+      assert.equal(context.systemPrompt, undefined)
+      assert.match(context.transformSystemPrompt?.('You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.') ?? '', /^你运行在 Pi 中。你通过读取文件/)
       if (id === 'b') {
-        assert.match(prompt, /deliverables\/a.txt/)
-        assert.match(prompt, /不得覆盖前置节点的最终交付文件/)
-        assert.doesNotMatch(prompt, /节点执行指令：Do a|private summary a/)
+        assert.match(system, /deliverables\/a.txt/)
+        assert.match(system, /读取快照：/)
+        assert.match(system, /不得修改前置最终成果或指定快照/)
+        assert.doesNotMatch(system, /执行指令：Do a|private summary a/)
       }
-      if (iteration > 1) assert.match(prompt, /INVALID_SUBMISSION/)
+      if (iteration > 1) assert.match(prompt, /你的最终提交未通过校验[\s\S]*本次尚未检查实际文件/)
+      else assert.equal(prompt, '开始你的工作。')
       if (iteration === 1) return { text: '' }
       await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
       return { text: submission(id) }
@@ -101,7 +101,32 @@ describe('automatic arrangement final file handover', () => {
     const result = await f.executor.execute(f.plan, 'task', 'run')
     assert.equal(result.status, 'completed')
     assert.equal(f.prompts.length, 4)
-    assert.ok(f.contexts.every(context => context.fixedSystemPrompt?.includes(efficiencyPrompt)))
+    assert.ok(f.contexts.every(context => context.fixedSystemPrompt?.includes('## 四、高效率执行（强制要求）')))
+  })
+
+  it('switches from submission correction to file correction and retains actual issues in the checkpoint', async () => {
+    const f = await fixture(async (id, iteration, root) => {
+      if (id === 'a' && iteration === 1) return { text: 'not JSON' }
+      if (id === 'a' && iteration === 2) {
+        assert.match(f.prompts.at(-1)!, /^你的最终提交未通过校验/)
+        assert.match(f.prompts.at(-1)!, /本次尚未检查实际文件/)
+        assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.issues[0]?.code, 'INVALID_SUBMISSION')
+        return { text: submission(id) }
+      }
+      if (id === 'a') {
+        assert.match(f.prompts.at(-1)!, /^你的提交格式已通过校验，但实际交付文件未通过校验/)
+        assert.doesNotMatch(f.prompts.at(-1)!, /本次尚未检查实际文件|FILE_MISSING|失败项目|第 \d+ 次/)
+        assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.issues[0]?.code, 'FILE_MISSING')
+      }
+      await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
+      return { text: submission(id) }
+    })
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(result.state.nodes.map(node => node.delivery?.validationAttempts), [3, 1])
+    const checked = f.events.filter(event => event.type === 'arrangement_delivery_checked').map(event => event.data as { issues: { code: string }[] })
+    assert.equal(checked[0]?.issues[0]?.code, 'INVALID_SUBMISSION')
+    assert.equal(checked[1]?.issues[0]?.code, 'FILE_MISSING')
   })
 
   it('accepts a complete long final reply and hands its validated file to the next node', async () => {
@@ -128,17 +153,23 @@ describe('automatic arrangement final file handover', () => {
     { text: '', stopReason: 'length', issue: 'OUTPUT_TRUNCATED' },
     { text: submission('a'), stopReason: 'length', issue: 'OUTPUT_TRUNCATED' },
   ]) {
-    it(`rejects ${scenario.stopReason} with ${scenario.text ? 'valid JSON' : 'empty body'} even when files exist`, async () => {
-      const f = await fixture(async (id, _iteration, root) => {
+    it(`continues correcting ${scenario.stopReason} with ${scenario.text ? 'valid JSON' : 'empty body'} beyond five validations`, async () => {
+      const f = await fixture(async (id, iteration, root) => {
         await writeFile(join(root, `deliverables/${id}.txt`), 'Existing findings')
+        if (id === 'b' || iteration === 8) return { text: submission(id) }
+        if (iteration > 1) {
+          assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.issues[0]?.code, scenario.issue)
+          assert.match(f.prompts.at(-1)!, /^你的最终提交未通过校验/)
+          assert.equal(f.contexts.length, 1)
+        }
         return scenario
       })
       const result = await f.executor.execute(f.plan, 'task', 'run')
-      assert.equal(result.status, 'failed')
-      assert.equal(result.state.nodes[0]?.delivery?.issues[0]?.code, scenario.issue)
-      assert.equal(result.state.nodes[0]?.delivery?.validationAttempts, 5)
-      assert.equal(result.state.nodes[1]?.status, 'blocked')
-      assert.equal(f.events.some(event => event.type === 'arrangement_node_completed'), false)
+      assert.equal(result.status, 'completed')
+      assert.deepEqual(result.state.nodes[0]?.delivery?.issues, [])
+      assert.equal(result.state.nodes[0]?.delivery?.validationAttempts, 8)
+      assert.equal(result.state.nodes[1]?.status, 'completed')
+      assert.equal(f.events.some(event => event.type === 'arrangement_node_failed'), false)
     })
   }
 
@@ -185,8 +216,8 @@ describe('automatic arrangement final file handover', () => {
         const run = await f.runs.get(f.plan.owner, 'task', f.contexts[0]!.runId)
         assert.equal(run?.outcome, 'running')
         if (iteration > 1) {
-          assert.match(f.prompts.at(-1)!, new RegExp(`第 ${iteration - 1} 次交付校验失败`))
-          assert.match(f.prompts.at(-1)!, /FILE_MISSING/)
+          assert.match(f.prompts.at(-1)!, /^你的提交格式已通过校验，但实际交付文件未通过校验/)
+          assert.doesNotMatch(f.prompts.at(-1)!, /第 \d+ 次|FILE_MISSING/)
         }
       } else {
         assert.equal(f.checkpoint()?.state.nodes[0]?.status, 'completed')
@@ -216,38 +247,47 @@ describe('automatic arrangement final file handover', () => {
     assert.equal(result.state.nodes[1]?.delivery?.validationAttempts, 1)
     assert.equal(f.contexts.length, 2)
     assert.equal(f.contexts[0]?.employeeProfile?.name, 'Researcher')
-    assert.match(f.contexts[0]?.fixedSystemPrompt ?? '', /skill 是硅基员工能力的主要载体/)
+    assert.match(f.contexts[0]?.fixedSystemPrompt ?? '', /存在与当前工作相关的 Skill 时，必须读取其 SKILL.md/)
     assert.match(f.contexts[1]?.fixedSystemPrompt ?? '', /deliverables\/a.txt/)
     assert.doesNotMatch(f.contexts[1]?.fixedSystemPrompt ?? '', /private summary a/)
-    assert.match(f.prompts[1]!, /第 1 次交付校验失败/)
+    assert.match(f.prompts[1]!, /^你的提交格式已通过校验，但实际交付文件未通过校验/)
     assert.equal(f.events.filter(event => event.type === 'arrangement_node_completed').length, 2)
   })
-  it('fails on the fifth validation and never starts the dependent node', async () => {
-    const f = await fixture(async id => ({ text: submission(id) }))
+  it('keeps correcting missing files beyond five validations before starting the dependent node', async () => {
+    const f = await fixture(async (id, iteration, root) => {
+      if (id === 'b' || iteration === 8) await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
+      else assert.equal(f.contexts.length, 1)
+      return { text: submission(id) }
+    })
     const result = await f.executor.execute(f.plan, 'task', 'run')
-    assert.equal(result.status, 'failed')
-    assert.equal(result.state.nodes[0]?.status, 'failed')
-    assert.equal(result.state.nodes[0]?.delivery?.validationAttempts, 5)
-    assert.equal(result.state.nodes[1]?.status, 'blocked')
-    assert.equal(f.prompts.length, 5)
-    assert.equal(f.contexts.length, 1)
-    assert.equal(f.events.filter(event => event.type === 'arrangement_node_completed').length, 0)
-    assert.equal(f.events.filter(event => event.type === 'arrangement_node_failed').length, 1)
+    assert.equal(result.status, 'completed')
+    assert.equal(result.state.nodes[0]?.status, 'completed')
+    assert.equal(result.state.nodes[0]?.delivery?.validationAttempts, 8)
+    assert.equal(result.state.nodes[1]?.status, 'completed')
+    assert.equal(f.prompts.length, 9)
+    assert.equal(f.contexts.length, 2)
+    assert.equal(f.events.filter(event => event.type === 'arrangement_node_completed').length, 2)
+    assert.equal(f.events.filter(event => event.type === 'arrangement_node_failed').length, 0)
     const states = f.events.filter(event => event.type === 'arrangement_state_changed').map(event => event.data as { status: string })
-    assert.ok(states.every(state => state.status !== 'waiting-user' && state.status !== 'completed'))
-    assert.equal(states.at(-1)?.status, 'failed')
-    assert.ok((await f.runs.list(f.plan.owner, 'task')).every(run => run.outcome === 'failed'))
+    assert.ok(states.every(state => state.status !== 'waiting-user' && state.status !== 'failed'))
+    assert.equal(states.at(-1)?.status, 'completed')
+    assert.ok((await f.runs.list(f.plan.owner, 'task')).every(run => run.outcome === 'completed'))
   })
-  it('does not renew the five-validation budget after interruption', async () => {
-    const f = await fixture(async id => ({ text: submission(id) }))
+  it('preserves high validation counts after interruption and continues correcting', async () => {
+    const f = await fixture(async (id, iteration, root) => {
+      if (id === 'b' || iteration === 3) await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
+      return { text: submission(id) }
+    })
     const state = createArrangementExecutionState(f.plan.nodes)
     state.status = 'interrupted'
     state.nodes[0]!.status = 'interrupted'
-    state.nodes[0]!.delivery = { validationAttempts: 3, issues: [{ code: 'FILE_MISSING', message: 'missing' }], finalFiles: [] }
+    state.nodes[0]!.delivery = { validationAttempts: 20, issues: [{ code: 'FILE_MISSING', message: 'missing' }], finalFiles: [] }
     const result = await f.executor.execute(f.plan, 'task', 'resume', state)
-    assert.equal(result.status, 'failed')
-    assert.equal(f.prompts.length, 2)
-    assert.equal(result.state.nodes[0]?.delivery?.validationAttempts, 5)
+    assert.equal(result.status, 'completed')
+    assert.equal(f.prompts.length, 4)
+    assert.match(f.prompts[0]!, /你的提交格式已通过校验，但实际交付文件未通过校验/)
+    assert.doesNotMatch(f.prompts[0]!, /第 20 次|最多/)
+    assert.equal(result.state.nodes[0]?.delivery?.validationAttempts, 23)
   })
   it('continues persisted execution counts and never treats high counts as a completion limit', async () => {
     const f = await fixture(async (id, _iteration, root) => {
@@ -317,7 +357,7 @@ describe('automatic arrangement final file handover', () => {
     let release!: () => void
     let terminalFailureObserved = false
     const gate = new Promise<void>(resolve => { release = resolve })
-    const f = await fixture(async id => ({ text: submission(id) }), async id => {
+    const f = await fixture(async () => { throw new DeliveryExecutionError('Final delivery storage is unavailable.') }, async id => {
       if (id === 'b') {
         await gate
         assert.ok(terminalFailureObserved)
@@ -387,7 +427,7 @@ describe('automatic arrangement final file handover', () => {
       return { text: iteration === 1 ? 'I have completed the work.' : submission(id) }
     })
     assert.equal((await f.executor.execute(f.plan, 'task', 'run')).status, 'completed')
-    assert.match(f.prompts[1]!, /INVALID_SUBMISSION/)
+    assert.match(f.prompts[1]!, /^你的最终提交未通过校验/)
   })
   it('hands over the frozen predecessor even if a later tool overwrites the workspace original', async () => {
     const f = await fixture(async (id, _iteration, root) => {

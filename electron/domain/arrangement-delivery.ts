@@ -1,7 +1,6 @@
 import { z } from 'zod'
 import { arrangementNodeWorkContractSchema, type ArrangementNode } from './arrangement-plan'
 
-export const MAX_DELIVERY_VALIDATIONS = 5
 export const deliveryIssueSchema = z.object({
   code: z.string().min(1).max(80),
   message: z.string().min(1).max(2_000),
@@ -27,7 +26,7 @@ export const finalDeliveryFileSchema = z.object({
 export type FinalDeliveryFile = z.infer<typeof finalDeliveryFileSchema>
 
 export const nodeDeliveryProgressSchema = z.object({
-  validationAttempts: z.number().int().min(0).max(MAX_DELIVERY_VALIDATIONS),
+  validationAttempts: z.number().int().min(0),
   issues: z.array(deliveryIssueSchema).max(128),
   finalFiles: z.array(finalDeliveryFileSchema).max(32),
   summary: z.string().max(4_000).optional(),
@@ -96,9 +95,13 @@ export class DeliveryExecutionError extends Error {
   constructor(message: string) { super(message); this.name = 'DeliveryExecutionError' }
 }
 
-export function buildDeliveryCorrection(attempt: number, issues: readonly DeliveryIssue[]): string {
-  const progress = attempt === 0
-    ? `上次执行的交付校验失败，本次手动重试最多允许 ${MAX_DELIVERY_VALIDATIONS} 次校验。`
-    : `第 ${attempt} 次交付校验失败，最多允许 ${MAX_DELIVERY_VALIDATIONS} 次。`
-  return `${progress}节点尚未完成。\n失败项目：\n${JSON.stringify(issues, null, 2)}\n请修复实际文件或提交内容，保留其他有效成果，不重复已完成的操作。重新确认节点全部工作结束后，按固定提示词提交完整最终 JSON。不得只回复“已修复”。`
+export function buildDeliveryCorrection(issues: readonly DeliveryIssue[]): string {
+  // Persisted issues also identify which validation failed when execution resumes.
+  const submissionFailed = issues.some(issue => [
+    'MISSING_DELIVERY_CONTRACT', 'OUTPUT_TRUNCATED', 'NODE_NOT_SETTLED', 'INVALID_SUBMISSION',
+    'WRONG_NODE', 'DELIVERY_MANIFEST_MISMATCH', 'MISSING_DELIVERY',
+  ].includes(issue.code))
+  return submissionFailed
+    ? '你的最终提交未通过校验，当前节点尚未完成。请按照当前节点要求检查并修正提交格式，确保提交对应当前节点，交付清单完整，文件标识和路径与节点要求一致。\n\n保留已经完成的工作和有效文件，不要因为提交格式有误而重新执行整个任务。修正后重新提交完整结果，不要只回复“已修复”。\n\n本次尚未检查实际文件，提交格式修正后还会继续进行文件校验。'
+    : '你的提交格式已通过校验，但实际交付文件未通过校验，当前节点尚未完成。请检查规定的交付文件是否已经保存、能够正常读取、内容非空，并且符合要求的文件格式和保存位置。\n\n修复存在问题的文件，保留其他有效成果，不要重复已完成的工作。完成保存后，按照当前节点要求重新提交完整结果，包含全部规定交付文件，不要只提交修复的部分，也不要只回复“已修复”。'
 }

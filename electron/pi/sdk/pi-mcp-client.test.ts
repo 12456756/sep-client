@@ -69,6 +69,14 @@ describe('MCP configuration', () => {
 })
 
 describe('MCP tool bridge', () => {
+  it('preserves already-decoded browser/MCP text including unrecoverable characters in place', async () => {
+    const text = 'before\n\u4e2d\u6587\n\ufffd\u9225\u72b2\u7c8b\nafter'
+    const server = await serve(request => request.method === 'tools/list'
+      ? { tools: [tool] } : { content: [{ type: 'text', text }] })
+    const bridge = await runtime([config(server.url)])
+    const result = await bridge.tools[0]!.execute('snapshot', {}, undefined)
+    assert.equal(result.content[0].text, text)
+  })
   it('provides Chinese fallback instructions when an MCP tool has no description', async () => {
     const server = await serve(request => request.method === 'tools/list'
       ? { tools: [{ ...tool, description: undefined }] } : { content: [] })
@@ -249,14 +257,15 @@ describe('MCP tool bridge', () => {
         const result = m.method === 'initialize'
           ? { protocolVersion: '2025-06-18', capabilities: { tools: {} }, serverInfo: { name: 'fixture', version: '1' } }
           : m.method === 'tools/list' ? { tools: [${JSON.stringify(tool)}] }
-          : { content: [{ type: 'text', text: 'stdio result: ' + m.params.arguments.query }] };
-        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }) + '\\n');
+          : { content: [{ type: 'text', text: 'stdio result: ' + m.params.arguments.query + ':' + process.env.PYTHONIOENCODING + ':' + process.env.PYTHONUTF8 }] };
+        const bytes = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: m.id, result }) + '\\n');
+        for (let i = 0; i < bytes.length; i++) process.stdout.write(bytes.subarray(i, i + 1));
       });
       rl.on('close', () => process.exit(0));
     `
     const bridge = await runtime([{ name: 'local', enabledTools: ['search'], transport: { type: 'stdio', command: process.execPath, args: ['-e', script] } }])
-    const result = await bridge.tools[0]!.execute('call-1', { query: 'hello' }, undefined)
-    assert.equal(result.content[0]!.text, 'stdio result: hello')
+    const result = await bridge.tools[0]!.execute('call-1', { query: '\u4e2d\u6587' }, undefined)
+    assert.equal(result.content[0]!.text, 'stdio result: \u4e2d\u6587:utf-8:1')
     await bridge.dispose()
   })
 })

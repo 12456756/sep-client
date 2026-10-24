@@ -49,7 +49,8 @@ describe('ArrangementCheckpointStore', () => {
     assert.deepEqual((await store.get(scope, 'task-a'))?.state.nodes[0]?.modelRequestProgress, state.nodes[0]!.modelRequestProgress)
     state.nodes[0]!.delivery!.validationAttempts = 6
     await store.save(scope, checkpoint)
-    assert.equal((await store.get(scope, 'task-a'))?.state.nodes[0]?.delivery?.validationAttempts, 3)
+    assert.equal((await store.get(scope, 'task-a'))?.state.nodes[0]?.delivery?.validationAttempts, 6)
+    state.nodes[0]!.delivery!.validationAttempts = -1
     await store.save(scope, { ...checkpoint, taskId: 'task-b' })
     assert.equal(await store.get(scope, 'task-b'), null)
   })
