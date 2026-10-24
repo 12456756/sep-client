@@ -1,5 +1,6 @@
-import { Paperclip, RotateCw, X } from 'lucide-react'
+import { FileText, LoaderCircle, Paperclip, X } from 'lucide-react'
 import { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../../shared/attachment-contracts'
 import { useAttachmentComposer } from '../../../features/enterprise/use-attachment-composer'
 
@@ -15,34 +16,43 @@ interface Props {
   onSelectStarted?: () => void
   onSelectFinished?: (attachments: AttachmentView[] | null) => void
   onBusyChange?: (busy: boolean) => void
+  listContainer?: HTMLDivElement | null
 }
 
-export function AttachmentComposer({ target, bindingKey, disabled = false, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange }: Props) {
+export function AttachmentComposer({ target, bindingKey, disabled = false, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer }: Props) {
   const composer = useAttachmentComposer({ target, bindingKey, disabled, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
   const attachments = composer.attachments
   useEffect(() => { onChange?.(attachments) }, [attachments, onChange])
   useEffect(() => { onSessionChange?.(composer.session) }, [composer.session, onSessionChange])
   useEffect(() => { onBusyChange?.(composer.busy) }, [composer.busy, onBusyChange])
+  const attachmentList = attachments.length ? (
+    <div className={`ent-attachment-list${listContainer ? ' ent-attachment-list-tiles' : ''}`} aria-label="已添加附件">
+      {attachments.map(item => (
+        <div className="ent-attachment-item" key={item.attachmentId}>
+          {listContainer ? <div className="ent-attachment-preview" aria-hidden><FileText size={28} strokeWidth={1.5} /></div> : null}
+          <div className="ent-attachment-details">
+            <span className="ent-attachment-name" title={item.displayName}>{item.displayName}</span>
+            <small>{formatBytes(item.byteLength)} · {statusLabel(item.extractionStatus)}</small>
+          </div>
+          <button type="button" className="ent-icon-btn" aria-label={`移除 ${item.displayName}`} onClick={() => void composer.remove(item.attachmentId)} disabled={disabled}>
+            <X size={13} aria-hidden />
+          </button>
+        </div>
+      ))}
+    </div>
+  ) : null
+  const feedback = (
+    <>
+      {attachmentList}
+      {composer.error ? <span className="ent-attachment-error" role="alert">{composer.error}<button type="button" onClick={() => composer.setError(null)} aria-label="关闭错误"><X size={12} aria-hidden /></button></span> : null}
+    </>
+  )
   return (
     <div className="ent-attachment-composer" data-attachment-composer data-composer-id={composer.composerId}>
-      {attachments.length ? (
-        <div className="ent-attachment-list" aria-label="已添加附件">
-          {attachments.map(item => (
-            <div className="ent-attachment-item" key={item.attachmentId}>
-              <span className="ent-attachment-name" title={item.displayName}>{item.displayName}</span>
-              <small>{formatBytes(item.byteLength)} · {statusLabel(item.extractionStatus)}</small>
-              <button type="button" className="ent-icon-btn" aria-label={`移除 ${item.displayName}`} onClick={() => void composer.remove(item.attachmentId)} disabled={disabled}>
-                <X size={13} aria-hidden />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-      <button type="button" className="ent-attachment-button" onClick={() => void composer.select()} disabled={disabled || composer.busy} title="添加附件">
-        <Paperclip size={15} aria-hidden />
-        <span>{composer.busy ? '处理中…' : '添加附件'}</span>
+      {listContainer ? createPortal(feedback, listContainer) : feedback}
+      <button type="button" className="ent-attachment-button" onClick={() => void composer.select()} disabled={disabled || composer.busy} title={composer.busy ? '处理中…' : '添加附件'} aria-label={composer.busy ? '附件处理中' : '添加附件'}>
+        {composer.busy ? <LoaderCircle size={16} aria-hidden className="ent-attachment-spinner" /> : <Paperclip size={16} aria-hidden />}
       </button>
-      {composer.error ? <span className="ent-attachment-error" role="alert">{composer.error}<button type="button" onClick={() => composer.setError(null)} aria-label="关闭错误"><RotateCw size={12} aria-hidden /></button></span> : null}
     </div>
   )
 }

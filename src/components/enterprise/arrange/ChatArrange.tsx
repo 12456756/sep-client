@@ -36,6 +36,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const [attachments, setAttachments] = useState<AttachmentView[]>([]);
   const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(null);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const [attachmentListContainer, setAttachmentListContainer] = useState<HTMLDivElement | null>(null);
   const [editorVersion, setEditorVersion] = useState(0);
   const composerId = useRef(`chat-${crypto.randomUUID()}`);
   const pick = useRef<HTMLDivElement>(null);
@@ -92,6 +93,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
       ) : null}
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-chat-ask">
+        <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
         <textarea
           data-composer-id={composerId.current}
           data-editor-version={editorVersion}
@@ -109,8 +111,8 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
             }
           }}
         />
-        <AttachmentComposer target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
         <div className="ent-chat-askbar">
+          <AttachmentComposer listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
           <div className="ent-chat-who" ref={pick}>
             <button
               type="button"

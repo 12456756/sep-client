@@ -72,7 +72,7 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
         setBusy(false)
       }
     }
-  }, [api, composerId, disabled, target, onPasteEdit])
+  }, [api, composerId, disabled, target])
 
   const select = useCallback(async () => {
     const current = session ?? await begin()
@@ -184,7 +184,10 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
   useEffect(() => () => {
     generation.current += 1
     identityGeneration.current += 1
+    busyRef.current = false
+    setBusy(false)
     bindDispose.current?.()
+    bindDispose.current = null
     const current = sessionRef.current
     if (current?.status === 'open') void api.cancelAttachmentImport({ sessionId: current.sessionId })
   }, [api])

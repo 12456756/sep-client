@@ -47,6 +47,7 @@ export function GoalComposer({
 }: Props) {
   const [, setAttachments] = useState<AttachmentView[]>([]);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const [attachmentListContainer, setAttachmentListContainer] = useState<HTMLDivElement | null>(null);
   const composerId = useRef(`goal-${crypto.randomUUID()}`);
   const [editorVersion, setEditorVersion] = useState(0);
   const speech = useSpeechInput({ contextKey: 'auto-goal', value, onChange, disabled: busy });
@@ -60,6 +61,7 @@ export function GoalComposer({
     <div className="ent-goal-stack">
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-goal">
+        <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
         <textarea
           data-composer-id={composerId.current}
           data-editor-version={editorVersion}
@@ -77,8 +79,8 @@ export function GoalComposer({
             }
           }}
         />
-        <AttachmentComposer target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={onAttachmentSessionChange} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
         <div className="ent-goal-bar">
+          <AttachmentComposer listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={onAttachmentSessionChange} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
           <RunSettingsBar
             settings={settings}
             models={models}
