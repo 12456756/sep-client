@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ArrangementExecutionSnapshot, ArrangementPlanSnapshot, ClientTask, TaskExecutionEvent } from '../../shared/types';
 import { runtimeKey } from '../../shared/work-activity';
 
+const EXECUTION_REFRESH_INTERVAL = 5000
+
 function mergeEvents(current: TaskExecutionEvent[], incoming: TaskExecutionEvent[]): TaskExecutionEvent[] {
   const bySequence = new Map(current.map(event => [event.sequence, event]));
   incoming.forEach(event => { if (event.type.startsWith('arrangement_')) bySequence.set(event.sequence, event); });
@@ -15,6 +17,8 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
   const [executions, setExecutions] = useState<Record<string, ArrangementExecutionSnapshot | null>>({});
   const [error, setError] = useState<string | null>(null);
   const requested = useRef(new Map<string, { key: string }>());
+  const executionInFlight = useRef(new Map<string, { request: { key: string }; generation: number }>());
+  const executionPending = useRef(new Map<string, { request: { key: string }; generation: number }>());
   const mounted = useRef(false);
   const scope = useRef({ key: scopeKey, generation: 0 });
   if (scope.current.key !== scopeKey) scope.current = { key: scopeKey, generation: scope.current.generation + 1 };
@@ -38,6 +42,34 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
     if (!event.type.startsWith('arrangement_')) return;
     const key = runtimeKey(event.taskId, event.runId);
     setEvents(previous => ({ ...previous, [key]: mergeEvents(previous[key] ?? [], [event]) }));
+  }, []);
+
+  const loadExecution = useCallback((taskId: string, request: { key: string }, requestGeneration: number): void => {
+    if (!mounted.current || scope.current.generation !== requestGeneration || requested.current.get(taskId) !== request) return
+    const inFlight = executionInFlight.current.get(taskId)
+    if (inFlight) {
+      if (inFlight.request !== request || inFlight.generation !== requestGeneration) executionPending.current.set(taskId, { request, generation: requestGeneration })
+      return
+    }
+    executionInFlight.current.set(taskId, { request, generation: requestGeneration })
+    void (async () => {
+      const isCurrent = () => mounted.current && scope.current.generation === requestGeneration && requested.current.get(taskId) === request
+      try {
+        const result = await window.electronAPI.getArrangementExecution(taskId)
+        if (!isCurrent()) return
+        if (!result.success) throw new Error(result.error?.message || '编排执行状态加载失败')
+        setExecutions(previous => ({ ...previous, [taskId]: result.execution ?? null }))
+      } catch (cause) {
+        if (isCurrent()) setError(cause instanceof Error ? cause.message : '编排执行状态加载失败')
+      } finally {
+        executionInFlight.current.delete(taskId)
+        const pending = executionPending.current.get(taskId)
+        executionPending.current.delete(taskId)
+        if (pending && mounted.current && requested.current.get(taskId) === pending.request && scope.current.generation === pending.generation) {
+          queueMicrotask(() => loadExecution(taskId, pending.request, pending.generation))
+        }
+      }
+    })()
   }, []);
 
   useEffect(() => {
@@ -67,16 +99,7 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
           if (isCurrent()) setError(cause instanceof Error ? cause.message : '工作计划加载失败');
         }
       })();
-      if (task.workType.state === 'resolved' && task.workType.kind === 'arrangement') void (async () => {
-        try {
-          const result = await window.electronAPI.getArrangementExecution(task.id);
-          if (!isCurrent()) return;
-          if (!result.success) throw new Error(result.error?.message || '编排执行状态加载失败');
-          setExecutions(previous => ({ ...previous, [task.id]: result.execution ?? null }));
-        } catch (cause) {
-          if (isCurrent()) setError(cause instanceof Error ? cause.message : '编排执行状态加载失败');
-        }
-      })();
+      if (task.workType.state === 'resolved' && task.workType.kind === 'arrangement') loadExecution(task.id, request, generation)
       if (task.activeRunId) void (async () => {
         try {
           const timeline = await window.electronAPI.getTaskTimeline(task.id, task.activeRunId!);
@@ -91,6 +114,25 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
         }
       })();
     }
-  }, [tasks, generation]);
+  }, [tasks, generation, loadExecution]);
+
+  // Media providers can finish without producing a model event. Refresh only the
+  // local execution snapshot at a low rate so the page reflects delivery progress
+  // without adding another provider polling loop or overlapping IPC calls.
+  useEffect(() => {
+    let active = true
+    const refresh = async (): Promise<void> => {
+      for (const task of tasks) {
+        if (!active || task.workType?.state !== 'resolved' || task.workType.kind !== 'arrangement' ||
+          (task.status !== 'running' && task.status !== 'pending' && task.status !== 'waiting_approval' && !task.activeRunId)) continue
+        const request = requested.current.get(task.id)
+        if (!request) continue
+        loadExecution(task.id, request, generation)
+      }
+    }
+    void refresh()
+    const timer = window.setInterval(() => { void refresh() }, EXECUTION_REFRESH_INTERVAL)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [tasks, generation, loadExecution]);
   return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, executions: loadedScope === scopeKey ? executions : {}, recordEvent, error };
 }

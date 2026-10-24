@@ -9,6 +9,10 @@ import type { ModelRequestKind, ModelRequestProgress } from '../../domain/model-
 
 const log = logger.child('pi-task-worker')
 
+function isHandoffAbort(message: string | undefined): boolean {
+  return message === 'Gateway retry cancelled.' || message === 'Request was aborted' || message === 'Agent run was aborted.'
+}
+
 export function createDefaultSharedPiSession(): SharedPiSession {
   return new SharedPiSession(new PiCodingAgentAdapter())
 }
@@ -50,6 +54,8 @@ export interface PiTaskWorkerOptions {
   /** Runs only after a complete agent execution, never after individual tool turns. */
   onResponseSettled?: (response: { text: string; stopReason?: string }) => Promise<{ continueWith: string } | void>
   onModelRequest?: (kind: ModelRequestKind) => Promise<ModelRequestProgress>
+  /** Host-owned media tracking can take over after a fully persisted successful tool batch. */
+  shouldYieldAfterToolTurn?: () => boolean
   runtime?: PiAgentRuntime
   sessionAdapter?: SharedPiSession
   createTokenManager?: () => TokenManagerPort
@@ -64,6 +70,7 @@ export class PiTaskWorker {
   private readonly onSessionCreated: PiTaskWorkerOptions['onSessionCreated']
   private readonly onResponseSettled: PiTaskWorkerOptions['onResponseSettled']
   private readonly onModelRequest: PiTaskWorkerOptions['onModelRequest']
+  private readonly shouldYieldAfterToolTurn: PiTaskWorkerOptions['shouldYieldAfterToolTurn']
   private readonly sessionAdapter: SharedPiSession | null
   private session: PiAgentSession | null = null
   private unsubscribe: (() => void) | null = null
@@ -86,6 +93,7 @@ export class PiTaskWorker {
     this.onSessionCreated = options.onSessionCreated
     this.onResponseSettled = options.onResponseSettled
     this.onModelRequest = options.onModelRequest
+    this.shouldYieldAfterToolTurn = options.shouldYieldAfterToolTurn
     this.sessionAdapter = options.sessionAdapter ?? null
     this.tokenManager = options.createTokenManager?.() ?? new EmploymentTokenManager({
       getRefreshToken: options.getRefreshToken,
@@ -185,6 +193,8 @@ export class PiTaskWorker {
     const subscribe = this.sessionAdapter
       ? (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => this.sessionAdapter!.subscribe(listener)
       : (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => session.subscribe(listener)
+    let yielded = false
+    let yieldStop: Promise<void> | undefined
     this.unsubscribe = subscribe(event => {
       if (event.type === 'turn_start') this.settledResponse = { text: '' }
       if (event.type === 'turn_end') {
@@ -195,7 +205,11 @@ export class PiTaskWorker {
         }
       }
       if (event.type === 'auto_retry_end' && (event.data as { success?: unknown } | null)?.success === true) this.retryCount = 0
-      if (event.failure && !this.finalFailure) this.finalFailure = event.failure
+      // The local retry gate reports this exact AbortError when the SDK starts
+      // its next turn after the host has already taken ownership of delivery.
+      const intentionalAbort = yielded && isHandoffAbort(event.failure) &&
+        (session.getSettledResponse?.().stopReason === 'aborted' || event.failure === 'Gateway retry cancelled.')
+      if (event.failure && !intentionalAbort && !this.finalFailure) this.finalFailure = event.failure
       if (event.type === 'auto_retry_start' && ++this.retryCount > MAX_RUN_AUTO_RETRIES) {
         this.finalFailure = `本轮自动重试已达到 ${MAX_RUN_AUTO_RETRIES} 次上限，请检查网关错误后手动重试。`
         void this.emit('retry_budget_exhausted', { error: this.finalFailure })
@@ -206,6 +220,17 @@ export class PiTaskWorker {
         return
       }
       void this.emit(event.type, event.data)
+      if (this.finalFailure) return
+      if (event.type === 'turn_end' && !yielded) {
+        const data = event.data as { toolResults?: Array<{ isError?: boolean }> }
+        if (data.toolResults?.length && data.toolResults.every(result => !result.isError) && this.shouldYieldAfterToolTurn?.()) {
+          yielded = true
+          // Abort the SDK loop, not the task: completed tool results remain available for recovery.
+          yieldStop = session.abort()
+          void yieldStop.catch(() => undefined)
+          return
+        }
+      }
     })
     try {
       stage = 'session-persist'
@@ -213,9 +238,16 @@ export class PiTaskWorker {
       this.checkCancellation()
       let nextPrompt = prompt
       while (true) {
+        yielded = false
+        yieldStop = undefined
         this.settledResponse = { text: '' }
         stage = 'prompt'
-        await session.prompt(nextPrompt)
+        try { await session.prompt(nextPrompt) } catch (error) {
+          const intentionalAbort = yielded && error instanceof Error && isHandoffAbort(error.message) &&
+            (session.getSettledResponse?.().stopReason === 'aborted' || error.name === 'AbortError' && error.message === 'Gateway retry cancelled.')
+          if (!intentionalAbort) throw error
+        }
+        await yieldStop
         stage = 'event-flush'
         await this.eventChain
         stage = 'agent-result'
@@ -223,7 +255,7 @@ export class PiTaskWorker {
         this.checkCancellation()
         stage = 'response-settlement'
         // Delivery JSON must use the complete reply, not the redacted, bounded event projection.
-        const correction = await this.onResponseSettled?.(session.getSettledResponse?.() ?? this.settledResponse)
+        const correction = await this.onResponseSettled?.(yielded ? { text: '', stopReason: 'stop' } : session.getSettledResponse?.() ?? this.settledResponse)
         this.checkCancellation()
         if (!correction) break
         nextPrompt = correction.continueWith

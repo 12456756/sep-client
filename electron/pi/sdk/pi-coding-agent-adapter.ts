@@ -153,7 +153,7 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
     return {
       name, label: name, executionMode: 'sequential',
       description: name === 'video_get_job'
-        ? 'Get a task-local video job by jobId, or call with {} to list current VIDEO profiles, supported specifications, jobs and referenceAssets. Image capabilities do not describe video availability.'
+        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait; end the turn after submission. Image capabilities do not describe video availability.'
         : `Generate a video using ${operation}. Supply creativeBrief; the host selects the authorized video profile and backend defaults. Do not require users to configure profileId or technical parameters. Only specify parameters explicitly requested by the user, using video_get_job with {} to check supported values. ${name === 'video_from_image' ? 'Supply one SAVED task-local referenceAssets localAssetId; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report tool error codes, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
       parameters: name === 'video_get_job' ? Type.Object({ jobId: Type.Optional(id) }, { additionalProperties: false })
         : Type.Object({
@@ -259,7 +259,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
   const descriptions = {
     media_get_capabilities: 'Get the currently authorized image capability and the task reference images selected in the image panel.',
     media_generate_image: "Create an image from the user's creative brief. The host selects the authorized image profile and fills supported defaults. Use the task reference images selected in the image panel when relevant; request localAssetIds only when the user names a different saved referenceAssets item. Specify profile, operation or supported parameters only when the user explicitly asks. The host validates cost and obtains approval before submission.",
-    media_get_job: 'Get the business status and task-local assets of an image job.',
+    media_get_job: 'Read cached status and task-local assets of an image job. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait; end the turn after submission.',
     media_cancel_job: 'Stop tracking an image job, optionally requesting upstream cancellation through the host approval policy.',
   }
   return names.map(name => ({

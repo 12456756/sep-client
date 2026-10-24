@@ -115,6 +115,21 @@ describe('WorkDetailPage media entry', () => {
     assert.match(renderDetail(flow), /编排媒体成果/);
   });
 
+  it('shows the real media waiting stage instead of a fabricated percentage', () => {
+    const flow: WorkItem = { ...work, kind: 'flow', status: 'running', progress: 50,
+      workType: { state: 'resolved', kind: 'arrangement' },
+      steps: [{ id: 'image', title: '生成媒体', employeeId: 'employee-a', employeeName: '员工', input: '', output: '', dependsOn: [], needsConfirm: false, state: 'running' }],
+      arrangementExecution: { activeRunId: 'run-1', status: 'running', updatedAt: 1,
+        nodes: [{ nodeId: 'image', status: 'running', finalFiles: [] }],
+        media: [{ nodeId: 'image', nodeRunId: 'run-1', kind: 'video', operation: 'text-to-video', inputs: [], pendingActions: [],
+          phase: 'tracking', jobId: 'job-1', outputs: [{ artifactId: 'video-1', status: 'pending' }] }] } };
+    const html = renderDetail(flow);
+    assert.match(html, /供应商正在生成媒体/);
+    assert.doesNotMatch(html, />50%<\/b>/);
+    assert.match(html, /media-waiting/);
+    assert.match(html, /当前：供应商正在生成媒体/);
+  });
+
   it('keeps the failed-node retry visible alongside running peers and saved media', () => {
     const flow: WorkItem = { ...work, kind: 'flow', status: 'running',
       workType: { state: 'resolved', kind: 'arrangement' },

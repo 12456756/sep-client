@@ -3121,6 +3121,8 @@
 .ent-wk-infobar-item.workdir .ent-wk-path { display: flex; width: 100%; max-width: 320px; }
 .ent-wk-infobar-item.workdir .ent-wk-path > span { min-width: 0; flex: 0 1 auto; color: var(--ent-ink); font-weight: 600; }
 .ent-wk-infobar-progress { min-width: 132px; flex: 0 1 200px; margin-left: auto; }
+.ent-wk-infobar-progress .ent-bar.media-waiting > span > i { width: 38%; background: var(--ent-attention, #b9792c); animation: ent-media-progress 1.4s ease-in-out infinite; }
+@keyframes ent-media-progress { 0%, 100% { opacity: .55; transform: translateX(0); } 50% { opacity: 1; transform: translateX(12px); } }
 
 .ent-wk-infobar-flow > .ent-wk-infobar-sep { height: auto; align-self: stretch; }
 .ent-wk-infobar-meta {

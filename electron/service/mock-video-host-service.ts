@@ -22,6 +22,7 @@ const log = logger.child('mock-video-host')
 // Run and IPC hosts share the same task persistence. An instance-local gate
 // cannot protect a task while approval, upload or submit is still in flight.
 const submissions = new Set<string>()
+const trackingOwners = new Map<string, symbol>()
 export interface MockVideoHostGateway extends VideoGatewayPort {
   uploadReference(bytes: Uint8Array, signal: AbortSignal): Promise<z.infer<typeof videoReferenceSchema>>
 }
@@ -55,6 +56,8 @@ interface VideoHostOptionsBase {
   now?: () => number
   operationTimeoutMs?: number
   tracker?: Omit<VideoTrackerOptions, 'service'>
+  /** Run hosts track only their submitted or explicitly recovered jobs. */
+  trackingJobIds?: ReadonlySet<string>
 }
 export type MockVideoHostOptions = VideoHostOptionsBase & ({ mock: true } | { mock: false })
 interface Context {
@@ -62,6 +65,9 @@ interface Context {
   scope: VideoScope
   service: VideoService
   tracker: VideoTracker
+  trackingOwner: symbol
+  trackedKeys: Set<string>
+  tracking?: Promise<void>
   uploadReference(taskId: string, toolName: string, bytes: Uint8Array, signal: AbortSignal): Promise<z.infer<typeof videoReferenceSchema>>
 }
 
@@ -75,6 +81,9 @@ function jobView(job: LocalVideoJob): VideoJobView {
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error,
+    ...(job.lastQueriedAt === undefined ? {} : { lastQueriedAt: job.lastQueriedAt }),
+    ...(job.providerWaitMs === undefined ? {} : { providerWaitMs: job.providerWaitMs }),
+    ...(job.downloadMs === undefined ? {} : { downloadMs: job.downloadMs }),
     outputs: structuredClone(job.receipt?.outputs ?? []),
   }
 }
@@ -206,15 +215,23 @@ export class MockVideoHostService {
       }, false),
     }
     const service = new VideoService({ scope, executionMode: this.options.mock ? 'mock' : 'real', store: this.options.store, gateway, now: this.now })
+    const trackingOwner = Symbol('video-tracker')
+    const trackedKeys = new Set<string>()
     const context: Context = {
-      taskId, scope, service, tracker: new VideoTracker({ ...this.options.tracker, service: {
+      taskId, scope, service, trackingOwner, trackedKeys, tracker: new VideoTracker({ ...this.options.tracker, service: {
         resume: (id, jobId, signal) => service.resume(id, jobId, signal),
         recover: async signal => {
-          const jobs = (await service.listJobs()).filter(job => job.taskId === taskId)
+          const jobs = await service.listJobsSnapshot(taskId)
           if (jobs.some(job => job.trackingStatus === 'AUTH_REQUIRED')) return jobs
           const restored: LocalVideoJob[] = []
           for (const job of jobs) {
             signal?.throwIfAborted()
+            if (this.options.trackingJobIds && !this.options.trackingJobIds.has(job.jobId)) continue
+            const key = JSON.stringify([scope.enterpriseId, scope.memberId, scope.subscriptionId, taskId, job.jobId])
+            const owner = trackingOwners.get(key)
+            if (owner && owner !== trackingOwner) { restored.push(job); continue }
+            trackingOwners.set(key, trackingOwner)
+            trackedKeys.add(key)
             const current = await service.resume(taskId, job.jobId, signal)
             restored.push(current)
             if (current.trackingStatus === 'AUTH_REQUIRED') break
@@ -306,19 +323,23 @@ export class MockVideoHostService {
     const revision = this.localRevision()
     const { scope, epoch, context } = await this.localBinding(taskId, signal)
     const runtime = this.localRuntime(scope)
-    const jobs = (await context.service.listJobs()).filter(job => job.taskId === taskId)
+    const jobs = await context.service.listJobsSnapshot(taskId)
     const views: VideoJobView[] = []
     for (const job of jobs) {
       const savedOutputIds: string[] = []
+      let invalidOutput = false
       for (const output of job.receipt?.outputs ?? []) {
         // A corrupt output must remain visible for explicit repair. Never count
         // it as saved or let it hide the other verified outputs in the task.
         try {
           const asset = await this.options.store.getAsset(scope, taskId, job.jobId, output.outputId)
           if (asset?.status === 'SAVED') savedOutputIds.push(output.outputId)
-        } catch { /* persistence evidence stays intact for explicit retry */ }
+        } catch { invalidOutput = true }
       }
-      views.push({ ...jobView(job), savedOutputIds })
+      const view = jobView(job)
+      const hasMissing = (job.receipt?.outputs.length ?? 0) > 0 && savedOutputIds.length < (job.receipt?.outputs.length ?? 0)
+      views.push({ ...view, ...(job.saveStatus === 'SAVED' && invalidOutput ? { saveStatus: 'SAVE_FAILED' as const, error: 'VIDEO_LOCAL_OUTPUT_INVALID' as const } :
+        job.saveStatus === 'SAVED' && hasMissing ? { saveStatus: 'MISSING' as const, error: 'VIDEO_LOCAL_OUTPUT_MISSING' as const } : {}), savedOutputIds })
     }
     this.assert(scope, epoch, signal)
     if (revision !== this.localRevision()) throw new AppError('AUTH_REQUIRED')
@@ -427,8 +448,16 @@ export class MockVideoHostService {
       try {
         const { scope, epoch, runtime, context } = await this.binding(taskId, signal)
         const input = resolve(runtime)
-        const jobs = await context.service.listJobs()
+        const jobs = await context.service.listJobsSnapshot(taskId)
         this.assert(scope, epoch, signal)
+        const runId = run?.runId ?? randomUUID()
+        // Tool retries in one run must observe the original durable job. This
+        // avoids a second quote/submit after a successful response was lost.
+        const duplicate = input.localAssetIds.length === 0 ? jobs.find(job => job.taskId === taskId && job.runId === runId && !videoSubmissionRejected(job) &&
+          job.request.operation === input.operation && job.request.profileId === input.profileId &&
+          job.request.creativeBrief === input.creativeBrief &&
+          JSON.stringify(job.request.parameters) === JSON.stringify(input.parameters) && job.request.referenceIds.length === 0) : undefined
+        if (duplicate) return jobView(duplicate)
         if (jobs.some(job => job.taskId === taskId && !videoSubmissionRejected(job) && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
           throw new AppError('CONFLICT', { message: '原视频提交状态尚未确认，请查询或恢复原任务，不能重复生成。' })
         }
@@ -436,7 +465,6 @@ export class MockVideoHostService {
         const policy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
         const toolName = input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
         if (policy && (policy.preset === 'read-only' || policy.preset !== 'full-local' && !policy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
-        const runId = run?.runId ?? randomUUID()
         const approve = async (details: Record<string, unknown>) => {
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
@@ -495,6 +523,14 @@ export class MockVideoHostService {
       return jobView(job)
     })
   }
+  /** Observers may wait on another host's bounded tracker without starting one. */
+  hasActiveTracker(taskId: string, jobId: string): boolean {
+    const owner = requireScope(this.options.scope)
+    return [...this.contexts.values()].some(({ scope, taskId: id }) => id === taskId &&
+      scope.enterpriseId === owner.enterpriseId && scope.memberId === owner.memberId &&
+      trackingOwners.has(JSON.stringify([scope.enterpriseId, scope.memberId, scope.subscriptionId, taskId, jobId])))
+  }
+
   /** Only explicit host/run lifecycle calls wake recovery; reads never do. */
   async track(taskId: string): Promise<void> {
     const signal = this.signal(taskId)
@@ -502,7 +538,17 @@ export class MockVideoHostService {
       const { scope, epoch } = await this.task(taskId, signal)
       // Let service.recover persist a grant failure as AUTH_REQUIRED. Checking
       // runtime before entering recover would leave disk jobs ACTIVE on denial.
-      await this.context(scope, epoch, taskId).tracker.wake()
+      const context = this.context(scope, epoch, taskId)
+      if (!context.tracking) {
+        context.tracking = context.tracker.wake().finally(() => {
+          for (const key of context.trackedKeys) {
+            if (trackingOwners.get(key) === context.trackingOwner) trackingOwners.delete(key)
+          }
+          context.trackedKeys.clear()
+          context.tracking = undefined
+        })
+      }
+      await context.tracking
     })
   }
   /** Login/startup recovery is explicit. Persisted grant failures need user resume. */

@@ -27,6 +27,11 @@ export const localVideoJobSchema = z.object({
   request: videoRequestWithIdentitySchema, quote: videoStoredQuoteSchema,
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), receipt: videoReceiptSchema.nullable(),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: videoSaveStatusSchema,
+  lastQueriedAt: z.number().int().nonnegative().optional(),
+  /** Elapsed time from job creation to first observed provider success; includes queue time. */
+  providerWaitMs: z.number().int().nonnegative().optional(),
+  /** Duration of the most recent complete save round across all outputs. */
+  downloadMs: z.number().int().nonnegative().optional(),
   error: z.string().max(256).nullable(), createdAt: z.number().int().nonnegative(), updatedAt: z.number().int().nonnegative(),
 }).strict().superRefine((job, context) => {
   if (job.request.quoteId !== job.quote.quoteId || job.quote.status !== 'quoted' || job.updatedAt < job.createdAt ||

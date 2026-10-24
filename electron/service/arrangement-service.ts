@@ -31,10 +31,12 @@ import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../commo
 import { TaskCreationGate } from './task-creation-gate'
 import { deliveryPlanIssues } from '../domain/arrangement-delivery'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
-import type { ArrangementExecutionSnapshot } from '../../src/shared/types'
+import type { ArrangementExecutionSnapshot, ArrangementMediaPhase, ArrangementMediaSummary } from '../../src/shared/types'
 import type { ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
 import type { ArrangementMediaAssetsPort } from '../domain/arrangement-media-runtime'
 import type { VideoStorePort } from '../domain/video-media'
+import type { MediaStorePort } from '../domain/media'
+import type { ArrangementExecutionState } from '../domain/arrangement-execution'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -57,6 +59,7 @@ export interface ArrangementServiceDependencies {
   arrangementMediaLinks?: ArrangementMediaLinkStorePort
   arrangementMediaAssets?: ArrangementMediaAssetsPort
   videoStore?: VideoStorePort
+  mediaStore?: MediaStorePort
 }
 
 export interface ArrangementContext {
@@ -141,7 +144,7 @@ export class ArrangementService {
     if (!this.deps.arrangementCheckpoints) return null
     const checkpoint = await this.deps.arrangementCheckpoints.get(scope, taskId)
     if (!checkpoint) return null
-    const media = await this.mediaSummary(scope, taskId)
+    const media = await this.mediaSummary(scope, taskId, checkpoint.state)
     return {
       activeRunId: checkpoint.activeRunId,
       status: checkpoint.state.status,
@@ -156,7 +159,7 @@ export class ArrangementService {
     }
   }
 
-  private async mediaSummary(scope: { memberId: string; enterpriseId: string }, taskId: string) {
+  private async mediaSummary(scope: { memberId: string; enterpriseId: string }, taskId: string, state: ArrangementExecutionState): Promise<ArrangementMediaSummary[]> {
     if (!this.deps.arrangementMediaLinks) return []
     const links = await this.deps.arrangementMediaLinks.list(scope, taskId)
     return Promise.all(links.map(async link => {
@@ -165,20 +168,39 @@ export class ArrangementService {
       const videoAssets = link.kind === 'video' && this.deps.videoStore
         ? await this.deps.videoStore.listAssets({ ...scope, subscriptionId: link.subscriptionId }, taskId).catch(() => []) : []
       const outputIds = new Map(videoAssets.map(asset => [asset.localAssetId, asset.output.outputId]))
-      const outputs = link.outputs.map(output => {
+      const currentOutputs = new Map(link.outputs.map(output => [output.artifactId, output]))
+      for (const asset of assets) currentOutputs.set(asset.artifactId, { artifactId: asset.artifactId, status: asset.status })
+      const outputs = [...currentOutputs.values()].map(output => {
         const asset = assetById.get(output.artifactId)
         return { artifactId: output.artifactId, ...(asset ? { mime: asset.mime, size: asset.size } : {}), status: output.status, ...(link.kind === 'video' && outputIds.has(output.artifactId) ? { outputId: outputIds.get(output.artifactId) } : {}) }
       })
+      const job = link.kind === 'image'
+        ? await this.deps.mediaStore?.getJob(scope, taskId, link.jobId)
+        : await this.deps.videoStore?.getJob({ ...scope, subscriptionId: link.subscriptionId }, taskId, link.jobId)
+      const generation = job && ('generationStatus' in job ? job.generationStatus : job.receipt?.status)
+      const node = state.nodes.find(node => node.nodeId === link.nodeId)
+      const delivery = node?.delivery
       const materialization = link.materializations[link.materializations.length - 1]
-      const phase = materialization?.status === 'conflict' ? 'blocked' as const
-        : outputs.some(output => output.status === 'saved') ? 'ready' as const
-          : outputs.some(output => ['saving', 'pending'].includes(output.status)) ? 'saving' as const
-            : 'tracking' as const
-      const pendingActions = phase === 'blocked' ? ['retry-save' as const]
+      let phase: ArrangementMediaPhase
+      if ((delivery?.mediaPhase === 'delivered' || node?.status === 'completed') && materialization?.status === 'saved' && outputs.some(output => output.status === 'saved')) phase = 'ready'
+      else if (node && ['failed', 'blocked', 'interrupted', 'stopped'].includes(node.status) || materialization?.status === 'conflict' || job && (['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(generation ?? '') ||
+        ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus) || job.trackingStatus !== 'ACTIVE' && job.saveStatus !== 'SAVED')) phase = 'blocked'
+      else if (outputs.some(output => output.status === 'saved') || job?.saveStatus === 'SAVED') phase = 'materializing'
+      else if (job?.saveStatus === 'SAVING' || ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(generation ?? '')) phase = 'saving'
+      else if (generation === 'SUBMITTING') phase = 'preparing'
+      else if (generation === 'QUEUED' || generation === 'SUBMISSION_UNKNOWN') phase = 'submitted'
+      else phase = 'tracking'
+      const pendingActions = phase === 'blocked' && (materialization?.status === 'conflict' || job && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)) ? ['retry-save' as const]
         : outputs.some(output => output.status === 'saved') ? ['export' as const] : []
       return { nodeId: link.nodeId, nodeRunId: link.nodeRunId, kind: link.kind, operation: link.operation,
         jobId: link.jobId, phase, inputs: link.inputs.map(input => ({ artifactId: input.artifactId, ...(input.sourceNodeId ? { sourceNodeId: input.sourceNodeId } : {}) })),
-        outputs, pendingActions }
+        outputs, pendingActions,
+        ...(job?.lastQueriedAt === undefined ? {} : { lastQueriedAt: job.lastQueriedAt }),
+        ...(job && 'providerWaitMs' in job ? { providerWaitMs: job.providerWaitMs } : {}),
+        ...(job && 'downloadMs' in job ? { downloadMs: job.downloadMs } : {}),
+        ...(delivery?.materializeMs === undefined ? {} : { materializeMs: delivery.materializeMs }),
+        ...(delivery?.deliveryMs === undefined ? {} : { deliveryMs: delivery.deliveryMs }),
+      }
     }))
   }
 

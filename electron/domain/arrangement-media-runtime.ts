@@ -26,6 +26,10 @@ export interface ArrangementMediaAssetsPort {
 export interface ArrangementMediaSession {
   readonly inputPrompt: string
   readonly recoverJobIds: readonly string[]
+  /** Only media-only nodes with every declared operation durably associated may yield. */
+  readyForTracking(): boolean
+  automaticSubmission(): Promise<DeliverySubmission | undefined>
+  artifactSummary(): Promise<Array<{ kind: 'image' | 'video'; jobId: string; assets: ArrangementMediaLink['outputs'] }>>
   onJobCreated(job: MediaJobCreated): Promise<void>
   bind(media?: MediaHostTools, video?: VideoHostTools): { media?: MediaHostTools; video?: VideoHostTools }
   materialize(submission: DeliverySubmission): Promise<FinalDeliveryFile[]>

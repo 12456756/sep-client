@@ -277,8 +277,8 @@ describe('real media billing recovery and canonical sizes', () => {
     f.state.billingStatus = 'SETTLED'
     await restarted.resumePending()
     await restarted.waitForRun('task-a', view.runId)
+    await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus === 'SETTLED')
     assert.ok(f.calls.filter(call => call.path === '/requests/real-receipt').length > queries)
-    assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus, 'SETTLED')
     assert.equal(f.calls.filter(call => call.path.endsWith('/content')).length, 1)
     assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
   })
@@ -299,7 +299,7 @@ describe('real media billing recovery and canonical sizes', () => {
       f.state.billingStatus = 'SETTLED'
       await f.service.resume('task-a', view.jobId)
       await f.service.waitForRun('task-a', view.runId)
-      assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus, 'SETTLED')
+      await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus === 'SETTLED')
       assert.equal(f.calls.filter(call => call.path.endsWith('/content')).length, 1)
       assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
     })
@@ -822,6 +822,67 @@ describe('MediaService local delivery and original-request recovery', () => {
     for (const field of ['relativePath', 'owner', 'requestHash', 'clientRequestId', 'quoteId', 'systemPrompt']) assert.ok(!JSON.stringify(task).includes(`"${field}"`))
     assert.ok(!JSON.stringify(task).includes(f.directory))
     assert.ok(await f.store.getSnapshot(owner, 'task-a', view.runId))
+  })
+
+  it('delivers saved images while billing is blocked and retains stable timings after reconciliation', async () => {
+    const f = await realFixture({ billingStatus: 'RECONCILING' })
+    const queryStarted = deferred<void>()
+    const releaseQuery = deferred<void>()
+    const gateway = f.options.gateway!
+    const getReceipt = gateway.getReceipt.bind(gateway)
+    gateway.getReceipt = async (...args) => {
+      queryStarted.resolve()
+      await releaseQuery.promise
+      return getReceipt(...args)
+    }
+    try {
+      const view = await f.generate()
+      await Promise.race([queryStarted.promise, delay(1000).then(() => assert.fail('Billing query did not start.'))])
+      await Promise.race([f.service.waitForRun('task-a', view.runId), delay(500).then(() => assert.fail('Saved image delivery waited for billing.'))])
+      const first = (await f.store.getJob(owner, 'task-a', view.jobId))!
+      assert.equal(first.billingStatus, 'RECONCILING')
+      assert.equal(first.saveStatus, 'SAVED')
+      assert.ok(first.providerWaitMs !== undefined && first.providerWaitMs >= 0)
+      assert.ok(first.downloadMs !== undefined && first.downloadMs >= 0)
+      f.state.billingStatus = 'SETTLED'
+      releaseQuery.resolve()
+      await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus === 'SETTLED')
+      const settled = (await f.store.getJob(owner, 'task-a', view.jobId))!
+      assert.equal(settled.providerWaitMs, first.providerWaitMs)
+      assert.equal(settled.downloadMs, first.downloadMs)
+      assert.equal(f.calls.filter(call => call.path.endsWith('/content')).length, 1)
+      assert.equal(f.calls.filter(call => call.path === '/requests' && call.method === 'POST').length, 1)
+    } finally { releaseQuery.resolve() }
+  })
+
+  for (const recovered of [false, true]) it(`reports image generation failure before billing settles${recovered ? ' after recovery' : ''}`, async () => {
+    const f = await realFixture({ status: 'FAILED', billingStatus: 'RECONCILING' })
+    const queryStarted = deferred<void>()
+    const releaseQuery = deferred<void>()
+    const gateway = f.options.gateway!
+    const getReceipt = gateway.getReceipt.bind(gateway)
+    gateway.getReceipt = async (...args) => {
+      queryStarted.resolve()
+      await releaseQuery.promise
+      return getReceipt(...args)
+    }
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    try {
+      const view = await f.generate()
+      await queryStarted.promise
+      const runId = recovered ? 'recovered-run' : view.runId
+      if (recovered) await f.service.prepareRun({ taskId: 'task-a', runId, subscriptionId: f.employee.subscriptionId,
+        employee: f.employee, requestApproval: f.options.requestApproval, recoverJobIds: [view.jobId] })
+      await Promise.race([
+        assert.rejects(f.service.waitForRun('task-a', runId), code('INVALID_STATE')),
+        new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Image failure waited for billing.')), 500) }),
+      ])
+      assert.equal((await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus, 'RECONCILING')
+      f.state.billingStatus = 'RELEASED'
+      releaseQuery.resolve()
+      await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.billingStatus === 'RELEASED')
+      assert.equal(f.calls.filter(call => call.path === '/requests' && call.method === 'POST').length, 1)
+    } finally { clearTimeout(deadline); releaseQuery.resolve() }
   })
 
   it('finds a lost submit response by its original request ID and never resubmits or changes the run', async () => {

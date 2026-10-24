@@ -14,12 +14,23 @@ type Notice = { message: string; tone: 'error' | 'success' }
 type OutputSelection = { jobId: string; outputId: string }
 const POLL_INTERVAL = 3000
 const localId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+
+function elapsedLabel(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return null
+  return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(1)} 秒`
+}
+
+function queryLabel(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value)) return null
+  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+}
 const jobSchema = z.object({
   jobId: localId, taskId: localId, profileId: localId, operation: videoOperationSchema,
   parameters: videoParametersSchema, generationStatus: z.string().max(80),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
   billingStatus: videoBillingStatusSchema, amountCny: z.string().optional(), actualCostCny: z.string().optional(), amountUsd: z.string().optional(), createdAt: z.number().finite(), updatedAt: z.number().finite(),
+  lastQueriedAt: z.number().finite().optional(), providerWaitMs: z.number().finite().nonnegative().optional(), downloadMs: z.number().finite().nonnegative().optional(),
   error: z.string().nullable(), outputs: z.array(videoOutputSchema).max(4),
   savedOutputIds: z.array(localId).max(4).optional(),
 })
@@ -93,6 +104,11 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[generation, mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
       <small>{videoBillingLabel(job)}</small>
+      <div className="media-job-timings">
+        {queryLabel(job.lastQueriedAt) && <small>最近查询：{queryLabel(job.lastQueriedAt)}</small>}
+        {elapsedLabel(job.providerWaitMs) && <small>供应商等待：{elapsedLabel(job.providerWaitMs)}</small>}
+        {elapsedLabel(job.downloadMs) && <small>下载保存：{elapsedLabel(job.downloadMs)}</small>}
+      </div>
       {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">提交结果不明{['NOT_RESERVED', 'RECONCILING'].includes(job.billingStatus) ? '，账务待确认' : ''}，请恢复跟踪原任务，不会自动重新生成。</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后，请手动恢复跟踪。</p>}
       {job.error && <p className="media-notice media-tone-error">{videoErrorMessage(job.error) || (job.generationStatus === 'SUBMISSION_UNKNOWN' ? '提交结果待确认。' : '视频任务未能完成。')}</p>}

@@ -76,6 +76,8 @@ interface Scenario {
   holdNode?: 'image' | 'video'
   correctMapping?: boolean
   associationFailure?: boolean
+  hostDelivery?: boolean
+  mixedMedia?: boolean
 }
 
 async function fixture(scenario: Scenario = {}) {
@@ -104,6 +106,8 @@ async function fixture(scenario: Scenario = {}) {
     deliverables: [{ id: 'movie', name: 'Movie', format: 'mp4', path: 'deliverables/movie.mp4',
       contentOutline: ['Product movement'], acceptanceCriteria: ['Saved video'], artifact: { kind: 'video', source: 'media-output' } }],
   }
+  if (scenario.mixedMedia) imageNode.deliverables!.push({ id: 'notes', name: 'Notes', format: 'md', path: 'deliverables/notes.md',
+    contentOutline: ['Product notes'], acceptanceCriteria: ['Written product notes'] })
   const plan: WorkPlan = {
     id: task.id, owner: scope, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1, mode: 'auto',
     title: 'Media workflow', goal: task.prompt, conversation: null, nodes: scenario.textVideo ? [videoNode] : [imageNode, videoNode],
@@ -206,6 +210,19 @@ async function fixture(scenario: Scenario = {}) {
           await new Promise<void>(resolve => { releaseHold = resolve; held = true })
           if (aborted) throw new Error('Worker interrupted after original media submission')
         }
+        if (scenario.hostDelivery) {
+          if (scenario.mixedMedia && node === 'image') {
+            assert.equal(options.shouldYieldAfterToolTurn?.(), false, 'Document work still needs the model')
+            assert.ok(await options.onResponseSettled!({ stopReason: 'stop', text: 'Submitted; document still needs writing.' }))
+            await mkdir(join(workspace, 'deliverables'), { recursive: true })
+            await writeFile(join(workspace, 'deliverables/notes.md'), '# Product notes\n\nThe product is shown on a plain background.\n')
+          } else {
+            assert.equal(options.shouldYieldAfterToolTurn?.(), true)
+            assert.equal(options.shouldYieldAfterToolTurn?.(), false, 'Only one handoff per worker')
+            assert.equal(await options.onResponseSettled!({ stopReason: 'stop', text: 'Submitted; host will deliver.' }), undefined)
+            return
+          }
+        }
         if (node === 'image') await media.waitForRun(task.id, options.context.runId)
         else await video.waitForRun(task.id, options.context.runId)
         const current = await execute(node === 'image' ? 'media_get_job' : 'video_get_job', { jobId: job.jobId })
@@ -214,7 +231,7 @@ async function fixture(scenario: Scenario = {}) {
           : (current.artifacts as Array<{ artifactId: string }>)[0]!.artifactId
         const deliverable = plan.nodes.find(item => item.id === node)!.deliverables![0]!
         const manifest = { nodeId: node, summary: 'Saved output',
-          finalDeliverables: [{ id: deliverable.id, path: deliverable.path }],
+          finalDeliverables: plan.nodes.find(item => item.id === node)!.deliverables!.map(file => ({ id: file.id, path: file.path })),
           mediaDeliverables: [{ deliverableId: deliverable.id, artifactId: scenario.foreignMapping ? 'out_' + 'f'.repeat(64) : artifactId }],
         }
         let response = await options.onResponseSettled!({ stopReason: 'stop', text: JSON.stringify(manifest) })
@@ -255,6 +272,34 @@ for (const plannerShape of ['14:43', '14:50'] as const) test(`backend E2E: ${pla
   assert.deepEqual(f.uploads, [hash(MOCK_MEDIA_PNG)])
   assert.equal(f.imageGateway.calls.submit.length, 1)
   assert.equal(f.videoGateway.calls.submit, 1)
+})
+
+test('backend E2E: host delivers image and video after submission with no model polling or delivery JSON', async () => {
+  const f = await fixture({ hostDelivery: true })
+  await f.runtime.executeTask(f.task.id)
+  assert.equal((await f.settled())?.status, TaskStatus.COMPLETED)
+  assert.deepEqual(f.started, ['image', 'video'])
+  assert.equal(f.imageGateway.calls.submit.length, 1)
+  assert.equal(f.videoGateway.calls.submit, 1)
+  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/picture.png')), MOCK_MEDIA_PNG)
+  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/movie.mp4')), MOCK_VIDEO_BYTES)
+  for (const node of (await f.checkpoints.get(scope, f.task.id))!.state.nodes) {
+    assert.equal(node.delivery?.mediaPhase, 'delivered')
+    assert.equal(node.delivery?.validationAttempts, 1)
+    assert.ok(typeof node.delivery?.materializeMs === 'number')
+    assert.ok(typeof node.delivery?.deliveryMs === 'number')
+  }
+})
+
+test('backend E2E: mixed media and document work keeps the worker until the document is delivered', async () => {
+  const f = await fixture({ hostDelivery: true, mixedMedia: true })
+  await f.runtime.executeTask(f.task.id)
+  const task = await f.settled()
+  assert.equal(task?.status, TaskStatus.COMPLETED, task?.error ?? undefined)
+  assert.match(await readFile(join(f.workspace, 'deliverables/notes.md'), 'utf8'), /Product notes/)
+  assert.equal(f.imageGateway.calls.submit.length, 1)
+  assert.equal(f.videoGateway.calls.submit, 1)
+  assert.equal((await f.checkpoints.get(scope, f.task.id))!.state.nodes.find(node => node.nodeId === 'image')!.delivery?.validationAttempts, 2)
 })
 
 test('backend E2E: image to video crosses employees, preserves hashes and automatically publishes frozen files', async () => {
@@ -313,6 +358,7 @@ for (const node of ['image', 'video'] as const) test(`backend E2E: interruption 
   const task = await f.settled(restored)
   assert.equal(task?.status, TaskStatus.COMPLETED, task?.error ?? undefined)
   assert.equal((await f.links.list(scope, f.task.id)).find(link => link.kind === node)!.jobId, original.jobId)
+  assert.equal(f.started.filter(id => id === node).length, 1, 'Recovery must deliver the existing job without another model worker')
   assert.equal(f.imageGateway.calls.submit.length, 1); assert.equal(f.videoGateway.calls.submit, 1)
   assert.equal(f.imageGateway.calls.quote.length, 1); assert.equal(f.videoGateway.calls.quote, 1)
   assert.deepEqual(await readFile(join(f.workspace, 'deliverables/movie.mp4')), MOCK_VIDEO_BYTES)

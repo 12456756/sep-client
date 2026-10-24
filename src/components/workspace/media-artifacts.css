@@ -33,6 +33,7 @@
 .media-job-heading { flex-wrap: wrap; }
 .media-job-id { display: block; margin: 5px 0; color: var(--color-text-secondary, #606060); overflow-wrap: anywhere; }
 .media-job-states { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.media-job-timings { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 6px 0; color: var(--color-text-secondary, #606060); }
 .media-job-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .media-notice { display: flex; min-width: 0; align-items: center; flex-wrap: wrap; gap: 5px; margin: 5px 0; color: var(--color-text-secondary, #606060); font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
 .media-tone-neutral { color: #666; }

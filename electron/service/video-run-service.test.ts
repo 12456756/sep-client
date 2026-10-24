@@ -181,40 +181,222 @@ test('text-to-video uses lightweight runtime authorization twice and never prepa
   } finally { await service.stopAll() }
 })
 
-test('real run cannot finish a saved video while billing is reconciling and restores original billing on a later run', async () => {
+test('held billing keeps one tracker and does not block delivery or the next run', { timeout: 15_000 }, async () => {
   const f = await setup()
   f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, protocolVersion: 2, executionMode: 'real',
     profiles: f.state.runtime.profiles.map(profile => ({ ...profile, capabilities: { ...profile.capabilities,
       audioModes: [false], defaultAudio: false, defaults: fixture.quoteRequest.parameters } })) })
   f.runInput.employee.video = f.state.runtime
   let settled = false
+  let terminalSeen = false
+  let heldReceiptId: string | undefined
+  const queries = new Map<string, number>()
+  let queryStarted!: () => void
+  const queryActive = new Promise<void>(resolve => { queryStarted = resolve })
+  let releaseQuery!: () => void
+  const queryGate = new Promise<void>(resolve => { releaseQuery = resolve })
   const source = f.options.gateway(scope)
-  const real = (receipt: VideoReceipt): VideoReceipt => ({ ...receipt, mock: false,
-    billingStatus: receipt.status === 'SUCCEEDED' ? settled ? 'SETTLED' : 'RECONCILING' : 'RESERVED',
-    recovery: { ...receipt.recovery, canQuery: receipt.status !== 'SUCCEEDED' || !settled }, amountCny: '0.900000' })
-  const options: MockVideoHostOptions = { ...f.options, mock: false, tracker: { floorMs: 1, maxAttempts: 2, budgetMs: 1000 }, gateway: () => ({
+  const real = (receipt: VideoReceipt): VideoReceipt => {
+    const reconciled = receipt.receiptId !== heldReceiptId || settled
+    return { ...receipt, mock: false,
+      billingStatus: receipt.status === 'SUCCEEDED' ? reconciled ? 'SETTLED' : 'RECONCILING' : 'RESERVED',
+      recovery: { ...receipt.recovery, canQuery: receipt.status !== 'SUCCEEDED' || !reconciled }, amountCny: '0.900000' }
+  }
+  const options: MockVideoHostOptions = { ...f.options, mock: false, tracker: { floorMs: 1, maxAttempts: 100, budgetMs: 10_000 }, gateway: () => ({
     quote: async (value, signal) => ({ ...await source.quote(value, signal), currency: 'CNY', amount: '0.900000' }),
-    submit: async (value, signal) => real(await source.submit(value, signal)),
+    submit: async (value, signal) => {
+      const receipt = await source.submit(value, signal)
+      heldReceiptId ??= receipt.receiptId
+      return real(receipt)
+    },
     findReceipt: async (id, signal) => { const receipt = await source.findReceipt(id, signal); return receipt ? real(receipt) : null },
-    getReceipt: async (id, signal) => real(await source.getReceipt(id, signal)), content: source.content.bind(source),
+    getReceipt: async (id, signal) => {
+      queries.set(id, (queries.get(id) ?? 0) + 1)
+      const receipt = await source.getReceipt(id, signal)
+      if (id === heldReceiptId) {
+        if (terminalSeen) { queryStarted(); await queryGate }
+        terminalSeen = terminalSeen || ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(receipt.status)
+      }
+      return real(receipt)
+    }, content: source.content.bind(source),
     uploadReference: async (bytes, signal) => ({ ...await source.uploadReference(bytes, signal), mock: false }),
   }) }
   const service = new VideoRunService(options)
+  const recoveryHost = new MockVideoHostService(options)
+  let deadline: ReturnType<typeof setTimeout> | undefined
   const tools = await service.prepareRun(f.runInput)
   assert.ok(tools)
   const job = await tools.execute('video_from_image', input()) as { jobId: string }
-  await assert.rejects(service.waitForRun('task-a', 'run-a'), { code: 'INVALID_STATE' })
-  const pending = await f.store.getJob(scope, 'task-a', job.jobId)
-  assert.equal(pending?.saveStatus, 'SAVED'); assert.equal(pending?.receipt?.billingStatus, 'RECONCILING')
-  await service.finishRun('task-a', 'run-a')
-  settled = true
-  const next = new VideoRunService(options)
-  assert.ok(await next.prepareRun({ ...f.runInput, runId: 'run-b' }))
-  await next.waitForRun('task-a', 'run-b')
-  const result = await f.store.getJob(scope, 'task-a', job.jobId)
-  assert.equal(result?.receipt?.billingStatus, 'SETTLED'); assert.equal(result?.trackingStatus, 'STOPPED')
-  assert.equal(f.gateway.calls.submit, 1); assert.equal(f.gateway.calls.quote, 1); assert.equal(f.gateway.calls.content, 1)
-  await next.finishRun('task-a', 'run-b')
+  try {
+    await service.waitForRun('task-a', 'run-a')
+    const pending = await f.store.getJob(scope, 'task-a', job.jobId)
+    assert.equal(pending?.saveStatus, 'SAVED'); assert.equal(pending?.receipt?.billingStatus, 'RECONCILING')
+    await queryActive
+    await service.finishRun('task-a', 'run-a')
+    assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.receipt?.billingStatus, 'RECONCILING')
+    const oldQueries = queries.get(heldReceiptId!)
+    const recovery = recoveryHost.track('task-a')
+    void recovery.catch(() => undefined)
+    await Promise.race([
+      (async () => {
+        const next = await service.prepareRun({ ...f.runInput, runId: 'run-b' })
+        assert.ok(next)
+        const generated = await next.execute('video_from_image', input()) as { jobId: string }
+        await service.waitForRun('task-a', 'run-b')
+        assert.equal((await f.store.getJob(scope, 'task-a', generated.jobId))?.saveStatus, 'SAVED')
+        await service.finishRun('task-a', 'run-b')
+      })(),
+      new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Next run blocked by previous billing.')), 2000) }),
+    ])
+    clearTimeout(deadline)
+    assert.equal(queries.get(heldReceiptId!), oldQueries)
+    settled = true
+    releaseQuery()
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if ((await f.store.getJob(scope, 'task-a', job.jobId))?.receipt?.billingStatus === 'SETTLED') break
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    const result = await f.store.getJob(scope, 'task-a', job.jobId)
+    assert.equal(result?.receipt?.billingStatus, 'SETTLED'); assert.equal(result?.trackingStatus, 'STOPPED')
+    assert.equal(queries.get(heldReceiptId!), oldQueries)
+    assert.equal(f.gateway.calls.submit, 2); assert.equal(f.gateway.calls.quote, 2); assert.equal(f.gateway.calls.content, 2)
+  } finally {
+    clearTimeout(deadline)
+    releaseQuery()
+    await Promise.all([service.stopAll(), recoveryHost.stopAll()])
+  }
+})
+
+test('rereads a video snapshot captured before its tracker finishes', { timeout: 10_000 }, async context => {
+  const f = await setup()
+  let queryStarted!: () => void, releaseQuery!: () => void
+  const queryActive = new Promise<void>(resolve => { queryStarted = resolve })
+  const queryGate = new Promise<void>(resolve => { releaseQuery = resolve })
+  const source = f.options.gateway(scope)
+  const service = new VideoRunService({ ...f.options, gateway: () => ({ ...source,
+    getReceipt: async (id, signal) => { queryStarted(); await queryGate; return source.getReceipt(id, signal) },
+  }) })
+  let releaseSnapshot!: () => void, snapshotStarted!: () => void
+  const snapshotGate = new Promise<void>(resolve => { releaseSnapshot = resolve })
+  const snapshotActive = new Promise<void>(resolve => { snapshotStarted = resolve })
+  try {
+    const tools = await service.prepareRun(f.runInput)
+    assert.ok(tools)
+    const job = await tools.execute('video_from_image', input()) as { jobId: string }
+    await queryActive
+    const listJobs = f.store.listJobs.bind(f.store)
+    let holdSnapshot = true
+    context.mock.method(f.store, 'listJobs', async (...args: Parameters<typeof listJobs>) => {
+      const jobs = await listJobs(...args)
+      if (holdSnapshot) { holdSnapshot = false; snapshotStarted(); await snapshotGate }
+      return jobs
+    })
+    const delivery = service.waitForRun('task-a', 'run-a')
+    void delivery.catch(() => undefined)
+    await snapshotActive
+    releaseQuery()
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if ((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus === 'SAVED') break
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus, 'SAVED')
+    // Let the terminal save settle its tracker while the earlier read stays held.
+    await new Promise(resolve => setTimeout(resolve, 20))
+    releaseSnapshot()
+    await delivery
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { releaseQuery(); releaseSnapshot(); await service.stopAll() }
+})
+
+test('recovered run observes the existing tracker until its terminal video is saved', { timeout: 10_000 }, async context => {
+  const f = await setup()
+  let contentStarted!: () => void, releaseContent!: () => void
+  const contentActive = new Promise<void>(resolve => { contentStarted = resolve })
+  const contentGate = new Promise<void>(resolve => { releaseContent = resolve })
+  let releaseSnapshot!: () => void, snapshotStarted!: () => void
+  const snapshotGate = new Promise<void>(resolve => { releaseSnapshot = resolve })
+  const snapshotActive = new Promise<void>(resolve => { snapshotStarted = resolve })
+  const saveOutput = f.store.saveOutput.bind(f.store)
+  context.mock.method(f.store, 'saveOutput', async (...args: Parameters<typeof saveOutput>) => {
+    contentStarted(); await contentGate
+    return saveOutput(...args)
+  })
+  const options = f.options
+  const owner = new MockVideoHostService(options)
+  const service = new VideoRunService(options)
+  try {
+    const job = await owner.generate('task-a', input())
+    const tracking = owner.track('task-a')
+    void tracking.catch(() => undefined)
+    await contentActive
+    assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus, 'SAVING')
+    assert.ok(await service.prepareRun({ ...f.runInput, recoverJobIds: [job.jobId] }))
+    let settled = false
+    const delivery = service.waitForRun('task-a', 'run-a').finally(() => { settled = true })
+    void delivery.catch(() => undefined)
+    await new Promise(resolve => setTimeout(resolve, 150))
+    assert.equal(settled, false, 'A passive tracker must not fail while the owner is saving')
+    const listJobs = f.store.listJobs.bind(f.store)
+    let holdSnapshot = true
+    context.mock.method(f.store, 'listJobs', async (...args: Parameters<typeof listJobs>) => {
+      const jobs = await listJobs(...args)
+      if (holdSnapshot) { holdSnapshot = false; snapshotStarted(); await snapshotGate }
+      return jobs
+    })
+    await snapshotActive
+    releaseContent()
+    await tracking
+    releaseSnapshot()
+    await delivery
+    assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus, 'SAVED')
+    assert.equal(f.gateway.calls.submit, 1)
+    assert.equal(f.gateway.calls.content, 1)
+  } finally { releaseContent(); releaseSnapshot(); await Promise.all([service.stopAll(), owner.stopAll()]) }
+})
+
+test('reports video save failure while its billing query is blocked', { timeout: 10_000 }, async () => {
+  const f = await setup('corrupt-download')
+  f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, protocolVersion: 2, executionMode: 'real',
+    profiles: f.state.runtime.profiles.map(profile => ({ ...profile, capabilities: { ...profile.capabilities,
+      audioModes: [false], defaultAudio: false, defaults: fixture.quoteRequest.parameters } })) })
+  f.runInput.employee.video = f.state.runtime
+  let terminalSeen = false, settled = false
+  let queryStarted!: () => void
+  const queryActive = new Promise<void>(resolve => { queryStarted = resolve })
+  let releaseQuery!: () => void
+  const queryGate = new Promise<void>(resolve => { releaseQuery = resolve })
+  const source = f.options.gateway(scope)
+  const real = (receipt: VideoReceipt): VideoReceipt => ({ ...receipt, mock: false,
+    billingStatus: receipt.status === 'SUCCEEDED' ? settled ? 'SETTLED' : 'RECONCILING' : 'RESERVED',
+    recovery: { ...receipt.recovery, canQuery: !settled }, amountCny: '0.900000' })
+  const service = new VideoRunService({ ...f.options, mock: false, gateway: () => ({
+    quote: async (value, signal) => ({ ...await source.quote(value, signal), currency: 'CNY', amount: '0.900000' }),
+    submit: async (value, signal) => real(await source.submit(value, signal)),
+    findReceipt: async (id, signal) => { const receipt = await source.findReceipt(id, signal); return receipt ? real(receipt) : null },
+    getReceipt: async (id, signal) => {
+      const receipt = await source.getReceipt(id, signal)
+      if (terminalSeen) { queryStarted(); await queryGate }
+      terminalSeen = terminalSeen || receipt.status === 'SUCCEEDED'
+      return real(receipt)
+    }, content: source.content.bind(source),
+    uploadReference: async (bytes, signal) => ({ ...await source.uploadReference(bytes, signal), mock: false }),
+  }) })
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    const tools = await service.prepareRun(f.runInput)
+    assert.ok(tools)
+    const job = await tools.execute('video_from_image', input()) as { jobId: string }
+    await queryActive
+    assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus, 'SAVE_FAILED')
+    await Promise.race([
+      assert.rejects(service.waitForRun('task-a', 'run-a'), { code: 'INVALID_STATE' }),
+      new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error('Video save failure waited for billing.')), 500) }),
+    ])
+    assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.receipt?.billingStatus, 'RECONCILING')
+    settled = true
+    releaseQuery()
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { clearTimeout(deadline); releaseQuery(); await service.stopAll() }
 })
 
 test('missing, malformed, disabled and empty-tools video cannot expose or execute tools', async () => {

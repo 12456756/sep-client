@@ -69,6 +69,9 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       if (link.kind === 'video') {
         const job = await this.options.videos?.getJob({ ...scope, subscriptionId: link.subscriptionId }, input.taskId, link.jobId)
         if (!job || job.runId !== link.nodeRunId) throw new AppError('INVALID_STATE')
+      } else {
+        const job = await this.options.images.getJob(scope, input.taskId, link.jobId)
+        if (!job || job.runId !== link.nodeRunId || job.subscriptionId !== link.subscriptionId) throw new AppError('INVALID_STATE')
       }
       links.set(link.kind + ':' + link.jobId, link)
     }
@@ -112,16 +115,7 @@ export class ArrangementMediaService implements ArrangementMediaPort {
         await save({ ...link, outputs: [...outputs.values()] })
       }
     }
-    // Existing frozen requests can be resumed, never resubmitted by this coordinator.
-    for (const link of links.values()) if (link.kind === 'image') {
-      const job = await this.options.images.getJob(scope, input.taskId, link.jobId)
-      if (!job || job.runId !== link.nodeRunId || job.subscriptionId !== link.subscriptionId) throw new AppError('INVALID_STATE')
-      if (job.saveStatus !== 'SAVED' || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
-        await this.options.media.resume?.(input.taskId, link.jobId)
-        await this.options.media.waitForRun(input.taskId, job.runId)
-      }
-    }
-    const recoverJobIds = [...links.values()].filter(link => link.kind === 'video').map(link => link.jobId)
+    const recoverJobIds = [...links.values()].map(link => link.jobId)
     const describe = async () => {
       await writes.run('links', refresh)
       return [...links.values()].map(link => ({ kind: link.kind, jobId: link.jobId, operation: link.operation,
@@ -144,7 +138,9 @@ export class ArrangementMediaService implements ArrangementMediaPort {
     })
     const normalize = async (raw: unknown, operation: MediaJobCreated['operation']): Promise<Record<string, unknown> | { recovered: true; jobs: unknown[] }> => {
       await check()
-      if ([...links.values()].some(link => link.operation === operation && link.nodeRunId !== input.nodeRunId)) return { recovered: true, jobs: await describe() }
+      const originals = [...links.values()].filter(link => link.operation === operation)
+      const requiredCount = Math.max(1, input.node.mediaRequirements?.filter(requirement => requirement.operation === operation && requirement.required !== false).length ?? 0)
+      if (originals.some(link => link.nodeRunId !== input.nodeRunId) || originals.length >= requiredCount) return { recovered: true, jobs: await describe() }
       const value = z.record(z.string(), z.unknown()).parse(raw)
       const ids = value.localAssetIds === undefined ? [...references.keys()] : idsSchema.parse(value.localAssetIds)
       if (ids.some(id => !references.has(id))) throw new AppError('PERMISSION_DENIED', { message: '媒体输入必须来自本节点计划声明的资产。' })
@@ -155,9 +151,30 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       const value = z.object({ jobId: z.string().min(1).optional() }).passthrough().parse(raw)
       if ((!optional || value.jobId) && !links.has(kind + ':' + value.jobId)) throw new AppError('PERMISSION_DENIED')
     }
+    const mediaOnly = !!input.node.deliverables?.length && input.node.deliverables.every(file => file.artifact?.source === 'media-output')
     return {
       inputPrompt: JSON.stringify({ referenceAssets: [...references].map(([localAssetId, original]) => ({ localAssetId, ...original })), recoverJobIds }),
       recoverJobIds,
+      readyForTracking: () => mediaOnly && input.node.deliverables!.every(file => [...links.values()].some(link => link.kind === file.artifact?.kind)) &&
+        !!input.node.mediaRequirements?.length && input.node.mediaRequirements.every(requirement =>
+          requirement.required === false || [...links.values()].filter(link => link.kind === requirement.kind && link.operation === requirement.operation).length >=
+            input.node.mediaRequirements!.filter(item => item.required !== false && item.kind === requirement.kind && item.operation === requirement.operation).length),
+      artifactSummary: describe,
+      automaticSubmission: async () => writes.run('links', async () => {
+        if (!mediaOnly) return undefined
+        await refresh()
+        const mappings: Array<{ deliverableId: string; artifactId: string }> = []
+        for (const kind of ['image', 'video'] as const) {
+          const deliverables = (input.node.deliverables ?? []).filter(file => file.artifact?.kind === kind && file.artifact.source === 'media-output')
+          const outputs = [...links.values()].filter(link => link.kind === kind).flatMap(link => link.outputs.filter(output => output.status === 'saved'))
+          // Multiple candidates need a business choice; never silently pick one.
+          if (outputs.length !== deliverables.length || outputs.length > 1) return undefined
+          deliverables.forEach((file, index) => mappings.push({ deliverableId: file.id, artifactId: outputs[index]!.artifactId }))
+        }
+        if (!mappings.length) return undefined
+        return { nodeId: input.node.id, summary: `${input.node.title}：媒体已生成并保存。`,
+          finalDeliverables: (input.node.deliverables ?? []).map(file => ({ id: file.id, path: file.path })), mediaDeliverables: mappings }
+      }),
       onJobCreated,
       bind: (media, video) => {
         for (const requirement of input.node.mediaRequirements ?? []) {
@@ -172,7 +189,7 @@ export class ArrangementMediaService implements ArrangementMediaPort {
             const value = await normalize(raw, operation === 'generate' ? 'generate' : operation === 'edit' || references.size ? 'edit' : 'generate')
             if ('recovered' in value) {
               const requested = operation === 'generate' ? 'generate' : operation === 'edit' || references.size ? 'edit' : 'generate'
-              const original = [...links.values()].find(link => link.kind === 'image' && link.operation === requested && link.nodeRunId !== input.nodeRunId)!
+              const original = [...links.values()].find(link => link.kind === 'image' && link.operation === requested)!
               return media.execute('media_get_job', { jobId: original.jobId }, signal)
             }
             return media.execute(name, value, signal)
@@ -202,7 +219,7 @@ export class ArrangementMediaService implements ArrangementMediaPort {
             const value = await normalize(raw, name === 'video_from_image' ? 'image-to-video' : 'text-to-video')
             if ('recovered' in value) {
               const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
-              const original = [...links.values()].find(link => link.kind === 'video' && link.operation === operation && link.nodeRunId !== input.nodeRunId)!
+              const original = [...links.values()].find(link => link.kind === 'video' && link.operation === operation)!
               return augment(await video.execute('video_get_job', { jobId: original.jobId }, signal))
             }
             return augment(await video.execute(name, value, signal))

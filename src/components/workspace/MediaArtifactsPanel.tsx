@@ -13,6 +13,16 @@ type CommandNotice = { message: string; tone: 'error' | 'success' }
 type CommandFeedback = { pending: Command | null; notice: CommandNotice | null }
 const POLL_INTERVAL = 3000
 
+function elapsedLabel(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return null
+  return value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(1)} 秒`
+}
+
+function queryLabel(value: number | undefined): string | null {
+  if (value === undefined || !Number.isFinite(value)) return null
+  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+}
+
 export function canImportVideoReference(value: unknown): boolean {
   const result = videoRuntimeSchema.safeParse(value)
   return result.success && result.data.executionAvailable && result.data.tools.includes('video_from_image') &&
@@ -167,6 +177,11 @@ export function MediaJobList({ jobs, archived, busy, onAction }: { jobs: MediaJo
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[mediaGenerationLabels[job.generationStatus], mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
       <small>账务状态：{job.billingStatus || '未确认'}</small>
+      <div className="media-job-timings">
+        {queryLabel(job.lastQueriedAt) && <small>最近查询：{queryLabel(job.lastQueriedAt)}</small>}
+        {elapsedLabel(job.providerWaitMs) && <small>供应商等待：{elapsedLabel(job.providerWaitMs)}</small>}
+        {elapsedLabel(job.downloadMs) && <small>下载保存：{elapsedLabel(job.downloadMs)}</small>}
+      </div>
       {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">尚不能确认上游是否接单，不会自动重新生成。</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后可继续跟踪原任务。</p>}
       {job.trackingStatus === 'STOPPED' && <p className="media-notice">仅停止本地跟踪，上游可能继续生成和计费。</p>}

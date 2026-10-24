@@ -253,6 +253,11 @@ export interface ArrangementMediaSummary {
   operation: ArrangementMediaOperation
   jobId: string
   phase: ArrangementMediaPhase
+  lastQueriedAt?: number
+  providerWaitMs?: number
+  downloadMs?: number
+  materializeMs?: number
+  deliveryMs?: number
   inputs: Array<{ artifactId: string; sourceNodeId?: string }>
   outputs: Array<{ artifactId: string; mime?: string; size?: number; status: ArrangementMediaOutputStatus; outputId?: string }>
   pendingActions: ArrangementMediaPendingAction[]

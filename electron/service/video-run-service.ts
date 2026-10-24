@@ -16,6 +16,7 @@ interface Run {
   pending: Set<Promise<unknown>>
   jobs: Set<string>
   tracking?: Promise<void>
+  finished: boolean
   terminalFailureNotified: boolean
   onTerminalFailure?: RunInput['onTerminalFailure']
 }
@@ -65,7 +66,8 @@ export class VideoRunService implements VideoRunPort {
       controller.signal.throwIfAborted()
       if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
     }
-    const host = new MockVideoHostService({ ...this.options,
+    const jobs = new Set<string>()
+    const host = new MockVideoHostService({ ...this.options, trackingJobIds: jobs,
       localRuntime: subscriptionId => this.options.localRuntime ? this.options.localRuntime(subscriptionId) : runtime.data,
       authorize: async (subscriptionId, signal) => {
         validate()
@@ -89,13 +91,14 @@ export class VideoRunService implements VideoRunPort {
       requestApproval: request => { validate(); return input.requestApproval({ ...request, runId: input.runId }) },
     })
     validate()
-    const run: Run = { taskId: input.taskId, host, controller, pending: new Set(), jobs: new Set(), terminalFailureNotified: false, onTerminalFailure: input.onTerminalFailure }
+    const run: Run = { taskId: input.taskId, host, controller, pending: new Set(), jobs, finished: false, terminalFailureNotified: false, onTerminalFailure: input.onTerminalFailure }
     this.runs.set(key, run)
     try {
       const restored = await abortableVideo(host.getTaskVideo(input.taskId), controller.signal)
       validate()
       for (const job of restored.jobs) {
         if (input.recoverJobIds && !input.recoverJobIds.includes(job.jobId)) continue
+        if (!input.recoverJobIds && [...this.runs.values()].some(other => other !== run && other.jobs.has(job.jobId))) continue
         if (videoBillingPending(job.billingStatus) || job.generationStatus !== 'NOT_SUBMITTED' && (!['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus)) && job.saveStatus !== 'SAVED') run.jobs.add(job.jobId)
       }
       if (run.jobs.size) {
@@ -108,7 +111,7 @@ export class VideoRunService implements VideoRunPort {
       throw error
     }
     const activity = <T>(call: () => Promise<T>): Promise<T> => {
-      const pending = Promise.resolve().then(() => { validate(); return call() }).catch(async error => {
+      const pending = Promise.resolve().then(() => { validate(); if (run.finished) throw new AppError('CONFLICT'); return call() }).catch(async error => {
         await this.notifyTerminalFailure(run, error)
         throw error
       })
@@ -153,18 +156,33 @@ export class VideoRunService implements VideoRunPort {
     while (run.pending.size) await Promise.all([...run.pending])
     run.controller.signal.throwIfAborted()
     if (!run.jobs.size) return
-    await run.tracking
-    // The tracker only queries the frozen request; never quote or submit again.
-    await run.host.track(taskId)
-    run.controller.signal.throwIfAborted()
-    const view = await run.host.getTaskVideo(taskId)
-    for (const id of run.jobs) {
-      const job = view.jobs.find(job => job.jobId === id)
-      if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED' || videoBillingPending(job.billingStatus)) {
-        const error = new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
-        await this.notifyTerminalFailure(run, error)
-        throw error
+    let trackingError: unknown
+    let trackingDone = false
+    if (!run.tracking) return
+    void run.tracking.then(() => { trackingDone = true }, error => { trackingDone = true; trackingError = error })
+    for (;;) {
+      run.controller.signal.throwIfAborted()
+      const trackingWasDone = trackingDone
+      const trackedBeforeRead = [...run.jobs].filter(id => run.host.hasActiveTracker(taskId, id))
+      const view = await run.host.getTaskVideo(taskId)
+      // The read may have captured pre-save state while the tracker completed.
+      if (!trackingWasDone && trackingDone || trackedBeforeRead.some(id => !run.host.hasActiveTracker(taskId, id))) continue
+      let complete = true
+      for (const id of run.jobs) {
+        const job = view.jobs.find(job => job.jobId === id)
+        if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED') {
+          complete = false
+          const failed = job && (['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus) || ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
+          // An observing host may finish its own loop while another host is saving.
+          if (failed || trackingDone && !run.host.hasActiveTracker(taskId, id)) {
+            const error = trackingError instanceof AppError ? trackingError : new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
+            await this.notifyTerminalFailure(run, error)
+            throw error
+          }
+        }
       }
+      if (complete) return
+      await new Promise<void>(resolve => setTimeout(resolve, 100))
     }
   }
 
@@ -192,9 +210,18 @@ export class VideoRunService implements VideoRunPort {
   async finishRun(taskId: string, runId: string): Promise<void> {
     const key = this.key(taskId, runId), run = this.runs.get(key)
     if (!run) return
-    run.controller.abort(new Error('Video run finished.'))
-    await run.host.stopAll()
+    run.finished = true
     await Promise.allSettled([...run.pending])
-    if (this.runs.get(key) === run) this.runs.delete(key)
+    if (!run.tracking) {
+      run.controller.abort(new Error('Video run finished.'))
+      await run.host.stopAll()
+      if (this.runs.get(key) === run) this.runs.delete(key)
+      return
+    }
+    void run.tracking.finally(async () => {
+      run.controller.abort(new Error('Video run finished.'))
+      await run.host.stopAll()
+      if (this.runs.get(key) === run) this.runs.delete(key)
+    }).catch(() => undefined)
   }
 }

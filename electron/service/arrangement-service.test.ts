@@ -18,6 +18,46 @@ import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../commo
 
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
+describe('arrangement media stage projection', () => {
+  for (const kind of ['image', 'video'] as const) {
+    for (const stage of ['queued', 'running', 'saving', 'saved', 'delivered', 'delivered-expired', 'interrupted', 'delivery-failed', 'delivery-interrupted', 'delivery-stopped'] as const) {
+      it(`projects live ${kind} ${stage} state rather than stale link outputs or billing`, async () => {
+        const delivered = stage === 'delivered' || stage === 'delivered-expired'
+        const generationStatus = stage === 'queued' ? 'QUEUED' : stage === 'running' || stage === 'interrupted' ? 'RUNNING' : stage === 'delivered-expired' ? 'RESULT_EXPIRED' : 'SUCCEEDED'
+        const saved = stage === 'saved' || stage.startsWith('delivery-') || delivered
+        const nodeStatus = stage === 'delivery-failed' ? 'failed' : stage === 'delivery-interrupted' ? 'interrupted' : stage === 'delivery-stopped' ? 'stopped' : 'running'
+        const job = {
+          ...(kind === 'image' ? { generationStatus } : { receipt: { status: generationStatus, billingStatus: 'PENDING' } }),
+          trackingStatus: stage === 'interrupted' ? 'INTERRUPTED' : 'ACTIVE',
+          saveStatus: saved ? 'SAVED' : stage === 'saving' ? 'SAVING' : 'PENDING',
+          lastQueriedAt: 42, providerWaitMs: 30, downloadMs: 10,
+        }
+        const service = new ArrangementService(serviceDeps({
+          arrangementCheckpoints: { async get() { return { activeRunId: 'run', updatedAt: 50,
+            state: { status: 'running', nodes: [{ nodeId: 'node', status: nodeStatus, delivery: {
+              mediaPhase: delivered ? 'delivered' : 'waiting-media', finalFiles: [], materializeMs: 3, deliveryMs: 2,
+            } }] } } } },
+          arrangementMediaLinks: { async list() { return [{ nodeId: 'node', nodeRunId: 'run', subscriptionId: 'sub', kind,
+            operation: kind === 'image' ? 'generate' : 'text-to-video', jobId: 'job', inputs: [], outputs: [],
+            materializations: delivered ? [{ status: 'saved' }] : [] }] } },
+          arrangementMediaAssets: { async outputs() { return saved ? [{ artifactId: 'asset', mime: 'image/png', size: 5, status: 'saved' }] : [] } },
+          mediaStore: { async getJob() { return job } },
+          videoStore: { async getJob() { return job }, async listAssets() { return [] } },
+        }))
+        const media = (await service.getExecution('task'))!.media![0]!
+        const expected = { queued: 'submitted', running: 'tracking', saving: 'saving', saved: 'materializing', delivered: 'ready', 'delivered-expired': 'ready', interrupted: 'blocked', 'delivery-failed': 'blocked', 'delivery-interrupted': 'blocked', 'delivery-stopped': 'blocked' }
+        assert.equal(media.phase, expected[stage])
+        assert.equal(media.lastQueriedAt, 42)
+        assert.equal(media.providerWaitMs, 30)
+        assert.equal(media.downloadMs, 10)
+        assert.equal(media.materializeMs, 3)
+        assert.equal(media.deliveryMs, 2)
+        assert.equal(media.outputs.length, saved ? 1 : 0, 'Verified live assets must appear before links refresh')
+      })
+    }
+  }
+})
+
 function serviceDeps(extra: Record<string, unknown>) {
   return {
     scope: { currentScope: () => scope },

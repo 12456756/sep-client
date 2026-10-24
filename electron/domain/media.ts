@@ -98,6 +98,10 @@ export interface LocalMediaJob {
   recovery?: MediaReceipt['recovery']
   errorCode?: MediaReceipt['errorCode']
   outputErrors?: MediaReceipt['outputErrors']
+  /** Last provider status query, retained for recovery diagnostics. */
+  lastQueriedAt?: number
+  providerWaitMs?: number
+  downloadMs?: number
   nextPollAt: number
   attempts: number
   error: string | null

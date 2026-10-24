@@ -30,6 +30,8 @@ const jobSchema = z.object({
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), generationStatus: generationSchema,
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: saveSchema,
   outputs: z.array(mediaOutputSchema).max(16), billingStatus: z.string().min(1).max(64), nextPollAt: timestamp,
+  lastQueriedAt: timestamp.optional(),
+  providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(),
   attempts: z.number().int().nonnegative(), error: z.string().max(20_000).nullable(), createdAt: timestamp, updatedAt: timestamp,
 }).strict().superRefine((job, context) => {

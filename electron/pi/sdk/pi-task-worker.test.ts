@@ -68,6 +68,107 @@ function context(root: string) {
 }
 
 describe('PiTaskWorker', () => {
+  it('does not hand a failed tool batch to the host', async () => {
+    const runtime = new FakeRuntime()
+    let handoffs = 0
+    let responseText = ''
+    runtime.session.prompt = async () => {
+      runtime.session.listener?.({ type: 'turn_end', data: { toolResults: [{ isError: true }] } })
+      runtime.session.listener?.({ type: 'turn_end', data: { message: { role: 'assistant', stopReason: 'stop',
+        content: [{ type: 'text', text: 'Submission failed.' }] } } })
+    }
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onApprovalRequest: async () => false, onEvent() {},
+      shouldYieldAfterToolTurn: () => { handoffs++; return true },
+      onResponseSettled: async response => { responseText = response.text },
+    })
+    try {
+      await worker.run('Submit media.')
+      assert.equal(handoffs, 0)
+      assert.equal(runtime.session.aborted, false)
+      assert.equal(responseText, 'Submission failed.')
+    } finally { await worker.dispose() }
+  })
+
+  it('preserves user cancellation while host tracking owns the successful tool result', async () => {
+    const runtime = new FakeRuntime()
+    runtime.session.prompt = async () => {
+      runtime.session.listener?.({ type: 'turn_end', data: { toolResults: [{ isError: false }] } })
+    }
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onApprovalRequest: async () => false, onEvent() {},
+      shouldYieldAfterToolTurn: () => true,
+      onResponseSettled: async () => { await worker.abort() },
+    })
+    try { await assert.rejects(worker.run('Submit media.'), /cancelled/) } finally { await worker.dispose() }
+  })
+
+  for (const source of ['event', 'prompt'] as const) it(`does not hide a real SDK ${source} failure after an aborted media handoff`, async () => {
+    const runtime = new FakeRuntime()
+    Object.assign(runtime.session, { getSettledResponse: () => ({ text: '', stopReason: 'aborted' }) })
+    runtime.session.prompt = async () => {
+      runtime.session.listener?.({ type: 'turn_end', data: { toolResults: [{ isError: false }] } })
+      if (source === 'prompt') throw new Error('Session persistence failed.')
+      runtime.session.listener?.({ type: 'agent_end', data: {}, failure: 'Session persistence failed.' })
+    }
+    let settlements = 0
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onApprovalRequest: async () => false, onEvent() {},
+      shouldYieldAfterToolTurn: () => true,
+      onResponseSettled: async () => { settlements++ },
+    })
+    try {
+      await assert.rejects(worker.run('Submit media.'), /Session persistence failed/)
+      assert.equal(settlements, 0)
+    } finally { await worker.dispose() }
+  })
+
+  it('hands a successful persisted tool batch to the host without another real SDK model request', async () => {
+    const root = await makeDirectory()
+    const path = join(root, 'original-job.txt')
+    await writeFile(path, 'original-media-job')
+    let requests = 0
+    const server = createServer((request, response) => {
+      request.resume()
+      request.on('end', () => {
+        requests++
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        writeChunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'read-job', type: 'function',
+          function: { name: 'read', arguments: JSON.stringify({ path }) } }] })
+        writeChunk(response, {}, 'tool_calls')
+        response.end('data: [DONE]\n\n')
+      })
+    })
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    assert.ok(address && typeof address !== 'string')
+    let sessionFile: string | null = null
+    let settlements = 0
+    const worker = new PiTaskWorker({
+      context: { ...context(root), gatewayUrl: `http://127.0.0.1:${address.port}/v1`,
+        toolPolicy: { allowedTools: ['read'], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'confirm-each', workspaceDir: root } },
+      runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
+      getRefreshToken: () => 'local-only', onAuthenticationRequired() {}, onApprovalRequest: async () => true,
+      createTokenManager: () => new FakeTokenManager(), onEvent() {},
+      shouldYieldAfterToolTurn: () => true,
+      onSessionCreated: session => { sessionFile = session.sessionFile },
+      onResponseSettled: async response => { settlements++; assert.deepEqual(response, { text: '', stopReason: 'stop' }) },
+    })
+    try {
+      await worker.run('Read the original job then leave tracking to the host.')
+      assert.equal(requests, 1)
+      assert.equal(settlements, 1)
+      assert.ok(sessionFile)
+      assert.match(await readFile(sessionFile, 'utf8'), /original-media-job/)
+    } finally {
+      await worker.dispose()
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+    }
+  })
+
   it('forwards the trusted system prompt and media facade to the session config', async () => {
     let received: PiAgentSessionConfig | undefined
     const session = new FakeSession()

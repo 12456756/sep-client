@@ -234,6 +234,14 @@ test('SSR grids allow saved results immediately but never export missing or unsa
   assert.doesNotMatch(refs, /导出成果/)
 })
 
+test('saved image results remain available while billing is pending and show query timing', () => {
+  const lastQueriedAt = Date.parse('2026-10-23T12:34:56Z')
+  const html = jobs(job({ generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVED', billingStatus: 'pending', lastQueriedAt, providerWaitMs: 1250, downloadMs: 240 }))
+  assert.ok(html.includes(`最近查询：${new Date(lastQueriedAt).toLocaleTimeString('zh-CN', { hour12: false })}`))
+  assert.match(html, /供应商等待：1\.3 秒/)
+  assert.match(html, /下载保存：240 ms/)
+})
+
 test('SSR panel is safe without browser IPC and escapes backend error text', () => {
   const html = render(React.createElement(MediaArtifactsPanel, { taskId: 'task-1' }))
   assert.match(html, /图片创作与成果/)

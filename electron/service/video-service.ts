@@ -57,7 +57,7 @@ export class VideoService {
     if ((job.executionMode ?? 'mock') !== this.mode) throw new AppError('PERMISSION_DENIED')
     return job
   }
-  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error'>>): Promise<LocalVideoJob> {
+  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs'>>): Promise<LocalVideoJob> {
     return this.store.updateJob(this.scope, job.taskId, job.jobId, previous => ({ ...previous, ...fields, updatedAt: Math.max(this.now(), previous.updatedAt) }))
   }
 
@@ -120,12 +120,23 @@ export class VideoService {
   private async accept(job: LocalVideoJob, value: VideoReceipt): Promise<LocalVideoJob> {
     const receipt = videoReceiptSchema.parse(value)
     if (!receiptMatchesRequest(job, receipt) || (job.receipt && job.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
-    return this.update(job, { receipt, submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode })
+    const terminal = ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(receipt.status)
+    return this.update(job, { receipt, submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode,
+      ...(terminal && job.providerWaitMs === undefined ? { providerWaitMs: Math.max(0, this.now() - job.createdAt) } : {}) })
   }
 
   private async save(job: LocalVideoJob, signal: AbortSignal, repair = false): Promise<LocalVideoJob> {
     if (!job.receipt?.outputs.length) return job
+    const saveStartedAt = this.now()
     const receipt = job.receipt
+    try {
+      const assets = await Promise.all(receipt.outputs.map(output => this.store.getAsset(this.scope, job.taskId, job.jobId, output.outputId)))
+      if (assets.every(asset => asset?.status === 'SAVED')) {
+        return this.update(job, { saveStatus: 'SAVED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', downloadMs: job.downloadMs })
+      }
+    } catch {
+      // Continue with normal materialization and preserve existing corruption handling.
+    }
     job = await this.update(job, { saveStatus: 'SAVING' })
     let failed = false
     let interruption: Pick<LocalVideoJob, 'trackingStatus' | 'error'> | null = null
@@ -154,14 +165,14 @@ export class VideoService {
       }
     }
     // Includes the final manifest write: failures propagate, never return SAVED.
-    return this.update(job, { saveStatus: failed ? 'SAVE_FAILED' : 'SAVED',
+    return this.update(job, { saveStatus: failed ? 'SAVE_FAILED' : 'SAVED', downloadMs: Math.max(0, this.now() - saveStartedAt),
       error: failed ? 'VIDEO_SAVE_FAILED' : receipt.errorCode,
       ...(!failed ? { trackingStatus: tracking(receipt) ? 'ACTIVE' as const : 'STOPPED' as const } : {}), ...(interruption ?? {}) })
   }
 
   /** One find/get only. A missing/unknown receipt NEVER authorizes a submit. */
   async resume(taskId: string, jobId: string, parent?: AbortSignal): Promise<LocalVideoJob> {
-    return activities.run(JSON.stringify(['video-recovery', this.scope]), () => this.resumeOriginal(taskId, jobId, parent, false))
+    return this.resumeOriginal(taskId, jobId, parent, false)
   }
 
   private async resumeOriginal(taskId: string, jobId: string, parent: AbortSignal | undefined, automatic: boolean): Promise<LocalVideoJob> {
@@ -175,16 +186,19 @@ export class VideoService {
       if (job.submission === 'NOT_SENT') return this.update(job, { trackingStatus: 'STOPPED', error: 'NOT_SUBMITTED' })
       if (!job.receipt || (tracking(job.receipt) && job.receipt.recovery.canQuery)) {
         let receipt: VideoReceipt | null
+        const queriedAt = this.now()
+        job = await this.update(job, { lastQueriedAt: queriedAt })
         try {
           receipt = job.receipt
             ? await abortableVideo(this.gateway.getReceipt(job.receipt.receiptId, signal), signal)
             : await abortableVideo(this.gateway.findReceipt(job.request.clientRequestId, signal), signal)
         } catch (error) {
-          return this.update(job, interrupted(error, 'VIDEO_QUERY_INTERRUPTED'))
+          return this.update(job, { ...interrupted(error, 'VIDEO_QUERY_INTERRUPTED'), lastQueriedAt: queriedAt })
         }
-        if (!receipt) return this.update(job, { trackingStatus: 'INTERRUPTED', error: videoErrorMessage(job.error) ? job.error : 'SUBMISSION_UNKNOWN' })
+        if (!receipt) return this.update(job, { trackingStatus: 'INTERRUPTED', error: videoErrorMessage(job.error) ? job.error : 'SUBMISSION_UNKNOWN', lastQueriedAt: queriedAt })
         signal.throwIfAborted()
         job = await this.accept(job, receipt)
+        job = await this.update(job, { lastQueriedAt: queriedAt })
       }
       return this.save(job, signal)
     })
@@ -244,6 +258,11 @@ export class VideoService {
       }))
     }
     return result
+  }
+
+  /** Read-only snapshot for delivery polling; it never waits on a job activity lock. */
+  async listJobsSnapshot(taskId?: string): Promise<LocalVideoJob[]> {
+    return (await this.store.listJobs(this.scope)).filter(job => (job.executionMode ?? 'mock') === this.mode && (taskId === undefined || job.taskId === taskId))
   }
   async listAssets(taskId: string): Promise<VideoAssetState[]> { return this.store.listAssets(this.scope, taskId) }
 

@@ -311,6 +311,7 @@ class BackendRuntime {
       arrangementCheckpoints: this.arrangementCheckpoints,
       arrangementMediaLinks: new ArrangementMediaLinkStore(userDataDir),
       arrangementMediaAssets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore),
+      mediaStore,
       videoStore,
       creationGate,
       execution: () => this.getTaskRuntime(),

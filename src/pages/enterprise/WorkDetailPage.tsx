@@ -51,7 +51,16 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
     : over ? work.lastRunId ? work.lastRunStartedAt ?? null : work.lastRunStartedAt ?? work.startedAt : null;
   const runEndedAt = work.lastRunEndedAt ?? work.completedAt;
   const percent = Math.round(work.progress);
-  const doing = currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt);
+  const mediaPhase = work.kind === 'flow'
+    ? work.arrangementExecution?.media?.find(item => !['ready', 'blocked'].includes(item.phase))?.phase ?? null
+    : null;
+  const mediaPhaseLabel = mediaPhase === 'preparing' ? '正在准备媒体请求'
+    : mediaPhase === 'awaiting-approval' ? '等待确认媒体请求'
+      : mediaPhase === 'submitted' ? '媒体已提交，等待供应商'
+        : mediaPhase === 'tracking' ? '供应商正在生成媒体'
+          : mediaPhase === 'saving' ? '正在下载并保存媒体'
+            : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
+  const doing = mediaPhaseLabel ?? currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt);
   const next = work.steps.find(step => step.state === 'pending');
   const [panel, setPanel] = useState<Panel>(null);
   const facts = {
@@ -78,9 +87,9 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
     ),
     progress: (
       <span className="ent-wk-infobar-progress">
-        <span className={`ent-bar${finished ? ' complete' : ''}`}>
-          <span><i className={over ? 'full' : undefined} style={{ width: `${Math.min(100, Math.max(2, percent))}%` }} /></span>
-          <b>{percent}%</b>
+        <span className={`ent-bar${finished ? ' complete' : ''}${mediaPhaseLabel ? ' media-waiting' : ''}`}>
+          <span><i className={over ? 'full' : undefined} style={{ width: mediaPhaseLabel ? '38%' : `${Math.min(100, Math.max(2, percent))}%` }} /></span>
+          <b>{mediaPhaseLabel ?? `${percent}%`}</b>
         </span>
       </span>
     ),
@@ -452,10 +461,17 @@ function Process({ work, workspace }: { work: WorkItem; workspace: EnterpriseWor
 }
 
 function ArrangementProcess({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
+  const mediaPhase = work.arrangementExecution?.media?.find(item => !['ready', 'blocked'].includes(item.phase))?.phase ?? null;
+  const mediaLabel = mediaPhase === 'preparing' ? '正在准备媒体请求'
+    : mediaPhase === 'awaiting-approval' ? '等待确认媒体请求'
+      : mediaPhase === 'submitted' ? '媒体已提交，等待供应商'
+        : mediaPhase === 'tracking' ? '供应商正在生成媒体'
+          : mediaPhase === 'saving' ? '正在下载并保存媒体'
+            : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
   return (
     <section className="ent-panel ent-work-process">
       <h2>工作过程</h2>
-      <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt)}</p>
+      <p className="ent-process-current" role="status">当前：{mediaLabel ?? currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt)}</p>
       {work.steps.length ? (
         <ArrangementSteps work={work} busy={workspace.busy} onRetry={workspace.retryWork} />
       ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}

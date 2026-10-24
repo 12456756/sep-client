@@ -44,6 +44,8 @@ describe('employee system prompt', () => {
     assert.match(prompt, /video_from_image.*图生视频/)
     assert.match(prompt, /media_get_job.*video_get_job/)
     assert.match(prompt, /返回任务 ID 不代表生成完成/)
+    assert.match(prompt, /主进程负责跟踪原任务并下载保存/)
+    assert.match(prompt, /不要 sleep/)
     assert.match(prompt, /不得虚构图片、视频、文件路径或生成成功/)
     assert.match(prompt, /工具可用性、费用及审批限制保持不变/)
   })

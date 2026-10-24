@@ -44,6 +44,11 @@ export interface VideoJobView {
   amountUsd?: string
   createdAt: number
   updatedAt: number
+  lastQueriedAt?: number
+  /** Submission-to-observed-provider-terminal duration; includes queue time. */
+  providerWaitMs?: number
+  /** Duration of the most recent complete save round across all outputs. */
+  downloadMs?: number
   error: string | null
   outputs: VideoOutput[]
   /** Verified local outputs; supports partial save without hiding existing files. */

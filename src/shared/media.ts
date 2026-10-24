@@ -60,6 +60,9 @@ export interface MediaJobView {
   trackingStatus: MediaTrackingStatus
   saveStatus: MediaSaveStatus
   billingStatus: string
+  lastQueriedAt?: number
+  providerWaitMs?: number
+  downloadMs?: number
   error: string | null
   createdAt: number
   updatedAt: number

@@ -333,6 +333,16 @@ test('saved videos expose local preview and native export actions without eager 
   }
 })
 
+test('saved videos remain available while billing is reconciling and show query timing', () => {
+  const lastQueriedAt = Date.parse('2026-10-23T12:34:56Z')
+  const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({ generationStatus: 'SUCCEEDED', saveStatus: 'SAVED', trackingStatus: 'STOPPED', billingStatus: 'RECONCILING', outputs: [output], lastQueriedAt, providerWaitMs: 2100, downloadMs: 320 })] } })
+  assert.match(html, /预览视频成果 1/)
+  assert.match(html, /导出视频成果 1/)
+  assert.ok(html.includes(`最近查询：${new Date(lastQueriedAt).toLocaleTimeString('zh-CN', { hour12: false })}`))
+  assert.match(html, /供应商等待：2\.1 秒/)
+  assert.match(html, /下载保存：320 ms/)
+})
+
 test('partial local saves allow only verified saved outputs to preview and export', () => {
   const partial = { ...job({ generationStatus: 'PARTIAL_SUCCEEDED', saveStatus: 'SAVE_FAILED', trackingStatus: 'STOPPED',
     outputs: [output, { ...output, outputId: 'output-2' }] }), savedOutputIds: ['output-1'] }

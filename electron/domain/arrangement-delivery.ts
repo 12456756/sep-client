@@ -57,6 +57,10 @@ export const nodeDeliveryProgressSchema = z.object({
   finalFiles: z.array(finalDeliveryFileSchema).max(32),
   summary: z.string().max(4_000).optional(),
   pendingSubmission: submissionSchema.optional(),
+  mediaPhase: z.enum(['waiting-media', 'materializing', 'delivered']).optional(),
+  mediaWaitStartedAt: z.number().int().nonnegative().optional(),
+  materializeMs: z.number().int().nonnegative().optional(),
+  deliveryMs: z.number().int().nonnegative().optional(),
 }).strict()
 export type NodeDeliveryProgress = z.infer<typeof nodeDeliveryProgressSchema>
 
