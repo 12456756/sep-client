@@ -74,7 +74,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
   const executableManifest = await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')
   const executableCapabilities = parseMediaCapabilities(executableManifest.runtime.media)
   assert.deepEqual(executableCapabilities.tools, ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'])
-  assert.equal(executableCapabilities.profiles[0]?.maxCount, 8)
+  assert.equal(executableCapabilities.profiles[0]?.maxCount, 4, 'The current local receipt contract accepts at most four outputs.')
   media = undefined
   assert.equal((await getEmployeeRuntime('sub-http', 'fixture-access-not-a-real-token')).runtime.media, undefined)
   video = videoFixture.runtime
