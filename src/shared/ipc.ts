@@ -295,7 +295,7 @@ export interface ElectronAPI {
   exportVideoOutput: (input: { taskId: string; jobId: string; outputId: string }) => Promise<IpcCommandResult & { cancelled?: boolean }>
   resumeVideoTracking: (input: { taskId: string; jobId: string }) => Promise<IpcCommandResult>
   retryVideoSave: (input: { taskId: string; jobId: string }) => Promise<IpcCommandResult>
-  getTaskMedia: (taskId: string) => Promise<IpcCommandResult & { data?: MediaTaskView }>
+  getTaskMedia: (taskId: string, options?: { refreshCapabilities?: boolean }) => Promise<IpcCommandResult & { data?: MediaTaskView }>
   setMediaReferenceSelection: (input: { taskId: string; assetIds: string[] }) => Promise<IpcCommandResult>
   importMediaReferences: (taskId: string) => Promise<IpcCommandResult & { data?: MediaAssetView[] }>
   generateTaskMedia: (input: { taskId: string; input: MediaGenerationInput }) => Promise<IpcCommandResult & { data?: MediaJobView }>

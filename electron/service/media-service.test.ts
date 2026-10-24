@@ -1711,6 +1711,110 @@ describe('MediaService review lifecycle regressions', () => {
     assert.equal(calls, 2)
   })
 
+  it('coalesces concurrent capability reads and refreshes while polling keeps the cache', async () => {
+    let calls = 0
+    let gate = deferred<void>()
+    const entered = deferred<void>()
+    const f = await fixture({ authorize: async () => { calls++; entered.resolve(); await gate.promise; return f.employee } })
+    const reads = Array.from({ length: 8 }, () => f.service.getTaskMedia('task-a'))
+    await entered.promise
+    gate.resolve()
+    await Promise.all(reads)
+    assert.equal(calls, 1)
+    await f.service.getTaskMedia('task-a')
+    assert.equal(calls, 1, 'Ordinary status polling must not reload runtime.')
+    gate = deferred<void>()
+    const refreshed = f.service.getTaskMedia('task-a', { refreshCapabilities: true })
+    const concurrent = f.service.getTaskMedia('task-a', { refreshCapabilities: true })
+    gate.resolve()
+    await Promise.all([refreshed, concurrent])
+    assert.equal(calls, 2)
+  })
+
+  it('refreshes policy changes without requiring a new Profile configVersion and preserves saved history', async () => {
+    let granted = true
+    const f = await fixture({ authorize: async () => granted ? f.employee : null })
+    const created = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', created.runId)
+    const before = await f.service.getTaskMedia('task-a')
+    const media = f.employee.media as typeof MOCK_MEDIA_CAPABILITIES
+    media.profiles[0].maxCount = 1
+    const changed = await f.service.getTaskMedia('task-a', { refreshCapabilities: true })
+    assert.equal(changed.capabilities?.profiles[0].configVersion, before.capabilities?.profiles[0].configVersion)
+    assert.equal(changed.capabilities?.profiles[0].maxCount, 1)
+    assert.equal((await f.store.getJob(owner, 'task-a', created.jobId))?.profile.maxCount, MOCK_MEDIA_CAPABILITIES.profiles[0].maxCount)
+    granted = false
+    const revoked = await f.service.getTaskMedia('task-a', { refreshCapabilities: true })
+    assert.equal(revoked.capabilities, null)
+    assert.equal(revoked.jobs[0].saveStatus, 'SAVED')
+    assert.ok(revoked.assets.length)
+    assert.equal(f.gateway.calls.submit.length, 1)
+  })
+
+  it('clears stale capabilities on refresh failure and retries without losing history', async () => {
+    let failed = false
+    const f = await fixture({ authorize: async () => { if (failed) throw new Error('Offline'); return f.employee } })
+    assert.ok((await f.service.getTaskMedia('task-a')).capabilities)
+    failed = true
+    assert.equal((await f.service.getTaskMedia('task-a', { refreshCapabilities: true })).capabilities, null)
+    failed = false
+    assert.ok((await f.service.getTaskMedia('task-a')).capabilities)
+  })
+
+  it('invalidates presentation capabilities after the backend reports changed configuration without retrying generation', async context => {
+    let calls = 0
+    const f = await fixture({ authorize: async () => { calls++; return f.employee } })
+    const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'old-config', subscriptionId: f.employee.subscriptionId,
+      employee: f.employee, requestApproval: f.options.requestApproval })
+    assert.ok(tools)
+    context.mock.method(f.gateway, 'quote', async () => {
+      throw new AppError('SERVICE_UNAVAILABLE', { details: { businessCode: 'CONFIG_CHANGED' } })
+    })
+    await assert.rejects(tools.execute('media_generate_image', { creativeBrief: 'Product image' }), code('SERVICE_UNAVAILABLE'))
+    const media = f.employee.media as typeof MOCK_MEDIA_CAPABILITIES
+    media.profiles[0].maxCount = 1
+    assert.equal((await f.service.getTaskMedia('task-a')).capabilities?.profiles[0].maxCount, 1)
+    assert.equal(calls, 1)
+    assert.equal(f.gateway.calls.submit.length, 0)
+  })
+
+  it('does not let a delayed presentation refresh replace newly admitted run capabilities', async () => {
+    const entered = deferred<void>(), gate = deferred<void>()
+    const f = await fixture({ authorize: async () => {
+      const old = structuredClone(f.employee)
+      entered.resolve(); await gate.promise
+      return old
+    } })
+    const reading = f.service.getTaskMedia('task-a')
+    await entered.promise
+    const media = f.employee.media as typeof MOCK_MEDIA_CAPABILITIES
+    media.profiles[0].maxCount = 1
+    await f.service.prepareRun({ taskId: 'task-a', runId: 'fresh', subscriptionId: f.employee.subscriptionId,
+      employee: f.employee, requestApproval: f.options.requestApproval })
+    gate.resolve()
+    assert.equal((await reading).capabilities?.profiles[0].maxCount, 1)
+    assert.equal((await f.service.getTaskMedia('task-a')).capabilities?.profiles[0].maxCount, 1)
+  })
+
+  it('isolates same-task capability loads by owner and cancels pending reads on logout', async () => {
+    const entered = deferred<void>(), gate = deferred<void>()
+    let calls = 0
+    const f = await fixture({ authorize: async () => {
+      if (++calls === 1) { entered.resolve(); await gate.promise }
+      return f.employee
+    } })
+    const old = assert.rejects(f.service.getTaskMedia('task-a'), code('AUTH_REQUIRED'))
+    await entered.promise
+    f.setScope(other)
+    assert.ok((await f.service.getTaskMedia('task-a')).capabilities)
+    assert.equal(calls, 2)
+    await f.service.stopAll()
+    await old
+    gate.resolve()
+    assert.ok((await f.service.getTaskMedia('task-a')).capabilities)
+    assert.equal(calls, 3)
+  })
+
   it('does not submit generation prepared before an explicit task stop', async context => {
     const f = await fixture({ policy: async () => policy() })
     const entered = deferred<void>(), release = deferred<void>()

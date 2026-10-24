@@ -224,13 +224,13 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
   const commandBusy = useRef(false)
   const requestVersion = useRef(0)
 
-  const refresh = useCallback(async (): Promise<void> => {
+  const refresh = useCallback(async (refreshCapabilities = false): Promise<void> => {
     if (!alive.current) return
     const epoch = lifetime.current
     const version = ++requestVersion.current
     try {
       const videoPromise = typeof window.electronAPI?.getTaskVideo === 'function' ? window.electronAPI.getTaskVideo(taskId).catch(() => null) : Promise.resolve(null)
-      const [result, videoResult] = await Promise.all([window.electronAPI.getTaskMedia(taskId), videoPromise])
+      const [result, videoResult] = await Promise.all([window.electronAPI.getTaskMedia(taskId, { refreshCapabilities }), videoPromise])
       if (!alive.current || epoch !== lifetime.current || version !== requestVersion.current) return
       setVideoReferenceAvailable(!!videoResult?.success && !!videoResult.data && canImportVideoReference(videoResult.data.runtime))
       if (result.success && result.data) {
@@ -247,17 +247,22 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
     const epoch = ++lifetime.current
     let active = true
     let timer: ReturnType<typeof setTimeout> | undefined
-    const poll = async () => {
-      await refresh()
+    const poll = async (refreshCapabilities = false) => {
+      await refresh(refreshCapabilities)
       if (active) timer = setTimeout(() => { void poll() }, POLL_INTERVAL)
     }
-    if (typeof window !== 'undefined' && typeof window.electronAPI?.getTaskMedia === 'function') void poll()
+    const foreground = () => { if (document.visibilityState === 'visible') void refresh(true) }
+    window.addEventListener('focus', foreground)
+    document.addEventListener('visibilitychange', foreground)
+    if (typeof window !== 'undefined' && typeof window.electronAPI?.getTaskMedia === 'function') void poll(true)
     else setView({ capabilities: null, unavailableReason: '图片服务尚未配置，普通聊天仍可使用', assets: [], selectedReferenceIds: [], jobs: [], archived: false })
     return () => {
       alive.current = false
       active = false
       lifetime.current = epoch + 1
       if (timer) clearTimeout(timer)
+      window.removeEventListener('focus', foreground)
+      document.removeEventListener('visibilitychange', foreground)
     }
   }, [taskId, refresh])
 
@@ -305,8 +310,8 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
   const busy = pending !== null
   const feedback = { pending, notice }
   return <section className="artifact-section media-artifacts" aria-label="图片创作与成果">
-    <h3><ImageIcon size={15} />图片创作与成果</h3>
-    {error && <p className="media-notice media-tone-error" role="alert">{error}<button type="button" className="media-icon-button" title="重新读取图片任务" aria-label="重新读取图片任务" onClick={() => { void refresh() }}><RefreshCw size={14} /></button></p>}
+    <h3><ImageIcon size={15} />图片创作与成果<button type="button" className="media-icon-button" title="刷新图片能力与任务" aria-label="刷新图片能力与任务" onClick={() => { void refresh(true) }}><RefreshCw size={14} /></button></h3>
+    {error && <p className="media-notice media-tone-error" role="alert">{error}</p>}
     {!view && !error && <p className="artifact-empty" role="status">正在读取图片能力</p>}
     {!preview && !view?.capabilities?.tools.includes('media_generate_image') && <MediaCommandFeedback {...feedback} />}
     {view && <>

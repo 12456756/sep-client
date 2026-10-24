@@ -4,6 +4,7 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { createServer } from 'node:http'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoReceiptSchema, videoRuntimeSchema, type VideoReceipt } from '../../src/shared/video-media'
 import type { VideoGenerationInput } from '../../src/shared/video-host'
@@ -17,6 +18,8 @@ import { VideoRunService } from './video-run-service'
 import { EmployeeAuthorizer } from './employee-authorizer'
 import { EmployeeDirectory } from './employee-directory'
 import { SepRealVideoGateway } from '../data/sep-video-media-gateway'
+import { PiCodingAgentAdapter } from '../pi/sdk/pi-coding-agent-adapter'
+import { PiTaskWorker } from '../pi/sdk/pi-task-worker'
 
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
@@ -54,8 +57,84 @@ async function setup(scenario: MockVideoScenario = 'success') {
     employee: { subscriptionId: scope.subscriptionId, modelId: 'model-a', gatewayUrl: 'http://mock', video: state.runtime },
     requestApproval: options.requestApproval,
   }
-  return { options, state, store, gateway, approvals, runInput, service: new VideoRunService(options) }
+  return { root, options, state, store, gateway, approvals, runInput, service: new VideoRunService(options) }
 }
+
+test('real SDK handoff and finishRun preserve pending video output saving without another submission', { timeout: 20_000 }, async context => {
+  const f = await setup()
+  let entered!: () => void, release!: () => void
+  const downloading = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let downloadSignal: AbortSignal | undefined
+  const content = f.gateway.content.bind(f.gateway)
+  context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+    downloadSignal = args[2]
+    entered(); await gate
+    return content(...args)
+  })
+  let requests = 0
+  const server = createServer((request, response) => {
+    request.resume()
+    request.on('end', () => {
+      requests++
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+      const chunk = (delta: unknown, finishReason: string | null = null) => response.write(`data: ${JSON.stringify({
+        id: 'video-handoff', object: 'chat.completion.chunk', created: 1, model: 'model-a',
+        choices: [{ index: 0, delta, finish_reason: finishReason }],
+      })}\n\n`)
+      chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'generate-video', type: 'function',
+        function: { name: 'video_from_image', arguments: JSON.stringify({ creativeBrief: 'Product movement', localAssetIds: ['asset-a'] }) } }] })
+      chunk({}, 'tool_calls')
+      response.end('data: [DONE]\n\n')
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address()
+  assert.ok(address && typeof address !== 'string')
+  const tools = await f.service.prepareRun(f.runInput)
+  assert.ok(tools)
+  let toolSignal: AbortSignal | undefined
+  const worker = new PiTaskWorker({
+    context: { taskId: 'task-a', runId: 'run-a', subscriptionId: scope.subscriptionId, modelId: 'model-a',
+      gatewayUrl: `http://127.0.0.1:${address.port}/v1`, workspaceDir: f.root,
+      agentDir: join(f.root, 'agent'), sessionDir: join(f.root, 'sessions'),
+      toolPolicy: { preset: 'full-local', approvalMode: 'auto-approve', allowedTools: [], allowedPaths: [], deniedPaths: [], commandPolicy: 'restricted', workspaceDir: f.root },
+      videoTools: { names: tools.names, execute: async (name, raw, signal) => {
+        toolSignal = signal
+        const result = await tools.execute(name, raw, signal)
+        await downloading
+        return result
+      } } },
+    runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
+    createTokenManager: () => ({ async initialize() {}, async getValidToken() { return 'local-fixture' }, stop() {} }),
+    getRefreshToken: () => 'local-fixture', onAuthenticationRequired() {}, onApprovalRequest: async () => true, onEvent() {},
+    shouldYieldAfterToolTurn: () => f.gateway.calls.submit > 0,
+  })
+  try {
+    await worker.run('Generate a product video and leave saving to the host.')
+    assert.equal(toolSignal?.aborted, true)
+    assert.equal(downloadSignal?.aborted, false)
+    await f.service.finishRun('task-a', 'run-a')
+    assert.equal(downloadSignal?.aborted, false, 'Finishing the model run must not cancel the host download.')
+    release()
+    const deadline = Date.now() + 5_000
+    while ((await f.store.listJobs(scope))[0].saveStatus !== 'SAVED') {
+      assert.ok(Date.now() < deadline, 'The original video output must finish saving after the run facade closes.')
+      await new Promise<void>(resolve => setTimeout(resolve, 10))
+    }
+    assert.equal((await f.store.listJobs(scope))[0].saveStatus, 'SAVED')
+    assert.equal(f.gateway.calls.quote, 1)
+    assert.equal(f.gateway.calls.submit, 1)
+    assert.equal(f.gateway.calls.content, 1)
+    assert.equal(requests, 1)
+  } finally {
+    release()
+    await worker.dispose()
+    await f.service.stopAll()
+    server.closeAllConnections()
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  }
+})
 
 test('run facade binds two host approvals to real run and awaits original output save', async () => {
   const f = await setup(), tools = await f.service.prepareRun(f.runInput)

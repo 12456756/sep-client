@@ -7,9 +7,13 @@ import { route } from '../router'
 
 const assetInput = z.object({ taskId: mediaId, assetId: mediaId }).strict()
 const jobInput = z.object({ taskId: mediaId, jobId: mediaId }).strict()
+const taskInput = z.union([
+  mediaId.transform(taskId => ({ taskId, refreshCapabilities: false })),
+  z.object({ taskId: mediaId, refreshCapabilities: z.boolean().default(false) }).strict(),
+])
 
 export const mediaRoutes = [
-  route(INVOKE_CHANNELS.MEDIA_GET_TASK, mediaId, async (ctx, taskId) => ({ success: true, data: await ctx.media.getTaskMedia(taskId) })),
+  route(INVOKE_CHANNELS.MEDIA_GET_TASK, taskInput, async (ctx, input) => ({ success: true, data: await ctx.media.getTaskMedia(input.taskId, { refreshCapabilities: input.refreshCapabilities }) })),
   route(INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION, z.object({ taskId: mediaId, assetIds: z.array(mediaId).max(16) }).strict(), async (ctx, input) => {
     await ctx.media.setReferenceSelection(input.taskId, input.assetIds)
     return { success: true }

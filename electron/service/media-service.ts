@@ -50,6 +50,7 @@ export class MediaService {
   private sessionController = new AbortController()
   private readonly activities = new Map<string, Activity>()
   private readonly caps = new Map<string, MediaCapabilities | null>()
+  private readonly capabilityLoads = new Map<string, Promise<void>>()
   private readonly selectedReferences = new Map<string, string[]>()
   private readonly submitting = new Set<string>()
   private readonly recoveryQueue = new Map<string, { taskId: string; jobId: string }>()
@@ -89,6 +90,13 @@ export class MediaService {
       return null
     }
   }
+  private invalidateCapabilities(scope: TaskOwnerScope, taskId: string, epoch: number, error: unknown): void {
+    if (epoch !== this.epoch || !(error instanceof AppError) || (error.code !== 'AUTH_REQUIRED' && error.code !== 'PERMISSION_DENIED'
+      && error.code !== 'MEDIA_FORBIDDEN' && error.details?.businessCode !== 'CONFIG_CHANGED')) return
+    const key = this.key(scope, taskId)
+    this.caps.delete(key)
+    this.capabilityLoads.delete(key)
+  }
   private async network<T>(scope: TaskOwnerScope, parent: AbortSignal, call: (signal: AbortSignal) => Promise<T>, timeoutMs = this.options.operationTimeoutMs ?? 60_000): Promise<T> {
     const epoch = this.epoch
     this.assert(scope, epoch)
@@ -127,19 +135,32 @@ export class MediaService {
       canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job) : job.recovery?.canQuery !== false,
       canCancelUpstream: job.recovery?.canCancel !== false && job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
   }
-  async getTaskMedia(taskId: string): Promise<MediaTaskView> {
-    const { scope, subscriptionId } = await this.task(taskId), epoch = this.epoch
+  private async loadCapabilities(scope: TaskOwnerScope, taskId: string, subscriptionId: string, refresh: boolean, epoch: number): Promise<void> {
     const key = this.key(scope, taskId)
-    if (!this.caps.has(key)) {
+    const existing = this.capabilityLoads.get(key)
+    if (existing) return existing
+    if (!refresh && this.caps.has(key)) return
+    this.caps.delete(key)
+    if (!this.options.gateway) return
+    const pending = Promise.resolve().then(async () => {
+      this.assert(scope, epoch)
       let employee: MediaEmployeeRuntime | null = null
-      let authorized = true
-      try { if (this.options.gateway) employee = await this.options.authorize(subscriptionId) } catch {
-        // Historical reads survive transient grant failures; a later refresh retries authorization.
-        authorized = false
+      try { employee = await this.network(scope, this.sessionController.signal, () => this.options.authorize(subscriptionId)) } catch {
+        // Historical reads survive grant failures; the next read retries.
       }
       this.assert(scope, epoch)
-      if (authorized && employee) this.caps.set(key, this.capabilities(employee))
+      // A newly admitted run can supersede a presentation-only refresh.
+      if (employee && this.capabilityLoads.get(key) === pending) this.caps.set(key, this.capabilities(employee))
+    })
+    this.capabilityLoads.set(key, pending)
+    try { await pending } finally {
+      if (this.capabilityLoads.get(key) === pending) this.capabilityLoads.delete(key)
     }
+  }
+  async getTaskMedia(taskId: string, options: { refreshCapabilities?: boolean } = {}): Promise<MediaTaskView> {
+    const { scope, subscriptionId } = await this.task(taskId), epoch = this.epoch
+    const key = this.key(scope, taskId)
+    await this.loadCapabilities(scope, taskId, subscriptionId, options.refreshCapabilities === true, epoch)
     const [assets, jobs, archived] = await Promise.all([this.options.store.listAssets(scope, taskId), this.options.store.listJobs(scope, taskId), this.options.store.isArchived(scope, taskId)])
     this.assert(scope, epoch)
     const capabilities = this.caps.get(key) ?? null
@@ -192,6 +213,7 @@ export class MediaService {
     const approved = input.employee.runtimeSnapshot
     if (input.subscriptionId !== input.employee.subscriptionId || (approved && (approved.enterpriseId !== scope.enterpriseId || approved.memberId !== scope.memberId || approved.subscriptionId !== input.subscriptionId))) throw new AppError('AUTH_REQUIRED')
     const capabilities = this.capabilities(input.employee)
+    this.capabilityLoads.delete(this.key(scope, input.taskId))
     this.caps.set(this.key(scope, input.taskId), capabilities)
     await this.options.store.saveSnapshot(scope, { version: 1, owner: scope, taskId: input.taskId, runId: input.runId,
       subscriptionId: input.subscriptionId, systemPrompt: input.employee.systemPrompt ?? '',
@@ -400,7 +422,8 @@ export class MediaService {
         // becomes an UNKNOWN request that is queried by its original id instead of
         // being mistaken for a local failure or retried with a new id.
         this.acceptReceipt(job, await this.network(scope, parent, s => gateway.submit(binding.subscriptionId, job!.request, s), this.options.submissionTimeoutMs ?? 190_000))
-      } catch {
+      } catch (error) {
+        this.invalidateCapabilities(scope, taskId, epoch, error)
         job.generationStatus = 'SUBMISSION_UNKNOWN'
         job.error = '提交结果尚未确认，仅查询原请求，不会再次生成。'
       }
@@ -418,6 +441,7 @@ export class MediaService {
       this.assert(scope, epoch)
       return this.viewJob(job, assets)
     } catch (error) {
+      this.invalidateCapabilities(scope, taskId, epoch, error)
       if (trackingStarted) {
         controller.abort()
         await this.activities.get(activityKey)?.promise.catch(() => undefined)
@@ -685,7 +709,7 @@ export class MediaService {
     }
   }
   async stopAll(): Promise<void> {
-    this.epoch++; this.caps.clear(); this.selectedReferences.clear(); this.taskStops.clear(); this.jobStops.clear(); this.runRecoveries.clear()
+    this.epoch++; this.caps.clear(); this.capabilityLoads.clear(); this.selectedReferences.clear(); this.taskStops.clear(); this.jobStops.clear(); this.runRecoveries.clear()
     this.recoveryQueue.clear()
     this.sessionController.abort()
     this.sessionController = new AbortController()
