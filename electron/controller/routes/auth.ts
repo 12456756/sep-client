@@ -106,7 +106,14 @@ export const authRoutes = [
           password,
           input.rememberPassword,
         )
-      } catch (error) { throw new LoginFeedbackError('credential_save', error) }
+      } catch (error) {
+        const damagedRememberedCredentials = error instanceof LoginFeedbackError &&
+          (error.reason === 'accounts_read' || error.reason === 'password_read')
+        if (input.useSavedPassword || input.rememberPassword || !damagedRememberedCredentials) {
+          throw new LoginFeedbackError('credential_save', error)
+        }
+        log.warn('remembered credential update skipped after manual login', { cause: describeError(error) })
+      }
       void ctx.backend.resumeClientMonitor().catch(error => {
         log.warn('client monitor resume failed', { cause: describeError(error) })
       })

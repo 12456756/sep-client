@@ -180,7 +180,18 @@ export function saveRememberedAccount(
   }
 
   const vault = encryptionAvailable ? readPasswordVault() : {}
-  const previousAccounts = readRememberedAccounts()
+  let previousAccounts: RememberedAccount[]
+  try {
+    previousAccounts = readRememberedAccounts()
+  } catch (error) {
+    // A manual login with password saving disabled must not leave a previously
+    // saved password usable just because the non-secret account index is corrupt.
+    if (encryptionAvailable && !rememberPassword && Object.hasOwn(vault, email)) {
+      delete vault[email]
+      writePasswordVault(vault)
+    }
+    throw error
+  }
   if (encryptionAvailable) {
     if (rememberPassword) {
       if (!password) throw new Error('Password is required to remember this account')

@@ -12,7 +12,7 @@ import { LoginFeedbackError } from '../common/platform/login-error'
 import { toAuthEnvelope } from '../errors/error-mapper'
 import { AuthApiError } from '../common/platform/platform-api'
 
-function setup(options: { saveFails?: boolean; loginFails?: boolean; deviceFails?: boolean; workspaceFails?: boolean; sessionFails?: boolean; passwordReadFails?: boolean; accountReadFails?: boolean; encryptionAvailable?: boolean; savedPassword?: string | null } = {}) {
+function setup(options: { saveFails?: boolean; saveFailureReason?: 'accounts_read' | 'password_read'; loginFails?: boolean; deviceFails?: boolean; workspaceFails?: boolean; sessionFails?: boolean; passwordReadFails?: boolean; accountReadFails?: boolean; encryptionAvailable?: boolean; savedPassword?: string | null } = {}) {
   let finishRecovery!: () => void
   const recovery = new Promise<void>(resolve => { finishRecovery = resolve })
   let rejectRead!: (error: Error) => void
@@ -54,6 +54,7 @@ function setup(options: { saveFails?: boolean; loginFails?: boolean; deviceFails
       getRememberedPassword: () => { if (options.passwordReadFails) throw new LoginFeedbackError('password_read'); return options.savedPassword ?? null },
       saveRememberedAccount: () => {
       calls.push('save-account')
+      if (options.saveFailureReason) throw new LoginFeedbackError(options.saveFailureReason)
       if (options.saveFails) throw new Error('disk unavailable')
     } },
     '../../errors/error-mapper': { authFailure: (code: string) => ({ success: false, error: { code } }) },
@@ -75,7 +76,7 @@ function setup(options: { saveFails?: boolean; loginFails?: boolean; deviceFails
   return {
     calls, finishRecovery, rejectRead, changeSession: () => { revision++ },
     read: (channel: string, input?: unknown) => authRoutes.find(entry => entry.channel === channel)!.handle(ctx, input),
-    login: (saved = false) => route.handle(ctx, { email: 'test@example.test', password: saved ? undefined : 'fixture-password', rememberPassword: false, useSavedPassword: saved }),
+    login: (saved = false, rememberPassword = false) => route.handle(ctx, { email: 'test@example.test', password: saved ? undefined : 'fixture-password', rememberPassword, useSavedPassword: saved }),
   }
 }
 
@@ -99,6 +100,27 @@ describe('login background recovery', () => {
       await assert.rejects(h.login(true), { reason })
       assert.equal(h.calls.includes('session'), false)
       h.finishRecovery()
+    }
+  })
+
+  it('allows manual login without persistence when remembered credentials are corrupt', async () => {
+    for (const saveFailureReason of ['accounts_read', 'password_read'] as const) {
+      const harness = setup({ saveFailureReason })
+      const result = await harness.login()
+      assert.equal(result.success, true)
+      assert.ok(harness.calls.includes('recovery'))
+      assert.ok(!harness.calls.includes('clear-session'))
+      harness.finishRecovery()
+    }
+  })
+
+  it('does not ignore corrupt remembered credentials when persistence was requested', async () => {
+    for (const [saved, rememberPassword] of [[false, true], [true, false]] as const) {
+      const harness = setup({ saveFailureReason: 'accounts_read', savedPassword: 'fixture-password' })
+      harness.finishRecovery()
+      await assert.rejects(harness.login(saved, rememberPassword), { reason: 'credential_save' })
+      assert.ok(harness.calls.includes('clear-session'))
+      assert.ok(!harness.calls.includes('recovery'))
     }
   })
 
