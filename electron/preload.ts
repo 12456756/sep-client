@@ -175,6 +175,7 @@ const electronAPI = {
   pauseTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_PAUSE, taskId),
   cancelTask: (taskId, reason) => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CANCEL, { taskId, reason }),
   deleteTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_DELETE, taskId),
+  updateTaskDetails: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_UPDATE_DETAILS, input),
   getTaskStats: () => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_STATS),
   selectDirectory: currentPath => ipcRenderer.invoke(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, currentPath),
   setWindowTheme: theme => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_SET_THEME, theme),

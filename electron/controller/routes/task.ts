@@ -39,6 +39,11 @@ const retryInput = z.union([
   taskId,
   z.object({ taskId, nodeId: z.string().min(1).optional() }),
 ]).transform(value => typeof value === 'string' ? { taskId: value, nodeId: undefined } : value)
+const updateTaskDetailsInput = z.object({
+  taskId,
+  title: z.string().trim().min(1).max(100).refine(value => !Array.from(value).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)).optional(),
+  pinned: z.boolean().optional(),
+}).strict().refine(value => value.title !== undefined || value.pinned !== undefined)
 
 /** run 记录投影：只把渲染进程契约里声明的字段送出去。 */
 function toClientTaskRun(record: TaskRunRecord) {
@@ -88,6 +93,14 @@ export const taskRoutes = [
     await ctx.tasks.delete(id)
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
+
+  route(INVOKE_CHANNELS.TASK_UPDATE_DETAILS, updateTaskDetailsInput, async (ctx, input) => ({
+    success: true,
+    task: await ctx.tasks.updateDetails(input.taskId, {
+      ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.pinned !== undefined ? { pinned: input.pinned } : {}),
+    }),
+  }), { invalidMessage: '工作详情参数不合法。' }),
 
   route(INVOKE_CHANNELS.TASK_GET, taskId, async (ctx, id) => ({
     success: true,

@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, CircleHelp, Layers, ListFilter, LoaderCircle, MessageSquare, Plus, RotateCcw, Search, Square, Workflow, X } from 'lucide-react'
+import { CircleAlert, CircleCheck, CircleHelp, Layers, ListFilter, LoaderCircle, MessageSquare, MoreHorizontal, Pin, Plus, RotateCcw, Search, Square, Workflow, X } from 'lucide-react'
 import { IconHint } from '../../components/enterprise/IconHint'
 import { WorkStatusIcon, WorkTypeTag, workStatusLabel, workTypeLabel } from '../../components/enterprise/WorkIndicators'
 import type { WorkItem } from '../../features/enterprise/types'
@@ -28,9 +28,11 @@ interface Props {
   onCreate: () => void
   onClose: () => void
   onRetryTypes: () => void
+  menuWorkId: string | null
+  onWorkMenu: (workId: string, trigger: HTMLElement, point?: { x: number; y: number }) => void
 }
 
-export function WorkListPane({ works, records, selectedWorkId, filters, onFilters, onSelect, onCreate, onClose, onRetryTypes }: Props) {
+export function WorkListPane({ works, records, selectedWorkId, filters, onFilters, onSelect, onCreate, onClose, onRetryTypes, menuWorkId, onWorkMenu }: Props) {
   const statuses = countWorkRecordStatuses(works, filters)
   const types = countWorkRecordTypes(works, filters)
   const unresolved = countUnresolvedWorkRecordTypes(works, filters)
@@ -51,10 +53,15 @@ export function WorkListPane({ works, records, selectedWorkId, filters, onFilter
     </div>
     <div className="ent-work-list-scroll">
       {!records.length && <div className="ent-work-list-empty"><p>{works.length ? '没有符合筛选条件的工作' : '还没有工作'}</p>{works.length ? <button type="button" className="ent-btn sm ghost" onClick={() => onFilters({ bucket: 'all', workType: 'all', search: '' })}><RotateCcw size={14} aria-hidden />清除筛选</button> : <button type="button" className="ent-btn sm ghost" onClick={onCreate}><Plus size={14} aria-hidden />开始第一项工作</button>}</div>}
-      {records.map(work => <button type="button" key={work.id} className={`ent-work-row${work.id === selectedWorkId ? ' selected' : ''}`} aria-current={work.id === selectedWorkId ? 'true' : undefined} aria-label={`${work.title}，${workStatusLabel(work)}，${workTypeLabel(work.workType)}`} onClick={() => onSelect(work.id)}>
+      {records.map(work => <div key={work.id} className="ent-work-row-wrap">
+        <button type="button" className={`ent-work-row${work.id === selectedWorkId ? ' selected' : ''}`} aria-current={work.id === selectedWorkId ? 'true' : undefined} aria-label={`${work.title}，${workStatusLabel(work)}，${workTypeLabel(work.workType)}`} aria-keyshortcuts="Shift+F10" onClick={() => onSelect(work.id)}
+          onContextMenu={event => { event.preventDefault(); onWorkMenu(work.id, event.currentTarget, { x: event.clientX, y: event.clientY }) }}
+          onKeyDown={event => { if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') { event.preventDefault(); onWorkMenu(work.id, event.currentTarget) } }}>
         <WorkStatusIcon work={work} focusable={false} />
-        <span className="ent-work-row-body"><span className="ent-work-row-title"><strong>{work.title || '未命名工作'}</strong><WorkTypeTag workType={work.workType} focusable={false} /></span><span className="ent-work-row-summary">{work.nextUserAction || work.messages.at(-1)?.content || work.goal || '尚无消息'}</span><span className="ent-work-row-meta"><span>{work.currentEmployeeName || '待分配员工'}</span><time>{relativeTime(work.updatedAt)}</time></span></span>
-      </button>)}
+        <span className="ent-work-row-body"><span className="ent-work-row-title"><strong>{work.title || '未命名工作'}</strong>{work.pinnedAt ? <span className="ent-work-pinned" role="img" aria-label="已置顶"><Pin size={12} aria-hidden /></span> : null}<WorkTypeTag workType={work.workType} focusable={false} /></span><span className="ent-work-row-summary">{work.nextUserAction || work.messages.at(-1)?.content || work.goal || '尚无消息'}</span><span className="ent-work-row-meta"><span>{work.currentEmployeeName || '待分配员工'}</span><time>{relativeTime(work.updatedAt)}</time></span></span>
+        </button>
+        <IconHint label="更多操作"><button type="button" className="ent-work-row-menu" aria-label={`更多操作：${work.title || '未命名工作'}`} aria-haspopup="menu" aria-expanded={menuWorkId === work.id} aria-controls={menuWorkId === work.id ? 'ent-work-context-menu' : undefined} onClick={event => onWorkMenu(work.id, event.currentTarget)}><MoreHorizontal size={16} aria-hidden /></button></IconHint>
+      </div>)}
     </div>
   </aside>
 }

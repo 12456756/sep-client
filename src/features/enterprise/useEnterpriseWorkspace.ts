@@ -208,7 +208,9 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
   retryWork: (workId: string, nodeId?: string) => Promise<void>;
-  deleteWork: (workId: string) => Promise<void>;
+  renameWork: (workId: string, title: string) => Promise<boolean>;
+  setWorkPinned: (workId: string, pinned: boolean) => Promise<boolean>;
+  deleteWork: (workId: string) => Promise<boolean>;
   /** 把当前安排好的工作存成常用工作，返回是否存成功。 */
   saveFlow: (flow: Omit<SavedWorkFlow, 'id' | 'savedAt'>) => boolean;
   deleteSavedFlow: (flowId: string) => void;
@@ -751,7 +753,27 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId } : workId), '重试失败，请稍后再试');
   }, [run]);
 
-  const deleteWork = useCallback(async (workId: string) => {
+  const updateWorkDetails = useCallback(async (workId: string, patch: { title?: string; pinned?: boolean }): Promise<boolean> => {
+    const cache = taskTypeCache.current;
+    const ok = await run(async () => {
+      const result = await window.electronAPI.updateTaskDetails({ taskId: workId, ...patch });
+      if (taskTypeCache.current === cache && result.success && result.task) {
+        const updated = result.task;
+        setTasks(current => current.map(task => task.id === workId ? {
+          ...task,
+          ...(patch.title !== undefined ? { title: updated.title } : {}),
+          ...(patch.pinned !== undefined ? { pinnedAt: updated.pinnedAt ?? null } : {}),
+        } : task));
+      }
+      return result;
+    }, '修改工作记录失败，请重试');
+    return ok && taskTypeCache.current === cache;
+  }, [run]);
+
+  const renameWork = useCallback((workId: string, title: string) => updateWorkDetails(workId, { title }), [updateWorkDetails]);
+  const setWorkPinned = useCallback((workId: string, pinned: boolean) => updateWorkDetails(workId, { pinned }), [updateWorkDetails]);
+
+  const deleteWork = useCallback(async (workId: string): Promise<boolean> => {
     const cache = taskTypeCache.current;
     const ok = await run(() => window.electronAPI.deleteTask(workId), '删除失败，请重试');
     if (ok && taskTypeCache.current === cache) {
@@ -767,6 +789,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       });
       setRoute(current => (current.name === 'work' && current.workId === workId ? { name: 'records' } : current));
     }
+    return ok && taskTypeCache.current === cache;
   }, [clearRuntimeState, deletedTaskIds, run]);
 
   // ── 常用工作 ──────────────────────────────────────────────────────────
@@ -853,7 +876,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, replaceRoute, retryWorkTypes, goBack, dismissError: () => setError(null),
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
-    stopWork, retryWork, deleteWork,
+    stopWork, retryWork, renameWork, setWorkPinned, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,
     organizationMembers, organizationEmployees, organizationStatus, organizationError, currentUserAvatar,

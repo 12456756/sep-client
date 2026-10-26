@@ -179,6 +179,8 @@ export interface WorkTimelineEntry {
 export interface WorkItem {
   id: string;
   title: string;
+  /** 本机持久化的置顶时间，未置顶为 null。 */
+  pinnedAt?: number | null;
   goal: string;
   /** 对话式工作与流程式工作走不同的页面，但在记录里统一呈现。 */
   kind: 'conversation' | 'flow';

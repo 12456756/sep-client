@@ -35,3 +35,17 @@ test('token timestamps keep stable order; state changes and newly inserted works
   assert.deepEqual(refreshWorkOrder([{ ...a, status: 'completed', updatedAt: 40 }, b], first).ids, ['a', 'b'])
   assert.deepEqual(refreshWorkOrder([...tokenUpdate, { ...a, id: 'c', updatedAt: 50 }], first).ids, ['c', 'a', 'b'])
 })
+
+test('pins precede ordinary work, survive streaming updates, and unpin restores normal order', () => {
+  const base = { status: 'completed' as const, currentEmployeeId: 'e', workType: { state: 'resolved' as const, kind: 'conversation' as const } }
+  const works: Array<typeof base & { id: string; updatedAt: number; pinnedAt?: number | null }> = [{ ...base, id: 'recent', updatedAt: 100 }, { ...base, id: 'old', updatedAt: 1, pinnedAt: 30 }, { ...base, id: 'older-pin', updatedAt: 5, pinnedAt: 20 }]
+  const snapshot = refreshWorkOrder(works)
+  assert.deepEqual(snapshot.ids, ['old', 'older-pin', 'recent'])
+  const streamed = works.map(work => ({ ...work, updatedAt: work.updatedAt + 1000 }))
+  assert.equal(refreshWorkOrder(streamed, snapshot), snapshot)
+  assert.deepEqual(applyWorkOrder(streamed, snapshot).map(work => work.id), snapshot.ids)
+  const unpinned = works.map(work => ({ ...work, pinnedAt: null }))
+  assert.deepEqual(refreshWorkOrder(unpinned, snapshot).ids, ['recent', 'older-pin', 'old'])
+  assert.deepEqual(applyWorkOrder(works.filter(work => work.id !== 'old'), snapshot).map(work => work.id), ['older-pin', 'recent'])
+  assert.deepEqual(applyWorkOrder(works.map(work => ({ ...work, pinnedAt: work.id === 'recent' ? 40 : work.pinnedAt })), snapshot).map(work => work.id), ['recent', 'old', 'older-pin'])
+})

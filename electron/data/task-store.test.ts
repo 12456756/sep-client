@@ -63,6 +63,23 @@ describe('TaskStore', () => {
     assert.equal(loaded?.queuedAt, 8)
   })
 
+  it('normalizes legacy and invalid pin timestamps while preserving valid pins', async () => {
+    const userData = await makeUserDataDir()
+    const store = new TaskStore(userData)
+    await store.initialize()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const legacy = task(scope, 'legacy')
+    const pinned = { ...task(scope, 'pinned'), pinnedAt: Date.now() - 10 }
+    const laterClock = { ...task(scope, 'later-clock'), pinnedAt: Date.now() + 3_600_000 }
+    const invalid = { ...task(scope, 'invalid'), pinnedAt: Number.POSITIVE_INFINITY }
+    await store.save(scope, [legacy, pinned, laterClock, invalid])
+    const loaded = await store.load(scope)
+    assert.equal(loaded.find(item => item.id === 'legacy')?.pinnedAt, null)
+    assert.equal(loaded.find(item => item.id === 'pinned')?.pinnedAt, pinned.pinnedAt)
+    assert.equal(loaded.find(item => item.id === 'later-clock')?.pinnedAt, laterClock.pinnedAt)
+    assert.equal(loaded.find(item => item.id === 'invalid')?.pinnedAt, null)
+  })
+
   it('isolates task files by enterprise and member', async () => {
     const userData = await makeUserDataDir()
     const store = new TaskStore(userData)

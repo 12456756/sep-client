@@ -598,6 +598,27 @@ export class TaskManager {
     return deleted
   }
 
+  async updateTaskDetails(taskId: string, input: { title?: string; pinned?: boolean }): Promise<Task> {
+    const generation = this.generation
+    const scope = await this.requireCurrentUser()
+    this.assertCurrentScope(scope, generation)
+    await this.requireTask(taskId)
+    await this.commit(nextTasks => {
+      const task = nextTasks.get(taskId)
+      if (!task || this.hiddenTaskIds.has(taskId)) throw new TaskScopeError('Task not found.')
+      if (input.title !== undefined) task.title = input.title
+      if (input.pinned !== undefined) {
+        if (input.pinned) task.pinnedAt ??= Date.now()
+        else task.pinnedAt = null
+      }
+    }, generation)
+    this.assertCurrentScope(scope, generation)
+    const updated = this.tasks.get(taskId)
+    if (!updated || this.hiddenTaskIds.has(taskId)) throw new TaskScopeError('Task not found.')
+    this.notifyTaskUpdate(taskId)
+    return cloneTask(updated)
+  }
+
   /** Called only after the service has durably archived the record. History stays readable internally. */
   hideTaskRecord(taskId: string, scope: TaskOwnerScope): void {
     if (!this.currentUser || this.currentUser.memberId !== scope.memberId || this.currentUser.enterpriseId !== scope.enterpriseId) {

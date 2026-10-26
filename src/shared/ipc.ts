@@ -390,6 +390,7 @@ export interface ElectronAPI {
   requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>
   getEmployeeAccessRequest: (input: GetEmployeeAccessRequestInput) => Promise<ArrangementDraftResult>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
+  updateTaskDetails: (input: { taskId: string; title?: string; pinned?: boolean }) => Promise<TaskResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>
   onPiEvent: (callback: (event: TaskExecutionEvent) => void) => () => void
