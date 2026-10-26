@@ -80,6 +80,7 @@ function mount(overrides: Partial<Props> = {}) {
 test('menu is clamped to the viewport, restores focus on escape and supports arrow keys', () => {
   const ui = mount()
   try {
+    assert.equal(ui.find(e => e.props.role === 'menu').props.popover, 'manual')
     assert.equal(ui.menu.style.left, '816px')
     assert.equal(ui.menu.style.top, '610px')
     assert.equal(ui.doc.activeElement, ui.items[0])

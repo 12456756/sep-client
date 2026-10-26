@@ -144,7 +144,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
   }
 
   return <>
-    <div id="ent-work-context-menu" ref={menuRef} role="menu" aria-label="工作记录操作" className="ent-work-context-menu"
+    <div id="ent-work-context-menu" ref={menuRef} {...{ popover: 'manual' }} role="menu" aria-label="工作记录操作" className="ent-work-context-menu"
       onKeyDown={handleMenuKey}>
       {menuWork && <>
         <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onPin(menuWork.id, !menuWork.pinnedAt) }}>
