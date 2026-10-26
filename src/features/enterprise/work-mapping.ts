@@ -8,6 +8,7 @@
 
 import { runtimeKey } from '../../shared/work-activity';
 import type { ArrangementExecutionSnapshot, ArrangementFinalFileSnapshot, ArrangementPlanSnapshot, TaskExecutionEvent, ClientTask, ClientTaskMessage } from '../../shared/types';
+import { GENERAL_ASSISTANT_ID } from './general-assistant';
 import type {
   SharedContext,
   WorkActivity,
@@ -223,7 +224,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
   const legacyProgress = task.status === 'pending' && task.activeRunId === null
     ? 0
     : task.progress ?? (status === 'completed' ? 100 : 0);
-  const nameOf = (id: string | null | undefined) => employees.find(item => item.id === id)?.name ?? '硅基员工';
+  const nameOf = (id: string | null | undefined) => id === GENERAL_ASSISTANT_ID ? '通用助手' : employees.find(item => item.id === id)?.name ?? '硅基员工';
 
   const stepStates = deriveStepStates(meta?.steps.length ?? 0, status, legacyProgress);
   const steps: WorkStep[] = (meta?.steps ?? []).map((step, index) => ({
@@ -234,7 +235,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
 
   const progress = plan && plan.mode !== 'conversation' && steps.length
     ? steps.filter(step => step.state === 'done').length / steps.length * 100 : legacyProgress;
-  const currentEmployeeId = activeEmployeeId
+  const currentEmployeeId = plan?.mode === 'conversation' && plan.conversation?.kind === 'general' ? GENERAL_ASSISTANT_ID : activeEmployeeId
     ?? steps.find(step => step.state === 'running' || step.state === 'waiting-user')?.employeeId
     ?? task.subscriptionId
     ?? steps[0]?.employeeId
@@ -272,7 +273,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     updatedAt: task.completedAt ?? task.lastRunEndedAt ?? task.currentRunStartedAt ?? task.queuedAt ?? task.startedAt ?? task.createdAt,
-    participants: meta?.participants.length ? meta.participants : [currentEmployeeId].filter(Boolean),
+    participants: currentEmployeeId === GENERAL_ASSISTANT_ID ? [GENERAL_ASSISTANT_ID] : meta?.participants.length ? meta.participants : [currentEmployeeId].filter(Boolean),
     deliverables,
     arrangementExecution: kind === 'flow' ? effectiveExecution : undefined,
     timeline: buildTimeline(task, kind, nameOf(currentEmployeeId)),

@@ -9,7 +9,7 @@
  * 路由用受控状态而不是 URL，因为桌面端不需要地址栏，返回行为由 hook 维护的历史栈决定。
  */
 
-import { AlertTriangle, Command, LayoutGrid, Moon, Network, Sun } from 'lucide-react';
+import { AlertTriangle, Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
@@ -20,6 +20,7 @@ import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsD
 import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
+import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
 import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
@@ -45,6 +46,8 @@ interface Props {
   userAvatar?: EmployeeAvatarSource | null;
   instances: Subscription[];
   employeeStatuses: EmployeeStatus[];
+  employeeLoad?: EmployeeLoadState;
+  employeeStatusLoad?: EmployeeLoadState;
   onLogout: () => void | Promise<void>;
   /** 企业管理员才看到技能审核与员工权限入口。平台接口未开放，暂按 false。 */
   canManage?: boolean;
@@ -56,7 +59,7 @@ export function ClientAppPage(props: Props) {
   </MediaPreferenceScopeContext.Provider>;
 }
 
-function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
+function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
@@ -206,6 +209,8 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
             </div>
           )}
         />
+        <EmployeeLoadNotice state={employeeLoad} loadingLabel="正在加载员工列表" retryLabel="重试加载员工列表" />
+        <EmployeeLoadNotice state={employeeStatusLoad} loadingLabel="正在加载员工状态" retryLabel="重试加载员工状态" />
         {workspace.error ? (
           <div className="ent-error-bar" role="alert">
             <AlertTriangle size={14} aria-hidden />
@@ -254,6 +259,20 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
       ) : null}
     </div>
   );
+}
+
+function EmployeeLoadNotice({ state, loadingLabel, retryLabel }: { state?: EmployeeLoadState; loadingLabel: string; retryLabel: string }) {
+  if (state?.error) return (
+    <div className="ent-error-bar" role="alert">
+      <AlertTriangle size={14} aria-hidden />
+      <span className="ent-load-message">{state.error}</span>
+      <button type="button" className="ent-top-icon ent-load-retry" aria-label={retryLabel} title={retryLabel} disabled={state.loading} onClick={state.retry}>
+        <RotateCw size={15} aria-hidden />
+      </button>
+    </div>
+  );
+  if (!state?.loading) return null;
+  return <div className="ent-load-bar" role="status"><LoaderCircle size={14} aria-hidden /><span>{loadingLabel}</span></div>;
 }
 
 function PageBody({ workspace }: { workspace: ReturnType<typeof useEnterpriseWorkspace> }) {

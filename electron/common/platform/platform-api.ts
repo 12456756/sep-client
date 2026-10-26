@@ -1,3 +1,5 @@
+import { z } from 'zod'
+import { LoginFeedbackError, isTransportTimeout } from './login-error'
 import {
   notificationPageSchema, notificationQuerySchema, notificationCategoryQuerySchema,
   notificationIdSchema, unreadNotificationCountSchema,
@@ -229,7 +231,7 @@ async function parseError(response: Response, resource?: AuthApiResource): Promi
   try {
     const value = await response.json() as Partial<ApiError>
     return new AuthApiError({
-      statusCode: typeof value.statusCode === 'number' ? value.statusCode : response.status,
+      statusCode: resource === 'login' ? response.status : typeof value.statusCode === 'number' ? value.statusCode : response.status,
       message: typeof value.message === 'string' ? value.message : response.statusText,
       requestId: value.requestId,
       timestamp: value.timestamp,
@@ -319,14 +321,39 @@ function validateImageInput(input: UploadInput): UploadInput {
   return input
 }
 
+const loginResponseSchema = z.object({
+  accessToken: z.string().min(1),
+  refreshToken: z.string().min(1),
+  accessTokenExpiresIn: z.number().finite().positive().optional(),
+  expiresIn: z.number().finite().positive().optional(),
+  refreshTokenExpiresIn: z.number().finite().positive(),
+  user: z.object({ id: z.string().min(1), email: z.string().email(), name: z.string(), role: z.string() }),
+  enterprise: z.object({ id: z.string().min(1), name: z.string() }).nullable(),
+  devices: z.array(z.object({ id: z.string(), fingerprint: z.string(), platform: z.string(), lastSeenAt: z.string() })),
+}).refine(value => value.accessTokenExpiresIn !== undefined || value.expiresIn !== undefined)
+  .transform(({ expiresIn, ...value }) => ({ ...value, accessTokenExpiresIn: value.accessTokenExpiresIn ?? expiresIn ?? 3600 }))
+
 export async function login(request: LoginRequest): Promise<LoginResponse> {
-  const response = await fetch(`${config.SEP_BASE_URL}/client/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
-  })
+  let response: Response
+  try {
+    response = await fetch(`${config.SEP_BASE_URL}/client/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    })
+  } catch (error) {
+    throw new LoginFeedbackError(isTransportTimeout(error) ? 'timeout' : 'network', error)
+  }
   if (!response.ok) throw await parseError(response, 'login')
-  return response.json() as Promise<LoginResponse>
+  let value: unknown
+  try {
+    value = await response.json()
+  } catch (error) {
+    throw new LoginFeedbackError(isTransportTimeout(error) ? 'timeout' : error instanceof TypeError ? 'network' : 'response_invalid', error)
+  }
+  const parsed = loginResponseSchema.safeParse(value)
+  if (!parsed.success) throw new LoginFeedbackError('response_invalid')
+  return parsed.data
 }
 
 export async function refreshAccessToken(refreshToken: string): Promise<RefreshResponse> {

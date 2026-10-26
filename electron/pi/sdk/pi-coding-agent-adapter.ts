@@ -939,14 +939,14 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
         extensionFactories: buildExtensions(config, mcp),
-        ...employeeSkillLoaderOptions(
+        ...(config.disableSkills ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) } : employeeSkillLoaderOptions(
           config.workspaceDir,
           config.agentDir,
           config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
           loadSkills,
-        ),
+        )),
         noContextFiles: true,
-        additionalSkillPaths: config.additionalSkillPaths,
+        additionalSkillPaths: config.disableSkills ? [] : config.additionalSkillPaths,
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,

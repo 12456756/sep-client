@@ -15,6 +15,7 @@ import type { CreateTaskInput, TaskExecutionPort, TaskService } from './task-ser
 import type { SessionRecoveryMode } from '../runtime/run-types'
 import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentService } from './attachment-service'
+import type { WorkPlanStorePort } from '../data/work-plan-store'
 
 export interface ConversationServiceDependencies {
   scope: ScopeSource
@@ -24,6 +25,7 @@ export interface ConversationServiceDependencies {
   tasks: TaskService
   execution: () => Promise<TaskExecutionPort>
   attachments?: AttachmentService
+  workPlans?: WorkPlanStorePort
 }
 
 export interface ContinueConversationInput {
@@ -53,7 +55,8 @@ export class ConversationService {
     if (!task || !task.subscriptionId) {
       throw new AppError('NOT_FOUND', { message: '未找到任务或其硅基员工绑定。' })
     }
-    if (!await this.deps.employees.authorize(task.subscriptionId)) {
+    const plan = await this.deps.workPlans?.get(scope, input.taskId)
+    if (plan?.conversation?.kind !== 'general' && !await this.deps.employees.authorize(task.subscriptionId)) {
       throw new AppError('INVALID_ARGUMENT')
     }
     const current = requireScope(this.deps.scope)
@@ -78,6 +81,8 @@ export class ConversationService {
    * 顺序反过来会在运行时拒绝时留下不一致的元数据。
    */
   async switchEmployee(taskId: string, subscriptionId: string): Promise<void> {
+    const plan = await this.deps.workPlans?.get(requireScope(this.deps.scope), taskId)
+    if (plan?.conversation?.kind === 'general') throw new AppError('INVALID_STATE', { message: '通用助手会话不支持切换员工，请新建员工对话。' })
     if (!await this.deps.employees.authorize(subscriptionId)) {
       throw new AppError('INVALID_ARGUMENT')
     }

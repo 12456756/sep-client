@@ -45,6 +45,8 @@ const draftDocument = z.object({
   attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   sharedSkillIds: z.array(z.string()),
   conversation: z.object({
+    kind: z.enum(['employee', 'general']).optional(),
+    modelId: z.string().trim().min(1).optional(),
     participants: z.array(participant),
     activeSubscriptionId: z.string().nullable(),
   }).nullable(),

@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { LoginPage } from './pages/LoginPage';
 import { ClientAppPage } from './pages/ClientAppPage';
 import { ToolApprovalDialog } from './components/ToolApprovalDialog';
-import type { EmployeeStatus, Subscription, RememberedAccount } from './shared/types';
+import type { RememberedAccount } from './shared/types';
+import { useWorkspaceEmployees } from './features/enterprise/use-workspace-employees';
+import { FeedbackProvider, useFeedback } from './components/feedback/FeedbackProvider';
+import { LOGIN_FEEDBACK } from './shared/login-feedback';
 
 interface AuthState {
   user: { id: string; email: string; name: string };
@@ -15,92 +18,83 @@ interface ToolApprovalRequest {
   input: unknown;
 }
 
-const INSTANCE_LOAD_TIMEOUT_MS = 3_000;
-
 export default function App() {
+  return <FeedbackProvider><AppContent /></FeedbackProvider>;
+}
+
+function AppContent() {
+  const feedback = useFeedback();
   const [authState, setAuthState] = useState<AuthState | null>(null);
-  const [instances, setInstances] = useState<Subscription[]>([]);
-  const [employeeStatuses, setEmployeeStatuses] = useState<EmployeeStatus[]>([]);
+  const currentAuth = useRef<AuthState | null>(null);
+  const logoutPending = useRef(false);
+  const employees = useWorkspaceEmployees(authState);
   const [toolApprovalRequest, setToolApprovalRequest] = useState<ToolApprovalRequest | null>(null);
   const [restoringAuth, setRestoringAuth] = useState(true);
   const [rememberedAccounts, setRememberedAccounts] = useState<RememberedAccount[]>([]);
   const [encryptionAvailable, setEncryptionAvailable] = useState(true);
-  const [loadingInstances, setLoadingInstances] = useState(false);
-  const [instanceError, setInstanceError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void window.electronAPI.listRememberedAccounts().then(result => {
+  const loadAccounts = useCallback(async (isCurrent: () => boolean) => {
+    try {
+      const result = await window.electronAPI.listRememberedAccounts();
+      if (!isCurrent()) return;
       setRememberedAccounts(result.accounts);
       setEncryptionAvailable(result.encryptionAvailable);
-      setRestoringAuth(false);
-    }).catch(() => setRestoringAuth(false));
-  }, []);
+      if (result.error) feedback.show({ tone: 'error', message: result.error.message });
+    } catch {
+      if (isCurrent()) feedback.show({ tone: 'error', message: LOGIN_FEEDBACK.accounts_read.message });
+    }
+  }, [feedback]);
+
+  useEffect(() => {
+    let active = true;
+    const revision = feedback.getRevision();
+    void loadAccounts(() => active && revision === feedback.getRevision()).finally(() => { if (active) setRestoringAuth(false); });
+    return () => { active = false; };
+  }, [feedback, loadAccounts]);
 
   useEffect(() => window.electronAPI.onToolApprovalRequest(setToolApprovalRequest), []);
 
   useEffect(() => window.electronAPI.onAuthenticationRequired(() => {
+    if (!currentAuth.current) return;
+    currentAuth.current = null;
+    feedback.clear();
     setAuthState(null);
-    setInstances([]);
-    setEmployeeStatuses([]);
-    setLoadingInstances(false);
-    setInstanceError(null);
     setToolApprovalRequest(null);
-  }), []);
+    feedback.show({ tone: 'warning', message: LOGIN_FEEDBACK.session_expired.message });
+  }), [feedback]);
 
-  useEffect(() => {
-    if (!authState) return;
-    let active = true;
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    setLoadingInstances(true);
-    setInstanceError(null);
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('加载员工团队超时，请稍后重试。')), INSTANCE_LOAD_TIMEOUT_MS);
-    });
-    void Promise.race([
-      Promise.all([window.electronAPI.getSubscriptions(), window.electronAPI.getEmployeeStatus()]),
-      timeout,
-    ]).then(result => {
-      if (!active) return;
-      const [subscriptions, statuses] = result;
-      if (!subscriptions.success) {
-        setInstanceError(subscriptions.error?.message || '?????????');
-        return;
-      }
-      setInstances(subscriptions.data ?? []);
-      setEmployeeStatuses(statuses.success ? (statuses.data ?? []) : []);
-    }).catch(error => {
-      if (active) setInstanceError(error instanceof Error ? error.message : '?????????');
-    }).finally(() => {
-      if (timeoutId) clearTimeout(timeoutId);
-      if (active) setLoadingInstances(false);
-    });
-    return () => {
-      active = false;
-      if (timeoutId) clearTimeout(timeoutId);
-    };
-  }, [authState]);
+  const handleLoginSuccess = (data: AuthState) => {
+    feedback.clear();
+    currentAuth.current = data;
+    setAuthState(data);
+  };
 
   const handleLogout = async () => {
+    if (logoutPending.current) return;
+    logoutPending.current = true;
+    const session = currentAuth.current;
     try {
-      await window.electronAPI.logout();
-    } finally {
+      const result = await window.electronAPI.logout();
+      if (currentAuth.current !== session) return;
+      if (!result.success) {
+        feedback.show({ tone: 'error', message: result.error?.message ?? LOGIN_FEEDBACK.logout.message });
+        return;
+      }
+      currentAuth.current = null;
+      feedback.clear();
       setAuthState(null);
-      setInstances([]);
-      setEmployeeStatuses([]);
-      setInstanceError(null);
       setToolApprovalRequest(null);
-      const result = await window.electronAPI.listRememberedAccounts();
-      setRememberedAccounts(result.accounts);
-      setEncryptionAvailable(result.encryptionAvailable);
-    }
+      const revision = feedback.getRevision();
+      await loadAccounts(() => revision === feedback.getRevision());
+    } catch {
+      if (currentAuth.current === session) feedback.show({ tone: 'error', message: LOGIN_FEEDBACK.logout.message });
+    } finally { logoutPending.current = false; }
   };
 
   const renderRoute = () => {
-    if (restoringAuth) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在恢复工作台</p></div>;
-    if (!authState) return <LoginPage encryptionAvailable={encryptionAvailable} rememberedAccounts={rememberedAccounts} onAccountListChange={setRememberedAccounts} onLoginSuccess={setAuthState} />;
-    if (loadingInstances) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在准备你的员工团队</p></div>;
-    if (instanceError) return <div className="app-empty-screen"><h1>暂时无法进入工作台</h1><p>{instanceError}</p><button className="workspace-primary-button" onClick={() => void handleLogout()}>退出登录</button></div>;
-    return <ClientAppPage userId={authState.user.id} userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={instances} employeeStatuses={employeeStatuses} onLogout={handleLogout} />;
+    if (restoringAuth) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在读取账号</p></div>;
+    if (!authState) return <LoginPage encryptionAvailable={encryptionAvailable} rememberedAccounts={rememberedAccounts} onAccountListChange={setRememberedAccounts} onLoginSuccess={handleLoginSuccess} />;
+    return <ClientAppPage userId={authState.user.id} userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={employees.subscriptions.items} employeeStatuses={employees.statuses.items} employeeLoad={employees.subscriptions} employeeStatusLoad={employees.statuses} onLogout={handleLogout} />;
   };
 
   return <>

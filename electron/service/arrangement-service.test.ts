@@ -18,6 +18,32 @@ import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../commo
 
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
+describe('general assistant conversation', () => {
+  it('resolves a real model subscription at preflight and preserves general mode in the plan', async () => {
+    let stored = persisted({ ...draft(), mode: 'conversation', nodes: [],
+      conversation: { kind: 'general', modelId: 'model-a', participants: [], activeSubscriptionId: null } })
+    const service = new ArrangementService(serviceDeps({
+      employees: { async list() { return [employee()] } },
+      drafts: { async get() { return stored }, async update(_s: unknown, _id: string, _revision: number, patch: ArrangementDraft) { stored = patch; return stored } },
+    }))
+    assert.equal((await service.preflightDraft(stored.id, 1)).canStart, true)
+    const { plan } = await service.confirmDraft(stored.id, 1, 'general-chat')
+    assert.equal(plan.conversation?.kind, 'general')
+    assert.deepEqual(plan.conversation?.participants, [{ subscriptionId: 'sub-a', modelId: 'model-a' }])
+    assert.equal(plan.nodes.length, 0)
+  })
+
+  it('blocks an unsupported model rather than inventing a subscription', async () => {
+    const stored = persisted({ ...draft(), mode: 'conversation', nodes: [],
+      conversation: { kind: 'general', modelId: 'missing', participants: [], activeSubscriptionId: null } })
+    const service = new ArrangementService(serviceDeps({
+      employees: { async list() { return [employee()] } }, drafts: { async get() { return stored } },
+    }))
+    assert.equal((await service.preflightDraft(stored.id, 1)).canStart, false)
+    await assert.rejects(service.confirmDraft(stored.id, 1, 'general-chat'))
+  })
+})
+
 describe('arrangement attachment ownership', () => {
   const attachment = { attachmentId: 'att-a', sha256: 'a'.repeat(64) }
 

@@ -1,4 +1,5 @@
 import type { ArrangementDraftDocument, ArrangementPermissionPreset } from '../../shared/types';
+import { GENERAL_ASSISTANT_ID } from './general-assistant';
 
 /** Task settings use the persisted backend contract, not employee-local display switches. */
 export interface RunSettings {
@@ -32,7 +33,9 @@ export function conversationDocument(
   return {
     schemaVersion: 1, mode: 'conversation', title, goal: prompt,
     confirmedInputs: [], sharedSkillIds: [], nodes: [], lastPlanning: null,
-    conversation: { participants: [{ subscriptionId, modelId }], activeSubscriptionId: subscriptionId },
+    conversation: subscriptionId === GENERAL_ASSISTANT_ID
+      ? { kind: 'general', modelId, participants: [], activeSubscriptionId: null }
+      : { participants: [{ subscriptionId, modelId }], activeSubscriptionId: subscriptionId },
     workspace: { mode: 'shared', path: settings.workDir?.trim() || null },
     permissions: { ...(settings.permissions ?? defaultConversationRunSettings().permissions) },
   };

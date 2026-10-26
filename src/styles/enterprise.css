@@ -701,6 +701,9 @@
 .ent-user-menu button.danger:hover { color: var(--ent-danger); background: var(--ent-danger-bg); }
 
 .ent-error-bar { display: flex; align-items: center; gap: 8px; margin: 0 28px 6px; padding: 10px 14px; border: 1px solid var(--ent-danger-line); border-radius: var(--ent-radius-sm); background: var(--ent-danger-bg); color: var(--ent-danger); font-size: var(--ent-fs-body); }
+.ent-load-bar { position: relative; z-index: 1; display: flex; align-items: center; gap: 8px; margin: 0 28px 6px; padding: 6px 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
+.ent-load-message { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.ent-load-retry { flex-shrink: 0; }
 
 /* ── 员工卡片 ────────────────────────────────────────────────────────── */
 

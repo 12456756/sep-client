@@ -205,11 +205,23 @@ function harness(extra: Record<string, unknown> = {}) {
     scope: { currentScope: () => scope },
     taskManager: { async getTask() { return task }, async getAllTasks() { return [task] }, async createTask() { return task } },
     taskMetadataStore: { async diagnose() { return missing }, async save() {} },
-    workPlans: { async diagnose() { return missing } },
+    workPlans: { async diagnose() { return missing }, async get() { return null } },
     employees: { async authorize() { return true } },
     taskRunStore: {}, execution: async () => ({}), ...extra,
   } as unknown as TaskServiceDependencies)
 }
+
+it('retries a general conversation without employee authorization or skill preparation', async () => {
+  let retryOptions: unknown
+  const service = harness({
+    taskMetadataStore: { async load() { return { kind: 'conversation' } } },
+    workPlans: { async get() { return { mode: 'conversation', conversation: { kind: 'general', modelId: 'model-a' } } } },
+    employees: { async authorize() { assert.fail('general retry must use model-only runtime authorization') } },
+    execution: async () => ({ async retryTask(taskId: string, options: unknown) { assert.equal(taskId, task.id); retryOptions = options } }),
+  })
+  await service.retry(task.id)
+  assert.deepEqual(retryOptions, { conversation: true })
+})
 
 it('projects get and list without mutating raw tasks or treating unavailable plan dependencies as absent', async () => {
   const service = harness()

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PiCodingAgentAdapter, normalizeGatewayPayload, sessionToolOptions, classifyToolFailure, buildGatewayRequestLogFields, buildGatewayThinkingLogFields } from './pi-coding-agent-adapter'
@@ -9,6 +9,7 @@ import type { PiAgentSessionConfig } from './pi-agent-runtime'
 import type { MediaHostTools, MediaToolName } from '../../domain/media-tools'
 import { AppError } from '../../errors/app-error'
 import { setLogSink } from '../../common/logger'
+import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
 
 const readOnlyPolicy = {
   allowedTools: ['read', 'grep', 'find', 'ls'],
@@ -285,8 +286,10 @@ async function mediaSession(
   overrides: Partial<PiAgentSessionConfig>,
   call?: { name: string; input: unknown },
   result: unknown = jobView,
+  prepare?: (root: string) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sep-pi-media-'))
+  await prepare?.(root)
   const bodies: Array<{ messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string; description: string; parameters: Record<string, unknown> } }> }> = []
   const executions: Array<{ name: MediaToolName; input: unknown; signal?: AbortSignal }> = []
   let approvals = 0
@@ -339,6 +342,25 @@ async function mediaSession(
 }
 
 describe('trusted media host tools with the real Pi SDK', () => {
+  it('general assistant preserves the Chinese native prompt and dynamic paths but loads no local skills or employee override', async () => {
+    const { bodies } = await mediaSession({
+      useNativeSystemPrompt: true, disableSkills: true, modelRequestAwareness: false,
+      systemPrompt: 'EMPLOYEE_OVERRIDE_MUST_NOT_APPEAR', employeeProfile: undefined, mediaTools: undefined,
+      additionalSkillPaths: ['missing-employee-skill'], transformSystemPrompt: translatePiNativeSystemPrompt,
+    }, undefined, jobView, async root => {
+      const skill = join(root, '.pi', 'skills', 'local-only')
+      await mkdir(skill, { recursive: true })
+      await writeFile(join(skill, 'SKILL.md'), '---\nname: local-only\ndescription: LOCAL_SKILL_MUST_NOT_APPEAR\n---\nLocal instructions.')
+      await writeFile(join(root, '.pi', 'SYSTEM.md'), 'LOCAL_SYSTEM_OVERRIDE_MUST_NOT_APPEAR')
+    })
+    const prompt = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+    assert.match(prompt, /你运行在 Pi 中。你通过读取文件、执行命令、编辑代码和创建新文件来帮助用户。/)
+    assert.match(prompt, /当前工作目录：.*sep-pi-media-/)
+    assert.match(prompt, /主要文档：.*README.md/)
+    assert.doesNotMatch(prompt, /EMPLOYEE_OVERRIDE_MUST_NOT_APPEAR|LOCAL_SKILL_MUST_NOT_APPEAR|LOCAL_SYSTEM_OVERRIDE_MUST_NOT_APPEAR|<employee_profile>|<available_skills>/)
+    assert.ok(bodies[0].tools?.some(tool => tool.function.name === 'read'))
+    assert.ok(!bodies[0].tools?.some(tool => tool.function.name.startsWith('media_')))
+  })
   for (const systemPrompt of [undefined, 'Custom employee instructions.']) {
     it(`keeps image tools and duty-bound means available with ${systemPrompt ? 'custom' : 'default'} instructions`, async () => {
       const { bodies, executions } = await mediaSession({ systemPrompt,

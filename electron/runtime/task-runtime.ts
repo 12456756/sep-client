@@ -77,6 +77,7 @@ export interface TaskRuntimeOptions {
   onApprovalRequest: (request: ToolAuthorizationRequest) => void
   resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   authorizeEmployee?: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
+  authorizeModel?: (modelId: string, preferredSubscriptionId?: string) => Promise<EmployeeRuntimeConfig | null>
   createWorker?: (options: PiTaskWorkerOptions) => TaskWorkerPort
   taskRunStore?: TaskRunStorePort
   userDataDir?: string
@@ -98,6 +99,7 @@ export class TaskRuntime {
   private readonly onEvent: (event: TaskExecutionEvent) => void
   private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   private readonly authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
+  private readonly authorizeModel: TaskRuntimeOptions['authorizeModel']
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
   private readonly workPlanStore: WorkPlanStorePort | null
@@ -134,6 +136,7 @@ export class TaskRuntime {
     this.onAuthenticationRequired = options.onAuthenticationRequired
     this.onEvent = options.onEvent
     this.resolveEmployee = options.resolveEmployee
+    this.authorizeModel = options.authorizeModel
     this.authorizeEmployee = options.authorizeEmployee ?? (async (subscriptionId, modelId) => {
       const employee = this.resolveEmployee(subscriptionId)
       return employee && (!modelId || employee.modelId === modelId) ? employee : null
@@ -186,6 +189,7 @@ export class TaskRuntime {
       getRefreshToken: this.getRefreshToken,
       onAuthenticationRequired: this.onAuthenticationRequired,
       authorizeEmployee: this.authorizeEmployee,
+      authorizeModel: this.authorizeModel,
       workspaceRoot: this.getTaskWorkspaceRoot,
       approvals: this.approvals,
       events: this.events,
@@ -287,11 +291,16 @@ export class TaskRuntime {
       void this.pump()
       return
     }
-    const subscriptionId = task.subscriptionId
-    if (!subscriptionId) throw new Error('Select a silicon employee before executing the task.')
-    const modelId = arrangement?.conversation?.participants.find(item => item.subscriptionId === subscriptionId)?.modelId
-    const employee = await this.authorizeEmployee(subscriptionId, modelId)
+    const general = arrangement?.mode === 'conversation' && arrangement.conversation?.kind === 'general'
+    const selectedSubscriptionId = task.subscriptionId
+    if (!selectedSubscriptionId && !general) throw new Error('Select a silicon employee before executing the task.')
+    const modelId = general ? arrangement.conversation!.modelId : arrangement?.conversation?.participants.find(item => item.subscriptionId === selectedSubscriptionId)?.modelId
+    const employee = general
+      ? modelId ? await this.authorizeModel?.(modelId, selectedSubscriptionId ?? undefined) : null
+      : await this.authorizeEmployee(selectedSubscriptionId!, modelId)
     if (!employee) throw new Error('The selected employee is no longer available.')
+    const subscriptionId = employee.subscriptionId
+    if (general && selectedSubscriptionId !== subscriptionId) await this.taskManager.setTaskEmployee(taskId, subscriptionId)
 
     if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) {
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)

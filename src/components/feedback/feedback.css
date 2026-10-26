@@ -1,0 +1,24 @@
+.feedback-overlay { position: fixed; inset: 0; z-index: 10000; background: rgb(0 0 0 / 24%); }
+.feedback-dialog { position: fixed; z-index: 10001; top: 50%; left: 50%; transform: translate(-50%, -50%); display: grid; grid-template-columns: 24px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; gap: 24px 12px; box-sizing: border-box; width: 400px; max-width: calc(100vw - 32px); min-height: min(160px, 70dvh); max-height: 70dvh; padding: 24px; border: 1px solid #dedede; border-radius: 8px; background: #fff; color: #262626; box-shadow: 0 12px 40px rgb(0 0 0 / 14%); font-size: 14px; letter-spacing: 0; }
+.feedback-copy { min-width: 0; overflow-y: auto; overflow-wrap: anywhere; }
+.feedback-title { margin: 0 0 10px; font-size: 16px; font-weight: 600; line-height: 1.5; }
+.feedback-description { margin: 0; font-size: 14px; line-height: 1.7; }
+.feedback-status { color: #b47a10; margin-top: 1px; }
+.feedback-error .feedback-status { color: #c83c3c; }
+.feedback-success .feedback-status { color: #24865d; }
+.feedback-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.feedback-actions button { box-sizing: border-box; min-width: 96px; height: 36px; padding: 0 16px; border: 1px solid #d6d6d6; border-radius: 6px; background: #fff; color: inherit; font: inherit; cursor: pointer; }
+.feedback-actions button:hover { background: #f3f3f3; }
+.feedback-actions .feedback-primary { border-color: #b53636; background: #b53636; color: #fff; }
+.feedback-actions .feedback-primary:hover { background: #9e2e2e; }
+.feedback-actions button:disabled { opacity: .55; cursor: wait; }
+.feedback-actions button:focus-visible { outline: 2px solid #b53636; outline-offset: 3px; }
+.feedback-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+:root[data-theme='dark'] .feedback-dialog, .dark .feedback-dialog { background: #252525; border-color: #454545; color: #f1f1f1; }
+:root[data-theme='dark'] .feedback-actions button:not(.feedback-primary), .dark .feedback-actions button:not(.feedback-primary) { background: #303030; border-color: #555; }
+:root[data-theme='dark'] .feedback-error .feedback-status, .dark .feedback-error .feedback-status { color: #ff8585; }
+:root[data-theme='dark'] .feedback-success .feedback-status, .dark .feedback-success .feedback-status { color: #6dce9a; }
+:root:has(.ent-shell.dark) .feedback-dialog { background: #252525; border-color: #454545; color: #f1f1f1; }
+:root:has(.ent-shell.dark) .feedback-actions button:not(.feedback-primary) { background: #303030; border-color: #555; }
+:root:has(.ent-shell.dark) .feedback-error .feedback-status { color: #ff8585; }
+:root:has(.ent-shell.dark) .feedback-success .feedback-status { color: #6dce9a; }

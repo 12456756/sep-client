@@ -17,6 +17,7 @@ await import('/index.css'); await import('/styles/enterprise.css'); await import
 const React = (await import('${reactUrl}')).default;
 const {createRoot} = (await import('${domUrl}')).default;
 const {LoginPage} = await import('/pages/LoginPage.tsx');
+const {FeedbackProvider} = await import('/components/feedback/FeedbackProvider.tsx');
 const {ArrangeWorkPage} = await import('/pages/enterprise/ArrangeWorkPage.tsx');
 window.calls = []; window.deleteFails = false;
 window.electronAPI = {
@@ -32,7 +33,7 @@ function LoginFixture() {
 }
 const employee = {id:'employee-a',name:'员工甲',mark:'甲',availability:'ready',assignedToMe:true,intro:'测试职责',goodAt:[],cannotDo:[],lastWorkedAt:null,allowedModels:['model-a','model-b'],skillIds:[],permissions:[],roleName:'',department:null};
 window.showChat = () => root.render(React.createElement('div',{className:'ent-shell',style:{display:'block',padding:24}},React.createElement(ArrangeWorkPage,{mode:'chat',workspace:{myEmployees:[employee],templates:[],arrangeSeed:null,busy:false,seedArrange:()=>{},navigate:()=>{},startConversation:async (...args)=>{window.calls.push(args)},chooseFolder:async()=>null}})));
-root.render(React.createElement(LoginFixture));
+root.render(React.createElement(FeedbackProvider,null,React.createElement(LoginFixture)));
 </script></body></html>`;
 const browser = await chromium.launch({channel:'msedge',headless:true});
 try {
@@ -49,13 +50,13 @@ try {
   assert.equal(await page.getByLabel('密码',{exact:true}).inputValue(),'fixture-password');
   await page.getByRole('button',{name:'清空密码',exact:true}).click();
   assert.equal(await page.getByLabel('密码',{exact:true}).inputValue(),'');
-  assert.ok(await page.getByRole('button',{name:'登录',exact:true}).isDisabled());
+  assert.ok(await page.getByRole('button',{name:'登录',exact:true}).isEnabled());
   await page.getByLabel('密码',{exact:true}).fill('replacement');
   await page.getByRole('button',{name:'登录',exact:true}).click();
   assert.equal(await page.evaluate(()=>window.calls[0].useSavedPassword),false);
   await page.reload();
   await page.getByLabel('密码',{exact:true}).focus(); await page.keyboard.press('Backspace');
-  assert.ok(await page.getByRole('button',{name:'登录',exact:true}).isDisabled());
+  assert.ok(await page.getByRole('button',{name:'登录',exact:true}).isEnabled());
   await page.reload();
   await page.evaluate(()=>{window.revealDelayed=true});
   await page.getByRole('button',{name:'显示密码',exact:true}).click();
@@ -66,13 +67,18 @@ try {
   await page.getByRole('button',{name:'选择历史账号'}).click();
   await page.evaluate(()=>{window.deleteFails=true});
   await page.getByRole('button',{name:'移除 one@example.test'}).click();
-  await page.getByRole('alert').waitFor();
-  assert.equal(await page.getByRole('button',{name:'移除 one@example.test'}).count(),1);
+  await page.getByRole('button',{name:'移除',exact:true}).click();
+  await page.getByRole('dialog').filter({hasText:'历史账号移除失败'}).waitFor();
+  assert.equal(await page.getByLabel('邮箱',{exact:true}).inputValue(),'one@example.test');
+  await page.getByRole('button',{name:'知道了',exact:true}).click();
   await page.evaluate(()=>{window.deleteFails=false});
+  await page.getByRole('button',{name:'选择历史账号'}).click();
   await page.getByRole('button',{name:'移除 one@example.test'}).click();
+  await page.getByRole('button',{name:'移除',exact:true}).click();
   await page.getByRole('button',{name:'移除 one@example.test'}).waitFor({state:'detached'});
   assert.equal(await page.getByLabel('邮箱',{exact:true}).inputValue(),'');
   await page.screenshot({path:join(tmpdir(),`sep-login-fixed-${width}.png`)});
+  if (process.env.SEP_LOGIN_ONLY === '1') continue;
   await page.evaluate(()=>window.showChat());
   await page.getByRole('button',{name:'选择一位同事'}).waitFor();
   assert.ok(await page.getByRole('button',{name:'开始对话',exact:true}).isDisabled());
@@ -92,5 +98,5 @@ try {
   const calls=await page.evaluate(()=>window.calls); const options=calls.at(-1)[2];
   assert.equal(options.modelId,'model-b'); assert.equal(options.permissions.preset,'workspace-edit'); assert.equal(options.permissions.approvalMode,'auto-approve');
  }
- assert.deepEqual(errors,[]); log('PASS login editing/reveal/clear/delete and task model/permissions at both viewport sizes');
+ assert.deepEqual(errors,[]); log(process.env.SEP_LOGIN_ONLY === '1' ? 'PASS login editing/reveal/clear/delete at both viewport sizes' : 'PASS login editing/reveal/clear/delete and task model/permissions at both viewport sizes');
 } finally {await browser.close();}

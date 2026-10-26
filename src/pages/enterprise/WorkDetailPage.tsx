@@ -17,6 +17,7 @@ import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/ent
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import { clockTime, dayTimeText, durationText, stampText } from '../../features/enterprise/vocabulary';
+import { generalAssistant, GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
 
 interface Props {
   workspace: EnterpriseWorkspace;
@@ -378,7 +379,7 @@ function useTeam(work: WorkItem, workspace: EnterpriseWorkspace): SiliconEmploye
   return useMemo(() => {
     const ids = [...new Set([work.currentEmployeeId, ...work.participants, ...work.steps.map(step => step.employeeId)])].filter(Boolean);
     return ids
-      .map(id => workspace.employees.find(item => item.id === id))
+      .map(id => id === GENERAL_ASSISTANT_ID ? generalAssistant([]) : workspace.employees.find(item => item.id === id))
       .filter((item): item is SiliconEmployee => Boolean(item));
   }, [work, workspace.employees]);
 }

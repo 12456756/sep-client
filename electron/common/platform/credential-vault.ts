@@ -1,4 +1,6 @@
 import { app, safeStorage } from 'electron'
+import { z } from 'zod'
+import { LoginFeedbackError } from './login-error'
 import {
   existsSync,
   mkdirSync,
@@ -58,22 +60,13 @@ function readRememberedAccounts(): RememberedAccount[] {
   if (!existsSync(ACCOUNTS_FILE)) return []
 
   try {
-    const value = JSON.parse(readFileSync(ACCOUNTS_FILE, 'utf-8')) as unknown
-    if (!Array.isArray(value)) return []
+    const value = z.array(z.object({
+      email: z.string().email(), displayName: z.string(), enterpriseName: z.string(),
+      lastLoginAt: z.string().refine(value => Number.isFinite(Date.parse(value))),
+    })).parse(JSON.parse(readFileSync(ACCOUNTS_FILE, 'utf-8')))
 
     const seen = new Set<string>()
     return value
-      .filter((account): account is RememberedAccount => {
-        if (!account || typeof account !== 'object') return false
-        const item = account as Partial<RememberedAccount>
-        return (
-          typeof item.email === 'string' &&
-          typeof item.displayName === 'string' &&
-          typeof item.enterpriseName === 'string' &&
-          typeof item.lastLoginAt === 'string' &&
-          Number.isFinite(Date.parse(item.lastLoginAt))
-        )
-      })
       .map((account) => ({
         email: normalizeEmail(account.email),
         displayName: account.displayName,
@@ -88,27 +81,22 @@ function readRememberedAccounts(): RememberedAccount[] {
       })
       .sort((left, right) => Date.parse(right.lastLoginAt) - Date.parse(left.lastLoginAt))
       .slice(0, MAX_REMEMBERED_ACCOUNTS)
-  } catch {
-    return []
+  } catch (error) {
+    throw new LoginFeedbackError('accounts_read', error)
   }
 }
 
 function readPasswordVault(): PasswordVault {
-  if (!existsSync(PASSWORDS_FILE) || !safeStorage.isEncryptionAvailable()) return {}
+  if (!existsSync(PASSWORDS_FILE)) return {}
+  if (!safeStorage.isEncryptionAvailable()) throw new LoginFeedbackError('storage_unavailable')
 
   try {
     const value = JSON.parse(
       safeStorage.decryptString(readFileSync(PASSWORDS_FILE)),
     ) as unknown
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
-
-    return Object.fromEntries(
-      Object.entries(value).filter(
-        (entry): entry is [string, string] => typeof entry[1] === 'string',
-      ),
-    )
-  } catch {
-    return {}
+    return z.record(z.string(), z.string()).parse(value)
+  } catch (error) {
+    throw new LoginFeedbackError('password_read', error)
   }
 }
 
@@ -173,7 +161,7 @@ export function getAuthMeta(): AuthMeta | null {
 }
 
 export function listRememberedAccounts(): RememberedAccount[] {
-  const vault = readPasswordVault()
+  const vault = safeStorage.isEncryptionAvailable() ? readPasswordVault() : {}
   return readRememberedAccounts().map((account) => ({
     ...account,
     hasSavedPassword: typeof vault[account.email] === 'string' && vault[account.email].length > 0,
@@ -192,6 +180,7 @@ export function saveRememberedAccount(
   }
 
   const vault = encryptionAvailable ? readPasswordVault() : {}
+  const previousAccounts = readRememberedAccounts()
   if (encryptionAvailable) {
     if (rememberPassword) {
       if (!password) throw new Error('Password is required to remember this account')
@@ -210,7 +199,7 @@ export function saveRememberedAccount(
   }
   const accounts = [
     nextAccount,
-    ...readRememberedAccounts().filter(item => normalizeEmail(item.email) !== email),
+    ...previousAccounts.filter(item => normalizeEmail(item.email) !== email),
   ].slice(0, MAX_REMEMBERED_ACCOUNTS)
 
   const retainedEmails = new Set(accounts.map(item => normalizeEmail(item.email)))
@@ -232,6 +221,7 @@ export function getRememberedPassword(email: string): string | null {
 }
 
 export function forgetRememberedAccount(email: string): void {
+  if (existsSync(PASSWORDS_FILE) && !safeStorage.isEncryptionAvailable()) throw new LoginFeedbackError('storage_unavailable')
   const normalizedEmail = normalizeEmail(email)
   const accounts = readRememberedAccounts().filter(
     account => normalizeEmail(account.email) !== normalizedEmail,

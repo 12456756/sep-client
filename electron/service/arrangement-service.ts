@@ -543,8 +543,12 @@ export class ArrangementService {
     if (draft.mode !== 'conversation' && draft.nodes.length === 0) throw new AppError('INVALID_STATE')
     const checkedAt = Date.now()
     const context = await this.context()
+    const general = draft.mode === 'conversation' && draft.conversation?.kind === 'general'
+    const generalSubscription = general
+      ? context.employees.find(employee => employee.status === 'ACTIVE' && employee.allowedModels.includes(draft.conversation!.modelId!))
+      : undefined
     const subscriptionIds = draft.mode === 'conversation'
-      ? draft.conversation?.participants.map(participant => participant.subscriptionId) ?? []
+      ? general ? generalSubscription ? [generalSubscription.subscriptionId] : [] : draft.conversation?.participants.map(participant => participant.subscriptionId) ?? []
       : draft.nodes.map(node => node.subscriptionId)
     const uniqueIds = [...new Set(subscriptionIds)]
     const subscriptions = uniqueIds.map(subscriptionId => {
@@ -558,7 +562,7 @@ export class ArrangementService {
       }, checkedAt, DEFAULT_SUBSCRIPTION_THRESHOLD_MS)
     })
     const modelIssues = draft.mode === 'conversation'
-      ? (draft.conversation?.participants ?? []).flatMap(participant => {
+      ? general ? generalSubscription ? [] : ['通用助手没有可用于所选模型的有效订阅。'] : (draft.conversation?.participants ?? []).flatMap(participant => {
           const employee = context.employees.find(item => item.subscriptionId === participant.subscriptionId)
           return employee?.allowedModels.includes(participant.modelId) ? [] : [`conversation:${participant.subscriptionId}:model-not-allowed`]
         })
@@ -612,7 +616,7 @@ export class ArrangementService {
     const preflight = await this.preflightDraft(draftId, expectedRevision)
     if (!preflight.canStart || !preflight.permissionPolicy) throw new AppError('INVALID_STATE')
     const primarySubscription = draft.mode === 'conversation'
-      ? draft.conversation?.participants[0]?.subscriptionId
+      ? draft.conversation?.kind === 'general' ? preflight.subscriptions[0]?.subscriptionId : draft.conversation?.participants[0]?.subscriptionId
       : draft.nodes[0]?.subscriptionId
     if (!primarySubscription) throw new AppError('INVALID_ARGUMENT')
     const current = requireScope(this.deps.scope)
@@ -639,7 +643,9 @@ export class ArrangementService {
         mode: draft.mode,
         title: draft.title || draft.goal,
         goal: draft.goal,
-        conversation: draft.conversation ? structuredClone(draft.conversation) : null,
+        conversation: draft.conversation?.kind === 'general'
+          ? { ...structuredClone(draft.conversation), participants: [{ subscriptionId: primarySubscription, modelId: draft.conversation.modelId! }], activeSubscriptionId: primarySubscription }
+          : draft.conversation ? structuredClone(draft.conversation) : null,
         nodes: structuredClone(draft.nodes),
         workspace: { mode: 'shared' as const, path: task.workDir },
         permissions: preflight.permissionPolicy,
@@ -654,9 +660,9 @@ export class ArrangementService {
         taskId: task.id,
         kind: draft.mode === 'conversation' ? 'conversation' : 'arrangement',
         participantSubscriptionIds: draft.mode === 'conversation'
-          ? [...new Set(draft.conversation?.participants.map(item => item.subscriptionId) ?? [])]
+          ? draft.conversation?.kind === 'general' ? [] : [...new Set(draft.conversation?.participants.map(item => item.subscriptionId) ?? [])]
           : [...new Set(draft.nodes.map(node => node.subscriptionId))],
-        currentSubscriptionId: primarySubscription,
+        currentSubscriptionId: draft.conversation?.kind === 'general' ? null : primarySubscription,
         createdAt: Date.now(),
       })
       await this.deps.drafts.update(scope, draft.id, draft.revision, {

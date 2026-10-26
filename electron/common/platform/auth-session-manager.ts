@@ -20,6 +20,7 @@ export class AuthSessionManager {
   private refreshToken: string | null = null
   private meta: AuthMeta | null = null
   private refreshPromise: Promise<string> | null = null
+  private sessionRevision = 0
   private readonly refreshTokenRotation: RefreshTokenRotationQueue
 
   constructor() {
@@ -42,6 +43,8 @@ export class AuthSessionManager {
       ? response.accessTokenExpiresIn
       : 60 * 60
 
+    this.sessionRevision += 1
+    this.refreshPromise = null
     this.accessToken = response.accessToken
     this.accessTokenExpiresAt = Date.now() + expiresIn * 1000
     this.refreshToken = response.refreshToken
@@ -73,6 +76,10 @@ export class AuthSessionManager {
     return this.meta
   }
 
+  getSessionRevision(): number {
+    return this.sessionRevision
+  }
+
   getAccessToken(): string {
     if (!this.accessToken || this.isAccessTokenExpired()) {
       throw new AuthenticationRequiredError()
@@ -83,9 +90,11 @@ export class AuthSessionManager {
   async getValidAccessToken(forceRefresh = false): Promise<string> {
     if (!forceRefresh && this.accessToken && !this.isAccessTokenExpired()) return this.accessToken
     if (this.refreshPromise) return this.refreshPromise
+    const revision = this.sessionRevision
     const request = this.refreshTokenRotation.run(
       refreshToken => refreshAccessToken(refreshToken),
     ).then(response => {
+      if (revision !== this.sessionRevision || !this.meta) throw new AuthenticationRequiredError()
       if (!response.accessToken || !response.enterprise) throw new AuthenticationRequiredError()
       this.accessToken = response.accessToken
       this.accessTokenExpiresAt = Date.now() + (response.accessTokenExpiresIn > 0 ? response.accessTokenExpiresIn : 3600) * 1000
@@ -100,8 +109,10 @@ export class AuthSessionManager {
       this.publishAccessToken()
       return response.accessToken
     }).catch(error => {
+      if (revision !== this.sessionRevision) throw new AuthenticationRequiredError()
       if (error instanceof AuthenticationRequiredError || (error && typeof error === 'object' && (error as { statusCode?: number }).statusCode === 401)) {
-        this.clear()
+        // Keep this login's revision until its controller completes invalidation.
+        this.clearState()
         throw new AuthenticationRequiredError()
       }
       throw error
@@ -119,6 +130,11 @@ export class AuthSessionManager {
   }
 
   clear(): void {
+    this.sessionRevision += 1
+    this.clearState()
+  }
+
+  private clearState(): void {
     this.accessToken = null
     this.accessTokenExpiresAt = 0
     this.refreshToken = null

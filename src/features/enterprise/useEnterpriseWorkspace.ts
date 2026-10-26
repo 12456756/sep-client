@@ -2,6 +2,7 @@ import { useArrangementPlans } from './use-arrangement-plans';
 import { useSkillLibrary, type SkillLibraryWorkspace } from './use-skill-library';
 import { needsSkillLibrary } from './skill-load-state';
 import { conversationDocument } from './run-settings';
+import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant';
 /**
  * 把平台数据与本地状态聚合成业务域模型。
  *
@@ -616,7 +617,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const startConversation = useCallback(async (employeeId: string, text: string, options?: ConversationOptions) => {
     const goal = text.trim();
     if (!goal) return;
-    const employee = myEmployees.find(item => item.id === employeeId);
+    const employee = employeeId === GENERAL_ASSISTANT_ID
+      ? generalAssistant(myEmployees.filter(item => item.availability !== 'unavailable'))
+      : myEmployees.find(item => item.id === employeeId);
     if (!employee) { setError('请先选择一位硅基员工'); return; }
     const api = window.electronAPI;
     const title = goal.length > 40 ? `${goal.slice(0, 40)}…` : goal;
@@ -624,7 +627,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     setError(null);
     try {
       const modelId = options?.modelId || employee.allowedModels[0];
-      if (!modelId || !employee.allowedModels.includes(modelId)) throw new Error('请选择该员工允许使用的模型');
+      if (!modelId || !employee.allowedModels.includes(modelId)) throw new Error(employeeId === GENERAL_ASSISTANT_ID ? '通用助手暂无可用的公共模型，请检查模型授权' : '请选择该员工允许使用的模型');
       const document = { ...conversationDocument(title, goal, employeeId, modelId, options), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
       const created = await api.createArrangementDraft(document);
       if (!created.success || !created.draft) throw new Error(created.error?.message || '创建对话失败');

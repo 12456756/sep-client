@@ -15,6 +15,7 @@ import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpris
 import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-motion';
 import { createDraftStep } from '../../features/enterprise/work-graph';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
+import { generalAssistant, GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
 
 interface Props {
   workspace: EnterpriseWorkspace;
@@ -40,13 +41,16 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   const employees = workspace.myEmployees.filter(item => item.availability !== 'unavailable');
   const availableModels = Array.from(new Set(employees.flatMap(item => item.allowedModels)));
   const orchestrationModels = (employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)));
+  const defaultSharedModel = orchestrationModels[0] ?? '';
+  const assistant = generalAssistant(employees);
+  const chatEmployees = [assistant, ...employees];
   const template = templateId ? workspace.templates.find(item => item.id === templateId) : undefined;
 
   const activeMode = mode === 'pick' ? 'chat' : mode;
   const [settings, setSettings] = useState<RunSettings>(() => activeMode === 'auto'
     ? defaultAutoRunSettings(orchestrationModels[0] ?? '')
     : activeMode === 'chat' ? defaultConversationRunSettings() : defaultRunSettings());
-  const [chatEmployeeId, setChatEmployeeId] = useState(employeeId ?? '');
+  const [chatEmployeeId, setChatEmployeeId] = useState(employeeId ?? GENERAL_ASSISTANT_ID);
   const isOrchestration = activeMode === 'auto' || activeMode === 'manual';
   const [autoStartError, setAutoStartError] = useState<string | null>(null);
   /** 正在淡出的目标画面。给「点了卡片但还没换页」这 200ms 用。 */
@@ -74,9 +78,9 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   useEffect(() => {
     setLeaving(null);
     setAutoStartError(null);
-    setChatEmployeeId(employeeId ?? '');
-    setSettings(current => ({ ...current, modelId: activeMode === 'auto' ? orchestrationModels[0] ?? '' : '' }));
-  }, [mode, employeeId, activeMode, orchestrationModels[0]]);
+    setChatEmployeeId(employeeId ?? GENERAL_ASSISTANT_ID);
+    setSettings(current => ({ ...current, modelId: activeMode === 'auto' || activeMode === 'chat' && !employeeId ? defaultSharedModel : '' }));
+  }, [mode, employeeId, activeMode, defaultSharedModel]);
 
   useEffect(() => {
     if (activeMode === 'auto') {
@@ -173,16 +177,17 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
       <div className={`ent-arr-view${leaving ? ' leaving' : ''}`} key={`${activeMode}-${employeeId ?? ''}`}>
         {activeMode === 'chat' ? (
           <ChatArrange
-            employees={employees}
+            employees={chatEmployees}
             busy={workspace.busy}
             employeeId={chatEmployeeId}
             attachmentBindingKey={workspace.attachmentScopeKey}
             onEmployeeChange={id => {
               setChatEmployeeId(id);
+              setSettings(current => ({ ...current, modelId: chatEmployees.find(employee => employee.id === id)?.allowedModels[0] ?? '' }));
             }}
             onStart={startChat}
             settings={settings}
-            models={availableModels}
+            models={chatEmployeeId === GENERAL_ASSISTANT_ID ? assistant.allowedModels : availableModels}
             onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
             onChooseFolder={workspace.chooseFolder}
           />

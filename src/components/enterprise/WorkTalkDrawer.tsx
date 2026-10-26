@@ -11,6 +11,7 @@ import { useSpeechInput } from '../../features/speech/use-speech-input';
 import { SpeechInputActions, SpeechInputFeedback } from '../speech/SpeechInputActions';
 import { AttachmentComposer } from './attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
+import { GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -198,7 +199,9 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
               <div className="ent-ask-bar">
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}
-                {work.kind === 'conversation' ? (
+                {work.currentEmployeeId === GENERAL_ASSISTANT_ID ? (
+                  <span className="ent-ask-who"><EmployeeFace name="通用助手" size="sm" round /><strong>通用助手</strong></span>
+                ) : work.kind === 'conversation' ? (
                   <label className="ent-ask-who">
                     <EmployeeFace employee={workspace.employees.find(item => item.id === work.currentEmployeeId)} name={work.currentEmployeeName} size="sm" round />
                     <select
