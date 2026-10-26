@@ -207,8 +207,8 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
     <>
       <ol className="ent-aa-strip">
         {STRIP.map((label, index) => (
-          <li key={label} className={index < at ? 'done' : index === at ? 'now' : 'wait'}>
-            <span className="ent-aa-strip-tick" aria-hidden>{index < at ? <Check size={10} /> : null}</span>{label}
+          <li key={label} className={phase === 'done' || index < at ? 'done' : index === at ? 'now' : 'wait'} aria-current={phase !== 'done' && index === at ? 'step' : undefined}>
+            <span className="ent-aa-strip-label"><span className="ent-aa-strip-tick" aria-hidden>{phase === 'done' || index < at ? <Check size={10} /> : null}</span>{label}</span>
           </li>
         ))}
       </ol>

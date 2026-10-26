@@ -22,16 +22,18 @@
 .ent-work-hub .ent-conversation-foot .ent-ask { border-color: var(--ent-line-strong); border-radius: 10px; box-shadow: none; }
 .ent-work-hub .ent-markdown { max-width: 75ch; background: transparent; padding: 8px 0; font-size: 13px; line-height: 1.8; }
 .ent-work-hub .ent-say.user { max-width: min(82%, 70ch); }
-.ent-work-hub .ent-wk-inspector { display: none; flex: 0 0 344px; width: 344px; min-width: 0; min-height: 0; gap: 0; padding: 0; overflow-y: auto; border-left: 1px solid var(--ent-line); background: var(--ent-panel-subtle); }
-.ent-work-hub .ent-wk-inspector.is-open { display: flex; }
-.ent-work-hub .ent-wk-inspector-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 48px; padding: 10px 16px; border-bottom: 1px solid var(--ent-line); background: var(--ent-panel-subtle); }
+.ent-work-hub .ent-wk-inspector { position: fixed; inset: 0; display: none; flex-direction: column; box-sizing: border-box; width: min(760px, calc(100vw - 48px)); height: fit-content; max-width: calc(100vw - 48px); max-height: min(800px, calc(100dvh - 96px)); min-width: 0; min-height: 0; margin: auto; padding: 0; overflow: hidden; border: 0; border-radius: 12px; color: var(--ent-ink); background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); }
+.ent-work-hub .ent-wk-inspector[open] { display: flex; }
+.ent-work-hub .ent-wk-inspector::backdrop { background: var(--ent-overlay, rgb(24 28 38 / 34%)); }
+.ent-shell.dark .ent-wk-inspector::backdrop { background: rgb(5 7 12 / 62%); }
+.ent-work-hub .ent-wk-inspector-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; min-height: 48px; padding: 10px 16px; border-bottom: 1px solid var(--ent-line); background: var(--ent-panel-subtle); }
 .ent-work-hub .ent-wk-inspector-heading > strong { font-size: 13px; font-weight: 600; }
 .ent-work-hub .ent-wk-inspector-heading > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; color: var(--ent-ink-2); background: transparent; cursor: pointer; }
 .ent-work-hub .ent-wk-inspector-heading > button:hover { background: var(--ent-line); }
-.ent-work-hub .ent-wk-inspector-content, .ent-work-hub .ent-wk-inspector > .artifact-section { margin: 0; padding: 16px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.ent-work-hub .ent-wk-inspector-content { flex: 1 1 auto; min-height: 0; margin: 0; padding: 20px 24px 24px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--ent-line-strong) transparent; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .ent-work-hub .ent-wk-inspector-content[hidden] { display: none; }
 .ent-work-hub .ent-wk-inspector .ent-panel { box-shadow: none; }
-.ent-work-hub .ent-wk-inspector-content > h2 { font-size: 13px; }
+.ent-work-hub .ent-wk-inspector .ent-work-process :is(.ent-wk-activity-list, .ent-timeline) { max-height: none; overflow: visible; }
 .ent-work-hub .ent-wk-info-facts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; color: var(--ent-ink-2); font-size: 12px; overflow-wrap: anywhere; }
 .ent-work-hub .ent-failed-node-copy { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; }
 .ent-work-hub .ent-failed-node-list { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -41,15 +43,16 @@
 .ent-work-hub .ent-wk-inspector .ent-wk-path { max-width: 100%; }
 .ent-work-hub .ent-wk-inspector .ent-wk-path > span { overflow-wrap: anywhere; white-space: normal; }
 .ent-work-hub .ent-wk-media-alert { flex-shrink: 0; margin: 8px 20px 0; padding: 8px 12px; border-radius: 6px; color: var(--ent-danger); background: var(--ent-danger-bg); font-size: 12px; }
-.ent-work-hub .ent-wk-inspector-backdrop { display: none; position: fixed; z-index: 39; inset: var(--window-chrome-height, 0px) 0 0; padding: 0; border: 0; background: var(--ent-overlay); }
 @media (max-width: 1180px) {
-  .ent-work-hub .ent-wk-inspector-backdrop { display: block; }
-  .ent-work-hub .ent-wk-inspector.is-open { position: fixed; z-index: 40; inset: max(48px, var(--window-chrome-height, 0px)) 16px 16px auto; width: min(480px, calc(100vw - 32px)); max-width: calc(100vw - 32px); height: auto; border: 1px solid var(--ent-line); border-radius: 10px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); }
   .ent-work-hub .ent-wk-head { padding-inline: 16px; }
   .ent-work-hub .ent-wk-back { margin-left: 16px; }
   .ent-work-hub .ent-chat-panel .ent-drawer-head { padding-inline: 16px; }
   .ent-work-hub .ent-chat-panel .ent-conversation-body { padding-inline: 16px; }
   .ent-work-hub .ent-chat-panel .ent-conversation-foot { padding: 10px 16px 14px; }
+}
+@media (max-width: 640px) {
+  .ent-work-hub .ent-wk-inspector { width: calc(100vw - 24px); max-width: calc(100vw - 24px); max-height: calc(100dvh - 48px); }
+  .ent-work-hub .ent-wk-inspector-content { padding: 16px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .ent-work-hub .ent-wk-inspector-trigger { transition: none; }

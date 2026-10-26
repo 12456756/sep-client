@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useState } from 'react'
+import { useLayoutEffect, useState } from 'react'
 import { PanelLeftOpen } from 'lucide-react'
 import type { AppRoute } from '../../features/enterprise/types'
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace'
@@ -19,9 +19,6 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
   const [creationVersion, setCreationVersion] = useState(0)
   const [listOpen, setListOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1180)
   const [order, setOrder] = useState(() => refreshWorkOrder(workspace.works))
-  const onInspectorChange = useCallback((open: boolean) => {
-    if (open && window.innerWidth < 1440) setListOpen(false)
-  }, [])
   useLayoutEffect(() => {
     setState(current => enterWorkHubRoute(current, route))
     if (route.name === 'arrange') setCreation(route)
@@ -48,7 +45,7 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
       <section className="ent-work-create" hidden={Boolean(selectedWorkId)} aria-label="新建工作">
         <ArrangeWorkPage key={creationVersion} workspace={workspace} templateId={creationRoute.templateId} employeeId={creationRoute.employeeId} mode={creationRoute.mode ?? 'pick'} onWorkCreated={() => setCreationVersion(version => version + 1)} />
       </section>
-      {selectedWorkId && <WorkDetailPage workspace={workspace} workId={selectedWorkId} onInspectorChange={onInspectorChange} />}
+      {selectedWorkId && <WorkDetailPage workspace={workspace} workId={selectedWorkId} />}
     </main>
   </div>
 }

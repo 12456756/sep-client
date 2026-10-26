@@ -2,7 +2,7 @@
 
 import {
   AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, Info, LoaderCircle, MessageSquareText,
-  RotateCcw, Share2, StopCircle, Trash2, X, XCircle,
+  RotateCcw, StopCircle, Trash2, X, XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Empty, StepStateChip } from '../../components/enterprise/atoms';
@@ -17,16 +17,15 @@ import { DocumentPreviewButton } from '../../components/workspace/DocumentPrevie
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
-import { clockTime, dayTimeText, durationText, stampText } from '../../features/enterprise/vocabulary';
+import { clockTime, dayTimeText, durationText } from '../../features/enterprise/vocabulary';
 import '../../styles/work-detail.css';
 
 interface Props {
   workspace: EnterpriseWorkspace;
   workId: string;
-  onInspectorChange?: (open: boolean) => void;
 }
 
-export function WorkDetailPage({ workspace, workId, onInspectorChange }: Props) {
+export function WorkDetailPage({ workspace, workId }: Props) {
   const work = workspace.works.find(item => item.id === workId);
   if (!work) {
     return (
@@ -44,13 +43,13 @@ export function WorkDetailPage({ workspace, workId, onInspectorChange }: Props) 
     </div>;
   }
   // 仅在权威分类已解析后显示该类型的操作；切换工作重置面板。
-  return <Detail key={work.id} work={work} workspace={workspace} onInspectorChange={onInspectorChange} />;
+  return <Detail key={work.id} work={work} workspace={workspace} />;
 }
 
 /** 抬头右边和抽屉之间共用的一个状态：现在拉开的是哪个抽屉。 */
 type Panel = 'results' | 'process' | 'info' | null;
 
-function Detail({ work, workspace, onInspectorChange }: { work: WorkItem; workspace: EnterpriseWorkspace; onInspectorChange?: (open: boolean) => void }) {
+function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   const team = useTeam(work, workspace);
   const isConversation = work.kind === 'conversation';
   const finished = work.status === 'completed';
@@ -68,8 +67,7 @@ function Detail({ work, workspace, onInspectorChange }: { work: WorkItem; worksp
   const [removing, setRemoving] = useState(false);
   const conversation = useRef<HTMLElement | null>(null);
   const focusConversation = () => conversation.current?.querySelector<HTMLTextAreaElement>('textarea.ent-ask-input')?.focus();
-  const [compactInspector, setCompactInspector] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 1180px)').matches);
-  const inspector = useRef<HTMLElement | null>(null);
+  const inspector = useRef<HTMLDialogElement | null>(null);
   const [mediaSummary, setMediaSummary] = useState<{ images: number | null; videos: number | null; error: string | null }>({ images: null, videos: null, error: null });
   const handleMediaSummary = useCallback((summary: typeof mediaSummary) => setMediaSummary(summary), []);
   const arrangementMedia = work.arrangementExecution?.media;
@@ -83,34 +81,19 @@ function Detail({ work, workspace, onInspectorChange }: { work: WorkItem; worksp
   ].filter((item): item is string => Boolean(item));
   const resultsTitle = resultCounts.length ? `产出结果：${resultCounts.join('、')}` : '产出结果';
   const inspectorCloseButton = useRef<HTMLButtonElement | null>(null);
-  const lastInspectorTrigger = useRef<HTMLElement | null>(null);
-  useEffect(() => { onInspectorChange?.(panel !== null); }, [onInspectorChange, panel]);
   useEffect(() => {
-    const media = window.matchMedia('(max-width: 1180px)');
-    const update = () => setCompactInspector(media.matches);
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
+    const dialog = inspector.current;
+    if (!dialog) return;
+    if (panel) {
+      if (!dialog.open) dialog.showModal();
+      inspectorCloseButton.current?.focus();
+    } else if (dialog.open) dialog.close();
+  }, [panel]);
+  useEffect(() => {
+    const dialog = inspector.current;
+    return () => { if (dialog?.open) dialog.close(); };
   }, []);
-  useEffect(() => {
-    if (!panel) { lastInspectorTrigger.current?.focus(); return; }
-    inspectorCloseButton.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setPanel(null); return; }
-      if (event.key !== 'Tab' || !compactInspector) return;
-      const focusable = inspector.current ? [...inspector.current.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])')].filter(node => !node.closest('[hidden], [aria-hidden="true"]')) : [];
-      if (!focusable.length) return;
-      const first = focusable[0]; const last = focusable.at(-1);
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [compactInspector, panel]);
-  const openInspector = (next: Exclude<Panel, null>, trigger: HTMLElement) => {
-    lastInspectorTrigger.current = trigger;
-    setInspector(next);
-  };
-  const setInspector = (next: Panel) => setPanel(current => current === next ? null : next);
+  const openInspector = (next: Exclude<Panel, null>) => setPanel(current => current === next ? null : next);
   const facts = {
     start: (
       <span className="ent-wk-infobar-item">
@@ -161,10 +144,9 @@ function Detail({ work, workspace, onInspectorChange }: { work: WorkItem; worksp
         <WorkTypeTag workType={work.workType} />
         <h1>{work.title}</h1>
         <div className="ent-wk-head-actions">
-          <IconHint label={resultsTitle} side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看产出结果" aria-expanded={panel === 'results'} onClick={event => openInspector('results', event.currentTarget)}><FileOutput size={16} aria-hidden /></button></IconHint>
-          <IconHint label="工作过程" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作过程" aria-expanded={panel === 'process'} onClick={event => openInspector('process', event.currentTarget)}><LoaderCircle size={16} aria-hidden /></button></IconHint>
-          <IconHint label="工作信息" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作信息" aria-expanded={panel === 'info'} onClick={event => openInspector('info', event.currentTarget)}><Info size={16} aria-hidden /></button></IconHint>
-          <ShareButton work={work} />
+          <IconHint label={resultsTitle} side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看产出结果" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'results'} onClick={() => openInspector('results')}><FileOutput size={16} aria-hidden /></button></IconHint>
+          <IconHint label="工作过程" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作过程" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'process'} onClick={() => openInspector('process')}><LoaderCircle size={16} aria-hidden /></button></IconHint>
+          <IconHint label="工作信息" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作信息" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'info'} onClick={() => openInspector('info')}><Info size={16} aria-hidden /></button></IconHint>
         </div>
       </div>
 
@@ -205,23 +187,35 @@ function Detail({ work, workspace, onInspectorChange }: { work: WorkItem; worksp
         <div className="ent-wk-detail-main">
           <NeedsYou work={work} workspace={workspace} onTalk={focusConversation} />
           {work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
-          {mediaError || mediaSummary.error ? <p className="ent-wk-media-alert" role="alert">{mediaError ? '媒体交付未完成，请打开产出结果查看详情。' : mediaSummary.error} <button type="button" className="ent-btn sm" onClick={event => openInspector('results', event.currentTarget)}>查看产出结果</button></p> : null}
+          {mediaError || mediaSummary.error ? <p className="ent-wk-media-alert" role="alert">{mediaError ? '媒体交付未完成，请打开产出结果查看详情。' : mediaSummary.error} <button type="button" className="ent-btn sm" onClick={() => openInspector('results')}>查看产出结果</button></p> : null}
 
           <section ref={conversation} className="ent-chat-panel" aria-label="工作对话">
             <WorkConversation work={work} workspace={workspace} />
           </section>
         </div>
 
-        {/*
-          侧栏：产出与过程。
-          这段产出结果原先在页面底部、对两种工作类型都渲染，是共用的一段；
-          这里把它挪进侧栏，不另写一份 —— 上次重复渲染就是因为新写了一份而没有删掉旧的。
-        */}
-        {panel ? <button type="button" className="ent-wk-inspector-backdrop" aria-label="关闭详情面板" onClick={() => setPanel(null)} /> : null}
-        <aside ref={inspector} className={`ent-wk-detail-side ent-wk-inspector ${panel ? 'is-open' : ''}`} aria-label="工作详情面板" aria-hidden={!panel} role={panel ? 'dialog' : undefined} aria-modal={panel && compactInspector ? 'true' : undefined}>
-          <div className="ent-wk-inspector-heading"><strong>{panel === 'results' ? '产出结果' : panel === 'process' ? '工作过程' : '工作信息'}</strong><button ref={inspectorCloseButton} type="button" className="ent-icon-btn" aria-label="关闭详情面板" onClick={() => setPanel(null)}><X size={16} aria-hidden /></button></div>
-          <section className="ent-panel ent-wk-inspector-content" hidden={panel !== 'results'}>
-            <h2>{finished ? '产出结果' : '最终产物'}</h2>
+        {/* 原生模态面板悬浮在工作空间上方，查询组件在关闭时仍保持挂载。 */}
+        <dialog
+          ref={inspector}
+          id={`work-inspector-${work.id}`}
+          className="ent-wk-inspector"
+          aria-modal="true"
+          aria-label="工作详情面板"
+          aria-labelledby={`work-inspector-title-${work.id}`}
+          onCancel={event => {
+            if (event.target !== event.currentTarget) return;
+            event.preventDefault();
+            setPanel(null);
+          }}
+          onClose={event => { if (event.target === event.currentTarget) setPanel(null); }}
+          onClick={event => {
+            if (event.target !== event.currentTarget) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) setPanel(null);
+          }}
+        >
+          <div className="ent-wk-inspector-heading"><strong id={`work-inspector-title-${work.id}`}>{panel === 'results' ? '产出结果' : panel === 'process' ? '工作过程' : '工作信息'}</strong><button ref={inspectorCloseButton} type="button" className="ent-icon-btn" aria-label="关闭详情面板" onClick={() => setPanel(null)}><X size={16} aria-hidden /></button></div>
+          <section className="ent-panel ent-wk-inspector-content" aria-label="产出结果" hidden={panel !== 'results'}>
             <p className="ent-hint">{resultCounts.join('、')}</p>
             {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} /> : null}
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel taskId={work.id} media={work.arrangementExecution.media} /> : null}
@@ -256,14 +250,12 @@ function Detail({ work, workspace, onInspectorChange }: { work: WorkItem; worksp
           </section>
 
           {/* 工作步骤与活动统一放在过程面板。 */}
-          <section className="ent-panel ent-wk-inspector-content" hidden={panel !== 'process'}>
-            <h2>工作过程</h2>
+          <section className="ent-panel ent-wk-inspector-content" aria-label="工作过程" hidden={panel !== 'process'}>
             <Process work={work} workspace={workspace} showRetry={false} />
           </section>
 
           {/* 工作信息折叠：低频信息不占首屏。多人协作时「谁做到哪一步」也在里面的工作步骤里。 */}
-          <section className="ent-panel ent-wk-inspector-content" hidden={panel !== 'info'}>
-            <h2>工作信息</h2>
+          <section className="ent-panel ent-wk-inspector-content" aria-label="工作信息" hidden={panel !== 'info'}>
             <div className="ent-wk-info-facts"><span>{team.length ? `${team.length} 位协作员工` : work.currentEmployeeName}</span><span>创建于 {dayTimeText(work.createdAt)}</span><span>{runStartedAt === null ? '尚未开始' : `开始于 ${dayTimeText(runStartedAt)}`}</span><span>{over && runEndedAt !== null ? `结束于 ${dayTimeText(runEndedAt)}` : '仍在执行'}</span><span>{work.workDir || '默认工作目录'}</span></div>
             <MoreInfo work={work} />
             {removing ? <div className="ent-confirm" role="group" aria-label="确认删除工作记录">
@@ -275,7 +267,7 @@ function Detail({ work, workspace, onInspectorChange }: { work: WorkItem; worksp
             </div> : <button type="button" className="ent-btn danger ghost sm" disabled={workspace.busy} onClick={() => setRemoving(true)}><Trash2 size={13} aria-hidden />删除记录</button>}
 
           </section>
-        </aside>
+        </dialog>
       </div>
     </div>
   );
@@ -413,8 +405,7 @@ function useTeam(work: WorkItem, workspace: EnterpriseWorkspace): SiliconEmploye
 function Process({ work, workspace, showRetry = true }: { work: WorkItem; workspace: EnterpriseWorkspace; showRetry?: boolean }) {
   if (work.kind === 'flow') return <ArrangementProcess work={work} workspace={workspace} showRetry={showRetry} />;
   return (
-    <section className="ent-panel ent-work-process">
-      <h2>工作过程</h2>
+    <section className="ent-work-process">
       <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt)}</p>
       {work.activities.length ? (
         <ol className="ent-wk-activity-list" aria-label="工作执行记录" tabIndex={0}>
@@ -452,8 +443,7 @@ function ArrangementProcess({ work, workspace, showRetry = true }: { work: WorkI
           : mediaPhase === 'saving' ? '正在下载并保存媒体'
             : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
   return (
-    <section className="ent-panel ent-work-process">
-      <h2>工作过程</h2>
+    <section className="ent-work-process">
       <p className="ent-process-current" role="status">当前：{mediaLabel ?? currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt)}</p>
       {work.steps.length ? (
         <ArrangementSteps work={work} busy={workspace.busy} onRetry={workspace.retryWork} showRetry={showRetry} />
@@ -508,29 +498,6 @@ function groupDeliverables(files: WorkItem['deliverables']): Array<{ key: string
     group.files.push(file);
   }
   return groups;
-}
-
-function ShareButton({ work }: { work: WorkItem }) {
-  const [done, setDone] = useState(false);
-  const share = () => {
-    const lines = [
-      work.title,
-      `状态：${work.status === 'completed' ? '已完成' : work.status === 'failed' ? '已中断' : '进行中'} · 进度 ${Math.round(work.progress)}%`,
-      `开始：${stampText(work.createdAt)} · 更新：${dayTimeText(work.updatedAt)}`,
-      work.goal ? `目标：${work.goal}` : '',
-      work.deliverables.length ? `产出：${work.deliverables.map(file => file.name).join('、')}` : '',
-    ].filter(Boolean);
-    void copy(lines.join('\n')).then(ok => {
-      setDone(ok);
-      window.setTimeout(() => setDone(false), 2000);
-    });
-  };
-  return (
-    <button type="button" className="ent-btn sm" onClick={share} title="把这项工作的摘要复制到剪贴板">
-      <Share2 size={14} aria-hidden />
-      {done ? '已复制' : '分享'}
-    </button>
-  );
 }
 
 /** 只缩短目录的展示文本；悬停和复制始终使用完整路径。 */

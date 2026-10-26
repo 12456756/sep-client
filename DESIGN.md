@@ -104,6 +104,27 @@ The incumbent palette is warm red against cool neutral surfaces. During redesign
 
 **The Scarce Accent Rule.** Brand red should identify action and focus, not paint every surface.
 
+### Work workspace palette
+
+The work workspace pairs warm neutral surfaces with brand red selection and blue, amber, green and red work states. Keep message reading surfaces open and quiet. Define all workspace roles in `src/styles/work-hub.css` under `.ent-shell.ent-work-shell`, with explicit `.dark` overrides; other pages retain the shared enterprise palette.
+
+| Role | Light | Dark |
+| --- | --- | --- |
+| Working canvas | `#fffdfb` | `#1a1d26` |
+| Icon rail / work list | `#f8f1ef` / `#f4efed` | `#261f27` / `#201f27` |
+| Hover / selection | `#ebe3e1` / `#f1dedd` | `#302b35` / `#422c33` |
+| Selection ink | `#8f2d34` | `#f2c2c6` |
+| Running ink / tint | `#315f9b` / `#e8f0fb` | `#94bfff` / `#263952` |
+| Ready ink / tint | `#196f4a` / `#e4f3ea` | `#7cd5a9` / `#203c30` |
+| Attention ink / tint | `#805b12` / `#fbefcf` | `#e8c371` / `#453820` |
+| Failure ink / tint | `#b52e47` / `#fbe7ec` | `#f392a4` / `#482a34` |
+
+- Active navigation, new work and the selected creation mode use solid brand red. Work row selection and secondary mode selection use the quieter brand tint.
+- Status filters and row glyphs use their semantic tint. A selected status filter reverses the ink/tint pair; shapes, pressed state and hover/focus hints preserve meaning without color.
+- Automatic planning uses blue for the current stage, green with a check for completed stages and dashed neutral nodes for future stages. All stages show completion when the workflow presentation ends. Current stage also exposes `aria-current="step"`.
+- Thinking statements use a shared blue information surface; their existing entrance remains, without continuously pulsing glyphs. Do not introduce decorative gradients or additional timers.
+- Workspace metadata uses `#695f6b` / `#a49aa5` for contrast on tinted surfaces. Dark primary controls use the solid brand token and a `#b44650` hover rather than pale red fills with white text.
+
 ## Typography
 
 **Display Font:** system UI sans stack.
@@ -128,7 +149,7 @@ The incumbent palette is warm red against cool neutral surfaces. During redesign
 - Use a reading width around 1180–1280px for list and detail pages; allow workbench and organization graph surfaces to use the available width.
 - Keep a consistent 8px rhythm with 16px and 24px grouping intervals.
 - At narrower desktop widths, collapse secondary panels before reducing primary content below readable measure.
-- Work uses a 304px compact list and primary conversation. Results, process, and information open in one optional Inspector; narrow desktop windows collapse the list first and use a modal Inspector. Employee detail retains its contextual rail.
+- Work uses a 304px compact list and primary conversation. Results, process, and information open in a centered floating modal Inspector at every window size. Opening it preserves the list visibility and conversation width; closing it restores focus to its trigger. Work sharing is removed. Employee detail retains its contextual rail.
 
 ## Elevation & Depth
 
