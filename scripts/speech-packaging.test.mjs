@@ -118,7 +118,8 @@ test('both channels and signing modes inherit speech resources, native unpacking
   for (const channel of ['beta', 'stable']) {
     for (const signed of [false, true]) {
       const config = createBuilderConfig(pkg.build, channel, { signed, platform: 'darwin', env: { SEP_MAC_TEAM_ID: 'ABCDE12345', APPLE_KEYCHAIN_PROFILE: 'test' } })
-      assert.deepEqual(config.extraResources, [{ from: 'resources/speech/sensevoice-int8', to: 'speech/sensevoice-int8', filter: speechFiles }])
+      assert.deepEqual(config.extraResources.filter(item => item.to === 'speech/sensevoice-int8'),
+        [{ from: 'resources/speech/sensevoice-int8', to: 'speech/sensevoice-int8', filter: speechFiles }])
       assert.ok(config.asarUnpack.includes('node_modules/sherpa-onnx-*/**/*'))
       assert.equal(config.beforePack, 'scripts/speech-before-pack.cjs')
       assert.equal(config.afterPack, 'scripts/speech-after-pack.cjs')

@@ -62,3 +62,7 @@ resources/speech/sensevoice-int8/*.download
 
 # Explicit video mock integration build
 out-video-mock/
+
+# Pinned third-party Office executables are fetched and verified by office:prepare.
+resources/office/officecli-*
+resources/office/*.download

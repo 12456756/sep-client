@@ -35,6 +35,7 @@
     "test:speech:client": "node --test poc/sensevoice/client.integration.test.mjs",
     "speech:prepare": "node scripts/prepare-speech-assets.mjs",
     "speech:verify": "node scripts/verify-speech-assets.mjs",
+    "office:prepare": "node scripts/office-assets.mjs",
     "release:config:beta": "node scripts/generate-runtime-config.mjs beta",
     "release:config:stable": "node scripts/generate-runtime-config.mjs stable",
     "package:beta": "npm run release:preflight && npm run release:config:beta && npm run release:builder:signed:beta && electron-vite build && electron-builder --config .release/electron-builder.beta.signed.json --publish never && node scripts/verify-release-signatures.mjs beta && node scripts/verify-update-manifest.mjs dist/beta && node scripts/generate-checksums.mjs dist/beta && node scripts/generate-release-notes.mjs beta dist/beta",
@@ -52,7 +53,7 @@
     "release:recover": "node scripts/publish-release.mjs recover-local",
     "test:releases": "node --test scripts/release-flow.test.mjs scripts/record-release-build.test.mjs scripts/release-version.test.mjs scripts/release-notes.test.mjs",
     "verify:release-signatures": "node scripts/verify-release-signatures.mjs",
-    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
+    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/office-assets.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
     "verify:packaged-runtime": "node scripts/verify-packaged-runtime.mjs",
     "release:builder:beta": "node scripts/generate-builder-config.mjs beta",
     "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
@@ -178,6 +179,8 @@
       "node_modules/sherpa-onnx-*/**/*"
     ],
     "extraResources": [
+      { "from": "resources/common-skills", "to": "common-skills", "filter": ["officecli/SKILL.md"] },
+      { "from": "resources/office", "to": "office", "filter": ["manifest.json", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.txt"] },
       {
         "from": "resources/speech/sensevoice-int8",
         "to": "speech/sensevoice-int8",

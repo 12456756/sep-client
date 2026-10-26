@@ -348,7 +348,6 @@ export class EmployeeAuthorizer {
       || new Set(prepared.skillPaths).size !== actualSkills.length
       || new Set(actualSkills.map(skill => skill.capabilityId)).size !== actualSkills.length
       || new Set(actualSkills.map(skill => skill.path)).size !== actualSkills.length
-      || new Set(actualSkills.map(skill => skill.name)).size !== actualSkills.length
       || actualSkills.some(actual => {
         const approved = approvedSkills.find(skill => skill.capabilityId === actual.capabilityId)
         if (!approved || !prepared.skillPaths.includes(actual.path)

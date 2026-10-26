@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import type { PiLoadSkills, PiResourceLoaderOptions, PiSkill } from './pi-coding-agent-adapter'
-import { skillNameComparisonKey } from '../../common/platform/skill-artifact-contract'
 import { validatedSkillMarkdown } from './skill-package-parser'
 import { assertSkillPathParents, packageManifestName, verifyPackageCache } from './skill-package-zip'
+import { allocateSkillNames } from './skill-runtime-names'
 
 function integrityMismatch(): never {
   throw new Error('Employee runtime skill loader integrity mismatch.')
@@ -21,12 +21,14 @@ export function employeeSkillLoaderOptions(
   agentDir: string,
   paths: readonly string[] | undefined,
   loadSkills: PiLoadSkills,
+  commonPaths: readonly string[] = [],
 ): Pick<PiResourceLoaderOptions, 'noSkills' | 'skillsOverride'> {
   // Ordinary sessions retain Pi's workstation/project skill discovery.
-  if (paths === undefined) return { noSkills: false }
+  if (paths === undefined && commonPaths.length === 0) return { noSkills: false }
 
-  const entries = paths.map(path => join(resolve(cwd, path), 'SKILL.md'))
-  if (new Set(entries.map(skillNameComparisonKey)).size !== entries.length) integrityMismatch()
+  const directories = [...new Set([...(paths ?? []), ...commonPaths].map(path => resolve(cwd, path)))]
+  const entries = directories.map(path => join(path, 'SKILL.md'))
+  const common = new Set(commonPaths.map(path => join(resolve(cwd, path), 'SKILL.md')))
   const expected = new Map(entries.map(path => {
     try {
       const stat = lstatSync(path)
@@ -52,12 +54,23 @@ export function employeeSkillLoaderOptions(
       return [path, { skill, canonical, prefix: parsed.compatibilityPrefix, sha256: createHash('sha256').update(bytes).digest('hex'), dev: stat.dev, ino: stat.ino, manifest }] as const
     } catch { return integrityMismatch() }
   }))
-  if (new Set([...expected.values()].map(entry => skillNameComparisonKey(entry.skill.name))).size !== expected.size) integrityMismatch()
-  const prepared = loadSkills({ cwd, agentDir, skillPaths: [...paths], includeDefaults: false })
+  const aliases = allocateSkillNames([...expected].map(([path, entry]) => ({
+    id: path, name: entry.skill.name, source: common.has(path) ? 'common' : 'employee',
+  })))
+  // Validate entries separately before the SDK's name-based deduplication can discard one.
+  for (const path of directories) validateBase(loadSkills({ cwd, agentDir, skillPaths: [path], includeDefaults: false }), false)
 
-  function validateBase(base: typeof prepared): void {
+  function validateBase(base: ReturnType<PiLoadSkills>, requireAll = true): void {
+    const collided = new Set<string>()
     for (const diagnostic of base.diagnostics) {
       const entry = diagnostic.path ? expected.get(resolve(diagnostic.path)) : undefined
+      if (entry && diagnostic.type === 'collision' && diagnostic.collision?.resourceType === 'skill') {
+        const winner = expected.get(resolve(diagnostic.collision.winnerPath))
+        if (!winner || winner.skill.name !== entry.skill.name || diagnostic.collision.name !== entry.skill.name
+          || resolve(diagnostic.collision.loserPath) !== resolve(diagnostic.path!)) integrityMismatch()
+        collided.add(resolve(diagnostic.path!))
+        continue
+      }
       if (!entry || diagnostic.type !== 'warning') integrityMismatch()
       const nameWarning = diagnostic.message === 'name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)'
         || diagnostic.message === `name exceeds 64 characters (${entry.skill.name.length})` && Array.from(entry.skill.name).length <= 64
@@ -72,9 +85,8 @@ export function employeeSkillLoaderOptions(
         skill.disableModelInvocation !== entry.skill.disableModelInvocation || resolve(skill.baseDir) !== dirname(path)) integrityMismatch()
       seen.add(path)
     }
-    for (const [path, entry] of expected) if (!entry.prefix && !seen.has(path)) integrityMismatch()
+    if (requireAll) for (const [path, entry] of expected) if (!entry.prefix && !seen.has(path) && !collided.has(path)) integrityMismatch()
   }
-  validateBase(prepared)
 
   return {
     // noSkills disables discovery but still loads additionalSkillPaths in SDK 0.83.0.
@@ -90,7 +102,7 @@ export function employeeSkillLoaderOptions(
           if (entry.manifest) verifyPackageCache(path, entry.manifest)
         } catch { integrityMismatch() }
       }
-      return { skills: [...expected.values()].map(entry => ({ ...entry.skill })), diagnostics: [] }
+      return { skills: [...expected].map(([path, entry]) => ({ ...entry.skill, name: aliases.get(path)! })), diagnostics: [] }
     },
   }
 }

@@ -103,7 +103,7 @@ describe('MCP tool bridge', () => {
     assert.equal(result.content[0]!.text, 'x'.repeat(128_000) + '...[truncated]')
   })
 
-  it('does not redact Electron launch mode as a secret in tool results', async () => {
+  it('does not redact public Electron and Office runtime switches as secrets in tool results', async () => {
     const script = `
       const rl = require('node:readline').createInterface({ input: process.stdin });
       rl.on('line', line => {
@@ -116,7 +116,8 @@ describe('MCP tool bridge', () => {
       });
     `
     const bridge = await runtime([{ name: 'local', enabledTools: ['search'], transport: {
-      type: 'stdio', command: process.execPath, args: ['-e', script], env: { ELECTRON_RUN_AS_NODE: '1' },
+      type: 'stdio', command: process.execPath, args: ['-e', script], env: { ELECTRON_RUN_AS_NODE: '1',
+        OFFICECLI_SKIP_UPDATE: '1', OFFICECLI_NO_AUTO_RESIDENT: '1', OFFICECLI_RESIDENT_FLUSH: 'each' },
     } }])
     const result = await bridge.tools[0]!.execute('snapshot', {}, undefined)
     assert.equal(result.content[0]!.text, 'button ref=e1 count=123')
@@ -219,9 +220,12 @@ describe('MCP tool bridge', () => {
     const pending = bridge.tools[0]!.execute('call-1', {}, controller.signal)
     await start
     controller.abort()
-    assert.match((await pending).content[0]!.text, /cancel/i)
+    const interrupted = await pending
+    assert.match(interrupted.content[0]!.text, /cancel/i)
+    assert.ok('executionUncertain' in interrupted.details && interrupted.details.executionUncertain)
     const timedOut = await bridge.tools[0]!.execute('call-2', {}, undefined)
     assert.equal(timedOut.details.isError, true)
+    assert.ok('executionUncertain' in timedOut.details && timedOut.details.executionUncertain)
     assert.match(timedOut.content[0]!.text, /timed out/i)
     assert.equal(server.methods.filter(method => method === 'tools/call').length, 2)
     assert.equal(getEventListeners(controller.signal, 'abort').length, 0)

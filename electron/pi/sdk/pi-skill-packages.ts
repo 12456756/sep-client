@@ -236,7 +236,6 @@ export class SkillStore {
     await mkdir(skillRoot, { recursive: true })
     const paths: string[] = []
     const installed: PreparedEmployeeSkill[] = []
-    const names = new Set<string>()
     for (const skill of approvedSkills) {
       checkCurrent(input)
       const scope = input.memberId ? { enterpriseId: input.enterpriseId, memberId: input.memberId } : null
@@ -268,9 +267,6 @@ export class SkillStore {
         const entry = await this.artifactEntry(input, skillRoot, artifact, runtimeSkill.content)
         checkCurrent(input)
         if (!isOwnerLocalVersion) {
-          const nameKey = skillNameComparisonKey(entry.name)
-          if (names.has(nameKey)) throw new Error('Installed skill names collide.')
-          names.add(nameKey)
           const versionKey = createHash('sha256').update(JSON.stringify([artifact.versionId, artifact.artifactSha256])).digest('hex')
           const parent = join(skillRoot, safeSegment(skill.capability.id), versionKey)
           const packageRoot = join(parent, entry.name)
@@ -370,9 +366,6 @@ export class SkillStore {
       if (!content?.trim()) throw new Error('Approved skill entry is empty or unavailable.')
       const entry = skillEntry(content, skill)
       if (!safePackagePath(entry.name)) throw new Error('Invalid skill installation directory.')
-      const nameKey = skillNameComparisonKey(entry.name)
-      if (names.has(nameKey)) throw new Error('Installed skill names collide.')
-      names.add(nameKey)
       const versionId = activeVersion?.versionId ?? platform?.versionId ?? `platform-${skill.currentVersion.id}`
       const version = activeVersion?.version ?? platform?.version ?? skill.currentVersion.version
       const sha256 = createHash('sha256').update(entry.content).digest('hex')

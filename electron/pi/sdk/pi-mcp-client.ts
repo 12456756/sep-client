@@ -15,20 +15,23 @@ import { utf8ChildEnvironment } from './pi-text-encoding'
 const log = logger.child('pi-mcp')
 const DEFAULT_TIMEOUT_MS = 30_000
 const CLOSE_TIMEOUT_MS = 2_000
+const STDIO_CLOSE_TIMEOUT_MS = 5_000
 const MAX_TOOL_PAGES = 32
 const MAX_DISCOVERED_TOOLS = 512
 const MAX_TOOL_NAME_LENGTH = 64
 const MAX_TOOL_RESULT_CHARS = 128_000
+const PUBLIC_RUNTIME_ENV = new Map([['ELECTRON_RUN_AS_NODE', '1'], ['OFFICECLI_SKIP_UPDATE', '1'],
+  ['OFFICECLI_NO_AUTO_RESIDENT', '1'], ['OFFICECLI_RESIDENT_FLUSH', 'each']])
 
 export interface McpToolResult {
   content: Array<{ type: 'text'; text: string }>
-  details: { serverName: string; toolName: string; isError: boolean }
+  details: { serverName: string; toolName: string; isError: boolean; executionUncertain?: true }
 }
 
 function safeText(text: string, config: McpServerConfig, maxLength?: number): string {
   // This public runtime switch is not a credential. Redacting "1" corrupts refs/URLs.
   const values = config.transport.type === 'stdio'
-    ? Object.entries(config.transport.env ?? {}).filter(([key]) => key !== 'ELECTRON_RUN_AS_NODE').map(([, value]) => value)
+    ? Object.entries(config.transport.env ?? {}).filter(([key, value]) => PUBLIC_RUNTIME_ENV.get(key) !== value).map(([, value]) => value)
     : Object.values(config.transport.headers ?? {})
   // A server may echo only the token, without its Authorization scheme.
   const bearerTokens = values.flatMap(value => /^Bearer\s+(\S+)$/i.exec(value)?.slice(1) ?? [])
@@ -83,7 +86,9 @@ function createTool(config: McpServerConfig, client: Client, tool: Tool) {
       } catch (error) {
         const message = signal?.aborted ? 'MCP tool call cancelled.' : error instanceof Error ? error.message : 'Unknown MCP error'
         // Returned as a tool result, never retried here. The Pi extension sets isError.
-        return resultFor(config, tool.name, { isError: true, content: [{ type: 'text', text: `MCP tool failed (${name}): ${message}` }] })
+        const result = resultFor(config, tool.name, { isError: true, content: [{ type: 'text', text: `MCP tool failed (${name}): ${message}` }] })
+        result.details.executionUncertain = true
+        return result
       } finally {
         signal?.removeEventListener('abort', onAbort)
       }
@@ -92,6 +97,8 @@ function createTool(config: McpServerConfig, client: Client, tool: Tool) {
 }
 
 export interface McpRuntime {
+  /** Set only by the built-in Office facade, never by an external server. */
+  readonly builtinOffice?: true
   readonly tools: ReturnType<typeof createTool>[]
   readonly permissions: RegisteredToolPermissions
   dispose(): Promise<void>
@@ -151,7 +158,8 @@ async function closeConnection(connection: Connection): Promise<void> {
     log.warn('MCP session termination failed', { serverName: config.name, error: safeText(String(error), config) })
   } finally {
     try {
-      await withTimeout(client.close(), CLOSE_TIMEOUT_MS, 'MCP close')
+      // Stdio close can need two 2-second grace periods before terminating a stuck process.
+      await withTimeout(client.close(), transport instanceof StdioClientTransport ? STDIO_CLOSE_TIMEOUT_MS : CLOSE_TIMEOUT_MS, 'MCP close')
     } catch (error) {
       log.warn('MCP connection close failed', { serverName: config.name, error: safeText(String(error), config) })
     }

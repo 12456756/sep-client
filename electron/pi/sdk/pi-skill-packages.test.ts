@@ -117,6 +117,24 @@ async function readSkillBody(path: string): Promise<string> {
 }
 
 describe('SkillStore', () => {
+  it('prepares different approved capabilities with the same skill name without rewriting them', async () => {
+    const { skills, runtimeRoot } = await createStore()
+    const payload = skillsPayload('version-v1', '1.0')
+    const second = { ...payload.skills[0], capability: { ...payload.skills[0].capability, id: 'cap-b' },
+      currentVersion: { ...payload.skills[0].currentVersion, id: 'version-v2', capabilityId: 'cap-b' } }
+    const content = '---\nname: orders\ndescription: Approved order operations\n---\n# Approved\n'
+    globalThis.fetch = async input => String(input).endsWith('/skills')
+      ? jsonResponse({ ...payload, skills: [...payload.skills, second] }) : jsonResponse({ content })
+    const prepared = await skills.prepare(request())
+    assert.equal(prepared.skills.length, 2)
+    assert.deepEqual(prepared.skills.map(skill => skill.name), ['orders', 'orders'])
+    assert.notEqual(prepared.skillPaths[0], prepared.skillPaths[1])
+    const options = employeeSkillLoaderOptions(runtimeRoot, runtimeRoot, prepared.skillPaths, loadSkills)
+    const loaded = options.skillsOverride!(loadSkills({ cwd: runtimeRoot, agentDir: runtimeRoot,
+      skillPaths: prepared.skillPaths, includeDefaults: false }))
+    assert.equal(new Set(loaded.skills.map(skill => skill.name)).size, 2)
+    for (const path of prepared.skillPaths) assert.equal(await readFile(join(path, 'SKILL.md'), 'utf8'), content)
+  })
   it('allows a bound skill with no approved version when runtime has no skills', async () => {
     const { skills } = await createStore()
     const payload = skillsPayload('version-v1', '1.0')

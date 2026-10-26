@@ -9,6 +9,8 @@ import type { PiAgentSessionConfig } from './pi-agent-runtime'
 import type { MediaHostTools, MediaToolName } from '../../domain/media-tools'
 import { AppError } from '../../errors/app-error'
 import { setLogSink } from '../../common/logger'
+import { prepareCommonSkills } from './common-skills'
+import { OFFICE_TOOL_NAME } from './pi-office-policy'
 
 const readOnlyPolicy = {
   allowedTools: ['read', 'grep', 'find', 'ls'],
@@ -337,6 +339,32 @@ async function mediaSession(
     restoreLog()
   }
 }
+
+describe('common Office skills with the real Pi SDK', () => {
+  it('advertises the verified common skill and tool for an employee session', async t => {
+    if (process.env.SEP_MCP_CONFIG || !prepareCommonSkills().office) {
+      t.skip('Requires prepared Office resources and default host MCP configuration.'); return
+    }
+    const { bodies } = await mediaSession({ mcpServers: undefined, additionalSkillPaths: [],
+      employeeProfile: { name: 'Office employee' } })
+    assert.ok(bodies[0].tools?.some(tool => tool.function.name === OFFICE_TOOL_NAME))
+    const system = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+    assert.match(system, /<name>officecli<\/name>/)
+  })
+  for (const overrides of [
+    { mcpServers: [] },
+    { mcpServers: undefined, disableTools: true },
+    { mcpServers: undefined, toolPolicy: { ...readOnlyPolicy, allowedTools: [] } },
+  ] satisfies Array<Partial<PiAgentSessionConfig>>) {
+    it(`does not add Office when disabled by ${JSON.stringify(overrides)}`, async () => {
+      const { bodies } = await mediaSession({ ...overrides, additionalSkillPaths: [],
+        employeeProfile: { name: 'Office employee' } })
+      assert.ok(!bodies[0].tools?.some(tool => tool.function.name === OFFICE_TOOL_NAME))
+      const system = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+      assert.doesNotMatch(system, /<name>officecli<\/name>/)
+    })
+  }
+})
 
 describe('trusted media host tools with the real Pi SDK', () => {
   for (const systemPrompt of [undefined, 'Custom employee instructions.']) {

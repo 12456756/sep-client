@@ -1,4 +1,5 @@
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { lazyStream, type AssistantMessage, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
@@ -58,6 +59,9 @@ import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnaps
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
 import { videoErrorMessage } from '../../../src/shared/video-errors'
+import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
+import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
+import { evaluateOfficeCommand, OFFICE_TOOL_NAME } from './pi-office-policy'
 
 const log = logger.child('pi-gateway')
 
@@ -729,6 +733,16 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
         await config.reportPolicyEvent?.('unknown_tool_blocked', { toolName, reason: 'Media tool is not enabled for this run.' })
         return { block: true, reason: `Unknown tool: ${toolName} - default deny` }
       }
+      if (toolName === OFFICE_TOOL_NAME && mcp.builtinOffice) {
+        const decision = evaluateOfficeCommand(event.input, officeTaskPolicy(config))
+        if (!decision.allowed) {
+          await config.reportPolicyEvent?.('tool_call_blocked', { toolName, reason: decision.reason })
+          return { block: true, reason: decision.reason ?? 'Office command denied.' }
+        }
+        if (!decision.requiresApproval) return { block: false }
+        const approved = await config.authorizeTool({ toolName, input: redactValue({ command: decision.args }) })
+        return { block: !approved, ...(approved ? {} : { reason: 'User denied Office document modification.' }) }
+      }
       if (toolPolicy && isUnrestrictedToolPolicy(toolPolicy)) {
         // In the explicit highest-permission mode, the policy is no longer a
         // path/command/approval gate. Pi still remains the source of truth for
@@ -932,7 +946,39 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     // Execution-disabled/planner policies must not gain external tools or spawn MCP servers.
     const canUseMcp = !config.disableTools && (!config.toolPolicy || config.toolPolicy.allowedTools.length > 0 || isUnrestrictedToolPolicy(config.toolPolicy))
     const servers = canUseMcp ? config.mcpServers ?? await loadHostMcpServers() : []
-    const mcp = await createMcpRuntime(servers, config.workspaceDir)
+    const common: CommonSkillsResult = config.employeeProfile && canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG
+      ? prepareCommonSkills() : { skills: [], unavailable: [] }
+    if (common.skills.length && config.resumeSessionFile) {
+      try {
+        const saved: unknown = JSON.parse(await readFile(join(config.agentDir, 'common-skill-snapshot.json'), 'utf8'))
+        const expected = common.skills.map(({ id, version, sha256 }) => ({ id, version, sha256 }))
+        if (JSON.stringify(saved) !== JSON.stringify(expected)) {
+          common.skills = []; common.office = undefined
+          common.unavailable.push('The resumed session requires a different common skill version; Office was not silently upgraded.')
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          common.skills = []; common.office = undefined
+          common.unavailable.push('The common skill recovery snapshot is unreadable; Office was not silently replaced.')
+        }
+      }
+    }
+    for (const reason of common.unavailable) {
+      log.warn('common skill unavailable', { skillId: 'officecli', reason })
+      await config.reportPolicyEvent?.('common_skill_unavailable', { skillId: 'officecli', reason })
+    }
+    const baseMcp = await createMcpRuntime(servers, config.workspaceDir)
+    const attached = await attachOfficeRuntime(baseMcp, common, config).catch(async error => {
+      await baseMcp.dispose()
+      throw error
+    })
+    const mcp = attached.runtime
+    if (common.office && !attached.enabled) common.unavailable.push('Office MCP startup failed.')
+    const commonPaths = attached.enabled ? common.skills.map(skill => skill.path) : []
+    if (commonPaths.length && config.toolPolicy) config = { ...config, toolPolicy: {
+      ...config.toolPolicy, approvedSkillPaths: [...(config.toolPolicy.approvedSkillPaths ?? []),
+        ...commonPaths.map(path => ({ entryPath: join(path, 'SKILL.md') }))],
+    } }
     try {
       const employeePrompt = !config.useNativeSystemPrompt && config.employeeProfile ? buildEmployeeSystemPrompt(config.employeeProfile) : undefined
       const resourceLoader = new DefaultResourceLoader({
@@ -944,17 +990,28 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           config.agentDir,
           config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
           loadSkills,
+          commonPaths,
         ),
         noContextFiles: true,
-        additionalSkillPaths: config.additionalSkillPaths,
+        additionalSkillPaths: [...(config.additionalSkillPaths ?? []), ...commonPaths],
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
-        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt
-          ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : [])]
+        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || common.unavailable.length
+          ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : []),
+            ...(common.unavailable.length ? ['The built-in Office capability is unavailable for this session. Do not claim it was used or install another executable.'] : [])]
           : undefined,
       })
       await resourceLoader.reload()
+      if (commonPaths.length) {
+        await writeFile(join(config.agentDir, 'common-skill-snapshot.json'), JSON.stringify(
+          common.skills.map(({ id, version, sha256 }) => ({ id, version, sha256 }))), 'utf8')
+      }
+      if (config.employeeProfile) {
+        await writeFile(join(config.agentDir, 'skill-runtime-names.json'), JSON.stringify(
+          resourceLoader.getSkills().skills.map(skill => ({ runtimeName: skill.name, path: skill.filePath,
+            source: commonPaths.includes(skill.baseDir) ? 'common' : 'employee' }))), 'utf8')
+      }
       const extensionState = resourceLoader.getExtensions()
       log.debug('resource loader reloaded', {
         extensionCount: extensionState.extensions.length,

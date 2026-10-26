@@ -86,14 +86,44 @@ describe('employee skills with the real DefaultResourceLoader (no model)', () =>
     assert.ok(loader.getSkills().diagnostics.some(diagnostic => diagnostic.type === 'collision'))
   })
 
-  it('fails closed on missing and duplicate prepared paths and duplicate names', async t => {
+  it('rejects missing entries but deduplicates paths and aliases colliding names', async t => {
     const f = await fixture()
     t.after(f.cleanup)
     assert.throws(() => f.loader([join(f.cwd, 'missing')]), /integrity mismatch/)
-    assert.throws(() => f.loader([f.approved, f.approved]), /integrity mismatch/)
+    const repeated = f.loader([f.approved, f.approved])
+    await repeated.reload()
+    assert.equal(repeated.getSkills().skills.length, 1)
     const duplicate = join(f.agentDir, 'orders')
     await f.skill(duplicate)
-    assert.throws(() => f.loader([f.approved, duplicate]), /integrity mismatch/)
+    const loader = f.loader([f.approved, duplicate])
+    await loader.reload()
+    const skills = loader.getSkills().skills
+    assert.equal(skills.length, 2)
+    assert.equal(new Set(skills.map(skill => skill.name)).size, 2)
+    assert.equal(await readFile(join(duplicate, 'SKILL.md'), 'utf8'), approvedContent)
+    const reversed = f.loader([duplicate, f.approved])
+    await reversed.reload()
+    assert.deepEqual(new Map(skills.map(skill => [skill.filePath, skill.name])),
+      new Map(reversed.getSkills().skills.map(skill => [skill.filePath, skill.name])))
+  })
+
+  it('loads common skills with an empty employee list and preserves their names on collision', async t => {
+    const f = await fixture()
+    t.after(f.cleanup)
+    const common = join(f.agentDir, 'common', 'orders')
+    await f.skill(common)
+    const create = (paths: string[]) => new DefaultResourceLoader({
+      cwd: f.cwd, agentDir: f.agentDir, noExtensions: true, noContextFiles: true,
+      settingsManager: SettingsManager.inMemory(), additionalSkillPaths: [...paths, common],
+      ...employeeSkillLoaderOptions(f.cwd, f.agentDir, paths, loadSkills, [common]),
+    })
+    const empty = create([])
+    await empty.reload()
+    assert.deepEqual(empty.getSkills().skills.map(skill => skill.name), ['orders'])
+    const combined = create([f.approved])
+    await combined.reload()
+    assert.equal(combined.getSkills().skills.find(skill => skill.baseDir === common)?.name, 'orders')
+    assert.equal(combined.getSkills().skills.find(skill => skill.baseDir === f.approved)?.name, 'employee-orders')
   })
 
   it('rejects body-only byte changes before the first reload and on later reloads', async t => {
@@ -184,12 +214,14 @@ describe('employee skills with the real DefaultResourceLoader (no model)', () =>
     })
   }
 
-  it('rejects NFKC name collisions and same-byte replacement or symlink substitution', async t => {
+  it('aliases NFKC name collisions but rejects same-byte replacement or symlink substitution', async t => {
     const f = await fixture()
     t.after(f.cleanup)
     const other = join(f.agentDir, 'other')
     await f.skill(other, approvedContent.replace('name: orders', 'name: ｏｒｄｅｒｓ'))
-    assert.throws(() => f.loader([f.approved, other]), /integrity mismatch/)
+    const colliding = f.loader([f.approved, other])
+    await colliding.reload()
+    assert.equal(new Set(colliding.getSkills().skills.map(skill => skill.name.normalize('NFKC'))).size, 2)
     const loader = f.loader()
     await loader.reload()
     const entry = join(f.approved, 'SKILL.md')
@@ -197,7 +229,12 @@ describe('employee skills with the real DefaultResourceLoader (no model)', () =>
     await writeFile(entry, approvedContent)
     await assert.rejects(loader.reload(), /integrity mismatch/)
     await rm(entry)
-    await symlink(join(f.approved, 'old.md'), entry)
+    try { await symlink(join(f.approved, 'old.md'), entry) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EPERM') throw error
+      t.diagnostic('File symlink substitution assertion unavailable: Windows denied symlink creation.')
+      return
+    }
     assert.throws(() => f.loader(), /integrity mismatch/)
   })
 })

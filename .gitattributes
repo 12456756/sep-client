@@ -1,0 +1,2 @@
+resources/common-skills/** text eol=lf
+resources/office/*.txt text eol=lf
