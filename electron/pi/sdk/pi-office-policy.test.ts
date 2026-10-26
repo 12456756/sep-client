@@ -21,6 +21,7 @@ describe('Office command policy', () => {
     const decision = evaluateOfficeCommand({ command: 'get "report one.docx" /body --json' }, f.policy)
     assert.equal(decision.allowed, true)
     assert.deepEqual(decision.args, ['get', join(f.workspace, 'report one.docx'), '/body', '--json'])
+    assert.deepEqual(decision.lockPaths, [join(f.workspace, 'report one.docx')])
     assert.equal(evaluateOfficeCommand({ command: ['help', 'docx', 'paragraph'] }, f.policy).allowed, true)
     assert.equal(evaluateOfficeCommand({ command: ['set', 'a.docx', '/body', '--prop', 'text=Hello'] }, f.policy).allowed, true)
   })
@@ -31,6 +32,12 @@ describe('Office command policy', () => {
     assert.equal(evaluateOfficeCommand({ command: ['view', 'a.xlsx', 'text'] }, readOnly).allowed, true)
     assert.equal(evaluateOfficeCommand({ command: ['set', 'a.docx', '/body', '--prop', 'text=x'] },
       { ...f.policy, approvalMode: 'confirm-each' }).requiresApproval, true)
+  })
+  it('returns both primary and output paths for runtime locking', async t => {
+    const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }))
+    const decision = evaluateOfficeCommand({ command: ['view', 'source.docx', 'html', '--out', 'render.html', '-o', 'render.html'] }, f.policy)
+    assert.equal(decision.allowed, true)
+    assert.deepEqual(decision.lockPaths, [join(f.workspace, 'source.docx'), join(f.workspace, 'render.html')])
   })
   it('checks traversal, symlinks, output paths and embedded resource paths', async t => {
     const f = await fixture(); t.after(() => rm(f.root, { recursive: true, force: true }))

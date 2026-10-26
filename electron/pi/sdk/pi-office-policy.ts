@@ -3,7 +3,13 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { evaluateToolCall, isUnrestrictedToolPolicy, type ToolPolicy } from '../../../pi-extension/guard'
 
 export const OFFICE_TOOL_NAME = 'mcp__officecli__officecli'
-export interface OfficeDecision { allowed: boolean; requiresApproval: boolean; args: string[]; reason?: string }
+export interface OfficeDecision {
+  allowed: boolean
+  requiresApproval: boolean
+  args: string[]
+  lockPaths: string[]
+  reason?: string
+}
 const reads = new Set(['get', 'query', 'validate', 'raw', 'view', 'dump'])
 const edits = new Set(['create', 'set', 'add', 'remove', 'move', 'swap', 'save', 'close', 'batch', 'import'])
 const booleanFlags = new Set(['--json', '--force', '--minimal', '--header', '--stop-on-error'])
@@ -57,11 +63,12 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
     const verb = args[0]
     if (verb === 'help' || verb === '--help' || verb === '--version') {
       if (args.slice(1).some(arg => !/^[\w-]+$/.test(arg))) throw new Error('Invalid help argument.')
-      return { allowed: true, requiresApproval: false, args }
+      return { allowed: true, requiresApproval: false, args, lockPaths: [] }
     }
     if (!reads.has(verb) && !edits.has(verb)) throw new Error('Unsupported Office command. Use help or supported document commands.')
     const write = edits.has(verb)
     let requiresApproval = false
+    const lockPaths: string[] = []
     const unrestricted = isUnrestrictedToolPolicy(policy)
     function file(value: string, writing: boolean): string {
       if (!value || /^(?:[a-z][a-z\d+.-]*:\/\/|\\\\)/i.test(value)) throw new Error('Local file paths are required.')
@@ -81,6 +88,7 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
         }
         requiresApproval ||= decision.requiresApproval
       }
+      lockPaths.push(actual)
       return actual
     }
     function prop(key: string, value: unknown): string {
@@ -120,7 +128,9 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
       if (booleanFlags.has(flag)) continue
       if (!valueFlags.has(flag) || args[i + 1] === undefined) throw new Error('Unsupported or incomplete Office option.')
       const value = args[++i]
-      if (flag === '--out' || flag === '-o') args[i] = file(value, true)
+      if (flag === '--out' || flag === '-o') {
+        args[i] = file(value, true)
+      }
       else if (flag === '--file') { if (verb !== 'import') throw new Error('--file is only supported for import.'); args[i] = file(value, false) }
       else if (flag === '--prop') {
         const equal = value.indexOf('=')
@@ -137,8 +147,9 @@ export function evaluateOfficeCommand(input: unknown, policy: ToolPolicy): Offic
     if (verb === 'view' && !['text', 'outline', 'stats', 'issues', 'annotated', 'html'].includes(args[positionals[0]])) throw new Error('Unsupported view mode.')
     if (verb === 'import' && positionals[1] !== undefined) args[positionals[1]] = file(args[positionals[1]], false)
     if (verb === 'batch' && !hasCommands) throw new Error('Use an inline --commands batch so all operations can be checked.')
-    return { allowed: true, requiresApproval, args }
+    return { allowed: true, requiresApproval, args, lockPaths: [...new Set(lockPaths)] }
   } catch (error) {
-    return { allowed: false, requiresApproval: false, args: [], reason: error instanceof Error ? error.message : 'Invalid Office command.' }
+    return { allowed: false, requiresApproval: false, args: [], lockPaths: [],
+      reason: error instanceof Error ? error.message : 'Invalid Office command.' }
   }
 }
