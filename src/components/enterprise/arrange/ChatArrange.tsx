@@ -88,7 +88,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
       {!submitted && !busy ? (
         <div className="ent-arr-empty-state" aria-hidden="true">
           <span className="ent-arr-empty-icon"><MessageSquare size={24} strokeWidth={1.8} /></span>
-          <p>选择一位同事，开始协作</p>
+          <p>开始一段对话</p>
         </div>
       ) : null}
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />

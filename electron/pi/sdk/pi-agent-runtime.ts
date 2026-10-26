@@ -45,6 +45,7 @@ export interface PiAgentSessionConfig {
   systemPrompt?: string
   /** Keep the SDK base and employee-scoped Skills, without the old employee prompt override/appendix. */
   useNativeSystemPrompt?: boolean
+  disableSkills?: boolean
   /** Host-only transform of the SDK-assembled prompt; preserves SDK resource loading. */
   transformSystemPrompt?: (systemPrompt: string) => string
   mediaTools?: import('../../domain/media-tools').MediaHostTools

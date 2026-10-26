@@ -48,6 +48,7 @@ import { ClientMonitorStore } from '../data/client-monitor-store'
 import { ConversationContextStore } from '../domain/conversation-context'
 import { ClientMonitorHistoryService } from '../service/client-monitor-history-service'
 import { ClientMonitorService } from '../service/client-monitor-service'
+import { SessionRecovery } from '../service/session-recovery'
 import { MediaStore } from '../data/media-store'
 import { ArrangementMediaLinkStore } from '../data/arrangement-media-link-store'
 import { ArrangementMediaAssets } from '../data/arrangement-media-assets'
@@ -126,6 +127,7 @@ class BackendRuntime {
   private readonly arrangementPlanner: LazyAsync<ArrangementPlannerPort>
   private readonly employmentTokens = new Map<string, { manager: EmploymentTokenManager; initialized: Promise<void> }>()
   private authenticationCleanup: Promise<void> | null = null
+  private readonly sessionRecovery: SessionRecovery
 
   constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities }: BackendOptions) {
     this.userDataDir = userDataDir
@@ -278,6 +280,16 @@ class BackendRuntime {
       this.video = new MockVideoHostService(videoOptions)
       this.videoRuns = new VideoRunService(videoOptions, this.video)
     }
+    this.sessionRecovery = new SessionRecovery(this, [
+      { name: 'history', run: () => this.clientMonitor.resumePending() },
+      { name: 'images', run: () => this.media.resumePending() },
+      { name: 'videos', run: async signal => {
+        if (!this.video) return
+        const tasks = await this.taskManager.getAllTasks()
+        signal.throwIfAborted()
+        await this.video.resumePending(tasks.map(task => task.id))
+      } },
+    ])
     this.arrangementMedia = new ArrangementMediaService({
       scope: this, plans: this.workPlans, checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore,
       links: new ArrangementMediaLinkStore(userDataDir), images: mediaStore, videos: videoStore,
@@ -303,7 +315,7 @@ class BackendRuntime {
       attachments: this.attachments,
     }
     this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media })
-    this.conversations = new ConversationService({ ...shared, tasks: this.tasks })
+    this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
     this.documentPreviews = new DocumentPreviewService({
       scope: this,
@@ -443,6 +455,8 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.sessionRecovery.stop()
+    await this.clientMonitor.stop()
     this.attachmentExtractionRuntime.peek()?.stop()
     await this.attachments.stop()
     this.knowledge.clear()
@@ -454,13 +468,10 @@ class BackendRuntime {
     await this.media.stopAll()
     await this.videoRuns?.stopAll()
     await this.runtime.peek()?.stopAll()
-    await this.clientMonitor.stop()
   }
 
-  async resumeClientMonitor(): Promise<void> {
-    await this.clientMonitor.resumePending()
-    await this.media.resumePending()
-    if (this.video) await this.video.resumePending((await this.taskManager.getAllTasks()).map(task => task.id))
+  resumeClientMonitor(): Promise<void> {
+    return this.sessionRecovery.resume()
   }
 
   /**
@@ -564,6 +575,7 @@ class BackendRuntime {
       onApprovalRequest: request => this.renderer.approvalRequest(request),
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),
+      authorizeModel: (modelId, preferredSubscriptionId) => this.employees.authorizeModel(modelId, preferredSubscriptionId),
       userDataDir: this.userDataDir,
       // 必须显式注入：运行时的默认值是 `process.cwd()`，打包后那是安装目录，
       // 而这个根被用作 workDir 为空时的兜底（workspaceDir 与 .pi-runs/.pi-sessions），

@@ -946,7 +946,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     // Execution-disabled/planner policies must not gain external tools or spawn MCP servers.
     const canUseMcp = !config.disableTools && (!config.toolPolicy || config.toolPolicy.allowedTools.length > 0 || isUnrestrictedToolPolicy(config.toolPolicy))
     const servers = canUseMcp ? config.mcpServers ?? await loadHostMcpServers() : []
-    const common: CommonSkillsResult = config.employeeProfile && canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG
+    const common: CommonSkillsResult = !config.disableSkills && config.employeeProfile && canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG
       ? prepareCommonSkills() : { skills: [], unavailable: [] }
     if (common.skills.length && config.resumeSessionFile) {
       try {
@@ -985,15 +985,15 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
         extensionFactories: buildExtensions(config, mcp),
-        ...employeeSkillLoaderOptions(
+        ...(config.disableSkills ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) } : employeeSkillLoaderOptions(
           config.workspaceDir,
           config.agentDir,
           config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
           loadSkills,
           commonPaths,
-        ),
+        )),
         noContextFiles: true,
-        additionalSkillPaths: [...(config.additionalSkillPaths ?? []), ...commonPaths],
+        additionalSkillPaths: config.disableSkills ? [] : [...(config.additionalSkillPaths ?? []), ...commonPaths],
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,

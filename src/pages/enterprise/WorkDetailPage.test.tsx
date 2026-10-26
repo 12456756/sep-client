@@ -18,6 +18,7 @@ import type { WorkItem } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
 import * as vocabulary from '../../features/enterprise/vocabulary';
+import * as generalAssistant from '../../features/enterprise/general-assistant';
 
 // Isolate CSS drawers and the browser-only motion hook; render the real page and media panel.
 const dependencies: Record<string, unknown> = {
@@ -38,6 +39,7 @@ const dependencies: Record<string, unknown> = {
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
   '../../features/enterprise/vocabulary': vocabulary,
   '../../styles/work-detail.css': {},
+  '../../features/enterprise/general-assistant': generalAssistant,
 };
 const filename = fileURLToPath(new URL('./WorkDetailPage.tsx', import.meta.url));
 const compiled = ts.transpileModule(readFileSync(filename, 'utf8'), {

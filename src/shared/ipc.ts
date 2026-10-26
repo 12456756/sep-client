@@ -40,6 +40,7 @@ import type {
   LogoutResult,
   PasswordAvailabilityResult,
   RememberedAccountsResult,
+  RememberedPasswordResult,
   TaskError,
   TaskExecutionEvent,
   TaskListResult,
@@ -338,7 +339,7 @@ export interface ElectronAPI {
   listRememberedAccounts: () => Promise<RememberedAccountsResult>
   getRememberedPassword: (email: string) => Promise<PasswordAvailabilityResult>
   /** Only invoked by an explicit password reveal gesture; never cache this response. */
-  revealRememberedPassword: (email: string) => Promise<{ password: string | null }>
+  revealRememberedPassword: (email: string) => Promise<RememberedPasswordResult>
   forgetAccount: (email: string) => Promise<ForgetAccountResult>
   logout: () => Promise<LogoutResult>
   getSubscriptions: () => Promise<InstanceListResult>

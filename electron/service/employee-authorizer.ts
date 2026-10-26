@@ -125,6 +125,14 @@ export class EmployeeAuthorizer {
     return this.readDirectory(false)
   }
 
+  /** Model-only grant: no employee identity, runtime manifest or skill preparation. */
+  async authorizeModel(modelId: string, preferredSubscriptionId?: string): Promise<EmployeeRuntimeConfig | null> {
+    const instances = await this.list()
+    const available = instances.filter(instance => instance.status === 'ACTIVE' && instance.allowedModels.includes(modelId))
+    const selected = available.find(instance => instance.subscriptionId === preferredSubscriptionId) ?? available[0]
+    return selected ? { subscriptionId: selected.subscriptionId, modelId, gatewayUrl: this.gatewayUrl } : null
+  }
+
   /** Host fence for external invalidation and observed video policy changes. */
   getAuthorizationRevision(): number {
     return this.authorizationRevision

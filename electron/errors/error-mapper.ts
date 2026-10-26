@@ -9,6 +9,8 @@
  * 各自所属层，映射逻辑集中在这里。
  */
 import { AuthApiError } from '../common/platform/platform-api'
+import { LoginFeedbackError } from '../common/platform/login-error'
+import { LOGIN_FEEDBACK, type LoginFeedbackReason } from '../../src/shared/login-feedback'
 import { KnowledgeApiError } from '../common/platform/knowledge-api'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
 import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
@@ -32,6 +34,7 @@ export interface IpcErrorEnvelope {
   platformCode?: string
   requestId?: string
   retryAfterMs?: number
+  reason?: LoginFeedbackReason
 }
 
 export interface IpcFailure {
@@ -82,11 +85,12 @@ function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
 /**
  * 唯一映射点。任何 handler 的 catch 都只调它，不再手写 `{ success: false, error: {...} }`。
  *
- * `authenticated` 区分同一个 401 的两种含义：登录接口上是"账号密码不对"，
+ * `authenticated` 区分同一个 401 的两种含义：登录接口需要按明确响应识别验证失败，
  * 已登录之后是"会话过期，请重新登录"。原来 authError / taskError 各自处理，
  * 结果是同一个错误在两条路径上给出不同的码。
  */
 export function toEnvelope(error: unknown, context: { authenticated?: boolean } = {}): IpcErrorEnvelope {
+  if (error instanceof LoginFeedbackError) return { ...LOGIN_FEEDBACK[error.reason], reason: error.reason }
   if (error instanceof KnowledgeApiError) {
     const status = error.statusCode
     const code: ErrorCode = status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED'
@@ -101,10 +105,20 @@ export function toEnvelope(error: unknown, context: { authenticated?: boolean } 
       return envelope('INTERNAL_ERROR')
     }
     // 已登录之后收到 401/403，含义是"会话/授权失效，请重新登录"，
-    // 而不是登录接口上的"账号密码不对"。原来 authError 与 taskError 各自处理，
+    // 登录接口则按响应内容识别验证失败。原来 authError 与 taskError 各自处理，
     // 同一个错误在两条路径上给出的码不一样。
     if (context.authenticated && (error.statusCode === 401 || error.statusCode === 403)) {
       return envelope('AUTH_REQUIRED')
+    }
+    if (error.resource === 'login') {
+      const reason: LoginFeedbackReason = error.statusCode === 401
+        ? error.message === '邮箱或密码错误' ? 'credentials' : 'verification'
+        : error.statusCode === 403 ? 'forbidden'
+        : error.statusCode === 429 ? 'rate_limited'
+        : error.statusCode === 0 ? 'network'
+        : error.statusCode === 408 ? 'timeout'
+        : error.statusCode >= 500 ? 'service' : 'request_rejected'
+      return { ...LOGIN_FEEDBACK[reason], statusCode: error.statusCode, reason }
     }
     return mapAuthApiError(error)
   }
@@ -166,6 +180,7 @@ export function toAuthEnvelope(error: unknown): AuthError {
     message: code === result.code ? result.message : spec.message,
     statusCode: code === result.code ? result.statusCode : spec.status,
     ...(spec.retryable ? { retryable: true } : {}),
+    ...(result.reason ? { reason: result.reason } : {}),
   }
 }
 

@@ -14,6 +14,13 @@ const task: ClientTask = {
 }
 
 describe('arrangement retry display regressions', () => {
+  it('displays the general assistant instead of the authentication employee in history and messages', () => {
+    const work = buildWorkItem({ task, employees: [], plan: { mode: 'conversation', conversation: { kind: 'general' } } as ArrangementPlanSnapshot,
+      messages: [{ id: 'reply', role: 'assistant', content: 'hello', createdAt: 1, runId: 'run' }] })
+    assert.equal(work.currentEmployeeName, '通用助手')
+    assert.deepEqual(work.participants, ['builtin:general-assistant'])
+    assert.equal(work.messages.find(message => message.role === 'employee')?.employeeName, '通用助手')
+  })
   it('projects a historical pending task as arranging without execution timestamps', () => {
     const work = buildWorkItem({ task: { ...task, status: 'pending', startedAt: null, completedAt: null, activeRunId: null, createdAt: 1 }, employees: [] })
     assert.equal(work.status, 'arranging')

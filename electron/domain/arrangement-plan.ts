@@ -18,6 +18,8 @@ export interface ConversationParticipant {
 }
 
 export interface ConversationArrangement {
+  kind?: 'employee' | 'general'
+  modelId?: string
   participants: ConversationParticipant[]
   activeSubscriptionId: string | null
 }
@@ -321,12 +323,17 @@ export function validateArrangementDraft(draft: ArrangementDraft): void {
   if (!draft.id || !draft.owner.memberId || !draft.owner.enterpriseId) throw new AppError('INVALID_ARGUMENT')
   if (!draft.title.trim() && !draft.goal.trim()) throw new AppError('INVALID_ARGUMENT')
   if (draft.mode === 'conversation') {
+    if (draft.conversation?.kind === 'general') {
+      if (!draft.conversation.modelId?.trim() || draft.nodes.length || draft.sharedSkillIds.length) throw new AppError('INVALID_ARGUMENT')
+      return
+    }
     if (!draft.conversation?.participants.length) throw new AppError('INVALID_ARGUMENT')
     for (const participant of draft.conversation.participants) {
       if (!participant.subscriptionId || !participant.modelId) throw new AppError('INVALID_ARGUMENT')
     }
     return
   }
+  if (draft.conversation?.kind === 'general') throw new AppError('INVALID_ARGUMENT')
   if (draft.nodes.length === 0 && draft.mode === 'auto' && (draft.status === 'editing' || draft.status === 'planning' || draft.status === 'planning-failed' || draft.status === 'awaiting-employee')) {
     if (draft.status === 'awaiting-employee' && !draft.unresolvedSteps?.length) throw new AppError('INVALID_ARGUMENT')
     return

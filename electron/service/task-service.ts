@@ -123,7 +123,8 @@ export class TaskService {
   async retry(taskId: string, nodeId?: string): Promise<void> {
     const task = await this.requireTask(taskId)
     const conversation = await this.isConversation(taskId)
-    if (conversation) await this.requireAuthorizedEmployee(task.subscriptionId)
+    const plan = conversation ? await this.deps.workPlans?.get(this.scope(), taskId) : null
+    if (conversation && plan?.conversation?.kind !== 'general') await this.requireAuthorizedEmployee(task.subscriptionId)
     try {
       await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}) })
     } catch (error) {

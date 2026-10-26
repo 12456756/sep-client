@@ -55,6 +55,28 @@ const session = {
   getMeta() { return { enterpriseId: 'enterprise-1' } },
 }
 
+describe('general assistant model authorization', () => {
+  it('borrows a valid model grant without loading employee runtime or skills', async () => {
+    const skills = fakeSkills()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [
+      subscription('sub-a', 'model-a'), subscription('sub-b', 'model-b'),
+    ]), skills, GATEWAY, { async getRuntime() { assert.fail('must not load employee runtime') } })
+    assert.deepEqual(await authorizer.authorizeModel('model-b'), { subscriptionId: 'sub-b', modelId: 'model-b', gatewayUrl: GATEWAY })
+    assert.equal(skills.prepared(), 0)
+    assert.equal(await authorizer.authorizeModel('missing'), null)
+  })
+
+  it('keeps the current valid subscription and falls back only for the same model', async () => {
+    let instances = [subscription('sub-a', 'model'), subscription('sub-b', 'model')]
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => instances), fakeSkills(), GATEWAY)
+    assert.equal((await authorizer.authorizeModel('model', 'sub-b'))?.subscriptionId, 'sub-b')
+    instances = [subscription('sub-a', 'model'), { ...subscription('sub-b', 'model'), status: 'PAUSED' }]
+    await authorizer.refresh()
+    assert.equal((await authorizer.authorizeModel('model', 'sub-b'))?.subscriptionId, 'sub-a')
+    assert.equal(await authorizer.authorizeModel('other', 'sub-a'), null)
+  })
+})
+
 /** 记下 prepare / invalidate 被调了几次，并给出固定的技能路径。 */
 function fakeSkills(): SkillProvisioner & { prepared: () => number; invalidations: () => number } {
   let prepared = 0

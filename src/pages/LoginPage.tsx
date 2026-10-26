@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  AlertCircle,
   ArrowUpRight,
   ChevronDown,
   Eye,
@@ -9,10 +8,11 @@ import {
   Mail,
   ShieldCheck,
   Trash2,
-  WifiOff,
   X,
 } from 'lucide-react';
-import type { AuthErrorCode, RememberedAccount } from '../shared/types';
+import type { RememberedAccount } from '../shared/types';
+import { LOGIN_FEEDBACK } from '../shared/login-feedback';
+import { useFeedback } from '../components/feedback/FeedbackProvider';
 import logoImage from '../assets/logo.png';
 
 interface LoginPageProps {
@@ -25,32 +25,13 @@ interface LoginPageProps {
   }) => void;
 }
 
-type LoginErrorKind = 'validation' | 'credentials' | 'network' | 'service' | 'storage' | 'unknown';
-
-const errorCopy: Record<LoginErrorKind, string> = {
-  validation: '请输入有效的邮箱和密码',
-  credentials: '邮箱或密码不正确',
-  network: '网络连接失败，请稍后重试',
-  service: '服务暂时不可用，请稍后重试',
-  storage: '系统安全存储不可用',
-  unknown: '登录失败，请稍后重试',
-};
-
-function classifyLoginError(code: AuthErrorCode | undefined): LoginErrorKind {
-  if (code === 'INVALID_ARGUMENT') return 'validation';
-  if (code === 'STORAGE_UNAVAILABLE') return 'storage';
-  if (code === 'INVALID_CREDENTIALS' || code === 'ACCOUNT_DISABLED') return 'credentials';
-  if (code === 'NETWORK_ERROR') return 'network';
-  if (code === 'SERVICE_UNAVAILABLE' || code === 'RATE_LIMITED') return 'service';
-  return 'unknown';
-}
-
 export const LoginPage: React.FC<LoginPageProps> = ({
   encryptionAvailable,
   rememberedAccounts,
   onAccountListChange,
   onLoginSuccess,
 }) => {
+  const feedback = useFeedback();
   const initialAccount = rememberedAccounts[0];
   const [selectedEmail, setSelectedEmail] = useState(initialAccount?.email ?? '');
   const [email, setEmail] = useState(initialAccount?.email ?? '');
@@ -65,14 +46,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   const [accountsOpen, setAccountsOpen] = useState(false);
   const [activeAccountIndex, setActiveAccountIndex] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [errorKind, setErrorKind] = useState<LoginErrorKind | null>(null);
   const [deletingEmail, setDeletingEmail] = useState<string | null>(null);
   const [revealing, setRevealing] = useState(false);
-  const [notice, setNotice] = useState('');
   const credentialRevision = useRef(0);
   const accountPickerRef = useRef<HTMLDivElement>(null);
   const emailInputRef = useRef<HTMLInputElement>(null);
   const submitButtonRef = useRef<HTMLButtonElement>(null);
+  const submitting = useRef(false);
 
   const filteredAccounts = useMemo(() => {
     const query = email.trim().toLowerCase();
@@ -83,6 +63,9 @@ export const LoginPage: React.FC<LoginPageProps> = ({
   }, [email, rememberedAccounts, selectedEmail]);
 
   useEffect(() => () => { credentialRevision.current += 1; }, []);
+  useEffect(() => {
+    if (!encryptionAvailable) feedback.show({ tone: 'warning', message: LOGIN_FEEDBACK.storage_unavailable.message });
+  }, [encryptionAvailable, feedback]);
 
   useEffect(() => {
     const handlePointerDown = (event: PointerEvent) => {
@@ -111,24 +94,22 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     setShowPassword(false);
     setHasSavedPassword(encryptionAvailable && account.hasSavedPassword);
     setRememberPassword(encryptionAvailable && account.hasSavedPassword);
-    setErrorKind(null);
-    setNotice('');
+    feedback.clear();
     setSelectedEmail(account.email);
     setAccountsOpen(false);
     setActiveAccountIndex(0);
   };
 
-  const handleEmailChange = (value: string) => {
+  const handleEmailChange = (value: string, clearFeedback = true) => {
     credentialRevision.current += 1;
     setRevealing(false);
     setPassword('');
     setShowPassword(false);
-    setNotice('');
+    if (clearFeedback) feedback.clear();
     setEmail(value);
     setSelectedEmail('');
     setHasSavedPassword(false);
     setRememberPassword(false);
-    setErrorKind(null);
     setActiveAccountIndex(0);
     setAccountsOpen(false);
   };
@@ -149,27 +130,35 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     }
   };
 
-  const handleForgetAccount = async (
+  const handleForgetAccount = (
     event: React.MouseEvent<HTMLButtonElement>,
     accountEmail: string,
   ) => {
     event.stopPropagation();
     if (loading || deletingEmail) return;
-    setDeletingEmail(accountEmail);
-    setErrorKind(null);
-    try {
-      const result = await window.electronAPI.forgetAccount(accountEmail);
-      if (!result.success) throw new Error('Account could not be removed');
-      onAccountListChange(rememberedAccounts.filter(account => account.email !== accountEmail));
-      if (selectedEmail === accountEmail) {
-        handleEmailChange('');
-      }
-      setNotice('已移除此设备保存的账号和密码');
-    } catch {
-      setErrorKind('storage');
-    } finally {
-      setDeletingEmail(null);
-    }
+    setAccountsOpen(false);
+    const revision = credentialRevision.current;
+    const session = feedback.getRevision();
+    const isCurrent = () => revision === credentialRevision.current && session === feedback.getRevision();
+    void feedback.confirm({
+      title: '移除历史账号',
+      message: `确认移除 ${accountEmail}？此设备保存的账号和密码将被删除。`,
+      actionLabel: '移除', busyLabel: '正在移除', key: `forget:${accountEmail}`,
+      onConfirm: async () => {
+        if (!isCurrent()) return { success: false, message: LOGIN_FEEDBACK.account_remove.message };
+        setDeletingEmail(accountEmail);
+        try {
+          const result = await window.electronAPI.forgetAccount(accountEmail);
+          if (!isCurrent()) return { success: false, message: LOGIN_FEEDBACK.account_remove.message };
+          if (!result.success) return { success: false, message: result.error?.message ?? LOGIN_FEEDBACK.account_remove.message };
+          onAccountListChange(rememberedAccounts.filter(account => account.email !== accountEmail));
+          if (selectedEmail === accountEmail) handleEmailChange('', false);
+          return { success: true, message: '已移除此设备保存的账号和密码' };
+        } catch {
+          return { success: false, message: LOGIN_FEEDBACK.account_remove.message };
+        } finally { if (session === feedback.getRevision()) setDeletingEmail(null); }
+      },
+    });
   };
 
   const clearPassword = () => {
@@ -178,23 +167,26 @@ export const LoginPage: React.FC<LoginPageProps> = ({
     setPassword('');
     setHasSavedPassword(false);
     setShowPassword(false);
-    setErrorKind(null);
   };
 
   const togglePassword = async () => {
     if (!hasSavedPassword) { setShowPassword(value => !value); return; }
     const revision = credentialRevision.current;
     setRevealing(true);
-    setErrorKind(null);
+    const session = feedback.getRevision();
     try {
       const result = await window.electronAPI.revealRememberedPassword(email);
-      if (revision !== credentialRevision.current) return;
+      if (revision !== credentialRevision.current || session !== feedback.getRevision()) return;
+      if (result.error) {
+        feedback.show({ tone: 'error', message: result.error.message });
+        return;
+      }
       setPassword(result.password ?? '');
       setHasSavedPassword(false);
       setShowPassword(Boolean(result.password));
-      if (!result.password) setNotice('保存的密码已不可用，请重新输入');
+      if (!result.password) feedback.show({ tone: 'warning', message: LOGIN_FEEDBACK.saved_password_missing.message });
     } catch {
-      if (revision === credentialRevision.current) setErrorKind('storage');
+      if (revision === credentialRevision.current && session === feedback.getRevision()) feedback.show({ tone: 'error', message: LOGIN_FEEDBACK.password_read.message });
     } finally {
       if (revision === credentialRevision.current) setRevealing(false);
     }
@@ -202,16 +194,23 @@ export const LoginPage: React.FC<LoginPageProps> = ({
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
+    if (submitting.current || loading || revealing || deletingEmail) return;
     setAccountsOpen(false);
-    setErrorKind(null);
 
     const normalizedEmail = email.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || (!hasSavedPassword && !password)) {
-      setErrorKind('validation');
+    const validation = !normalizedEmail ? 'email_required'
+      : normalizedEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) ? 'email_invalid'
+      : !hasSavedPassword && !password ? 'password_required' : null;
+    if (validation) {
+      feedback.show({ tone: 'warning', message: LOGIN_FEEDBACK[validation].message });
       return;
     }
 
     credentialRevision.current += 1;
+    const revision = credentialRevision.current;
+    const session = feedback.getRevision();
+    const isCurrent = () => revision === credentialRevision.current && session === feedback.getRevision();
+    submitting.current = true;
     setRevealing(false);
     setLoading(true);
     try {
@@ -221,27 +220,26 @@ export const LoginPage: React.FC<LoginPageProps> = ({
         rememberPassword,
         useSavedPassword: hasSavedPassword && !password,
       });
+      if (!isCurrent()) return;
 
       if (result.success && result.data) {
         onLoginSuccess(result.data);
         return;
       }
 
-      const kind = classifyLoginError(result.error?.code);
-      setErrorKind(kind);
-      if (kind === 'credentials' && hasSavedPassword) {
+      feedback.show({ tone: 'error', message: result.error?.message ?? LOGIN_FEEDBACK.unknown.message });
+      if ((result.error?.reason === 'credentials' || result.error?.reason === 'saved_password_missing') && hasSavedPassword) {
         setHasSavedPassword(false);
         setRememberPassword(false);
         setPassword('');
       }
     } catch {
-      setErrorKind('unknown');
+      if (isCurrent()) feedback.show({ tone: 'error', message: LOGIN_FEEDBACK.unknown.message });
     } finally {
-      setLoading(false);
+      submitting.current = false;
+      if (revision === credentialRevision.current) setLoading(false);
     }
   };
-
-  const canSubmit = email.trim().length > 0 && (hasSavedPassword || password.length > 0);
 
   return (
     <main className="login-page">
@@ -269,7 +267,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 <p className="login-subtitle">进入你的数字员工工作台</p>
               </header>
 
-              <form onSubmit={handleSubmit} className="login-form">
+              <form noValidate onSubmit={handleSubmit} className="login-form">
             <div ref={accountPickerRef} className="login-field">
               <div className="login-field-label-row">
                 <label htmlFor="login-email">邮箱</label>
@@ -359,7 +357,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                     setRevealing(false);
                     setPassword(hasSavedPassword ? event.target.value.replace('••••••••', '') : event.target.value);
                     setHasSavedPassword(false);
-                    setErrorKind(null);
                   }}
                   onFocus={event => { if (hasSavedPassword) event.target.select(); }}
                   onKeyDown={event => {
@@ -391,15 +388,6 @@ export const LoginPage: React.FC<LoginPageProps> = ({
               </div>
             </div>
 
-            {notice && <p role="status" className="login-notice">{notice}</p>}
-
-            {errorKind && (
-              <div role="alert" className="login-error">
-                {errorKind === 'network' ? <WifiOff size={15} aria-hidden="true" /> : <AlertCircle size={15} aria-hidden="true" />}
-                <span>{errorCopy[errorKind]}</span>
-              </div>
-            )}
-
             <div className="login-form-options">
               <label className="login-remember-option">
                 <input
@@ -410,13 +398,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({
                 />
                 <span>记住密码</span>
               </label>
-              {!encryptionAvailable && <span className="login-storage-warning">系统安全存储不可用</span>}
             </div>
 
             <button
               ref={submitButtonRef}
               type="submit"
-              disabled={loading || revealing || deletingEmail !== null || !canSubmit}
+              disabled={loading || revealing || deletingEmail !== null}
               className="login-submit"
             >
               {loading ? (

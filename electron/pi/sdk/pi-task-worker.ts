@@ -30,6 +30,7 @@ export interface PiTaskWorkerContext {
   additionalSkillPaths?: string[]
   systemPrompt?: string
   useNativeSystemPrompt?: boolean
+  disableSkills?: boolean
   modelRequestAwareness?: boolean
   transformSystemPrompt?: PiAgentSessionConfig['transformSystemPrompt']
   mediaTools?: PiAgentSessionConfig['mediaTools']
@@ -142,6 +143,7 @@ export class PiTaskWorker {
         additionalSkillPaths: this.context.additionalSkillPaths,
         systemPrompt: this.context.systemPrompt,
         useNativeSystemPrompt: this.context.useNativeSystemPrompt,
+        disableSkills: this.context.disableSkills,
         modelRequestAwareness: this.context.modelRequestAwareness,
         transformSystemPrompt: this.context.transformSystemPrompt,
         mediaTools: this.context.mediaTools,

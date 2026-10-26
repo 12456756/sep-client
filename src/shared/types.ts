@@ -3,6 +3,8 @@
  * IPC 通道两侧均引用此文件
  */
 
+import type { LoginFeedbackReason } from './login-feedback'
+
 // ──────────────────────────── Auth ─────────────────────────────
 
 export interface LoginRequest {
@@ -23,6 +25,7 @@ export interface RememberedAccount {
 export interface RememberedAccountsResult {
   accounts: RememberedAccount[]
   encryptionAvailable: boolean
+  error?: AuthError
 }
 
 export type AuthErrorCode =
@@ -41,6 +44,7 @@ export interface AuthError {
   message: string
   statusCode: number
   retryable?: boolean
+  reason?: LoginFeedbackReason
 }
 
 export interface AuthResult<T> {
@@ -55,7 +59,8 @@ export interface LoginData {
 }
 
 export type LoginResult = AuthResult<LoginData>
-export type PasswordAvailabilityResult = { passwordAvailable: boolean }
+export type PasswordAvailabilityResult = { passwordAvailable: boolean; error?: AuthError }
+export type RememberedPasswordResult = { password: string | null; error?: AuthError }
 export type ForgetAccountResult = AuthResult<null>
 export type LogoutResult = AuthResult<null>
 
@@ -302,6 +307,8 @@ export interface ArrangementPlanSnapshot {
   title: string
   goal: string
   conversation: {
+    kind?: 'employee' | 'general'
+    modelId?: string
     participants: ArrangementParticipantSnapshot[]
     activeSubscriptionId: string | null
   } | null
@@ -380,6 +387,8 @@ export interface ArrangementDraftDocument {
   confirmedInputs: string[]
   sharedSkillIds: string[]
   conversation: {
+    kind?: 'employee' | 'general'
+    modelId?: string
     participants: ArrangementParticipantSnapshot[]
     activeSubscriptionId: string | null
   } | null

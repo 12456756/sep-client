@@ -30,6 +30,7 @@ import { logger } from '../common/logger'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
 import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
+import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
 
 const log = logger.child('conversation-executor')
 
@@ -41,6 +42,7 @@ export interface ConversationExecutorOptions {
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
   authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
+  authorizeModel?: ((modelId: string, preferredSubscriptionId?: string) => Promise<EmployeeRuntimeConfig | null>) | undefined
   workspaceRoot: () => string
   approvals: Pick<ToolApprovals, 'request'>
   events: Pick<EventPipeline, 'drain' | 'enqueue' | 'forgetRun' | 'pendingSideEffects' | 'takeResponse'>
@@ -91,6 +93,7 @@ export class ConversationExecutor {
     const runId = queued.runId
     const scope = this.options.taskManager.getCurrentUserScope()
     const employee = queued.employee
+    const general = queued.arrangement?.conversation?.kind === 'general'
     const completion = createRunCompletion()
     let worker: TaskWorkerPort | null = null
     let active: ActiveRun | null = null
@@ -134,11 +137,11 @@ export class ConversationExecutor {
         },
       }
       this.options.workers.register(active)
-      const mediaTools = await this.options.media?.prepareRun({
+      const mediaTools = general ? undefined : await this.options.media?.prepareRun({
         taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
-      const videoTools = await this.options.video?.prepareRun({
+      const videoTools = general ? undefined : await this.options.video?.prepareRun({
         taskId, runId: runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
@@ -159,12 +162,13 @@ export class ConversationExecutor {
           agentDir: conversationPaths?.agentDir ?? runPaths?.agentDir ?? `${this.options.workspaceRoot()}/.pi-runs/${runId}`,
           sessionDir: conversationPaths?.sessionDir ?? runPaths?.sessionDir ?? `${this.options.workspaceRoot()}/.pi-sessions/${runId}`,
           resumeSessionFile: queued.resumeSessionFile,
-          additionalSkillPaths: employee.additionalSkillPaths,
-          systemPrompt: employee.systemPrompt,
+          additionalSkillPaths: general ? [] : employee.additionalSkillPaths,
+          systemPrompt: general ? undefined : employee.systemPrompt,
+          ...(general ? { useNativeSystemPrompt: true, disableSkills: true, modelRequestAwareness: false, transformSystemPrompt: translatePiNativeSystemPrompt } : {}),
           mediaTools,
           videoTools,
           toolPolicy,
-          employeeProfile: employee.employeeProfile,
+          employeeProfile: general ? undefined : employee.employeeProfile,
           inputImages: attachmentImages,
         },
         getRefreshToken: this.options.getRefreshToken,
@@ -221,7 +225,7 @@ export class ConversationExecutor {
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
-      if (queued.conversation && this.options.knowledgeSearch && active.control === 'none') {
+      if (queued.conversation && !general && this.options.knowledgeSearch && active.control === 'none') {
         const knowledgeQuery = queued.prompt.trim().slice(0, 1_000).trimEnd()
         let result: KnowledgeSearchResult | null = null
         try {
@@ -290,8 +294,11 @@ export class ConversationExecutor {
     if (!employeeId) throw new Error('The selected employee is no longer available.')
     const scope = this.options.taskManager.getCurrentUserScope()
     const arrangement = scope && this.options.workPlanStore ? await this.options.workPlanStore.get(scope, taskId) : null
-    const modelId = arrangement?.conversation?.participants.find(item => item.subscriptionId === employeeId)?.modelId
-    const employee = await this.options.authorizeEmployee(employeeId, modelId)
+    const general = arrangement?.mode === 'conversation' && arrangement.conversation?.kind === 'general'
+    const modelId = general ? arrangement.conversation!.modelId : arrangement?.conversation?.participants.find(item => item.subscriptionId === employeeId)?.modelId
+    const employee = general
+      ? modelId ? await this.options.authorizeModel?.(modelId, employeeId) : null
+      : await this.options.authorizeEmployee(employeeId, modelId)
     if (!employee) throw new Error('The selected employee is no longer available.')
     if (!scope || !this.options.taskRunStore) throw new Error('Conversation storage is unavailable.')
 
@@ -317,8 +324,8 @@ export class ConversationExecutor {
     }
 
     if (task.status !== TaskStatus.PENDING) await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
-    if (employeeId !== task.subscriptionId) {
-      await this.options.taskManager.setTaskEmployee(taskId, employeeId)
+    if (employee.subscriptionId !== task.subscriptionId) {
+      await this.options.taskManager.setTaskEmployee(taskId, employee.subscriptionId)
       await this.conversationAdapter(scope, taskId).reset()
     }
     const runId = randomUUID()
@@ -328,7 +335,7 @@ export class ConversationExecutor {
     const queued: QueuedRun = {
       taskId,
       runId,
-      subscriptionId: employeeId,
+      subscriptionId: employee.subscriptionId,
       employee,
       prompt: prompt.trim(),
       conversation: true,
