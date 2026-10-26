@@ -159,6 +159,15 @@ export class TaskService {
     }
   }
 
+  async updateDetails(taskId: string, input: { title?: string; pinned?: boolean }): Promise<TaskReadView> {
+    const scope = this.scope()
+    const updated = await this.deps.taskManager.updateTaskDetails(taskId, input)
+    this.assertScope(scope)
+    const projected = await this.projectTask(scope, updated)
+    this.assertScope(scope)
+    return projected
+  }
+
   // ── 查询 ────────────────────────────────────────────────────────────────────
 
   async get(taskId: string): Promise<TaskReadView> {

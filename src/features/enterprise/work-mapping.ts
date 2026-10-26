@@ -252,6 +252,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
   return {
     id: task.id,
     title: task.title,
+    pinnedAt: task.pinnedAt ?? null,
     goal: meta?.goal || readableGoal(task.prompt),
     kind,
     workType,

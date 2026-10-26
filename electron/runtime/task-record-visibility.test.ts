@@ -8,7 +8,7 @@ import { MediaStore } from '../data/media-store'
 import { MOCK_MEDIA_PNG } from '../data/mock-media-gateway'
 import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
-import { TaskStore } from '../data/task-store'
+import { TaskStore, type TaskStorePort } from '../data/task-store'
 import { ScopePath } from '../data/scope-path'
 import { MediaService } from '../service/media-service'
 import { TaskService } from '../service/task-service'
@@ -57,6 +57,105 @@ async function fixture() {
 }
 
 describe('deleted work record visibility', () => {
+  it('updates title and pin without changing lifecycle revision and persists both fields', async () => {
+    const f = await fixture()
+    const original = await f.manager.getTask(f.task.id)
+    assert.ok(original)
+    const updated = await f.manager.updateTaskDetails(f.task.id, { title: 'Renamed work', pinned: true })
+    assert.equal(updated.title, 'Renamed work')
+    assert.equal(typeof updated.pinnedAt, 'number')
+    assert.equal(updated.stateRevision, original.stateRevision)
+    assert.equal(f.updates.at(-1)?.pinnedAt, updated.pinnedAt)
+    const reloaded = new TaskManager(f.root)
+    await reloaded.setCurrentUser(owner.memberId, owner.enterpriseId)
+    const persisted = await reloaded.getTask(f.task.id)
+    assert.equal(persisted?.title, 'Renamed work')
+    assert.equal(persisted?.pinnedAt, updated.pinnedAt)
+  })
+
+  it('keeps pinning idempotent and supports unpinning without changing lifecycle revision', async () => {
+    const f = await fixture()
+    const initial = await f.manager.getTask(f.task.id)
+    const first = await f.manager.updateTaskDetails(f.task.id, { pinned: true })
+    const second = await f.manager.updateTaskDetails(f.task.id, { pinned: true })
+    assert.equal(first.pinnedAt, second.pinnedAt)
+    assert.equal(second.stateRevision, initial?.stateRevision)
+    const unpinned = await f.manager.updateTaskDetails(f.task.id, { pinned: false })
+    assert.equal(unpinned.pinnedAt, null)
+    assert.equal(unpinned.stateRevision, initial?.stateRevision)
+  })
+
+  it('does not report or retain an update when the authenticated scope changes mid-flight', async () => {
+    const f = await fixture()
+    const foreignScope = { memberId: 'member-b', enterpriseId: 'enterprise-b' }
+    const foreignStore = new TaskStore(f.root)
+    await foreignStore.initialize()
+    await foreignStore.save(foreignScope, [{
+      ...f.task,
+      title: 'Foreign scope title',
+      pinnedAt: null,
+      ownerId: foreignScope.memberId,
+      ownerEnterpriseId: foreignScope.enterpriseId,
+    }])
+    f.updates.length = 0
+    const update = f.manager.updateTaskDetails(f.task.id, { title: 'stale scope update', pinned: true })
+    const rejected = assert.rejects(update)
+    f.lists.length = 0
+    await f.manager.setCurrentUser(foreignScope.memberId, foreignScope.enterpriseId)
+    await rejected
+    assert.deepEqual(f.updates, [])
+    const foreignTask = await f.manager.getTask(f.task.id)
+    assert.equal(foreignTask?.title, 'Foreign scope title')
+    assert.equal(foreignTask?.pinnedAt, null)
+  })
+
+  it('rejects detail updates for hidden records', async () => {
+    const f = await fixture()
+    f.updates.length = 0
+    f.manager.hideTaskRecord(f.task.id, owner)
+    await assert.rejects(
+      f.manager.updateTaskDetails(f.task.id, { title: 'should stay hidden' }),
+    )
+    assert.deepEqual(f.updates, [])
+  })
+
+  it('preserves concurrent lifecycle mutation while updating details', async () => {
+    const f = await fixture()
+    await f.manager.admitTask(f.task.id, 'run-a')
+    const [, updated] = await Promise.all([
+      f.manager.updateTaskStatus(f.task.id, TaskStatus.RUNNING),
+      f.manager.updateTaskDetails(f.task.id, { title: 'Running work', pinned: true }),
+    ])
+    const current = await f.manager.getTask(f.task.id)
+    assert.equal(current?.status, TaskStatus.RUNNING)
+    assert.equal(current?.title, 'Running work')
+    assert.equal(typeof current?.pinnedAt, 'number')
+    assert.ok((current?.stateRevision ?? 0) >= 1)
+    assert.equal(updated.title, 'Running work')
+  })
+
+  it('does not notify or mutate when task detail persistence fails', async () => {
+    const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-record-visibility-failing-'))
+    roots.push(root)
+    const backing = new TaskStore(root)
+    let writes = 0
+    const failing: TaskStorePort = {
+      initialize: () => backing.initialize(),
+      load: scope => backing.load(scope),
+      save: async (scope, tasks) => { if (writes++ === 0) return backing.save(scope, tasks); throw new Error('persistence failure') },
+    }
+    const updates: ClientTask[] = []
+    const manager = new TaskManager(root, { taskListUpdated() {}, taskUpdated(task) { updates.push(task) } }, failing)
+    await manager.setCurrentUser(owner.memberId, owner.enterpriseId)
+    const task = await manager.createTask('original', 'goal')
+    updates.length = 0
+    await assert.rejects(manager.updateTaskDetails(task.id, { title: 'must not persist', pinned: true }))
+    const current = await manager.getTask(task.id)
+    assert.equal(current?.title, 'original')
+    assert.equal(current?.pinnedAt ?? null, null)
+    assert.deepEqual(updates, [])
+  })
+
   it('notifies removal immediately without deleting task history or generated files', async () => {
     const f = await fixture()
     await f.manager.updateTaskStatus(f.task.id, TaskStatus.PAUSED)

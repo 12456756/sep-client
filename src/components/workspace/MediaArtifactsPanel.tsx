@@ -40,6 +40,29 @@ function failure(result: IpcCommandResult, fallback: string): string {
   return result.error?.message || fallback
 }
 
+export function mediaTaskIssue(jobs: MediaJobView[]): string | null {
+  for (const job of jobs) {
+    if (job.error) return job.error
+    if (job.generationStatus === 'FAILED') return '图片生成失败'
+    if (job.generationStatus === 'PARTIAL_SUCCEEDED') return '部分图片生成成功'
+    if (job.generationStatus === 'SUBMISSION_UNKNOWN') return '图片任务提交结果待核实'
+    if (job.saveStatus === 'SAVE_FAILED') return '图片成果保存失败'
+    if (job.saveStatus === 'MISSING') return '图片成果文件缺失'
+    if (job.trackingStatus === 'AUTH_REQUIRED') return '图片任务需要恢复认证'
+    if (job.trackingStatus === 'INTERRUPTED') return '图片任务跟踪中断，可恢复'
+  }
+  return null
+}
+
+export function savedImageOutputCount(taskId: string, view: MediaTaskView | null, jobs: MediaJobView[], queryError = false): number | null {
+  if (!view || queryError) return null
+  const outputs = new Set<string>()
+  for (const asset of [...view.assets, ...jobs.flatMap(job => job.assets)]) {
+    if (asset.taskId === taskId && asset.source === 'output' && asset.status === 'SAVED') outputs.add(asset.localAssetId)
+  }
+  return outputs.size
+}
+
 function useAssetPreview(taskId: string, asset: MediaAssetView): { url: string | null; error: string | null; retry: () => void } {
   const [url, setUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -212,7 +235,7 @@ function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport, feedback }
   </dialog>
 }
 
-function MediaTaskPanel({ taskId }: { taskId: string }) {
+function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void }) {
   const [view, setView] = useState<MediaTaskView | null>(null)
   const [videoReferenceAvailable, setVideoReferenceAvailable] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -305,11 +328,16 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
   const jobs = view?.jobs.filter(job => job.taskId === taskId) || []
   const outputs = new Map<string, MediaAssetView>()
   for (const asset of [...(view?.assets || []), ...jobs.flatMap(job => job.assets)]) {
-    if (asset.taskId === taskId && asset.source === 'output') outputs.set(asset.localAssetId, asset)
+    if (asset.taskId === taskId && asset.source === 'output' && asset.status === 'SAVED') outputs.set(asset.localAssetId, asset)
   }
+  const outputCount = savedImageOutputCount(taskId, view, jobs, Boolean(error))
+  const taskIssue = mediaTaskIssue(jobs)
+  const summaryError = error || taskIssue
+  useEffect(() => { onSummary?.({ outputs: outputCount, error: summaryError }) }, [onSummary, outputCount, summaryError])
   const busy = pending !== null
   const feedback = { pending, notice }
-  return <section className="artifact-section media-artifacts" aria-label="图片创作与成果">
+  if (!visible) return null
+  return <section className="artifact-section media-artifacts" aria-label="图片创作与成果" hidden={!visible}>
     <h3><ImageIcon size={15} />图片创作与成果<button type="button" className="media-icon-button" title="刷新图片能力与任务" aria-label="刷新图片能力与任务" onClick={() => { void refresh(true) }}><RefreshCw size={14} /></button></h3>
     {error && <p className="media-notice media-tone-error" role="alert">{error}</p>}
     {!view && !error && <p className="artifact-empty" role="status">正在读取图片能力</p>}
@@ -331,6 +359,13 @@ function MediaTaskPanel({ taskId }: { taskId: string }) {
   </section>
 }
 
-export function MediaArtifactsPanel({ taskId }: { taskId: string }) {
-  return <><MediaTaskPanel key={taskId} taskId={taskId} /><VideoTaskPanel taskId={taskId} /></>
+export function MediaArtifactsPanel({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { images: number | null; videos: number | null; error: string | null }) => void }) {
+  const [imageSummary, setImageSummary] = useState<{ outputs: number | null; error: string | null }>({ outputs: null, error: null })
+  const [videoSummary, setVideoSummary] = useState<{ outputs: number | null; error: string | null }>({ outputs: null, error: null })
+  const imageCount = imageSummary.outputs
+  const videoCount = videoSummary.outputs
+  const mediaError = imageSummary.error || videoSummary.error
+  useEffect(() => { onSummary?.({ images: imageCount, videos: videoCount, error: mediaError }) }, [imageCount, mediaError, onSummary, videoCount])
+  const onImageSummary = useCallback((summary: { outputs: number | null; error: string | null }) => setImageSummary(summary), [])
+  return <><MediaTaskPanel key={taskId} taskId={taskId} visible={visible} onSummary={onImageSummary} /><VideoTaskPanel taskId={taskId} visible={visible} onSummary={setVideoSummary} /></>
 }

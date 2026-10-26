@@ -93,6 +93,7 @@ export const INVOKE_CHANNELS = {
   TASK_PAUSE: 'task:pause',
   TASK_CANCEL: 'task:cancel',
   TASK_DELETE: 'task:delete',
+  TASK_UPDATE_DETAILS: 'task:update-details',
   TASK_GET_STATS: 'task:get-stats',
   ARRANGE_GET_CONTEXT: 'arrange:get-context',
   ARRANGE_GET_PLAN: 'arrange:get-plan',

@@ -70,6 +70,7 @@ function parseTask(value: unknown): ClientTask | null {
   return {
     id: item.id,
     title: item.title,
+    pinnedAt: typeof item.pinnedAt === 'number' && Number.isSafeInteger(item.pinnedAt) && item.pinnedAt > 0 ? item.pinnedAt : null,
     prompt: item.prompt,
     status: item.status,
     workDir: item.workDir,

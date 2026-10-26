@@ -21,6 +21,7 @@ interface Props {
   templateId?: string;
   employeeId?: string;
   mode: ArrangeMode;
+  onWorkCreated?: () => void;
 }
 
 /** 企业固定流程 → 一条线性的工作链。步骤内容由企业定义，员工和顺序用户可以改。 */
@@ -35,7 +36,7 @@ function stepsFromTemplate(template: WorkTemplate, employees: SiliconEmployee[])
   return steps.map((step, index) => (index ? { ...step, dependsOn: [steps[index - 1]!.id] } : step));
 }
 
-export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Props) {
+export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWorkCreated }: Props) {
   /** 只有现在能派活的同事参与安排。暂时不可用的员工选了也开不了工。 */
   const employees = workspace.myEmployees.filter(item => item.availability !== 'unavailable');
   const availableModels = Array.from(new Set(employees.flatMap(item => item.allowedModels)));
@@ -111,6 +112,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
       }
       const result = await window.electronAPI.confirmAndStartArrangement({ draftId: draft.id, expectedRevision: draft.revision, idempotencyKey: crypto.randomUUID() });
       if (!result.success || !result.execution) throw new Error(result.error?.message || '启动工作失败');
+      onWorkCreated?.();
       workspace.navigate({ name: 'work', workId: result.execution.id });
     } catch (cause) {
       setAutoStartError(cause instanceof Error ? cause.message : '启动工作失败');
@@ -119,11 +121,11 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode }: Pro
   };
 
   const startManual = (draft: ManualDraft) => {
-    void workspace.arrangeWork({ ...draft, templateId: template?.id, workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, sharedSkillIds: [], attachmentSessionId: draft.attachmentSession?.sessionId, attachmentCandidates: draft.attachmentRefs?.map(item => ({ attachment: { attachmentId: item.attachmentId, sha256: item.sha256 }, mustUse: draft.mustUseAttachments ?? true })) });
+    void workspace.arrangeWork({ ...draft, templateId: template?.id, workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, sharedSkillIds: [], attachmentSessionId: draft.attachmentSession?.sessionId, attachmentCandidates: draft.attachmentRefs?.map(item => ({ attachment: { attachmentId: item.attachmentId, sha256: item.sha256 }, mustUse: draft.mustUseAttachments ?? true })) }).then(created => { if (created) onWorkCreated?.(); });
   };
 
   const startChat = (id: string, text: string, attachments: AttachmentView[], session: AttachmentImportSession | null) => {
-    void workspace.startConversation(id, text, { workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, attachmentSessionId: session?.sessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) });
+    void workspace.startConversation(id, text, { workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, attachmentSessionId: session?.sessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) }).then(created => { if (created) onWorkCreated?.(); });
   };
 
   if (!workspace.myEmployees.length) {

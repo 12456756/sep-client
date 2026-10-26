@@ -90,6 +90,8 @@ export interface ClientTaskLog {
 export interface ClientTask {
   id: string
   title: string
+  /** Local pin order timestamp; null means the task is not pinned. */
+  pinnedAt?: number | null
   prompt: string
   status: ClientTaskStatus
   workDir: string | null

@@ -29,12 +29,15 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/arrange/ArrangementSteps': { ArrangementSteps },
   '../../components/enterprise/WorkPlanDrawer': { WorkPlanDrawer: () => null },
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
+  '../../components/enterprise/IconHint': { IconHint: ({ children }: { children: React.ReactNode }) => children },
+  '../../components/enterprise/WorkIndicators': { WorkStatusIcon: () => null, WorkTypeTag: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
   '../../features/enterprise/vocabulary': vocabulary,
+  '../../styles/work-detail.css': {},
 };
 const filename = fileURLToPath(new URL('./WorkDetailPage.tsx', import.meta.url));
 const compiled = ts.transpileModule(readFileSync(filename, 'utf8'), {
@@ -70,6 +73,62 @@ function renderDetail(item: WorkItem): string {
   }
 }
 
+// Check handlers and effect ownership; native focus behavior still needs window verification.
+function mountDetail() {
+  const cells: unknown[] = [];
+  const effects = new Map<number, { deps?: readonly unknown[]; cleanup?: () => void }>();
+  let cursor = 0;
+  let pending: Array<() => void> = [];
+  const hooks = {
+    ...React,
+    useMemo: (factory: () => unknown) => factory(),
+    useCallback: (callback: unknown) => callback,
+    useRef: (initial: unknown) => { const index = cursor++; return cells[index] ??= { current: initial }; },
+    useState: (initial: unknown) => {
+      const index = cursor++;
+      if (!(index in cells)) cells[index] = typeof initial === 'function' ? initial() : initial;
+      return [cells[index], (next: unknown) => { cells[index] = typeof next === 'function' ? next(cells[index]) : next; }];
+    },
+    useEffect: (run: () => void | (() => void), deps?: readonly unknown[]) => {
+      const index = cursor++;
+      const previous = effects.get(index);
+      if (previous?.deps && deps && deps.length === previous.deps.length && deps.every((value, i) => Object.is(value, previous.deps?.[i]))) return;
+      pending.push(() => { previous?.cleanup?.(); effects.set(index, { deps, cleanup: run() || undefined }); });
+    },
+  };
+  const loaded = { exports: {} };
+  compileFunction(compiled, ['require', 'exports', 'module'], { filename })(
+    (id: string) => id === 'react' ? hooks : requireStub(id), loaded.exports, loaded,
+  );
+  const Page = (loaded.exports as typeof import('./WorkDetailPage')).WorkDetailPage;
+  let navigated = false;
+  const workspace = { works: [work], employees: [], myEmployees: [], busy: false,
+    navigate: () => { navigated = true; } } as unknown as EnterpriseWorkspace;
+  const root = Page({ workspace, workId: work.id });
+  const renderBody = root.type as (props: unknown) => React.ReactElement;
+  let elements: React.ReactElement<Record<string, unknown>>[] = [];
+  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; },
+    getBoundingClientRect: () => ({ left: 100, right: 860, top: 100, bottom: 700 }) };
+  function find(predicate: (element: React.ReactElement<Record<string, unknown>>) => boolean) {
+    const element = elements.find(predicate);
+    assert.ok(element);
+    return element;
+  }
+  function render() {
+    cursor = 0; pending = []; elements = [];
+    const visit = (nodes: React.ReactNode) => React.Children.forEach(nodes, child => {
+      if (!React.isValidElement<Record<string, unknown>>(child)) return;
+      elements.push(child); visit(child.props.children as React.ReactNode);
+    });
+    visit(renderBody(root.props));
+    (Reflect.get(find(element => element.type === 'dialog'), 'ref') as { current: unknown }).current = dialog;
+    (Reflect.get(find(element => element.props['aria-label'] === '关闭详情面板'), 'ref') as { current: unknown }).current = { focus() {} };
+    pending.forEach(run => run());
+  }
+  render();
+  return { render, dialog, find, navigated: () => navigated, unmount: () => effects.forEach(effect => effect.cleanup?.()) };
+}
+
 describe('WorkDetailPage media entry', () => {
   it('shows a pending task as waiting to start, not running time', () => {
     const pending = { ...work, status: 'arranging' as const, isActive: false, createdAt: Date.now() - 7 * 24 * 60 * 60 * 1000, updatedAt: Date.now(), startedAt: null, completedAt: null }
@@ -96,23 +155,85 @@ describe('WorkDetailPage media entry', () => {
     assert.doesNotMatch(html, /本轮已运行/)
   })
 
-  it('mounts the shared media panel exactly once on the actual conversation route', () => {
+  it('keeps the results inspector closed until requested', () => {
     const html = renderDetail(work);
-    assert.equal((html.match(/aria-label="图片创作与成果"/g) ?? []).length, 1);
-    assert.match(html, /正在读取图片能力/);
-    assert.match(html, /产出结果/);
+    assert.match(html, /查看产出结果/);
+    assert.match(html, /aria-label="工作对话"/);
+    assert.doesNotMatch(html, /aria-label="图片创作与成果"/);
+    assert.match(html, /<dialog[^>]+class="ent-wk-inspector"/);
+    assert.doesNotMatch(html, /<dialog[^>]*\bopen(?:=|[ >])/);
+    assert.doesNotMatch(html, /分享|把这项工作的摘要复制到剪贴板/);
+  });
+
+  it('opens every detail as a modal without navigation and keeps the media controller mounted', () => {
+    const page = mountDetail();
+    for (const label of ['查看产出结果', '查看工作过程', '查看工作信息']) {
+      (page.find(element => element.props['aria-label'] === label).props.onClick as () => void)();
+      page.render();
+      assert.equal(page.dialog.open, true);
+      assert.equal(page.navigated(), false);
+      const media = page.find(element => element.type === MediaArtifactsPanel);
+      assert.equal(media.props.visible, label === '查看产出结果');
+      (page.find(element => element.props['aria-label'] === '关闭详情面板').props.onClick as () => void)();
+      page.render();
+      assert.equal(page.dialog.open, false);
+    }
+    page.unmount();
+  });
+
+  it('ignores nested preview cancellation and inside clicks, and closes on its own Escape or backdrop', () => {
+    const page = mountDetail();
+    const open = () => { (page.find(element => element.props['aria-label'] === '查看工作过程').props.onClick as () => void)(); page.render(); };
+    const props = () => page.find(element => element.type === 'dialog').props;
+    open();
+    let prevented = false;
+    const cancel = () => { prevented = true; };
+    (props().onCancel as (event: unknown) => void)({ target: {}, currentTarget: page.dialog, preventDefault: cancel });
+    (props().onClick as (event: unknown) => void)({ target: page.dialog, currentTarget: page.dialog, clientX: 150, clientY: 150 });
+    page.render();
+    assert.equal(prevented, false);
+    assert.equal(page.dialog.open, true);
+    (props().onCancel as (event: unknown) => void)({ target: page.dialog, currentTarget: page.dialog, preventDefault: cancel });
+    page.render();
+    assert.equal(prevented, true);
+    assert.equal(page.dialog.open, false);
+    open();
+    (props().onClick as (event: unknown) => void)({ target: page.dialog, currentTarget: page.dialog, clientX: 20, clientY: 20 });
+    page.render();
+    assert.equal(page.dialog.open, false);
+    open(); page.unmount();
+    assert.equal(page.dialog.open, false);
+  });
+
+  it('does not infer type-specific operations while authoritative classification is unavailable', () => {
+    for (const state of ['loading', 'unavailable'] as const) {
+      const html = renderDetail({ ...work, workType: { state } });
+      assert.match(html, /工作类型/);
+      assert.doesNotMatch(html, /aria-label="工作对话"/);
+      assert.doesNotMatch(html, /查看产出结果/);
+      if (state === 'unavailable') assert.match(html, /重新读取工作类型/);
+    }
+  });
+
+  it('keeps deletion behind work information and an explicit confirmation', () => {
+    const html = renderDetail(work);
+    const info = html.indexOf('aria-label="工作信息"');
+    assert.ok(info > 0);
+    assert.ok(html.indexOf('删除记录', info) > info);
+    assert.doesNotMatch(html, />确认删除</);
   });
 
   it('does not introduce conversation media operations into flow work', () => {
     assert.doesNotMatch(renderDetail({ ...work, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' } }), /aria-label="图片创作与成果"/);
   });
 
-  it('mounts arrangement media results when the execution snapshot has media', () => {
+  it('keeps arrangement media previews unmounted until the results inspector opens', () => {
     const flow = { ...work, kind: 'flow' as const, workType: { state: 'resolved' as const, kind: 'arrangement' as const },
       arrangementExecution: { activeRunId: null, status: 'completed' as const, nodes: [], updatedAt: 1, media: [{ nodeId: 'image', nodeRunId: 'run-1', kind: 'image' as const, operation: 'generate' as const,
         inputs: [], pendingActions: [],
         phase: 'ready' as const, jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' as const }] }] } };
-    assert.match(renderDetail(flow), /编排媒体成果/);
+    assert.match(renderDetail(flow), /查看产出结果/);
+    assert.doesNotMatch(renderDetail(flow), /编排媒体成果/);
   });
 
   it('shows the real media waiting stage instead of a fabricated percentage', () => {
@@ -141,8 +262,9 @@ describe('WorkDetailPage media entry', () => {
           phase: 'ready', jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' }] }] } };
     const html = renderDetail(flow);
     assert.equal((html.match(/aria-label="重试此节点：failed"/g) ?? []).length, 1);
+    assert.ok(html.indexOf('ent-failed-node-actions') < html.indexOf('aria-label="工作对话"'));
     assert.doesNotMatch(html, /重试此节点：peer/);
-    assert.match(html, /编排媒体成果/);
+    assert.doesNotMatch(html, /编排媒体成果/);
     assert.match(html, /进行中/);
   });
 
