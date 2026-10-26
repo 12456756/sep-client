@@ -66,14 +66,26 @@ export async function beforeOfficePack(context) {
   await verifyOfficeAssets(join(context.packager.projectDir, 'resources'), context.electronPlatformName, arch)
 }
 
+function packagedResources(context) {
+  return context.electronPlatformName === 'darwin'
+    ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
+    : join(context.appOutDir, 'resources')
+}
+
+// mac.signIgnore preserves the pinned upstream Developer ID signature. Verify the
+// final bytes as well, so a signing-policy change cannot ship an unusable tool.
+export async function afterOfficeSign(context) {
+  if (context.electronPlatformName !== 'darwin') return
+  const arch = { 1: 'x64', 3: 'arm64' }[context.arch]
+  await verifyOfficeAssets(packagedResources(context), 'darwin', arch)
+}
+
 export async function afterOfficePack(context) {
   const platform = context.electronPlatformName
   const arch = { 0: 'ia32', 1: 'x64', 2: 'armv7l', 3: 'arm64' }[context.arch]
   const source = join(context.packager.projectDir, 'resources')
   const asset = await verifyOfficeAssets(source, platform, arch)
-  const resources = platform === 'darwin'
-    ? join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
-    : join(context.appOutDir, 'resources')
+  const resources = packagedResources(context)
   await mkdir(join(resources, 'office'), { recursive: true })
   // Copy after extraResources transformations: Windows must not re-sign this pinned
   // third-party executable and invalidate the checksum enforced by the runtime.

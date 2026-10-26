@@ -137,6 +137,7 @@
     "mac": {
       "category": "public.app-category.business",
       "icon": "build/icon.icns",
+      "signIgnore": ["/Contents/Resources/office/officecli-mac-(arm64|x64)$"],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "用于将您主动录制的语音在本机转换为输入文字。"
       },
@@ -189,6 +190,7 @@
     ],
     "beforePack": "scripts/speech-before-pack.cjs",
     "afterPack": "scripts/speech-after-pack.cjs",
+    "afterSign": "scripts/office-after-sign.cjs",
     "artifactName": "SEP-Client-${version}-${os}-${arch}.${ext}"
   },
   "allowScripts": {
