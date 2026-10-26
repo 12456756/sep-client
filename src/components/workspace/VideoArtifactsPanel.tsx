@@ -51,6 +51,24 @@ function failure(result: IpcCommandResult, fallback: string): string {
   return result.error?.message || fallback
 }
 
+export function videoTaskIssue(jobs: VideoJobView[]): string | null {
+  for (const job of jobs) {
+    if (job.error) return videoErrorMessage(job.error) || job.error
+    if (job.generationStatus === 'FAILED') return '视频生成失败'
+    if (job.generationStatus === 'SUBMISSION_UNKNOWN') return '视频任务提交结果待核实'
+    if (job.saveStatus === 'SAVE_FAILED') return '视频成果保存失败'
+    if (job.saveStatus === 'MISSING') return '视频成果文件缺失'
+    if (job.trackingStatus === 'AUTH_REQUIRED') return '视频任务需要恢复认证'
+    if (job.trackingStatus === 'INTERRUPTED') return '视频任务跟踪中断，可恢复'
+  }
+  return null
+}
+
+export function savedVideoOutputCount(jobs: VideoJobView[] | null, queryError = false): number | null {
+  if (!jobs || queryError) return null
+  return new Set(jobs.flatMap(job => job.outputs.filter(output => videoOutputIsSaved(job, output.outputId)).map(output => output.outputId))).size
+}
+
 export function videoOutputIsSaved(job: VideoJobView & { savedOutputIds?: string[] }, outputId: string): boolean {
   return job.outputs.some(output => output.outputId === outputId) &&
     (job.savedOutputIds === undefined ? job.saveStatus === 'SAVED' : job.savedOutputIds.includes(outputId))
@@ -129,14 +147,15 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
 }
 
 /** Presentation only: no IPC, remote URLs or eager media reads. */
-export function VideoTaskContent({ taskId, view: value, busy, pending, notice, error, onRefresh, onAction, onPreview, onExport }: {
+export function VideoTaskContent({ taskId, view: value, busy, pending, notice, error, onRefresh, onAction, onPreview, onExport, visible = true }: {
   taskId: string; view: VideoTaskView | null; busy: boolean; pending: Command | null; notice: Notice | null; error: string | null
+  visible?: boolean
   onRefresh: () => void
   onAction: (job: VideoJobView, action: JobAction) => void; onPreview: (selection: OutputSelection) => void; onExport: (selection: OutputSelection) => void
 }) {
   const view = safeView(value, taskId)
   if (!view) return null
-  return <section className="artifact-section media-artifacts video-artifacts" aria-label="视频成果">
+  return <section className="artifact-section media-artifacts video-artifacts" aria-label="视频成果" hidden={!visible}>
     <h3><Film size={15} />视频成果{view.mock && <span className="video-mock-badge">Mock · 不收费</span>}</h3>
     {view.mock && <p className="media-notice">仅供 Mock 视频验证 · MOCK_NOT_CHARGED</p>}
     {error && <p className="media-notice media-tone-error" role="alert">{error}<button type="button" className="media-icon-button" disabled={!!pending} title="重新读取视频任务" aria-label="重新读取视频任务" onClick={onRefresh}><RefreshCw size={14} /></button></p>}
@@ -195,7 +214,7 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, notice, onClose,
   </dialog>
 }
 
-function VideoTaskController({ taskId }: { taskId: string }) {
+function VideoTaskController({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void }) {
   const [view, setView] = useState<VideoTaskView | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
@@ -267,18 +286,26 @@ function VideoTaskController({ taskId }: { taskId: string }) {
   const exportOutput = (selection: OutputSelection) => { void run('export', api => api.exportVideoOutput({ taskId, ...selection })) }
   const previewAvailable = preview && view?.jobs.some(job => job.jobId === preview.jobId && videoOutputIsSaved(job, preview.outputId))
   useEffect(() => { if (preview && !previewAvailable) setPreview(null) }, [preview, previewAvailable])
+  useEffect(() => { if (!visible) setPreview(null) }, [visible])
   const busy = pending !== null || error !== null
+  const savedOutputCount = savedVideoOutputCount(view?.jobs ?? null, Boolean(error))
+  const outputCount = savedOutputCount
+  const taskIssue = videoTaskIssue(view?.jobs ?? [])
+  const summaryError = error || taskIssue
+  useEffect(() => {
+    onSummary?.({ outputs: outputCount, error: summaryError })
+  }, [onSummary, outputCount, summaryError])
   return <>
-    <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending} notice={notice} error={error}
+    {visible ? <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending} notice={notice} error={error}
       onRefresh={() => { void refresh() }}
       onAction={(job, action) => { void run(action, api => action === 'resume' ? api.resumeVideoTracking({ taskId, jobId: job.jobId }) : api.retryVideoSave({ taskId, jobId: job.jobId })) }}
-      onPreview={setPreview} onExport={exportOutput} />
-    {preview && previewAvailable && <VideoPreviewDialog key={`${taskId}:${preview.jobId}:${preview.outputId}`} taskId={taskId} selection={preview} busy={busy} pending={pending} notice={notice} onClose={() => setPreview(null)} onExport={() => exportOutput(preview)} />}
+      onPreview={setPreview} onExport={exportOutput} /> : null}
+    {visible && preview && previewAvailable && <VideoPreviewDialog key={`${taskId}:${preview.jobId}:${preview.outputId}`} taskId={taskId} selection={preview} busy={busy} pending={pending} notice={notice} onClose={() => setPreview(null)} onExport={() => exportOutput(preview)} />}
   </>
 }
 
-export function VideoTaskPanel({ taskId }: { taskId: string }) {
-  return <VideoTaskController key={taskId} taskId={taskId} />
+export function VideoTaskPanel({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void }) {
+  return <VideoTaskController key={taskId} taskId={taskId} visible={visible} onSummary={onSummary} />
 }
 
 export { VideoTaskPanel as VideoArtifactsPanel }

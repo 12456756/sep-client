@@ -7,7 +7,7 @@ import { imageFormAspectRatios, imageFormParameters, imageFormSizes, mediaGenera
 import { imageAspectRatio } from './media-spec'
 
 // Shared tests also compile under the Node tsconfig, which intentionally has no JSX setting.
-const { MediaArtifactsPanel, MediaAssetGrid, MediaCommandFeedback, MediaCreationForm, MediaJobList } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
+const { MediaArtifactsPanel, MediaAssetGrid, MediaCommandFeedback, MediaCreationForm, MediaJobList, mediaTaskIssue, savedImageOutputCount } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
 
 const profile: MediaProfile = {
   profileId: 'image-profile', kind: 'image', displayName: '商品图片', configVersion: '1', operations: ['generate', 'edit'],
@@ -240,6 +240,15 @@ test('saved image results remain available while billing is pending and show que
   assert.ok(html.includes(`最近查询：${new Date(lastQueriedAt).toLocaleTimeString('zh-CN', { hour12: false })}`))
   assert.match(html, /供应商等待：1\.3 秒/)
   assert.match(html, /下载保存：240 ms/)
+})
+
+test('image summaries preserve saved output counts while reporting task failures', () => {
+  const failed = job({ generationStatus: 'FAILED', saveStatus: 'SAVE_FAILED', error: '上游拒绝' })
+  const view = { capabilities: null, unavailableReason: null, assets: [asset], selectedReferenceIds: [], jobs: [failed], archived: false }
+  assert.equal(savedImageOutputCount('task-1', view, [failed]), 1)
+  assert.equal(mediaTaskIssue([failed]), '上游拒绝')
+  assert.equal(savedImageOutputCount('task-1', null, [failed]), null)
+  assert.equal(savedImageOutputCount('task-1', view, [failed], true), null)
 })
 
 test('SSR panel is safe without browser IPC and escapes backend error text', () => {

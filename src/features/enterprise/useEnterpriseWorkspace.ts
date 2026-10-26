@@ -201,8 +201,8 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   retryWorkTypes: () => void;
   goBack: () => void;
   dismissError: () => void;
-  startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<void>;
-  arrangeWork: (draft: ArrangeWorkDraft) => Promise<void>;
+  startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>;
+  arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
   sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string) => Promise<boolean>;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
@@ -615,9 +615,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
   const startConversation = useCallback(async (employeeId: string, text: string, options?: ConversationOptions) => {
     const goal = text.trim();
-    if (!goal) return;
+    if (!goal) return false;
     const employee = myEmployees.find(item => item.id === employeeId);
-    if (!employee) { setError('请先选择一位硅基员工'); return; }
+    if (!employee) { setError('请先选择一位硅基员工'); return false; }
     const api = window.electronAPI;
     const title = goal.length > 40 ? `${goal.slice(0, 40)}…` : goal;
     setBusy(true);
@@ -643,16 +643,18 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       if (!started.success || !started.execution) throw new Error(started.error?.message || '员工没能接单，请重试');
       setActiveEmployeeByWork(current => ({ ...current, [started.execution!.id]: employeeId }));
       navigate({ name: 'work', workId: started.execution.id });
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '工作创建失败');
+      return false;
     } finally {
       setBusy(false);
     }
   }, [myEmployees, navigate]);
 
-  const arrangeWork = useCallback(async (draft: ArrangeWorkDraft): Promise<void> => {
+  const arrangeWork = useCallback(async (draft: ArrangeWorkDraft): Promise<boolean> => {
     const steps = draft.steps.filter(step => step.employeeId && step.title.trim());
-    if (!steps.length) { setError('????????'); return; }
+    if (!steps.length) { setError('????????'); return false; }
     const kept = new Set(steps.map(step => step.id));
     const nodes = steps.map(step => {
       const employee = myEmployees.find(item => item.id === step.employeeId);
@@ -668,7 +670,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         inputRefs: step.inputRefs ?? [],
       };
     });
-    if (nodes.some(node => !node.modelId)) { setError('???????'); return; }
+    if (nodes.some(node => !node.modelId)) { setError('???????'); return false; }
     const document: ArrangementDraftDocument = {
       schemaVersion: 1,
       mode: 'manual',
@@ -701,8 +703,10 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       const started = await api.confirmAndStartArrangement({ draftId: createdDraft.id, expectedRevision: createdDraft.revision, idempotencyKey: crypto.randomUUID() });
       if (!started.success || !started.execution) throw new Error(started.error?.message || '????');
       navigate({ name: 'work', workId: started.execution.id });
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '????');
+      return false;
     } finally {
       setBusy(false);
     }

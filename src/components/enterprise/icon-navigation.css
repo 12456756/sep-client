@@ -1,0 +1,258 @@
+.ent-side.ent-icon-nav {
+  width: 64px;
+  flex: 0 0 64px;
+  padding: 8px 12px 12px;
+  transition: none;
+}
+
+.ent-side.ent-icon-nav.collapsed,
+.ent-side.ent-icon-nav:not(.collapsed) {
+  width: 64px;
+  flex-basis: 64px;
+  padding: 8px 12px 12px;
+}
+
+.ent-side.ent-icon-nav .ent-icon-brand,
+.ent-side.ent-icon-nav .ent-icon-brand-button,
+.ent-side.ent-icon-nav .ent-icon-account,
+.ent-side.ent-icon-nav .ent-icon-account-button,
+.ent-side.ent-icon-nav .ent-icon-nav-item {
+  -webkit-app-region: no-drag;
+}
+
+.ent-side.ent-icon-nav .ent-icon-brand {
+  position: relative;
+  display: grid;
+  min-height: 42px;
+  place-items: center;
+  padding: 0;
+}
+
+.ent-side.ent-icon-nav .ent-icon-brand-button,
+.ent-side.ent-icon-nav .ent-icon-account-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  color: var(--ent-ink-2);
+  background: transparent;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease, transform 160ms ease;
+}
+
+.ent-side.ent-icon-nav .ent-icon-brand-button:hover,
+.ent-side.ent-icon-nav .ent-icon-brand-button:focus-visible,
+.ent-side.ent-icon-nav .ent-icon-account-button:hover,
+.ent-side.ent-icon-nav .ent-icon-account-button:focus-visible {
+  color: var(--ent-brand-ink);
+  background: var(--ent-brand-tint);
+}
+
+.ent-side.ent-icon-nav .ent-icon-brand-button:active,
+.ent-side.ent-icon-nav .ent-icon-account-button:active,
+.ent-side.ent-icon-nav .ent-icon-nav-item:active {
+  transform: scale(.96);
+  transition-duration: 80ms;
+}
+
+.ent-side.ent-icon-nav .ent-icon-brand-button:hover svg,
+.ent-side.ent-icon-nav .ent-icon-account-button:hover svg,
+.ent-side.ent-icon-nav .ent-icon-nav-item:hover svg {
+  transform: scale(1.08);
+}
+
+.ent-side.ent-icon-nav .ent-icon-brand-button svg,
+.ent-side.ent-icon-nav .ent-icon-account-button svg,
+.ent-side.ent-icon-nav .ent-icon-nav-item svg {
+  transition: transform 160ms ease;
+}
+
+.ent-side.ent-icon-nav .ent-icon-brand-button .ent-enterprise-logo {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.ent-side.ent-icon-nav .ent-icon-items {
+  flex: 0 1 auto;
+  justify-content: flex-start;
+  gap: 8px;
+  margin-block: auto;
+  padding: 0;
+  overflow-y: auto;
+}
+
+
+.ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  min-height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  padding: 0;
+  border-radius: 10px;
+  color: var(--ent-ink-3);
+  background: transparent;
+}
+
+.ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item:hover {
+  color: var(--ent-brand-ink);
+  background: var(--ent-brand-tint);
+}
+
+.ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item.active,
+.ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item.active:hover {
+  color: var(--ent-brand-ink);
+  background: var(--ent-brand-softer);
+  box-shadow: inset 3px 0 0 var(--ent-brand-solid);
+}
+
+.ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item.active svg,
+.ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item:hover svg {
+  color: currentColor;
+}
+
+.ent-side.ent-icon-nav .ent-icon-count {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  min-width: 15px;
+  height: 15px;
+  place-items: center;
+  padding: 0 3px;
+  border: 2px solid var(--ent-panel);
+  border-radius: 999px;
+  color: #fff;
+  background: var(--ent-danger);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.ent-side.ent-icon-nav .ent-icon-account {
+  display: grid;
+  min-height: 48px;
+  margin-top: 8px;
+  padding-top: 8px;
+  place-items: center;
+}
+
+.ent-side.ent-icon-nav .ent-icon-account-button .ent-face {
+  width: 28px;
+  height: 28px;
+}
+
+.ent-side.ent-icon-nav .ent-icon-account-fallback {
+  display: none;
+}
+
+.ent-side.ent-icon-nav .ent-icon-menu {
+  right: auto;
+  position: absolute;
+  z-index: 40;
+  left: calc(100% + 8px);
+  width: 176px;
+  padding: 7px;
+  border: 1px solid var(--ent-line);
+  border-radius: 8px;
+  background: var(--ent-panel);
+  box-shadow: var(--ent-shadow-lift);
+}
+
+.ent-side.ent-icon-nav .ent-enterprise-menu {
+  top: 2px;
+}
+
+.ent-side.ent-icon-nav .ent-icon-account .ent-icon-menu {
+  right: auto;
+  bottom: 4px;
+}
+
+.ent-side.ent-icon-nav .ent-icon-menu strong {
+  display: block;
+  overflow: hidden;
+  padding: 5px 8px 7px;
+  color: var(--ent-ink);
+  font-size: var(--ent-fs-note);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ent-side.ent-icon-nav .ent-icon-menu button {
+  display: flex;
+  width: 100%;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--ent-ink-2);
+  background: transparent;
+  font-size: var(--ent-fs-body);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ent-side.ent-icon-nav .ent-icon-menu button:hover,
+.ent-side.ent-icon-nav .ent-icon-menu button:focus-visible {
+  color: var(--ent-brand-ink);
+  background: var(--ent-brand-softer);
+}
+
+.ent-side.ent-icon-nav .ent-icon-menu button.danger {
+  color: var(--ent-danger);
+}
+
+.ent-icon-hint {
+  z-index: 100;
+  max-width: min(280px, calc(100vw - 80px));
+  overflow-wrap: anywhere;
+  padding: 6px 8px;
+  border: 1px solid var(--ent-line);
+  border-radius: 5px;
+  color: var(--ent-ink);
+  background: var(--ent-panel);
+  box-shadow: var(--ent-shadow-lift);
+  font-size: var(--ent-fs-note);
+  line-height: 1.25;
+  animation: ent-icon-hint-in 150ms ease-out;
+}
+
+.ent-icon-hint-arrow {
+  fill: var(--ent-panel);
+}
+
+:root:has(.ent-shell.dark) .ent-icon-hint {
+  border-color: var(--ent-dark-line);
+  color: var(--ent-dark-ink);
+  background: var(--ent-dark);
+}
+
+:root:has(.ent-shell.dark) .ent-icon-hint-arrow { fill: var(--ent-dark); }
+
+@keyframes ent-icon-hint-in {
+  from { opacity: 0; transform: translateX(-3px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ent-side.ent-icon-nav .ent-icon-brand-button,
+  .ent-side.ent-icon-nav .ent-icon-account-button,
+  .ent-side.ent-icon-nav .ent-icon-nav-item svg,
+  .ent-side.ent-icon-nav .ent-icon-brand-button svg,
+  .ent-side.ent-icon-nav .ent-icon-account-button svg,
+  .ent-icon-hint { transition: none; animation: none; }
+  .ent-side.ent-icon-nav .ent-icon-brand-button:active,
+  .ent-side.ent-icon-nav .ent-icon-account-button:active,
+  .ent-side.ent-icon-nav .ent-icon-nav-item:active { transform: none; }
+  .ent-side.ent-icon-nav .ent-icon-brand-button:hover svg,
+  .ent-side.ent-icon-nav .ent-icon-account-button:hover svg,
+  .ent-side.ent-icon-nav .ent-icon-nav-item:hover svg { transform: none; }
+}

@@ -1,35 +1,24 @@
-/**
- * 左侧主导航。固定在左边、通高，永远不移到顶部。
- *
- * 自上而下三段：企业标记与名称、五个入口、账号。账号固定贴底，
- * 菜单向上弹出，避免被窗口底边裁掉。企业管理类入口只对有权限的成员显示。
- *
- * 「待我处理」的数量挂在「工作记录」上，作为这个入口的注解。顶栏右上角那颗铃铛
- * 指向同一页 —— 数字说明入口现在的情况，铃铛是随时都在的提醒，两者不冲突。
- *
- * 顶部的企业块同时是 Electron 的窗口拖拽区（Windows 的窗口按钮由
- * titleBarOverlay 画在右上角，那一侧的留白见 enterprise.css 的 .ent-top）。
- */
-
-import { BookOpen, Building2, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, Gauge, GraduationCap, LayoutGrid, ListTodo, LogOut, Settings, ShieldCheck, Users } from 'lucide-react';
+import { BookOpen, Building2, CircleUserRound, Gauge, LayoutGrid, ListTodo, LogOut, Settings, Users, Workflow } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import type { AppRoute, AppRouteName } from '../../features/enterprise/types';
 import type { EmployeeAvatarSource } from '../../shared/types';
 import { EmployeeFace } from './EmployeeFace';
+import { IconHint } from './IconHint';
+import './icon-navigation.css';
 
 interface Props {
   enterpriseName: string;
-  enterpriseMark: string;
+  enterpriseMark?: string;
   enterpriseLogo?: string | null;
   current: AppRouteName;
-  /** 待我确认或需要重试的工作数量，挂在「工作记录」右侧。 */
   needsMeCount: number;
-  /** 是否为企业管理员。普通成员看不到管理入口。 */
   canManage: boolean;
   userName: string;
   userAvatar?: EmployeeAvatarSource | null;
-  collapsed: boolean;
-  onToggleCollapse: () => void;
+  /** Kept for source compatibility. The rail is always icon-only. */
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
   onNavigate: (route: AppRoute) => void;
   onOpenSettings: () => void;
   onLogout: () => void;
@@ -37,141 +26,131 @@ interface Props {
 
 const MAIN: { name: AppRouteName; label: string; icon: typeof Users; route: AppRoute }[] = [
   { name: 'home', label: '首页', icon: LayoutGrid, route: { name: 'home' } },
+  { name: 'records', label: '工作', icon: Workflow, route: { name: 'records' } },
   { name: 'employees', label: '硅基员工', icon: Users, route: { name: 'employees' } },
-  { name: 'arrange', label: '安排工作', icon: ListTodo, route: { name: 'arrange' } },
-  { name: 'records', label: '工作记录', icon: ClipboardList, route: { name: 'records' } },
-  { name: 'skills', label: '员工技能', icon: GraduationCap, route: { name: 'skills' } },
+  { name: 'skills', label: '员工技能', icon: ListTodo, route: { name: 'skills' } },
   { name: 'knowledge', label: '知识库', icon: BookOpen, route: { name: 'knowledge' } },
   { name: 'compute-center', label: '算力中心', icon: Gauge, route: { name: 'compute-center' } },
 ];
 
-/** 详情页算在它的列表页下面：员工详情亮「硅基员工」，工作详情亮「工作记录」。 */
 function isActive(item: AppRouteName, current: AppRouteName): boolean {
+  if (item === 'records') return current === 'arrange' || current === 'records' || current === 'work';
   if (item === current) return true;
-  if (item === 'employees') return current === 'employee';
-  if (item === 'records') return current === 'work';
-  return false;
+  return item === 'employees' && current === 'employee';
 }
 
 export function AppSideNav({
-  enterpriseName, enterpriseMark, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, collapsed, onToggleCollapse, onNavigate, onOpenSettings, onLogout,
-}: Props) {
+  enterpriseName, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, onNavigate, onOpenSettings, onLogout,
+}: Props): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [enterpriseMenuOpen, setEnterpriseMenuOpen] = useState(false);
   const [logoFailed, setLogoFailed] = useState(false);
-  const [logoSrc, setLogoSrc] = useState<string | null>(enterpriseLogo ?? null);
   const account = useRef<HTMLDivElement>(null);
+  const enterprise = useRef<HTMLDivElement>(null);
+  const accountTrigger = useRef<HTMLButtonElement>(null);
+  const enterpriseTrigger = useRef<HTMLButtonElement>(null);
+  const accountMenu = useRef<HTMLDivElement>(null);
+  const enterpriseMenu = useRef<HTMLDivElement>(null);
+
+  useEffect(() => setLogoFailed(false), [enterpriseLogo]);
 
   useEffect(() => {
-    setLogoFailed(false);
-    setLogoSrc(enterpriseLogo ?? null);
-  }, [enterpriseLogo]);
-
-  useEffect(() => {
-    if (!menuOpen) return;
+    if (!menuOpen && !enterpriseMenuOpen) return;
     const close = (event: MouseEvent) => {
-      if (!account.current?.contains(event.target as Node)) setMenuOpen(false);
+      const target = event.target as Node;
+      if (!account.current?.contains(target)) setMenuOpen(false);
+      if (!enterprise.current?.contains(target)) setEnterpriseMenuOpen(false);
     };
-    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenuOpen(false); };
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+        setEnterpriseMenuOpen(false);
+        if (menuOpen) accountTrigger.current?.focus();
+        if (enterpriseMenuOpen) enterpriseTrigger.current?.focus();
+      }
+    };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', key);
     return () => {
       document.removeEventListener('mousedown', close);
       document.removeEventListener('keydown', key);
     };
-  }, [menuOpen]);
+  }, [menuOpen, enterpriseMenuOpen]);
+
+  useEffect(() => {
+    if (menuOpen) accountMenu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    if (enterpriseMenuOpen) enterpriseMenu.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [menuOpen, enterpriseMenuOpen]);
+
+  function handleMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>, menu: RefObject<HTMLDivElement | null>): void {
+    const items = Array.from(menu.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+    if (!items.length) return;
+    const index = items.indexOf(document.activeElement as HTMLElement);
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      items[(index + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      items[0]?.focus();
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      items[items.length - 1]?.focus();
+    }
+  }
 
   return (
-    <nav className={`ent-side${collapsed ? ' collapsed' : ''}`} aria-label="主导航">
-      <button
-        type="button"
-        className="ent-side-toggle"
-        onClick={onToggleCollapse}
-        aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
-        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
-      >
-        {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
-      </button>
-
-      <div className="ent-side-brand electron-drag-region">
-        {logoSrc && !logoFailed ? (
-          <img
-            className="ent-enterprise-logo"
-            src={logoSrc}
-            alt=""
-            aria-hidden
-            onError={() => {
-              setLogoFailed(true);
-            }}
-          />
-        ) : <span className="ent-mark" aria-hidden>{enterpriseMark}</span>}
-        {!collapsed && <strong title={enterpriseName}>{enterpriseName}</strong>}
-      </div>
-
-      <div className="ent-side-items">
-        {MAIN.map(item => {
-          const Icon = item.icon;
-          const active = isActive(item.name, current);
-          return (
-            <button
-              key={item.name}
-              type="button"
-              className={`ent-nav-item${active ? ' active' : ''}`}
-              onClick={() => onNavigate(item.route)}
-              aria-current={active ? 'page' : undefined}
-              title={item.label}
-            >
-              <Icon size={17} aria-hidden />
-              {!collapsed && <span>{item.label}</span>}
-              {!collapsed && item.name === 'records' && needsMeCount ? (
-                <em className="ent-nav-count" title={`${needsMeCount} 项工作等你处理`}>{needsMeCount}</em>
-              ) : null}
-            </button>
-          );
-        })}
-
-        {canManage && !collapsed ? (
-          <>
-            <div className="ent-nav-group">企业管理</div>
-            <button type="button" className="ent-nav-item" onClick={() => onNavigate({ name: 'skills' })} title="技能审核">
-              <ShieldCheck size={17} aria-hidden />
-              <span>技能审核</span>
-            </button>
-            <button type="button" className="ent-nav-item" onClick={() => onNavigate({ name: 'employees' })} title="员工权限">
-              <Building2 size={17} aria-hidden />
-              <span>员工权限</span>
-            </button>
-          </>
+    <nav className="ent-side ent-icon-nav" aria-label="主导航">
+      <div className="ent-side-brand ent-icon-brand electron-no-drag" ref={enterprise}>
+        <IconHint label={enterpriseName}>
+          <button
+            type="button"
+            ref={enterpriseTrigger}
+            className="ent-icon-brand-button"
+            aria-label={`${enterpriseName}，打开企业菜单`}
+            aria-expanded={enterpriseMenuOpen}
+            aria-haspopup="menu"
+            onClick={() => { setMenuOpen(false); setEnterpriseMenuOpen(value => !value); }}
+          >
+            {enterpriseLogo && !logoFailed ? <img className="ent-enterprise-logo" src={enterpriseLogo} alt="" onError={() => setLogoFailed(true)} /> : <Building2 size={22} aria-hidden />}
+          </button>
+        </IconHint>
+        {enterpriseMenuOpen ? (
+          <div className="ent-icon-menu ent-enterprise-menu" role="menu" ref={enterpriseMenu} onKeyDown={event => handleMenuKeyDown(event, enterpriseMenu)}>
+            <strong>{enterpriseName}</strong>
+            <button type="button" role="menuitem" onClick={() => { setEnterpriseMenuOpen(false); onNavigate({ name: 'organization' }); }}>企业组织</button>
+            {canManage ? <button type="button" role="menuitem" onClick={() => { setEnterpriseMenuOpen(false); onNavigate({ name: 'employees' }); }}>员工管理</button> : null}
+            {canManage ? <button type="button" role="menuitem" onClick={() => { setEnterpriseMenuOpen(false); onNavigate({ name: 'skills' }); }}>技能管理</button> : null}
+          </div>
         ) : null}
       </div>
 
-      <div className="ent-side-account" ref={account}>
-        <button
-          type="button"
-          className="ent-side-user"
-          onClick={() => setMenuOpen(value => !value)}
-          aria-expanded={menuOpen}
-          aria-haspopup="menu"
-          title={collapsed ? userName : undefined}
-        >
-          <EmployeeFace employee={userAvatar} name={userName} size="sm" round />
-          {!collapsed && (
-            <span>
-              <strong title={userName}>{userName}</strong>
-              <small>我的账号</small>
-            </span>
-          )}
-          {!collapsed && <ChevronUp size={14} aria-hidden style={{ transform: menuOpen ? 'rotate(180deg)' : undefined }} />}
-        </button>
+      <div className="ent-side-items ent-icon-items">
+        {MAIN.map(item => {
+          const Icon = item.icon;
+          const active = isActive(item.name, current);
+          const label = item.name === 'records' && needsMeCount > 0 ? `${item.label}，${needsMeCount} 项待处理` : item.label;
+          return (
+            <IconHint key={item.name} label={label}>
+              <button type="button" className={`ent-nav-item ent-icon-nav-item${active ? ' active' : ''}`} onClick={() => { if (!active) onNavigate(item.route); }} aria-label={label} aria-current={active ? 'page' : undefined}>
+                <Icon size={20} strokeWidth={1.8} aria-hidden />
+                {item.name === 'records' && needsMeCount > 0 ? <span className="ent-icon-count" aria-hidden>{needsMeCount > 99 ? '99+' : needsMeCount}</span> : null}
+              </button>
+            </IconHint>
+          );
+        })}
+      </div>
+
+      <div className="ent-side-account ent-icon-account" ref={account}>
+        <IconHint label={userName}>
+          <button type="button" ref={accountTrigger} className="ent-side-user ent-icon-account-button" onClick={() => { setEnterpriseMenuOpen(false); setMenuOpen(value => !value); }} aria-expanded={menuOpen} aria-haspopup="menu" aria-label={`${userName}，打开账号菜单`}>
+            <EmployeeFace employee={userAvatar} name={userName} size="sm" round />
+            <CircleUserRound className="ent-icon-account-fallback" size={20} aria-hidden />
+          </button>
+        </IconHint>
         {menuOpen ? (
-          <div className="ent-side-menu" role="menu">
-            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onOpenSettings(); }}>
-              <Settings size={13} aria-hidden />
-              设置
-            </button>
-            <button type="button" role="menuitem" className="danger" onClick={() => { setMenuOpen(false); onLogout(); }}>
-              <LogOut size={13} aria-hidden />
-              退出登录
-            </button>
+          <div className="ent-icon-menu ent-side-menu" role="menu" ref={accountMenu} onKeyDown={event => handleMenuKeyDown(event, accountMenu)}>
+            <button type="button" role="menuitem" onClick={() => { setMenuOpen(false); onOpenSettings(); }}><Settings size={14} aria-hidden />设置</button>
+            <button type="button" role="menuitem" className="danger" onClick={() => { setMenuOpen(false); onLogout(); }}><LogOut size={14} aria-hidden />退出登录</button>
           </div>
         ) : null}
       </div>

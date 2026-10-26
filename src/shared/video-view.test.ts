@@ -9,7 +9,7 @@ import { videoAllowedAudioModes } from './video-media'
 import { videoFormParameters } from './media-view'
 
 // Dynamic import keeps TSX outside the shared Node tsconfig's compilation graph.
-const { VideoTaskContent, VideoTaskPanel, VideoArtifactsPanel, videoOutputIsSaved } = await import(new URL('../components/workspace/VideoArtifactsPanel.tsx', import.meta.url).href)
+const { VideoTaskContent, VideoTaskPanel, VideoArtifactsPanel, videoOutputIsSaved, savedVideoOutputCount, videoTaskIssue } = await import(new URL('../components/workspace/VideoArtifactsPanel.tsx', import.meta.url).href)
 const { canImportVideoReference } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
 const { VideoCreationForm } = await import(new URL('../testing/VideoCreationForm.tsx', import.meta.url).href)
 
@@ -331,6 +331,17 @@ test('saved videos expose local preview and native export actions without eager 
     assert.doesNotMatch(unavailable, /预览视频成果|导出视频成果/)
     assert.match(unavailable, /保存后可预览或导出/)
   }
+})
+
+test('video summaries preserve saved outputs while reporting generation or tracking failures', () => {
+  const failed = job({ generationStatus: 'FAILED', trackingStatus: 'AUTH_REQUIRED', saveStatus: 'SAVE_FAILED', outputs: [output], error: 'MEDIA_FORBIDDEN' })
+  assert.equal(savedVideoOutputCount([failed]), 0)
+  assert.equal(videoTaskIssue([failed]), '当前账号没有视频生成权限。')
+  const partial = job({ generationStatus: 'FAILED', saveStatus: 'SAVE_FAILED', outputs: [output], savedOutputIds: ['output-1'], error: 'unknown-error' })
+  assert.equal(savedVideoOutputCount([partial]), 1)
+  assert.equal(videoTaskIssue([partial]), 'unknown-error')
+  assert.equal(savedVideoOutputCount(null), null)
+  assert.equal(savedVideoOutputCount([partial], true), null)
 })
 
 test('saved videos remain available while billing is reconciling and show query timing', () => {

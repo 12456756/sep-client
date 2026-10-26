@@ -6,10 +6,17 @@ type AttachmentApi = Pick<Window['electronAPI'], 'beginAttachmentImport' | 'sele
   onAttachmentPaste?: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
 }
 
+/** Owned by a logged-in workspace; the owner disposes open sessions on scope teardown. */
+export interface RetainedAttachmentState {
+  session: AttachmentImportSession | null
+  attachments: AttachmentView[]
+}
+
 export interface AttachmentComposerOptions {
   target: AttachmentImportTarget
   bindingKey?: string
   disabled?: boolean
+  retainedState?: RetainedAttachmentState
   onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean
   onPasteImported?: (operationId: string, attachments: AttachmentView[]) => void
   onPasteStarted?: (operationId: string) => void
@@ -17,9 +24,9 @@ export interface AttachmentComposerOptions {
   onSelectFinished?: (attachments: AttachmentView[] | null) => void
 }
 
-export function useAttachmentComposer({ target, bindingKey = '', disabled = false, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished }: AttachmentComposerOptions) {
-  const [session, setSession] = useState<AttachmentImportSession | null>(null)
-  const [attachments, setAttachments] = useState<AttachmentView[]>([])
+export function useAttachmentComposer({ target, bindingKey = '', disabled = false, retainedState, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished }: AttachmentComposerOptions) {
+  const [session, setSession] = useState<AttachmentImportSession | null>(retainedState?.session ?? null)
+  const [attachments, setAttachments] = useState<AttachmentView[]>(retainedState?.attachments ?? [])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const busyRef = useRef(false)
@@ -34,6 +41,11 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
   const generatedComposerId = useRef(`composer-${crypto.randomUUID()}`)
   const composerId = target.kind === 'compose' ? target.composerId : generatedComposerId.current
   const api = window.electronAPI as AttachmentApi
+  const retention = useRef(retainedState)
+  retention.current = retainedState
+  useLayoutEffect(() => {
+    if (retainedState) { retainedState.session = session; retainedState.attachments = attachments }
+  }, [retainedState, session, attachments])
   const onPasteImportedRef = useRef(onPasteImported)
   useEffect(() => { onPasteImportedRef.current = onPasteImported }, [onPasteImported])
   const onPasteStartedRef = useRef(onPasteStarted)
@@ -58,10 +70,8 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
         void api.cancelAttachmentImport({ sessionId: result.data.sessionId })
         return null
       }
-      bindDispose.current?.()
       setSession(result.data)
       setAttachments(result.data.attachments)
-      if (api.bindAttachmentPaste) bindDispose.current = api.bindAttachmentPaste({ composerId, sessionId: result.data.sessionId, target, isEnabled: () => !disabledRef.current && !busyRef.current, onPasteEdit: input => onPasteEditRef.current?.(input) ?? false })
       return result.data
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '附件会话创建失败')
@@ -72,7 +82,17 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
         setBusy(false)
       }
     }
-  }, [api, composerId, disabled, target])
+  }, [api, disabled, target])
+
+  // Rebind an existing retained import session without creating another session.
+  useEffect(() => {
+    if (!session || !api.bindAttachmentPaste) return
+    const dispose = api.bindAttachmentPaste({ composerId, sessionId: session.sessionId, target, isEnabled: () => !disabledRef.current && !busyRef.current, onPasteEdit: input => onPasteEditRef.current?.(input) ?? false })
+    bindDispose.current = dispose
+    return () => { dispose(); if (bindDispose.current === dispose) bindDispose.current = null }
+    // target identity is represented by identityKey, avoiding a new binding for every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, composerId, identityKey, session])
 
   const select = useCallback(async () => {
     const current = session ?? await begin()
@@ -162,7 +182,7 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
     else setAttachments(items => items.filter(item => item.attachmentId !== attachmentId))
   }, [api, session])
 
-  const sessionRef = useRef<AttachmentImportSession | null>(null)
+  const sessionRef = useRef<AttachmentImportSession | null>(session)
   useEffect(() => { sessionRef.current = session }, [session])
   useLayoutEffect(() => {
     if (identityRef.current === identityKey) return
@@ -189,7 +209,7 @@ export function useAttachmentComposer({ target, bindingKey = '', disabled = fals
     bindDispose.current?.()
     bindDispose.current = null
     const current = sessionRef.current
-    if (current?.status === 'open') void api.cancelAttachmentImport({ sessionId: current.sessionId })
+    if (!retention.current && current?.status === 'open') void api.cancelAttachmentImport({ sessionId: current.sessionId })
   }, [api])
 
   return { session, attachments, busy, error, select, remove, setError, composerId }

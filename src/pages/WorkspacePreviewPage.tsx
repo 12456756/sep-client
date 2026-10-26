@@ -13,7 +13,6 @@ export function WorkspacePreviewPage(): JSX.Element {
   const [route, setRoute] = useState<AppRoute>({ name: 'organization' });
   const [commandOpen, setCommandOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const isOrganization = route.name === 'organization';
 
   useEffect(() => {
@@ -28,7 +27,7 @@ export function WorkspacePreviewPage(): JSX.Element {
   }, []);
 
   return (
-    <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
+    <div className={`ent-shell${darkMode ? ' dark' : ''} sidebar-collapsed`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName="未连接平台"
         enterpriseMark="—"
@@ -36,8 +35,7 @@ export function WorkspacePreviewPage(): JSX.Element {
         needsMeCount={0}
         canManage={false}
         userName="未登录"
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
+        collapsed
         onNavigate={setRoute}
         onOpenSettings={() => undefined}
         onLogout={() => setRoute({ name: 'home' })}

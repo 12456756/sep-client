@@ -29,12 +29,15 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/arrange/ArrangementSteps': { ArrangementSteps },
   '../../components/enterprise/WorkPlanDrawer': { WorkPlanDrawer: () => null },
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
+  '../../components/enterprise/IconHint': { IconHint: ({ children }: { children: React.ReactNode }) => children },
+  '../../components/enterprise/WorkIndicators': { WorkStatusIcon: () => null, WorkTypeTag: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
   '../../features/enterprise/vocabulary': vocabulary,
+  '../../styles/work-detail.css': {},
 };
 const filename = fileURLToPath(new URL('./WorkDetailPage.tsx', import.meta.url));
 const compiled = ts.transpileModule(readFileSync(filename, 'utf8'), {
@@ -96,23 +99,43 @@ describe('WorkDetailPage media entry', () => {
     assert.doesNotMatch(html, /本轮已运行/)
   })
 
-  it('mounts the shared media panel exactly once on the actual conversation route', () => {
+  it('keeps the results inspector closed until requested', () => {
     const html = renderDetail(work);
-    assert.equal((html.match(/aria-label="图片创作与成果"/g) ?? []).length, 1);
-    assert.match(html, /正在读取图片能力/);
-    assert.match(html, /产出结果/);
+    assert.match(html, /查看产出结果/);
+    assert.match(html, /aria-label="工作对话"/);
+    assert.doesNotMatch(html, /aria-label="图片创作与成果"/);
+    assert.doesNotMatch(html, /class="ent-wk-inspector is-open"/);
+  });
+
+  it('does not infer type-specific operations while authoritative classification is unavailable', () => {
+    for (const state of ['loading', 'unavailable'] as const) {
+      const html = renderDetail({ ...work, workType: { state } });
+      assert.match(html, /工作类型/);
+      assert.doesNotMatch(html, /aria-label="工作对话"/);
+      assert.doesNotMatch(html, /查看产出结果/);
+      if (state === 'unavailable') assert.match(html, /重新读取工作类型/);
+    }
+  });
+
+  it('keeps deletion behind work information and an explicit confirmation', () => {
+    const html = renderDetail(work);
+    const info = html.indexOf('工作信息</h2>');
+    assert.ok(info > 0);
+    assert.ok(html.indexOf('删除记录', info) > info);
+    assert.doesNotMatch(html, />确认删除</);
   });
 
   it('does not introduce conversation media operations into flow work', () => {
     assert.doesNotMatch(renderDetail({ ...work, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' } }), /aria-label="图片创作与成果"/);
   });
 
-  it('mounts arrangement media results when the execution snapshot has media', () => {
+  it('keeps arrangement media previews unmounted until the results inspector opens', () => {
     const flow = { ...work, kind: 'flow' as const, workType: { state: 'resolved' as const, kind: 'arrangement' as const },
       arrangementExecution: { activeRunId: null, status: 'completed' as const, nodes: [], updatedAt: 1, media: [{ nodeId: 'image', nodeRunId: 'run-1', kind: 'image' as const, operation: 'generate' as const,
         inputs: [], pendingActions: [],
         phase: 'ready' as const, jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' as const }] }] } };
-    assert.match(renderDetail(flow), /编排媒体成果/);
+    assert.match(renderDetail(flow), /查看产出结果/);
+    assert.doesNotMatch(renderDetail(flow), /编排媒体成果/);
   });
 
   it('shows the real media waiting stage instead of a fabricated percentage', () => {
@@ -141,8 +164,9 @@ describe('WorkDetailPage media entry', () => {
           phase: 'ready', jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' }] }] } };
     const html = renderDetail(flow);
     assert.equal((html.match(/aria-label="重试此节点：failed"/g) ?? []).length, 1);
+    assert.ok(html.indexOf('ent-failed-node-actions') < html.indexOf('aria-label="工作对话"'));
     assert.doesNotMatch(html, /重试此节点：peer/);
-    assert.match(html, /编排媒体成果/);
+    assert.doesNotMatch(html, /编排媒体成果/);
     assert.match(html, /进行中/);
   });
 

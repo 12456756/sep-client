@@ -1,5 +1,6 @@
 import { ArrowDown, ChevronDown, Paperclip, Send, StopCircle, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import type { SetStateAction } from 'react';
 import { isSubmitEnter } from '../../shared/composer-shortcut';
 import type { WorkItem } from '../../features/enterprise/types';
 import { useDrawer } from '../../features/enterprise/use-drawer';
@@ -11,6 +12,7 @@ import { useSpeechInput } from '../../features/speech/use-speech-input';
 import { SpeechInputActions, SpeechInputFeedback } from '../speech/SpeechInputActions';
 import { AttachmentComposer } from './attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
+import { ConversationSessionsContext, createConversationSessions } from '../../features/enterprise/conversation-sessions';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -46,12 +48,22 @@ function formatAttachmentBytes(bytes: number): string {
 }
 
 export function WorkConversation({ work, workspace, onClose }: ConversationProps) {
+  const inheritedSessions = useContext(ConversationSessionsContext);
+  const [localSessions] = useState(() => createConversationSessions(sessionId => { void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined); }));
+  const sessions = inheritedSessions ?? localSessions;
+  const [savedSession] = useState(() => sessions.get(work.id));
+  const retainedAttachments = savedSession.attachment;
+  useLayoutEffect(() => { sessions.retain(work.id, savedSession); }, [sessions, work.id, savedSession]);
+  useEffect(() => { if (!inheritedSessions) return localSessions.retainOwner(); }, [inheritedSessions, localSessions]);
   const body = useRef<HTMLDivElement | null>(null);
-  const [draft, setDraft] = useState('');
-  const [attachments, setAttachments] = useState<AttachmentView[]>([]);
-  const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(null);
+  useSyncExternalStore(savedSession.subscribe, () => savedSession.revision, () => savedSession.revision);
+  const draft = savedSession.draft;
+  const setDraft = useCallback((update: SetStateAction<string>) => {
+    savedSession.setDraft(typeof update === 'function' ? update(savedSession.draft) : update);
+  }, [savedSession]);
+  const [attachments, setAttachments] = useState<AttachmentView[]>(retainedAttachments.attachments);
+  const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(retainedAttachments.session);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
-  const [attachmentEpoch, setAttachmentEpoch] = useState(0);
   const composerId = useMemo(() => `conversation-${work.id}`, [work.id]);
   const [editorVersion, setEditorVersion] = useState(0);
   const onPasteEdit = useCallback(({ text: pasted, selectionStart, selectionEnd, editorVersion: pastedVersion }: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
@@ -59,14 +71,17 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
     setDraft(current => `${current.slice(0, selectionStart)}${pasted}${current.slice(selectionEnd)}`);
     setEditorVersion(version => version + 1);
     return true;
-  }, [editorVersion]);
+  }, [editorVersion, setDraft]);
   const [stopping, setStopping] = useState(false);
   const [reason, setReason] = useState('');
   const speech = useSpeechInput({ contextKey: `work:${work.id}`, value: draft, onChange: setDraft, disabled: workspace.busy || stopping });
   const over = work.status === 'completed' || work.status === 'paused' || work.status === 'failed';
 
-  const followsLatest = useRef(true);
+  const followsLatest = useRef(savedSession.followsLatest);
   const [hasNewContent, setHasNewContent] = useState(false);
+  useLayoutEffect(() => {
+    if (body.current) body.current.scrollTop = savedSession.scrollTop;
+  }, [savedSession]);
   const latestMessage = work.messages.at(-1);
   const latestMessageId = latestMessage?.id;
   const latestContent = latestMessage?.content;
@@ -102,10 +117,9 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
     setHasNewContent(false);
     const sent = await workspace.sendMessage(work.id, text, attachments, attachmentSession?.sessionId);
     if (!sent) return;
-    setDraft('');
+    savedSession.acceptSend(draft);
     setAttachments([]);
     setAttachmentSession(null);
-    setAttachmentEpoch(epoch => epoch + 1);
   };
 
   return (
@@ -125,6 +139,8 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
           const node = body.current;
           if (!node) return;
           followsLatest.current = node.scrollHeight - node.scrollTop - node.clientHeight < FOLLOW_THRESHOLD_PX;
+          savedSession.scrollTop = node.scrollTop;
+          savedSession.followsLatest = followsLatest.current;
           if (followsLatest.current) setHasNewContent(false);
         }}>
           <div className="ent-talk">
@@ -194,7 +210,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 onChange={event => { setDraft(event.target.value); setEditorVersion(version => version + 1); }}
                 onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
-              <AttachmentComposer key={attachmentEpoch} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} disabled={workspace.busy || stopping} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+      <AttachmentComposer key={savedSession.attachmentEpoch} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || stopping} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
               <div className="ent-ask-bar">
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}

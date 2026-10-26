@@ -60,7 +60,7 @@ components:
 
 ## Overview
 
-**Current visual baseline:** the renderer currently uses a light desktop shell, a fixed left navigation, a top context bar, red brand accents, semantic status colors, compact typography, and optional dark mode. This file records the incumbent system before the approved whole-client redesign is implemented.
+**Current visual baseline:** the renderer currently uses a light desktop shell, a fixed left navigation, a top context bar, red brand accents, semantic status colors, compact typography, and optional dark mode. The work surface now uses an icon rail, a compact work list, and a conversation-first workspace; employee and organization surfaces retain their established layouts.
 
 The redesign must keep the product in Operate mode: users arrive to complete work, inspect a real employee state, make a decision, or retrieve a result. Brand personality should appear in identity and state language, not in decorative effects. The target system should feel like a calm operations room for a team of capable digital colleagues.
 
@@ -68,7 +68,7 @@ The redesign must keep the product in Operate mode: users arrive to complete wor
 
 - Desktop-first, dense enough for repeated work, with readable scanning hierarchy.
 - Red brand color used as a scarce action and identity signal.
-- Semantic state colors paired with text and icons.
+- Semantic state colors paired with distinct SVG shapes, accessible names, and hover/focus hints.
 - Stable navigation and action locations across pages.
 - Employee identity expressed through role, capability, state, and work history.
 
@@ -95,7 +95,8 @@ The incumbent palette is warm red against cool neutral surfaces. During redesign
 
 - **Ready** (#1a7f52): available, complete, or healthy.
 - **Attention** (#8a6410): waiting for user action, confirmation, or review.
-- **Danger** (#bf3149): failed, stopped, or destructive action.
+- **Running** (#315f9b): active work; static glyph, no perpetual decorative spin.
+- **Danger** (#bf3149): failed or destructive action; user-terminated work is neutral.
 
 ### Named Rules
 
@@ -122,12 +123,12 @@ The incumbent palette is warm red against cool neutral surfaces. During redesign
 
 - Keep one application shell with one primary navigation model. Do not duplicate the same destinations in both a top nav and side nav.
 - Keep employee discovery as one navigation destination. Use an in-page scope control for “与我有关 / 企业全部”; reserve organization views for authorization and management relationships.
-- Use a fixed navigation rail with a collapsible compact state. Keep the content region fluid and page-specific.
+- Use a fixed 64px icon navigation rail. Keep the company logo at the top and account at the bottom; center six 40px navigation targets vertically in the available middle space. Names appear on hover and focus.
 - Use a page header for title, context, and the primary action. Page-specific tabs stay inside the page header or workbench.
 - Use a reading width around 1180–1280px for list and detail pages; allow workbench and organization graph surfaces to use the available width.
 - Keep a consistent 8px rhythm with 16px and 24px grouping intervals.
 - At narrower desktop widths, collapse secondary panels before reducing primary content below readable measure.
-- Detail pages use a clear two-column relationship: primary work or employee content, then a contextual rail for state, actions, or metadata.
+- Work uses a 304px compact list and primary conversation. Results, process, and information open in one optional Inspector; narrow desktop windows collapse the list first and use a modal Inspector. Employee detail retains its contextual rail.
 
 ## Elevation & Depth
 
@@ -144,11 +145,11 @@ Use tonal surfaces and one restrained shadow vocabulary. A surface may use a bor
 
 ## Components
 
-- **Navigation item:** icon, label, selected state, optional count; selected state must remain legible in compact mode. Employee discovery is one item; scope is selected inside the page.
+- **Navigation item:** icon, accessible name, 250ms hover/focus Tooltip, selected state and optional attention dot. Home, work, employees, skills, knowledge and compute are the six primary destinations. Enterprise identity shows the real logo or Building2 fallback; the name appears in a Tooltip and menu.
 - **Employee identity:** avatar or generated face, name, role, availability, and current work state. Identity is never just an image.
-- **Work status:** icon + text + semantic color + next action when applicable.
+- **Work status:** distinct SVG + semantic color + accessible name and Tooltip. Running uses a static blue LoaderCircle; pending action uses amber CircleAlert; completion uses green CircleCheck; failure uses red CircleX; termination uses neutral Square; unstarted uses CircleDashed; queued uses Clock3. Failure and pending actions remain visible outside Inspector.
 - **Primary button:** one clear action per page region; label names the action.
-- **Filter group:** segmented controls for a small set, select or menu for larger sets, search for text discovery.
+- **Filter group:** icon + cross-filter count with hover/focus labels; state and authoritative work type intersect with search. Unavailable type is never guessed from legacy kind. Work type uses a neutral MessageSquare / Workflow pill.
 - **Timeline:** chronological state changes with actor, time, and evidence.
 - **Deliverable row:** file or result name, source step or employee, status, and open/reveal action.
 - **Dialog/drawer:** reserved for focused decisions, protected confirmation, or contextual detail that should not reset page context.
@@ -170,3 +171,11 @@ Use tonal surfaces and one restrained shadow vocabulary. A surface may use a bor
 - Do not make every page a grid of same-shaped cards.
 - Do not use gradients, glowing effects, or sci-fi ornament as a substitute for hierarchy.
 - Do not invent employee activity, progress, capabilities, or business claims.
+
+## Work interaction rules
+
+- Hover navigation glyphs scale to 1.08 in 160ms; press scales to 0.96 in 80ms. Background and color settle in 140ms. Reduced motion disables transforms and nonessential animation.
+- Selecting a work preserves search and filters, and each work restores its own unsent draft, attachments, and reading position within the logged-in scope.
+- Results, process and information are closed by default. Media polling remains mounted while results are hidden; image/video previews mount only when requested.
+- Display file, image and video counts separately when no reliable shared identity exists. Loading and failed reads never become a fabricated zero.
+- One work list scrolls independently from the conversation; avoid body scroll and large decorative report cards in the conversation view.

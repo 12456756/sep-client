@@ -2,12 +2,13 @@ import { FileText, LoaderCircle, Paperclip, X } from 'lucide-react'
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../../shared/attachment-contracts'
-import { useAttachmentComposer } from '../../../features/enterprise/use-attachment-composer'
+import { useAttachmentComposer, type RetainedAttachmentState } from '../../../features/enterprise/use-attachment-composer'
 
 interface Props {
   target: AttachmentImportTarget
   bindingKey?: string
   disabled?: boolean
+  retainedState?: RetainedAttachmentState
   onChange?: (attachments: AttachmentView[]) => void
   onSessionChange?: (session: AttachmentImportSession | null) => void
   onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean
@@ -19,8 +20,8 @@ interface Props {
   listContainer?: HTMLDivElement | null
 }
 
-export function AttachmentComposer({ target, bindingKey, disabled = false, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer }: Props) {
-  const composer = useAttachmentComposer({ target, bindingKey, disabled, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
+export function AttachmentComposer({ target, bindingKey, disabled = false, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer }: Props) {
+  const composer = useAttachmentComposer({ target, bindingKey, disabled, retainedState, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
   const attachments = composer.attachments
   useEffect(() => { onChange?.(attachments) }, [attachments, onChange])
   useEffect(() => { onSessionChange?.(composer.session) }, [composer.session, onSessionChange])

@@ -35,7 +35,7 @@ function Harness() {
   const send = () => setSent(count => count + 1)
   const workspace = {
     employees: [employee], myEmployees: [employee], skills: [], busy: false, error: null,
-    navigate: () => {}, startConversation: async () => { send() }, sendMessage: async () => { send() }, switchEmployee: async () => {},
+    navigate: () => {}, startConversation: async () => { send(); return true }, sendMessage: async () => { send() }, switchEmployee: async () => {},
   } as unknown as EnterpriseWorkspace
   const shared = { settings, models: ['test-model'], onSettingsChange: (patch: Partial<typeof settings>) => setSettings(current => ({ ...current, ...patch })), onChooseFolder: async () => null }
   return <div className="ent-shell" style={{ display: 'block', height: 'auto', minHeight: '100vh', padding: 24 }}>

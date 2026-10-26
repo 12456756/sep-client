@@ -13,6 +13,7 @@ import { AlertTriangle, Command, LayoutGrid, Moon, Network, Sun } from 'lucide-r
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
+import { ConversationSessionsContext, createConversationSessions } from '../features/enterprise/conversation-sessions';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { NotificationCenter } from '../components/enterprise/NotificationCenter';
@@ -21,13 +22,11 @@ import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
-import { ArrangeWorkPage } from './enterprise/ArrangeWorkPage';
+import { WorkHubPage } from './enterprise/WorkHubPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
 import { EmployeesPage } from './enterprise/EmployeesPage';
 import { HomePageRedesign as HomePage } from './enterprise/HomePageRedesign';
 import { SkillsPage } from './enterprise/SkillsPage';
-import { WorkDetailPage } from './enterprise/WorkDetailPage';
-import { WorkRecordsPage } from './enterprise/WorkRecordsPage';
 import { ComputeCenterPage } from './enterprise/ComputeCenterPage';
 import { OrganizationPage } from './enterprise/OrganizationPage';
 import { KnowledgePage } from './enterprise/knowledge/KnowledgePage';
@@ -58,6 +57,16 @@ export function ClientAppPage(props: Props) {
 
 function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
+  const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
+    void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined);
+  }));
+  useEffect(() => conversationSessions.retainOwner(), [conversationSessions]);
+  const previousWorkIds = useRef(new Set<string>());
+  useEffect(() => {
+    const currentIds = new Set(workspace.works.map(work => work.id));
+    for (const id of previousWorkIds.current) if (!currentIds.has(id)) conversationSessions.remove(id);
+    previousWorkIds.current = currentIds;
+  }, [workspace.works, conversationSessions]);
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -71,22 +80,11 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
   const [darkMode, setDarkMode] = useState(() => {
     try { return window.localStorage.getItem('sep.theme') === 'dark'; } catch { return false; }
   });
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      const saved = window.localStorage.getItem('sep.sidebar.collapsed');
-      return saved === 'true';
-    } catch {
-      return false;
-    }
-  });
 
   useEffect(() => {
     try { window.localStorage.setItem('sep.theme', darkMode ? 'dark' : 'light'); } catch { /* 无痕模式不阻断主题切换。 */ }
   }, [darkMode]);
 
-  useEffect(() => {
-    try { window.localStorage.setItem('sep.sidebar.collapsed', sidebarCollapsed ? 'true' : 'false'); } catch { /* 无痕模式不阻断侧边栏状态保存。 */ }
-  }, [sidebarCollapsed]);
   useEffect(() => {
     void window.electronAPI.setWindowTheme(darkMode ? 'dark' : 'light');
   }, [darkMode]);
@@ -112,13 +110,13 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
       case 'organization': return { title: '企业组织', breadcrumb: ['企业'], subtitle: `${overview.name} · 企业成员与硅基员工关系` };
       case 'home': return null;
       case 'work': return null;
-      case 'arrange': return { title: '安排工作', breadcrumb: ['个人', '安排工作'] };
+      case 'arrange': return null;
       case 'employees': return { title: '硅基员工', breadcrumb: ['个人'], subtitle: `企业共 ${overview.totalEmployees} 位，其中 ${overview.availableToMe} 位已分配给你` };
       case 'employee': {
         const employee = workspace.employees.find(item => item.id === route.employeeId);
         return { title: employee?.name ?? '员工详情', breadcrumb: ['个人', '硅基员工'] };
       }
-      case 'records': return { title: '工作记录', breadcrumb: ['个人'], subtitle: '优先展示需要你处理的工作' };
+      case 'records': return null;
       case 'skills': return { title: '员工技能', breadcrumb: ['个人'], subtitle: '查看技能原文、管理个人版本，选择员工使用的技能版本' };
       case 'knowledge': return { title: '知识库', breadcrumb: ['企业'], subtitle: '企业资料、文档版本与成员访问权限' };
       case 'compute-center': return { title: '算力中心', subtitle: '企业额度、个人钱包与消费情况' };
@@ -127,7 +125,7 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
   }, [route, overview, workspace.employees]);
 
   return (
-    <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
+    <div className={`ent-shell${darkMode ? ' dark' : ''} sidebar-collapsed${['arrange', 'records', 'work'].includes(route.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
@@ -137,8 +135,7 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
         canManage={canManage}
         userName={displayUserName}
         userAvatar={userAvatar}
-        collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(prev => !prev)}
+        collapsed
         onNavigate={workspace.navigate}
         onOpenSettings={() => setSettingsOpen(true)}
         onLogout={() => { void onLogout(); }}
@@ -213,10 +210,12 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
           </div>
         ) : null}
         <div
-          className={`ent-scroll${(route.name === 'organization' || route.name === 'home') ? ' ent-scroll-no-overflow' : ''}${route.name === 'arrange' ? ' ent-scroll-arrange' : ''}`}
+          className={`ent-scroll${(route.name === 'organization' || route.name === 'home') ? ' ent-scroll-no-overflow' : ''}${['arrange', 'records', 'work'].includes(route.name) ? ' ent-scroll-work' : ''}`}
           ref={scroll}
         >
-          <PageBody workspace={workspace} />
+          <ConversationSessionsContext.Provider value={conversationSessions}>
+            <PageBody workspace={workspace} />
+          </ConversationSessionsContext.Provider>
         </div>
         {commandOpen ? (
           <CommandPalette
@@ -275,11 +274,9 @@ function PageBody({ workspace }: { workspace: ReturnType<typeof useEnterpriseWor
     case 'employee':
       return <EmployeeDetailPage workspace={workspace} employeeId={route.employeeId} />;
     case 'arrange':
-      return <ArrangeWorkPage workspace={workspace} templateId={route.templateId} employeeId={route.employeeId} mode={route.mode ?? 'pick'} />;
     case 'records':
-      return <WorkRecordsPage workspace={workspace} />;
     case 'work':
-      return <WorkDetailPage workspace={workspace} workId={route.workId} />;
+      return <WorkHubPage key={workspace.attachmentScopeKey} workspace={workspace} />;
     case 'skills':
       return <SkillsPage workspace={workspace} skillId={route.skillId} />;
     case 'compute-center':

@@ -1,0 +1,57 @@
+/* Conversation owns the available height; details never create body scroll. */
+.ent-shell.ent-work-shell .ent-scroll.ent-scroll-work { overflow: hidden; }
+.ent-work-hub .ent-page.ent-wk { position: relative; display: flex; flex: 1; flex-direction: column; gap: 0; width: 100%; height: 100%; min-height: 0; margin: 0; padding: 0; overflow: hidden; animation: none; }
+.ent-work-hub .ent-wk-back { flex-shrink: 0; margin: 10px 20px 0; font-size: 11px; }
+.ent-work-hub .ent-wk-head { display: flex; flex: 0 0 auto; flex-wrap: nowrap; gap: 8px; min-height: 54px; padding: 8px 20px; border-bottom: 1px solid var(--ent-line); }
+.ent-work-hub .ent-wk-head h1 { flex: 1; min-width: 0; overflow: hidden; font-size: 15px; line-height: 1.5; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.ent-work-hub .ent-wk-head-actions { gap: 4px; }
+.ent-work-hub .ent-wk-head-actions .ent-btn { padding-inline: 8px; font-size: 11px; }
+.ent-work-hub .ent-wk-inspector-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 32px; height: 32px; padding: 0 7px; border: 0; border-radius: 6px; color: var(--ent-ink-2); background: transparent; cursor: pointer; }
+.ent-work-hub .ent-wk-inspector-trigger:hover, .ent-work-hub .ent-wk-inspector-trigger[aria-expanded='true'] { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
+.ent-work-hub .ent-wk-result-count { font-size: 11px; font-variant-numeric: tabular-nums; }
+.ent-work-hub .ent-page.ent-wk > .ent-wk-infobar { display: none; }
+.ent-work-hub .ent-wk-detail { display: flex; flex: 1; gap: 0; min-height: 0; min-width: 0; overflow: hidden; }
+.ent-work-hub .ent-wk-detail-main { display: flex; flex: 1; flex-direction: column; gap: 0; min-width: 0; min-height: 0; }
+.ent-work-hub .ent-wk-detail-main > .ent-flow-act { flex-shrink: 0; max-height: 28vh; margin: 12px 20px 0; padding: 9px 12px; overflow-y: auto; border-radius: 6px; }
+.ent-work-hub .ent-wk-detail-main > .ent-chat-panel { flex: 1; height: auto; min-height: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.ent-work-hub .ent-chat-panel .ent-drawer-head { flex-shrink: 0; min-height: 44px; padding: 10px 24px; border: 0; }
+.ent-work-hub .ent-chat-panel .ent-drawer-id h2 { margin: 0; color: var(--ent-ink-2); font-size: 12px; font-weight: 500; }
+.ent-work-hub .ent-chat-panel .ent-conversation-body { flex: 1; min-height: 0; padding: 16px max(24px, calc((100% - 800px) / 2)); overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ent-line-strong) transparent; }
+.ent-work-hub .ent-chat-panel .ent-talk { margin: 0; max-height: none; overflow: visible; }
+.ent-work-hub .ent-chat-panel .ent-conversation-foot { flex: 0 0 auto; max-height: 42vh; padding: 12px max(24px, calc((100% - 800px) / 2)) 18px; background: var(--ent-panel); box-shadow: none; }
+.ent-work-hub .ent-conversation-foot .ent-ask { border-color: var(--ent-line-strong); border-radius: 10px; box-shadow: none; }
+.ent-work-hub .ent-markdown { max-width: 75ch; background: transparent; padding: 8px 0; font-size: 13px; line-height: 1.8; }
+.ent-work-hub .ent-say.user { max-width: min(82%, 70ch); }
+.ent-work-hub .ent-wk-inspector { display: none; flex: 0 0 344px; width: 344px; min-width: 0; min-height: 0; gap: 0; padding: 0; overflow-y: auto; border-left: 1px solid var(--ent-line); background: var(--ent-panel-subtle); }
+.ent-work-hub .ent-wk-inspector.is-open { display: flex; }
+.ent-work-hub .ent-wk-inspector-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 48px; padding: 10px 16px; border-bottom: 1px solid var(--ent-line); background: var(--ent-panel-subtle); }
+.ent-work-hub .ent-wk-inspector-heading > strong { font-size: 13px; font-weight: 600; }
+.ent-work-hub .ent-wk-inspector-heading > button { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; color: var(--ent-ink-2); background: transparent; cursor: pointer; }
+.ent-work-hub .ent-wk-inspector-heading > button:hover { background: var(--ent-line); }
+.ent-work-hub .ent-wk-inspector-content, .ent-work-hub .ent-wk-inspector > .artifact-section { margin: 0; padding: 16px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.ent-work-hub .ent-wk-inspector-content[hidden] { display: none; }
+.ent-work-hub .ent-wk-inspector .ent-panel { box-shadow: none; }
+.ent-work-hub .ent-wk-inspector-content > h2 { font-size: 13px; }
+.ent-work-hub .ent-wk-info-facts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; color: var(--ent-ink-2); font-size: 12px; overflow-wrap: anywhere; }
+.ent-work-hub .ent-failed-node-copy { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; }
+.ent-work-hub .ent-failed-node-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.ent-work-hub .ent-wk-inspector .ent-wk-grid { display: flex; flex-direction: column; gap: 16px; }
+.ent-work-hub .ent-wk-inspector .ent-wk-files { max-height: none; overflow: visible; }
+.ent-work-hub .ent-wk-inspector .ent-wk-file-actions { flex-wrap: wrap; }
+.ent-work-hub .ent-wk-inspector .ent-wk-path { max-width: 100%; }
+.ent-work-hub .ent-wk-inspector .ent-wk-path > span { overflow-wrap: anywhere; white-space: normal; }
+.ent-work-hub .ent-wk-media-alert { flex-shrink: 0; margin: 8px 20px 0; padding: 8px 12px; border-radius: 6px; color: var(--ent-danger); background: var(--ent-danger-bg); font-size: 12px; }
+.ent-work-hub .ent-wk-inspector-backdrop { display: none; position: fixed; z-index: 39; inset: var(--window-chrome-height, 0px) 0 0; padding: 0; border: 0; background: var(--ent-overlay); }
+@media (max-width: 1180px) {
+  .ent-work-hub .ent-wk-inspector-backdrop { display: block; }
+  .ent-work-hub .ent-wk-inspector.is-open { position: fixed; z-index: 40; inset: max(48px, var(--window-chrome-height, 0px)) 16px 16px auto; width: min(480px, calc(100vw - 32px)); max-width: calc(100vw - 32px); height: auto; border: 1px solid var(--ent-line); border-radius: 10px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); }
+  .ent-work-hub .ent-wk-head { padding-inline: 16px; }
+  .ent-work-hub .ent-wk-back { margin-left: 16px; }
+  .ent-work-hub .ent-chat-panel .ent-drawer-head { padding-inline: 16px; }
+  .ent-work-hub .ent-chat-panel .ent-conversation-body { padding-inline: 16px; }
+  .ent-work-hub .ent-chat-panel .ent-conversation-foot { padding: 10px 16px 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ent-work-hub .ent-wk-inspector-trigger { transition: none; }
+  .ent-work-hub .ent-bar.media-waiting > span > i { animation: none; transform: none; }
+}
