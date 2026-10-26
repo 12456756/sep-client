@@ -58,9 +58,11 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
       if (event.target instanceof Node && menu.contains(event.target)) return
       onDismiss()
     }
+    document.addEventListener('pointerdown', dismiss, true)
     document.addEventListener('scroll', dismiss, true)
     window.addEventListener('resize', onDismiss)
     return () => {
+      document.removeEventListener('pointerdown', dismiss, true)
       document.removeEventListener('scroll', dismiss, true)
       window.removeEventListener('resize', onDismiss)
       if (menu.matches(':popover-open')) menu.hidePopover()

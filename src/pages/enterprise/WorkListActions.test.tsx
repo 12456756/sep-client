@@ -21,20 +21,28 @@ const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 function mount(overrides: Partial<Props> = {}) {
   const oldWindow = Reflect.get(globalThis, 'window')
   const oldDocument = Reflect.get(globalThis, 'document')
+  const oldNode = Reflect.get(globalThis, 'Node')
   const cells: unknown[] = []
   let cursor = 0
   let pending: (() => void)[] = []
   const effects = new Map<number, { deps?: readonly unknown[]; cleanup?: () => void }>()
-  const doc = { activeElement: null as unknown, addEventListener() {}, removeEventListener() {} }
+  class TestNode {}
+  const listeners = new Map<string, EventListener>()
+  const doc = {
+    activeElement: null as unknown,
+    addEventListener(type: string, listener: EventListener) { listeners.set(type, listener) },
+    removeEventListener(type: string) { listeners.delete(type) },
+  }
   const button = () => ({ focus() { doc.activeElement = this } })
   const trigger = { ...button(), isConnected: true } as unknown as HTMLElement
   const items = [button(), button(), button()]
-  const menu = { open: false, style: { left: '', top: '' }, showPopover() { this.open = true }, hidePopover() { this.open = false },
-    matches() { return this.open }, getBoundingClientRect: () => ({ width: 200, height: 150 }), querySelector: () => items[0], querySelectorAll: () => items }
+  const menu = Object.assign(new TestNode(), { open: false, style: { left: '', top: '' }, showPopover() { this.open = true }, hidePopover() { this.open = false }, contains(target: unknown) { return target === this },
+    matches() { return this.open }, getBoundingClientRect: () => ({ width: 200, height: 150 }), querySelector: () => items[0], querySelectorAll: () => items })
   const dialog = { open: false, showModal() { this.open = true }, close() { this.open = false } }
   const input = { ...button(), selected: false, select() { this.selected = true } }
   Reflect.set(globalThis, 'window', { innerWidth: 1024, innerHeight: 768, addEventListener() {}, removeEventListener() {} })
   Reflect.set(globalThis, 'document', doc)
+  Reflect.set(globalThis, 'Node', TestNode)
   const hooks = {
     useRef: (initial: unknown) => { const i = cursor++; if (!(i in cells)) cells[i] = { current: initial }; return cells[i] },
     useState: (initial: unknown) => { const i = cursor++; if (!(i in cells)) cells[i] = initial; return [cells[i], (next: unknown) => { cells[i] = typeof next === 'function' ? next(cells[i]) : next }] },
@@ -70,12 +78,25 @@ function mount(overrides: Partial<Props> = {}) {
   const click = (label: string) => { const element = find(e => e.type === 'button' && e.props.children === label || e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes(label)); (element.props.onClick as () => void)() }
   const submit = () => { (find(e => e.type === 'form').props.onSubmit as (event: unknown) => void)({ preventDefault() {} }) }
   render()
-  return { props, menu, dialog, input, trigger, doc, items, find, render, click, submit, cleanup() {
+  return { props, menu, dialog, input, trigger, doc, items, listeners, find, render, click, submit, cleanup() {
     effects.forEach(effect => effect.cleanup?.())
     if (oldWindow === undefined) Reflect.deleteProperty(globalThis, 'window'); else Reflect.set(globalThis, 'window', oldWindow)
     if (oldDocument === undefined) Reflect.deleteProperty(globalThis, 'document'); else Reflect.set(globalThis, 'document', oldDocument)
+    if (oldNode === undefined) Reflect.deleteProperty(globalThis, 'Node'); else Reflect.set(globalThis, 'Node', oldNode)
   } }
 }
+
+test('pointerdown outside the menu dismisses it while pointerdown inside is ignored', () => {
+  const ui = mount()
+  try {
+    const dismiss = ui.listeners.get('pointerdown')
+    assert.ok(dismiss)
+    dismiss({ target: ui.menu } as unknown as Event)
+    assert.notEqual(ui.props.request, null)
+    dismiss({ target: new (Reflect.get(globalThis, 'Node') as new () => object)() } as unknown as Event)
+    assert.equal(ui.props.request, null)
+  } finally { ui.cleanup() }
+})
 
 test('menu is clamped to the viewport, restores focus on escape and supports arrow keys', () => {
   const ui = mount()
