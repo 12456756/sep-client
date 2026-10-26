@@ -4,6 +4,7 @@ import type { DeliverySubmission, FinalDeliveryFile } from './arrangement-delive
 import type { ArrangementMediaLink } from './arrangement-media'
 import type { MediaHostTools, MediaJobCreated } from './media-tools'
 import type { VideoHostTools } from './video-tools'
+import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 
 export class ArrangementMediaSubmissionError extends Error {}
 
@@ -17,6 +18,7 @@ export interface ArrangementMediaAsset {
 }
 
 export interface ArrangementMediaAssetsPort {
+  attachmentReference?(scope: TaskOwnerScope, taskId: string, ref: AttachmentRef, signal: AbortSignal, validate: () => void): Promise<{ artifactId: string; sha256: string }>
   outputs(scope: TaskOwnerScope, taskId: string, link: ArrangementMediaLink): Promise<ArrangementMediaAsset[]>
   reference(scope: TaskOwnerScope, taskId: string, artifactId: string, signal: AbortSignal, validate: () => void): Promise<{ artifactId: string; sha256: string }>
   materialize(scope: TaskOwnerScope, taskId: string, workspace: string, deliverable: ArrangementDeliverable,

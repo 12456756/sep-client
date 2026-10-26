@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 
 export interface ConversationMessage {
   id: string
@@ -10,6 +11,7 @@ export interface ConversationMessage {
   modelId: string
   role: 'user' | 'assistant' | 'tool'
   content: string
+  attachmentRefs?: AttachmentRef[]
   createdAt: number
 }
 

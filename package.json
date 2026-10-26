@@ -6,6 +6,10 @@
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev --watch",
+    "dev:debug": "electron-vite dev --watch --remoteDebuggingPort 9333 --inspect 9334",
+    "mcp:electron-debug": "node scripts/electron-debug-mcp.mjs",
+    "mcp:electron-debug:install": "node scripts/electron-debug-mcp.mjs --install",
+    "test:electron-debug": "node scripts/test-electron-debug.mjs",
     "dev:preview": "vite --config vite.preview.config.ts --open /?preview=workspace",
     "build": "node scripts/generate-runtime-config.mjs && electron-vite build",
     "preview": "electron-vite preview",

@@ -5,6 +5,7 @@ import { compileFunction } from 'node:vm'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import * as arrangementPlan from '../domain/arrangement-plan'
+import * as attachmentContracts from '../../src/shared/attachment-contracts'
 import { INVOKE_CHANNELS } from './channels'
 import type { Route } from './router'
 
@@ -16,6 +17,7 @@ function loadRoutes(): Route[] {
     zod: { z },
     '../channels': { INVOKE_CHANNELS },
     '../../domain/arrangement-plan': arrangementPlan,
+    '../../../src/shared/attachment-contracts': attachmentContracts,
     '../router': { NO_INPUT: z.undefined(), route: (channel: string, schema: z.ZodType, handle: Route['handle']) => ({ channel, schema, handle }) },
   }
   compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => {
@@ -38,6 +40,13 @@ const document = {
 }
 
 describe('arrangement work contract IPC', () => {
+  it('preserves attachment candidates, import session and explicit node bindings', () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
+    const attachment = { attachmentId: 'attachment-a', sha256: 'a'.repeat(64) }
+    const input = { ...document, attachmentSessionId: 'session-a', attachmentCandidates: [{ attachment, mustUse: true }], nodes: [{ ...node, inputRefs: [{ kind: 'attachment', attachment, required: true, purpose: 'analysis' }] }] }
+    assert.deepEqual(route.schema.parse(input), input)
+    assert.equal(route.schema.safeParse({ ...input, attachmentCandidates: [{ attachment: { ...attachment, sha256: 'bad' }, mustUse: true }] }).success, false)
+  })
   it('validates explicit confirmation and routes only validated task and node IDs', async () => {
     const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES)!
     const input = { taskId: 'task-a', nodeIds: ['node-a', 'node-b'] }

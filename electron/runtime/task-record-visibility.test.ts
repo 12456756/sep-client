@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import type { ClientTask } from '../../src/shared/types'
@@ -19,14 +19,14 @@ const roots: string[] = []
 
 afterEach(async () => {
   for (const root of roots.splice(0)) {
-    assert.ok(resolve(root).startsWith(`${resolve(tmpdir())}${sep}`))
+    assert.ok(resolve(root).startsWith(`${await realpath(tmpdir())}${sep}`))
     assert.ok(root.includes('sep-record-visibility-'))
     await rm(root, { recursive: true, force: true })
   }
 })
 
 async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), 'sep-record-visibility-'))
+  const root = await mkdtemp(join(await realpath(tmpdir()), 'sep-record-visibility-'))
   roots.push(root)
   const lists: ClientTask[][] = []
   const updates: ClientTask[] = []

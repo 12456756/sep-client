@@ -209,6 +209,7 @@ describe('auto-update IPC contract', () => {
       },
       './controller/channels': { INVOKE_CHANNELS, EVENT_CHANNELS },
       './common/window-layout': { getWindowChromeConfig: () => ({ contentTop: 0, windowsRightInset: 0 }) },
+      '../src/shared/attachment-contracts': { attachmentImportLimits: { maxFiles: 10, maxFileBytes: 20 * 1024 * 1024 } },
     })
     for (const [method, channel] of updateCommands) assert.equal(await api[method](), responses.get(channel))
     assert.deepEqual(calls, updateCommands.map(([, channel]) => [channel]))

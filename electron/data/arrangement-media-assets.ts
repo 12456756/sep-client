@@ -6,11 +6,25 @@ import { ScopePath } from './scope-path'
 import type { MediaStore } from './media-store'
 import type { VideoStore } from './video-store'
 import { materializeArrangementMedia, type ArrangementMediaSource } from './arrangement-media-files'
+import type { AttachmentInputPort } from '../domain/attachment-input'
+import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 
 /** Only this adapter translates scoped media identities into file streams. */
 export class ArrangementMediaAssets implements ArrangementMediaAssetsPort {
   private readonly paths: ScopePath
-  constructor(root: string, private readonly images: MediaStore, private readonly videos?: VideoStore) { this.paths = new ScopePath(root) }
+  constructor(root: string, private readonly images: MediaStore, private readonly videos?: VideoStore, private readonly attachments?: AttachmentInputPort) { this.paths = new ScopePath(root) }
+
+  async attachmentReference(scope: TaskOwnerScope, taskId: string, ref: AttachmentRef, signal: AbortSignal, validate: () => void) {
+    signal.throwIfAborted(); validate()
+    const resolved = await this.attachments?.resolveTaskInputs(scope, taskId, [ref])
+    const original = resolved?.attachments.find(item => item.attachmentId === ref.attachmentId && item.sha256 === ref.sha256)
+    if (!original?.readPath || !['image/png', 'image/jpeg', 'image/webp'].includes(original.mediaType)) throw new Error('媒体输入必须是已归属本任务的图片附件。')
+    signal.throwIfAborted(); validate()
+    const reference = await this.images.importReference(scope, taskId, original.readPath, signal, validate)
+    if (reference.sha256 !== ref.sha256) throw new Error('附件内容与媒体参考图不一致。')
+    signal.throwIfAborted(); validate()
+    return { artifactId: reference.localAssetId, sha256: reference.sha256 }
+  }
 
   async outputs(scope: TaskOwnerScope, taskId: string, link: ArrangementMediaLink): Promise<ArrangementMediaAsset[]> {
     if (link.kind === 'image') return (await this.images.listAssets(scope, taskId))

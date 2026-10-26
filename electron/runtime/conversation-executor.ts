@@ -18,6 +18,9 @@ import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sd
 import { ConversationRecoveryError } from './conversation-recovery-error'
 import { withApprovedSkillReadPaths } from './run-skill-policy'
 import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, TaskWorkerPort } from './run-types'
+import type { AttachmentInputPort } from '../domain/attachment-input'
+import type { AttachmentRef } from '../../src/shared/attachment-contracts'
+import type { AttachmentView } from '../../src/shared/attachment-contracts'
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
 import { cleanupRun } from './run-cleanup'
 import type { EventPipeline } from './run-events'
@@ -51,6 +54,7 @@ export interface ConversationExecutorOptions {
   media?: MediaRunPort
   video?: VideoRunPort
   knowledgeSearch?: KnowledgeSearchPort
+  attachmentInputs?: AttachmentInputPort
 }
 
 export class ConversationExecutor {
@@ -62,7 +66,7 @@ export class ConversationExecutor {
   async continue(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[] } = {},
   ): Promise<void> {
     await this.continueAs(taskId, prompt, undefined, recovery)
   }
@@ -101,7 +105,7 @@ export class ConversationExecutor {
         ? this.options.taskRunStore.getConversationSessionPaths(scope, taskId)
         : null
       const workspaceDir = task.workDir ?? this.options.workspaceRoot()
-      const toolPolicy = withApprovedSkillReadPaths(queued.arrangement ? {
+      let toolPolicy = withApprovedSkillReadPaths(queued.arrangement ? {
         preset: queued.arrangement.permissions.preset,
         allowedTools: [...queued.arrangement.permissions.allowedTools],
         allowedPaths: [...queued.arrangement.permissions.allowedPaths],
@@ -109,6 +113,16 @@ export class ConversationExecutor {
         commandPolicy: queued.arrangement.permissions.commandPolicy,
         approvalMode: queued.arrangement.permissions.approvalMode ?? 'confirm-each', workspaceDir,
       } : undefined, employee)
+      let attachmentImages: readonly { data: string; mimeType: string }[] | undefined
+      let attachmentText = ''
+      let attachmentMetadata: AttachmentView[] | undefined
+      if (scope && queued.attachmentRefs?.length && this.options.attachmentInputs) {
+        const resolved = await this.options.attachmentInputs.resolveTaskInputs(scope, taskId, queued.attachmentRefs)
+        attachmentMetadata = resolved.attachments.map(item => ({ attachmentId: item.attachmentId, displayName: item.displayName, mediaType: item.mediaType, byteLength: item.byteLength, sha256: item.sha256, importSource: 'picker', extractionStatus: item.extractionStatus as AttachmentView['extractionStatus'], warnings: [] }))
+        attachmentImages = resolved.images.map(image => ({ data: Buffer.from(image.bytes).toString('base64'), mimeType: image.mediaType }))
+        attachmentText = resolved.attachments.filter(item => item.extractedText).map(item => `附件 ${item.displayName}：\n${item.extractedText}`).join('\n\n')
+        if (toolPolicy) toolPolicy = { ...toolPolicy, readableAttachmentPaths: resolved.attachments.flatMap(item => item.readPath ? [item.readPath] : []) }
+      }
       // Register before async host preparation so pause/shutdown can stop setup too.
       active = {
         taskId, runId, subscriptionId: queued.subscriptionId, releaseWorkspace, control: 'none', completion: completion.promise,
@@ -151,6 +165,7 @@ export class ConversationExecutor {
           videoTools,
           toolPolicy,
           employeeProfile: employee.employeeProfile,
+          inputImages: attachmentImages,
         },
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
@@ -182,10 +197,11 @@ export class ConversationExecutor {
           workspaceDir: task.workDir ?? this.options.workspaceRoot(),
           prompt: queued.prompt,
           executionKind: 'conversation',
+          ...(attachmentMetadata ? { attachmentMetadata } : {}),
         })
         runCreated = true
         if (queued.conversation) {
-          const message = this.userMessage(taskId, runId, queued.subscriptionId, employee.modelId, queued.prompt)
+          const message = this.userMessage(taskId, runId, queued.subscriptionId, employee.modelId, queued.prompt, queued.attachmentRefs)
           await this.conversationStore(scope, taskId).appendMessage(message)
         }
         if (queued.degradedRecovery) {
@@ -204,6 +220,7 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
       if (queued.conversation && this.options.knowledgeSearch && active.control === 'none') {
         const knowledgeQuery = queued.prompt.trim().slice(0, 1_000).trimEnd()
         let result: KnowledgeSearchResult | null = null
@@ -264,7 +281,7 @@ export class ConversationExecutor {
     taskId: string,
     prompt: string,
     employeeOverride: string | undefined,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean },
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[] },
   ): Promise<void> {
     const task = await this.options.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
@@ -319,6 +336,7 @@ export class ConversationExecutor {
       resumeSessionFile,
       workerPrompt,
       degradedRecovery,
+      attachmentRefs: recovery.attachmentRefs,
     }
     this.options.enqueue(queued)
     this.options.onQueued?.({
@@ -471,8 +489,8 @@ export class ConversationExecutor {
     return store
   }
 
-  private userMessage(taskId: string, runId: string, subscriptionId: string, modelId: string, content: string): ConversationMessage {
-    return { id: `${runId}-user`, taskId, turnId: runId, runId, subscriptionId, modelId, role: 'user', content, createdAt: Date.now() }
+  private userMessage(taskId: string, runId: string, subscriptionId: string, modelId: string, content: string, attachmentRefs?: AttachmentRef[]): ConversationMessage {
+    return { id: `${runId}-user`, taskId, turnId: runId, runId, subscriptionId, modelId, role: 'user', content, createdAt: Date.now(), ...(attachmentRefs?.length ? { attachmentRefs } : {}) }
   }
 
   private conversationAdapter(scope: { memberId: string; enterpriseId: string }, taskId: string): SharedPiSession {

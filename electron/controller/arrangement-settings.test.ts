@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import * as arrangementPlan from '../domain/arrangement-plan'
+import * as attachmentContracts from '../../src/shared/attachment-contracts'
 import { INVOKE_CHANNELS } from './channels'
 
 interface TestRoute {
@@ -20,6 +21,7 @@ function settingsRoute(): TestRoute {
   const imports: Record<string, unknown> = {
     zod: { z }, '../channels': { INVOKE_CHANNELS },
     '../../domain/arrangement-plan': arrangementPlan,
+    '../../../src/shared/attachment-contracts': attachmentContracts,
     '../router': {
       NO_INPUT: z.undefined(),
       route: (channel: string, schema: z.ZodType, handle: TestRoute['handle']) => ({ channel, schema, handle }),

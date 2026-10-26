@@ -3,3 +3,11 @@ command = "uvx"
 args = ["code-review-graph", "serve", "--repo", "D:/github/sep-client"]
 cwd = "D:/github/sep-client"
 enabled = true
+
+[mcp_servers.electron-debug]
+command = "node"
+args = ["scripts/electron-debug-mcp.mjs"]
+enabled = true
+startup_timeout_sec = 120
+tool_timeout_sec = 30
+enabled_tools = ["attach", "list_apps", "list_targets", "page_info", "snapshot", "screenshot", "save_screenshot", "click", "click_ax", "type_text", "type_ax", "press_key", "wait_for", "assert_ui", "get_console_messages", "handle_dialog", "evaluate", "evaluate_main", "cdp_command", "reload", "diagnose", "stop_app"]
