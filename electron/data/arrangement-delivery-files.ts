@@ -56,7 +56,7 @@ async function saveSnapshot(taskDirectory: string, file: FinalDeliveryFile, byte
   } finally { await rm(temporary, { force: true }) }
 }
 
-async function readWorkspaceFile(workspace: string, path: string, signal?: AbortSignal): Promise<Buffer> {
+export async function readWorkspaceFile(workspace: string, path: string, signal?: AbortSignal): Promise<Buffer> {
   signal?.throwIfAborted()
   if (!isSafeDeliveryPath(path)) throw new Error('UNSAFE_PATH')
   const root = await realpath(workspace)

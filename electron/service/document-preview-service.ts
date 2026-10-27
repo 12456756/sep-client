@@ -8,6 +8,7 @@ interface Options {
   scope: ScopeSource
   getDelivery(scope: TaskOwnerScope, taskId: string, nodeId: string, deliverableId: string): Promise<{ status: string; file: FinalDeliveryFile; workspace: string } | null>
   read(scope: TaskOwnerScope, taskId: string, file: FinalDeliveryFile, workspace: string): Promise<{ bytes: Uint8Array; source: DocumentPreview['source'] }>
+  readConversation?(scope: TaskOwnerScope, taskId: string, fileId: string): Promise<{ name: string; format: string; version: string; bytes: Uint8Array } | null>
   render(format: string, bytes: Uint8Array, validate: () => void): Promise<DocumentPreviewContent>
   stop?: () => void
 }
@@ -37,6 +38,29 @@ export class DocumentPreviewService {
       const current = requireScope(this.options.scope)
       if (epoch !== this.epoch || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
     }
+    if ('fileId' in input) {
+      const read = async () => {
+        try {
+          const file = await this.options.readConversation?.(scope, input.taskId, input.fileId)
+          assert()
+          if (!file) throw new AppError('NOT_FOUND', { message: '此文件不在当前对话成果列表中，或暂不支持预览。' })
+          if (!supportsDocumentPreview(file.format)) throw new AppError('INVALID_ARGUMENT', { message: '此格式暂不支持文档预览，可复制路径查看原文件。' })
+          return file
+        } catch (error) {
+          assert()
+          if (error instanceof AppError) throw error
+          throw new AppError('NOT_FOUND', { message: '对话成果暂不可读取，请确认文件已保存、未被删除且位于工作目录内。' })
+        }
+      }
+      const file = await read()
+      const key = JSON.stringify([scope, input, file.format, file.version])
+      const content = await this.convert(key, file.format, file.bytes, assert)
+      const current = await read()
+      if (current.version !== file.version || current.name !== file.name || current.format !== file.format) {
+        throw new AppError('INVALID_STATE', { message: '对话成果文件已更新，请重新打开预览。' })
+      }
+      return { name: file.name, format: file.format, version: file.version, source: 'conversation-file', content }
+    }
     const delivery = await this.options.getDelivery(scope, input.taskId, input.nodeId, input.deliverableId)
     assert()
     if (!delivery || delivery.status !== 'completed') throw new AppError('NOT_FOUND', { message: '此节点尚无已验收的文档，请等待节点交付完成。' })
@@ -47,6 +71,16 @@ export class DocumentPreviewService {
     catch { assert(); throw new AppError('NOT_FOUND', { message: '验收版本不可读取或已被修改，可复制路径检查原文件。' }) }
     assert()
     const key = JSON.stringify([scope, input, file.format, version(file)])
+    const content = await this.convert(key, file.format, local.bytes, assert)
+    const current = await this.options.getDelivery(scope, input.taskId, input.nodeId, input.deliverableId)
+    assert()
+    if (!current || current.status !== 'completed' || version(current.file) !== version(file) || current.file.nodeRunId !== file.nodeRunId) {
+      throw new AppError('INVALID_STATE', { message: '文档交付版本已更新，请重新打开预览。' })
+    }
+    return { name: file.path.split(/[\\/]/).pop() || file.id, format: file.format, version: version(file), source: local.source, content }
+  }
+
+  private async convert(key: string, format: string, bytes: Uint8Array, assert: () => void): Promise<DocumentPreviewContent> {
     let content = this.cache.get(key)?.content
     if (content) {
       const entry = this.cache.get(key)!
@@ -54,9 +88,9 @@ export class DocumentPreviewService {
     } else {
       let pending = this.pending.get(key)
       if (!pending) {
-        pending = file.format.toLowerCase() === 'pdf'
-          ? Promise.resolve({ kind: 'pdf', bytes: new Uint8Array(local.bytes) })
-          : this.options.render(file.format, local.bytes, assert)
+        pending = format.toLowerCase() === 'pdf'
+          ? Promise.resolve({ kind: 'pdf', bytes: new Uint8Array(bytes) })
+          : this.options.render(format, bytes, assert)
         this.pending.set(key, pending)
       }
       try { content = await pending }
@@ -74,11 +108,7 @@ export class DocumentPreviewService {
         }
       }
     }
-    const current = await this.options.getDelivery(scope, input.taskId, input.nodeId, input.deliverableId)
     assert()
-    if (!current || current.status !== 'completed' || version(current.file) !== version(file) || current.file.nodeRunId !== file.nodeRunId) {
-      throw new AppError('INVALID_STATE', { message: '文档交付版本已更新，请重新打开预览。' })
-    }
-    return { name: file.path.split(/[\\/]/).pop() || file.id, format: file.format, version: version(file), source: local.source, content }
+    return content
   }
 }

@@ -40,6 +40,12 @@ assert.ok(address && typeof address !== 'string')
 const base = `http://127.0.0.1:${address.port}`
 const browser = await chromium.launch({ executablePath, headless: true })
 try {
+  const mainResponse = await fetch(`${base}/main.tsx`)
+  assert.ok(mainResponse.ok, 'Vite must serve the renderer entry before browser fixtures load')
+  const main = await mainResponse.text()
+  const reactUrl = main.match(/from "([^"]*react\.js[^"]*)"/)?.[1]
+  const domUrl = main.match(/from "([^"]*react-dom_client\.js[^"]*)"/)?.[1]
+  assert.ok(reactUrl && domUrl, 'Vite must resolve React and ReactDOM module URLs')
   const page = await browser.newPage()
   page.setDefaultTimeout(15000)
   const errors = []
@@ -47,13 +53,29 @@ try {
   await page.route('**/__document-preview-test', route => route.fulfill({ contentType: 'text/html; charset=utf-8', body: `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div><script type="module">
     import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;
     </script><script type="module">
-    import React from '/@fs/${process.cwd().replaceAll('\\', '/')}/node_modules/.vite/deps/react.js';
-    import ReactDOM from '/@fs/${process.cwd().replaceAll('\\', '/')}/node_modules/.vite/deps/react-dom_client.js';
+    import React from ${JSON.stringify(reactUrl)};
+    import ReactDOM from ${JSON.stringify(domUrl)};
     import {DocumentPreviewButton} from '/components/workspace/DocumentPreviewButton.tsx';
+    import {FeedbackProvider} from '/components/feedback/FeedbackProvider.tsx';
+    import {WorkDetailPage} from '/pages/enterprise/WorkDetailPage.tsx';
+    import {buildWorkItem,encodeWorkPrompt} from '/features/enterprise/work-mapping.ts';
+    import '/styles/enterprise.css';
     import '/index.css';
     window.fixture={content:${JSON.stringify(word)},failure:false,calls:[]};
     window.electronAPI={previewArrangementDocument:async input=>{window.fixture.calls.push(input);return window.fixture.failure?{success:false,error:{message:'测试读取失败'}}:{success:true,data:{name:'节点交付报告.docx',format:'docx',version:'accepted',source:'snapshot',content:window.fixture.content}}}};
-    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(DocumentPreviewButton,{taskId:'task',nodeId:'node',deliverableId:'report',name:'节点交付报告.docx',format:'docx'}));
+    const root=ReactDOM.createRoot(document.getElementById('root'));
+    root.render(React.createElement(DocumentPreviewButton,{taskId:'task',nodeId:'node',deliverableId:'report',name:'节点交付报告.docx',format:'docx'}));
+    window.showConversation=()=>{
+      const task={id:'conversation-task',title:'对话文档成果',prompt:encodeWorkPrompt('生成报告',{kind:'conversation',goal:'生成报告',steps:[],participants:[],sharedContext:{goal:'生成报告',confirmedInputs:[],previousResults:[],userNotes:[]}}),
+        status:'completed',workDir:'C:/work',createdAt:1,startedAt:1,completedAt:2,error:null,files:['C:/work/report.docx','C:/work/archive.zip'],logs:[],ownerId:'member',ownerEnterpriseId:'enterprise',subscriptionId:'employee',activeRunId:null,workType:{state:'resolved',kind:'conversation'}};
+      const work=buildWorkItem({task,employees:[]});
+      const api=window.electronAPI;
+      api.beginAttachmentImport=async({target})=>({success:true,data:{schemaVersion:1,sessionId:'preview-attachment-session',owner:{memberId:'member',enterpriseId:'enterprise'},target,status:'open',createdAt:1,expiresAt:9999999999999,attachments:[],revision:0}});
+      api.bindAttachmentPaste=()=>()=>{};
+      api.cancelAttachmentImport=async()=>({success:true});
+      window.electronAPI=new Proxy(api,{get:(target,name)=>name in target?target[name]:String(name).startsWith('on')?()=>()=>{}:async()=>({success:false,error:{message:'测试服务未启用'}})});
+      root.render(React.createElement(FeedbackProvider,null,React.createElement(WorkDetailPage,{workId:work.id,workspace:{works:[work],employees:[],myEmployees:[],busy:false,canGoBack:false,attachmentScopeKey:'test',error:null}})));
+    };
     </script></body></html>` }))
   await page.goto(`${base}/__document-preview-test`)
   await page.getByRole('button', { name: '预览文档：节点交付报告.docx' }).click()
@@ -107,7 +129,31 @@ try {
   await page.getByRole('heading', { name: '节点摘要' }).waitFor()
   assert.equal(await page.locator('.document-preview-text img').count(), 0)
   assert.deepEqual(await page.evaluate(() => window.fixture.calls[0]), { taskId: 'task', nodeId: 'node', deliverableId: 'report' })
+  await page.getByRole('button', { name: '关闭文档预览' }).click()
+  await page.evaluate(content => { window.fixture.content = content; window.showConversation() }, word)
+  await page.getByRole('heading', { name: '对话文档成果', exact: true }).waitFor()
+  await page.waitForFunction(() => !document.querySelector('.ent-attachment-button')?.disabled)
+  assert.equal(await page.locator('.feedback-dialog').count(), 0, 'conversation fixture setup must not trigger failure feedback')
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 820 })
+    await page.getByRole('button', { name: '查看产出结果', exact: true }).first().click()
+    const inspector = page.getByRole('dialog', { name: '产出结果', exact: true })
+    await inspector.waitFor()
+    assert.equal(await page.getByRole('button', { name: '预览文档：archive.zip' }).count(), 0)
+    await page.getByRole('button', { name: '预览文档：report.docx' }).click()
+    const preview = page.getByRole('dialog', { name: '文档预览：report.docx', exact: true })
+    await preview.waitFor()
+    await frame.getByText('节点交付报告', { exact: true }).waitFor()
+    await preview.getByText('当前对话成果', { exact: true }).waitFor()
+    assert.deepEqual(await page.evaluate(() => window.fixture.calls.at(-1)), { taskId: 'conversation-task', fileId: 'conversation-task-file-0' })
+    assert.ok(await preview.evaluate(element => element.getBoundingClientRect().width <= window.innerWidth))
+    await page.screenshot({ path: join(output, `conversation-${width}.png`) })
+    await page.keyboard.press('Escape')
+    await preview.waitFor({ state: 'detached' })
+    assert.equal(await inspector.isVisible(), true, 'closing a document must preserve the conversation results inspector')
+    await inspector.getByRole('button', { name: '关闭详情面板' }).click()
+  }
   assert.deepEqual(errors, [])
-  log('PASS: Word desktop/mobile, saved-version IPC identities, retry, close, PDF pages/nonblank canvas, safe Markdown')
+  log('PASS: conversation results desktop/mobile, task file IPC identities, nested dialog close, Word, retry, PDF pages/nonblank canvas, safe Markdown')
   log(`Screenshots: ${output}`)
 } finally { await browser.close(); await server.close() }
