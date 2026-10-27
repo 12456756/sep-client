@@ -1,8 +1,10 @@
+/* global window, document, requestAnimationFrame */
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
 import process from 'node:process';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
+import { createServer } from 'vite';
 
 function findBrowserExecutable() {
   const candidates = [process.env.SEP_PREVIEW_BROWSER,
@@ -14,6 +16,8 @@ function findBrowserExecutable() {
 
 const executablePath = findBrowserExecutable();
 if (!executablePath) throw new Error('No Chromium browser found. Set SEP_PREVIEW_BROWSER before running the home preview check.');
+const server = process.env.SEP_PREVIEW_URL ? null : await createServer({ configFile: 'vite.preview.config.ts', logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } });
+await server?.listen();
 const browser = await chromium.launch({ executablePath, headless: true });
 const outputDir = process.env.SEP_PREVIEW_OUTPUT_DIR ?? join(process.cwd(), 'output', 'playwright', 'home-reference');
 mkdirSync(outputDir, { recursive: true });
@@ -21,7 +25,7 @@ const errors = [];
 try {
   const page = await browser.newPage({ viewport: { width: 1586, height: 992 } });
   page.on('pageerror', error => errors.push(error.message));
-  await page.goto(process.env.SEP_PREVIEW_URL ?? 'http://127.0.0.1:5174/?preview=home');
+  await page.goto(process.env.SEP_PREVIEW_URL ?? new URL('?preview=home', server.resolvedUrls.local[0]).href);
   await page.locator('.sep-home').waitFor();
   assert.equal(await page.evaluate(() => 'electronAPI' in window), false, 'Preview must not install fake IPC');
   assert.equal(await page.locator('.ent-side.collapsed').count(), 1, 'Shared side navigation starts collapsed');
@@ -71,4 +75,5 @@ try {
   console.log('PASS: homepage sections, fixtures, no common tools, responsive layout, preview interactions and theme verified');
 } finally {
   await browser.close();
+  await server?.close();
 }

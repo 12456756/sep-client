@@ -49,6 +49,7 @@ export function HomeAssistantCard(props: Props) {
 
 function LiveAssistant(props: Props & { editor: Editor }) {
   const { draft, editor: { update, version } } = props
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const target = useMemo(() => ({ kind: 'compose' as const, composerId: props.draft.composerId }), [props.draft.composerId])
   const onPasteEdit = useCallback((input: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
     if (input.editorVersion !== version.current) return false
@@ -57,9 +58,9 @@ function LiveAssistant(props: Props & { editor: Editor }) {
     return true
   }, [draft, update, version])
   const composer = useAttachmentComposer({ target, bindingKey: `${props.draft.composerId}:${props.draft.epoch}`, disabled: props.busy,
-    retainedState: props.draft.attachment, onPasteEdit })
-  return <AssistantForm {...props} attachment={{ attachments: composer.attachments, busy: composer.busy, error: composer.error,
-    select: () => { void composer.select() }, remove: id => { void composer.remove(id) } }} />
+    retainedState: props.draft.attachment, onPasteEdit, onError: setAttachmentError })
+  return <AssistantForm {...props} attachment={{ attachments: composer.attachments, busy: composer.busy, error: attachmentError,
+    select: () => { setAttachmentError(null); void composer.select() }, remove: id => { setAttachmentError(null); void composer.remove(id) } }} />
 }
 
 function AssistantForm({ employees, works, draft, onSubmit, onCreate, demo, busy, editor, attachment }: Props & { editor: Editor; attachment?: Attachments }) {
