@@ -273,6 +273,15 @@ describe('WorkDetailPage media entry', () => {
     assert.match(html, /进行中/);
   });
 
+  it('offers previews for supported conversation documents without node delivery identities', () => {
+    const html = renderDetail({ ...work, deliverables: ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt', 'zip'].map((format, index) => ({
+      id: `${work.id}-file-${index}`, name: `report.${format}`, path: `C:\\work\\report.${format}`, note: '对话成果', format,
+    })) })
+    for (const format of ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
+    assert.doesNotMatch(html, /aria-label="预览文档：report\.zip"/)
+    assert.match(html, /复制路径/)
+  });
+
   it('offers accepted node documents while parallel arrangement nodes are still running', () => {
     const flow = { ...work, kind: 'flow' as const, status: 'running' as const,
       workType: { state: 'resolved' as const, kind: 'arrangement' as const },

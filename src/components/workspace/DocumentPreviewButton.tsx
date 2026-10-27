@@ -3,7 +3,7 @@ import { Component, useState, type ComponentType, type ReactNode } from 'react'
 import { supportsDocumentPreview, type DocumentPreviewRequest } from '../../shared/document-preview'
 import type { DocumentPreviewDialogProps } from './DocumentPreviewDialog'
 
-interface Props extends DocumentPreviewRequest { name: string; format: string; version?: string }
+type Props = DocumentPreviewRequest & { name: string; format: string; version?: string }
 
 class PreviewBoundary extends Component<{ children: ReactNode; onClose(): void }, { failed: boolean }> {
   state = { failed: false }

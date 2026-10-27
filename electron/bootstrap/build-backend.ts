@@ -329,6 +329,7 @@ class BackendRuntime {
       scope: this,
       getDelivery: (...args) => previewFiles.getDelivery(...args),
       read: (...args) => previewFiles.read(...args),
+      readConversation: async (scope, taskId, fileId) => previewFiles.readConversation(scope, await this.tasks.get(taskId), fileId),
       render: (format, bytes, validate) => this.documentPreviewRuntime.get().then(runtime => { validate(); return runtime.render(format, bytes) }),
       stop: () => this.documentPreviewRuntime.peek()?.stop(),
     })

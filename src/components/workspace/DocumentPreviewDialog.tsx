@@ -6,9 +6,13 @@ import type { DocumentPreview, DocumentPreviewRequest } from '../../shared/docum
 import { documentPreviewFrame } from './document-preview-frame'
 
 const PdfPreview = lazy(() => import('./PdfDocumentPreview'))
-export interface DocumentPreviewDialogProps extends DocumentPreviewRequest { name: string; version?: string; onClose(): void }
+export type DocumentPreviewDialogProps = DocumentPreviewRequest & { name: string; version?: string; onClose(): void }
 
-export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, name, version, onClose }: DocumentPreviewDialogProps) {
+export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps) {
+  const { taskId, name, version, onClose } = props
+  const nodeId = 'nodeId' in props ? props.nodeId : undefined
+  const deliverableId = 'deliverableId' in props ? props.deliverableId : undefined
+  const fileId = 'fileId' in props ? props.fileId : undefined
   const dialog = useRef<HTMLDialogElement>(null)
   const close = useRef<HTMLButtonElement>(null)
   const [data, setData] = useState<DocumentPreview | null>(null)
@@ -25,13 +29,14 @@ export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, n
   useEffect(() => {
     let active = true
     setData(null); setError(null); setSection(0); setZoom(1)
-    void window.electronAPI.previewArrangementDocument({ taskId, nodeId, deliverableId }).then(result => {
+    const request: DocumentPreviewRequest = fileId !== undefined ? { taskId, fileId } : { taskId, nodeId: nodeId!, deliverableId: deliverableId! }
+    void window.electronAPI.previewArrangementDocument(request).then(result => {
       if (!active) return
       if (!result.success || !result.data) { setError(result.error?.message || '文档预览读取失败'); return }
       setData(result.data)
     }).catch(() => { if (active) setError('文档预览读取失败，可重试或复制路径查看原件。') })
     return () => { active = false }
-  }, [taskId, nodeId, deliverableId, version, attempt])
+  }, [taskId, nodeId, deliverableId, fileId, version, attempt])
   const content = data?.content
   const text = content?.kind === 'text' || content?.kind === 'markdown' ? content.text : ''
   const count = content?.kind === 'html' ? content.sections.length : Math.max(1, Math.ceil(text.length / 100_000))
@@ -41,7 +46,7 @@ export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, n
     try { await navigator.clipboard.writeText(part); setCopied(true) } catch { setCopied(false) }
   }
   return <dialog ref={dialog} className="document-preview-dialog" aria-label={`文档预览：${name}`} onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
-    <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>
+    <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{fileId !== undefined ? '当前对话成果' : data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>
       <div className="document-preview-actions">
         <button type="button" title="重新读取" aria-label="重新读取文档" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={17} /></button>
         <button ref={close} type="button" title="关闭预览" aria-label="关闭文档预览" onClick={onClose}><X size={18} /></button>
