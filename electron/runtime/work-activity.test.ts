@@ -53,3 +53,8 @@ test('settles retry activities across distinct event sequence numbers', () => {
   const exhausted = applyRuntimeEvent(first, event('retry_budget_exhausted', {}, 4))
   assert.equal(exhausted[0]?.state, 'failed')
 })
+
+test('does not duplicate raw runtime errors in activity rows', () => {
+  const activities = applyRuntimeEvent([], event('session_error', { message: 'Request timed out. /private/path' }))
+  assert.equal(activities[0]?.text, '当前轮次执行遇到问题')
+})

@@ -28,6 +28,22 @@ function fixture() {
 }
 
 describe('shared speech input lifecycle', () => {
+  it('never starts recording when application consent is canceled or returned after owner cancellation', async () => {
+    const f = fixture()
+    let begins = 0
+    f.api.beginSpeechRecording = async () => { begins++; throw new Error('must not start') }
+    await f.controller.start('one', f.result, async () => false)
+    assert.equal(begins, 0)
+    assert.equal(f.controller.getSnapshot().error, null)
+    const consent = deferred<boolean>()
+    const pending = f.controller.start('two', f.result, () => consent.promise)
+    f.controller.cancel('two')
+    consent.resolve(true)
+    await pending
+    assert.equal(begins, 0)
+    assert.equal(f.starts, 0)
+    assert.equal(f.controller.getSnapshot().phase, 'idle')
+  })
   it('cleans up a rejected microphone startup and can immediately retry', async () => {
     const f = fixture()
     const failure = Object.assign(new Error('permission denied'), { name: 'NotAllowedError' })

@@ -79,7 +79,6 @@
 .ent-arr-back:hover { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
 
 .ent-arr-note { margin: 18px 0 0; color: var(--ent-ink-3); font-size: 13px; line-height: 1.7; }
-.ent-arr-problem { color: var(--ent-attention); font-size: 13px; }
 
 /* ── 三种按钮。整页只有一个实心红色按钮，就是「往下走」的那个。 ──────────── */
 
@@ -376,8 +375,6 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-attachment-button:disabled { opacity: .55; cursor: default; }
 .ent-attachment-spinner { animation: attachment-spin 900ms linear infinite; }
 @keyframes attachment-spin { to { transform: rotate(360deg); } }
-.ent-attachment-error { display: inline-flex; align-items: center; gap: 5px; color: var(--ent-danger, #b42318); font-size: 12px; }
-.ent-attachment-error button { display: inline-flex; border: 0; background: transparent; color: inherit; cursor: pointer; }
 .ent-attachment-usage { display: inline-flex; align-items: center; gap: 6px; color: var(--ent-ink-2); font-size: 12px; }
 .ent-message-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .ent-message-attachments > span { display: inline-flex; max-width: 320px; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid var(--arr-card-line); border-radius: 6px; background: var(--ent-panel); color: var(--ent-ink-2); font-size: 12px; overflow-wrap: anywhere; }
@@ -743,6 +740,8 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   .ent-chat-ask,
   .ent-goal { border-radius: 15px; }
   .ent-rs-inline { flex-wrap: wrap; }
+  .ent-chat-askbar, .ent-goal-bar { flex-wrap: wrap; }
+  .ent-chat-askbar > .ent-rs-inline, .ent-goal-bar > .ent-rs-inline { order: 2; flex: 1 0 100%; }
   .ent-mn-foot { align-items: stretch; }
   .ent-mn-inline-settings { width: 100%; }
   .ent-mn-foot .ent-arr-gap { order: 3; }

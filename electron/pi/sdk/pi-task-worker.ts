@@ -18,6 +18,10 @@ export function createDefaultSharedPiSession(): SharedPiSession {
 }
 
 export interface PiTaskWorkerContext {
+  modelTrace?: PiAgentSessionConfig['modelTrace']
+  taskTitle?: string
+  tracePhase?: string
+  nodeTitle?: string
   taskId: string
   runId: string
   subscriptionId: string
@@ -120,7 +124,10 @@ export class PiTaskWorker {
       subscriptionId: this.context.subscriptionId,
       modelId: this.context.modelId,
       nodeId: this.context.arrangementNodeId,
+      taskTitle: this.context.taskTitle,
+      nodeTitle: this.context.nodeTitle,
     }
+    const runStartedAt = Date.now()
     log.info('run started', logContext)
     let session: PiAgentSession
     try {
@@ -133,6 +140,10 @@ export class PiTaskWorker {
         runtime: this.runtime.constructor?.name ?? 'unknown',
       })
       const sessionConfig: PiAgentSessionConfig = {
+        modelTrace: this.context.modelTrace,
+        taskTitle: this.context.taskTitle,
+        tracePhase: this.context.tracePhase,
+        nodeTitle: this.context.nodeTitle,
         runId: this.context.runId,
         modelId: this.context.modelId,
         gatewayUrl: this.context.gatewayUrl,
@@ -184,6 +195,7 @@ export class PiTaskWorker {
         return created
       }))
     } catch (error) {
+      void this.context.modelTrace?.({ phase: '', kind: 'status', text: `会话初始化失败；环节：${stage}\n${error instanceof Error ? error.stack ?? error.message : String(error)}` }).catch(() => undefined)
       log.error('run setup failed', {
         ...logContext,
         stage,
@@ -200,6 +212,9 @@ export class PiTaskWorker {
     }
 
     this.session = session
+    session.setDiagnostics?.({ runId: this.context.runId, taskTitle: this.context.taskTitle, tracePhase: this.context.tracePhase,
+      nodeTitle: this.context.nodeTitle, modelTrace: this.context.modelTrace })
+    void this.context.modelTrace?.({ phase: '', kind: 'status', text: `Pi 会话：${session.sessionId}\n会话文件：${session.sessionFile ?? '未提供'}\n运行标识：${this.context.runId}` }).catch(() => undefined)
     const subscribe = this.sessionAdapter
       ? (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => this.sessionAdapter!.subscribe(listener)
       : (listener: (event: import('./pi-agent-runtime').PiAgentEvent) => void) => session.subscribe(listener)
@@ -247,12 +262,14 @@ export class PiTaskWorker {
       await this.duringSetup(Promise.resolve(this.onSessionCreated?.({ sessionId: session.sessionId, sessionFile: session.sessionFile })))
       this.checkCancellation()
       let nextPrompt = prompt
+      let requestPurpose = this.context.resumeSessionFile ? '恢复执行' : '首次执行'
       while (true) {
         yielded = false
         yieldStop = undefined
         this.settledResponse = { text: '' }
         stage = 'prompt'
         try {
+          session.setRequestPurpose?.(requestPurpose)
           const images = this.context.inputImages
             ? this.context.inputImages.map(image => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType }))
             : undefined
@@ -270,14 +287,23 @@ export class PiTaskWorker {
         this.checkCancellation()
         stage = 'response-settlement'
         // Delivery JSON must use the complete reply, not the redacted, bounded event projection.
+        const validationStartedAt = Date.now()
         const correction = await this.onResponseSettled?.(yielded ? { text: '', stopReason: 'stop' } : session.getSettledResponse?.() ?? this.settledResponse)
+        if (this.onResponseSettled) {
+          const message = correction ? 'business validation failed' : 'business validation passed'
+          log.info(message, { ...logContext, elapsedMs: Date.now() - validationStartedAt })
+          void this.context.modelTrace?.({ phase: '', kind: 'status', text: `${correction ? '业务验收未通过，继续修正' : '业务验收通过'}；耗时 ${Date.now() - validationStartedAt} 毫秒` }).catch(() => undefined)
+        }
         this.checkCancellation()
         if (!correction) break
         nextPrompt = correction.continueWith
+        requestPurpose = '校验失败修正'
       }
       log.info('run completed', logContext)
+      void this.context.modelTrace?.({ phase: '', kind: 'status', text: `本轮会话执行结束；总耗时 ${Date.now() - runStartedAt} 毫秒` }).catch(() => undefined)
     } catch (error) {
       const failure = this.finalFailure ? new Error(this.finalFailure) : error
+      void this.context.modelTrace?.({ phase: '', kind: 'status', text: `本轮会话执行未完成；环节：${stage}；总耗时 ${Date.now() - runStartedAt} 毫秒\n${failure instanceof Error ? failure.stack ?? failure.message : String(failure)}` }).catch(() => undefined)
       log.error('run failed', {
         ...logContext,
         stage,

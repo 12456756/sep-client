@@ -9,7 +9,7 @@ const node: ArrangementNode = {
   deliverables: [{ id: 'report', name: 'Report', format: 'txt', path: 'deliverables/report.txt', contentOutline: ['Findings'], acceptanceCriteria: ['Contains findings'] }],
 }
 const submission = { nodeId: node.id, summary: 'Research complete', finalDeliverables: [{ id: 'report', path: 'deliverables/report.txt' }] }
-const submissionCorrection = '你的最终提交未通过校验，当前节点尚未完成。请按照当前节点要求检查并修正提交格式，确保提交对应当前节点，交付清单完整，文件标识和路径与节点要求一致。\n\n保留已经完成的工作和有效文件，不要因为提交格式有误而重新执行整个任务。修正后重新提交完整结果，不要只回复“已修复”。\n\n本次尚未检查实际文件，提交格式修正后还会继续进行文件校验。'
+const submissionCorrection = '当前节点尚未通过最终交付校验。请承接已有上下文和工具结果，继续完成尚未完成的任务。\n\n保留并复用已经完成的工作、有效文件和已收集的信息，不要从头重做，不要重复创建已有有效文件或重复收集已有信息；允许按需补写、修改和修复未完成的文件。\n\n以实际工具执行结果和文件状态为准，不要把此前描述的计划当作已经执行。需要操作时实际调用工具，不要只说明接下来要做什么。\n\n如果工作已经完成，只需按要求提交最终 JSON；否则先完成剩余工作，再提交。'
 const fileCorrection = '你的提交格式已通过校验，但实际交付文件未通过校验，当前节点尚未完成。请检查规定的交付文件是否已经保存、能够正常读取、内容非空，并且符合要求的文件格式和保存位置。\n\n修复存在问题的文件，保留其他有效成果，不要重复已完成的工作。完成保存后，按照当前节点要求重新提交完整结果，包含全部规定交付文件，不要只提交修复的部分，也不要只回复“已修复”。'
 
 describe('node final delivery protocol', () => {

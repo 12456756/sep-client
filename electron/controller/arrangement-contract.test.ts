@@ -6,6 +6,7 @@ import * as ts from 'typescript'
 import { z } from 'zod'
 import * as arrangementPlan from '../domain/arrangement-plan'
 import * as attachmentContracts from '../../src/shared/attachment-contracts'
+import * as arrangementFeedback from '../../src/shared/arrangement-feedback'
 import { INVOKE_CHANNELS } from './channels'
 import type { Route } from './router'
 
@@ -18,6 +19,7 @@ function loadRoutes(): Route[] {
     '../channels': { INVOKE_CHANNELS },
     '../../domain/arrangement-plan': arrangementPlan,
     '../../../src/shared/attachment-contracts': attachmentContracts,
+    '../../../src/shared/arrangement-feedback': arrangementFeedback,
     '../router': { NO_INPUT: z.undefined(), route: (channel: string, schema: z.ZodType, handle: Route['handle']) => ({ channel, schema, handle }) },
   }
   compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => {
@@ -40,6 +42,15 @@ const document = {
 }
 
 describe('arrangement work contract IPC', () => {
+  it('returns validated public preflight reasons without exposing internal diagnostics', async () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_PREFLIGHT_DRAFT)!
+    const publicFields = { preflightId: 'check-a', draftId: 'draft-a', draftRevision: 1, valid: false, canStart: false,
+      issues: [{ code: 'MODEL_NOT_ALLOWED', message: '所选员工不支持当前模型，请重新选择' }], message: '所选员工不支持当前模型，请重新选择' }
+    const context = { arrangements: { preflightDraft: async () => ({ ...publicFields, blockingIssues: ['private-sub:model-not-allowed'], modelIssues: ['private-node:model-not-allowed'], subscriptions: [{ subscriptionId: 'private-sub' }] }) } }
+    const result = await route.handle(context as never, { draftId: 'draft-a', expectedRevision: 1 } as never)
+    assert.deepEqual(result, { success: true, preflight: publicFields })
+    assert.doesNotMatch(JSON.stringify(result), /private-sub|private-node|blockingIssues|modelIssues/)
+  })
   it('preserves attachment candidates, import session and explicit node bindings', () => {
     const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
     const attachment = { attachmentId: 'attachment-a', sha256: 'a'.repeat(64) }

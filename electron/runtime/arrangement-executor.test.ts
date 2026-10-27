@@ -408,6 +408,47 @@ describe('TaskRuntime arrangement controls', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })
 
+  it('notifies a timed out run only after parallel work settles and retries only the failed node', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-runtime-timeout-'))
+    directories.push(root)
+    const runs = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runs)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('timeout', 'goal', root, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.nodes[1]!.dependsOn = []
+    const checkpoints = new MemoryCheckpointStore()
+    const events: TaskExecutionEvent[] = []
+    const attempts: string[] = []
+    let release!: () => void
+    const peer = new Promise<void>(resolve => { release = resolve })
+    let failed = false
+    const runtime = runtimeForArrangement(manager, runs, checkpoints, arrangement, options => ({
+      async run() {
+        const id = options.context.arrangementNodeId!
+        attempts.push(id)
+        if (id === 'node-a' && !failed) { failed = true; throw new Error('Request timed out.') }
+        if (id === 'node-b') await peer
+      }, async abort() { release() }, async dispose() {},
+    }), silentTaskMonitor, event => { events.push(event) })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(() => checkpoints.value?.state.nodes[0]?.status === 'failed' && attempts.includes('node-b'))
+      assert.equal(events.filter(event => event.type === 'run_failure_notice').length, 0)
+      release()
+      await waitFor(() => events.some(event => event.type === 'run_failure_notice'))
+      assert.equal((await manager.getTask(task.id))?.activeRunId, null)
+      assert.equal(events.filter(event => event.type === 'run_failure_notice').length, 1)
+      assert.deepEqual(events.find(event => event.type === 'run_failure_notice')?.data, { owner: scope, code: 'MODEL_TIMEOUT' })
+      assert.equal(checkpoints.value?.state.nodes[0]?.error, '模型请求超时，请稍后重试')
+      await runtime.retryTask(task.id, { nodeId: 'node-a' })
+      await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+      assert.deepEqual(attempts, ['node-a', 'node-b', 'node-a'])
+      assert.equal(events.filter(event => event.type === 'run_failure_notice').length, 1)
+    } finally { release(); await runtime.stopAll() }
+  })
+
   it('settles as paused for confirmation without rerunning the independent completed node', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-parallel-confirmation-'))
     directories.push(root)
@@ -669,7 +710,7 @@ describe('TaskRuntime arrangement controls', () => {
       })
       const result = await executor.execute(arrangement, 'task', 'run')
       assert.equal(result.status, 'failed')
-      assert.match(result.error ?? '', /尚未接通/)
+      assert.equal(result.error, '当前媒体交付暂不可用，请联系平台管理员')
       assert.equal(prepared, 0)
       assert.equal(workers, 0)
     }
@@ -1185,7 +1226,7 @@ describe('TaskRuntime arrangement controls', () => {
               await options.onSessionCreated?.({ sessionId: 'logical-b', sessionFile })
             } else {
               assert.equal(options.context.resumeSessionFile, sessionFile)
-              assert.match(prompt, /你的最终提交未通过校验[\s\S]*本次尚未检查实际文件/)
+              assert.match(prompt, /当前节点尚未通过最终交付校验[\s\S]*请承接已有上下文和工具结果[\s\S]*否则先完成剩余工作，再提交/)
               const node = arrangement.nodes.find(item => item.id === id)!
               const system = options.context.fixedSystemPrompt!
               for (const value of [node.objective!, node.instruction, node.expectedOutput, JSON.stringify(node.deliverables, null, 2)]) {

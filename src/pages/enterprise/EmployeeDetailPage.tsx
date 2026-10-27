@@ -12,7 +12,7 @@ import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { EMPLOYEE_AVAILABILITY, relativeTime } from '../../features/enterprise/vocabulary';
 import { useSpeechInput } from '../../features/speech/use-speech-input';
-import { SpeechInputActions, SpeechInputFeedback } from '../../components/speech/SpeechInputActions';
+import { SpeechInputActions } from '../../components/speech/SpeechInputActions';
 
 export function EmployeeDetailPage({ workspace, employeeId }: { workspace: EnterpriseWorkspace; employeeId: string }) {
   const employee = workspace.employees.find(item => item.id === employeeId);
@@ -90,7 +90,6 @@ export function EmployeeDetailPage({ workspace, employeeId }: { workspace: Enter
                   交给他开始
                 </button>
               </div>
-              <SpeechInputFeedback speech={speech} />
             </div>
           ) : null}
         </section>

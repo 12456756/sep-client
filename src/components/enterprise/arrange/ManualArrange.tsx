@@ -11,13 +11,14 @@
 
 import { ArrowRight, BookmarkPlus, GripVertical, ListPlus, Plus, X } from 'lucide-react';
 import { useCallback, useRef, useState } from 'react';
+import { useOperationFeedback } from '../../feedback/use-operation-feedback';
 import type { SiliconEmployee, WorkDraftStep } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { createDraftStep, validateGraph } from '../../../features/enterprise/work-graph';
 import { EmployeeFace } from '../EmployeeFace';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
-import { SpeechInputActions, SpeechInputFeedback } from '../../speech/SpeechInputActions';
+import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 
@@ -36,7 +37,7 @@ interface Props {
   busy: boolean;
   /** 从常用工作或企业固定流程带进来的初始内容。 */
   seed: { title?: string; goal?: string; steps: WorkDraftStep[]; confirmedInputs?: string[] } | null;
-  onSave: (draft: ManualDraft) => void;
+  onSave: (draft: ManualDraft) => boolean;
   onStart: (draft: ManualDraft) => void;
   settings: RunSettings;
   models: string[];
@@ -59,6 +60,7 @@ function move<T>(list: T[], from: number, to: number): T[] {
 }
 
 export function ManualArrange({ employees, busy, seed, onSave, onStart, settings, models, onSettingsChange, onChooseFolder, attachmentBindingKey }: Props) {
+  const { capture: captureFeedback } = useOperationFeedback(attachmentBindingKey);
   const [title, setTitle] = useState(seed?.title ?? '');
   const [goal, setGoal] = useState(seed?.goal ?? '');
   const [materials, setMaterials] = useState((seed?.confirmedInputs ?? []).join('\n'));
@@ -385,26 +387,27 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
             type="button"
             className="ent-arr-second"
             disabled={!steps.length || saved || speech.busy}
-            onClick={() => { onSave(draft()); setSaved(true); }}
+            onClick={() => { setSaved(onSave(draft())); }}
           >
             <BookmarkPlus size={14} aria-hidden />
             {saved ? '已保存' : '保存'}
           </button>
           <span className="ent-arr-gap" />
-          {problem ? <span className="ent-arr-problem">{problem}</span> : null}
           <SpeechInputActions speech={speech} disabled={busy} />
           <button
             type="button"
             className="ent-arr-primary"
-            disabled={busy || speech.busy || attachmentsBusy || !steps.length || Boolean(problem)}
-            title={problem ?? (steps.length ? undefined : '先把一位同事拖进来')}
-            onClick={() => { if (!speech.busy) onStart(draft()); }}
+            disabled={busy || speech.busy || attachmentsBusy || !steps.length}
+            onClick={() => {
+              if (speech.busy) return;
+              if (problem) { captureFeedback().show(problem, 'warning'); return; }
+              onStart(draft());
+            }}
           >
             {busy ? '安排中…' : '开始'}
             <ArrowRight size={15} aria-hidden />
           </button>
         </div>
-        <SpeechInputFeedback speech={speech} />
       </footer>
     </section>
   );

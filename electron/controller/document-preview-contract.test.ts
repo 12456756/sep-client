@@ -40,3 +40,18 @@ it('document preview IPC accepts delivery identities only and delegates without 
   assert.deepEqual(await route.handle(context as never, input as never), { success: true, data: preview })
   assert.deepEqual(calls, [input])
 })
+
+it('conversation preview accepts a task file identity, never a path or mixed node identity', async () => {
+  const route = previewRoute()
+  const input = { taskId: 'task-a', fileId: 'task-a-file-0' }
+  assert.deepEqual(route.schema.parse(input), input)
+  for (const invalid of [
+    { ...input, path: 'C:\\private.docx' }, { ...input, fileId: '../secret' },
+    { ...input, nodeId: 'node', deliverableId: 'report' }, { ...input, fileId: 0 },
+    { ...input, taskId: '../task' }, { ...input, fileId: '' },
+  ]) assert.equal(route.schema.safeParse(invalid).success, false)
+  const calls: unknown[] = []
+  const context = { documentPreviews: { preview: async (value: unknown) => { calls.push(value); return { name: 'report.docx' } } } }
+  await route.handle(context as never, input as never)
+  assert.deepEqual(calls, [input])
+})

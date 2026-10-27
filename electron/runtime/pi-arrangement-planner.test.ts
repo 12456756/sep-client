@@ -250,7 +250,8 @@ describe('PiArrangementPlanner', () => {
         assert.equal(failed?.fields.employeeScope, 'enterprise')
         assert.equal(failed?.fields.eventCount, scenario.text === undefined ? 0 : 1)
         assert.equal(failed?.fields.modelId, 'model-research')
-        assert.doesNotMatch(JSON.stringify(logs), /private-model-response|private-user-goal|private-refresh-token/)
+        assert.equal(failed?.fields.taskTitle, 'private-user-goal')
+        assert.doesNotMatch(JSON.stringify(logs), /private-model-response|private-refresh-token/)
       } finally { restore() }
     })
   }

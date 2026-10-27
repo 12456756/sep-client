@@ -4,6 +4,7 @@ export const MAX_SPEECH_SECONDS = 30
 export const speechPermissionSchema = z.enum(['prompt', 'granted', 'denied'])
 export type SpeechPermission = z.infer<typeof speechPermissionSchema>
 export const speechRecordingSchema = z.object({ recordingId: z.string().regex(/^[a-zA-Z0-9-]{1,80}$/) }).strict()
+export const speechBeginSchema = speechRecordingSchema.extend({ consent: z.boolean().optional() }).strict()
 export const speechAudioSchema = speechRecordingSchema.extend({
   sampleRate: z.number().int().min(8000).max(96000),
   samples: z.instanceof(Float32Array),

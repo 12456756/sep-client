@@ -11,7 +11,7 @@ import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { EmployeeFace } from '../EmployeeFace';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
-import { SpeechInputActions, SpeechInputFeedback } from '../../speech/SpeechInputActions';
+import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 
@@ -43,7 +43,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const speech = useSpeechInput({ contextKey: `chat:${employeeId}`, value: text, onChange: setText, disabled: busy });
   const input = speech.inputProps.ref;
   const employee = employees.find(item => item.id === employeeId);
-  const ready = Boolean(employee && text.trim()) && !attachmentsBusy;
+  const ready = Boolean(employee && text.trim() && models.includes(settings.modelId)) && !attachmentsBusy;
   const onPasteEdit = useCallback(({ text: pasted, selectionStart, selectionEnd, editorVersion: pastedVersion }: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
     if (pastedVersion !== editorVersion) return false;
     setText(current => `${current.slice(0, selectionStart)}${pasted}${current.slice(selectionEnd)}`);
@@ -158,7 +158,6 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
             <ArrowUp size={17} aria-hidden />
           </button>
         </div>
-        <SpeechInputFeedback speech={speech} />
       </div>
     </section>
   );

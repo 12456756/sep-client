@@ -24,6 +24,8 @@ import { describeError } from '../common/redact'
 import type { AuthError } from '../../src/shared/types'
 import { AppError } from './app-error'
 import { ERROR_CODES, isErrorCode, type ErrorCode } from './error-codes'
+import { operationFeedback } from './operation-feedback'
+import type { FeedbackOperation } from '../../src/shared/arrangement-feedback'
 
 /** 送到渲染进程的错误信封。message 是中文，绝不含技术细节。 */
 export interface IpcErrorEnvelope {
@@ -89,7 +91,12 @@ function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
  * 已登录之后是"会话过期，请重新登录"。原来 authError / taskError 各自处理，
  * 结果是同一个错误在两条路径上给出不同的码。
  */
-export function toEnvelope(error: unknown, context: { authenticated?: boolean } = {}): IpcErrorEnvelope {
+export function toEnvelope(error: unknown, context: { authenticated?: boolean; feedbackOperation?: FeedbackOperation } = {}): IpcErrorEnvelope {
+  const result = mapEnvelope(error, context)
+  return context.feedbackOperation ? { ...result, ...operationFeedback(error, context.feedbackOperation, result) } : result
+}
+
+function mapEnvelope(error: unknown, context: { authenticated?: boolean }): IpcErrorEnvelope {
   if (error instanceof LoginFeedbackError) return { ...LOGIN_FEEDBACK[error.reason], reason: error.reason }
   if (error instanceof KnowledgeApiError) {
     const status = error.statusCode

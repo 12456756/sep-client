@@ -14,6 +14,13 @@ const task: ClientTask = {
 }
 
 describe('arrangement retry display regressions', () => {
+  it('includes document formats and task file identities for conversation preview', () => {
+    const work = buildWorkItem({ task: { ...task, files: ['C:\\work\\report.DOCX', 'deliverables/sheet.xlsx', 'notes.md'] }, employees: [] })
+    assert.equal(work.kind, 'conversation')
+    assert.deepEqual(work.deliverables.map(file => [file.id, file.format]), [
+      ['task-a-file-0', 'docx'], ['task-a-file-1', 'xlsx'], ['task-a-file-2', 'md'],
+    ])
+  })
   it('displays the general assistant instead of the authentication employee in history and messages', () => {
     const work = buildWorkItem({ task, employees: [], plan: { mode: 'conversation', conversation: { kind: 'general' } } as ArrangementPlanSnapshot,
       messages: [{ id: 'reply', role: 'assistant', content: 'hello', createdAt: 1, runId: 'run' }] })

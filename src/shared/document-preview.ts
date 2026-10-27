@@ -1,10 +1,14 @@
 import { z } from 'zod'
 
-export const documentPreviewRequestSchema = z.object({
-  taskId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+const taskId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+export const documentPreviewRequestSchema = z.union([z.object({
+  taskId,
   nodeId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
   deliverableId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
-}).strict()
+}).strict(), z.object({
+  taskId,
+  fileId: z.string().regex(/^[A-Za-z0-9_-]{1,160}$/),
+}).strict()])
 export type DocumentPreviewRequest = z.infer<typeof documentPreviewRequestSchema>
 
 const sectionSchema = z.object({ title: z.string(), html: z.string() }).strict()
@@ -18,7 +22,7 @@ export interface DocumentPreview {
   name: string
   format: string
   version: string
-  source: 'snapshot' | 'recovered-snapshot' | 'verified-original'
+  source: 'snapshot' | 'recovered-snapshot' | 'verified-original' | 'conversation-file'
   content: DocumentPreviewContent
 }
 

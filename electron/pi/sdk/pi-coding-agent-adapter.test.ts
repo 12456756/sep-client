@@ -12,6 +12,7 @@ import { setLogSink } from '../../common/logger'
 import { prepareCommonSkills } from './common-skills'
 import { OFFICE_TOOL_NAME } from './pi-office-policy'
 import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
+import type { ModelTraceEntry } from '../../domain/model-trace'
 
 const readOnlyPolicy = {
   allowedTools: ['read', 'grep', 'find', 'ls'],
@@ -289,6 +290,7 @@ async function mediaSession(
   call?: { name: string; input: unknown },
   result: unknown = jobView,
   prepare?: (root: string) => Promise<void>,
+  continueSession?: (session: Awaited<ReturnType<PiCodingAgentAdapter['createSession']>>) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sep-pi-media-'))
   await prepare?.(root)
@@ -333,6 +335,7 @@ async function mediaSession(
       authorizeTool: async () => { approvals++; return false }, ...overrides,
     })
     await session.prompt('Run the requested operation.')
+    await continueSession?.(session)
     return { bodies, executions, approvals, literalPrompt }
   } finally {
     await session?.dispose()
@@ -371,6 +374,51 @@ describe('common Office skills with the real Pi SDK', () => {
 })
 
 describe('trusted media host tools with the real Pi SDK', () => {
+  it('keeps request documents distinct across sessions sharing the same run ID', async () => {
+    const entries: ModelTraceEntry[] = []
+    const config = { modelTrace: async (entry: ModelTraceEntry) => { entries.push(entry) } }
+    await mediaSession(config)
+    await mediaSession(config)
+    const inputs = entries.filter(entry => entry.kind === 'input')
+    assert.equal(inputs.length, 2)
+    assert.ok(inputs.every(entry => entry.requestNumber === 1 && String(entry.requestId).startsWith('run-a-')))
+    assert.notEqual(inputs[0].requestId, inputs[1].requestId)
+  })
+  it('rebinds diagnostics when a conversation reuses the same Pi session', async () => {
+    const first: ModelTraceEntry[] = []
+    const second: ModelTraceEntry[] = []
+    await mediaSession({ modelTrace: async entry => { first.push(entry) } }, undefined, jobView, undefined, async session => {
+      session.setDiagnostics?.({ runId: 'run-b', taskTitle: '继续对话', tracePhase: '对话执行', modelTrace: async entry => { second.push(entry) } })
+      session.setRequestPurpose?.('恢复执行')
+      await session.prompt('Continue the same conversation.')
+    })
+    assert.equal(first.filter(entry => entry.kind === 'input').length, 1)
+    assert.equal(second.filter(entry => entry.kind === 'input').length, 1)
+    assert.ok(first.filter(entry => entry.requestId).every(entry => String(entry.requestId).startsWith('run-a-')))
+    assert.ok(second.filter(entry => entry.requestId).every(entry => String(entry.requestId).startsWith('run-b-')))
+    assert.ok(second.some(entry => entry.text.includes('恢复执行')))
+  })
+  it('records actual provider inputs, tool continuation, headers and full response without terminal body records', async () => {
+    const entries: ModelTraceEntry[] = []
+    const { bodies } = await mediaSession({ taskTitle: '日志链路测试', tracePhase: '节点：图片生成',
+      modelTrace: async entry => { entries.push(entry) },
+    }, { name: 'media_get_job', input: { jobId: 'job-a' } })
+    const inputs = entries.filter(entry => entry.kind === 'input')
+    const completed = entries.filter(entry => entry.completed)
+    assert.equal(inputs.length, bodies.length)
+    assert.equal(completed.length, bodies.length)
+    assert.match(inputs[0].text, /系统消息/)
+    assert.match(inputs.at(-1)!.text, /工具返回/)
+    assert.ok(entries.some(entry => entry.kind === 'tool' && entry.text.includes('工具结束')))
+    assert.ok(entries.some(entry => entry.metrics?.响应状态码 === 200))
+    assert.ok(completed.every(entry => typeof entry.metrics?.总耗时毫秒 === 'number'))
+    assert.ok(entries.some(entry => entry.text.includes('工具执行后续轮')))
+    assert.doesNotMatch(JSON.stringify(entries), /test-token/)
+  })
+  it('continues the real provider request when the diagnostic recorder rejects', async () => {
+    const { bodies } = await mediaSession({ modelTrace: async () => { throw new Error('disk unavailable') } })
+    assert.equal(bodies.length, 1)
+  })
   it('general assistant preserves the Chinese native prompt and dynamic paths but loads no local skills or employee override', async () => {
     const { bodies } = await mediaSession({
       useNativeSystemPrompt: true, disableSkills: true, modelRequestAwareness: false,

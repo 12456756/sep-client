@@ -3,6 +3,10 @@ import type { FocusEvent, KeyboardEvent } from 'react'
 import { flushSync } from 'react-dom'
 import { speechInput } from './speech-input'
 import { SpaceHold } from './space-hold'
+import { useFeedback } from '../../components/feedback/FeedbackProvider'
+import { useOperationFeedback } from '../../components/feedback/use-operation-feedback'
+import { responseError } from '../../shared/arrangement-feedback'
+import { speechPermissionSchema } from '../../shared/speech-contracts'
 
 type TextInput = HTMLInputElement | HTMLTextAreaElement
 interface Options {
@@ -13,6 +17,8 @@ interface Options {
 }
 
 export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(options: Options) {
+  const feedback = useFeedback()
+  const { capture } = useOperationFeedback(options.contextKey)
   const id = useId()
   const owner = `${id}:${options.contextKey}`
   const input = useRef<T>(null)
@@ -21,11 +27,21 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
   const mountedOwner = useRef(owner)
   mountedOwner.current = owner
   const composing = useRef(false)
+  const requestingConsent = useRef(false)
   const snapshot = useSyncExternalStore(speechInput.subscribe, speechInput.getSnapshot, speechInput.getSnapshot)
   const owns = snapshot.owner === owner
   const busy = snapshot.phase !== 'idle'
   const active = owns && busy
   const available = typeof window !== 'undefined' && typeof window.electronAPI?.beginSpeechRecording === 'function'
+  const shown = useRef<typeof snapshot | null>(null)
+  useEffect(() => {
+    if (!owns) return
+    const message = snapshot.error || snapshot.notice
+    if (!message) { shown.current = null; return }
+    if (shown.current === snapshot) return
+    shown.current = snapshot
+    capture().show(message, snapshot.error ? 'error' : 'success')
+  }, [snapshot, owns, capture])
 
   const insert = (text: string, expectedOwner: string, range?: { start: number; end: number; value: string }): void => {
     const element = input.current
@@ -53,7 +69,18 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
       const element = input.current
       if (!element) return
       const range = { start: element.selectionStart ?? element.value.length, end: element.selectionEnd ?? element.value.length, value: latest.current.value }
-      void speechInput.start(owner, text => insert(text, owner, range))
+      const notice = capture()
+      void speechInput.start(owner, text => insert(text, owner, range), async signal => {
+        const response = await window.electronAPI.getSpeechPermission()
+        if (!notice.isCurrent() || signal.aborted) return false
+        if (!response.success) throw responseError(response, 'speech')
+        const permission = speechPermissionSchema.parse(response.data?.permission)
+        if (permission !== 'prompt') return undefined
+        requestingConsent.current = true
+        try {
+          return await feedback.ask({ message: '允许使用麦克风进行语音输入？语音将在本机识别。', actionLabel: '允许', key: 'speech-consent', signal })
+        } finally { requestingConsent.current = false }
+      })
     },
     stop: () => { void speechInput.stop(owner) },
     cancel: () => speechInput.cancel(owner),
@@ -61,7 +88,11 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
   }
   const gesture = useRef<SpaceHold | null>(null)
   gesture.current ??= new SpaceHold({
-    start: () => actions.current.start(), stop: () => actions.current.stop(),
+    start: () => actions.current.start(), stop: () => {
+      // Releasing the gesture must leave its consent dialog available to answer.
+      // A first authorization never starts capture; recording requires another gesture.
+      if (!requestingConsent.current) actions.current.stop()
+    },
     cancel: () => actions.current.cancel(), insertSpace: () => actions.current.insertSpace(),
   })
 
@@ -106,15 +137,15 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
       ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey })) event.preventDefault()
   }
   const onBlur = (event: FocusEvent<T>): void => {
-    gesture.current!.reset()
     const next = event.relatedTarget
+    if (next instanceof Element && next.closest('.feedback-dialog')) return
+    gesture.current!.reset()
     if (!(next instanceof Element) || next.closest('[data-speech-owner]')?.getAttribute('data-speech-owner') !== owner) speechInput.cancel(owner)
   }
 
   return {
     owner, busy, active, available, phase: owns ? snapshot.phase : 'idle', seconds: owns ? snapshot.seconds : 0,
     isComposing: () => composing.current,
-    error: owns ? snapshot.error : null, notice: owns ? snapshot.notice : null,
     start: () => {
       input.current?.focus()
       actions.current.start()

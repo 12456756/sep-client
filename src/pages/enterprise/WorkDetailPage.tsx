@@ -234,7 +234,9 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                             <small>{file.note}</small>
                           </span>
                           <div className="ent-wk-file-actions">
-                            {!isConversation && file.nodeId && file.deliverableId && file.format ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null}
+                            {file.format ? isConversation
+                              ? <DocumentPreviewButton taskId={work.id} fileId={file.id} name={file.name} format={file.format} />
+                              : file.nodeId && file.deliverableId ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null : null}
                             <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
                               复制路径
                             </button>
@@ -252,7 +254,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
 
           {/* 工作步骤与活动统一放在过程面板。 */}
           <section className="ent-panel ent-wk-inspector-content" aria-label="工作过程" hidden={panel !== 'process'}>
-            <Process work={work} workspace={workspace} showRetry={false} />
+            <Process work={work} workspace={workspace} />
           </section>
 
           {/* 工作信息折叠：低频信息不占首屏。多人协作时「谁做到哪一步」也在里面的工作步骤里。 */}
