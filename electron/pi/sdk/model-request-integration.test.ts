@@ -9,6 +9,8 @@ import { PiCodingAgentAdapter } from './pi-coding-agent-adapter'
 import type { PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../../domain/model-request-progress'
 import { setLogLevel, setLogSink, type LogRecord } from '../../common/logger'
+import type { ModelTraceEntry } from '../../domain/model-trace'
+import { redactModelTraceText } from '../../common/redact'
 
 import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
 
@@ -47,6 +49,7 @@ function chunk(response: ServerResponse, delta: Record<string, unknown>, finishR
 async function fixture(t: TestContext, handle: (body: RequestBody, response: ServerResponse, root: string) => void,
   persist?: PiAgentSessionConfig['onModelRequest'], overrides: Partial<PiAgentSessionConfig> = {}) {
   const logs: LogRecord[] = []
+  const traces: ModelTraceEntry[] = []
   restoreLog = setLogSink(record => { logs.push(record) })
   const root = await mkdtemp(join(tmpdir(), 'sep-model-awareness-'))
   const requests: RequestBody[] = []
@@ -85,6 +88,7 @@ async function fixture(t: TestContext, handle: (body: RequestBody, response: Ser
     runId: 'run', modelId: 'model', gatewayUrl: `http://127.0.0.1:${address.port}/v1`, workspaceDir: root,
     agentDir: join(root, 'agent'), sessionDir: join(root, 'sessions'), mcpServers: [],
     fixedSystemPrompt: 'Fixed node contract: finish all required work before final JSON.',
+    modelTrace: async entry => { traces.push({ ...entry, text: redactModelTraceText(entry.text) }) },
     getAccessToken: async () => 'test-token', authorizeTool: async () => true,
     onModelRequest: async kind => {
       kinds.push(kind)
@@ -96,7 +100,7 @@ async function fixture(t: TestContext, handle: (body: RequestBody, response: Ser
   let session = await new PiCodingAgentAdapter().createSession(config)
   resources.session = session
   return { root, get session() { return session }, requests, payloadErrors, kinds, logs, progress: () => progress,
-    reopen: async () => {
+    traces, reopen: async () => {
       const sessionFile = session.sessionFile!
       await session.dispose()
       session = await new PiCodingAgentAdapter().createSession({ ...config, resumeSessionFile: sessionFile })
@@ -219,7 +223,7 @@ describe('real SDK model request awareness', () => {
       assert.ok(finalRequest.messages.some(message => message.content?.includes('preserve the completed research')))
       assert.equal(f.progress()?.executionRounds, overflow ? 2 : 3)
       assert.equal(f.progress()?.compactionAttempts, summaryRequests)
-      assert.ok(f.logs.some(record => record.message === 'model response content' && String(record.fields.content).includes('"nodeId":"node-1"')))
+      assert.ok(f.traces.some(record => record.kind === 'output' && record.text.includes('"nodeId":"node-1"')))
     })
   }
 
@@ -233,11 +237,8 @@ describe('real SDK model request awareness', () => {
     assert.equal(overview.fields.outputBudgetSource, 'platform')
     assert.equal(overview.fields.includeUsage, true)
     const requestId = overview.fields.requestId
-    const user = f.logs.find(record => record.message === 'model input added: user')!
-    assert.equal(user.fields.content, 'First requirement\nSecond requirement\nBearer [redacted]')
-    assert.equal(user.fields.runId, 'run')
-    assert.equal(user.fields.displayTitle, '模型输入（用户消息）')
-    assert.equal(user.fields.inputSequence, overview.fields.latestInputSequence)
+    const user = f.traces.find(record => record.kind === 'input')!
+    assert.ok(user.text.includes('First requirement\nSecond requirement\nBearer [redacted]'))
     const completed = f.logs.find(record => record.message === 'model response completed')!
     assert.equal(completed.fields.runId, 'run')
     assert.equal(completed.fields.requestId, requestId)
@@ -245,10 +246,9 @@ describe('real SDK model request awareness', () => {
     assert.equal(completed.fields.platformRequestId, 'platform-test-1')
     assert.equal(completed.fields.providerStatus, 200)
     assert.deepEqual(completed.fields.usage, { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, total: 11 })
-    const body = f.logs.find(record => record.message === 'model response content')!
-    assert.equal(body.fields.content, 'First result\nSecond result\nBearer [redacted]')
-    assert.equal(body.fields.displayTitle, '模型输出')
-    assert.equal(body.fields.requestId, requestId)
+    const body = f.traces.filter(record => record.kind === 'output').at(-1)!
+    assert.equal(body.text, 'First result\nSecond result\nBearer [redacted]')
+    assert.equal(body.requestId, user.requestId)
     assert.equal(f.requests[0]!.messages.at(-1)!.content, 'First requirement\nSecond requirement\nBearer request-secret')
     assert.equal(f.logs.some(record => 'context' in record.fields), false)
     assert.doesNotMatch(JSON.stringify(f.logs), /request-secret|response-secret/)
@@ -256,13 +256,13 @@ describe('real SDK model request awareness', () => {
     assert.equal(f.logs.some(record => record.message === 'model request tool list'), false)
   })
 
-  it('shows low-level gateway diagnostics only at trace level', { timeout: 30_000 }, async t => {
+  it('keeps all model bodies in detailed traces even at trace log level', { timeout: 30_000 }, async t => {
     setLogLevel('trace')
     const f = await fixture(t, (_body, response) => answer(response, 'Visible response'))
     await f.session.prompt('New requirement')
-    assert.ok(f.logs.some(record => record.message === 'provider response received' && record.level === 'trace'))
-    assert.ok(f.logs.some(record => record.message === 'model request tool list' && record.level === 'trace'))
-    assert.ok(f.logs.some(record => record.message === 'model response content' && record.fields.content === 'Visible response'))
+    assert.ok(f.traces.some(record => record.kind === 'input' && record.text.includes('New requirement')))
+    assert.ok(f.traces.some(record => record.kind === 'output' && record.text === 'Visible response'))
+    assert.doesNotMatch(JSON.stringify(f.logs), /New requirement|Visible response/)
   })
 
   it('logs assembled thinking once per response without accumulating history', { timeout: 30_000 }, async t => {
@@ -288,21 +288,16 @@ describe('real SDK model request awareness', () => {
     assert.equal(completed[1]!.fields.thinkingLength, 0)
     assert.equal(completed[1]!.fields.estimatedThinkingTokens, 0)
     assert.equal(completed[1]!.fields.contentLength, 'Final response'.length)
-    const bodies = f.logs.filter(record => record.message === 'model response content')
-    assert.equal(bodies[0]!.fields.displayTitle, '模型输出')
-    assert.equal(bodies[0]!.fields.content, '（本轮没有正文输出）')
+    assert.equal(f.logs.some(record => record.message === 'model response content'), false)
     for (const [index, record] of completed.entries()) {
       assert.equal(record.fields.outputLimit, f.requests[index]!.max_tokens)
       const overview = f.logs.find(log => log.message === 'model request overview' && log.fields.requestId === record.fields.requestId)
       assert.equal(record.fields.outputLimit, overview?.fields.outputLimit)
     }
-    const thinking = f.logs.filter(record => record.message === 'model response thinking')
-    assert.equal(thinking.length, 1)
-    assert.equal(thinking[0]!.fields.displayTitle, '模型思考')
-    assert.equal(thinking[0]!.fields.content, '中文private-thinking-marker')
-    assert.equal(thinking[0]!.fields.runId, completed[0]!.fields.runId)
-    assert.equal(thinking[0]!.fields.requestId, completed[0]!.fields.requestId)
-    assert.ok(f.logs.indexOf(thinking[0]!) < f.logs.indexOf(bodies[0]!))
+    const thinking = f.traces.filter(record => record.kind === 'thinking')
+    assert.equal(thinking.at(-1)!.text, '中文private-thinking-marker')
+    assert.ok(thinking.every(record => record.requestId === thinking[0].requestId))
+    assert.doesNotMatch(JSON.stringify(f.logs), /private-thinking-marker/)
     assert.ok(f.requests.every(request => !('max_tokens' in request) && !('max_completion_tokens' in request)))
   })
 
@@ -321,19 +316,22 @@ describe('real SDK model request awareness', () => {
       assert.equal(completed.fields.contentLength, text.length)
       assert.equal(completed.fields.stopReason, finishReason)
       assert.equal((completed.fields.usage as { output: number }).output, 6000)
-      assert.equal(f.logs.find(record => record.message === 'model response content')!.fields.content, text)
+      assert.equal(f.traces.filter(record => record.kind === 'output').at(-1)!.text, text)
     })
   }
 
-  it('logs only newly added inputs and responses while preserving the full provider context', { timeout: 30_000 }, async t => {
+  it('records the actual full context of each request without sending bodies to ordinary logs', { timeout: 30_000 }, async t => {
     let turn = 0
     const f = await fixture(t, (_body, response) => answer(response, `Reply ${++turn}`))
     await f.session.prompt('First requirement')
     await f.session.prompt('New delivery correction')
-    const inputs = f.logs.filter(record => record.message === 'model input added: user')
-    assert.deepEqual(inputs.map(record => record.fields.content), ['First requirement', 'New delivery correction'])
-    assert.deepEqual(f.logs.filter(record => record.message === 'model response content').map(record => record.fields.content), ['Reply 1', 'Reply 2'])
-    assert.deepEqual(f.logs.filter(record => record.message === 'model request overview').map(record => record.fields.latestInputSequence), [1, 2])
+    const inputs = f.traces.filter(record => record.kind === 'input')
+    assert.equal(inputs.length, 2)
+    assert.ok(inputs[0].text.includes('First requirement'))
+    assert.ok(inputs[1].text.includes('Reply 1'))
+    assert.ok(inputs[1].text.includes('New delivery correction'))
+    assert.doesNotMatch(JSON.stringify(f.logs), /First requirement|New delivery correction|Reply 1|Reply 2/)
+    assert.deepEqual(f.logs.filter(record => record.message === 'model request overview').map(record => record.fields.requestNumber), [1, 2])
     assert.equal(f.logs.some(record => record.message.startsWith('model request message')), false)
     assert.equal(f.logs.some(record => record.fields.role === 'system'), false)
     assert.ok(f.requests[1]!.messages.some(message => message.content === 'First requirement'))
@@ -346,8 +344,10 @@ describe('real SDK model request awareness', () => {
     await f.session.prompt('Saved requirement')
     await f.reopen()
     f.logs.length = 0
+    f.traces.length = 0
     await f.session.prompt('Resume with this new requirement')
-    assert.deepEqual(f.logs.filter(record => record.message === 'model input added: user').map(record => record.fields.content), ['Resume with this new requirement'])
+    assert.equal(f.logs.filter(record => record.message === 'model input added: user').length, 0)
+    assert.ok(f.traces.find(record => record.kind === 'input')!.text.includes('Resume with this new requirement'))
     assert.doesNotMatch(JSON.stringify(f.logs.filter(record => record.message.startsWith('model input'))), /Saved requirement|Saved response/)
     assert.ok(f.requests[1]!.messages.some(message => message.content === 'Saved requirement'))
   })
@@ -434,11 +434,11 @@ describe('real SDK model request awareness', () => {
       await f.session.prompt('Read both files and complete the node.')
       assert.deepEqual(f.kinds, ['execution', 'execution', 'retry', 'execution'])
       assert.deepEqual(f.progress(), { executionRounds: 3, requestAttempts: 4, executionRetries: 1, compactionAttempts: 0 })
-      const inputs = f.logs.filter(record => record.message.startsWith('model input added:'))
-      assert.deepEqual(inputs.map(record => record.fields.role), ['user', 'tool', 'tool'])
-      assert.match(String(inputs[1]?.fields.content), /First result/)
-      assert.match(String(inputs[2]?.fields.content), /New useful result/)
-      assert.deepEqual(f.logs.filter(record => record.message === 'model request overview').map(record => record.fields.latestInputSequence), [1, 2, 2, 3])
+      const inputs = f.traces.filter(record => record.kind === 'input')
+      assert.equal(inputs.length, 4)
+      assert.match(inputs[1].text, /First result/)
+      assert.match(inputs[3].text, /New useful result/)
+      assert.deepEqual(f.logs.filter(record => record.message === 'model request overview').map(record => record.fields.requestNumber), [1, 2, 3, 4])
       for (const [index, round] of [1, 2, 2, 3].entries()) {
         const system = f.requests[index]!.messages.find(message => message.role === 'system')!.content
         assert.ok(system.includes(`第 ${round} 次执行模型请求`))

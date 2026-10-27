@@ -42,6 +42,9 @@ import { ArrangementMediaSubmissionError } from '../domain/arrangement-media-run
 import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
+import type { ModelTraceFactory } from '../domain/model-trace'
+import { runtimeFeedback } from '../errors/runtime-feedback'
+import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 
 export interface ArrangementExecutionResult {
   status: ArrangementExecutionState['status']
@@ -50,6 +53,7 @@ export interface ArrangementExecutionResult {
 }
 
 export interface ArrangementExecutionOptions {
+  createModelTrace?: ModelTraceFactory
   scope: TaskOwnerScope | null
   taskManager: TaskManager
   taskRunStore: TaskRunStorePort | null
@@ -227,7 +231,8 @@ export class ArrangementExecutor {
     if (plan.mode === 'auto') {
       const issues = deliveryPlanIssues(plan.nodes)
       if (issues.length) {
-        const error = issues.map(issue => issue.message).join('\n')
+        logger.child('arrangement-executor').error('invalid delivery plan', { taskId, arrangementRunId, issues })
+        const error = RUNTIME_FAILURE_MESSAGES.DELIVERY_FAILED
         const failedNodeId = state.nodes.find(node => node.status !== 'completed')?.nodeId
         const failed = { ...state, status: 'failed' as const,
           failureNodeIds: [...new Set([...state.failureNodeIds, ...(failedNodeId ? [failedNodeId] : [])])],
@@ -397,6 +402,7 @@ export class ArrangementExecutor {
     savePredecessorFiles: (nodeId: string, files: FinalDeliveryFile[]) => Promise<void>,
   ): Promise<NodeExecutionResult> {
     const nodeRunId = randomUUID()
+    const modelTrace = this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
     const workspaceDir = plan.workspace.path ?? this.options.workspaceRoot
     const paths = this.options.scope && this.options.taskRunStore
       ? this.options.taskRunStore.getPaths(this.options.scope, taskId, nodeRunId)
@@ -569,6 +575,10 @@ export class ArrangementExecutor {
       worker = this.options.createWorker({
         context: {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
+          modelTrace,
+          taskTitle: plan.goal,
+          nodeTitle: node.title,
+          tracePhase: `节点：${node.title}`,
           gatewayUrl: employee.gatewayUrl, workspaceDir,
           agentDir: paths?.agentDir ?? `${workspaceDir}/.pi-runs/${nodeRunId}`,
           sessionDir: paths?.sessionDir ?? `${workspaceDir}/.pi-sessions/${nodeRunId}`,
@@ -642,6 +652,10 @@ export class ArrangementExecutor {
           await saveDelivery(delivery)
           await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_delivery_checked', arrangementRunId, nodeId: node.id, nodeRunId,
             subscriptionId: node.subscriptionId, data: { validationAttempts: delivery.validationAttempts, accepted, issues: delivery.issues } })
+          logger.child('arrangement-executor').info(accepted ? 'delivery validation passed' : 'delivery validation failed', {
+            taskTitle: plan.goal, nodeTitle: node.title, validationKind: parsed.ok ? 'files' : 'submission', elapsedMs: Date.now() - validationStartedAt,
+          })
+          void modelTrace?.({ phase: '', kind: 'status', text: `${parsed.ok ? '实际交付文件校验' : '提交格式校验'}${accepted ? '通过' : '失败'}\n${JSON.stringify(delivery.issues, null, 2)}` }).catch(() => undefined)
           if (accepted) return
           if (mediaSession && node.deliverables?.every(file => file.artifact?.source === 'media-output') && delivery.validationAttempts >= 2) throw new DeliveryExecutionError(`媒体交付仍需明确选择或修复：${delivery.issues.map(issue => issue.message).join('\n')}。请保留原媒体任务后处理。`)
           const artifacts = mediaSession ? `\n【主进程已核验的媒体资产】\n${JSON.stringify(await mediaSession.artifactSummary())}\n仅从这些原任务资产选择交付，不等待、不重新生成。` : ''
@@ -699,8 +713,12 @@ export class ArrangementExecutor {
       }
       return { ok: true, nodeId: node.id, output: output || null, completion }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
       const interrupted = this.abortRequested
+      logger.child('arrangement-executor').warn('node execution failed', { taskId, arrangementRunId, nodeId: node.id, nodeRunId,
+        interrupted, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
+      const feedback = runtimeFeedback(error)
+      const message = interrupted ? '工作已停止' : error instanceof DeliveryExecutionError && feedback.code === 'INTERNAL_ERROR'
+        ? RUNTIME_FAILURE_MESSAGES.DELIVERY_FAILED : feedback.message
       const terminal = (error instanceof DeliveryExecutionError || terminalMediaFailure !== undefined) && !interrupted
       if (created && this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message).catch(() => undefined)

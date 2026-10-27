@@ -7,6 +7,8 @@ import type { TaskManager } from '../runtime/task-manager'
 import type { TaskExecutionPort } from './task-service'
 import { TaskStatus } from '../../src/shared/types'
 import { AppError } from '../errors/app-error'
+import { operationFeedback } from '../errors/operation-feedback'
+import type { ArrangementBlockingIssue } from '../../src/shared/arrangement-feedback'
 import { logger, type LogFields } from '../common/logger'
 import { describeError } from '../common/redact'
 import { planningErrorFields, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
@@ -92,6 +94,8 @@ export interface DraftPreflight {
   modelIssues: string[]
   permissionPolicy: EffectiveTaskPermissionPolicy | null
   blockingIssues: string[]
+  issues: ArrangementBlockingIssue[]
+  message: string | null
   checkedAt: number
   expiresAt: number
 }
@@ -354,6 +358,7 @@ export class ArrangementService {
     log.info('planning phase started', { ...context, ...diagnosticContext, phase })
     try {
       const current = await this.getDraft(draftId)
+      context.taskTitle = current.goal
       if (current.attachmentCandidates?.some(candidate => candidate.mustUse) && !this.deps.attachments) {
         throw new AppError('INVALID_STATE', { message: '自动编排无法读取已要求使用的附件。' })
       }
@@ -518,7 +523,7 @@ export class ArrangementService {
     if (!scope) return
     const latest = await this.deps.drafts.get(scope, draftId)
     if (!latest || latest.revision !== revision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') return
-    const message = error instanceof AppError ? error.userMessage : new AppError('PLANNING_FAILED').userMessage
+    const message = operationFeedback(error, 'planning').message
     const updated = await this.deps.drafts.update(scope, draftId, revision, { ...latest, status: 'planning-failed', lastPlanning: { planningId, status: 'failed', message } })
     this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_failed', occurredAt: Date.now(), data: { message: updated.lastPlanning?.message ?? undefined } })
   }
@@ -580,6 +585,22 @@ export class ArrangementService {
       ...subscriptions.filter(item => !item.available || !item.passesThreshold).map(item => `${item.subscriptionId}:${item.reasonCode ?? 'unavailable'}`),
       ...modelIssues,
     ]
+    const issues: ArrangementBlockingIssue[] = []
+    if (subscriptions.some(item => !item.available || !item.passesThreshold) || general && !generalSubscription) {
+      issues.push({ code: 'EMPLOYEE_UNAVAILABLE', message: general ? '当前模型没有可用的员工授权，请联系平台管理员' : '所选员工当前不可用，请重新选择员工' })
+    }
+    if (modelIssues.length && !(general && !generalSubscription)) issues.push({
+      code: 'MODEL_NOT_ALLOWED',
+      message: draft.mode === 'auto' ? '自动编排选择了不可用的模型，请联系平台管理员' : '所选员工不支持当前模型，请重新选择',
+    })
+    if (draft.mode === 'auto' && draft.unresolvedSteps?.length) issues.push({ code: 'UNRESOLVED_STEPS', message: '还有工作步骤缺少员工，请先完成员工匹配' })
+    if (draft.mode === 'auto') {
+      for (const issue of deliveryPlanIssues(draft.nodes)) issues.push({ code: 'DELIVERY_INVALID', message: issue.code === 'DUPLICATE_DELIVERY'
+        ? '自动编排的交付文件冲突，请联系平台管理员'
+        : issue.code === 'MEDIA_FORMAT_UNSUPPORTED' ? '当前图片交付仅支持 PNG 格式，请调整要求后重新编排'
+        : issue.code === 'WORKSPACE_MEDIA_UNSUPPORTED' ? '当前编排不支持所选图片或视频交付方式，请调整要求后重新编排'
+        : '自动编排的交付安排不完整，请联系平台管理员' })
+    }
     return {
       preflightId: randomUUID(),
       draftId,
@@ -590,6 +611,8 @@ export class ArrangementService {
       modelIssues,
       permissionPolicy,
       blockingIssues,
+      issues,
+      message: issues[0]?.message ?? null,
       checkedAt,
       expiresAt: checkedAt + 60_000,
     }
@@ -614,7 +637,7 @@ export class ArrangementService {
     }
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
     const preflight = await this.preflightDraft(draftId, expectedRevision)
-    if (!preflight.canStart || !preflight.permissionPolicy) throw new AppError('INVALID_STATE')
+    if (!preflight.canStart || !preflight.permissionPolicy) throw new AppError('INVALID_STATE', { message: preflight.message ?? undefined })
     const primarySubscription = draft.mode === 'conversation'
       ? draft.conversation?.kind === 'general' ? preflight.subscriptions[0]?.subscriptionId : draft.conversation?.participants[0]?.subscriptionId
       : draft.nodes[0]?.subscriptionId

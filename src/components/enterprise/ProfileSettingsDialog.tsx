@@ -4,6 +4,7 @@ import type { ClientProfile } from '../../shared/profile-wallet-contracts'
 import type { UploadInput } from '../../shared/ipc'
 import { EmployeeFace } from './EmployeeFace'
 import { SpeechSettings } from '../speech/SpeechSettings'
+import { DefaultModelSettings } from './DefaultModelSettings'
 
 interface Props {
   profile: ClientProfile | null
@@ -15,6 +16,7 @@ interface Props {
   onUploadLogo: (input: UploadInput) => Promise<unknown>
   onRefresh: () => Promise<unknown>
   onClose: () => void
+  models: readonly string[]
 }
 
 const ACCEPTED_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -26,7 +28,7 @@ async function readImage(file: File): Promise<UploadInput> {
 }
 
 export function ProfileSettingsDialog({
-  profile, userName, canManage, uploading, error, onUploadAvatar, onUploadLogo, onRefresh, onClose,
+  profile, userName, canManage, uploading, error, onUploadAvatar, onUploadLogo, onRefresh, onClose, models,
 }: Props) {
   const avatarInput = useRef<HTMLInputElement>(null)
   const logoInput = useRef<HTMLInputElement>(null)
@@ -83,6 +85,7 @@ export function ProfileSettingsDialog({
               <input ref={logoInput} hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={event => { void choose('logo', event.target.files?.[0]); event.target.value = '' }} />
             </div>
           ) : null}
+          <DefaultModelSettings models={models} />
           <SpeechSettings />
           {localError || error ? <p className="ent-profile-error" role="alert">{localError || error}</p> : null}
           <button type="button" className="ent-profile-refresh" disabled={uploading !== null} onClick={refreshProfile}>

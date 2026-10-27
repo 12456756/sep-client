@@ -288,8 +288,8 @@ export interface ElectronAPI {
   cancelKnowledgeRequests: (requestIds: string[]) => Promise<IpcCommandResult>
   getSpeechPermission: () => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
   openSpeechSystemSettings: () => Promise<IpcCommandResult>
-  setSpeechEnabled: (input: { enabled: boolean }) => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
-  beginSpeechRecording: (input: { recordingId: string }) => Promise<IpcCommandResult & { data?: SpeechStart }>
+  setSpeechEnabled: (input: { enabled: boolean; consent?: boolean }) => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
+  beginSpeechRecording: (input: { recordingId: string; consent?: boolean }) => Promise<IpcCommandResult & { data?: SpeechStart }>
   recognizeSpeech: (input: SpeechAudio) => Promise<IpcCommandResult & { data?: SpeechResult }>
   cancelSpeechRecording: (input: { recordingId: string }) => Promise<IpcCommandResult>
   getTaskVideo: (taskId: string) => Promise<IpcCommandResult & { data?: VideoTaskView | null }>

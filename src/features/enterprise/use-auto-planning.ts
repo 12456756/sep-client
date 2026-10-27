@@ -1,191 +1,170 @@
-import { useEffect, useRef, useState } from 'react';
-import type { ArrangementDraft, ArrangementPlanningProgress } from '../../shared/types';
+import { useEffect, useRef, useState } from 'react'
+import type { ArrangementDraft, ArrangementPlanningProgress } from '../../shared/types'
+import type { AttachmentRef } from '../../shared/attachment-contracts'
+import { responseError } from '../../shared/arrangement-feedback'
+import { useOperationFeedback } from '../../components/feedback/use-operation-feedback'
 
+type Notice = ReturnType<ReturnType<typeof useOperationFeedback>['capture']>
 interface PlanningAttempt {
-  draftId: string | null;
-  planningId: string | null;
-  modelId: string;
-  terminal: boolean;
+  draftId: string | null
+  planningId: string | null
+  minRevision: number
+  terminal: boolean
+  notice: Notice
 }
 
-function errorMessage(result: { success: boolean; error?: { message?: string } }, fallback: string): string {
-  return result.error?.message || fallback
-}
+/** An attempt owns its IPC reply and terminal event, including events arriving first. */
+export function useAutoPlanning(bindingKey = '') {
+  const [draft, setDraft] = useState<ArrangementDraft | null>(null)
+  const [events, setEvents] = useState<ArrangementPlanningProgress[]>([])
+  const [planning, setPlanning] = useState(false)
+  const [cancellable, setCancellable] = useState(false)
+  const { capture } = useOperationFeedback(bindingKey)
+  const attempt = useRef<PlanningAttempt | null>(null)
+  const planningModelId = useRef<string | null>(null)
+  const hasAttempt = () => attempt.current !== null
+  const draftRef = useRef(draft)
+  draftRef.current = draft
 
-/** IPC progress may arrive before invoke resolves. Keep one attempt until its terminal event. */
-export function useAutoPlanning() {
-  const [draft, setDraft] = useState<ArrangementDraft | null>(null);
-  const [events, setEvents] = useState<ArrangementPlanningProgress[]>([]);
-  const [planning, setPlanning] = useState(false);
-  const [cancellable, setCancellable] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const attempt = useRef<PlanningAttempt | null>(null);
-  const planningModelId = useRef<string | null>(null);
-
-  const fail = (current: PlanningAttempt, message: string): void => {
-    if (attempt.current !== current) return;
-    current.terminal = true;
-    attempt.current = null;
-    setPlanning(false);
-    setCancellable(false);
-    setError(message);
-  };
+  const finish = (current: PlanningAttempt, error?: unknown): void => {
+    if (attempt.current !== current || !current.notice.isCurrent()) return
+    current.terminal = true
+    attempt.current = null
+    setPlanning(false)
+    setCancellable(false)
+    if (error !== undefined) current.notice.fail(error, 'planning', `planning:${current.draftId}:${current.planningId}`)
+  }
 
   useEffect(() => {
+    setDraft(null)
+    setEvents([])
+    setPlanning(false)
+    setCancellable(false)
+    planningModelId.current = null
     const unsubscribe = window.electronAPI.onArrangementPlanningEvent(event => {
-      const current = attempt.current;
-      if (!current || current.terminal || event.draftId !== current.draftId) return;
-      if (current.planningId && current.planningId !== event.planningId) return;
-      current.planningId = event.planningId;
-      setCancellable(true);
-      setEvents(previous => [...previous, event]);
-      if (event.type === 'arrangement_planning_failed' || event.type === 'arrangement_planning_cancelled') {
-        fail(current, event.data.message || (event.type === 'arrangement_planning_failed' ? '自动编排失败，请重试' : '已取消自动编排，可修改目标后重试'));
+      const current = attempt.current
+      if (!current || current.terminal || !current.notice.isCurrent() || event.draftId !== current.draftId) return
+      if (event.draftRevision < current.minRevision) return
+      if (current.planningId && current.planningId !== event.planningId) return
+      current.planningId = event.planningId
+      setEvents(previous => [...previous, event])
+      if (event.type === 'arrangement_planning_failed') {
+        finish(current, responseError({ error: event.data.message ? { message: event.data.message } : undefined }, 'planning'))
+      } else if (event.type === 'arrangement_planning_cancelled') {
+        finish(current)
       } else if (event.type === 'arrangement_planning_completed') {
-        current.terminal = true;
-        setCancellable(false);
+        current.terminal = true
+        setCancellable(false)
         void (async () => {
           try {
-            const result = await window.electronAPI.getArrangementDraft(event.draftId);
-            if (attempt.current !== current) return;
-            if (!result.success || !result.draft) throw new Error(result.error?.message || '读取编排草稿失败，请重试');
-            setDraft(result.draft);
-            setPlanning(false);
-          } catch (cause) {
-            fail(current, cause instanceof Error ? cause.message : '读取编排草稿失败，请重试');
-          }
-        })();
-      }
-    });
+            const result = await window.electronAPI.getArrangementDraft(event.draftId)
+            if (attempt.current !== current || !current.notice.isCurrent()) return
+            if (!result.success || !result.draft) throw responseError(result, 'read')
+            setDraft(result.draft)
+            finish(current)
+          } catch (error) { finish(current, error) }
+        })()
+      } else setCancellable(true)
+    })
     return () => {
-      unsubscribe();
-      const current = attempt.current;
-      attempt.current = null;
+      unsubscribe()
+      const current = attempt.current
+      attempt.current = null
       if (current?.draftId && current.planningId && !current.terminal) {
-        // Best-effort cleanup; there is no mounted view left to report a failure to.
-        void window.electronAPI.cancelArrangementPlanning({ draftId: current.draftId, planningId: current.planningId }).catch(() => undefined);
+        void window.electronAPI.cancelArrangementPlanning({ draftId: current.draftId, planningId: current.planningId }).catch(() => undefined)
       }
-    };
-  }, []);
-
-  const start = async (goal: string, workDir: string, modelId: string, attachmentRefs: import('../../shared/attachment-contracts').AttachmentRef[] = [], attachmentSessionId?: string, mustUseAttachments = true): Promise<void> => {
-    if (!goal.trim() || !modelId || attempt.current && !attempt.current.terminal) return;
-    planningModelId.current = modelId;
-    const current: PlanningAttempt = { draftId: null, planningId: null, modelId, terminal: false };
-    attempt.current = current;
-    setPlanning(true);
-    setCancellable(false);
-    setDraft(null);
-    setEvents([]);
-    setError(null);
-    try {
-      const created = await window.electronAPI.createArrangementDraft({
-        schemaVersion: 1, mode: 'auto', title: goal.trim().slice(0, 40), goal: goal.trim(),
-        confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [], attachmentCandidates: attachmentRefs.map(attachment => ({ attachment, mustUse: mustUseAttachments })), attachmentSessionId,
-        workspace: { mode: 'shared', path: workDir || null }, permissions: { preset: 'read-only' }, lastPlanning: null,
-      });
-      if (attempt.current !== current) return;
-      if (!created.success || !created.draft) throw new Error(created.error?.message || '自动编排草稿创建失败');
-      current.draftId = created.draft.id;
-      setDraft(created.draft);
-      const planned = await window.electronAPI.planArrangementDraft({ draftId: created.draft.id, expectedRevision: created.draft.revision, modelId });
-      if (current.terminal) return;
-      if (!planned.success || !planned.planningId) throw new Error(planned.error?.message || '自动编排未能启动');
-      if (attempt.current !== current) {
-        await window.electronAPI.cancelArrangementPlanning({ draftId: created.draft.id, planningId: planned.planningId });
-        return;
-      }
-      current.planningId = planned.planningId;
-      setCancellable(true);
-    } catch (cause) {
-      if (!current.terminal) fail(current, cause instanceof Error ? cause.message : '自动编排失败');
     }
-  };
+    // Each listener is bound to the mounted workspace identity.
+  }, [bindingKey])
+
+  const plan = async (current: PlanningAttempt, target: ArrangementDraft, modelId: string): Promise<void> => {
+    current.draftId = target.id
+    current.minRevision = target.revision + 1
+    const result = await window.electronAPI.planArrangementDraft({ draftId: target.id, expectedRevision: target.revision, modelId })
+    if (current.terminal) return
+    if (!result.success || !result.planningId) throw responseError(result, 'planning')
+    if (attempt.current !== current || !current.notice.isCurrent()) {
+      void window.electronAPI.cancelArrangementPlanning({ draftId: target.id, planningId: result.planningId }).catch(() => undefined)
+      return
+    }
+    current.planningId = result.planningId
+    setCancellable(true)
+  }
+
+  const beginAttempt = (modelId: string): PlanningAttempt => {
+    planningModelId.current = modelId
+    const current: PlanningAttempt = { draftId: null, planningId: null, minRevision: 0, terminal: false, notice: capture() }
+    attempt.current = current
+    setPlanning(true)
+    setCancellable(false)
+    setEvents([])
+    return current
+  }
+
+  const start = async (goal: string, workDir: string, modelId: string, attachmentRefs: AttachmentRef[] = [], attachmentSessionId?: string, mustUseAttachments = true): Promise<void> => {
+    if (hasAttempt()) return
+    if (!goal.trim() || !modelId) { capture().show(!goal.trim() ? '请填写工作目标' : '请选择需要使用的模型', 'warning'); return }
+    const current = beginAttempt(modelId)
+    setDraft(null)
+    try {
+      const result = await window.electronAPI.createArrangementDraft({
+        schemaVersion: 1, mode: 'auto', title: goal.trim().slice(0, 40), goal: goal.trim(),
+        confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [],
+        attachmentCandidates: attachmentRefs.map(attachment => ({ attachment, mustUse: mustUseAttachments })), attachmentSessionId,
+        workspace: { mode: 'shared', path: workDir || null }, permissions: { preset: 'read-only' }, lastPlanning: null,
+      })
+      if (attempt.current !== current || !current.notice.isCurrent()) return
+      if (!result.success || !result.draft) throw responseError(result, 'create')
+      setDraft(result.draft)
+      await plan(current, result.draft, modelId)
+    } catch (error) { if (!current.terminal) finish(current, error) }
+  }
 
   const cancel = async (): Promise<void> => {
-    const current = attempt.current;
-    if (!current?.draftId || !current.planningId || current.terminal) return;
-    setCancellable(false);
+    const current = attempt.current
+    if (!current?.draftId || !current.planningId || current.terminal) return
+    setCancellable(false)
     try {
-      const result = await window.electronAPI.cancelArrangementPlanning({ draftId: current.draftId, planningId: current.planningId });
-      if (attempt.current !== current || current.terminal) return;
-      if (!result.success) throw new Error(result.error?.message || '取消自动编排失败');
-      // A completed event wins a cancellation race. No event is required for successful cancellation.
-      if (result.cancelled) fail(current, '已取消自动编排，可修改目标后重试');
-      else setCancellable(true);
-    } catch (cause) {
-      if (attempt.current !== current || current.terminal) return;
-      setError(cause instanceof Error ? cause.message : '取消自动编排失败');
-      setCancellable(true);
+      const result = await window.electronAPI.cancelArrangementPlanning({ draftId: current.draftId, planningId: current.planningId })
+      if (attempt.current !== current || current.terminal || !current.notice.isCurrent()) return
+      if (!result.success) throw responseError(result, 'cancel')
+      if (result.cancelled) finish(current)
+      else setCancellable(true)
+    } catch (error) {
+      if (attempt.current !== current || current.terminal || !current.notice.isCurrent()) return
+      current.notice.fail(error, 'cancel')
+      setCancellable(true)
     }
-  };
+  }
 
-  const requestEmployeeAccess = async (stepId: string, employeeId: string): Promise<void> => {
-    if (!draft || planning) return;
-    setError(null);
-    const result = await window.electronAPI.requestEmployeeAccess({
-      draftId: draft.id,
-      expectedRevision: draft.revision,
-      stepId,
-      employeeId,
-    });
-    if (!result.success || !result.draft) {
-      throw new Error(errorMessage(result, '申请员工失败，请稍后重试'));
-    }
-    setDraft(result.draft);
-  };
-
-  const refreshEmployeeAccess = async (requestId: string): Promise<void> => {
-    if (!draft || planning) return;
-    setError(null);
-    const result = await window.electronAPI.getEmployeeAccessRequest({ draftId: draft.id, requestId });
-    if (!result.success || !result.draft) {
-      throw new Error(errorMessage(result, '查询员工申请状态失败，请稍后重试'));
-    }
-    setDraft(result.draft);
-  };
-
-  const recheckDraft = async (targetDraft: ArrangementDraft, modelId: string, force = false): Promise<void> => {
-    if (planning && !force) return;
-    const current: PlanningAttempt = { draftId: targetDraft.id, planningId: null, modelId, terminal: false };
-    attempt.current = current;
-    setPlanning(true);
-    setCancellable(false);
-    setEvents([]);
-    setError(null);
-    setDraft(targetDraft);
+  const access = async (input: { stepId: string; employeeId: string } | { requestId: string }): Promise<void> => {
+    if (!draft || planning) return
+    const target = draft
+    const notice = capture()
+    const operation = 'requestId' in input ? 'requestStatus' : 'request'
     try {
-      const planned = await window.electronAPI.planArrangementDraft({ draftId: targetDraft.id, expectedRevision: targetDraft.revision, modelId });
-      if (attempt.current !== current) return;
-      if (!planned.success || !planned.planningId) {
-        throw new Error(errorMessage(planned, '重新检查未能启动'));
-      }
-      current.planningId = planned.planningId;
-      setCancellable(true);
-    } catch (cause) {
-      if (!current.terminal) fail(current, cause instanceof Error ? cause.message : '重新检查失败');
-    }
-  };
+      const result = 'requestId' in input
+        ? await window.electronAPI.getEmployeeAccessRequest({ draftId: target.id, requestId: input.requestId })
+        : await window.electronAPI.requestEmployeeAccess({ draftId: target.id, expectedRevision: target.revision, ...input })
+      if (!notice.isCurrent() || draftRef.current?.id !== target.id) return
+      if (!result.success || !result.draft) throw responseError(result, operation)
+      setDraft(result.draft)
+    } catch (error) { if (draftRef.current?.id === target.id) notice.fail(error, operation) }
+  }
 
-  const recheck = async (): Promise<void> => {
-    const modelId = planningModelId.current;
-    if (!draft || planning || !modelId) return;
-    await recheckDraft(draft, modelId);
-  };
+  const recheckDraft = async (target: ArrangementDraft, modelId: string, force = false): Promise<void> => {
+    if (attempt.current || planning && !force) return
+    const current = beginAttempt(modelId)
+    setDraft(target)
+    try { await plan(current, target, modelId) }
+    catch (error) { if (!current.terminal) finish(current, error) }
+  }
 
   return {
-    draft,
-    setDraft,
-    events,
-    planning,
-    cancellable,
-    error,
-    setError,
-    start,
-    cancel,
-    requestEmployeeAccess,
-    refreshEmployeeAccess,
-    recheck,
+    draft, setDraft, events, planning, cancellable, start, cancel,
+    requestEmployeeAccess: (stepId: string, employeeId: string) => access({ stepId, employeeId }),
+    refreshEmployeeAccess: (requestId: string) => access({ requestId }),
+    recheck: async () => { if (draft && planningModelId.current) await recheckDraft(draft, planningModelId.current) },
     recheckDraft,
-  };
+  }
 }

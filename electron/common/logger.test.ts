@@ -85,7 +85,7 @@ describe('logger', () => {
     assert.ok(captured[0]?.timestamp > 0)
   })
 
-  it('renders multiline content as real console lines after redaction', () => {
+  it('does not render legacy model input bodies in the console', () => {
     const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
       import { logger, setLogLevel } from './electron/common/logger.ts';
       setLogLevel('debug');
@@ -96,15 +96,10 @@ describe('logger', () => {
         accessToken: 'never-print-this',
       });
     `], { encoding: 'utf8', cwd: process.cwd() })
-    assert.match(output, /DEBUG pi-gateway model input added: user/)
-    assert.match(output, /inputSequence=42/)
-    assert.ok(output.includes('content:\nFirst line\nSecond line\nAuthorization: Bearer [redacted]'))
-    assert.ok(output.includes('reasoning:\nThird line\nFourth line'))
-    assert.equal(output.includes('\\n'), false)
-    assert.doesNotMatch(output, /private-value|never-print-this/)
+    assert.equal(output, '')
   })
 
-  it('prints timestamped single-line summaries and keeps even short content in a separate block', () => {
+  it('prints Chinese request summaries without bodies or dense diagnostic identifiers', () => {
     const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
       import { logger, setLogLevel } from './electron/common/logger.ts';
       setLogLevel('debug');
@@ -115,21 +110,17 @@ describe('logger', () => {
       });
       logger.child('pi-gateway').debug('model response content', { requestId: 28, content: 'Short answer' });
     `], { encoding: 'utf8', cwd: process.cwd() })
-    const lines = output.trim().split(/\r?\n/)
-    assert.match(lines[0]!, /^\d{2}:\d{2}:\d{2}\.\d{3} INFO\s+pi-gateway model response completed /)
-    assert.match(lines[0]!, /requestId=28/)
-    assert.match(lines[0]!, /estimatedThinkingTokens=2906/)
-    assert.match(lines[0]!, /usage=\{ input: 62902, output: 4096 \}/)
-    assert.ok(output.includes('content:\nShort answer'))
-    assert.equal(lines.length, 4)
+    assert.match(output, /\d{2}:\d{2}:\d{2}｜模型响应完成/)
+    assert.match(output, /输入 62902｜输出 4096/)
+    assert.doesNotMatch(output, /Short answer|requestId|estimatedThinkingTokens/)
   })
 
   it('keeps multiline log length limits and does not reinterpret literal backslashes', () => {
     const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
       import { logger, setLogLevel } from './electron/common/logger.ts';
       setLogLevel('debug');
-      logger.child('pi-gateway').info('long message', { content: 'First line\\n' + 'x'.repeat(9000) + 'HIDDEN_TAIL' });
-      logger.child('pi-gateway').info('path', { content: String.raw\`C:\\new\\test.txt\` });
+      logger.child('ordinary-module').info('long message', { content: 'First line\\n' + 'x'.repeat(9000) + 'HIDDEN_TAIL' });
+      logger.child('ordinary-module').info('path', { content: String.raw\`C:\\new\\test.txt\` });
     `], { encoding: 'utf8', cwd: process.cwd() })
     assert.ok(output.includes('content:\nFirst line\n'))
     assert.match(output, /\[truncated\]/)
@@ -138,10 +129,10 @@ describe('logger', () => {
     assert.ok(output.includes('new'))
   })
 
-  it('shows labelled model inputs, thinking and outputs as plain text without JSON wrappers or escaped newlines', () => {
+  it('suppresses all legacy input, thinking and output blocks even at trace level', () => {
     const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
       import { logger, setLogLevel } from './electron/common/logger.ts';
-      setLogLevel('debug');
+      setLogLevel('trace');
       const log = logger.child('pi-gateway');
       log.debug('model input added: user', {
         displayTitle: '模型输入（用户消息）', inputSequence: 1,
@@ -154,14 +145,7 @@ describe('logger', () => {
         displayTitle: '模型输出', requestId: 1, content: '正在制作演示文稿。\\nBearer private-output',
       });
     `], { encoding: 'utf8', cwd: process.cwd() })
-    assert.match(output, /【模型输入（用户消息）】/)
-    assert.match(output, /【模型输出】/)
-    assert.match(output, /【模型思考】/)
-    assert.ok(output.includes('\n思考第一行。\n第二行。\nBearer [redacted]'))
-    assert.ok(output.includes('\n请生成演示文稿。\n保留真实换行。\nBearer [redacted]'))
-    assert.ok(output.includes('\n正在制作演示文稿。\nBearer [redacted]'))
-    assert.doesNotMatch(output, /displayTitle|content:|model input added|model response content|model response thinking|private-input|private-output|private-thinking/)
-    assert.equal(output.includes('\\n'), false)
+    assert.equal(output, '')
   })
 })
 

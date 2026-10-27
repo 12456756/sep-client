@@ -252,7 +252,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
 
           {/* 工作步骤与活动统一放在过程面板。 */}
           <section className="ent-panel ent-wk-inspector-content" aria-label="工作过程" hidden={panel !== 'process'}>
-            <Process work={work} workspace={workspace} showRetry={false} />
+            <Process work={work} workspace={workspace} />
           </section>
 
           {/* 工作信息折叠：低频信息不占首屏。多人协作时「谁做到哪一步」也在里面的工作步骤里。 */}

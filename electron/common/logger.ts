@@ -11,6 +11,7 @@
  */
 import { inspect } from 'node:util'
 import { redactValue } from './redact'
+import { formatRuntimeLog } from './runtime-log-format'
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
 
@@ -53,6 +54,8 @@ function defaultLevel(): LogLevel {
 
 /** 唯一允许调用 console 的地方。级别映射到对应的 console 方法，便于 devtools 过滤。 */
 function writeToConsole(record: LogRecord): void {
+  const formatted = formatRuntimeLog(record)
+  if (formatted === null) return
   const time = new Date(record.timestamp)
   const timestamp = `${time.toTimeString().slice(0, 8)}.${String(time.getMilliseconds()).padStart(3, '0')}`
   const displayTitle = typeof record.fields.displayTitle === 'string' ? record.fields.displayTitle : undefined
@@ -68,7 +71,7 @@ function writeToConsole(record: LogRecord): void {
     else if (typeof value === 'string' && (key === 'content' || /[\r\n]/.test(value))) multiline.push(`\n${key}:\n${value}`)
     else fields.push(`${key}=${typeof value === 'string' ? value : inspect(value, { compact: true, breakLength: Infinity, depth: 5 })}`)
   }
-  const output = `${prefix}${fields.length ? ` ${fields.join(' ')}` : ''}${multiline.join('')}`
+  const output = formatted ?? `${prefix}${fields.length ? ` ${fields.join(' ')}` : ''}${multiline.join('')}`
   if (record.level === 'error') console.error(output)
   else if (record.level === 'warn') console.warn(output)
   else if (record.level === 'info') console.info(output)

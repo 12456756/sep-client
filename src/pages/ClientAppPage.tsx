@@ -12,6 +12,7 @@
 import { AlertTriangle, Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
+import { ModelPreferenceProvider } from '../components/workspace/model-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { ConversationSessionsContext, createConversationSessions } from '../features/enterprise/conversation-sessions';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
@@ -20,6 +21,7 @@ import { NotificationCenter } from '../components/enterprise/NotificationCenter'
 import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
 import { UpdateNotice } from '../components/enterprise/UpdateNotice';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
+import { useRuntimeFeedback } from '../components/feedback/use-runtime-feedback';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
@@ -57,11 +59,14 @@ interface Props {
 
 export function ClientAppPage(props: Props) {
   return <MediaPreferenceScopeContext.Provider key={JSON.stringify([props.enterpriseId, props.userId])} value={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
-    <ClientAppContent {...props} />
+    <ModelPreferenceProvider scope={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
+      <ClientAppContent {...props} />
+    </ModelPreferenceProvider>
   </MediaPreferenceScopeContext.Provider>;
 }
 
 function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
+  useRuntimeFeedback(userId, enterpriseId);
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
     void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined);
@@ -225,6 +230,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
         <ProfileSettingsDialog
           profile={profile}
           userName={userName}
+          models={[...new Set(workspace.myEmployees.flatMap(employee => employee.allowedModels))]}
           canManage={canManage}
           uploading={profileWorkspace.uploading}
           error={profileWorkspace.error}
@@ -252,11 +258,10 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
 
 function EmployeeLoadNotice({ state, loadingLabel, retryLabel }: { state?: EmployeeLoadState; loadingLabel: string; retryLabel: string }) {
   if (state?.error) return (
-    <div className="ent-error-bar" role="alert">
-      <AlertTriangle size={14} aria-hidden />
-      <span className="ent-load-message">{state.error}</span>
+    <div className="ent-load-bar">
       <button type="button" className="ent-top-icon ent-load-retry" aria-label={retryLabel} title={retryLabel} disabled={state.loading} onClick={state.retry}>
         <RotateCw size={15} aria-hidden />
+        <span>{retryLabel}</span>
       </button>
     </div>
   );

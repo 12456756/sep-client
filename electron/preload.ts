@@ -62,14 +62,14 @@ function registerPasteTarget(input: PasteTarget): () => void {
       const results: Array<{ success?: boolean; error?: { message?: string } }> = [];
       if (paths.length) results.push(await ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES, { sessionId: input.sessionId, operationId, paths }));
       for (const { file } of imageEntries) {
-        if (!file.type.startsWith('image/')) throw new Error('剪贴板没有提供可读取的附件数据');
-        if (file.size > attachmentImportLimits.maxFileBytes) throw new Error('粘贴图片超过 20 MB 限制');
+        if (!file.type.startsWith('image/')) { notify({ status: 'failed', error: '剪贴板没有提供可读取的附件数据' }); return; }
+        if (file.size > attachmentImportLimits.maxFileBytes) { notify({ status: 'failed', error: '粘贴图片不能超过 20 MiB' }); return; }
         const bytes = new Uint8Array(await file.arrayBuffer());
         results.push(await ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_IMPORT_IMAGE, { sessionId: input.sessionId, operationId, name: file.name || 'pasted-image', type: file.type, bytes }));
       }
       const failed = results.find(result => !result.success);
-      notify(failed ? { status: 'failed', error: failed.error?.message || '附件导入失败' } : { status: 'completed' });
-    })().catch((error: unknown) => notify({ status: 'failed', error: error instanceof Error ? error.message : '附件导入失败' }));
+      notify(failed ? { status: 'failed', error: failed.error?.message || '附件导入失败，请联系平台管理员' } : { status: 'completed' });
+    })().catch(() => notify({ status: 'failed', error: '附件导入失败，请联系平台管理员' }));
   };
   const doc = (globalThis as unknown as { document: { addEventListener: (type: string, listener: (event: Event) => void, capture: boolean) => void; removeEventListener: (type: string, listener: (event: Event) => void, capture: boolean) => void } }).document;
   doc.addEventListener('paste', handler, true);

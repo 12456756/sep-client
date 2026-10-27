@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { FeedbackProvider } from '../../../components/feedback/FeedbackProvider'
 import { ChatArrange } from '../../../components/enterprise/arrange/ChatArrange'
 import { GoalComposer } from '../../../components/enterprise/arrange/GoalComposer'
 import { ManualArrange } from '../../../components/enterprise/arrange/ManualArrange'
@@ -50,7 +51,7 @@ function Harness() {
       {surface === 'chat' ? <ChatArrange employees={[employee]} busy={false} employeeId={employeeId} onEmployeeChange={setEmployeeId} onStart={send} {...shared} /> : null}
       {surface === 'auto' || surface === 'two' ? <GoalComposer value={value} onChange={setValue} placeholder="工作目标" submitLabel="开始" submitDisabled={!value} onSubmit={send} {...shared} /> : null}
       {surface === 'two' ? <ChatArrange employees={[employee]} busy={false} employeeId={employeeId} onEmployeeChange={setEmployeeId} onStart={send} {...shared} /> : null}
-      {surface === 'manual' ? <ManualArrange employees={[employee]} busy={false} seed={null} onSave={() => {}} onStart={send} {...shared} /> : null}
+      {surface === 'manual' ? <ManualArrange employees={[employee]} busy={false} seed={null} onSave={() => true} onStart={send} {...shared} /> : null}
       {surface === 'employee' ? <EmployeeDetailPage workspace={workspace} employeeId={employeeId} /> : null}
       {surface === 'work' ? <WorkConversation work={{ ...work, id: workId }} workspace={workspace} /> : null}
       {surface === 'settings' ? <SpeechSettings /> : null}
@@ -58,4 +59,4 @@ function Harness() {
   </div>
 }
 
-createRoot(document.getElementById('root')!).render(<Harness />)
+createRoot(document.getElementById('root')!).render(<FeedbackProvider><Harness /></FeedbackProvider>)

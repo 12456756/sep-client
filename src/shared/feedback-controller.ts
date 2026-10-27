@@ -10,7 +10,7 @@ export interface FeedbackConfirmation {
   actionLabel: string
   busyLabel: string
   key?: string
-  onConfirm: () => Promise<{ success: boolean; message: string }>
+  onConfirm?: () => Promise<{ success: boolean; message: string }>
 }
 
 export interface FeedbackItem {
@@ -67,6 +67,21 @@ export class FeedbackController {
     return promise
   }
 
+  ask = (input: { message: string; actionLabel: string; key?: string; signal?: AbortSignal }): Promise<boolean> => {
+    const { signal, ...confirmation } = input
+    const promise = this.confirm({ ...confirmation, busyLabel: input.actionLabel })
+    const entry = this.queue.find(item => item.promise === promise)
+    const cancel = () => {
+      if (!entry || !this.queue.includes(entry)) return
+      this.queue = this.queue.filter(item => item !== entry)
+      entry.resolve?.(false)
+      this.emit()
+    }
+    if (signal?.aborted) cancel()
+    else signal?.addEventListener('abort', cancel, { once: true })
+    return promise.finally(() => signal?.removeEventListener('abort', cancel))
+  }
+
   dismiss = (id: number): void => {
     const entry = this.queue[0]
     if (!entry || entry.item.id !== id || entry.item.busy) return
@@ -78,6 +93,12 @@ export class FeedbackController {
   accept = async (id: number): Promise<void> => {
     const entry = this.queue[0]
     if (!entry || entry.item.id !== id || entry.item.busy || !entry.confirmation) return
+    if (!entry.confirmation.onConfirm) {
+      this.queue.shift()
+      entry.resolve?.(true)
+      this.emit()
+      return
+    }
     entry.item = { ...entry.item, busy: true }
     this.emit()
     let result: { success: boolean; message: string }

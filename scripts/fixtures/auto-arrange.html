@@ -3,6 +3,7 @@ window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plug
 await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
 const React=(await import('__REACT__')).default;
 const {createRoot}=(await import('__DOM__')).default;
+const {FeedbackProvider,useFeedback}=await import('/components/feedback/FeedbackProvider.tsx');
 const {ArrangeWorkPage}=await import('/pages/enterprise/ArrangeWorkPage.tsx');
 const {WorkDetailPage}=await import('/pages/enterprise/WorkDetailPage.tsx');
 const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseWorkspace.ts');
@@ -17,9 +18,10 @@ window.nodeEvent=(type,nodeId,nodeStatus)=>{const event={taskId:task.id,runId:'p
 window.staleEvent=()=>listeners.planning?.({planningId:'old-planning',draftId:draft.id,draftRevision:2,type:'arrangement_planning_failed',occurredAt:Date.now(),data:{message:'过期事件不得显示'}});
 window.finish=()=>{window.nodeEvent('arrangement_node_completed','node-b');window.nodeEvent('arrangement_state_changed','node-b','completed');task={...task,status:'completed',completedAt:Date.now(),files:['D:/fixture/report.md']};listeners.task?.(task);listeners.pi?.({taskId:task.id,runId:'parent-run',subscriptionId:'sub-a',sequence:++sequence,type:'agent_end',occurredAt:Date.now(),data:{}});};
 window.electronAPI={
+ beginAttachmentImport:async({target})=>({success:true,data:{sessionId:crypto.randomUUID(),target,status:'open',attachments:[]}}),cancelAttachmentImport:async()=>({success:true}),bindAttachmentPaste:()=>()=>{},
  getEnterpriseOrganization:async()=>({success:true,data:{enterprise:{id:'fixture-enterprise',name:'隔离测试',logo:null},departments:[],members:[],grants:[],employees:[]}}),
  listSkillLibrary:async()=>({success:true,data:[]}),
- getAllTasks:async()=>({success:true,tasks:task?[task]:[]}),getTaskMessages:async()=>({success:true,messages:[]}),
+ getTask:async()=>({success:true,task}),getAllTasks:async()=>({success:true,tasks:task?[task]:[]}),getTaskMessages:async()=>({success:true,messages:[]}),
  getArrangementPlan:async()=>({success:true,plan}),getTaskTimeline:async()=>({success:true,events:[...timeline]}),
  onTaskListUpdated:subscribe('list'),onTaskUpdated:subscribe('task'),onPiEvent:subscribe('pi'),onArrangementPlanningEvent:subscribe('planning'),
  selectDirectory:async()=>({success:true,path:'D:/fixture'}),
@@ -28,9 +30,9 @@ window.electronAPI={
  getArrangementDraft:async()=>({success:true,draft:structuredClone(draft)}),
  cancelArrangementPlanning:async()=>{window.emit('arrangement_planning_cancelled');return {success:true,cancelled:true};},
  updateArrangementExecutionSettings:async input=>{window.lastSettingsInput=structuredClone(input);if(input.expectedRevision!==draft.revision)return {success:false,error:{message:'revision mismatch'}};const settings=input.settings;draft={...draft,nodes:draft.nodes.map(node=>({...node,modelId:settings.modelId??node.modelId})),workspace:{...draft.workspace,path:settings.workDir??draft.workspace.path},permissions:settings.permissions,revision:draft.revision+1};return {success:true,draft:structuredClone(draft)};},
- preflightArrangementDraft:async()=>{window.counts.preflight++;const blocked=window.scenario==='preflight-retry'&&window.counts.preflight===1;return {success:true,preflight:{canStart:!blocked,blockingIssues:blocked?['测试预检失败']:[],warnings:[]}};},
- confirmAndStartArrangement:async input=>{window.counts.start++;if(window.scenario==='slow-start')await new Promise(r=>{window.resolveStart=r;});if(input.expectedRevision!==draft.revision)return {success:false,error:{message:'revision mismatch'}};plan={...draft,id:'work-1',sourceDraftId:draft.id,sourceDraftRevision:draft.revision,planHash:'hash'};task={id:'work-1',title:draft.title,prompt:draft.goal,status:'running',workDir:'D:/fixture',createdAt:Date.now(),startedAt:Date.now(),completedAt:null,error:null,files:[],logs:[],ownerId:'fixture-user',ownerEnterpriseId:'fixture-enterprise',subscriptionId:'sub-a',activeRunId:'parent-run'};listeners.task?.(task);return {success:true,plan,execution:{id:task.id,status:'running'}};}
+ preflightArrangementDraft:async()=>{window.counts.preflight++;const blocked=window.scenario==='preflight-retry'&&window.counts.preflight===1;return {success:true,preflight:{canStart:!blocked,valid:!blocked,preflightId:'check-1',draftId:draft.id,draftRevision:draft.revision,issues:blocked?[{code:'EMPLOYEE_UNAVAILABLE',message:'所选员工当前不可用，请重新选择员工'}]:[],message:blocked?'所选员工当前不可用，请重新选择员工':null}};},
+ confirmAndStartArrangement:async input=>{window.counts.start++;if(window.scenario==='slow-start')await new Promise(r=>{window.resolveStart=r;});if(input.expectedRevision!==draft.revision)return {success:false,error:{message:'revision mismatch'}};plan={...draft,id:'work-1',sourceDraftId:draft.id,sourceDraftRevision:draft.revision,planHash:'hash'};task={id:'work-1',title:draft.title,prompt:draft.goal,status:'running',workDir:'D:/fixture',createdAt:Date.now(),startedAt:Date.now(),completedAt:null,error:null,files:[],logs:[],ownerId:'fixture-user',ownerEnterpriseId:'fixture-enterprise',subscriptionId:'sub-a',activeRunId:'parent-run'};task.workType={state:'resolved',kind:'arrangement'};listeners.task?.(task);return {success:true,plan,execution:{id:task.id,status:'running'}};}
 };
-function App(){const workspace=useEnterpriseWorkspace(options);React.useEffect(()=>{workspace.navigate({name:'arrange',mode:'auto'});},[workspace.navigate]);window.workspace=workspace;return React.createElement('div',{className:'ent-shell',style:{padding:24,minHeight:'100vh'}},workspace.route.name==='work'?React.createElement(WorkDetailPage,{workspace,workId:workspace.route.workId}):React.createElement(ArrangeWorkPage,{workspace,mode:'auto'}));}
-createRoot(document.getElementById('root')).render(React.createElement(App));
+function App(){const workspace=useEnterpriseWorkspace(options);window.feedback=useFeedback();React.useEffect(()=>{workspace.navigate({name:'arrange',mode:'auto'});},[workspace.navigate]);window.workspace=workspace;return React.createElement('div',{className:'ent-shell',style:{padding:24,minHeight:'100vh'}},workspace.route.name==='work'?React.createElement(WorkDetailPage,{workspace,workId:workspace.route.workId}):React.createElement(ArrangeWorkPage,{workspace,mode:'auto'}));}
+createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider,null,React.createElement(App)));
 </script></body></html>

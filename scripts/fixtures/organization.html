@@ -3,6 +3,7 @@ window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plug
 await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
 const React=(await import('__REACT__')).default;
 const {createRoot}=(await import('__DOM__')).default;
+const {FeedbackProvider}=await import('/components/feedback/FeedbackProvider.tsx');
 const {ClientAppPage}=await import('/pages/ClientAppPage.tsx');
 const subscribe=()=>()=>{};
 window.pending=[];
@@ -32,5 +33,5 @@ function App(){
  const [scope,setScope]=React.useState({userId:'user-1',enterpriseId:'enterprise-1'});window.setScope=setScope;
  return React.createElement(ClientAppPage,{...scope,userName:'测试成员甲',enterpriseName:'组织架构联调测试',instances:[],employeeStatuses:[],onLogout:async()=>{}});
 }
-createRoot(document.getElementById('root')).render(React.createElement(App));
+createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider,null,React.createElement(App)));
 </script></body></html>
