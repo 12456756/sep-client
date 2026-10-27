@@ -518,6 +518,10 @@
 .ent-profile-error { margin: 0; padding: 9px 11px; border-radius: 7px; color: var(--ent-danger); background: var(--ent-danger-bg); font-size: 12px; line-height: 1.6; }
 .ent-profile-refresh { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; border: 0; color: var(--ent-ink-3); background: transparent; font-size: 12px; cursor: pointer; }
 .ent-profile-refresh:hover { color: var(--ent-brand-ink); }
+.ent-default-model-settings { display: grid; gap: 8px; min-width: 0; padding-top: 16px; border-top: 1px solid var(--ent-line-soft); }
+.ent-default-model-settings label { color: var(--ent-ink); font-size: 14px; }
+.ent-default-model-settings select { width: 100%; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid var(--ent-line); border-radius: 6px; color: var(--ent-ink); background: var(--ent-panel); font: inherit; font-size: 13px; }
+.ent-default-model-settings select:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
 .ent-profile-refresh:disabled, .ent-profile-actions .ent-btn:disabled, .ent-profile-logo-row .ent-btn:disabled { cursor: wait; opacity: .65; }
 .ent-spin { animation: ent-spin 900ms linear infinite; }
 @keyframes ent-spin { to { transform: rotate(360deg); } }

@@ -1185,7 +1185,7 @@ describe('TaskRuntime arrangement controls', () => {
               await options.onSessionCreated?.({ sessionId: 'logical-b', sessionFile })
             } else {
               assert.equal(options.context.resumeSessionFile, sessionFile)
-              assert.match(prompt, /你的最终提交未通过校验[\s\S]*本次尚未检查实际文件/)
+              assert.match(prompt, /当前节点尚未通过最终交付校验[\s\S]*请承接已有上下文和工具结果[\s\S]*否则先完成剩余工作，再提交/)
               const node = arrangement.nodes.find(item => item.id === id)!
               const system = options.context.fixedSystemPrompt!
               for (const value of [node.objective!, node.instruction, node.expectedOutput, JSON.stringify(node.deliverables, null, 2)]) {

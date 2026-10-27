@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { lazyStream, type AssistantMessage, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
+import { randomUUID } from 'node:crypto'
+import { lazyStream, type AssistantMessage, type AssistantMessageEvent, type SimpleStreamOptions, type StreamFunction } from '@earendil-works/pi-ai'
 import {
   createAgentSession,
   createBashToolDefinition,
@@ -14,7 +15,6 @@ import {
   SessionManager,
   SettingsManager,
   type AgentSessionEvent,
-  type BeforeProviderRequestEvent,
   type ExtensionFactory,
   type ToolCallEvent,
   type ToolCallEventResult,
@@ -41,7 +41,6 @@ import type {
 } from './pi-agent-runtime'
 import { MAX_RUN_AUTO_RETRIES } from './pi-agent-runtime'
 import { redactText, redactValue } from '../../common/redact'
-import { redactKnowledgeContextForLog } from '../../common/knowledge-context'
 import {
   BUILTIN_TOOL_NAMES,
   READ_ONLY_TOOLS,
@@ -50,7 +49,7 @@ import {
   isUnrestrictedToolPolicy,
   requiresToolApproval,
 } from '../../../pi-extension'
-import { isLogLevelEnabled, logger } from '../../common/logger'
+import { logger } from '../../common/logger'
 import { createMcpRuntime, type McpRuntime } from './pi-mcp-client'
 import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
@@ -61,19 +60,20 @@ import { encodingToolDefinitions } from './pi-text-tools'
 import { videoErrorMessage } from '../../../src/shared/video-errors'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
+import { modelPayloadText, readableTraceValue, traceModelStream } from './pi-model-trace'
 import { evaluateOfficeCommand, OFFICE_TOOL_NAME } from './pi-office-policy'
 
 const log = logger.child('pi-gateway')
 
 export type PiSkill = Skill
+export type PiAssistantMessage = AssistantMessage
+export type PiAssistantMessageEvent = AssistantMessageEvent
 export type PiBashOperations = BashOperations
 export type PiToolDefinition = ToolDefinition
 export type PiEncodingToolSdk = Pick<typeof import('@earendil-works/pi-coding-agent'),
   'createBashToolDefinition' | 'createGrepToolDefinition' | 'createReadToolDefinition' | 'defineTool' | 'getShellConfig'>
 export type PiLoadSkills = typeof loadSkills
 export type PiResourceLoaderOptions = ConstructorParameters<typeof DefaultResourceLoader>[0]
-
-let gatewayRequestSequence = 0
 
 const DEFAULT_SESSION_TOOLS = ['read', 'bash', 'edit', 'write'] as const
 const MEDIA_TOOL_NAMES: readonly MediaToolName[] = ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job']
@@ -494,12 +494,6 @@ function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
         },
       }
     case 'tool_execution_end':
-      log.debug('tool execution completed', {
-        toolId: raw.toolCallId,
-        toolName: raw.toolName,
-        success: raw.isError !== true,
-        resultLength: toolResultText(raw.result).length,
-      })
       return {
         type: event.type,
         data: {
@@ -590,108 +584,13 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
     allowedTools: [...config.toolPolicy.allowedTools, ...mcp.permissions.keys()],
   } : undefined
   const gatewayPayload: ExtensionFactory = pi => {
-    let activeRequest: { requestId: number; startedAt: number; platformRequestId?: string; providerStatus?: number } | undefined
-    let latestInputSequence = 0
-    log.trace('provider payload hook registered')
-    pi.on('turn_start', () => { activeRequest = undefined })
-    pi.on('before_provider_request', (event: BeforeProviderRequestEvent) => {
-      const requestId = ++gatewayRequestSequence
-      activeRequest = { requestId, startedAt: Date.now() }
-      try {
-        const context = event.payload && typeof event.payload === 'object' ? event.payload as Record<string, unknown> : {}
-        if (isLogLevelEnabled('info')) {
-          const { tools, ...fields } = buildGatewayRequestLogFields(context, requestId)
-          log.info('model request overview', {
-            runId: config.runId, latestInputSequence, ...fields,
-          })
-          if (tools) log.trace('model request tool list', { runId: config.runId, requestId, tools })
-        }
-      } catch (error) {
-        log.error('provider request diagnostics failed', {
-          runId: config.runId,
-          requestId,
-          error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
-          stack: error instanceof Error ? error.stack : undefined,
-        })
-        throw error
-      }
-    })
-
-    pi.on('after_provider_response', event => {
-      if (activeRequest) {
-        activeRequest.platformRequestId = event.headers['x-request-id']
-        activeRequest.providerStatus = event.status
-      }
-      log.trace('provider response received', {
-        runId: config.runId,
-        requestId: activeRequest?.requestId,
-        status: event.status,
-        platformRequestId: event.headers['x-request-id'],
-        retryAfter: event.headers['retry-after'],
-      })
-    })
-
-    // after_provider_response exposes headers only, never a JSON body (including SSE).
-    // Inspect the final assembled message rather than logging every streaming delta.
+    // Request bodies and timings are observed at the provider boundary, including compaction.
     pi.on('message_end', event => {
       const response = event.message
-      if (response.role !== 'assistant') {
-        if (response.role !== 'user' && response.role !== 'toolResult' && response.role !== 'custom') return
-        // Live events contain only new inputs; replayed history and retry payloads never pass here.
-        const inputSequence = ++latestInputSequence
-        if (!isLogLevelEnabled('debug')) return
-        const role = response.role === 'toolResult' ? 'tool' : response.role
-        const content = redactKnowledgeContextForLog(gatewayContent(response.content))
-        log.debug(`model input added: ${role}`, {
-          displayTitle: role === 'tool' ? '模型输入（工具返回）' : role === 'user' ? '模型输入（用户消息）' : '模型输入（补充消息）',
-          runId: config.runId, inputSequence, role, content, contentLength: content?.length ?? 0,
-          ...(response.role === 'toolResult' ? { toolCallId: response.toolCallId, name: response.toolName, isError: response.isError } : {}),
-        })
-        return
-      }
-      const request = activeRequest
-      activeRequest = undefined
+      if (response.role !== 'assistant') return
       const calls = response.content.filter(part => part.type === 'toolCall')
-      const textParts = response.content.filter(part => part.type === 'text')
-      const contentLength = textParts.reduce((length, part) => length + part.text.length, Math.max(textParts.length - 1, 0))
-      log.info('model response completed', {
-        runId: config.runId,
-        requestId: request?.requestId,
-        platformRequestId: request?.platformRequestId,
-        providerStatus: request?.providerStatus,
-        model: response.model,
-        stopReason: response.stopReason,
-        elapsedMs: request ? Date.now() - request.startedAt : undefined,
-        outputBudgetSource: 'platform',
-        contentLength,
-        ...(isLogLevelEnabled('info') ? buildGatewayThinkingLogFields(response.content) : {}),
-        toolCount: calls.length,
-        usage: { input: response.usage.input, output: response.usage.output,
-          cacheRead: response.usage.cacheRead, cacheWrite: response.usage.cacheWrite, total: response.usage.totalTokens },
-        ...(response.errorMessage ? { error: response.errorMessage } : {}),
-      })
-      if (isLogLevelEnabled('debug')) {
-        const thinking = response.content.filter(part => part.type === 'thinking').map(part => part.thinking).join('\n')
-        if (thinking) {
-          log.debug('model response thinking', {
-            displayTitle: '模型思考', runId: config.runId, requestId: request?.requestId,
-            content: thinking,
-          })
-        }
-        const text = textParts.map(part => part.text).join('\n')
-        const toolSummary = calls.length ? `调用工具：${calls.map(call => call.name).join('、')}` : ''
-        log.debug('model response content', {
-          displayTitle: '模型输出', runId: config.runId, requestId: request?.requestId,
-          content: redactKnowledgeContextForLog([text, toolSummary].filter(Boolean).join('\n\n')) || '（本轮没有正文输出）',
-        })
-      }
       if (calls.length === 0) return
       const availableTools = pi.getActiveTools()
-      log.trace('provider tool calls assembled', {
-        runId: config.runId,
-        requestId: request?.requestId,
-        toolCalls: calls.map(call => ({ toolId: call.id, toolName: call.name })),
-      })
       const unavailable = calls.filter(call => !availableTools.includes(call.name))
       if (unavailable.length > 0) {
         log.warn('provider returned unavailable tool calls', {
@@ -795,8 +694,41 @@ class PiCodingAgentSession implements PiAgentSession {
     private readonly retryWait: GatewayRetryWait,
     private readonly settingsManager: SettingsManager,
     private readonly requestTracker: ModelRequestTracker | null,
+    private readonly flushTrace: () => Promise<void> = async () => {},
+    private readonly diagnostics?: {
+      current: () => PiAgentSessionConfig
+      update: (config: Pick<PiAgentSessionConfig, 'runId' | 'taskTitle' | 'tracePhase' | 'nodeTitle' | 'modelTrace'>) => void
+      purpose: (purpose: string) => void
+      observe: (event: AgentSessionEvent) => void
+      startPrompt: () => void
+    },
   ) {
+    const toolStarts = new Map<string, number>()
+    const operationStarts = new Map<string, number>()
     this.unsubscribe = session.subscribe(event => {
+      this.diagnostics?.observe(event)
+      if (event.type === 'auto_retry_end' && event.success === true) retryWait.reset()
+      const delayMs = event.type === 'auto_retry_start' || event.type === 'summarization_retry_scheduled'
+        ? retryWait.schedule() : undefined
+      const config = this.diagnostics?.current()
+      if (config && (event.type === 'tool_execution_start' || event.type === 'tool_execution_end')) {
+        const started = event.type === 'tool_execution_start'
+        if (started) toolStarts.set(event.toolCallId, Date.now())
+        const elapsedMs = started ? undefined : toolStarts.has(event.toolCallId) ? Date.now() - toolStarts.get(event.toolCallId)! : undefined
+        const fields = { taskTitle: config.taskTitle, nodeTitle: config.nodeTitle, toolName: event.toolName, elapsedMs,
+          ...(!started ? { success: !event.isError } : {}) }
+        log.info(started ? 'tool execution started' : 'tool execution completed', fields)
+        void config.modelTrace?.({ phase: '', kind: 'tool', text: `${started ? '工具开始' : '工具结束'}\n${readableTraceValue({ ...fields, ...event })}` }).catch(() => undefined)
+        if (!started) toolStarts.delete(event.toolCallId)
+      }
+      if (config && /^(auto_retry_|compaction_|summarization_retry_scheduled)/.test(event.type)) {
+        const operation = event.type.replace(/_(start|end)$/, '')
+        if (event.type.endsWith('_start')) operationStarts.set(operation, Date.now())
+        const elapsedMs = event.type.endsWith('_end') && operationStarts.has(operation) ? Date.now() - operationStarts.get(operation)! : undefined
+        log.info(event.type, { taskTitle: config.taskTitle, nodeTitle: config.nodeTitle, elapsedMs, delayMs })
+        void config.modelTrace?.({ phase: '', kind: 'status', text: `${event.type}\n${readableTraceValue({ ...event, ...(delayMs === undefined ? {} : { delayMs }) })}${elapsedMs === undefined ? '' : `\n耗时 ${elapsedMs} 毫秒`}` }).catch(() => undefined)
+        if (event.type.endsWith('_end')) operationStarts.delete(operation)
+      }
       if (event.type === 'turn_start') this.settledResponse = { text: '' }
       if (event.type === 'turn_end' && event.message.role === 'assistant') {
         this.settledResponse = {
@@ -805,9 +737,6 @@ class PiCodingAgentSession implements PiAgentSession {
         }
       }
       this.requestTracker?.observe(event)
-      if (event.type === 'auto_retry_end' && event.success === true) retryWait.reset()
-      const delayMs = event.type === 'auto_retry_start' || event.type === 'summarization_retry_scheduled'
-        ? retryWait.schedule() : undefined
       const normalized = normalizeEvent(event)
       if (!normalized) return
       if (event.type === 'auto_retry_start') {
@@ -824,6 +753,12 @@ class PiCodingAgentSession implements PiAgentSession {
     return this.session.sessionId
   }
 
+  setDiagnostics(config: Pick<PiAgentSessionConfig, 'runId' | 'taskTitle' | 'tracePhase' | 'nodeTitle' | 'modelTrace'>): void {
+    this.diagnostics?.update(config)
+  }
+
+  setRequestPurpose(purpose: string): void { this.diagnostics?.purpose(purpose) }
+
   get sessionFile(): string | null {
     return this.session.sessionFile ?? null
   }
@@ -833,6 +768,7 @@ class PiCodingAgentSession implements PiAgentSession {
   }
 
   async prompt(text: string, options?: { images?: readonly { type: 'image'; data: string; mimeType: string }[] }): Promise<void> {
+    this.diagnostics?.startPrompt()
     this.settledResponse = { text: '' }
     this.requestTracker?.startPrompt()
     this.retryWait.reset()
@@ -859,12 +795,36 @@ class PiCodingAgentSession implements PiAgentSession {
       await this.session.dispose()
     } finally {
       await this.mcp.dispose()
+      await this.flushTrace()
     }
   }
 }
 
 export class PiCodingAgentAdapter implements PiAgentRuntime {
   async createSession(config: PiAgentSessionConfig): Promise<PiAgentSession> {
+    const pendingTraces = new Set<Promise<void>>()
+    let originalRecorder = config.modelTrace
+    let traceFailureReported = false
+    const record: NonNullable<PiAgentSessionConfig['modelTrace']> = entry => {
+      const destination = originalRecorder
+      if (!destination) return Promise.resolve()
+      const phase = entry.phase || config.tracePhase || '模型执行'
+      const pending = Promise.resolve().then(() => destination({ ...entry, phase })).catch(() => {
+        if (!traceFailureReported) {
+          traceFailureReported = true
+          log.warn('model trace write failed', { taskTitle: config.taskTitle, reason: '日志采集失败；业务任务继续运行' })
+        }
+      })
+      pendingTraces.add(pending)
+      void pending.finally(() => pendingTraces.delete(pending))
+      return pending
+    }
+    config = { ...config, modelTrace: originalRecorder ? record : undefined }
+    let requestNumber = 0
+    const traceSessionId = randomUUID()
+    let requestsInPrompt = 0
+    let requestPurpose = config.resumeSessionFile ? '恢复执行' : '首次执行'
+    let observedKind = 'execution'
     log.trace('createSession started', {
       modelId: config.modelId,
       gatewayUrl: config.gatewayUrl,
@@ -911,21 +871,63 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
             ? [systemPrompt, buildModelRequestAwareness(snapshot.progress, snapshot.kind)].filter(Boolean).join('\n\n')
             : systemPrompt,
         }
-        return streamSimple({ ...model, api: 'openai-completions' }, requestContext, {
+        const number = ++requestNumber
+        const purpose = requestsInPrompt++ === 0 ? requestPurpose : '工具执行后续轮'
+        const requestKind = snapshot?.kind ?? observedKind
+        const requestId = `${config.runId}-${traceSessionId}-${number}`
+        let startedAt = Date.now()
+        let headersMs: number | undefined
+        let platformRequestId: string | undefined
+        let providerStatus: number | undefined
+        let sent = false
+        let overview: Record<string, unknown> = {}
+        const fields = { runId: config.runId, taskTitle: config.taskTitle, nodeTitle: config.nodeTitle, phase: config.tracePhase, requestNumber: number, model: config.modelId }
+        const requestRecord: typeof record = entry => record({ ...entry, requestId, requestNumber: number })
+        void requestRecord({ phase: '', kind: 'status', text: `第 ${number} 次请求；用途：${purpose}；类型：${requestKind}；运行标识：${config.runId}`, metrics: { 模型: config.modelId, 请求用途: purpose, 请求类型: requestKind } })
+        const source = streamSimple({ ...model, api: 'openai-completions' }, requestContext, {
           ...options,
           maxRetries: 0,
           onPayload: async (payload, requestModel) => {
             const replacement = await options?.onPayload?.(payload, requestModel)
             // Standalone summaries omit the Agent hooks; normalize once after any caller hook.
-            return normalizeGatewayPayload(replacement === undefined ? payload : replacement)
+            const normalized = normalizeGatewayPayload(replacement === undefined ? payload : replacement)
+            overview = buildGatewayRequestLogFields(normalized && typeof normalized === 'object' ? normalized as Record<string, unknown> : {}, number)
+            void requestRecord({ phase: '', kind: 'input', text: modelPayloadText(normalized) })
+            return normalized
           },
           fetch: async (input, init) => {
             const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
             headers.set('authorization', buildBearerAuthorizationHeader(await config.getAccessToken()))
+            startedAt = Date.now()
+            sent = true
+            log.info('model request overview', { ...overview, ...fields, requestId: number, traceRequestId: requestId })
+            void requestRecord({ phase: '', kind: 'status', text: '请求已发送，等待模型响应。', timestamp: startedAt, metrics: { 请求发送时间: new Date(startedAt).toISOString() } })
             const response = await globalThis.fetch(input, { ...init, headers })
+            headersMs = Date.now() - startedAt
+            platformRequestId = response.headers.get('x-request-id') ?? undefined
+            providerStatus = response.status
+            void requestRecord({ phase: '', kind: 'status', text: `收到响应头；状态码 ${providerStatus}`, metrics: { 响应头耗时毫秒: headersMs, 平台请求标识: platformRequestId, 响应状态码: providerStatus } })
             if (!retryWait.inspect(response)) settingsManager.setRetryEnabled(false)
             return response
           },
+        })
+        return traceModelStream(source, requestRecord, async (response, timings) => {
+          const elapsedMs = Date.now() - startedAt
+          const usage = { input: response.usage.input, output: response.usage.output, cacheRead: response.usage.cacheRead, cacheWrite: response.usage.cacheWrite, total: response.usage.totalTokens }
+          log.info('model response completed', { ...fields, requestId: number, traceRequestId: requestId, platformRequestId, providerStatus, elapsedMs, ...timings,
+            stopReason: response.stopReason, usage, outputBudgetSource: 'platform',
+            contentLength: response.content.filter(part => part.type === 'text').map(part => part.text).join('\n').length,
+            toolCount: response.content.filter(part => part.type === 'toolCall').length, ...buildGatewayThinkingLogFields(response.content) })
+          await requestRecord({ phase: '', kind: 'status', completed: true,
+            text: `响应结束；结束原因：${response.stopReason}${response.errorMessage ? `；错误：${response.errorMessage}` : ''}；耗时 ${elapsedMs} 毫秒`,
+            metrics: { 总耗时毫秒: elapsedMs, 首个SDK流事件毫秒: timings.firstEventMs, 首次思考毫秒: timings.firstThinkingMs, 首次正文毫秒: timings.firstTextMs,
+              响应结束时间: new Date().toISOString(), 发送状态: sent ? '已发送' : '未发送',
+              响应头耗时毫秒: headersMs, 平台请求标识: platformRequestId, 响应状态码: providerStatus, 结束原因: response.stopReason,
+              输入Token: usage.input, 输出Token: usage.output, 缓存读取Token: usage.cacheRead, 缓存写入Token: usage.cacheWrite, 总Token: usage.total } })
+        }, () => startedAt, timings => {
+          log.info('model stream progress', { ...fields, ...timings })
+          void requestRecord({ phase: '', kind: 'status', text: '模型流式响应进度（首个 SDK 事件不等同于网络首字节）',
+            metrics: { 首个SDK流事件毫秒: timings.firstEventMs, 首次思考毫秒: timings.firstThinkingMs, 首次正文毫秒: timings.firstTextMs } })
         })
       }),
       models: [{
@@ -1035,7 +1037,17 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         settingsManager,
       })
       log.trace('createAgentSession completed', { sessionId: session.sessionId })
-      return new PiCodingAgentSession(session, mcp, retryWait, settingsManager, requestTracker)
+      return new PiCodingAgentSession(session, mcp, retryWait, settingsManager, requestTracker, async () => { await Promise.all([...pendingTraces]) }, {
+        current: () => config,
+        update: next => { originalRecorder = next.modelTrace; config = { ...config, ...next, modelTrace: next.modelTrace ? record : undefined } },
+        purpose: value => { requestPurpose = value },
+        startPrompt: () => { requestsInPrompt = 0; observedKind = 'execution' },
+        observe: event => {
+          if (event.type === 'compaction_start') observedKind = 'compaction'
+          else if (event.type === 'auto_retry_start') observedKind = 'retry'
+          else if (event.type === 'compaction_end' || event.type === 'auto_retry_end') observedKind = 'execution'
+        },
+      })
     } catch (error) {
       await mcp.dispose()
       throw error

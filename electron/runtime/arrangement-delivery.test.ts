@@ -92,7 +92,7 @@ describe('automatic arrangement final file handover', () => {
         assert.match(system, /不得修改前置最终成果或指定快照/)
         assert.doesNotMatch(system, /执行指令：Do a|private summary a/)
       }
-      if (iteration > 1) assert.match(prompt, /你的最终提交未通过校验[\s\S]*本次尚未检查实际文件/)
+      if (iteration > 1) assert.match(prompt, /当前节点尚未通过最终交付校验[\s\S]*请承接已有上下文和工具结果[\s\S]*否则先完成剩余工作，再提交/)
       else assert.equal(prompt, '开始你的工作。')
       if (iteration === 1) return { text: '' }
       await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
@@ -108,8 +108,8 @@ describe('automatic arrangement final file handover', () => {
     const f = await fixture(async (id, iteration, root) => {
       if (id === 'a' && iteration === 1) return { text: 'not JSON' }
       if (id === 'a' && iteration === 2) {
-        assert.match(f.prompts.at(-1)!, /^你的最终提交未通过校验/)
-        assert.match(f.prompts.at(-1)!, /本次尚未检查实际文件/)
+        assert.match(f.prompts.at(-1)!, /^当前节点尚未通过最终交付校验/)
+        assert.match(f.prompts.at(-1)!, /不要重复创建已有有效文件或重复收集已有信息/)
         assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.issues[0]?.code, 'INVALID_SUBMISSION')
         return { text: submission(id) }
       }
@@ -159,7 +159,7 @@ describe('automatic arrangement final file handover', () => {
         if (id === 'b' || iteration === 8) return { text: submission(id) }
         if (iteration > 1) {
           assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.issues[0]?.code, scenario.issue)
-          assert.match(f.prompts.at(-1)!, /^你的最终提交未通过校验/)
+          assert.match(f.prompts.at(-1)!, /^当前节点尚未通过最终交付校验/)
           assert.equal(f.contexts.length, 1)
         }
         return scenario
@@ -432,7 +432,7 @@ describe('automatic arrangement final file handover', () => {
       return { text: iteration === 1 ? 'I have completed the work.' : submission(id) }
     })
     assert.equal((await f.executor.execute(f.plan, 'task', 'run')).status, 'completed')
-    assert.match(f.prompts[1]!, /^你的最终提交未通过校验/)
+    assert.match(f.prompts[1]!, /^当前节点尚未通过最终交付校验/)
   })
   it('hands over the frozen predecessor even if a later tool overwrites the workspace original', async () => {
     const f = await fixture(async (id, _iteration, root) => {

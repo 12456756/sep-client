@@ -12,6 +12,7 @@
 import { AlertTriangle, Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
+import { ModelPreferenceProvider } from '../components/workspace/model-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { ConversationSessionsContext, createConversationSessions } from '../features/enterprise/conversation-sessions';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
@@ -54,7 +55,9 @@ interface Props {
 
 export function ClientAppPage(props: Props) {
   return <MediaPreferenceScopeContext.Provider key={JSON.stringify([props.enterpriseId, props.userId])} value={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
-    <ClientAppContent {...props} />
+    <ModelPreferenceProvider scope={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
+      <ClientAppContent {...props} />
+    </ModelPreferenceProvider>
   </MediaPreferenceScopeContext.Provider>;
 }
 
@@ -235,6 +238,7 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
         <ProfileSettingsDialog
           profile={profile}
           userName={userName}
+          models={[...new Set(workspace.myEmployees.flatMap(employee => employee.allowedModels))]}
           canManage={canManage}
           uploading={profileWorkspace.uploading}
           error={profileWorkspace.error}

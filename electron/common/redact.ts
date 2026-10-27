@@ -59,4 +59,12 @@ export function describeError(error: unknown): string {
   return redactText(String(error))
 }
 
+/** Local transcripts keep full business text, but never authentication material or binary data. */
+export function redactModelTraceText(value: string): string {
+  return redactText(value, Infinity)
+    .replace(/data:[^\s;]+;base64,[A-Za-z0-9+/=_-]+/gi, '[binary data omitted]')
+    .replace(/((?:["']?)(?:authorization|cookie|password|secret|token|access[_-]?token|refresh[_-]?token|api[_-]?key|credential)(?:["']?)\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[^\s,;}]+)/gi, '$1[redacted]')
+    .replace(/([?&](?:x-amz-signature|x-amz-credential|signature|sig)=)[^&\s)"']+/gi, '$1[redacted]')
+}
+
 
