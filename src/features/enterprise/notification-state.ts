@@ -59,7 +59,9 @@ function matches(item: PlatformNotification, query: NotificationFilters): boolea
 
 export function assertNotificationCommand(result: IpcCommandResult): void {
   // A successful 204 has no data. Only the IPC success envelope matters.
-  if (!result.success) throw new Error(result.error?.message || '通知操作失败，请重试。')
+  if (!result.success) throw Object.assign(new Error(result.error?.message || '通知操作失败，请重试。'), {
+    code: result.error?.code, statusCode: result.error?.statusCode, retryAfterMs: result.error?.retryAfterMs,
+  })
 }
 
 export function notificationReducer(state: NotificationState, action: NotificationStateAction): NotificationState {

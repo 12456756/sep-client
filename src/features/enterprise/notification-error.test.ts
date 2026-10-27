@@ -1,8 +1,24 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { notificationErrorMessage } from './notification-error'
+import { notificationErrorMessage, notificationRetryDelay } from './notification-error'
+import { assertNotificationCommand } from './notification-state'
 
 describe('notification user-facing errors', () => {
+  it('preserves IPC rate-limit metadata and explains the actual failure', () => {
+    let failure: unknown
+    try { assertNotificationCommand({ success: false, error: { code: 'RATE_LIMITED', statusCode: 429, message: 'safe message', retryAfterMs: 65_000 } }) } catch (error) { failure = error }
+    assert.equal(notificationErrorMessage(failure), '通知请求较多，请稍后重试。')
+    assert.equal(notificationRetryDelay(failure, 0), 65_000)
+    assert.equal(notificationRetryDelay(failure, 3), null)
+  })
+  it('backs off transient failures without retrying authentication or invalid payload errors', () => {
+    assert.equal(notificationRetryDelay({ statusCode: 429 }, 0), 60_000)
+    assert.equal(notificationRetryDelay(new TypeError('Failed to fetch'), 0), 3_000)
+    assert.equal(notificationRetryDelay({ statusCode: 503 }, 1), 6_000)
+    assert.equal(notificationRetryDelay({ statusCode: 401 }, 0), null)
+    assert.equal(notificationRetryDelay(new Error('Invalid response'), 0), null)
+    assert.equal(notificationRetryDelay({ statusCode: 429, retryAfterMs: NaN }, 0), 60_000)
+  })
   it('explains stale main/preload without leaking IPC diagnostics', () => {
     for (const channel of ['notifications:list', 'notifications:unread-count']) {
       const raw = new Error(`Error invoking remote method '${channel}': Error: No handler registered for '${channel}'`)

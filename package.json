@@ -64,6 +64,7 @@
     "test:update-feed": "node scripts/test-update-feed.mjs",
     "test:updates": "node --test scripts/update-manifest.test.mjs scripts/prepare-download-update.test.mjs",
     "test:updates:ui": "node scripts/test-download-update-ui.mjs",
+    "test:content-loading:ui": "node scripts/test-content-loading-ui.mjs",
     "test:updates:runtime": "tsx --test electron/bootstrap/app-updater.test.ts electron/bootstrap/create-app-updater.test.ts electron/bootstrap/shutdown.test.ts electron/common/update-config.test.ts electron/controller/update-contract.test.ts"
   },
   "dependencies": {

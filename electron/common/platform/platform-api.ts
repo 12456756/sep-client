@@ -179,6 +179,7 @@ export interface UploadInput {
 export interface ApiError {
   statusCode: number
   message: string
+  retryAfterMs?: number
   requestId?: string
   timestamp?: string
   path?: string
@@ -228,6 +229,10 @@ export class AuthApiError extends Error {
 }
 
 async function parseError(response: Response, resource?: AuthApiResource): Promise<AuthApiError> {
+  const retryHeader = response.headers.get('Retry-After')?.trim()
+  const retryDelay = retryHeader ? Number(retryHeader) : NaN
+  const retryAfterMs = retryHeader && !Number.isFinite(retryDelay) ? Date.parse(retryHeader) - Date.now() : retryDelay * 1000
+  const retry = Number.isFinite(retryAfterMs) && retryAfterMs > 0 ? { retryAfterMs: Math.ceil(retryAfterMs) } : {}
   try {
     const value = await response.json() as Partial<ApiError>
     return new AuthApiError({
@@ -236,27 +241,35 @@ async function parseError(response: Response, resource?: AuthApiResource): Promi
       requestId: value.requestId,
       timestamp: value.timestamp,
       path: value.path,
+      ...retry,
     }, resource)
   } catch {
-    return new AuthApiError({ statusCode: response.status, message: response.statusText }, resource)
+    return new AuthApiError({ statusCode: response.status, message: response.statusText, ...retry }, resource)
   }
 }
 
 async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource, signal?: AbortSignal): Promise<T> {
+  const boundedRead = ['notifications', 'skills', 'subscriptions'].includes(resource)
+  const failTransport = (error: unknown): never => {
+    if (boundedRead && !signal?.aborted && (error instanceof TypeError || isTransportTimeout(error))) {
+      throw new AuthApiError({ statusCode: 0, message: 'Platform read connection failed or timed out' }, resource)
+    }
+    throw error
+  }
   const response = await fetch(`${config.SEP_BASE_URL}${path}`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       ...(resource === 'notifications' ? { Origin: config.SEP_WEB_ORIGIN } : {}),
     },
-    signal: signal ?? (resource === 'notifications' ? AbortSignal.timeout(15_000) : undefined),
-  })
+    signal: signal ?? (boundedRead ? AbortSignal.timeout(15_000) : undefined),
+  }).catch(failTransport)
   if (resource === 'skills' && path.startsWith('/enterprise/skill-versions?')) {
     const fields = { method: 'GET', path: '/enterprise/skill-versions', statusCode: response.status, ok: response.ok }
     if (response.ok) log.trace('skill version query response received', fields)
     else log.warn('skill version query response received', fields)
   }
   if (!response.ok) throw await parseError(response, resource)
-  return response.json() as Promise<T>
+  return response.json().catch(failTransport) as Promise<T>
 }
 
 async function postJson<T>(

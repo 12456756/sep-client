@@ -64,6 +64,8 @@ import type {
 export interface IpcError {
   message: string
   statusCode?: number
+  code?: string
+  retryAfterMs?: number
 }
 
 export interface IpcCommandResult {

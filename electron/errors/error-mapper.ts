@@ -77,7 +77,7 @@ function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
   if (error.statusCode === 401) return envelope('INVALID_CREDENTIALS')
   if (error.statusCode === 403) return envelope('ACCOUNT_DISABLED')
   if (error.statusCode === 404) return envelope('NOT_FOUND')
-  if (error.statusCode === 429) return envelope('RATE_LIMITED')
+  if (error.statusCode === 429) return { ...envelope('RATE_LIMITED'), ...(error.error.retryAfterMs ? { retryAfterMs: error.error.retryAfterMs } : {}) }
   if (error.statusCode >= 500) return envelope('SERVICE_UNAVAILABLE')
   return envelope('INTERNAL_ERROR')
 }

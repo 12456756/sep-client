@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react'
-import { notificationErrorMessage } from './notification-error'
+import { notificationErrorMessage, notificationRetryDelay } from './notification-error'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import {
   notificationPageSchema, notificationSocketMessageSchema, unreadNotificationCountSchema,
@@ -40,6 +40,9 @@ export function useNotifications() {
     let queued = false
     let revision = 0
     let timer: ReturnType<typeof setTimeout> | undefined
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let retryAttempt = 0
+    let lastRefreshAt = 0
     let unsubscribe: (() => void) | undefined
     let subscriptionError: string | null = null
     const seen = new Map<string, string>()
@@ -47,8 +50,20 @@ export function useNotifications() {
     function schedule() {
       if (!active) return
       queued = true
-      if (inFlight || timer !== undefined) return
+      if (inFlight || timer !== undefined || retryTimer !== undefined) return
       timer = setTimeout(() => { timer = undefined; void refresh() }, 150)
+    }
+
+    function retryFailures(errors: unknown[]) {
+      const delays = errors.flatMap(error => {
+        const delay = notificationRetryDelay(error, retryAttempt)
+        return delay === null ? [] : [delay]
+      })
+      if (!errors.length) retryAttempt = 0
+      if (!active || !delays.length) return
+      retryAttempt++
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+      retryTimer = setTimeout(() => { retryTimer = undefined; void refresh() }, Math.max(...delays))
     }
 
     async function refresh() {
@@ -56,6 +71,7 @@ export function useNotifications() {
       if (timer !== undefined) { clearTimeout(timer); timer = undefined }
       queued = false
       inFlight = true
+      lastRefreshAt = Date.now()
       const id = ++sequence.current
       const snapshotRevision = revision
       dispatch({ type: 'start', id })
@@ -81,11 +97,16 @@ export function useNotifications() {
         const page = pageResult.status === 'fulfilled' ? pageResult.value : undefined
         const unreadCount = countResult.status === 'fulfilled' ? countResult.value : undefined
         const categoryUnreadCount = category ? scopedResult.status === 'fulfilled' ? scopedResult.value : undefined : unreadCount
-        const errors = [pageResult, countResult, scopedResult].flatMap(result => result.status === 'rejected' ? [notificationErrorMessage(result.reason)] : [])
+        const failures = [pageResult, countResult, scopedResult].flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+        const errors = failures.map(error => notificationErrorMessage(error))
         if (subscriptionError) errors.unshift(subscriptionError)
         dispatch({ type: 'finish', id, page, unreadCount, categoryUnreadCount, error: errors.length ? [...new Set(errors)].join('；') : null })
+        retryFailures(failures)
       } catch (error) {
-        if (active && snapshotRevision === revision) dispatch({ type: 'finish', id, error: notificationErrorMessage(error) })
+        if (active && snapshotRevision === revision) {
+          dispatch({ type: 'finish', id, error: notificationErrorMessage(error) })
+          retryFailures([error])
+        }
       } finally {
         inFlight = false
         if (active && queued) schedule()
@@ -127,10 +148,14 @@ export function useNotifications() {
     } catch (error) {
       subscriptionError = notificationErrorMessage(error)
     }
+    const onFocus = () => { if (Date.now() - lastRefreshAt >= 30_000) schedule() }
+    window.addEventListener('focus', onFocus)
     void refresh()
     return () => {
       active = false
       if (timer !== undefined) clearTimeout(timer)
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+      window.removeEventListener('focus', onFocus)
       unsubscribe?.()
       refreshRef.current = () => undefined
     }
