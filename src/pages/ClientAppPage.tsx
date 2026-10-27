@@ -18,10 +18,12 @@ import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { NotificationCenter } from '../components/enterprise/NotificationCenter';
 import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
+import { UpdateNotice } from '../components/enterprise/UpdateNotice';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
+import type { UpdateModel } from '../features/update/use-update';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
 import { WorkHubPage } from './enterprise/WorkHubPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
@@ -38,6 +40,7 @@ import '../styles/arrange.css';
 import '../styles/compute-center.css';
 
 interface Props {
+  update?: UpdateModel;
   userId: string;
   userName: string;
   enterpriseId: string;
@@ -58,7 +61,7 @@ export function ClientAppPage(props: Props) {
   </MediaPreferenceScopeContext.Provider>;
 }
 
-function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
+function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
     void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined);
@@ -73,6 +76,7 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const profile = profileWorkspace.profile;
   const userAvatar = displayedUserAvatar(profile, initialUserAvatar ?? null, userName);
   const displayUserName = profile?.user.name || userName;
@@ -203,6 +207,8 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
                   if (!result.success) throw new Error(result.error?.message || '无法打开通知关联页面');
                 }
               }} />
+              {update ? <UpdateNotice update={update} open={updateOpen} onOpenChange={setUpdateOpen}
+                onOpenWorkRecords={() => workspace.navigate({ name: 'records' })} /> : null}
             </div>
           )}
         />

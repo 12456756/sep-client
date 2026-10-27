@@ -195,7 +195,7 @@ Use tonal surfaces and one restrained shadow vocabulary. A surface may use a bor
 
 ## Work interaction rules
 
-- Hover navigation glyphs scale to 1.08 in 160ms; press scales to 0.96 in 80ms. Background and color settle in 140ms. Reduced motion disables transforms and nonessential animation.
+- Hover or keyboard focus scales navigation glyphs, the enterprise mark and the account avatar to 1.4 in 200ms, returning smoothly when interaction ends; press scales the button to 0.96 in 80ms. Button bounds and rail spacing stay fixed. Background and color settle in 140ms. Reduced motion disables transforms and nonessential animation.
 - Selecting a work preserves search and filters, and each work restores its own unsent draft, attachments, and reading position within the logged-in scope.
 - Results, process and information are closed by default. Media polling remains mounted while results are hidden; image/video previews mount only when requested.
 - Display file, image and video counts separately when no reliable shared identity exists. Loading and failed reads never become a fabricated zero.

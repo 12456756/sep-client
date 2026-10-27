@@ -123,12 +123,15 @@ test('signed channel configs validate against installed builder schema and never
       const config = createBuilderConfig(build, channel, { signed: true, platform, env })
       await validateConfiguration(config, new DebugLogger(false))
       assert.equal(config.forceCodeSigning, true)
+      assert.equal(config.extraMetadata.sepUpdateMode, 'in-app')
       assert.equal(config.directories.output, `dist/${channel}`)
       assert.equal(config.publish[0].url, `https://download.longdaosep.cn/sep-client/${channel}/`)
       assert.doesNotMatch(JSON.stringify(config), /SECRET_CERT|PRIVATE_PASSWORD|secret-value/)
     }
   }
   assert.equal(createBuilderConfig(build, 'beta').forceCodeSigning, undefined)
+  assert.equal(createBuilderConfig({ ...build, extraMetadata: { sepUpdateMode: 'in-app', retained: true } }, 'beta').extraMetadata.sepUpdateMode, 'external')
+  assert.equal(createBuilderConfig({ ...build, extraMetadata: { retained: true } }, 'beta').extraMetadata.retained, true)
   assert.equal(createBuilderConfig(build, 'beta').directories.output, 'dist/local/beta')
 })
 

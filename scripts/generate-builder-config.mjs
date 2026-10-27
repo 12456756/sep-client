@@ -14,6 +14,7 @@ export function createBuilderConfig(build, channel, { signed = false, env = proc
   if (!Object.hasOwn(UPDATE_FEEDS, channel)) throw new Error('channel must be beta or stable')
   if (!build || typeof build !== 'object' || Array.isArray(build)) throw new Error('package.json must contain build configuration')
   const config = structuredClone(build)
+  config.extraMetadata = { ...config.extraMetadata, sepUpdateMode: signed ? 'in-app' : 'external' }
   for (const platform of ['mac', 'win', 'linux']) {
     if (config[platform]?.publish != null) throw new Error(`${platform}.publish must not override the channel feed`)
   }

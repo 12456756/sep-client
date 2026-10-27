@@ -49,6 +49,8 @@ export function UpdateDetails({ update, onRestart, onClose }: {
     : release?.version === version ? release.releaseNotes : []
   const date = state?.status === 'available' ? state.releaseDate
     : release?.version === version ? release.releaseDate : null
+  const externalDownload = (state?.status === 'available' ? state.downloadMode : release?.downloadMode) === 'external'
+  const downloadOpened = state?.status === 'available' && externalDownload && state.downloadOpened === true
   const retry = () => {
     if (state?.status !== 'error') return
     if (state.operation === 'download') void update.download()
@@ -63,7 +65,10 @@ export function UpdateDetails({ update, onRestart, onClose }: {
       {state?.status === 'checking' && <p>正在检查新版本…</p>}
       {state?.status === 'not-available' && <p>当前已是最新版本。</p>}
       {version && <p><strong>新版本 {version}</strong></p>}
-      {state?.status === 'available' && <p>新版本已准备好，下载时可以继续工作。</p>}
+      {state?.status === 'available' && <p>{externalDownload
+        ? '浏览器将下载对应平台安装包。下载后退出客户端，再安装新版本。'
+        : '新版本已准备好，下载时可以继续工作。'}</p>}
+      {state?.status === 'available' && downloadOpened && <p>浏览器已打开下载页面。</p>}
       {state?.status === 'downloaded' && <p>下载完成。确认后将关闭客户端，安装更新并重新打开。</p>}
     </div>
     {state?.status === 'downloading' && <div className="ent-update-progress">
@@ -82,11 +87,11 @@ export function UpdateDetails({ update, onRestart, onClose }: {
     </p>}
     {pending && <p className="ent-update-hint" role="status">{
       pending === 'install' ? '正在准备重启…' : pending === 'cancel' ? '正在取消下载…'
-        : pending === 'download' ? '正在下载更新…' : '正在检查更新…'
+        : pending === 'download' ? (externalDownload ? '正在打开下载页面…' : '正在下载更新…') : '正在检查更新…'
     }</p>}
     <footer className="ent-update-actions">
       {state?.status === 'available' && <button type="button" className="ent-btn primary" disabled={busy} onClick={() => void update.download()}>
-        <ArrowDownToLine size={14} aria-hidden />下载更新
+        <ArrowDownToLine size={14} aria-hidden />{externalDownload ? (downloadOpened ? '再次下载' : '下载新版') : '下载更新'}
       </button>}
       {state?.status === 'downloading' && <button type="button" className="ent-btn" disabled={pending === 'cancel' || pending === 'install'} onClick={() => void update.cancel()}>取消下载</button>}
       {state?.status === 'downloaded' && <button type="button" className="ent-btn primary" disabled={busy} onClick={onRestart}>

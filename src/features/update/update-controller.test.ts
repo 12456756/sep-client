@@ -24,6 +24,33 @@ const ok: IpcCommandResult = { success: true }
 const fail: IpcCommandResult = { success: false, error: { message: 'secret token /private/path https://private' } }
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() }
 
+test('browser download mode and confirmation survive IPC without pretending the update is installed', async () => {
+  const external: UpdateState = { ...available, downloadMode: 'external' }
+  const h = await ready(external)
+  assert.equal(h.controller.getSnapshot().release?.downloadMode, 'external')
+  h.handlers.download = async () => {
+    h.emit({ ...external, downloadOpened: true })
+    return ok
+  }
+  await h.controller.getSnapshot().download()
+  assert.deepEqual(h.controller.getSnapshot().state, { ...external, downloadOpened: true })
+  assert.equal(h.controller.getSnapshot().release?.downloadOpened, true)
+  assert.equal(h.controller.getSnapshot().pending, null)
+  await h.controller.getSnapshot().install()
+  assert.ok(!h.calls.includes('install'))
+  h.emit({ status: 'error', currentVersion: '1.0.0', operation: 'download', message: 'private', retryable: true })
+  assert.equal(h.controller.getSnapshot().release?.downloadMode, 'external')
+  h.disconnect()
+})
+
+test('browser download flags reject malformed IPC values and do not accept an arbitrary remote link', () => {
+  assert.equal(parseUpdateState({ ...available, downloadMode: 'file://private' }), null)
+  assert.equal(parseUpdateState({ ...available, downloadOpened: 'yes' }), null)
+  const parsed = parseUpdateState({ ...available, downloadMode: 'external', downloadUrl: 'https://evil.test' })
+  assert.ok(parsed)
+  assert.ok(!('downloadUrl' in parsed))
+})
+
 function harness(initial: UpdateState = idle) {
   const calls: string[] = []
   const subscriptions: Array<(value: UpdateState) => void> = []

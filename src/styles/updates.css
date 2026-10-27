@@ -1,3 +1,4 @@
+.login-update-entry { position: fixed; z-index: 74; top: calc(var(--window-chrome-height, 0px) + 14px); right: calc(24px + var(--window-controls-inset, 0px)); -webkit-app-region: no-drag; }
 .ent-update-entry { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: var(--ent-panel); font-size: var(--ent-fs-note); white-space: nowrap; cursor: pointer; }
 .ent-update-entry.has-update { color: var(--ent-brand-ink); border-color: var(--ent-brand-border); background: var(--ent-brand-soft); }
 .ent-update-entry:hover { border-color: var(--ent-brand); }

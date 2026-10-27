@@ -80,6 +80,8 @@ export type UpdateState =
       version: string
       releaseDate: string | null
       releaseNotes: string[]
+      downloadMode?: 'external'
+      downloadOpened?: boolean
     }
   | {
       status: 'downloading'

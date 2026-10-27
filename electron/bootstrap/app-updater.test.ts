@@ -37,7 +37,7 @@ class Driver extends EventEmitter implements UpdateDriver {
   quitAndInstall(): void { this.installCalls++ }
 }
 
-function setup(enabled = true): {
+function setup(enabled = true, openExternalDownload?: (version: string) => Promise<void>): {
   driver: Driver; updater: AppUpdater; states: UpdateState[]; tokens: FakeToken[]
   stats: ClientTaskStats; setPrepare: (work: () => Promise<void>) => void; setRecover: (work: () => Promise<void>) => void
 } {
@@ -48,7 +48,7 @@ function setup(enabled = true): {
   let prepare = async (): Promise<void> => {}
   let recover = async (): Promise<void> => {}
   const updater = new AppUpdater({
-    currentVersion: '0.1.2', driver: enabled ? driver : null,
+    currentVersion: '0.1.2', driver: enabled ? driver : null, openExternalDownload,
     createToken: () => { const token = new FakeToken(); tokens.push(token); return token as unknown as CancellationToken },
     isNewerVersion: version => version === '0.1.3',
     taskStats: async () => ({ ...stats }), prepareInstall: () => prepare(), restoreAfterInstallFailure: () => recover(), publish: state => states.push(state),
@@ -64,6 +64,45 @@ async function downloaded(): Promise<ReturnType<typeof setup>> {
 }
 
 describe('AppUpdater', () => {
+  it('opens unsigned releases in the browser without downloading, installing or stopping tasks', async () => {
+    const opened: string[] = []
+    const { updater, driver, stats, tokens } = setup(true, async version => { opened.push(version) })
+    stats.running = 2
+    await updater.check()
+    assert.equal(updater.getState().status, 'available')
+    assert.equal((updater.getState() as Extract<UpdateState, { status: 'available' }>).downloadMode, 'external')
+    await updater.download()
+    assert.deepEqual(opened, ['0.1.3'])
+    const state = updater.getState()
+    assert.equal(state.status, 'available')
+    assert.equal((state as Extract<UpdateState, { status: 'available' }>).downloadOpened, true)
+    assert.equal(driver.downloadCalls, 0)
+    assert.equal(driver.installCalls, 0)
+    assert.equal(tokens.length, 0)
+    await assert.rejects(updater.install(), /下载/)
+    updater.dispose()
+  })
+
+  it('retries browser opening failures and keeps concurrent checks locked', async () => {
+    let attempts = 0
+    const pending = deferred<void>()
+    const { updater, driver } = setup(true, async () => {
+      if (++attempts === 1) throw new Error('private download failure')
+      await pending.promise
+    })
+    await updater.check()
+    await assert.rejects(updater.download(), /下载更新失败/)
+    assert.equal(updater.getState().status, 'error')
+    assert.doesNotMatch(JSON.stringify(updater.getState()), /private/)
+    const retry = updater.download()
+    await assert.rejects(updater.check(), /正在进行/)
+    pending.resolve()
+    await retry
+    assert.equal(updater.getState().status, 'available')
+    assert.equal(driver.downloadCalls, 0)
+    updater.dispose()
+  })
+
   it('checks without downloading and exposes a detached sanitized snapshot', async () => {
     const { updater, driver, states } = setup()
     await updater.check()

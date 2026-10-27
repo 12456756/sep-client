@@ -190,6 +190,8 @@
 .ent-shell-main { position: relative; isolation: isolate; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: linear-gradient(135deg, rgb(234 213 220 / 36%), rgb(240 230 229 / 22%) 44%, rgb(238 240 244 / 48%)); }
 .ent-shell-main::before { position: absolute; z-index: 0; right: -100px; bottom: -170px; width: min(42vw, 420px); aspect-ratio: 1; content: ''; opacity: .02; background: #ae383d; -webkit-mask: url('../assets/logo.png') center / contain no-repeat; mask: url('../assets/logo.png') center / contain no-repeat; pointer-events: none; }
 .ent-shell-main > .ent-top, .ent-shell-main > .ent-error-bar, .ent-shell-main > .ent-scroll { position: relative; z-index: 1; }
+/* Global header panels sit above page-local search bars and organization nodes. */
+.ent-shell-main > .ent-top { z-index: 20; }
 .ent-shell.dark { background: #11131a; }
 .ent-shell.dark .ent-shell-main { background: linear-gradient(135deg, #171519, #181a21 48%, #171d26); }
 .ent-shell.dark .ent-shell-main::before { background: #e8b2b6; opacity: .025; }
@@ -458,7 +460,8 @@
  * 那三颗按钮由 titleBarOverlay 画在右上角，任何内容压过去都会被它盖住。
  * 首页、工作详情、安排工作不写标题（它们的第一行就是内容），这条横条仍然在。
  */
-.ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 28px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: rgb(255 255 255 / 76%); backdrop-filter: blur(14px); }
+/* Keep fixed notification/update panels anchored to the viewport, without a filter containing block. */
+.ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 28px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: rgb(255 255 255 / 76%); }
 [data-platform='win32'] .ent-top { padding-right: calc(28px + var(--window-controls-inset)); }
 
 .ent-top-head { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }

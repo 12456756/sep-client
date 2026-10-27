@@ -1,12 +1,24 @@
 import { createRequire } from 'node:module'
-import { app } from 'electron'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { app, shell } from 'electron'
 import { logger } from '../common/logger'
-import { supportsAppUpdates } from '../common/update-config'
+import { externalUpdateDownloadUrl, supportsAppUpdates } from '../common/update-config'
+import { generatedRuntimeConfig } from '../common/runtime-config.generated'
 import { withTimeout } from '../common/with-timeout'
 import type { Backend } from './build-backend'
 import { AppUpdater } from './app-updater'
 import type { RendererBridge } from './renderer-bridge'
 import { SHUTDOWN_BUDGET_MS } from './shutdown'
+
+/** Only signed-release packaging opts into native installation. Legacy/local packages use browser downloads. */
+function usesNativeInstallation(): boolean {
+  try {
+    const metadata: unknown = JSON.parse(readFileSync(join(app.getAppPath(), 'package.json'), 'utf8'))
+    return metadata !== null && typeof metadata === 'object' &&
+      'sepUpdateMode' in metadata && metadata.sepUpdateMode === 'in-app'
+  } catch { return false }
+}
 
 /** 不支持的平台不构造 SDK updater，避免开发环境意外请求或安装。 */
 export function createAppUpdater(backend: Backend, bridge: RendererBridge): AppUpdater {
@@ -40,6 +52,11 @@ export function createAppUpdater(backend: Backend, bridge: RendererBridge): AppU
   }
   return new AppUpdater({
     currentVersion: app.getVersion(), driver,
+    ...(supported && !usesNativeInstallation() ? {
+      openExternalDownload: (version: string) => shell.openExternal(
+        externalUpdateDownloadUrl(generatedRuntimeConfig.channel, version, process.platform, process.arch),
+      ),
+    } : {}),
     createToken: () => {
       if (!sdk) throw new Error('Updater unavailable')
       return new sdk.CancellationToken()
