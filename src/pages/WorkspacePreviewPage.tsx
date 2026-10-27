@@ -37,13 +37,14 @@ export function WorkspacePreviewPage(): JSX.Element {
         canManage={false}
         userName="未登录"
         collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(value => !value)}
         onNavigate={setRoute}
         onOpenSettings={() => undefined}
         onLogout={() => setRoute({ name: 'home' })}
       />
       <div className="ent-shell-main">
         <AppTopBar
+          sidebarCollapsed={sidebarCollapsed}
+          onToggleSidebar={() => setSidebarCollapsed(value => !value)}
           actions={(
             <div className="ent-top-actions-group">
               <div className="ent-view-switch" role="group" aria-label="页面切换">

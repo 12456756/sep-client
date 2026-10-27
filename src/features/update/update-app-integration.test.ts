@@ -13,8 +13,7 @@ test('the update subscription lives in App and the client toolbar exposes its no
   assert.match(client, /<UpdateNotice[\s\S]*update=\{update\}[\s\S]*onOpenWorkRecords=\{\(\) => workspace\.navigate\(\{ name: 'records' \}\)\}/)
 })
 
-test('the login screen also exposes updates without waiting for authentication', () => {
-  assert.match(app, /!authState && <aside[^>]*className="login-update-entry"/)
-  assert.match(app, /<UpdateNotice update=\{update\} open=\{loginUpdateOpen\}/)
+test('the login screen omits the update entry while retaining a single update subscription', () => {
+  assert.doesNotMatch(app, /login-update-entry|loginUpdateOpen|<UpdateNotice/)
   assert.equal(app.match(/useUpdate\(\)/g)?.length, 1)
 })

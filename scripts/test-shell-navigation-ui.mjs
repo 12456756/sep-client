@@ -53,14 +53,15 @@ try {
           const r = document.querySelector(selector).getBoundingClientRect()
           return { x: r.x, y: r.y, width: r.width, height: r.height, right: r.right, bottom: r.bottom }
         }
-        const actions = [...document.querySelectorAll('.ent-top-actions-group button')].map(button => {
+        const isClickable = button => {
           const r = button.getBoundingClientRect()
           const target = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)
           return button.contains(target) && r.right <= window.innerWidth
-        })
+        }
+        const actions = [...document.querySelectorAll('.ent-top-actions-group button')].map(isClickable)
         const nav = rect('.ent-icon-nav')
         const navButtonsFit = [...document.querySelectorAll('.ent-icon-nav button:not([role="menuitem"])')].every(button => button.getBoundingClientRect().right <= nav.right)
-        return { nav, navButtonsFit, main: rect('.ent-shell-main'), header: rect('.ent-top'), chrome: rect('.electron-window-chrome'), brand: rect('.ent-icon-brand-button'), toggle: rect('.ent-icon-nav-toggle'), actions, overflow: document.documentElement.scrollWidth > window.innerWidth }
+        return { nav, navButtonsFit, main: rect('.ent-shell-main'), header: rect('.ent-top'), chrome: rect('.electron-window-chrome'), brand: rect('.ent-icon-brand-button'), firstNav: rect('.ent-icon-nav-item'), toggle: rect('.ent-top-sidebar-toggle'), toggleClickable: isClickable(document.querySelector('.ent-top-sidebar-toggle')), actions, overflow: document.documentElement.scrollWidth > window.innerWidth }
       })
       assert.equal(metrics.nav.width, expanded ? 200 : 80)
       assert.equal(metrics.main.x, metrics.nav.right)
@@ -71,19 +72,28 @@ try {
         assert.equal(metrics.chrome.width, 80)
         assert.ok(metrics.brand.y >= 44)
       }
-      assert.ok(metrics.toggle.bottom <= height)
+      assert.ok(metrics.firstNav.y - metrics.brand.bottom >= 32, 'navigation must leave a clear gap below the company icon')
+      assert.ok(metrics.firstNav.y < height / 3, 'navigation must sit near the top')
+      assert.ok(metrics.toggle.x >= metrics.header.x && metrics.toggle.right <= metrics.header.x + 64, 'toggle must sit at the left of the toolbar')
+      assert.ok(metrics.toggle.y >= metrics.header.y && metrics.toggle.bottom <= metrics.header.bottom)
+      assert.equal(metrics.toggleClickable, true, 'the toolbar toggle must not be blocked by the drag overlay')
       assert.ok(metrics.actions.every(Boolean), 'toolbar actions must stay inside the viewport and outside the drag overlay')
       assert.equal(metrics.overflow, false)
     }
     await assertLayout(false)
-    await nav.getByRole('button', { name: '展开侧栏', exact: true }).click()
-    assert.equal(await nav.getByRole('button', { name: '收起侧栏', exact: true }).getAttribute('aria-expanded'), 'true')
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: '收起侧栏', exact: true }).getAttribute('aria-expanded'), 'true')
     for (const label of ['首页', '工作', '硅基员工', '员工技能', '知识库', '算力中心']) assert.equal(await nav.locator('.ent-icon-label').getByText(label, { exact: true }).isVisible(), true)
     await assertLayout(true)
-    assert.ok(await nav.locator('.ent-icon-nav-toggle .ent-icon-label').evaluate(label => label.getBoundingClientRect().width >= 64), 'the expanded toggle must have room for its label')
+    assert.equal(await page.locator('.ent-top-sidebar-toggle .lucide-panel-left').count(), 1)
+    assert.equal(await nav.getByRole('button', { name: /侧栏/ }).count(), 0)
+    await nav.getByRole('img', { name: '测试企业名称很长时保持单行省略', exact: true }).hover()
+    await page.getByRole('tooltip', { name: '测试企业名称很长时保持单行省略', exact: true }).waitFor()
+    assert.equal(await page.getByRole('menuitem', { name: '企业组织', exact: true }).count(), 0)
+    await page.mouse.move(width - 10, height / 2)
     await page.screenshot({ path: `output/playwright/shell-expanded-${platform}-${width}-${dark ? 'dark' : 'light'}.png` })
     await page.reload()
-    await nav.getByRole('button', { name: '收起侧栏', exact: true }).waitFor()
+    await page.getByRole('button', { name: '收起侧栏', exact: true }).waitFor()
     assert.equal(await page.evaluate(() => localStorage.getItem('sep.sidebar.collapsed')), 'false')
     await nav.getByRole('button', { name: '工作', exact: true }).click()
     await assertLayout(true)
@@ -92,9 +102,9 @@ try {
     await updatePanel.waitFor()
     assert.ok((await updatePanel.boundingBox()).y >= (await page.locator('.ent-top').boundingBox()).height)
     await page.getByRole('button', { name: '关闭更新面板', exact: true }).click()
-    await nav.getByRole('button', { name: '收起侧栏', exact: true }).focus()
+    await page.getByRole('button', { name: '收起侧栏', exact: true }).focus()
     await page.keyboard.press('Enter')
-    await nav.getByRole('button', { name: '展开侧栏', exact: true }).waitFor()
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).waitFor()
     await assertLayout(false)
     const work = nav.getByRole('button', { name: '工作', exact: true })
     await work.hover()

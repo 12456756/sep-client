@@ -17,10 +17,16 @@ if (runtime) {
 }
 if (!root) throw new Error('Root element not found');
 
-const previewRequested = import.meta.env.DEV && new URLSearchParams(window.location.search).get('preview') === 'workspace';
+const preview = import.meta.env.DEV ? new URLSearchParams(window.location.search).get('preview') : null;
+const previewRequested = preview === 'workspace';
+const HomePreviewPage = preview === 'home'
+  ? React.lazy(() => import('./pages/HomePreviewPage').then(module => ({ default: module.HomePreviewPage })))
+  : null;
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
-    {previewRequested ? <WorkspacePreviewPage /> : <App />}
+    {previewRequested ? <WorkspacePreviewPage /> : HomePreviewPage ? (
+      <React.Suspense fallback={null}><HomePreviewPage /></React.Suspense>
+    ) : <App />}
   </React.StrictMode>,
 );

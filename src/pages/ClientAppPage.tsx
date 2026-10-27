@@ -22,6 +22,7 @@ import { UpdateNotice } from '../components/enterprise/UpdateNotice';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
+import { useHomeDraftOwner } from '../features/enterprise/home-draft';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
 import type { UpdateModel } from '../features/update/use-update';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
@@ -63,6 +64,7 @@ export function ClientAppPage(props: Props) {
 
 function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
+  const homeDraft = useHomeDraftOwner();
   const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
     void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined);
   }));
@@ -82,6 +84,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   const displayUserName = profile?.user.name || userName;
   const displayEnterpriseName = profile ? profile.enterprise?.name || overview.name : overview.name;
   const displayEnterpriseLogo = displayedEnterpriseLogo(profile, overview.logo);
+  const isHome = route.name === 'home';
   const scroll = useRef<HTMLDivElement | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -117,6 +120,29 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
     if (scroll.current) scroll.current.scrollTop = 0;
   }, [route]);
 
+  const topBar = (
+    <AppTopBar
+      sidebarCollapsed={sidebarCollapsed}
+      onToggleSidebar={() => setSidebarCollapsed(value => !value)}
+      actions={(
+        <div className="ent-top-actions-group">
+          <div className="ent-view-switch" role="group" aria-label="页面切换">
+            <button type="button" className={route.name === 'organization' ? undefined : 'active'} onClick={() => workspace.navigate({ name: 'home' })} aria-pressed={route.name !== 'organization'} title="切换到个人工作台"><LayoutGrid size={14} aria-hidden />个人</button>
+            <button type="button" className={route.name === 'organization' ? 'active' : undefined} onClick={() => workspace.navigate({ name: 'organization' })} aria-pressed={route.name === 'organization'} title="切换到企业组织"><Network size={14} aria-hidden />企业</button>
+          </div>
+          <button type="button" className="ent-top-command" onClick={() => setCommandOpen(true)} title="打开命令入口（⌘K / Ctrl+K）" aria-label="打开命令入口"><Command size={14} aria-hidden /><span>⌘K</span></button>
+          <button type="button" className="ent-top-icon" onClick={() => setDarkMode(value => !value)} title={darkMode ? '切换到浅色主题' : '切换到深色主题'} aria-label={darkMode ? '切换到浅色主题' : '切换到深色主题'}>{darkMode ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}</button>
+          <NotificationCenter onOpenAction={async notification => {
+            if (notification.category === 'USAGE_ALERT' || notification.type === 'CONTRIBUTION_REWARD_CREDITED') workspace.navigate({ name: 'compute-center' });
+            else if (notification.type === 'SKILL_VERSION_UPDATED') workspace.navigate({ name: 'skills' });
+            else if (notification.actionUrl) { const result = await window.electronAPI.openNotificationAction(notification.actionUrl); if (!result.success) throw new Error(result.error?.message || '无法打开通知关联页面'); }
+          }} />
+          {update ? <UpdateNotice update={update} open={updateOpen} onOpenChange={setUpdateOpen} onOpenWorkRecords={() => workspace.navigate({ name: 'records' })} /> : null}
+        </div>
+      )}
+    />
+  );
+
   return (
     <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}${['arrange', 'records', 'work'].includes(route.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
@@ -129,73 +155,12 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
         userName={displayUserName}
         userAvatar={userAvatar}
         collapsed={sidebarCollapsed}
-        onToggleCollapse={() => setSidebarCollapsed(value => !value)}
         onNavigate={workspace.navigate}
         onOpenSettings={() => setSettingsOpen(true)}
         onLogout={() => { void onLogout(); }}
       />
       <div className="ent-shell-main">
-        <AppTopBar
-          actions={(
-            <div className="ent-top-actions-group">
-              <div className="ent-view-switch" role="group" aria-label="页面切换">
-                <button
-                  type="button"
-                  className={route.name === 'organization' ? undefined : 'active'}
-                  onClick={() => workspace.navigate({ name: 'home' })}
-                  aria-pressed={route.name !== 'organization'}
-                  title="切换到个人工作台"
-                >
-                  <LayoutGrid size={14} aria-hidden />
-                  个人
-                </button>
-                <button
-                  type="button"
-                  className={route.name === 'organization' ? 'active' : undefined}
-                  onClick={() => workspace.navigate({ name: 'organization' })}
-                  aria-pressed={route.name === 'organization'}
-                  title="切换到企业组织"
-                >
-                  <Network size={14} aria-hidden />
-                  企业
-                </button>
-              </div>
-              <button
-                type="button"
-                className="ent-top-command"
-                onClick={() => setCommandOpen(true)}
-                title="打开命令入口（⌘K / Ctrl+K）"
-                aria-label="打开命令入口"
-              >
-                <Command size={14} aria-hidden />
-                <span>⌘K</span>
-              </button>
-              <button
-                type="button"
-                className="ent-top-icon"
-                onClick={() => setDarkMode(value => !value)}
-                title={darkMode ? '切换到浅色主题' : '切换到深色主题'}
-                aria-label={darkMode ? '切换到浅色主题' : '切换到深色主题'}
-              >
-                {darkMode ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}
-              </button>
-              <NotificationCenter onOpenAction={async notification => {
-                if (notification.category === 'USAGE_ALERT' || notification.type === 'CONTRIBUTION_REWARD_CREDITED') {
-                  workspace.navigate({ name: 'compute-center' });
-                } else if (notification.type === 'SKILL_VERSION_UPDATED') {
-                  workspace.navigate({ name: 'skills' });
-                } else if (notification.actionUrl) {
-                  // Desktop does not implement platform approval/contribution pages.
-                  // Main validates the trusted Web origin before opening the browser.
-                  const result = await window.electronAPI.openNotificationAction(notification.actionUrl);
-                  if (!result.success) throw new Error(result.error?.message || '无法打开通知关联页面');
-                }
-              }} />
-              {update ? <UpdateNotice update={update} open={updateOpen} onOpenChange={setUpdateOpen}
-                onOpenWorkRecords={() => workspace.navigate({ name: 'records' })} /> : null}
-            </div>
-          )}
-        />
+        {topBar}
         <EmployeeLoadNotice state={employeeLoad} loadingLabel="正在加载员工列表" retryLabel="重试加载员工列表" />
         <EmployeeLoadNotice state={employeeStatusLoad} loadingLabel="正在加载员工状态" retryLabel="重试加载员工状态" />
         {workspace.error ? (
@@ -205,11 +170,11 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
           </div>
         ) : null}
         <div
-          className={`ent-scroll${(route.name === 'organization' || route.name === 'home') ? ' ent-scroll-no-overflow' : ''}${['arrange', 'records', 'work'].includes(route.name) ? ' ent-scroll-work' : ''}`}
+          className={`ent-scroll${route.name === 'organization' ? ' ent-scroll-no-overflow' : ''}${isHome ? ' ent-scroll-home' : ''}${['arrange', 'records', 'work'].includes(route.name) ? ' ent-scroll-work' : ''}`}
           ref={scroll}
         >
           <ConversationSessionsContext.Provider value={conversationSessions}>
-            <PageBody workspace={workspace} />
+            <PageBody workspace={workspace} userName={displayUserName} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} draft={homeDraft} />
           </ConversationSessionsContext.Provider>
         </div>
         {commandOpen ? (
@@ -264,7 +229,7 @@ function EmployeeLoadNotice({ state, loadingLabel, retryLabel }: { state?: Emplo
   return <div className="ent-load-bar" role="status"><LoaderCircle size={14} aria-hidden /><span>{loadingLabel}</span></div>;
 }
 
-function PageBody({ workspace }: { workspace: ReturnType<typeof useEnterpriseWorkspace> }) {
+function PageBody({ workspace, userName, employeeLoad, employeeStatusLoad, draft }: { workspace: ReturnType<typeof useEnterpriseWorkspace>; userName: string; employeeLoad?: EmployeeLoadState; employeeStatusLoad?: EmployeeLoadState; draft: ReturnType<typeof useHomeDraftOwner> }) {
   const { route } = workspace;
   switch (route.name) {
     case 'organization':
@@ -293,6 +258,6 @@ function PageBody({ workspace }: { workspace: ReturnType<typeof useEnterpriseWor
     case 'knowledge':
       return <KnowledgePage kbId={route.kbId} navigate={workspace.navigate} />;
     default:
-      return <HomePage workspace={workspace} />;
+      return <HomePage workspace={workspace} userName={userName} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} draft={draft} />;
   }
 }

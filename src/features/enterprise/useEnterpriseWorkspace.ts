@@ -200,6 +200,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   /** 更新当前路由的筛选条件，不创建返回历史。 */
   replaceRoute: (route: AppRoute) => void;
   retryWorkTypes: () => void;
+  workListLoad: { loading: boolean; error: string | null; retry: () => void };
   goBack: () => void;
   dismissError: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>;
@@ -237,6 +238,14 @@ const NOTICE_DURATION_MS = 5_000;
 export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses }: Options): EnterpriseWorkspace {
   const [tasks, setTasks] = useState<ClientTask[]>([]);
   const scopeKey = JSON.stringify([userId, enterpriseId]);
+  const retryWorkListRef = useRef<(() => void) | null>(null);
+  const retryWorkList = useCallback(() => retryWorkListRef.current?.(), []);
+  const [workListLoadState, setWorkListLoadState] = useState<{ scopeKey: string; loading: boolean; error: string | null }>({
+    scopeKey, loading: true, error: null,
+  });
+  const workListLoad = useMemo(() => workListLoadState.scopeKey === scopeKey
+    ? { loading: workListLoadState.loading, error: workListLoadState.error, retry: retryWorkList }
+    : { loading: true, error: null, retry: retryWorkList }, [scopeKey, workListLoadState, retryWorkList]);
   const deletedRecords = useMemo(() => ({ scopeKey, ids: new Set<string>() }), [scopeKey]);
   const deletedTaskIds = deletedRecords.ids;
   const scopedTasks = useMemo(() => tasks.filter(task => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId), [tasks, userId, enterpriseId]);
@@ -459,7 +468,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const messageVersions = new Map<string, number>();
     const observedRuns = new Map<string, string | null>();
     let receivedTaskList = false;
+    let initialQueryRevision = 0;
     const pushedTaskIds = new Set<string>();
+    setWorkListLoadState({ scopeKey, loading: true, error: null });
     const typeCache = new TaskReadCache(async task => {
       const result = await api.getTask(task.id);
       return result.success && result.task?.workType ? result.task.workType : { state: 'unavailable' };
@@ -503,19 +514,33 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       if (previousRun !== task.activeRunId) void loadMessages([task]);
     };
 
-    void api.getAllTasks().then(result => {
-      if (!active || !result.success) return;
-      const list = (result.tasks ?? []).filter(belongsToScope);
-      setTasks(current => {
-        const next = mergeInitialTaskQuery(current, list, pushedTaskIds, receivedTaskList, deletedTaskIds);
-        typeCache.retain(next);
-        next.forEach(typeCache.ensure.bind(typeCache));
-        return next.map(task => typeCache.preserve(task));
+    const loadInitialTasks = () => {
+      const revision = ++initialQueryRevision;
+      setWorkListLoadState({ scopeKey, loading: true, error: null });
+      void api.getAllTasks().then(result => {
+        if (!active || revision !== initialQueryRevision) return;
+        if (!result.success) {
+          setWorkListLoadState({ scopeKey, loading: false, error: result.error?.message || '工作列表加载失败' });
+          return;
+        }
+        const list = (result.tasks ?? []).filter(belongsToScope);
+        setTasks(current => {
+          const next = mergeInitialTaskQuery(current, list, pushedTaskIds, receivedTaskList, deletedTaskIds);
+          typeCache.retain(next);
+          next.forEach(typeCache.ensure.bind(typeCache));
+          return next.map(task => typeCache.preserve(task));
+        });
+        list.forEach(refreshMessages);
+        setWorkListLoadState({ scopeKey, loading: false, error: null });
+      }).catch((loadError: unknown) => {
+        if (!active || revision !== initialQueryRevision) return;
+        const message = loadError instanceof Error ? loadError.message : '工作列表加载失败';
+        setWorkListLoadState({ scopeKey, loading: false, error: message });
+        if (!receivedTaskList && pushedTaskIds.size === 0) setTasks([]);
       });
-      list.forEach(refreshMessages);
-    }).catch(() => {
-      if (active && !receivedTaskList && pushedTaskIds.size === 0) setTasks([]);
-    });
+    };
+    retryWorkListRef.current = loadInitialTasks;
+    loadInitialTasks();
 
     const unsubscribeList = api.onTaskListUpdated(incoming => {
       if (!active) return;
@@ -560,6 +585,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
     return () => {
       active = false;
+      if (retryWorkListRef.current === loadInitialTasks) retryWorkListRef.current = null;
       unsubscribeList();
       unsubscribeTask();
       unsubscribePi();
@@ -877,7 +903,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, error, busy,
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
-    navigate, replaceRoute, retryWorkTypes, goBack, dismissError: () => setError(null),
+    navigate, replaceRoute, retryWorkTypes, workListLoad, goBack, dismissError: () => setError(null),
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
     stopWork, retryWork, renameWork, setWorkPinned, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,

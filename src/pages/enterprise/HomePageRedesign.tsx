@@ -1,303 +1,149 @@
-/**
- * 首页重新设计 - 紧凑且信息丰富的硅基员工工作台
- */
+import { ArrowRight, BadgeHelp, BookOpen, Bot, ChartPie, ChevronRight, Clock3, Flame, LayoutGrid, RefreshCw, Settings, ShieldPlus, Sun, TriangleAlert, Users, Workflow, Zap } from 'lucide-react'
+import * as Dialog from '@radix-ui/react-dialog'
+import { useMemo, useState, type ReactNode } from 'react'
+import { EmployeeFace } from '../../components/enterprise/EmployeeFace'
+import { HomeAssistantCard } from '../../components/enterprise/home/HomeAssistantCard'
+import { workTypeLabel } from '../../components/enterprise/WorkIndicators'
+import { createHomeDraft, type HomeDraft } from '../../features/enterprise/home-draft'
+import { createHomeViewModel } from '../../features/enterprise/home-view-model'
+import type { EnterpriseWorkspace, ConversationOptions } from '../../features/enterprise/useEnterpriseWorkspace'
+import type { EmployeeLoadState } from '../../features/enterprise/use-workspace-employees'
+import type { AppRoute, SiliconEmployee, WorkItem } from '../../features/enterprise/types'
+import { relativeTime } from '../../features/enterprise/vocabulary'
+import '../../styles/home-v2.css'
 
-import { AlertTriangle, ArrowRight, Coffee, Moon, RefreshCw, Users, Zap, Clock } from 'lucide-react';
-import { useMemo, useState } from 'react';
-import { EmployeeWorksDrawer } from '../../components/enterprise/EmployeeWorksDrawer';
-import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
-import type { SiliconEmployee, WorkItem } from '../../features/enterprise/types';
-import type { DeskFlag } from '../../components/enterprise/EmployeeDeskCard';
-import '../../styles/home-v2.css';
-
-interface Desk {
-  employee: SiliconEmployee;
-  load: { done: number; total: number };
-  working: boolean;
-  flags: DeskFlag[];
+export interface HomeDashboardProps {
+  userName: string
+  employees: SiliconEmployee[]
+  works: WorkItem[]
+  draft: HomeDraft
+  onNavigate: (route: AppRoute) => void
+  onSubmit: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>
+  demo?: boolean
+  now?: number
+  visualStats?: { total: number; working: number; idle: number }
+  employeeLoad?: EmployeeLoadState
+  employeeStatusLoad?: EmployeeLoadState
+  workListLoad?: EmployeeLoadState
+  busy?: boolean
 }
 
-export function HomePageRedesign({ workspace }: { workspace: EnterpriseWorkspace }) {
-  const { employees, works, unreviewedWorkIds, navigate } = workspace;
+interface Props {
+  workspace: EnterpriseWorkspace
+  userName?: string
+  employeeLoad?: EmployeeLoadState
+  employeeStatusLoad?: EmployeeLoadState
+  draft?: HomeDraft
+}
 
-  const roster = useMemo(() => employees.filter(item => item.assignedToMe), [employees]);
-  const desks = useMemo(
-    () => roster.map(employee => deskOf(employee, works, new Set(unreviewedWorkIds), startOfToday())),
-    [roster, works, unreviewedWorkIds],
-  );
+export function HomePageRedesign({ workspace, userName, employeeLoad, employeeStatusLoad, draft }: Props) {
+  const [fallbackDraft] = useState(createHomeDraft)
+  return <HomeDashboard userName={userName ?? workspace.userName} employees={workspace.employees} works={workspace.works}
+    draft={draft ?? fallbackDraft} onNavigate={workspace.navigate} onSubmit={workspace.startConversation} busy={workspace.busy}
+    employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} workListLoad={workspace.workListLoad} />
+}
 
-  // 按工作状态分组，调整显示数量
-  const groupedDesks = useMemo(() => {
-    const working = desks.filter(d => d.working).slice(0, 6); // 最多6个（2行×3列）
-    const needsAttention = desks.filter(d => !d.working && d.flags.length > 0).slice(0, 4); // 最多4个
-    const idle = desks.filter(d => !d.working && d.flags.length === 0).slice(0, 10); // 最多10个（2行×5列）
-    return { working, idle, needsAttention };
-  }, [desks]);
+export function HomeDashboard({ userName, employees, works, draft, onNavigate, onSubmit, demo = false, now = Date.now(), visualStats, employeeLoad, employeeStatusLoad, workListLoad, busy = false }: HomeDashboardProps) {
+  const model = useMemo(() => createHomeViewModel(employees, works), [employees, works])
+  const [tab, setTab] = useState<'recommended' | 'recent'>('recommended')
+  const [batch, setBatch] = useState(0)
+  const [toolNotice, setToolNotice] = useState(false)
+  const stats = demo && visualStats ? visualStats : model.stats
+  const visibleEmployees = tab === 'recent' ? model.recentEmployees : model.recommendedEmployees
+  const popularPool = demo && model.roster.length > 5 ? model.roster.slice(5) : model.allRecommendedEmployees
+  const popular = Array.from({ length: Math.min(6, popularPool.length) }, (_, i) => popularPool[(batch * 6 + i) % popularPool.length])
+  const hour = new Date(now).getHours()
+  const greeting = hour < 6 ? '夜深了' : hour < 12 ? '上午好' : hour < 18 ? '下午好' : '晚上好'
+  const loading = employeeLoad?.loading
+  const statsUnknown = loading || employeeLoad?.error
+  const activityUnknown = statsUnknown || employeeStatusLoad?.loading || employeeStatusLoad?.error || workListLoad?.loading || workListLoad?.error
+  const activeIds = useMemo(() => new Set(works.filter(work => work.isActive === true).flatMap(work => [work.currentEmployeeId, ...work.participants])), [works])
 
-  const [openId, setOpenId] = useState<string | null>(null);
-
-  const openEmployee = openId ? roster.find(item => item.id === openId) : undefined;
-  const openWorks = useMemo(
-    () => (openEmployee
-      ? works.filter(work => involves(work, openEmployee.id)).sort((left, right) => right.updatedAt - left.updatedAt)
-      : []),
-    [openEmployee, works],
-  );
-
-  const openWork = (workId: string) => { setOpenId(null); navigate({ name: 'work', workId }); };
-
-  return (
-    <div className="ent-page ent-home-v2">
-      {/* 顶部横幅 - 欢迎语和关键指标 */}
-      <header className="home-banner">
-        <div className="banner-left">
-          <h1>{workspace.userName}，下午好</h1>
-          <p>你的硅基团队正在待命</p>
-        </div>
-        <div className="banner-stats">
-          <div className="stat total">
-            <div className="icon">
-              <Users size={20} />
-            </div>
-            <div className="data">
-              <span className="value">{roster.length}</span>
-              <span className="label">总数</span>
-            </div>
-          </div>
-          <div className="stat working">
-            <div className="icon">
-              <Zap size={20} />
-            </div>
-            <div className="data">
-              <span className="value">{groupedDesks.working.length}</span>
-              <span className="label">工作中</span>
-            </div>
-          </div>
-          <div className="stat idle">
-            <div className="icon">
-              <Moon size={20} />
-            </div>
-            <div className="data">
-              <span className="value">{groupedDesks.idle.length}</span>
-              <span className="label">空闲</span>
-            </div>
-          </div>
+  return <div className="sep-home">
+    <div className="sep-home-main">
+      <header className="sep-home-greeting">
+        <div className="sep-home-welcome"><Sun size={29} strokeWidth={1.6} aria-hidden /><div><h1>{userName}，{greeting}</h1><p>AI 让工作更简单，让团队更强大！</p></div></div>
+        <div className="sep-home-stats" aria-label="智能体概览">
+          <Stat icon={<Users />} label="总数" value={statsUnknown ? null : stats.total} tone="total" />
+          <Stat icon={<Zap fill="currentColor" />} label="工作中" value={activityUnknown ? null : stats.working} tone="working" />
+          <Stat icon={<ChartPie />} label="空闲" value={activityUnknown ? null : stats.idle} tone="idle" />
         </div>
       </header>
-
-      {/* 员工展示区域 */}
-      <div className="home-workspace">
-        {/* 工作中的员工 */}
-        {groupedDesks.working.length > 0 && (
-          <section className="employee-section">
-            <div className="section-header">
-              <h2>
-                <span className="icon"><Zap size={17} aria-hidden /></span>
-                工作中
-                <span className="count">{groupedDesks.working.length}</span>
-              </h2>
-            </div>
-            <div className="employee-grid working">
-              {groupedDesks.working.map(desk => {
-                const progress = desk.load.total > 0 ? Math.floor((desk.load.done / desk.load.total) * 100) : 0;
-                const avatarUrl = desk.employee.avatarAsset?.portraitUrl || desk.employee.avatar || '';
-
-                return (
-                  <div
-                    key={desk.employee.id}
-                    className="employee-card working"
-                    onClick={() => setOpenId(desk.employee.id)}
-                  >
-                    <div className="card-header">
-                      <div className="avatar-container">
-                        <img src={avatarUrl} alt={desk.employee.name} />
-                        <span className="pulse-dot" />
-                      </div>
-                      <div className="employee-info">
-                        <strong className="name">{desk.employee.name}</strong>
-                        <span className="role">{desk.employee.roleName}</span>
-                      </div>
-                    </div>
-                    <div className="card-body">
-                      <div className="status-row">
-                        <span className="status-badge running"><RefreshCw size={12} aria-hidden /> 执行中</span>
-                        <span className="progress-value">{progress}%</span>
-                      </div>
-                      <div className="progress-bar">
-                        <div className="progress-fill" style={{ width: `${progress}%` }} />
-                      </div>
-                      <div className="meta-row">
-                        <span className="meta">
-                          {desk.load.done} / {desk.load.total} 步骤
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
-        {/* 需要关注的员工 */}
-        {groupedDesks.needsAttention.length > 0 && (
-          <section className="employee-section">
-            <div className="section-header">
-              <h2>
-                <span className="icon"><AlertTriangle size={16} aria-hidden /></span>
-                需要关注
-                <span className="count">{groupedDesks.needsAttention.length}</span>
-              </h2>
-            </div>
-            <div className="employee-grid attention">
-              {groupedDesks.needsAttention.map(desk => {
-                const avatarUrl = desk.employee.avatarAsset?.portraitUrl || desk.employee.avatar || '';
-                const flagText = desk.flags.map(flag => {
-                  if (flag === 'done') return '需要查阅';
-                  if (flag === 'call') return '等待拍板';
-                  if (flag === 'stop') return '工作中断';
-                  return flag;
-                }).join(' · ');
-
-                return (
-                  <div
-                    key={desk.employee.id}
-                    className="employee-card attention"
-                    onClick={() => setOpenId(desk.employee.id)}
-                  >
-                    <div className="card-header">
-                      <div className="avatar-container">
-                        <img src={avatarUrl} alt={desk.employee.name} />
-                      </div>
-                      <div className="employee-info">
-                        <strong className="name">{desk.employee.name}</strong>
-                        <span className="role">{desk.employee.roleName}</span>
-                      </div>
-                    </div>
-                    <div className="card-body">
-                      <div className="status-row">
-                        <span className="status-badge warning"><AlertTriangle size={12} aria-hidden /> {flagText}</span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
-        {/* 空闲中的员工 */}
-        {groupedDesks.idle.length > 0 && (
-          <section className="employee-section">
-            <div className="section-header">
-              <h2>
-                <span className="icon"><Coffee size={16} aria-hidden /></span>
-                空闲中
-                <span className="count">{groupedDesks.idle.length}</span>
-              </h2>
-              <button className="link-btn" onClick={() => navigate({ name: 'employees', scope: 'mine' })}>
-                查看全部 <ArrowRight size={14} />
-              </button>
-            </div>
-            <div className="employee-grid idle">
-              {groupedDesks.idle.map(desk => {
-                const avatarUrl = desk.employee.avatarAsset?.portraitUrl || desk.employee.avatar || '';
-                const lastWorked = desk.employee.lastWorkedAt
-                  ? formatLastWorked(desk.employee.lastWorkedAt)
-                  : '从未工作';
-
-                return (
-                  <div
-                    key={desk.employee.id}
-                    className="employee-card idle"
-                    onClick={() => setOpenId(desk.employee.id)}
-                  >
-                    <div className="avatar-container">
-                      <img src={avatarUrl} alt={desk.employee.name} />
-                    </div>
-                    <div className="employee-info">
-                      <strong className="name">{desk.employee.name}</strong>
-                      <span className="role">{desk.employee.roleName}</span>
-                      <span className="status-badge"><Coffee size={12} aria-hidden /> 休息中</span>
-                      <span className="last-worked">
-                        <Clock size={11} />
-                        {lastWorked}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-        )}
-
-        {/* 空状态 */}
-        {desks.length === 0 && (
-          <div className="empty-state">
-            <div className="empty-icon"><Users size={38} aria-hidden /></div>
-            <h3>还没有硅基员工</h3>
-            <p>联系管理员为你分配团队成员</p>
+      <HomeAssistantCard employees={model.roster} works={model.recentWorks} draft={draft} onSubmit={onSubmit}
+        onCreate={() => onNavigate({ name: 'arrange', mode: 'pick' })} demo={demo} busy={busy || Boolean(employeeLoad?.loading)} />
+      <section className="sep-home-employees" aria-label="我的智能体">
+        <div className="sep-home-section-heading">
+          <h2><Settings size={20} aria-hidden />我的智能体</h2>
+          <div className="sep-home-tabs" role="tablist" aria-label="智能体列表范围" onKeyDown={event => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+            event.preventDefault()
+            const next = event.key === 'Home' ? 'recommended' : event.key === 'End' ? 'recent' : tab === 'recommended' ? 'recent' : 'recommended'
+            setTab(next)
+            document.getElementById(`home-${next}-tab`)?.focus()
+          }}>
+            <button id="home-recommended-tab" type="button" role="tab" tabIndex={tab === 'recommended' ? 0 : -1} aria-selected={tab === 'recommended'} aria-controls="home-employee-list" onClick={() => setTab('recommended')}>推荐</button>
+            <button id="home-recent-tab" type="button" role="tab" tabIndex={tab === 'recent' ? 0 : -1} aria-selected={tab === 'recent'} aria-controls="home-employee-list" onClick={() => setTab('recent')}>最近使用</button>
           </div>
-        )}
-      </div>
-
-      {/* 员工详情抽屉 */}
-      {openEmployee ? (
-        <EmployeeWorksDrawer
-          employee={openEmployee}
-          works={openWorks}
-          onClose={() => setOpenId(null)}
-          onOpenWork={openWork}
-        />
-      ) : null}
+          <More label="查看全部" onClick={() => onNavigate({ name: 'employees', scope: 'mine' })} />
+        </div>
+        <div id="home-employee-list" role="tabpanel" aria-labelledby={tab === 'recommended' ? 'home-recommended-tab' : 'home-recent-tab'} className="sep-home-employee-grid">
+          {loading ? <SkeletonCards count={5} /> : employeeLoad?.error ? <InlineState message={employeeLoad.error} onRetry={employeeLoad.retry} />
+            : visibleEmployees.length ? visibleEmployees.map(employee => <button type="button" className="sep-home-employee" key={employee.id} onClick={() => onNavigate({ name: 'employee', employeeId: employee.id })}>
+              <span className="sep-home-employee-identity"><EmployeeFace employee={employee} size="sm" round /><span><strong title={employee.name}>{employee.name}</strong><small title={employee.roleName}>{employee.roleName}</small></span></span>
+              <EmployeeStatus employee={employee} working={activeIds.has(employee.id)} unknown={Boolean(employeeStatusLoad?.loading || employeeStatusLoad?.error || workListLoad?.loading || workListLoad?.error)} />
+            </button>) : <InlineState message={tab === 'recent' ? '还没有使用记录，选择一位智能体开始工作吧' : '暂时没有分配给你的智能体'} />}
+        </div>
+      </section>
+      <section className="sep-home-popular" aria-label="热门推荐">
+        <div className="sep-home-section-heading"><h2><Flame size={21} fill="currentColor" aria-hidden />热门推荐</h2><button type="button" className="sep-home-more" disabled={popularPool.length <= 6} onClick={() => setBatch(value => value + 1)}><RefreshCw size={14} aria-hidden />换一批</button></div>
+        <div className="sep-home-popular-grid">{loading ? <SkeletonCards count={6} /> : popular.length ? popular.map(employee => <button type="button" className="sep-home-popular-card" key={employee.id} onClick={() => onNavigate({ name: 'employee', employeeId: employee.id })}><EmployeeFace employee={employee} size="sm" round /><strong title={employee.name}>{employee.name}</strong><small title={employee.roleName}>{employee.roleName}</small></button>) : <InlineState message="暂无可推荐的智能体" />}</div>
+        {!demo && popular.length ? <span className="sep-home-recommendation-source">根据你可用的智能体推荐</span> : null}
+      </section>
     </div>
-  );
+    <aside className="sep-home-side" aria-label="首页摘要">
+      <section className="sep-home-recent sep-home-panel" aria-label="最近任务">
+        <div className="sep-home-section-heading"><h2><Clock3 size={18} aria-hidden />最近任务</h2><More label="查看全部" onClick={() => onNavigate({ name: 'records', bucket: 'all' })} /></div>
+        <div className="sep-home-recent-list">{workListLoad?.loading ? <SkeletonCards count={5} /> : workListLoad?.error ? <InlineState message={workListLoad.error} onRetry={workListLoad.retry} /> : model.recentWorks.length ? model.recentWorks.map((work, i) => {
+          const Icon = work.workType.state === 'resolved' && work.workType.kind === 'arrangement' ? Workflow : Bot
+          return <button type="button" key={work.id} className={`sep-home-recent-row tone-${i}`} onClick={() => onNavigate({ name: 'work', workId: work.id })}><span className="sep-home-recent-icon"><Icon size={18} aria-hidden /></span><span className="sep-home-recent-copy"><strong title={work.title}>{work.title || '未命名工作'}</strong><small>{demo ? ['数据分析', '文案创作', '流程设计', '图像生成', '视频生成'][i] : workTypeLabel(work.workType)}</small></span><time dateTime={new Date(work.updatedAt).toISOString()}>{relativeTime(work.updatedAt, now)}</time></button>
+        }) : <InlineState message="还没有任务，从第一项工作开始吧" />}</div>
+      </section>
+      <section className="sep-home-shortcuts sep-home-panel" aria-label="快捷入口">
+        <div className="sep-home-section-heading"><h2><Zap size={20} fill="currentColor" aria-hidden />快捷入口</h2></div>
+        <div className="sep-home-shortcut-grid">
+          <Shortcut icon={<ShieldPlus />} title="创建任务" description="快速创建 AI 任务" tone="red" onClick={() => onNavigate({ name: 'arrange', mode: 'pick' })} />
+          <Shortcut icon={<Users />} title="我的工作台" description="查看任务进度" tone="blue" onClick={() => onNavigate({ name: 'records', bucket: 'all' })} />
+          <Shortcut icon={<BookOpen />} title="知识库" description="企业知识沉淀" tone="purple" onClick={() => onNavigate({ name: 'knowledge' })} />
+          <Shortcut icon={<LayoutGrid />} title="工具中心" description="更多 AI 工具" tone="orange" onClick={() => setToolNotice(true)} />
+        </div>
+      </section>
+      <section className="sep-home-brand" aria-label="品牌寄语"><blockquote>“用 AI 赋能业务<br /><span>让每个员工都成为数字员工”</span></blockquote></section>
+    </aside>
+    <HomeDialog open={toolNotice} onClose={() => setToolNotice(false)} title="工具中心"><p>工具中心暂未开放</p></HomeDialog>
+  </div>
 }
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 辅助函数
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-function startOfToday(now = new Date()): number {
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+function Stat({ icon, label, value, tone }: { icon: ReactNode; label: string; value: number | null; tone: string }) {
+  return <div className={`sep-home-stat ${tone}`}><span className="sep-home-stat-icon">{icon}</span><span><strong>{value ?? '—'}</strong><small>{label}</small></span></div>
 }
-
-function formatLastWorked(timestamp: number): string {
-  const now = Date.now();
-  const diff = now - timestamp;
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-
-  if (days === 0) return '今天工作过';
-  if (days === 1) return '昨天工作过';
-  if (days < 7) return `${days}天前`;
-  if (days < 30) return `${Math.floor(days / 7)}周前`;
-  return `${Math.floor(days / 30)}月前`;
+function More({ label, onClick }: { label: string; onClick: () => void }) {
+  return <button type="button" className="sep-home-more" onClick={onClick}>{label}<ChevronRight size={14} aria-hidden /></button>
 }
-
-function involves(work: WorkItem, employeeId: string): boolean {
-  return work.participants.includes(employeeId);
+function EmployeeStatus({ employee, working, unknown }: { employee: SiliconEmployee; working: boolean; unknown: boolean }) {
+  const status = employee.availability
+  const busy = working || status === 'working'
+  const label = unknown ? '状态待更新' : status === 'needs-auth' ? '需授权' : status === 'unavailable' ? '不可用' : busy ? '工作中' : '空闲'
+  return <span className={`sep-home-availability ${unknown ? 'unknown' : busy ? 'working' : status}`}><TriangleAlert size={11} aria-hidden />{label}</span>
 }
-
-function deskOf(
-  employee: SiliconEmployee,
-  works: WorkItem[],
-  unreviewedWorkIds: Set<string>,
-  today: number,
-): Desk {
-  const myWorks = works.filter(work => involves(work, employee.id));
-  const working = myWorks.some(work => work.isActive === true);
-  const done = myWorks.filter(work => work.status === 'completed' && work.updatedAt >= today).length;
-  const total = myWorks.filter(work => work.createdAt >= today).length;
-
-  const flags: DeskFlag[] = [];
-  if (myWorks.some(work => unreviewedWorkIds.has(work.id))) flags.push('done');
-  if (myWorks.some(work => work.status === 'waiting-user')) flags.push('call');
-  if (myWorks.some(work => work.status === 'failed' || work.status === 'paused')) flags.push('stop');
-
-  return {
-    employee,
-    load: { done, total },
-    working,
-    flags,
-  };
+function Shortcut({ icon, title, description, tone, onClick }: { icon: ReactNode; title: string; description: string; tone: string; onClick: () => void }) {
+  return <button className={`sep-home-shortcut ${tone}`} type="button" onClick={onClick}><span>{icon}</span><strong>{title}</strong><small>{description}</small></button>
+}
+function InlineState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  return <div className="sep-home-inline-state" role="status"><BadgeHelp size={20} aria-hidden /><p>{message}</p>{onRetry ? <button type="button" onClick={onRetry}>重试<ArrowRight size={13} aria-hidden /></button> : null}</div>
+}
+function SkeletonCards({ count }: { count: number }) {
+  return <>{Array.from({ length: count }, (_, index) => <div key={index} className="sep-home-skeleton" aria-label="正在加载" />)}</>
+}
+export function HomeDialog({ open, onClose, title, children }: { open: boolean; onClose: () => void; title: string; children: ReactNode }) {
+  return <Dialog.Root open={open} onOpenChange={value => { if (!value) onClose() }}><Dialog.Portal><Dialog.Overlay className="sep-home-dialog-overlay" /><Dialog.Content className="sep-home-dialog" aria-describedby={undefined}><Dialog.Title>{title}</Dialog.Title>{children}<Dialog.Close className="sep-home-dialog-done">知道了</Dialog.Close></Dialog.Content></Dialog.Portal></Dialog.Root>
 }

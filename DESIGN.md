@@ -144,9 +144,9 @@ The work workspace pairs warm neutral surfaces with brand red selection and blue
 
 - Keep one application shell with one primary navigation model. Do not duplicate the same destinations in both a top nav and side nav.
 - Keep employee discovery as one navigation destination. Use an in-page scope control for “与我有关 / 企业全部”; reserve organization views for authorization and management relationships.
-- Use an 80px collapsed navigation rail and a 200px expanded sidebar. Keep the company logo at the top, center six 40px navigation targets vertically in the available middle space, and anchor the account and expand/collapse control at the bottom. Collapsed names appear on hover and focus; expanded names appear beside their icons. Preserve the user's selection across restarts.
+- Use an 80px collapsed navigation rail and a 200px expanded sidebar. Keep the company logo at the top, place six 40px navigation targets near the top with a 32px gap below the company area, and anchor the account at the bottom. Put the icon-only PanelLeft expand/collapse control at the left of the global toolbar. Collapsed names appear on hover and focus; expanded names appear beside their icons. Preserve the user's selection across restarts.
 - On macOS, reserve the top 44px of the sidebar for native traffic lights and place the global toolbar at the top of the main column, with a minimum height of 52px. Keep the native drag overlay within the 80px traffic-light column so it cannot intercept toolbar controls. Other platforms retain their separate native chrome band.
-- The global toolbar contains only right-aligned actions; omit page titles, breadcrumbs and descriptive subtitles at the top left. Keep task-specific names and content headings in their working surfaces. The work list header contains only create and collapse controls; counts stay in the filters.
+- The global toolbar contains the sidebar toggle on the left and global actions on the right; omit page titles, breadcrumbs and descriptive subtitles at the top left. Keep task-specific names and content headings in their working surfaces. The work list header contains only create and collapse controls; counts stay in the filters.
 - Use a reading width around 1180–1280px for list and detail pages; allow workbench and organization graph surfaces to use the available width.
 - Keep a consistent 8px rhythm with 16px and 24px grouping intervals.
 - At narrower desktop widths, collapse secondary panels before reducing primary content below readable measure.
@@ -204,3 +204,10 @@ Use tonal surfaces and one restrained shadow vocabulary. A surface may use a bor
 - Each work row exposes Pin / Unpin, Rename and Delete through right-click, Shift+F10 and a hover/focus ellipsis button. Opening the menu preserves the current conversation and filters. Keep the menu in the native popover top layer so list scrolling cannot clip it; clamp it to the viewport and dismiss on scroll, resize, outside click or Esc.
 - Pins are persisted per task in the authenticated owner's local task snapshot; newer pins appear first, while streaming updates preserve ordinary row order. Renaming persists the task title, updates search and detail headings, and leaves the original goal and message content intact.
 - Rename uses a focused dialog with a trimmed 1–100-character name. Delete requires a confirmation that explains the loss of the record and retention of output files; active tasks retain the existing deletion restriction. Keep failures recoverable in the dialog. No archive entry is included.
+
+
+## Homepage reference update — 2026-10-27
+
+The personal homepage content follows the approved reference: greeting and three statistics, an AI composer, assigned agents, recommendations, and a right summary column. The common tools section is deferred without a reserved gap. Soft pink surfaces and the three statistic cards are scoped exceptions to older homepage content guidance.
+
+The homepage uses the same sidebar, toolbar, company logo/name, account menus, and saved collapse preference as every other section. Do not create a homepage shell variant or move company identity into a separate homepage header. See `docs/plans/2026-10-27-首页参考图复刻开发文档.md` for implementation evidence and remaining artwork differences.
