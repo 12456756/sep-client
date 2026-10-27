@@ -363,13 +363,19 @@ it('does not hide a record when archival fails or the authenticated owner change
 
 it('preserves ordinary task deletion and the running-task guard when media is absent', async () => {
   let allowed = true
+  let activeRunId: string | null = 'run-a'
   let deletions = 0
   const service = harness({
-    taskManager: { async deleteTask() { deletions++; return allowed } },
+    taskManager: {
+      async deleteTask() { deletions++; return allowed },
+      async getTask() { return { ...task, activeRunId } },
+    },
     media: { async archiveIfMedia() { return false } },
   })
   await service.delete(task.id)
   allowed = false
-  await assert.rejects(service.delete(task.id), { code: 'INVALID_STATE' })
-  assert.equal(deletions, 2)
+  await assert.rejects(service.delete(task.id), { code: 'INVALID_STATE', message: '任务正在执行，无法删除。' })
+  activeRunId = null
+  await assert.rejects(service.delete(task.id), { code: 'INVALID_STATE', message: '工作状态已变化，无法删除，请刷新后重试。' })
+  assert.equal(deletions, 3)
 })

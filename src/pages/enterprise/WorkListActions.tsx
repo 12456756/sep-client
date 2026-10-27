@@ -26,6 +26,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
   const inputRef = useRef<HTMLInputElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const returnFocus = useRef<HTMLElement | null>(null)
+  const returnFallbacks = useRef<HTMLElement[]>([])
   const pending = useRef(false)
   const [action, setAction] = useState<{ kind: 'rename' | 'delete'; workId: string } | null>(null)
   const [title, setTitle] = useState('')
@@ -37,7 +38,8 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
   const cannotDelete = (work: WorkItem) => Boolean(work.isActive || work.status === 'running')
 
   const restoreFocus = () => {
-    if (returnFocus.current?.isConnected) returnFocus.current.focus()
+    const target = [returnFocus.current, ...returnFallbacks.current].find(element => element?.isConnected)
+    target?.focus({ preventScroll: true })
   }
   const closeMenu = (restore = true) => {
     menuRef.current?.hidePopover()
@@ -49,6 +51,11 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
     const menu = menuRef.current
     if (!request || !menu) return
     returnFocus.current = request.trigger
+    const list = request.trigger.closest<HTMLElement>('.ent-work-list')
+    const rows = Array.from(list?.querySelectorAll<HTMLButtonElement>('.ent-work-row') ?? [])
+    const row = request.trigger.closest('.ent-work-row-wrap')?.querySelector('.ent-work-row')
+    const index = rows.findIndex(element => element === row)
+    returnFallbacks.current = list ? [...rows.slice(index + 1), ...rows.slice(0, Math.max(0, index)).reverse(), list] : []
     menu.showPopover()
     const rect = menu.getBoundingClientRect()
     menu.style.left = `${Math.max(8, Math.min(request.x, window.innerWidth - rect.width - 8))}px`
@@ -83,7 +90,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
     } else {
       if (dialog.open) {
         dialog.close()
-        if (!returnFocus.current?.isConnected) dialog.closest('.ent-work-hub')?.querySelector<HTMLInputElement>('.ent-work-search input')?.focus()
+        restoreFocus()
       }
       if (action) setAction(null)
     }
@@ -104,7 +111,6 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
   const closeAction = () => {
     if (pending.current) return
     setAction(null)
-    restoreFocus()
   }
   const submit = async () => {
     if (!action || !actionWork || busy || pending.current) return
@@ -124,7 +130,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
       const ok = action.kind === 'rename'
         ? await onRename(action.workId, nextTitle)
         : await onDelete(action.workId)
-      if (ok) { setAction(null); restoreFocus() }
+      if (ok) setAction(null)
       else setError(action.kind === 'rename' ? '名称没能保存，请重试。' : '记录没能删除，请重试。')
     } catch {
       setError('操作没能完成，请重试。')

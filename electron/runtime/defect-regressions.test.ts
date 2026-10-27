@@ -567,13 +567,37 @@ describe('stopped task deletion', () => {
     })
   }
 
-  it('does not delete pending or running work', async () => {
+  it('deletes pending work and removes a stale execution status without a run', async () => {
     const manager = new TaskManager(await makeUserDataDir())
     await manager.initialize()
     await manager.setCurrentUser('member-a', 'enterprise-a')
     const task = await manager.createTask('active', 'prompt')
-    assert.equal(await manager.deleteTask(task.id), false)
+    assert.equal(await manager.deleteTask(task.id), true)
+    assert.equal(await manager.getTask(task.id), null)
+    const staleRunning = await manager.createTask('stale', 'prompt')
+    await manager.updateTaskStatus(staleRunning.id, TaskStatus.RUNNING)
+    assert.equal(await manager.deleteTask(staleRunning.id), true)
+    assert.equal(await manager.getTask(staleRunning.id), null)
+
+    const admitted = await manager.createTask('admitted', 'prompt')
+    await manager.admitTask(admitted.id, 'active-run')
+    assert.equal(await manager.deleteTask(admitted.id), false)
+    assert.equal((await manager.getTask(admitted.id))?.activeRunId, 'active-run')
+
+    const failed = await manager.createTask('start-failed', 'prompt')
+    await manager.recordStartFailure(failed.id, 'worker startup failed')
+    assert.equal(await manager.deleteTask(failed.id), true)
+    assert.equal(await manager.getTask(failed.id), null)
+  })
+
+  it('does not delete a running task while its run is still admitted', async () => {
+    const manager = new TaskManager(await makeUserDataDir())
+    await manager.initialize()
+    await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('active', 'prompt')
+    await manager.admitTask(task.id, 'active-run')
     await manager.updateTaskStatus(task.id, TaskStatus.RUNNING)
     assert.equal(await manager.deleteTask(task.id), false)
+    assert.equal((await manager.getTask(task.id))?.activeRunId, 'active-run')
   })
 })

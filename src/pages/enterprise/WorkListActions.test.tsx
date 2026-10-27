@@ -33,13 +33,21 @@ function mount(overrides: Partial<Props> = {}) {
     addEventListener(type: string, listener: EventListener) { listeners.set(type, listener) },
     removeEventListener(type: string) { listeners.delete(type) },
   }
-  const button = () => ({ focus() { doc.activeElement = this } })
-  const trigger = { ...button(), isConnected: true } as unknown as HTMLElement
-  const items = [button(), button(), button()]
+  let modalOpen = false
+  let previousModalFocus: unknown
+  const button = (inDialog = false) => ({ isConnected: true, focusOptions: undefined as FocusOptions | undefined,
+    focus(options?: FocusOptions) { if (modalOpen && !inDialog) return; this.focusOptions = options; doc.activeElement = this } })
+  const previousRow = button()
+  const nextRow = button()
+  const search = button()
+  const list = { ...button(), querySelectorAll: () => [previousRow, trigger, nextRow] }
+  const trigger = { ...button(), closest: (selector: string) => selector === '.ent-work-list' ? list : { querySelector: () => trigger } } as unknown as HTMLElement
+  const items = [button(true), button(true), button(true)]
   const menu = Object.assign(new TestNode(), { open: false, style: { left: '', top: '' }, showPopover() { this.open = true }, hidePopover() { this.open = false }, contains(target: unknown) { return target === this },
     matches() { return this.open }, getBoundingClientRect: () => ({ width: 200, height: 150 }), querySelector: () => items[0], querySelectorAll: () => items })
-  const dialog = { open: false, showModal() { this.open = true }, close() { this.open = false } }
-  const input = { ...button(), selected: false, select() { this.selected = true } }
+  const dialog = { open: false, showModal() { this.open = modalOpen = true; previousModalFocus = doc.activeElement },
+    close() { this.open = modalOpen = false; doc.activeElement = previousModalFocus }, closest: () => ({ querySelector: () => search }) }
+  const input = { ...button(true), selected: false, select() { this.selected = true } }
   Reflect.set(globalThis, 'window', { innerWidth: 1024, innerHeight: 768, addEventListener() {}, removeEventListener() {} })
   Reflect.set(globalThis, 'document', doc)
   Reflect.set(globalThis, 'Node', TestNode)
@@ -78,7 +86,7 @@ function mount(overrides: Partial<Props> = {}) {
   const click = (label: string) => { const element = find(e => e.type === 'button' && e.props.children === label || e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes(label)); (element.props.onClick as () => void)() }
   const submit = () => { (find(e => e.type === 'form').props.onSubmit as (event: unknown) => void)({ preventDefault() {} }) }
   render()
-  return { props, menu, dialog, input, trigger, doc, items, listeners, find, render, click, submit, cleanup() {
+  return { props, menu, dialog, input, trigger, previousRow, nextRow, list, search, doc, items, listeners, find, render, click, submit, cleanup() {
     effects.forEach(effect => effect.cleanup?.())
     if (oldWindow === undefined) Reflect.deleteProperty(globalThis, 'window'); else Reflect.set(globalThis, 'window', oldWindow)
     if (oldDocument === undefined) Reflect.deleteProperty(globalThis, 'document'); else Reflect.set(globalThis, 'document', oldDocument)
@@ -180,6 +188,39 @@ test('cancel performs no mutation and streaming snapshots do not reset the edite
     assert.equal(ui.input.selected, false)
     ui.click('取消'); ui.render()
     assert.equal(ui.dialog.open, false)
+    assert.equal(ui.doc.activeElement, ui.trigger)
     assert.equal(calls, 0)
   } finally { ui.cleanup() }
+})
+
+test('deleting a row restores focus to its next visible neighbor without scrolling to search', async () => {
+  const ui = mount()
+  try {
+    ui.click('删除'); ui.render()
+    ui.submit(); await tick()
+    Object.assign(ui.trigger, { isConnected: false })
+    ui.props.works = []
+    ui.render()
+    assert.equal(ui.dialog.open, false)
+    assert.equal(ui.doc.activeElement, ui.nextRow)
+    assert.deepEqual(ui.nextRow.focusOptions, { preventScroll: true })
+  } finally { ui.cleanup() }
+})
+
+test('deleting the last visible row restores focus to the previous row or list', async () => {
+  for (const hasPrevious of [true, false]) {
+    const ui = mount()
+    try {
+      ui.click('删除'); ui.render()
+      ui.submit(); await tick()
+      Object.assign(ui.trigger, { isConnected: false })
+      ui.nextRow.isConnected = false
+      ui.previousRow.isConnected = hasPrevious
+      ui.props.works = []
+      ui.render()
+      const target = hasPrevious ? ui.previousRow : ui.list
+      assert.equal(ui.doc.activeElement, target)
+      assert.deepEqual(target.focusOptions, { preventScroll: true })
+    } finally { ui.cleanup() }
+  }
 })
