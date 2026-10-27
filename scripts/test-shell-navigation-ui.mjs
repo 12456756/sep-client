@@ -35,13 +35,15 @@ try {
     }, { platform, dark })
     await page.route(/\/main\.tsx(?:\?.*)?$/, route => route.fulfill({ contentType: 'text/javascript', body: `${entry}
       import '/index.css';
+      import { FeedbackProvider } from '/components/feedback/FeedbackProvider.tsx';
       import { ClientAppPage } from '/pages/ClientAppPage.tsx';
       document.documentElement.dataset.platform = ${JSON.stringify(platform)};
       document.documentElement.style.setProperty('--window-controls-inset', '${platform === 'win32' ? 144 : 0}px');
       const update = { state: { status: 'idle', currentVersion: '0.2.2' }, pending: null, error: null, release: null };
       ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode, null,
         React.createElement('div', { className: 'electron-window-chrome electron-drag-region', 'aria-hidden': true }),
-        React.createElement(ClientAppPage, { userId: 'fixture-user', userName: '测试用户', enterpriseId: 'fixture-enterprise', enterpriseName: '测试企业名称很长时保持单行省略', instances: [], employeeStatuses: [], onLogout: () => {}, update })));
+        React.createElement(FeedbackProvider, null,
+          React.createElement(ClientAppPage, { userId: 'fixture-user', userName: '测试用户', enterpriseId: 'fixture-enterprise', enterpriseName: '测试企业名称很长时保持单行省略', instances: [], employeeStatuses: [], onLogout: () => {}, update }))));
     ` }))
     await page.goto(origin)
     await page.waitForFunction(() => document.querySelector('.ent-icon-nav'), undefined, { timeout: 10000 }).catch(error => { throw new Error(`${error.message}; renderer errors: ${errors.join('; ')}`) })

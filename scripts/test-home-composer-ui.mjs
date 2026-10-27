@@ -23,11 +23,11 @@ try {
     import { useHomeDraftOwner } from '/features/enterprise/home-draft.ts';
     import { homePreviewEmployees } from '/preview/home-fixtures.ts';
     const attachment = { attachmentId: 'file-1', displayName: '季度报告.pdf', sha256: 'a'.repeat(64), mediaType: 'application/pdf', byteLength: 120, importSource: 'picker', extractionStatus: 'ready', warnings: [] };
-    window.homeCalls = { begins: [], selects: [], cancels: [], submits: [], removes: [] };
+    window.homeCalls = { begins: [], selects: [], cancels: [], submits: [], removes: [], failSelect: false };
     const items = new Map();
     window.electronAPI = {
       beginAttachmentImport: async ({ target }) => { const id = 'session-' + (window.homeCalls.begins.length + 1); window.homeCalls.begins.push(id); items.set(id, []); return { success: true, data: { sessionId: id, status: 'open', target, attachments: [] } } },
-      selectAttachments: async ({ sessionId }) => { window.homeCalls.selects.push(sessionId); items.set(sessionId, [attachment]); return { success: true, data: [attachment] } },
+      selectAttachments: async ({ sessionId }) => { window.homeCalls.selects.push(sessionId); if (window.homeCalls.failSelect) return { success: false, error: { message: '测试选择附件失败' } }; items.set(sessionId, [attachment]); return { success: true, data: [attachment] } },
       listAttachments: async ({ sessionId }) => ({ success: true, data: items.get(sessionId) || [] }),
       removeAttachment: async ({ sessionId, attachmentId }) => { window.homeCalls.removes.push(attachmentId); items.set(sessionId, []); return { success: true } },
       cancelAttachmentImport: async ({ sessionId }) => { window.homeCalls.cancels.push(sessionId); return { success: true } },
@@ -102,6 +102,10 @@ try {
   assert.equal(await input.inputValue(), '')
   assert.equal(await page.getByText('已添加上下文', { exact: true }).count(), 0)
   assert.equal(await page.getByTitle('季度报告.pdf', { exact: true }).count(), 0)
+  await page.getByRole('button', { name: '上传文件', exact: true }).click()
+  await page.evaluate(() => { window.homeCalls.failSelect = true })
+  await page.getByRole('button', { name: '添加附件', exact: true }).click()
+  await page.getByRole('alert').filter({ hasText: '测试选择附件失败' }).waitFor()
   await page.waitForFunction(() => Boolean(window.homeSnapshot().session))
   const abandoned = await page.evaluate(() => window.homeSnapshot().session)
   await page.evaluate(() => window.resetHomeOwner())
