@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { describeError, redactOptionalText, redactText, redactValue } from './redact'
+import { describeError, redactModelTraceText, redactOptionalText, redactText, redactValue } from './redact'
 
 describe('redactText', () => {
   it('strips bearer tokens', () => {
@@ -79,6 +79,20 @@ describe('describeError', () => {
     assert.equal(describeError(new TypeError('Bearer abc')), 'TypeError: Bearer [redacted]')
     assert.equal(describeError('Bearer abc'), 'Bearer [redacted]')
     assert.equal(describeError(42), '42')
+  })
+})
+
+describe('redactModelTraceText', () => {
+  it('redacts complete raw HTTP authorization and cookie headers', () => {
+    const text = 'HTTP/1.1 200 OK\r\nAuthorization: Basic PRIVATE_BASIC\r\nProxy-Authorization: Digest username="PRIVATE_USER", response="PRIVATE_DIGEST"\r\nCookie: session=PRIVATE_SESSION; csrf=PRIVATE_CSRF\r\nSet-Cookie: auth=PRIVATE_COOKIE; Path=/; HttpOnly\r\nBusiness result: keep this'
+    const result = redactModelTraceText(text)
+    assert.doesNotMatch(result, /PRIVATE_/)
+    assert.match(result, /Business result: keep this/)
+  })
+
+  it('redacts hyphenated credentials in serialized or query text', () => {
+    const text = '{"x-api-key":"PRIVATE_API","refresh-token":"PRIVATE_REFRESH","access-token":"PRIVATE_ACCESS"}\nhttps://example.test/?id_token=PRIVATE_ID&x-api-key=PRIVATE_KEY'
+    assert.doesNotMatch(redactModelTraceText(text), /PRIVATE_/)
   })
 })
 

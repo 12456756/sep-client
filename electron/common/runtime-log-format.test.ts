@@ -27,3 +27,25 @@ it('separates validation and client monitor warnings with Chinese headings', () 
   assert.match(monitor, /403/)
   assert.doesNotMatch(monitor, /UUID/)
 })
+
+it('retains failure reasons when formatting runtime errors', () => {
+  const output = formatRuntimeLog({ ...record('run failed', {
+    stage: 'agent-result', modelId: 'unavailable-model', error: '404: Model unavailable\nRequest rejected', runId: 'UUID',
+  }), scope: 'pi-task-worker', level: 'error' })!
+  assert.match(output, /模型会话失败/)
+  assert.match(output, /错误：404: Model unavailable Request rejected/)
+  assert.doesNotMatch(output, /UUID/)
+  const cause = formatRuntimeLog({ ...record('conversation run failed', { cause: 'Connection failed' }), scope: 'conversation-executor', level: 'error' })!
+  assert.match(cause, /原因：Connection failed/)
+})
+
+it('redacts HTTP credentials in failure summaries while preserving business fields', () => {
+  for (const key of ['error', 'cause']) {
+    for (const text of ['HTTP 401: Authorization: Basic PRIVATE_BASIC', 'HTTP failure: Cookie: sid=PRIVATE_COOKIE; csrf=PRIVATE_CSRF', 'Request failed: X-API-Key=PRIVATE_API; access-token=PRIVATE_TOKEN']) {
+      const output = formatRuntimeLog({ ...record('run failed', { [key]: text, taskTitle: 'Authorization documentation' }), scope: 'pi-task-worker', level: 'error' })!
+      assert.doesNotMatch(output, /PRIVATE_/)
+      assert.match(output, /\[redacted\]/)
+      assert.match(output, /任务：Authorization documentation/)
+    }
+  }
+})

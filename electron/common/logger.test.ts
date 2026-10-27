@@ -1,6 +1,6 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { isLogLevelEnabled, logger, setLogLevel, setLogSink, type LogRecord } from './logger'
 
 const captured: LogRecord[] = []
@@ -113,6 +113,24 @@ describe('logger', () => {
     assert.match(output, /\d{2}:\d{2}:\d{2}｜模型响应完成/)
     assert.match(output, /输入 62902｜输出 4096/)
     assert.doesNotMatch(output, /Short answer|requestId|estimatedThinkingTokens/)
+  })
+
+  it('redacts HTTP credentials from formatted runtime errors through the default console sink', () => {
+    const processResult = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+      import { logger, setLogLevel } from './electron/common/logger.ts';
+      setLogLevel('debug');
+      const log = logger.child('pi-task-worker');
+      log.error('run failed', { error: 'HTTP 401: Authorization: Basic PRIVATE_BASIC' });
+      log.error('run failed', { cause: 'HTTP failure: Cookie: sid=PRIVATE_COOKIE; csrf=PRIVATE_CSRF' });
+      log.error('run failed', { error: 'HTTP 403: X-API-Key=PRIVATE_API; access-token=PRIVATE_TOKEN' });
+    `], { encoding: 'utf8', cwd: process.cwd() })
+    assert.equal(processResult.status, 0)
+    const output = processResult.stdout + processResult.stderr
+    assert.match(output, /模型会话失败/)
+    assert.match(output, /HTTP 401/)
+    assert.match(output, /HTTP 403/)
+    assert.match(output, /\[redacted\]/)
+    assert.doesNotMatch(output, /PRIVATE_/)
   })
 
   it('keeps multiline log length limits and does not reinterpret literal backslashes', () => {

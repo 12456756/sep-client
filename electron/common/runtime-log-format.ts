@@ -1,4 +1,5 @@
 import type { LogRecord } from './logger'
+import { redactModelTraceText } from './redact'
 
 const phases: Record<string, string> = {
   initialization: '初始化', 'provider-request': '等待模型响应', 'response-assembly': '响应整理',
@@ -36,7 +37,7 @@ const labels: Record<string, string> = {
   providerStatus: '响应状态', statusCode: '状态码', stopReason: '结束原因',
   nodeCount: '执行节点数', completedNodeCount: '已生成节点数', unresolvedStepCount: '未匹配步骤数',
   employeeCount: '目录员工数', toolCount: '工具数', toolName: '工具', success: '成功',
-  status: '状态', reason: '原因', errorCode: '错误代码', path: '日志位置', delayMs: '等待时间',
+  status: '状态', reason: '原因', error: '错误', cause: '原因', errorCode: '错误代码', path: '日志位置', delayMs: '等待时间',
   attempt: '尝试次数', validationKind: '校验类型',
   kind: '操作类型',
   stage: '当前环节',
@@ -63,7 +64,9 @@ export function formatRuntimeLog(record: LogRecord): string | null | undefined {
   const time = new Date(record.timestamp).toTimeString().slice(0, 8)
   const lines = [`\n──────── ${time}｜${title} ────────`]
   if (record.scope === 'client-monitor') lines.push('类别：客户端同步（独立于模型请求）')
-  for (const [key, value] of Object.entries(record.fields)) {
+  for (const [key, rawValue] of Object.entries(record.fields)) {
+    const value = typeof rawValue === 'string' && (key === 'error' || key === 'cause')
+      ? redactModelTraceText(rawValue) : rawValue
     const label = labels[key]
     if (!label || value === undefined || value === null) continue
     const display = typeof value === 'number' && key.endsWith('Ms') ? formatDuration(value)

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, symlink, rm, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { evaluateOfficeCommand } from './pi-office-policy'
@@ -8,7 +8,7 @@ import type { ToolPolicy } from '../../../pi-extension/guard'
 
 describe('Office command policy', () => {
   async function fixture() {
-    const root = await mkdtemp(join(tmpdir(), 'sep-office-policy-'))
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'sep-office-policy-')))
     const workspace = join(root, 'workspace')
     await mkdir(workspace)
     const policy: ToolPolicy = { preset: 'workspace-edit', allowedTools: ['read', 'write', 'edit'],

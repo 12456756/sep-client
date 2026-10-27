@@ -27,6 +27,7 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
   const mountedOwner = useRef(owner)
   mountedOwner.current = owner
   const composing = useRef(false)
+  const requestingConsent = useRef(false)
   const snapshot = useSyncExternalStore(speechInput.subscribe, speechInput.getSnapshot, speechInput.getSnapshot)
   const owns = snapshot.owner === owner
   const busy = snapshot.phase !== 'idle'
@@ -75,7 +76,10 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
         if (!response.success) throw responseError(response, 'speech')
         const permission = speechPermissionSchema.parse(response.data?.permission)
         if (permission !== 'prompt') return undefined
-        return feedback.ask({ message: '允许使用麦克风进行语音输入？语音将在本机识别。', actionLabel: '允许', key: 'speech-consent', signal })
+        requestingConsent.current = true
+        try {
+          return await feedback.ask({ message: '允许使用麦克风进行语音输入？语音将在本机识别。', actionLabel: '允许', key: 'speech-consent', signal })
+        } finally { requestingConsent.current = false }
       })
     },
     stop: () => { void speechInput.stop(owner) },
@@ -84,7 +88,11 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
   }
   const gesture = useRef<SpaceHold | null>(null)
   gesture.current ??= new SpaceHold({
-    start: () => actions.current.start(), stop: () => actions.current.stop(),
+    start: () => actions.current.start(), stop: () => {
+      // Releasing the gesture must leave its consent dialog available to answer.
+      // A first authorization never starts capture; recording requires another gesture.
+      if (!requestingConsent.current) actions.current.stop()
+    },
     cancel: () => actions.current.cancel(), insertSpace: () => actions.current.insertSpace(),
   })
 
@@ -129,9 +137,9 @@ export function useSpeechInput<T extends TextInput = HTMLTextAreaElement>(option
       ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey })) event.preventDefault()
   }
   const onBlur = (event: FocusEvent<T>): void => {
-    gesture.current!.reset()
     const next = event.relatedTarget
     if (next instanceof Element && next.closest('.feedback-dialog')) return
+    gesture.current!.reset()
     if (!(next instanceof Element) || next.closest('[data-speech-owner]')?.getAttribute('data-speech-owner') !== owner) speechInput.cancel(owner)
   }
 

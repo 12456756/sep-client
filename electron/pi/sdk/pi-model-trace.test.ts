@@ -26,6 +26,14 @@ it('labels every actual message role and preserves rich content and escaped text
   assert.doesNotMatch(text, /PRIVATEIMAGE/)
   assert.match(text, /工具定义/)
 })
+
+it('redacts structured credential keys without losing token usage diagnostics', () => {
+  const result = readableTraceValue({ headers: { 'X-API-Key': 'PRIVATE_API', 'Proxy-Authorization': 'Basic PRIVATE_BASIC', 'Set-Cookie': 'auth=PRIVATE_COOKIE' },
+    credentials: { 'access-token': 'PRIVATE_ACCESS', 'refresh-token': 'PRIVATE_REFRESH', id_token: 'PRIVATE_ID' }, max_tokens: 4096, usage: { totalTokens: 42 } })
+  assert.doesNotMatch(result, /PRIVATE_/)
+  assert.match(result, /"max_tokens": 4096/)
+  assert.match(result, /"totalTokens": 42/)
+})
 it('does not wait for disk writes before forwarding stream events and records complete snapshots', async () => {
   const saved: ModelTraceEntry[] = []
   let complete = false

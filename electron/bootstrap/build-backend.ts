@@ -123,7 +123,7 @@ class BackendRuntime {
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
   private readonly userDataDir: string
-  private readonly modelTraces = new ModelTraceStore(join(process.cwd(), 'model-logs'))
+  private readonly modelTraces: ModelTraceStore
   private readonly createModelTrace: ModelTraceFactory = context => {
     const scope = this.currentScope()
     return scope ? this.modelTraces.recorder(scope, context.taskId, context.title, context.phase) : undefined
@@ -138,6 +138,7 @@ class BackendRuntime {
 
   constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities }: BackendOptions) {
     this.userDataDir = userDataDir
+    this.modelTraces = new ModelTraceStore(join(userDataDir, 'model-logs'))
     this.renderer = renderer
     this.isEncryptionAvailable = isEncryptionAvailable
     this.runtime = loadOnce(() => this.loadTaskRuntime())

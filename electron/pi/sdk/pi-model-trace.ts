@@ -1,13 +1,13 @@
 import type { PiAssistantMessage as AssistantMessage, PiAssistantMessageEvent as AssistantMessageEvent } from './pi-coding-agent-adapter'
 import type { ModelTraceRecorder } from '../../domain/model-trace'
-import { redactModelTraceText } from '../../common/redact'
+import { isSensitiveModelTraceKey, redactModelTraceText } from '../../common/redact'
 import { logger } from '../../common/logger'
 
 const roles: Record<string, string> = { system: '系统消息', developer: '开发者消息', user: '用户消息', assistant: '助手消息', tool: '工具返回' }
 export function readableTraceValue(value: unknown): string {
   if (typeof value === 'string') return redactModelTraceText(value)
   return JSON.stringify(value, function (this: Record<string, unknown>, key, item: unknown) {
-    if (/^(authorization|cookie|password|secret|token|access_?token|refresh_?token|api_?key|credential)$/i.test(key)) return '[redacted]'
+    if (isSensitiveModelTraceKey(key)) return '[redacted]'
     if (key === 'data' && typeof item === 'string' && (this.type === 'image' || this.type === 'reasoning.encrypted' || typeof this.mimeType === 'string')) return `[binary data omitted: ${item.length} characters]`
     return typeof item === 'string' ? redactModelTraceText(item) : item
   }, 2) ?? String(value)
