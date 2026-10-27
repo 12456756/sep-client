@@ -15,6 +15,7 @@ import { errorCodeSpec } from './error-codes'
 import { AppError } from './app-error'
 import { authFailureFrom, toEnvelope, type IpcErrorEnvelope, type IpcFailure } from './error-mapper'
 import type { AuthError } from '../../src/shared/types'
+import type { FeedbackOperation } from '../../src/shared/arrangement-feedback'
 
 const log = logger.child('errors')
 
@@ -34,10 +35,10 @@ export function setFatalPresenter(presenter: FatalPresenter | null): void {
 export function reportError(
   operation: string,
   error: unknown,
-  context: LogFields & { authenticated?: boolean } = {},
+  context: LogFields & { authenticated?: boolean; feedbackOperation?: FeedbackOperation } = {},
 ): IpcErrorEnvelope {
-  const { authenticated, ...fields } = context
-  const result = toEnvelope(error, { authenticated })
+  const { authenticated, feedbackOperation, ...fields } = context
+  const result = toEnvelope(error, { authenticated, feedbackOperation })
   const spec = errorCodeSpec(result.code)
   const statusCode = typeof error === 'object' && error !== null && 'statusCode' in error
     && typeof error.statusCode === 'number' && Number.isFinite(error.statusCode)
@@ -60,7 +61,7 @@ export function reportError(
 export function reportFailure(
   operation: string,
   error: unknown,
-  context: LogFields & { authenticated?: boolean } = {},
+  context: LogFields & { authenticated?: boolean; feedbackOperation?: FeedbackOperation } = {},
 ): IpcFailure {
   return { success: false, error: reportError(operation, error, context) }
 }

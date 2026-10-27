@@ -16,8 +16,3 @@ export function SpeechInputActions({ speech, disabled = false }: { speech: Speec
     {speech.active ? <button type="button" className="speech-icon" aria-label="取消语音输入" title="取消语音输入" onPointerDown={event => event.preventDefault()} onClick={speech.cancel}><X size={15} aria-hidden /></button> : null}
   </span>
 }
-
-export function SpeechInputFeedback({ speech }: { speech: SpeechInputBinding }) {
-  if (!speech.error && !speech.notice) return null
-  return <p className={`speech-feedback${speech.error ? ' error' : ''}`} role={speech.error ? 'alert' : 'status'}>{speech.error || speech.notice}</p>
-}

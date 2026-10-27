@@ -20,6 +20,7 @@ import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { NotificationCenter } from '../components/enterprise/NotificationCenter';
 import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
+import { useRuntimeFeedback } from '../components/feedback/use-runtime-feedback';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
@@ -62,6 +63,7 @@ export function ClientAppPage(props: Props) {
 }
 
 function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
+  useRuntimeFeedback(userId, enterpriseId);
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
     void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined);
@@ -266,11 +268,10 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
 
 function EmployeeLoadNotice({ state, loadingLabel, retryLabel }: { state?: EmployeeLoadState; loadingLabel: string; retryLabel: string }) {
   if (state?.error) return (
-    <div className="ent-error-bar" role="alert">
-      <AlertTriangle size={14} aria-hidden />
-      <span className="ent-load-message">{state.error}</span>
+    <div className="ent-load-bar">
       <button type="button" className="ent-top-icon ent-load-retry" aria-label={retryLabel} title={retryLabel} disabled={state.loading} onClick={state.retry}>
         <RotateCw size={15} aria-hidden />
+        <span>{retryLabel}</span>
       </button>
     </div>
   );

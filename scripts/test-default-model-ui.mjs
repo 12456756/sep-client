@@ -17,6 +17,7 @@ await import('/index.css');
 const React=(await import('${reactUrl}')).default;
 const {createRoot}=(await import('${domUrl}')).default;
 const {ClientAppPage}=await import('/pages/ClientAppPage.tsx');
+const {FeedbackProvider}=await import('/components/feedback/FeedbackProvider.tsx');
 const employee=(name,models)=>({subscriptionId:'sub-'+name,employeeId:'employee-'+name,name,description:'业务协助',status:'ACTIVE',allowedModels:models,template:{name:'分析师',avatar:null},templateVersion:'1'});
 let props={userId:'member',userName:'测试用户',enterpriseId:'enterprise',enterpriseName:'测试企业',instances:[employee('员工A',['first','gpt','private-a']),employee('员工B',['first','gpt','private-b'])],employeeStatuses:[],onLogout:()=>{}};
 window.requests=[];window.plans=[];window.listeners=[];
@@ -37,7 +38,7 @@ const api={
 };
 window.electronAPI=new Proxy(api,{get:(target,name)=>name in target?target[name]:String(name).startsWith('on')?()=>()=>{}:async()=>({success:false})});
 const root=createRoot(document.getElementById('root'));
-const render=()=>root.render(React.createElement(ClientAppPage,props));
+const render=()=>root.render(React.createElement(FeedbackProvider,null,React.createElement(ClientAppPage,props)));
 window.updateFixture=patch=>{props={...props,...patch};render()};
 window.reorderModels=()=>{props={...props,instances:props.instances.map(item=>({...item,allowedModels:[...item.allowedModels].reverse()}))};render()};
 window.revokeDefault=()=>{props={...props,instances:props.instances.map(item=>({...item,allowedModels:['first']}))};render()};

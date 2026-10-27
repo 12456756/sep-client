@@ -148,7 +148,7 @@ export function applyRuntimeEvent(current: WorkActivity[], event: TaskExecutionE
     return append(current, {
       id: activityId,
       runId: event.runId,
-      text: `运行遇到问题：${safeError(stringValue(data.message))}`,
+      text: '当前轮次执行遇到问题',
       state: 'failed',
       startedAt: at,
       endedAt: at,
@@ -179,8 +179,4 @@ function stringValue(value: unknown): string | undefined {
 
 function safeLabel(value: string): string {
   return value.replace(/[\r\n]+/g, ' ').slice(0, MAX_ERROR_LENGTH)
-}
-
-function safeError(value: string | undefined): string {
-  return value ? safeLabel(value) : '请查看工作记录'
 }

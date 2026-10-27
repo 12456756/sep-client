@@ -4,6 +4,8 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
+import { responseError } from '../../shared/arrangement-feedback';
 import type { ArrangementDraft } from '../../shared/types';
 import { AutoArrange } from '../../components/enterprise/arrange/AutoArrange';
 import { ChatArrange } from '../../components/enterprise/arrange/ChatArrange';
@@ -63,7 +65,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
     setSettings(current => ({ ...current, ...patch }));
   };
   const isOrchestration = activeMode === 'auto' || activeMode === 'manual';
-  const [autoStartError, setAutoStartError] = useState<string | null>(null);
+  const { capture: captureFeedback } = useOperationFeedback(`${workspace.attachmentScopeKey}:${activeMode}`);
   /** 正在淡出的目标画面。给「点了卡片但还没换页」这 200ms 用。 */
   const [leaving, setLeaving] = useState<ArrangeMode | null>(null);
   /** 从常用工作带进来的初始内容，用过就从 workspace 里清掉。 */
@@ -88,7 +90,6 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
   // 换画面时把上一屏的淡出状态清掉，否则返回时这一屏是半透明的。
   useEffect(() => {
     setLeaving(null);
-    setAutoStartError(null);
     setChatEmployeeId(employeeId ?? GENERAL_ASSISTANT_ID);
     setSettings(current => ({ ...current, modelId: '' }));
   }, [mode, employeeId, activeMode]);
@@ -108,7 +109,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
   };
 
   const startAuto = async (draft: ArrangementDraft): Promise<ArrangementDraft> => {
-    setAutoStartError(null);
+    const notice = captureFeedback();
     try {
       const updated = await window.electronAPI.updateArrangementExecutionSettings({
         draftId: draft.id, expectedRevision: draft.revision,
@@ -118,18 +119,21 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
           permissions: { ...settings.permissions },
         },
       });
-      if (!updated.success || !updated.draft) throw new Error(updated.error?.message || '保存执行设置失败');
+      if (!notice.isCurrent()) return draft;
+      if (!updated.success || !updated.draft) throw responseError(updated, 'settings');
       draft = updated.draft;
       const preflight = await window.electronAPI.preflightArrangementDraft({ draftId: draft.id, expectedRevision: draft.revision });
+      if (!notice.isCurrent()) return draft;
       if (!preflight.success || !preflight.preflight?.canStart) {
-        throw new Error(preflight.error?.message || preflight.preflight?.blockingIssues.join('；') || '运行前检查失败');
+        throw responseError({ error: preflight.error ?? (preflight.preflight?.message ? { message: preflight.preflight.message } : undefined) }, 'preflight');
       }
       const result = await window.electronAPI.confirmAndStartArrangement({ draftId: draft.id, expectedRevision: draft.revision, idempotencyKey: crypto.randomUUID() });
-      if (!result.success || !result.execution) throw new Error(result.error?.message || '启动工作失败');
+      if (!notice.isCurrent()) return draft;
+      if (!result.success || !result.execution) throw responseError(result, 'start');
       onWorkCreated?.();
       workspace.navigate({ name: 'work', workId: result.execution.id });
     } catch (cause) {
-      setAutoStartError(cause instanceof Error ? cause.message : '启动工作失败');
+      notice.fail(cause, 'start');
     }
     return draft;
   };
@@ -187,7 +191,6 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
         ) : null}
       </div>
 
-      {autoStartError ? <div role="alert" className="workspace-inline-error">{autoStartError}</div> : null}
       <div className={`ent-arr-view${leaving ? ' leaving' : ''}`} key={`${activeMode}-${employeeId ?? ''}`}>
         {activeMode === 'chat' ? (
           <ChatArrange
@@ -228,7 +231,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
             attachmentBindingKey={workspace.attachmentScopeKey}
             seed={manualSeed}
             onSave={draft => {
-              workspace.saveFlow({
+              return workspace.saveFlow({
                 name: draft.title,
                 goal: draft.goal,
                 version: 2,

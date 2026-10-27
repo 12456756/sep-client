@@ -6,7 +6,7 @@ import * as ts from 'typescript'
 import { z } from 'zod'
 import * as contracts from '../../src/shared/speech-contracts'
 import { appError } from '../errors/app-error'
-import { INVOKE_CHANNELS } from './channels'
+import { INVOKE_CHANNELS, FEEDBACK_OPERATION_BY_CHANNEL } from './channels'
 import type { RequestContext } from './request-context'
 import type { Route } from './router'
 
@@ -20,7 +20,7 @@ function load<T>(file: string, dependencies: Record<string, unknown>): T {
   return module.exports as T
 }
 
-function fixture() {
+function fixture(permission = 'prompt') {
   const handlers = new Map<string, (event: unknown, input: unknown) => Promise<{ success: boolean }>>()
   const failure = () => ({ success: false, error: { code: 'INVALID_ARGUMENT' } })
   const router = load<typeof import('./router')>('./router.ts', {
@@ -28,6 +28,7 @@ function fixture() {
     zod: { z }, '../common/logger': { logger: { child: () => ({ info: () => {}, warn: () => {} }) } },
     '../errors/app-error': { appError }, '../errors/error-mapper': { authFailure: failure, failure },
     '../errors/error-reporter': { reportAuthFailure: failure, reportFailure: failure },
+    './channels': { FEEDBACK_OPERATION_BY_CHANNEL },
   })
   const { speechRoutes } = load<{ speechRoutes: Route[] }>('./routes/speech.ts', {
     electron: { dialog: { showMessageBox: () => assert.fail('Must not ask consent while opening system settings') } },
@@ -35,12 +36,20 @@ function fixture() {
     '../../errors/app-error': { appError }, '../channels': { INVOKE_CHANNELS }, '../router': router,
   })
   let opened = 0
+  let begun = 0
+  let enabled = 0
   const webContents = { mainFrame: {} }
   const ctx = { window: () => ({ isDestroyed: () => false, webContents }),
-    speech: { openSystemSettings: async () => { opened++ } } } as unknown as RequestContext
+    speech: {
+      openSystemSettings: async () => { opened++ },
+      getPermission: async () => permission,
+      begin: async (recordingId: string, ask: () => Promise<boolean>) => { begun++; return { recordingId, ready: false, permission: await ask() ? 'granted' : permission } },
+      setEnabled: async (_enabled: boolean, ask: () => Promise<boolean>) => { enabled++; return await ask() ? 'granted' : permission },
+    } } as unknown as RequestContext
   router.registerRoutes(ctx, { routes: speechRoutes, listeners: [] })
   const invoke = (input: unknown, event = { sender: webContents, senderFrame: webContents.mainFrame }) => handlers.get(INVOKE_CHANNELS.SPEECH_OPEN_SYSTEM_SETTINGS)!(event, input)
-  return { routes: speechRoutes, invoke, get opened() { return opened } }
+  const command = (channel: string, input: unknown, event = { sender: webContents, senderFrame: webContents.mainFrame }) => handlers.get(channel)!(event, input)
+  return { routes: speechRoutes, invoke, command, get opened() { return opened }, get begun() { return begun }, get enabled() { return enabled } }
 }
 
 describe('system microphone settings IPC boundary', () => {
@@ -62,5 +71,28 @@ describe('system microphone settings IPC boundary', () => {
     const f = fixture()
     assert.equal((await f.invoke(undefined, { sender: {}, senderFrame: {} } as never)).success, false)
     assert.equal(f.opened, 0)
+  })
+  it('does not begin recording or enable speech without explicit application consent', async () => {
+    const f = fixture()
+    for (const consent of [undefined, false]) {
+      assert.equal((await f.command(INVOKE_CHANNELS.SPEECH_BEGIN, { recordingId: 'recording-a', consent })).success, true)
+      assert.equal((await f.command(INVOKE_CHANNELS.SPEECH_SET_ENABLED, { enabled: true, consent })).success, true)
+    }
+    assert.equal(f.begun, 0)
+    assert.equal(f.enabled, 0)
+    await f.command(INVOKE_CHANNELS.SPEECH_BEGIN, { recordingId: 'recording-a', consent: true })
+    await f.command(INVOKE_CHANNELS.SPEECH_SET_ENABLED, { enabled: true, consent: true })
+    assert.equal(f.begun, 1)
+    assert.equal(f.enabled, 1)
+  })
+  it('validates consent and sender identity before accepting permission', async () => {
+    const f = fixture()
+    assert.equal((await f.command(INVOKE_CHANNELS.SPEECH_BEGIN, { recordingId: 'recording-a', consent: 'yes' })).success, false)
+    assert.equal((await f.command(INVOKE_CHANNELS.SPEECH_SET_ENABLED, { enabled: true, consent: true }, { sender: {}, senderFrame: {} } as never)).success, false)
+    assert.equal(f.begun, 0)
+    assert.equal(f.enabled, 0)
+    const granted = fixture('granted')
+    assert.equal((await granted.command(INVOKE_CHANNELS.SPEECH_BEGIN, { recordingId: 'recording-a' })).success, true)
+    assert.equal(granted.begun, 1)
   })
 })

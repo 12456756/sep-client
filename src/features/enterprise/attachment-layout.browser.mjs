@@ -64,14 +64,15 @@ for (const mode of ['chat', 'goal']) {
         import { ChatArrange } from '/components/enterprise/arrange/ChatArrange.tsx';
         import { GoalComposer } from '/components/enterprise/arrange/GoalComposer.tsx';
         import { defaultRunSettings } from '/features/enterprise/run-settings.ts';
+        import { FeedbackProvider } from '/components/feedback/FeedbackProvider.tsx';
         const noop = () => {};
         const props = { busy: false, settings: defaultRunSettings(), models: ['deepseek-v4-flash'], onSettingsChange: noop, onChooseFolder: async () => null };
         const content = ${mode === 'chat'
           ? "React.createElement(ChatArrange, { ...props, employees: [], employeeId: '', onEmployeeChange: noop, onStart: noop })"
           : "React.createElement('section', { className: 'ent-arr-auto' }, React.createElement(GoalComposer, { ...props, value: '', onChange: noop, placeholder: 'Work goal', submitLabel: 'Submit', submitDisabled: true, onSubmit: noop }))"};
-        ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode, null,
+        ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider, null, React.createElement(React.StrictMode, null,
           React.createElement('main', { className: 'ent-shell', style: { padding: '24px', height: '100vh' } },
-            React.createElement('div', { className: 'ent-arr', style: { padding: 0 } }, content))));` }))
+            React.createElement('div', { className: 'ent-arr', style: { padding: 0 } }, content)))));` }))
       await page.goto(base)
       const button = page.getByRole('button', { name: '添加附件', exact: true })
       await button.waitFor()

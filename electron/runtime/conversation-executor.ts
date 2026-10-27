@@ -8,7 +8,9 @@
  */
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import { TaskStatus } from '../../src/shared/types'
+import { TaskStatus, type TaskExecutionEvent } from '../../src/shared/types'
+import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
+import { runtimeFeedback, runtimeFailureEvent } from '../errors/runtime-feedback'
 import { ConversationContextStore, type ConversationMessage } from '../domain/conversation-context'
 import type { TaskRunStorePort, TaskRunOutcome } from '../data/task-run-store'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
@@ -53,6 +55,7 @@ export interface ConversationExecutorOptions {
   onOutput?: (input: MonitorTaskContentInput) => void
   onStarted?: (input: MonitorTaskStartedInput) => void
   onFinished?: (input: MonitorTaskFinishedInput) => void
+  onFailure?: (event: TaskExecutionEvent) => void
   media?: MediaRunPort
   video?: VideoRunPort
   knowledgeSearch?: KnowledgeSearchPort
@@ -261,9 +264,10 @@ export class ConversationExecutor {
         await this.finalize(active, queued, scope, runCreated, error)
       } else {
         await this.options.taskManager
-          .settleTaskRun(taskId, runId, TaskStatus.FAILED, 'The conversation could not be started.')
+          .settleTaskRun(taskId, runId, TaskStatus.FAILED, runtimeFeedback(error).message)
           .catch(() => undefined)
-        this.options.onFinished?.({ taskId, runId, status: 'FAILED', error: 'The conversation could not be started.', completedAt: Date.now() })
+        this.options.onFinished?.({ taskId, runId, status: 'FAILED', error: runtimeFeedback(error).message, completedAt: Date.now() })
+        if (scope) this.options.onFailure?.(runtimeFailureEvent({ taskId, runId, subscriptionId: queued.subscriptionId, owner: scope }, error))
       }
     } finally {
       await cleanupRun(taskId, runId, [
@@ -376,7 +380,7 @@ export class ConversationExecutor {
           : failure ? 'failed' : 'completed'
     let error = active.control === 'cancel'
       ? active.controlReason
-      : failure instanceof Error ? failure.message : failure ? String(failure) : undefined
+      : failure ? runtimeFeedback(failure).message : undefined
 
     let finalizationFailure: unknown
     const persist = async (stage: string, operation: () => unknown): Promise<void> => {
@@ -447,7 +451,7 @@ export class ConversationExecutor {
     }
     if (finalizationFailure && active.control === 'none') {
       outcome = 'failed'
-      error = 'The run could not persist its final result.'
+      error = RUNTIME_FAILURE_MESSAGES.STORAGE_FAILED
     }
     if (runCreated && scope && this.options.taskRunStore) {
       try {
@@ -467,7 +471,7 @@ export class ConversationExecutor {
           error = record.error ?? undefined
         } else if (active.control === 'none') {
           outcome = 'failed'
-          error = 'The run could not persist its final result.'
+          error = RUNTIME_FAILURE_MESSAGES.STORAGE_FAILED
         }
       }
     }
@@ -480,6 +484,9 @@ export class ConversationExecutor {
             ? TaskStatus.FAILED
             : TaskStatus.COMPLETED
       await this.options.taskManager.settleTaskRun(active.taskId, active.runId, nextStatus, error)
+      if (outcome === 'failed' && active.control === 'none' && scope) {
+        this.options.onFailure?.(runtimeFailureEvent({ taskId: active.taskId, runId: active.runId, subscriptionId: active.subscriptionId, owner: scope }, new Error(error)))
+      }
       await cleanupRun(active.taskId, active.runId, [['monitor-finished', () => this.options.onFinished?.({ taskId: active.taskId, runId: active.runId,
         status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : outcome === 'interrupted' ? 'INTERRUPTED' : 'PAUSED',
         error, completedAt: Date.now(),

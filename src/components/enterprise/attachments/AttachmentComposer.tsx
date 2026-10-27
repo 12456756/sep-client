@@ -3,6 +3,7 @@ import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../../shared/attachment-contracts'
 import { useAttachmentComposer, type RetainedAttachmentState } from '../../../features/enterprise/use-attachment-composer'
+import { useOperationFeedback } from '../../feedback/use-operation-feedback'
 
 interface Props {
   target: AttachmentImportTarget
@@ -21,7 +22,9 @@ interface Props {
 }
 
 export function AttachmentComposer({ target, bindingKey, disabled = false, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer }: Props) {
-  const composer = useAttachmentComposer({ target, bindingKey, disabled, retainedState, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
+  const { capture } = useOperationFeedback(bindingKey)
+  const notice = capture()
+  const composer = useAttachmentComposer({ target, bindingKey, disabled, retainedState, onError: message => notice.show(message), onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
   const attachments = composer.attachments
   useEffect(() => { onChange?.(attachments) }, [attachments, onChange])
   useEffect(() => { onSessionChange?.(composer.session) }, [composer.session, onSessionChange])
@@ -42,15 +45,9 @@ export function AttachmentComposer({ target, bindingKey, disabled = false, retai
       ))}
     </div>
   ) : null
-  const feedback = (
-    <>
-      {attachmentList}
-      {composer.error ? <span className="ent-attachment-error" role="alert">{composer.error}<button type="button" onClick={() => composer.setError(null)} aria-label="关闭错误"><X size={12} aria-hidden /></button></span> : null}
-    </>
-  )
   return (
     <div className="ent-attachment-composer" data-attachment-composer data-composer-id={composer.composerId}>
-      {listContainer ? createPortal(feedback, listContainer) : feedback}
+      {listContainer ? createPortal(attachmentList, listContainer) : attachmentList}
       <button type="button" className="ent-attachment-button" onClick={() => void composer.select()} disabled={disabled || composer.busy} title={composer.busy ? '处理中…' : '添加附件'} aria-label={composer.busy ? '附件处理中' : '添加附件'}>
         {composer.busy ? <LoaderCircle size={16} aria-hidden className="ent-attachment-spinner" /> : <Paperclip size={16} aria-hidden />}
       </button>

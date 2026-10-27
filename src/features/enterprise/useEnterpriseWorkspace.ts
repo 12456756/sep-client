@@ -3,6 +3,8 @@ import { useSkillLibrary, type SkillLibraryWorkspace } from './use-skill-library
 import { needsSkillLibrary } from './skill-load-state';
 import { conversationDocument } from './run-settings';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant';
+import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
+import { UserFeedbackError, responseError } from '../../shared/arrangement-feedback';
 /**
  * 把平台数据与本地状态聚合成业务域模型。
  *
@@ -32,7 +34,7 @@ import type {
   WorkItem,
   WorkTemplate,
 } from './types';
-import { upgradeDraftSteps } from './work-graph';
+import { upgradeDraftSteps, validateGraph } from './work-graph';
 import { buildWorkItem, completedStepCount, getArrangementDisplayEvents } from './work-mapping';
 import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
 import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
@@ -237,6 +239,7 @@ const NOTICE_DURATION_MS = 5_000;
 export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses }: Options): EnterpriseWorkspace {
   const [tasks, setTasks] = useState<ClientTask[]>([]);
   const scopeKey = JSON.stringify([userId, enterpriseId]);
+  const { capture: captureFeedback } = useOperationFeedback(scopeKey);
   const deletedRecords = useMemo(() => ({ scopeKey, ids: new Set<string>() }), [scopeKey]);
   const deletedTaskIds = deletedRecords.ids;
   const scopedTasks = useMemo(() => tasks.filter(task => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId), [tasks, userId, enterpriseId]);
@@ -617,49 +620,56 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   }, []);
 
   const startConversation = useCallback(async (employeeId: string, text: string, options?: ConversationOptions) => {
+    const notice = captureFeedback();
     const goal = text.trim();
     if (!goal) return false;
     const employee = employeeId === GENERAL_ASSISTANT_ID
       ? generalAssistant(myEmployees.filter(item => item.availability !== 'unavailable'))
       : myEmployees.find(item => item.id === employeeId);
-    if (!employee) { setError('请先选择一位硅基员工'); return false; }
+    if (!employee) { notice.show('请选择需要使用的员工', 'warning'); return false; }
     const api = window.electronAPI;
     const title = goal.length > 40 ? `${goal.slice(0, 40)}…` : goal;
     setBusy(true);
     setError(null);
     try {
       const modelId = options?.modelId || employee.allowedModels[0];
-      if (!modelId || !employee.allowedModels.includes(modelId)) throw new Error(employeeId === GENERAL_ASSISTANT_ID ? '通用助手暂无可用的公共模型，请检查模型授权' : '请选择该员工允许使用的模型');
+      if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请联系平台管理员' : '所选员工不支持当前模型，请重新选择');
       const document = { ...conversationDocument(title, goal, employeeId, modelId, options), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
       const created = await api.createArrangementDraft(document);
-      if (!created.success || !created.draft) throw new Error(created.error?.message || '创建对话失败');
+      if (!notice.isCurrent()) return false;
+      if (!created.success || !created.draft) throw responseError(created, 'create');
       let draft = created.draft;
       if (draft.attachmentCandidates?.length && draft.attachmentSessionId) {
         const updated = await api.updateArrangementInputs({ draftId: draft.id, expectedRevision: draft.revision, inputs: { attachmentSessionId: draft.attachmentSessionId, attachmentCandidates: draft.attachmentCandidates } });
-        if (!updated.success || !updated.draft) throw new Error(updated.error?.message || '保存会话附件失败');
+        if (!notice.isCurrent()) return false;
+        if (!updated.success || !updated.draft) throw responseError(updated, 'attachments');
         draft = updated.draft;
       }
       const input = { draftId: draft.id, expectedRevision: draft.revision };
       const preflight = await api.preflightArrangementDraft(input);
+      if (!notice.isCurrent()) return false;
       if (!preflight.success || !preflight.preflight?.canStart) {
-        throw new Error(preflight.error?.message || preflight.preflight?.blockingIssues.join('；') || '运行前检查失败');
+        throw responseError({ error: preflight.error ?? (preflight.preflight?.message ? { message: preflight.preflight.message } : undefined) }, 'preflight');
       }
       const started = await api.confirmAndStartArrangement({ ...input, idempotencyKey: crypto.randomUUID() });
-      if (!started.success || !started.execution) throw new Error(started.error?.message || '员工没能接单，请重试');
+      if (!notice.isCurrent()) return false;
+      if (!started.success || !started.execution) throw responseError(started, 'start');
       setActiveEmployeeByWork(current => ({ ...current, [started.execution!.id]: employeeId }));
       navigate({ name: 'work', workId: started.execution.id });
       return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '工作创建失败');
+      notice.fail(cause, 'create');
       return false;
     } finally {
-      setBusy(false);
+      if (notice.isCurrent()) setBusy(false);
     }
-  }, [myEmployees, navigate]);
+  }, [myEmployees, navigate, captureFeedback]);
 
   const arrangeWork = useCallback(async (draft: ArrangeWorkDraft): Promise<boolean> => {
-    const steps = draft.steps.filter(step => step.employeeId && step.title.trim());
-    if (!steps.length) { setError('????????'); return false; }
+    const notice = captureFeedback();
+    const steps = draft.steps;
+    const problem = validateGraph(steps);
+    if (!steps.length || problem) { notice.show(problem || '请先添加工作步骤', 'warning'); return false; }
     const kept = new Set(steps.map(step => step.id));
     const nodes = steps.map(step => {
       const employee = myEmployees.find(item => item.id === step.employeeId);
@@ -668,14 +678,14 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         subscriptionId: step.employeeId,
         modelId: draft.modelId || employee?.allowedModels[0] || '',
         title: step.title,
-        instruction: [step.title, step.input && `??${step.input}`].filter(Boolean).join('\n'),
+        instruction: [step.title, step.input && `输入：${step.input}`].filter(Boolean).join('\n'),
         expectedOutput: step.output || step.title,
         dependsOn: step.dependsOn.filter(dep => kept.has(dep)),
         skillIds: [...step.skillIds],
         inputRefs: step.inputRefs ?? [],
       };
     });
-    if (nodes.some(node => !node.modelId)) { setError('???????'); return false; }
+    if (nodes.some(node => !node.modelId)) { notice.show('请选择需要使用的模型', 'warning'); return false; }
     const document: ArrangementDraftDocument = {
       schemaVersion: 1,
       mode: 'manual',
@@ -696,26 +706,30 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     setError(null);
     try {
       const created = await api.createArrangementDraft(document);
-      if (!created.success || !created.draft) throw new Error(created.error?.message || '??????');
+      if (!notice.isCurrent()) return false;
+      if (!created.success || !created.draft) throw responseError(created, 'create');
       let createdDraft = created.draft;
       if (draft.attachmentSessionId && draft.attachmentCandidates?.length) {
         const updated = await api.updateArrangementInputs({ draftId: createdDraft.id, expectedRevision: createdDraft.revision, inputs: { attachmentSessionId: draft.attachmentSessionId, attachmentCandidates: draft.attachmentCandidates, nodes: nodes.map(node => ({ nodeId: node.id, inputRefs: node.inputRefs ?? [] })) } });
-        if (!updated.success || !updated.draft) throw new Error(updated.error?.message || '保存附件分配失败');
+        if (!notice.isCurrent()) return false;
+        if (!updated.success || !updated.draft) throw responseError(updated, 'attachments');
         createdDraft = updated.draft;
       }
       const preflight = await api.preflightArrangementDraft({ draftId: createdDraft.id, expectedRevision: createdDraft.revision });
-      if (!preflight.success || !preflight.preflight?.canStart) throw new Error(preflight.error?.message || preflight.preflight?.blockingIssues.join('?') || '??????');
+      if (!notice.isCurrent()) return false;
+      if (!preflight.success || !preflight.preflight?.canStart) throw responseError({ error: preflight.error ?? (preflight.preflight?.message ? { message: preflight.preflight.message } : undefined) }, 'preflight');
       const started = await api.confirmAndStartArrangement({ draftId: createdDraft.id, expectedRevision: createdDraft.revision, idempotencyKey: crypto.randomUUID() });
-      if (!started.success || !started.execution) throw new Error(started.error?.message || '????');
+      if (!notice.isCurrent()) return false;
+      if (!started.success || !started.execution) throw responseError(started, 'start');
       navigate({ name: 'work', workId: started.execution.id });
       return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '????');
+      notice.fail(cause, 'start');
       return false;
     } finally {
-      setBusy(false);
+      if (notice.isCurrent()) setBusy(false);
     }
-  }, [myEmployees, navigate]);
+  }, [myEmployees, navigate, captureFeedback]);
 
   const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string): Promise<boolean> => {
     const prompt = text.trim();
@@ -803,15 +817,15 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       window.localStorage.setItem(savedFlowsKey(enterpriseId), JSON.stringify(next));
       return true;
     } catch {
-      setError('常用工作已在本次使用中生效，但没能保存到本机');
+      captureFeedback().show('常用工作未能保存到本机，请联系平台管理员');
       return false;
     }
-  }, [enterpriseId]);
+  }, [enterpriseId, captureFeedback]);
 
   const saveFlow = useCallback((flow: Omit<SavedWorkFlow, 'id' | 'savedAt'>) => {
     const name = flow.name.trim();
-    if (!name) { setError('请先给这个常用工作起个名字'); return false; }
-    if (!flow.steps.length) { setError('至少要有一个工作步骤才能保存'); return false; }
+    if (!name) { captureFeedback().show('请先给这个常用工作起个名字', 'warning'); return false; }
+    if (!flow.steps.length) { captureFeedback().show('至少要有一个工作步骤才能保存', 'warning'); return false; }
     const entry: SavedWorkFlow = {
       ...flow,
       name,
@@ -819,8 +833,10 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       savedAt: Date.now(),
     };
     // 同名视为覆盖，避免列表里堆出一串「客户周报」。
-    return persistFlows([entry, ...savedFlows.filter(item => item.name !== name)]);
-  }, [savedFlows, persistFlows]);
+    const saved = persistFlows([entry, ...savedFlows.filter(item => item.name !== name)]);
+    if (saved) captureFeedback().show('常用工作保存成功', 'success');
+    return saved;
+  }, [savedFlows, persistFlows, captureFeedback]);
 
   const deleteSavedFlow = useCallback((flowId: string) => {
     persistFlows(savedFlows.filter(item => item.id !== flowId));
@@ -842,13 +858,17 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   }, [savedFlows, myEmployees, navigate]);
 
   const chooseFolder = useCallback(async (currentPath?: string) => {
+    const notice = captureFeedback();
     try {
       const result = await window.electronAPI.selectDirectory(currentPath);
+      if (!notice.isCurrent()) return null;
+      if (result.error) throw responseError(result, 'directory');
       return result.success ? result.path ?? null : null;
-    } catch {
+    } catch (error) {
+      notice.fail(error, 'directory');
       return null;
     }
-  }, []);
+  }, [captureFeedback]);
 
   // ── 本机操作权限 ───────────────────────────────────────────────────────
   const patchPermission = useCallback((employeeId: string, permissionId: OperationPermissionId, patch: Partial<OperationPermission>) => {

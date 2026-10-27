@@ -45,7 +45,8 @@ try {
    await reset('normal');await page.getByRole('button',{name:'开始自动编排'}).click();
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
    await page.evaluate(()=>window.emit('arrangement_planning_failed',{message:'测试规划失败'}));
-   await page.getByRole('alert').filter({hasText:'测试规划失败'}).waitFor({timeout:3000});
+   await page.getByRole('dialog').filter({hasText:'测试规划失败'}).waitFor({timeout:3000});
+   await page.getByRole('button',{name:'知道了',exact:true}).click();
    await page.getByRole('button',{name:'重新编排',exact:true}).click();
    await page.getByRole('textbox',{name:'工作目标',exact:true}).fill('分析市场并生成报告');
    await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model');
@@ -66,7 +67,7 @@ try {
    await page.waitForFunction(()=>document.querySelector('.ent-aa-flow .ent-aa-link.in'));
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).waitFor();
    assert.equal(await page.locator('.ent-flowcard.in').count(),2);
-   assert.equal(await page.locator('.ent-aa-strip li.done').count(),3);
+   assert.equal(await page.locator('.ent-aa-strip li.done').count(),4);
    assert.equal(await page.evaluate(()=>window.counts.start),0,'animation must never execute work');
    assert.equal(await page.locator('.ent-aa-link-line').first().evaluate(el=>window.getComputedStyle(el).animationName)==='none',reducedMotion==='reduce');
    await page.screenshot({path:join(tmpdir(),'sep-auto-ready-'+width+'.png'),fullPage:true});
@@ -74,25 +75,24 @@ try {
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).click();
    await page.locator('.ent-wk').waitFor({timeout:4000});
    await page.getByText('2 位同事协作',{exact:true}).waitFor();
+   await page.getByRole('button',{name:'查看工作过程',exact:true}).click();
    await page.evaluate(()=>window.nodeEvent('arrangement_node_started','node-a'));
    await page.getByRole('status').filter({hasText:'当前：正在市场调研'}).waitFor();
    await page.evaluate(()=>{window.nodeEvent('arrangement_node_completed','node-a');window.nodeEvent('arrangement_state_changed','node-a','completed');window.nodeEvent('arrangement_node_started','node-b');});
    await page.getByText('50%',{exact:true}).first().waitFor();
-   await page.getByRole('list',{name:'工作执行记录'}).locator('li.completed').filter({hasText:'市场调研'}).waitFor({timeout:3000});
+   await page.getByRole('list',{name:'节点完成情况'}).locator('li.done').filter({hasText:'市场调研'}).waitFor({timeout:3000});
    assert.deepEqual(await page.evaluate(()=>window.workspace.works[0].steps.map(s=>s.state)),['done','running']);
    await page.waitForFunction(()=>{
     const bar=document.querySelector('.ent-bar > span > i');
     return Math.abs(bar.getBoundingClientRect().width/bar.parentElement.getBoundingClientRect().width-.5)<.01;
    });
-   await page.waitForFunction(()=>{
-    const circle=document.querySelector('.ent-donut svg circle:nth-of-type(2)');
-    return Math.abs(Number.parseFloat(window.getComputedStyle(circle).strokeDashoffset)-Math.PI*59/2)<1;
-   });
    await page.screenshot({path:join(tmpdir(),'sep-auto-executing-'+width+'.png'),fullPage:true});
    await page.evaluate(()=>window.finish());
-   await page.getByText('工作已完成',{exact:true}).waitFor();
+   await page.getByRole('status').filter({hasText:'当前：本轮工作已完成'}).waitFor();
    assert.equal(await page.locator('.ent-wk-activity.running').count(),0);
    assert.equal(await page.locator('.ent-bar > span > i').evaluate(el=>window.getComputedStyle(el).animationName),'none','completed progress must stop animating');
+   await page.getByRole('button',{name:'关闭详情面板',exact:true}).click();
+   await page.getByRole('button',{name:'查看产出结果',exact:true}).click();
    await page.getByText('report.md',{exact:true}).first().waitFor();
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
    await page.waitForFunction(()=>{
@@ -131,8 +131,9 @@ try {
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
    await page.evaluate(()=>window.complete());
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).click();
-   await page.getByText('测试预检失败',{exact:true}).waitFor();
+   await page.getByRole('dialog').filter({hasText:'所选员工当前不可用，请重新选择员工'}).waitFor();
    assert.equal(await page.evaluate(()=>window.counts.start),0);
+   await page.getByRole('button',{name:'知道了',exact:true}).click();
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).click();
    await page.locator('.ent-wk').waitFor();
    assert.equal(await page.evaluate(()=>window.counts.start),1);

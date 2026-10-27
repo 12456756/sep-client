@@ -5,8 +5,6 @@
 .speech-icon:disabled { opacity: 0.5; cursor: default; }
 .speech-icon.recording { color: #c4424b; background: rgba(196, 66, 75, 0.09); }
 .speech-status { font-size: 12px; line-height: 18px; white-space: nowrap; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
-.speech-feedback { margin: 6px 0 0; font-size: 12px; line-height: 18px; color: var(--ent-text-secondary, #657078); overflow-wrap: anywhere; }
-.speech-feedback.error { color: #be414d; }
 .speech-spin { animation: speech-spin 1s linear infinite; }
 .speech-settings { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--ent-border, #dfe5e5); }
 .speech-settings label { display: flex; align-items: center; gap: 10px; font-size: 14px; }
