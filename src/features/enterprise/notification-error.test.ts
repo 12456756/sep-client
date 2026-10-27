@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { notificationErrorMessage, notificationRetryDelay } from './notification-error'
+import { notificationCooldownDelay, notificationErrorMessage, notificationRetryDelay } from './notification-error'
 import { assertNotificationCommand } from './notification-state'
 
 describe('notification user-facing errors', () => {
@@ -10,6 +10,7 @@ describe('notification user-facing errors', () => {
     assert.equal(notificationErrorMessage(failure), '通知请求较多，请稍后重试。')
     assert.equal(notificationRetryDelay(failure, 0), 65_000)
     assert.equal(notificationRetryDelay(failure, 3), null)
+    assert.equal(notificationCooldownDelay(failure), 65_000)
   })
   it('backs off transient failures without retrying authentication or invalid payload errors', () => {
     assert.equal(notificationRetryDelay({ statusCode: 429 }, 0), 60_000)
@@ -18,6 +19,8 @@ describe('notification user-facing errors', () => {
     assert.equal(notificationRetryDelay({ statusCode: 401 }, 0), null)
     assert.equal(notificationRetryDelay(new Error('Invalid response'), 0), null)
     assert.equal(notificationRetryDelay({ statusCode: 429, retryAfterMs: NaN }, 0), 60_000)
+    assert.equal(notificationCooldownDelay({ statusCode: 429, retryAfterMs: 1 }), 1000)
+    assert.equal(notificationCooldownDelay({ statusCode: 503 }), null)
   })
   it('explains stale main/preload without leaking IPC diagnostics', () => {
     for (const channel of ['notifications:list', 'notifications:unread-count']) {

@@ -36,6 +36,20 @@ export function NotificationPanel(props: PanelProps) {
   const page = Math.floor(offset / NOTIFICATION_PAGE_SIZE) + 1
   const pages = Math.ceil(state.total / NOTIFICATION_PAGE_SIZE)
   const hasItems = state.items.length > 0
+  const [now, setNow] = useState(Date.now)
+  useEffect(() => {
+    setNow(Date.now())
+    if (state.cooldownUntil <= Date.now()) return
+    const timer = setInterval(() => {
+      const time = Date.now()
+      setNow(time)
+      if (time >= state.cooldownUntil) clearInterval(timer)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [state.cooldownUntil])
+  const remainingSeconds = Math.max(0, Math.ceil((state.cooldownUntil - now) / 1000))
+  const coolingDown = remainingSeconds > 0
+  const retryLabel = coolingDown ? `${remainingSeconds} 秒后重试` : '重试'
   return (
     <section id={id} className="ent-notification-panel" role="dialog" aria-labelledby={`${id}-title`}>
       <header className="ent-notification-header">
@@ -43,7 +57,7 @@ export function NotificationPanel(props: PanelProps) {
         <div className="ent-notification-header-actions">
           <button type="button" className="ent-notification-read-all" aria-label="全部标为已读"
             title={category ? `将${categories[category]}通知全部标为已读` : '将全部通知标为已读'}
-            disabled={state.pending || state.categoryUnreadCount === 0} onClick={onReadAll}>
+            disabled={state.pending || coolingDown || state.categoryUnreadCount === 0} onClick={onReadAll}>
             <Check size={17} aria-hidden="true" /><span>全部已读</span>
           </button>
           <button type="button" className="ent-notification-icon-action" aria-label="关闭通知中心" title="关闭" onClick={onClose} data-notification-entry>
@@ -60,19 +74,20 @@ export function NotificationPanel(props: PanelProps) {
         })}
       </div>
       {state.mutationError && <div className="ent-notification-note" role="alert">{state.mutationError}</div>}
+      {coolingDown && <p className="ent-notification-status ent-notification-progress" role="status">{remainingSeconds} 秒后可重试，正在等待服务恢复</p>}
       {state.pending && <p className="ent-notification-status ent-notification-progress" role="status">正在处理…</p>}
       <div className="ent-notification-content" aria-busy={state.loading}>
         {state.error && (hasItems ? (
           <div className="ent-notification-note" role="alert">
             <CircleAlert size={14} aria-hidden="true" /><span>{state.error}</span>
-            <button type="button" aria-label="重试加载通知" disabled={state.loading} onClick={onRetry}>重试</button>
+            <button type="button" aria-label="重试加载通知" disabled={state.loading || coolingDown} onClick={onRetry}>{retryLabel}</button>
           </div>
         ) : (
           <div className="ent-notification-empty" role="alert">
             <CircleAlert size={24} aria-hidden="true" />
             <h3>暂时无法加载通知</h3>
             <p>{state.error}</p>
-            <button type="button" aria-label="重试加载通知" disabled={state.loading} onClick={onRetry}>重试</button>
+            <button type="button" aria-label="重试加载通知" disabled={state.loading || coolingDown} onClick={onRetry}>{retryLabel}</button>
           </div>
         ))}
         {state.loading && (!state.error || hasItems) && (
@@ -109,11 +124,11 @@ export function NotificationPanel(props: PanelProps) {
                     <div className="ent-notification-row-actions">
                       {actionLabel && <button type="button" className="ent-notification-view-action" disabled={state.pending}
                         onClick={() => onAction(notification)} aria-label={`${actionLabel}：${notification.title}`}>{actionLabel}</button>}
-                      {!notification.read && <button type="button" className="ent-notification-icon-action" disabled={state.pending}
+                      {!notification.read && <button type="button" className="ent-notification-icon-action" disabled={state.pending || coolingDown}
                         onClick={() => onRead(notification.id)} aria-label={`标为已读：${notification.title}`} title="标为已读">
                         <Check size={15} aria-hidden="true" />
                       </button>}
-                      <button type="button" className="ent-notification-icon-action ent-notification-delete" disabled={state.pending}
+                      <button type="button" className="ent-notification-icon-action ent-notification-delete" disabled={state.pending || coolingDown}
                         onClick={() => onDelete(notification.id)} aria-label={`删除通知：${notification.title}`} title="删除通知">
                         <Trash2 size={14} aria-hidden="true" />
                       </button>

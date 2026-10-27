@@ -17,14 +17,22 @@ export function notificationErrorMessage(error: unknown, operation: 'read' | 'mu
   return operation === 'mutation' ? '操作未完成，请稍后重试。' : '暂时无法获取通知，请稍后重试。'
 }
 
-/** Retry only transient failures, at most three times; honor upstream rate-limit windows. */
-export function notificationRetryDelay(error: unknown, attempt: number): number | null {
-  if (attempt >= 3) return null
+/** A server cooldown still applies after automatic retries have been exhausted. */
+export function notificationCooldownDelay(error: unknown): number | null {
   const failure = error && typeof error === 'object' ? error as { statusCode?: number; code?: string; retryAfterMs?: number } : {}
   if (failure.statusCode === 429 || failure.code === 'RATE_LIMITED') {
     return typeof failure.retryAfterMs === 'number' && Number.isFinite(failure.retryAfterMs) && failure.retryAfterMs > 0
       ? Math.max(1000, failure.retryAfterMs) : 60_000
   }
+  return null
+}
+
+/** Retry only transient failures, at most three times; honor upstream rate-limit windows. */
+export function notificationRetryDelay(error: unknown, attempt: number): number | null {
+  if (attempt >= 3) return null
+  const cooldown = notificationCooldownDelay(error)
+  if (cooldown !== null) return cooldown
+  const failure = error && typeof error === 'object' ? error as { statusCode?: number; code?: string } : {}
   if (failure.statusCode === 0 || (failure.statusCode !== undefined && failure.statusCode >= 500)
     || failure.code === 'NETWORK_ERROR' || failure.code === 'SERVICE_UNAVAILABLE'
     || error instanceof TypeError || error instanceof Error && error.name === 'TimeoutError') return Math.min(30_000, 3000 * 2 ** attempt)

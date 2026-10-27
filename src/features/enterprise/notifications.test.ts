@@ -87,6 +87,22 @@ test('failed/partial REST refresh retains cached data and badge', () => {
   assert.equal(partial.unreadCount, 7)
 })
 
+test('cooldown survives filter changes and waits without discarding cached items', () => {
+  const until = Date.now() + 65_000
+  const cooling = notificationReducer(loadedState(), { type: 'cooldown', until })
+  const waiting = notificationReducer(cooling, { type: 'wait', error: '通知请求较多，请稍后重试。' })
+  assert.equal(waiting.loading, false)
+  assert.equal(waiting.items.length, 1)
+  const filtered = notificationReducer(waiting, { type: 'query', query: { category: 'SECURITY', unreadOnly: false, offset: 50 } })
+  assert.equal(filtered.cooldownUntil, until)
+  const markup = renderPanel(waiting)
+  assert.match(buttonMarkup(markup, '重试加载通知'), /disabled=""/)
+  assert.match(buttonMarkup(markup, '重试加载通知'), /秒后重试/)
+  assert.match(buttonMarkup(markup, '全部标为已读'), /disabled=""/)
+  assert.match(buttonMarkup(markup, '标为已读：通知 one'), /disabled=""/)
+  assert.match(buttonMarkup(markup, '删除通知：通知 one'), /disabled=""/)
+})
+
 test('deduplicates REST rows and separates mutation errors from refresh errors', () => {
   const state = notificationReducer(notificationReducer(initialNotificationState, { type: 'start', id: 1 }), {
     type: 'finish', id: 1, page: { items: [notification('one'), notification('one', { title: '新版本' })], total: 1 }, error: null,

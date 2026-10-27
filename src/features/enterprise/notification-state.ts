@@ -20,6 +20,7 @@ export interface NotificationState {
   error: string | null
   mutationError: string | null
   pending: boolean
+  cooldownUntil: number
   requestId: number | null
   seen: Record<string, string>
 }
@@ -27,7 +28,7 @@ export interface NotificationState {
 export const initialNotificationState: NotificationState = {
   query: { unreadOnly: false, offset: 0 }, items: [], total: 0,
   unreadCount: null, categoryUnreadCount: null, loading: true, error: null,
-  mutationError: null, pending: false, requestId: null, seen: {},
+  mutationError: null, pending: false, cooldownUntil: 0, requestId: null, seen: {},
 }
 
 export type NotificationStateAction =
@@ -38,6 +39,8 @@ export type NotificationStateAction =
   | { type: 'invalidate' }
   | { type: 'count'; count: number }
   | { type: 'mutation'; pending: boolean; error: string | null }
+  | { type: 'cooldown'; until: number }
+  | { type: 'wait'; error?: string }
 
 export function notificationFingerprint(notification: PlatformNotification): string {
   return JSON.stringify(notification)
@@ -103,5 +106,9 @@ export function notificationReducer(state: NotificationState, action: Notificati
       return { ...state, requestId: null }
     case 'mutation':
       return { ...state, pending: action.pending, mutationError: action.error }
+    case 'cooldown':
+      return { ...state, cooldownUntil: action.until }
+    case 'wait':
+      return { ...state, loading: false, requestId: null, error: action.error ?? state.error }
   }
 }
