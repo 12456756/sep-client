@@ -85,3 +85,52 @@ test('a late session created after unmount is cancelled even when retaining draf
   assert.deepEqual(cancelled, ['late-session'])
   assert.equal(retained.session, null)
 })
+
+test('a failed automatic import session reports once and only retries on explicit selection', async () => {
+  let calls = 0
+  const errors: string[] = []
+  const hook = mountHook({ beginAttachmentImport: async () => { calls++; return { success: false, error: { message: '附件会话创建失败，请联系平台管理员' } } } }, {
+    target: { kind: 'compose', composerId: 'failed' }, onError: message => errors.push(message),
+  })
+  hook.render()
+  await Promise.resolve()
+  hook.render()
+  hook.render()
+  assert.equal(calls, 1)
+  assert.equal(errors.length, 1)
+  await hook.render().select()
+  assert.equal(calls, 2)
+  hook.unmount()
+})
+
+test('effect replay restarts an interrupted initialization and cancels its stale session', async () => {
+  const pending: Array<(result: unknown) => void> = []
+  const cancelled: string[] = []
+  const hook = mountHook({
+    beginAttachmentImport: () => new Promise(resolve => pending.push(resolve)),
+    cancelAttachmentImport: async ({ sessionId }: { sessionId: string }) => { cancelled.push(sessionId) },
+  }, { target: { kind: 'compose', composerId: 'strict' } })
+  hook.render()
+  hook.unmount()
+  hook.render()
+  assert.equal(pending.length, 2)
+  pending[0]({ success: true, data: { sessionId: 'stale', status: 'open', attachments: [] } })
+  pending[1]({ success: true, data: { sessionId: 'current', status: 'open', attachments: [] } })
+  await Promise.resolve()
+  assert.equal(hook.render().session?.sessionId, 'current')
+  assert.deepEqual(cancelled, ['stale'])
+  hook.unmount()
+})
+
+test('late failures after composer disposal do not notify the next page', async () => {
+  let reject!: (reason: unknown) => void
+  const errors: string[] = []
+  const hook = mountHook({ beginAttachmentImport: () => new Promise((_resolve, fail) => { reject = fail }) }, {
+    target: { kind: 'compose', composerId: 'stale' }, onError: message => errors.push(message),
+  })
+  hook.render()
+  hook.unmount()
+  reject(new Error('private diagnostics'))
+  await Promise.resolve()
+  assert.deepEqual(errors, [])
+})

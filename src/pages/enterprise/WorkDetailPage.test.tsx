@@ -263,7 +263,10 @@ describe('WorkDetailPage media entry', () => {
         media: [{ nodeId: 'peer', nodeRunId: 'run-1', kind: 'image', operation: 'generate', inputs: [], pendingActions: [],
           phase: 'ready', jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' }] }] } };
     const html = renderDetail(flow);
-    assert.equal((html.match(/aria-label="重试此节点：failed"/g) ?? []).length, 1);
+    assert.equal((html.match(/aria-label="重试此节点：failed"/g) ?? []).length, 2);
+    const processPanel = html.slice(html.indexOf('aria-label="工作过程"'), html.indexOf('aria-label="工作信息"'));
+    assert.match(processPanel, /aria-label="重试此节点：failed"/);
+    assert.doesNotMatch(processPanel, /aria-label="重试此节点：peer"/);
     assert.ok(html.indexOf('ent-failed-node-actions') < html.indexOf('aria-label="工作对话"'));
     assert.doesNotMatch(html, /重试此节点：peer/);
     assert.doesNotMatch(html, /编排媒体成果/);

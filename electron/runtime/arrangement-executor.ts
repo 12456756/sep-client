@@ -42,6 +42,8 @@ import { ArrangementMediaSubmissionError } from '../domain/arrangement-media-run
 import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
+import { runtimeFeedback } from '../errors/runtime-feedback'
+import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 
 export interface ArrangementExecutionResult {
   status: ArrangementExecutionState['status']
@@ -227,7 +229,8 @@ export class ArrangementExecutor {
     if (plan.mode === 'auto') {
       const issues = deliveryPlanIssues(plan.nodes)
       if (issues.length) {
-        const error = issues.map(issue => issue.message).join('\n')
+        logger.child('arrangement-executor').error('invalid delivery plan', { taskId, arrangementRunId, issues })
+        const error = RUNTIME_FAILURE_MESSAGES.DELIVERY_FAILED
         const failedNodeId = state.nodes.find(node => node.status !== 'completed')?.nodeId
         const failed = { ...state, status: 'failed' as const,
           failureNodeIds: [...new Set([...state.failureNodeIds, ...(failedNodeId ? [failedNodeId] : [])])],
@@ -699,8 +702,12 @@ export class ArrangementExecutor {
       }
       return { ok: true, nodeId: node.id, output: output || null, completion }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
       const interrupted = this.abortRequested
+      logger.child('arrangement-executor').warn('node execution failed', { taskId, arrangementRunId, nodeId: node.id, nodeRunId,
+        interrupted, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
+      const feedback = runtimeFeedback(error)
+      const message = interrupted ? '工作已停止' : error instanceof DeliveryExecutionError && feedback.code === 'INTERNAL_ERROR'
+        ? RUNTIME_FAILURE_MESSAGES.DELIVERY_FAILED : feedback.message
       const terminal = (error instanceof DeliveryExecutionError || terminalMediaFailure !== undefined) && !interrupted
       if (created && this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message).catch(() => undefined)

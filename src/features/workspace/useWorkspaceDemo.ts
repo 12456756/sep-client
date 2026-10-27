@@ -436,7 +436,7 @@ export function useWorkspaceDemo(options: { subscriptionId?: string; employeeNam
       });
       if (!created.success || !created.draft) throw new Error(created.error?.message || '????????');
       const preflight = await window.electronAPI.preflightArrangementDraft({ draftId: created.draft.id, expectedRevision: created.draft.revision });
-      if (!preflight.success || !preflight.preflight?.canStart) throw new Error(preflight.error?.message || preflight.preflight?.blockingIssues.join('?') || '????????');
+      if (!preflight.success || !preflight.preflight?.canStart) throw new Error(preflight.error?.message || preflight.preflight?.message || '工作启动检查失败，请联系平台管理员');
       const started = await window.electronAPI.confirmAndStartArrangement({ draftId: created.draft.id, expectedRevision: created.draft.revision, idempotencyKey: crypto.randomUUID() });
       if (!started.success || !started.execution) throw new Error(started.error?.message || '??????');
       taskTypeById.current.set(started.execution.id, 'workflow');

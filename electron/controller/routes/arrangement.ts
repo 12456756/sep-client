@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { arrangementPreflightFeedbackSchema } from '../../../src/shared/arrangement-feedback'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
 import { arrangementNodeWorkContractSchema, type ArrangementDraft } from '../../domain/arrangement-plan'
@@ -158,10 +159,11 @@ export const arrangementRoutes = [
     success: true,
     validation: await ctx.arrangements.validateDraft(id),
   })),
-  route(INVOKE_CHANNELS.ARRANGE_PREFLIGHT_DRAFT, z.object({ draftId, expectedRevision: revision }), async (ctx, input) => ({
-    success: true,
-    preflight: await ctx.arrangements.preflightDraft(input.draftId, input.expectedRevision),
-  })),
+  route(INVOKE_CHANNELS.ARRANGE_PREFLIGHT_DRAFT, z.object({ draftId, expectedRevision: revision }), async (ctx, input) => {
+    const result = await ctx.arrangements.preflightDraft(input.draftId, input.expectedRevision)
+    const { preflightId, draftId, draftRevision, valid, canStart, issues, message } = result
+    return { success: true, preflight: arrangementPreflightFeedbackSchema.parse({ preflightId, draftId, draftRevision, valid, canStart, issues, message }) }
+  }),
   route(INVOKE_CHANNELS.ARRANGE_CONFIRM_DRAFT, confirmInput, async (ctx, input) => ({
     success: true,
     ...(await ctx.arrangements.confirmDraft(input.draftId, input.expectedRevision, input.idempotencyKey)),

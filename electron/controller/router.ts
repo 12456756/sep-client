@@ -17,7 +17,7 @@ import { logger } from '../common/logger'
 import { appError } from '../errors/app-error'
 import { authFailure, failure } from '../errors/error-mapper'
 import { reportAuthFailure, reportFailure } from '../errors/error-reporter'
-import type { InvokeChannel, SendChannel } from './channels'
+import { FEEDBACK_OPERATION_BY_CHANNEL, type InvokeChannel, type SendChannel } from './channels'
 import type { RequestContext } from './request-context'
 
 const log = logger.child('router')
@@ -99,6 +99,8 @@ function describeIssues(error: z.ZodError): { issues: string[] } {
 }
 
 function toFailure(route: Route, error: unknown): unknown {
+  const feedbackOperation = FEEDBACK_OPERATION_BY_CHANNEL[route.channel]
+  if (feedbackOperation) return reportFailure(route.channel, error, { authenticated: true, feedbackOperation })
   switch (route.errorShape) {
     case 'auth':
       return reportAuthFailure(route.channel, error)
@@ -132,6 +134,7 @@ export function registerRoutes(
           })
           // 校验失败不走 catch：它不是"操作失败"，没有技术 cause 可记。
           // 信封形态仍按 route 的声明来，否则 auth 通道会拿到一个契约外的码。
+          if (FEEDBACK_OPERATION_BY_CHANNEL[entry.channel]) return toFailure(entry, appError('INVALID_ARGUMENT'))
           if (entry.errorShape === 'reject') {
             throw appError('INVALID_ARGUMENT', { message: entry.invalidMessage })
           }

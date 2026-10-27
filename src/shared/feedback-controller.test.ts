@@ -2,6 +2,22 @@ import * as assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { FeedbackController } from './feedback-controller'
 
+it('permission confirmations settle directly without generating a success popup', async () => {
+  const feedback = new FeedbackController()
+  const permission = feedback.ask({ message: 'microphone?', actionLabel: 'allow' })
+  await feedback.accept(feedback.getSnapshot()!.id)
+  assert.equal(await permission, true)
+  assert.equal(feedback.getSnapshot(), null)
+  const abort = new AbortController()
+  feedback.show({ tone: 'error', message: 'earlier error' })
+  const canceled = feedback.ask({ message: 'queued consent', actionLabel: 'allow', signal: abort.signal })
+  abort.abort()
+  assert.equal(await canceled, false)
+  assert.equal(feedback.getSnapshot()?.message, 'earlier error')
+  feedback.dismiss(feedback.getSnapshot()!.id)
+  assert.equal(feedback.getSnapshot(), null)
+})
+
 it('deduplicates, queues and ignores a stale close', () => {
   const feedback = new FeedbackController()
   feedback.show({ message: 'first', tone: 'error' })

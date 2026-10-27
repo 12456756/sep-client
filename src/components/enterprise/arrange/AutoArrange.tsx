@@ -1,5 +1,7 @@
 import { ArrowRight, RefreshCw, Settings2, Workflow, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
+import { useOperationFeedback } from '../../feedback/use-operation-feedback';
+import { responseError } from '../../../shared/arrangement-feedback';
 import type { ArrangementDraft } from '../../../shared/types';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
@@ -30,7 +32,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
   const [mustUseAttachments, setMustUseAttachments] = useState(true);
   const [attachmentSaveBusy, setAttachmentSaveBusy] = useState(false);
   const [attachmentDirty, setAttachmentDirty] = useState(false);
-  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const { capture: captureFeedback } = useOperationFeedback(attachmentBindingKey);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -40,35 +42,35 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
     events,
     planning,
     cancellable,
-    error,
-    setError,
     start,
     cancel,
     requestEmployeeAccess,
     refreshEmployeeAccess,
     recheck,
     recheckDraft,
-  } = useAutoPlanning();
+  } = useAutoPlanning(attachmentBindingKey);
   const [requestingKey, setRequestingKey] = useState<string | null>(null);
   const [refreshingRequestId, setRefreshingRequestId] = useState<string | null>(null);
 
   const confirmAndStart = async (): Promise<void> => {
     if (!draft || starting || busy || planning || attachmentDirty || attachmentsBusy) return;
     setStarting(true);
+    const notice = captureFeedback();
     try {
       // Saving execution settings increments the revision, including when preflight fails.
-      setDraft(await onStart(draft));
+      const updated = await onStart(draft);
+      if (notice.isCurrent()) setDraft(updated);
     } catch {
-      setError('启动工作失败，请重试');
+      notice.fail(undefined, 'start');
     } finally {
-      setStarting(false);
+      if (notice.isCurrent()) setStarting(false);
     }
   };
 
   const saveAttachmentAssignments = async (): Promise<void> => {
     if (!draft || attachmentSaveBusy || planning) return;
     setAttachmentSaveBusy(true);
-    setAttachmentError(null);
+    const notice = captureFeedback();
     try {
       const result = await window.electronAPI.updateArrangementInputs({
         draftId: draft.id,
@@ -79,7 +81,8 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
           nodes: draft.nodes.map(node => ({ nodeId: node.id, inputRefs: node.inputRefs ?? [] })),
         },
       });
-      if (!result.success || !result.draft) throw new Error(result.error?.message || '保存附件分配失败');
+      if (!notice.isCurrent()) return;
+      if (!result.success || !result.draft) throw responseError(result, 'attachments');
       setDraft(result.draft);
       setAttachmentDirty(false);
       if (result.draft.mode === 'auto') {
@@ -88,9 +91,9 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
         return;
       }
     } catch (cause) {
-      setAttachmentError(cause instanceof Error ? cause.message : '保存附件分配失败');
+      notice.fail(cause, 'attachments');
     } finally {
-      setAttachmentSaveBusy(false);
+      if (notice.isCurrent()) setAttachmentSaveBusy(false);
     }
   };
 
@@ -117,11 +120,8 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
   const requestAccess = async (stepId: string, employeeId: string): Promise<void> => {
     const key = `${stepId}:${employeeId}`;
     setRequestingKey(key);
-    setError(null);
     try {
       await requestEmployeeAccess(stepId, employeeId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '申请员工失败，请稍后重试');
     } finally {
       setRequestingKey(current => current === key ? null : current);
     }
@@ -129,11 +129,8 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
 
   const refreshRequest = async (requestId: string): Promise<void> => {
     setRefreshingRequestId(requestId);
-    setError(null);
     try {
       await refreshEmployeeAccess(requestId);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '查询申请状态失败，请稍后重试');
     } finally {
       setRefreshingRequestId(current => current === requestId ? null : current);
     }
@@ -172,7 +169,6 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
         {attachmentRefs.length ? <label className="ent-attachment-usage"><input type="checkbox" checked={mustUseAttachments} onChange={event => setMustUseAttachments(event.target.checked)} />必须安排到至少一个步骤</label> : null}
         </section>
       ) : null}
-      {error ? <div role="alert" className="workspace-inline-error">{error}</div> : null}
       {draft ? (
         <AutoArrangeAnimation key={draft.id} draft={draft} employees={employees} planning={planning} planningEvents={events}>
           {draft.attachmentCandidates?.length ? <div className="ent-attachment-summary"><strong>全局附件</strong>{draft.attachmentCandidates.map(candidate => <label key={candidate.attachment.attachmentId}><input type="checkbox" checked={candidate.mustUse} disabled={planning || attachmentSaveBusy} onChange={event => { const mustUse = event.target.checked; setDraft(current => current ? { ...current, attachmentCandidates: (current.attachmentCandidates ?? []).map(item => item.attachment.attachmentId === candidate.attachment.attachmentId ? { ...item, mustUse } : item) } : current); setAttachmentDirty(true); }} />{attachmentRefs.find(item => item.attachmentId === candidate.attachment.attachmentId)?.displayName ?? candidate.attachment.attachmentId}<small>{candidate.mustUse ? '必须使用' : '可选'}</small></label>)}</div> : null}
@@ -183,7 +179,6 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
             return <label key={attachment.attachmentId}><input type="checkbox" checked={Boolean(existing)} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, event.target.checked ? {} : null)} />{attachment.displayName}{existing ? <><select aria-label={`${node.title}中${attachment.displayName}的用途`} value={existing.purpose} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, { purpose: event.target.value as Extract<NodeInputRef, { kind: 'attachment' }>['purpose'] })}><option value="reference">参考</option><option value="analysis">分析</option><option value="vision">视觉</option><option value="media-source">媒体源</option></select><small><input type="checkbox" checked={existing.required} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, { required: event.target.checked })} />节点必需</small></> : null}</label>;
           })}</div>)}</div> : null}
           {attachmentDirty ? <div className="ent-attachment-save"><button type="button" className="ent-arr-second" disabled={planning || attachmentSaveBusy} onClick={() => void saveAttachmentAssignments()}>{attachmentSaveBusy ? '保存附件分配中…' : '保存附件分配'}</button><span>保存后本次编排按新分配执行</span></div> : null}
-          {attachmentError ? <div role="alert" className="workspace-inline-error">{attachmentError}</div> : null}
           {draft.status === 'awaiting-employee' ? (
             <section className="ent-aa-waiting">
               <div className="ent-aa-waiting-head">
@@ -232,7 +227,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
             </div>
           ) : null}
           <footer className="ent-arr-foot">
-            <button type="button" className="ent-arr-second" disabled={starting || planning || requestingKey !== null || refreshingRequestId !== null} onClick={() => { setDraft(null); setError(null); setSubmitted(false); }}>重新编排</button>
+            <button type="button" className="ent-arr-second" disabled={starting || planning || requestingKey !== null || refreshingRequestId !== null} onClick={() => { setDraft(null); setSubmitted(false); }}>重新编排</button>
             <span className="ent-arr-gap" />
             <button type="button" className="ent-arr-ghost" disabled={starting} aria-expanded={settingsOpen} onClick={() => setSettingsOpen(open => !open)}><Settings2 size={14} aria-hidden />执行设置</button>
             {draft.nodes.length > 0 && draft.status !== 'confirmed' && draft.status !== 'awaiting-employee' ? <button type="button" className="ent-arr-primary" disabled={starting || busy || attachmentDirty || attachmentSaveBusy} onClick={() => void confirmAndStart()}>{starting ? '正在启动…' : '确认并开始工作'}<ArrowRight size={15} aria-hidden /></button> : null}

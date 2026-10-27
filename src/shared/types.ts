@@ -4,6 +4,7 @@
  */
 
 import type { LoginFeedbackReason } from './login-feedback'
+import type { ArrangementBlockingIssue } from './arrangement-feedback'
 
 // ──────────────────────────── Auth ─────────────────────────────
 
@@ -452,7 +453,8 @@ export interface ArrangementDraftPreflightResult {
     draftRevision: number
     valid: boolean
     canStart: boolean
-    blockingIssues: string[]
+    issues: ArrangementBlockingIssue[]
+    message: string | null
   }
   error?: TaskError
 }

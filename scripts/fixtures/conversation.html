@@ -3,6 +3,7 @@ window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plug
 await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
 const React=(await import('__REACT__')).default;
 const {createRoot}=(await import('__DOM__')).default;
+const {FeedbackProvider}=await import('/components/feedback/FeedbackProvider.tsx');
 const {WorkTalkDrawer}=await import('/components/enterprise/WorkTalkDrawer.tsx');
 const {WorkDetailPage}=await import('/pages/enterprise/WorkDetailPage.tsx');
 const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseWorkspace.ts');
@@ -17,18 +18,19 @@ window.finish=()=>{messages=[...messages,{id:'answer',role:'assistant',content:'
 window.cancelMode='pending';window.runNumber=1;
 window.settleContinue=()=>{task={...task,status:'completed',activeRunId:null};listeners.task?.(task);};
 window.electronAPI={
+ beginAttachmentImport:async({target})=>({success:true,data:{sessionId:crypto.randomUUID(),target,status:'open',attachments:[]}}),cancelAttachmentImport:async()=>({success:true}),bindAttachmentPaste:()=>()=>{},
  getEnterpriseOrganization:async()=>({success:true,data:{enterprise:{id:'fixture-enterprise',name:'隔离测试',logo:null},departments:[],members:[],grants:[],employees:[]}}),
  listSkillLibrary:async()=>({success:true,data:[]}),
  getAllTasks:async()=>new Promise(resolve=>{window.releaseInitial=()=>resolve({success:true,tasks:[]});}),
- getTaskMessages:async()=>{const snapshot={success:true,messages:structuredClone(messages)};if(window.deferMessages)return new Promise(resolve=>{window.releaseOldHistory=()=>resolve(snapshot);});return snapshot;},
+ getTask:async()=>({success:true,task}),getTaskMessages:async()=>{const snapshot={success:true,messages:structuredClone(messages)};if(window.deferMessages)return new Promise(resolve=>{window.releaseOldHistory=()=>resolve(snapshot);});return snapshot;},
  getArrangementPlan:async()=>({success:true}),getTaskTimeline:async()=>({success:true,events:[]}),
  onTaskListUpdated:subscribe('list'),onTaskUpdated:subscribe('task'),onPiEvent:subscribe('pi'),onArrangementPlanningEvent:subscribe('planning'),
  createArrangementDraft:async document=>{draft={...document,id:'draft-1',revision:1};window.createdGoal=document.goal;return {success:true,draft};},
- preflightArrangementDraft:async()=>({success:true,preflight:{canStart:true,blockingIssues:[],warnings:[]}}),
+ preflightArrangementDraft:async()=>({success:true,preflight:{canStart:true,valid:true,preflightId:'check-1',draftId:draft.id,draftRevision:draft.revision,issues:[],message:null}}),
  confirmAndStartArrangement:async()=>{
   task={id:'work-1',title:draft.title,prompt:draft.goal,status:'running',workDir:null,createdAt:Date.now(),startedAt:Date.now(),completedAt:null,error:null,files:[],logs:[],ownerId:'fixture-user',ownerEnterpriseId:'fixture-enterprise',subscriptionId:'sub-a',activeRunId:'run-1'};
   messages=[{id:'question',role:'user',content:draft.goal,createdAt:Date.now(),runId:'run-1'}];
-  listeners.task?.(task);window.emit('text_delta',{text:'第一段'});
+  task.workType={state:'resolved',kind:'conversation'};listeners.task?.(task);window.emit('text_delta',{text:'第一段'});
   await new Promise(resolve=>setTimeout(resolve,30));return {success:true,execution:{id:task.id,status:'running'}};
  },
  continueTask:async input=>{
@@ -49,5 +51,5 @@ window.electronAPI={
  cancelTask:async(taskId,reason)=>{window.cancelInput={taskId,reason};return new Promise(resolve=>{window.resolveCancel=ok=>{if(ok){task={...task,status:'paused',activeRunId:null,error:reason};listeners.task?.(task);}resolve(ok?{success:true}:{success:false,error:{message:'模拟终止失败，请重试'}});};});}
 };
 function App(){const workspace=useEnterpriseWorkspace(options);window.workspace=workspace;const work=workspace.works[0];return React.createElement('div',{className:'ent-shell'},React.createElement('output',{'data-testid':'status'},work?.status || 'empty'),work?React.createElement(WorkTalkDrawer,{workspace,work,onClose:()=>{}}):React.createElement('button',{onClick:()=>workspace.startConversation('sub-a','请整理资料')},'开始测试'));}
-createRoot(document.getElementById('root')).render(React.createElement(App));
+createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider,null,React.createElement(App)));
 </script></body></html>

@@ -9,7 +9,7 @@ import { EmployeeFace } from './EmployeeFace';
 import { MessageContent } from './MessageContent';
 import '../../styles/conversation.css';
 import { useSpeechInput } from '../../features/speech/use-speech-input';
-import { SpeechInputActions, SpeechInputFeedback } from '../speech/SpeechInputActions';
+import { SpeechInputActions } from '../speech/SpeechInputActions';
 import { AttachmentComposer } from './attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
 import { ConversationSessionsContext, createConversationSessions } from '../../features/enterprise/conversation-sessions';
@@ -245,7 +245,6 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                   <Send size={15} aria-hidden />
                 </button>
               </div>
-              <SpeechInputFeedback speech={speech} />
             </div>
           )}
         </div>

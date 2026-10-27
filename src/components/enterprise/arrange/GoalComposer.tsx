@@ -4,7 +4,7 @@ import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
-import { SpeechInputActions, SpeechInputFeedback } from '../../speech/SpeechInputActions';
+import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 
@@ -100,7 +100,6 @@ export function GoalComposer({
             <ArrowUp size={17} aria-hidden />
           </button>
         </div>
-        <SpeechInputFeedback speech={speech} />
       </div>
     </div>
   );

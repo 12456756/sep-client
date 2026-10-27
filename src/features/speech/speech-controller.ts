@@ -1,5 +1,6 @@
 import type { ElectronAPI } from '../../shared/ipc'
 import { speechResultSchema, speechStartSchema } from '../../shared/speech-contracts'
+import { UserFeedbackError, operationFailure } from '../../shared/arrangement-feedback'
 
 export type SpeechClientApi = Pick<ElectronAPI, 'beginSpeechRecording' | 'recognizeSpeech' | 'cancelSpeechRecording'>
 export interface CapturedAudio { sampleRate: number; samples: Float32Array }
@@ -32,11 +33,12 @@ interface Active {
 }
 
 function microphoneError(error: unknown): string {
+  if (error instanceof UserFeedbackError) return error.message
   const name = error instanceof Error ? error.name : ''
   if (name === 'NotAllowedError' || name === 'SecurityError') return '未获得麦克风权限，请检查系统麦克风隐私设置。'
   if (name === 'NotFoundError') return '未找到麦克风，请连接麦克风后重试。'
   if (name === 'NotReadableError') return '无法读取麦克风，请检查设备是否被其他程序占用。'
-  return '录音失败，请检查麦克风连接和系统输入音量后重试。'
+  return '录音失败，请联系平台管理员'
 }
 
 export class SpeechInputController {
@@ -57,18 +59,21 @@ export class SpeechInputController {
     for (const listener of this.listeners) listener()
   }
 
-  async start(owner: string, onResult: (text: string) => void): Promise<void> {
+  async start(owner: string, onResult: (text: string) => void, requestConsent?: (signal: AbortSignal) => Promise<boolean | undefined>): Promise<void> {
     if (this.active) return
     const session: Active = { owner, id: this.options.id?.() ?? crypto.randomUUID(), abort: new AbortController(), onResult }
     this.active = session
     this.update({ owner, phase: 'arming', seconds: 0, error: null, notice: null })
-    session.timer = setTimeout(() => this.fail(session, '麦克风授权超时，请重试。'), 65_000)
     try {
-      const response = await this.options.api().beginSpeechRecording({ recordingId: session.id })
+      const consent = requestConsent ? await requestConsent(session.abort.signal) : undefined
       if (this.active !== session) return
-      if (!response.success) { this.fail(session, response.error?.message || '无法使用语音输入，请检查设置。'); return }
+      if (consent === false) { this.cancel(owner); return }
+      session.timer = setTimeout(() => this.fail(session, '麦克风授权超时，请重试。'), 65_000)
+      const response = await this.options.api().beginSpeechRecording({ recordingId: session.id, ...(consent === undefined ? {} : { consent }) })
+      if (this.active !== session) return
+      if (!response.success) { this.fail(session, response.error?.message || operationFailure('speech')); return }
       const start = speechStartSchema.parse(response.data)
-      if (start.recordingId !== session.id) throw new Error('Recording mismatch')
+      if (start.recordingId !== session.id) throw new UserFeedbackError('语音输入响应异常，请联系平台管理员')
       if (!start.ready) {
         this.cancel(owner)
         this.update({ notice: start.permission === 'granted' ? '麦克风已授权。' : null,
@@ -108,7 +113,7 @@ export class SpeechInputController {
       session.timer = setTimeout(() => this.fail(session, '语音识别超时，请重试。'), 65_000)
       const response = await this.options.api().recognizeSpeech({ recordingId: session.id, sampleRate: audio.sampleRate, samples: new Float32Array(audio.samples) })
       if (this.active !== session) return
-      if (!response.success) { this.fail(session, response.error?.message || '语音识别失败，请重试。'); return }
+      if (!response.success) { this.fail(session, response.error?.message || '语音识别失败，请联系平台管理员'); return }
       const result = speechResultSchema.parse(response.data)
       if (result.recordingId !== session.id) throw new Error('Recording mismatch')
       clearTimeout(session.timer)
@@ -116,7 +121,7 @@ export class SpeechInputController {
       this.active = null
       this.update({ phase: 'idle', error: result.silent || !result.text.trim() ? '未检测到有效声音，请检查麦克风输入音量。' : null })
       if (!result.silent && result.text.trim()) session.onResult(result.text.trim())
-    } catch { this.fail(session, '语音识别失败，请重新录音。') }
+    } catch { this.fail(session, '语音识别失败，请联系平台管理员') }
   }
 
   cancel(owner?: string): void {

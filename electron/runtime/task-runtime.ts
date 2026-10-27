@@ -28,6 +28,8 @@ import type {
 import { redactText } from '../common/redact'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
+import { runtimeFeedback, runtimeFailureEvent, sanitizeRuntimeErrorEvent } from '../errors/runtime-feedback'
+import { runtimeFailureNoticeSchema } from '../../src/shared/runtime-feedback'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor } from './arrangement-executor'
@@ -203,6 +205,7 @@ export class TaskRuntime {
       onOutput: input => this.reportMonitorOutput(input),
       onStarted: input => this.reportMonitorStarted(input),
       onFinished: input => this.reportMonitorFinished(input),
+      onFailure: event => this.notifyRunFailure(event),
       media: this.media,
       video: this.video,
       knowledgeSearch: this.knowledgeSearch,
@@ -701,10 +704,12 @@ export class TaskRuntime {
               runId: queued.runId,
               reason: 'employee_unavailable',
             })
-            const error = 'Selected employee is unavailable.'
+            const error = runtimeFeedback(new Error('Selected employee is unavailable.')).message
             await cleanupRun(queued.taskId, queued.runId, [['reject-admission', () =>
               this.taskManager.settleTaskRun(queued.taskId, queued.runId, TaskStatus.FAILED, error)]])
             this.reportMonitorFinished({ taskId: queued.taskId, runId: queued.runId, status: 'FAILED', error, completedAt: Date.now() })
+            const owner = this.taskManager.getCurrentUserScope()
+            if (owner) this.notifyRunFailure(runtimeFailureEvent({ taskId: queued.taskId, runId: queued.runId, subscriptionId: queued.subscriptionId, owner }, new Error(error)))
             continue
           }
           const releaseWorkspace = this.locks.acquire(queued.runId, task.workDir)
@@ -843,10 +848,14 @@ export class TaskRuntime {
                     ? TaskStatus.COMPLETED
                     : TaskStatus.FAILED
         await this.taskManager.settleTaskRun(taskId, runId, status, error)
+        if (control === 'none' && error && scope && (outcome === 'failed' || result.state.nodes.some(node => node.status === 'failed'))) {
+          this.notifyRunFailure(runtimeFailureEvent({ taskId, runId, subscriptionId: queued.subscriptionId, owner: scope }, new Error(error)))
+        }
         this.reportMonitorFinished({ taskId, runId, status: outcome === 'cancelled' ? 'CANCELLED' : outcome === 'completed' ? 'COMPLETED' : outcome === 'failed' ? 'FAILED' : outcome === 'interrupted' ? 'INTERRUPTED' : 'PAUSED', error, completedAt: Date.now() })
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      log.error('arrangement run failed', { taskId, runId, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
+      const message = runtimeFeedback(error).message
       if (scope && this.arrangementCheckpointStore) {
         try {
           const checkpoint = await this.arrangementCheckpointStore.get(scope, taskId)
@@ -872,6 +881,10 @@ export class TaskRuntime {
           }
         }
         await this.taskManager.settleTaskRun(taskId, runId, status, status === TaskStatus.FAILED ? message : undefined)
+        const active = this.activeArrangements.get(taskId)
+        if (status === TaskStatus.FAILED && active?.runId === runId && active.control === 'none' && scope) {
+          this.notifyRunFailure(runtimeFailureEvent({ taskId, runId, subscriptionId: queued.subscriptionId, owner: scope }, new Error(message)))
+        }
         this.reportMonitorFinished({ taskId, runId, status: status === TaskStatus.COMPLETED ? 'COMPLETED'
           : status === TaskStatus.INTERRUPTED ? 'INTERRUPTED' : status === TaskStatus.PAUSED ? 'PAUSED' : 'FAILED',
         error: status === TaskStatus.FAILED ? message : undefined, completedAt: Date.now() })
@@ -906,6 +919,9 @@ export class TaskRuntime {
         : null
       if (!nodeRun && this.nodeParticipations.get(event.runId)?.parentRunId !== arrangement.runId) return
     }
+    const safeEvent = sanitizeRuntimeErrorEvent(event)
+    if (safeEvent !== event) log.debug('model runtime diagnostic', { taskId: event.taskId, runId: event.runId, type: event.type, data: event.data })
+    event = safeEvent
     const persistedEvent = scope && this.taskRunStore
       ? await this.taskRunStore.events.appendEvent(scope, event)
       : event
@@ -1041,6 +1057,15 @@ export class TaskRuntime {
     void this.monitor.taskStarted(input).catch(() => {
       log.warn('client monitor started report failed', { taskId: input.taskId, runId: input.runId })
     })
+  }
+
+  private notifyRunFailure(event: TaskExecutionEvent): void {
+    const notice = runtimeFailureNoticeSchema.safeParse(event.data)
+    const scope = this.taskManager.getCurrentUserScope()
+    if (!notice.success || !scope || notice.data.owner.memberId !== scope.memberId || notice.data.owner.enterpriseId !== scope.enterpriseId) return
+    try { this.onEvent(event) } catch {
+      log.warn('runtime failure notification could not be delivered', { taskId: event.taskId, runId: event.runId })
+    }
   }
 
   private reportMonitorFinished(input: MonitorTaskFinishedInput): void {
