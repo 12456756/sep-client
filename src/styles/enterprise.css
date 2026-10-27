@@ -73,8 +73,8 @@
 
   /** 内容区顶部让给窗口按钮的那条。titleBarOverlay 在 main.ts 里固定 44 高。 */
   --ent-drag-h: var(--window-chrome-height);
-  --ent-side-w: 232px;
-  --ent-side-w-collapsed: 64px;
+  --ent-side-w: 200px;
+  --ent-side-w-collapsed: 80px;
   --ent-shell-gap: 12px;
   /**
    * 员工墙两侧渐隐带的宽度，同时也是首页内容的左右内边距 ——
@@ -187,6 +187,11 @@
  * 44 高）让开 —— 不留出右边那一段的话关闭按钮会压在标题上。
  */
 .ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: linear-gradient(135deg, #ead5dc 0%, #f2dcd6 24%, #f0e6e5 48%, #eef0f4 78%, #f5f6f8 100%); }
+/* macOS 窗口按钮留在侧栏顶部，右侧工具栏与它们共用顶部空间。 */
+[data-platform='darwin'] .ent-shell { padding-top: 0; }
+[data-platform='darwin'] .ent-shell > .ent-side.ent-icon-nav { padding-top: calc(var(--window-chrome-height) + 8px); }
+[data-platform='darwin'] .ent-shell .ent-top { min-height: 52px; }
+:root[data-platform='darwin']:has(.ent-shell) .electron-window-chrome { width: var(--ent-side-w-collapsed); right: auto; }
 .ent-shell-main { position: relative; isolation: isolate; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: linear-gradient(135deg, rgb(234 213 220 / 36%), rgb(240 230 229 / 22%) 44%, rgb(238 240 244 / 48%)); }
 .ent-shell-main::before { position: absolute; z-index: 0; right: -100px; bottom: -170px; width: min(42vw, 420px); aspect-ratio: 1; content: ''; opacity: .02; background: #ae383d; -webkit-mask: url('../assets/logo.png') center / contain no-repeat; mask: url('../assets/logo.png') center / contain no-repeat; pointer-events: none; }
 .ent-shell-main > .ent-top, .ent-shell-main > .ent-error-bar, .ent-shell-main > .ent-scroll { position: relative; z-index: 1; }
@@ -437,11 +442,11 @@
 
 /* 窄一档只收窄导航，绝不把它挪到顶部 —— 桌面端导航固定在左边。 */
 @media (max-width: 1180px) {
-  :root { --ent-side-w: 210px; }
+  :root { --ent-side-w: 200px; }
 }
 /* 再窄就只剩图标：文字收掉，入口一个不少，位置也不变。 */
 @media (max-width: 900px) {
-  :root { --ent-side-w: 68px; --ent-wall-fade: 52px; }
+  :root { --ent-wall-fade: 52px; }
   .ent-side { padding: 0 10px 10px; }
   .ent-side-brand { justify-content: center; padding: 0; }
   .ent-side-brand strong, .ent-nav-item > span, .ent-nav-group,

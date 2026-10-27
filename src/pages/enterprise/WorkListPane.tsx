@@ -38,7 +38,6 @@ export function WorkListPane({ works, records, selectedWorkId, filters, onFilter
   const unresolved = countUnresolvedWorkRecordTypes(works, filters)
   return <aside className="ent-work-list" aria-label="工作列表" tabIndex={-1}>
     <header className="ent-work-list-heading">
-      <h1>工作</h1><span>{works.length}</span>
       <IconHint label="新建工作"><button type="button" aria-label="新建工作" className="ent-work-icon create" onClick={onCreate}><Plus size={18} aria-hidden /></button></IconHint>
       <IconHint label="收起工作列表"><button type="button" aria-label="收起工作列表" className="ent-work-icon" onClick={onClose}><X size={16} aria-hidden /></button></IconHint>
     </header>

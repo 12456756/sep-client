@@ -144,8 +144,9 @@ The work workspace pairs warm neutral surfaces with brand red selection and blue
 
 - Keep one application shell with one primary navigation model. Do not duplicate the same destinations in both a top nav and side nav.
 - Keep employee discovery as one navigation destination. Use an in-page scope control for “与我有关 / 企业全部”; reserve organization views for authorization and management relationships.
-- Use a fixed 64px icon navigation rail. Keep the company logo at the top and account at the bottom; center six 40px navigation targets vertically in the available middle space. Names appear on hover and focus.
-- Use a page header for title, context, and the primary action. Page-specific tabs stay inside the page header or workbench.
+- Use an 80px collapsed navigation rail and a 200px expanded sidebar. Keep the company logo at the top, center six 40px navigation targets vertically in the available middle space, and anchor the account and expand/collapse control at the bottom. Collapsed names appear on hover and focus; expanded names appear beside their icons. Preserve the user's selection across restarts.
+- On macOS, reserve the top 44px of the sidebar for native traffic lights and place the global toolbar at the top of the main column, with a minimum height of 52px. Keep the native drag overlay within the 80px traffic-light column so it cannot intercept toolbar controls. Other platforms retain their separate native chrome band.
+- The global toolbar contains only right-aligned actions; omit page titles, breadcrumbs and descriptive subtitles at the top left. Keep task-specific names and content headings in their working surfaces. The work list header contains only create and collapse controls; counts stay in the filters.
 - Use a reading width around 1180–1280px for list and detail pages; allow workbench and organization graph surfaces to use the available width.
 - Keep a consistent 8px rhythm with 16px and 24px grouping intervals.
 - At narrower desktop widths, collapse secondary panels before reducing primary content below readable measure.
