@@ -25,6 +25,29 @@ it('distinguishes transport, HTTP and unknown failures without guessing authenti
   assert.equal(runtimeFeedback(new Error('private stack /secret')).message, '工作运行失败，请联系平台管理员')
 })
 
+it('recognizes a flattened response termination without guessing unrelated failures', () => {
+  assert.deepEqual(runtimeFeedback(new Error('terminated')), {
+    code: 'MODEL_RESPONSE_INTERRUPTED', message: '模型响应中断，请稍后重试',
+  })
+  assert.equal(runtimeFeedback(new Error('模型响应中断，请稍后重试')).code, 'MODEL_RESPONSE_INTERRUPTED')
+  for (const message of ['process terminated with exit code 1', 'unterminated string', 'Request was aborted']) {
+    assert.equal(runtimeFeedback(new Error(message)).code, 'INTERNAL_ERROR')
+  }
+})
+
+it('uses the interrupted response message in normalized retry and session error events', () => {
+  for (const type of ['session_error', 'auto_retry_start', 'auto_retry_end', 'retry_budget_exhausted']) {
+    const event: TaskExecutionEvent = { taskId: 't', runId: 'r', subscriptionId: 's', sequence: 1, occurredAt: 1,
+      type, data: { error: 'terminated', attempt: 3, success: false } }
+    const safe = sanitizeRuntimeErrorEvent(event)
+    assert.deepEqual(safe.data, {
+      attempt: 3, success: false,
+      ...(type === 'session_error' ? { message: '模型响应中断，请稍后重试' } : { error: '模型响应中断，请稍后重试' }),
+    })
+    assert.equal((event.data as { error: string }).error, 'terminated')
+  }
+})
+
 it('preserves verified SDK HTTP prefixes and typed application reasons after worker normalization', () => {
   for (const [status, code] of [[401, 'AUTH_REQUIRED'], [403, 'REQUEST_DENIED'], [429, 'RATE_LIMITED'], [503, 'SERVICE_UNAVAILABLE']] as const) {
     assert.equal(runtimeFeedback(new Error(`${status} private provider body`)).code, code)

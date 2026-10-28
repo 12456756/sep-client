@@ -245,7 +245,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const scopedTasks = useMemo(() => tasks.filter(task => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId), [tasks, userId, enterpriseId]);
   const arrangement = useArrangementPlans(scopedTasks, scopeKey);
   const { recordEvent: recordArrangementEvent } = arrangement;
-  const [route, setRoute] = useState<AppRoute>({ name: 'organization' });
+  const [route, setRoute] = useState<AppRoute>({ name: 'home' });
   const [history, setHistory] = useState<AppRoute[]>([]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -545,6 +545,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     });
     const unsubscribePi = api.onPiEvent(event => {
       if (!active || deletedTaskIds.has(event.taskId)) return;
+      // The selected arrangement detail owns its high-frequency transcript subscription.
+      if (event.type === 'arrangement_node_progress') return;
       recordArrangementEvent(event);
       latestRunByTask.current.set(event.taskId, event.runId);
       const key = runtimeKey(event.taskId, event.runId);

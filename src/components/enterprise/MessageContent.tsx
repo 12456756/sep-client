@@ -56,10 +56,7 @@ const remarkPlugins = [remarkGfm];
 const safeUrl = (url: string): string => /^https?:\/\//i.test(url) ? url : '';
 
 export const MessageContent = memo(function MessageContent({ content }: MessageContentProps) {
-  return <>
-    <div className="ent-markdown">
-      <Markdown skipHtml remarkPlugins={remarkPlugins} components={components} urlTransform={safeUrl}>{content}</Markdown>
-    </div>
-    <CopyText text={content} label="复制回答" />
-  </>;
+  return <div className="ent-markdown">
+    <Markdown skipHtml remarkPlugins={remarkPlugins} components={components} urlTransform={safeUrl}>{content}</Markdown>
+  </div>;
 });

@@ -4,7 +4,8 @@ import { createServer } from 'node:http'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PiCodingAgentAdapter, normalizeGatewayPayload, sessionToolOptions, classifyToolFailure, buildGatewayRequestLogFields, buildGatewayThinkingLogFields } from './pi-coding-agent-adapter'
+import { PiCodingAgentAdapter, normalizeEvent, normalizeGatewayPayload, sessionToolOptions, classifyToolFailure, buildGatewayRequestLogFields, buildGatewayThinkingLogFields } from './pi-coding-agent-adapter'
+import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent'
 import type { PiAgentSessionConfig } from './pi-agent-runtime'
 import type { MediaHostTools, MediaToolName } from '../../domain/media-tools'
 import { AppError } from '../../errors/app-error'
@@ -22,6 +23,17 @@ const readOnlyPolicy = {
   approvalMode: 'auto-approve' as const,
   workspaceDir: 'C:/workspace',
 }
+
+describe('thinking event projection', () => {
+  it('forwards only actual thinking deltas and redacts their contents', () => {
+    const event = { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', delta: 'Inspect files. Bearer secret-access-token password="private-password"' } } as unknown as AgentSessionEvent
+    const projected = normalizeEvent(event)
+    assert.equal(projected?.type, 'thinking_delta')
+    assert.match(JSON.stringify(projected), /Inspect files/)
+    assert.doesNotMatch(JSON.stringify(projected), /secret-access-token|private-password/)
+    assert.equal(normalizeEvent({ ...event, assistantMessageEvent: { type: 'thinking_start' } } as unknown as AgentSessionEvent), null)
+  })
+})
 
 describe('task tool policy session options', () => {
   it('advertises policy tools without the removed web search', () => {

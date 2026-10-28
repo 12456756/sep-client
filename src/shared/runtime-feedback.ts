@@ -5,6 +5,7 @@ import type { TaskExecutionEvent } from './types'
 export const RUNTIME_FAILURE_EVENT = 'run_failure_notice'
 export const RUNTIME_FAILURE_MESSAGES = {
   MODEL_TIMEOUT: '模型请求超时，请稍后重试',
+  MODEL_RESPONSE_INTERRUPTED: '模型响应中断，请稍后重试',
   NETWORK_ERROR: '网络连接失败，请检查网络后重试',
   AUTH_REQUIRED: '登录验证未通过，请重新登录',
   REQUEST_DENIED: '模型请求被拒绝，请联系平台管理员',

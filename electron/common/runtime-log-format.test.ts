@@ -27,3 +27,16 @@ it('separates validation and client monitor warnings with Chinese headings', () 
   assert.match(monitor, /403/)
   assert.doesNotMatch(monitor, /UUID/)
 })
+
+it('shows safe transport diagnostics and correlation IDs without arbitrary error objects', () => {
+  const output = formatRuntimeLog({ ...record('model transport interrupted', {
+    transportPhase: 'response-body', providerStatus: 200, platformRequestId: 'platform-a', traceRequestId: 'trace-a',
+    errorName: 'TypeError', errorMessage: 'terminated', causeName: 'SocketError', causeCode: 'UND_ERR_SOCKET',
+    causeMessage: 'other side closed', elapsedMs: 2500, firstByteMs: 100, lastDataAgeMs: 2400,
+    bytesReceived: 42, signalAborted: false, socket: { remoteAddress: 'PRIVATE' },
+  }), level: 'warn' })!
+  for (const text of ['模型传输中断', '响应流读取', 'platform-a', 'trace-a', 'terminated', 'UND_ERR_SOCKET', 'other side closed', '42', '2.400 秒', '是否主动取消：否']) {
+    assert.ok(output.includes(text), text)
+  }
+  assert.doesNotMatch(output, /PRIVATE|remoteAddress/)
+})

@@ -2,13 +2,15 @@ import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, writeFile, readFile, symlink, open } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
-import { constants } from 'node:fs'
+import { constants, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { zipSync, strToU8 } from 'fflate'
+import { zipSync, strToU8, unzipSync } from 'fflate'
 import { PDFDocument } from 'pdf-lib'
 import { validateDeliveryFiles, revalidateDeliveryFiles, resolveDeliveryFiles } from './arrangement-delivery-files'
 import type { ArrangementNode } from '../domain/arrangement-plan'
+import { applicationResourcesDirectory } from './application-resources'
+import * as officeManifest from '../../resources/office/manifest.json'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
@@ -206,6 +208,49 @@ describe('final delivery file validation', () => {
     assert.equal((await validateDeliveryFiles(f.root, f.node, f.submission, 'run')).ok, false)
   })
   for (const format of ['docx', 'xlsx', 'pptx'] as const) {
+    it(`resolves ${format} content type declarations with Override precedence over Default`, async () => {
+      const f = await fixture(format)
+      const main = format === 'docx' ? 'word/document.xml' : format === 'xlsx' ? 'xl/workbook.xml' : 'ppt/presentation.xml'
+      const type = format === 'docx' ? 'wordprocessingml.document' : format === 'xlsx' ? 'spreadsheetml.sheet' : 'presentationml.presentation'
+      const mime = `application/vnd.openxmlformats-officedocument.${type}.main+xml`
+      const defaultType = `<Default Extension="xml" ContentType="${mime}"/>`
+      const overrideType = `<Override PartName="/${main}" ContentType="${mime}"/>`
+      const cases = [
+        { name: 'default only', declarations: defaultType, accepted: true },
+        { name: 'case insensitive default extension', declarations: `<Default Extension="XML" ContentType="${mime}"/>`, accepted: true },
+        { name: 'unrelated override does not hide default', declarations: `<Override PartName="/other.xml" ContentType="application/xml"/>${defaultType}`, accepted: true },
+        { name: 'override replaces generic default', declarations: `<Default Extension="xml" ContentType="application/xml"/>${overrideType}`, accepted: true },
+        { name: 'matching default and override', declarations: `${defaultType}${overrideType}`, accepted: true },
+        { name: 'wrong override cannot fall back to default', declarations: `${defaultType}<Override PartName="/${main}" ContentType="application/xml"/>`, accepted: false },
+        { name: 'missing override type cannot fall back to default', declarations: `${defaultType}<Override PartName="/${main}"/>`, accepted: false },
+        { name: 'missing declarations', declarations: '', accepted: false },
+        { name: 'wrong extension', declarations: `<Default Extension="rels" ContentType="${mime}"/>`, accepted: false },
+        { name: 'wrong default type', declarations: '<Default Extension="xml" ContentType="application/xml"/>', accepted: false },
+        { name: 'missing default type', declarations: '<Default Extension="xml"/>', accepted: false },
+        { name: 'unknown declaration is not a mapping', declarations: `<Fallback Extension="xml" ContentType="${mime}"/>`, accepted: false },
+      ]
+      for (const example of cases) {
+        const files = unzipSync(officePackage(format))
+        files['[Content_Types].xml'] = strToU8(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${example.declarations}</Types>`)
+        await writeFile(f.file, zipSync(files))
+        const result = await validateDeliveryFiles(f.root, f.node, f.submission, 'run')
+        assert.equal(result.ok, example.accepted, example.name)
+        if (!result.ok) assert.equal(result.issues[0]?.code, 'INVALID_FORMAT', example.name)
+        else assert.deepEqual(await revalidateDeliveryFiles(f.root, result.files), [], example.name)
+      }
+    })
+
+    it(`accepts prefixed XML declarations and Strict relationships for ${format}`, async () => {
+      const f = await fixture(format)
+      const main = format === 'docx' ? 'word/document.xml' : format === 'xlsx' ? 'xl/workbook.xml' : 'ppt/presentation.xml'
+      const type = format === 'docx' ? 'wordprocessingml.document' : format === 'xlsx' ? 'spreadsheetml.sheet' : 'presentationml.presentation'
+      const files = unzipSync(officePackage(format))
+      files['[Content_Types].xml'] = strToU8(`\uFEFF<?xml version="1.0" encoding="UTF-8"?><ct:Types xmlns:ct="http://schemas.openxmlformats.org/package/2006/content-types"><ct:Default Extension="xml" ContentType="application/vnd.openxmlformats-officedocument.${type}.main+xml"/></ct:Types>`)
+      files['_rels/.rels'] = strToU8(`<?xml version="1.0"?><r:Relationships xmlns:r="http://schemas.openxmlformats.org/package/2006/relationships"><r:Relationship Id="rId1" Type="http://purl.oclc.org/ooxml/officeDocument/relationships/officeDocument" Target="/${main}"/></r:Relationships>`)
+      await writeFile(f.file, zipSync(files))
+      assert.equal((await validateDeliveryFiles(f.root, f.node, f.submission, 'run')).ok, true)
+    })
+
     it(`rejects an incomplete ${format} package and accepts its basic document structure`, async () => {
       const f = await fixture(format)
       await writeFile(f.file, officePackage(format))
@@ -217,6 +262,29 @@ describe('final delivery file validation', () => {
       assert.equal((await validateDeliveryFiles(f.root, f.node, f.submission, 'run')).ok, false)
     })
   }
+
+  it('accepts real OfficeCLI docx/xlsx/pptx deliveries and their archived snapshots', { timeout: 120_000 }, async t => {
+    const asset = officeManifest.assets[`${process.platform}-${process.arch}` as keyof typeof officeManifest.assets]
+    const binary = asset && join(applicationResourcesDirectory(), 'office', asset.file)
+    if (!binary || !existsSync(binary)) {
+      t.skip('Run npm run office:prepare to enable real binary integration checks.'); return
+    }
+    const call = (args: string[]) => execFileSync(binary, args, { encoding: 'utf8', timeout: 30_000,
+      env: { ...process.env, OFFICECLI_SKIP_UPDATE: '1', OFFICECLI_NO_AUTO_RESIDENT: '1', OFFICECLI_RESIDENT_FLUSH: 'each' } })
+    for (const format of ['docx', 'xlsx', 'pptx'] as const) {
+      const f = await fixture(format)
+      call(['create', f.file])
+      if (format === 'docx') call(['add', f.file, '/body', '--type', 'paragraph', '--prop', 'text=Delivery validation regression'])
+      if (format === 'xlsx') call(['set', f.file, '/Sheet1/A1', '--prop', 'value=Delivery validation regression'])
+      if (format === 'pptx') call(['add', f.file, '/', '--type', 'slide', '--prop', 'title=Delivery validation regression'])
+      call(['save', f.file]); call(['close', f.file])
+      assert.deepEqual(JSON.parse(call(['validate', f.file, '--json'])), { success: true, data: { count: 0, errors: [] } })
+      const options = { taskDirectory: join(f.root, 'task-data') }
+      const result = await validateDeliveryFiles(f.root, f.node, f.submission, 'run', undefined, options)
+      assert.ok(result.ok, `${format}: ${JSON.stringify(result)}`)
+      assert.deepEqual(await revalidateDeliveryFiles(f.root, result.files, undefined, options), [])
+    }
+  })
   it('supports cancellation and rejects oversized files and invalid JSON', async () => {
     const f = await fixture('json')
     await writeFile(f.file, '{not-json}')

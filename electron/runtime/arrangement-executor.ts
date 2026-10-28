@@ -74,7 +74,7 @@ export interface ArrangementExecutionOptions {
 }
 
 export interface ArrangementNodeEvent {
-  type: 'arrangement_node_started' | 'arrangement_node_completed' | 'arrangement_node_failed' | 'arrangement_state_changed' | 'arrangement_delivery_checked'
+  type: 'arrangement_node_started' | 'arrangement_node_completed' | 'arrangement_node_failed' | 'arrangement_state_changed' | 'arrangement_delivery_checked' | 'arrangement_node_progress'
   arrangementRunId: string
   nodeId?: string
   nodeRunId?: string
@@ -674,6 +674,17 @@ export class ArrangementExecutor {
             if (typeof data.text === 'string') output += data.text
           }
           await this.options.onEvent(event)
+          if (['turn_start', 'turn_end', 'text_delta', 'thinking_delta', 'tool_execution_start', 'tool_execution_end',
+            'approval_requested', 'approval_resolved', 'auto_retry_start', 'auto_retry_end'].includes(event.type)) {
+            const raw = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : {}
+            const progress: Record<string, unknown> = { eventType: event.type }
+            // The transcript never needs prompts, tool arguments/results or provider diagnostics.
+            for (const key of ['text', 'toolId', 'toolName', 'success', 'requestId', 'approved']) {
+              if (typeof raw[key] === 'string' || typeof raw[key] === 'boolean') progress[key] = raw[key]
+            }
+            await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_node_progress', arrangementRunId,
+              nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt, data: progress })
+          }
         },
         onSessionCreated: async session => {
           if (this.options.scope && this.options.taskRunStore) {

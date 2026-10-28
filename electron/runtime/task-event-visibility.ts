@@ -29,6 +29,7 @@ const IMPORTANT_EVENT_TYPES = new Set([
   'arrangement_node_started',
   'arrangement_node_completed',
   'arrangement_node_failed',
+  'arrangement_node_progress',
   'arrangement_state_changed',
   'SIDE_EFFECT_UNKNOWN',
 ])

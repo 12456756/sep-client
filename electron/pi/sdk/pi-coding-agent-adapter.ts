@@ -40,7 +40,7 @@ import type {
   PiAgentSessionConfig,
 } from './pi-agent-runtime'
 import { MAX_RUN_AUTO_RETRIES } from './pi-agent-runtime'
-import { redactText, redactValue } from '../../common/redact'
+import { redactModelTraceText, redactText, redactValue } from '../../common/redact'
 import {
   BUILTIN_TOOL_NAMES,
   READ_ONLY_TOOLS,
@@ -61,6 +61,7 @@ import { videoErrorMessage } from '../../../src/shared/video-errors'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
 import { modelPayloadText, readableTraceValue, traceModelStream } from './pi-model-trace'
+import { fetchWithModelDiagnostics } from './model-transport-diagnostics'
 import { evaluateOfficeCommand, OFFICE_TOOL_NAME } from './pi-office-policy'
 
 const log = logger.child('pi-gateway')
@@ -476,13 +477,13 @@ export function normalizeGatewayPayload(payload: unknown): unknown {
   }
 }
 
-function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
+export function normalizeEvent(event: AgentSessionEvent): PiAgentEvent | null {
   const raw = event as unknown as Record<string, unknown>
   switch (event.type) {
     case 'message_update': {
       const update = raw.assistantMessageEvent as Record<string, unknown> | undefined
-      if (update?.type !== 'text_delta' || typeof update.delta !== 'string') return null
-      return { type: 'text_delta', data: { text: redactText(update.delta) } }
+      if ((update?.type !== 'text_delta' && update?.type !== 'thinking_delta') || typeof update.delta !== 'string') return null
+      return { type: update.type, data: { text: update.type === 'thinking_delta' ? redactModelTraceText(update.delta) : redactText(update.delta) } }
     }
     case 'tool_execution_start':
       return {
@@ -902,7 +903,22 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
             sent = true
             log.info('model request overview', { ...overview, ...fields, requestId: number, traceRequestId: requestId })
             void requestRecord({ phase: '', kind: 'status', text: '请求已发送，等待模型响应。', timestamp: startedAt, metrics: { 请求发送时间: new Date(startedAt).toISOString() } })
-            const response = await globalThis.fetch(input, { ...init, headers })
+            const response = await fetchWithModelDiagnostics(input, { ...init, headers }, failure => {
+              const { causes, ...diagnostic } = failure
+              const cause = causes[0]
+              const details = { ...diagnostic, causeName: cause?.name, causeCode: cause?.code, causeMessage: cause?.message }
+              log[failure.signalAborted ? 'info' : 'warn']('model transport interrupted', { ...fields, ...details, traceRequestId: requestId, causes })
+              return requestRecord({ phase: '', kind: 'status', text: '模型传输中断；以下为 SDK 格式化之前采集的底层诊断。',
+                metrics: {
+                  传输阶段: failure.transportPhase === 'connect' ? '连接建立' : '响应流读取',
+                  错误类型: failure.errorName, 错误信息: failure.errorMessage, 错误代码: failure.errorCode,
+                  底层错误类型: cause?.name, 底层错误码: cause?.code, 底层原因: cause?.message,
+                  原因链: JSON.stringify(causes), 平台请求标识: failure.platformRequestId, 响应状态码: failure.providerStatus,
+                  已接收字节数: failure.bytesReceived, 总耗时毫秒: failure.elapsedMs,
+                  网络首字节毫秒: failure.firstByteMs, 距离最后收包毫秒: failure.lastDataAgeMs,
+                  是否主动取消: failure.signalAborted ? '是' : '否',
+                } })
+            })
             headersMs = Date.now() - startedAt
             platformRequestId = response.headers.get('x-request-id') ?? undefined
             providerStatus = response.status
