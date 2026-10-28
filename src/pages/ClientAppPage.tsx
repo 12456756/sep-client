@@ -10,7 +10,7 @@
  */
 
 import { AlertTriangle, Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
 import { ModelPreferenceProvider } from '../components/workspace/model-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
@@ -26,6 +26,7 @@ import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterp
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import { useHomeDraftOwner } from '../features/enterprise/home-draft';
 import { useEmployeePageScroll } from '../features/enterprise/use-employee-page-scroll';
+import { useSkillPageScroll } from '../features/enterprise/use-skill-page-scroll';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
 import type { UpdateModel } from '../features/update/use-update';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
@@ -128,6 +129,15 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   const employeePageReady = !employeeLoad?.loading && !workspace.skillsLoading
     && (workspace.employeePageState.scope !== 'all' || workspace.organizationStatus !== 'loading');
   useEmployeePageScroll(scroll, contentRoute, workspace.employeePageState, workspace.updateEmployeePageState, employeePageReady);
+  useSkillPageScroll(scroll, contentRoute, workspace.skillPageState, workspace.updateSkillPageState, !workspace.skillsLoading || workspace.skills.length > 0);
+  const previousRoute = useRef(route);
+  useLayoutEffect(() => {
+    const previous = previousRoute.current;
+    previousRoute.current = route;
+    if (route.name !== 'employee' || previous.name !== 'skills' || !previous.skillId || previous.returnTo?.name !== 'employee' || previous.returnTo.employeeId !== route.employeeId) return;
+    const frame = requestAnimationFrame(() => document.getElementById(`employee-skill-${previous.skillId}`)?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [route]);
 
   const topBar = (
     <AppTopBar
@@ -179,7 +189,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
           </div>
         ) : null}
         <div
-          className={`ent-scroll${contentRoute.name === 'organization' ? ' ent-scroll-no-overflow' : ''}${isHome ? ' ent-scroll-home' : ''}${['arrange', 'records', 'work'].includes(contentRoute.name) ? ' ent-scroll-work' : ''}`}
+          className={`ent-scroll${contentRoute.name === 'organization' ? ' ent-scroll-no-overflow' : ''}${contentRoute.name === 'skills' ? ' ent-scroll-skills' : ''}${isHome ? ' ent-scroll-home' : ''}${['arrange', 'records', 'work'].includes(contentRoute.name) ? ' ent-scroll-work' : ''}`}
           ref={scroll}
         >
           <ConversationSessionsContext.Provider value={conversationSessions}>
@@ -259,7 +269,7 @@ function PageBody({ workspace, userName, employeeLoad, employeeStatusLoad, draft
     case 'work':
       return <WorkHubPage key={workspace.attachmentScopeKey} workspace={workspace} />;
     case 'skills':
-      return <SkillsPage workspace={workspace} skillId={route.skillId} />;
+      return <SkillsPage workspace={workspace} skillId={route.skillId} employeeFilterId={route.employeeFilterId} sourceEmployeeId={route.sourceEmployeeId} returnTo={route.returnTo} />;
     case 'compute-center':
       return <ComputeCenterPage />;
     case 'knowledge':

@@ -68,7 +68,7 @@ it('renders linked start, skill and recent work actions', () => {
   }
   assert.deepEqual(calls, [
     { name: 'arrange', mode: 'chat', employeeId: employee.id },
-    { name: 'skills', skillId: skill.capability.id },
+    { name: 'skills', skillId: skill.capability.id, sourceEmployeeId: employee.id, returnTo: { name: 'employee', employeeId: employee.id } },
     { name: 'work', workId: work.id },
   ]);
 });

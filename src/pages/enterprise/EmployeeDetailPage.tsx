@@ -86,6 +86,7 @@ export function EmployeeDetailPage({ workspace, employeeId, employeeLoad, employ
       <section className="ent-employee-detail-section" aria-labelledby="employee-skills-heading">
         <div className="ent-employee-detail-section-heading">
           <h2 id="employee-skills-heading">已有技能</h2>
+          {skills.length ? <button type="button" className="ent-employee-inline-link" onClick={() => workspace.navigate({ name: 'skills', employeeFilterId: employee.id })}>查看全部技能</button> : null}
           {workspace.skillsLoading ? <span role="status">正在加载技能…</span> : null}
         </div>
         {workspace.skillsError ? (
@@ -107,7 +108,7 @@ export function EmployeeDetailPage({ workspace, employeeId, employeeLoad, employ
                   <strong>{skill.capability.name}</strong>
                   {skill.capability.description.trim() ? <p>{skill.capability.description}</p> : null}
                 </div>
-                <button type="button" className="ent-employee-inline-link" onClick={() => workspace.navigate({ name: 'skills', skillId: skill.capability.id })}>
+                <button type="button" id={`employee-skill-${skill.capability.id}`} className="ent-employee-inline-link" onClick={() => workspace.navigate({ name: 'skills', skillId: skill.capability.id, sourceEmployeeId: employee.id, returnTo: { name: 'employee', employeeId: employee.id } })}>
                   查看技能<ChevronRight size={15} aria-hidden />
                 </button>
               </li>

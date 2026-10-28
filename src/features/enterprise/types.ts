@@ -293,7 +293,7 @@ export type AppRoute =
   | { name: 'arrange'; templateId?: string; mode?: ArrangeMode; employeeId?: string }
   | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped'; workType?: 'all' | 'conversation' | 'arrangement'; search?: string }
   | { name: 'work'; workId: string }
-  | { name: 'skills'; skillId?: string }
+  | { name: 'skills'; skillId?: string; employeeFilterId?: string; sourceEmployeeId?: string; returnTo?: { name: 'skill-list' } | { name: 'employee'; employeeId: string } }
   | { name: 'knowledge'; kbId?: string }
   | { name: 'compute-center' };
 

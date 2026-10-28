@@ -1,178 +1,359 @@
-/* global window, document, fetch */
-// Isolated IPC fixtures matching platform contracts. No fixture data enters production storage.
+/* global window, document */
+// Isolated renderer and IPC fixtures. No account, platform or production storage mutations.
 import assert from 'node:assert/strict';
-import { tmpdir } from 'node:os';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import process from 'node:process';
 import { log } from 'node:console';
 import { chromium } from 'playwright-core';
-const origin = process.env.SEP_PREVIEW_ORIGIN ?? 'http://127.0.0.1:5174';
-const main = await (await fetch(origin + '/main.tsx')).text();
-const reactUrl = main.match(/from "([^"]*react\.js[^"]*)"/)[1];
-const domUrl = main.match(/from "([^"]*react-dom_client[^"]*)"/)[1];
-const html = `<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module">
-window.$RefreshReg$ = () => {}; window.$RefreshSig$ = () => type => type; window.__vite_plugin_react_preamble_installed__ = true;
-await import('/index.css'); await import('/styles/enterprise.css'); await import('/styles/arrange.css');
-const React = (await import('${reactUrl}')).default;
-const {createRoot} = (await import('${domUrl}')).default;
-const {SkillsPage} = await import('/pages/enterprise/SkillsPage.tsx');
-const {useSkillLibrary} = await import('/features/enterprise/use-skill-library.ts');
-const {ArrangeWorkPage} = await import('/pages/enterprise/ArrangeWorkPage.tsx');
-const {AppTopBar} = await import('/components/enterprise/AppTopBar.tsx');
-window.source = '---\\nname: analysis\\n---\\n# 数据分析\\n\\n保留 **Markdown** 与原文。\\n';
-window.sources = {public:window.source,approved:'# 我的已审核版本\\n'};
-const publicVersion={id:'public',capabilityId:'cap',scope:'ENTERPRISE',version:'1.2.0',status:'ENTERPRISE_APPROVED'};
-const approved={id:'approved',capabilityId:'cap',scope:'PERSONAL',ownerId:'user',version:'opaque-personal-id',parentVersionId:'public',status:'ENTERPRISE_APPROVED',changeSummary:'已审核优化版'};
-window.library=[{capability:{id:'cap',name:'数据分析',description:'读取数据并生成分析报告，保留原文与版本。',type:'SKILL'},bindings:[{subscriptionId:'sub-a',employeeId:'emp-a',currentVersion:publicVersion,selectedVersionId:'public'},{subscriptionId:'sub-b',employeeId:'emp-b',currentVersion:publicVersion,selectedVersionId:'public'}],usableVersionIds:['public','approved'],versions:[publicVersion,approved],localVersions:[]}];
-window.calls=[];window.failUpload=false;window.failList=false;window.failSelect=false;
-const employee=id=>({id,name:id==='sub-a'?'数据分析师':'报告撰写员',availability:'ready',assignedToMe:true,allowedModels:['model-a'],skillIds:['cap'],goodAt:[],cannotDo:[],permissions:[]});
+import { createServer } from 'vite';
+
+const server = await createServer({ configFile: 'vite.preview.config.ts', logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } });
+let browser;
+try {
+  await server.listen();
+  const origin = 'http://127.0.0.1:' + server.httpServer.address().port;
+  const main = await (await fetch(origin + '/main.tsx')).text();
+  const reactUrl = main.match(/from "([^"]*react\.js[^"]*)"/)[1];
+  const domUrl = main.match(/from "([^"]*react-dom_client[^"]*)"/)[1];
+  const html = String.raw`<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module">
+import RefreshRuntime from '/@react-refresh';RefreshRuntime.injectIntoGlobalHook(window);window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;
+await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
+const React=(await import('${reactUrl}')).default;const {createRoot}=(await import('${domUrl}')).default;
+const {SkillsPage}=await import('/pages/enterprise/SkillsPage.tsx');
+const {useSkillLibrary}=await import('/features/enterprise/use-skill-library.ts');
+const {createSkillPageState,enterSkillPage,createSkillLeaveRegistry}=await import('/features/enterprise/skill-page-state.ts');
+const {useSkillPageScroll}=await import('/features/enterprise/use-skill-page-scroll.ts');
+window.source='---\nname: analysis\ncustom: keep\n---\n# 数据分析\n\n保留 **Markdown** 与原文。\n\n[链接](javascript:alert(1))\n<img src=x onerror=alert(1)>\n';
+const publicVersion={id:'public',capabilityId:'cap',scope:'ENTERPRISE',version:'1.2.0',status:'ENTERPRISE_APPROVED',createdAt:'2026-10-01'};
+const platform={...publicVersion,id:'platform',scope:'PLATFORM',version:'1.0.0',status:'PLATFORM_APPROVED'};
+const approved={...publicVersion,id:'approved',scope:'PERSONAL',ownerId:'user',version:'opaque-personal-id',parentVersionId:'public',changeSummary:'已审核优化版',createdAt:'2026-10-20'};
+window.sources={public:window.source,platform:'# 平台原文\n',approved:'# 我的已审核版本\n'};
+window.library=[{capability:{id:'cap',name:'数据分析',description:'读取数据并生成分析报告，保留原文与版本。',type:'SKILL'},bindings:[{subscriptionId:'sub-a',employeeId:'emp-a',currentVersion:publicVersion,selectedVersionId:'public'},{subscriptionId:'sub-b',employeeId:'emp-b',currentVersion:publicVersion,selectedVersionId:'platform'}],usableVersionIds:['public','platform','approved'],versions:[publicVersion,platform,approved],localVersions:[]}];
+window.calls=[];window.previewCalls=[];window.failUpload=false;window.failList=false;window.failSelect=false;window.failSave=false;window.skippedCount=0;
+const makeEmployee=id=>({id,name:id==='sub-a'?'数据分析师':'报告撰写员',availability:'ready',assignedToMe:true,allowedModels:[],skillIds:['cap'],goodAt:[],cannotDo:[],permissions:[],avatar:null});
 window.electronAPI={
- listSkillLibrary:async()=>window.failList?{success:false,error:{message:'平台连接失败'}}:{success:true,skippedCount:window.skippedCount??0,data:structuredClone(window.memberId==='other'?window.library.map(item=>({...item,localVersions:[],usableVersionIds:['public'],bindings:item.bindings.map(binding=>({...binding,selectedVersionId:'public'}))})):window.library)},
- previewLibrarySkill:async input=>{window.previewCalls??=[];window.previewCalls.push(input);return {success:true,data:window.sources[input.versionId]};},
- selectSkillVersion:async input=>{window.calls.push(input);if(window.failSelect || !window.library[0].usableVersionIds.includes(input.versionId))return {success:false,error:{message:'版本切换失败'}};window.library=window.library.map(item=>({...item,bindings:item.bindings.map(b=>({...b,selectedVersionId:input.versionId}))}));return {success:true};},
- savePersonalSkill:async input=>{window.calls.push(input);window.sources[input.idempotencyKey]=input.request.content;
-  const version={...approved,id:'saved-'+window.calls.length,status:'PENDING_ENTERPRISE_REVIEW',changeSummary:input.request.changeSummary};
-  window.library[0].localVersions.push({...input,createdAt:new Date().toISOString(),...(window.failUpload?{}:{uploadedVersion:version})});
-  window.library[0].usableVersionIds.push(input.idempotencyKey);
-  if(window.failUpload){return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:false}};}
-  window.sources[version.id]=input.request.content;window.library[0].versions.push(version);return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:true,version}};},
- retryPersonalSkillUpload:async input=>{window.calls.push(input);const local=window.library[0].localVersions.find(v=>v.idempotencyKey===input.idempotencyKey);const version={...approved,id:'retry-saved',status:'PENDING_ENTERPRISE_REVIEW',changeSummary:local.request.changeSummary};window.sources[version.id]=local.request.content;window.library[0].versions.push(version);window.library[0].localVersions=window.library[0].localVersions.map(v=>v.idempotencyKey===input.idempotencyKey?{...v,uploadedVersion:version}:v);return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:true,version}};},
- onArrangementPlanningEvent:()=>()=>{},
- createArrangementDraft:async input=>{window.calls.push(input);return {success:false,error:{message:'草稿测试结束'}};},
+ listSkillLibrary:async()=>window.failList?{success:false,error:{message:'平台连接失败'}}:window.limited?{success:false,error:{statusCode:429,message:'请在 2 秒后重试'}}:{success:true,skippedCount:window.skippedCount,data:structuredClone(window.memberId==='other'?window.library.map(item=>({...item,versions:item.versions.filter(v=>v.scope!=='PERSONAL'),localVersions:[],usableVersionIds:['public','platform'],bindings:item.bindings.map(binding=>({...binding,selectedVersionId:'public'}))})):window.library)},
+ previewLibrarySkill:async input=>{window.previewCalls.push(input);if(window.failPreview)return {success:false,error:{message:'读取失败测试'}};return {success:true,data:window.sources[input.versionId]??'# 技能内容\n'};},
+ selectSkillVersion:async input=>{window.calls.push({kind:'select',...input});if(window.failSelect)return {success:false,error:{message:'版本切换失败测试'}};if(window.delaySelect)await new Promise(resolve=>window.resolveSelect=resolve);window.library=window.library.map(item=>item.capability.id!==input.capabilityId?item:({...item,bindings:item.bindings.map(b=>({...b,selectedVersionId:input.versionId}))}));return {success:true};},
+ savePersonalSkill:async input=>{window.calls.push({kind:'save',...input});if(window.failSave)return {success:false,error:{message:'保存失败测试'}};if(window.delaySave)await new Promise(resolve=>window.resolveSave=resolve);window.sources[input.idempotencyKey]=input.request.content;const version={...approved,id:'saved-'+input.idempotencyKey,status:'PENDING_ENTERPRISE_REVIEW',createdAt:new Date().toISOString(),changeSummary:input.request.changeSummary};const item=window.library.find(s=>s.capability.id===input.request.capabilityId);if(!item.localVersions.some(v=>v.idempotencyKey===input.idempotencyKey))item.localVersions.push({...input,createdAt:new Date().toISOString(),...(window.failUpload?{}:{uploadedVersion:version})});item.usableVersionIds.push(input.idempotencyKey);if(window.failUpload)return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:false}};window.sources[version.id]=input.request.content;item.versions.push(version);return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:true,version}};},
+ retryPersonalSkillUpload:async input=>{window.calls.push({kind:'retry',...input});const item=window.library.find(s=>s.capability.id===input.capabilityId);const local=item.localVersions.find(v=>v.idempotencyKey===input.idempotencyKey);const version={...approved,id:'retry-saved',status:'PENDING_ENTERPRISE_REVIEW',changeSummary:local.request.changeSummary};window.sources[version.id]=local.request.content;item.versions.push(version);item.localVersions=item.localVersions.map(v=>v.idempotencyKey===input.idempotencyKey?{...v,uploadedVersion:version}:v);return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:true,version}};},
 };
 function Fixture(){
- const [memberId,setMemberId]=React.useState('user'); window.memberId=memberId;
- const library=useSkillLibrary('enterprise:'+memberId); const [route,navigate]=React.useState({name:'skills'});
- window.switchUser=()=>setMemberId('other');
- window.goAuto=()=>navigate({name:'arrange',mode:'auto'});
- window.goSkills=()=>navigate({name:'skills'});
- const workspace={...library,navigate,employees:[employee('sub-a'),employee('sub-b')],myEmployees:[employee('sub-a'),employee('sub-b')],templates:[],arrangeSeed:null,busy:false,seedArrange:()=>{},chooseFolder:async()=> 'D:/work/my-project'};
- return React.createElement('div',{className:'ent-shell',style:{display:'flex',flexDirection:'column',height:'100vh',marginLeft:200,width:'calc(100% - 200px)'}},React.createElement(AppTopBar,{title:route.name==='skills'?'员工技能':'自动编排'}),React.createElement('main',{style:{overflow:'auto',padding:24,flex:1,minHeight:0}},route.name==='skills'?React.createElement(SkillsPage,{workspace,skillId:route.skillId}):React.createElement(ArrangeWorkPage,{workspace,mode:route.mode})));
+ const [member,setMember]=React.useState('user');window.memberId=member;const scope='enterprise:'+member;
+ const library=useSkillLibrary(scope);const [route,setRoute]=React.useState({name:'skills'});
+ const [state,setState]=React.useState(createSkillPageState);const update=React.useCallback(patch=>setState(current=>({...current,...patch})),[]);
+ const [registry]=React.useState(createSkillLeaveRegistry);const register=React.useCallback(guard=>registry.register(scope,guard),[registry,scope]);
+ const navigate=next=>{if(!registry.mayLeave(scope))return;if(next.name==='skills')setState(current=>enterSkillPage(current,next));setRoute(next);};
+ window.goSkills=()=>navigate({name:'skills'});window.goAway=()=>navigate({name:'home'});window.goSource=()=>navigate({name:'skills',skillId:'cap',sourceEmployeeId:'sub-b',returnTo:{name:'employee',employeeId:'sub-b'}});window.goMissingSource=()=>navigate({name:'skills',skillId:'cap',returnTo:{name:'employee',employeeId:'removed'}});
+ window.switchUser=()=>{setMember('other');setState(createSkillPageState());setRoute({name:'skills'});};window.navigateFixture=navigate;
+ const scroll=React.useRef(null);useSkillPageScroll(scroll,route,state,update,!library.skillsLoading||library.skills.length>0);
+ const workspace={...library,attachmentScopeKey:scope,skillPageState:state,updateSkillPageState:update,registerSkillLeaveGuard:register,navigate,canGoBack:false,employees:[makeEmployee('sub-a'),makeEmployee('sub-b')],organizationEmployees:[]};
+ return React.createElement('div',{className:'ent-shell',style:{display:'block',height:'100vh',overflow:'hidden'}},React.createElement('main',{ref:scroll,'data-test-scroll':'',className:route.name==='skills'?'ent-scroll-skills':'',style:{overflow:'auto',height:'100%'}},route.name==='skills'?React.createElement(SkillsPage,{workspace,skillId:route.skillId,employeeFilterId:route.employeeFilterId,sourceEmployeeId:route.sourceEmployeeId,returnTo:route.returnTo}):React.createElement('h1',null,route.name==='employee'?'员工详情示例':'其他页面')));
 }
 createRoot(document.getElementById('root')).render(React.createElement(Fixture));
 </script></body></html>`;
-const browser=await chromium.launch({channel:'msedge',headless:true});
-try {
- const page=await browser.newPage(); await page.emulateMedia({reducedMotion:'reduce'}); const errors=[];
- page.on('pageerror',error=>{errors.push(error.message);log(error.message)});
- await page.route('**/__skill-library-test',route=>route.fulfill({contentType:'text/html',body:html}));
- for(const width of [1200,960]) {
-  await page.setViewportSize({width,height:width===1200?800:640});
-  await page.goto(origin+'/__skill-library-test');
-  await page.getByRole('button',{name:'查看并调整'}).waitFor();
-  assert.equal(await page.locator('.skill-employee').count(),2);
-  await page.screenshot({path:join(tmpdir(),'sep-skill-list-'+width+'.png')});
-  await page.getByRole('button',{name:'查看并调整'}).click();
-  const source=page.getByRole('textbox',{name:'Skill 原始内容'});
-  await source.waitFor();
-  await page.waitForFunction(()=>document.querySelector('.skill-source')?.value.includes('# 数据分析'));
-  assert.equal(await source.getAttribute('readonly'),'');
-  await page.getByRole('button',{name:'修改',exact:true}).click();
-  await source.fill('# 个人优化\n\n直接编辑 **原文**。\n');
-  await page.getByRole('button',{name:'保存为个人版本',exact:true}).click();
-  const dialog=page.getByRole('dialog');await dialog.waitFor();
-  await page.getByLabel('版本名称 / 修改说明').fill('我的优化版');
-  await page.screenshot({path:join(tmpdir(),'sep-skill-save-'+width+'.png')});
-  await page.getByRole('button',{name:'确定保存',exact:true}).click();
-  await dialog.waitFor({state:'detached'});
-  await page.getByText('已保存个人版本并上传送审。无需等待审核，可返回列表切换为本人本地使用。').waitFor();
-  assert.equal(await page.evaluate(()=>window.sources.public),await page.evaluate(()=>window.source));
-  assert.equal(await page.evaluate(()=>window.calls.find(c=>c.request).request.content),'# 个人优化\n\n直接编辑 **原文**。\n');
-  await page.locator('main').evaluate(element=>{element.scrollTop=0});
-  await page.screenshot({path:join(tmpdir(),'sep-skill-detail-'+width+'.png')});
-  await page.getByRole('button',{name:'返回技能列表'}).click();
-  const selector=page.getByLabel('数据分析当前使用版本');
-  assert.equal(await selector.inputValue(),'public');
-  const savedKey=await page.evaluate(()=>window.calls.find(c=>c.request).idempotencyKey);
-  const remoteId=await page.evaluate(()=>window.library[0].localVersions[0].uploadedVersion.id);
-  assert.equal(await selector.locator('option[value="'+remoteId+'"]').getAttribute('disabled'),'');
-  assert.equal(await selector.locator('option[value="'+savedKey+'"]').getAttribute('disabled'),null);
-  await selector.selectOption(savedKey);
-  await page.waitForFunction(key=>window.library[0].bindings.every(b=>b.selectedVersionId===key),savedKey);
-  assert.equal(await selector.inputValue(),savedKey);
-  await page.evaluate(()=>{window.library[0].versions=window.library[0].versions.map(v=>v.status==='PENDING_ENTERPRISE_REVIEW'?{...v,status:'ENTERPRISE_REJECTED'}:v)});
-  await page.getByRole('button',{name:'刷新',exact:true}).click();
-  await page.waitForFunction(()=>Array.from(document.querySelectorAll('option')).some(o=>o.textContent.includes('已驳回')));
-  assert.equal(await selector.locator('option[value="'+savedKey+'"]').getAttribute('disabled'),null);
-  await selector.selectOption('approved');
-  await page.waitForFunction(()=>window.library[0].bindings.every(b=>b.selectedVersionId==='approved'));
-  assert.equal(await selector.inputValue(),'approved');
-  await page.evaluate(()=>{window.failSelect=true});
-  await selector.selectOption('public');await page.getByRole('alert').waitFor();
-  assert.equal(await selector.inputValue(),'approved');
-  await page.reload();await page.getByRole('button',{name:'查看并调整'}).click();
-  await page.getByRole('button',{name:'修改',exact:true}).click();await source.fill('# 本地待上传\n');
-  await page.evaluate(()=>{window.failUpload=true});
-  await page.getByRole('button',{name:'保存为个人版本',exact:true}).click();
-  await page.getByLabel('版本名称 / 修改说明').fill('断网重试版');
-  await page.getByRole('button',{name:'确定保存',exact:true}).click();
-  const retryKey=await page.evaluate(()=>window.calls.find(c=>c.request).idempotencyKey);
-  await page.getByRole('button',{name:'返回技能列表'}).click();
-  assert.equal(await selector.locator('option[value="'+retryKey+'"]').getAttribute('disabled'),null);
-  await selector.selectOption(retryKey);
-  await page.waitForFunction(key=>window.library[0].bindings.every(b=>b.selectedVersionId===key),retryKey);
-  await page.getByRole('button',{name:'查看并调整'}).click();
-  await page.evaluate(()=>{window.failList=true});
-  await page.getByRole('button',{name:'重试上传'}).click();
-  await page.getByText('上传成功，已进入审核；不影响本人本地使用。').waitFor();
-  assert.equal(await page.evaluate(()=>window.calls.at(-1).idempotencyKey),retryKey);
-  await page.getByRole('button',{name:'修改',exact:true}).click();
-  await source.fill('# 已保存但列表刷新失败\n');
-  await page.evaluate(()=>{window.failList=true;window.failUpload=false});
-  await page.getByRole('button',{name:'保存为个人版本',exact:true}).click();
-  await page.getByLabel('版本名称 / 修改说明').fill('刷新失败仍保留');
-  await page.getByRole('button',{name:'确定保存',exact:true}).click();
-  await page.getByRole('dialog').waitFor({state:'detached'});
-  await page.getByRole('button',{name:'返回技能列表'}).click();
-  const fallbackKey=await page.evaluate(()=>window.calls.filter(c=>c.request).at(-1).idempotencyKey);
-  assert.equal(await selector.locator('option[value="'+fallbackKey+'"]').getAttribute('disabled'),null);
-  await selector.selectOption(fallbackKey);
-  await page.waitForFunction(key=>window.library[0].bindings.every(b=>b.selectedVersionId===key),fallbackKey);
-  assert.equal(await selector.inputValue(),fallbackKey);
-  await page.screenshot({path:join(tmpdir(),'sep-skill-local-'+width+'.png')});
-  await page.evaluate(()=>{window.failList=false;window.switchUser()});
-  await page.waitForFunction(()=>document.querySelector('.skill-active-version select')?.value==='public');
-  assert.equal(await selector.locator('option[value="'+fallbackKey+'"]').count(),0);
-  assert.equal(await selector.locator('option[value="'+retryKey+'"]').count(),0);
-  assert.equal(await selector.locator('option[value="approved"]').getAttribute('disabled'),'');
-  if(process.env.SEP_SKILLS_ONLY!=='1') {
-    await page.evaluate(()=>window.goAuto());
-    await page.getByRole('button',{name:'工作目录',exact:true}).click();
-    await page.getByText('my-project',{exact:true}).waitFor();
-    assert.equal(await page.getByRole('button',{name:'附件',exact:true}).count(),0);
-    assert.equal(await page.getByRole('button',{name:'知识库',exact:true}).count(),0);
-    await page.getByRole('button',{name:'运行设置',exact:true}).click();
-    await page.getByRole('dialog').waitFor();
-    await page.keyboard.press('Escape');
-    await page.getByRole('textbox',{name:'工作目标'}).fill('生成分析报告');
-    await page.getByRole('button',{name:'开始自动编排'}).click();
-    await page.getByText('草稿测试结束').waitFor();
-    assert.equal(await page.evaluate(()=>window.calls.at(-1).workspace.path),'D:/work/my-project');
-    await page.screenshot({path:join(tmpdir(),'sep-auto-arrange-'+width+'.png')});
-    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>window.innerWidth),false);
+  browser = await chromium.launch({ channel: process.env.SEP_BROWSER_CHANNEL || 'chrome', headless: true });
+  const screenshotDir = join(process.cwd(), 'outputs', 'skill-library-validation');
+  await mkdir(screenshotDir, { recursive: true });
+  const page = await browser.newPage();
+  page.setDefaultTimeout(10_000);
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.route('**/__skill-library-test', route => route.fulfill({ contentType: 'text/html', body: html }));
+  const reset = async () => { await page.goto(origin + '/__skill-library-test'); await page.getByRole('button', { name: '查看详情：数据分析', exact: true }).waitFor(); };
+  const open = () => page.getByRole('button', { name: '查看详情：数据分析', exact: true }).click();
+  const candidate = page.getByRole('combobox', { name: '切换使用版本：数据分析（全部 2 名关联员工）', exact: true });
+  const toList = async () => {
+    if (await page.locator('.skill-detail').count()) await page.getByRole('button', { name: '返回技能列表', exact: true }).click();
+  };
+  const select = async (id, reopen = true) => {
+    await toList();
+    await candidate.selectOption(id);
+    await page.getByRole('status').filter({ hasText: /^已切换为/ }).waitFor();
+    if (reopen) await open();
+  };
+  const beginSave = async (content, name) => {
+    await page.getByRole('button', { name: '创建个人版本', exact: true }).click();
+    await page.getByRole('textbox', { name: 'Skill 原始内容' }).fill(content);
+    await page.getByRole('button', { name: '保存为个人版本', exact: true }).click();
+    await page.getByLabel('版本名称 / 修改说明').fill(name);
+    await page.getByRole('button', { name: '确定保存', exact: true }).click();
+  };
+  const savedKey = () => page.evaluate(() => window.calls.filter(call => call.kind === 'save').at(-1).idempotencyKey);
+  for (const width of [1200, 960]) {
+    await page.setViewportSize({ width, height: width === 1200 ? 800 : 640 });
+    await reset();
+    assert.equal(await page.getByRole('heading', { name: '员工技能', exact: true }).count(), 0);
+    assert.deepEqual(await page.getByLabel('版本范围').locator('option').allTextContents(), ['全部版本', '个人', '企业', '平台']);
+    assert.equal(await page.locator('.skill-row').count(), 1);
+    assert.equal(await page.locator('.skill-row select').count(), 1);
+    assert.equal(await candidate.locator('option:checked').textContent(), '多个版本');
+    await page.getByLabel('搜索技能或员工').fill('数据分析师');
+    await page.getByText('找到 1 / 1 个技能', { exact: true }).waitFor();
+    await page.getByRole('button', { name: '筛选员工：报告撰写员' }).click();
+    assert.equal(await page.getByLabel('搜索技能或员工').inputValue(), '');
+    assert.equal(await page.getByLabel('按员工筛选').inputValue(), 'sub-b');
+    await page.getByLabel('技能排序').selectOption('recent');
+    await page.screenshot({ path: join(screenshotDir, 'list-' + width + '.png'), fullPage: true });
+    await open();
+    assert.equal(await page.getByRole('region', { name: '使用设置' }).count(), 0);
+    assert.equal(await page.locator('.skill-editor-footer').count(), 0);
+    assert.equal(await page.getByText('读取数据并生成分析报告，保留原文与版本。', { exact: true }).count(), 0);
+    assert.equal(await page.locator('.skill-source').count(), 0);
+    await page.getByRole('tab', { name: '版本记录', exact: true }).click();
+    await page.getByRole('button', { name: '查看内容', exact: true }).first().click();
+    assert.equal(await page.evaluate(() => window.calls.filter(c => c.kind === 'select').length), 0);
+    await page.getByRole('button', { name: '原文', exact: true }).click();
+    assert.equal(await page.getByRole('textbox', { name: 'Skill 原始内容' }).getAttribute('readonly'), '');
+    await page.getByRole('button', { name: '阅读', exact: true }).click();
+    await page.getByRole('tab', { name: '版本记录', exact: true }).click();
+    const publicRow = page.locator('.skill-version-row').filter({ hasText: '企业版 1.2.0' });
+    await publicRow.getByRole('button', { name: /查看内容|正在查看/ }).click();
+    await page.locator('.skill-reading strong').filter({ hasText: 'Markdown' }).waitFor();
+    assert.equal(await page.getByRole('heading', { name: '数据分析', exact: true }).count(), 1);
+    assert.equal(await page.getByText('元数据', { exact: true }).count(), 0);
+    assert.equal(await page.getByRole('tab', { name: '技能说明', exact: true }).getAttribute('aria-selected'), 'true');
+    assert.equal(await page.locator('#skill-panel-history').isVisible(), false);
+    assert.equal(await page.locator('.skill-reading img,.skill-reading a,.skill-reading script').count(), 0);
+    await page.locator('[data-test-scroll]').evaluate(el => { el.scrollTop = 0; });
+    await page.screenshot({ path: join(screenshotDir, 'detail-' + width + '.png'), fullPage: true });
+    const original = await page.evaluate(() => window.source);
+    await beginSave(original + '\n## 个人调整\n明确输出验证依据。\n', '我的优化版');
+    await page.getByRole('dialog').waitFor({ state: 'detached' });
+    await page.getByText('个人版本已保存，已上传送审。', { exact: true }).waitFor();
+    assert.equal(await page.evaluate(() => window.sources.public), original);
+    assert.equal(await page.evaluate(() => window.calls.filter(c => c.kind === 'select').length), 0);
+    const key = await savedKey();
+    assert.equal(await page.evaluate(() => window.calls.find(c => c.kind === 'save').request.content), original + '\n## 个人调整\n明确输出验证依据。\n');
+    await page.getByRole('button', { name: '返回列表切换', exact: true }).click();
+    assert.equal(await candidate.inputValue(), '');
+    assert.equal(await candidate.locator('option[value="' + key + '"]').getAttribute('disabled'), null);
+    await select(key);
+    assert.equal(await page.evaluate(key => window.library[0].bindings.every(b => b.selectedVersionId === key), key), true);
+    const selectCall = await page.evaluate(() => window.calls.filter(c => c.kind === 'select').at(-1));
+    assert.deepEqual(Object.keys(selectCall).sort(), ['capabilityId', 'kind', 'versionId']);
+    await page.getByRole('tab', { name: '版本记录', exact: true }).click();
+    assert.equal(await page.locator('.skill-version-row').filter({ hasText: '我的优化版' }).count(), 1);
+    await page.evaluate(() => { window.library[0].versions = window.library[0].versions.map(v => v.status === 'PENDING_ENTERPRISE_REVIEW' ? { ...v, status: 'ENTERPRISE_REJECTED', rejectionReason: '测试驳回' } : v); });
+    await page.getByRole('button', { name: '刷新状态', exact: true }).click();
+    await page.locator('.skill-version-info small').filter({ hasText: /本地可用.*已驳回/ }).first().waitFor();
+    await page.screenshot({ path: join(screenshotDir, 'versions-' + width + '.png'), fullPage: true });
+    await toList();
+    assert.equal(await candidate.locator('option').filter({ hasText: '我的优化版' }).getAttribute('disabled'), null);
+    await select('approved');
+    await toList();
+    await page.evaluate(() => { window.failSelect = true; });
+    await candidate.selectOption('public');
+    await page.getByRole('alert').filter({ hasText: '版本切换失败测试' }).waitFor();
+    assert.equal(await page.evaluate(() => window.library[0].bindings.every(b => b.selectedVersionId === 'approved')), true);
+    assert.equal(await candidate.inputValue(), 'approved');
+    await page.evaluate(() => { window.failSelect = false; });
+    await page.getByRole('button', { name: '重试切换', exact: true }).click();
+    await page.getByRole('status').filter({ hasText: /^已切换为/ }).waitFor();
+    assert.equal(await candidate.inputValue(), 'public');
+    assert.equal(await page.getByLabel('按员工筛选').inputValue(), 'sub-b');
+    assert.equal(await page.getByLabel('技能排序').inputValue(), 'recent');
+    log('PASS layout/read/edit/save/apply/aliases/review/filter return: ' + width);
   }
-  await page.reload();
-  await page.getByRole('button',{name:'查看并调整'}).waitFor();
-  await page.evaluate(()=>{
-    window.library.push({capability:{id:'empty',name:'未发布技能',description:'',type:'SKILL'},bindings:[{subscriptionId:'sub-a',employeeId:'emp-a',currentVersion:null,selectedVersionId:null}],versions:[],usableVersionIds:[],localVersions:[]});
-    window.skippedCount=1;
+
+  await reset();
+  await page.evaluate(() => { window.delaySelect = true; });
+  await candidate.selectOption('approved');
+  await page.getByText('切换中…', { exact: true }).waitFor();
+  assert.equal(await candidate.isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: '数据分析', exact: true }).isDisabled(), true);
+  assert.equal(await page.getByRole('button', { name: '刷新', exact: true }).isDisabled(), true);
+  await page.evaluate(() => window.goAway());
+  assert.equal(await page.getByRole('heading', { name: '其他页面', exact: true }).count(), 0);
+  assert.equal(await page.evaluate(() => window.calls.filter(call => call.kind === 'select').length), 1);
+  await page.evaluate(() => window.resolveSelect());
+  await page.getByRole('status').filter({ hasText: /^已切换为/ }).waitFor();
+  assert.equal(await candidate.inputValue(), 'approved');
+  await candidate.selectOption('approved');
+  assert.equal(await page.evaluate(() => window.calls.filter(call => call.kind === 'select').length), 1);
+  await candidate.selectOption('platform');
+  await page.getByText('切换中…', { exact: true }).waitFor();
+  await page.evaluate(() => window.switchUser());
+  await candidate.waitFor();
+  assert.equal(await candidate.inputValue(), 'public');
+  await page.evaluate(() => window.resolveSelect());
+  await page.waitForFunction(() => window.library[0].bindings.every(binding => binding.selectedVersionId === 'platform'));
+  assert.equal(await candidate.inputValue(), 'public');
+  assert.equal(await page.getByRole('status').filter({ hasText: /^已切换为/ }).count(), 0);
+  log('PASS inline switch busy guard, duplicate prevention and late identity result isolation');
+
+  await reset();
+  await page.evaluate(() => {
+    const base = window.library[0];
+    for (const [id, scope, subscriptionId] of [['enterprise-only', 'ENTERPRISE', 'sub-a'], ['platform-only', 'PLATFORM', 'sub-b']]) {
+      const version = { ...base.versions[0], id: id + '-version', capabilityId: id, scope };
+      window.library.push({ ...structuredClone(base), capability: { ...base.capability, id, name: id }, versions: [version], bindings: [{ ...base.bindings[0], subscriptionId, selectedVersionId: version.id }], usableVersionIds: [version.id] });
+    }
+    window.library.push({ ...structuredClone(base), capability: { ...base.capability, id: 'local-only', name: 'local-only' }, versions: [], bindings: base.bindings.map(binding => ({ ...binding, selectedVersionId: 'local-key' })), usableVersionIds: ['local-key'], localVersions: [{ idempotencyKey: 'local-key', createdAt: '2026-10-28', request: { capabilityId: 'local-only', parentVersionId: 'public', content: '# local' } }] });
   });
-  await page.getByRole('button',{name:'刷新',exact:true}).click();
-  await page.getByText('部分技能数据异常，已跳过；其他技能仍可正常使用。').waitFor();
-  assert.equal(await page.locator('.skill-card').count(),2);
-  const emptyCard=page.locator('.skill-card').filter({has:page.getByRole('heading',{name:'未发布技能'})});
-  await emptyCard.getByText('暂无可用版本',{exact:true}).waitFor();
-  assert.equal(await page.getByLabel('未发布技能当前使用版本').inputValue(),'');
-  await emptyCard.getByRole('button',{name:'查看并调整'}).click();
-  await page.getByText('未选择版本。',{exact:true}).waitFor();
-  assert.equal(await page.getByRole('button',{name:'修改',exact:true}).isDisabled(),true);
-  assert.equal(await page.evaluate(()=>window.previewCalls?.some(call=>!call.versionId)??false),false);
-  await page.getByRole('button',{name:'返回技能列表'}).click();
-  await page.screenshot({path:join(tmpdir(),'sep-skill-nullable-'+width+'.png')});
-  await page.evaluate(()=>{window.skippedCount=0});
-  await page.getByRole('button',{name:'刷新',exact:true}).click();
-  await page.getByText('部分技能数据异常，已跳过；其他技能仍可正常使用。').waitFor({state:'detached'});
- }
- assert.deepEqual(errors,[]);
- log('PASS skill list, raw edit/save, immutable public source, owner-local selection, rejected review, durable upload retry, refresh failure, user isolation, nullable versions and partial warnings'+(process.env.SEP_SKILLS_ONLY==='1'?'':', auto toolbar')+'; 1200x800 / 960x640');
-} finally {await browser.close();}
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByText('共 4 个技能', { exact: true }).waitFor();
+  for (const [scope, expected] of [['personal', ['local-only']], ['enterprise', ['cap', 'enterprise-only']], ['platform', ['cap', 'platform-only']]]) {
+    await page.getByLabel('版本范围').selectOption(scope);
+    assert.deepEqual((await page.locator('.skill-row').evaluateAll(rows => rows.map(row => row.dataset.skillId))).sort(), expected);
+    await page.getByText(`找到 ${expected.length} / 4 个技能`, { exact: true }).waitFor();
+  }
+  await page.getByLabel('按员工筛选').selectOption('sub-a');
+  assert.deepEqual(await page.locator('.skill-row').evaluateAll(rows => rows.map(row => row.dataset.skillId)), ['cap']);
+  await page.getByRole('button', { name: '清除筛选', exact: true }).click();
+  assert.equal(await page.locator('.skill-row').count(), 4);
+  await page.evaluate(() => { window.library[0].bindings = window.library[0].bindings.map(binding => ({ ...binding, selectedVersionId: 'platform' })); });
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByRole('button', { name: '刷新', exact: true }).waitFor({ state: 'visible' });
+  await page.getByLabel('版本范围').selectOption('enterprise');
+  await page.getByText('找到 1 / 4 个技能', { exact: true }).waitFor();
+  assert.deepEqual(await page.locator('.skill-row').evaluateAll(rows => rows.map(row => row.dataset.skillId)), ['enterprise-only']);
+  assert.equal(await page.getByRole('button', { name: '查看详情：数据分析', exact: true }).count(), 0);
+  await page.getByLabel('版本范围').selectOption('platform');
+  await select('approved', false);
+  await page.getByText('找到 1 / 4 个技能', { exact: true }).waitFor();
+  assert.deepEqual(await page.locator('.skill-row').evaluateAll(rows => rows.map(row => row.dataset.skillId)), ['platform-only']);
+  await page.getByLabel('版本范围').selectOption('personal');
+  assert.deepEqual((await page.locator('.skill-row').evaluateAll(rows => rows.map(row => row.dataset.skillId))).sort(), ['cap', 'local-only']);
+  log('PASS current version categories, historical version exclusion, local aliases and employee intersection');
+
+  await reset();await open();
+  await page.evaluate(() => { window.failUpload = true; });
+  await beginSave('# 本地待上传\n', '断网重试版');
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  const localKey = await savedKey();
+  await select(localKey);
+  await page.getByRole('tab', { name: '版本记录', exact: true }).click();
+  await page.evaluate(() => { window.failList = true; });
+  await page.getByRole('button', { name: '重试上传', exact: true }).click();
+  await page.getByText('上传成功，等待审核。', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.calls.at(-1).idempotencyKey), localKey);
+  assert.equal(await page.evaluate(key => window.library[0].bindings.every(binding => binding.selectedVersionId === key), localKey), true);
+  await page.locator('.skill-version-row').filter({ hasText: '断网重试版' }).getByRole('button', { name: /查看内容|正在查看/ }).click();
+  await page.evaluate(() => { window.failUpload = false; });
+  await beginSave('# 刷新失败仍保留\n', '刷新失败仍保留');
+  await page.getByRole('dialog').waitFor({ state: 'detached' });
+  const fallbackKey = await savedKey();
+  await toList();
+  assert.equal(await candidate.locator('option[value="' + fallbackKey + '"]').getAttribute('disabled'), null);
+  await select(fallbackKey);
+  await page.evaluate(() => { window.failList = false; window.switchUser(); });
+  await page.getByRole('button', { name: '查看详情：数据分析', exact: true }).waitFor();
+  assert.equal(await candidate.locator('option[value="' + fallbackKey + '"]').count(), 0);
+  log('PASS local upload retry, metadata refresh failure, owner isolation');
+
+  await reset();await open();
+  await page.getByRole('button', { name: '创建个人版本', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Skill 原始内容' }).fill('# 未保存草稿\n');
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.evaluate(() => window.goAway());
+  assert.equal(await page.getByRole('textbox', { name: 'Skill 原始内容' }).inputValue(), '# 未保存草稿\n');
+  assert.equal(await page.getByRole('tab', { name: '版本记录' }).isDisabled(), true);
+  page.once('dialog', dialog => dialog.accept());await page.evaluate(() => window.goAway());
+  await page.getByRole('heading', { name: '其他页面', exact: true }).waitFor();
+  await reset();await open();await page.evaluate(() => { window.failSave = true; });
+  await beginSave('# 幂等重试\n', '重试版');
+  await page.getByRole('dialog').getByRole('alert').filter({ hasText: '保存失败测试' }).waitFor();
+  const attemptKey = await savedKey();
+  await page.evaluate(() => { window.failSave = false; });
+  await page.getByRole('button', { name: '确定保存', exact: true }).click();await page.getByRole('dialog').waitFor({ state: 'detached' });
+  assert.equal(await savedKey(), attemptKey);
+  log('PASS unsaved global navigation guard, idempotent save retry');
+
+  await reset();await open();
+  await page.evaluate(() => { window.failPreview = true; });
+  await page.getByRole('tab', { name: '版本记录', exact: true }).click();
+  await page.locator('.skill-version-row').filter({ hasText: '已审核优化版' }).getByRole('button', { name: '查看内容', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '读取失败测试' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '创建个人版本', exact: true }).isDisabled(), true);
+  await page.evaluate(() => { window.failPreview = false; });
+  await page.getByRole('button', { name: '重新读取', exact: true }).click();
+  await page.locator('.skill-reading').getByRole('heading', { name: '我的已审核版本', exact: true }).waitFor();
+  await page.getByRole('button', { name: '创建个人版本', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Skill 原始内容' }).fill('# 原版本消失仍保留草稿\n');
+  await page.evaluate(() => { window.library[0].versions = window.library[0].versions.filter(v => v.id !== 'approved'); });
+  // Focus refresh is cooled down, so mutate the visible fixture through the existing refresh command after returning.
+  page.once('dialog', dialog => dialog.dismiss());await page.evaluate(() => window.goSkills());
+  assert.equal(await page.getByRole('textbox', { name: 'Skill 原始内容' }).inputValue(), '# 原版本消失仍保留草稿\n');
+  page.once('dialog', dialog => dialog.accept());await page.evaluate(() => window.goSkills());
+  await reset();await open();
+  await page.evaluate(() => { window.delaySave = true; });
+  await beginSave('# 旧身份异步保存\n', '旧身份版本');
+  await page.getByRole('button', { name: '正在保存并上传…', exact: true }).waitFor();
+  await page.evaluate(() => window.goAway());
+  assert.equal(await page.getByRole('heading', { name: '其他页面', exact: true }).count(), 0);
+  await page.evaluate(() => window.switchUser());
+  await page.getByRole('button', { name: '查看详情：数据分析', exact: true }).waitFor();
+  await page.evaluate(() => window.resolveSave());
+  assert.equal(await candidate.locator('option').filter({ hasText: '旧身份版本' }).count(), 0);
+  await open();
+  await page.getByRole('tab', { name: '版本记录', exact: true }).click();
+  assert.equal(await page.getByText('旧身份版本', { exact: true }).count(), 0);
+  log('PASS preview recovery, discarded navigation, busy guard and late-save identity isolation');
+
+  await reset();
+  await page.evaluate(() => {
+    const base = window.library[0];
+    for (let i = 0; i < 38; i++) window.library.push({ ...structuredClone(base), capability: { ...base.capability, id: 'extra-' + i, name: '技能' + i, description: '很长的技能描述'.repeat(20) } });
+    window.library.push({ capability: { id: 'empty', name: '未发布技能', description: '', type: 'SKILL' }, bindings: [{ subscriptionId: 'sub-a', employeeId: 'emp-a', currentVersion: null, selectedVersionId: null }], versions: [], usableVersionIds: [], localVersions: [] });
+    window.skippedCount = 1;
+  });
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByText('部分技能数据异常，已跳过；其他技能仍可正常使用。', { exact: true }).waitFor();
+  assert.equal(await page.locator('.skill-row').count(), 40);
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.screenshot({ path: join(screenshotDir, 'list-dense-1200.png'), fullPage: true });
+  await page.getByLabel('技能排序').selectOption('employees');
+  await page.locator('[data-test-scroll]').evaluate(el => { el.scrollTop = 1200; });
+  await page.waitForTimeout(100);
+  const target = page.locator('.skill-row').nth(15);
+  await target.getByRole('button', { name: /查看详情/ }).click();
+  await page.getByRole('button', { name: '返回技能列表', exact: true }).click();
+  assert.ok(await page.locator('[data-test-scroll]').evaluate(el => el.scrollTop) > 600);
+  await page.getByLabel('搜索技能或员工').fill('未发布技能');
+  await page.getByRole('button', { name: '查看详情：未发布技能', exact: true }).click();
+  await page.getByText('暂无版本', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '创建个人版本', exact: true }).isDisabled(), true);
+  assert.equal(await page.evaluate(() => window.previewCalls.some(call => !call.versionId)), false);
+  await page.getByRole('button', { name: '返回技能列表', exact: true }).click();
+  await page.getByRole('button', { name: '清除筛选', exact: true }).click();
+  await page.setViewportSize({ width: 540, height: 800 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
+  await page.screenshot({ path: join(screenshotDir, 'narrow.png'), fullPage: true });
+  await page.locator('.ent-shell').evaluate(el => el.classList.add('dark'));
+  await page.screenshot({ path: join(screenshotDir, 'dark.png'), fullPage: true });
+  await open();
+  await page.locator('.skill-reading').waitFor();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false);
+  await page.screenshot({ path: join(screenshotDir, 'detail-dark.png'), fullPage: true });
+  await page.locator('.ent-shell').evaluate(el => el.classList.remove('dark'));
+  await page.screenshot({ path: join(screenshotDir, 'detail-narrow.png'), fullPage: true });
+  log('PASS long list, scroll restore, null versions, partial warning, narrow/dark');
+
+  await reset();await page.evaluate(() => { window.limited = true; });
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '技能服务请求较多' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '刷新', exact: true }).isDisabled(), true);
+  await page.evaluate(() => { window.limited = false; });
+  await page.getByRole('button', { name: '刷新', exact: true }).waitFor({ state: 'visible' });
+  await page.waitForFunction(() => !Array.from(document.querySelectorAll('button')).find(button => button.textContent === '刷新')?.disabled);
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByRole('alert').waitFor({ state: 'detached' });
+  await page.evaluate(() => window.goSource());
+  await page.getByRole('heading', { name: '数据分析', exact: true }).waitFor();
+  assert.equal(await page.getByText('来自：报告撰写员', { exact: true }).count(), 0);
+  await page.getByRole('button', { name: '返回员工详情', exact: true }).click();
+  await page.getByRole('heading', { name: '员工详情示例', exact: true }).waitFor();
+  await page.evaluate(() => window.goMissingSource());
+  await page.getByRole('button', { name: '返回员工详情', exact: true }).click();
+  await page.getByText('来源员工已不在当前列表中，已返回技能列表。', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '查看详情：数据分析', exact: true }).waitFor();
+  log('PASS rate limit and employee entry/return');
+  assert.deepEqual(errors, []);
+  log('PASS skill library browser regression; screenshots: ' + screenshotDir);
+} finally {
+  await browser?.close();
+  await server.close();
+}

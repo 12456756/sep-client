@@ -3,6 +3,7 @@ import { useSkillLibrary, type SkillLibraryWorkspace } from './use-skill-library
 import { needsSkillLibrary } from './skill-load-state';
 import { subscriptionAvailability } from './employee-view-model';
 import { createEmployeePageState, employeeBackgroundRoute, enterEmployeePage, readEmployeeView, saveEmployeeView, type EmployeePageState } from './employee-page-state';
+import { createSkillPageState, enterSkillPage, createSkillLeaveRegistry, type SkillPageState } from './skill-page-state';
 import { conversationDocument } from './run-settings';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
@@ -194,6 +195,9 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   employeeBackgroundRoute: AppRoute;
   employeePageState: EmployeePageState;
   updateEmployeePageState: (patch: Partial<EmployeePageState>) => void;
+  skillPageState: SkillPageState;
+  updateSkillPageState: (patch: Partial<SkillPageState>) => void;
+  registerSkillLeaveGuard: (guard: (() => boolean) | null) => () => void;
   /** 是否有可返回的上一页，供顶栏决定是否显示返回按钮。 */
   canGoBack: boolean;
   error: string | null;
@@ -261,6 +265,13 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const { recordEvent: recordArrangementEvent } = arrangement;
   const [route, setRoute] = useState<AppRoute>({ name: 'home' });
   const [history, setHistory] = useState<AppRoute[]>([]);
+  const [skillPageRecord, setSkillPageRecord] = useState(() => ({ scopeKey, state: createSkillPageState() }));
+  const skillPageState = skillPageRecord.scopeKey === scopeKey ? skillPageRecord.state : createSkillPageState();
+  const updateSkillPageState = useCallback((patch: Partial<SkillPageState>) => {
+    setSkillPageRecord(current => ({ scopeKey, state: { ...(current.scopeKey === scopeKey ? current.state : createSkillPageState()), ...patch } }));
+  }, [scopeKey]);
+  const [skillLeaveRegistry] = useState(createSkillLeaveRegistry);
+  const registerSkillLeaveGuard = useCallback((guard: (() => boolean) | null) => skillLeaveRegistry.register(scopeKey, guard), [skillLeaveRegistry, scopeKey]);
   const [employeePageState, setEmployeePageState] = useState(() => createEmployeePageState(readEmployeeView(scopeKey)));
   const updateEmployeePageState = useCallback((patch: Partial<EmployeePageState>) => {
     setEmployeePageState(current => ({ ...current, ...patch }));
@@ -620,26 +631,31 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
   // ── 导航 ─────────────────────────────────────────────────────────────
   const navigate = useCallback((next: AppRoute) => {
+    if (!skillLeaveRegistry.mayLeave(scopeKey)) return;
+    if (next.name === 'skills') setSkillPageRecord(current => ({ scopeKey, state: enterSkillPage(current.scopeKey === scopeKey ? current.state : createSkillPageState(), next) }));
     if (next.name === 'employees' && next.scope) setEmployeePageState(current => enterEmployeePage(current, next.scope));
     setRoute(current => {
       setHistory(stack => [...stack.slice(-19), current]);
       return next;
     });
     setError(null);
-  }, []);
+  }, [skillLeaveRegistry, scopeKey]);
 
   const goBack = useCallback(() => {
+    if (!skillLeaveRegistry.mayLeave(scopeKey)) return;
     setHistory(stack => {
       if (!stack.length) return stack;
       setRoute(stack[stack.length - 1]);
       return stack.slice(0, -1);
     });
-  }, []);
+  }, [skillLeaveRegistry, scopeKey]);
 
   const replaceRoute = useCallback((next: AppRoute) => {
+    if (!skillLeaveRegistry.mayLeave(scopeKey)) return;
+    if (next.name === 'skills') setSkillPageRecord(current => ({ scopeKey, state: enterSkillPage(current.scopeKey === scopeKey ? current.state : createSkillPageState(), next) }));
     setRoute(next);
     setError(null);
-  }, []);
+  }, [skillLeaveRegistry, scopeKey]);
 
   // ── 工作动作 ──────────────────────────────────────────────────────────
   const run = useCallback(async (action: () => Promise<{ success: boolean; error?: { message: string } }>, fallback: string) => {
@@ -934,6 +950,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     attachmentScopeKey: scopeKey,
     overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, error, busy,
     employeePageState, updateEmployeePageState,
+    skillPageState, updateSkillPageState, registerSkillLeaveGuard,
     employeeBackgroundRoute: employeeBackgroundRoute(route, history),
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,

@@ -20,6 +20,7 @@ export function useEmployeePageScroll(
   useLayoutEffect(() => {
     const element = container.current;
     if (!element) return;
+    if (route.name === 'skills') return;
     if (route.name !== 'employees') {
       element.scrollTop = 0;
       return;

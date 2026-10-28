@@ -36,10 +36,52 @@ test('skill names and descriptions still match independently of employee names',
   assert.deepEqual(ids(filterSkillLibrary(skills, employees, '接口', 'all')), ['api']);
 });
 
-test('personal-version filter combines with employee search and includes local versions', () => {
-  const local = { ...skills[0], localVersions: [{ idempotencyKey: 'local-version', createdAt: '2026-10-14', request: { capabilityId: 'ui', parentVersionId: 'ui-version', content: '# local' } }] };
+test('personal-version filter combines with employee search and includes selected local versions', () => {
+  const local = { ...skills[0], bindings: skills[0].bindings.map(binding => ({ ...binding, selectedVersionId: 'local-version' })), localVersions: [{ idempotencyKey: 'local-version', createdAt: '2026-10-14', request: { capabilityId: 'ui', parentVersionId: 'ui-version', content: '# local' } }] };
   assert.deepEqual(ids(filterSkillLibrary(skills, employees, '前端', 'personal')), ['shared']);
   assert.deepEqual(ids(filterSkillLibrary([local, ...skills.slice(1)], employees, '前端', 'personal')), ['ui', 'shared']);
+});
+
+test('version filters follow current selections rather than available or historical versions', () => {
+  const enterprise = skills[0];
+  const personal = skills[1];
+  const platform = { ...skills[2], versions: skills[2].versions.map(version => ({ ...version, scope: 'PLATFORM' })) };
+  const platformWithHistory = { ...platform, versions: [...enterprise.versions, ...personal.versions, ...platform.versions], localVersions: [{ idempotencyKey: 'unused-local', createdAt: '2026-10-28', request: { capabilityId: 'api', parentVersionId: 'api-version', content: '# local' } }] };
+  const empty = { ...enterprise, capability: { ...enterprise.capability, id: 'empty' }, versions: [], localVersions: [] };
+  const library = [enterprise, personal, platformWithHistory, empty];
+  assert.deepEqual(ids(filterSkillLibrary(library, employees, '', 'enterprise')), ['ui']);
+  assert.deepEqual(ids(filterSkillLibrary(library, employees, '', 'platform')), ['api']);
+  assert.deepEqual(ids(filterSkillLibrary(library, employees, '', 'personal')), ['shared']);
+  assert.equal(filterSkillLibrary(library, employees, '', 'all').length, 4);
+  assert.deepEqual(ids(filterSkillLibrary(library, employees, 'Bob', 'platform')), ['api']);
+  assert.deepEqual(filterSkillLibrary(library, employees, 'Alice', 'platform'), []);
+  const switched = { ...platformWithHistory, bindings: platformWithHistory.bindings.map(binding => ({ ...binding, selectedVersionId: enterprise.versions[0].id })) };
+  assert.deepEqual(ids(filterSkillLibrary([switched], employees, '', 'enterprise')), ['api']);
+  assert.deepEqual(filterSkillLibrary([switched], employees, '', 'platform'), []);
+});
+
+test('mixed employee selections match their used sources once, without depending on usability', () => {
+  const mixed = { ...skills[1], versions: [...skills[0].versions, ...skills[1].versions], usableVersionIds: [], bindings: skills[1].bindings.map((binding, i) => ({ ...binding, selectedVersionId: i ? skills[0].versions[0].id : skills[1].versions[0].id })) };
+  assert.deepEqual(ids(filterSkillLibrary([mixed], employees, '', 'enterprise')), ['shared']);
+  assert.deepEqual(ids(filterSkillLibrary([mixed], employees, '', 'personal')), ['shared']);
+  assert.deepEqual(filterSkillLibrary([mixed], employees, '', 'platform'), []);
+});
+
+test('local and uploaded aliases classify as personal; empty or unknown selections have no category', () => {
+  const uploadedVersion = { id: 'uploaded', capabilityId: 'ui', scope: 'PERSONAL', status: 'ENTERPRISE_REJECTED', version: 'opaque' };
+  const local = { ...skills[0], localVersions: [{ idempotencyKey: 'local', createdAt: '2026-10-28', request: { capabilityId: 'ui', parentVersionId: 'ui-version', content: '# local' }, uploadedVersion }] };
+  for (const selectedVersionId of ['local', 'uploaded']) {
+    const selected = { ...local, bindings: local.bindings.map(binding => ({ ...binding, selectedVersionId })) };
+    assert.deepEqual(ids(filterSkillLibrary([selected], employees, '', 'personal')), ['ui']);
+    assert.deepEqual(filterSkillLibrary([selected], employees, '', 'enterprise'), []);
+  }
+  for (const selectedVersionId of [null, 'missing']) {
+    const unavailable = { ...local, bindings: local.bindings.map(binding => ({ ...binding, selectedVersionId })) };
+    assert.deepEqual(filterSkillLibrary([unavailable], employees, '', 'personal'), []);
+    assert.deepEqual(filterSkillLibrary([unavailable], employees, '', 'enterprise'), []);
+    assert.deepEqual(filterSkillLibrary([unavailable], employees, '', 'platform'), []);
+    assert.deepEqual(filterSkillLibrary([unavailable], employees, '', 'all'), [unavailable]);
+  }
 });
 
 test('empty search preserves ordering and the version filter', () => {
