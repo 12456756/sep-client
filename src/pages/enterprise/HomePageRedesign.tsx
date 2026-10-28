@@ -117,7 +117,6 @@ export function HomeDashboard({ userName, employees, works, draft, onNavigate, o
           <Shortcut icon={<LayoutGrid />} title="工具中心" description="更多 AI 工具" tone="orange" onClick={() => setToolNotice(true)} />
         </div>
       </section>
-      <section className="sep-home-brand" aria-label="品牌寄语"><blockquote>“用 AI 赋能业务<br /><span>让每个员工都成为数字员工”</span></blockquote></section>
     </aside>
     <HomeDialog open={toolNotice} onClose={() => setToolNotice(false)} title="工具中心"><p>工具中心暂未开放</p></HomeDialog>
   </div>

@@ -48,12 +48,23 @@ try {
     assert.equal(await page.locator('.sep-home-popular-grid > *').count(), 6);
     assert.equal(await page.locator('.sep-home-recent-row').count(), 5);
     assert.equal(await page.locator('.sep-home').innerText().then(text => text.includes('智能体')), false, 'Homepage uses employee terminology');
+    assert.equal(await page.getByRole('region', { name: '品牌寄语' }).count(), 0, 'Brand artwork panel is removed');
     if (viewport.width <= 1299) {
       for (const expanded of [false, true]) {
         if (expanded) await page.getByRole('button', { name: '展开侧栏' }).click();
         const recent = await page.locator('.sep-home-recent').boundingBox();
-        const brand = await page.locator('.sep-home-brand').boundingBox();
-        assert.ok(Math.abs(recent.y + recent.height - brand.y - brand.height) < 1, 'Recent tasks and brand panel bottoms align');
+        const shortcuts = await page.locator('.sep-home-shortcuts').boundingBox();
+        assert.ok(Math.abs(recent.y + recent.height - shortcuts.y - shortcuts.height) < 1, 'Recent tasks and shortcuts panel bottoms align');
+        const shortcutGrid = await page.locator('.sep-home-shortcut-grid').boundingBox();
+        assert.ok(shortcuts.y + shortcuts.height - shortcutGrid.y - shortcutGrid.height < 20, 'Shortcuts panel has no stretched empty space below its cards');
+        const scroll = await page.locator('.sep-home-recent-list').evaluate(list => {
+          const overflows = list.scrollHeight > list.clientHeight;
+          list.scrollTop = list.scrollHeight;
+          const scrolled = list.scrollTop > 0;
+          list.scrollTop = 0;
+          return { overflows, scrolled };
+        });
+        assert.deepEqual(scroll, { overflows: true, scrolled: true }, 'Recent tasks scroll inside the compact panel');
       }
       await page.getByRole('button', { name: '收起侧栏' }).click();
     }
