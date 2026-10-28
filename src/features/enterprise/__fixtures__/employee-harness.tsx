@@ -15,12 +15,13 @@ import '../../../styles/employee-detail.css';
 const makeEmployee = (index: number, assignedToMe = true): SiliconEmployee => ({
   id: `employee-${index}`, name: index === 1 ? '爆品机会评估师' : index === 27 ? '资料助手' : `${assignedToMe ? '运营顾问' : '企业员工'} ${index}`,
   avatar: null, avatarAsset: null, mark: '员', roleName: '', department: null,
-  availability: index === 3 ? 'working' : index === 4 ? 'unavailable' : 'ready', assignedToMe,
+  availability: index === 3 ? 'working' : index === 4 ? 'unavailable' : index === 5 ? 'needs-auth' : 'ready', assignedToMe,
   intro: index === 27 ? '' : index === 2 ? '负责独特的会员权益方案整理' : '根据你提供的资料，整理分析结果并形成工作建议。',
   goodAt: [], cannotDo: [], lastWorkedAt: index === 27 ? null : Date.now() - index * 3600000,
   allowedModels: ['fixture-model'], skillIds: [], permissions: [], templateVersion: 'fixture',
 });
 const employees = Array.from({ length: 27 }, (_, index) => makeEmployee(index + 1));
+employees[5] = { ...employees[5], avatar: '/__employee_portrait_fixture__/missing-legacy.png', avatarAsset: { id: 'fixture-face', version: '1', faceUrl: '/__employee_portrait_fixture__/face.svg', portraitUrl: '/__employee_portrait_fixture__/missing-portrait.png' } };
 const organizationEmployees = [...employees, ...Array.from({ length: 3 }, (_, index) => makeEmployee(index + 28, false))];
 const skills: SkillLibraryItem[] = Array.from({ length: 26 }, (_, index) => ({
   capability: { id: `skill-${index + 1}`, name: index === 0 ? '商品机会研究' : `业务资料整理 ${index + 1}`, description: '整理资料、分析重点，并输出清晰的建议。', type: 'skill' },

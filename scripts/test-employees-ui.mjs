@@ -16,6 +16,11 @@ mkdirSync(outputDir, { recursive: true });
 const errors = [];
 try {
   const page = await browser.newPage({ viewport: { width: 1320, height: 900 } });
+  const portraitRequests = [];
+  await page.route('**/__employee_portrait_fixture__/**', async route => {
+    portraitRequests.push(route.request().url());
+    await route.abort();
+  });
   page.on('pageerror', error => errors.push(error.message));
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto(new URL('features/enterprise/__fixtures__/employee-test.html', server.resolvedUrls.local[0]).href);
@@ -25,13 +30,54 @@ try {
   await cards.first().waitFor();
   assert.equal(await page.evaluate(() => 'electronAPI' in window), false);
   assert.equal(await cards.count(), 27);
+  assert.equal(await cards.nth(5).locator('.employee-portrait image').count(), 0, 'Platform avatar is never spliced into a figure');
+  assert.deepEqual(portraitRequests, [], 'People view never requests platform avatar assets');
+  for (const [index, pose] of [[0, 'ready'], [2, 'working'], [3, 'unavailable'], [4, 'needs-auth']]) {
+    assert.equal(await cards.nth(index).locator('.employee-portrait').getAttribute('data-pose'), pose);
+  }
+  assert.equal(await cards.first().locator('.employee-portrait').isVisible(), true);
+  assert.equal(await cards.locator('[data-character="soft-digital-companion"]').count(), 27, 'Actual directory renders soft digital companions');
+  assert.equal(await cards.locator('.employee-portrait-orbit').count(), 0, 'Glass avatar rings are removed');
+  assert.equal(await cards.locator('.employee-portrait').evaluateAll(elements => elements.every(element => {
+    const head = element.querySelector('.employee-portrait-head').getBoundingClientRect();
+    const body = element.querySelector('.employee-portrait-body').getBoundingClientRect();
+    return head.width >= 78 && head.height >= 70 && body.width >= 85 && body.height >= 90;
+  })), true, 'Every generated shell has a complete visible head and body');
+  const variedCompanions = await cards.locator('.employee-portrait').evaluateAll(elements => elements.filter(element => element.dataset.pose === 'ready').map(element => ({
+    palette: element.dataset.palette,
+    expression: element.dataset.expression,
+    body: getComputedStyle(element.querySelector('.employee-portrait-body')).backgroundImage,
+    eyes: Array.from(element.querySelectorAll('.employee-portrait-eye')).map(eye => {
+      const style = getComputedStyle(eye);
+      return [style.width, style.height, style.borderTopWidth, style.borderBottomWidth, style.borderRadius].join(':');
+    }).join('|'),
+  })));
+  assert.ok(new Set(variedCompanions.map(item => item.palette)).size >= 4, 'Directory employees have distinct color identities');
+  assert.ok(new Set(variedCompanions.map(item => item.body)).size >= 4, 'Palettes visibly change the shell material');
+  assert.ok(new Set(variedCompanions.map(item => item.expression)).size >= 4, 'Directory employees have distinct expressions');
+  assert.ok(new Set(variedCompanions.map(item => item.eyes)).size >= 4, 'Expressions visibly change the rendered eyes');
+  assert.equal(await cards.locator('.employee-portrait-hair, .employee-portrait-skin').count(), 0, 'Old human illustration is fully replaced');
+  const personStyle = await cards.first().evaluate(element => ({ background: getComputedStyle(element).backgroundColor, border: getComputedStyle(element).borderWidth }));
+  assert.deepEqual(personStyle, { background: 'rgba(0, 0, 0, 0)', border: '0px' }, 'People have no rectangular card surface');
+  await search.focus();
+  await page.mouse.move(5, 5);
+  assert.equal(await cards.first().getByRole('button', { name: '开始对话' }).evaluate(element => getComputedStyle(element).opacity), '0');
+  await cards.first().hover();
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.ent-emp-chat')).opacity === '1');
+  assert.equal(await cards.first().getByRole('button', { name: '开始对话' }).evaluate(element => getComputedStyle(element).opacity), '1', 'Mouse hover reveals conversation');
+  await page.mouse.move(5, 5);
+  await cards.first().locator('.ent-emp-open').focus();
+  assert.equal(await cards.first().getByRole('button', { name: '开始对话' }).evaluate(element => getComputedStyle(element).opacity), '1', 'Keyboard focus reveals conversation');
+  assert.equal(await cards.first().locator('.employee-portrait').evaluate(element => getComputedStyle(element).transform), 'none', 'Reduced motion disables figure lift');
+  await search.focus();
   assert.equal(await page.getByRole('button', { name: '查看详情', exact: true }).count(), 0);
   assert.equal(await page.getByRole('heading', { name: '硅基员工', exact: true }).count(), 0);
-  for (const [width, columns] of [[1320, 3], [900, 2], [590, 1]]) {
+  for (const [width, columns] of [[1440, 4], [1120, 3], [590, 2]]) {
     await page.setViewportSize({ width, height: 900 });
     await page.waitForFunction(expected => getComputedStyle(document.querySelector('.ent-emp-grid')).gridTemplateColumns.split(' ').length === expected, columns);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `No horizontal overflow at ${width}`);
-    await page.screenshot({ path: join(outputDir, `cards-${width}.png`) });
+    assert.equal(await cards.first().evaluate(element => element.querySelector('.employee-portrait').getBoundingClientRect().bottom <= element.querySelector('header').getBoundingClientRect().top), true, `Portrait and name do not overlap at ${width}`);
+    await page.screenshot({ path: join(outputDir, `people-${width}.png`) });
   }
   await page.setViewportSize({ width: 1320, height: 900 });
   await search.fill('机会评估');
@@ -59,7 +105,7 @@ try {
   await page.getByRole('button', { name: '切换主题' }).click();
   await page.screenshot({ path: join(outputDir, 'list-dark.png') });
   await page.getByRole('button', { name: '切换主题' }).click();
-  await page.getByRole('button', { name: '卡片视图', exact: true }).click();
+  await page.getByRole('button', { name: '人物视图', exact: true }).click();
   await cards.first().evaluate(element => { element.dataset.persisted = 'directory-node'; });
   await cards.first().getByRole('button', { name: '开始对话' }).click();
   assert.equal(await drawer.count(), 0, 'Chat button must not open the employee drawer');
@@ -96,7 +142,7 @@ try {
   assert.equal(await cards.first().getAttribute('data-persisted'), 'drawer-background', 'Closing drawer keeps the original list DOM mounted');
   await cards.first().locator('.ent-emp-open').click();
   await page.getByRole('button', { name: '查看技能', exact: true }).click();
-  assert.deepEqual(JSON.parse(await page.getByTestId('destination').textContent()), { name: 'skills', skillId: 'skill-1' });
+  assert.deepEqual(JSON.parse(await page.getByTestId('destination').textContent()), { name: 'skills', skillId: 'skill-1', sourceEmployeeId: 'employee-1', returnTo: { name: 'employee', employeeId: 'employee-1' } });
   await page.getByRole('button', { name: '返回来源' }).click();
   await page.locator('.ent-employee-work-link').first().click();
   assert.deepEqual(JSON.parse(await page.getByTestId('destination').textContent()), { name: 'work', workId: 'work-1' });
@@ -106,7 +152,7 @@ try {
   await cards.first().locator('.ent-emp-open').click();
   await page.screenshot({ path: join(outputDir, 'drawer-dark.png') });
   await page.getByRole('button', { name: '关闭员工详情', exact: true }).click();
-  await page.screenshot({ path: join(outputDir, 'cards-dark.png') });
+  await page.screenshot({ path: join(outputDir, 'people-dark.png') });
   await page.getByRole('button', { name: '切换主题' }).click();
   await page.evaluate(() => { document.querySelector('.ent-scroll').scrollTop = 700; });
   await page.waitForFunction(() => document.querySelector('.ent-scroll').scrollTop >= 700);
@@ -192,7 +238,7 @@ try {
   await page.keyboard.press('Enter');
   await page.getByRole('button', { name: '重新进入我的员工' }).click();
   await page.evaluate(() => { document.documentElement.style.zoom = '2'; });
-  await page.waitForFunction(() => getComputedStyle(document.querySelector('.ent-emp-grid')).gridTemplateColumns.split(' ').length === 1);
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.ent-emp-grid')).gridTemplateColumns.split(' ').length === 2);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, 'No horizontal overflow at 200% CSS zoom');
   await cards.first().locator('.ent-emp-open').focus();
   await page.keyboard.press('Enter');
@@ -201,6 +247,46 @@ try {
   await page.evaluate(() => { window.scrollTo(0, 0); document.querySelector('.ent-scroll').scrollTop = 0; });
   await page.screenshot({ path: join(outputDir, 'drawer-zoom-200.png') });
   await page.evaluate(() => { document.documentElement.style.zoom = ''; });
+  const touchPage = await browser.newPage({ viewport: { width: 590, height: 900 }, hasTouch: true, isMobile: true });
+  touchPage.on('pageerror', error => errors.push(error.message));
+  await touchPage.goto(new URL('features/enterprise/__fixtures__/employee-test.html', server.resolvedUrls.local[0]).href);
+  const touchPerson = touchPage.locator('.ent-emp-person').first();
+  await touchPerson.waitFor();
+  assert.equal(await touchPerson.getByRole('button', { name: '开始对话' }).evaluate(element => getComputedStyle(element).opacity), '1', 'Touch keeps conversation action visible');
+  await touchPerson.locator('.ent-emp-open').tap();
+  await touchPage.getByRole('dialog', { name: '员工详情', exact: true }).waitFor();
+  await touchPage.close();
+  const posePage = await browser.newPage({ viewport: { width: 1120, height: 1000 } });
+  const poseRequests = [];
+  posePage.on('pageerror', error => errors.push(error.message));
+  await posePage.route('**/__employee_portrait_fixture__/**', async route => { poseRequests.push(route.request().url()); await route.abort(); });
+  await posePage.goto(new URL('features/enterprise/__fixtures__/employee-portrait-test.html', server.resolvedUrls.local[0]).href);
+  const comparison = posePage.getByRole('region', { name: '四种员工状态' });
+  await comparison.locator('.employee-portrait').first().waitFor();
+  const identities = await comparison.locator('.employee-portrait').evaluateAll(elements => elements.map(element => element.dataset.appearance));
+  assert.equal(new Set(identities).size, 1, 'One employee retains the same appearance in all states');
+  assert.deepEqual(await comparison.locator('.employee-portrait').evaluateAll(elements => elements.map(element => element.dataset.pose)), ['ready', 'working', 'unavailable', 'needs-auth']);
+  assert.equal(new Set(await comparison.locator('.employee-portrait').evaluateAll(elements => elements.map(element => element.innerHTML))).size, 4, 'All four poses have different rendered geometry');
+  const live = posePage.getByTestId('live-portrait').locator('.employee-portrait');
+  const identity = await live.getAttribute('data-appearance');
+  for (const state of ['working', 'unavailable', 'needs-auth', 'ready']) {
+    await posePage.getByLabel('员工姿势').selectOption(state);
+    await posePage.waitForFunction(expected => document.querySelector('[data-testid="live-portrait"] .employee-portrait').dataset.pose === expected, state);
+    assert.equal(await live.getAttribute('data-appearance'), identity, 'Live state updates preserve identity');
+    assert.equal(await live.locator('.employee-portrait-laptop').isVisible(), state === 'working');
+    assert.equal(await live.locator('.employee-portrait-document').isVisible(), state === 'needs-auth');
+  }
+  await posePage.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+  await posePage.screenshot({ path: join(outputDir, 'portrait-states-light.png'), fullPage: true });
+  await posePage.getByRole('button', { name: '切换主题' }).click();
+  await posePage.screenshot({ path: join(outputDir, 'portrait-states-dark.png'), fullPage: true });
+  await posePage.getByRole('button', { name: '切换主题' }).click();
+  await posePage.setViewportSize({ width: 590, height: 1000 });
+  await posePage.evaluate(async () => { await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); });
+  assert.equal(await posePage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  await posePage.screenshot({ path: join(outputDir, 'portrait-states-narrow.png'), fullPage: true });
+  await posePage.close();
+  assert.deepEqual(poseRequests, [], 'Full vector figures never request platform avatar assets');
   assert.deepEqual(errors, []);
   console.log('PASS: employee responsive layouts, true scopes, search, details, navigation, return restoration, account isolation and failure states');
 } finally {

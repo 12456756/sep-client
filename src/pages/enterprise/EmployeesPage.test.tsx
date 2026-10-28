@@ -3,6 +3,7 @@ import { it } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { EmployeeCard } from '../../components/enterprise/EmployeeCard';
+import { EmployeePortrait } from '../../components/enterprise/EmployeePortrait';
 import { EmployeesPage } from './EmployeesPage';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee } from '../../features/enterprise/types';
@@ -155,4 +156,43 @@ for (const compact of [false, true]) {
 it('directory omits the redundant page title and introductory copy', () => {
   const html = renderToStaticMarkup(createElement(EmployeesPage, { workspace }));
   assert.doesNotMatch(html, /<h1|找到合适的员工，把工作交给它完成。/);
+});
+
+it('people view shows the selected digital companion while compact rows retain their small identity avatar', () => {
+  const portrait = renderToStaticMarkup(createElement(EmployeeCard, { employee, onOpen: () => undefined, onChat: () => undefined }));
+  assert.match(portrait, /ent-emp-person-stage/);
+  assert.match(portrait, /class="employee-portrait/);
+  assert.match(portrait, /data-character="soft-digital-companion"/);
+  assert.match(portrait, /data-palette="[^"]+"/);
+  assert.match(portrait, /data-expression="[^"]+"/);
+  assert.doesNotMatch(portrait, /employee-portrait-orbit/);
+  assert.doesNotMatch(portrait, /ent-card\s/);
+  const compact = renderToStaticMarkup(createElement(EmployeeCard, { employee, compact: true, onOpen: () => undefined }));
+  assert.match(compact, /ent-face sm/);
+  assert.doesNotMatch(compact, /class="employee-portrait/);
+});
+
+it('a platform avatar never replaces the unified illustrated employee identity', () => {
+  const html = renderToStaticMarkup(createElement(EmployeePortrait, { employee: { ...employee, avatar: 'https://example.invalid/old-face.png' } }));
+  assert.doesNotMatch(html, /<image|<img|old-face/);
+  assert.match(html, /employee-portrait-head/);
+  assert.match(html, /employee-portrait-body/);
+  assert.match(html, /employee-portrait-visor/);
+  assert.doesNotMatch(html, /employee-portrait-hair|employee-portrait-skin|<svg/);
+});
+
+it('real employee status changes the pose while preserving generated appearance', () => {
+  const identities = new Set<string>();
+  const poses = new Set<string>();
+  for (const availability of ['ready', 'working', 'unavailable', 'needs-auth'] as const) {
+    const html = renderToStaticMarkup(createElement(EmployeePortrait, { employee: { ...employee, availability } }));
+    identities.add(html.match(/data-appearance="([^"]+)"/)![1]);
+    poses.add(html.match(/employee-portrait-pose-([^"\s]+)/)![1]);
+    assert.match(html, new RegExp(`data-pose="${availability}"`));
+    assert.match(html, /aria-label="测试员工，.+数字员工形象"/);
+    assert.equal(html.includes('employee-portrait-laptop'), availability === 'working');
+    assert.equal(html.includes('employee-portrait-document'), availability === 'needs-auth');
+  }
+  assert.equal(identities.size, 1);
+  assert.equal(poses.size, 4);
 });

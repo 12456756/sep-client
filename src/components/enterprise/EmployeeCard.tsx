@@ -8,6 +8,7 @@ import { relativeTime } from '../../features/enterprise/vocabulary';
 import type { SkillLibraryItem } from '../../shared/skill-library';
 import { AvailabilityChip } from './atoms';
 import { EmployeeFace } from './EmployeeFace';
+import { EmployeePortrait } from './EmployeePortrait';
 
 interface Props {
   employee: SiliconEmployee;
@@ -47,12 +48,18 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false, skills
     </div>;
   }
 
-  return <article className={`ent-card ent-emp-card${employee.assignedToMe ? '' : ' off'}`}>
+  return <article className={`ent-emp-card ent-emp-person${employee.assignedToMe ? '' : ' off'}`}>
     {open}
-    <header><EmployeeFace employee={employee} size="md" /><div className="ent-emp-card-id"><strong title={employee.name}>{employee.name}</strong></div><AvailabilityChip value={employee.availability} /></header>
+    <div className="ent-emp-person-stage">
+      <span className="ent-emp-person-halo" aria-hidden />
+      <EmployeePortrait employee={employee} />
+      <span className="ent-emp-person-ground" aria-hidden />
+      <div className="ent-emp-person-status"><AvailabilityChip value={employee.availability} /></div>
+    </div>
+    <header><div className="ent-emp-card-id"><strong title={employee.name}>{employee.name}</strong></div></header>
     {summary ? <p className="ent-emp-card-intro">{summary}</p> : null}
     {skillSummary}
-    {recent}
+    {recent ? <div className="ent-emp-person-recent">{recent}</div> : null}
     {reason ? <p id={disabledReasonId} className="ent-emp-disabled-reason">{reason}</p> : null}
     <footer>{chat}</footer>
   </article>;
