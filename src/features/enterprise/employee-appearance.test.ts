@@ -9,7 +9,7 @@ it('new employees receive a complete appearance without a configured portrait', 
     assert.ok(['wide', 'compact', 'arched'].includes(appearance.visor));
     assert.ok(['left', 'right', 'both'].includes(appearance.ear));
     assert.ok(['bar', 'round', 'diamond'].includes(appearance.core));
-    assert.ok(['coral', 'sage', 'sky', 'amber', 'lilac', 'teal'].includes(appearance.palette));
+    assert.ok(['coral', 'sage', 'sky', 'amber', 'lilac', 'teal', 'rose', 'peach', 'slate', 'silver'].includes(appearance.palette));
     assert.ok(['friendly', 'cheerful', 'curious', 'calm', 'bright'].includes(appearance.expression));
     assert.deepEqual(employeeAppearance(id), appearance);
   }
@@ -23,7 +23,7 @@ it('appearance is independent of directory order and supports varied combination
   assert.equal(new Set([...originals.values()].map(item => item.visor)).size, 3);
   assert.equal(new Set([...originals.values()].map(item => item.ear)).size, 3);
   assert.equal(new Set([...originals.values()].map(item => item.core)).size, 3);
-  assert.equal(new Set([...originals.values()].map(item => item.palette)).size, 6);
+  assert.equal(new Set([...originals.values()].map(item => item.palette)).size, 10);
   assert.equal(new Set([...originals.values()].map(item => item.expression)).size, 5);
   assert.ok(new Set([...originals.values()].map(item => JSON.stringify(item))).size >= 30);
 });

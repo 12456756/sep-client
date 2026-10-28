@@ -21,25 +21,23 @@
 .ent-employees-legend { margin-left: auto; }
 .ent-clear-filter { display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--ent-brand-ink); cursor: pointer; font: inherit; }
 .ent-employees-state { padding: 18px 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
-.ent-employees-page .ent-emp-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 24px; row-gap: 26px; align-items: start; padding-top: 8px; }
-.ent-employees-page .ent-emp-person { min-height: 0; padding: 0 12px 14px; gap: 8px; overflow: visible; align-items: center; border: 0; border-radius: 0; background: none; box-shadow: none; text-align: center; }
+.ent-employees-page .ent-emp-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); column-gap: 24px; row-gap: 18px; align-items: start; padding-top: 8px; }
+.ent-employees-page .ent-emp-person { min-height: 0; padding: 0 12px 12px; gap: 6px; overflow: visible; align-items: center; border: 0; border-radius: 0; background: none; box-shadow: none; text-align: center; }
 .ent-employees-page .ent-emp-person:hover, .ent-employees-page .ent-emp-person.off { background: none; border: 0; box-shadow: none; transform: none; }
 .ent-employees-page .ent-emp-person::after { display: none; }
 .ent-employees-page .ent-emp-person > header { width: 100%; justify-content: center; }
 .ent-employees-page .ent-emp-person > footer { min-height: 32px; justify-content: center; margin-top: 2px; padding-top: 0; }
-.ent-employees-page .ent-emp-card-id { align-items: center; }
+.ent-employees-page .ent-emp-card-id { align-items: center; text-align: center; }
 .ent-employees-page .ent-emp-card-id strong { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; font-size: 15px; line-height: 1.5; }
-.ent-employees-page .ent-emp-card-intro { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; max-width: 28ch; color: var(--ent-ink-3); font-size: 12px; line-height: 1.65; }
-.ent-employees-page .ent-emp-card-skills { justify-content: center; gap: 4px 8px; }
-.ent-employees-page .ent-emp-card-skills .ent-tag { height: auto; padding: 0; border: 0; background: none; font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
-.ent-employees-page .ent-emp-card-skills .ent-tag + .ent-tag::before { content: '·'; margin-right: 8px; color: var(--ent-ink-3); }
-.ent-emp-person-stage { position: relative; display: grid; width: 100%; height: 220px; place-items: end center; isolation: isolate; }
-.ent-emp-person-stage .employee-portrait { position: relative; z-index: 1; }
-.ent-emp-person-halo { position: absolute; bottom: 16px; width: min(176px, 94%); height: 176px; border-radius: 50%; background: radial-gradient(ellipse at 50% 60%, var(--ent-brand-soft), transparent 72%); opacity: .38; transform: scale(.9); transition: opacity 180ms ease, transform 180ms ease; }
-.ent-emp-person-ground { position: absolute; bottom: 2px; width: 112px; height: 10px; border-radius: 50%; background: var(--ent-ink-3); opacity: .09; filter: blur(3px); }
-.ent-emp-person-status { position: absolute; z-index: 2; top: 24px; right: 4px; }
-.ent-emp-person-status .ent-chip { height: 21px; padding: 0 7px; font-size: 10px; background: var(--ent-panel); font-weight: 500; }
-.ent-emp-person-status .ent-chip::before { content: ''; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: currentColor; }
+.ent-emp-person-stage { position: relative; display: grid; width: 100%; height: 264px; place-items: end center; isolation: isolate; }
+.ent-emp-speech { position: absolute; top: 0; right: 0; width: min(232px, 100%); box-sizing: border-box; padding: 10px 13px; border: 1px solid var(--ent-line-soft); border-radius: 16px 16px 16px 5px; background: var(--ent-panel); color: var(--ent-ink-2); text-align: left; box-shadow: 0 3px 10px #30202a04; }
+.ent-emp-speech::after { content: ''; position: absolute; bottom: -5px; left: 29%; width: 8px; height: 8px; border-right: 1px solid var(--ent-line-soft); border-bottom: 1px solid var(--ent-line-soft); background: var(--ent-panel); transform: skewY(-12deg) rotate(45deg); }
+.ent-emp-speech p { display: -webkit-box; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow-wrap: anywhere; font-size: 12px; line-height: 18px; }
+.ent-emp-speech strong { color: var(--ent-ink); font-weight: 600; }
+.ent-emp-person-stage .employee-portrait { position: absolute; bottom: 0; left: calc(50% - 96px); z-index: 1; width: 156px; height: 187px; }
+.ent-emp-person-stage .employee-portrait-model { position: absolute; top: 0; transform: scale(.85); transform-origin: top center; }
+.ent-emp-person-halo { position: absolute; bottom: 12px; left: calc(50% - 93px); width: 150px; height: 150px; border-radius: 50%; background: radial-gradient(ellipse at 50% 60%, var(--ent-brand-soft), transparent 72%); opacity: .38; transform: scale(.9); transition: opacity 180ms ease, transform 180ms ease; }
+.ent-emp-person-ground { position: absolute; bottom: 2px; left: calc(50% - 66px); width: 96px; height: 8px; border-radius: 50%; background: var(--ent-ink-3); opacity: .09; filter: blur(3px); }
 .ent-emp-person-recent { height: 16px; opacity: 0; overflow: hidden; transition: opacity 150ms ease; }
 .ent-emp-person:hover .ent-emp-person-halo, .ent-emp-person:focus-within .ent-emp-person-halo { opacity: 1; transform: scale(1.12); }
 .ent-emp-person:hover .employee-portrait, .ent-emp-person:focus-within .employee-portrait { transform: translateY(-4px); }
@@ -76,7 +74,6 @@
   .ent-employees-legend { flex-basis: 100%; margin-left: 0; }
   .ent-employees-page .ent-emp-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; }
   .ent-employees-page .ent-emp-person { padding-inline: 0; }
-  .ent-emp-person-status { top: 14px; right: 0; }
   .ent-employees-page .ent-emp-row { grid-template-columns: 32px minmax(0, 1fr) auto; gap: 8px 10px; padding: 12px; }
   .ent-employees-page .ent-emp-row > .ent-face { grid-column: 1; grid-row: 1 / span 2; }
   .ent-employees-page .ent-emp-row-name { grid-column: 2; grid-row: 1; }

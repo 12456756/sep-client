@@ -4,7 +4,7 @@ export interface EmployeeAppearance {
   visor: 'wide' | 'compact' | 'arched';
   ear: 'left' | 'right' | 'both';
   core: 'bar' | 'round' | 'diamond';
-  palette: 'coral' | 'sage' | 'sky' | 'amber' | 'lilac' | 'teal';
+  palette: 'coral' | 'sage' | 'sky' | 'amber' | 'lilac' | 'teal' | 'rose' | 'peach' | 'slate' | 'silver';
   expression: 'friendly' | 'cheerful' | 'curious' | 'calm' | 'bright';
 }
 
@@ -12,7 +12,7 @@ const SHELLS = ['rounded', 'capsule', 'squircle'] as const;
 const VISORS = ['wide', 'compact', 'arched'] as const;
 const EARS = ['left', 'right', 'both'] as const;
 const CORES = ['bar', 'round', 'diamond'] as const;
-const PALETTES = ['coral', 'sage', 'sky', 'amber', 'lilac', 'teal'] as const;
+const PALETTES = ['coral', 'sage', 'sky', 'amber', 'lilac', 'teal', 'rose', 'peach', 'slate', 'silver'] as const;
 const EXPRESSIONS = ['friendly', 'cheerful', 'curious', 'calm', 'bright'] as const;
 
 function featureHash(id: string, feature: string): number {

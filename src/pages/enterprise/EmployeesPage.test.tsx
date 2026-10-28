@@ -66,6 +66,43 @@ it('employee card omits unavailable description, empty skills and empty last-wor
   const sparse = { ...employee, intro: '', goodAt: [], lastWorkedAt: null };
   const html = renderToStaticMarkup(createElement(EmployeeCard, { employee: sparse, onOpen: () => undefined }));
   assert.doesNotMatch(html, /测试员工介绍|尚无记录|sparkles|已授权/);
+  assert.doesNotMatch(html, /ent-emp-speech/);
+});
+
+it('speech combines the actual introduction and all unique skills without duplicating content below the name', () => {
+  const second = { ...skill, capability: { ...skill.capability, id: 'skill-b', name: '商品机会评分' } };
+  const html = renderToStaticMarkup(createElement(EmployeeCard, {
+    employee: { ...employee, intro: '筛选有需求证据但尚未充分满足的商品机会。' },
+    skills: [skill, second, skill], onOpen: () => undefined,
+  }));
+  assert.match(html, /我可以筛选有需求证据但尚未充分满足的商品机会，擅长<strong>市场机会分析<\/strong>和<strong>商品机会评分<\/strong>。/);
+  assert.equal((html.match(/市场机会分析/g) ?? []).length, 1);
+  assert.equal((html.match(/筛选有需求证据/g) ?? []).length, 1);
+  assert.doesNotMatch(html, /ent-emp-card-intro|ent-emp-card-skills/);
+  assert.match(html, /<header><div class="ent-emp-card-id"><strong title="测试员工">测试员工<\/strong><\/div><\/header>/);
+  assert.doesNotMatch(html, /ent-emp-person-status|class="ent-chip/);
+});
+
+for (const [intro, expected] of [
+  ['我可以分析商品机会。', '我可以分析商品机会。'],
+  ['可以分析商品机会。', '我可以分析商品机会。'],
+  ['负责整理资料！', '我负责整理资料。'],
+  ['分析商品机会', '我可以分析商品机会。'],
+]) {
+  it(`speech retains first-person grammar for introduction: ${intro}`, () => {
+    const html = renderToStaticMarkup(createElement(EmployeeCard, { employee: { ...employee, intro }, onOpen: () => undefined }));
+    assert.ok(html.includes(expected));
+    assert.doesNotMatch(html, /我可以我|我可以可以|擅长|ent-emp-card-intro/);
+  });
+}
+
+it('skills alone form a real first-person introduction and blank skill names are omitted', () => {
+  const blank = { ...skill, capability: { ...skill.capability, name: ' ' } };
+  const html = renderToStaticMarkup(createElement(EmployeeCard, {
+    employee: { ...employee, intro: ' ' }, skills: [skill, blank], onOpen: () => undefined,
+  }));
+  assert.match(html, /我擅长<strong>市场机会分析<\/strong>。/);
+  assert.doesNotMatch(html, /我可以|ent-emp-card-intro|ent-emp-card-skills/);
 });
 
 it('controlled scope takes precedence over a standalone initial scope', () => {

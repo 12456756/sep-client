@@ -20,7 +20,7 @@ interface Props {
 }
 
 function skillNames(skills: readonly SkillLibraryItem[] | undefined): string[] {
-  return [...new Set((skills ?? []).map(skill => skill.capability.name).filter(Boolean))];
+  return [...new Set((skills ?? []).map(skill => skill.capability.name.trim()).filter(Boolean))];
 }
 
 export function EmployeeCard({ employee, onOpen, onChat, compact = false, skills, chatDisabledReason }: Props): React.JSX.Element {
@@ -34,7 +34,8 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false, skills
     <MessageSquareText size={13} aria-hidden />开始对话
   </button>;
   const summary = employee.intro.trim();
-  const skillSummary = names.length ? <div className="ent-emp-card-skills" aria-label="员工技能">{names.slice(0, 2).map(name => <span key={name} className="ent-tag">{name}</span>)}{names.length > 2 ? <span className="ent-tag">+{names.length - 2}</span> : null}</div> : null;
+  const introduction = summary.replace(/[。.!！?？；;，,、\s]+$/u, '');
+  const speech = introduction.startsWith('我') ? introduction : introduction ? `${/^(可以|能够|能|擅长|负责|专注)/u.test(introduction) ? '我' : '我可以'}${introduction}` : '';
   const recent = employee.lastWorkedAt ? <span className="ent-emp-card-recent">最近使用：{relativeTime(employee.lastWorkedAt)}</span> : null;
 
   if (compact) {
@@ -51,14 +52,14 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false, skills
   return <article className={`ent-emp-card ent-emp-person${employee.assignedToMe ? '' : ' off'}`}>
     {open}
     <div className="ent-emp-person-stage">
+      {speech || names.length ? <div className="ent-emp-speech" aria-label="员工自我介绍"><p>
+        {speech}{names.length ? <>{speech ? '，擅长' : '我擅长'}{names.map((name, index) => <React.Fragment key={name}>{index ? index === names.length - 1 ? '和' : '、' : ''}<strong>{name}</strong></React.Fragment>)}</> : null}。
+      </p></div> : null}
       <span className="ent-emp-person-halo" aria-hidden />
       <EmployeePortrait employee={employee} />
       <span className="ent-emp-person-ground" aria-hidden />
-      <div className="ent-emp-person-status"><AvailabilityChip value={employee.availability} /></div>
     </div>
     <header><div className="ent-emp-card-id"><strong title={employee.name}>{employee.name}</strong></div></header>
-    {summary ? <p className="ent-emp-card-intro">{summary}</p> : null}
-    {skillSummary}
     {recent ? <div className="ent-emp-person-recent">{recent}</div> : null}
     {reason ? <p id={disabledReasonId} className="ent-emp-disabled-reason">{reason}</p> : null}
     <footer>{chat}</footer>

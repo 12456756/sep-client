@@ -737,8 +737,6 @@
 .ent-emp-card-id { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
 .ent-emp-card-id strong { overflow: hidden; font-size: var(--ent-fs-title); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ent-emp-card-id small { overflow: hidden; color: var(--ent-ink-3); font-size: var(--ent-fs-note); text-overflow: ellipsis; white-space: nowrap; }
-.ent-emp-card-intro { margin: 0; color: var(--ent-ink-2); font-size: var(--ent-fs-body); line-height: 1.75; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.ent-emp-card-skills { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; color: var(--ent-ink-3); }
 .ent-emp-card-meta { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-3); font-size: var(--ent-fs-note); }
 .ent-emp-card-meta span { display: inline-flex; align-items: center; gap: 5px; }
 .ent-emp-card > footer { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

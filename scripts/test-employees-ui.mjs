@@ -41,8 +41,13 @@ try {
   assert.equal(await cards.locator('.employee-portrait').evaluateAll(elements => elements.every(element => {
     const head = element.querySelector('.employee-portrait-head').getBoundingClientRect();
     const body = element.querySelector('.employee-portrait-body').getBoundingClientRect();
-    return head.width >= 78 && head.height >= 70 && body.width >= 85 && body.height >= 90;
+    return head.width >= 66 && head.height >= 59 && body.width >= 72 && body.height >= 76;
   })), true, 'Every generated shell has a complete visible head and body');
+  assert.equal(await cards.first().locator('.employee-portrait-model').evaluate(element => Math.round(element.getBoundingClientRect().width)), 145, 'The 170px model is scaled down by 15%');
+  assert.equal(await cards.locator('.ent-emp-speech').count(), 26, 'Only employees with real introduction or skills have a bubble');
+  assert.equal(await cards.first().locator('.ent-emp-speech').textContent(), '我可以根据你提供的资料，整理分析结果并形成工作建议，擅长商品机会研究。');
+  assert.equal(await cards.locator('.ent-emp-card-intro, .ent-emp-card-skills').count(), 0, 'Description and skill tags are no longer repeated under names');
+  assert.equal(await cards.locator('.ent-chip').count(), 0, 'People view omits status pills beside employee names');
   const variedCompanions = await cards.locator('.employee-portrait').evaluateAll(elements => elements.filter(element => element.dataset.pose === 'ready').map(element => ({
     palette: element.dataset.palette,
     expression: element.dataset.expression,
@@ -52,8 +57,8 @@ try {
       return [style.width, style.height, style.borderTopWidth, style.borderBottomWidth, style.borderRadius].join(':');
     }).join('|'),
   })));
-  assert.ok(new Set(variedCompanions.map(item => item.palette)).size >= 4, 'Directory employees have distinct color identities');
-  assert.ok(new Set(variedCompanions.map(item => item.body)).size >= 4, 'Palettes visibly change the shell material');
+  assert.equal(new Set(variedCompanions.map(item => item.palette)).size, 10, 'Directory employees cover all ten color identities');
+  assert.equal(new Set(variedCompanions.map(item => item.body)).size, 10, 'All ten palettes visibly change the shell material');
   assert.ok(new Set(variedCompanions.map(item => item.expression)).size >= 4, 'Directory employees have distinct expressions');
   assert.ok(new Set(variedCompanions.map(item => item.eyes)).size >= 4, 'Expressions visibly change the rendered eyes');
   assert.equal(await cards.locator('.employee-portrait-hair, .employee-portrait-skin').count(), 0, 'Old human illustration is fully replaced');
@@ -76,7 +81,22 @@ try {
     await page.setViewportSize({ width, height: 900 });
     await page.waitForFunction(expected => getComputedStyle(document.querySelector('.ent-emp-grid')).gridTemplateColumns.split(' ').length === expected, columns);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `No horizontal overflow at ${width}`);
+    assert.equal(await cards.evaluateAll(elements => elements.every(element => {
+      const name = element.querySelector('header strong').getBoundingClientRect();
+      const card = element.getBoundingClientRect();
+      return Math.abs(name.left + name.width / 2 - card.left - card.width / 2) < 1;
+    })), true, `Employee names are centered at ${width}`);
     assert.equal(await cards.first().evaluate(element => element.querySelector('.employee-portrait').getBoundingClientRect().bottom <= element.querySelector('header').getBoundingClientRect().top), true, `Portrait and name do not overlap at ${width}`);
+    assert.equal(await cards.locator('.employee-portrait-laptop, .employee-portrait-document').evaluateAll(elements => elements.every(element => element.getBoundingClientRect().bottom < element.closest('article').querySelector('header').getBoundingClientRect().top)), true, `Status props do not overlap names at ${width}`);
+    assert.equal(await cards.evaluateAll(elements => elements.every(element => {
+      const bubble = element.querySelector('.ent-emp-speech');
+      if (!bubble) return true;
+      const text = bubble.querySelector('p');
+      const bounds = bubble.getBoundingClientRect();
+      const card = element.getBoundingClientRect();
+      const head = element.querySelector('.employee-portrait-head').getBoundingClientRect();
+      return bounds.left >= card.left && bounds.right <= card.right && bounds.bottom + 5 <= head.top && text.getBoundingClientRect().height <= 54;
+    })), true, `Bubbles stay inside columns and above faces at ${width}`);
     await page.screenshot({ path: join(outputDir, `people-${width}.png`) });
   }
   await page.setViewportSize({ width: 1320, height: 900 });
@@ -179,8 +199,8 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement.id), targetId, 'Backdrop close restores card focus');
   await page.getByRole('button', { name: '重新进入我的员工' }).click();
   await cards.first().locator('.ent-emp-open').scrollIntoViewIfNeeded();
-  const skillBox = await cards.first().locator('.ent-emp-card-skills').boundingBox();
-  await page.mouse.click(skillBox.x + skillBox.width / 2, skillBox.y + skillBox.height / 2);
+  const bubbleBox = await cards.first().locator('.ent-emp-speech').boundingBox();
+  await page.mouse.click(bubbleBox.x + bubbleBox.width / 2, bubbleBox.y + bubbleBox.height / 2);
   await drawer.waitFor();
   await page.getByRole('button', { name: '关闭员工详情', exact: true }).click();
   const firstCardBox = await cards.first().boundingBox();
@@ -193,6 +213,7 @@ try {
   await drawer.waitFor();
   await page.getByRole('button', { name: '关闭员工详情', exact: true }).click();
   await search.fill('资料助手');
+  assert.equal(await cards.first().locator('.ent-emp-speech').count(), 0);
   assert.equal(await cards.first().locator('.ent-emp-card-intro').count(), 0);
   assert.equal(await cards.first().locator('.ent-emp-card-skills').count(), 0);
   await cards.first().locator('.ent-emp-open').click();

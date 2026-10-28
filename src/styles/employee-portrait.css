@@ -91,6 +91,10 @@
 .employee-portrait[data-palette='amber'] { --companion-tint: #efdab1; --companion-accent: #ba955b; --companion-accent-light: #ecd1a1; }
 .employee-portrait[data-palette='lilac'] { --companion-tint: #d8c6e9; --companion-accent: #9a80b6; --companion-accent-light: #cfb8e5; }
 .employee-portrait[data-palette='teal'] { --companion-tint: #b9ded8; --companion-accent: #659f98; --companion-accent-light: #a6d8cc; }
+.employee-portrait[data-palette='rose'] { --companion-tint: #ecc5d5; --companion-accent: #b77e97; --companion-accent-light: #e6afc7; }
+.employee-portrait[data-palette='peach'] { --companion-tint: #f1ceb4; --companion-accent: #c58f65; --companion-accent-light: #efc3a0; }
+.employee-portrait[data-palette='slate'] { --companion-tint: #bdcadb; --companion-accent: #798ba5; --companion-accent-light: #b2c2d7; }
+.employee-portrait[data-palette='silver'] { --companion-tint: #d5dadd; --companion-accent: #8a969e; --companion-accent-light: #c3cdd3; }
 .ent-shell.dark .employee-portrait { --companion-shell: color-mix(in srgb,var(--companion-tint) 35%,#e4e8ed); --companion-shade: color-mix(in srgb,var(--companion-tint) 48%,#8f9ba8); }
 .employee-portrait-mouth { position:absolute;top:28px;left:37px;width:12px;height:5px;border:0;border-bottom:2px solid #e7eee8;border-radius:0 0 12px 12px; }
 .employee-portrait[data-pose='ready'][data-expression='cheerful'] .employee-portrait-eye { width:12px;height:7px;top:14px;background:transparent;border-top:3px solid #e7eee8;border-radius:50% 50% 0 0;box-shadow:none; }
