@@ -828,6 +828,41 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   margin-bottom: 0;
 }
 
+.ent-prompt-examples {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-self: center;
+  gap: 8px;
+  width: min(820px, 100%);
+  min-width: 0;
+}
+.ent-prompt-examples button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--ent-line);
+  border-radius: 6px;
+  color: var(--ent-ink-2);
+  background: var(--ent-panel-subtle);
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.ent-prompt-examples button svg { flex-shrink: 0; color: var(--ent-brand-ink); }
+.ent-prompt-examples button span { overflow-wrap: anywhere; }
+.ent-prompt-examples button:hover:not(:disabled) { border-color: var(--ent-brand-border); background: var(--ent-brand-soft); }
+.ent-prompt-examples button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.ent-prompt-examples button:disabled { opacity: .5; cursor: default; }
+.ent-goal-stack > .ent-prompt-examples { margin-bottom: 8px; }
+
 /* 空工作台只保留一个轻量的起始提示；开始发送后让位给真实内容。 */
 .ent-arr-chat,
 .ent-arr-auto {

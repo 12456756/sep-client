@@ -2,6 +2,26 @@ import * as assert from 'node:assert/strict'
 import { it } from 'node:test'
 import { FeedbackController } from './feedback-controller'
 
+it('validates prompt input, keeps it through failure and executes a silent success once', async () => {
+  const feedback = new FeedbackController()
+  const values: string[] = []
+  const promise = feedback.confirm({ message: 'rename', actionLabel: 'save', busyLabel: 'saving',
+    input: { label: 'name', value: 'original', maxLength: 100 },
+    validate: value => value.trim() ? null : 'name required',
+    onConfirm: async value => { values.push(value); return { success: true } },
+  })
+  const id = feedback.getSnapshot()!.id
+  feedback.setInput(id, '  ')
+  await feedback.accept(id)
+  assert.equal(feedback.getSnapshot()?.validationMessage, 'name required')
+  assert.deepEqual(values, [])
+  feedback.setInput(id, 'renamed')
+  await feedback.accept(id)
+  assert.equal(await promise, true)
+  assert.deepEqual(values, ['renamed'])
+  assert.equal(feedback.getSnapshot(), null)
+})
+
 it('permission confirmations settle directly without generating a success popup', async () => {
   const feedback = new FeedbackController()
   const permission = feedback.ask({ message: 'microphone?', actionLabel: 'allow' })
@@ -30,6 +50,17 @@ it('deduplicates, queues and ignores a stale close', () => {
   assert.equal(feedback.getSnapshot()?.message, 'second')
   feedback.dismiss(feedback.getSnapshot()!.id)
   assert.equal(feedback.getSnapshot(), null)
+})
+
+it('does not repeat a persistent background failure after dismissal until session reset', () => {
+  const feedback = new FeedbackController()
+  feedback.show({ key: 'poll:job', message: 'failed', tone: 'error', once: true })
+  feedback.dismiss(feedback.getSnapshot()!.id)
+  feedback.show({ key: 'poll:job', message: 'failed', tone: 'error', once: true })
+  assert.equal(feedback.getSnapshot(), null)
+  feedback.clear()
+  feedback.show({ key: 'poll:job', message: 'failed', tone: 'error', once: true })
+  assert.equal(feedback.getSnapshot()?.message, 'failed')
 })
 
 it('settles canceled confirmations and fences in-flight actions across session reset', async () => {

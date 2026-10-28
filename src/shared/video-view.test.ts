@@ -43,11 +43,12 @@ function job(patch: Partial<VideoJobView> = {}): VideoJobView {
     billingStatus: 'MOCK_NOT_CHARGED', createdAt: 1, updatedAt: 1, error: null, outputs: [], ...patch,
   }
 }
+const { FeedbackProvider } = await import(new URL('../components/feedback/FeedbackProvider.tsx', import.meta.url).href)
 const noop = () => {}
 function render(element: React.ReactElement): string {
   const previous = Reflect.get(globalThis, 'React')
   Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
-  try { return renderToStaticMarkup(element) }
+  try { return renderToStaticMarkup(React.createElement(FeedbackProvider, null, element)) }
   finally {
     if (previous === undefined) Reflect.deleteProperty(globalThis, 'React')
     else Object.defineProperty(globalThis, 'React', { configurable: true, value: previous })
@@ -231,7 +232,8 @@ test('definitive business rejection shows its cause without recovery or regenera
   const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' },
     jobs: [job({ generationStatus: 'FAILED', trackingStatus: 'STOPPED',
       billingStatus: 'NOT_RESERVED', error: 'VIDEO_BUDGET_EXCEEDED' })] } })
-  assert.match(html, /已超过企业视频预算/)
+  assert.doesNotMatch(html, /role="alert"/)
+  assert.equal(videoTaskIssue([job({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', error: 'VIDEO_BUDGET_EXCEEDED' })]), '已超过企业视频预算，请联系平台管理员')
   assert.match(html, /提交被拒绝/)
   assert.match(html, /尚未预占/)
   assert.doesNotMatch(html, /生成失败|恢复跟踪|重新保存|重新生成|提交结果不明|Video job reported/)
@@ -306,7 +308,7 @@ test('uncertain real submission retains the cause and displays pending billing w
   const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' },
     jobs: [job({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED',
       billingStatus: 'RECONCILING', error: 'MEDIA_FORBIDDEN' })] } })
-  assert.match(html, /当前账号没有视频生成权限/)
+  assert.doesNotMatch(html, /当前账号没有视频生成权限/)
   assert.match(html, /账务待确认/)
   assert.match(html, /恢复跟踪/)
   assert.doesNotMatch(html, /尚未预占|未产生扣费|重新保存/)
@@ -336,10 +338,10 @@ test('saved videos expose local preview and native export actions without eager 
 test('video summaries preserve saved outputs while reporting generation or tracking failures', () => {
   const failed = job({ generationStatus: 'FAILED', trackingStatus: 'AUTH_REQUIRED', saveStatus: 'SAVE_FAILED', outputs: [output], error: 'MEDIA_FORBIDDEN' })
   assert.equal(savedVideoOutputCount([failed]), 0)
-  assert.equal(videoTaskIssue([failed]), '当前账号没有视频生成权限。')
+  assert.equal(videoTaskIssue([failed]), '当前账号没有视频生成权限，请联系平台管理员')
   const partial = job({ generationStatus: 'FAILED', saveStatus: 'SAVE_FAILED', outputs: [output], savedOutputIds: ['output-1'], error: 'unknown-error' })
   assert.equal(savedVideoOutputCount([partial]), 1)
-  assert.equal(videoTaskIssue([partial]), 'unknown-error')
+  assert.equal(videoTaskIssue([partial]), '视频成果保存失败，请联系平台管理员')
   assert.equal(savedVideoOutputCount(null), null)
   assert.equal(savedVideoOutputCount([partial], true), null)
 })
@@ -444,10 +446,10 @@ test('unknown video errors use fixed copy and feedback stays above results witho
   const html = panel({ view: { mock: true, runtime: { ...runtime, profiles: [{ ...runtime.profiles[0], displayName: attack }] }, jobs: [job({ error: attack })] },
     busy: true, pending: 'export', notice: { message: attack, tone: 'error' } })
   assert.doesNotMatch(html, /<script>|dangerouslySetInnerHTML|(?:src|href)=/)
-  assert.equal(html.split('&lt;script&gt;').length - 1, 1)
-  assert.match(html, /role="alert" aria-atomic="true">&lt;script&gt;/)
+  assert.equal(html.split('&lt;script&gt;').length - 1, 0)
+  assert.doesNotMatch(html, /role="alert"/)
   assert.doesNotMatch(html, /<form|<select|<textarea/)
-  assert.ok(html.indexOf('role="alert"') < html.indexOf('video-jobs'))
+  assert.match(videoTaskIssue([job({ error: attack })])!, /请联系平台管理员/)
 })
 
 test('pending commands and export feedback are visible and disable all mutations', () => {
@@ -458,5 +460,5 @@ test('pending commands and export feedback are visible and disable all mutations
     assert.doesNotMatch(html, /<fieldset|<textarea|<select/)
     assert.doesNotMatch(html, /<button(?![^>]*disabled="")[^>]*>/)
   }
-  assert.match(panel({ notice: { message: '视频已导出', tone: 'success' } }), /media-tone-success" role="status" aria-atomic="true">视频已导出/)
+  assert.doesNotMatch(panel({ notice: { message: '视频已导出', tone: 'success' } }), /视频已导出/)
 })

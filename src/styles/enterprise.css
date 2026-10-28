@@ -189,7 +189,7 @@
 .ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: linear-gradient(135deg, #ead5dc 0%, #f2dcd6 24%, #f0e6e5 48%, #eef0f4 78%, #f5f6f8 100%); }
 .ent-shell-main { position: relative; isolation: isolate; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: linear-gradient(135deg, rgb(234 213 220 / 36%), rgb(240 230 229 / 22%) 44%, rgb(238 240 244 / 48%)); }
 .ent-shell-main::before { position: absolute; z-index: 0; right: -100px; bottom: -170px; width: min(42vw, 420px); aspect-ratio: 1; content: ''; opacity: .02; background: #ae383d; -webkit-mask: url('../assets/logo.png') center / contain no-repeat; mask: url('../assets/logo.png') center / contain no-repeat; pointer-events: none; }
-.ent-shell-main > .ent-top, .ent-shell-main > .ent-error-bar, .ent-shell-main > .ent-scroll { position: relative; z-index: 1; }
+.ent-shell-main > .ent-top, .ent-shell-main > .ent-scroll { position: relative; z-index: 1; }
 .ent-shell.dark { background: #11131a; }
 .ent-shell.dark .ent-shell-main { background: linear-gradient(135deg, #171519, #181a21 48%, #171d26); }
 .ent-shell.dark .ent-shell-main::before { background: #e8b2b6; opacity: .025; }
@@ -700,7 +700,6 @@
 .ent-user-menu button.danger { color: var(--ent-danger); }
 .ent-user-menu button.danger:hover { color: var(--ent-danger); background: var(--ent-danger-bg); }
 
-.ent-error-bar { display: flex; align-items: center; gap: 8px; margin: 0 28px 6px; padding: 10px 14px; border: 1px solid var(--ent-danger-line); border-radius: var(--ent-radius-sm); background: var(--ent-danger-bg); color: var(--ent-danger); font-size: var(--ent-fs-body); }
 .ent-load-bar { position: relative; z-index: 1; display: flex; align-items: center; gap: 8px; margin: 0 28px 6px; padding: 6px 0; color: var(--ent-ink-3); font-size: var(--ent-fs-body); }
 .ent-load-message { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .ent-load-retry { flex-shrink: 0; }
@@ -1022,7 +1021,7 @@
 /* 对话列表交给抽屉正文滚，自己不再限高 —— 两层滚动条同时出现会不知道该滚哪个。 */
 .ent-drawer .ent-talk { max-height: none; margin-bottom: 0; }
 .ent-drawer-foot { display: flex; flex: 0 0 auto; align-items: center; gap: 8px; padding: 14px 18px 18px; box-shadow: inset 0 1px 0 var(--ent-line); }
-.ent-drawer-foot .ent-ask, .ent-drawer-foot .ent-confirm { min-width: 0; flex: 1; }
+.ent-drawer-foot .ent-ask { min-width: 0; flex: 1; }
 
 /*
  * 一张工作卡：图标片 + 标题 + 一行进度或完成说明 + 右侧箭头。
@@ -1375,12 +1374,6 @@
 
 .ent-btn.danger.ghost { border-color: transparent; background: transparent; color: var(--ent-danger); }
 .ent-btn.danger.ghost:hover:not(:disabled) { border-color: var(--ent-danger-line); background: var(--ent-danger-bg); }
-.ent-confirm { display: flex; flex-direction: column; gap: 10px; padding: 13px; border: 1px solid var(--ent-danger-line); border-radius: var(--ent-radius-sm); background: var(--ent-danger-bg); }
-/* 说明文字里混了 <strong>，用 flex 会把每段文本拆成独立的列。这里必须保持普通行内排版，图标改用绝对定位挂在首行。 */
-.ent-confirm p { position: relative; margin: 0; padding-left: 21px; color: var(--ent-ink); font-size: var(--ent-fs-body); line-height: 1.7; }
-.ent-confirm p svg { position: absolute; top: 4px; left: 0; color: var(--ent-danger); }
-.ent-confirm p strong { font-weight: 600; }
-.ent-confirm-foot { display: flex; justify-content: flex-end; gap: 8px; }
 
 .ent-visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
 
@@ -1523,7 +1516,6 @@
 .ent-record-detail h3 { margin: 0 0 9px; color: var(--ent-ink); font-size: var(--ent-fs-body); font-weight: 600; }
 .ent-record-detail h3 + * + h3, .ent-record-detail ol + h3, .ent-record-detail ul + h3, .ent-record-detail p + h3 { margin-top: 15px; }
 .ent-record-detail .ent-hint { margin: 0; }
-.ent-record .ent-confirm { margin-top: 14px; }
 .ent-record-page > .ent-empty { border-color: color-mix(in srgb, var(--ent-line) 78%, transparent); background: color-mix(in srgb, var(--ent-panel) 72%, transparent); }
 
 @media (max-width: 980px) {

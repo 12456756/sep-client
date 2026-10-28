@@ -45,6 +45,7 @@ export class ToolApprovals {
       ...input,
       requestId: randomUUID(),
       timestamp: Date.now(),
+      expiresAt: Date.now() + this.timeoutMs,
     }
     return new Promise(resolve => {
       const timer = setTimeout(() => {

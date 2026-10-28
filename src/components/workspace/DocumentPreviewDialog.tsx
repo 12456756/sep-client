@@ -4,11 +4,14 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { DocumentPreview, DocumentPreviewRequest } from '../../shared/document-preview'
 import { documentPreviewFrame } from './document-preview-frame'
+import { useOperationFeedback } from '../feedback/use-operation-feedback'
+import { operationFailure, responseError } from '../../shared/arrangement-feedback'
 
 const PdfPreview = lazy(() => import('./PdfDocumentPreview'))
 export interface DocumentPreviewDialogProps extends DocumentPreviewRequest { name: string; version?: string; onClose(): void }
 
 export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, name, version, onClose }: DocumentPreviewDialogProps) {
+  const { capture } = useOperationFeedback(`${taskId}:${nodeId}:${deliverableId}:${version}`)
   const dialog = useRef<HTMLDialogElement>(null)
   const close = useRef<HTMLButtonElement>(null)
   const [data, setData] = useState<DocumentPreview | null>(null)
@@ -24,21 +27,29 @@ export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, n
   }, [])
   useEffect(() => {
     let active = true
+    const notice = capture()
+    const failed = (message: string) => {
+      if (!active || !notice.isCurrent()) return
+      setError(message)
+      notice.show(message, 'error', `document-preview:${taskId}:${nodeId}:${deliverableId}:${version}:${attempt}`, true)
+    }
     setData(null); setError(null); setSection(0); setZoom(1)
     void window.electronAPI.previewArrangementDocument({ taskId, nodeId, deliverableId }).then(result => {
-      if (!active) return
-      if (!result.success || !result.data) { setError(result.error?.message || '文档预览读取失败'); return }
+      if (!active || !notice.isCurrent()) return
+      if (!result.success || !result.data) { failed(responseError(result, 'documentPreview').message); return }
       setData(result.data)
-    }).catch(() => { if (active) setError('文档预览读取失败，可重试或复制路径查看原件。') })
+    }).catch(() => failed(operationFailure('documentPreview')))
     return () => { active = false }
-  }, [taskId, nodeId, deliverableId, version, attempt])
+  }, [taskId, nodeId, deliverableId, version, attempt, capture])
   const content = data?.content
   const text = content?.kind === 'text' || content?.kind === 'markdown' ? content.text : ''
   const count = content?.kind === 'html' ? content.sections.length : Math.max(1, Math.ceil(text.length / 100_000))
   const index = Math.min(section, count - 1)
   const part = text.slice(index * 100_000, (index + 1) * 100_000)
   const copyText = async () => {
-    try { await navigator.clipboard.writeText(part); setCopied(true) } catch { setCopied(false) }
+    const notice = capture()
+    try { await navigator.clipboard.writeText(part); if (notice.isCurrent()) setCopied(true) }
+    catch { if (notice.isCurrent()) { setCopied(false); notice.show('文档内容复制失败，请联系平台管理员') } }
   }
   return <dialog ref={dialog} className="document-preview-dialog" aria-label={`文档预览：${name}`} onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>
@@ -47,7 +58,7 @@ export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, n
         <button ref={close} type="button" title="关闭预览" aria-label="关闭文档预览" onClick={onClose}><X size={18} /></button>
       </div>
     </header>
-    {error ? <div className="document-preview-state" role="alert"><p>{error}</p><button type="button" className="ent-btn sm" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={14} />重试预览</button></div>
+    {error ? <div className="document-preview-state"><button type="button" className="ent-btn sm" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={14} />重试预览</button></div>
       : !content ? <div className="document-preview-state" role="status"><LoaderCircle size={22} className="animate-spin" /><p>正在读取文档</p></div>
         : content.kind === 'pdf' ? <Suspense fallback={<div className="document-preview-state" role="status">正在加载 PDF</div>}><PdfPreview bytes={content.bytes} /></Suspense>
           : <>

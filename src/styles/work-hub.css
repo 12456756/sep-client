@@ -154,20 +154,6 @@
 .ent-work-context-menu button.danger:is(:hover,:focus-visible) { color: var(--work-danger); background: var(--work-danger-bg); }
 .ent-work-context-menu button:disabled { opacity: .55; cursor: not-allowed; }
 .ent-work-context-menu p { margin: 4px 10px 6px; color: var(--ent-ink-3); font-size: 11px; line-height: 1.6; }
-.ent-work-action-dialog { position: fixed; inset: 0; display: none; box-sizing: border-box; width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 64px); margin: auto; padding: 0; overflow-y: auto; border: 0; border-radius: 12px; color: var(--ent-ink); background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); }
-.ent-work-action-dialog[open] { display: block; }
-.ent-work-action-dialog::backdrop { background: var(--ent-overlay); }
-.ent-work-action-dialog form { padding: 20px; }
-.ent-work-action-dialog header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.ent-work-action-dialog h2 { margin: 0; font-size: 16px; font-weight: 650; }
-.ent-work-action-dialog header button { display: grid; width: 28px; height: 28px; place-items: center; padding: 0; border: 0; border-radius: 5px; color: var(--ent-ink-2); background: transparent; cursor: pointer; }
-.ent-work-action-dialog header button:hover { background: var(--work-list); }
-.ent-work-action-dialog p { margin: 14px 0; color: var(--ent-ink-2); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-.ent-work-action-dialog label { display: block; margin-bottom: 6px; color: var(--ent-ink-2); font-size: 12px; }
-.ent-work-action-dialog input { box-sizing: border-box; width: 100%; height: 38px; padding: 0 10px; border: 1px solid var(--ent-line-strong); border-radius: 6px; color: var(--ent-ink); background: var(--ent-panel); font: inherit; font-size: 13px; }
-.ent-work-action-dialog input:focus-visible, .ent-work-action-dialog header button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
-.ent-work-action-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
-.ent-work-action-dialog .ent-work-action-error { color: var(--work-danger); }
 @media (hover: none) { .ent-work-row-menu { opacity: 1; } }
 @media (max-width: 1179px) {
   .ent-work-list { flex-basis: 280px; }

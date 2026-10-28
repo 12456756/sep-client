@@ -36,6 +36,16 @@ it('treats subscription inactive as unavailable, without inventing an expiry dat
   assert.doesNotMatch(result.message, /过期|到期/)
 })
 
+it('uses operation-specific work messages and preserves only verified business reasons', () => {
+  assert.equal(toEnvelope(new Error('private path and token'), { feedbackOperation: 'workDelete' }).message, '工作记录删除失败，请联系平台管理员')
+  assert.equal(toEnvelope(appError('INVALID_STATE', { message: '任务正在执行，无法删除。' }), { feedbackOperation: 'workDelete' }).message, '工作正在执行，请先终止工作，再删除记录')
+  assert.equal(toEnvelope(appError('INVALID_STATE', { message: '只能重试当前失败的节点。' }), { feedbackOperation: 'workRetry' }).message, '只能重试当前失败的节点')
+  assert.equal(toEnvelope(appError('CONFLICT'), { feedbackOperation: 'imageGenerate' }).message, '图片请求正在处理，请勿重复提交')
+  assert.equal(toEnvelope(appError('INSUFFICIENT_FUNDS'), { feedbackOperation: 'videoRead' }).message, '可用资金不足，请联系平台管理员')
+  assert.equal(toEnvelope(appError('NOT_FOUND', { message: '验收版本不可读取或已被修改，可复制路径检查原文件。' }), { feedbackOperation: 'documentPreview' }).message, '文档交付版本无法读取，请联系平台管理员')
+  assert.doesNotMatch(toEnvelope(appError('INVALID_ARGUMENT', { message: 'private input' }), { feedbackOperation: 'imageGenerate' }).message, /private/)
+})
+
 it('preserves known planning reasons without exposing contract paths or model output', () => {
   const cases = [
     ['invalid-json', '自动编排返回内容格式异常'], ['empty-plan', '自动编排未生成工作步骤'],

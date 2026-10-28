@@ -23,6 +23,7 @@ function job(patch: Partial<MediaJobView> = {}): MediaJobView {
     parameters: { aspectRatio: '1:1', count: 2 }, generationStatus: 'RUNNING', trackingStatus: 'ACTIVE', saveStatus: 'PENDING',
     billingStatus: 'pending', error: null, createdAt: 1, updatedAt: 1, assets: [], canCancelUpstream: false, ...patch }
 }
+const { FeedbackProvider } = await import(new URL('../components/feedback/FeedbackProvider.tsx', import.meta.url).href)
 const noop = () => {}
 
 test('model selection honors the default after loading or removal while preserving valid explicit choices', () => {
@@ -83,7 +84,7 @@ test('image SSR selects the server default model and its quality, and marks sing
 function render(element: React.ReactElement): string {
   const previous = Reflect.get(globalThis, 'React')
   Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
-  try { return renderToStaticMarkup(element) }
+  try { return renderToStaticMarkup(React.createElement(FeedbackProvider, null, element)) }
   finally {
     if (previous === undefined) Reflect.deleteProperty(globalThis, 'React')
     else Object.defineProperty(globalThis, 'React', { configurable: true, value: previous })
@@ -178,49 +179,36 @@ test('SSR creation controls provide system reference selection, specs and no fee
     taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))
   for (const text of ['图片模型', '编辑参考图', '从系统选择参考图', '图片比例', '图片数量', '图片尺寸', '图片质量', '创作需求']) assert.match(html, new RegExp(text))
   assert.match(html, /max="4"/)
-  assert.match(html, /disabled=""[^>]*>.*提交图片生成/)
+  assert.match(html, /type="submit"/)
   assert.doesNotMatch(html, /role="dialog"|确认费用|视频|type="file"/)
   const minimal = render(React.createElement(MediaCreationForm, { profiles: [{ ...profile, allowedSizes: undefined, allowedQualities: undefined }], references: [], archived: true, busy: false,
     taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))
   assert.doesNotMatch(minimal, /图片尺寸|图片质量/)
-  assert.match(minimal, /任务已归档/)
+  assert.doesNotMatch(minimal, /任务已归档/)
+  assert.match(minimal, /select[^>]*disabled/)
 })
 
-test('SSR command failures appear once immediately beside creation submit and before long task history', () => {
-  const message = '认证失败，请重新登录 <script>bad()</script>'
-  const html = render(React.createElement(React.Fragment, null,
-    React.createElement(MediaCreationForm, { profiles: [profile], references: [], archived: false, busy: true,
-      taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop,
-      feedback: { pending: 'generate', notice: { message, tone: 'error' } } }),
-    React.createElement(MediaJobList, { jobs: Array.from({ length: 20 }, (_, index) => job({ jobId: `job-${index}` })), archived: false, busy: true, onAction: noop })))
-  const feedbackId = html.match(/aria-describedby="([^"]+)"/)?.[1]
-  assert.ok(feedbackId)
-  assert.ok(html.includes(`提交图片生成</button><p id="${feedbackId}" class="media-notice media-tone-error" role="alert" aria-atomic="true">`))
-  assert.equal(html.split('认证失败，请重新登录').length - 1, 1)
-  assert.ok(html.indexOf('认证失败，请重新登录') < html.indexOf('media-jobs'))
-  assert.match(html, /&lt;script&gt;bad\(\)&lt;\/script&gt;/)
-  assert.doesNotMatch(html, /<script>|正在处理图片操作/)
+test('SSR results never duplicate command errors handled by shared dialogs', () => {
+  const html = jobs(job({ error: '<script>private error</script>' }))
+  assert.doesNotMatch(html, /private error|role="alert"|<script>/)
 })
 
 test('SSR pending feedback stays beside submit for every media command without changing controls', () => {
   for (const pending of ['generate', 'import', 'export', 'retry', 'cancel', 'resume', 'redo']) {
     const html = render(React.createElement(MediaCreationForm, { profiles: [profile], references: [], archived: false, busy: true,
-      taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop, feedback: { pending, notice: null } }))
+      taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop, feedback: { pending } }))
     assert.match(html, /提交图片生成<\/button><p[^>]*role="status" aria-atomic="true">/)
     assert.equal(html.split('正在处理图片操作').length - 1, 1)
     assert.match(html, /<textarea[^>]*disabled=""/)
     assert.match(html, /type="submit"[^>]*disabled=""[^>]*aria-describedby="[^"]+"/)
   }
-  const idle = render(React.createElement(MediaCommandFeedback, { pending: null, notice: null }))
+  const idle = render(React.createElement(MediaCommandFeedback, { pending: null }))
   assert.equal(idle, '')
 })
 
-test('SSR standalone feedback supports errors and export success outside the creation form', () => {
-  const failure = render(React.createElement(MediaCommandFeedback, { notice: { message: '导出失败', tone: 'error' } }))
-  assert.match(failure, /media-tone-error" role="alert" aria-atomic="true">导出失败/)
-  const success = render(React.createElement(MediaCommandFeedback, { notice: { message: '图片已导出', tone: 'success' } }))
-  assert.match(success, /media-tone-success" role="status" aria-atomic="true">图片已导出/)
-  assert.doesNotMatch(success, /role="alert"/)
+test('SSR command feedback renders only ongoing progress', () => {
+  assert.equal(render(React.createElement(MediaCommandFeedback, { pending: null })), '')
+  assert.match(render(React.createElement(MediaCommandFeedback, { pending: 'export' })), /正在处理图片操作/)
 })
 
 test('SSR grids allow saved results immediately but never export missing or unsaved files', () => {
@@ -246,7 +234,7 @@ test('image summaries preserve saved output counts while reporting task failures
   const failed = job({ generationStatus: 'FAILED', saveStatus: 'SAVE_FAILED', error: '上游拒绝' })
   const view = { capabilities: null, unavailableReason: null, assets: [asset], selectedReferenceIds: [], jobs: [failed], archived: false }
   assert.equal(savedImageOutputCount('task-1', view, [failed]), 1)
-  assert.equal(mediaTaskIssue([failed]), '上游拒绝')
+  assert.equal(mediaTaskIssue([failed]), '图片成果保存失败，请联系平台管理员')
   assert.equal(savedImageOutputCount('task-1', null, [failed]), null)
   assert.equal(savedImageOutputCount('task-1', view, [failed], true), null)
 })
@@ -256,6 +244,6 @@ test('SSR panel is safe without browser IPC and escapes backend error text', () 
   assert.match(html, /图片创作与成果/)
   assert.match(html, /正在读取图片能力/)
   const escaped = jobs(job({ error: '<script>bad()</script>' }))
-  assert.match(escaped, /&lt;script&gt;/)
+  assert.doesNotMatch(escaped, /&lt;script&gt;/)
   assert.doesNotMatch(escaped, /<script>/)
 })

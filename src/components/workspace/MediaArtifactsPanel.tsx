@@ -7,10 +7,15 @@ import { videoRuntimeSchema } from '../../shared/video-media'
 import { VideoTaskPanel } from './VideoArtifactsPanel'
 import { useMediaParameterPreferences } from './media-preference-scope'
 
+
+import { useOperationFeedback } from '../feedback/use-operation-feedback'
+import { useFeedback } from '../feedback/FeedbackProvider'
+import { operationFailure, responseError, feedbackMessage, type FeedbackOperation } from '../../shared/arrangement-feedback'
+import { mediaIssueMessage } from '../../shared/media-feedback'
+
 type Command = 'import' | 'video-import' | 'selection' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
 type JobAction = Exclude<Command, 'import' | 'video-import' | 'selection' | 'generate' | 'export'>
-type CommandNotice = { message: string; tone: 'error' | 'success' }
-type CommandFeedback = { pending: Command | null; notice: CommandNotice | null }
+type CommandFeedback = { pending: Command | null }
 const POLL_INTERVAL = 3000
 
 function elapsedLabel(value: number | undefined): string | null {
@@ -29,27 +34,18 @@ export function canImportVideoReference(value: unknown): boolean {
     result.data.profiles.some(profile => profile.operations.includes('image-to-video') && profile.capabilities.supportsImageToVideo)
 }
 
-export function MediaCommandFeedback({ pending, notice, id }: Partial<CommandFeedback> & { id?: string }) {
-  if (!pending && !notice) return null
-  return <p id={id} className={`media-notice${notice ? ` media-tone-${notice.tone}` : ''}`} role={notice?.tone === 'error' ? 'alert' : 'status'} aria-atomic="true">
-    {notice ? notice.message : <><LoaderCircle size={13} aria-hidden="true" />{pending === 'video-import' ? '正在导入视频参考图' : '正在处理图片操作'}</>}
-  </p>
+export function MediaCommandFeedback({ pending, id }: Partial<CommandFeedback> & { id?: string }) {
+  if (!pending) return null
+  return <p id={id} className="media-notice" role="status" aria-atomic="true"><LoaderCircle size={13} aria-hidden />正在处理图片操作</p>
 }
-
-function failure(result: IpcCommandResult, fallback: string): string {
-  return result.error?.message || fallback
+function failure(result: IpcCommandResult, operation: FeedbackOperation): string {
+  return responseError(result, operation).message
 }
 
 export function mediaTaskIssue(jobs: MediaJobView[]): string | null {
   for (const job of jobs) {
-    if (job.error) return job.error
-    if (job.generationStatus === 'FAILED') return '图片生成失败'
-    if (job.generationStatus === 'PARTIAL_SUCCEEDED') return '部分图片生成成功'
-    if (job.generationStatus === 'SUBMISSION_UNKNOWN') return '图片任务提交结果待核实'
-    if (job.saveStatus === 'SAVE_FAILED') return '图片成果保存失败'
-    if (job.saveStatus === 'MISSING') return '图片成果文件缺失'
-    if (job.trackingStatus === 'AUTH_REQUIRED') return '图片任务需要恢复认证'
-    if (job.trackingStatus === 'INTERRUPTED') return '图片任务跟踪中断，可恢复'
+    const message = mediaIssueMessage(job, 'image')
+    if (message) return message
   }
   return null
 }
@@ -64,11 +60,18 @@ export function savedImageOutputCount(taskId: string, view: MediaTaskView | null
 }
 
 function useAssetPreview(taskId: string, asset: MediaAssetView): { url: string | null; error: string | null; retry: () => void } {
+  const { capture } = useOperationFeedback(`${taskId}:${asset.localAssetId}`)
   const [url, setUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let active = true
+    const notice = capture()
+    const failed = (message: string) => {
+      if (!active || !notice.isCurrent()) return
+      setError(message)
+      notice.show(message, 'error', `image-preview:${taskId}:${asset.localAssetId}:${attempt}`, true)
+    }
     let objectUrl: string | null = null
     setUrl(null)
     setError(null)
@@ -76,16 +79,16 @@ function useAssetPreview(taskId: string, asset: MediaAssetView): { url: string |
     const load = async () => {
       try {
         const result = await window.electronAPI.previewMediaAsset({ taskId, assetId: asset.localAssetId })
-        if (!active) return
+        if (!active || !notice.isCurrent()) return
         if (!result.success || !result.data) {
-          setError(failure(result, '图片预览不可用'))
+          failed(failure(result, 'imagePreview'))
           return
         }
         const preview: MediaPreview = result.data
         objectUrl = URL.createObjectURL(new Blob([new Uint8Array(preview.bytes).buffer], { type: preview.mime }))
         setUrl(objectUrl)
       } catch {
-        if (active) setError('图片预览读取失败')
+        failed(operationFailure('imagePreview'))
       }
     }
     void load()
@@ -93,18 +96,20 @@ function useAssetPreview(taskId: string, asset: MediaAssetView): { url: string |
       active = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [taskId, asset.localAssetId, asset.status, attempt])
+  }, [taskId, asset.localAssetId, asset.status, attempt, capture])
   return { url, error, retry: () => setAttempt(value => value + 1) }
 }
 
 function AssetImage({ taskId, asset, large = false }: { taskId: string; asset: MediaAssetView; large?: boolean }) {
+  const { capture } = useOperationFeedback(`${taskId}:${asset.localAssetId}`)
   const preview = useAssetPreview(taskId, asset)
   const [decodeError, setDecodeError] = useState(false)
   useEffect(() => setDecodeError(false), [preview.url])
-  const error = preview.error || (decodeError ? '图片解码失败' : null)
+  const error = preview.error || (decodeError ? operationFailure('imagePreview') : null)
+  useEffect(() => { if (decodeError) capture().show(operationFailure('imagePreview'), 'error', `image-decode:${taskId}:${asset.localAssetId}`, true) }, [decodeError, capture, taskId, asset.localAssetId])
   return <div className={`media-image ${large ? 'media-image-large' : ''}`}>
     {preview.url && !error ? <img src={preview.url} alt={asset.source === 'reference' ? '商品参考图' : '图片成果'} onError={() => setDecodeError(true)} /> :
-      <span className="media-image-placeholder"><ImageIcon size={20} /><span>{error || (asset.status === 'SAVED' ? '读取图片' : mediaSaveLabels[asset.status].label)}</span></span>}
+      <span className="media-image-placeholder"><ImageIcon size={20} /><span>{error ? '预览不可用' : (asset.status === 'SAVED' ? '读取图片' : mediaSaveLabels[asset.status].label)}</span></span>}
     {error && large && <button type="button" className="media-command" onClick={preview.retry}><RefreshCw size={14} />重新读取</button>}
   </div>
 }
@@ -133,6 +138,7 @@ export function MediaCreationForm({ profiles, defaultProfileId, references, arch
   feedback?: CommandFeedback
 }) {
   const id = useId()
+  const { capture } = useOperationFeedback(taskId)
   const [profileId, setProfileId] = useState('')
   const profile = selectMediaProfile(profiles, profileId, defaultProfileId)
   const [operation, setOperation] = useState<MediaOperation>('generate')
@@ -162,7 +168,8 @@ export function MediaCreationForm({ profiles, defaultProfileId, references, arch
 
   return <form className="media-creation" onSubmit={event => {
     event.preventDefault()
-    if (!profile || !parameters || problem || busy) return
+    if (busy) return
+    if (!profile || !parameters || problem) { capture().show(problem || '图片生成配置不可用，请联系平台管理员', 'warning'); return }
     onGenerate({ profileId: profile.profileId, operation, localAssetIds: selectedIds, creativeBrief: brief.trim(), parameters })
   }}>
     <label htmlFor={`${id}-profile`}>图片模型</label>
@@ -185,8 +192,7 @@ export function MediaCreationForm({ profiles, defaultProfileId, references, arch
     </div>
     <label htmlFor={`${id}-brief`}>创作需求</label>
     <textarea id={`${id}-brief`} rows={4} value={brief} disabled={busy || archived} placeholder="用途、画面要求、不可改变的商品特征" onChange={event => setBrief(event.target.value)} />
-    {problem && <p className="media-notice">{problem}</p>}
-    <button type="submit" className="media-command media-primary" disabled={busy || !!problem} aria-describedby={feedback?.pending || feedback?.notice ? `${id}-feedback` : undefined}>{busy ? <LoaderCircle size={14} /> : <ImagePlus size={14} />}{operation === 'edit' ? '提交图片编辑' : '提交图片生成'}</button>
+    <button type="submit" className="media-command media-primary" disabled={busy} aria-describedby={feedback?.pending ? `${id}-feedback` : undefined}>{busy ? <LoaderCircle size={14} /> : <ImagePlus size={14} />}{operation === 'edit' ? '提交图片编辑' : '提交图片生成'}</button>
     <MediaCommandFeedback {...feedback} id={`${id}-feedback`} />
   </form>
 }
@@ -208,7 +214,6 @@ export function MediaJobList({ jobs, archived, busy, onAction }: { jobs: MediaJo
       {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">尚不能确认上游是否接单，不会自动重新生成。</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后可继续跟踪原任务。</p>}
       {job.trackingStatus === 'STOPPED' && <p className="media-notice">仅停止本地跟踪，上游可能继续生成和计费。</p>}
-      {job.error && <p className="media-notice media-tone-error">{job.error}</p>}
       <div className="media-job-actions">
         {actions.stopTracking && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'cancel', false)} title="停止本地跟踪，上游可能继续计费"><Square size={13} />停止跟踪</button>}
         {actions.cancelUpstream && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'cancel', true)} title="请求上游取消，不代表退款"><X size={13} />请求上游取消</button>}
@@ -239,7 +244,10 @@ function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string;
   const [view, setView] = useState<MediaTaskView | null>(null)
   const [videoReferenceAvailable, setVideoReferenceAvailable] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<CommandNotice | null>(null)
+  const feedbackController = useFeedback()
+  const { capture } = useOperationFeedback(taskId)
+  const seenIssues = useRef(new Set<string>())
+  const queryFailure = useRef(false)
   const [pending, setPending] = useState<Command | null>(null)
   const [preview, setPreview] = useState<MediaAssetView | null>(null)
   const alive = useRef(false)
@@ -251,19 +259,32 @@ function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string;
     if (!alive.current) return
     const epoch = lifetime.current
     const version = ++requestVersion.current
+    const notice = capture()
     try {
       const videoPromise = typeof window.electronAPI?.getTaskVideo === 'function' ? window.electronAPI.getTaskVideo(taskId).catch(() => null) : Promise.resolve(null)
       const [result, videoResult] = await Promise.all([window.electronAPI.getTaskMedia(taskId, { refreshCapabilities }), videoPromise])
-      if (!alive.current || epoch !== lifetime.current || version !== requestVersion.current) return
+      if (!alive.current || epoch !== lifetime.current || version !== requestVersion.current || !notice.isCurrent()) return
       setVideoReferenceAvailable(!!videoResult?.success && !!videoResult.data && canImportVideoReference(videoResult.data.runtime))
       if (result.success && result.data) {
         setView(result.data)
         setError(null)
-      } else setError(failure(result, '读取图片任务失败'))
+        queryFailure.current = false
+        for (const job of result.data.jobs) {
+          const message = mediaIssueMessage(job, 'image')
+          const key = `${job.jobId}:${message}`
+          if (message && !seenIssues.current.has(key)) { seenIssues.current.add(key); notice.show(message, 'error', `image-job:${taskId}:${key}`, true) }
+        }
+      } else {
+        const message = failure(result, 'imageRead'); setError(message)
+        if (!queryFailure.current) { queryFailure.current = true; notice.show(message) }
+      }
     } catch {
-      if (alive.current && epoch === lifetime.current && version === requestVersion.current) setError('读取图片任务失败，可稍后重试')
+      if (alive.current && epoch === lifetime.current && version === requestVersion.current && notice.isCurrent()) {
+        setError(operationFailure('imageRead'))
+        if (!queryFailure.current) { queryFailure.current = true; notice.show(operationFailure('imageRead')) }
+      }
     }
-  }, [taskId])
+  }, [taskId, capture])
 
   useEffect(() => {
     alive.current = true
@@ -289,23 +310,29 @@ function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string;
     }
   }, [taskId, refresh])
 
-  async function run(command: Command, execute: (api: ElectronAPI) => Promise<IpcCommandResult & { cancelled?: boolean }>): Promise<void> {
-    if (commandBusy.current || !alive.current) return
+  async function run(command: Command, execute: (api: ElectronAPI) => Promise<IpcCommandResult & { cancelled?: boolean }>, quiet = false): Promise<{ success: boolean; message?: string }> {
+    if (commandBusy.current || !alive.current) return { success: false }
     const epoch = lifetime.current
     commandBusy.current = true
     setPending(command)
-    setNotice(null)
+    const notice = capture()
+    const operation: FeedbackOperation = ({ import: 'imageImport', 'video-import': 'videoImport', selection: 'imageSelection', generate: 'imageGenerate', export: 'imageExport', retry: 'imageSave', cancel: 'imageCancel', resume: 'imageResume', redo: 'imageGenerate' } as const)[command]
     try {
       const result = await execute(window.electronAPI)
-      if (!alive.current || epoch !== lifetime.current) return
-      if (!result.success) setNotice({ message: failure(result, command === 'video-import' ? '导入视频参考图失败' : '图片操作失败'), tone: 'error' })
-      else if (command === 'export' && !result.cancelled) setNotice({ message: '图片已导出', tone: 'success' })
+      if (!alive.current || epoch !== lifetime.current || !notice.isCurrent()) return { success: false }
+      const message = result.success ? undefined : failure(result, operation)
+      if (message && !quiet) notice.show(message)
+      else if (result.success && command === 'export' && !result.cancelled) notice.show('图片已导出', 'success')
       if (command !== 'export') await refresh()
+      return { success: result.success, message }
     } catch {
-      if (alive.current && epoch === lifetime.current) {
-        setNotice({ message: command === 'generate' || command === 'redo' ? '未收到操作结果，请查看任务记录；不要重复提交。' : command === 'video-import' ? '导入视频参考图失败，请稍后重试' : '图片操作失败，请稍后重试', tone: 'error' })
+      if (alive.current && epoch === lifetime.current && notice.isCurrent()) {
+        const message = command === 'generate' || command === 'redo' ? '图片提交结果尚未确认，请查看原任务，勿重复提交' : operationFailure(operation)
+        if (!quiet) notice.show(message)
         if (command !== 'export') await refresh()
+        return { success: false, message }
       }
+      return { success: false }
     } finally {
       commandBusy.current = false
       if (alive.current && epoch === lifetime.current) setPending(null)
@@ -314,7 +341,8 @@ function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string;
 
   const exportAsset = (asset: MediaAssetView) => { void run('export', api => api.exportMediaAsset({ taskId, assetId: asset.localAssetId })) }
   const jobAction = (job: MediaJobView, action: JobAction, cancelUpstream = false) => {
-    void run(action, api => {
+    const notice = capture()
+    const execute = (api: ElectronAPI) => {
       const input = { taskId, jobId: job.jobId }
       switch (action) {
         case 'retry': return api.retryMediaSave(input)
@@ -322,7 +350,16 @@ function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string;
         case 'resume': return api.resumeMediaTracking(input)
         case 'redo': return api.redoMediaJob(input)
       }
-    })
+    }
+    if (action !== 'cancel' && action !== 'redo') { void run(action, execute); return }
+    const message = action === 'redo' ? '确认重新生成图片？本次将创建新任务，可能产生费用。' : cancelUpstream ? '确认请求平台取消此任务？取消结果以平台返回为准，不代表退款。' : '确认停止本地跟踪？平台任务可能继续生成和计费。'
+    void feedbackController.confirm({ key: `image-action:${taskId}:${job.jobId}:${action}:${cancelUpstream}`, message,
+      actionLabel: action === 'redo' ? '重新生成' : cancelUpstream ? '请求取消' : '停止跟踪', busyLabel: '正在处理',
+      onConfirm: async () => {
+        if (!notice.isCurrent()) return { success: false }
+        try { return await run(action, execute, true) }
+        catch (cause) { return { success: false, message: feedbackMessage(cause, action === 'redo' ? 'imageGenerate' : 'imageCancel') } }
+      } })
   }
   const references = view?.assets.filter(asset => asset.taskId === taskId && asset.source === 'reference') || []
   const jobs = view?.jobs.filter(job => job.taskId === taskId) || []
@@ -335,15 +372,14 @@ function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string;
   const summaryError = error || taskIssue
   useEffect(() => { onSummary?.({ outputs: outputCount, error: summaryError }) }, [onSummary, outputCount, summaryError])
   const busy = pending !== null
-  const feedback = { pending, notice }
+  const feedback = { pending }
   if (!visible) return null
   return <section className="artifact-section media-artifacts" aria-label="图片创作与成果" hidden={!visible}>
     <h3><ImageIcon size={15} />图片创作与成果<button type="button" className="media-icon-button" title="刷新图片能力与任务" aria-label="刷新图片能力与任务" onClick={() => { void refresh(true) }}><RefreshCw size={14} /></button></h3>
-    {error && <p className="media-notice media-tone-error" role="alert">{error}</p>}
     {!view && !error && <p className="artifact-empty" role="status">正在读取图片能力</p>}
     {!preview && !view?.capabilities?.tools.includes('media_generate_image') && <MediaCommandFeedback {...feedback} />}
     {view && <>
-      {!view.capabilities?.tools.includes('media_generate_image') && <p className="media-notice">{view.unavailableReason || '图片能力尚未配置，普通聊天仍可使用'}</p>}
+      {!view.capabilities?.tools.includes('media_generate_image') && <p className="media-notice">图片生成配置不可用</p>}
       <div className="media-subheading"><span>创作参考图</span><button type="button" className="media-command" disabled={busy || view.archived} onClick={() => { void run('import', api => api.importMediaReferences(taskId)) }}><ImagePlus size={14} />导入参考图</button></div>
       {references.length > 0 ? <MediaAssetGrid taskId={taskId} assets={references} references selected={view.selectedReferenceIds} disabled={busy || view.archived} onSelect={assetId => {
         const selected = new Set(view.selectedReferenceIds)

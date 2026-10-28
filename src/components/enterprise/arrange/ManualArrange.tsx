@@ -15,6 +15,7 @@ import { useOperationFeedback } from '../../feedback/use-operation-feedback';
 import type { SiliconEmployee, WorkDraftStep } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
+import { PromptExamples } from './PromptExamples';
 import { createDraftStep, validateGraph } from '../../../features/enterprise/work-graph';
 import { EmployeeFace } from '../EmployeeFace';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
@@ -362,6 +363,12 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
         </aside>
       </div>
 
+      {!goal && !busy ? <PromptExamples mode="arrangement" disabled={speech.busy} inputRef={speech.inputProps.ref} onSelect={prompt => {
+        setGoal(prompt);
+        setSaved(false);
+        activeNodeId.current = null;
+        updateEditorValue(prompt, value => { setGoal(value); setSaved(false); });
+      }} /> : null}
       <footer className="ent-mn-composer">
         <input
           {...speech.inputProps}

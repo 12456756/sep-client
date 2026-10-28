@@ -1,16 +1,20 @@
 /// <reference types="vite/client" />
-import { Download, Film, LoaderCircle, Play, RefreshCw, X } from 'lucide-react'
+import { Download, Film, LoaderCircle, Play, X } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { z } from 'zod'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
 import type { VideoJobView, VideoTaskView } from '../../shared/video-host'
 import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../shared/video-media'
-import { isVideoSubmissionRejectionCode, videoErrorMessage } from '../../shared/video-errors'
+import { isVideoSubmissionRejectionCode } from '../../shared/video-errors'
+
+
+import { useOperationFeedback } from '../feedback/use-operation-feedback'
+import { operationFailure, responseError, type FeedbackOperation } from '../../shared/arrangement-feedback'
+import { mediaIssueMessage } from '../../shared/media-feedback'
 
 type Command = 'export' | 'resume' | 'retry'
 type JobAction = 'resume' | 'retry'
-type Notice = { message: string; tone: 'error' | 'success' }
 type OutputSelection = { jobId: string; outputId: string }
 const POLL_INTERVAL = 3000
 const localId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
@@ -47,19 +51,14 @@ function safeView(value: unknown, taskId: string): VideoTaskView | null {
 }
 
 
-function failure(result: IpcCommandResult, fallback: string): string {
-  return result.error?.message || fallback
+function failure(result: IpcCommandResult, operation: FeedbackOperation): string {
+  return responseError(result, operation).message
 }
 
 export function videoTaskIssue(jobs: VideoJobView[]): string | null {
   for (const job of jobs) {
-    if (job.error) return videoErrorMessage(job.error) || job.error
-    if (job.generationStatus === 'FAILED') return '视频生成失败'
-    if (job.generationStatus === 'SUBMISSION_UNKNOWN') return '视频任务提交结果待核实'
-    if (job.saveStatus === 'SAVE_FAILED') return '视频成果保存失败'
-    if (job.saveStatus === 'MISSING') return '视频成果文件缺失'
-    if (job.trackingStatus === 'AUTH_REQUIRED') return '视频任务需要恢复认证'
-    if (job.trackingStatus === 'INTERRUPTED') return '视频任务跟踪中断，可恢复'
+    const message = mediaIssueMessage(job, 'video')
+    if (message) return message
   }
   return null
 }
@@ -93,11 +92,8 @@ function videoBillingLabel(job: VideoJobView): string {
   return `${status}${actual !== undefined ? ` · 实付 ¥${actual}` : quote !== undefined ? ` · 报价 ¥${quote}` : ''}`
 }
 
-function VideoFeedback({ pending, notice, id }: { pending: Command | null; notice: Notice | null; id?: string }) {
-  if (!pending && !notice) return null
-  return <p id={id} className={`media-notice${notice ? ` media-tone-${notice.tone}` : ''}`} role={notice?.tone === 'error' ? 'alert' : 'status'} aria-atomic="true">
-    {notice?.message || <><LoaderCircle size={13} aria-hidden="true" />正在处理视频操作</>}
-  </p>
+function VideoFeedback({ pending }: { pending: Command | null }) {
+  return pending ? <p className="media-notice" role="status" aria-atomic="true"><LoaderCircle size={13} aria-hidden />正在处理视频操作</p> : null
 }
 
 
@@ -129,7 +125,6 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
       </div>
       {job.generationStatus === 'SUBMISSION_UNKNOWN' && <p className="media-notice">提交结果不明{['NOT_RESERVED', 'RECONCILING'].includes(job.billingStatus) ? '，账务待确认' : ''}，请恢复跟踪原任务，不会自动重新生成。</p>}
       {job.trackingStatus === 'AUTH_REQUIRED' && <p className="media-notice">认证恢复后，请手动恢复跟踪。</p>}
-      {job.error && <p className="media-notice media-tone-error">{videoErrorMessage(job.error) || (job.generationStatus === 'SUBMISSION_UNKNOWN' ? '提交结果待确认。' : '视频任务未能完成。')}</p>}
       <div className="media-job-actions">
         {resume && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />恢复跟踪</button>}
         {retry && <button type="button" className="media-command" disabled={busy} title="重新保存原结果，不重新生成" onClick={() => onAction(job, 'retry')}><Download size={13} />重新保存</button>}
@@ -147,10 +142,9 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
 }
 
 /** Presentation only: no IPC, remote URLs or eager media reads. */
-export function VideoTaskContent({ taskId, view: value, busy, pending, notice, error, onRefresh, onAction, onPreview, onExport, visible = true }: {
-  taskId: string; view: VideoTaskView | null; busy: boolean; pending: Command | null; notice: Notice | null; error: string | null
+export function VideoTaskContent({ taskId, view: value, busy, pending, onAction, onPreview, onExport, visible = true }: {
+  taskId: string; view: VideoTaskView | null; busy: boolean; pending: Command | null
   visible?: boolean
-  onRefresh: () => void
   onAction: (job: VideoJobView, action: JobAction) => void; onPreview: (selection: OutputSelection) => void; onExport: (selection: OutputSelection) => void
 }) {
   const view = safeView(value, taskId)
@@ -158,17 +152,17 @@ export function VideoTaskContent({ taskId, view: value, busy, pending, notice, e
   return <section className="artifact-section media-artifacts video-artifacts" aria-label="视频成果" hidden={!visible}>
     <h3><Film size={15} />视频成果{view.mock && <span className="video-mock-badge">Mock · 不收费</span>}</h3>
     {view.mock && <p className="media-notice">仅供 Mock 视频验证 · MOCK_NOT_CHARGED</p>}
-    {error && <p className="media-notice media-tone-error" role="alert">{error}<button type="button" className="media-icon-button" disabled={!!pending} title="重新读取视频任务" aria-label="重新读取视频任务" onClick={onRefresh}><RefreshCw size={14} /></button></p>}
-    <VideoFeedback pending={pending} notice={notice} />
+    <VideoFeedback pending={pending} />
     {view.jobs.length ? <VideoJobList jobs={view.jobs} busy={busy} onAction={onAction} onPreview={onPreview} onExport={onExport} /> : <p className="artifact-empty">尚无视频任务</p>}
   </section>
 }
 
-function VideoPreviewDialog({ taskId, selection, busy, pending, notice, onClose, onExport }: {
-  taskId: string; selection: OutputSelection; busy: boolean; pending: Command | null; notice: Notice | null; onClose: () => void; onExport: () => void
+function VideoPreviewDialog({ taskId, selection, busy, pending, onClose, onExport }: {
+  taskId: string; selection: OutputSelection; busy: boolean; pending: Command | null; onClose: () => void; onExport: () => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const closeButton = useRef<HTMLButtonElement>(null)
+  const { capture } = useOperationFeedback(`${taskId}:${selection.outputId}`)
   const [url, setUrl] = useState<string | null>(null)
   const [opened, setOpened] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -179,6 +173,12 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, notice, onClose,
   }, [])
   useEffect(() => {
     let active = true
+    const notice = capture()
+    const failed = (message: string) => {
+      if (!active || !notice.isCurrent()) return
+      setError(message)
+      notice.show(message, 'error', `video-preview:${taskId}:${selection.outputId}:${attempt}`, true)
+    }
     let objectUrl: string | null = null
     setUrl(null)
     setOpened(false)
@@ -186,38 +186,40 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, notice, onClose,
     const load = async () => {
       try {
         const result = await window.electronAPI.previewVideoOutput({ taskId, jobId: selection.jobId, outputId: selection.outputId })
-        if (!active) return
-        if (!result.success || !result.data) { setError(failure(result, '视频预览读取失败')); return }
+        if (!active || !notice.isCurrent()) return
+        if (!result.success || !result.data) { failed(failure(result, 'videoPreview')); return }
         if ('opened' in result.data && result.data.opened === true) { setOpened(true); return }
-        if (!('bytes' in result.data)) { setError('视频预览数据无效'); return }
+        if (!('bytes' in result.data)) { failed(operationFailure('videoPreview')); return }
         const { mime, bytes } = result.data
         if (!['video/mp4', 'video/webm'].includes(mime) || !(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
-          setError('视频预览数据无效'); return
+          failed(operationFailure('videoPreview')); return
         }
         objectUrl = URL.createObjectURL(new Blob([new Uint8Array(bytes).buffer], { type: mime }))
         setUrl(objectUrl)
       } catch {
-        if (active) setError('视频预览读取失败')
+        failed(operationFailure('videoPreview'))
       }
     }
     void load()
     return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl) }
-  }, [taskId, selection.jobId, selection.outputId, attempt])
+  }, [taskId, selection.jobId, selection.outputId, attempt, capture])
   return <dialog ref={dialog} className="media-preview-dialog video-preview-dialog" aria-label="本地视频预览" onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <div className="media-dialog-heading"><strong>本地视频预览</strong><div className="media-dialog-tools">
       <button type="button" className="media-icon-button" title="导出视频" aria-label="导出视频" disabled={busy} onClick={onExport}><Download size={18} /></button>
       <button ref={closeButton} type="button" className="media-icon-button" title="关闭视频预览" aria-label="关闭视频预览" onClick={onClose}><X size={18} /></button>
     </div></div>
-    <VideoFeedback pending={pending} notice={notice} />
-    {error ? <div><p className="media-notice media-tone-error" role="alert">{error}</p><button type="button" className="media-command" onClick={() => setAttempt(value => value + 1)}>重新读取本地视频</button></div>
-      : url ? <video className="video-player" aria-label="本地视频播放器" src={url} controls preload="metadata" playsInline onError={() => setError('本地视频无法播放')} /> : <p className="media-notice" role="status">{opened ? '已在系统播放器打开' : '正在读取本地视频'}</p>}
+    <VideoFeedback pending={pending} />
+    {error ? <div><button type="button" className="media-command" onClick={() => setAttempt(value => value + 1)}>重新读取本地视频</button></div>
+      : url ? <video className="video-player" aria-label="本地视频播放器" src={url} controls preload="metadata" playsInline onError={() => { setError(operationFailure('videoPreview')); capture().show(operationFailure('videoPreview'), 'error', `video-decode:${taskId}:${selection.outputId}:${attempt}`, true) }} /> : <p className="media-notice" role="status">{opened ? '已在系统播放器打开' : '正在读取本地视频'}</p>}
   </dialog>
 }
 
 function VideoTaskController({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void }) {
   const [view, setView] = useState<VideoTaskView | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
-  const [notice, setNotice] = useState<Notice | null>(null)
+  const { capture } = useOperationFeedback(taskId)
+  const seenIssues = useRef(new Set<string>())
+  const queryFailure = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<OutputSelection | null>(null)
   const alive = useRef(false)
@@ -229,20 +231,31 @@ function VideoTaskController({ taskId, visible = true, onSummary }: { taskId: st
     if (!alive.current || commandBusy.current && !afterCommand) return
     const epoch = lifetime.current
     const version = ++requestVersion.current
-    const current = () => alive.current && lifetime.current === epoch && version === requestVersion.current
+    const notice = capture()
+    const current = () => alive.current && lifetime.current === epoch && version === requestVersion.current && notice.isCurrent()
     try {
       const result = await window.electronAPI.getTaskVideo(taskId)
       if (!current()) return
-      if (!result.success) { setError(failure(result, '读取视频任务失败')); return }
+      if (!result.success) {
+        const message = failure(result, 'videoRead'); setError(message)
+        if (!queryFailure.current) { queryFailure.current = true; notice.show(message) }
+        return
+      }
       if (result.data === null) { setView(null); setPreview(null); setError(null); return }
       const next = safeView(result.data, taskId)
-      if (!next) { setView(null); setPreview(null); setError('视频任务数据无效'); return }
+      if (!next) { setView(null); setPreview(null); setError('视频任务数据异常，请联系平台管理员'); if (!queryFailure.current) { queryFailure.current = true; notice.show('视频任务数据异常，请联系平台管理员') }; return }
       setView(next)
       setError(null)
+      queryFailure.current = false
+      for (const job of next.jobs) {
+        const message = mediaIssueMessage(job, 'video')
+        const key = `${job.jobId}:${message}`
+        if (message && !seenIssues.current.has(key)) { seenIssues.current.add(key); notice.show(message, 'error', `video-job:${taskId}:${key}`, true) }
+      }
     } catch {
-      if (current()) setError('读取视频任务失败，请稍后重试')
+      if (current()) { setError(operationFailure('videoRead')); if (!queryFailure.current) { queryFailure.current = true; notice.show(operationFailure('videoRead')) } }
     }
-  }, [taskId])
+  }, [taskId, capture])
 
   useEffect(() => {
     // Keep the presentation importable by the existing Node SSR test runner.
@@ -266,16 +279,17 @@ function VideoTaskController({ taskId, visible = true, onSummary }: { taskId: st
     commandBusy.current = true
     requestVersion.current++
     setPending(command)
-    setNotice(null)
+    const notice = capture()
+    const operation = command === 'export' ? 'videoExport' : command === 'retry' ? 'videoSave' : 'videoResume'
     try {
       const result = await execute(window.electronAPI)
-      if (!alive.current || lifetime.current !== epoch) return
-      if (!result.success) setNotice({ message: failure(result, '视频操作失败'), tone: 'error' })
-      else if (command === 'export' && !result.cancelled) setNotice({ message: '视频已导出', tone: 'success' })
+      if (!alive.current || lifetime.current !== epoch || !notice.isCurrent()) return
+      if (!result.success) notice.show(failure(result, operation))
+      else if (command === 'export' && !result.cancelled) notice.show('视频已导出', 'success')
       if (command !== 'export') await refresh(true)
     } catch {
-      if (alive.current && lifetime.current === epoch) {
-        setNotice({ message: '视频操作失败，请稍后重试', tone: 'error' })
+      if (alive.current && lifetime.current === epoch && notice.isCurrent()) {
+        notice.show(operationFailure(operation))
         if (command !== 'export') await refresh(true)
       }
     } finally {
@@ -296,11 +310,10 @@ function VideoTaskController({ taskId, visible = true, onSummary }: { taskId: st
     onSummary?.({ outputs: outputCount, error: summaryError })
   }, [onSummary, outputCount, summaryError])
   return <>
-    {visible ? <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending} notice={notice} error={error}
-      onRefresh={() => { void refresh() }}
+    {visible ? <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending}
       onAction={(job, action) => { void run(action, api => action === 'resume' ? api.resumeVideoTracking({ taskId, jobId: job.jobId }) : api.retryVideoSave({ taskId, jobId: job.jobId })) }}
       onPreview={setPreview} onExport={exportOutput} /> : null}
-    {visible && preview && previewAvailable && <VideoPreviewDialog key={`${taskId}:${preview.jobId}:${preview.outputId}`} taskId={taskId} selection={preview} busy={busy} pending={pending} notice={notice} onClose={() => setPreview(null)} onExport={() => exportOutput(preview)} />}
+    {visible && preview && previewAvailable && <VideoPreviewDialog key={`${taskId}:${preview.jobId}:${preview.outputId}`} taskId={taskId} selection={preview} busy={busy} pending={pending} onClose={() => setPreview(null)} onExport={() => exportOutput(preview)} />}
   </>
 }
 

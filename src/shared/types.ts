@@ -665,6 +665,7 @@ export interface ToolAuthorizationRequest {
   toolName: string
   input: unknown
   timestamp: number
+  expiresAt?: number
 }
 
 /** 高危工具调用，等待用户批准（文档 §6.2 措施 ④） */

@@ -17,7 +17,7 @@ import { logger } from '../common/logger'
 import { appError } from '../errors/app-error'
 import { authFailure, failure } from '../errors/error-mapper'
 import { reportAuthFailure, reportFailure } from '../errors/error-reporter'
-import { FEEDBACK_OPERATION_BY_CHANNEL, type InvokeChannel, type SendChannel } from './channels'
+import { FEEDBACK_OPERATION_BY_CHANNEL, INVOKE_CHANNELS, type InvokeChannel, type SendChannel } from './channels'
 import type { RequestContext } from './request-context'
 
 const log = logger.child('router')
@@ -98,8 +98,11 @@ function describeIssues(error: z.ZodError): { issues: string[] } {
   return { issues: error.issues.slice(0, 8).map(issue => `${issue.path.join('.') || '<root>'}:${issue.code}`) }
 }
 
-function toFailure(route: Route, error: unknown): unknown {
-  const feedbackOperation = FEEDBACK_OPERATION_BY_CHANNEL[route.channel]
+function toFailure(route: Route, error: unknown, input?: unknown): unknown {
+  let feedbackOperation = FEEDBACK_OPERATION_BY_CHANNEL[route.channel]
+  if (route.channel === INVOKE_CHANNELS.TASK_UPDATE_DETAILS && input && typeof input === 'object' && 'pinned' in input && !('title' in input)) {
+    feedbackOperation = input.pinned ? 'workPin' : 'workUnpin'
+  }
   if (feedbackOperation) return reportFailure(route.channel, error, { authenticated: true, feedbackOperation })
   switch (route.errorShape) {
     case 'auth':
@@ -119,6 +122,7 @@ export function registerRoutes(
 ): void {
   for (const entry of tables.routes) {
     ipcMain.handle(entry.channel, async (event, raw: unknown) => {
+      let validated: unknown
       try {
         if (entry.trustedMainFrame) {
           const window = ctx.window()
@@ -142,9 +146,10 @@ export function registerRoutes(
             ? authFailure('INVALID_ARGUMENT', entry.invalidMessage)
             : failure('INVALID_ARGUMENT', entry.invalidMessage)
         }
+        validated = parsed.data
         return await entry.handle(ctx, parsed.data as never)
       } catch (error) {
-        return toFailure(entry, error)
+        return toFailure(entry, error, validated)
       }
     })
   }

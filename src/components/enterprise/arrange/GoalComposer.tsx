@@ -3,6 +3,7 @@ import { useCallback, useRef, useState } from 'react';
 import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
+import { PromptExamples } from './PromptExamples';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
@@ -25,6 +26,7 @@ interface Props {
   onChooseFolder: (currentPath?: string) => Promise<string | null>;
   conversation?: boolean;
   attachmentBindingKey?: string;
+  showExamples?: boolean;
 }
 
 export function GoalComposer({
@@ -44,6 +46,7 @@ export function GoalComposer({
   onAttachmentsChange,
   onAttachmentSessionChange,
   onAttachmentsBusyChange,
+  showExamples = false,
 }: Props) {
   const [, setAttachments] = useState<AttachmentView[]>([]);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
@@ -59,6 +62,7 @@ export function GoalComposer({
   }, [editorVersion, onChange, value]);
   return (
     <div className="ent-goal-stack">
+      {showExamples && !value && !busy ? <PromptExamples mode="arrangement" disabled={speech.busy} inputRef={speech.inputProps.ref} onSelect={prompt => { onChange(prompt); setEditorVersion(version => version + 1); }} /> : null}
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-goal">
         <div className="ent-composer-attachments" ref={setAttachmentListContainer} />

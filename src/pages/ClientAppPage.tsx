@@ -9,7 +9,7 @@
  * 路由用受控状态而不是 URL，因为桌面端不需要地址栏，返回行为由 hook 维护的历史栈决定。
  */
 
-import { AlertTriangle, Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
+import { Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
@@ -210,12 +210,6 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
         />
         <EmployeeLoadNotice state={employeeLoad} loadingLabel="正在加载员工列表" retryLabel="重试加载员工列表" />
         <EmployeeLoadNotice state={employeeStatusLoad} loadingLabel="正在加载员工状态" retryLabel="重试加载员工状态" />
-        {workspace.error ? (
-          <div className="ent-error-bar" role="alert">
-            <AlertTriangle size={14} aria-hidden />
-            {workspace.error}
-          </div>
-        ) : null}
         <div
           className={`ent-scroll${(route.name === 'organization' || route.name === 'home') ? ' ent-scroll-no-overflow' : ''}${['arrange', 'records', 'work'].includes(route.name) ? ' ent-scroll-work' : ''}`}
           ref={scroll}

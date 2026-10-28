@@ -19,10 +19,10 @@ export function useOperationFeedback(bindingKey = '') {
   const capture = useCallback(() => {
     const current = identity.current
     const isCurrent = () => current.active && identity.current === current && current.revision === feedback.getRevision()
-    const show = (message: string, tone: FeedbackNotice['tone'] = 'error', key?: string) => {
-      if (isCurrent()) feedback.show({ message, tone, key })
+    const show = (message: string, tone: FeedbackNotice['tone'] = 'error', key?: string, once = false) => {
+      if (isCurrent()) feedback.show({ message, tone, key, once })
     }
-    return { isCurrent, show, fail: (error: unknown, operation: FeedbackOperation, key?: string) => show(feedbackMessage(error, operation), 'error', key) }
+    return { isCurrent, show, fail: (error: unknown, operation: FeedbackOperation, key?: string, once = false) => show(feedbackMessage(error, operation), 'error', key, once) }
   }, [feedback])
   return { capture }
 }

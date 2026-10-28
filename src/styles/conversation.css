@@ -43,7 +43,7 @@
 }
 
 .ent-drawer-foot.ent-conversation-foot { flex-direction: column; align-items: stretch; gap: 0; }
-.ent-conversation-foot .ent-ask, .ent-conversation-foot .ent-confirm { width: 100%; flex: none; }
+.ent-conversation-foot .ent-ask { width: 100%; flex: none; }
 /* 消息区滚动条预留的宽度也用于输入区，长回复出现后两侧仍对齐。 */
 .ent-conversation-body, .ent-conversation-foot { scrollbar-gutter: stable; scrollbar-width: thin; }
 .ent-conversation-foot { overflow-y: auto; }

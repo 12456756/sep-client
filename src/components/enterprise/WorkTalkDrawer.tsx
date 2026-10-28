@@ -73,9 +73,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
     setEditorVersion(version => version + 1);
     return true;
   }, [editorVersion, setDraft]);
-  const [stopping, setStopping] = useState(false);
-  const [reason, setReason] = useState('');
-  const speech = useSpeechInput({ contextKey: `work:${work.id}`, value: draft, onChange: setDraft, disabled: workspace.busy || stopping });
+  const speech = useSpeechInput({ contextKey: `work:${work.id}`, value: draft, onChange: setDraft, disabled: workspace.busy });
   const over = work.status === 'completed' || work.status === 'paused' || work.status === 'failed';
 
   const followsLatest = useRef(savedSession.followsLatest);
@@ -174,32 +172,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
           <p className="ent-conversation-status" role="status">
             {isReplying ? <span className="ent-reply-dot" aria-hidden /> : null}{statusText}
           </p>
-          {workspace.error ? <p role="alert" className="ent-hint">{workspace.error}</p> : null}
-          {stopping ? (
-            <div className="ent-confirm">
-              <p>
-                <StopCircle size={14} aria-hidden />
-                终止之后这项工作不再继续，<strong>已完成的部分和已产出的文件会保留</strong>。
-              </p>
-              <input className="ent-input" value={reason} placeholder="终止原因（可留空）" onChange={event => setReason(event.target.value)} />
-              <div className="ent-confirm-foot">
-                <button type="button" className="ent-btn sm" onClick={() => setStopping(false)}>不终止</button>
-                <button
-                  type="button"
-                  className="ent-btn danger sm"
-                  disabled={workspace.busy}
-                  onClick={() => {
-                    void workspace.stopWork(work.id, reason.trim() || '用户终止了这项工作').then(ok => {
-                      if (ok) { setStopping(false); setReason(''); }
-                    });
-                  }}
-                >
-                  {workspace.busy ? '正在终止…' : '确认终止'}
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="ent-ask">
+          <div className="ent-ask">
           <textarea
             data-composer-id={composerId}
             data-editor-version={editorVersion}
@@ -211,7 +184,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 onChange={event => { setDraft(event.target.value); setEditorVersion(version => version + 1); }}
                 onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
-      <AttachmentComposer key={savedSession.attachmentEpoch} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || stopping} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+      <AttachmentComposer key={savedSession.attachmentEpoch} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
               <div className="ent-ask-bar">
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}
@@ -235,7 +208,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 ) : null}
                 <span className="ent-ask-spacer" />
                 {over ? null : (
-                  <button type="button" className="ent-ask-stop" onClick={() => setStopping(true)}>
+                  <button type="button" className="ent-ask-stop" onClick={() => { void workspace.stopWork(work.id, '用户终止了这项工作'); }}>
                     <StopCircle size={13} aria-hidden />
                     终止
                   </button>
@@ -245,8 +218,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                   <Send size={15} aria-hidden />
                 </button>
               </div>
-            </div>
-          )}
+          </div>
         </div>
     </>
   );

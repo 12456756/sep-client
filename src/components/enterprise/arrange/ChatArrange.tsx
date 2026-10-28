@@ -9,6 +9,7 @@ import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { SiliconEmployee } from '../../../features/enterprise/types';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
+import { PromptExamples } from './PromptExamples';
 import { EmployeeFace } from '../EmployeeFace';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
@@ -91,6 +92,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
           <p>开始一段对话</p>
         </div>
       ) : null}
+      {!submitted && !text && !busy ? <PromptExamples mode="conversation" disabled={speech.busy} inputRef={input} onSelect={prompt => { setText(prompt); setEditorVersion(version => version + 1); }} /> : null}
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-chat-ask">
         <div className="ent-composer-attachments" ref={setAttachmentListContainer} />

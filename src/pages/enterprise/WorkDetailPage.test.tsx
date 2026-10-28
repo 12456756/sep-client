@@ -8,6 +8,8 @@ import * as React from 'react';
 import * as jsxRuntime from 'react/jsx-runtime';
 import { renderToStaticMarkup } from 'react-dom/server';
 import * as ts from 'typescript';
+import { FeedbackProvider } from '../../components/feedback/FeedbackProvider';
+import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import * as atoms from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { ArrangementSteps } from '../../components/enterprise/arrange/ArrangementSteps';
@@ -35,6 +37,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
+  '../../components/feedback/use-operation-feedback': { useOperationFeedback },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
   '../../features/enterprise/vocabulary': vocabulary,
@@ -68,7 +71,7 @@ function renderDetail(item: WorkItem): string {
   const previousReact = Reflect.get(globalThis, 'React');
   Object.defineProperty(globalThis, 'React', { configurable: true, value: React });
   try {
-    return renderToStaticMarkup(React.createElement(WorkDetailPage, { workspace, workId: item.id }));
+    return renderToStaticMarkup(React.createElement(FeedbackProvider, null, React.createElement(WorkDetailPage, { workspace, workId: item.id })));
   } finally {
     if (previousReact === undefined) Reflect.deleteProperty(globalThis, 'React');
     else Object.defineProperty(globalThis, 'React', { configurable: true, value: previousReact });
@@ -100,7 +103,8 @@ function mountDetail() {
   };
   const loaded = { exports: {} };
   compileFunction(compiled, ['require', 'exports', 'module'], { filename })(
-    (id: string) => id === 'react' ? hooks : requireStub(id), loaded.exports, loaded,
+    (id: string) => id === 'react' ? hooks : id === '../../components/feedback/use-operation-feedback'
+      ? { useOperationFeedback: () => ({ capture: () => ({ show() {} }) }) } : requireStub(id), loaded.exports, loaded,
   );
   const Page = (loaded.exports as typeof import('./WorkDetailPage')).WorkDetailPage;
   let navigated = false;

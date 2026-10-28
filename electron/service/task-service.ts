@@ -283,7 +283,7 @@ export class TaskService {
    */
   private async requireAuthorizedEmployee(subscriptionId: string | null | undefined): Promise<void> {
     if (!subscriptionId || !await this.deps.employees.authorize(subscriptionId)) {
-      throw new AppError('INVALID_ARGUMENT')
+      throw new AppError('INVALID_ARGUMENT', { details: { reason: 'employee-unavailable' } })
     }
   }
 
