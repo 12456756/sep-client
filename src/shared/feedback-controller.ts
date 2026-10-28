@@ -2,6 +2,7 @@ export interface FeedbackNotice {
   message: string
   tone: 'error' | 'warning' | 'success'
   key?: string
+  once?: boolean
 }
 
 export interface FeedbackConfirmation {
@@ -10,7 +11,10 @@ export interface FeedbackConfirmation {
   actionLabel: string
   busyLabel: string
   key?: string
-  onConfirm?: () => Promise<{ success: boolean; message: string }>
+  input?: { label: string; value: string; maxLength: number; placeholder?: string }
+  validate?: (value: string) => string | null
+  onConfirm?: (value: string) => Promise<{ success: boolean; message?: string }>
+  cancelLabel?: string
 }
 
 export interface FeedbackItem {
@@ -22,6 +26,9 @@ export interface FeedbackItem {
   busy: boolean
   actionLabel?: string
   busyLabel?: string
+  cancelLabel?: string
+  input?: FeedbackConfirmation['input']
+  validationMessage?: string
 }
 
 interface Entry {
@@ -36,6 +43,7 @@ export class FeedbackController {
   private listeners = new Set<() => void>()
   private nextId = 0
   private revision = 0
+  private shown = new Set<string>()
 
   getSnapshot = (): FeedbackItem | null => this.queue[0]?.item ?? null
   getRevision = (): number => this.revision
@@ -47,7 +55,9 @@ export class FeedbackController {
 
   show = (notice: FeedbackNotice): void => {
     const key = notice.key ?? `${notice.tone}:${notice.message}`
+    if (notice.once && this.shown.has(key)) return
     if (this.queue.some(entry => entry.item.key === key)) return
+    if (notice.once) this.shown.add(key)
     this.queue.push({ item: { ...notice, key, id: ++this.nextId, busy: false } })
     this.emit()
   }
@@ -60,7 +70,8 @@ export class FeedbackController {
     const promise = new Promise<boolean>(settle => { resolve = settle })
     this.queue.push({
       item: { id: ++this.nextId, key, message: confirmation.message, title: confirmation.title,
-        tone: 'confirm', busy: false, actionLabel: confirmation.actionLabel, busyLabel: confirmation.busyLabel },
+        tone: 'confirm', busy: false, actionLabel: confirmation.actionLabel, busyLabel: confirmation.busyLabel,
+        cancelLabel: confirmation.cancelLabel, input: confirmation.input ? { ...confirmation.input } : undefined },
       confirmation, promise, resolve,
     })
     this.emit()
@@ -90,9 +101,23 @@ export class FeedbackController {
     this.emit()
   }
 
+  setInput = (id: number, value: string): void => {
+    const entry = this.queue[0]
+    if (!entry || entry.item.id !== id || entry.item.busy || !entry.item.input) return
+    entry.item = { ...entry.item, validationMessage: undefined, input: { ...entry.item.input, value: value.slice(0, entry.item.input.maxLength) } }
+    this.emit()
+  }
+
   accept = async (id: number): Promise<void> => {
     const entry = this.queue[0]
     if (!entry || entry.item.id !== id || entry.item.busy || !entry.confirmation) return
+    const value = entry.item.input?.value ?? ''
+    const validationMessage = entry.confirmation.validate?.(value)
+    if (validationMessage) {
+      entry.item = { ...entry.item, validationMessage }
+      this.emit()
+      return
+    }
     if (!entry.confirmation.onConfirm) {
       this.queue.shift()
       entry.resolve?.(true)
@@ -101,15 +126,16 @@ export class FeedbackController {
     }
     entry.item = { ...entry.item, busy: true }
     this.emit()
-    let result: { success: boolean; message: string }
-    try { result = await entry.confirmation.onConfirm() }
+    let result: { success: boolean; message?: string }
+    try { result = await entry.confirmation.onConfirm(value) }
     catch { result = { success: false, message: '操作失败，请联系平台管理员' } }
     // A cleared session owns neither this response nor its confirmation promise.
     if (this.queue[0] !== entry) return
     entry.resolve?.(result.success)
     entry.resolve = undefined
     entry.confirmation = undefined
-    entry.item = { id, key: entry.item.key, message: result.message, tone: result.success ? 'success' : 'error', busy: false }
+    if (result.success && !result.message) this.queue.shift()
+    else entry.item = { id, key: entry.item.key, message: result.message || '操作失败，请联系平台管理员', tone: result.success ? 'success' : 'error', busy: false }
     this.emit()
   }
 
@@ -117,6 +143,7 @@ export class FeedbackController {
     this.revision++
     const previous = this.queue
     this.queue = []
+    this.shown.clear()
     previous.forEach(entry => entry.resolve?.(false))
     this.emit()
   }

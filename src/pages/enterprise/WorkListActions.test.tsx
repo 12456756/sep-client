@@ -22,6 +22,7 @@ function mount(overrides: Partial<Props> = {}) {
   const oldWindow = Reflect.get(globalThis, 'window')
   const oldDocument = Reflect.get(globalThis, 'document')
   const oldNode = Reflect.get(globalThis, 'Node')
+  const oldAnimationFrame = Reflect.get(globalThis, 'requestAnimationFrame')
   const cells: unknown[] = []
   let cursor = 0
   let pending: (() => void)[] = []
@@ -30,6 +31,7 @@ function mount(overrides: Partial<Props> = {}) {
   const listeners = new Map<string, EventListener>()
   const doc = {
     activeElement: null as unknown,
+    querySelector: () => null,
     addEventListener(type: string, listener: EventListener) { listeners.set(type, listener) },
     removeEventListener(type: string) { listeners.delete(type) },
   }
@@ -51,6 +53,7 @@ function mount(overrides: Partial<Props> = {}) {
   Reflect.set(globalThis, 'window', { innerWidth: 1024, innerHeight: 768, addEventListener() {}, removeEventListener() {} })
   Reflect.set(globalThis, 'document', doc)
   Reflect.set(globalThis, 'Node', TestNode)
+  Reflect.set(globalThis, 'requestAnimationFrame', (callback: () => void) => setImmediate(callback))
   const hooks = {
     useRef: (initial: unknown) => { const i = cursor++; if (!(i in cells)) cells[i] = { current: initial }; return cells[i] },
     useState: (initial: unknown) => { const i = cursor++; if (!(i in cells)) cells[i] = initial; return [cells[i], (next: unknown) => { cells[i] = typeof next === 'function' ? next(cells[i]) : next }] },
@@ -73,7 +76,7 @@ function mount(overrides: Partial<Props> = {}) {
       if (React.isValidElement<Record<string, unknown>>(child)) { elements.push(child); visit(child.props.children as React.ReactNode) }
     })
     visit(Component(props))
-    for (const [element, value] of [[find(e => e.props.role === 'menu'), menu], [find(e => e.type === 'dialog'), dialog]] as const) {
+    for (const [element, value] of [[find(e => e.props.role === 'menu'), menu]] as const) {
       (Reflect.get(element, 'ref') as { current: unknown }).current = value
     }
     for (const element of elements) {
@@ -91,6 +94,7 @@ function mount(overrides: Partial<Props> = {}) {
     if (oldWindow === undefined) Reflect.deleteProperty(globalThis, 'window'); else Reflect.set(globalThis, 'window', oldWindow)
     if (oldDocument === undefined) Reflect.deleteProperty(globalThis, 'document'); else Reflect.set(globalThis, 'document', oldDocument)
     if (oldNode === undefined) Reflect.deleteProperty(globalThis, 'Node'); else Reflect.set(globalThis, 'Node', oldNode)
+    if (oldAnimationFrame === undefined) Reflect.deleteProperty(globalThis, 'requestAnimationFrame'); else Reflect.set(globalThis, 'requestAnimationFrame', oldAnimationFrame)
   } }
 }
 
@@ -105,7 +109,6 @@ test('pointerdown outside the menu dismisses it while pointerdown inside is igno
     assert.equal(ui.props.request, null)
   } finally { ui.cleanup() }
 })
-
 test('menu is clamped to the viewport, restores focus on escape and supports arrow keys', () => {
   const ui = mount()
   try {
@@ -134,72 +137,27 @@ test('pin and unpin target the menu row without requiring selection', async () =
   assert.deepEqual(calls, [['a', true], ['a', false]])
 })
 
-test('rename validates before saving, trims input and keeps failure recoverable', async () => {
+test('rename and delete delegate to shared workspace confirmations without a second dialog', async () => {
   const calls: unknown[][] = []
-  const ui = mount({ onRename: async (...args) => { calls.push(args); return calls.length > 1 } })
+  const ui = mount({ onRename: async (...args) => { calls.push(['rename', ...args]); return false }, onDelete: async (...args) => { calls.push(['delete', ...args]); return false } })
   try {
-    ui.click('重命名'); ui.render()
-    assert.equal(ui.dialog.open, true)
-    assert.equal(ui.input.selected, true)
-    const change = (value: string) => { (ui.find(e => e.type === 'input').props.onChange as (event: unknown) => void)({ target: { value } }); ui.render() }
-    change('   '); ui.submit(); await tick(); ui.render()
-    assert.deepEqual(calls, [])
-    assert.ok(ui.find(e => e.props.role === 'alert'))
-    change('新名称\n第二行'); ui.submit(); await tick(); ui.render()
-    assert.deepEqual(calls, [])
-    change('  年度报告  '); ui.submit(); await tick(); ui.render()
-    assert.equal(ui.dialog.open, true)
-    assert.ok(ui.find(e => e.props.role === 'alert'))
-    ui.submit(); await tick(); ui.render()
-    assert.deepEqual(calls, [['a', '年度报告'], ['a', '年度报告']])
+    ui.click('重命名'); await tick()
+    assert.deepEqual(calls, [['rename', 'a']])
+    ui.props.request = { workId: 'a', x: 20, y: 20, trigger: ui.trigger }; ui.render()
+    ui.click('删除'); await tick()
+    assert.deepEqual(calls, [['rename', 'a'], ['delete', 'a']])
     assert.equal(ui.dialog.open, false)
-  } finally { ui.cleanup() }
-})
-
-test('delete requires confirmation, blocks duplicate requests and disables active work', async () => {
-  let calls = 0
-  let resolve!: (value: boolean) => void
-  const ui = mount({ onDelete: async () => { calls++; return new Promise<boolean>(done => { resolve = done }) } })
-  try {
-    ui.click('删除'); ui.render()
-    assert.equal(calls, 0)
-    ui.submit(); ui.submit(); ui.render()
-    assert.equal(calls, 1)
-    const cancel = ui.find(e => e.type === 'button' && e.props.children === '取消')
-    assert.equal(cancel.props.disabled, true)
-    resolve(true); await tick(); ui.render()
-    assert.equal(ui.dialog.open, false)
+    assert.equal(ui.props.request, null)
   } finally { ui.cleanup() }
   const active = mount({ works: [{ ...work, isActive: true, status: 'running' }] })
   try { assert.equal(active.find(e => e.props.role === 'menuitem' && e.props.className === 'danger').props.disabled, true) } finally { active.cleanup() }
 })
-
-test('cancel performs no mutation and streaming snapshots do not reset the edited name', () => {
-  let calls = 0
-  const ui = mount({ onRename: async () => { calls++; return true }, onDelete: async () => { calls++; return true } })
-  try {
-    ui.click('重命名'); ui.render()
-    ;(ui.find(e => e.type === 'input').props.onChange as (event: unknown) => void)({ target: { value: '编辑中的名称' } })
-    ui.render()
-    ui.input.selected = false
-    ui.props.works = [{ ...work, updatedAt: Date.now() }]
-    ui.render()
-    assert.equal(ui.find(e => e.type === 'input').props.value, '编辑中的名称')
-    assert.equal(ui.input.selected, false)
-    ui.click('取消'); ui.render()
-    assert.equal(ui.dialog.open, false)
-    assert.equal(ui.doc.activeElement, ui.trigger)
-    assert.equal(calls, 0)
-  } finally { ui.cleanup() }
-})
-
 test('deleting a row restores focus to its next visible neighbor without scrolling to search', async () => {
   const ui = mount()
+  ui.props.onDelete = async () => { Object.assign(ui.trigger, { isConnected: false }); ui.props.works = []; return true }
+  ui.render()
   try {
-    ui.click('删除'); ui.render()
-    ui.submit(); await tick()
-    Object.assign(ui.trigger, { isConnected: false })
-    ui.props.works = []
+    ui.click('删除'); await tick(); await tick()
     ui.render()
     assert.equal(ui.dialog.open, false)
     assert.equal(ui.doc.activeElement, ui.nextRow)
@@ -210,13 +168,12 @@ test('deleting a row restores focus to its next visible neighbor without scrolli
 test('deleting the last visible row restores focus to the previous row or list', async () => {
   for (const hasPrevious of [true, false]) {
     const ui = mount()
+    ui.props.onDelete = async () => { Object.assign(ui.trigger, { isConnected: false }); ui.props.works = []; return true }
+    ui.render()
     try {
-      ui.click('删除'); ui.render()
-      ui.submit(); await tick()
-      Object.assign(ui.trigger, { isConnected: false })
       ui.nextRow.isConnected = false
       ui.previousRow.isConnected = hasPrevious
-      ui.props.works = []
+      ui.click('删除'); await tick(); await tick()
       ui.render()
       const target = hasPrevious ? ui.previousRow : ui.list
       assert.equal(ui.doc.activeElement, target)

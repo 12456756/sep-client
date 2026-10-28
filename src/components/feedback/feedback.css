@@ -3,6 +3,10 @@
 .feedback-copy { min-width: 0; overflow-y: auto; overflow-wrap: anywhere; }
 .feedback-title { margin: 0 0 10px; font-size: 16px; font-weight: 600; line-height: 1.5; }
 .feedback-description { margin: 0; font-size: 14px; line-height: 1.7; }
+dialog[data-feedback-host]::backdrop { background: transparent !important; }
+.feedback-field { display: grid; gap: 8px; margin-top: 16px; }
+.feedback-field input { box-sizing: border-box; width: 100%; height: 36px; padding: 0 10px; border: 1px solid #aaa; border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+.feedback-validation { margin: 8px 0 0; color: #c83c3c; }
 .feedback-status { color: #b47a10; margin-top: 1px; }
 .feedback-error .feedback-status { color: #c83c3c; }
 .feedback-success .feedback-status { color: #24865d; }

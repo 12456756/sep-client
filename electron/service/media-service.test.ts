@@ -980,6 +980,19 @@ describe('MediaService local delivery and original-request recovery', () => {
     })
   }
 
+  for (const [error, code] of [[new Error('Request timed out.'), 'NETWORK_TIMEOUT'], [Object.assign(new Error('private network detail'), { code: 'ECONNRESET' }), 'NETWORK_ERROR']] as const) {
+    it(`projects ${code} after exhausted original image queries without resubmitting`, async context => {
+      const f = await fixture({}, new MockMediaGateway({ initialStatus: 'QUEUED' }))
+      context.mock.method(f.gateway, 'getReceipt', async () => { throw error })
+      const view = await f.service.generateTaskMedia('task-a', input())
+      await waitUntil(async () => (await f.store.getJob(owner, 'task-a', view.jobId))?.trackingStatus === 'STOPPED')
+      const [job] = (await f.service.getTaskMedia('task-a')).jobs
+      assert.equal(job.error, code)
+      assert.equal(f.gateway.calls.submit.length, 1)
+      assert.equal(f.gateway.calls.quote.length, 1)
+    })
+  }
+
   it('labels expired unsaved outputs and disables ineffective save/recovery actions without losing successful history', async context => {
     const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
     const submit = f.gateway.submit.bind(f.gateway)
@@ -992,7 +1005,7 @@ describe('MediaService local delivery and original-request recovery', () => {
     const [restored] = (await f.service.getTaskMedia('task-a')).jobs
     assert.equal(restored.generationStatus, 'SUCCEEDED')
     assert.equal(restored.saveStatus, 'SAVE_FAILED')
-    assert.match(restored.error!, /已过期/)
+    assert.equal(restored.error, 'RESULT_EXPIRED')
     assert.equal(restored.canRetrySave, false)
     assert.equal(restored.canResumeTracking, false)
     assert.equal(f.gateway.calls.content.length, 0)

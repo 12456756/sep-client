@@ -26,6 +26,14 @@ it('only displays final failures and remembers a dismissed run across route chan
   assert.equal(feedback.getSnapshot()?.tone, 'error')
 })
 
+it('displays the safe response interruption reason from a final failure notice', () => {
+  const feedback = new FeedbackController()
+  const listener = createRuntimeFailureListener(feedback, owner)
+  listener.receive({ ...event(), data: { owner, code: 'MODEL_RESPONSE_INTERRUPTED' } })
+  assert.equal(feedback.getSnapshot()?.message, '模型响应中断，请稍后重试')
+  assert.equal(feedback.getSnapshot()?.tone, 'error')
+})
+
 it('rejects wrong owners, cleared sessions, disposed listeners and arbitrary error content', () => {
   const feedback = new FeedbackController()
   const listener = createRuntimeFailureListener(feedback, owner)

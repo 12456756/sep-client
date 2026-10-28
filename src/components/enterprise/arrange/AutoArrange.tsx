@@ -151,6 +151,7 @@ export function AutoArrange({ employees, busy, onStart, onPlanningStart, setting
           </div>
         ) : null}
         <GoalComposer
+          showExamples={!submitted && !planning}
           busy={busy || planning}
           value={goal}
           onChange={setGoal}

@@ -3,6 +3,7 @@ import { AuthApiError } from '../common/platform/platform-api'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
 import { AppError } from './app-error'
 import type { ErrorCode } from './error-codes'
+import { workFeedbackMessage } from './work-feedback'
 
 interface PublicError { code: ErrorCode; message: string; statusCode: number }
 
@@ -73,6 +74,8 @@ export function operationFeedback(error: unknown, operation: FeedbackOperation, 
   if (error instanceof Error && error.message.startsWith('ATTACHMENT_') && mapped && mapped.message !== '操作未能完成。') return mapped
   if (error instanceof AppError) {
     const base = { code: error.code, statusCode: mapped?.statusCode ?? 500 }
+    const workMessage = workFeedbackMessage(error, operation, error.code)
+    if (workMessage) return { ...base, message: workMessage }
     if (error.userMessage === '自动编排无法读取已要求使用的附件。') return { ...base, message: '自动编排无法读取所需附件，请联系平台管理员' }
     if (error.code === 'PLANNING_FAILED' && planningMessages[error.userMessage]) return { ...base, message: planningMessages[error.userMessage] }
     const reason = error.details?.reason
@@ -90,9 +93,12 @@ export function operationFeedback(error: unknown, operation: FeedbackOperation, 
       NETWORK_ERROR: '网络连接失败，请检查网络', RATE_LIMITED: '请求过于频繁，请稍后重试',
     }
     if (messages[error.code]) return { ...base, message: messages[error.code]! }
+    if (error.code === 'INVALID_ARGUMENT' && error.details?.reason === 'employee-unavailable') return { ...base, message: '所选员工当前不可用，请重新选择员工' }
     if (error.userMessage === '本地语音模型缺失或损坏，请检查安装资源。') return { ...base, message: '语音识别资源异常，请联系平台管理员' }
     return { ...base, message: fallback.message }
   }
   if (mapped?.code === 'AUTH_REQUIRED') return { ...mapped, message: '登录状态已失效，请重新登录' }
+  const workMessage = workFeedbackMessage(error, operation, mapped?.code)
+  if (workMessage && mapped) return { ...mapped, message: workMessage }
   return { ...(mapped ?? fallback), message: fallback.message }
 }

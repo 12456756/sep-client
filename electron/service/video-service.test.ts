@@ -210,6 +210,19 @@ describe('VideoService mock submission, disk recovery and original delivery', ()
     })
   }
 
+  for (const [error, code] of [[new Error('Request timed out.'), 'NETWORK_TIMEOUT'], [Object.assign(new Error('private network diagnostics'), { code: 'ECONNRESET' }), 'NETWORK_ERROR']] as const) {
+    it(`preserves typed transport ${code} while keeping the original receipt`, async context => {
+      const f = await fixture()
+      const initial = await f.service.generate('task-a', input())
+      context.mock.method(f.gateway, 'getReceipt', async () => { throw error })
+      const job = await f.service.resume('task-a', initial.jobId)
+      assert.equal(job.error, code)
+      assert.equal(job.trackingStatus, 'INTERRUPTED')
+      assert.deepEqual(job.receipt, initial.receipt)
+      assert.equal(f.gateway.calls.submit, 1)
+    })
+  }
+
   it('requires explicit save retry after download authorization is lost and recovers only original bytes', async context => {
     const f = await fixture()
     const denied = context.mock.method(f.gateway, 'content', async () => { throw new AppError('AUTH_REQUIRED') })

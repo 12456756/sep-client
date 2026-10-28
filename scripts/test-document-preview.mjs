@@ -64,7 +64,7 @@ try {
     window.fixture={content:${JSON.stringify(word)},failure:false,calls:[]};
     window.electronAPI={previewArrangementDocument:async input=>{window.fixture.calls.push(input);return window.fixture.failure?{success:false,error:{message:'测试读取失败'}}:{success:true,data:{name:'节点交付报告.docx',format:'docx',version:'accepted',source:'snapshot',content:window.fixture.content}}}};
     const root=ReactDOM.createRoot(document.getElementById('root'));
-    root.render(React.createElement(DocumentPreviewButton,{taskId:'task',nodeId:'node',deliverableId:'report',name:'节点交付报告.docx',format:'docx'}));
+    root.render(React.createElement(FeedbackProvider,null,React.createElement(DocumentPreviewButton,{taskId:'task',nodeId:'node',deliverableId:'report',name:'节点交付报告.docx',format:'docx'})));
     window.showConversation=()=>{
       const task={id:'conversation-task',title:'对话文档成果',prompt:encodeWorkPrompt('生成报告',{kind:'conversation',goal:'生成报告',steps:[],participants:[],sharedContext:{goal:'生成报告',confirmedInputs:[],previousResults:[],userNotes:[]}}),
         status:'completed',workDir:'C:/work',createdAt:1,startedAt:1,completedAt:2,error:null,files:['C:/work/report.docx','C:/work/archive.zip'],logs:[],ownerId:'member',ownerEnterpriseId:'enterprise',subscriptionId:'employee',activeRunId:null,workType:{state:'resolved',kind:'conversation'}};
@@ -73,6 +73,8 @@ try {
       api.beginAttachmentImport=async({target})=>({success:true,data:{schemaVersion:1,sessionId:'preview-attachment-session',owner:{memberId:'member',enterpriseId:'enterprise'},target,status:'open',createdAt:1,expiresAt:9999999999999,attachments:[],revision:0}});
       api.bindAttachmentPaste=()=>()=>{};
       api.cancelAttachmentImport=async()=>({success:true});
+      api.getTaskMedia=async()=>({success:true,data:{capabilities:null,assets:[],jobs:[],selectedReferenceIds:[],archived:false}});
+      api.getTaskVideo=async()=>({success:true,data:null});
       window.electronAPI=new Proxy(api,{get:(target,name)=>name in target?target[name]:String(name).startsWith('on')?()=>()=>{}:async()=>({success:false,error:{message:'测试服务未启用'}})});
       root.render(React.createElement(FeedbackProvider,null,React.createElement(WorkDetailPage,{workId:work.id,workspace:{works:[work],employees:[],myEmployees:[],busy:false,canGoBack:false,attachmentScopeKey:'test',error:null}})));
     };
@@ -93,7 +95,8 @@ try {
   await dialog.waitFor({ state: 'detached' })
   await page.evaluate(() => { window.fixture.failure = true })
   await page.getByRole('button', { name: '预览文档：节点交付报告.docx' }).click()
-  await page.getByRole('alert').filter({ hasText: '测试读取失败' }).waitFor()
+  await page.locator('.feedback-dialog').filter({ hasText: '测试读取失败' }).waitFor()
+  await page.getByRole('button', { name: '知道了', exact: true }).click()
   await page.evaluate(() => { window.fixture.failure = false })
   await page.getByRole('button', { name: '重试预览' }).click()
   await frame.getByText('节点交付报告', { exact: true }).waitFor()

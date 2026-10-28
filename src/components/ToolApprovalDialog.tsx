@@ -1,216 +1,94 @@
-/**
- * src/components/ToolApprovalDialog.tsx — 工具审批对话框
- *
- * 功能:
- *   - 显示 AI 请求执行的工具名称和参数
- *   - 允许用户批准或拒绝执行
- *   - 60 秒倒计时，超时自动拒绝
- */
-
-import { useEffect, useRef, useState } from 'react';
-import { Button } from './ui/Button';
-import { z } from 'zod';
-
-const paidVideoApprovalSchema = z.object({ mock: z.literal(false), quote: z.object({
-  amount: z.string().regex(/^\d+\.\d{6}$/), currency: z.literal('CNY'),
-  amountUsd: z.string().optional(),
-}) });
+import { useEffect, useRef } from 'react'
+import { z } from 'zod'
+import { useFeedback } from './feedback/FeedbackProvider'
 
 interface ToolApprovalRequest {
-  toolName: string;
-  input: unknown;
+  requestId?: string
+  toolName: string
+  input: unknown
+  timestamp?: number
+  expiresAt?: number
+}
+interface Props {
+  request: ToolApprovalRequest | null
+  onApprove: () => void
+  onDeny: () => void
 }
 
-interface ToolApprovalDialogProps {
-  request: ToolApprovalRequest | null;
-  onApprove: () => void;
-  onDeny: () => void;
+const paidQuote = z.object({ mock: z.literal(false), quote: z.object({
+  amount: z.string().regex(/^\d+\.\d{6}$/).refine(value => Number.isFinite(Number(value))), currency: z.literal('CNY'),
+}) })
+const imageQuote = z.object({ quote: z.object({ amount: z.string().regex(/^\d+(?:\.\d+)?$/).refine(value => Number.isFinite(Number(value))), currency: z.string().min(1).max(20) }) })
+const messages: Readonly<Record<string, string>> = {
+  bash: '允许员工在本机执行命令？此操作可能修改文件或访问系统资源。',
+  write: '允许员工创建或覆盖文件？覆盖后原有内容可能无法恢复。',
+  edit: '允许员工修改文件内容？',
+  media_generate_image: '允许员工生成图片？本次操作可能产生费用。',
+  media_cancel_job: '允许请求平台取消图片任务？取消结果以平台返回为准，不代表退款。',
+  video_generate: '允许员工按已确认的要求生成视频？',
+  video_from_image: '允许员工上传所选参考图或生成视频？',
 }
 
-const TIMEOUT_SECONDS = 60;
-
-// 高风险工具的说明
-const TOOL_DESCRIPTIONS: Record<string, { title: string; description: string; risk: string }> = {
-  video_from_image: {
-    title: '参考图生成视频',
-    description: '员工请求传输所选参考图或按已确认参数生成视频',
-    risk: '请核对参考图、创意和报价。标记为 mock 的任务使用模拟数据，不扣费。',
-  },
-  video_generate: {
-    title: '生成视频',
-    description: '员工请求按已确认的创意和参数生成视频',
-    risk: '请核对创意、参数和报价后批准。标记为 mock 的任务不扣费。',
-  },
-  bash: {
-    title: 'Shell 命令执行',
-    description: 'AI 请求在您的系统上执行 Shell 命令',
-    risk: '可能修改文件、安装软件或访问系统资源',
-  },
-  write: {
-    title: '创建/覆写文件',
-    description: 'AI 请求创建新文件或覆盖现有文件',
-    risk: '可能覆盖重要文件导致数据丢失',
-  },
-  edit: {
-    title: '编辑文件',
-    description: 'AI 请求修改现有文件内容',
-    risk: '可能修改代码或配置文件',
-  },
-};
-
-export function ToolApprovalDialog({ request, onApprove, onDeny }: ToolApprovalDialogProps) {
-  const [countdown, setCountdown] = useState(TIMEOUT_SECONDS);
-  const denyButtonRef = useRef<HTMLButtonElement>(null);
-
+/** The main process owns the deadline; queueing never restarts its approval budget. */
+export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
+  const feedback = useFeedback()
+  const lifetime = useRef<{ request: ToolApprovalRequest; token: object } | null>(null)
+  const resolved = useRef<ToolApprovalRequest | null>(null)
   useEffect(() => {
-    if (!request) return;
-
-  // 收到新请求时重置倒计时。
-    setCountdown(TIMEOUT_SECONDS);
-
-    const timer = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-    onDeny(); // 超时后自动拒绝。
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
-    return () => clearInterval(timer);
-  }, [request, onDeny]);
-
-  useEffect(() => {
-    if (request) denyButtonRef.current?.focus();
-  }, [request]);
-
-  if (!request) return null;
-
-  const toolInfo = TOOL_DESCRIPTIONS[request.toolName] || {
-    title: `未知工具: ${request.toolName}`,
-    description: 'AI 请求执行一个未知的工具',
-    risk: '未知风险，建议拒绝',
-  };
-
-  // 格式化输入内容以供显示。
-  const formatInput = (input: unknown): string => {
-    if (typeof input === 'string') return input;
-    if (typeof input === 'object' && input !== null) {
-      return JSON.stringify(input, null, 2);
+    if (!request || resolved.current === request) return
+    const token = {}
+    lifetime.current = { request, token }
+    let active = true
+    const approval = new AbortController()
+    const revision = feedback.getRevision()
+    const deadline = request.expiresAt ?? (request.timestamp ?? Date.now()) + 60_000
+    const remaining = deadline - Date.now()
+    let settled = false
+    const settle = (accepted: boolean) => {
+      if (settled || !active) return
+      settled = true
+      resolved.current = request
+      if (accepted && !approval.signal.aborted && Date.now() < deadline && revision === feedback.getRevision()) onApprove()
+      else onDeny()
     }
-    return String(input);
-  };
-
-  const inputDisplay = formatInput(request.input);
-  const paidVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image'
-    ? paidVideoApprovalSchema.safeParse(request.input) : null;
-  const realVideo = (request.toolName === 'video_generate' || request.toolName === 'video_from_image') &&
-    typeof request.input === 'object' && request.input !== null && 'mock' in request.input && request.input.mock === false;
-  const shouldTruncate = inputDisplay.length > 500;
-
-  return (
-      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" role="presentation">
-      <div className="bg-white dark:bg-gray-800 rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col" role="dialog" aria-modal="true" aria-labelledby="tool-approval-title" aria-describedby="tool-approval-description">
-        {/* Header */}
-        <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
-          <div className="flex items-start justify-between">
-            <div>
-              <h2 id="tool-approval-title" className="text-xl font-semibold text-gray-900 dark:text-gray-100">
-                🔐 工具执行授权
-              </h2>
-              <p id="tool-approval-description" className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                {toolInfo.description}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 ml-4">
-              <div className="text-right">
-                <div className="text-2xl font-mono font-bold text-orange-600 dark:text-orange-400">
-                  {countdown}s
-                </div>
-                <div className="text-xs text-gray-500 dark:text-gray-500">
-                  自动拒绝
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          {/* Risk Warning */}
-          <div className="bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg p-4 mb-4">
-            <div className="flex items-start gap-3">
-              <svg className="w-5 h-5 text-orange-600 dark:text-orange-400 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-              </svg>
-              <div>
-                <p className="text-sm font-medium text-orange-800 dark:text-orange-300">
-                  ⚠️ 风险提示
-                </p>
-                <p className="text-sm text-orange-700 dark:text-orange-400 mt-1">
-                  {realVideo ? '真实视频请求可能产生费用，请核对报价和参数后批准。' : toolInfo.risk}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {paidVideo?.success && <p className="mb-4 font-semibold" role="status">视频报价：¥{paidVideo.data.quote.amount} CNY{paidVideo.data.quote.amountUsd ? ` · $${paidVideo.data.quote.amountUsd} USD` : ''}</p>}
-
-          {/* Tool Name */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              工具名称
-            </label>
-            <div className="bg-gray-50 dark:bg-gray-900 px-4 py-2 rounded-md">
-              <code className="text-blue-600 dark:text-blue-400 font-mono">
-                {request.toolName}
-              </code>
-            </div>
-          </div>
-
-          {/* Tool Parameters */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              参数内容
-            </label>
-            <div className="bg-gray-50 dark:bg-gray-900 px-4 py-3 rounded-md overflow-x-auto">
-              <pre className="text-sm text-gray-800 dark:text-gray-200 font-mono whitespace-pre-wrap break-words">
-                {shouldTruncate ? inputDisplay.slice(0, 500) + '\n\n... (已截断)' : inputDisplay}
-              </pre>
-            </div>
-          </div>
-        </div>
-
-        {/* Actions */}
-        <div className="px-6 py-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50">
-          <div className="flex gap-3">
-            <Button
-              ref={denyButtonRef}
-              onClick={onDeny}
-              variant="secondary"
-              className="flex-1"
-              aria-label="拒绝工具执行"
-              title="拒绝工具执行"
-            >
-              ❌ 拒绝执行
-            </Button>
-            <Button
-              onClick={onApprove}
-              variant="primary"
-              className="flex-1"
-              aria-label="允许工具执行"
-              title="允许工具执行"
-            >
-              ✅ 允许执行
-            </Button>
-          </div>
-          <p className="text-xs text-center text-gray-500 dark:text-gray-500 mt-3">
-            仅在您确认操作安全的情况下点击"允许执行"
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+    const quote = paidQuote.safeParse(request.input)
+    const isVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image'
+    const raw = z.object({ mock: z.boolean().optional() }).safeParse(request.input)
+    const input = z.record(z.string(), z.unknown()).safeParse(request.input)
+    const transmission = (isVideo || request.toolName === 'media_generate_image') && input.success && input.data.operation === 'upload-references'
+    if (!Number.isFinite(deadline) || remaining <= 0 || isVideo && !transmission && (!raw.success || raw.data.mock !== true && !quote.success)) {
+      settle(false)
+      return
+    }
+    let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
+    if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前将另行确认报价。'
+    const price = request.toolName === 'media_generate_image' ? imageQuote.safeParse(request.input) : null
+    if (price?.success) message += ` 本次报价 ${price.data.quote.amount} ${price.data.quote.currency}。`
+    if (input.success && ['bash', 'write', 'edit'].includes(request.toolName)) {
+      const target = request.toolName === 'bash' ? input.data.command : input.data.path
+      if (typeof target === 'string') message += ` ${request.toolName === 'bash' ? '命令' : '文件'}：${target}`
+      else if (target && typeof target === 'object') message += ` 命令：${JSON.stringify(target)}`
+    }
+    const timer = window.setTimeout(() => { approval.abort(); settle(false) }, remaining)
+    void feedback.ask({
+      key: `approval:${request.requestId ?? request.timestamp ?? deadline}`,
+      message: isVideo && quote.success ? `${message} 本次报价 ¥${quote.data.quote.amount}。` : message,
+      actionLabel: isVideo && quote.success ? '同意并生成' : '允许',
+      signal: approval.signal,
+    }).then(settle)
+    return () => {
+      active = false
+      window.clearTimeout(timer)
+      approval.abort()
+      // StrictMode replays the same request's effect; only a real departure denies it.
+      queueMicrotask(() => {
+        if (!settled && (lifetime.current?.token === token || lifetime.current?.request !== request)) {
+          settled = true
+          resolved.current = request
+          onDeny()
+        }
+      })
+    }
+  }, [request, feedback, onApprove, onDeny])
+  return null
 }

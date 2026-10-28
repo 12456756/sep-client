@@ -1,19 +1,20 @@
-/** 会话与编排共享对话主视图；结果、过程和工作信息按需查看。 */
+/** 会话显示对话，编排显示实时节点消息；结果和工作信息按需查看。 */
 
 import {
-  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, Info, LoaderCircle, MessageSquareText,
+  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, Info, LoaderCircle,
   RotateCcw, StopCircle, Trash2, X, XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Empty, StepStateChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
-import { ArrangementSteps } from '../../components/enterprise/arrange/ArrangementSteps';
+import { ArrangementTranscript } from '../../components/enterprise/arrange/ArrangementTranscript';
 import { WorkConversation } from '../../components/enterprise/WorkTalkDrawer';
 import { IconHint } from '../../components/enterprise/IconHint';
 import { WorkStatusIcon, WorkTypeTag } from '../../components/enterprise/WorkIndicators';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
+import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
 import { currentWorkOperation, processActivityLabel } from '../../features/enterprise/work-process';
@@ -51,6 +52,11 @@ export function WorkDetailPage({ workspace, workId }: Props) {
 type Panel = 'results' | 'process' | 'info' | null;
 
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
+  const { capture } = useOperationFeedback(work.id);
+  const copyPath = async (path: string) => {
+    const notice = capture();
+    if (!await copy(path)) notice.show('路径复制失败，请联系平台管理员');
+  };
   const team = useTeam(work, workspace);
   const isConversation = work.kind === 'conversation';
   const finished = work.status === 'completed';
@@ -63,11 +69,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const runEndedAt = work.lastRunEndedAt ?? work.completedAt;
   const mediaPhase = work.kind === 'flow' ? work.arrangementExecution?.media?.find(item => !['ready', 'blocked'].includes(item.phase))?.phase ?? null : null;
   const mediaPhaseLabel = mediaPhase === 'preparing' ? '正在准备媒体请求' : mediaPhase === 'awaiting-approval' ? '等待确认媒体请求' : mediaPhase === 'submitted' ? '媒体已提交，等待供应商' : mediaPhase === 'tracking' ? '供应商正在生成媒体' : mediaPhase === 'saving' ? '正在下载并保存媒体' : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
-  const mediaError = work.kind === 'flow' ? work.arrangementExecution?.media?.find(item => item.phase === 'blocked') : null;
   const [panel, setPanel] = useState<Panel>(null);
-  const [removing, setRemoving] = useState(false);
-  const conversation = useRef<HTMLElement | null>(null);
-  const focusConversation = () => conversation.current?.querySelector<HTMLTextAreaElement>('textarea.ent-ask-input')?.focus();
   const inspector = useRef<HTMLDialogElement | null>(null);
   const [mediaSummary, setMediaSummary] = useState<{ images: number | null; videos: number | null; error: string | null }>({ images: null, videos: null, error: null });
   const handleMediaSummary = useCallback((summary: typeof mediaSummary) => setMediaSummary(summary), []);
@@ -146,7 +148,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         <h1>{work.title}</h1>
         <div className="ent-wk-head-actions">
           <IconHint label={resultsTitle} side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看产出结果" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'results'} onClick={() => openInspector('results')}><FileOutput size={16} aria-hidden /></button></IconHint>
-          <IconHint label="工作过程" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作过程" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'process'} onClick={() => openInspector('process')}><LoaderCircle size={16} aria-hidden /></button></IconHint>
+          {isConversation ? <IconHint label="工作过程" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作过程" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'process'} onClick={() => openInspector('process')}><LoaderCircle size={16} aria-hidden /></button></IconHint> : null}
           <IconHint label="工作信息" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作信息" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'info'} onClick={() => openInspector('info')}><Info size={16} aria-hidden /></button></IconHint>
         </div>
       </div>
@@ -186,13 +188,13 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
       <div className="ent-wk-detail">
         {/* 主轴：两种工作类型都以内容为主体，内部滚动 */}
         <div className="ent-wk-detail-main">
-          <NeedsYou work={work} workspace={workspace} onTalk={focusConversation} />
+          <NeedsYou work={work} workspace={workspace} />
           {work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
-          {mediaError || mediaSummary.error ? <p className="ent-wk-media-alert" role="alert">{mediaError ? '媒体交付未完成，请打开产出结果查看详情。' : mediaSummary.error} <button type="button" className="ent-btn sm" onClick={() => openInspector('results')}>查看产出结果</button></p> : null}
 
-          <section ref={conversation} className="ent-chat-panel" aria-label="工作对话">
+          {isConversation ? <section className="ent-chat-panel" aria-label="工作对话">
             <WorkConversation work={work} workspace={workspace} />
-          </section>
+          </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}
+            busy={workspace.busy} onStop={workspace.stopWork} onResults={() => openInspector('results')} />}
         </div>
 
         {/* 原生模态面板悬浮在工作空间上方，查询组件在关闭时仍保持挂载。 */}
@@ -237,7 +239,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                             {file.format ? isConversation
                               ? <DocumentPreviewButton taskId={work.id} fileId={file.id} name={file.name} format={file.format} />
                               : file.nodeId && file.deliverableId ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null : null}
-                            <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copy(file.path)}>
+                            <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copyPath(file.path)}>
                               复制路径
                             </button>
                           </div>
@@ -252,22 +254,16 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             )}
           </section>
 
-          {/* 工作步骤与活动统一放在过程面板。 */}
-          <section className="ent-panel ent-wk-inspector-content" aria-label="工作过程" hidden={panel !== 'process'}>
+          {/* 普通会话的结构化活动仍可单独查看。 */}
+          {isConversation ? <section className="ent-panel ent-wk-inspector-content" aria-label="工作过程" hidden={panel !== 'process'}>
             <Process work={work} workspace={workspace} />
-          </section>
+          </section> : null}
 
-          {/* 工作信息折叠：低频信息不占首屏。多人协作时「谁做到哪一步」也在里面的工作步骤里。 */}
+          {/* 工作信息按需打开，不占用消息区。 */}
           <section className="ent-panel ent-wk-inspector-content" aria-label="工作信息" hidden={panel !== 'info'}>
             <div className="ent-wk-info-facts"><span>{team.length ? `${team.length} 位协作员工` : work.currentEmployeeName}</span><span>创建于 {dayTimeText(work.createdAt)}</span><span>{runStartedAt === null ? '尚未开始' : `开始于 ${dayTimeText(runStartedAt)}`}</span><span>{over && runEndedAt !== null ? `结束于 ${dayTimeText(runEndedAt)}` : '仍在执行'}</span><span>{work.workDir || '默认工作目录'}</span></div>
             <MoreInfo work={work} />
-            {removing ? <div className="ent-confirm" role="group" aria-label="确认删除工作记录">
-              <p><AlertTriangle size={14} aria-hidden />删除记录后，这项工作的对话、过程和结果说明都会从列表里消失，<strong>无法恢复</strong>。已经产生的文件仍然留在工作文件夹里。</p>
-              <div className="ent-confirm-foot">
-                <button type="button" className="ent-btn ghost sm" onClick={() => setRemoving(false)}>先留着</button>
-                <button type="button" className="ent-btn danger sm" disabled={workspace.busy} onClick={() => { void workspace.deleteWork(work.id); }}>确认删除</button>
-              </div>
-            </div> : <button type="button" className="ent-btn danger ghost sm" disabled={workspace.busy} onClick={() => setRemoving(true)}><Trash2 size={13} aria-hidden />删除记录</button>}
+            <button type="button" className="ent-btn danger ghost sm" disabled={workspace.busy} onClick={() => { void workspace.deleteWork(work.id); }}><Trash2 size={13} aria-hidden />删除记录</button>
 
           </section>
         </dialog>
@@ -277,20 +273,13 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
 }
 
 /** 等待确认、失败与终止后的恢复操作始终留在主对话区。 */
-function NeedsYou({ work, workspace, onTalk }: { work: WorkItem; workspace: EnterpriseWorkspace; onTalk: () => void }) {
-  const talkable = work.kind === 'flow';
+function NeedsYou({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
 
   if (work.status === 'waiting-user') {
     return (
       <div className="ent-flow-act">
         <AlertTriangle size={16} aria-hidden />
         <p>现在需要你：{work.nextUserAction ?? '看一下结果再决定怎么继续'}</p>
-        {talkable ? (
-          <button type="button" className="ent-btn sm" onClick={onTalk}>
-            <MessageSquareText size={13} aria-hidden />
-            补充说明
-          </button>
-        ) : null}
         <button type="button" className="ent-btn primary sm" onClick={() => void workspace.confirmStep(work.id)} disabled={workspace.busy}>
           <CheckCircle2 size={13} aria-hidden />
           确认，继续
@@ -304,12 +293,6 @@ function NeedsYou({ work, workspace, onTalk }: { work: WorkItem; workspace: Ente
       <div className="ent-flow-act danger">
         <XCircle size={16} aria-hidden />
         <p>{work.stopReason ? `中断原因：${work.stopReason}` : work.nextUserAction ?? '这项工作中断了，看一下再决定怎么继续'}</p>
-        {talkable ? (
-          <button type="button" className="ent-btn sm" onClick={onTalk}>
-            <MessageSquareText size={13} aria-hidden />
-            补充说明
-          </button>
-        ) : null}
         {!(work.kind === 'flow' && work.arrangementExecution?.nodes.some(node => node.status === 'failed')) ? <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
           <RotateCcw size={13} aria-hidden />
           重新试一次
@@ -405,8 +388,7 @@ function useTeam(work: WorkItem, workspace: EnterpriseWorkspace): SiliconEmploye
  */
 /** 工作过程。多人协作时上面一排页签按人筛，单人工作不出现页签。 */
 /** 用户只看结构化动作；原始日志仍由后台保留，不在详情页呈现。 */
-function Process({ work, workspace, showRetry = true }: { work: WorkItem; workspace: EnterpriseWorkspace; showRetry?: boolean }) {
-  if (work.kind === 'flow') return <ArrangementProcess work={work} workspace={workspace} showRetry={showRetry} />;
+function Process({ work }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   return (
     <section className="ent-work-process">
       <p className="ent-process-current" role="status">当前：{currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt)}</p>
@@ -432,24 +414,6 @@ function Process({ work, workspace, showRetry = true }: { work: WorkItem; worksp
             </li>
           ))}
         </ol>
-      ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}
-    </section>
-  );
-}
-
-function ArrangementProcess({ work, workspace, showRetry = true }: { work: WorkItem; workspace: EnterpriseWorkspace; showRetry?: boolean }) {
-  const mediaPhase = work.arrangementExecution?.media?.find(item => !['ready', 'blocked'].includes(item.phase))?.phase ?? null;
-  const mediaLabel = mediaPhase === 'preparing' ? '正在准备媒体请求'
-    : mediaPhase === 'awaiting-approval' ? '等待确认媒体请求'
-      : mediaPhase === 'submitted' ? '媒体已提交，等待供应商'
-        : mediaPhase === 'tracking' ? '供应商正在生成媒体'
-          : mediaPhase === 'saving' ? '正在下载并保存媒体'
-            : mediaPhase === 'materializing' ? '正在整理媒体交付结果' : null;
-  return (
-    <section className="ent-work-process">
-      <p className="ent-process-current" role="status">当前：{mediaLabel ?? currentWorkOperation(work.status, work.activities, work.isActive, work.queuedAt)}</p>
-      {work.steps.length ? (
-        <ArrangementSteps work={work} busy={workspace.busy} onRetry={workspace.retryWork} showRetry={showRetry} />
       ) : <p className="ent-hint">暂无可展示的执行步骤。</p>}
     </section>
   );
@@ -505,13 +469,18 @@ function groupDeliverables(files: WorkItem['deliverables']): Array<{ key: string
 
 /** 只缩短目录的展示文本；悬停和复制始终使用完整路径。 */
 function PathValue({ path }: { path: string }) {
+  const { capture } = useOperationFeedback(path);
+  const copyPath = async () => {
+    const notice = capture();
+    if (!await copy(path)) notice.show('路径复制失败，请联系平台管理员');
+  };
   const separator = path.includes('\\') ? '\\' : '/';
   const parts = path.split(/[\\/]/).filter(Boolean);
   const label = parts.length > 2 ? `…${separator}${parts.slice(-2).join(separator)}` : path;
   return (
     <span className="ent-wk-path">
       <span title={path}>{label}</span>
-      <button type="button" className="ent-wk-copy" onClick={() => void copy(path)} aria-label="复制工作目录" title="复制完整工作目录">
+      <button type="button" className="ent-wk-copy" onClick={() => void copyPath()} aria-label="复制工作目录" title="复制完整工作目录">
         <Copy size={13} aria-hidden />
       </button>
     </span>
@@ -523,7 +492,6 @@ async function copy(text: string): Promise<boolean> {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    // 剪贴板被浏览器策略拦下时静默失败：这只是一个便利动作，不该弹错误。
     return false;
   }
 }

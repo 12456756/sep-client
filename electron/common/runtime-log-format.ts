@@ -12,6 +12,7 @@ const phases: Record<string, string> = {
 const titles: Record<string, string> = {
   'model request overview': '模型请求已发送', 'model response completed': '模型响应完成',
   'model stream progress': '模型响应进度', 'provider response received': '收到响应头',
+  'model transport interrupted': '模型传输中断',
   'planning phase started': '规划环节开始', 'planning phase completed': '规划环节完成',
   'planning completed': '规划完成', 'planning phase failed': '规划失败', 'planning failed': '规划失败',
   'planning cancelled': '规划已取消', 'planning result discarded': '规划结果已丢弃',
@@ -41,11 +42,16 @@ const labels: Record<string, string> = {
   attempt: '尝试次数', validationKind: '校验类型',
   kind: '操作类型',
   stage: '当前环节',
+  transportPhase: '传输阶段', errorName: '错误类型', errorMessage: '错误信息',
+  causeName: '底层错误类型', causeCode: '底层错误码', causeMessage: '底层原因',
+  platformRequestId: '平台请求 ID', traceRequestId: '客户端请求 ID', bytesReceived: '已接收字节数',
+  firstByteMs: '网络首字节', lastDataAgeMs: '距离最后收包', signalAborted: '是否主动取消',
 }
 const values: Record<string, string> = {
   stop: '正常结束', length: '达到输出上限', error: '错误', aborted: '已中断', toolUse: '调用工具',
   ready: '可执行', create: '创建同步记录', status: '同步状态',
   submission: '提交格式', files: '实际文件',
+  connect: '连接建立', 'response-body': '响应流读取',
 }
 
 export function runtimePhaseLabel(phase: string): string { return phases[phase] ?? phase }

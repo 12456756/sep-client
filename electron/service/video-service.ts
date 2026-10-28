@@ -7,6 +7,7 @@ import { abortableVideo } from '../data/video-files'
 import { WriteChain } from '../data/write-chain'
 import { AppError } from '../errors/app-error'
 import { VideoRequestError } from '../errors/video-request-error'
+import { transportKind } from '../errors/operation-feedback'
 import { videoErrorMessage } from '../../src/shared/video-errors'
 
 type VideoInput = z.infer<typeof videoRequestSchema>
@@ -25,7 +26,8 @@ function tracking(receipt: VideoReceipt): boolean {
 }
 function interrupted(error: unknown, fallback: string): Pick<LocalVideoJob, 'trackingStatus' | 'error'> {
   const authorization = error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
-  return { trackingStatus: authorization ? 'AUTH_REQUIRED' : 'INTERRUPTED', error: error instanceof AppError ? error.code : fallback }
+  const transport = transportKind(error)
+  return { trackingStatus: authorization ? 'AUTH_REQUIRED' : 'INTERRUPTED', error: transport === 'timeout' ? 'NETWORK_TIMEOUT' : transport === 'network' ? 'NETWORK_ERROR' : error instanceof AppError ? error.code : fallback }
 }
 
 /** Explicit one-step polling. No timers, IPC, runtime registration or real gateway selection. */

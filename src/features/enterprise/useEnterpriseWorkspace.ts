@@ -8,6 +8,8 @@ import { conversationDocument } from './run-settings';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import { UserFeedbackError, responseError } from '../../shared/arrangement-feedback';
+import { feedbackMessage, type FeedbackOperation } from '../../shared/arrangement-feedback';
+import { useFeedback } from '../../components/feedback/FeedbackProvider';
 /**
  * 把平台数据与本地状态聚合成业务域模型。
  *
@@ -200,7 +202,6 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   registerSkillLeaveGuard: (guard: (() => boolean) | null) => () => void;
   /** 是否有可返回的上一页，供顶栏决定是否显示返回按钮。 */
   canGoBack: boolean;
-  error: string | null;
   busy: boolean;
   /** 当前登录用户名，页面问候语与「你」的表达都用它。 */
   userName: string;
@@ -213,7 +214,6 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   retryWorkTypes: () => void;
   workListLoad: { loading: boolean; error: string | null; retry: () => void };
   goBack: () => void;
-  dismissError: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>;
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
   sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string) => Promise<boolean>;
@@ -221,7 +221,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
   retryWork: (workId: string, nodeId?: string) => Promise<void>;
-  renameWork: (workId: string, title: string) => Promise<boolean>;
+  renameWork: (workId: string, title?: string) => Promise<boolean>;
   setWorkPinned: (workId: string, pinned: boolean) => Promise<boolean>;
   deleteWork: (workId: string) => Promise<boolean>;
   /** 把当前安排好的工作存成常用工作，返回是否存成功。 */
@@ -244,8 +244,6 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
 
 }
 
-const NOTICE_DURATION_MS = 5_000;
-
 export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses }: Options): EnterpriseWorkspace {
   const [tasks, setTasks] = useState<ClientTask[]>([]);
   const scopeKey = JSON.stringify([userId, enterpriseId]);
@@ -258,6 +256,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     ? { loading: workListLoadState.loading, error: workListLoadState.error, retry: retryWorkList }
     : { loading: true, error: null, retry: retryWorkList }, [scopeKey, workListLoadState, retryWorkList]);
   const { capture: captureFeedback } = useOperationFeedback(scopeKey);
+  const feedback = useFeedback();
   const deletedRecords = useMemo(() => ({ scopeKey, ids: new Set<string>() }), [scopeKey]);
   const deletedTaskIds = deletedRecords.ids;
   const scopedTasks = useMemo(() => tasks.filter(task => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId), [tasks, userId, enterpriseId]);
@@ -277,12 +276,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     setEmployeePageState(current => ({ ...current, ...patch }));
     if (patch.view) saveEmployeeView(scopeKey, patch.view);
   }, [scopeKey]);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!error) return;
-    const timeout = window.setTimeout(() => setError(null), NOTICE_DURATION_MS);
-    return () => window.clearTimeout(timeout);
-  }, [error]);
   const [busy, setBusy] = useState(false);
   const [organizationData, setOrganizationData] = useState<EnterpriseOrganization | null>(null);
   const [organizationMembers, setOrganizationMembers] = useState<OrganizationCarbonEmployee[]>([]);
@@ -481,6 +474,13 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   useEffect(() => {
     let active = true;
     const api = window.electronAPI;
+    const notice = captureFeedback();
+    const failedReads = new Set<string>();
+    const readFailure = (key: string, result: { error?: { message?: string } }, operation: FeedbackOperation) => {
+      if (!active || failedReads.has(key)) return;
+      failedReads.add(key);
+      notice.fail(responseError(result, operation), operation, `work-read:${operation}`, true);
+    };
     const belongsToScope = (task: ClientTask) => task.ownerId === userId && task.ownerEnterpriseId === enterpriseId
       && !deletedTaskIds.has(task.id);
     setTasks([]);
@@ -497,8 +497,15 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const pushedTaskIds = new Set<string>();
     setWorkListLoadState({ scopeKey, loading: true, error: null });
     const typeCache = new TaskReadCache(async task => {
-      const result = await api.getTask(task.id);
-      return result.success && result.task?.workType ? result.task.workType : { state: 'unavailable' };
+      try {
+        const result = await api.getTask(task.id);
+        if (active && (!result.success || result.task?.workType?.state === 'unavailable')) readFailure(`type:${task.id}`, result, 'workType');
+        else failedReads.delete(`type:${task.id}`);
+        return result.success && result.task?.workType ? result.task.workType : { state: 'unavailable' };
+      } catch {
+        readFailure(`type:${task.id}`, {}, 'workType');
+        return { state: 'unavailable' };
+      }
     }, (taskId, workType) => {
       if (!active) return;
       setTasks(current => current.map(task => task.id === taskId ? { ...task, workType } : task));
@@ -512,7 +519,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         const settled = task.activeRunId === null;
         try {
           const result = await api.getTaskMessages(task.id);
-          if (!active || deletedTaskIds.has(task.id) || messageVersions.get(task.id) !== version || !result.success || !result.messages) return;
+          if (!active || deletedTaskIds.has(task.id) || messageVersions.get(task.id) !== version) return;
+          if (!result.success || !result.messages) { readFailure(`messages:${task.id}`, result, 'workMessages'); return; }
+          failedReads.delete(`messages:${task.id}`);
           const messages = result.messages;
           // Early admission snapshots may not contain the new run yet. Only a new
           // persisted user message can acknowledge one optimistic send (not old identical text).
@@ -529,6 +538,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
           if (settled && runId) streamingText.current.delete(runtimeKey(task.id, runId));
         } catch {
           // Keep the live response until persisted messages can be read successfully.
+          readFailure(`messages:${task.id}`, {}, 'workMessages');
         }
       }));
       if (active) setTasks(current => [...current]);
@@ -545,9 +555,11 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       void api.getAllTasks().then(result => {
         if (!active || revision !== initialQueryRevision) return;
         if (!result.success) {
+          readFailure('list', result, 'workList');
           setWorkListLoadState({ scopeKey, loading: false, error: result.error?.message || '工作列表加载失败' });
           return;
         }
+        failedReads.delete('list');
         const list = (result.tasks ?? []).filter(belongsToScope);
         setTasks(current => {
           const next = mergeInitialTaskQuery(current, list, pushedTaskIds, receivedTaskList, deletedTaskIds);
@@ -559,6 +571,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         setWorkListLoadState({ scopeKey, loading: false, error: null });
       }).catch((loadError: unknown) => {
         if (!active || revision !== initialQueryRevision) return;
+        readFailure('list', {}, 'workList');
         const message = loadError instanceof Error ? loadError.message : '工作列表加载失败';
         setWorkListLoadState({ scopeKey, loading: false, error: message });
         if (!receivedTaskList && pushedTaskIds.size === 0) setTasks([]);
@@ -592,6 +605,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     });
     const unsubscribePi = api.onPiEvent(event => {
       if (!active || deletedTaskIds.has(event.taskId)) return;
+      // The selected arrangement detail owns its high-frequency transcript subscription.
+      if (event.type === 'arrangement_node_progress') return;
       recordArrangementEvent(event);
       latestRunByTask.current.set(event.taskId, event.runId);
       const key = runtimeKey(event.taskId, event.runId);
@@ -617,7 +632,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       typeCache.dispose();
       if (taskTypeCache.current === typeCache) taskTypeCache.current = null;
     };
-  }, [recordArrangementEvent, scopeKey, userId, enterpriseId, deletedTaskIds]);
+  }, [recordArrangementEvent, scopeKey, userId, enterpriseId, deletedTaskIds, captureFeedback]);
 
   const retryWorkTypes = useCallback(() => {
     const cache = taskTypeCache.current;
@@ -638,7 +653,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       setHistory(stack => [...stack.slice(-19), current]);
       return next;
     });
-    setError(null);
   }, [skillLeaveRegistry, scopeKey]);
 
   const goBack = useCallback(() => {
@@ -654,24 +668,26 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     if (!skillLeaveRegistry.mayLeave(scopeKey)) return;
     if (next.name === 'skills') setSkillPageRecord(current => ({ scopeKey, state: enterSkillPage(current.scopeKey === scopeKey ? current.state : createSkillPageState(), next) }));
     setRoute(next);
-    setError(null);
   }, [skillLeaveRegistry, scopeKey]);
 
   // ── 工作动作 ──────────────────────────────────────────────────────────
-  const run = useCallback(async (action: () => Promise<{ success: boolean; error?: { message: string } }>, fallback: string) => {
+  const run = useCallback(async (action: () => Promise<{ success: boolean; error?: { message: string } }>, operation: FeedbackOperation, quiet = false) => {
+    const notice = captureFeedback();
     setBusy(true);
-    setError(null);
     try {
       const result = await action();
-      if (!result.success) setError(result.error?.message || fallback);
-      return result.success;
+      if (!notice.isCurrent()) return false;
+      if (!result.success) throw responseError(result, operation);
+      return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : fallback);
+      if (!notice.isCurrent()) return false;
+      if (quiet) throw new UserFeedbackError(feedbackMessage(cause, operation));
+      notice.fail(cause, operation);
       return false;
     } finally {
-      setBusy(false);
+      if (notice.isCurrent()) setBusy(false);
     }
-  }, []);
+  }, [captureFeedback]);
 
   const startConversation = useCallback(async (employeeId: string, text: string, options?: ConversationOptions) => {
     const notice = captureFeedback();
@@ -684,7 +700,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const api = window.electronAPI;
     const title = goal.length > 40 ? `${goal.slice(0, 40)}…` : goal;
     setBusy(true);
-    setError(null);
     try {
       const modelId = options?.modelId || employee.allowedModels[0];
       if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请联系平台管理员' : '所选员工不支持当前模型，请重新选择');
@@ -757,7 +772,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     };
     const api = window.electronAPI;
     setBusy(true);
-    setError(null);
     try {
       const created = await api.createArrangementDraft(document);
       if (!notice.isCurrent()) return false;
@@ -788,43 +802,51 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string): Promise<boolean> => {
     const prompt = text.trim();
     if (!prompt || attachments.length && !attachmentSessionId) return false;
-    setError(null);
     const message: ClientTaskMessage = {
       id: `pending-${crypto.randomUUID()}`, role: 'user', content: prompt, createdAt: Date.now(), runId: '',
     };
     pendingMessages.current.set(workId, [...(pendingMessages.current.get(workId) ?? []), message]);
     setTasks(current => [...current]);
-    const ok = await run(() => window.electronAPI.continueTask({ taskId: workId, prompt, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) }), '消息没能发送，请重试');
+    const notice = captureFeedback();
+    const ok = await run(() => window.electronAPI.continueTask({ taskId: workId, prompt, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) }), 'workSend');
+    if (!notice.isCurrent()) return false;
     if (ok) return true;
       pendingMessages.current.set(workId, (pendingMessages.current.get(workId) ?? []).filter(item => item.id !== message.id));
       setTasks(current => [...current]);
     return false;
-  }, [run]);
+  }, [run, captureFeedback]);
 
   const switchEmployee = useCallback(async (workId: string, employeeId: string) => {
-    if (!myEmployees.some(item => item.id === employeeId)) { setError('这位员工当前不可用'); return; }
-    setActiveEmployeeByWork(current => ({ ...current, [workId]: employeeId }));
-    await run(() => window.electronAPI.switchConversationEmployee({ taskId: workId, subscriptionId: employeeId }), '切换员工失败，已保留原来的员工');
-  }, [myEmployees, run]);
+    const notice = captureFeedback();
+    if (!myEmployees.some(item => item.id === employeeId)) { notice.show('所选员工当前不可用，请重新选择员工'); return; }
+    const ok = await run(() => window.electronAPI.switchConversationEmployee({ taskId: workId, subscriptionId: employeeId }), 'workSwitch');
+    if (ok && notice.isCurrent()) setActiveEmployeeByWork(current => ({ ...current, [workId]: employeeId }));
+  }, [myEmployees, run, captureFeedback]);
 
   const confirmStep = useCallback(async (workId: string) => {
     const work = works.find(item => item.id === workId);
     const execution = work?.arrangementExecution ?? arrangement.executions[workId];
     const nodeIds = execution?.nodes.filter(node => node.pendingConfirmation).map(node => node.nodeId) ?? [];
-    if (nodeIds.length) await run(() => window.electronAPI.confirmArrangementNodes({ taskId: workId, nodeIds }), '确认没能提交，请重试');
-    else if (work?.workType.state === 'resolved' && work.workType.kind === 'conversation') await run(() => window.electronAPI.continueTask({ taskId: workId, prompt: '我已确认当前结果，请继续下一步。' }), '确认没能提交，请重试');
+    if (nodeIds.length) await run(() => window.electronAPI.confirmArrangementNodes({ taskId: workId, nodeIds }), 'workConfirm');
+    else if (work?.workType.state === 'resolved' && work.workType.kind === 'conversation') await run(() => window.electronAPI.continueTask({ taskId: workId, prompt: '我已确认当前结果，请继续下一步。' }), 'workConfirm');
   }, [arrangement.executions, run, works]);
 
   const stopWork = useCallback(async (workId: string, reason: string) => {
-    const ok = await run(() => window.electronAPI.cancelTask(workId, reason), '终止失败，请重试');
-    return ok;
-  }, [run]);
+    const notice = captureFeedback();
+    return feedback.confirm({ key: `stop:${scopeKey}:${workId}`, message: '确认终止当前工作？已完成的操作和已产出的文件不会撤销，平台上的图片或视频任务可能仍在执行。',
+      actionLabel: '终止工作', busyLabel: '正在终止', input: { label: '终止原因（选填）', value: '', maxLength: 2000 },
+      onConfirm: async value => {
+        if (!notice.isCurrent()) return { success: false };
+        try { return { success: await run(() => window.electronAPI.cancelTask(workId, value.trim() || reason), 'workStop', true) }; }
+        catch (cause) { return { success: false, message: feedbackMessage(cause, 'workStop') }; }
+      } });
+  }, [run, feedback, scopeKey, captureFeedback]);
 
   const retryWork = useCallback(async (workId: string, nodeId?: string) => {
-    await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId } : workId), '重试失败，请稍后再试');
+    await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId } : workId), 'workRetry');
   }, [run]);
 
-  const updateWorkDetails = useCallback(async (workId: string, patch: { title?: string; pinned?: boolean }): Promise<boolean> => {
+  const updateWorkDetails = useCallback(async (workId: string, patch: { title?: string; pinned?: boolean }, quiet = false): Promise<boolean> => {
     const cache = taskTypeCache.current;
     const ok = await run(async () => {
       const result = await window.electronAPI.updateTaskDetails({ taskId: workId, ...patch });
@@ -837,16 +859,33 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         } : task));
       }
       return result;
-    }, '修改工作记录失败，请重试');
+    }, patch.title !== undefined ? 'workRename' : patch.pinned ? 'workPin' : 'workUnpin', quiet);
     return ok && taskTypeCache.current === cache;
   }, [run]);
 
-  const renameWork = useCallback((workId: string, title: string) => updateWorkDetails(workId, { title }), [updateWorkDetails]);
+  const renameWork = useCallback(async (workId: string, title?: string): Promise<boolean> => {
+    const notice = captureFeedback();
+    return feedback.confirm({ key: `rename:${scopeKey}:${workId}`, title: '重命名工作', message: '请输入工作名称',
+      actionLabel: '保存名称', busyLabel: '正在保存', input: { label: '工作名称', value: title ?? works.find(work => work.id === workId)?.title ?? '', maxLength: 100 },
+      validate: value => !value.trim() || Array.from(value).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) ? '工作名称须为 1–100 个字符，不能包含换行或控制字符' : null,
+      onConfirm: async value => {
+        if (!notice.isCurrent()) return { success: false };
+        try { return { success: await updateWorkDetails(workId, { title: value.trim() }, true) }; }
+        catch (cause) { return { success: false, message: feedbackMessage(cause, 'workRename') }; }
+      } });
+  }, [updateWorkDetails, feedback, scopeKey, works, captureFeedback]);
   const setWorkPinned = useCallback((workId: string, pinned: boolean) => updateWorkDetails(workId, { pinned }), [updateWorkDetails]);
 
   const deleteWork = useCallback(async (workId: string): Promise<boolean> => {
     const cache = taskTypeCache.current;
-    const ok = await run(() => window.electronAPI.deleteTask(workId), '删除失败，请重试');
+    const notice = captureFeedback();
+    const ok = await feedback.confirm({ key: `delete:${scopeKey}:${workId}`,
+      message: '确认删除这条工作记录？已产出的文件仍保留，此操作不会取消平台上的图片或视频任务。',
+      actionLabel: '删除', busyLabel: '正在删除', onConfirm: async () => {
+        if (!notice.isCurrent()) return { success: false };
+        try { return { success: await run(() => window.electronAPI.deleteTask(workId), 'workDelete', true) }; }
+        catch (cause) { return { success: false, message: feedbackMessage(cause, 'workDelete') }; }
+      } });
     if (ok && taskTypeCache.current === cache) {
       // Only successful deletions suppress snapshots already in flight before the IPC reply.
       deletedTaskIds.add(workId);
@@ -861,7 +900,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       setRoute(current => (current.name === 'work' && current.workId === workId ? { name: 'records' } : current));
     }
     return ok && taskTypeCache.current === cache;
-  }, [clearRuntimeState, deletedTaskIds, run]);
+  }, [clearRuntimeState, deletedTaskIds, run, feedback, scopeKey, captureFeedback]);
 
   // ── 常用工作 ──────────────────────────────────────────────────────────
   /** 写盘失败（无痕模式、配额满）不阻断界面：内存里仍然保留，只是下次打开会丢。 */
@@ -948,13 +987,13 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   return {
     ...skillLibrary,
     attachmentScopeKey: scopeKey,
-    overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, error, busy,
+    overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, busy,
     employeePageState, updateEmployeePageState,
     skillPageState, updateSkillPageState, registerSkillLeaveGuard,
     employeeBackgroundRoute: employeeBackgroundRoute(route, history),
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
-    navigate, replaceRoute, retryWorkTypes, workListLoad, goBack, dismissError: () => setError(null),
+    navigate, replaceRoute, retryWorkTypes, workListLoad, goBack,
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
     stopWork, retryWork, renameWork, setWorkPinned, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,

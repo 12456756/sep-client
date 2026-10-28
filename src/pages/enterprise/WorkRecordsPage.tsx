@@ -7,7 +7,7 @@
  * 已确认的内容和终止原因都会保留，不会一起消失。
  */
 
-import { Activity, AlertTriangle, CheckCircle2, ChevronDown, CircleHelp, ClipboardCheck, FileCheck2, History, LoaderCircle, MessageSquare, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
+import { Activity, CheckCircle2, ChevronDown, CircleHelp, ClipboardCheck, FileCheck2, History, LoaderCircle, MessageSquare, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';
 import { useState } from 'react';
 import { Empty, WorkStatusChip } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
@@ -66,9 +66,6 @@ interface Props {
 export function WorkRecordsPage({ workspace }: Props) {
   const [openId, setOpenId] = useState<string | null>(null);
   const [panel, setPanel] = useState<'result' | 'process'>('process');
-  const [removing, setRemoving] = useState<string | null>(null);
-  const [stopping, setStopping] = useState<string | null>(null);
-  const [stopReason, setStopReason] = useState('');
 
   const filters = readWorkRecordFilters(workspace.route);
   const records = filterWorkRecords(workspace.works, filters);
@@ -85,14 +82,6 @@ export function WorkRecordsPage({ workspace }: Props) {
     setOpenId(current => (current === work.id && panel === next ? null : work.id));
   };
 
-  const stop = (work: WorkItem) => {
-    void workspace.stopWork(work.id, stopReason.trim() || '用户在工作记录里终止了这项工作').then(ok => {
-      if (ok) {
-        setStopping(null);
-        setStopReason('');
-      }
-    });
-  };
 
   return (
     <div className="ent-page ent-record-page">
@@ -152,16 +141,6 @@ export function WorkRecordsPage({ workspace }: Props) {
         </p>
       ) : null}
 
-      {unresolvedTypes.unavailable ? (
-        <div className="ent-record-type-notice unavailable" role="status">
-          <CircleHelp size={14} aria-hidden />
-          <span>{unresolvedTypes.unavailable} 条记录的类型暂不可用，暂仅显示在全部类型中。</span>
-          <button type="button" className="ent-btn sm ghost" onClick={() => workspace.retryWorkTypes()}>
-            <RotateCcw size={13} aria-hidden />
-            重新读取类型
-          </button>
-        </div>
-      ) : null}
 
       {!records.length && !workspace.works.length ? (
         <Empty title="这里还没有工作记录">
@@ -250,54 +229,16 @@ export function WorkRecordsPage({ workspace }: Props) {
                   <ChevronDown size={13} aria-hidden className="ent-record-caret" />
                 </button>
                 {!over ? (
-                  <button type="button" className="ent-btn sm danger ghost" onClick={() => { setStopping(work.id); setStopReason(''); }} disabled={workspace.busy}>
+                  <button type="button" className="ent-btn sm danger ghost" onClick={() => { void workspace.stopWork(work.id, '用户在工作记录里终止了这项工作'); }} disabled={workspace.busy}>
                     <StopCircle size={13} aria-hidden />
                     终止当前工作
                   </button>
                 ) : null}
-                <button type="button" className="ent-btn sm danger ghost" onClick={() => setRemoving(work.id)} disabled={workspace.busy}>
+                <button type="button" className="ent-btn sm danger ghost" onClick={() => { void workspace.deleteWork(work.id); }} disabled={workspace.busy}>
                   <Trash2 size={13} aria-hidden />
                   删除记录
                 </button>
               </div>
-
-              {stopping === work.id ? (
-                <div className="ent-confirm">
-                  <p>
-                    <AlertTriangle size={14} aria-hidden />
-                    终止后 {work.currentEmployeeName} 会立刻停手。
-                    <strong>已完成的动作、已产生的文件、你已确认的内容和终止原因都会保留</strong>，之后还能继续这项工作。
-                  </p>
-                  <label className="ent-field">
-                    <span>终止原因（会记录在工作过程里）</span>
-                    <input className="ent-input" value={stopReason} placeholder="例如：资料给错了，需要重新准备" onChange={event => setStopReason(event.target.value)} />
-                  </label>
-                  <div className="ent-confirm-foot">
-                    <button type="button" className="ent-btn ghost sm" onClick={() => setStopping(null)}>先不终止</button>
-                    <button type="button" className="ent-btn danger sm" disabled={workspace.busy} onClick={() => stop(work)}>{workspace.busy ? '正在终止…' : '确认终止'}</button>
-                  </div>
-                </div>
-              ) : null}
-
-              {removing === work.id ? (
-                <div className="ent-confirm">
-                  <p>
-                    <AlertTriangle size={14} aria-hidden />
-                    删除记录后，这项工作的对话、过程和结果说明都会从列表里消失，<strong>无法恢复</strong>。
-                    已经产生的文件仍然留在工作文件夹里。
-                  </p>
-                  <div className="ent-confirm-foot">
-                    <button type="button" className="ent-btn ghost sm" onClick={() => setRemoving(null)}>先留着</button>
-                    <button
-                      type="button"
-                      className="ent-btn danger sm"
-                      onClick={() => { void workspace.deleteWork(work.id); setRemoving(null); setOpenId(null); }}
-                    >
-                      确认删除
-                    </button>
-                  </div>
-                </div>
-              ) : null}
 
               {expanded ? (
                 <div className="ent-record-detail">

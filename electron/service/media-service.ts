@@ -13,6 +13,7 @@ import { realMediaParameters, realMediaSemanticHash } from '../common/platform/r
 import { imageAspectRatio } from '../../src/shared/media-spec'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
+import { transportKind } from '../errors/operation-feedback'
 import { requireScope, type ScopeSource } from './scope-guard'
 
 const log = logger.child('media-service')
@@ -130,10 +131,19 @@ export class MediaService {
       ...(job.lastQueriedAt !== undefined ? { lastQueriedAt: job.lastQueriedAt } : {}),
       ...(job.providerWaitMs !== undefined ? { providerWaitMs: job.providerWaitMs } : {}),
       ...(job.downloadMs !== undefined ? { downloadMs: job.downloadMs } : {}),
-      error: job.error, createdAt: job.createdAt, updatedAt: job.updatedAt,
+      error: this.publicJobError(job.errorCode ?? job.error), createdAt: job.createdAt, updatedAt: job.updatedAt,
       assets: jobAssets.map(asset => this.viewAsset(asset)), canRetrySave,
       canResumeTracking: terminal.has(job.generationStatus) ? canRetrySave || this.needsBillingQuery(job) : job.recovery?.canQuery !== false,
       canCancelUpstream: job.recovery?.canCancel !== false && job.profile.capabilities.cancel && !!job.receiptId && !terminal.has(job.generationStatus) }
+  }
+  private publicJobError(error: string | null): string | null {
+    if (!error) return null
+    if (error === '本地跟踪已停止，上游任务可能仍在执行。') return 'TRACKING_STOPPED'
+    if (error === '未保存的原结果已过期，无法再次下载；已保存的图片仍可使用。') return 'RESULT_EXPIRED'
+    if (error === '原结果当前不可下载，不会重新生成。') return 'DOWNLOAD_UNAVAILABLE'
+    if (error === '本轮跟踪已达时长或查询上限，可手动恢复原请求。' || error === '查询重试已达上限，可继续跟踪原请求。') return 'TRACKING_LIMIT'
+    if (error === '服务端无法继续查询原请求，不会再次生成。' || error === '该通道不支持按原请求找回，不能自动恢复。') return 'QUERY_UNAVAILABLE'
+    return ['AUTH_REQUIRED', 'NETWORK_ERROR', 'NETWORK_TIMEOUT', 'RATE_LIMITED', 'INSUFFICIENT_FUNDS', 'QUOTE_EXPIRED', 'MEDIA_FORBIDDEN', 'PERMISSION_DENIED'].includes(error) ? error : 'MEDIA_FAILED'
   }
   private async loadCapabilities(scope: TaskOwnerScope, taskId: string, subscriptionId: string, refresh: boolean, epoch: number): Promise<void> {
     const key = this.key(scope, taskId)
@@ -541,7 +551,13 @@ export class MediaService {
             job.trackingStatus = 'AUTH_REQUIRED'; job.error = '请恢复图片任务的读取授权。'; break
           }
           job.attempts++; job.nextPollAt = Date.now() + Math.min(30_000, (this.options.pollFloorMs ?? 1_000) * 2 ** Math.min(job.attempts, 5))
-          if (job.attempts >= (this.options.maxAttempts ?? 8)) { job.trackingStatus = 'STOPPED'; job.error = '查询重试已达上限，可继续跟踪原请求。'; break }
+          if (job.attempts >= (this.options.maxAttempts ?? 8)) {
+            const transport = transportKind(error)
+            job.trackingStatus = 'STOPPED'
+            job.error = transport === 'timeout' ? 'NETWORK_TIMEOUT' : transport === 'network' ? 'NETWORK_ERROR'
+              : error instanceof AppError && error.code === 'RATE_LIMITED' ? 'RATE_LIMITED' : '查询重试已达上限，可继续跟踪原请求。'
+            break
+          }
           await this.options.store.saveJob(scope, job)
         }
       }

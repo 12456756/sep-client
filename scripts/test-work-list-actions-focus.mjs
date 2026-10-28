@@ -1,10 +1,11 @@
-/* global window, document */
+/* global window, document, requestAnimationFrame */
 import assert from 'node:assert/strict'
 import { mkdir } from 'node:fs/promises'
 import { chromium } from 'playwright-core'
 
 const browser = await chromium.launch({
-  executablePath: process.env.SEP_PREVIEW_BROWSER ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  ...(process.env.SEP_PREVIEW_BROWSER ? { executablePath: process.env.SEP_PREVIEW_BROWSER }
+    : process.platform === 'win32' ? { channel: 'msedge' } : { executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' }),
   headless: true,
 })
 try {
@@ -22,11 +23,13 @@ try {
     const { createRoot } = (await import(domPath)).default
     const { WorkListPane } = await import('/pages/enterprise/WorkListPane.tsx')
     const { WorkListActions } = await import('/pages/enterprise/WorkListActions.tsx')
+    const { FeedbackProvider, useFeedback } = await import('/components/feedback/FeedbackProvider.tsx')
     await import('/styles/work-hub.css')
     const e = React.createElement
     const work = id => ({ id, title: `测试工作 ${id}`, status: 'completed', isActive: false,
       workType: { state: 'resolved', kind: 'conversation' }, messages: [], goal: '测试记录', updatedAt: 1 })
     function Harness() {
+      const feedback = useFeedback()
       const [works, setWorks] = React.useState(Array.from({ length: 30 }, (_, i) => work(String(i))))
       const [request, setRequest] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
@@ -38,23 +41,28 @@ try {
           e(WorkListPane, { works, records: works, filters, onFilters: setFilters, selectedWorkId: null,
             onSelect() {}, onCreate() {}, onClose() {}, onRetryTypes() {}, menuWorkId: request?.workId,
             onWorkMenu: (workId, trigger, point) => setRequest({ workId, trigger, x: point?.x ?? 200, y: point?.y ?? 200 }) }),
-          e(WorkListActions, { works, request, busy, onDismiss: dismiss, onPin: async () => true, onRename: async () => true,
-            onDelete: async id => {
+          e(WorkListActions, { works, request, busy, onDismiss: dismiss, onPin: async () => true,
+            onRename: async id => feedback.confirm({ message: '重命名工作', actionLabel: '保存名称', busyLabel: '正在保存',
+              input: { label: '工作名称', value: works.find(item => item.id === id).title, maxLength: 100 },
+              onConfirm: async () => ({ success: true }) }),
+            onDelete: async id => feedback.confirm({ message: '确认删除工作记录', actionLabel: '确认删除', busyLabel: '正在删除', onConfirm: async () => {
               setBusy(true)
               await new Promise(resolve => setTimeout(resolve, 50))
               setWorks(current => current.filter(item => item.id !== id))
               setBusy(false)
-              return true
-            } })))
+              return { success: true }
+            } }) })))
     }
     document.getElementById('root').remove()
     const root = document.createElement('div')
     document.body.append(root)
-    createRoot(root).render(e(Harness))
+    createRoot(root).render(e(FeedbackProvider, null, e(Harness)))
   }, { reactPath, domPath })
 
   const row = id => page.getByRole('button', { name: `测试工作 ${id}，已完成，会话`, exact: true })
   const openDelete = async id => {
+    await row(id).scrollIntoViewIfNeeded()
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     await row(id).click({ button: 'right' })
     await page.getByRole('menuitem', { name: '删除', exact: true }).click()
     await page.getByRole('dialog').waitFor()
@@ -62,8 +70,12 @@ try {
   }
   const assertFocus = async locator => {
     await locator.waitFor()
-    await page.waitForFunction(() => !document.querySelector('dialog[open]'))
-    assert.equal(await locator.evaluate(el => el === document.activeElement), true)
+    await page.waitForFunction(() => !document.querySelector('.feedback-dialog, dialog[open]'))
+    await locator.evaluate(el => new Promise((resolve, reject) => {
+      let attempts = 0
+      const check = () => el === document.activeElement ? resolve(true) : attempts++ > 60 ? reject(new Error(`Focus did not return from ${document.activeElement?.tagName}`)) : requestAnimationFrame(check)
+      check()
+    }))
     assert.equal(await page.getByRole('searchbox').evaluate(el => el === document.activeElement), false)
   }
 
@@ -94,7 +106,7 @@ try {
   assert.deepEqual(errors, [])
   await mkdir('output/playwright', { recursive: true })
   await page.screenshot({ path: 'output/playwright/work-list-focus.png' })
-  console.log('PASS: native dialog deletion/cancel/rename focus; adjacent row and empty-list fallback; scroll position; no page errors')
+  console.log('PASS: shared dialog deletion/cancel/rename focus; adjacent row and empty-list fallback; scroll position; no page errors')
 } finally {
   await browser.close()
 }

@@ -2,20 +2,23 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ArrangementExecutionSnapshot, ArrangementPlanSnapshot, ClientTask, TaskExecutionEvent } from '../../shared/types';
 import { runtimeKey } from '../../shared/work-activity';
 
+import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
+import { responseError } from '../../shared/arrangement-feedback';
+
 const EXECUTION_REFRESH_INTERVAL = 5000
 
 function mergeEvents(current: TaskExecutionEvent[], incoming: TaskExecutionEvent[]): TaskExecutionEvent[] {
   const bySequence = new Map(current.map(event => [event.sequence, event]));
-  incoming.forEach(event => { if (event.type.startsWith('arrangement_')) bySequence.set(event.sequence, event); });
+  incoming.forEach(event => { if (event.type.startsWith('arrangement_') && event.type !== 'arrangement_node_progress') bySequence.set(event.sequence, event); });
   return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
 }
 
 /** Read the existing plan/timeline IPC contracts, never reconstruct DAG state from a percentage. */
 export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
+  const { capture } = useOperationFeedback(scopeKey);
   const [plans, setPlans] = useState<Record<string, ArrangementPlanSnapshot>>({});
   const [events, setEvents] = useState<Record<string, TaskExecutionEvent[]>>({});
   const [executions, setExecutions] = useState<Record<string, ArrangementExecutionSnapshot | null>>({});
-  const [error, setError] = useState<string | null>(null);
   const requested = useRef(new Map<string, { key: string }>());
   const executionInFlight = useRef(new Map<string, { request: { key: string }; generation: number }>());
   const executionPending = useRef(new Map<string, { request: { key: string }; generation: number }>());
@@ -29,7 +32,6 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
     setPlans({});
     setEvents({});
     setExecutions({});
-    setError(null);
     setLoadedScope(scopeKey);
   }, [scopeKey]);
   useEffect(() => {
@@ -39,7 +41,7 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
   }, []);
 
   const recordEvent = useCallback((event: TaskExecutionEvent): void => {
-    if (!event.type.startsWith('arrangement_')) return;
+    if (!event.type.startsWith('arrangement_') || event.type === 'arrangement_node_progress') return;
     const key = runtimeKey(event.taskId, event.runId);
     setEvents(previous => ({ ...previous, [key]: mergeEvents(previous[key] ?? [], [event]) }));
   }, []);
@@ -52,15 +54,16 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
       return
     }
     executionInFlight.current.set(taskId, { request, generation: requestGeneration })
+    const notice = capture()
     void (async () => {
-      const isCurrent = () => mounted.current && scope.current.generation === requestGeneration && requested.current.get(taskId) === request
+      const isCurrent = () => notice.isCurrent() && mounted.current && scope.current.generation === requestGeneration && requested.current.get(taskId) === request
       try {
         const result = await window.electronAPI.getArrangementExecution(taskId)
         if (!isCurrent()) return
-        if (!result.success) throw new Error(result.error?.message || '编排执行状态加载失败')
+        if (!result.success) throw responseError(result, 'workExecution')
         setExecutions(previous => ({ ...previous, [taskId]: result.execution ?? null }))
       } catch (cause) {
-        if (isCurrent()) setError(cause instanceof Error ? cause.message : '编排执行状态加载失败')
+        if (isCurrent()) notice.fail(cause, 'workExecution', `arrangement-read:${taskId}:workExecution`, true)
       } finally {
         executionInFlight.current.delete(taskId)
         const pending = executionPending.current.get(taskId)
@@ -70,7 +73,7 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
         }
       }
     })()
-  }, []);
+  }, [capture]);
 
   useEffect(() => {
     const taskIds = new Set(tasks.map(task => task.id));
@@ -87,16 +90,17 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
       const requestKey = runtimeKey(task.id, task.activeRunId ?? '') + ':' + task.status + ':' + typeKey;
       if (requested.current.get(task.id)?.key === requestKey) continue;
       const request = { key: requestKey };
+      const notice = capture();
       requested.current.set(task.id, request);
-      const isCurrent = () => mounted.current && scope.current.generation === generation && requested.current.get(task.id) === request;
+      const isCurrent = () => notice.isCurrent() && mounted.current && scope.current.generation === generation && requested.current.get(task.id) === request;
       void (async () => {
         try {
           const result = await window.electronAPI.getArrangementPlan(task.id);
           if (!isCurrent()) return;
-          if (!result.success) throw new Error(result.error?.message || '编排计划加载失败');
+          if (!result.success) throw responseError(result, 'workPlan');
           if (result.plan) setPlans(previous => ({ ...previous, [task.id]: result.plan! }));
         } catch (cause) {
-          if (isCurrent()) setError(cause instanceof Error ? cause.message : '工作计划加载失败');
+          if (isCurrent()) notice.fail(cause, 'workPlan', `arrangement-read:${scopeKey}:workPlan`, true);
         }
       })();
       if (task.workType.state === 'resolved' && task.workType.kind === 'arrangement') loadExecution(task.id, request, generation)
@@ -104,17 +108,17 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
         try {
           const timeline = await window.electronAPI.getTaskTimeline(task.id, task.activeRunId!);
           if (!isCurrent()) return;
-          if (!timeline.success) throw new Error(timeline.error?.message || '工作执行记录加载失败');
+          if (!timeline.success) throw responseError(timeline, 'workTimeline');
           if (timeline.events) {
             const key = runtimeKey(task.id, task.activeRunId!);
             setEvents(previous => ({ ...previous, [key]: mergeEvents(previous[key] ?? [], timeline.events!) }));
           }
         } catch (cause) {
-          if (isCurrent()) setError(cause instanceof Error ? cause.message : '工作执行记录加载失败');
+          if (isCurrent()) notice.fail(cause, 'workTimeline', `arrangement-read:${scopeKey}:workTimeline`, true);
         }
       })();
     }
-  }, [tasks, generation, loadExecution]);
+  }, [tasks, generation, loadExecution, capture, scopeKey]);
 
   // Media providers can finish without producing a model event. Refresh only the
   // local execution snapshot at a low rate so the page reflects delivery progress
@@ -134,5 +138,5 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
     const timer = window.setInterval(() => { void refresh() }, EXECUTION_REFRESH_INTERVAL)
     return () => { active = false; window.clearInterval(timer) }
   }, [tasks, generation, loadExecution]);
-  return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, executions: loadedScope === scopeKey ? executions : {}, recordEvent, error };
+  return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, executions: loadedScope === scopeKey ? executions : {}, recordEvent };
 }
