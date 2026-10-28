@@ -63,18 +63,18 @@ export function HomeDashboard({ userName, employees, works, draft, onNavigate, o
     <div className="sep-home-main">
       <header className="sep-home-greeting">
         <div className="sep-home-welcome"><Sun size={29} strokeWidth={1.6} aria-hidden /><div><h1>{userName}，{greeting}</h1><p>AI 让工作更简单，让团队更强大！</p></div></div>
-        <div className="sep-home-stats" aria-label="智能体概览">
+        <div className="sep-home-stats" aria-label="员工概览">
           <Stat icon={<Users />} label="总数" value={statsUnknown ? null : stats.total} tone="total" />
           <Stat icon={<Zap fill="currentColor" />} label="工作中" value={activityUnknown ? null : stats.working} tone="working" />
           <Stat icon={<ChartPie />} label="空闲" value={activityUnknown ? null : stats.idle} tone="idle" />
         </div>
       </header>
-      <HomeAssistantCard employees={model.roster} works={model.recentWorks} draft={draft} onSubmit={onSubmit}
+      <HomeAssistantCard employees={model.roster} draft={draft} onSubmit={onSubmit}
         onCreate={() => onNavigate({ name: 'arrange', mode: 'pick' })} demo={demo} busy={busy || Boolean(employeeLoad?.loading)} />
-      <section className="sep-home-employees" aria-label="我的智能体">
+      <section className="sep-home-employees" aria-label="我的员工">
         <div className="sep-home-section-heading">
-          <h2><Settings size={20} aria-hidden />我的智能体</h2>
-          <div className="sep-home-tabs" role="tablist" aria-label="智能体列表范围" onKeyDown={event => {
+          <h2><Settings size={20} aria-hidden />我的员工</h2>
+          <div className="sep-home-tabs" role="tablist" aria-label="员工列表范围" onKeyDown={event => {
             if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
             event.preventDefault()
             const next = event.key === 'Home' ? 'recommended' : event.key === 'End' ? 'recent' : tab === 'recommended' ? 'recent' : 'recommended'
@@ -91,13 +91,13 @@ export function HomeDashboard({ userName, employees, works, draft, onNavigate, o
             : visibleEmployees.length ? visibleEmployees.map(employee => <button type="button" className="sep-home-employee" key={employee.id} onClick={() => onNavigate({ name: 'employee', employeeId: employee.id })}>
               <span className="sep-home-employee-identity"><EmployeeFace employee={employee} size="sm" round /><span><strong title={employee.name}>{employee.name}</strong><small title={employee.roleName}>{employee.roleName}</small></span></span>
               <EmployeeStatus employee={employee} working={activeIds.has(employee.id)} unknown={Boolean(employeeStatusLoad?.loading || employeeStatusLoad?.error || workListLoad?.loading || workListLoad?.error)} />
-            </button>) : <InlineState message={tab === 'recent' ? '还没有使用记录，选择一位智能体开始工作吧' : '暂时没有分配给你的智能体'} />}
+            </button>) : <InlineState message={tab === 'recent' ? '还没有使用记录，选择一位员工开始工作吧' : '暂时没有分配给你的员工'} />}
         </div>
       </section>
       <section className="sep-home-popular" aria-label="热门推荐">
         <div className="sep-home-section-heading"><h2><Flame size={21} fill="currentColor" aria-hidden />热门推荐</h2><button type="button" className="sep-home-more" disabled={popularPool.length <= 6} onClick={() => setBatch(value => value + 1)}><RefreshCw size={14} aria-hidden />换一批</button></div>
-        <div className="sep-home-popular-grid">{loading ? <SkeletonCards count={6} /> : popular.length ? popular.map(employee => <button type="button" className="sep-home-popular-card" key={employee.id} onClick={() => onNavigate({ name: 'employee', employeeId: employee.id })}><EmployeeFace employee={employee} size="sm" round /><strong title={employee.name}>{employee.name}</strong><small title={employee.roleName}>{employee.roleName}</small></button>) : <InlineState message="暂无可推荐的智能体" />}</div>
-        {!demo && popular.length ? <span className="sep-home-recommendation-source">根据你可用的智能体推荐</span> : null}
+        <div className="sep-home-popular-grid">{loading ? <SkeletonCards count={6} /> : popular.length ? popular.map(employee => <button type="button" className="sep-home-popular-card" key={employee.id} onClick={() => onNavigate({ name: 'employee', employeeId: employee.id })}><EmployeeFace employee={employee} size="sm" round /><strong title={employee.name}>{employee.name}</strong><small title={employee.roleName}>{employee.roleName}</small></button>) : <InlineState message="暂无可推荐的员工" />}</div>
+        {!demo && popular.length ? <span className="sep-home-recommendation-source">根据你可用的员工推荐</span> : null}
       </section>
     </div>
     <aside className="sep-home-side" aria-label="首页摘要">

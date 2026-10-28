@@ -48,6 +48,8 @@ try {
     await page.goto(origin)
     await page.waitForFunction(() => document.querySelector('.ent-icon-nav'), undefined, { timeout: 10000 }).catch(error => { throw new Error(`${error.message}; renderer errors: ${errors.join('; ')}`) })
     const nav = page.getByRole('navigation', { name: '主导航' })
+    await page.locator('.sep-home').waitFor()
+    assert.equal(await page.getByRole('button', { name: '个人', exact: true }).getAttribute('aria-pressed'), 'true', 'login opens the personal homepage')
     await nav.getByRole('button', { name: '工作', exact: true }).click()
     const assertLayout = async expanded => {
       const metrics = await page.evaluate(() => {

@@ -50,7 +50,9 @@
 .sep-home-composer-actions > button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border: 1px solid #e8eaf0; border-radius: 8px; color: #758094; background: transparent; font-size: 12px; white-space: nowrap; }
 .sep-home-composer-actions > button:hover { color: var(--home-brand); border-color: #e4a7b0; background: #fff8f9; }
 .sep-home-composer-send { flex-shrink: 0; gap: 15px; }
-.sep-home-paperclip { display: grid; place-items: center; width: 26px; height: 32px; padding: 0; color: #53627b; border: 0; background: transparent; }
+.sep-home-composer-actions > .sep-home-paperclip { display: grid; place-items: center; width: 26px; height: 32px; padding: 0; color: var(--home-muted); border: 0; background: transparent; }
+.sep-home-composer .speech-actions { color: var(--home-muted); }
+.sep-home-composer .speech-icon:focus-visible { outline-color: var(--home-brand); }
 .sep-home-send { display: grid; place-items: center; width: 37px; height: 37px; padding: 0; border: 0; border-radius: 50%; color: white; background: linear-gradient(135deg, #d23b46, #be2632); box-shadow: inset 0 1px 3px #ffadb4; }
 .sep-home-send:disabled { opacity: .75; }
 .sep-home-send:not(:disabled):hover { background: #a6202c; }
@@ -144,9 +146,6 @@
 .sep-home-picker-list button > span:nth-child(2) { flex: 1; }
 .sep-home-picker-list strong { display: block; font-size: 13px; }
 .sep-home-picker-list small { display: block; margin-top: 4px; color: #8995aa; font-size: 11px; }
-.sep-home-context-suggestions { display: flex; flex-direction: column; gap: 5px; }
-.sep-home-context-suggestions > small { color: #8995aa; font-size: 11px; }
-.sep-home-context-suggestions > button { display: flex; align-items: center; justify-content: space-between; padding: 8px; border: 1px solid #ece5e9; border-radius: 6px; background: #fff; color: #667186; font-size: 12px; text-align: left; }
 .ent-shell.dark .sep-home { --home-ink: #e5dfeb; --home-muted: #a49aaf; --home-line: #3b323f; --home-panel: #28232d; --home-brand: #ed929d; background: radial-gradient(ellipse at 35% 0, #36272f, transparent 65%), #211e28; }
 .ent-shell.dark .sep-home-assistant, .ent-shell.dark .sep-home-panel, .ent-shell.dark .sep-home-employee, .ent-shell.dark .sep-home-popular, .ent-shell.dark .sep-home-popular-card, .ent-shell.dark .sep-home-stat { border-color: #443541; background: var(--home-panel); }
 .ent-shell.dark .sep-home-composer, .ent-shell.dark .sep-home-shortcut, .ent-shell.dark .sep-home-composer-actions > button { border-color: #4d3946; }
@@ -158,7 +157,7 @@
 .ent-shell.dark .sep-home-availability.working { background: #493b26; border-color: #685231; color: #e2bd7f; }
 .ent-shell.dark .sep-home-skeleton { background: #3b323f; }
 :root:has(.ent-shell.dark) .sep-home-dialog { border-color: #4c3b46; background: #28232d; color: #e5dfeb; }
-:root:has(.ent-shell.dark) .sep-home-dialog textarea, :root:has(.ent-shell.dark) .sep-home-picker-list button, :root:has(.ent-shell.dark) .sep-home-context-suggestions > button { background: #322b36; border-color: #4c3b46; color: #e5dfeb; }
+:root:has(.ent-shell.dark) .sep-home-dialog textarea, :root:has(.ent-shell.dark) .sep-home-picker-list button { background: #322b36; border-color: #4c3b46; color: #e5dfeb; }
 @media (max-width: 1439px) {
   .sep-home { grid-template-columns: minmax(0, 1fr) 218px; gap: 17px; padding-inline: 18px; }
   .sep-home-welcome { gap: 12px; }
@@ -172,7 +171,7 @@
   .sep-home { grid-template-columns: minmax(0, 1fr); }
   .sep-home-side { display: grid; grid-template-columns: 1.2fr 1fr; align-items: start; gap: 14px; }
   .sep-home-brand { min-height: 181px; margin: 0; grid-column: 2; }
-  .sep-home-recent { grid-row: 1 / 3; }
+  .sep-home-recent { grid-row: 1 / 3; align-self: stretch; }
   .sep-home-shortcuts { min-height: 0; }
   .sep-home-shortcut { min-height: 88px; }
 }
@@ -203,7 +202,6 @@
   .sep-home-composer-toolbar { align-items: flex-end; }
   .sep-home-composer-actions { gap: 5px; }
   .sep-home-composer-actions > button { height: 29px; font-size: 11px; }
-  .sep-home-composer-send { flex-direction: column; }
   .sep-home-employee-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sep-home-section-heading { gap: 16px; }
   .sep-home-tabs { gap: 14px; }

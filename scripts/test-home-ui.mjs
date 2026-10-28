@@ -40,22 +40,34 @@ try {
     await page.reload();
     await page.locator('.sep-home').waitFor();
     await page.evaluate(async () => { await document.fonts.ready; await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))); document.querySelector('.ent-scroll').scrollTop = 0; });
-    await page.getByRole('region', { name: '我的智能体' }).waitFor();
+    await page.getByRole('region', { name: '我的员工' }).waitFor();
     await page.getByRole('region', { name: '热门推荐' }).waitFor();
     await page.getByRole('region', { name: '最近任务' }).waitFor();
     assert.equal(await page.locator('.sep-home').innerText().then(text => text.includes('常用工具')), false, 'Common tools block is deferred');
     assert.equal(await page.locator('.sep-home-employee').count(), 5);
     assert.equal(await page.locator('.sep-home-popular-grid > *').count(), 6);
     assert.equal(await page.locator('.sep-home-recent-row').count(), 5);
+    assert.equal(await page.locator('.sep-home').innerText().then(text => text.includes('智能体')), false, 'Homepage uses employee terminology');
+    if (viewport.width <= 1299) {
+      for (const expanded of [false, true]) {
+        if (expanded) await page.getByRole('button', { name: '展开侧栏' }).click();
+        const recent = await page.locator('.sep-home-recent').boundingBox();
+        const brand = await page.locator('.sep-home-brand').boundingBox();
+        assert.ok(Math.abs(recent.y + recent.height - brand.y - brand.height) < 1, 'Recent tasks and brand panel bottoms align');
+      }
+      await page.getByRole('button', { name: '收起侧栏' }).click();
+    }
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true, `No horizontal overflow at ${viewport.width}px`);
     await page.screenshot({ path: join(outputDir, `home-${viewport.width}.png`), fullPage: true });
 
-    await page.getByRole('button', { name: '选择智能体' }).click();
-    await page.getByRole('dialog', { name: '选择智能体' }).waitFor();
+    await page.getByRole('button', { name: '选择员工' }).click();
+    await page.getByRole('dialog', { name: '选择员工' }).waitFor();
     await page.getByRole('dialog').getByRole('button', { name: /爆品机会评估师/ }).click();
-    await page.getByRole('button', { name: '上下文', exact: true }).click();
-    await page.getByRole('textbox', { name: '补充背景信息' }).fill('演示上下文检查');
-    await page.getByRole('button', { name: '保存上下文' }).click();
+    assert.equal(await page.getByRole('button', { name: '上下文', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '截图', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '上传文件', exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: '添加附件', exact: true }).count(), 1);
+    assert.equal(await page.getByRole('button', { name: '语音输入', exact: true }).isDisabled(), true, 'Preview never opens a microphone');
     await page.getByRole('textbox', { name: '工作需求' }).fill('请生成一份周报');
     await page.getByRole('button', { name: '发送需求' }).click();
     await page.getByRole('dialog', { name: '演示模式' }).waitFor();

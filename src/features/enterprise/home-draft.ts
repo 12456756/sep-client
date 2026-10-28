@@ -6,7 +6,6 @@ import type { RetainedAttachmentState } from './use-attachment-composer'
 export interface HomeDraft {
   text: string
   employeeId: string
-  context: string
   composerId: string
   epoch: number
   attachment: RetainedAttachmentState
@@ -14,7 +13,7 @@ export interface HomeDraft {
 
 export function createHomeDraft(): HomeDraft {
   return {
-    text: '', employeeId: GENERAL_ASSISTANT_ID, context: '',
+    text: '', employeeId: GENERAL_ASSISTANT_ID,
     composerId: `home-${crypto.randomUUID()}`, epoch: 0,
     attachment: { session: null, attachments: [] },
   }
@@ -32,16 +31,9 @@ export function useHomeDraftOwner(): HomeDraft {
         void window.electronAPI.cancelAttachmentImport({ sessionId: session.sessionId }).catch(() => undefined)
       }
       owner.draft.text = ''
-      owner.draft.context = ''
       owner.draft.attachment.session = null
       owner.draft.attachment.attachments = []
     })
   }, [owner])
   return owner.draft
-}
-
-export function homeMessage(text: string, context: string): string {
-  const goal = text.trim()
-  const background = context.trim()
-  return background ? `${goal}\n\n补充上下文：\n${background}` : goal
 }
