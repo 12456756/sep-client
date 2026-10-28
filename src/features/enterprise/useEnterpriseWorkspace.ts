@@ -1,6 +1,8 @@
 import { useArrangementPlans } from './use-arrangement-plans';
 import { useSkillLibrary, type SkillLibraryWorkspace } from './use-skill-library';
 import { needsSkillLibrary } from './skill-load-state';
+import { subscriptionAvailability } from './employee-view-model';
+import { createEmployeePageState, employeeBackgroundRoute, enterEmployeePage, readEmployeeView, saveEmployeeView, type EmployeePageState } from './employee-page-state';
 import { conversationDocument } from './run-settings';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
@@ -175,7 +177,7 @@ function readReviewed(enterpriseId: string): Record<string, number> {
 export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   attachmentScopeKey: string;
   overview: EnterpriseOverview;
-  /** 企业全部员工，含未分配给我的。 */
+  /** 当前账号的员工订阅，含本机工作与技能信息。 */
   employees: SiliconEmployee[];
   /** 我可以直接安排的员工。 */
   myEmployees: SiliconEmployee[];
@@ -189,6 +191,9 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
    */
   unreviewedWorkIds: ReadonlySet<string>;
   route: AppRoute;
+  employeeBackgroundRoute: AppRoute;
+  employeePageState: EmployeePageState;
+  updateEmployeePageState: (patch: Partial<EmployeePageState>) => void;
   /** 是否有可返回的上一页，供顶栏决定是否显示返回按钮。 */
   canGoBack: boolean;
   error: string | null;
@@ -256,6 +261,11 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const { recordEvent: recordArrangementEvent } = arrangement;
   const [route, setRoute] = useState<AppRoute>({ name: 'home' });
   const [history, setHistory] = useState<AppRoute[]>([]);
+  const [employeePageState, setEmployeePageState] = useState(() => createEmployeePageState(readEmployeeView(scopeKey)));
+  const updateEmployeePageState = useCallback((patch: Partial<EmployeePageState>) => {
+    setEmployeePageState(current => ({ ...current, ...patch }));
+    if (patch.view) saveEmployeeView(scopeKey, patch.view);
+  }, [scopeKey]);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!error) return;
@@ -315,6 +325,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
   useEffect(() => {
     void refreshOrganization();
+    return () => { organizationRequestRef.current += 1; };
   }, [refreshOrganization]);
 
   const clearRuntimeState = useCallback((taskId: string): void => {
@@ -332,7 +343,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const roleName = instance.template.name || '硅基员工';
     const platformStatus = employeeStatuses.find(item => item.employeeId === instance.employeeId)?.status;
     const permissions = permissionOverrides[instance.subscriptionId] ?? defaultPermissions();
-    const availability = instance.status !== 'ACTIVE' ? 'unavailable' : platformStatus === 'WORKING' ? 'working' : permissions.some(item => item.enabled) ? 'ready' : 'needs-auth';
+    const availability = subscriptionAvailability(instance.status, platformStatus);
     return {
       id: instance.subscriptionId,
       name: instance.name,
@@ -384,7 +395,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const busyIds = busyEmployeeIds(works);
     const lastWorked = new Map<string, number>();
     works.forEach(work => {
-      work.participants.forEach(id => {
+      new Set([...work.participants, work.currentEmployeeId].filter(Boolean)).forEach(id => {
         lastWorked.set(id, Math.max(lastWorked.get(id) ?? 0, work.updatedAt));
       });
     });
@@ -609,6 +620,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
   // ── 导航 ─────────────────────────────────────────────────────────────
   const navigate = useCallback((next: AppRoute) => {
+    if (next.name === 'employees' && next.scope) setEmployeePageState(current => enterEmployeePage(current, next.scope));
     setRoute(current => {
       setHistory(stack => [...stack.slice(-19), current]);
       return next;
@@ -921,6 +933,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     ...skillLibrary,
     attachmentScopeKey: scopeKey,
     overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, error, busy,
+    employeePageState, updateEmployeePageState,
+    employeeBackgroundRoute: employeeBackgroundRoute(route, history),
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, replaceRoute, retryWorkTypes, workListLoad, goBack, dismissError: () => setError(null),

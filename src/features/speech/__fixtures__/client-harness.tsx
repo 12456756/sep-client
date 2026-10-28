@@ -25,7 +25,7 @@ const employee: SiliconEmployee = {
 const work: WorkItem = {
   id: 'work-a', title: '测试工作', goal: '测试工作', kind: 'conversation', workType: { state: 'resolved', kind: 'conversation' },
   status: 'completed', progress: 100, currentEmployeeId: employee.id, currentEmployeeName: employee.name, steps: [], nextUserAction: null,
-  createdAt: 1, startedAt: 1, completedAt: 2, updatedAt: 2, participants: [], deliverables: [], timeline: [], messages: [], activities: [],
+  createdAt: 1, startedAt: 1, completedAt: 2, updatedAt: 2, participants: [employee.id], deliverables: [], timeline: [], messages: [], activities: [],
   sharedContext: { goal: '', confirmedInputs: [], previousResults: [], userNotes: [] }, stopReason: null, workDir: null,
 }
 
@@ -35,11 +35,11 @@ function Harness() {
   const [sent, setSent] = useState(0)
   const [value, setValue] = useState('')
   const [workId, setWorkId] = useState('work-a')
-  const [settings, setSettings] = useState(defaultRunSettings)
+  const [settings, setSettings] = useState(() => ({ ...defaultRunSettings(), modelId: 'test-model' }))
   const [employeeId, setEmployeeId] = useState(employee.id)
   const send = () => setSent(count => count + 1)
   const workspace = {
-    employees: [employee], myEmployees: [employee], skills: [], busy: false, error: null,
+    employees: [employee], myEmployees: [employee], organizationEmployees: [employee], organizationStatus: 'ready', organizationError: null, retryOrganization: () => {}, skills: [], skillsLoading: false, skillsError: null, skillsRetrySeconds: null, refreshSkills: async () => undefined, works: [work], workListLoad: { loading: false, error: null, retry: () => undefined }, canGoBack: false, goBack: () => {}, busy: false, error: null,
     navigate: () => {}, startConversation: async () => { send(); return true }, sendMessage: async () => { send() }, switchEmployee: async () => {},
   } as unknown as EnterpriseWorkspace
   const shared = { settings, models: ['test-model'], onSettingsChange: (patch: Partial<typeof settings>) => setSettings(current => ({ ...current, ...patch })), onChooseFolder: async () => null }

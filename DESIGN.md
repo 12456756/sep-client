@@ -150,7 +150,7 @@ The work workspace pairs warm neutral surfaces with brand red selection and blue
 - Use a reading width around 1180–1280px for list and detail pages; allow workbench and organization graph surfaces to use the available width.
 - Keep a consistent 8px rhythm with 16px and 24px grouping intervals.
 - At narrower desktop widths, collapse secondary panels before reducing primary content below readable measure.
-- Work uses a 304px compact list and primary conversation. Results, process, and information open in a centered floating modal Inspector at every window size. Opening it preserves the list visibility and conversation width; closing it restores focus to its trigger. Work sharing is removed. Employee detail retains its contextual rail.
+- Work uses a 304px compact list and primary conversation. Results, process, and information open in a centered floating modal Inspector at every window size. Opening it preserves the list visibility and conversation width; closing it restores focus to its trigger. Work sharing is removed. Employee details open in a modal drawer on the right with a profile, bound skills and up to three recent works; the source page retains its filters, view and scroll position.
 
 ## Elevation & Depth
 
@@ -169,6 +169,8 @@ Use tonal surfaces and one restrained shadow vocabulary. A surface may use a bor
 
 - **Navigation item:** icon, accessible name, 250ms hover/focus Tooltip, selected state and optional attention dot. Home, work, employees, skills, knowledge and compute are the six primary destinations. Enterprise identity shows the real logo or Building2 fallback; the name appears in a Tooltip and menu.
 - **Employee identity:** avatar or generated face, name, role, availability, and current work state. Identity is never just an image.
+- **Employee discovery:** compact three/two/one-column cards based on content width, or a compact list. Show real descriptions and bound skills; omit empty content, permission counts and missing-history placeholders. Search names, descriptions and visible skill names. Use the real organization directory for the enterprise scope. Omit the discovery title and subtitle; clicking a card or row opens its drawer, with no separate visible details button. Keep start conversation as an independent action.
+- **Employee detail drawer:** open a modal drawer on the right over the current page; retain the source page and its scroll/filter state. Use a native dialog with close button, Escape/backdrop dismissal, focus containment and trigger focus restoration. Show the employee name and profile, exact bound-skill links, and the latest three visible local works. Start conversation opens the shared composer with that employee selected. Keep recording, permissions and version editing out of this drawer; preserve backend approvals.
 - **Work status:** distinct SVG + semantic color + accessible name and Tooltip. Running uses a static blue LoaderCircle; pending action uses amber CircleAlert; completion uses green CircleCheck; failure uses red CircleX; termination uses neutral Square; unstarted uses CircleDashed; queued uses Clock3. Failure and pending actions remain visible outside Inspector.
 - **Primary button:** one clear action per page region; label names the action.
 - **Filter group:** icon + cross-filter count with hover/focus labels; state and authoritative work type intersect with search. Unavailable type is never guessed from legacy kind. Work type uses a neutral MessageSquare / Workflow pill.

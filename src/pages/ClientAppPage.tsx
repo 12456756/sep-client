@@ -25,11 +25,12 @@ import { useRuntimeFeedback } from '../components/feedback/use-runtime-feedback'
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import { useHomeDraftOwner } from '../features/enterprise/home-draft';
+import { useEmployeePageScroll } from '../features/enterprise/use-employee-page-scroll';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
 import type { UpdateModel } from '../features/update/use-update';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
 import { WorkHubPage } from './enterprise/WorkHubPage';
-import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
+import { EmployeeDetailDrawer } from '../components/enterprise/EmployeeDetailDrawer';
 import { EmployeesPage } from './enterprise/EmployeesPage';
 import { HomePageRedesign as HomePage } from './enterprise/HomePageRedesign';
 import { SkillsPage } from './enterprise/SkillsPage';
@@ -41,6 +42,8 @@ import '../styles/notifications.css';
 import '../styles/updates.css';
 import '../styles/arrange.css';
 import '../styles/compute-center.css';
+import '../styles/employees.css';
+import '../styles/employee-detail.css';
 
 interface Props {
   update?: UpdateModel;
@@ -82,6 +85,8 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   }, [workspace.works, conversationSessions]);
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
+  const contentRoute = workspace.employeeBackgroundRoute;
+  const contentWorkspace = route.name === 'employee' ? { ...workspace, route: contentRoute } : workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const profile = profileWorkspace.profile;
@@ -89,7 +94,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   const displayUserName = profile?.user.name || userName;
   const displayEnterpriseName = profile ? profile.enterprise?.name || overview.name : overview.name;
   const displayEnterpriseLogo = displayedEnterpriseLogo(profile, overview.logo);
-  const isHome = route.name === 'home';
+  const isHome = contentRoute.name === 'home';
   const scroll = useRef<HTMLDivElement | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -120,10 +125,9 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
-  // 换页就回到顶部。同一个滚动容器在页面之间复用，不重置的话新页面会从上一页的位置开始。
-  useEffect(() => {
-    if (scroll.current) scroll.current.scrollTop = 0;
-  }, [route]);
+  const employeePageReady = !employeeLoad?.loading && !workspace.skillsLoading
+    && (workspace.employeePageState.scope !== 'all' || workspace.organizationStatus !== 'loading');
+  useEmployeePageScroll(scroll, contentRoute, workspace.employeePageState, workspace.updateEmployeePageState, employeePageReady);
 
   const topBar = (
     <AppTopBar
@@ -132,8 +136,8 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
       actions={(
         <div className="ent-top-actions-group">
           <div className="ent-view-switch" role="group" aria-label="页面切换">
-            <button type="button" className={route.name === 'organization' ? undefined : 'active'} onClick={() => workspace.navigate({ name: 'home' })} aria-pressed={route.name !== 'organization'} title="切换到个人工作台"><LayoutGrid size={14} aria-hidden />个人</button>
-            <button type="button" className={route.name === 'organization' ? 'active' : undefined} onClick={() => workspace.navigate({ name: 'organization' })} aria-pressed={route.name === 'organization'} title="切换到企业组织"><Network size={14} aria-hidden />企业</button>
+            <button type="button" className={contentRoute.name === 'organization' ? undefined : 'active'} onClick={() => workspace.navigate({ name: 'home' })} aria-pressed={contentRoute.name !== 'organization'} title="切换到个人工作台"><LayoutGrid size={14} aria-hidden />个人</button>
+            <button type="button" className={contentRoute.name === 'organization' ? 'active' : undefined} onClick={() => workspace.navigate({ name: 'organization' })} aria-pressed={contentRoute.name === 'organization'} title="切换到企业组织"><Network size={14} aria-hidden />企业</button>
           </div>
           <button type="button" className="ent-top-command" onClick={() => setCommandOpen(true)} title="打开命令入口（⌘K / Ctrl+K）" aria-label="打开命令入口"><Command size={14} aria-hidden /><span>⌘K</span></button>
           <button type="button" className="ent-top-icon" onClick={() => setDarkMode(value => !value)} title={darkMode ? '切换到浅色主题' : '切换到深色主题'} aria-label={darkMode ? '切换到浅色主题' : '切换到深色主题'}>{darkMode ? <Sun size={16} aria-hidden /> : <Moon size={16} aria-hidden />}</button>
@@ -149,12 +153,12 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   );
 
   return (
-    <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}${['arrange', 'records', 'work'].includes(route.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
+    <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}${['arrange', 'records', 'work'].includes(contentRoute.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
         enterpriseLogo={displayEnterpriseLogo}
-        current={route.name}
+        current={contentRoute.name}
         needsMeCount={overview.needsMeCount}
         canManage={canManage}
         userName={displayUserName}
@@ -175,13 +179,14 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
           </div>
         ) : null}
         <div
-          className={`ent-scroll${route.name === 'organization' ? ' ent-scroll-no-overflow' : ''}${isHome ? ' ent-scroll-home' : ''}${['arrange', 'records', 'work'].includes(route.name) ? ' ent-scroll-work' : ''}`}
+          className={`ent-scroll${contentRoute.name === 'organization' ? ' ent-scroll-no-overflow' : ''}${isHome ? ' ent-scroll-home' : ''}${['arrange', 'records', 'work'].includes(contentRoute.name) ? ' ent-scroll-work' : ''}`}
           ref={scroll}
         >
           <ConversationSessionsContext.Provider value={conversationSessions}>
-            <PageBody workspace={workspace} userName={displayUserName} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} draft={homeDraft} />
+            <PageBody workspace={contentWorkspace} userName={displayUserName} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} draft={homeDraft} />
           </ConversationSessionsContext.Provider>
         </div>
+        {route.name === 'employee' ? <EmployeeDetailDrawer key={route.employeeId} workspace={workspace} employeeId={route.employeeId} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} /> : null}
         {commandOpen ? (
           <CommandPalette
             darkMode={darkMode}
@@ -248,10 +253,7 @@ function PageBody({ workspace, userName, employeeLoad, employeeStatusLoad, draft
         />
       );
     case 'employees':
-      // key 带上 scope：从首页两个指标格分别进来时要重置默认范围，否则组件不会重新初始化。
-      return <EmployeesPage key={route.scope ?? 'mine'} workspace={workspace} scope={route.scope} />;
-    case 'employee':
-      return <EmployeeDetailPage workspace={workspace} employeeId={route.employeeId} />;
+      return <EmployeesPage workspace={workspace} state={workspace.employeePageState} onStateChange={workspace.updateEmployeePageState} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} />;
     case 'arrange':
     case 'records':
     case 'work':
