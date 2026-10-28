@@ -1014,16 +1014,19 @@ describe('TaskRuntime arrangement controls', () => {
     directories.push(root)
     const arrangement = twoNodePlan('task')
     const prompts: string[] = []
+    const progressEvents: TaskExecutionEvent[] = []
     const executor = new ArrangementExecutor({
       scope: null, taskManager: new TaskManager(root), taskRunStore: null, checkpointStore: null,
       workspaceRoot: root, arrangementSubscriptionId: 'employee-a',
       getRefreshToken: () => 'mock', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
-      async onEvent() {}, async authorizeEmployee() { return employee },
+      async onEvent(event) { progressEvents.push(event) }, async authorizeEmployee() { return employee },
       createWorker: options => ({ async run(prompt) {
         prompts.push(prompt)
         const emit = (type: TaskExecutionEvent['type'], data: unknown) => options.onEvent({ taskId: 'task',
           runId: options.context.runId, subscriptionId: options.context.subscriptionId, sequence: 0, occurredAt: Date.now(), type, data })
         if (options.context.modelId === 'node-model-a') {
+          await emit('thinking_delta', { text: 'Considering available files' })
+          await emit('tool_execution_start', { toolId: 'read-1', toolName: 'read', input: { secret: 'must-not-be-forwarded' } })
           await emit('text_delta', { text: 'failed fragment' })
           await emit('turn_end', { message: { role: 'assistant', stopReason: 'error', content: [{ type: 'text', text: 'failed fragment' }] } })
           await emit('turn_start', {})
@@ -1040,6 +1043,11 @@ describe('TaskRuntime arrangement controls', () => {
     assert.equal(result.state.nodes[0]?.output, 'final answer')
     assert.match(prompts[1], /final answer/)
     assert.doesNotMatch(prompts[1], /failed fragment|checking files/)
+    const progress = progressEvents.filter(event => event.type === 'arrangement_node_progress')
+    assert.ok(progress.some(event => (event.data as { eventType: string }).eventType === 'thinking_delta'))
+    assert.ok(progress.some(event => (event.data as { eventType: string }).eventType === 'turn_start'))
+    assert.ok(progress.every(event => event.runId === 'parent' && typeof (event.data as { nodeRunId: unknown }).nodeRunId === 'string'))
+    assert.doesNotMatch(JSON.stringify(progress), /must-not-be-forwarded|"message"/)
   })
 
   it('retries only the failed node and then schedules its dependents', async () => {

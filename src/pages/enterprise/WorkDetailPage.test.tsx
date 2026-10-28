@@ -13,6 +13,8 @@ import { useOperationFeedback } from '../../components/feedback/use-operation-fe
 import * as atoms from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { ArrangementSteps } from '../../components/enterprise/arrange/ArrangementSteps';
+import { ArrangementTranscriptView } from '../../components/enterprise/arrange/ArrangementTranscript';
+import { buildArrangementTranscript } from '../../features/enterprise/arrangement-transcript';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
@@ -30,6 +32,8 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/atoms': atoms,
   '../../components/enterprise/EmployeeFace': { EmployeeFace },
   '../../components/enterprise/arrange/ArrangementSteps': { ArrangementSteps },
+  '../../components/enterprise/arrange/ArrangementTranscript': { ArrangementTranscript: (props: React.ComponentProps<typeof ArrangementTranscriptView>) =>
+    React.createElement(ArrangementTranscriptView, { ...props, nodes: buildArrangementTranscript(props.work.steps, []) }) },
   '../../components/enterprise/WorkPlanDrawer': { WorkPlanDrawer: () => null },
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
   '../../components/enterprise/IconHint': { IconHint: ({ children }: { children: React.ReactNode }) => children },
@@ -254,7 +258,8 @@ describe('WorkDetailPage media entry', () => {
     assert.match(html, /供应商正在生成媒体/);
     assert.doesNotMatch(html, />50%<\/b>/);
     assert.match(html, /media-waiting/);
-    assert.match(html, /当前：供应商正在生成媒体/);
+    assert.match(html, /aria-label="编排执行过程"/);
+    assert.doesNotMatch(html, /查看工作过程|aria-label="工作对话"/);
   });
 
   it('keeps the failed-node retry visible alongside running peers and saved media', () => {
@@ -267,14 +272,12 @@ describe('WorkDetailPage media entry', () => {
         media: [{ nodeId: 'peer', nodeRunId: 'run-1', kind: 'image', operation: 'generate', inputs: [], pendingActions: [],
           phase: 'ready', jobId: 'job-1', outputs: [{ artifactId: 'asset-1', status: 'saved' }] }] } };
     const html = renderDetail(flow);
-    assert.equal((html.match(/aria-label="重试此节点：failed"/g) ?? []).length, 2);
-    const processPanel = html.slice(html.indexOf('aria-label="工作过程"'), html.indexOf('aria-label="工作信息"'));
-    assert.match(processPanel, /aria-label="重试此节点：failed"/);
-    assert.doesNotMatch(processPanel, /aria-label="重试此节点：peer"/);
-    assert.ok(html.indexOf('ent-failed-node-actions') < html.indexOf('aria-label="工作对话"'));
+    assert.equal((html.match(/aria-label="重试此节点：failed"/g) ?? []).length, 1);
+    assert.doesNotMatch(html, /查看工作过程|aria-label="工作过程"|aria-label="工作对话"|补充说明/);
+    assert.ok(html.indexOf('ent-failed-node-actions') < html.indexOf('aria-label="编排执行过程"'));
     assert.doesNotMatch(html, /重试此节点：peer/);
     assert.doesNotMatch(html, /编排媒体成果/);
-    assert.match(html, /进行中/);
+    assert.match(html, /正在处理/);
   });
 
   it('offers previews for supported conversation documents without node delivery identities', () => {

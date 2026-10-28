@@ -9,7 +9,7 @@ const EXECUTION_REFRESH_INTERVAL = 5000
 
 function mergeEvents(current: TaskExecutionEvent[], incoming: TaskExecutionEvent[]): TaskExecutionEvent[] {
   const bySequence = new Map(current.map(event => [event.sequence, event]));
-  incoming.forEach(event => { if (event.type.startsWith('arrangement_')) bySequence.set(event.sequence, event); });
+  incoming.forEach(event => { if (event.type.startsWith('arrangement_') && event.type !== 'arrangement_node_progress') bySequence.set(event.sequence, event); });
   return [...bySequence.values()].sort((a, b) => a.sequence - b.sequence);
 }
 
@@ -41,7 +41,7 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
   }, []);
 
   const recordEvent = useCallback((event: TaskExecutionEvent): void => {
-    if (!event.type.startsWith('arrangement_')) return;
+    if (!event.type.startsWith('arrangement_') || event.type === 'arrangement_node_progress') return;
     const key = runtimeKey(event.taskId, event.runId);
     setEvents(previous => ({ ...previous, [key]: mergeEvents(previous[key] ?? [], [event]) }));
   }, []);

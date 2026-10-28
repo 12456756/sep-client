@@ -128,7 +128,12 @@ async function validateFormat(bytes: Buffer, format: string): Promise<void> {
     const root = lower === 'docx' ? 'document' : lower === 'xlsx' ? 'workbook' : 'presentation'
     const section = lower === 'docx' ? 'body' : lower === 'xlsx' ? 'sheets' : 'sldIdLst'
     const contentType = lower === 'docx' ? 'wordprocessingml.document' : lower === 'xlsx' ? 'spreadsheetml.sheet' : 'presentationml.presentation'
-    if (!xmlChildren(parsed['[Content_Types].xml'].Types, 'Override').some(item => item['@_PartName'] === `/${main}` && item['@_ContentType'] === `application/vnd.openxmlformats-officedocument.${contentType}.main+xml`)) throw new Error('INVALID_FORMAT')
+    const types = parsed['[Content_Types].xml'].Types
+    const override = xmlChildren(types, 'Override').find(item => item['@_PartName'] === `/${main}`)
+    // An explicit Override takes precedence even if its content type is invalid.
+    const declaration = override ?? xmlChildren(types, 'Default').find(item =>
+      typeof item['@_Extension'] === 'string' && item['@_Extension'].toLowerCase() === 'xml')
+    if (declaration?.['@_ContentType'] !== `application/vnd.openxmlformats-officedocument.${contentType}.main+xml`) throw new Error('INVALID_FORMAT')
     if (!xmlChildren(parsed['_rels/.rels'].Relationships, 'Relationship').some(item => typeof item['@_Type'] === 'string' && item['@_Type'].endsWith('/officeDocument') && String(item['@_Target']).replace(/^\//, '') === main)) throw new Error('INVALID_FORMAT')
     const document = parsed[main]?.[root]
     if (!document || typeof document !== 'object' || !Object.hasOwn(document, section)) throw new Error('INVALID_FORMAT')

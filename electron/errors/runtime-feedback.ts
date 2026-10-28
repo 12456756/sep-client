@@ -23,6 +23,8 @@ export function runtimeFeedback(error: unknown): RuntimeFailure {
     const transport = transportKind(error)
     if (transport === 'timeout') return failure('MODEL_TIMEOUT')
     if (transport === 'network' || error.name === 'APIConnectionError' || error.message === 'Connection error.') return failure('NETWORK_ERROR')
+    // Pi can flatten a response-stream failure to this message without its transport cause.
+    if (error.message === 'terminated') return failure('MODEL_RESPONSE_INTERRUPTED')
     if (error instanceof AuthenticationRequiredError || error instanceof AppError && error.code === 'AUTH_REQUIRED') return failure('AUTH_REQUIRED')
     // Pi keeps the OpenAI APIError status prefix when flattening an error to text.
     const status = error instanceof AuthApiError ? error.statusCode : 'status' in error ? error.status
