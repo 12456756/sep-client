@@ -358,6 +358,7 @@ export class ArrangementService {
     log.info('planning phase started', { ...context, ...diagnosticContext, phase })
     try {
       const current = await this.getDraft(draftId)
+      context.taskTitle = current.goal
       if (current.attachmentCandidates?.some(candidate => candidate.mustUse) && !this.deps.attachments) {
         throw new AppError('INVALID_STATE', { message: '自动编排无法读取已要求使用的附件。' })
       }

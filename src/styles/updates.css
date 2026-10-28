@@ -1,9 +1,11 @@
+.login-update-entry { position: fixed; z-index: 74; top: calc(var(--window-chrome-height, 0px) + 14px); right: calc(24px + var(--window-controls-inset, 0px)); -webkit-app-region: no-drag; }
 .ent-update-entry { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: var(--ent-panel); font-size: var(--ent-fs-note); white-space: nowrap; cursor: pointer; }
 .ent-update-entry.has-update { color: var(--ent-brand-ink); border-color: var(--ent-brand-border); background: var(--ent-brand-soft); }
 .ent-update-entry:hover { border-color: var(--ent-brand); }
 .ent-update-entry:focus-visible, .ent-update-panel button:focus-visible, .ent-update-confirm button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 3px; }
 .ent-update-panel, .ent-update-confirm { -webkit-app-region: no-drag; border: 1px solid var(--ent-line); border-radius: 14px; color: var(--ent-ink); background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); font-size: var(--ent-fs-body); line-height: 1.6; }
 .ent-update-panel { position: fixed; z-index: 75; top: calc(var(--window-chrome-height, 0px) + 66px); right: calc(24px + var(--window-controls-inset, 0px)); width: min(390px, calc(100vw - 32px)); max-height: calc(100vh - var(--window-chrome-height, 0px) - 90px); padding: 18px; overflow-y: auto; }
+[data-platform='darwin'] .ent-shell .ent-update-panel { top: 60px; max-height: calc(100dvh - 76px); }
 .ent-update-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .ent-update-head h2, .ent-update-confirm h2 { margin: 0; font-size: var(--ent-fs-title); font-weight: 600; }
 .ent-update-hint, .ent-update-version, .ent-update-notes time, .ent-update-progress p { color: var(--ent-ink-3); font-size: var(--ent-fs-note); }

@@ -22,6 +22,14 @@ function FeedbackDialog({ controller, item }: { controller: FeedbackController; 
     return () => { delete host.dataset.feedbackHost }
   }, [host])
   const previousFocus = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null)
+  const [focusFallbacks] = useState(() => {
+    const list = previousFocus.current?.closest<HTMLElement>('.ent-work-list')
+    if (!list) return []
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('.ent-work-row'))
+    const row = previousFocus.current?.closest('.ent-work-row-wrap')?.querySelector('.ent-work-row')
+    const index = rows.findIndex(element => element === row)
+    return [...rows.slice(index + 1), ...rows.slice(0, Math.max(0, index)).reverse(), list]
+  })
   useEffect(() => {
     if (item.tone !== 'success') return
     const timer = window.setTimeout(() => controller.dismiss(item.id), 2000)
@@ -42,8 +50,8 @@ function FeedbackDialog({ controller, item }: { controller: FeedbackController; 
         onCloseAutoFocus={event => {
           event.preventDefault()
           if (controller.getSnapshot()) return
-          const target = previousFocus.current
-          if (target?.isConnected && !target.matches(':disabled')) target.focus()
+          const target = [previousFocus.current, ...focusFallbacks].find(element => element?.isConnected && !element.matches(':disabled'))
+          if (target) target.focus({ preventScroll: true })
           else document.querySelector<HTMLElement>('#login-email, .ent-side-user')?.focus()
         }}>
         <Icon className="feedback-status" size={24} aria-hidden />

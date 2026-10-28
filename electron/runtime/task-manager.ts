@@ -590,6 +590,11 @@ export class TaskManager {
       if (!nextTask || nextTask.activeRunId) return
       const deletable = isTaskTerminal(nextTask.status)
         || nextTask.status === TaskStatus.PAUSED || nextTask.status === TaskStatus.INTERRUPTED
+        || nextTask.status === TaskStatus.PENDING
+        // A running status without a run id is a stale persisted record. The
+        // current runtime owns live execution through activeRunId; once that
+        // ownership is gone, the record can be removed like an interrupted run.
+        || isTaskExecutionStatus(nextTask.status)
       if (!deletable) return
       nextTasks.delete(taskId)
       deleted = true

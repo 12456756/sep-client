@@ -237,7 +237,9 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                             <small>{file.note}</small>
                           </span>
                           <div className="ent-wk-file-actions">
-                            {!isConversation && file.nodeId && file.deliverableId && file.format ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null}
+                            {file.format ? isConversation
+                              ? <DocumentPreviewButton taskId={work.id} fileId={file.id} name={file.name} format={file.format} />
+                              : file.nodeId && file.deliverableId ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null : null}
                             <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copyPath(file.path)}>
                               复制路径
                             </button>

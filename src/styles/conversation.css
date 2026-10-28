@@ -54,6 +54,8 @@
 .ent-work-process .ent-wk-activity-copy strong { white-space: normal; overflow-wrap: anywhere; }
 .ent-work-process .ent-wk-activity-list:focus-visible { outline: 2px solid var(--ent-brand-solid); outline-offset: 2px; }
 
+.ent-conversation-foot .ent-ask-bar > .ent-attachment-composer { flex: 0 0 auto; }
+.ent-conversation-foot .ent-composer-attachments:not(:empty) { width: auto; margin: 12px 15px 0; }
 .ent-conversation-foot .ent-ask-who { min-width: 0; max-width: 60%; }
 .ent-conversation-foot .ent-ask-who select { min-width: 0; text-overflow: ellipsis; }
 .ent-conversation-foot .ent-ask-who .ent-face, .ent-conversation-foot .ent-ask-who > svg { flex-shrink: 0; }

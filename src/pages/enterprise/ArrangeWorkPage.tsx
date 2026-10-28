@@ -18,6 +18,8 @@ import { usePrefersReducedMotion } from '../../features/enterprise/use-reduced-m
 import { createDraftStep } from '../../features/enterprise/work-graph';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
+import { useModelPreference } from '../../components/workspace/model-preference-scope';
+import { useTaskModel } from '../../features/enterprise/use-task-model';
 
 interface Props {
   workspace: EnterpriseWorkspace;
@@ -42,18 +44,26 @@ function stepsFromTemplate(template: WorkTemplate, employees: SiliconEmployee[])
 export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWorkCreated }: Props) {
   /** 只有现在能派活的同事参与安排。暂时不可用的员工选了也开不了工。 */
   const employees = workspace.myEmployees.filter(item => item.availability !== 'unavailable');
-  const availableModels = Array.from(new Set(employees.flatMap(item => item.allowedModels)));
   const orchestrationModels = (employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)));
-  const defaultSharedModel = orchestrationModels[0] ?? '';
   const assistant = generalAssistant(employees);
   const chatEmployees = [assistant, ...employees];
   const template = templateId ? workspace.templates.find(item => item.id === templateId) : undefined;
 
   const activeMode = mode === 'pick' ? 'chat' : mode;
-  const [settings, setSettings] = useState<RunSettings>(() => activeMode === 'auto'
-    ? defaultAutoRunSettings(orchestrationModels[0] ?? '')
+  const [runSettings, setSettings] = useState<RunSettings>(() => activeMode === 'auto'
+    ? defaultAutoRunSettings()
     : activeMode === 'chat' ? defaultConversationRunSettings() : defaultRunSettings());
   const [chatEmployeeId, setChatEmployeeId] = useState(employeeId ?? GENERAL_ASSISTANT_ID);
+  const { defaultModelId } = useModelPreference();
+  const sceneModels = activeMode === 'chat'
+    ? chatEmployees.find(employee => employee.id === chatEmployeeId)?.allowedModels ?? []
+    : orchestrationModels;
+  const taskModel = useTaskModel(`${mode}:${employeeId ?? ''}:${chatEmployeeId}`, sceneModels, defaultModelId);
+  const settings = { ...runSettings, modelId: activeMode === 'manual' ? runSettings.modelId : taskModel.modelId };
+  const changeSettings = (patch: Partial<RunSettings>): void => {
+    if (activeMode !== 'manual' && patch.modelId !== undefined) taskModel.select(patch.modelId);
+    setSettings(current => ({ ...current, ...patch }));
+  };
   const isOrchestration = activeMode === 'auto' || activeMode === 'manual';
   const { capture: captureFeedback } = useOperationFeedback(`${workspace.attachmentScopeKey}:${activeMode}`);
   /** 正在淡出的目标画面。给「点了卡片但还没换页」这 200ms 用。 */
@@ -81,8 +91,8 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
   useEffect(() => {
     setLeaving(null);
     setChatEmployeeId(employeeId ?? GENERAL_ASSISTANT_ID);
-    setSettings(current => ({ ...current, modelId: activeMode === 'auto' || activeMode === 'chat' && !employeeId ? defaultSharedModel : '' }));
-  }, [mode, employeeId, activeMode, defaultSharedModel]);
+    setSettings(current => ({ ...current, modelId: '' }));
+  }, [mode, employeeId, activeMode]);
 
   useEffect(() => {
     if (activeMode === 'auto') {
@@ -133,6 +143,8 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
   };
 
   const startChat = (id: string, text: string, attachments: AttachmentView[], session: AttachmentImportSession | null) => {
+    if (!settings.modelId || !sceneModels.includes(settings.modelId)) return;
+    taskModel.commit();
     void workspace.startConversation(id, text, { workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, attachmentSessionId: session?.sessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) }).then(created => { if (created) onWorkCreated?.(); });
   };
 
@@ -188,12 +200,11 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
             attachmentBindingKey={workspace.attachmentScopeKey}
             onEmployeeChange={id => {
               setChatEmployeeId(id);
-              setSettings(current => ({ ...current, modelId: chatEmployees.find(employee => employee.id === id)?.allowedModels[0] ?? '' }));
             }}
             onStart={startChat}
             settings={settings}
-            models={chatEmployeeId === GENERAL_ASSISTANT_ID ? assistant.allowedModels : availableModels}
-            onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
+            models={sceneModels}
+            onSettingsChange={changeSettings}
             onChooseFolder={workspace.chooseFolder}
           />
         ) : null}
@@ -203,10 +214,11 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
             employees={employees}
             busy={workspace.busy}
             onStart={startAuto}
+            onPlanningStart={taskModel.commit}
             attachmentBindingKey={workspace.attachmentScopeKey}
             settings={settings}
             models={orchestrationModels}
-            onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
+            onSettingsChange={changeSettings}
             onChooseFolder={workspace.chooseFolder}
           />
         ) : null}
@@ -231,7 +243,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
             onStart={startManual}
             settings={settings}
             models={orchestrationModels}
-            onSettingsChange={patch => setSettings(current => ({ ...current, ...patch }))}
+            onSettingsChange={changeSettings}
             onChooseFolder={workspace.chooseFolder}
           />
         ) : null}

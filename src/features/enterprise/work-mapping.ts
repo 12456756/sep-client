@@ -249,6 +249,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
       name: file.split(/[\\/]/).pop() || file,
       path: file,
       note: '由员工在工作过程中产出',
+      format: /\.([^.\\/]+)$/.exec(file)?.[1].toLowerCase() ?? '',
     }));
   return {
     id: task.id,

@@ -23,6 +23,8 @@ import { logger } from '../common/logger'
 import { describeError } from '../common/redact'
 import { settleWithTimeout } from '../common/with-timeout'
 import { SkillVersionStore } from '../data/skill-version-store'
+import { ModelTraceStore } from '../data/model-trace-store'
+import type { ModelTraceFactory } from '../domain/model-trace'
 import { TaskMetadataStore } from '../data/task-metadata-store'
 import { TaskRunStore } from '../data/task-run-store'
 import { WorkPlanStore } from '../data/work-plan-store'
@@ -121,6 +123,11 @@ class BackendRuntime {
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
   private readonly userDataDir: string
+  private readonly modelTraces: ModelTraceStore
+  private readonly createModelTrace: ModelTraceFactory = context => {
+    const scope = this.currentScope()
+    return scope ? this.modelTraces.recorder(scope, context.taskId, context.title, context.phase) : undefined
+  }
   private readonly renderer: RendererPort
   private readonly isEncryptionAvailable: () => boolean
   private readonly runtime: LazyAsync<TaskRuntime>
@@ -131,6 +138,7 @@ class BackendRuntime {
 
   constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities }: BackendOptions) {
     this.userDataDir = userDataDir
+    this.modelTraces = new ModelTraceStore(join(userDataDir, 'model-logs'))
     this.renderer = renderer
     this.isEncryptionAvailable = isEncryptionAvailable
     this.runtime = loadOnce(() => this.loadTaskRuntime())
@@ -321,6 +329,7 @@ class BackendRuntime {
       scope: this,
       getDelivery: (...args) => previewFiles.getDelivery(...args),
       read: (...args) => previewFiles.read(...args),
+      readConversation: async (scope, taskId, fileId) => previewFiles.readConversation(scope, await this.tasks.get(taskId), fileId),
       render: (format, bytes, validate) => this.documentPreviewRuntime.get().then(runtime => { validate(); return runtime.render(format, bytes) }),
       stop: () => this.documentPreviewRuntime.peek()?.stop(),
     })
@@ -538,6 +547,7 @@ class BackendRuntime {
   private async loadArrangementPlanner(): Promise<ArrangementPlannerPort> {
     const { PiArrangementPlanner } = await import('../runtime/pi-arrangement-planner')
     return new PiArrangementPlanner({
+      createModelTrace: this.createModelTrace,
       gatewayUrl: config.SEP_GATEWAY_URL,
       workspaceRoot: join(this.userDataDir, 'arrangement-planning'),
       getRefreshToken: () => this.authSession.getRefreshToken(),
@@ -568,6 +578,7 @@ class BackendRuntime {
     }
     const { TaskRuntime } = await import('../runtime/task-runtime')
     const runtime = new TaskRuntime({
+      createModelTrace: this.createModelTrace,
       taskManager: this.taskManager,
       getRefreshToken: () => this.authSession.getRefreshToken(),
       onAuthenticationRequired: () => this.invalidateAuthentication(),

@@ -64,6 +64,8 @@ import type {
 export interface IpcError {
   message: string
   statusCode?: number
+  code?: string
+  retryAfterMs?: number
 }
 
 export interface IpcCommandResult {
@@ -80,6 +82,8 @@ export type UpdateState =
       version: string
       releaseDate: string | null
       releaseNotes: string[]
+      downloadMode?: 'external'
+      downloadOpened?: boolean
     }
   | {
       status: 'downloading'

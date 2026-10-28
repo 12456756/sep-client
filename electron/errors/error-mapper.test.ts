@@ -31,6 +31,12 @@ describe('error code table', () => {
 })
 
 describe('toEnvelope', () => {
+  it('keeps a platform rate-limit cooldown in the renderer-safe envelope', () => {
+    const error = new AuthApiError({ statusCode: 429, message: 'upstream-private-message', retryAfterMs: 65_000 }, 'notifications')
+    assert.deepEqual(toEnvelope(error, { authenticated: true }), {
+      code: 'RATE_LIMITED', message: ERROR_CODES.RATE_LIMITED.message, statusCode: 429, retryable: true, retryAfterMs: 65_000,
+    })
+  })
   it('honours an AppError code and its overridden copy', () => {
     const result = toEnvelope(appError('CONFLICT', { message: '目录忙。' }))
     assert.deepEqual(result, { code: 'CONFLICT', message: '目录忙。', statusCode: 409, retryable: true })

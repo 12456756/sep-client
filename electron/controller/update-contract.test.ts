@@ -92,14 +92,14 @@ describe('auto-update IPC contract', () => {
       assert.ok(ts.isTypeLiteralNode(variant))
       return Object.fromEntries(variant.members.map(member => {
         assert.ok(ts.isPropertySignature(member) && member.type && member.name)
-        assert.equal(member.questionToken, undefined)
+        assert.equal(Boolean(member.questionToken), ['downloadMode', 'downloadOpened'].includes(member.name.getText(ipc)))
         return [member.name.getText(ipc), member.type.getText(ipc).replace(/\s+/g, '')]
       }))
     })
     assert.deepEqual(variants, [
       { status: "'idle'", currentVersion: 'string' },
       { status: "'checking'", currentVersion: 'string' },
-      { status: "'available'", currentVersion: 'string', version: 'string', releaseDate: 'string|null', releaseNotes: 'string[]' },
+      { status: "'available'", currentVersion: 'string', version: 'string', releaseDate: 'string|null', releaseNotes: 'string[]', downloadMode: "'external'", downloadOpened: 'boolean' },
       { status: "'downloading'", currentVersion: 'string', version: 'string', percent: 'number', transferred: 'number', total: 'number', bytesPerSecond: 'number' },
       { status: "'downloaded'", currentVersion: 'string', version: 'string' },
       { status: "'not-available'", currentVersion: 'string', checkedAt: 'string' },

@@ -59,4 +59,18 @@ export function describeError(error: unknown): string {
   return redactText(String(error))
 }
 
+/** Local transcripts keep full business text, but never authentication material or binary data. */
+export function isSensitiveModelTraceKey(key: string): boolean {
+  return /^(?:authorization|proxyauthorization|cookies?|setcookie|password|secret|token|accesstoken|refreshtoken|idtoken|apikey|xapikey|credential)$/i.test(key.replace(/[-_]/g, ''))
+}
+
+export function redactModelTraceText(value: string): string {
+  return redactText(value, Infinity)
+    .replace(/data:[^\s;]+;base64,[A-Za-z0-9+/=_-]+/gi, '[binary data omitted]')
+    // HTTP credentials and cookies can contain spaces or semicolon-separated values.
+    .replace(/\b((?:proxy-authorization|authorization|set-cookie|cookie)\s*:\s*)[^\r\n]*/gi, '$1[redacted]')
+    .replace(/((?:["']?)(?:authorization|proxy[_-]?authorization|set[_-]?cookie|cookies?|password|secret|token|(?:access|refresh|id)[_-]?token|(?:x[_-]?)?api[_-]?key|credential)(?:["']?)\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[^\s,;}]+)/gi, '$1[redacted]')
+    .replace(/([?&](?:x-amz-signature|x-amz-credential|signature|sig)=)[^&\s)"']+/gi, '$1[redacted]')
+}
+
 

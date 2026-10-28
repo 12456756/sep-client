@@ -1,4 +1,4 @@
-import { BookOpen, Building2, CircleUserRound, Gauge, LayoutGrid, ListTodo, LogOut, Settings, Users, Workflow } from 'lucide-react';
+import { BookOpen, Building2, CircleUserRound, Gauge, LayoutGrid, ListTodo, LogOut, Menu, PanelLeftClose, Settings, Users, Workflow } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import type { AppRoute, AppRouteName } from '../../features/enterprise/types';
@@ -16,7 +16,6 @@ interface Props {
   canManage: boolean;
   userName: string;
   userAvatar?: EmployeeAvatarSource | null;
-  /** Kept for source compatibility. The rail is always icon-only. */
   collapsed?: boolean;
   onToggleCollapse?: () => void;
   onNavigate: (route: AppRoute) => void;
@@ -40,7 +39,7 @@ function isActive(item: AppRouteName, current: AppRouteName): boolean {
 }
 
 export function AppSideNav({
-  enterpriseName, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, onNavigate, onOpenSettings, onLogout,
+  enterpriseName, enterpriseLogo, current, needsMeCount, canManage, userName, userAvatar, collapsed = true, onToggleCollapse, onNavigate, onOpenSettings, onLogout,
 }: Props): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false);
   const [enterpriseMenuOpen, setEnterpriseMenuOpen] = useState(false);
@@ -99,7 +98,7 @@ export function AppSideNav({
   }
 
   return (
-    <nav className="ent-side ent-icon-nav" aria-label="主导航">
+    <nav className={`ent-side ent-icon-nav${collapsed ? ' collapsed' : ''}`} aria-label="主导航">
       <div className="ent-side-brand ent-icon-brand electron-no-drag" ref={enterprise}>
         <IconHint label={enterpriseName}>
           <button
@@ -112,6 +111,7 @@ export function AppSideNav({
             onClick={() => { setMenuOpen(false); setEnterpriseMenuOpen(value => !value); }}
           >
             {enterpriseLogo && !logoFailed ? <img className="ent-enterprise-logo" src={enterpriseLogo} alt="" onError={() => setLogoFailed(true)} /> : <Building2 size={22} aria-hidden />}
+            {!collapsed ? <span className="ent-icon-label">{enterpriseName}</span> : null}
           </button>
         </IconHint>
         {enterpriseMenuOpen ? (
@@ -124,7 +124,7 @@ export function AppSideNav({
         ) : null}
       </div>
 
-      <div className="ent-side-items ent-icon-items">
+      <div className="ent-side-items ent-icon-items" id="ent-primary-navigation">
         {MAIN.map(item => {
           const Icon = item.icon;
           const active = isActive(item.name, current);
@@ -133,6 +133,7 @@ export function AppSideNav({
             <IconHint key={item.name} label={label}>
               <button type="button" className={`ent-nav-item ent-icon-nav-item${active ? ' active' : ''}`} onClick={() => { if (!active) onNavigate(item.route); }} aria-label={label} aria-current={active ? 'page' : undefined}>
                 <Icon size={20} strokeWidth={1.8} aria-hidden />
+                {!collapsed ? <span className="ent-icon-label">{item.label}</span> : null}
                 {item.name === 'records' && needsMeCount > 0 ? <span className="ent-icon-count" aria-hidden>{needsMeCount > 99 ? '99+' : needsMeCount}</span> : null}
               </button>
             </IconHint>
@@ -145,6 +146,7 @@ export function AppSideNav({
           <button type="button" ref={accountTrigger} className="ent-side-user ent-icon-account-button" onClick={() => { setEnterpriseMenuOpen(false); setMenuOpen(value => !value); }} aria-expanded={menuOpen} aria-haspopup="menu" aria-label={`${userName}，打开账号菜单`}>
             <EmployeeFace employee={userAvatar} name={userName} size="sm" round />
             <CircleUserRound className="ent-icon-account-fallback" size={20} aria-hidden />
+            {!collapsed ? <span className="ent-icon-label">{userName}</span> : null}
           </button>
         </IconHint>
         {menuOpen ? (
@@ -154,6 +156,12 @@ export function AppSideNav({
           </div>
         ) : null}
       </div>
+      <IconHint label={collapsed ? '展开侧栏' : '收起侧栏'}>
+        <button type="button" className="ent-icon-nav-toggle" aria-label={collapsed ? '展开侧栏' : '收起侧栏'} aria-expanded={!collapsed} aria-controls="ent-primary-navigation" onClick={onToggleCollapse}>
+          {collapsed ? <Menu size={20} aria-hidden /> : <PanelLeftClose size={20} aria-hidden />}
+          {!collapsed ? <span className="ent-icon-label">收起侧栏</span> : null}
+        </button>
+      </IconHint>
     </nav>
   );
 }

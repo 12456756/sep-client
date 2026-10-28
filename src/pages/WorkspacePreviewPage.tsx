@@ -13,6 +13,7 @@ export function WorkspacePreviewPage(): JSX.Element {
   const [route, setRoute] = useState<AppRoute>({ name: 'organization' });
   const [commandOpen, setCommandOpen] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
   const isOrganization = route.name === 'organization';
 
   useEffect(() => {
@@ -27,7 +28,7 @@ export function WorkspacePreviewPage(): JSX.Element {
   }, []);
 
   return (
-    <div className={`ent-shell${darkMode ? ' dark' : ''} sidebar-collapsed`} data-theme={darkMode ? 'dark' : 'light'}>
+    <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName="未连接平台"
         enterpriseMark="—"
@@ -35,15 +36,14 @@ export function WorkspacePreviewPage(): JSX.Element {
         needsMeCount={0}
         canManage={false}
         userName="未登录"
-        collapsed
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(value => !value)}
         onNavigate={setRoute}
         onOpenSettings={() => undefined}
         onLogout={() => setRoute({ name: 'home' })}
       />
       <div className="ent-shell-main">
         <AppTopBar
-          title={isOrganization ? '组织架构' : '界面预览'}
-          subtitle="浏览器仅预览界面，真实数据请在桌面客户端登录后查看"
           actions={(
             <div className="ent-top-actions-group">
               <div className="ent-view-switch" role="group" aria-label="页面切换">

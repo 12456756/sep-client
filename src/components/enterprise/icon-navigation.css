@@ -1,15 +1,13 @@
 .ent-side.ent-icon-nav {
-  width: 64px;
-  flex: 0 0 64px;
+  width: var(--ent-side-w);
+  flex: 0 0 var(--ent-side-w);
   padding: 8px 12px 12px;
-  transition: none;
+  transition: width 180ms ease-out, flex-basis 180ms ease-out;
 }
 
-.ent-side.ent-icon-nav.collapsed,
-.ent-side.ent-icon-nav:not(.collapsed) {
-  width: 64px;
-  flex-basis: 64px;
-  padding: 8px 12px 12px;
+.ent-side.ent-icon-nav.collapsed {
+  width: var(--ent-side-w-collapsed);
+  flex-basis: var(--ent-side-w-collapsed);
 }
 
 .ent-side.ent-icon-nav .ent-icon-brand,
@@ -23,6 +21,7 @@
 .ent-side.ent-icon-nav .ent-icon-brand {
   position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 42px;
   place-items: center;
   padding: 0;
@@ -58,16 +57,13 @@
   transition-duration: 80ms;
 }
 
-.ent-side.ent-icon-nav .ent-icon-brand-button:hover svg,
-.ent-side.ent-icon-nav .ent-icon-account-button:hover svg,
-.ent-side.ent-icon-nav .ent-icon-nav-item:hover svg {
-  transform: scale(1.08);
+.ent-side.ent-icon-nav :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item):is(:hover, :focus-visible) > :is(svg, .ent-enterprise-logo, .ent-face) {
+  transform: scale(1.4);
 }
 
-.ent-side.ent-icon-nav .ent-icon-brand-button svg,
-.ent-side.ent-icon-nav .ent-icon-account-button svg,
-.ent-side.ent-icon-nav .ent-icon-nav-item svg {
-  transition: transform 160ms ease;
+.ent-side.ent-icon-nav :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item) > :is(svg, .ent-enterprise-logo, .ent-face) {
+  transform-origin: center;
+  transition: transform 200ms cubic-bezier(.16, 1, .3, 1);
 }
 
 .ent-side.ent-icon-nav .ent-icon-brand-button .ent-enterprise-logo {
@@ -82,7 +78,7 @@
   justify-content: flex-start;
   gap: 8px;
   margin-block: auto;
-  padding: 0;
+  padding: 12px 0;
   overflow-y: auto;
 }
 
@@ -95,9 +91,11 @@
   flex: 0 0 40px;
   place-items: center;
   padding: 0;
+  margin-inline: auto;
   border-radius: 10px;
   color: var(--ent-ink-3);
   background: transparent;
+  transition: color 140ms ease, background-color 140ms ease, transform 160ms ease;
 }
 
 .ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item:hover {
@@ -122,6 +120,8 @@
   top: 2px;
   right: 2px;
   display: grid;
+  width: auto;
+  opacity: 1;
   min-width: 15px;
   height: 15px;
   place-items: center;
@@ -137,6 +137,7 @@
 
 .ent-side.ent-icon-nav .ent-icon-account {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 48px;
   margin-top: 8px;
   padding-top: 8px;
@@ -151,6 +152,63 @@
 .ent-side.ent-icon-nav .ent-icon-account-fallback {
   display: none;
 }
+
+.ent-side.ent-icon-nav .ent-icon-nav-toggle {
+  display: flex;
+  width: 40px;
+  min-height: 40px;
+  flex: 0 0 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 8px auto 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ent-ink-2);
+  background: transparent;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.ent-side.ent-icon-nav .ent-icon-nav-toggle:hover {
+  color: var(--ent-brand-ink);
+  background: var(--ent-brand-tint);
+}
+
+.ent-side.ent-icon-nav :is(.ent-icon-nav-toggle, .ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item):focus-visible {
+  outline: 2px solid var(--ent-brand-solid);
+  outline-offset: 2px;
+}
+
+.ent-side.ent-icon-nav .ent-icon-label {
+  display: block;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: inherit;
+  font-size: var(--ent-fs-body);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ent-side.ent-icon-nav:not(.collapsed) :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item.ent-nav-item, .ent-icon-nav-toggle) {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  padding-inline: 18px;
+}
+
+.ent-side.ent-icon-nav:not(.collapsed) :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item, .ent-icon-nav-toggle) > :is(svg, .ent-face, .ent-enterprise-logo) {
+  flex-shrink: 0;
+}
+
+.ent-side.ent-icon-nav:not(.collapsed) .ent-icon-account-button { padding-inline: 14px; }
+.ent-side.ent-icon-nav:not(.collapsed) .ent-icon-count { position: static; flex: 0 0 auto; }
 
 .ent-side.ent-icon-nav .ent-icon-menu {
   right: auto;
@@ -243,16 +301,19 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .ent-side.ent-icon-nav,
   .ent-side.ent-icon-nav .ent-icon-brand-button,
   .ent-side.ent-icon-nav .ent-icon-account-button,
+  .ent-side.ent-icon-nav .ent-icon-nav-item,
+  .ent-side.ent-icon-nav .ent-icon-nav-toggle,
   .ent-side.ent-icon-nav .ent-icon-nav-item svg,
   .ent-side.ent-icon-nav .ent-icon-brand-button svg,
   .ent-side.ent-icon-nav .ent-icon-account-button svg,
+  .ent-side.ent-icon-nav .ent-enterprise-logo,
+  .ent-side.ent-icon-nav .ent-icon-account-button .ent-face,
   .ent-icon-hint { transition: none; animation: none; }
   .ent-side.ent-icon-nav .ent-icon-brand-button:active,
   .ent-side.ent-icon-nav .ent-icon-account-button:active,
   .ent-side.ent-icon-nav .ent-icon-nav-item:active { transform: none; }
-  .ent-side.ent-icon-nav .ent-icon-brand-button:hover svg,
-  .ent-side.ent-icon-nav .ent-icon-account-button:hover svg,
-  .ent-side.ent-icon-nav .ent-icon-nav-item:hover svg { transform: none; }
+  .ent-side.ent-icon-nav :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item):is(:hover, :focus-visible) > :is(svg, .ent-enterprise-logo, .ent-face) { transform: none; }
 }

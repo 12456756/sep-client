@@ -156,7 +156,12 @@ export class TaskService {
       return
     }
     if (!await this.deps.taskManager.deleteTask(taskId)) {
-      throw new AppError('INVALID_STATE', { message: '任务正在执行，无法删除。' })
+      const task = await this.deps.taskManager.getTask(taskId)
+      this.assertScope(scope)
+      const message = task?.activeRunId
+        ? '任务正在执行，无法删除。'
+        : '工作状态已变化，无法删除，请刷新后重试。'
+      throw new AppError('INVALID_STATE', { message })
     }
   }
 

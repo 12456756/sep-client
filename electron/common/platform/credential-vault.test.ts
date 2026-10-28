@@ -51,3 +51,37 @@ it('distinguishes absent credentials from corrupt files and preserves corrupt da
     assert.throws(() => h.vault.getRememberedPassword('test@example.test'), { reason: 'password_read' })
   } finally { h.cleanup() }
 })
+
+it('removes an old password before reporting a corrupt account index', () => {
+  const h = setup()
+  try {
+    fs.writeFileSync(h.file('accounts.json'), 'broken')
+    fs.writeFileSync(h.file('passwords.enc'), JSON.stringify({ 'test@example.test': 'old-password' }))
+
+    assert.throws(() => h.vault.saveRememberedAccount(
+      { email: 'test@example.test', displayName: 'Test', enterpriseName: 'Test' },
+      'new-password',
+      false,
+    ), { reason: 'accounts_read' })
+
+    assert.equal(fs.readFileSync(h.file('accounts.json'), 'utf8'), 'broken')
+    assert.equal(h.vault.getRememberedPassword('test@example.test'), null)
+  } finally { h.cleanup() }
+})
+
+it('preserves a corrupt password vault when password saving is disabled', () => {
+  const h = setup()
+  try {
+    fs.writeFileSync(h.file('accounts.json'), '[]')
+    fs.writeFileSync(h.file('passwords.enc'), 'broken')
+
+    assert.throws(() => h.vault.saveRememberedAccount(
+      { email: 'test@example.test', displayName: 'Test', enterpriseName: 'Test' },
+      'new-password',
+      false,
+    ), { reason: 'password_read' })
+
+    assert.equal(fs.readFileSync(h.file('accounts.json'), 'utf8'), '[]')
+    assert.equal(fs.readFileSync(h.file('passwords.enc'), 'utf8'), 'broken')
+  } finally { h.cleanup() }
+})

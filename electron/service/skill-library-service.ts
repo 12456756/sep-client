@@ -37,8 +37,24 @@ const libraryEntrySchema = z.object({
 })
 const libraryCatalogSchema = z.object({ subscriptionId: z.string().min(1), skills: z.array(z.unknown()) })
 
+/** Drain current requests before exposing a failure; never keep starting work after one fails. */
+async function loadBounded<T, R>(items: T[], load: (item: T) => Promise<R>): Promise<R[]> {
+  const result = new Array<R>(items.length)
+  let next = 0
+  let failure: { error: unknown } | undefined
+  await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
+    while (!failure && next < items.length) {
+      const index = next++
+      try { result[index] = await load(items[index]) } catch (error) { failure ??= { error } }
+    }
+  }))
+  if (failure) throw failure.error
+  return result
+}
+
 export class SkillLibraryService {
   private snapshot: { scope: TaskOwnerScope; items: SkillLibraryItem[] } | null = null
+  private inFlight: { scope: TaskOwnerScope; promise: Promise<{ items: SkillLibraryItem[]; skippedCount: number }> } | null = null
   constructor(private readonly options: Options) {}
 
   private checkScope(scope: TaskOwnerScope): void {
@@ -52,13 +68,21 @@ export class SkillLibraryService {
 
   async listWithDiagnostics(): Promise<{ items: SkillLibraryItem[]; skippedCount: number }> {
     const scope = requireScope(this.options.scope)
+    if (this.inFlight?.scope.memberId === scope.memberId && this.inFlight.scope.enterpriseId === scope.enterpriseId) return this.inFlight.promise
+    const promise = this.loadLibrary(scope)
+    this.inFlight = { scope: { ...scope }, promise }
+    try { return await promise } finally { if (this.inFlight?.promise === promise) this.inFlight = null }
+  }
+
+  private async loadLibrary(scope: TaskOwnerScope): Promise<{ items: SkillLibraryItem[]; skippedCount: number }> {
     const token = await this.options.token()
     const subscriptions = await this.options.subscriptions()
-    const catalogs = await Promise.all(subscriptions.map(async subscription => {
+    const catalogs = await loadBounded(subscriptions, async subscription => {
+      this.checkScope(scope)
       const response = libraryCatalogSchema.parse(await this.options.platform.skills(subscription.employeeId, token))
       if (response.subscriptionId !== subscription.subscriptionId) throw new Error('员工技能与订阅不匹配。')
       return { subscription, skills: response.skills }
-    }))
+    })
     this.checkScope(scope)
     const items = new Map<string, SkillLibraryItem>()
     let skippedCount = 0
@@ -87,7 +111,8 @@ export class SkillLibraryService {
         })
       }
     }
-    const result = await Promise.all([...items.values()].map(async item => {
+    const result = await loadBounded([...items.values()], async item => {
+      this.checkScope(scope)
       const versions = await this.options.platform.list({ capabilityId: item.capability.id }, token)
       const submissions = await this.options.submissions.list(scope, item.capability.id)
       return {
@@ -100,7 +125,7 @@ export class SkillLibraryService {
         // A local copy remains selectable even after upload while the remote version is pending/rejected.
         localVersions: submissions,
       }
-    }))
+    })
     this.checkScope(scope)
     this.snapshot = { scope: { ...scope }, items: result }
     return { items: result, skippedCount }

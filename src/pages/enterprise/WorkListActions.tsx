@@ -23,11 +23,13 @@ interface Props {
 export function WorkListActions({ works, request, busy, onDismiss, onRename, onPin, onDelete }: Props) {
   const menuRef = useRef<HTMLDivElement | null>(null)
   const returnFocus = useRef<HTMLElement | null>(null)
+  const returnFallbacks = useRef<HTMLElement[]>([])
   const menuWork = works.find(work => work.id === request?.workId)
   const cannotDelete = (work: WorkItem) => Boolean(work.isActive || work.status === 'running')
 
   const restoreFocus = () => {
-    if (returnFocus.current?.isConnected) returnFocus.current.focus()
+    const target = [returnFocus.current, ...returnFallbacks.current].find(element => element?.isConnected)
+    target?.focus({ preventScroll: true })
   }
   const closeMenu = (restore = true) => {
     menuRef.current?.hidePopover()
@@ -39,6 +41,11 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
     const menu = menuRef.current
     if (!request || !menu) return
     returnFocus.current = request.trigger
+    const list = request.trigger.closest<HTMLElement>('.ent-work-list')
+    const rows = Array.from(list?.querySelectorAll<HTMLButtonElement>('.ent-work-row') ?? [])
+    const row = request.trigger.closest('.ent-work-row-wrap')?.querySelector('.ent-work-row')
+    const index = rows.findIndex(element => element === row)
+    returnFallbacks.current = list ? [...rows.slice(index + 1), ...rows.slice(0, Math.max(0, index)).reverse(), list] : []
     menu.showPopover()
     const rect = menu.getBoundingClientRect()
     menu.style.left = `${Math.max(8, Math.min(request.x, window.innerWidth - rect.width - 8))}px`
@@ -63,6 +70,15 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
     if (request && !menuWork) onDismiss()
   }, [request, menuWork, onDismiss])
 
+  const deleteWork = async (workId: string) => {
+    const targets = [returnFocus.current, ...returnFallbacks.current]
+    closeMenu()
+    await onDelete(workId)
+    requestAnimationFrame(() => {
+      if (document.querySelector('[role="dialog"], dialog[open]')) return
+      targets.find(element => element?.isConnected)?.focus({ preventScroll: true })
+    })
+  }
   const handleMenuKey = (event: KeyboardEvent<HTMLDivElement>) => {
     const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
     const index = items.indexOf(document.activeElement as HTMLButtonElement)
@@ -83,7 +99,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
           {menuWork.pinnedAt ? <PinOff size={16} aria-hidden /> : <Pin size={16} aria-hidden />}{menuWork.pinnedAt ? '取消置顶' : '置顶'}
         </button>
         <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onRename(menuWork.id) }}><Pencil size={16} aria-hidden />重命名</button>
-        <button type="button" role="menuitem" className="danger" disabled={busy || cannotDelete(menuWork)} aria-describedby={cannotDelete(menuWork) ? 'ent-work-delete-reason' : undefined} onClick={() => { closeMenu(); void onDelete(menuWork.id) }}><Trash2 size={16} aria-hidden />删除</button>
+        <button type="button" role="menuitem" className="danger" disabled={busy || cannotDelete(menuWork)} aria-describedby={cannotDelete(menuWork) ? 'ent-work-delete-reason' : undefined} onClick={() => { void deleteWork(menuWork.id) }}><Trash2 size={16} aria-hidden />删除</button>
         {cannotDelete(menuWork) && <p id="ent-work-delete-reason">执行中的工作需先终止，再删除记录。</p>}
       </>}
     </div>

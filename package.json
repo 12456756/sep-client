@@ -1,6 +1,6 @@
 {
   "name": "longsilicon",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "硅基员工平台客户端",
   "type": "module",
   "main": "out/main/index.js",
@@ -43,6 +43,7 @@
     "package:local:beta": "npm run release:config:beta && npm run release:builder:beta && electron-vite build && electron-builder --config .release/electron-builder.beta.json --publish never",
     "package:local:stable": "npm run release:config:stable && npm run release:builder:stable && electron-vite build && electron-builder --config .release/electron-builder.stable.json --publish never",
     "release:preflight": "node scripts/release-signing.mjs",
+    "release:prepare-download-update": "node scripts/prepare-download-update.mjs",
     "release:record-build": "node scripts/record-release-build.mjs",
     "release:version": "node scripts/release-version.mjs",
     "release:collect": "node scripts/publish-release.mjs collect",
@@ -61,7 +62,9 @@
     "release:builder:signed:stable": "node scripts/generate-builder-config.mjs stable --signed",
     "verify:update-manifest": "node scripts/verify-update-manifest.mjs",
     "test:update-feed": "node scripts/test-update-feed.mjs",
-    "test:updates": "node --test scripts/update-manifest.test.mjs",
+    "test:updates": "node --test scripts/update-manifest.test.mjs scripts/prepare-download-update.test.mjs",
+    "test:updates:ui": "node scripts/test-download-update-ui.mjs",
+    "test:content-loading:ui": "node scripts/test-content-loading-ui.mjs",
     "test:updates:runtime": "tsx --test electron/bootstrap/app-updater.test.ts electron/bootstrap/create-app-updater.test.ts electron/bootstrap/shutdown.test.ts electron/common/update-config.test.ts electron/controller/update-contract.test.ts"
   },
   "dependencies": {
@@ -137,6 +140,7 @@
     "mac": {
       "category": "public.app-category.business",
       "icon": "build/icon.icns",
+      "signIgnore": ["/Contents/Resources/office/officecli-mac-(arm64|x64)$"],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "用于将您主动录制的语音在本机转换为输入文字。"
       },
@@ -189,6 +193,7 @@
     ],
     "beforePack": "scripts/speech-before-pack.cjs",
     "afterPack": "scripts/speech-after-pack.cjs",
+    "afterSign": "scripts/office-after-sign.cjs",
     "artifactName": "SEP-Client-${version}-${os}-${arch}.${ext}"
   },
   "allowScripts": {

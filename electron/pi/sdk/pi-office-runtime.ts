@@ -31,6 +31,26 @@ export async function withOfficeFileLock<T>(key: string, signal: AbortSignal | u
   }
 }
 
+function normalizedLockPaths(paths: string[]): string[] {
+  return [...new Set(paths.map(path => process.platform === 'win32' ? path.toLowerCase() : path))].sort()
+}
+
+export async function withOfficeFileLocks<T>(
+  paths: string[], signal: AbortSignal | undefined, run: () => Promise<T>,
+): Promise<T> {
+  signal?.throwIfAborted()
+  const keys = normalizedLockPaths(paths)
+  const acquire = (index: number): Promise<T> => index === keys.length ? run()
+    : withOfficeFileLock(keys[index], signal, () => acquire(index + 1))
+  return acquire(0)
+}
+
+function sameLockPaths(left: string[], right: string[]): boolean {
+  const a = normalizedLockPaths(left)
+  const b = normalizedLockPaths(right)
+  return a.length === b.length && a.every((path, index) => path === b[index])
+}
+
 export function officeTaskPolicy(config: Pick<PiAgentSessionConfig, 'toolPolicy' | 'workspaceDir'>): ToolPolicy {
   return config.toolPolicy ?? { allowedTools: ['read', 'write', 'edit'], allowedPaths: [config.workspaceDir],
     deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'confirm-each', workspaceDir: config.workspaceDir }
@@ -59,27 +79,32 @@ export async function attachOfficeRuntime(
   const tools = office.tools.map(tool => ({
     ...tool,
     async execute(...args: Parameters<typeof tool.execute>) {
-      const decision = evaluateOfficeCommand(args[1], officeTaskPolicy(config))
+      let decision = evaluateOfficeCommand(args[1], officeTaskPolicy(config))
       if (!decision.allowed) return { content: [{ type: 'text' as const, text: decision.reason ?? 'Office command denied.' }],
         details: { serverName: 'officecli', toolName: 'officecli', isError: true } }
-      const key = decision.args[1] && !['help', '--help', '--version'].includes(decision.args[0])
-        ? process.platform === 'win32' ? decision.args[1].toLowerCase() : decision.args[1] : ''
-      return withOfficeFileLock(key, args[2], async () => {
-        if (interrupted) return { content: [{ type: 'text' as const,
-          text: 'Office connection was closed after an interrupted call. Check the file before continuing in a new session.' }],
-          details: { serverName: 'officecli', toolName: 'officecli', isError: true } }
-        // Recheck after waiting; files or symlinks might have changed during approval/queuing.
-        const current = evaluateOfficeCommand({ command: decision.args }, officeTaskPolicy(config))
-        if (!current.allowed) throw new Error(current.reason)
-        const result = await tool.execute(args[0], { command: current.args }, args[2])
-        if (result.details.executionUncertain) {
-          interrupted = true
-          // A cancellation response is not proof that the upstream write has stopped.
-          await closeOffice()
-          result.content.push({ type: 'text', text: 'Office connection closed. The write may have completed; verify the file before any retry.' })
-        }
-        return result
-      })
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const outcome = await withOfficeFileLocks(decision.lockPaths, args[2], async () => {
+          if (interrupted) return { result: { content: [{ type: 'text' as const,
+            text: 'Office connection was closed after an interrupted call. Check the file before continuing in a new session.' }],
+            details: { serverName: 'officecli', toolName: 'officecli', isError: true } } }
+          // Recheck the original request after waiting; files or symlinks might have changed during approval/queuing.
+          const current = evaluateOfficeCommand(args[1], officeTaskPolicy(config))
+          if (!current.allowed) throw new Error(current.reason)
+          if (!sameLockPaths(decision.lockPaths, current.lockPaths)) return { retry: current }
+          const result = await tool.execute(args[0], { command: current.args }, args[2])
+          if (result.details.executionUncertain) {
+            interrupted = true
+            // A cancellation response is not proof that the upstream write has stopped.
+            await closeOffice()
+            result.content.push({ type: 'text', text: 'Office connection closed. The write may have completed; verify the file before any retry.' })
+          }
+          return { result }
+        })
+        if (outcome.result) return outcome.result
+        if (!outcome.retry) throw new Error('Office command lock validation failed.')
+        decision = outcome.retry
+      }
+      throw new Error('Office command paths changed repeatedly while waiting for the file lock.')
     },
   }))
   let closing: Promise<void> | undefined

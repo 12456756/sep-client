@@ -2,13 +2,14 @@
 import * as assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, it, mock } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { compileFunction } from 'node:vm'
 import * as ts from 'typescript'
 import type { CancellationToken, UpdateCheckResult } from 'electron-updater'
 import type { UpdateState } from '../../src/shared/ipc'
-import { supportsAppUpdates } from '../common/update-config'
+import { externalUpdateDownloadUrl, supportsAppUpdates } from '../common/update-config'
 import { AppError } from '../errors/app-error'
 import { AppUpdater, type UpdateDriver } from './app-updater'
 import type { Backend } from './build-backend'
@@ -51,6 +52,8 @@ function setup(options: {
   platform?: string
   arch?: string
   version?: string
+  packageMetadata?: string
+  channel?: 'beta' | 'stable'
   failure?: Failure
   installFailure?: 'cleanup' | 'install'
   recoveryWork?: Promise<void>
@@ -114,11 +117,15 @@ function setup(options: {
   } as unknown as RendererBridge
   const withTimeout = mock.fn((work: Promise<void>, _budgetMs: number, _operation: string) => work)
   const version = options.version ?? '0.1.2'
+  const openExternal = mock.fn(async (_url: string) => undefined)
   const dependencies: Record<string, unknown> = {
+    'node:fs': { readFileSync: () => options.packageMetadata ?? '{"sepUpdateMode":"in-app"}' },
+    'node:path': { join },
     'node:module': { createRequire },
-    electron: { app: { isPackaged: options.packaged ?? true, getVersion: () => version } },
+    electron: { app: { isPackaged: options.packaged ?? true, getVersion: () => version, getAppPath: () => '/packaged/app' }, shell: { openExternal } },
     '../common/logger': { logger },
-    '../common/update-config': { supportsAppUpdates },
+    '../common/update-config': { externalUpdateDownloadUrl, supportsAppUpdates },
+    '../common/runtime-config.generated': { generatedRuntimeConfig: { channel: options.channel ?? 'stable' } },
     '../common/with-timeout': { withTimeout },
     './app-updater': { AppUpdater },
     './shutdown': { SHUTDOWN_BUDGET_MS: 5_000 },
@@ -152,7 +159,7 @@ function setup(options: {
   return {
     create: () => factory.createAppUpdater(backend, bridge), driver, createRequire, nativeRequire,
     getSdkUpdater, records, stats, stopAll, states, version, resumeClientMonitor, loginRefresh,
-    notificationUpdated, withTimeout, recoveryOrder,
+    notificationUpdated, withTimeout, recoveryOrder, openExternal,
   }
 }
 
@@ -168,6 +175,22 @@ async function assertDisabled(updater: AppUpdater, version: string): Promise<voi
 }
 
 describe('createAppUpdater behavior', () => {
+  for (const packageMetadata of ['{}', '{"sepUpdateMode":"external"}', '{"sepUpdateMode":"unknown"}', '{broken']) {
+    it('uses browser downloads without a formal signed-release marker: ' + packageMetadata, async t => {
+      const harness = setup({ packageMetadata, channel: 'beta', platform: 'darwin', arch: 'arm64' })
+      const updater = harness.create()
+      t.after(() => updater.dispose())
+      await updater.check()
+      await updater.download()
+      assert.deepEqual(harness.openExternal.mock.calls.map(call => call.arguments), [[
+        'https://download.longdaosep.cn/sep-client/beta/0.1.3/SEP-Client-0.1.3-mac-arm64.dmg',
+      ]])
+      assert.equal(harness.driver.downloadUpdate.mock.callCount(), 0)
+      assert.equal(harness.driver.quitAndInstall.mock.callCount(), 0)
+      assert.equal(harness.stopAll.mock.callCount(), 0)
+    })
+  }
+
   for (const [packaged, platform, arch] of [
     [false, 'darwin', 'arm64'],
     [false, 'win32', 'x64'],

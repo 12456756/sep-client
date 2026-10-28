@@ -15,6 +15,7 @@ type Props = {
   employees: SiliconEmployee[];
   busy: boolean;
   onStart: (draft: ArrangementDraft) => Promise<ArrangementDraft>;
+  onPlanningStart?: () => void;
   settings: RunSettings;
   models: string[];
   onSettingsChange: (patch: Partial<RunSettings>) => void;
@@ -24,7 +25,7 @@ type Props = {
   attachmentBindingKey?: string;
 };
 
-export function AutoArrange({ employees, busy, onStart, settings, models, onSettingsChange, onChooseFolder, attachmentBindingKey }: Props) {
+export function AutoArrange({ employees, busy, onStart, onPlanningStart, settings, models, onSettingsChange, onChooseFolder, attachmentBindingKey }: Props) {
   const [starting, setStarting] = useState(false);
   const [goal, setGoal] = useState('');
   const [attachmentRefs, setAttachmentRefs] = useState<AttachmentView[]>([]);
@@ -113,6 +114,7 @@ export function AutoArrange({ employees, busy, onStart, settings, models, onSett
   };
 
   const submitGoal = () => {
+    onPlanningStart?.();
     setSubmitted(true);
     void start(goal, settings.workDir, settings.modelId, attachmentRefs.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })), attachmentSession?.sessionId, mustUseAttachments);
   };

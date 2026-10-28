@@ -6,6 +6,8 @@ import type { RememberedAccount, ToolAuthorizationRequest } from './shared/types
 import { useWorkspaceEmployees } from './features/enterprise/use-workspace-employees';
 import { FeedbackProvider, useFeedback } from './components/feedback/FeedbackProvider';
 import { LOGIN_FEEDBACK } from './shared/login-feedback';
+import { useUpdate } from './features/update/use-update';
+import { UpdateNotice } from './components/enterprise/UpdateNotice';
 
 interface AuthState {
   user: { id: string; email: string; name: string };
@@ -18,6 +20,8 @@ export default function App() {
 
 function AppContent() {
   const feedback = useFeedback();
+  const update = useUpdate();
+  const [loginUpdateOpen, setLoginUpdateOpen] = useState(false);
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const currentAuth = useRef<AuthState | null>(null);
   const logoutPending = useRef(false);
@@ -97,12 +101,16 @@ function AppContent() {
   const renderRoute = () => {
     if (restoringAuth) return <div className="app-loading-screen"><div className="app-loading-spinner" /><p>正在读取账号</p></div>;
     if (!authState) return <LoginPage encryptionAvailable={encryptionAvailable} rememberedAccounts={rememberedAccounts} onAccountListChange={setRememberedAccounts} onLoginSuccess={handleLoginSuccess} />;
-    return <ClientAppPage userId={authState.user.id} userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={employees.subscriptions.items} employeeStatuses={employees.statuses.items} employeeLoad={employees.subscriptions} employeeStatusLoad={employees.statuses} onLogout={handleLogout} />;
+    return <ClientAppPage update={update} userId={authState.user.id} userName={authState.user.name || authState.user.email} enterpriseId={authState.enterprise?.id ?? ''} enterpriseName={authState.enterprise?.name ?? '我的企业'} instances={employees.subscriptions.items} employeeStatuses={employees.statuses.items} employeeLoad={employees.subscriptions} employeeStatusLoad={employees.statuses} onLogout={handleLogout} />;
   };
 
   return <>
     <div className="electron-window-chrome electron-drag-region" aria-hidden="true" />
     {renderRoute()}
+    {!authState && <aside className="login-update-entry" aria-label="客户端版本更新">
+      <UpdateNotice update={update} open={loginUpdateOpen} onOpenChange={setLoginUpdateOpen}
+        onOpenWorkRecords={() => setLoginUpdateOpen(false)} />
+    </aside>}
     {toolApprovalRequests.map(request => <Approval key={request.requestId} request={request} onResolve={resolveApproval} />)}
   </>;
 }

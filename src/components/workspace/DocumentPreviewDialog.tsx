@@ -8,10 +8,14 @@ import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { operationFailure, responseError } from '../../shared/arrangement-feedback'
 
 const PdfPreview = lazy(() => import('./PdfDocumentPreview'))
-export interface DocumentPreviewDialogProps extends DocumentPreviewRequest { name: string; version?: string; onClose(): void }
+export type DocumentPreviewDialogProps = DocumentPreviewRequest & { name: string; version?: string; onClose(): void }
 
-export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, name, version, onClose }: DocumentPreviewDialogProps) {
-  const { capture } = useOperationFeedback(`${taskId}:${nodeId}:${deliverableId}:${version}`)
+export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps) {
+  const { taskId, name, version, onClose } = props
+  const nodeId = 'nodeId' in props ? props.nodeId : undefined
+  const deliverableId = 'deliverableId' in props ? props.deliverableId : undefined
+  const fileId = 'fileId' in props ? props.fileId : undefined
+  const { capture } = useOperationFeedback(`${taskId}:${fileId}:${nodeId}:${deliverableId}:${version}`)
   const dialog = useRef<HTMLDialogElement>(null)
   const close = useRef<HTMLButtonElement>(null)
   const [data, setData] = useState<DocumentPreview | null>(null)
@@ -31,16 +35,17 @@ export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, n
     const failed = (message: string) => {
       if (!active || !notice.isCurrent()) return
       setError(message)
-      notice.show(message, 'error', `document-preview:${taskId}:${nodeId}:${deliverableId}:${version}:${attempt}`, true)
+      notice.show(message, 'error', `document-preview:${taskId}:${fileId}:${nodeId}:${deliverableId}:${version}:${attempt}`, true)
     }
     setData(null); setError(null); setSection(0); setZoom(1)
-    void window.electronAPI.previewArrangementDocument({ taskId, nodeId, deliverableId }).then(result => {
+    const request: DocumentPreviewRequest = fileId !== undefined ? { taskId, fileId } : { taskId, nodeId: nodeId!, deliverableId: deliverableId! }
+    void window.electronAPI.previewArrangementDocument(request).then(result => {
       if (!active || !notice.isCurrent()) return
       if (!result.success || !result.data) { failed(responseError(result, 'documentPreview').message); return }
       setData(result.data)
     }).catch(() => failed(operationFailure('documentPreview')))
     return () => { active = false }
-  }, [taskId, nodeId, deliverableId, version, attempt, capture])
+  }, [taskId, nodeId, deliverableId, fileId, version, attempt, capture])
   const content = data?.content
   const text = content?.kind === 'text' || content?.kind === 'markdown' ? content.text : ''
   const count = content?.kind === 'html' ? content.sections.length : Math.max(1, Math.ceil(text.length / 100_000))
@@ -52,7 +57,7 @@ export default function DocumentPreviewDialog({ taskId, nodeId, deliverableId, n
     catch { if (notice.isCurrent()) { setCopied(false); notice.show('文档内容复制失败，请联系平台管理员') } }
   }
   return <dialog ref={dialog} className="document-preview-dialog" aria-label={`文档预览：${name}`} onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
-    <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>
+    <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{fileId !== undefined ? '当前对话成果' : data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>
       <div className="document-preview-actions">
         <button type="button" title="重新读取" aria-label="重新读取文档" onClick={() => setAttempt(value => value + 1)}><RotateCcw size={17} /></button>
         <button ref={close} type="button" title="关闭预览" aria-label="关闭文档预览" onClick={onClose}><X size={18} /></button>

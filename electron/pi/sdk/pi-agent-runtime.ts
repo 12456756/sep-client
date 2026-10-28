@@ -10,6 +10,8 @@ export interface PiAgentEvent {
 }
 
 export interface PiAgentSession {
+  setDiagnostics?(config: Pick<PiAgentSessionConfig, 'runId' | 'taskTitle' | 'tracePhase' | 'nodeTitle' | 'modelTrace'>): void
+  setRequestPurpose?(purpose: string): void
   readonly sessionId: string
   readonly sessionFile: string | null
   /** Complete host-only reply for delivery validation; never forward it as an event or log field. */
@@ -34,6 +36,10 @@ export interface McpServerConfig {
 }
 
 export interface PiAgentSessionConfig {
+  modelTrace?: import('../../domain/model-trace').ModelTraceRecorder
+  taskTitle?: string
+  tracePhase?: string
+  nodeTitle?: string
   runId: string
   modelId: string
   gatewayUrl: string

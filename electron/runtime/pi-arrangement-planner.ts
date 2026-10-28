@@ -21,8 +21,11 @@ import { transformArrangementPlannerSystemPrompt } from '../pi/sdk/pi-planner-sy
 import type { PiAgentRuntime } from '../pi/sdk/pi-agent-runtime'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import type { TaskToolPolicy, TaskWorkerPort } from './run-types'
+import type { ModelTraceFactory, ModelTraceRecorder } from '../domain/model-trace'
+import { runtimePhaseLabel } from '../common/runtime-log-format'
 
 export interface ArrangementPlannerRuntimeOptions {
+  createModelTrace?: ModelTraceFactory
   gatewayUrl: string
   workspaceRoot: string
   getRefreshToken: () => string
@@ -72,6 +75,9 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
 
   async plan(input: Parameters<ArrangementPlannerPort['plan']>[0]): Promise<ArrangementPlanningResult> {
     const { planningId, draft, employees, plannerEmployees, signal, onProgress } = input
+    const stage = input.planningStage ?? input.diagnosticContext?.employeeScope ?? 'authorized'
+    const stageTitle = { authorized: '第一阶段：已授权员工匹配', enterprise: '第二阶段：企业员工推荐', platform: '第三阶段：平台员工推荐' }[stage]
+    const trace = this.options.createModelTrace?.({ taskId: draft.id, runId: planningId, title: draft.goal, phase: stageTitle })
     const context: LogFields = {
       planningId, runId: planningId, draftId: draft.id, draftRevision: draft.revision,
       round: input.diagnosticContext?.round ?? 1,
@@ -79,12 +85,14 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       modelId: input.modelId ?? input.plannerModelId ?? this.options.plannerModelId,
       employeeCount: employees.length, existingNodeCount: draft.nodes.length,
       unresolvedStepCount: draft.unresolvedSteps?.length ?? 0,
+      taskTitle: draft.goal,
     }
     const workerEvents: TaskExecutionEvent[] = []
     let phase: PlanningPhase = 'initialization'
     let phaseStartedAt = Date.now()
     let primaryError = false
     const nextPhase = (next: PlanningPhase, fields: LogFields = {}): void => {
+      void trace?.({ phase: stageTitle, kind: 'status', text: `规划环节“${runtimePhaseLabel(phase)}”完成；耗时 ${Date.now() - phaseStartedAt} 毫秒` }).catch(() => undefined)
       log.info('planning phase completed', { ...context, phase, elapsedMs: Date.now() - phaseStartedAt, ...fields })
       phase = next
       phaseStartedAt = Date.now()
@@ -147,11 +155,12 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
             response.stopReason === 'error' || response.stopReason === 'aborted') throw error
           throwIfAborted(planningSignal)
           log.warn('planning output rejected; requesting correction', { ...context, ...planningErrorFields(error) })
+          void trace?.({ phase: stageTitle, kind: 'status', text: `规划校验失败，继续修正\n${JSON.stringify(planningErrorFields(error), null, 2)}` }).catch(() => undefined)
           const continueWith = buildArrangementPlannerRepairPrompt(error.details.phase, planningData)
           nextPhase('provider-request', { promptLength: continueWith.length })
           return { continueWith }
         }
-      })
+      }, trace, draft.goal, stageTitle)
       let abortHandler: (() => void) | null = null
       const abortPromise = new Promise<never>((_resolve, reject) => {
         abortHandler = (): void => {
@@ -220,6 +229,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
         }
 
         log.info('planning phase completed', { ...context, phase, elapsedMs: Date.now() - phaseStartedAt, nodeCount: result.nodes.length, unresolvedStepCount: result.unresolvedSteps?.length ?? 0 })
+        await trace?.({ phase: stageTitle, kind: 'status', text: `本阶段规划完成；执行节点 ${result.nodes.length} 个；未匹配步骤 ${result.unresolvedSteps?.length ?? 0} 个` })
         return result
       } catch (error) {
         primaryError = true
@@ -247,6 +257,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       const details = { ...context, ...summarizeWorkerEvents(workerEvents), ...fields, phase: failurePhase, elapsedMs: Date.now() - phaseStartedAt }
       if (cancelled) log.info('planning cancelled', details)
       else log.error('planning phase failed', details)
+      await trace?.({ phase: stageTitle, kind: 'status', text: `${cancelled ? '规划取消' : '规划失败'}\n${JSON.stringify(details, null, 2)}` })
       throw error
     } finally {
       if (signal) signal.removeEventListener('abort', externalAbortHandler)
@@ -260,9 +271,13 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     modelId: string,
     onEvent: PiTaskWorkerOptions['onEvent'],
     onResponseSettled: PiTaskWorkerOptions['onResponseSettled'],
+    modelTrace?: ModelTraceRecorder,
+    taskTitle?: string,
+    tracePhase?: string,
   ): TaskWorkerPort {
     const workspaceDir = this.options.workspaceRoot
     const context: PiTaskWorkerOptions['context'] = {
+      modelTrace, taskTitle, tracePhase,
       taskId: planningId,
       runId: planningId,
       subscriptionId: plannerEmployee.subscriptionId,

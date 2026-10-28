@@ -2,7 +2,10 @@ import { z } from 'zod'
 import type { UpdateState } from '../../shared/ipc'
 
 export type UpdateOperation = 'check' | 'download' | 'cancel' | 'install'
-export type UpdateRelease = { version: string; releaseDate: string | null; releaseNotes: string[] }
+export type UpdateRelease = {
+  version: string; releaseDate: string | null; releaseNotes: string[]
+  downloadMode?: 'external'; downloadOpened?: boolean
+}
 
 export const updateErrorMessages: Record<UpdateOperation, string> = {
   check: '检查更新失败，请稍后重试；开发环境或当前平台可能不支持自动更新。',
@@ -22,6 +25,7 @@ const updateStateSchema = z.discriminatedUnion('status', [
     ...base, status: z.literal('available'), version,
     releaseDate: z.iso.datetime({ offset: true }).nullable(),
     releaseNotes: z.array(z.string().max(300)).max(20),
+    downloadMode: z.literal('external').optional(), downloadOpened: z.boolean().optional(),
   }),
   z.object({
     ...base, status: z.literal('downloading'), version,
@@ -70,7 +74,11 @@ export function projectUpdateState(state: UpdateState, previous: UpdateState | n
 
 export function projectUpdateRelease(state: UpdateState, previous: UpdateRelease | null): UpdateRelease | null {
   if (state.status === 'available') {
-    return { version: state.version, releaseDate: state.releaseDate, releaseNotes: [...state.releaseNotes] }
+    return {
+      version: state.version, releaseDate: state.releaseDate, releaseNotes: [...state.releaseNotes],
+      ...(state.downloadMode ? { downloadMode: state.downloadMode } : {}),
+      ...(state.downloadOpened !== undefined ? { downloadOpened: state.downloadOpened } : {}),
+    }
   }
   if (state.status === 'downloading' || state.status === 'downloaded') {
     return previous?.version === state.version ? previous : null

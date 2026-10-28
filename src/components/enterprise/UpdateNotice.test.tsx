@@ -45,6 +45,23 @@ test('available details render main versions and notes as escaped text', () => {
   assert.doesNotMatch(html, /重启并安装/)
 })
 
+test('external downloads explain manual installation and confirm the browser opened', () => {
+  const available = { ...idle, status: 'available', version: '0.1.3', releaseDate: null, releaseNotes: [],
+    downloadMode: 'external' as const }
+  const html = details(model(available as UpdateState))
+  assert.match(html, /浏览器将下载对应平台安装包。下载后退出客户端，再安装新版本。/)
+  assert.match(html, /<button[^>]*>.*下载新版/)
+  assert.doesNotMatch(html, /下载更新|重启并安装/)
+
+  const opening = details(model(available as UpdateState, { pending: 'download' }))
+  assert.match(opening, /正在打开下载页面/)
+  assert.doesNotMatch(opening, /正在下载更新/)
+
+  const opened = details(model({ ...available, downloadOpened: true } as UpdateState))
+  assert.match(opened, /浏览器已打开下载页面/)
+  assert.match(opened, /再次下载/)
+})
+
 test('100 percent still displays verification and cancellation until main reports downloaded', () => {
   const html = details(model({ ...idle, status: 'downloading', version: '0.1.3', percent: 100,
     transferred: 1024, total: 1024, bytesPerSecond: 100 }, { pending: 'download' }))

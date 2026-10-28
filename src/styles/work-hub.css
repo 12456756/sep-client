@@ -45,9 +45,7 @@
 .ent-scroll.ent-scroll-work { display: flex; max-width: none; overflow: hidden; }
 .ent-work-hub { display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; background: var(--work-canvas); }
 .ent-work-list { display: flex; flex: 0 0 304px; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--ent-line); background: var(--work-list); }
-.ent-work-list-heading { display: flex; align-items: center; gap: 8px; padding: 16px 16px 10px; }
-.ent-work-list-heading h1 { margin: 0; font-size: 16px; font-weight: 650; }
-.ent-work-list-heading > span { flex: 1; color: var(--ent-ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ent-work-list-heading { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 16px 16px 10px; }
 .ent-work-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: 0 0 32px; padding: 0; border: 0; border-radius: 6px; color: var(--ent-ink-2); background: transparent; cursor: pointer; }
 .ent-work-icon:hover { background: var(--ent-panel-subtle); color: var(--ent-ink); }
 .ent-work-icon.create { color: #fff; background: var(--ent-brand-solid); }

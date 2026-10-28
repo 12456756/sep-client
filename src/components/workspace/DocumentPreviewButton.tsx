@@ -5,7 +5,7 @@ import { operationFailure } from '../../shared/arrangement-feedback'
 import { supportsDocumentPreview, type DocumentPreviewRequest } from '../../shared/document-preview'
 import type { DocumentPreviewDialogProps } from './DocumentPreviewDialog'
 
-interface Props extends DocumentPreviewRequest { name: string; format: string; version?: string }
+type Props = DocumentPreviewRequest & { name: string; format: string; version?: string }
 
 class PreviewBoundary extends Component<{ children: ReactNode; onClose(): void; onFailure(): void }, { failed: boolean }> {
   state = { failed: false }
@@ -18,7 +18,8 @@ class PreviewBoundary extends Component<{ children: ReactNode; onClose(): void; 
 }
 
 export function DocumentPreviewButton(props: Props) {
-  const { capture } = useOperationFeedback(`${props.taskId}:${props.nodeId}:${props.deliverableId}`)
+  const previewId = 'fileId' in props ? props.fileId : `${props.nodeId}:${props.deliverableId}`
+  const { capture } = useOperationFeedback(`${props.taskId}:${previewId}`)
   const [Dialog, setDialog] = useState<ComponentType<DocumentPreviewDialogProps> | null>(null)
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)

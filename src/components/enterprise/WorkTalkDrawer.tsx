@@ -65,6 +65,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
   const [attachments, setAttachments] = useState<AttachmentView[]>(retainedAttachments.attachments);
   const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(retainedAttachments.session);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const [attachmentListContainer, setAttachmentListContainer] = useState<HTMLDivElement | null>(null);
   const composerId = useMemo(() => `conversation-${work.id}`, [work.id]);
   const [editorVersion, setEditorVersion] = useState(0);
   const onPasteEdit = useCallback(({ text: pasted, selectionStart, selectionEnd, editorVersion: pastedVersion }: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
@@ -173,6 +174,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
             {isReplying ? <span className="ent-reply-dot" aria-hidden /> : null}{statusText}
           </p>
           <div className="ent-ask">
+          <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
           <textarea
             data-composer-id={composerId}
             data-editor-version={editorVersion}
@@ -184,8 +186,8 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 onChange={event => { setDraft(event.target.value); setEditorVersion(version => version + 1); }}
                 onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
-      <AttachmentComposer key={savedSession.attachmentEpoch} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
               <div className="ent-ask-bar">
+                <AttachmentComposer key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}
                 {work.currentEmployeeId === GENERAL_ASSISTANT_ID ? (

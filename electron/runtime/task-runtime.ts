@@ -43,6 +43,7 @@ import type { ArrangementMediaPort } from '../domain/arrangement-media-runtime'
 import type { KnowledgeSearchPort } from '../common/knowledge-context'
 import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { TaskLifecycleRuntimeEvidence } from '../domain/task-lifecycle'
+import type { ModelTraceFactory } from '../domain/model-trace'
 
 const log = logger.child('task-runtime')
 
@@ -72,6 +73,7 @@ function filePathFromInput(input: unknown): string | null {
 }
 
 export interface TaskRuntimeOptions {
+  createModelTrace?: ModelTraceFactory
   taskManager: TaskManager
   getRefreshToken: () => string
   onAuthenticationRequired: () => void
@@ -124,6 +126,7 @@ export class TaskRuntime {
 
   private readonly events: EventPipeline
   private readonly createWorker: (options: PiTaskWorkerOptions) => TaskWorkerPort
+  private readonly createModelTrace: ModelTraceFactory | undefined
   private readonly conversationExecutor: ConversationExecutor
   private readonly pendingFileTools = new Map<string, PendingFileToolState>()
   private readonly nodeParticipations = new Map<string, { taskId: string; parentRunId: string; participation: MonitorParticipation }>()
@@ -133,6 +136,7 @@ export class TaskRuntime {
   private readonly startingRuns = new Map<string, string>()
 
   constructor(options: TaskRuntimeOptions) {
+    this.createModelTrace = options.createModelTrace
     this.taskManager = options.taskManager
     this.getRefreshToken = options.getRefreshToken
     this.onAuthenticationRequired = options.onAuthenticationRequired
@@ -143,7 +147,13 @@ export class TaskRuntime {
       const employee = this.resolveEmployee(subscriptionId)
       return employee && (!modelId || employee.modelId === modelId) ? employee : null
     })
-    this.createWorker = options.createWorker ?? (workerOptions => new PiTaskWorker(workerOptions))
+    this.createWorker = workerOptions => {
+      const context = workerOptions.context
+      const modelTrace = context.modelTrace ?? options.createModelTrace?.({ taskId: context.taskId, runId: context.runId,
+        title: context.taskTitle ?? '对话任务', phase: context.tracePhase ?? (context.arrangementNodeId ? `节点：${context.nodeTitle ?? context.arrangementNodeId}` : '对话执行') })
+      const tracedOptions = { ...workerOptions, context: { ...context, modelTrace } }
+      return options.createWorker?.(tracedOptions) ?? new PiTaskWorker(tracedOptions)
+    }
     this.taskRunStore = options.taskRunStore ?? (options.userDataDir ? new TaskRunStore(options.userDataDir) : null)
     this.getTaskWorkspaceRoot = options.getTaskWorkspaceRoot ?? (() => process.cwd())
     this.workPlanStore = options.workPlanStore ?? null
@@ -780,6 +790,7 @@ export class TaskRuntime {
         parentCreated = true
       }
       arrangement = new ArrangementExecutor({
+        createModelTrace: this.createModelTrace,
         scope,
         taskManager: this.taskManager,
         taskRunStore: this.taskRunStore,

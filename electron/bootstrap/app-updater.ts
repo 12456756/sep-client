@@ -36,6 +36,7 @@ export interface AppUpdaterOptions {
   driver: UpdateDriver | null
   createToken: () => CancellationToken
   isNewerVersion: (version: string) => boolean
+  openExternalDownload?: (version: string) => Promise<void>
   taskStats: () => Promise<ClientTaskStats>
   prepareInstall: () => Promise<void>
   restoreAfterInstallFailure?: () => Promise<void>
@@ -116,6 +117,7 @@ export class AppUpdater {
           status: 'available', currentVersion: this.options.currentVersion, version: info.version,
           releaseDate: date && Number.isFinite(date.getTime()) ? date.toISOString() : null,
           releaseNotes: normalizeReleaseNotes(info.releaseNotes),
+          ...(this.options.openExternalDownload ? { downloadMode: 'external' as const } : {}),
         }
         this.setState(this.available)
       } else {
@@ -133,6 +135,23 @@ export class AppUpdater {
     const available = this.available
     if (!available || (this.state.status !== 'available' && !(this.state.status === 'error' && this.state.operation === 'download'))) {
       throw this.invalid('请先检查并选择可用更新。')
+    }
+    const openExternalDownload = this.options.openExternalDownload
+    if (openExternalDownload) {
+      const work = Promise.resolve().then(async () => {
+        try {
+          await openExternalDownload(available.version)
+          if (!this.disposed) {
+            this.available = { ...available, downloadOpened: true }
+            this.setState(this.available)
+          }
+        } catch {
+          if (!this.disposed) this.fail('download')
+          throw this.operationError('download')
+        } finally { this.downloadWork = null }
+      })
+      this.downloadWork = work
+      return work
     }
     const token = this.options.createToken()
     this.token = token

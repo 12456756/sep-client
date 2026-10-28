@@ -2,7 +2,7 @@
  * 客户端应用外壳：左侧导航 + 顶部 Header + 当前页面。
  *
  * 导航永远在左边、通高，不会因为窗口变窄跑到顶部。右边是内容区，内容区顶部那条
- * 白色 Header（AppTopBar）左边写当前页面的名字、右边挂一颗铃铛，同时给 Electron
+ * 白色 Header（AppTopBar）放置全局操作，同时给 Electron
  * 当窗口拖拽区，并把 Windows 的窗口按钮（titleBarOverlay 画在右上角）让开。
  *
  * 所有页面数据来自 useEnterpriseWorkspace，页面组件不直接调用 window.electronAPI。
@@ -10,19 +10,22 @@
  */
 
 import { Command, LayoutGrid, LoaderCircle, Moon, Network, RotateCw, Sun } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MediaPreferenceScopeContext } from '../components/workspace/media-preference-scope';
+import { ModelPreferenceProvider } from '../components/workspace/model-preference-scope';
 import { AppSideNav } from '../components/enterprise/AppSideNav';
 import { ConversationSessionsContext, createConversationSessions } from '../features/enterprise/conversation-sessions';
 import { AppTopBar } from '../components/enterprise/AppTopBar';
 import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { NotificationCenter } from '../components/enterprise/NotificationCenter';
 import { ProfileSettingsDialog } from '../components/enterprise/ProfileSettingsDialog';
+import { UpdateNotice } from '../components/enterprise/UpdateNotice';
 import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { useRuntimeFeedback } from '../components/feedback/use-runtime-feedback';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
 import type { EmployeeLoadState } from '../features/enterprise/use-workspace-employees';
+import type { UpdateModel } from '../features/update/use-update';
 import type { EmployeeAvatarSource, EmployeeStatus, Subscription } from '../shared/types';
 import { WorkHubPage } from './enterprise/WorkHubPage';
 import { EmployeeDetailPage } from './enterprise/EmployeeDetailPage';
@@ -39,6 +42,7 @@ import '../styles/arrange.css';
 import '../styles/compute-center.css';
 
 interface Props {
+  update?: UpdateModel;
   userId: string;
   userName: string;
   enterpriseId: string;
@@ -55,11 +59,13 @@ interface Props {
 
 export function ClientAppPage(props: Props) {
   return <MediaPreferenceScopeContext.Provider key={JSON.stringify([props.enterpriseId, props.userId])} value={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
-    <ClientAppContent {...props} />
+    <ModelPreferenceProvider scope={{ enterpriseId: props.enterpriseId, memberId: props.userId }}>
+      <ClientAppContent {...props} />
+    </ModelPreferenceProvider>
   </MediaPreferenceScopeContext.Provider>;
 }
 
-function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
+function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseName, userAvatar: initialUserAvatar, instances, employeeStatuses, employeeLoad, employeeStatusLoad, onLogout, canManage = false }: Props) {
   useRuntimeFeedback(userId, enterpriseId);
   const workspace = useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses });
   const [conversationSessions] = useState(() => createConversationSessions(sessionId => {
@@ -75,6 +81,7 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
   const profileWorkspace = useClientProfile();
   const { route, overview } = workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const profile = profileWorkspace.profile;
   const userAvatar = displayedUserAvatar(profile, initialUserAvatar ?? null, userName);
   const displayUserName = profile?.user.name || userName;
@@ -82,6 +89,12 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
   const displayEnterpriseLogo = displayedEnterpriseLogo(profile, overview.logo);
   const scroll = useRef<HTMLDivElement | null>(null);
   const [commandOpen, setCommandOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return window.localStorage.getItem('sep.sidebar.collapsed') !== 'false'; } catch { return true; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem('sep.sidebar.collapsed', String(sidebarCollapsed)); } catch { /* 存储不可用时仍允许切换。 */ }
+  }, [sidebarCollapsed]);
   const [darkMode, setDarkMode] = useState(() => {
     try { return window.localStorage.getItem('sep.theme') === 'dark'; } catch { return false; }
   });
@@ -109,28 +122,8 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
     if (scroll.current) scroll.current.scrollTop = 0;
   }, [route]);
 
-  // 页面标题、层级路径和副标题统一放在顶部标题栏；工作详情保留自身标题。
-  const head = useMemo<{ title: string; breadcrumb?: readonly string[]; subtitle?: string } | null>(() => {
-    switch (route.name) {
-      case 'organization': return { title: '企业组织', breadcrumb: ['企业'], subtitle: `${overview.name} · 企业成员与硅基员工关系` };
-      case 'home': return null;
-      case 'work': return null;
-      case 'arrange': return null;
-      case 'employees': return { title: '硅基员工', breadcrumb: ['个人'], subtitle: `企业共 ${overview.totalEmployees} 位，其中 ${overview.availableToMe} 位已分配给你` };
-      case 'employee': {
-        const employee = workspace.employees.find(item => item.id === route.employeeId);
-        return { title: employee?.name ?? '员工详情', breadcrumb: ['个人', '硅基员工'] };
-      }
-      case 'records': return null;
-      case 'skills': return { title: '员工技能', breadcrumb: ['个人'], subtitle: '查看技能原文、管理个人版本，选择员工使用的技能版本' };
-      case 'knowledge': return { title: '知识库', breadcrumb: ['企业'], subtitle: '企业资料、文档版本与成员访问权限' };
-      case 'compute-center': return { title: '算力中心', subtitle: '企业额度、个人钱包与消费情况' };
-      default: return { title: overview.name };
-    }
-  }, [route, overview, workspace.employees]);
-
   return (
-    <div className={`ent-shell${darkMode ? ' dark' : ''} sidebar-collapsed${['arrange', 'records', 'work'].includes(route.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
+    <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}${['arrange', 'records', 'work'].includes(route.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
@@ -140,16 +133,14 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
         canManage={canManage}
         userName={displayUserName}
         userAvatar={userAvatar}
-        collapsed
+        collapsed={sidebarCollapsed}
+        onToggleCollapse={() => setSidebarCollapsed(value => !value)}
         onNavigate={workspace.navigate}
         onOpenSettings={() => setSettingsOpen(true)}
         onLogout={() => { void onLogout(); }}
       />
       <div className="ent-shell-main">
         <AppTopBar
-          title={head?.title}
-          breadcrumb={head?.breadcrumb}
-          subtitle={head?.subtitle}
           actions={(
             <div className="ent-top-actions-group">
               <div className="ent-view-switch" role="group" aria-label="页面切换">
@@ -205,6 +196,8 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
                   if (!result.success) throw new Error(result.error?.message || '无法打开通知关联页面');
                 }
               }} />
+              {update ? <UpdateNotice update={update} open={updateOpen} onOpenChange={setUpdateOpen}
+                onOpenWorkRecords={() => workspace.navigate({ name: 'records' })} /> : null}
             </div>
           )}
         />
@@ -231,6 +224,7 @@ function ClientAppContent({ userId, userName, enterpriseId, enterpriseName, user
         <ProfileSettingsDialog
           profile={profile}
           userName={userName}
+          models={[...new Set(workspace.myEmployees.flatMap(employee => employee.allowedModels))]}
           canManage={canManage}
           uploading={profileWorkspace.uploading}
           error={profileWorkspace.error}

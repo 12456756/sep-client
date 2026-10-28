@@ -158,6 +158,8 @@ export class ConversationExecutor {
         context: {
           taskId,
           runId,
+          taskTitle: task.title,
+          tracePhase: '对话执行',
           subscriptionId: queued.subscriptionId,
           modelId: employee.modelId,
           gatewayUrl: employee.gatewayUrl,

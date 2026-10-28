@@ -44,7 +44,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const speech = useSpeechInput({ contextKey: `chat:${employeeId}`, value: text, onChange: setText, disabled: busy });
   const input = speech.inputProps.ref;
   const employee = employees.find(item => item.id === employeeId);
-  const ready = Boolean(employee && text.trim()) && !attachmentsBusy;
+  const ready = Boolean(employee && text.trim() && models.includes(settings.modelId)) && !attachmentsBusy;
   const onPasteEdit = useCallback(({ text: pasted, selectionStart, selectionEnd, editorVersion: pastedVersion }: { text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => {
     if (pastedVersion !== editorVersion) return false;
     setText(current => `${current.slice(0, selectionStart)}${pasted}${current.slice(selectionEnd)}`);

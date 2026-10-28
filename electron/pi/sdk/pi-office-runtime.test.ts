@@ -1,12 +1,12 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createMcpRuntime } from './pi-mcp-client'
 import { prepareCommonSkills } from './common-skills'
-import { attachOfficeRuntime, officeMcpServer, withOfficeFileLock } from './pi-office-runtime'
+import { attachOfficeRuntime, officeMcpServer, withOfficeFileLock, withOfficeFileLocks } from './pi-office-runtime'
 import { OFFICE_TOOL_NAME } from './pi-office-policy'
 import type { PiAgentSessionConfig } from './pi-agent-runtime'
 import { buildExtensions } from './pi-coding-agent-adapter'
@@ -16,8 +16,9 @@ import * as officeManifest from '../../../resources/office/manifest.json'
 
 describe('built-in Office runtime', () => {
   it('closes an interrupted Office process before allowing another command', async t => {
-    const root = await mkdtemp(join(tmpdir(), 'sep-office-abort-'))
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'sep-office-abort-')))
     t.after(() => rm(root, { recursive: true, force: true }))
+    await writeFile(join(root, 'package.json'), '{"type":"commonjs"}')
     await writeFile(join(root, 'mcp'), `
       const fs = require('node:fs');
       const rl = require('node:readline').createInterface({ input: process.stdin });
@@ -79,6 +80,99 @@ describe('built-in Office runtime', () => {
     await Promise.all([first, third])
     assert.deepEqual(events, ['first', 'independent', 'first-done', 'third'])
   })
+  it('serializes overlapping multi-file operations and keeps unrelated files parallel', async () => {
+    let release!: () => void
+    const hold = new Promise<void>(done => { release = done })
+    const events: string[] = []
+    const first = withOfficeFileLocks(['source.docx', 'render.html'], undefined, async () => {
+      events.push('first'); await hold; events.push('first-done')
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    const overlap = withOfficeFileLocks(['other.docx', 'render.html'], undefined, async () => { events.push('overlap') })
+    const independent = withOfficeFileLocks(['unrelated.docx'], undefined, async () => { events.push('independent') })
+    await independent
+    assert.deepEqual(events, ['first', 'independent'])
+    release()
+    await Promise.all([first, overlap])
+    assert.deepEqual(events, ['first', 'independent', 'first-done', 'overlap'])
+  })
+  it('acquires multiple locks in sorted order without deadlock', async () => {
+    const events: string[] = []
+    await Promise.all([
+      withOfficeFileLocks(['b.docx', 'a.docx'], undefined, async () => { events.push('first') }),
+      withOfficeFileLocks(['a.docx', 'b.docx'], undefined, async () => { events.push('second') }),
+    ])
+    assert.equal(events.length, 2)
+  })
+  it('releases a cancelled partial lock set without releasing another worker lock', async () => {
+    let release!: () => void
+    const hold = new Promise<void>(done => { release = done })
+    const events: string[] = []
+    const first = withOfficeFileLocks(['cancel-b'], undefined, async () => {
+      events.push('first'); await hold; events.push('first-done')
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    const controller = new AbortController()
+    const pending = withOfficeFileLocks(['cancel-b', 'cancel-a'], controller.signal, async () => { events.push('cancelled') })
+    const rejected = assert.rejects(pending, /cancel/)
+    await new Promise(resolve => setImmediate(resolve))
+    controller.abort(new Error('cancel'))
+    await rejected
+    const third = withOfficeFileLocks(['cancel-b'], undefined, async () => { events.push('third') })
+    await withOfficeFileLocks(['cancel-a'], undefined, async () => { events.push('released-a') })
+    assert.deepEqual(events, ['first', 'released-a'])
+    release()
+    await Promise.all([first, third])
+    assert.deepEqual(events, ['first', 'released-a', 'first-done', 'third'])
+  })
+  it('does not execute an already cancelled command without file paths', async () => {
+    const controller = new AbortController()
+    controller.abort(new Error('cancel'))
+    let executed = false
+    await assert.rejects(withOfficeFileLocks([], controller.signal, async () => { executed = true }), /cancel/)
+    assert.equal(executed, false)
+  })
+  it('locks an output shared by otherwise distinct Office commands', async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'sep-office-locks-')))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    await writeFile(join(root, 'package.json'), '{"type":"commonjs"}')
+    await writeFile(join(root, 'mcp'), `
+      const fs = require('node:fs');
+      const rl = require('node:readline').createInterface({ input: process.stdin });
+      rl.on('line', line => { const m = JSON.parse(line); if (m.id === undefined) return;
+        if (m.method === 'initialize') return process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{protocolVersion:'2025-06-18',capabilities:{tools:{}},serverInfo:{name:'office',version:'1'}}})+'\\n');
+        if (m.method === 'tools/list') return process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{tools:[{name:'officecli',inputSchema:{type:'object'}}]}})+'\\n');
+        const command = m.params.arguments.command; fs.appendFileSync('calls', 'start:' + command[1] + '\\n');
+        setTimeout(() => { fs.appendFileSync('calls', 'end:' + command[1] + '\\n');
+          process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:m.id,result:{content:[{type:'text',text:'ok'}]}})+'\\n'); }, 30);
+      });
+    `)
+    const base = await createMcpRuntime([], root)
+    const attached = await attachOfficeRuntime(base, { skills: [], unavailable: [], office: { executable: process.execPath, sha256: '' } }, {
+      runId: 'lock-office', modelId: 'm', gatewayUrl: '', workspaceDir: root, agentDir: root, sessionDir: root,
+      getAccessToken: async () => '', authorizeTool: async () => true,
+      toolPolicy: { allowedTools: ['read', 'write'], allowedPaths: [root], deniedPaths: [], workspaceDir: root,
+        commandPolicy: 'disabled', approvalMode: 'auto-approve' },
+    })
+    t.after(() => attached.runtime.dispose())
+    const office = attached.runtime.tools.find(tool => tool.name === OFFICE_TOOL_NAME)!
+    for (const command of [
+      ['view', 'second.docx', 'html', '--out', 'same.html'],
+      ['get', 'same.html'],
+    ]) {
+      await writeFile(join(root, 'calls'), '')
+      const first = office.execute('first', { command: ['view', 'first.docx', 'html', '--out', 'same.html'] }, undefined)
+      const second = office.execute('second', { command }, undefined)
+      const results = await Promise.all([first, second])
+      for (const result of results) assert.equal(result.details.isError, false)
+      const calls = (await readFile(join(root, 'calls'), 'utf8')).trim().split('\n')
+      assert.equal(calls.length, 4)
+      assert.match(calls[0], /^start:/)
+      assert.match(calls[1], /^end:/)
+      assert.match(calls[2], /^start:/)
+      assert.match(calls[3], /^end:/)
+    }
+  })
   it('keeps existing tools available if optional Office startup fails', async () => {
     const base = await createMcpRuntime([], process.cwd())
     const result = await attachOfficeRuntime(base, { skills: [], unavailable: [],
@@ -128,7 +222,7 @@ describe('built-in Office runtime', () => {
     }
     const common = prepareCommonSkills()
     assert.ok(common.office, common.unavailable.join('; '))
-    const root = await mkdtemp(join(tmpdir(), 'sep-office-real-'))
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'sep-office-real-')))
     const base = await createMcpRuntime([], root)
     const attached = await attachOfficeRuntime(base, common, { runId: 'office-test', modelId: 'm', gatewayUrl: '',
       workspaceDir: root, agentDir: root, sessionDir: root, getAccessToken: async () => '', authorizeTool: async () => true,
