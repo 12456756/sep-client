@@ -13,7 +13,7 @@
     "dev:preview": "vite --config vite.preview.config.ts --open /?preview=workspace",
     "build": "node scripts/generate-runtime-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
-    "package": "npm run package:beta",
+    "package": "npm run package:local:stable",
     "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "lint": "eslint . --ext .ts,.tsx",
     "auth:smoke": "bash scripts/test-auth-flow.sh",
