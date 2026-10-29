@@ -212,10 +212,10 @@ test('release notes and checksums can target isolated channel directories', () =
   assert.notEqual(run(dir, 'generate-release-notes.mjs', ['invalid']).status, 0)
 })
 
-test('default packaging selects beta and update tooling has a pinned YAML parser', () => {
+test('default packaging selects local stable and update tooling has a pinned YAML parser', () => {
   const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(resolve(root, 'package-lock.json'), 'utf8'))
-  assert.equal(pkg.scripts.package, 'npm run package:beta')
+  assert.equal(pkg.scripts.package, 'npm run package:local:stable')
   assert.equal(pkg.devDependencies['js-yaml'], '4.3.0')
   assert.equal(lock.packages[''].devDependencies['js-yaml'], pkg.devDependencies['js-yaml'])
   assert.equal(lock.packages['node_modules/js-yaml'].version, pkg.devDependencies['js-yaml'])

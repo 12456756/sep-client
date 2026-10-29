@@ -31,6 +31,18 @@ test('authenticated workspace starts on the personal home and navigation can ret
     './use-arrangement-plans': { useArrangementPlans: () => ({ plans: {}, events: {}, executions: {}, recordEvent() {} }) },
     './use-skill-library': { useSkillLibrary: () => ({ skills: [] }) },
     './skill-load-state': { needsSkillLibrary: () => false },
+    './skill-page-state': {
+      createSkillPageState: () => ({ query: '', employeeFilterId: '', versionFilter: 'all', sort: 'name', scrollTop: 0, focusId: null, anchorId: null, anchorOffset: 0, notice: '' }),
+      enterSkillPage: (state: unknown) => state,
+      createSkillLeaveRegistry: () => ({ register: () => () => {}, mayLeave: () => true }),
+    },
+    './employee-page-state': {
+      createEmployeePageState: () => ({ scope: 'mine', search: '', availability: '', view: 'cards', scrollTop: 0, focusId: null }),
+      employeeBackgroundRoute: (route: unknown) => route,
+      enterEmployeePage: (state: unknown) => state,
+      readEmployeeView: () => 'cards',
+      saveEmployeeView() {},
+    },
     '../../components/feedback/use-operation-feedback': { useOperationFeedback: () => ({ capture() {} }) },
     '../../components/feedback/FeedbackProvider': { useFeedback: () => ({ confirm: async () => false }) },
     './placeholder': { WORK_TEMPLATES: [] },

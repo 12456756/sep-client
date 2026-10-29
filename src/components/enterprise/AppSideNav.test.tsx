@@ -47,7 +47,7 @@ function render(current: 'home' | 'arrange' | 'records' | 'work' = 'home', needs
 
 test('renders icon-only company branding with one unified work entry', () => {
   const html = render('home', 2);
-  assert.match(html, /aria-label="龙硅科技，打开企业菜单"/);
+  assert.match(html, /role="img" aria-label="龙硅科技"/);
   assert.match(html, /<svg[^>]*aria-hidden="true"/);
   assert.doesNotMatch(html, /<strong[^>]*>龙硅科技<\/strong>/);
   assert.equal((html.match(/aria-label="工作，2 项待处理"/g) ?? []).length, 1);

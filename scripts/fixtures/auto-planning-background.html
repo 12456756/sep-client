@@ -8,7 +8,7 @@ const {WorkHubPage}=await import('/pages/enterprise/WorkHubPage.tsx');
 const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseWorkspace.ts');
 const owner={memberId:'fixture-user',enterpriseId:'fixture-enterprise'};
 const instances=['调研员','报告撰写员'].map((name,i)=>({id:'sub-'+i,subscriptionId:'sub-'+i,employeeId:'employee-'+i,name,status:'ACTIVE',templateVersion:'1.0.0',template:{id:'employee-'+i,name,avatar:null},department:null,allowedModels:['model'],upgradeAvailable:false}));
-const options={userId:owner.memberId,userName:'测试用户',enterpriseId:owner.enterpriseId,enterpriseName:'隔离测试',instances,employeeStatuses:[]};
+const options={userId:owner.memberId,userName:'测试用户',enterpriseId:owner.enterpriseId,enterpriseName:'隔离测试',instances,employeeStatuses:instances.map(instance=>({employeeId:instance.employeeId,status:'READY'}))};
 const attachment={attachmentId:'attachment-a',sha256:'a'.repeat(64),displayName:'促销要求.txt',mediaType:'text/plain',byteLength:128,importSource:'picker',extractionStatus:'ready',warnings:[]};
 const saved=JSON.parse(sessionStorage.getItem('planning-fixture')||'{}');
 const drafts=new Map(saved.drafts||[]),progress=new Map(saved.progress||[]),tasks=new Map(saved.tasks||[]),plans=new Map(saved.plans||[]);

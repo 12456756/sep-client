@@ -127,7 +127,7 @@ curl http://localhost:9999/log  # 查看捕获的 tokens
 ```bash
 npm run dev      # 开发模式 (hot reload)
 npm run build    # 构建生产版本
-npm run package  # 打包成 .dmg / .exe
+npm run package  # stable 本地包，输出到 dist/local/stable
 ```
 
 ---

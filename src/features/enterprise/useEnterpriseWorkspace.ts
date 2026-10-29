@@ -1,6 +1,9 @@
 import { useArrangementPlans } from './use-arrangement-plans';
 import { useSkillLibrary, type SkillLibraryWorkspace } from './use-skill-library';
 import { needsSkillLibrary } from './skill-load-state';
+import { subscriptionAvailability } from './employee-view-model';
+import { createEmployeePageState, employeeBackgroundRoute, enterEmployeePage, readEmployeeView, saveEmployeeView, type EmployeePageState } from './employee-page-state';
+import { createSkillPageState, enterSkillPage, createSkillLeaveRegistry, type SkillPageState } from './skill-page-state';
 import { conversationDocument } from './run-settings';
 import { generalAssistant, GENERAL_ASSISTANT_ID } from './general-assistant';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
@@ -180,7 +183,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   planningController?: import('./auto-planning-controller').AutoPlanningController;
   attachmentScopeKey: string;
   overview: EnterpriseOverview;
-  /** 企业全部员工，含未分配给我的。 */
+  /** 当前账号的员工订阅，含本机工作与技能信息。 */
   employees: SiliconEmployee[];
   /** 我可以直接安排的员工。 */
   myEmployees: SiliconEmployee[];
@@ -194,6 +197,12 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
    */
   unreviewedWorkIds: ReadonlySet<string>;
   route: AppRoute;
+  employeeBackgroundRoute: AppRoute;
+  employeePageState: EmployeePageState;
+  updateEmployeePageState: (patch: Partial<EmployeePageState>) => void;
+  skillPageState: SkillPageState;
+  updateSkillPageState: (patch: Partial<SkillPageState>) => void;
+  registerSkillLeaveGuard: (guard: (() => boolean) | null) => () => void;
   /** 是否有可返回的上一页，供顶栏决定是否显示返回按钮。 */
   canGoBack: boolean;
   busy: boolean;
@@ -206,6 +215,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   /** 更新当前路由的筛选条件，不创建返回历史。 */
   replaceRoute: (route: AppRoute) => void;
   retryWorkTypes: () => void;
+  workListLoad: { loading: boolean; error: string | null; retry: () => void };
   goBack: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>;
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
@@ -242,6 +252,14 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const scopeKey = JSON.stringify([userId, enterpriseId]);
   const planningController = usePlanningSession({ memberId: userId, enterpriseId });
   const planningRecords = useSyncExternalStore(planningController.subscribe, planningController.getRecords, planningController.getRecords);
+  const retryWorkListRef = useRef<(() => void) | null>(null);
+  const retryWorkList = useCallback(() => retryWorkListRef.current?.(), []);
+  const [workListLoadState, setWorkListLoadState] = useState<{ scopeKey: string; loading: boolean; error: string | null }>({
+    scopeKey, loading: true, error: null,
+  });
+  const workListLoad = useMemo(() => workListLoadState.scopeKey === scopeKey
+    ? { loading: workListLoadState.loading, error: workListLoadState.error, retry: retryWorkList }
+    : { loading: true, error: null, retry: retryWorkList }, [scopeKey, workListLoadState, retryWorkList]);
   const { capture: captureFeedback } = useOperationFeedback(scopeKey);
   const feedback = useFeedback();
   const deletedRecords = useMemo(() => ({ scopeKey, ids: new Set<string>() }), [scopeKey]);
@@ -251,6 +269,18 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const { recordEvent: recordArrangementEvent } = arrangement;
   const [route, setRoute] = useState<AppRoute>({ name: 'home' });
   const [history, setHistory] = useState<AppRoute[]>([]);
+  const [skillPageRecord, setSkillPageRecord] = useState(() => ({ scopeKey, state: createSkillPageState() }));
+  const skillPageState = skillPageRecord.scopeKey === scopeKey ? skillPageRecord.state : createSkillPageState();
+  const updateSkillPageState = useCallback((patch: Partial<SkillPageState>) => {
+    setSkillPageRecord(current => ({ scopeKey, state: { ...(current.scopeKey === scopeKey ? current.state : createSkillPageState()), ...patch } }));
+  }, [scopeKey]);
+  const [skillLeaveRegistry] = useState(createSkillLeaveRegistry);
+  const registerSkillLeaveGuard = useCallback((guard: (() => boolean) | null) => skillLeaveRegistry.register(scopeKey, guard), [skillLeaveRegistry, scopeKey]);
+  const [employeePageState, setEmployeePageState] = useState(() => createEmployeePageState(readEmployeeView(scopeKey)));
+  const updateEmployeePageState = useCallback((patch: Partial<EmployeePageState>) => {
+    setEmployeePageState(current => ({ ...current, ...patch }));
+    if (patch.view) saveEmployeeView(scopeKey, patch.view);
+  }, [scopeKey]);
   const [busy, setBusy] = useState(false);
   const [organizationData, setOrganizationData] = useState<EnterpriseOrganization | null>(null);
   const [organizationMembers, setOrganizationMembers] = useState<OrganizationCarbonEmployee[]>([]);
@@ -304,6 +334,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
   useEffect(() => {
     void refreshOrganization();
+    return () => { organizationRequestRef.current += 1; };
   }, [refreshOrganization]);
 
   const clearRuntimeState = useCallback((taskId: string): void => {
@@ -321,7 +352,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const roleName = instance.template.name || '硅基员工';
     const platformStatus = employeeStatuses.find(item => item.employeeId === instance.employeeId)?.status;
     const permissions = permissionOverrides[instance.subscriptionId] ?? defaultPermissions();
-    const availability = instance.status !== 'ACTIVE' ? 'unavailable' : platformStatus === 'WORKING' ? 'working' : permissions.some(item => item.enabled) ? 'ready' : 'needs-auth';
+    const availability = subscriptionAvailability(instance.status, platformStatus);
     return {
       id: instance.subscriptionId,
       name: instance.name,
@@ -373,7 +404,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const busyIds = busyEmployeeIds(works);
     const lastWorked = new Map<string, number>();
     works.forEach(work => {
-      work.participants.forEach(id => {
+      new Set([...work.participants, work.currentEmployeeId].filter(Boolean)).forEach(id => {
         lastWorked.set(id, Math.max(lastWorked.get(id) ?? 0, work.updatedAt));
       });
     });
@@ -467,7 +498,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const messageVersions = new Map<string, number>();
     const observedRuns = new Map<string, string | null>();
     let receivedTaskList = false;
+    let initialQueryRevision = 0;
     const pushedTaskIds = new Set<string>();
+    setWorkListLoadState({ scopeKey, loading: true, error: null });
     const typeCache = new TaskReadCache(async task => {
       try {
         const result = await api.getTask(task.id);
@@ -521,21 +554,36 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       if (previousRun !== task.activeRunId) void loadMessages([task]);
     };
 
-    void api.getAllTasks().then(result => {
-      if (!active) return;
-      if (!result.success) { readFailure('list', result, 'workList'); return; }
-      const list = (result.tasks ?? []).filter(belongsToScope);
-      setTasks(current => {
-        const next = mergeInitialTaskQuery(current, list, pushedTaskIds, receivedTaskList, deletedTaskIds);
-        typeCache.retain(next);
-        next.forEach(typeCache.ensure.bind(typeCache));
-        return next.map(task => typeCache.preserve(task));
+    const loadInitialTasks = () => {
+      const revision = ++initialQueryRevision;
+      setWorkListLoadState({ scopeKey, loading: true, error: null });
+      void api.getAllTasks().then(result => {
+        if (!active || revision !== initialQueryRevision) return;
+        if (!result.success) {
+          readFailure('list', result, 'workList');
+          setWorkListLoadState({ scopeKey, loading: false, error: result.error?.message || '工作列表加载失败' });
+          return;
+        }
+        failedReads.delete('list');
+        const list = (result.tasks ?? []).filter(belongsToScope);
+        setTasks(current => {
+          const next = mergeInitialTaskQuery(current, list, pushedTaskIds, receivedTaskList, deletedTaskIds);
+          typeCache.retain(next);
+          next.forEach(typeCache.ensure.bind(typeCache));
+          return next.map(task => typeCache.preserve(task));
+        });
+        list.forEach(refreshMessages);
+        setWorkListLoadState({ scopeKey, loading: false, error: null });
+      }).catch((loadError: unknown) => {
+        if (!active || revision !== initialQueryRevision) return;
+        readFailure('list', {}, 'workList');
+        const message = loadError instanceof Error ? loadError.message : '工作列表加载失败';
+        setWorkListLoadState({ scopeKey, loading: false, error: message });
+        if (!receivedTaskList && pushedTaskIds.size === 0) setTasks([]);
       });
-      list.forEach(refreshMessages);
-    }).catch(() => {
-      readFailure('list', {}, 'workList');
-      if (active && !receivedTaskList && pushedTaskIds.size === 0) setTasks([]);
-    });
+    };
+    retryWorkListRef.current = loadInitialTasks;
+    loadInitialTasks();
 
     const unsubscribeList = api.onTaskListUpdated(incoming => {
       if (!active) return;
@@ -582,6 +630,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
     return () => {
       active = false;
+      if (retryWorkListRef.current === loadInitialTasks) retryWorkListRef.current = null;
       unsubscribeList();
       unsubscribeTask();
       unsubscribePi();
@@ -602,23 +651,29 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
 
   // ── 导航 ─────────────────────────────────────────────────────────────
   const navigate = useCallback((next: AppRoute) => {
+    if (!skillLeaveRegistry.mayLeave(scopeKey)) return;
+    if (next.name === 'skills') setSkillPageRecord(current => ({ scopeKey, state: enterSkillPage(current.scopeKey === scopeKey ? current.state : createSkillPageState(), next) }));
+    if (next.name === 'employees' && next.scope) setEmployeePageState(current => enterEmployeePage(current, next.scope));
     setRoute(current => {
       setHistory(stack => [...stack.slice(-19), current]);
       return next;
     });
-  }, []);
+  }, [skillLeaveRegistry, scopeKey]);
 
   const goBack = useCallback(() => {
+    if (!skillLeaveRegistry.mayLeave(scopeKey)) return;
     setHistory(stack => {
       if (!stack.length) return stack;
       setRoute(stack[stack.length - 1]);
       return stack.slice(0, -1);
     });
-  }, []);
+  }, [skillLeaveRegistry, scopeKey]);
 
   const replaceRoute = useCallback((next: AppRoute) => {
+    if (!skillLeaveRegistry.mayLeave(scopeKey)) return;
+    if (next.name === 'skills') setSkillPageRecord(current => ({ scopeKey, state: enterSkillPage(current.scopeKey === scopeKey ? current.state : createSkillPageState(), next) }));
     setRoute(next);
-  }, []);
+  }, [skillLeaveRegistry, scopeKey]);
 
   // ── 工作动作 ──────────────────────────────────────────────────────────
   const run = useCallback(async (action: () => Promise<{ success: boolean; error?: { message: string } }>, operation: FeedbackOperation, quiet = false) => {
@@ -956,9 +1011,12 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     planningController,
     attachmentScopeKey: scopeKey,
     overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, busy,
+    employeePageState, updateEmployeePageState,
+    skillPageState, updateSkillPageState, registerSkillLeaveGuard,
+    employeeBackgroundRoute: employeeBackgroundRoute(route, history),
     canGoBack: history.length > 0,
     arrangeSeed, seedArrange: setArrangeSeed, userName,
-    navigate, replaceRoute, retryWorkTypes, goBack,
+    navigate, replaceRoute, retryWorkTypes, workListLoad, goBack,
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
     stopWork, retryWork, renameWork, setWorkPinned, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,

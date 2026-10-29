@@ -47,7 +47,7 @@ try {
     try {
       await page.route('**/__skill-follow?*', route => route.fulfill({ contentType: 'text/html', body: html }))
       await page.goto(origin + '/__skill-follow?source=' + source)
-      const select = page.locator('.skill-active-version select')
+      const select = page.locator('.skill-row-version select')
       await select.waitFor()
       assert.deepEqual(await select.locator('option').evaluateAll(options => options.map(option => option.value)), ['follow-platform', 'personal'])
       await select.selectOption('follow-platform')
@@ -57,7 +57,8 @@ try {
       assert.deepEqual(await page.evaluate(() => window.calls), [{ capabilityId: 'cap', versionId: 'follow-platform' }])
       await page.screenshot({ path: join(tmpdir(), `sep-skill-follow-${source}-${width}.png`), fullPage: true })
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
-      await page.locator('.skill-card-bottom button').click()
+      await page.locator('.skill-row-open').click()
+      await page.getByRole('tab').nth(1).click()
       await page.locator('.skill-history').waitFor()
       assert.equal(await page.locator('.skill-version-row').count(), 3)
       assert.deepEqual(errors, [])

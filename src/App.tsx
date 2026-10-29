@@ -7,7 +7,6 @@ import { useWorkspaceEmployees } from './features/enterprise/use-workspace-emplo
 import { FeedbackProvider, useFeedback } from './components/feedback/FeedbackProvider';
 import { LOGIN_FEEDBACK } from './shared/login-feedback';
 import { useUpdate } from './features/update/use-update';
-import { UpdateNotice } from './components/enterprise/UpdateNotice';
 
 interface AuthState {
   user: { id: string; email: string; name: string };
@@ -21,7 +20,6 @@ export default function App() {
 function AppContent() {
   const feedback = useFeedback();
   const update = useUpdate();
-  const [loginUpdateOpen, setLoginUpdateOpen] = useState(false);
   const [authState, setAuthState] = useState<AuthState | null>(null);
   const currentAuth = useRef<AuthState | null>(null);
   const logoutPending = useRef(false);
@@ -107,10 +105,6 @@ function AppContent() {
   return <>
     <div className="electron-window-chrome electron-drag-region" aria-hidden="true" />
     {renderRoute()}
-    {!authState && <aside className="login-update-entry" aria-label="客户端版本更新">
-      <UpdateNotice update={update} open={loginUpdateOpen} onOpenChange={setLoginUpdateOpen}
-        onOpenWorkRecords={() => setLoginUpdateOpen(false)} />
-    </aside>}
     {toolApprovalRequests.map(request => <Approval key={request.requestId} request={request} onResolve={resolveApproval} />)}
   </>;
 }

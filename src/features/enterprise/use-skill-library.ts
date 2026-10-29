@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PersonalSkillVersionRequest } from '../../shared/platform-supplement-contracts';
 import type { SaveSkillResult, SkillLibraryItem } from '../../shared/skill-library';
 import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../shared/skill-library';
@@ -8,7 +8,10 @@ const FOCUS_REFRESH_COOLDOWN_MS = 30_000;
 
 /** Server metadata and durable local versions only. No browser-side skill copies. */
 export function useSkillLibrary(scopeKey: string, enabled = true) {
+  const identity = useMemo(() => ({ scopeKey, active: true }), [scopeKey]);
+  useLayoutEffect(() => { identity.active = true; return () => { identity.active = false; }; }, [identity]);
   const [skills, setSkills] = useState<SkillLibraryItem[]>([]);
+  const [stateScopeKey, setStateScopeKey] = useState(scopeKey);
   const [skillsLoading, setLoading] = useState(enabled);
   const [skillsWarning, setSkillsWarning] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<SkillLoadError | null>(null);
@@ -40,14 +43,14 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
         if (!result.success || !result.data) {
           throw classifySkillLoadError(result.error);
         }
-        if (generation.current === request) {
+        if (identity.active && generation.current === request) {
           setSkills(result.data);
           setSkillsWarning(result.skippedCount ? '部分技能数据异常，已跳过；其他技能仍可正常使用。' : null);
           loadErrorRef.current = null;
           setLoadError(null);
         }
       } catch (error) {
-        if (generation.current === request) {
+        if (identity.active && generation.current === request) {
           const failure = error && typeof error === 'object' && 'kind' in error
             ? error as SkillLoadError
             : classifySkillLoadError(error);
@@ -55,7 +58,7 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
           setLoadError(failure);
         }
       } finally {
-        if (generation.current === request) setLoading(false);
+        if (identity.active && generation.current === request) setLoading(false);
         if (inFlightRequest.current === request) {
           inFlight.current = null;
           inFlightRequest.current = null;
@@ -64,10 +67,11 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     });
     inFlight.current = requestPromise;
     return requestPromise;
-  }, []);
+  }, [identity]);
 
   useEffect(() => {
     setSkills([]);
+    setStateScopeKey(scopeKey);
     setSkillsWarning(null);
     setLoading(false);
     loadErrorRef.current = null;
@@ -105,19 +109,22 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
 
   const previewSkillSource = useCallback(async (capabilityId: string, versionId: string): Promise<string> => {
     const result = await window.electronAPI.previewLibrarySkill({ capabilityId, versionId });
+    if (!identity.active) throw new Error('登录身份已变化，请重新打开技能。');
     if (!result.success || result.data === undefined) throw new Error(result.error?.message || '原文读取失败');
     return result.data;
-  }, []);
+  }, [identity]);
   const selectSkillVersion = useCallback(async (capabilityId: string, versionId: string): Promise<void> => {
     const result = await window.electronAPI.selectSkillVersion({ capabilityId, versionId });
+    if (!identity.active) throw new Error('登录身份已变化，请重新打开技能。');
     if (!result.success) throw new Error(result.error?.message || '版本切换失败');
     setSkills(current => current.map(item => item.capability.id === capabilityId ? { ...item, bindings: item.bindings.map(binding => ({ ...binding,
       selectionMode: versionId === FOLLOW_PLATFORM_SKILL_VERSION ? 'follow-platform' : 'personal',
       selectedVersionId: versionId === FOLLOW_PLATFORM_SKILL_VERSION ? binding.currentVersion?.id ?? null : versionId })) } : item));
     await refreshSkills();
-  }, [refreshSkills]);
+  }, [refreshSkills, identity]);
   const saveSkillSource = useCallback(async (request: PersonalSkillVersionRequest, idempotencyKey: string): Promise<SaveSkillResult> => {
     const result = await window.electronAPI.savePersonalSkill({ request, idempotencyKey });
+    if (!identity.active) throw new Error('登录身份已变化，请重新打开技能。');
     if (!result.success || !result.data) throw new Error(result.error?.message || '保存失败，原文未丢失，请重试');
     const saved = result.data;
     // The durable save succeeded; a failed metadata refresh must not hide the new version.
@@ -133,9 +140,10 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     }));
     await refreshSkills();
     return saved;
-  }, [refreshSkills]);
+  }, [refreshSkills, identity]);
   const retrySkillUpload = useCallback(async (capabilityId: string, idempotencyKey: string): Promise<SaveSkillResult> => {
     const result = await window.electronAPI.retryPersonalSkillUpload({ capabilityId, idempotencyKey });
+    if (!identity.active) throw new Error('登录身份已变化，请重新打开技能。');
     if (!result.success || !result.data) throw new Error(result.error?.message || '上传失败');
     const saved = result.data;
     if (saved.version) setSkills(current => current.map(item => item.capability.id !== capabilityId ? item : {
@@ -144,14 +152,14 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     }));
     await refreshSkills();
     return result.data;
-  }, [refreshSkills]);
+  }, [refreshSkills, identity]);
   return {
-    skills,
-    skillsLoading,
-    skillsWarning,
-    skillsError,
-    skillsErrorKind: (loadError?.kind ?? null) as SkillLoadErrorKind | null,
-    skillsRetrySeconds,
+    skills: stateScopeKey === scopeKey ? skills : [],
+    skillsLoading: stateScopeKey === scopeKey ? skillsLoading : enabled,
+    skillsWarning: stateScopeKey === scopeKey ? skillsWarning : null,
+    skillsError: stateScopeKey === scopeKey ? skillsError : null,
+    skillsErrorKind: (stateScopeKey === scopeKey ? loadError?.kind ?? null : null) as SkillLoadErrorKind | null,
+    skillsRetrySeconds: stateScopeKey === scopeKey ? skillsRetrySeconds : null,
     refreshSkills,
     previewSkillSource,
     selectSkillVersion,

@@ -28,7 +28,7 @@ function fixture(permission = 'prompt') {
     zod: { z }, '../common/logger': { logger: { child: () => ({ info: () => {}, warn: () => {} }) } },
     '../errors/app-error': { appError }, '../errors/error-mapper': { authFailure: failure, failure },
     '../errors/error-reporter': { reportAuthFailure: failure, reportFailure: failure },
-    './channels': { FEEDBACK_OPERATION_BY_CHANNEL },
+    './channels': { FEEDBACK_OPERATION_BY_CHANNEL, INVOKE_CHANNELS },
   })
   const { speechRoutes } = load<{ speechRoutes: Route[] }>('./routes/speech.ts', {
     electron: { dialog: { showMessageBox: () => assert.fail('Must not ask consent while opening system settings') } },
