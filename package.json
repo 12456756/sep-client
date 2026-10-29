@@ -1,6 +1,6 @@
 {
   "name": "longsilicon",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "硅基员工平台客户端",
   "type": "module",
   "main": "out/main/index.js",
@@ -136,7 +136,9 @@
     "mac": {
       "category": "public.app-category.business",
       "icon": "build/icon.icns",
-      "signIgnore": ["/Contents/Resources/office/officecli-mac-(arm64|x64)$"],
+      "signIgnore": [
+        "/Contents/Resources/office/officecli-mac-(arm64|x64)$"
+      ],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "用于将您主动录制的语音在本机转换为输入文字。"
       },
@@ -179,12 +181,33 @@
       "node_modules/sherpa-onnx-*/**/*"
     ],
     "extraResources": [
-      { "from": "resources/common-skills", "to": "common-skills", "filter": ["officecli/SKILL.md"] },
-      { "from": "resources/office", "to": "office", "filter": ["manifest.json", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.txt"] },
+      {
+        "from": "resources/common-skills",
+        "to": "common-skills",
+        "filter": [
+          "officecli/SKILL.md"
+        ]
+      },
+      {
+        "from": "resources/office",
+        "to": "office",
+        "filter": [
+          "manifest.json",
+          "LICENSE",
+          "NOTICE",
+          "THIRD-PARTY-NOTICES.txt"
+        ]
+      },
       {
         "from": "resources/speech/sensevoice-int8",
         "to": "speech/sensevoice-int8",
-        "filter": ["model.int8.onnx", "tokens.txt", "MODEL_LICENSE", "RUNTIME_LICENSE", "manifest.json"]
+        "filter": [
+          "model.int8.onnx",
+          "tokens.txt",
+          "MODEL_LICENSE",
+          "RUNTIME_LICENSE",
+          "manifest.json"
+        ]
       }
     ],
     "beforePack": "scripts/speech-before-pack.cjs",
