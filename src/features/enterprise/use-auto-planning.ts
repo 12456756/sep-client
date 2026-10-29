@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ArrangementDraft, ArrangementPlanningProgress } from '../../shared/types'
 import type { AttachmentRef } from '../../shared/attachment-contracts'
+import type { KnowledgeSelection } from '../../shared/knowledge-selection'
 import { responseError } from '../../shared/arrangement-feedback'
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback'
 
@@ -101,7 +102,7 @@ export function useAutoPlanning(bindingKey = '') {
     return current
   }
 
-  const start = async (goal: string, workDir: string, modelId: string, attachmentRefs: AttachmentRef[] = [], attachmentSessionId?: string, mustUseAttachments = true): Promise<void> => {
+  const start = async (goal: string, workDir: string, modelId: string, attachmentRefs: AttachmentRef[] = [], attachmentSessionId?: string, mustUseAttachments = true, knowledge?: KnowledgeSelection): Promise<void> => {
     if (hasAttempt()) return
     if (!goal.trim() || !modelId) { capture().show(!goal.trim() ? '请填写工作目标' : '请选择需要使用的模型', 'warning'); return }
     const current = beginAttempt(modelId)
@@ -109,6 +110,7 @@ export function useAutoPlanning(bindingKey = '') {
     try {
       const result = await window.electronAPI.createArrangementDraft({
         schemaVersion: 1, mode: 'auto', title: goal.trim().slice(0, 40), goal: goal.trim(),
+        knowledge,
         confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [],
         attachmentCandidates: attachmentRefs.map(attachment => ({ attachment, mustUse: mustUseAttachments })), attachmentSessionId,
         workspace: { mode: 'shared', path: workDir || null }, permissions: { preset: 'read-only' }, lastPlanning: null,

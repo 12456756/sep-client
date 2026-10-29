@@ -7,13 +7,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { log } from 'node:console';
+import { previewBrowserOptions, selectComposerModel } from './model-picker-helpers.mjs';
 import { chromium } from 'playwright-core';
 const origin = process.env.SEP_PREVIEW_ORIGIN ?? 'http://127.0.0.1:5174';
 const main = await (await fetch(origin + '/main.tsx')).text();
 const reactUrl = main.match(/from "([^"]*react\.js[^"]*)"/)[1];
 const domUrl = main.match(/from "([^"]*react-dom_client[^"]*)"/)[1];
 const html = readFileSync(new URL('./fixtures/auto-arrange.html', import.meta.url), 'utf8').replace('__REACT__',reactUrl).replace('__DOM__',domUrl);
-const browser = await chromium.launch({channel:'msedge', headless:true});
+const browser = await chromium.launch({ ...previewBrowserOptions(), headless: true });
 const failures = [];
 try {
  for (const [width,height,reducedMotion] of [[1200,800,'no-preference'],[960,640,'reduce']]) {
@@ -25,7 +26,7 @@ try {
    await page.getByRole('textbox',{name:'工作目标',exact:true}).waitFor();
    await page.evaluate(s=>{window.scenario=s;},scenario);
    await page.getByRole('textbox',{name:'工作目标',exact:true}).fill('分析市场并生成报告');
-   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model');
+   await selectComposerModel(page, 'model');
   };
   const check = async (name, fn) => { try {await fn();log('PASS',width,name);} catch(e) {log('DIAGNOSTIC',name,await page.evaluate(()=>({text:document.body.innerText,route:window.workspace?.route,works:window.workspace?.works,counts:window.counts})),errors);failures.push(width+' '+name+': '+e.message);await page.screenshot({path:join(tmpdir(),'sep-auto-failure-'+width+'-'+name+'.png')});} };
   await check('creation-lock',async()=>{
@@ -49,7 +50,7 @@ try {
    await page.getByRole('button',{name:'知道了',exact:true}).click();
    await page.getByRole('button',{name:'重新编排',exact:true}).click();
    await page.getByRole('textbox',{name:'工作目标',exact:true}).fill('分析市场并生成报告');
-   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model');
+   await selectComposerModel(page, 'model');
   });
   await check('selection-to-execution',async()=>{
    await reset('normal');await page.getByRole('button',{name:'开始自动编排'}).click();
@@ -118,7 +119,7 @@ try {
    await page.getByRole('textbox',{name:'工作目标',exact:true}).waitFor();
    assert.equal(await page.locator('.ent-aa-flow').count(),0);
    await page.evaluate(()=>{window.scenario='normal';});
-   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model');
+   await selectComposerModel(page, 'model');
    await page.getByRole('button',{name:'开始自动编排'}).click();
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
    await page.getByText('正在匹配最适合完成任务的员工……',{exact:true}).waitFor();
@@ -162,7 +163,7 @@ try {
    await page.getByText('正在分析你的工作目标',{exact:true}).waitFor();
    await page.evaluate(()=>window.complete());
    await page.getByRole('button',{name:'执行设置',exact:true}).click();
-   await page.getByRole('combobox',{name:'模型',exact:true}).selectOption('model-alternate');
+   await selectComposerModel(page, 'model-alternate');
    await page.getByRole('combobox',{name:'访问权限',exact:true}).selectOption('workspace-edit');
    await page.locator('.ent-rs-directory').click();
    await page.getByRole('button',{name:'确认并开始工作',exact:true}).click();

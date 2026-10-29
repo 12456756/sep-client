@@ -404,7 +404,7 @@ describe('conversation task lifecycle', () => {
       const manager = new TaskManager(userData)
       await manager.initialize()
       await manager.setCurrentUser('member-a', 'enterprise-a')
-      const task = await manager.createTask('chat', 'question', undefined, 'employee-a')
+      const task = await manager.createTask('chat', 'knowledge base question', undefined, 'employee-a')
       let signal: AbortSignal | undefined
       let resolveSearch!: () => void
       const search = new Promise<void>(resolve => { resolveSearch = resolve })
@@ -422,7 +422,7 @@ describe('conversation task lifecycle', () => {
           async run() { started = true }, async abort() {}, async dispose() {},
         }),
       })
-      await runtime.executeTask(task.id, { conversation: true })
+      await runtime.executeTask(task.id, { conversation: true, knowledge: { mode: 'auto', knowledgeBaseIds: ['kb'] } })
       await waitFor(() => signal !== undefined)
       const stopping = control === 'pause' ? runtime.pauseTask(task.id)
         : control === 'cancel' ? runtime.cancelTask(task.id) : runtime.stopAll()
@@ -441,7 +441,7 @@ describe('conversation task lifecycle', () => {
     const manager = new TaskManager(userData)
     await manager.initialize()
     await manager.setCurrentUser('member-a', 'enterprise-a')
-    const prompt = 'a'.repeat(1_500)
+    const prompt = 'knowledge base ' + 'a'.repeat(1_500)
     const task = await manager.createTask('chat', prompt, undefined, 'employee-a')
     let query = ''
     let workerPrompt = ''
@@ -450,15 +450,15 @@ describe('conversation task lifecycle', () => {
       getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
       resolveEmployee: subscriptionId => ({ subscriptionId, modelId: 'model-a', gatewayUrl: 'http://gateway' }),
       knowledgeSearch: async value => {
-        query = value
-        assert.ok(value.length <= 1_000)
+        query = value.query
+        assert.ok(value.query.length <= 1_000)
         return { status: 'NO_MATCH', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1, results: [] }
       },
       createWorker: () => ({
         async run(value) { workerPrompt = value }, async abort() {}, async dispose() {},
       }),
     })
-    await runtime.executeTask(task.id, { conversation: true })
+    await runtime.executeTask(task.id, { conversation: true, knowledge: { mode: 'auto', knowledgeBaseIds: ['kb'] } })
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal(query, prompt.slice(0, 1_000))
     assert.ok(workerPrompt.startsWith(prompt))
@@ -484,10 +484,10 @@ describe('conversation task lifecycle', () => {
       onEvent: () => {},
       onApprovalRequest: () => {},
       knowledgeSearch: async query => {
-        knowledgeQueries.push(query)
+        knowledgeQueries.push(query.query)
         return { status: 'MATCHED', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1,
           results: [{ sourceId: 'source', knowledgeBaseId: 'kb', knowledgeBaseName: 'Internal', documentId: 'doc',
-            documentName: 'Handbook', versionId: 'v1', content: `Reference for ${query}`, location: {} }] }
+            documentName: 'Handbook', versionId: 'v1', content: `Reference for ${query.query}`, location: {} }] }
       },
       resolveEmployee: id => id === employee.subscriptionId ? employee : null,
       createWorker: options => ({
@@ -506,10 +506,11 @@ describe('conversation task lifecycle', () => {
       }),
     })
 
-    await runtime.executeTask(task.id, { conversation: true })
+    const knowledge = { mode: 'manual' as const, knowledgeBaseIds: ['kb'], sources: [{ knowledgeBaseId: 'kb', sourceId: 'source' }] }
+    await runtime.executeTask(task.id, { conversation: true, knowledge })
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal((await manager.getTask(task.id))?.status, TaskStatus.COMPLETED)
-    await runtime.continueConversation(task.id, 'second')
+    await runtime.continueConversation(task.id, 'second', { knowledge })
     await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
     assert.equal(count, 2)
     assert.deepEqual(knowledgeQueries, ['first', 'second'])
@@ -517,6 +518,27 @@ describe('conversation task lifecycle', () => {
     const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
     const messages = await projectTaskMessages({ listRuns: id => runStore.list(scope, id), getTimeline: (id, runId) => runStore.events.getTimeline(scope, id, runId) }, task.id, 'legacy')
     assert.deepEqual(messages.map(message => message.content), ['first', 'answer-1', 'second', 'answer-2'])
+  })
+
+  it('does not restore an earlier knowledge scope when retrying after an explicit none selection', async () => {
+    const userData = await makeUserDataDir()
+    const manager = new TaskManager(userData); const runStore = new TaskRunStore(userData)
+    await manager.initialize(); await manager.setCurrentUser('member-a', 'enterprise-a')
+    const task = await manager.createTask('retry knowledge', '按公司制度回答', undefined, 'employee-a')
+    const searches: string[] = []; let attempts = 0
+    const runtime = new TaskRuntime({
+      taskManager: manager, taskRunStore: runStore, getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+      resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://gateway' }),
+      knowledgeSearch: async request => { searches.push(request.query); return { status: 'NO_MATCH', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1, results: [] } },
+      createWorker: options => ({ async run() { attempts++; await mkdir(options.context.sessionDir, { recursive: true }); await writeFile(join(options.context.sessionDir, 'session.jsonl'), '{}\n'); await options.onSessionCreated?.({ sessionId: 's', sessionFile: join(options.context.sessionDir, 'session.jsonl') }); if (attempts === 2) throw new Error('retry') }, async abort() {}, async dispose() {} }),
+    })
+    await runtime.executeTask(task.id, { conversation: true, knowledge: { mode: 'auto', knowledgeBaseIds: ['kb'] } })
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    await runtime.continueConversation(task.id, '这次不要查知识库', { knowledge: { mode: 'none', knowledgeBaseIds: [] } })
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    await runtime.retryTask(task.id, { conversation: true })
+    await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+    assert.deepEqual(searches, ['按公司制度回答'])
   })
 
   it('preserves the selected model and permission policy on first and subsequent conversation turns', async () => {
@@ -674,7 +696,7 @@ describe('conversation task lifecycle', () => {
 
 // Public surface regression coverage.
 const PUBLIC_SIGNATURES = [
-  'async executeTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {',
+  'async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import(\'../../src/shared/knowledge-selection\').KnowledgeSelection } = {}): Promise<void> {',
   'async continueConversation(',
   'async switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void> {',
   'async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string } = {}): Promise<void> {',

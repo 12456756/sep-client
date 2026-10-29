@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
 import { log } from 'node:console';
+import { previewBrowserOptions, selectComposerModel } from './model-picker-helpers.mjs';
 import { chromium } from 'playwright-core';
 const origin = process.env.SEP_PREVIEW_ORIGIN ?? 'http://127.0.0.1:5174';
 const main = await (await fetch(origin + '/main.tsx')).text();
@@ -32,10 +33,10 @@ function LoginFixture() {
  return React.createElement(LoginPage,{encryptionAvailable:true,rememberedAccounts:accounts,onAccountListChange:setAccounts,onLoginSuccess:()=>{}});
 }
 const employee = {id:'employee-a',name:'员工甲',mark:'甲',availability:'ready',assignedToMe:true,intro:'测试职责',goodAt:[],cannotDo:[],lastWorkedAt:null,allowedModels:['model-a','model-b'],skillIds:[],permissions:[],roleName:'',department:null};
-window.showChat = () => root.render(React.createElement('div',{className:'ent-shell',style:{display:'block',padding:24}},React.createElement(ArrangeWorkPage,{mode:'chat',workspace:{myEmployees:[employee],templates:[],arrangeSeed:null,busy:false,seedArrange:()=>{},navigate:()=>{},startConversation:async (...args)=>{window.calls.push(args)},chooseFolder:async()=>null}})));
+window.showChat = () => root.render(React.createElement(FeedbackProvider,null,React.createElement('div',{className:'ent-shell',style:{display:'block',padding:24}},React.createElement(ArrangeWorkPage,{mode:'chat',workspace:{myEmployees:[employee],templates:[],arrangeSeed:null,busy:false,seedArrange:()=>{},navigate:()=>{},startConversation:async (...args)=>{window.calls.push(args)},chooseFolder:async()=>null}}))));
 root.render(React.createElement(FeedbackProvider,null,React.createElement(LoginFixture)));
 </script></body></html>`;
-const browser = await chromium.launch({channel:'msedge',headless:true});
+const browser = await chromium.launch({ ...previewBrowserOptions(), headless: true });
 try {
  const page = await browser.newPage(); const errors=[];
  page.on('pageerror', error => errors.push(error.message));
@@ -86,9 +87,9 @@ try {
   await employeePicker.click();
   await page.getByRole('option',{name:/员工甲/}).click();
   assert.equal(await page.getByLabel('访问权限',{exact:true}).locator('option').count(),3);
-  assert.equal(await page.getByLabel('模型',{exact:true}).inputValue(),'model-a');
+  assert.equal(await page.getByLabel('模型',{exact:true}).textContent(),'model-a');
   assert.equal(await page.getByRole('dialog').count(),0);
-  await page.getByLabel('模型',{exact:true}).selectOption('model-b');
+  await selectComposerModel(page, 'model-b');
   await page.getByLabel('访问权限',{exact:true}).selectOption('workspace-edit');
   await page.getByRole('checkbox',{name:'自动放行',exact:true}).check();
   await page.screenshot({path:join(tmpdir(),`sep-settings-fixed-${width}.png`)});

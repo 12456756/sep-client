@@ -266,7 +266,7 @@ export class TaskRuntime {
     }
   }
 
-  async executeTask(taskId: string, options: { conversation?: boolean } = {}): Promise<void> {
+  async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection } = {}): Promise<void> {
     this.startLifecycleAudit()
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
@@ -275,6 +275,9 @@ export class TaskRuntime {
     }
     const scope = this.taskManager.getCurrentUserScope()
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
+    const taskKnowledge = arrangement?.mode === 'conversation'
+      ? options.knowledge ?? arrangement.knowledge
+      : arrangement ? arrangement.knowledge : options.knowledge ?? await this.latestKnowledgeSelection(taskId)
     if (arrangement && arrangement.mode !== 'conversation') {
       const checkpoint = scope && this.arrangementCheckpointStore
         ? await this.arrangementCheckpointStore.get(scope, taskId)
@@ -297,7 +300,7 @@ export class TaskRuntime {
       await this.taskManager.admitTask(taskId, runId)
       const admittedTask = await this.taskManager.getTask(taskId)
       if (!admittedTask || admittedTask.activeRunId !== runId) return
-      this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: arrangement.goal, conversation: false, arrangement,
+      this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: arrangement.goal, conversation: false, arrangement, knowledge: taskKnowledge,
         ...(arrangement.inputSnapshot?.attachments?.length ? { attachmentRefs: arrangement.inputSnapshot.attachments } : {}) })
       this.reportMonitorQueued({ taskId, runId, prompt: arrangement.goal, subscriptionId: primarySubscriptionId, title: task.title, modelId: employee.modelId, taskType: 'arrangement' })
       this.reportMonitorInput({ taskId, runId, content: arrangement.goal })
@@ -325,6 +328,7 @@ export class TaskRuntime {
     if (!admittedTask || admittedTask.activeRunId !== runId) return
     const isConversation = arrangement?.mode === 'conversation' || options.conversation === true
     this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: isConversation, arrangement: arrangement ?? undefined,
+      knowledge: taskKnowledge,
       ...(arrangement?.inputSnapshot?.attachments?.length ? { attachmentRefs: arrangement.inputSnapshot.attachments } : {}) })
     this.reportMonitorQueued({ taskId, runId, prompt: task.prompt, subscriptionId, title: task.title, modelId: employee.modelId, taskType: isConversation ? 'conversation' : 'arrangement',
       participation: { executionId: runId, subscriptionId, title: task.title, modelId: employee.modelId } })
@@ -335,11 +339,13 @@ export class TaskRuntime {
   async continueConversation(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection } = {},
   ): Promise<void> {
     this.startLifecycleAudit()
+    const knowledge = recovery.knowledge ?? await this.latestKnowledgeSelection(taskId)
     return this.conversationExecutor.continue(taskId, prompt, {
       ...recovery,
+      ...(knowledge ? { knowledge } : {}),
       ...(recovery.inputSnapshot ? { attachmentRefs: recovery.inputSnapshot.attachments } : {}),
     })
   }
@@ -354,7 +360,7 @@ export class TaskRuntime {
     const scope = this.taskManager.getCurrentUserScope()
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
     if (task.status === TaskStatus.PENDING && task.executionHealth === 'start-failed' && !task.activeRunId) {
-      await this.executeTask(taskId, options)
+      await this.executeTask(taskId, { ...options, knowledge: await this.latestKnowledgeSelection(taskId) })
       return
     }
     if (arrangement && arrangement.mode !== 'conversation') {
@@ -365,7 +371,15 @@ export class TaskRuntime {
       throw new Error('Only terminal or interrupted tasks can be retried.')
     }
     await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
-    await this.executeTask(taskId, options)
+    await this.executeTask(taskId, { ...options, knowledge: await this.latestKnowledgeSelection(taskId) })
+  }
+
+  private async latestKnowledgeSelection(taskId: string): Promise<import('../../src/shared/knowledge-selection').KnowledgeSelection | undefined> {
+    const scope = this.taskManager.getCurrentUserScope()
+    if (!scope || !this.taskRunStore) return undefined
+    const runs = await this.taskRunStore.list(scope, taskId)
+    const latest = [...runs].sort((a, b) => b.startedAt - a.startedAt)[0]
+    return latest ? latest.knowledge ?? { mode: 'none', knowledgeBaseIds: [] } : undefined
   }
 
   async confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void> {
@@ -786,6 +800,7 @@ export class TaskRuntime {
           workspaceDir: task.workDir ?? this.getTaskWorkspaceRoot(),
           prompt: plan.goal,
           executionKind: 'arrangement',
+          ...(queued.knowledge ? { knowledge: queued.knowledge } : {}),
         })
         parentCreated = true
       }

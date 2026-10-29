@@ -9,6 +9,7 @@ import type { TaskRunRecord } from '../../data/task-run-store'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
 import { attachmentRefSchema } from '../../../src/shared/attachment-contracts'
+import { knowledgeSelectionSchema } from '../../../src/shared/knowledge-selection'
 
 /** 任务 ID：非空字符串。原 handler 逐个写的 `typeof x !== 'string' || !x` 就是它。 */
 const taskId = z.string().min(1)
@@ -26,6 +27,7 @@ export const createTaskInput = z.object({
   subscriptionId: z.string(),
   attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   attachmentRefs: z.array(attachmentRefSchema).max(10).optional(),
+  knowledge: knowledgeSelectionSchema.optional(),
 })
 export const CREATE_TASK_INVALID = '任务请求参数不合法。'
 
@@ -58,6 +60,7 @@ function toClientTaskRun(record: TaskRunRecord) {
     endedAt: record.endedAt,
     sessionId: record.sessionId,
     error: record.error,
+    ...(record.knowledge ? { knowledge: structuredClone(record.knowledge) } : {}),
   }
 }
 

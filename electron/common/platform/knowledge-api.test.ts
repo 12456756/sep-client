@@ -6,6 +6,13 @@ import { setLogSink, type LogRecord } from '../logger'
 const requestId = 'c49b8f02-2143-4a61-9d62-459c2cb82193'
 const noMatch = { status: 'NO_MATCH', results: [], actualStrategy: 'LEXICAL', degraded: false, partial: false, durationMs: 1 }
 describe('knowledge platform adapter', () => {
+  it('reads a versioned source through the authenticated source endpoint', async () => {
+    let url = ''
+    const source = { sourceId: 'source/a', knowledgeBaseId: 'kb/a', documentId: 'd', documentName: '制度.md', versionId: 'v1', content: '原文', location: {}, isCurrent: false }
+    const api = new KnowledgeApi({ baseUrl: 'https://platform.test/api', getAccessToken: async () => 'token', fetch: async input => { url = String(input); return Response.json(source) } })
+    assert.deepEqual(await api.execute({ requestId, action: 'source', kbId: 'kb/a', sourceId: 'source/a' }), source)
+    assert.equal(url, 'https://platform.test/api/knowledge-bases/kb%2Fa/sources/source%2Fa')
+  })
   it('returns cancellation for a pre-aborted call without looking up a token', async () => {
     let calls = 0
     const api = new KnowledgeApi({ getAccessToken: async () => { calls++; return 'token' } })

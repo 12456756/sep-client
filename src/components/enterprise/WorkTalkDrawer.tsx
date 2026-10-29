@@ -14,6 +14,8 @@ import { AttachmentComposer } from './attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../shared/attachment-contracts';
 import { ConversationSessionsContext, createConversationSessions } from '../../features/enterprise/conversation-sessions';
 import { GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
+import { KnowledgeSelector } from './KnowledgeSelector';
+import { noKnowledgeSelection } from '../../shared/knowledge-selection';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -65,6 +67,20 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
   const [attachments, setAttachments] = useState<AttachmentView[]>(retainedAttachments.attachments);
   const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(retainedAttachments.session);
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
+  const knowledge = savedSession.knowledge ?? work.knowledge ?? noKnowledgeSelection();
+  const setKnowledge = savedSession.setKnowledge;
+  useEffect(() => {
+    let active = true;
+    if (savedSession.knowledge === undefined) {
+      void window.electronAPI.listTaskRuns(work.id).then(result => {
+        if (!active || savedSession.knowledge !== undefined || !result.success) return;
+        const latest = [...(result.runs ?? [])].sort((a, b) => b.startedAt - a.startedAt)[0];
+        const restored = latest?.knowledge ?? work.knowledge ?? noKnowledgeSelection();
+        savedSession.setKnowledge(restored.mode === 'manual' ? { ...restored, sources: [] } : restored);
+      }).catch(() => undefined);
+    }
+    return () => { active = false; };
+  }, [savedSession, work.id, work.knowledge]);
   const [attachmentListContainer, setAttachmentListContainer] = useState<HTMLDivElement | null>(null);
   const composerId = useMemo(() => `conversation-${work.id}`, [work.id]);
   const [editorVersion, setEditorVersion] = useState(0);
@@ -115,7 +131,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
     if (!text || workspace.busy || speech.busy) return;
     followsLatest.current = true;
     setHasNewContent(false);
-    const sent = await workspace.sendMessage(work.id, text, attachments, attachmentSession?.sessionId);
+    const sent = await workspace.sendMessage(work.id, text, attachments, attachmentSession?.sessionId, knowledge);
     if (!sent) return;
     savedSession.acceptSend(draft);
     setAttachments([]);
@@ -208,6 +224,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                     <ChevronDown size={13} aria-hidden />
                   </label>
                 ) : null}
+                <KnowledgeSelector value={knowledge} onChange={setKnowledge} disabled={workspace.busy} scopeKey={workspace.attachmentScopeKey} />
                 <span className="ent-ask-spacer" />
                 {over ? null : (
                   <button type="button" className="ent-ask-stop" onClick={() => { void workspace.stopWork(work.id, '用户终止了这项工作'); }}>

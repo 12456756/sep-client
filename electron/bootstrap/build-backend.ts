@@ -11,7 +11,6 @@ import { KnowledgeApi } from '../common/platform/knowledge-api'
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { shell, systemPreferences } from 'electron'
 import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
@@ -336,6 +335,7 @@ class BackendRuntime {
     const platformSession = this.authSession
     this.arrangements = new ArrangementService({
       scope: this,
+      knowledgeCatalog: ids => this.knowledge.describeForRuntime([...ids]),
       drafts: arrangementDrafts,
       attachments: this.attachments,
       employees: this.employees,
@@ -595,9 +595,10 @@ class BackendRuntime {
       workPlanStore: this.workPlans,
       arrangementCheckpointStore: this.arrangementCheckpoints,
       monitor: this.clientMonitor,
-      knowledgeSearch: (query, signal) => this.knowledge.execute({
-        action: 'search', requestId: randomUUID(), query, topK: 5,
-      }, signal),
+      knowledgeSearch: Object.assign(
+        (request: import('../common/knowledge-context').KnowledgeSearchRequest, signal?: AbortSignal) => this.knowledge.searchForRuntime(request, signal),
+        { describe: (ids: string[], signal?: AbortSignal) => this.knowledge.describeForRuntime(ids, signal) },
+      ),
       media: this.media,
       video: this.videoRuns,
       arrangementMedia: this.arrangementMedia,

@@ -8,6 +8,7 @@ import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
+import { KnowledgeSelector } from '../KnowledgeSelector';
 
 interface Props {
   busy?: boolean;
@@ -85,6 +86,7 @@ export function GoalComposer({
         />
         <div className="ent-goal-bar">
           <AttachmentComposer listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={onAttachmentSessionChange} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
+          <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
           <RunSettingsBar
             settings={settings}
             models={models}

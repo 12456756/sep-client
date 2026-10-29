@@ -16,6 +16,7 @@ import type { SessionRecoveryMode } from '../runtime/run-types'
 import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentService } from './attachment-service'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
+import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 
 export interface ConversationServiceDependencies {
   scope: ScopeSource
@@ -35,6 +36,7 @@ export interface ContinueConversationInput {
   confirmRecovery?: boolean | undefined
   attachmentSessionId?: string
   attachmentRefs?: AttachmentRef[]
+  knowledge?: KnowledgeSelection
 }
 
 export class ConversationService {
@@ -73,6 +75,7 @@ export class ConversationService {
         : 'confirm_rebuild',
       confirmed: input.confirmRecovery === true,
       ...(inputSnapshot ? { inputSnapshot } : {}),
+      ...(input.knowledge ? { knowledge: input.knowledge } : {}),
     })
   }
 

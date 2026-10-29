@@ -29,7 +29,7 @@ describe('arrangement planner prompt separation', () => {
     const prompt = buildArrangementPlannerUserPrompt(input)
     assert.ok(prompt.startsWith(`目前是自动编排的${heading}。`))
     assert.equal(input.planningStage, stage)
-    assert.deepEqual(Object.keys(input), ['planningStage', 'userGoal', 'confirmedInputs', 'attachments', 'intentSnapshot', 'unresolvedSteps', 'existingNodes', 'existingCandidateMatches', 'employeeCatalog'])
+    assert.deepEqual(Object.keys(input), ['planningStage', 'knowledgeSelection', 'knowledgeCatalog', 'userGoal', 'confirmedInputs', 'attachments', 'intentSnapshot', 'unresolvedSteps', 'existingNodes', 'existingCandidateMatches', 'employeeCatalog'])
     assert.deepEqual(input.existingCandidateMatches, draft.candidateMatches)
     assert.ok(prompt.includes(JSON.stringify(input, null, 2)))
     assert.doesNotMatch(prompt, /核心规划原则|candidateMatches 返回|nodes 返回|private-skill|不得默认增加/)
@@ -42,6 +42,16 @@ describe('arrangement planner prompt separation', () => {
     source.confirmedInputs.push('changed')
     assert.deepEqual(input.confirmedInputs, draft.confirmedInputs)
     assert.doesNotMatch(JSON.stringify(input), /skillIds|requiresUserConfirmation/)
+  })
+
+  it('passes the user-selected knowledge scope and trusted catalog to the planner', () => {
+    const source = structuredClone(draft) as typeof draft & { knowledge?: { mode: 'auto'; knowledgeBaseIds: string[] }; plannerKnowledgeCatalog?: Array<{ id: string; name: string }> }
+    source.knowledge = { mode: 'auto', knowledgeBaseIds: ['kb-a'] }
+    source.plannerKnowledgeCatalog = [{ id: 'kb-a', name: '企业制度库' }]
+    const input = buildArrangementPlannerInput(source, [], 'authorized')
+    assert.deepEqual(input.knowledgeSelection, source.knowledge)
+    assert.deepEqual(input.knowledgeCatalog, source.plannerKnowledgeCatalog)
+    assert.match(buildArrangementPlannerUserPrompt(input), /企业制度库/)
   })
 
   it('preserves existing media requirements in every stage and correction input', () => {

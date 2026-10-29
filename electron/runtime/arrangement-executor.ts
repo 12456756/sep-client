@@ -39,7 +39,7 @@ import type { VideoRunPort } from '../domain/video-tools'
 import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
 import { ArrangementMediaSubmissionError } from '../domain/arrangement-media-runtime'
-import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
+import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import type { ModelTraceFactory } from '../domain/model-trace'
@@ -486,14 +486,16 @@ export class ArrangementExecutor {
       if (!employee) throw new Error('The selected employee is no longer available.')
       this.checkExecutionControl()
       let knowledgeContext = ''
-      if (node.knowledgeQuery) {
+      const selection = node.knowledge ?? plan.knowledge
+      const knowledge = knowledgeRequest(node.instruction, selection, [], node.knowledgeQuery ?? '')
+      if (knowledge) {
         let result: KnowledgeSearchResult | null = null
         try {
-          result = await this.options.knowledgeSearch?.(node.knowledgeQuery, this.validationCancellation.signal) ?? null
+          result = await this.options.knowledgeSearch?.(knowledge, this.validationCancellation.signal) ?? null
         } catch {
           this.validationCancellation.signal.throwIfAborted()
         }
-        knowledgeContext = formatKnowledgeContext(node.knowledgeQuery, result)
+        knowledgeContext = formatKnowledgeContext(knowledge.query, result)
       }
       this.checkExecutionControl()
       if (structured && delivery.issues.length) prompt += `\n\n${buildDeliveryCorrection(delivery.issues)}`

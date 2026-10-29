@@ -8,7 +8,7 @@ const {ArrangeWorkPage}=await import('/pages/enterprise/ArrangeWorkPage.tsx');
 const {WorkDetailPage}=await import('/pages/enterprise/WorkDetailPage.tsx');
 const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseWorkspace.ts');
 const subscriptions=['调研员','报告撰写员','候补员工'].map((name,i)=>({id:['sub-a','sub-b','sub-spare'][i],subscriptionId:['sub-a','sub-b','sub-spare'][i],employeeId:'employee-'+i,name,status:'ACTIVE',templateVersion:'1.0.0',template:{id:'employee-'+i,name,avatar:null},department:null,allowedModels:['model','model-alternate'],upgradeAvailable:false}));
-const options={userId:'fixture-user',userName:'测试用户',enterpriseId:'fixture-enterprise',enterpriseName:'隔离测试',instances:subscriptions,employeeStatuses:[]};
+const options={userId:'fixture-user',userName:'测试用户',enterpriseId:'fixture-enterprise',enterpriseName:'隔离测试',instances:subscriptions,employeeStatuses:subscriptions.map(item=>({employeeId:item.employeeId,status:"READY"}))};
 const listeners={};const subscribe=name=>cb=>{listeners[name]=cb;return ()=>{delete listeners[name];};};
 window.counts={create:0,start:0,preflight:0};window.scenario='normal';let draft;let plan;let task;let sequence=0;let timeline=[];
 const nodes=[{id:'node-a',subscriptionId:'sub-a',modelId:'model',title:'市场调研',instruction:'整理市场事实',expectedOutput:'事实清单',dependsOn:[],skillIds:[],requiresUserConfirmation:false},{id:'node-b',subscriptionId:'sub-b',modelId:'model',title:'撰写报告',instruction:'根据调研结果生成报告',expectedOutput:'最终报告',dependsOn:['node-a'],skillIds:[],requiresUserConfirmation:false}];

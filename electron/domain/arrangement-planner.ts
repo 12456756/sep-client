@@ -54,6 +54,7 @@ export interface ArrangementPlanningResult {
 
 export type ArrangementPlannerDraft = ArrangementDraft & {
   plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments']
+  plannerKnowledgeCatalog?: import('./arrangement-planner-prompts').ArrangementPlannerInput['knowledgeCatalog']
 }
 
 export interface ArrangementCandidateDirectory {
@@ -117,7 +118,8 @@ export function parseArrangementPlannerOutput(
     const subscriptionId = stringField(item.subscriptionId)
     const modelId = stringField(item.modelId)
     if (!subscriptionId || !modelId) throw planningFailure('output-validation', 'missing-node-fields')
-    const contract = arrangementNodeWorkContractSchema.safeParse(item)
+    const { knowledge: _modelKnowledge, ...plannerContract } = item
+    const contract = arrangementNodeWorkContractSchema.safeParse(plannerContract)
     if (!contract.success) throw planningContractFailure(index, contract.error.issues)
     for (const [requirementIndex, requirement] of (contract.data.mediaRequirements ?? []).entries()) {
       if (requirement.required !== false && !requirement.inputFrom && (requirement.operation === 'edit' || requirement.operation === 'image-to-video')) {
@@ -133,6 +135,7 @@ export function parseArrangementPlannerOutput(
         throw planningContractFailure(index, [{ path: ['deliverables', fileIndex, 'format'], code: 'custom' }], '媒体原文件的格式需与类型一致，当前支持 PNG、JPEG、WebP、MP4、WebM；其他格式请另行安排转换。')
       }
     }
+    const existingKnowledge = draft.nodes.find(node => node.id === (stringField(item.id) ?? `node-${index + 1}`))?.knowledge
     return {
       id: stringField(item.id) ?? `node-${index + 1}`,
       subscriptionId,
@@ -140,8 +143,9 @@ export function parseArrangementPlannerOutput(
       title: stringField(item.title) ?? '',
       instruction: stringField(item.instruction) ?? '',
       expectedOutput: stringField(item.expectedOutput) ?? '',
-      knowledgeQuery: stringField(item.knowledgeQuery) ?? '',
+      ...(typeof item.knowledgeQuery === 'string' && item.knowledgeQuery.trim() ? { knowledgeQuery: item.knowledgeQuery.trim() } : {}),
       ...contract.data,
+      ...(existingKnowledge ? { knowledge: structuredClone(existingKnowledge) } : {}),
       dependsOn: stringArray(item.dependsOn),
       skillIds: [],
       ...(stringField(item.stepId) ? { stepId: stringField(item.stepId)! } : {}),
@@ -161,7 +165,7 @@ export function parseArrangementPlannerOutput(
   if ((draft.attachmentCandidates ?? []).some(candidate => candidate.mustUse && !usedAttachmentIds.has(candidate.attachment.attachmentId))) {
     throw planningFailure('output-validation', 'required-attachment-unassigned')
   }
-  if (nodes.some(node => !node.title || !node.instruction || !node.knowledgeQuery)) throw planningFailure('output-validation', 'missing-node-fields')
+  if (nodes.some(node => !node.title || !node.instruction)) throw planningFailure('output-validation', 'missing-node-fields')
   onPhase?.('employee-validation')
   for (const node of nodes) {
     const employee = employeeById.get(node.subscriptionId)

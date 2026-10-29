@@ -675,7 +675,6 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   background: var(--ent-panel-subtle);
 }
 .ent-rs-model { min-width: 0; max-width: min(280px, 40vw); }
-.ent-rs-model select { width: max-content; max-width: 100%; }
 
 /* 权限下拉带盾牌图标，和目录按钮同一行的视觉重量 */
 .ent-rs-permission { gap: 4px; padding-left: 4px; color: var(--ent-ink-3); }
@@ -1040,3 +1039,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
     width: 100%;
   }
 }
+
+.ent-knowledge-node-summary { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; padding: 10px; border: 1px solid var(--ent-line-soft); border-radius: 8px; }
+.ent-knowledge-node-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ent-knowledge-node-row > span { min-width: 120px; flex: 1; color: var(--ent-ink-2); font-size: 12px; }

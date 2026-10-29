@@ -716,11 +716,13 @@ describe('TaskRuntime arrangement controls', () => {
     }
   })
 
-  it('does not prepare tool hosts after knowledge retrieval resolves for an aborted node', async () => {
+  it('searches a manual arrangement node query without source references', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-search-abort-'))
     directories.push(root)
     const arrangement = plan('task')
-    arrangement.nodes[0].knowledgeQuery = 'Internal policy'
+    arrangement.nodes[0].knowledgeQuery = 'Internal policy for this node'
+    arrangement.knowledge = { mode: 'manual', knowledgeBaseIds: ['kb'] }
+    const searches: string[] = []
     let prepared = 0
     let workers = 0
     const executor = new ArrangementExecutor({
@@ -728,9 +730,11 @@ describe('TaskRuntime arrangement controls', () => {
       workspaceRoot: root, arrangementSubscriptionId: employee.subscriptionId,
       getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, async onApprovalRequest() { return true },
       async onEvent() {}, async authorizeEmployee() { return employee },
-      knowledgeSearch: async (_query, signal) => {
-        await executor.abort()
-        assert.equal(signal?.aborted, true)
+      knowledgeSearch: async request => {
+        searches.push(request.query)
+        assert.equal(request.query, 'Internal policy for this node')
+        assert.deepEqual(request.knowledgeBaseIds, ['kb'])
+        assert.equal(request.sources, undefined)
         return { status: 'NO_MATCH', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1, results: [] }
       },
       media: { async prepareRun() { prepared++; return undefined }, async waitForRun() {}, async stopTask() {} },
@@ -740,8 +744,9 @@ describe('TaskRuntime arrangement controls', () => {
       },
     })
     await executor.execute(arrangement, 'task', 'run')
-    assert.equal(prepared, 0)
-    assert.equal(workers, 0)
+    assert.deepEqual(searches, ['Internal policy for this node'])
+    assert.equal(prepared, 1)
+    assert.equal(workers, 1)
   })
 
   it('does not launch a queued node retry when explicit stop wins the race', async () => {

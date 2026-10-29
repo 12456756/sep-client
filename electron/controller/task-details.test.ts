@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import { INVOKE_CHANNELS } from './channels'
+import * as knowledgeSelection from '../../src/shared/knowledge-selection'
 
 interface TestRoute {
   channel: string
@@ -24,6 +25,7 @@ function updateRoute(): TestRoute {
       route: (channel: string, schema: z.ZodType, handle: TestRoute['handle']) => ({ channel, schema, handle }),
     },
     '../../../src/shared/attachment-contracts': { attachmentRefSchema: z.any() },
+    '../../../src/shared/knowledge-selection': knowledgeSelection,
   }
   runInNewContext(compiled, { exports, require: (name: string) => {
     assert.ok(name in imports, `unexpected route dependency: ${name}`)

@@ -1,6 +1,7 @@
 import type { EmployeeAvatarAsset } from '../../shared/types'
 import type { ArrangementExecutionSnapshot, WorkTypeReadResult } from '../../shared/types'
 import type { WorkActivity } from '../../shared/work-activity'
+import type { KnowledgeSelection } from '../../shared/knowledge-selection'
 
 /**
  * 客户端业务域模型 —— 面向「企业 / 硅基员工 / 工作」而非「Agent / 任务 / DAG」。
@@ -130,6 +131,8 @@ export interface WorkDraftStep {
   x: number;
   y: number;
   inputRefs?: import('../../shared/attachment-contracts').NodeInputRef[];
+  knowledge?: import('../../shared/knowledge-selection').KnowledgeSelection | null;
+  knowledgeQuery?: string;
 }
 
 /** 切换员工时同步给下一位员工的共享背景。 */
@@ -177,6 +180,7 @@ export interface WorkTimelineEntry {
 }
 
 export interface WorkItem {
+  knowledge?: KnowledgeSelection;
   id: string;
   title: string;
   /** 本机持久化的置顶时间，未置顶为 null。 */

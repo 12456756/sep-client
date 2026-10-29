@@ -59,3 +59,14 @@ test('late send acceptance updates a reopened conversation and preserves text ty
   entry.setDraft('已卸载')
   assert.equal(notifications, 4)
 })
+
+test('knowledge choices stay with their work and manual references are consumed after sending', () => {
+  const sessions = createConversationSessions(() => {})
+  const session = sessions.get('a')
+  session.setKnowledge({ mode: 'manual', knowledgeBaseIds: ['policy'], manualQuery: '年假', sources: [{ knowledgeBaseId: 'policy', sourceId: 'fragment' }] })
+  assert.equal(sessions.get('b').knowledge, undefined)
+  assert.equal(sessions.get('a').knowledge?.sources?.length, 1)
+  session.acceptSend('已发送')
+  assert.deepEqual(session.knowledge, { mode: 'manual', knowledgeBaseIds: ['policy'], manualQuery: '年假', sources: [] })
+  assert.equal(createConversationSessions(() => {}).get('a').knowledge, undefined)
+})

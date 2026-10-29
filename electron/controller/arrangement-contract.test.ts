@@ -6,6 +6,7 @@ import * as ts from 'typescript'
 import { z } from 'zod'
 import * as arrangementPlan from '../domain/arrangement-plan'
 import * as attachmentContracts from '../../src/shared/attachment-contracts'
+import * as knowledgeSelection from '../../src/shared/knowledge-selection'
 import * as arrangementFeedback from '../../src/shared/arrangement-feedback'
 import { INVOKE_CHANNELS } from './channels'
 import type { Route } from './router'
@@ -19,6 +20,7 @@ function loadRoutes(): Route[] {
     '../channels': { INVOKE_CHANNELS },
     '../../domain/arrangement-plan': arrangementPlan,
     '../../../src/shared/attachment-contracts': attachmentContracts,
+    '../../../src/shared/knowledge-selection': knowledgeSelection,
     '../../../src/shared/arrangement-feedback': arrangementFeedback,
     '../router': { NO_INPUT: z.undefined(), route: (channel: string, schema: z.ZodType, handle: Route['handle']) => ({ channel, schema, handle }) },
   }

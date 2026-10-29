@@ -31,7 +31,8 @@ import type { MonitorTaskContentInput, MonitorTaskQueuedInput, MonitorTaskStarte
 import { logger } from '../common/logger'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
-import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
+import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
+import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
 
 const log = logger.child('conversation-executor')
@@ -71,7 +72,7 @@ export class ConversationExecutor {
   async continue(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[] } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection } = {},
   ): Promise<void> {
     await this.continueAs(taskId, prompt, undefined, recovery)
   }
@@ -206,6 +207,7 @@ export class ConversationExecutor {
           workspaceDir: task.workDir ?? this.options.workspaceRoot(),
           prompt: queued.prompt,
           executionKind: 'conversation',
+          ...(queued.knowledge ? { knowledge: queued.knowledge } : {}),
           ...(attachmentMetadata ? { attachmentMetadata } : {}),
         })
         runCreated = true
@@ -230,15 +232,24 @@ export class ConversationExecutor {
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
-      if (queued.conversation && !general && this.options.knowledgeSearch && active.control === 'none') {
-        const knowledgeQuery = queued.prompt.trim().slice(0, 1_000).trimEnd()
-        let result: KnowledgeSearchResult | null = null
+      const selection = queued.knowledge ?? queued.arrangement?.knowledge
+      let trustedNames: string[] = []
+      if (selection?.mode === 'auto' && this.options.knowledgeSearch?.describe && active.control === 'none') {
         try {
-          result = await this.options.knowledgeSearch(knowledgeQuery, knowledgeCancellation.signal)
+          trustedNames = (await this.options.knowledgeSearch.describe(selection.knowledgeBaseIds, knowledgeCancellation.signal)).map(item => item.name)
         } catch (error) {
           if (knowledgeCancellation.signal.aborted) throw error
         }
-        workerPrompt = `${workerPrompt}\n\n${formatKnowledgeContext(knowledgeQuery, result)}`
+      }
+      const request = knowledgeRequest(queued.prompt, selection, trustedNames)
+      if (queued.conversation && request && this.options.knowledgeSearch && active.control === 'none') {
+        let result: KnowledgeSearchResult | null = null
+        try {
+          result = await this.options.knowledgeSearch(request, knowledgeCancellation.signal)
+        } catch (error) {
+          if (knowledgeCancellation.signal.aborted) throw error
+        }
+        workerPrompt = `${workerPrompt}\n\n${formatKnowledgeContext(request.query, result)}`
       }
       if (active.control !== 'none') {
         await this.finalize(active, queued, scope, runCreated)
@@ -291,7 +302,7 @@ export class ConversationExecutor {
     taskId: string,
     prompt: string,
     employeeOverride: string | undefined,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[] },
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection },
   ): Promise<void> {
     const task = await this.options.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
@@ -350,6 +361,7 @@ export class ConversationExecutor {
       workerPrompt,
       degradedRecovery,
       attachmentRefs: recovery.attachmentRefs,
+      knowledge: recovery.knowledge ?? arrangement?.knowledge,
     }
     this.options.enqueue(queued)
     this.options.onQueued?.({

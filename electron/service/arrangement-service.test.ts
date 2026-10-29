@@ -359,6 +359,36 @@ describe('ArrangementService', () => {
     assert.deepEqual(updated.workspace, original.workspace)
   })
 
+  it('saves selected knowledge scopes and restores node inheritance with null', async () => {
+    const harness = planningHarness(async () => ({ nodes: [] } as never))
+    const original = persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode] })
+    harness.setStored(original)
+    const updated = await harness.service.updateExecutionSettings(original.id, original.revision, {
+      workDir: null, permissions: { preset: 'read-only' },
+      knowledge: { mode: 'auto', knowledgeBaseIds: ['kb-global'] },
+      nodeKnowledge: [{ nodeId: plannedNode.id, knowledge: { mode: 'none', knowledgeBaseIds: [] } }],
+    })
+    assert.deepEqual(updated.knowledge, { mode: 'auto', knowledgeBaseIds: ['kb-global'] })
+    assert.deepEqual(updated.nodes[0].knowledge, { mode: 'none', knowledgeBaseIds: [] })
+    const inherited = await harness.service.updateExecutionSettings(updated.id, updated.revision, {
+      workDir: null, permissions: { preset: 'read-only' }, nodeKnowledge: [{ nodeId: plannedNode.id, knowledge: null }],
+    })
+    assert.equal(inherited.nodes[0].knowledge, undefined)
+    assert.deepEqual(inherited.knowledge, updated.knowledge)
+  })
+
+  it('rejects duplicate or unknown knowledge node overrides without writing', async () => {
+    const harness = planningHarness(async () => ({ nodes: [] } as never))
+    const original = persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode] })
+    harness.setStored(original)
+    for (const nodeIds of [[plannedNode.id, plannedNode.id], ['unknown-node']]) {
+      await assert.rejects(harness.service.updateExecutionSettings(original.id, original.revision, {
+        workDir: null, permissions: { preset: 'read-only' }, nodeKnowledge: nodeIds.map(nodeId => ({ nodeId, knowledge: null })),
+      }), (error: unknown) => error instanceof AppError && error.code === 'INVALID_ARGUMENT')
+    }
+    assert.equal(harness.updates.length, 0)
+  })
+
   it('rejects stale execution settings without writing over a newer plan', async () => {
     const harness = planningHarness(async () => ({ nodes: [] } as never))
     harness.setStored(persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode] }, 3))

@@ -152,6 +152,15 @@ describe('arrangement node work contract parsing', () => {
     assert.deepEqual(result.nodes[0]?.deliverables, [deliverable])
   })
 
+  it('ignores model supplied knowledge scope and restores the user node override', () => {
+    const selected = { mode: 'manual' as const, knowledgeBaseIds: ['kb-a'], sources: [{ knowledgeBaseId: 'kb-a', sourceId: 'source-a' }] }
+    const existing = { ...draft.nodes[0], id: 'node-1', knowledge: selected }
+    const result = parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ ...node, knowledge: { mode: 'auto', knowledgeBaseIds: ['kb-attacker'] } }] }), { ...draft, nodes: [existing] }, [authorized])
+    assert.deepEqual(result.nodes[0]?.knowledge, selected)
+    const newNode = parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ ...node, knowledge: { mode: 'auto', knowledgeBaseIds: ['kb-attacker'] } }] }), { ...draft, nodes: [] }, [authorized])
+    assert.equal(newNode.nodes[0]?.knowledge, undefined)
+  })
+
   it('preserves media requirements and typed image/video deliverables from planner output', () => {
     const result = parseArrangementPlannerOutput(JSON.stringify({
       title: 'Create an image and video',

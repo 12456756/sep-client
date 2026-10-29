@@ -52,6 +52,7 @@ export interface ArrangementServiceDependencies {
   creationGate?: TaskCreationGate
   execution: () => Promise<TaskExecutionPort>
   planner?: ArrangementPlannerPort
+  knowledgeCatalog?: (ids: readonly string[]) => Promise<Array<{ id: string; name: string }>>
   candidateEmployees?: ArrangementCandidateDirectory
   employeeCapabilities?: ArrangementEmployeeCapabilityDirectory
   onPlanningEvent?: (event: ArrangementPlanningProgress) => void
@@ -233,9 +234,20 @@ export class ArrangementService {
     const draft = await this.getDraft(draftId)
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
     if (draft.mode !== 'auto' || !['ready', 'preflight-failed'].includes(draft.status) || draft.confirmedWorkPlanId) throw new AppError('INVALID_STATE')
+    const nodeKnowledge = settings.nodeKnowledge ?? []
+    const nodeKnowledgeIds = new Set(nodeKnowledge.map(item => item.nodeId))
+    if (nodeKnowledgeIds.size !== nodeKnowledge.length || nodeKnowledge.some(item => !draft.nodes.some(node => node.id === item.nodeId))) throw new AppError('INVALID_ARGUMENT')
     return this.deps.drafts.update(scope, draftId, expectedRevision, {
       ...draft,
-      nodes: draft.nodes.map(node => ({ ...node, modelId: settings.modelId ?? node.modelId })),
+      ...(settings.knowledge ? { knowledge: structuredClone(settings.knowledge) } : {}),
+      nodes: draft.nodes.map(node => {
+        const override = nodeKnowledge.find(item => item.nodeId === node.id)
+        return {
+          ...node,
+          modelId: settings.modelId ?? node.modelId,
+          ...(override ? (override.knowledge === null ? { knowledge: undefined } : { knowledge: structuredClone(override.knowledge) }) : {}),
+        }
+      }),
       workspace: { ...draft.workspace, path: settings.workDir ?? draft.workspace.path },
       permissions: structuredClone(settings.permissions),
     })
@@ -368,7 +380,10 @@ export class ArrangementService {
           mustUse: current.attachmentCandidates?.find(candidate => candidate.attachment.attachmentId === material.attachmentId)?.mustUse ?? false,
         })))
         : []
-      const planningSource = { ...current, plannerAttachmentMaterials }
+      const plannerKnowledgeCatalog = current.knowledge && current.knowledge.mode !== 'none' && current.knowledge.knowledgeBaseIds.length
+        ? await this.loadPlannerKnowledgeCatalog(current.knowledge.knowledgeBaseIds)
+        : []
+      const planningSource = { ...current, plannerAttachmentMaterials, plannerKnowledgeCatalog }
       context.completedNodeCount = current.nodes.length
       context.unresolvedStepCount = current.unresolvedSteps?.length ?? 0
       nextPhase('employee-loading')
@@ -387,7 +402,7 @@ export class ArrangementService {
       const intentAnalysis = result.intentAnalysis ?? current.intentAnalysis ?? undefined
       let unresolvedSteps = result.unresolvedSteps ?? []
       let candidateMatches = result.candidateMatches ?? []
-      let executableNodes = mergeExecutableNodes([], result.nodes)
+      let executableNodes = mergeExecutableNodes([], sanitizePlannerNodes(result.nodes, current.nodes))
       context.completedNodeCount = executableNodes.length
       context.unresolvedStepCount = unresolvedSteps.length
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
@@ -404,7 +419,7 @@ export class ArrangementService {
             diagnosticContext,
             onProgress: event => this.emitPlanning(event),
           })
-          executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
+          executableNodes = mergeExecutableNodes(executableNodes, sanitizePlannerNodes(result.nodes, current.nodes))
           unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
           context.completedNodeCount = executableNodes.length
           context.unresolvedStepCount = unresolvedSteps.length
@@ -430,7 +445,7 @@ export class ArrangementService {
             diagnosticContext,
             onProgress: event => this.emitPlanning(event),
           })
-          executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
+          executableNodes = mergeExecutableNodes(executableNodes, sanitizePlannerNodes(result.nodes, current.nodes))
           unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
           context.completedNodeCount = executableNodes.length
           context.unresolvedStepCount = unresolvedSteps.length
@@ -469,6 +484,23 @@ export class ArrangementService {
     } finally {
       this.planningControllers.delete(planningId)
     }
+  }
+
+  private async loadPlannerKnowledgeCatalog(ids: readonly string[]): Promise<Array<{ id: string; name: string }>> {
+    if (!this.deps.knowledgeCatalog) throw new AppError('INVALID_STATE', { message: '知识库目录服务不可用。' })
+    const expected = new Set(ids)
+    const catalog = await this.deps.knowledgeCatalog(ids)
+    const seen = new Set<string>()
+    for (const item of catalog) {
+      if (!expected.has(item.id) || seen.has(item.id) || !item.name.trim()) {
+        throw new AppError('INVALID_STATE', { message: '知识库目录与用户选择不一致。' })
+      }
+      seen.add(item.id)
+    }
+    if (catalog.length !== ids.length) {
+      throw new AppError('INVALID_STATE', { message: '知识库目录与用户选择不一致。' })
+    }
+    return catalog.map(item => ({ id: item.id, name: item.name }))
   }
 
   private async loadAuthorizedPlannerEmployees(context: LogFields): Promise<ArrangementPlannerEmployee[]> {
@@ -670,6 +702,7 @@ export class ArrangementService {
           ? { ...structuredClone(draft.conversation), participants: [{ subscriptionId: primarySubscription, modelId: draft.conversation.modelId! }], activeSubscriptionId: primarySubscription }
           : draft.conversation ? structuredClone(draft.conversation) : null,
         nodes: structuredClone(draft.nodes),
+        ...(draft.knowledge ? { knowledge: structuredClone(draft.knowledge) } : {}),
         workspace: { mode: 'shared' as const, path: task.workDir },
         permissions: preflight.permissionPolicy,
         confirmedInputs: [...draft.confirmedInputs],
@@ -747,6 +780,15 @@ function mergeExecutableNodes(
     byStep.set(key, node)
   }
   return order.map(key => byStep.get(key)!).filter(Boolean)
+}
+
+function sanitizePlannerNodes(nodes: readonly ArrangementNode[], userNodes: readonly ArrangementNode[]): ArrangementNode[] {
+  const knowledgeById = new Map(userNodes.filter(node => node.knowledge !== undefined).map(node => [node.id, node.knowledge]))
+  return nodes.map(node => {
+    const knowledge = knowledgeById.get(node.id)
+    const { knowledge: _modelKnowledge, ...withoutModelKnowledge } = node
+    return knowledge === undefined ? withoutModelKnowledge : { ...withoutModelKnowledge, knowledge: structuredClone(knowledge) }
+  })
 }
 
 function requestedCapabilityIds(draft: ArrangementDraft, stepId: string): string[] {

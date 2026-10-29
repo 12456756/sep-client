@@ -1,7 +1,43 @@
 import type { KnowledgeData } from '../../src/shared/knowledge-contracts'
+import type { KnowledgeSelection, KnowledgeSourceRef } from '../../src/shared/knowledge-selection'
 
 export type KnowledgeSearchResult = KnowledgeData<'search'>
-export type KnowledgeSearchPort = (query: string, signal?: AbortSignal) => Promise<KnowledgeSearchResult>
+export interface KnowledgeSearchRequest {
+  query: string
+  knowledgeBaseIds: string[]
+  topK?: number
+  sources?: KnowledgeSourceRef[]
+}
+
+export type KnowledgeSearchPort = ((request: KnowledgeSearchRequest, signal?: AbortSignal) => Promise<KnowledgeSearchResult>) & {
+  describe?: (ids: string[], signal?: AbortSignal) => Promise<Array<{ id: string; name: string }>>
+}
+
+export function knowledgeRequest(
+  prompt: string,
+  selection: KnowledgeSelection | undefined,
+  trustedNames: readonly string[] = [],
+  plannedQuery?: string,
+): KnowledgeSearchRequest | null {
+  if (!selection || selection.mode === 'none' || selection.knowledgeBaseIds.length === 0) return null
+  if (selection.mode === 'manual') {
+    const query = (selection.manualQuery?.trim() || (plannedQuery !== undefined ? plannedQuery.trim() : '') || (selection.sources?.length ? prompt : '')).slice(0, 1000).trimEnd()
+    if (!selection.sources?.length && (plannedQuery === undefined || !query)) return null
+    return {
+      query,
+      knowledgeBaseIds: [...selection.knowledgeBaseIds],
+      ...(selection.sources?.length ? { sources: selection.sources.map(source => ({ ...source })) } : {}),
+      topK: 5,
+    }
+  }
+  const query = (plannedQuery ?? prompt).trim().slice(0, 1000).trimEnd()
+  if (/(?:不要|无需|不用|不使用).{0,16}(?:知识库|内部资料|knowledge\s*base|internal\s+(?:data|docs?))/i.test(prompt)) return null
+  if (!query) return null
+  const needsKnowledge = plannedQuery !== undefined ||
+    /知识库|内部资料|企业资料|公司制度|员工手册|企业规定|内部数据|业务数据|报销标准|内部政策|根据.{0,20}(制度|资料|文档)|依据.{0,20}(制度|资料|文档)|knowledge\s*base|internal\s+(policy|data|documents?)|company\s+policy|employee\s+handbook|according\s+to\s+(the\s+)?document/i.test(prompt) ||
+    trustedNames.some(name => name.trim().length > 0 && prompt.toLocaleLowerCase().includes(name.trim().toLocaleLowerCase()))
+  return needsKnowledge ? { query, knowledgeBaseIds: [...selection.knowledgeBaseIds], topK: 5 } : null
+}
 
 const OPEN_MARKER = '<sep-knowledge-context>'
 const CLOSE_MARKER = '</sep-knowledge-context>'
@@ -38,6 +74,8 @@ export function formatKnowledgeContext(query: string, result: KnowledgeSearchRes
       const source = [
         `资料 ${index + 1}：${escapeMarkers(item.documentName)}`,
         `知识库：${escapeMarkers(item.knowledgeBaseName)}`,
+        `来源：${escapeMarkers(item.sourceId)}；版本：${escapeMarkers(item.versionId)}${item.isCurrent === false ? '（历史版本）' : ''}`,
+        ...(item.location.pageStart ? [`页码：${item.location.pageStart}${item.location.pageEnd && item.location.pageEnd !== item.location.pageStart ? `–${item.location.pageEnd}` : ''}`] : []),
         ...(item.location.sectionPath?.length ? [`位置：${item.location.sectionPath.map(escapeMarkers).join(' / ')}`] : []),
         escapeMarkers(item.content),
       ].join('\n')
@@ -60,5 +98,5 @@ export function redactKnowledgeContextForLog(input: string | null): string | nul
   if (input === null) return null
   return input
     .replace(/<sep-knowledge-context>[\s\S]*?<\/sep-knowledge-context>/gi, '[knowledge context omitted from logs]')
-    .replace(/("knowledgeQuery"\s*:\s*")(?:\\.|[^"\\])*(")/gi, '$1[query omitted from logs]$2')
+    .replace(/("(?:knowledgeQuery|manualQuery)"\s*:\s*")(?:\\.|[^"\\])*(")/gi, '$1[query omitted from logs]$2')
 }

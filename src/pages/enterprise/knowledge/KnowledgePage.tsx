@@ -1,4 +1,4 @@
-import { ArrowLeft, BookOpen, FileText, Plus, RefreshCw, Search, Settings, Users } from 'lucide-react'
+import { ArrowLeft, BookOpen, FileText, Plus, RefreshCw, Settings, Users } from 'lucide-react'
 import { useState } from 'react'
 import type { AppRoute } from '../../../features/enterprise/types'
 import { canManageKnowledge, KnowledgeClientError, type KnowledgeClient } from '../../../features/knowledge/knowledge-client'
@@ -7,7 +7,6 @@ import type { KnowledgeBase } from '../../../shared/knowledge-contracts'
 import { KnowledgeDialog, KnowledgeErrorNotice, KnowledgePager, KnowledgeSearchForm } from './KnowledgeUI'
 import { KnowledgeDocuments } from './KnowledgeDocuments'
 import { KnowledgeGrants } from './KnowledgeGrants'
-import { KnowledgeSearch } from './KnowledgeSearch'
 import '../../../styles/knowledge.css'
 
 export function KnowledgePage({ kbId, navigate }: { kbId?: string; navigate(route: AppRoute): void }) {
@@ -41,7 +40,7 @@ function KnowledgeList({ client, open }: { client: KnowledgeClient; open(id: str
 }
 function KnowledgeDetail({ client, kbId, back }: { client: KnowledgeClient; kbId: string; back(): void }) {
   const [revision, refresh] = useState(0)
-  const [tab, setTab] = useState<'documents' | 'search' | 'grants'>('documents')
+  const [tab, setTab] = useState<'documents' | 'grants'>('documents')
   const [editing, setEditing] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [confirmation, setConfirmation] = useState('')
@@ -60,10 +59,9 @@ function KnowledgeDetail({ client, kbId, back }: { client: KnowledgeClient; kbId
         {manage ? <><button className="ent-btn" onClick={() => setEditing(true)}><Settings size={15} />编辑</button><button className="ent-btn kb-danger" onClick={() => { mutation.clearError(); setDeleting(true) }}>删除知识库</button></> : null}
       </div></header>
       <div className="kb-tabs" role="tablist" aria-label="知识库内容">{([
-        ['documents', '文档', FileText], ['search', '检索', Search], ...(grant ? [['grants', '成员授权', Users] as const] : []),
+        ['documents', '文档', FileText], ...(grant ? [['grants', '成员授权', Users] as const] : []),
       ] as const).map(([id, label, Icon]) => <button key={id} role="tab" aria-selected={tab === id} className={tab === id ? 'active' : ''} onClick={() => setTab(id)}><Icon size={16} />{label}</button>)}</div>
       {tab === 'documents' ? <KnowledgeDocuments client={client} base={base} /> : null}
-      {tab === 'search' ? <KnowledgeSearch client={client} base={base} /> : null}
       {tab === 'grants' && grant ? <KnowledgeGrants client={client} base={base} /> : null}
       {editing ? <BaseEditor client={client} base={base} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); refresh(value => value + 1) }} /> : null}
       {deleting ? <KnowledgeDialog title="删除知识库" description="删除后成员将无法继续检索该库。已展示或进入历史对话的内容不会自动收回。" onClose={() => setDeleting(false)} busy={mutation.busy}>

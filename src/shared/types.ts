@@ -3,6 +3,7 @@
  * IPC 通道两侧均引用此文件
  */
 
+import type { KnowledgeSelection } from './knowledge-selection'
 import type { LoginFeedbackReason } from './login-feedback'
 import type { ArrangementBlockingIssue } from './arrangement-feedback'
 
@@ -131,6 +132,7 @@ export type ClientTaskRunOutcome = 'running' | 'completed' | 'failed' | 'cancell
 
 /** Renderer-safe summary of one persisted execution attempt. */
 export interface ClientTaskRun {
+  knowledge?: KnowledgeSelection
   id: string
   taskId: string
   subscriptionId: string
@@ -273,6 +275,8 @@ export interface ArrangementMediaSummary {
 }
 
 export interface ArrangementNodeSnapshot {
+  knowledge?: KnowledgeSelection
+  knowledgeQuery?: string
   id: string
   subscriptionId: string
   modelId: string
@@ -299,6 +303,7 @@ export interface ArrangementPermissionSnapshot {
 }
 
 export interface ArrangementPlanSnapshot {
+  knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1
   sourceDraftId: string
@@ -324,6 +329,8 @@ export interface ArrangementPlanSnapshot {
 export type ArrangementDraftStatus = 'editing' | 'planning' | 'planning-failed' | 'awaiting-employee' | 'ready' | 'preflight-failed' | 'confirmed'
 
 export interface ArrangementDraftNode {
+  knowledge?: KnowledgeSelection
+  knowledgeQuery?: string
   id: string
   stepId?: string
   subscriptionId: string
@@ -381,6 +388,7 @@ export interface ArrangementEmployeeAccessRequest {
 }
 
 export interface ArrangementDraftDocument {
+  knowledge?: KnowledgeSelection
   schemaVersion: 1
   mode: ArrangementMode
   title: string
@@ -417,6 +425,8 @@ export interface ArrangementDraftDocument {
 }
 
 export interface ArrangementExecutionSettings {
+  knowledge?: KnowledgeSelection
+  nodeKnowledge?: Array<{ nodeId: string; knowledge: KnowledgeSelection | null }>
   modelId?: string
   workDir: string | null
   permissions: ArrangementDraftDocument['permissions']
@@ -499,6 +509,7 @@ export interface ArrangementExecutionResult {
 }
 
 export interface CreateTaskRequest {
+  knowledge?: KnowledgeSelection
   title: string
   prompt: string
   workDir?: string

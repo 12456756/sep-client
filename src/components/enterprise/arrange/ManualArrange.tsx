@@ -21,6 +21,7 @@ import { EmployeeFace } from '../EmployeeFace';
 import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
+import { KnowledgeSelector } from '../KnowledgeSelector';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 
 export interface ManualDraft {
@@ -314,6 +315,8 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
           {selected ? (
             <StepForm
               step={selected}
+              globalKnowledge={settings.knowledge}
+              scopeKey={attachmentBindingKey}
               employees={employees}
               order={steps.findIndex(item => item.id === selected.id) + 1}
               onPatch={change => patch(selected.id, change)}
@@ -389,6 +392,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
               models={models}
               onChange={onSettingsChange}
             />
+            <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
           </div>
           <button
             type="button"
@@ -421,8 +425,10 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
 }
 
 /** 右栏：当前这一步做什么。字段顺序按用户的思考顺序排，不按数据结构排。 */
-function StepForm({ step, employees, order, onPatch, attachments, composerId, editorVersion, updateFocusedEditor, updateEditorValue, onFocusNode }: {
+function StepForm({ step, globalKnowledge, scopeKey, employees, order, onPatch, attachments, composerId, editorVersion, updateFocusedEditor, updateEditorValue, onFocusNode }: {
   step: WorkDraftStep;
+  globalKnowledge: RunSettings['knowledge'];
+  scopeKey?: string;
   employees: SiliconEmployee[];
   order: number;
   onPatch: (change: Partial<WorkDraftStep>) => void;
@@ -444,6 +450,12 @@ function StepForm({ step, employees, order, onPatch, attachments, composerId, ed
         </span>
         <em>第 {order} 步</em>
       </header>
+      <div className="ent-mn-field">
+        <span>本步骤知识库 · {step.knowledge ? '单独设置' : '继承全局'}</span>
+        <KnowledgeSelector key={step.id} value={step.knowledge ?? globalKnowledge} onChange={knowledge => onPatch({ knowledge })} scopeKey={scopeKey} />
+        {step.knowledge ? <button type="button" className="ent-arr-second" onClick={() => onPatch({ knowledge: undefined })}>继承全局</button> : null}
+      </div>
+      {(step.knowledge ?? globalKnowledge).mode === 'auto' ? <label className="ent-mn-field"><span>自动检索问题（可选）</span><input className="ent-mn-input" maxLength={1000} value={step.knowledgeQuery ?? ''} onChange={event => onPatch({ knowledgeQuery: event.target.value.trim() ? event.target.value : undefined })} placeholder="留空时本步骤不检索" /></label> : null}
 
       <label className="ent-mn-field">
         <span>工作</span>

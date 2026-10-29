@@ -6,6 +6,7 @@
  */
 import { diagnoseJsonWithBackup, readJsonWithBackup, writeJsonAtomic, type JsonReadDiagnostic } from './atomic-file'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
+import { knowledgeSelectionSchema, type KnowledgeSelection } from '../../src/shared/knowledge-selection'
 
 export type TaskKind = 'conversation' | 'arrangement'
 
@@ -16,6 +17,7 @@ export interface TaskMetadata {
   participantSubscriptionIds: string[]
   currentSubscriptionId: string | null
   createdAt: number
+  knowledge?: KnowledgeSelection
 }
 
 const KINDS: readonly TaskKind[] = ['conversation', 'arrangement']
@@ -28,7 +30,8 @@ function parseMetadata(value: unknown, taskId: string): TaskMetadata | null {
     !KINDS.includes(metadata.kind) ||
     !Array.isArray(metadata.participantSubscriptionIds)
   ) return null
-  return { ...metadata, participantSubscriptionIds: [...metadata.participantSubscriptionIds] }
+  if (metadata.knowledge !== undefined && !knowledgeSelectionSchema.safeParse(metadata.knowledge).success) return null
+  return { ...metadata, participantSubscriptionIds: [...metadata.participantSubscriptionIds], ...(metadata.knowledge ? { knowledge: structuredClone(metadata.knowledge) } : {}) }
 }
 
 export class TaskMetadataStore {

@@ -75,6 +75,7 @@ function definition(r: KnowledgeRequest): Definition {
   switch (r.action) {
     case 'list': return { path: kb + query({ page: r.page, pageSize: r.pageSize, keyword: r.keyword }), method: 'GET' }
     case 'getBase': return { path: kb, method: 'GET' }
+    case 'source': return { path: kb + '/sources/' + encodeURIComponent(r.sourceId), method: 'GET' }
     case 'createBase': return { path: kb, method: 'POST', body: { name: r.name, ...(r.description !== undefined ? { description: r.description } : {}) } }
     case 'updateBase': return { path: kb, method: 'PATCH', body: { name: r.name, description: r.description } }
     case 'deleteBase': return { path: kb, method: 'DELETE' }

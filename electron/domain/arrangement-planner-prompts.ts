@@ -1,6 +1,7 @@
 import type { ArrangementDraft, ArrangementMediaRequirement } from './arrangement-plan'
 import type { ArrangementPlannerEmployee } from './arrangement-planner'
 import type { DraftAttachmentCandidate } from '../../src/shared/attachment-contracts'
+import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 
 export type ArrangementPlanningStage = 'authorized' | 'enterprise' | 'platform'
 export type ArrangementPlannerValidationPhase =
@@ -9,6 +10,8 @@ export type ArrangementPlannerValidationPhase =
 
 export interface ArrangementPlannerInput {
   planningStage: ArrangementPlanningStage
+  knowledgeSelection: KnowledgeSelection | null
+  knowledgeCatalog: Array<{ id: string; name: string }>
   userGoal: string
   confirmedInputs: ArrangementDraft['confirmedInputs']
   attachments: Array<{ attachment: DraftAttachmentCandidate['attachment']; displayName: string; mediaType: string; byteLength: number; summary: string; warnings: string[]; mustUse: boolean }>
@@ -130,7 +133,7 @@ instruction 是硅基员工的核心执行指令，必须包含完成工作所�
 
 未经验证的产品功能、市场数据、成本和业务假设必须标明不确定性，不得将其当作已确认事实。
 
-knowledgeQuery 必须非空，并且必须是可直接提交给企业知识库的检索问题，只关注本节点需要的内部政策、标准、业务数据或工作方法。
+只有本节点确实需要企业内部知识时填写 knowledgeQuery，内容应为可直接检索的内部政策、标准、业务数据或工作方法问题。不需要时省略该字段；不得为了满足字段要求强行生成查询。知识库选择范围由用户配置，节点不得自行扩大。
 
 规划阶段只能设定工作要求，不得声称已取得实际研究结果或生成文件。
 
@@ -241,7 +244,7 @@ enterprise 或 platform 阶段的 nodes 必须返回 []，已有节点由程序�
       "objective": "节点业务目标及其对整体目标的作用",
       "instruction": "具体执行思路、工作范围、主要事项、专业要求、职责边界和前置成果使用要求",
       "expectedOutput": "与交付物一致的具体成果说明",
-      "knowledgeQuery": "本节点需要的企业知识库检索问题",
+      "knowledgeQuery": "可选；仅本节点需要企业内部知识时填写",
       "deliverables": [
         {
           "id": "deliverable-1",
@@ -342,12 +345,14 @@ ${JSON.stringify(mediaExamples.map(requirement => ({
 - 不得输出注释、Markdown 或其他文字。`
 
 export function buildArrangementPlannerInput(
-  draft: Pick<ArrangementDraft, 'goal' | 'confirmedInputs' | 'intentAnalysis' | 'unresolvedSteps' | 'nodes' | 'candidateMatches' | 'attachmentCandidates'> & { plannerAttachmentMaterials?: ArrangementPlannerInput['attachments'] },
+  draft: Pick<ArrangementDraft, 'goal' | 'confirmedInputs' | 'intentAnalysis' | 'unresolvedSteps' | 'nodes' | 'candidateMatches' | 'attachmentCandidates' | 'knowledge'> & { plannerAttachmentMaterials?: ArrangementPlannerInput['attachments']; plannerKnowledgeCatalog?: ArrangementPlannerInput['knowledgeCatalog'] },
   employees: readonly ArrangementPlannerEmployee[],
   planningStage: ArrangementPlanningStage,
 ): ArrangementPlannerInput {
   return structuredClone({
     planningStage,
+    knowledgeSelection: draft.knowledge ?? null,
+    knowledgeCatalog: draft.plannerKnowledgeCatalog ?? [],
     userGoal: draft.goal,
     confirmedInputs: draft.confirmedInputs,
     attachments: draft.plannerAttachmentMaterials ?? [],

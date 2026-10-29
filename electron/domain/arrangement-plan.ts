@@ -1,3 +1,4 @@
+import { knowledgeSelectionSchema, type KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { AppError } from '../errors/app-error'
 import { z } from 'zod'
 import type { DraftAttachmentCandidate, InputSnapshotRef, NodeInputRef } from '../../src/shared/attachment-contracts'
@@ -147,6 +148,7 @@ export function isSafeDeliveryPath(value: string): boolean {
 }
 
 export const arrangementNodeWorkContractSchema = z.object({
+  knowledge: knowledgeSelectionSchema.optional(),
   objective: deliveryText.optional(),
   knowledgeQuery: z.string().trim().min(1).max(1_000).optional(),
   deliverables: z.array(z.object({
@@ -172,6 +174,7 @@ export const arrangementNodeWorkContractSchema = z.object({
 export type ArrangementDeliverable = NonNullable<z.infer<typeof arrangementNodeWorkContractSchema>['deliverables']>[number]
 
 export interface ArrangementNode {
+  knowledge?: KnowledgeSelection
   id: string
   subscriptionId: string
   modelId: string
@@ -209,6 +212,8 @@ export interface RequestedTaskPermissionPolicy {
 }
 
 export interface ArrangementExecutionSettings {
+  knowledge?: KnowledgeSelection
+  nodeKnowledge?: Array<{ nodeId: string; knowledge: KnowledgeSelection | null }>
   modelId?: string
   workDir: string | null
   permissions: RequestedTaskPermissionPolicy
@@ -225,6 +230,7 @@ export interface EffectiveTaskPermissionPolicy {
 }
 
 export interface ArrangementDraft {
+  knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1 | 2
   revision: number
@@ -253,6 +259,7 @@ export interface ArrangementDraft {
 }
 
 export interface WorkPlan {
+  knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1 | 2
   sourceDraftId: string
@@ -320,6 +327,10 @@ export function effectivePermissionPolicy(
 }
 
 export function validateArrangementDraft(draft: ArrangementDraft): void {
+  if (draft.knowledge !== undefined && !knowledgeSelectionSchema.safeParse(draft.knowledge).success) throw new AppError('INVALID_ARGUMENT')
+  for (const node of draft.nodes) {
+    if (node.knowledge !== undefined && !knowledgeSelectionSchema.safeParse(node.knowledge).success) throw new AppError('INVALID_ARGUMENT')
+  }
   if (!draft.id || !draft.owner.memberId || !draft.owner.enterpriseId) throw new AppError('INVALID_ARGUMENT')
   if (!draft.title.trim() && !draft.goal.trim()) throw new AppError('INVALID_ARGUMENT')
   if (draft.mode === 'conversation') {

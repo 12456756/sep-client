@@ -82,3 +82,59 @@ test('general chat preserves selected model, permissions and history across turn
     assert.deepEqual((await runs.list(scope, task.id)).map(run => run.subscriptionId).sort(), ['subscription-a', 'subscription-b', 'subscription-b'])
   } finally { await runtime?.stopAll(); await rm(root, { recursive: true, force: true }) }
 })
+
+test('general chat searches selected knowledge bases only when auto mode is relevant', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-general-knowledge-'))
+  const scope = { memberId: 'member', enterpriseId: 'enterprise' }
+  const manager = new TaskManager(root)
+  const plans = new WorkPlanStore(root)
+  const runs = new TaskRunStore(root)
+  const searches: Array<{ query: string; knowledgeBaseIds: string[] }> = []
+  let skillsLoaded = false
+  const runtime = new TaskRuntime({
+    taskManager: manager, taskRunStore: runs, workPlanStore: plans,
+    resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://unused' }),
+    authorizeEmployee: async () => { skillsLoaded = true; throw new Error('general chat must not authorize employee') },
+    authorizeModel: async modelId => ({ subscriptionId: 'general-model', modelId, gatewayUrl: 'http://unused' }),
+    getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+    knowledgeSearch: async request => {
+      searches.push({ query: request.query, knowledgeBaseIds: request.knowledgeBaseIds })
+      return { status: 'NO_MATCH', actualStrategy: 'hybrid', degraded: false, partial: false, durationMs: 1, results: [] }
+    },
+    createWorker: options => ({
+      async run() { await mkdir(options.context.sessionDir, { recursive: true }); await writeFile(join(options.context.sessionDir, 'session.jsonl'), '{}\n'); await options.onSessionCreated?.({ sessionId: 's', sessionFile: join(options.context.sessionDir, 'session.jsonl') }) },
+      async abort() {}, async dispose() {},
+    }),
+  })
+  const settle = async (id: string) => { for (let i = 0; i < 200; i++) { if ((await manager.getTask(id))?.activeRunId === null) return; await new Promise(resolve => setTimeout(resolve, 5)) }; assert.fail('run did not settle') }
+  try {
+    await manager.initialize(); await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('general', '请按公司制度说明报销标准', join(root, 'workspace'), 'general-model')
+    await plans.save(scope, { id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1, owner: scope, mode: 'conversation', title: 'general', goal: task.prompt, nodes: [], confirmedInputs: [], knowledge: { mode: 'auto', knowledgeBaseIds: ['kb-selected'] }, conversation: { kind: 'general', modelId: 'selected', participants: [{ subscriptionId: 'general-model', modelId: 'selected' }], activeSubscriptionId: 'general-model' }, workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'workspace-edit', approvalMode: 'confirm-each' }), planHash: 'general', createdAt: Date.now() })
+    await runtime.executeTask(task.id, { conversation: true }); await settle(task.id)
+    assert.deepEqual(searches, [{ query: task.prompt, knowledgeBaseIds: ['kb-selected'] }])
+    assert.equal(skillsLoaded, false)
+  } finally { await runtime.stopAll(); await rm(root, { recursive: true, force: true }) }
+})
+
+test('manual conversation without selected sources does not search', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-general-manual-'))
+  const scope = { memberId: 'member', enterpriseId: 'enterprise' }
+  const manager = new TaskManager(root); const plans = new WorkPlanStore(root)
+  let searched = false
+  const runtime = new TaskRuntime({
+    taskManager: manager, workPlanStore: plans, resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://unused' }),
+    authorizeModel: async modelId => ({ subscriptionId: 'general-model', modelId, gatewayUrl: 'http://unused' }),
+    getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+    knowledgeSearch: async () => { searched = true; throw new Error('manual empty selection must not search') },
+    createWorker: options => ({ async run() { await mkdir(options.context.sessionDir, { recursive: true }); await writeFile(join(options.context.sessionDir, 'session.jsonl'), '{}\n'); await options.onSessionCreated?.({ sessionId: 's', sessionFile: join(options.context.sessionDir, 'session.jsonl') }) }, async abort() {}, async dispose() {} }),
+  })
+  try {
+    await manager.initialize(); await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('general', '请按公司制度说明报销标准', join(root, 'workspace'), 'general-model')
+    await plans.save(scope, { id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1, owner: scope, mode: 'conversation', title: 'general', goal: task.prompt, nodes: [], confirmedInputs: [], knowledge: { mode: 'manual', knowledgeBaseIds: ['kb-selected'] }, conversation: { kind: 'general', modelId: 'selected', participants: [{ subscriptionId: 'general-model', modelId: 'selected' }], activeSubscriptionId: 'general-model' }, workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'workspace-edit', approvalMode: 'confirm-each' }), planHash: 'general', createdAt: Date.now() })
+    await runtime.executeTask(task.id, { conversation: true });
+    for (let i = 0; i < 200 && (await manager.getTask(task.id))?.activeRunId !== null; i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.equal(searched, false)
+  } finally { await runtime.stopAll(); await rm(root, { recursive: true, force: true }) }
+})

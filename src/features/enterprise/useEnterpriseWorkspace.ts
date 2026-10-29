@@ -47,6 +47,7 @@ import { mapEnterpriseOrganization, mapOrganizationEmployees } from './organizat
 import type { OrganizationCarbonEmployee } from './organization-model';
 import { TaskReadCache, mergeInitialTaskQuery, mergeTaskList, mergeTaskUpdate } from './task-read-cache';
 import type { AttachmentRef, AttachmentView, DraftAttachmentCandidate } from '../../shared/attachment-contracts';
+import type { KnowledgeSelection } from '../../shared/knowledge-selection';
 
 /**
  * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
@@ -69,6 +70,7 @@ function busyEmployeeIds(works: WorkItem[]): Set<string> {
 
 /** 「安排工作」页提交的内容。 */
 export interface ArrangeWorkDraft {
+  knowledge?: KnowledgeSelection;
   modelId?: string;
   permissions?: ArrangementDraftDocument['permissions'];
   title: string;
@@ -101,6 +103,7 @@ export interface ArrangeSeed {
  * 技能还没有下发通道，所以页面必须写清它现在生效到哪一层。
  */
 export interface ConversationOptions {
+  knowledge?: KnowledgeSelection;
   modelId?: string;
   permissions?: ArrangementDraftDocument['permissions'];
   workDir?: string;
@@ -216,7 +219,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   goBack: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>;
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
-  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string) => Promise<boolean>;
+  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string, knowledge?: KnowledgeSelection) => Promise<boolean>;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
@@ -752,12 +755,15 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         dependsOn: step.dependsOn.filter(dep => kept.has(dep)),
         skillIds: [...step.skillIds],
         inputRefs: step.inputRefs ?? [],
+        ...(step.knowledge ? { knowledge: step.knowledge } : {}),
+        knowledgeQuery: step.knowledgeQuery,
       };
     });
     if (nodes.some(node => !node.modelId)) { notice.show('请选择需要使用的模型', 'warning'); return false; }
     const document: ArrangementDraftDocument = {
       schemaVersion: 1,
       mode: 'manual',
+      knowledge: draft.knowledge,
       title: draft.title.trim() || draft.goal.trim().slice(0, 40),
       goal: draft.goal.trim() || draft.title.trim(),
       confirmedInputs: draft.confirmedInputs.filter(Boolean),
@@ -799,7 +805,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     }
   }, [myEmployees, navigate, captureFeedback]);
 
-  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string): Promise<boolean> => {
+  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string, knowledge?: KnowledgeSelection): Promise<boolean> => {
     const prompt = text.trim();
     if (!prompt || attachments.length && !attachmentSessionId) return false;
     const message: ClientTaskMessage = {
@@ -808,7 +814,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     pendingMessages.current.set(workId, [...(pendingMessages.current.get(workId) ?? []), message]);
     setTasks(current => [...current]);
     const notice = captureFeedback();
-    const ok = await run(() => window.electronAPI.continueTask({ taskId: workId, prompt, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) }), 'workSend');
+    const ok = await run(() => window.electronAPI.continueTask({ taskId: workId, prompt, knowledge, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) }), 'workSend');
     if (!notice.isCurrent()) return false;
     if (ok) return true;
       pendingMessages.current.set(workId, (pendingMessages.current.get(workId) ?? []).filter(item => item.id !== message.id));

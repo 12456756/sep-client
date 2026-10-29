@@ -15,6 +15,7 @@ import { useSpeechInput } from '../../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
+import { KnowledgeSelector } from '../KnowledgeSelector';
 
 interface Props {
   employees: SiliconEmployee[];
@@ -148,6 +149,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
               </div>
             ) : null}
           </div>
+          <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
           <RunSettingsBar
             settings={settings}
             models={models}

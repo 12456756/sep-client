@@ -4,6 +4,7 @@
  */
 
 import { FolderOpen, ShieldCheck } from 'lucide-react';
+import { ModelSelector } from '../ModelSelector';
 import { RUN_PERMISSIONS, type RunSettings } from '../../../features/enterprise/run-settings';
 
 interface SharedProps {
@@ -85,18 +86,13 @@ export function RunSettingsBar({ settings, models, conversation = false, onChang
 
   return (
     <div className="ent-rs-inline">
-      <label className="ent-rs-compact ent-rs-model" title={modelLabel}>
-        <span className="sr-only">模型</span>
-        <select
-          aria-label="模型"
-          value={models.includes(settings.modelId) ? settings.modelId : conversation ? models[0] ?? '' : ''}
-          disabled={!models.length}
-          onChange={event => onChange({ modelId: event.target.value })}
-        >
-          {!models.length ? <option value="">模型</option> : !conversation ? <option value="">模型</option> : null}
-          {models.map(model => <option key={model} value={model}>{model}</option>)}
-        </select>
-      </label>
+      <ModelSelector
+        models={models}
+        value={models.includes(settings.modelId) ? settings.modelId : conversation ? models[0] ?? '' : ''}
+        title={modelLabel}
+        allowEmpty={!conversation}
+        onChange={modelId => onChange({ modelId })}
+      />
     </div>
   );
 }
