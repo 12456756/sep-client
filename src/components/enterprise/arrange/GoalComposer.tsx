@@ -1,4 +1,4 @@
-import { ArrowUp } from 'lucide-react';
+import { ArrowUp, Workflow } from 'lucide-react';
 import { useCallback, useRef, useState } from 'react';
 import { isSubmitEnter } from '../../../shared/composer-shortcut';
 import type { RunSettings } from '../../../features/enterprise/run-settings';
@@ -62,51 +62,57 @@ export function GoalComposer({
     return true;
   }, [editorVersion, onChange, value]);
   return (
-    <div className="ent-goal-stack">
-      {showExamples && !value && !busy ? <PromptExamples mode="arrangement" disabled={speech.busy} inputRef={speech.inputProps.ref} onSelect={prompt => { onChange(prompt); setEditorVersion(version => version + 1); }} /> : null}
-      <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
-      <div className="ent-goal">
-        <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
-        <textarea
-          data-composer-id={composerId.current}
-          data-editor-version={editorVersion}
-          {...speech.inputProps}
-          className="ent-goal-input"
-          value={value}
-          placeholder={placeholder}
-          aria-label="工作目标"
-          onChange={event => { onChange(event.target.value); setEditorVersion(version => version + 1); }}
-          onKeyDown={event => {
-            speech.inputProps.onKeyDown(event);
-            if (isSubmitEnter(event, speech.isComposing())) {
-              event.preventDefault();
-              if (!submitDisabled && !busy && !speech.busy) onSubmit();
-            }
-          }}
-        />
-        <div className="ent-goal-bar">
-          <AttachmentComposer listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={onAttachmentSessionChange} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
-          <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
-          <RunSettingsBar
-            settings={settings}
-            models={models}
-            conversation={conversation}
-            onChange={onSettingsChange}
+    <>
+      {showExamples && !value && !busy ? <div className="ent-arr-empty-state">
+        <span className="ent-arr-empty-icon" aria-hidden="true"><Workflow size={24} strokeWidth={1.8} /></span>
+        <p>描述一个目标，开始编排</p>
+        <PromptExamples mode="arrangement" disabled={speech.busy} inputRef={speech.inputProps.ref} onSelect={prompt => { onChange(prompt); setEditorVersion(version => version + 1); }} />
+      </div> : null}
+      <div className="ent-goal-stack">
+        <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
+        <div className="ent-goal">
+          <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
+          <textarea
+            data-composer-id={composerId.current}
+            data-editor-version={editorVersion}
+            {...speech.inputProps}
+            className="ent-goal-input"
+            value={value}
+            placeholder={placeholder}
+            aria-label="工作目标"
+            onChange={event => { onChange(event.target.value); setEditorVersion(version => version + 1); }}
+            onKeyDown={event => {
+              speech.inputProps.onKeyDown(event);
+              if (isSubmitEnter(event, speech.isComposing())) {
+                event.preventDefault();
+                if (!submitDisabled && !busy && !speech.busy) onSubmit();
+              }
+            }}
           />
-          <span className="ent-arr-gap" aria-hidden="true" />
-          <SpeechInputActions speech={speech} disabled={busy} />
-          <button
-            type="button"
-            className="ent-goal-send"
-            aria-label={submitLabel}
-            title={submitLabel}
-            onClick={() => { if (!speech.busy) onSubmit(); }}
-            disabled={submitDisabled || speech.busy || attachmentsBusy}
-          >
-            <ArrowUp size={17} aria-hidden />
-          </button>
+          <div className="ent-goal-bar">
+            <AttachmentComposer listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={onAttachmentSessionChange} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
+            <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
+            <RunSettingsBar
+              settings={settings}
+              models={models}
+              conversation={conversation}
+              onChange={onSettingsChange}
+            />
+            <span className="ent-arr-gap" aria-hidden="true" />
+            <SpeechInputActions speech={speech} disabled={busy} />
+            <button
+              type="button"
+              className="ent-goal-send"
+              aria-label={submitLabel}
+              title={submitLabel}
+              onClick={() => { if (!speech.busy) onSubmit(); }}
+              disabled={submitDisabled || speech.busy || attachmentsBusy}
+            >
+              <ArrowUp size={17} aria-hidden />
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

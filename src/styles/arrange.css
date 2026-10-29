@@ -865,7 +865,12 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-prompt-examples button:hover:not(:disabled) { border-color: var(--ent-brand-border); background: var(--ent-brand-soft); }
 .ent-prompt-examples button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
 .ent-prompt-examples button:disabled { opacity: .5; cursor: default; }
-.ent-goal-stack > .ent-prompt-examples { margin-bottom: 8px; }
+.ent-arr-empty-state > .ent-prompt-examples,
+.ent-mn-empty-state > .ent-prompt-examples {
+  justify-content: center;
+  margin-top: 8px;
+  pointer-events: auto;
+}
 
 /* 空工作台只保留一个轻量的起始提示；开始发送后让位给真实内容。 */
 .ent-arr-chat,
@@ -873,15 +878,16 @@ textarea.ent-mn-input.tall { min-height: 92px; }
   position: relative;
 }
 .ent-arr-empty-state {
-  position: absolute;
-  inset: 0;
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   z-index: 0;
   display: flex;
   align-items: center;
   flex-direction: column;
   justify-content: center;
   gap: 12px;
-  padding-bottom: 112px;
+  padding: 24px 12px;
   color: var(--ent-ink-3);
   pointer-events: none;
   animation: arr-empty-in 260ms var(--arr-ease) both;
@@ -915,9 +921,6 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .ent-arr-empty-state { animation: none; }
-}
-@media (max-width: 760px) {
-  .ent-arr-empty-state { padding-bottom: 96px; }
 }
 
 /* ── 手动编排：与会话 / 自动编排统一为底部输入式工作台 ─────────────── */

@@ -87,13 +87,13 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
 
   return (
     <section className="ent-arr-chat">
-      {!submitted && !busy ? (
-        <div className="ent-arr-empty-state" aria-hidden="true">
-          <span className="ent-arr-empty-icon"><MessageSquare size={24} strokeWidth={1.8} /></span>
+      {!submitted && !text && !busy ? (
+        <div className="ent-arr-empty-state">
+          <span className="ent-arr-empty-icon" aria-hidden="true"><MessageSquare size={24} strokeWidth={1.8} /></span>
           <p>开始一段对话</p>
+          <PromptExamples mode="conversation" disabled={speech.busy} inputRef={input} onSelect={prompt => { setText(prompt); setEditorVersion(version => version + 1); }} />
         </div>
       ) : null}
-      {!submitted && !text && !busy ? <PromptExamples mode="conversation" disabled={speech.busy} inputRef={input} onSelect={prompt => { setText(prompt); setEditorVersion(version => version + 1); }} /> : null}
       <RunSettingsDirectory settings={settings} onChange={onSettingsChange} onChooseFolder={onChooseFolder} />
       <div className="ent-chat-ask">
         <div className="ent-composer-attachments" ref={setAttachmentListContainer} />

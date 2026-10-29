@@ -1,4 +1,4 @@
-import { ArrowRight, RefreshCw, Settings2, Workflow, X } from 'lucide-react';
+import { ArrowRight, RefreshCw, Settings2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useOperationFeedback } from '../../feedback/use-operation-feedback';
 import { recoverDraftRevisionConflict, responseError } from '../../../shared/arrangement-feedback';
@@ -164,12 +164,6 @@ export function AutoArrange({ employees, busy, onStart, onPlanningStart, setting
     <div className="ent-auto-arrange">
       {!draft ? (
         <section className="ent-arr-auto">
-        {!submitted && !planning ? (
-          <div className="ent-arr-empty-state" aria-hidden="true">
-            <span className="ent-arr-empty-icon"><Workflow size={24} strokeWidth={1.8} /></span>
-            <p>描述一个目标，开始编排</p>
-          </div>
-        ) : null}
         <GoalComposer
           showExamples={!submitted && !planning}
           busy={busy || planning}

@@ -282,9 +282,15 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
               })}
             </ul>
           ) : (
-            <div className="ent-mn-empty-state" aria-hidden="true">
-              <span className="ent-mn-empty-icon"><ListPlus size={22} strokeWidth={1.8} /></span>
+            <div className="ent-mn-empty-state">
+              <span className="ent-mn-empty-icon" aria-hidden="true"><ListPlus size={22} strokeWidth={1.8} /></span>
               <span>添加员工，开始编排</span>
+              {!goal && !busy ? <PromptExamples mode="arrangement" disabled={speech.busy} inputRef={speech.inputProps.ref} onSelect={prompt => {
+                setGoal(prompt);
+                setSaved(false);
+                activeNodeId.current = null;
+                updateEditorValue(prompt, value => { setGoal(value); setSaved(false); });
+              }} /> : null}
             </div>
           )}
 
@@ -366,12 +372,6 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
         </aside>
       </div>
 
-      {!goal && !busy ? <PromptExamples mode="arrangement" disabled={speech.busy} inputRef={speech.inputProps.ref} onSelect={prompt => {
-        setGoal(prompt);
-        setSaved(false);
-        activeNodeId.current = null;
-        updateEditorValue(prompt, value => { setGoal(value); setSaved(false); });
-      }} /> : null}
       <footer className="ent-mn-composer">
         <input
           {...speech.inputProps}
