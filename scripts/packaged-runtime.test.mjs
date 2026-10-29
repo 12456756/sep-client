@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { finished } from 'node:stream/promises'
 import { test } from 'node:test'
 import { createPackage } from '@electron/asar'
 import { verifyAfterPack, verifyPackagedRuntime } from './verify-packaged-runtime.mjs'
@@ -28,7 +29,8 @@ async function fixture(t, { nested = false, version = '0.83.0', source = 'export
   const resources = join(directory, 'resources')
   await mkdir(resources)
   const archive = join(resources, 'app.asar')
-  await createPackage(app, archive)
+  const output = await createPackage(app, archive)
+  await finished(output)
   return { archive, directory, resources }
 }
 
