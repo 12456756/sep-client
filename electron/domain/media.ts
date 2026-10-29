@@ -1,3 +1,4 @@
+import type { ImageRequestedSpec, MediaParameterSources } from '../../src/shared/media-spec-contract'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { ImageMime, MediaAssetView, MediaCapabilities, MediaGenerationInput, MediaGenerationStatus, MediaProfile, MediaSaveStatus, MediaTrackingStatus } from '../../src/shared/media'
 import type { EmployeeRuntimeSnapshot } from '../common/platform/employee-runtime-contract'
@@ -21,6 +22,7 @@ export interface MediaReceipt {
   status: MediaGenerationStatus
   pollAfterMs: number | null
   outputs: MediaOutput[]
+  actualSpec?: ImageRequestedSpec
   billingStatus: string
   recovery?: { canQuery: boolean; canCancel: boolean; canDownload: boolean }
   errorCode?: string | null
@@ -29,6 +31,7 @@ export interface MediaReceipt {
 
 /** Mock/adapter port, not a finalized HTTP DTO. Amounts remain platform-owned strings. */
 export interface MediaQuote {
+  effectiveSpec?: ImageRequestedSpec
   quoteId: string
   requestHash: string
   expiresAt: number
@@ -50,6 +53,10 @@ export interface MediaRequest {
   referenceIds: string[]
   referenceHashes: string[]
   creativeBrief: string
+  protocolVersion?: 3
+  requestedSpec?: ImageRequestedSpec
+  parameterSources?: MediaParameterSources
+  specRevision?: number
   parameters: MediaGenerationInput['parameters']
 }
 
@@ -94,6 +101,7 @@ export interface LocalMediaJob {
   trackingStatus: MediaTrackingStatus
   saveStatus: MediaSaveStatus
   outputs: MediaOutput[]
+  actualSpec?: ImageRequestedSpec
   billingStatus: string
   recovery?: MediaReceipt['recovery']
   errorCode?: MediaReceipt['errorCode']

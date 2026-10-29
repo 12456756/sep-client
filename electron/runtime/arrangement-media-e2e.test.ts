@@ -201,7 +201,9 @@ async function fixture(scenario: Scenario = {}) {
         if (node === 'image') await assert.rejects(options.context.mediaTools!.execute('media_get_job', { jobId: 'foreign-job' }))
         else await assert.rejects(options.context.videoTools!.execute('video_get_job', { jobId: 'foreign-job' }))
         const job = await execute(node === 'image' ? 'media_generate_image' : scenario.textVideo ? 'video_generate' : 'video_from_image', {
-          creativeBrief: 'Product on a plain background', ...(node === 'video' && !scenario.textVideo ? {
+          creativeBrief: 'Product on a plain background',
+          parameters: node === 'image' ? { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' } : videoFixture.request.parameters,
+          ...(node === 'video' && !scenario.textVideo ? {
             localAssetIds: [JSON.parse(options.context.fixedSystemPrompt!.split('【已授权媒体输入与原任务】\n')[1]!.split('\n')[0]!).referenceAssets[0].localAssetId],
           } : {}),
         })

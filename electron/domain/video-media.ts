@@ -1,8 +1,9 @@
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
-import { videoOutputSchema, videoReceiptSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
+import { videoOutputSchema, videoReceiptSchema, videoSpecFailureSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import type { VideoOutput, VideoReceipt } from '../../src/shared/video-media'
 import { isVideoSubmissionRejectionCode } from '../../src/shared/video-errors'
+import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema } from '../../src/shared/media-spec-contract'
 
 export const videoLocalIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const scopeSegment = z.string().min(1).max(256).refine(value => !/[\\/]/.test(value) && value !== '.' && value !== '..')
@@ -18,6 +19,7 @@ export const videoStoredQuoteSchema = z.object({
   amountUsd: z.string().regex(/^\d+(?:\.\d+)?$/).optional(), pricingVersion: z.string().min(1).max(256).optional(),
   usdToCnyRate: z.number().finite().positive().optional(),
   funding: z.object({ creditCny: z.string(), memberWalletCny: z.string(), personalCny: z.string() }).strict().optional(),
+  protocolVersion: z.literal(3).optional(), specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(), effectiveSpec: videoRequestedSpecSchema.optional(),
 }).strict()
 export const videoSaveStatusSchema = z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING'])
 export const localVideoJobSchema = z.object({
@@ -32,6 +34,7 @@ export const localVideoJobSchema = z.object({
   providerWaitMs: z.number().int().nonnegative().optional(),
   /** Duration of the most recent complete save round across all outputs. */
   downloadMs: z.number().int().nonnegative().optional(),
+  specFailure: videoSpecFailureSchema.optional(),
   error: z.string().max(256).nullable(), createdAt: z.number().int().nonnegative(), updatedAt: z.number().int().nonnegative(),
 }).strict().superRefine((job, context) => {
   if (job.request.quoteId !== job.quote.quoteId || job.quote.status !== 'quoted' || job.updatedAt < job.createdAt ||
@@ -54,7 +57,8 @@ export function videoSubmissionRejected(job: LocalVideoJob): boolean {
 
 export function receiptMatchesRequest(job: Pick<LocalVideoJob, 'request' | 'executionMode'>, receipt: VideoReceipt): boolean {
   return receipt.mock === ((job.executionMode ?? 'mock') === 'mock') && receipt.clientRequestId === job.request.clientRequestId && receipt.profileId === job.request.profileId &&
-    receipt.configVersion === job.request.configVersion && receipt.operation === job.request.operation
+    receipt.configVersion === job.request.configVersion && receipt.operation === job.request.operation &&
+    (job.request.protocolVersion !== 3 || receipt.protocolVersion === 3 && receipt.specRevision === job.request.specRevision && receipt.effectiveSpec !== undefined && mediaSpecsEqual(job.request.requestedSpec!, receipt.effectiveSpec))
 }
 
 export const localVideoAssetSchema = z.object({
@@ -99,4 +103,31 @@ export interface VideoStorePort {
   listAssets(scope: VideoScope, taskId: string): Promise<VideoAssetState[]>
   readAsset(scope: VideoScope, taskId: string, jobId: string, outputId: string): Promise<Uint8Array>
   saveOutput(scope: VideoScope, taskId: string, jobId: string, output: VideoOutput, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<LocalVideoAsset>
+}
+
+/** Receipt measurements describe the delivered artifact; unknown fields never imply acceptance. */
+export function videoSpecAcceptance(job: Pick<LocalVideoJob, 'request' | 'receipt'>): {
+  actualSpec?: import('../../src/shared/media-spec-contract').VideoRequestedSpec
+  acceptance: 'matched' | 'mismatched' | 'unknown'
+} {
+  if (job.request.protocolVersion !== 3 || !job.receipt) return { acceptance: 'unknown' }
+  const receipt = job.receipt
+  const measuredSpecs = receipt.outputs.length ? receipt.outputs.map(output => ({
+    ...receipt.actualSpec,
+    width: output.width, height: output.height, durationSeconds: output.durationSeconds,
+    frameRate: output.frameRate, outputFormat: output.mimeType,
+    aspectRatio: `${output.width}:${output.height}`,
+  })) : [{ ...receipt.actualSpec }]
+  const requested = job.request.requestedSpec ?? {}
+  const entries = Object.entries(requested).filter(([, value]) => value !== undefined)
+  const differs = measuredSpecs.some(spec => entries.some(([key, value]) => {
+    const measured = spec[key as keyof typeof spec]
+    return measured !== undefined && !mediaSpecsEqual({ [key]: value }, { [key]: measured })
+  }))
+  const complete = entries.length > 0 && measuredSpecs.every(spec =>
+    entries.every(([key]) => spec[key as keyof typeof spec] !== undefined))
+  // A single summary is truthful only when every delivered artifact has the same measured specification.
+  const actualSpec = measuredSpecs.every(spec => mediaSpecsEqual(measuredSpecs[0], spec)) ? measuredSpecs[0] : undefined
+  return { ...(actualSpec && Object.keys(actualSpec).length ? { actualSpec } : {}), acceptance:
+    differs || job.receipt.acceptance === 'mismatched' ? 'mismatched' : complete ? 'matched' : 'unknown' }
 }

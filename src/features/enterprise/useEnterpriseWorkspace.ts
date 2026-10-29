@@ -223,7 +223,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
-  retryWork: (workId: string, nodeId?: string) => Promise<void>;
+  retryWork: (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => Promise<void>;
   renameWork: (workId: string, title?: string) => Promise<boolean>;
   setWorkPinned: (workId: string, pinned: boolean) => Promise<boolean>;
   deleteWork: (workId: string) => Promise<boolean>;
@@ -848,8 +848,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       } });
   }, [run, feedback, scopeKey, captureFeedback]);
 
-  const retryWork = useCallback(async (workId: string, nodeId?: string) => {
-    await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId } : workId), 'workRetry');
+  const retryWork = useCallback(async (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => {
+    await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId, ...(inputReply ? { inputReply } : {}) } : workId), 'workRetry');
   }, [run]);
 
   const updateWorkDetails = useCallback(async (workId: string, patch: { title?: string; pinned?: boolean }, quiet = false): Promise<boolean> => {

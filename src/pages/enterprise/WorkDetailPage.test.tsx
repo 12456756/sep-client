@@ -82,6 +82,41 @@ function renderDetail(item: WorkItem): string {
   }
 }
 
+it('renders a media question and an empty reply form instead of an approval action', () => {
+  const html = renderDetail({ ...work, kind: 'flow', status: 'waiting-user',
+    arrangementExecution: { activeRunId: null, status: 'waiting-user', updatedAt: 3,
+      nodes: [{ nodeId: 'video', status: 'interrupted', finalFiles: [], inputRequest: {
+        requestId: 'question-a', kind: 'media-spec', question: '需要多长的视频？', requirements: [{ id: 'video', specRevision: 1 }],
+      } }] } })
+  assert.match(html, /需要多长的视频？/)
+  assert.match(html, /<textarea[^>]*><\/textarea>/)
+  assert.match(html, /提交补充并继续/)
+  assert.doesNotMatch(html, /确认，继续/)
+})
+
+it('keeps parallel questions available only while the arrangement can accept replies', () => {
+  const inputRequest = { requestId: 'question-a', kind: 'media-spec' as const, question: '需要多长的视频？', requirements: [] }
+  const pending = { ...work, kind: 'flow' as const, status: 'running' as const,
+    arrangementExecution: { activeRunId: 'run', status: 'running' as const, updatedAt: 3,
+      nodes: [{ nodeId: 'video', status: 'interrupted' as const, finalFiles: [], inputRequest },
+        { nodeId: 'peer', status: 'running' as const, finalFiles: [] }] } }
+  assert.match(renderDetail(pending), /提交补充并继续/)
+  for (const status of ['paused', 'failed', 'completed'] as const) {
+    const html = renderDetail({ ...pending, status })
+    assert.doesNotMatch(html, /提交补充并继续|<textarea/)
+    if (status === 'paused') assert.match(html, /这项工作已终止/)
+    if (status === 'failed') assert.match(html, /这项工作中断了/)
+  }
+  for (const status of ['stopped', 'interrupted', 'completed', 'failed'] as const) {
+    const html = renderDetail({ ...pending, arrangementExecution: { ...pending.arrangementExecution, status } })
+    assert.doesNotMatch(html, /提交补充并继续|<textarea/)
+  }
+  const stoppedNode = renderDetail({ ...pending, arrangementExecution: { ...pending.arrangementExecution,
+    nodes: [{ ...pending.arrangementExecution.nodes[0]!, status: 'stopped' }] } })
+  assert.doesNotMatch(stoppedNode, /提交补充并继续|<textarea/)
+  assert.deepEqual(pending.arrangementExecution.nodes[0]?.inputRequest, inputRequest)
+})
+
 // Check handlers and effect ownership; native focus behavior still needs window verification.
 function mountDetail() {
   const cells: unknown[] = [];

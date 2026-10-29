@@ -11,6 +11,7 @@ import { mediaToolGenerationInputSchema } from '../../src/shared/media-host'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
 import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { imageAspectRatio } from '../../src/shared/media-spec'
+import { isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import { transportKind } from '../errors/operation-feedback'
@@ -127,6 +128,8 @@ export class MediaService {
       (output.expiresAt === null || output.expiresAt > Date.now()) && !jobAssets.some(asset => asset.outputId === output.outputId && asset.status === 'SAVED'))
     return { jobId: job.jobId, taskId: job.taskId, runId: job.runId, profileId: job.profile.profileId,
       operation: job.input.operation, parameters: { ...job.input.parameters }, generationStatus: job.generationStatus,
+      requestedSpec: job.input.requestedSpec, effectiveSpec: job.quote.effectiveSpec, actualSpec: job.actualSpec,
+      protocolVersion: job.input.protocolVersion, parameterSources: job.input.parameterSources, specRevision: job.input.specRevision,
       trackingStatus: job.trackingStatus, saveStatus, billingStatus: job.billingStatus,
       ...(job.lastQueriedAt !== undefined ? { lastQueriedAt: job.lastQueriedAt } : {}),
       ...(job.providerWaitMs !== undefined ? { providerWaitMs: job.providerWaitMs } : {}),
@@ -138,6 +141,7 @@ export class MediaService {
   }
   private publicJobError(error: string | null): string | null {
     if (!error) return null
+    if (isMediaSpecError(error)) return error
     if (error === '本地跟踪已停止，上游任务可能仍在执行。') return 'TRACKING_STOPPED'
     if (error === '未保存的原结果已过期，无法再次下载；已保存的图片仍可使用。') return 'RESULT_EXPIRED'
     if (error === '原结果当前不可下载，不会重新生成。') return 'DOWNLOAD_UNAVAILABLE'
@@ -262,6 +266,15 @@ export class MediaService {
         const localAssetIds = requested.localAssetIds ?? this.selectedReferences.get(this.key(scope, input.taskId)) ?? []
         const operation = requested.operation ?? (localAssetIds.length && profile.operations.includes('edit')
           ? 'edit' : profile.operations.includes('generate') ? 'generate' : 'edit')
+        if (capabilities.protocolVersion === 3) {
+          if (requested.protocolVersion !== 3 || !requested.requestedSpec || !requested.parameterSources || !requested.specRevision) throw new AppError('MISSING_SPEC')
+          if (requested.parameters && !mediaSpecsEqual(requested.parameters, requested.requestedSpec)) throw new AppError('SPEC_CONFLICT')
+          return this.generate(input.taskId, parseMediaInput({ profileId: profile.profileId, operation, localAssetIds,
+            creativeBrief: requested.creativeBrief, parameters: requested.requestedSpec, protocolVersion: 3,
+            requestedSpec: requested.requestedSpec, parameterSources: requested.parameterSources, specRevision: requested.specRevision,
+          }), { ...input, capabilities }, signal)
+        }
+        if (requested.protocolVersion === 3 || requested.requestedSpec) throw new AppError('UPGRADE_REQUIRED')
         const requestedParameters = requested.parameters ?? {}
         const ratios = profile.allowedAspectRatios.filter(ratio => !profile.allowedSizes?.length || profile.allowedSizes.some(size => {
           const mapped = imageAspectRatio(size)
@@ -274,16 +287,15 @@ export class MediaService {
         })
         const size = requestedParameters.size
         if (size && !sizes.includes(size)) throw new AppError('INVALID_ARGUMENT')
-        const aspectRatio = requestedParameters.aspectRatio ?? (size && imageAspectRatio(size)) ??
-          (profile.defaultSize && imageAspectRatio(profile.defaultSize)) ?? ratios[0]
-        const quality = requestedParameters.quality ?? profile.defaultQuality ?? profile.allowedQualities?.[0]
-        const count = requestedParameters.count ?? 1
+        const aspectRatio = requestedParameters.aspectRatio
+        const quality = requestedParameters.quality
+        const count = requestedParameters.count
+        if (aspectRatio === undefined || count === undefined) throw new AppError('MISSING_SPEC')
         if (!aspectRatio || (quality && !profile.allowedQualities?.includes(quality)) || (size && imageAspectRatio(size) && imageAspectRatio(size) !== aspectRatio)) {
           throw new AppError('INVALID_ARGUMENT')
         }
-        const toolSize = size ?? sizes.find(value => imageAspectRatio(value) === undefined)
         const normalized = parseMediaInput({ profileId: profile.profileId, operation, localAssetIds, creativeBrief: requested.creativeBrief,
-          parameters: { aspectRatio, count, ...(toolSize ? { size: toolSize } : {}), ...(quality ? { quality } : {}) } })
+          parameters: { aspectRatio, count, ...(size ? { size } : {}), ...(quality ? { quality } : {}) } })
         return this.generate(input.taskId, normalized, { ...input, capabilities }, signal)
       }
       const args = z.object({ jobId: mediaId, cancelUpstream: z.boolean().optional() }).strict().parse(raw)
@@ -316,28 +328,29 @@ export class MediaService {
     if (stopVersion !== (this.taskStops.get(stopKey) ?? 0)) throw new AppError('INVALID_STATE')
     if (binding.toolPolicy && (binding.toolPolicy.preset === 'read-only' || (binding.toolPolicy.preset !== 'full-local' && !binding.toolPolicy.allowedTools.includes('media_generate_image')))) throw new AppError('PERMISSION_DENIED')
     const profile = binding.capabilities.profiles.find(profile => profile.profileId === input.profileId)
+    const negotiated = input.protocolVersion === 3 && binding.capabilities.protocolVersion === 3
+    if ((input.protocolVersion === 3) !== (binding.capabilities.protocolVersion === 3)) throw new AppError('UPGRADE_REQUIRED')
     if (!binding.capabilities.tools.includes('media_generate_image') || !profile || !profile.operations.includes(input.operation)
-      || !profile.allowedAspectRatios.includes(input.parameters.aspectRatio) || input.parameters.count > profile.maxCount
-      || (input.parameters.size !== undefined && !profile.allowedSizes?.includes(input.parameters.size))
-      || (input.parameters.quality !== undefined && !profile.allowedQualities?.includes(input.parameters.quality))
+      || (!negotiated && (!input.parameters.aspectRatio || !profile.allowedAspectRatios.includes(input.parameters.aspectRatio)
+        || input.parameters.count === undefined || profile.maxCount === undefined || input.parameters.count > profile.maxCount
+        || (input.parameters.size !== undefined && !profile.allowedSizes?.includes(input.parameters.size))
+        || (input.parameters.quality !== undefined && profile.allowedQualities !== undefined && !profile.allowedQualities.includes(input.parameters.quality))))
       || (input.localAssetIds.length > 0 && !profile.capabilities.referenceImage)
       || (input.operation === 'edit' && input.localAssetIds.length === 0)
       || new Set(input.localAssetIds).size !== input.localAssetIds.length) throw new AppError('INVALID_ARGUMENT', {
         message: '图片参数不受当前配置支持，请查询 media_get_capabilities，按返回的操作、比例、尺寸、数量和质量选项重试；未提供质量选项时不要传 quality。这不是权限拒绝。',
       })
-    // Resolve defaults once, before approval, quoting or persistence. Every entry
-    // point (manual UI and Pi) freezes these same effective parameters.
     const realGateway = this.gateway().quoteRequiresUploadedReferences === true
-    const pixelSizes = profile.allowedSizes?.filter(size => imageAspectRatio(size) !== undefined)
-    const size = input.parameters.size ?? (profile.defaultSize && imageAspectRatio(profile.defaultSize) === input.parameters.aspectRatio ? profile.defaultSize
-      : pixelSizes?.find(size => imageAspectRatio(size) === input.parameters.aspectRatio))
-    if (pixelSizes?.length && !size) throw new AppError('INVALID_ARGUMENT', { message: '当前比例没有合法尺寸，请刷新模型规格。' })
+    if (negotiated && (!input.requestedSpec || !mediaSpecsEqual(input.parameters, input.requestedSpec))) throw new AppError('SPEC_CONFLICT')
+    if (!negotiated) {
+    const size = input.parameters.size
+    if ((realGateway || profile.allowedSizes?.length) && size === undefined) throw new AppError('MISSING_SPEC', { details: { field: 'size' } })
+    if ((realGateway || profile.allowedQualities?.length) && input.parameters.quality === undefined) throw new AppError('MISSING_SPEC', { details: { field: 'quality' } })
     if (size && imageAspectRatio(size) !== undefined && imageAspectRatio(size) !== input.parameters.aspectRatio) {
       throw new AppError('INVALID_ARGUMENT', { message: '图片比例与尺寸不匹配。' })
     }
-    const quality = input.parameters.quality ?? profile.defaultQuality
-    input = { ...input, parameters: { ...input.parameters, ...(size ? { size } : {}), ...(quality ? { quality } : {}) } }
-    if (realGateway) input = { ...input, parameters: { aspectRatio: input.parameters.aspectRatio, ...realMediaParameters(input.parameters) } }
+    if (realGateway) realMediaParameters(input.parameters)
+    }
     const gate = this.key(scope, taskId)
     if (this.submitting.has(gate)) throw new AppError('CONFLICT')
     if (this.activities.size >= 4) throw new AppError('RATE_LIMITED')
@@ -356,8 +369,9 @@ export class MediaService {
         if (!asset || asset.taskId !== taskId) throw new AppError('NOT_FOUND')
         referenceHashes.push(asset.sha256)
       }
-      const semantic = { profileId: profile.profileId, configVersion: profile.configVersion, operation: input.operation,
-        referenceHashes, creativeBrief: input.creativeBrief, parameters: { aspectRatio: input.parameters.aspectRatio, count: input.parameters.count,
+      const semantic = { ...(negotiated ? { protocolVersion: 3 as const, requestedSpec: input.requestedSpec,
+        parameterSources: input.parameterSources, specRevision: input.specRevision } : {}), profileId: profile.profileId, configVersion: profile.configVersion, operation: input.operation,
+        referenceHashes, creativeBrief: input.creativeBrief, parameters: negotiated ? { ...input.requestedSpec } : { aspectRatio: input.parameters.aspectRatio, count: input.parameters.count,
           ...(input.parameters.size ? { size: input.parameters.size } : {}), ...(input.parameters.quality ? { quality: input.parameters.quality } : {}) } }
       const requestHash = gateway.quoteRequiresUploadedReferences ? realMediaSemanticHash(semantic)
         : createHash('sha256').update(JSON.stringify(semantic)).digest('hex')
@@ -386,6 +400,7 @@ export class MediaService {
       const quoteRequest = { ...semantic, referenceIds, requestHash }
       const readQuote = async () => {
         const next = mediaQuoteSchema.parse(await this.network(scope, parent, s => gateway.quote(binding.subscriptionId, quoteRequest, s)))
+        if (negotiated && (!next.effectiveSpec || !mediaSpecsEqual(input.requestedSpec!, next.effectiveSpec))) throw new AppError('SPEC_CONFLICT')
         // Keep legacy quote fields readable; unknown prices cannot authorize generation.
         if (next.requestHash !== requestHash || !next.authorized || !next.budgetAuthorized
           || next.status !== 'quoted' || next.amount === null || !next.currency?.trim()) throw new AppError('PERMISSION_DENIED')
@@ -473,13 +488,44 @@ export class MediaService {
     const receipt: MediaReceipt = mediaReceiptSchema.parse(raw)
     if (receipt.clientRequestId !== job.clientRequestId || receipt.profileId !== job.profile.profileId || receipt.configVersion !== job.profile.configVersion
       || (job.receiptId && job.receiptId !== receipt.receiptId) || new Set(receipt.outputs.map(output => output.outputId)).size !== receipt.outputs.length
-      || receipt.outputs.length > job.input.parameters.count) throw new AppError('INVALID_ARGUMENT')
+      || (job.input.protocolVersion !== 3 && job.input.parameters.count !== undefined && receipt.outputs.length > job.input.parameters.count)) throw new AppError('INVALID_ARGUMENT')
+    const priorMismatch = job.errorCode === 'OUTPUT_SPEC_MISMATCH'
     job.receiptId = receipt.receiptId; job.submission = 'RECEIPTED'; job.generationStatus = receipt.status
     job.outputs = receipt.outputs; job.billingStatus = receipt.billingStatus
+    job.actualSpec = receipt.actualSpec
     job.recovery = receipt.recovery; job.errorCode = receipt.errorCode; job.outputErrors = receipt.outputErrors
+    if (priorMismatch) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
+    if (job.input.protocolVersion === 3 && receipt.actualSpec && job.input.requestedSpec && Object.entries(job.input.requestedSpec).some(([key, requested]) => {
+      const actual = receipt.actualSpec![key as keyof typeof receipt.actualSpec]
+      return actual !== undefined && !mediaSpecsEqual({ [key]: requested }, { [key]: actual })
+    })) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
+    this.recordOutputMismatch(job)
     job.nextPollAt = Date.now() + Math.max(this.options.pollFloorMs ?? 1_000, receipt.pollAfterMs ?? 0)
     job.error = null; job.attempts = 0; job.updatedAt = Date.now()
     if (terminal.has(receipt.status) && job.providerWaitMs === undefined) job.providerWaitMs = Math.max(0, job.updatedAt - job.createdAt)
+  }
+  private outputSpecEvidence(job: LocalMediaJob, assets: MediaAssetView[]): { width: number | null; height: number | null; outputFormat: string }[] {
+    return job.outputs.map(output => {
+      const asset = assets.find(item => item.jobId === job.jobId && item.outputId === output.outputId && item.status === 'SAVED')
+      return { width: asset?.width ?? output.width,
+        height: asset?.height ?? output.height, outputFormat: asset?.mime ?? output.mime }
+    })
+  }
+  private recordOutputMismatch(job: LocalMediaJob, assets: MediaAssetView[] = []): void {
+    const requested = job.input.requestedSpec
+    if (job.input.protocolVersion !== 3 || !requested) return
+    const succeeded = job.generationStatus === 'SUCCEEDED' || job.generationStatus === 'PARTIAL_SUCCEEDED'
+    if (succeeded && requested.count !== undefined && job.outputs.length !== requested.count) job.errorCode = 'OUTPUT_SPEC_MISMATCH'
+    const size = requested.size?.split('x').map(Number)
+    for (const output of this.outputSpecEvidence(job, assets)) {
+      if ((output.width !== null && ((requested.width !== undefined && output.width !== requested.width) || (size && output.width !== size[0])))
+        || (output.height !== null && ((requested.height !== undefined && output.height !== requested.height) || (size && output.height !== size[1])))
+        || (requested.outputFormat !== undefined && requested.outputFormat !== output.outputFormat)
+        || (requested.aspectRatio !== undefined && output.width !== null && output.height !== null
+          && !mediaSpecsEqual({ aspectRatio: requested.aspectRatio }, { aspectRatio: imageAspectRatio(`${output.width}x${output.height}`) }))) {
+        job.errorCode = 'OUTPUT_SPEC_MISMATCH'
+      }
+    }
   }
   private async save(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal): Promise<void> {
     if (!job.outputs.length || !job.receiptId) return
@@ -489,7 +535,8 @@ export class MediaService {
     const initialAssets = await this.options.store.listAssets(scope, job.taskId)
     const missing = job.outputs.filter(output => !initialAssets.some(asset => asset.jobId === job.jobId && asset.outputId === output.outputId && asset.status === 'SAVED'))
     if (!missing.length) {
-      if (job.saveStatus !== 'SAVED') { job.saveStatus = 'SAVED'; await this.options.store.saveJob(scope, job) }
+      this.recordOutputMismatch(job, initialAssets)
+      job.saveStatus = 'SAVED'; await this.options.store.saveJob(scope, job)
       return
     }
     job.saveStatus = 'SAVING'; await this.options.store.saveJob(scope, job)
@@ -514,6 +561,7 @@ export class MediaService {
     job.error = !failed ? null : expired === failed ? '未保存的原结果已过期，无法再次下载；已保存的图片仍可使用。'
       : job.recovery?.canDownload === false ? '原结果当前不可下载，不会重新生成。' : '部分图片未保存，可以重试保存原结果。'
     if (downloaded > 0) job.downloadMs = (job.downloadMs ?? 0) + (Date.now() - downloadStartedAt)
+    this.recordOutputMismatch(job, await this.options.store.listAssets(scope, job.taskId))
     await this.options.store.saveJob(scope, job)
   }
   private async track(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, epoch = this.epoch): Promise<void> {

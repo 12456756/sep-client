@@ -6,6 +6,7 @@
 import type { KnowledgeSelection } from './knowledge-selection'
 import type { LoginFeedbackReason } from './login-feedback'
 import type { ArrangementBlockingIssue } from './arrangement-feedback'
+import type { MediaSpecFailureContext } from './media-spec-contract'
 
 // ──────────────────────────── Auth ─────────────────────────────
 
@@ -166,6 +167,8 @@ export interface ClientTaskStats {
 }
 
 export type TaskErrorCode =
+  | 'MISSING_SPEC' | 'SPEC_CONFLICT' | 'UPGRADE_REQUIRED' | 'ADAPTER_UNAVAILABLE'
+  | 'ADAPTER_FIELD_UNMAPPED' | 'PRICE_UNAVAILABLE' | 'UPSTREAM_SPEC_UNSUPPORTED' | 'OUTPUT_SPEC_MISMATCH'
   | 'AUTH_REQUIRED'
   | 'INVALID_ARGUMENT'
   | 'NOT_FOUND'
@@ -173,7 +176,7 @@ export type TaskErrorCode =
   | 'PERSISTENCE_ERROR'
   | 'INTERNAL_ERROR'
 
-export interface TaskError {
+export interface TaskError extends MediaSpecFailureContext {
   code: TaskErrorCode
   message: string
 }
@@ -492,6 +495,7 @@ export interface ArrangementNodeExecutionSnapshot {
   status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
   finalFiles: ArrangementFinalFileSnapshot[]
   pendingConfirmation?: boolean
+  inputRequest?: import('./arrangement-input').ArrangementInputRequest
 }
 
 export interface ArrangementExecutionSnapshot {

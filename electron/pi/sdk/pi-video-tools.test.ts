@@ -96,6 +96,31 @@ function value(result: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>['execu
 }
 
 describe('video tools through the mocked Pi SDK extension API', () => {
+  it('accepts a versioned model proposal beyond legacy specifications without changing user audio intent', async () => {
+    const runtime = await sdk()
+    const input = { creativeBrief: 'A portrait product video', requirementId: 'video-b', protocolVersion: 3, specRevision: 2,
+      requestedSpec: { durationSeconds: 12, aspectRatio: '9:16', resolution: '8k', frameRate: 29.97, audio: false, outputFormat: 'video/quicktime' },
+      parameterSources: { durationSeconds: 'model', aspectRatio: 'user', resolution: 'model', frameRate: 'model', audio: 'user', outputFormat: 'user' } }
+    const result = await runtime.execute('video_generate', input)
+    assert.deepEqual(result.details, { isError: false })
+    assert.deepEqual(runtime.calls[0].input, { ...input, localAssetIds: [] })
+    assert.doesNotMatch(runtime.definitions.get('video_generate')!.description, /host.*defaults|backend defaults|Only specify parameters explicitly/)
+    const schema = JSON.stringify(runtime.definitions.get('video_generate')!.parameters)
+    assert.match(schema, /requestedSpec/)
+    assert.match(schema, /requirementId/)
+    assert.match(schema, /parameterSources/)
+  })
+
+  it('returns structured missing-spec context without diagnosing missing authorization', async () => {
+    const runtime = await sdk({}, new AppError('MISSING_SPEC', { details: { field: 'requestedSpec.durationSeconds', source: 'pricing', stage: 'video-quote', submissionState: 'not_submitted' } }))
+    const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
+    const error = JSON.parse(value(result)).error
+    assert.equal(error.code, 'MISSING_SPEC')
+    assert.equal(error.field, 'requestedSpec.durationSeconds')
+    assert.equal(error.source, 'pricing')
+    assert.equal(error.submissionState, 'not_submitted')
+  })
+
   it('accepts a brief without a profile or technical specifications', async () => {
     const runtime = await sdk()
     const result = await runtime.execute('video_generate', { creativeBrief: 'A product video' })
@@ -373,10 +398,10 @@ describe('video tools through the mocked Pi SDK extension API', () => {
       { ...generation, creativeBrief: ' ' }, { ...generation, creativeBrief: 'a'.repeat(4001) },
       { ...generation, localAssetIds: ['remote-reference'] }, { ...generation, operation: 'image-to-video', localAssetIds: ['asset-a'] },
       { ...generation, parameters: { ...parameters, path: '/private/video.mp4' } },
-      { ...generation, parameters: { ...parameters, durationSeconds: 601 } },
+      { ...generation, parameters: { ...parameters, durationSeconds: 0 } },
       { ...generation, parameters: { ...parameters, audio: 'false' } },
-      { ...generation, parameters: { ...parameters, frameRate: 1.5 } },
-      { ...generation, parameters: { ...parameters, resolution: '8k' } },
+      { ...generation, parameters: { ...parameters, frameRate: -1 } },
+      { ...generation, parameters: { ...parameters, resolution: 'https://private.example' } },
       { ...generation, parameters: { ...parameters, outputFormat: 'image/png' } },
     ]
     for (const input of invalid) {
@@ -577,4 +602,15 @@ describe('isolated streaming video model fixture with the actual Pi SDK', () => 
       tool_calls: [{ id: 'bad', type: 'function', function: { name: 'video_from_image', arguments: JSON.stringify(secrets) } }],
     }, { role: 'tool', content: '{}', tool_call_id: 'bad' }] }), { message: 'Pi video model mock: INVALID_TOOL_HISTORY' })
   })
+})
+
+it('projects persisted submit specification diagnostics safely alongside unresolved job state', async () => {
+  const specFailure = { code: 'UPSTREAM_SPEC_UNSUPPORTED' as const, source: 'provider' as const, field: 'resolution', requestedValue: '8k',
+    alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted' as const, billingState: 'not_reserved' as const }
+  const pending = { ...job, generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED', billingStatus: 'RECONCILING', error: specFailure.code, specFailure }
+  const runtime = await sdk({}, { ...pending, specFailure: { ...specFailure, message: 'Bearer private-secret', reason: 'https://private.invalid', rawBody: 'private-secret' } })
+  const result = await runtime.execute('video_get_job', { jobId: job.jobId })
+  assert.deepEqual(JSON.parse(value(result)).specFailure, specFailure)
+  assert.equal(JSON.parse(value(result)).generationStatus, 'SUBMISSION_UNKNOWN')
+  assert.doesNotMatch(value(result), /private-secret|private\.invalid|rawBody|Bearer/)
 })

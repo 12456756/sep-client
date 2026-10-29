@@ -1,4 +1,19 @@
 import { z } from 'zod'
+import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoRequestedSpec } from './media-spec-contract'
+
+/** Persist only validated public specification diagnostics, never upstream free text. */
+export const videoSpecFailureSchema = z.object({
+  code: z.enum(['MISSING_SPEC', 'SPEC_CONFLICT', 'UPGRADE_REQUIRED', 'PRICE_UNAVAILABLE', 'ADAPTER_UNAVAILABLE', 'ADAPTER_FIELD_UNMAPPED', 'UPSTREAM_SPEC_UNSUPPORTED', 'OUTPUT_SPEC_MISMATCH']),
+  field: z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/).optional(),
+  source: z.enum(['client', 'sep', 'platform', 'adapter', 'pricing', 'sub2api', 'provider', 'upstream', 'authorization']).optional(),
+  requestedValue: z.union([z.string().max(96), z.number().finite(), z.boolean()]).optional(),
+  reasonCode: z.string().regex(/^[A-Z][A-Z0-9_]{0,95}$/).optional(),
+  alternatives: z.array(videoRequestedSpecSchema).max(8).optional(),
+  submissionState: z.enum(['not_submitted', 'submitted', 'unknown']).optional(),
+  billingState: z.enum(['not_reserved', 'reserved', 'settled', 'released', 'reconciling', 'unknown']).optional(),
+  retryable: z.boolean().optional(),
+}).strip().refine(value => value.requestedValue === undefined || !!value.field && videoRequestedSpecSchema.safeParse({ [value.field.split('.').at(-1)!]: value.requestedValue }).success)
+export type VideoSpecFailure = z.infer<typeof videoSpecFailureSchema>
 
 export const videoOperationSchema = z.enum(['image-to-video', 'text-to-video'])
 export type VideoOperation = z.infer<typeof videoOperationSchema>
@@ -118,10 +133,41 @@ const videoRuntimeV2Schema = z.object({
     if (tool === 'video_from_image' && !value.profiles.some(profile => profile.operations.includes('image-to-video')) || tool === 'video_generate' && !value.profiles.some(profile => profile.operations.includes('text-to-video')) || tool === 'video_cancel_job' && !value.profiles.some(profile => profile.capabilities.supportsCancel)) context.addIssue({ code: 'custom', path: ['tools'], message: 'Video tool capability is unavailable.' })
   }
 })
-export const videoRuntimeSchema = z.union([videoRuntimeV1Schema, videoRuntimeV2Schema])
-export type VideoRuntimeProfile = Omit<z.infer<typeof videoRuntimeProfileSchema>, 'capabilities'> & { capabilities: VideoCapabilities }
+const videoCapabilitiesV3Schema = videoCapabilitiesV1Schema.extend({
+  durationsSeconds: z.array(z.number().finite().positive()).max(32),
+  aspectRatios: z.array(z.string().regex(/^[1-9]\d*:[1-9]\d*$/).max(32)).max(32),
+  resolutions: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/)).max(32),
+  frameRates: z.array(z.number().finite().positive()).max(32),
+  outputFormats: z.array(z.string().regex(/^video\/[a-zA-Z0-9][a-zA-Z0-9.+-]*$/).max(96)).max(32),
+  audioModes: z.array(z.boolean()).max(2).optional(),
+}).strict()
+const videoRuntimeV3ProfileSchema = videoRuntimeProfileSchema.extend({
+  capabilities: videoCapabilitiesV3Schema,
+  adapterId: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/).optional(),
+  adapterVersion: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/).optional(),
+  capabilityHints: z.object({ source: z.enum(['provider', 'adapter', 'observed', 'unknown']),
+    observedAt: z.string().datetime({ offset: true }).optional(), confidence: z.enum(['verified', 'reported', 'unknown']),
+  }).strict().optional(),
+}).strict()
+const videoRuntimeV3Schema = z.object({
+  protocolVersion: z.literal(3), executionMode: z.literal('real'), executionAvailable: z.boolean(),
+  defaultProfileId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/).nullable(),
+  tools: z.array(z.enum(['video_from_image', 'video_generate', 'video_get_job', 'video_cancel_job'])).max(4),
+  profiles: z.array(videoRuntimeV3ProfileSchema).max(64),
+}).strict().superRefine((value, context) => {
+  if (!value.executionAvailable && value.tools.length || value.executionAvailable && !value.profiles.length ||
+    new Set(value.profiles.map(profile => profile.profileId)).size !== value.profiles.length ||
+    value.defaultProfileId !== null && !value.profiles.some(profile => profile.profileId === value.defaultProfileId)) context.addIssue({ code: 'custom', message: 'Inconsistent video runtime authorization.' })
+  for (const tool of value.tools) {
+    if (tool === 'video_generate' && !value.profiles.some(profile => profile.operations.includes('text-to-video')) ||
+      tool === 'video_from_image' && !value.profiles.some(profile => profile.operations.includes('image-to-video')) ||
+      tool === 'video_cancel_job' && !value.profiles.some(profile => profile.capabilities.supportsCancel)) context.addIssue({ code: 'custom', path: ['tools'], message: 'Video operation is unavailable.' })
+  }
+})
+export const videoRuntimeSchema = z.union([videoRuntimeV1Schema, videoRuntimeV2Schema, videoRuntimeV3Schema])
+export type VideoRuntimeProfile = Omit<z.infer<typeof videoRuntimeProfileSchema>, 'capabilities'> & { capabilities: Omit<VideoCapabilities, 'resolutions' | 'outputFormats'> & { resolutions: string[]; outputFormats: string[] }; adapterId?: string; adapterVersion?: string; capabilityHints?: z.infer<typeof videoRuntimeV3ProfileSchema>['capabilityHints'] }
 export interface VideoRuntime {
-  protocolVersion: 1 | 2
+  protocolVersion: 1 | 2 | 3
   executionMode?: 'mock' | 'real'
   executionAvailable: boolean
   defaultProfileId: string | null
@@ -131,7 +177,7 @@ export interface VideoRuntime {
 
 export function videoAllowedAudioModes(runtime: Pick<VideoRuntime, 'protocolVersion' | 'executionMode'>,
   profile: { capabilities: Pick<VideoCapabilities, 'supportsAudio'> & { audioModes?: boolean[] } }): boolean[] {
-  if (runtime.protocolVersion === 2) return profile.capabilities.audioModes ? [...new Set(profile.capabilities.audioModes)] : []
+  if (runtime.protocolVersion === 2 || runtime.protocolVersion === 3) return profile.capabilities.audioModes ? [...new Set(profile.capabilities.audioModes)] : []
   if (runtime.executionMode === 'real') return [true]
   return profile.capabilities.supportsAudio ? [false, true] : [false]
 }
@@ -142,9 +188,19 @@ const videoRequestBaseSchema = z.object({
   operation: videoOperationSchema,
   referenceIds: z.array(z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)).max(4),
   creativeBrief: z.string().trim().min(1).max(4000),
-  parameters: videoParametersSchema,
+  parameters: videoRequestedSpecSchema,
+  protocolVersion: z.literal(3).optional(),
+  requestedSpec: videoRequestedSpecSchema.optional(),
+  parameterSources: mediaSpecMetadataSchema.shape.parameterSources.optional(),
+  specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
 }).strict()
 function refineVideoRequest(value: z.infer<typeof videoRequestBaseSchema>, context: z.RefinementCtx): void {
+  if (value.protocolVersion === 3) {
+    if (!value.requestedSpec || !value.parameterSources || value.specRevision === undefined || !mediaSpecsEqual(value.parameters, value.requestedSpec)) context.addIssue({ code: 'custom', path: ['requestedSpec'], message: 'Versioned video specifications must match the frozen parameters.' })
+    if (value.parameterSources && Object.keys(value.parameterSources).some(key => value.requestedSpec?.[key as keyof typeof value.requestedSpec] === undefined)) context.addIssue({ code: 'custom', path: ['parameterSources'], message: 'Specification sources must describe present video fields.' })
+  } else if (!videoParametersSchema.safeParse(value.parameters).success || value.requestedSpec !== undefined || value.parameterSources !== undefined || value.specRevision !== undefined) {
+    context.addIssue({ code: 'custom', path: ['parameters'], message: 'Legacy requests require complete legacy specifications.' })
+  }
   if (value.operation === 'image-to-video' && value.referenceIds.length !== 1) context.addIssue({ code: 'custom', path: ['referenceIds'], message: 'Image-to-video requires exactly one reference.' })
   if (value.operation === 'text-to-video' && value.referenceIds.length !== 0) context.addIssue({ code: 'custom', path: ['referenceIds'], message: 'Text-to-video does not accept references in v1.' })
 }
@@ -158,13 +214,13 @@ export type VideoRequest = z.infer<typeof videoRequestWithIdentitySchema>
 export const videoOutputSchema = z.object({
   outputId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
   kind: z.literal('video'),
-  mimeType: z.enum(['video/mp4', 'video/webm']),
+  mimeType: z.string().max(96).regex(/^video\/[a-zA-Z0-9][a-zA-Z0-9.+-]*$/),
   byteLength: z.number().int().positive().max(256 * 1024 * 1024),
   sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
-  durationSeconds: z.number().positive().max(600),
-  width: z.number().int().positive().max(16384),
-  height: z.number().int().positive().max(16384),
-  frameRate: z.number().positive().max(120),
+  durationSeconds: z.number().finite().positive(),
+  width: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  height: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  frameRate: z.number().finite().positive(),
   thumbnailOutputId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/).nullable(),
   expiresAt: z.string().datetime({ offset: true }).nullable(),
 }).strict()
@@ -181,6 +237,11 @@ const videoReceiptBaseSchema = z.object({
   outputs: z.array(videoOutputSchema).max(4),
   errorCode: z.string().nullable(),
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict(),
+  protocolVersion: z.literal(3).optional(),
+  specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
+  actualSpec: videoRequestedSpecSchema.optional(),
+  effectiveSpec: videoRequestedSpecSchema.optional(),
+  acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
 }).strict()
 const decimalCny = z.string().regex(/^\d+\.\d{6}$/)
 const decimalUsd = z.string().regex(/^\d+(?:\.\d{1,12})?$/)
@@ -218,6 +279,9 @@ export interface VideoQuote {
   pricingVersion?: string
   usdToCnyRate?: number
   funding?: { creditCny: string; memberWalletCny: string; personalCny: string }
+  protocolVersion?: 3
+  specRevision?: number
+  effectiveSpec?: VideoRequestedSpec
 }
 
 export interface VideoGatewayPort {
@@ -243,6 +307,7 @@ export const videoRealQuoteResponseSchema = videoMockQuoteResponseSchema.omit({ 
   mock: z.literal(false), amountCny: decimalCny, amountUsd: decimalUsd, pricingVersion: z.string().min(1).max(128),
   usdToCnyRate: z.number().finite().positive(), funding: z.object({ creditCny: decimalCny, memberWalletCny: decimalCny, personalCny: decimalCny }).strict(),
   billingStatus: z.literal('NOT_RESERVED'),
+  protocolVersion: z.literal(3).optional(), specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(), effectiveSpec: videoRequestedSpecSchema.optional(),
 }).strict()
 export const videoQuoteResponseSchema = z.discriminatedUnion('mock', [videoMockQuoteResponseSchema, videoRealQuoteResponseSchema])
 
@@ -270,3 +335,8 @@ export const videoRealProfilesResponseSchema = videoMockProfilesResponseSchema.e
   mock: z.literal(false), persistence: z.literal('database'), billingStatus: z.literal('NOT_RESERVED'),
 }).strict()
 export const videoProfilesResponseSchema = z.discriminatedUnion('mock', [videoMockProfilesResponseSchema, videoRealProfilesResponseSchema])
+
+/** Unknown containers remain opaque exports and never acquire an executable extension. */
+export function videoOutputExtension(mime: string): string {
+  return ({ 'video/mp4': 'mp4', 'video/webm': 'webm' } as Record<string, string>)[mime] ?? 'bin'
+}

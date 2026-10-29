@@ -640,3 +640,54 @@ describe('VideoService mock submission, disk recovery and original delivery', ()
     assert.equal(f.gateway.calls.getReceipt, 0)
   })
 })
+
+for (const states of [
+  { submissionState: 'not_submitted', billingState: 'not_reserved' },
+  { submissionState: 'unknown', billingState: 'unknown' },
+  {},
+]) {
+  it(`persists safe V3 submit diagnostics without treating reported ${JSON.stringify(states)} as trusted rejection`, async () => {
+    const f = await fixture()
+    const requestedSpec = { resolution: '8k', audio: false }
+    const request = { ...input(), protocolVersion: 3 as const, specRevision: 2,
+      requestedSpec, parameters: requestedSpec, parameterSources: { resolution: 'user' as const, audio: 'user' as const } }
+    let submissions = 0, quotes = 0, queries = 0
+    let recoveredReceipt: VideoReceipt | null = null
+    const remote = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId,
+      token: async () => 'test-token', fetch: async () => {
+        submissions++
+        return new Response(JSON.stringify({ error: { code: 'UPSTREAM_SPEC_UNSUPPORTED', source: 'provider', field: 'resolution', requestedValue: '8k',
+          reasonCode: 'UNSUPPORTED_RESOLUTION', alternatives: [{ resolution: '1080p' }], retryable: false, ...states,
+          message: 'Bearer private-secret', reason: 'https://private.invalid', body: { apiKey: 'private-secret' } } }),
+        { status: 422, headers: { 'Content-Type': 'application/json' } })
+      } })
+    const gateway: VideoGatewayPort = {
+      quote: async () => { quotes++; return { protocolVersion: 3, specRevision: 2, effectiveSpec: requestedSpec,
+        quoteId: 'v3-quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', currency: 'CNY', amount: '0.900000' } },
+      submit: remote.submit.bind(remote), findReceipt: async () => { queries++; return recoveredReceipt },
+      getReceipt: f.gateway.getReceipt.bind(f.gateway), content: f.gateway.content.bind(f.gateway),
+    }
+    const reopen = () => new VideoService({ scope, executionMode: 'real', store: new VideoStore(f.root), gateway })
+    const service = reopen()
+    const first = await service.generate('task-a', request)
+    assert.equal(first.submission, 'MAYBE_SENT'); assert.equal(first.trackingStatus, 'INTERRUPTED'); assert.equal(first.receipt, null)
+    assert.deepEqual(first.specFailure, { code: 'UPSTREAM_SPEC_UNSUPPORTED', source: 'provider', field: 'resolution', requestedValue: '8k', reasonCode: 'UNSUPPORTED_RESOLUTION', alternatives: [{ resolution: '1080p' }], retryable: false, ...states })
+    const restored = reopen()
+    const [recovered] = await restored.recover()
+    assert.deepEqual(recovered.specFailure, first.specFailure)
+    assert.deepEqual(recovered.request, first.request); assert.deepEqual(recovered.quote, first.quote)
+    await assert.rejects(restored.submit('task-a', first.jobId), /already/)
+    assert.equal(quotes, 1); assert.equal(submissions, 1); assert.equal(queries, 1)
+    assert.doesNotMatch(JSON.stringify(recovered), /private-secret|private\.invalid|apiKey|Bearer/)
+    recoveredReceipt = { mock: false, receiptId: 'recovered-v3-receipt', clientRequestId: first.request.clientRequestId,
+      profileId: first.request.profileId, configVersion: first.request.configVersion, operation: first.request.operation,
+      protocolVersion: 3, specRevision: 2, effectiveSpec: requestedSpec, status: 'QUEUED', pollAfterMs: 1000,
+      outputs: [], billingStatus: 'RESERVED', amountCny: '0.900000', errorCode: null,
+      recovery: { canQuery: true, canCancel: false, canDownload: false } }
+    const confirmed = await restored.resume('task-a', first.jobId)
+    assert.equal(confirmed.specFailure, undefined, 'An authoritative receipt supersedes the earlier submission diagnostic.')
+    assert.equal(confirmed.submission, 'RECEIPTED'); assert.equal(confirmed.receipt?.billingStatus, 'RESERVED')
+    assert.deepEqual(confirmed.request, first.request); assert.deepEqual(confirmed.quote, first.quote)
+    assert.equal(submissions, 1); assert.equal(quotes, 1)
+  })
+}

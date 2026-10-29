@@ -1,3 +1,4 @@
+import type { ImageRequestedSpec, MediaParameterSources } from './media-spec-contract'
 export type ImageMime = 'image/png' | 'image/jpeg' | 'image/webp'
 export type MediaOperation = 'generate' | 'edit'
 export type MediaToolName = 'media_get_capabilities' | 'media_generate_image' | 'media_get_job' | 'media_cancel_job'
@@ -18,11 +19,12 @@ export interface MediaProfile {
   allowedQualities?: string[]
   defaultSize?: string
   defaultQuality?: string
-  maxCount: number
+  maxCount?: number
+  maxCountSource?: 'local-output-safety'
 }
 
 export interface MediaCapabilities {
-  protocolVersion: 1
+  protocolVersion: 1 | 3
   defaultProfileId?: string | null
   tools: MediaToolName[]
   profiles: MediaProfile[]
@@ -33,7 +35,11 @@ export interface MediaGenerationInput {
   operation: MediaOperation
   localAssetIds: string[]
   creativeBrief: string
-  parameters: { aspectRatio: string; count: number; size?: string; quality?: string }
+  parameters: ImageRequestedSpec
+  protocolVersion?: 3
+  requestedSpec?: ImageRequestedSpec
+  parameterSources?: MediaParameterSources
+  specRevision?: number
 }
 
 export interface MediaAssetView {
@@ -56,6 +62,12 @@ export interface MediaJobView {
   profileId: string
   operation: MediaOperation
   parameters: MediaGenerationInput['parameters']
+  protocolVersion?: 3
+  parameterSources?: MediaParameterSources
+  specRevision?: number
+  requestedSpec?: ImageRequestedSpec
+  effectiveSpec?: ImageRequestedSpec
+  actualSpec?: ImageRequestedSpec
   generationStatus: MediaGenerationStatus
   trackingStatus: MediaTrackingStatus
   saveStatus: MediaSaveStatus

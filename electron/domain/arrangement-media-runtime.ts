@@ -41,5 +41,6 @@ export interface ArrangementMediaPort {
   prepareNode(input: {
     taskId: string; arrangementRunId: string; nodeRunId: string; attempt: number
     planHash: string; node: ArrangementNode; signal: AbortSignal
+    specRevisions?: Record<string, number>
   }): Promise<ArrangementMediaSession>
 }

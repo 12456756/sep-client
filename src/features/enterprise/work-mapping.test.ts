@@ -92,6 +92,23 @@ describe('arrangement retry display regressions', () => {
     }
   })
 
+  it('projects a media clarification from checkpoints and live events without showing task failure', () => {
+    const inputRequest = { requestId: 'spec-question', kind: 'media-spec' as const, question: '视频用于什么场景？', requirements: [{ id: 'video', specRevision: 1 }] }
+    const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-user', updatedAt: 4,
+      nodes: [{ nodeId: 'node-a', status: 'interrupted', inputRequest, finalFiles: [] }] }
+    const event: TaskExecutionEvent = { ...failed, occurredAt: 5, data: { status: 'waiting-user', nodeStates: execution.nodes } }
+    for (const input of [{ arrangementExecution: execution }, { arrangementEvents: [event] }]) {
+      const work = buildWorkItem({ task: { ...task, status: 'paused', activeRunId: null }, employees: [], plan, ...input })
+      assert.equal(work.status, 'waiting-user')
+      assert.equal(work.steps[0]?.state, 'waiting-user')
+      assert.equal(work.nextUserAction, inputRequest.question)
+      assert.deepEqual(work.arrangementExecution?.nodes[0]?.inputRequest, inputRequest)
+    }
+    const resumed = buildWorkItem({ task, employees: [], plan, arrangementExecution: execution,
+      arrangementEvents: [{ ...event, occurredAt: 6, data: { status: 'running', nodeStates: [{ nodeId: 'node-a', status: 'running' }] } }] })
+    assert.equal(resumed.arrangementExecution?.nodes[0]?.inputRequest, undefined)
+  })
+
   it('removes the pending confirmation when a newer authoritative event confirms the node', () => {
     const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-user', updatedAt: 4,
       nodes: [{ nodeId: 'node-a', status: 'completed', pendingConfirmation: true, finalFiles: [] }] }

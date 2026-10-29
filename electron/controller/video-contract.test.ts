@@ -1,3 +1,5 @@
+import { videoOutputExtension } from '../../src/shared/video-media'
+import { videoGenerationInputSchema } from '../../src/shared/video-host'
 /** 视频 IPC 契约：转译真实 routes/router，仅注入 Electron 与服务替身。 */
 import * as assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -39,17 +41,8 @@ function loadSource<T>(path: string, dependencies: Record<string, unknown> = {})
 function loadRoutes(dialog: Record<string, (...args: unknown[]) => unknown> = {}) {
   const routes = loadSource<{ videoRoutes: readonly Route[] }>('electron/controller/routes/video.ts', {
     electron: { dialog }, zod: { z },
-    '../../../src/shared/video-host': { videoGenerationInputSchema: z.object({
-      profileId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
-      operation: z.enum(['image-to-video', 'text-to-video']),
-      localAssetIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)).max(4),
-      creativeBrief: z.string().trim().min(1).max(4000),
-      parameters: z.object({
-        durationSeconds: z.number().int().positive().max(600), aspectRatio: z.string().regex(/^\d+:\d+$/),
-        resolution: z.enum(['480p', '720p', '1080p', '4k']), frameRate: z.number().int().positive().max(120),
-        audio: z.boolean(), outputFormat: z.enum(['video/mp4', 'video/webm']),
-      }).strict(),
-    }).strict() },
+    '../../../src/shared/video-media': { videoOutputExtension },
+    '../../../src/shared/video-host': { videoGenerationInputSchema },
     '../../domain/video-media': { videoLocalIdSchema: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/) },
     '../../errors/app-error': { appError, AppError },
     '../channels': { INVOKE_CHANNELS },
@@ -230,7 +223,7 @@ describe('video IPC contract', () => {
     assert.deepEqual(importing.calls.map(call => call.method), ['nativeSelection', 'showOpenDialog', 'import'])
     assert.deepEqual(importing.calls.at(-1)?.args, [['/native/reference.png']])
 
-    for (const [mime, extension] of [['video/mp4', 'mp4'], ['video/webm', 'webm']]) {
+    for (const [mime, extension] of [['video/mp4', 'mp4'], ['video/webm', 'webm'], ['video/quicktime', 'bin']]) {
       const exporting = harness({ preview: { mime }, save: { canceled: false, filePath: `/native/export.${extension}` } })
       assert.deepEqual(await exporting.invoke(INVOKE_CHANNELS.VIDEO_EXPORT, { taskId, jobId, outputId }), { success: true, cancelled: false })
       assert.deepEqual(exporting.calls.map(call => call.method), ['nativeSelection', 'outputInfo', 'showSaveDialog', 'export'])

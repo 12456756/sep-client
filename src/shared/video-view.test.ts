@@ -462,3 +462,13 @@ test('pending commands and export feedback are visible and disable all mutations
   }
   assert.doesNotMatch(panel({ notice: { message: '视频已导出', tone: 'success' } }), /视频已导出/)
 })
+
+test('persisted submit diagnostics explain unsupported specifications without hiding uncertainty', () => {
+  const pending = job({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED', billingStatus: 'RECONCILING',
+    error: 'UPSTREAM_SPEC_UNSUPPORTED', specFailure: { code: 'UPSTREAM_SPEC_UNSUPPORTED', source: 'provider', field: 'resolution', requestedValue: '8k',
+      alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved' } })
+  const issue = videoTaskIssue([pending])
+  assert.match(issue, /8k/); assert.match(issue, /1080p/); assert.match(issue, /上游模型/)
+  const html = render(React.createElement(VideoTaskContent, { taskId: 'task-1', view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [pending] }, busy: false, pending: null, onAction: noop, onPreview: noop, onExport: noop }))
+  assert.match(html, /8k/); assert.match(html, /1080p/); assert.match(html, /提交结果不明/)
+})

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { rm } from 'node:fs/promises'
 import { isDeepStrictEqual } from 'node:util'
-import { videoOutputSchema, type VideoOutput } from '../../src/shared/video-media'
+import { videoOutputSchema, videoOutputExtension, type VideoOutput } from '../../src/shared/video-media'
 import { assertVideoJobUpdate, localVideoAssetSchema, localVideoJobSchema, videoLocalIdSchema, videoScopeSchema,
   type LocalVideoAsset, type LocalVideoJob, type VideoAssetState, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { encodeTaskScopeSegment, ScopePath } from './scope-path'
@@ -10,7 +10,6 @@ import { VideoFiles, VideoIntegrityError, VideoPersistenceError, videoFileMissin
 import { WriteChain } from './write-chain'
 
 const writes = new WriteChain()
-const extension = { 'video/mp4': 'mp4', 'video/webm': 'webm' } as const
 
 /** Isolated from image media; all identifiers are validated before deriving paths. */
 export class VideoStore implements VideoStorePort {
@@ -111,8 +110,8 @@ export class VideoStore implements VideoStorePort {
     return `vout_${videoSha256(JSON.stringify([jobId, outputId]))}`
   }
   private assetFile(scope: VideoScope, asset: Pick<LocalVideoAsset, 'relativePath' | 'localAssetId' | 'output' | 'taskId'>): string {
-    if (asset.relativePath !== `files/${asset.localAssetId}.${extension[asset.output.mimeType]}`) throw new VideoPersistenceError('Video asset path differs from identity.')
-    return this.file(scope, asset.taskId, 'files', asset.localAssetId, `.${extension[asset.output.mimeType]}`)
+    if (asset.relativePath !== `files/${asset.localAssetId}.${videoOutputExtension(asset.output.mimeType)}`) throw new VideoPersistenceError('Video asset path differs from identity.')
+    return this.file(scope, asset.taskId, 'files', asset.localAssetId, `.${videoOutputExtension(asset.output.mimeType)}`)
   }
   private async record(scope: VideoScope, taskId: string, jobId: string, outputId: string): Promise<LocalVideoAsset | null> {
     const id = this.assetId(jobId, outputId)
@@ -230,11 +229,11 @@ export class VideoStore implements VideoStorePort {
       if (!job?.receipt || !job.receipt.outputs.some(item => isDeepStrictEqual(item, output))) throw new VideoPersistenceError('Video output is not authorized by original receipt.')
       const existing = await this.asset(scope, taskId, jobId, output.outputId)
       if (existing?.status === 'SAVED') return existing as LocalVideoAsset
-      const file = this.file(scope, taskId, 'files', id, `.${extension[output.mimeType]}`)
+      const file = this.file(scope, taskId, 'files', id, `.${videoOutputExtension(output.mimeType)}`)
       if (!existing && await this.files.exists(file)) throw new VideoPersistenceError('Orphaned video output requires commit evidence.')
       const asset: LocalVideoAsset = existing ? { ...existing, status: 'SAVED' } : {
         version: 1, scope: { ...scope }, taskId, jobId, localAssetId: id, receiptId: job.receipt.receiptId, output,
-        relativePath: `files/${id}.${extension[output.mimeType]}`, status: 'SAVED', createdAt: Date.now(),
+        relativePath: `files/${id}.${videoOutputExtension(output.mimeType)}`, status: 'SAVED', createdAt: Date.now(),
       }
       const manifest = this.file(scope, taskId, 'assets', id)
       const part = `${file}.${randomUUID()}.part`

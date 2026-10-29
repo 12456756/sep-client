@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import { employeeRuntimeSnapshotSchema } from '../common/platform/employee-runtime-contract'
 import { imageMimeSchema, mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId, mediaOutputErrorsSchema, mediaOutputSchema, mediaParametersSchema, mediaProfileSchema, mediaQuoteSchema, mediaRecoverySchema } from '../common/platform/media-contract'
+import { imageRequestedSpecSchema, mediaParameterSourcesSchema } from '../../src/shared/media-spec-contract'
 import type { LocalMediaAsset, LocalMediaJob, MediaOutput, MediaRunSnapshot, MediaStorePort } from '../domain/media'
 import { writeJsonAtomic } from './atomic-file'
 import { inspectMediaImage, MAX_MEDIA_BYTES, MAX_MEDIA_DIMENSION, MAX_MEDIA_PIXELS } from './media-image'
@@ -21,7 +22,9 @@ const saveSchema = z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING
 const requestSchema = z.object({
   clientRequestId: mediaId, requestHash: hashSchema, quoteId: opaqueId, profileId: opaqueId, configVersion: opaqueId,
   operation: z.enum(['generate', 'edit']), referenceIds: z.array(opaqueId).max(16), referenceHashes: z.array(hashSchema).max(16),
-  creativeBrief: z.string().min(1).max(20_000), parameters: mediaParametersSchema,
+  creativeBrief: z.string().min(1).max(20_000), parameters: z.union([mediaParametersSchema, imageRequestedSpecSchema]),
+  protocolVersion: z.literal(3).optional(), requestedSpec: imageRequestedSpecSchema.optional(),
+  parameterSources: mediaParameterSourcesSchema.optional(), specRevision: z.number().int().positive().optional(),
 }).strict()
 const jobSchema = z.object({
   version: z.literal(1), owner: ownerSchema, jobId: mediaId, taskId: mediaId, runId: mediaId, subscriptionId: opaqueId,
@@ -29,7 +32,7 @@ const jobSchema = z.object({
   request: requestSchema, quote: mediaQuoteSchema, approval: z.enum(['manual', 'automatic']), receiptId: opaqueId.nullable(),
   submission: z.enum(['NOT_SENT', 'MAYBE_SENT', 'RECEIPTED']), generationStatus: generationSchema,
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']), saveStatus: saveSchema,
-  outputs: z.array(mediaOutputSchema).max(16), billingStatus: z.string().min(1).max(64), nextPollAt: timestamp,
+  outputs: z.array(mediaOutputSchema), actualSpec: imageRequestedSpecSchema.optional(), billingStatus: z.string().min(1).max(64), nextPollAt: timestamp,
   lastQueriedAt: timestamp.optional(),
   providerWaitMs: timestamp.optional(), downloadMs: timestamp.optional(),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(),
@@ -40,6 +43,8 @@ const jobSchema = z.object({
     request.quoteId !== quote.quoteId || request.profileId !== profile.profileId || input.profileId !== profile.profileId ||
     request.configVersion !== profile.configVersion || request.operation !== input.operation || request.creativeBrief !== input.creativeBrief ||
     !isDeepStrictEqual(request.parameters, input.parameters) || request.referenceIds.length !== request.referenceHashes.length ||
+    request.protocolVersion !== input.protocolVersion || request.specRevision !== input.specRevision ||
+    !isDeepStrictEqual(request.requestedSpec, input.requestedSpec) || !isDeepStrictEqual(request.parameterSources, input.parameterSources) ||
     request.referenceIds.length !== input.localAssetIds.length || !profile.operations.includes(input.operation) ||
     job.updatedAt < job.createdAt || (job.submission === 'RECEIPTED') !== (job.receiptId !== null) ||
     new Set(job.outputs.map(output => output.outputId)).size !== job.outputs.length) {

@@ -34,6 +34,7 @@ import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor } from './arrangement-executor'
 import { createArrangementExecutionState, confirmArrangementNode, interruptArrangement, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
+import { arrangementInputReplySchema, type ArrangementInputReply } from '../../src/shared/arrangement-input'
 import { shouldPushTaskEvent } from './task-event-visibility'
 import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinishedInput, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
 import { monitorParticipationSchema, type MonitorParticipation } from '../common/platform/client-monitor-contract'
@@ -354,17 +355,18 @@ export class TaskRuntime {
     return this.conversationExecutor.switchEmployee(taskId, subscriptionId)
   }
 
-  async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string } = {}): Promise<void> {
+  async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply } = {}): Promise<void> {
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     const scope = this.taskManager.getCurrentUserScope()
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
+    if (options.inputReply && (!options.nodeId || !arrangement || arrangement.mode === 'conversation' || !arrangementInputReplySchema.safeParse(options.inputReply).success)) throw new AppError('INVALID_ARGUMENT')
     if (task.status === TaskStatus.PENDING && task.executionHealth === 'start-failed' && !task.activeRunId) {
       await this.executeTask(taskId, { ...options, knowledge: await this.latestKnowledgeSelection(taskId) })
       return
     }
     if (arrangement && arrangement.mode !== 'conversation') {
-      await this.retryArrangement(task, arrangement, options.nodeId)
+      await this.retryArrangement(task, arrangement, options.nodeId, options.inputReply)
       return
     }
     if (task.status !== TaskStatus.FAILED && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.INTERRUPTED) {
@@ -475,6 +477,7 @@ export class TaskRuntime {
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
     nodeId?: string,
+    inputReply?: ArrangementInputReply,
   ): Promise<void> {
     const scope = this.taskManager.getCurrentUserScope()
     if (this.arrangementRetries.has(task.id)) {
@@ -485,21 +488,22 @@ export class TaskRuntime {
       const active = this.activeArrangements.get(task.id)
       if (active) {
         if (!nodeId || active.control !== 'none') throw new AppError('INVALID_STATE', { message: '当前编排仍在执行，只能重试已失败的指定节点。' })
-        if (await active.executor.retryFailedNode(nodeId)) return
+        if (await active.executor.retryFailedNode(nodeId, inputReply)) return
         const liveCheckpoint = scope && this.arrangementCheckpointStore
           ? await this.arrangementCheckpointStore.get(scope, task.id)
           : null
-        if (liveCheckpoint?.state.nodes.find(node => node.nodeId === nodeId)?.status !== 'failed') {
+        const waitingNode = liveCheckpoint?.state.nodes.find(node => node.nodeId === nodeId)
+        if (waitingNode?.status !== 'failed' && !waitingNode?.inputRequest) {
           throw new AppError('INVALID_STATE', { message: '只能重试当前失败的节点。' })
         }
         await active.completion
         const latest = await this.taskManager.getTask(task.id)
         if (!latest) throw new Error('Task not found.')
-        await this.prepareArrangementRetry(latest, plan, nodeId)
+        await this.prepareArrangementRetry(latest, plan, nodeId, inputReply)
         return
       }
       if (task.activeRunId) throw new AppError('INVALID_STATE', { message: '这项编排正在执行或提交重试，请等待当前操作完成。' })
-      await this.prepareArrangementRetry(task, plan, nodeId)
+      await this.prepareArrangementRetry(task, plan, nodeId, inputReply)
     }
     finally { this.arrangementRetries.delete(task.id) }
   }
@@ -508,6 +512,7 @@ export class TaskRuntime {
     task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>,
     plan: NonNullable<Awaited<ReturnType<WorkPlanStorePort['get']>>>,
     nodeId?: string,
+    inputReply?: ArrangementInputReply,
   ): Promise<void> {
     const scope = this.taskManager.getCurrentUserScope()
     if (!scope || !this.arrangementCheckpointStore) throw new Error('Arrangement checkpoint storage is unavailable.')
@@ -517,8 +522,8 @@ export class TaskRuntime {
     if (checkpoint.state.status === 'stopped' || checkpoint.state.status === 'completed') throw new AppError('INVALID_STATE', { message: '这项编排已终止或完成，不能重试。' })
     let nextState: ArrangementExecutionState
     if (checkpoint.state.status === 'waiting-user' || checkpoint.state.status === 'failed') {
-      nextState = retryArrangementNode(checkpoint.state, plan.nodes, nodeId)
-      if (nextState === checkpoint.state) throw new AppError('INVALID_STATE', { message: '没有可重试的失败节点。' })
+      nextState = retryArrangementNode(checkpoint.state, plan.nodes, nodeId, inputReply)
+      if (nextState === checkpoint.state) throw new AppError('INVALID_STATE', { message: inputReply ? '补充回复对应的问题已变化，请刷新后重新回答。' : '没有可重试的失败节点；等待补充规格的节点需要先提交回复。' })
     } else {
       // A failed admission/write can leave an inactive checkpoint with its pre-execution status.
       const stale = !checkpoint.activeRunId &&

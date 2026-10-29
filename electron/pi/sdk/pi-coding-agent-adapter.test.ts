@@ -386,6 +386,51 @@ describe('common Office skills with the real Pi SDK', () => {
 })
 
 describe('trusted media host tools with the real Pi SDK', () => {
+  it('preserves a historical named image size when projecting the original job', async () => {
+    const parameters = { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' }
+    const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, { ...jobView, parameters })
+    const continuation = bodies.at(-1)!.messages.find(message => message.role === 'tool')!
+    const result = JSON.parse(continuation.content)
+    assert.equal(result.jobId, 'job-a')
+    assert.deepEqual(result.parameters, parameters)
+  })
+  it('does not accept legacy named image sizes as V3 job specifications', async () => {
+    const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, {
+      ...jobView, protocolVersion: 3, parameters: { ...generationInput.parameters, size: 'small' },
+    })
+    const result = JSON.parse(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content)
+    assert.equal(result.ok, false)
+    assert.equal(result.error.code, 'MEDIA_FAILED')
+  })
+  it('explains contradictory image dimensions before dispatch without echoing the creative brief', async () => {
+    const { bodies, executions } = await mediaSession({}, { name: 'media_generate_image', input: {
+      creativeBrief: 'private creative brief', protocolVersion: 3, specRevision: 1,
+      requestedSpec: { width: 800, height: 600, aspectRatio: '9:16' },
+      parameterSources: { width: 'user', height: 'user', aspectRatio: 'model' },
+    } })
+    const resultText = bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content
+    const result = JSON.parse(resultText)
+    assert.deepEqual(executions, [])
+    assert.equal(result.error.code, 'SPEC_CONFLICT')
+    assert.equal(result.error.field, 'requestedSpec.aspectRatio')
+    assert.equal(result.error.source, 'client')
+    assert.doesNotMatch(resultText, /private creative brief/)
+  })
+  it('advertises and forwards a model-proposed V3 image decision through the actual SDK', async () => {
+    const input = { creativeBrief: 'A vertical product photograph', requirementId: 'image-b', protocolVersion: 3, specRevision: 2,
+      requestedSpec: { size: '2048x3072', quality: 'ultra' }, parameterSources: { size: 'model', quality: 'user' } }
+    const view = { ...jobView, parameters: input.requestedSpec, protocolVersion: 3, requestedSpec: input.requestedSpec,
+      effectiveSpec: input.requestedSpec, parameterSources: input.parameterSources, specRevision: 2 }
+    const { bodies, executions } = await mediaSession({}, { name: 'media_generate_image', input }, view)
+    assert.equal(executions.length, 1)
+    assert.deepEqual(executions[0].input, input)
+    const definition = bodies[0].tools!.find(tool => tool.function.name === 'media_generate_image')!
+    assert.match(JSON.stringify(definition), /requestedSpec|parameterSources|specRevision/)
+    assert.doesNotMatch(definition.function.description, /fills supported defaults|only when the user explicitly asks/)
+    const continuation = JSON.stringify(bodies.at(-1))
+    assert.match(continuation, /2048x3072/)
+    assert.match(continuation, /effectiveSpec/)
+  })
   it('keeps request documents distinct across sessions sharing the same run ID', async () => {
     const entries: ModelTraceEntry[] = []
     const config = { modelTrace: async (entry: ModelTraceEntry) => { entries.push(entry) } }
@@ -460,8 +505,8 @@ describe('trusted media host tools with the real Pi SDK', () => {
       assert.match(prompt, /不要求员工资料逐项列明这些手段/)
       assert.match(prompt, /工具可用性、费用及审批限制保持不变/)
       const tool = bodies[0].tools!.find(tool => tool.function.name === 'media_generate_image')!
-      assert.match(tool.function.description, /host selects the authorized image profile/)
-      assert.match(tool.function.description, /selected in the image panel/)
+      assert.match(tool.function.description, /actual authorization and protocol version/)
+      assert.match(tool.function.description, /selected task reference images/)
       assert.equal(executions.length, 1)
     })
   }
@@ -480,7 +525,7 @@ describe('trusted media host tools with the real Pi SDK', () => {
     assert.equal(properties.parameters.required, undefined)
     const nested = properties.parameters.properties as Record<string, Record<string, unknown>>
     assert.equal(nested.count.type, 'integer')
-    assert.equal(nested.count.maximum, 16)
+    assert.equal(nested.count.maximum, Number.MAX_SAFE_INTEGER)
     const cancel = tools.find(tool => tool.function.name === 'media_cancel_job')!.function.parameters
     assert.deepEqual(cancel.required, ['jobId', 'cancelUpstream'])
     const caps = tools.find(tool => tool.function.name === 'media_get_capabilities')!.function.parameters

@@ -2,6 +2,7 @@ import { buildArrangementPlannerInput, buildArrangementPlannerUserPrompt, type A
 import { planningContractFailure, planningFailure, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
 import { arrangementMediaKindForFormat, arrangementNodeWorkContractSchema, validateArrangementDraft, type ArrangementCandidateMatch, type ArrangementDraft, type ArrangementIntentAnalysis, type ArrangementNode, type ArrangementUnresolvedStep } from './arrangement-plan'
 import { normalizePlannerMediaContract } from './arrangement-planner-media'
+import type { ArrangementMediaTools } from './arrangement-media-availability'
 
 export interface ArrangementPlannerCapability {
   id: string
@@ -20,6 +21,7 @@ export interface ArrangementPlannerEmployee {
   position?: string
   functionalCategory?: string
   capabilities?: readonly ArrangementPlannerCapability[]
+  mediaTools?: ArrangementMediaTools
   canApply?: boolean
   allowedModels: readonly string[]
   status: string
@@ -128,6 +130,10 @@ export function parseArrangementPlannerOutput(
     }
     for (const [fileIndex, file] of (contract.data.deliverables ?? []).entries()) {
       const kind = arrangementMediaKindForFormat(file.format)
+      if (kind && contract.data.mediaRequirements?.some(requirement => requirement.kind === kind && requirement.generationMethod === 'ai-generated') &&
+        file.artifact?.source !== 'media-output') {
+        throw planningContractFailure(index, [{ path: ['deliverables', fileIndex, 'artifact', 'source'], code: 'custom' }], '用户要求 AI 生成的媒体必须关联真实媒体任务产物，不能以脚本生成的文件替代。')
+      }
       if (!file.artifact && kind && contract.data.mediaRequirements?.some(requirement => requirement.kind === kind)) {
         throw planningContractFailure(index, [{ path: ['deliverables', fileIndex, 'artifact'], code: 'custom' }], '请明确该交付物的媒体来源与操作后重新规划。')
       }

@@ -699,7 +699,7 @@ const PUBLIC_SIGNATURES = [
   'async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import(\'../../src/shared/knowledge-selection\').KnowledgeSelection } = {}): Promise<void> {',
   'async continueConversation(',
   'async switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void> {',
-  'async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string } = {}): Promise<void> {',
+  'async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply } = {}): Promise<void> {',
   'async pauseTask(taskId: string): Promise<void> {',
   'async cancelTask(taskId: string, reason?: string): Promise<void> {',
   'async stopAll(): Promise<void> {',
@@ -708,7 +708,7 @@ const PUBLIC_SIGNATURES = [
 ]
 
 describe('TaskRuntime public surface', () => {
-  it('keeps the documented public methods, with unchanged signatures', async () => {
+  it('keeps the documented public methods including node-bound clarification replies', async () => {
     const source = await readFile(join(process.cwd(), 'electron', 'runtime', 'task-runtime.ts'), 'utf8')
 
     for (const signature of PUBLIC_SIGNATURES) {

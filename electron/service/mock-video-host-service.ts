@@ -1,11 +1,11 @@
 import { randomUUID, createHash } from 'node:crypto'
 import type { z } from 'zod'
 import { videoGenerationInputSchema, videoToolGenerationInputSchema, type VideoGenerationInput, type VideoJobView, type VideoTaskView } from '../../src/shared/video-host'
-import { videoFormParameters } from '../../src/shared/media-view'
-import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoReferenceSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
+import { videoAllowedAudioModes, videoBillingPending, videoRuntimeSchema, videoReferenceSchema, videoParametersSchema, type VideoGatewayPort, type VideoRuntime } from '../../src/shared/video-media'
+import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema } from '../../src/shared/media-spec-contract'
 import type { ToolAuthorizationRequest } from '../../src/shared/types'
 import type { MediaAssetView } from '../../src/shared/media'
-import { videoSubmissionRejected, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
+import { videoSubmissionRejected, videoSpecAcceptance, videoLocalIdSchema, videoScopeSchema, type LocalVideoJob, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { AppError } from '../errors/app-error'
 import { logger } from '../common/logger'
 import { abortableVideo } from '../data/video-files'
@@ -73,14 +73,18 @@ interface Context {
 
 function jobView(job: LocalVideoJob): VideoJobView {
   const rejected = videoSubmissionRejected(job)
+  const measured = videoSpecAcceptance(job)
   return {
     jobId: job.jobId, taskId: job.taskId, profileId: job.request.profileId, operation: job.request.operation,
     parameters: { ...job.request.parameters }, generationStatus: job.receipt?.status ?? (job.submission === 'NOT_SENT' ? 'NOT_SUBMITTED' : rejected ? 'FAILED' : 'SUBMISSION_UNKNOWN'),
+    ...(job.request.protocolVersion === 3 ? { protocolVersion: 3, requestedSpec: job.request.requestedSpec, specRevision: job.request.specRevision, parameterSources: job.request.parameterSources,
+      effectiveSpec: job.quote.effectiveSpec, actualSpec: measured.actualSpec, acceptance: measured.acceptance } : {}),
     trackingStatus: job.trackingStatus, saveStatus: job.saveStatus, billingStatus: job.receipt?.billingStatus ?? ((job.executionMode ?? 'mock') === 'real'
       ? job.submission === 'NOT_SENT' || rejected ? 'NOT_RESERVED' : 'RECONCILING' : 'MOCK_NOT_CHARGED'),
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
-    createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error,
+    ...(job.specFailure ? { specFailure: structuredClone(job.specFailure) } : {}),
+    createdAt: job.createdAt, updatedAt: job.updatedAt, error: measured.acceptance === 'mismatched' ? 'OUTPUT_SPEC_MISMATCH' : job.error,
     ...(job.lastQueriedAt === undefined ? {} : { lastQueriedAt: job.lastQueriedAt }),
     ...(job.providerWaitMs === undefined ? {} : { providerWaitMs: job.providerWaitMs }),
     ...(job.downloadMs === undefined ? {} : { downloadMs: job.downloadMs }),
@@ -251,14 +255,22 @@ export class MockVideoHostService {
   private profile(runtime: VideoRuntime, input: VideoGenerationInput, configVersion?: string) {
     const profile = runtime.profiles.find(candidate => candidate.profileId === input.profileId)
     const tool = input.operation === 'image-to-video' ? 'video_from_image' : 'video_generate'
-    const parameters = input.parameters
     if (!runtime.executionAvailable || !runtime.tools.includes(tool) || !profile ||
-      configVersion !== undefined && configVersion !== profile.configVersion || !profile.operations.includes(input.operation) ||
-      !profile.capabilities.durationsSeconds.includes(parameters.durationSeconds) ||
-      !profile.capabilities.aspectRatios.includes(parameters.aspectRatio) || !profile.capabilities.resolutions.includes(parameters.resolution) ||
-      !profile.capabilities.frameRates.includes(parameters.frameRate) || !profile.capabilities.outputFormats.includes(parameters.outputFormat) ||
-      !videoAllowedAudioModes(runtime, profile).includes(parameters.audio) || input.localAssetIds.length > profile.capabilities.maxReferenceCount) {
+      configVersion !== undefined && configVersion !== profile.configVersion || !profile.operations.includes(input.operation)) {
       throw new AppError('PERMISSION_DENIED')
+    }
+    if (input.localAssetIds.length > profile.capabilities.maxReferenceCount) throw new AppError('ADAPTER_FIELD_UNMAPPED', { details: { field: 'localAssetIds', source: 'adapter' } })
+    if (runtime.protocolVersion === 3 && input.protocolVersion !== 3) throw new AppError('MISSING_SPEC', { details: { field: 'specRevision', source: 'client' } })
+    if (input.protocolVersion === 3) {
+      if (runtime.protocolVersion !== 3) throw new AppError('UPGRADE_REQUIRED')
+      if (Object.keys(input.parameterSources ?? {}).some(key => input.parameters[key as keyof typeof input.parameters] === undefined)) throw new AppError('SPEC_CONFLICT', { details: { field: 'parameterSources', source: 'client' } })
+      videoRequestedSpecSchema.parse(input.parameters)
+    } else {
+      const parameters = videoParametersSchema.parse(input.parameters)
+      if (!profile.capabilities.durationsSeconds.includes(parameters.durationSeconds) ||
+        !profile.capabilities.aspectRatios.includes(parameters.aspectRatio) || !profile.capabilities.resolutions.includes(parameters.resolution) ||
+        !profile.capabilities.frameRates.includes(parameters.frameRate) || !profile.capabilities.outputFormats.includes(parameters.outputFormat) ||
+        !videoAllowedAudioModes(runtime, profile).includes(parameters.audio)) throw new AppError('INVALID_ARGUMENT', { details: { field: 'parameters', source: 'platform' } })
     }
     return profile
   }
@@ -400,6 +412,7 @@ export class MockVideoHostService {
   async preview(taskId: string, jobId: string, outputId: string) {
     const signal = this.signal(taskId)
     const { scope, asset, validate, validateTask } = await this.savedOutput(taskId, jobId, outputId, signal)
+    if (asset.output.mimeType !== 'video/mp4' && asset.output.mimeType !== 'video/webm') throw new AppError('INVALID_STATE', { message: '此视频格式暂不支持本地预览，可以导出原件后使用兼容的播放器打开。' })
     // Real outputs open through the native adapter; never transfer their bytes over IPC.
     if (!this.options.mock) {
       if (!this.options.openOutput || asset.output.byteLength > 256 * 1024 * 1024) throw new AppError('INVALID_ARGUMENT')
@@ -423,7 +436,7 @@ export class MockVideoHostService {
   async generateTool(taskId: string, name: 'video_generate' | 'video_from_image', raw: unknown, parent?: AbortSignal, run?: GenerationRun): Promise<VideoJobView> {
     const parsed = videoToolGenerationInputSchema.safeParse(raw)
     if (!parsed.success) throw new AppError('INVALID_ARGUMENT')
-    const request = parsed.data
+    const { requirementId: _requirementId, ...request } = parsed.data
     const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
     if (request.operation !== undefined && request.operation !== operation || request.localAssetIds.length !== (operation === 'image-to-video' ? 1 : 0)) throw new AppError('INVALID_ARGUMENT')
     return this.generateRequest(taskId, runtime => {
@@ -432,9 +445,17 @@ export class MockVideoHostService {
       const profile = request.profileId ? profiles.find(profile => profile.profileId === request.profileId)
         : profiles.find(profile => profile.profileId === runtime.defaultProfileId) ?? profiles[0]
       if (!profile) throw new AppError('PERMISSION_DENIED')
-      const parameters = videoFormParameters(runtime, profile, request.parameters)
-      if (!parameters || Object.entries(request.parameters ?? {}).some(([key, value]) => parameters[key as keyof typeof parameters] !== value)) throw new AppError('INVALID_ARGUMENT')
-      return { ...request, profileId: profile.profileId, operation, parameters }
+      const parameters = request.requestedSpec ?? request.parameters ?? {}
+      if (runtime.protocolVersion === 3) {
+        const metadata = mediaSpecMetadataSchema.safeParse({ protocolVersion: request.protocolVersion, specRevision: request.specRevision, parameterSources: request.parameterSources })
+        if (!metadata.success) throw new AppError('MISSING_SPEC', { details: { field: 'specRevision', source: 'client' } })
+        if (Object.keys(metadata.data.parameterSources).some(key => parameters[key as keyof typeof parameters] === undefined)) throw new AppError('SPEC_CONFLICT', { details: { field: 'parameterSources', source: 'client' } })
+        return { ...request, ...metadata.data, requestedSpec: parameters, profileId: profile.profileId, operation, parameters }
+      }
+      if (request.protocolVersion === 3 || request.requestedSpec !== undefined) throw new AppError('UPGRADE_REQUIRED')
+      const legacy = videoParametersSchema.safeParse(parameters)
+      if (!legacy.success) throw new AppError('MISSING_SPEC', { details: { field: 'parameters', source: 'client' } })
+      return { ...request, profileId: profile.profileId, operation, parameters: legacy.data }
     }, parent, run)
   }
   private async generateRequest(taskId: string, resolve: (runtime: VideoRuntime) => VideoGenerationInput, parent?: AbortSignal, run?: GenerationRun): Promise<VideoJobView> {
@@ -456,7 +477,7 @@ export class MockVideoHostService {
         const duplicate = input.localAssetIds.length === 0 ? jobs.find(job => job.taskId === taskId && job.runId === runId && !videoSubmissionRejected(job) &&
           job.request.operation === input.operation && job.request.profileId === input.profileId &&
           job.request.creativeBrief === input.creativeBrief &&
-          JSON.stringify(job.request.parameters) === JSON.stringify(input.parameters) && job.request.referenceIds.length === 0) : undefined
+          job.request.specRevision === input.specRevision && mediaSpecsEqual(job.request.parameters, input.parameters) && job.request.referenceIds.length === 0) : undefined
         if (duplicate) return jobView(duplicate)
         if (jobs.some(job => job.taskId === taskId && !videoSubmissionRejected(job) && (job.submission === 'MAYBE_SENT' || job.receipt?.status === 'SUBMISSION_UNKNOWN'))) {
           throw new AppError('CONFLICT', { message: '原视频提交状态尚未确认，请查询或恢复原任务，不能重复生成。' })

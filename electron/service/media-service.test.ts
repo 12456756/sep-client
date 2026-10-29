@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createHash } from 'node:crypto'
-import { inflateSync } from 'node:zlib'
+import { deflateSync, inflateSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import type { MediaGenerationInput } from '../../src/shared/media'
@@ -43,7 +43,8 @@ afterEach(async () => {
 
 function input(overrides: Partial<MediaGenerationInput> = {}): MediaGenerationInput {
   return { profileId: 'mock-image', operation: 'generate', localAssetIds: [], creativeBrief: 'A product photograph',
-    parameters: { aspectRatio: '1:1', count: 1 }, ...overrides }
+    ...overrides, parameters: { ...(overrides.profileId === 'image-prod' ? { aspectRatio: '1:1', count: 1, size: '1024x1024', quality: 'medium' }
+      : { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' }), ...overrides.parameters } }
 }
 
 function policy(preset: TaskToolPolicy['preset'] = 'full-local', approvalMode: TaskToolPolicy['approvalMode'] = 'auto-approve'): TaskToolPolicy {
@@ -59,6 +60,10 @@ async function fixture(overrides: Partial<MediaServiceOptions> = {}, gateway = n
   const approvalRequests: Omit<ToolAuthorizationRequest, 'requestId' | 'timestamp'>[] = []
   const employee: EmployeeRuntimeConfig = { subscriptionId: 'subscription-a', modelId: 'model-a', gatewayUrl: 'mock://no-network',
     systemPrompt: 'Product photography employee', media: structuredClone(MOCK_MEDIA_CAPABILITIES) }
+  if ('quoteRequiresUploadedReferences' in gateway && gateway.quoteRequiresUploadedReferences) {
+    employee.media = { ...MOCK_MEDIA_CAPABILITIES, profiles: MOCK_MEDIA_CAPABILITIES.profiles.map(profile => ({ ...profile,
+      allowedSizes: ['1024x1024'], allowedQualities: ['medium'] })) }
+  }
   const options: MediaServiceOptions = {
     scope: { currentScope: () => activeScope }, store, gateway,
     getTask: async taskId => ['task-a', 'task-b'].includes(taskId) ? { subscriptionId: employee.subscriptionId } : null,
@@ -157,24 +162,25 @@ async function realFixture(initial: {
     profileId: 'image-prod', kind: 'image', displayName: 'Production image', configVersion: 'cfg-v1', operations: ['generate'], executionMode: 'sync-response',
     capabilities: { supportsReferenceImage: false, maxOutputs: 4, sizes: ['1024x1024', '1536x1024', '1024x1536'], maxWidth: 1536, maxHeight: 1536 },
   }] }
-  return { ...f, state, calls, generate: (parameters: MediaGenerationInput['parameters'] = { aspectRatio: '1:1', size: '1024x1024', count: 1 }) =>
-    f.service.generateTaskMedia('task-a', input({ profileId: 'image-prod', parameters })) }
+  return { ...f, state, calls, generate: (parameters: MediaGenerationInput['parameters'] = { aspectRatio: '1:1', size: '1024x1024', count: 1, quality: 'medium' }) =>
+    f.service.generateTaskMedia('task-a', { ...input({ profileId: 'image-prod' }), parameters }) }
 }
 
 describe('real media billing recovery and canonical sizes', () => {
   it('rejects mismatched size and ratio before quote, approval or submission', async () => {
     const f = await realFixture({})
-    await assert.rejects(f.generate({ aspectRatio: '1:1', size: '1536x1024', count: 1 }), code('INVALID_ARGUMENT'))
+    await assert.rejects(f.generate({ aspectRatio: '1:1', size: '1536x1024', count: 1, quality: 'medium' }), code('INVALID_ARGUMENT'))
     assert.deepEqual(f.calls, [])
     assert.deepEqual(f.approvalRequests, [])
   })
 
-  it('freezes v2 quality defaults into approval, quote, submission and recovery', async () => {
+  it('freezes explicit v2 specifications into approval, quote, submission and recovery', async () => {
     const f = await realFixture({ billingStatus: 'SETTLED' })
     const runtime = f.employee.media as { protocolVersion: number; profiles: { capabilities: Record<string, unknown> }[] }
     runtime.protocolVersion = 2
     Object.assign(runtime.profiles[0].capabilities, { qualities: ['low', 'medium', 'high'], defaultQuality: 'high', defaultSize: '1536x1024' })
-    const first = await f.generate({ aspectRatio: '3:2', count: 1 })
+    await assert.rejects(f.generate({ aspectRatio: '3:2', count: 1 }), code('MISSING_SPEC'))
+    const first = await f.generate({ aspectRatio: '3:2', count: 1, size: '1536x1024', quality: 'high' })
     await f.service.waitForRun('task-a', first.runId)
     const saved = (await f.store.getJob(owner, 'task-a', first.jobId))!
     assert.deepEqual(saved.input.parameters, { aspectRatio: '3:2', size: '1536x1024', count: 1, quality: 'high' })
@@ -193,13 +199,11 @@ describe('real media billing recovery and canonical sizes', () => {
     assert.equal(f.calls.slice(before).filter(call => call.method === 'POST').length, 0)
   })
 
-  it('explains unadvertised quality as an input error without quoting or submitting', async () => {
+  it('requires missing legacy size before quoting or submitting', async () => {
     const f = await realFixture({})
     await assert.rejects(f.generate({ aspectRatio: '2:3', count: 1, quality: 'high' }), error => {
       assert.ok(error instanceof AppError)
-      assert.equal(error.code, 'INVALID_ARGUMENT')
-      assert.match(error.userMessage, /media_get_capabilities/)
-      assert.match(error.userMessage, /不要传 quality/)
+      assert.equal(error.code, 'MISSING_SPEC')
       return true
     })
     assert.deepEqual(f.calls, [])
@@ -209,9 +213,9 @@ describe('real media billing recovery and canonical sizes', () => {
     ['1:1', undefined, '1024x1024'], ['3:2', undefined, '1536x1024'], ['2:3', undefined, '1024x1536'],
     ['3:2', '1536x1024', '1536x1024'],
   ] as const) {
-    it(`uses the same quote and submission hash for ${aspectRatio} ${explicitSize ?? 'default size'}`, async () => {
+    it(`uses the same quote and submission hash for explicit ${aspectRatio} ${expectedSize}`, async () => {
       const f = await realFixture({ billingStatus: 'SETTLED' })
-      const view = await f.generate({ aspectRatio, count: 1, ...(explicitSize ? { size: explicitSize } : {}) })
+      const view = await f.generate({ aspectRatio, count: 1, size: explicitSize ?? expectedSize, quality: 'medium' })
       await f.service.waitForRun('task-a', view.runId)
       const quoted = f.calls.find(call => call.path === '/quotes')!.body!
       const submitted = f.calls.find(call => call.path === '/requests')!.body!
@@ -233,7 +237,7 @@ describe('real media billing recovery and canonical sizes', () => {
     for (const billingStatus of ['RESERVED', 'RECONCILING'] as const) {
       it(`continues original receipt queries after ${status} with ${billingStatus}`, async () => {
         const f = await realFixture({ status, billingStatus })
-        const view = await f.generate({ aspectRatio: '1:1', size: '1024x1024', count: status === 'PARTIAL_SUCCEEDED' ? 2 : 1 })
+        const view = await f.generate({ aspectRatio: '1:1', size: '1024x1024', count: status === 'PARTIAL_SUCCEEDED' ? 2 : 1, quality: 'medium' })
         await waitUntil(async () => f.calls.some(call => call.path === '/requests/real-receipt'))
         const pending = (await f.store.getJob(owner, 'task-a', view.jobId))!
         assert.equal(pending.generationStatus, status)
@@ -434,7 +438,7 @@ describe('media capability and handoff regressions', () => {
           choices: [{ index: 0, delta, finish_reason: finishReason }],
         })}\n\n`)
         chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'generate-image', type: 'function',
-          function: { name: 'media_generate_image', arguments: JSON.stringify({ creativeBrief: 'Product photograph' }) } }] })
+          function: { name: 'media_generate_image', arguments: JSON.stringify({ creativeBrief: 'Product photograph', parameters: input().parameters }) } }] })
         chunk({}, 'tool_calls')
         response.end('data: [DONE]\n\n')
       })
@@ -495,7 +499,7 @@ describe('media capability and handoff regressions', () => {
       const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'handoff', subscriptionId: f.employee.subscriptionId,
         employee: f.employee, toolPolicy: policy(), requestApproval: f.options.requestApproval })
       const toolController = new AbortController()
-      const view = await tools!.execute('media_generate_image', { creativeBrief: 'Product photograph' }, toolController.signal) as { jobId: string }
+      const view = await tools!.execute('media_generate_image', { creativeBrief: 'Product photograph', parameters: input().parameters }, toolController.signal) as { jobId: string }
       await entered.promise
       toolController.abort()
       if (action === 'handoff') {
@@ -521,19 +525,15 @@ describe('media capability and handoff regressions', () => {
     })
   }
 
-  it('resolves a ratio-only tool request without the conflicting profile default size', async () => {
+  it('returns missing specs for ratio-only legacy tool input without applying advertised defaults', async () => {
     const f = await realFixture({ billingStatus: 'SETTLED' })
     const runtime = f.employee.media as { protocolVersion: number; profiles: { capabilities: Record<string, unknown> }[] }
     runtime.protocolVersion = 2
     Object.assign(runtime.profiles[0].capabilities, { qualities: ['medium'], defaultQuality: 'medium', defaultSize: '1024x1024' })
     const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'ratio-only', subscriptionId: f.employee.subscriptionId,
       employee: f.employee, toolPolicy: policy(), requestApproval: f.options.requestApproval })
-    const result = await tools!.execute('media_generate_image', { creativeBrief: 'Wide product photo', parameters: { aspectRatio: '3:2' } }) as { jobId: string }
-    await f.service.waitForRun('task-a', 'ratio-only')
-    const saved = await f.store.getJob(owner, 'task-a', result.jobId)
-    assert.deepEqual(saved?.input.parameters, { aspectRatio: '3:2', size: '1536x1024', count: 1, quality: 'medium' })
-    assert.deepEqual(f.calls.find(call => call.path === '/requests')?.body?.parameters,
-      f.calls.find(call => call.path === '/quotes')?.body?.parameters)
+    await assert.rejects(tools!.execute('media_generate_image', { creativeBrief: 'Wide product photo', parameters: { aspectRatio: '3:2' } }), code('MISSING_SPEC'))
+    assert.deepEqual(f.calls, [])
   })
 })
 
@@ -621,7 +621,7 @@ describe('MediaService authorization and request semantics', () => {
     const selected = join(f.directory, 'reference.png')
     await writeFile(selected, MOCK_MEDIA_PNG)
     const [asset] = await f.service.importReferences('task-a', [selected])
-    const view = await f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId] }))
+    const view = await f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId], parameters: { aspectRatio: '1:1', size: '1024x1024', count: 1, quality: 'medium' } }))
     await f.service.waitForRun('task-a', view.runId)
     assert.deepEqual(stages, ['upload-approval', 'generate-approval'])
     const quoted = gateway.calls.quote[0].request
@@ -637,7 +637,7 @@ describe('MediaService authorization and request semantics', () => {
     const selected = join(f.directory, 'reference.png')
     await writeFile(selected, MOCK_MEDIA_PNG)
     const [asset] = await f.service.importReferences('task-a', [selected])
-    await assert.rejects(f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId] })), code('PERMISSION_DENIED'))
+    await assert.rejects(f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId], parameters: { aspectRatio: '1:1', size: '1024x1024', count: 1, quality: 'medium' } })), code('PERMISSION_DENIED'))
     assert.equal(gateway.calls.uploadReference.length, 0)
     assert.equal(gateway.calls.quote.length, 0)
     assert.equal(gateway.calls.submit.length, 0)
@@ -650,7 +650,7 @@ describe('MediaService authorization and request semantics', () => {
     const selected = join(f.directory, 'reference.png')
     await writeFile(selected, MOCK_MEDIA_PNG)
     const [asset] = await f.service.importReferences('task-a', [selected])
-    await assert.rejects(f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId] })), code('PERMISSION_DENIED'))
+    await assert.rejects(f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [asset.localAssetId], parameters: { aspectRatio: '1:1', size: '1024x1024', count: 1, quality: 'medium' } })), code('PERMISSION_DENIED'))
     assert.equal(gateway.calls.uploadReference.length, 1)
     assert.equal(gateway.calls.quote.length, 1)
     assert.equal(gateway.calls.submit.length, 0)
@@ -919,7 +919,7 @@ describe('MediaService authorization and request semantics', () => {
     const [b] = await f.service.importReferences('task-b', [selected])
     const first = await f.service.generateTaskMedia('task-a', input({ operation: 'edit', localAssetIds: [a.localAssetId] }))
     await f.service.waitForRun('task-a', first.runId)
-    const second = await f.service.generateTaskMedia('task-b', input({ parameters: { count: 1, aspectRatio: '1:1' }, operation: 'edit', localAssetIds: [b.localAssetId] }))
+    const second = await f.service.generateTaskMedia('task-b', input({ parameters: { count: 1, aspectRatio: '1:1', size: 'small', quality: 'standard' }, operation: 'edit', localAssetIds: [b.localAssetId] }))
     await f.service.waitForRun('task-b', second.runId)
     const [requestA, requestB] = f.gateway.calls.submit.map(call => call.request)
     assert.equal(requestA.requestHash, requestB.requestHash)
@@ -931,7 +931,7 @@ describe('MediaService authorization and request semantics', () => {
     const changed = await f.service.generateTaskMedia('task-a', input({ creativeBrief: 'Different product photograph' }))
     await f.service.waitForRun('task-a', changed.runId)
     assert.notEqual(f.gateway.calls.submit[2].request.requestHash, requestA.requestHash)
-    const changedCount = await f.service.generateTaskMedia('task-a', input({ parameters: { aspectRatio: '1:1', count: 2 } }))
+    const changedCount = await f.service.generateTaskMedia('task-a', input({ parameters: { aspectRatio: '1:1', count: 2, size: 'small', quality: 'standard' } }))
     await f.service.waitForRun('task-a', changedCount.runId)
     assert.notEqual(f.gateway.calls.submit[3].request.requestHash, f.gateway.calls.submit[2].request.requestHash)
     const changedCapabilities = structuredClone(MOCK_MEDIA_CAPABILITIES)
@@ -1654,7 +1654,7 @@ describe('MediaService review lifecycle regressions', () => {
     const capabilityView = await tools!.execute('media_get_capabilities', {}) as { referenceAssets: { localAssetId: string }[] }
     assert.deepEqual(capabilityView.referenceAssets.map(asset => asset.localAssetId), [reference.localAssetId])
 
-    const result = await tools!.execute('media_generate_image', { creativeBrief: 'Make a clean product photo' }) as { jobId: string }
+    const result = await tools!.execute('media_generate_image', { creativeBrief: 'Make a clean product photo', parameters: input().parameters }) as { jobId: string }
     await f.service.waitForRun('task-a', 'brief-run')
     const job = await f.store.getJob(owner, 'task-a', result.jobId)
     assert.equal(job?.profile.profileId, 'mock-image')
@@ -1675,7 +1675,7 @@ describe('MediaService review lifecycle regressions', () => {
 
     const tools = await f.service.prepareRun({ taskId: 'task-a', runId: 'generate-with-reference', subscriptionId: f.employee.subscriptionId,
       employee: f.employee, requestApproval: f.options.requestApproval })
-    const result = await tools!.execute('media_generate_image', { creativeBrief: 'Create a new image using this visual reference' }) as { jobId: string }
+    const result = await tools!.execute('media_generate_image', { creativeBrief: 'Create a new image using this visual reference', parameters: input().parameters }) as { jobId: string }
     await f.service.waitForRun('task-a', 'generate-with-reference')
     const job = await f.store.getJob(owner, 'task-a', result.jobId)
     assert.equal(job?.input.operation, 'generate')
@@ -1783,7 +1783,7 @@ describe('MediaService review lifecycle regressions', () => {
     context.mock.method(f.gateway, 'quote', async () => {
       throw new AppError('SERVICE_UNAVAILABLE', { details: { businessCode: 'CONFIG_CHANGED' } })
     })
-    await assert.rejects(tools.execute('media_generate_image', { creativeBrief: 'Product image' }), code('SERVICE_UNAVAILABLE'))
+    await assert.rejects(tools.execute('media_generate_image', { creativeBrief: 'Product image', parameters: input().parameters }), code('SERVICE_UNAVAILABLE'))
     const media = f.employee.media as typeof MOCK_MEDIA_CAPABILITIES
     media.profiles[0].maxCount = 1
     assert.equal((await f.service.getTaskMedia('task-a')).capabilities?.profiles[0].maxCount, 1)
@@ -2026,5 +2026,150 @@ describe('MediaService review lifecycle regressions', () => {
       stub.mock.restore()
       await f.service.stopTask('task-a')
     } finally { stub.mock.restore() }
+  })
+})
+
+describe('V3 image specifications', () => {
+  for (const [tool, forbiddenOperation] of [['image_generate', 'edit'], ['image_edit', 'generate']] as const) {
+    it(`rejects ${forbiddenOperation} before reference upload or quote when only ${tool} is authorized`, async () => {
+      const f = await fixture()
+      f.employee.media = { protocolVersion: 3, executionAvailable: true, defaultProfileId: 'image-v3', tools: [tool], profiles: [{
+        profileId: 'image-v3', kind: 'image', displayName: 'V3', configVersion: 'cfg', operations: ['generate', 'edit'], executionMode: 'sync-response',
+        capabilities: { supportsReferenceImage: true },
+      }] }
+      const spec = { count: 1 }
+      await assert.rejects(f.service.generateTaskMedia('task-a', { profileId: 'image-v3', operation: forbiddenOperation,
+        localAssetIds: forbiddenOperation === 'edit' ? ['reference-a'] : [], creativeBrief: 'poster', protocolVersion: 3,
+        parameters: spec, requestedSpec: spec, parameterSources: { count: 'user' }, specRevision: 1 }), code('INVALID_ARGUMENT'))
+      assert.equal(f.gateway.calls.uploadReference.length, 0)
+      assert.equal(f.gateway.calls.quote.length, 0)
+      assert.equal(f.gateway.calls.submit.length, 0)
+      assert.equal(f.approvalRequests.length, 0)
+    })
+  }
+
+  it('quotes free specifications without host defaults and rejects a changed quote before submitting', async () => {
+    const gateway = new MockMediaGateway()
+    gateway.quote = async (_subscriptionId, request) => {
+      gateway.calls.quote.push({ subscriptionId: _subscriptionId, request: structuredClone(request) })
+      return { quoteId: 'quote-v3', requestHash: request.requestHash, expiresAt: Date.now() + 60000, status: 'quoted',
+        amount: '0', currency: 'MOCK', authorized: true, budgetAuthorized: true, allowUnknownCost: false,
+        effectiveSpec: { ...request.requestedSpec, quality: 'medium' } }
+    }
+    const f = await fixture({}, gateway)
+    f.employee.media = { protocolVersion: 3, executionAvailable: true, defaultProfileId: 'image-v3', tools: ['image_generate'], profiles: [{
+      profileId: 'image-v3', kind: 'image', displayName: 'V3', configVersion: 'cfg', operations: ['generate'], executionMode: 'sync-response',
+      capabilities: { supportsReferenceImage: false },
+    }] }
+    const spec = { width: 1600, height: 2400, quality: 'ultra' }
+    await assert.rejects(f.service.generateTaskMedia('task-a', { profileId: 'image-v3', operation: 'generate', localAssetIds: [],
+      creativeBrief: 'poster', protocolVersion: 3, parameters: spec, requestedSpec: spec,
+      parameterSources: { width: 'user', height: 'model', quality: 'model' }, specRevision: 1 }), code('SPEC_CONFLICT'))
+    assert.equal(gateway.calls.submit.length, 0)
+    assert.deepEqual(gateway.calls.quote[0].request.requestedSpec, spec)
+    assert.deepEqual(gateway.calls.quote[0].request.parameters, spec)
+    assert.equal('count' in gateway.calls.quote[0].request.requestedSpec!, false)
+    assert.equal(f.approvalRequests.length, 0)
+  })
+})
+
+describe('V3 image output verification', () => {
+  function png(width: number, height: number): Buffer {
+    const chunk = (kind: string, bytes: Buffer): Buffer => {
+      const data = Buffer.concat([Buffer.from(kind), bytes]); let crc = 0xffffffff
+      for (const byte of data) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0) }
+      const length = Buffer.alloc(4), checksum = Buffer.alloc(4)
+      length.writeUInt32BE(bytes.length); checksum.writeUInt32BE((crc ^ 0xffffffff) >>> 0)
+      return Buffer.concat([length, data, checksum])
+    }
+    const header = Buffer.alloc(13); header.writeUInt32BE(width); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 2
+    return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', header),
+      chunk('IDAT', deflateSync(Buffer.alloc(height * (1 + width * 3)))), chunk('IEND', Buffer.alloc(0))])
+  }
+  async function outputFixture(spec: MediaGenerationInput['parameters'], options: { count?: number; localSecondWide?: boolean; unknownDimensions?: boolean } = {}) {
+    const gateway = new MockMediaGateway({ initialStatus: 'SUCCEEDED' })
+    const quote = gateway.quote.bind(gateway)
+    gateway.quote = async (...args) => ({ ...await quote(...args), effectiveSpec: args[1].requestedSpec })
+    const submit = gateway.submit.bind(gateway)
+    gateway.submit = async (subscriptionId, request, signal) => {
+      const receipt = await submit(subscriptionId, { ...request, parameters: { ...request.parameters, count: options.count ?? spec.count ?? 1 } }, signal)
+      return { ...receipt, billingStatus: 'SETTLED', recovery: { canQuery: false, canCancel: false, canDownload: true }, outputs: receipt.outputs.map(output =>
+        options.unknownDimensions ? { outputId: output.outputId, mime: output.mime, width: null, height: null, size: null, expiresAt: output.expiresAt } : output) }
+    }
+    if (options.localSecondWide) {
+      gateway.content = async (_subscriptionId, _receiptId, outputId) => (async function* () { yield png(outputId.endsWith('-2') ? 2 : 1, 1) })()
+    }
+    const f = await fixture({ policy: async () => policy() }, gateway)
+    f.employee.media = { protocolVersion: 3, executionAvailable: true, defaultProfileId: 'image-v3', tools: ['image_generate'], profiles: [{
+      profileId: 'image-v3', kind: 'image', displayName: 'V3', configVersion: 'cfg', operations: ['generate'], executionMode: 'sync-response',
+      capabilities: { supportsReferenceImage: false },
+    }] }
+    const view = await f.service.generateTaskMedia('task-a', { profileId: 'image-v3', operation: 'generate', localAssetIds: [], creativeBrief: 'poster',
+      protocolVersion: 3, parameters: spec, requestedSpec: spec, parameterSources: Object.fromEntries(Object.entries(spec).filter(([, value]) => value !== undefined).map(([key]) => [key, 'user' as const])), specRevision: 1 })
+    await f.service.waitForRun('task-a', view.runId)
+    return { ...f, job: (await f.store.getJob(owner, 'task-a', view.jobId))! }
+  }
+
+  for (const [name, spec] of [
+    ['width', { width: 2, count: 1 }], ['height', { height: 2, count: 1 }],
+    ['size', { size: '2x1', count: 1 }], ['aspect ratio', { aspectRatio: '2:1', count: 1 }],
+    ['MIME', { outputFormat: 'image/webp', count: 1 }],
+  ] as const) it(`detects ${name} mismatch from receipt outputs without actualSpec while retaining originals and settled billing`, async () => {
+    const f = await outputFixture(spec)
+    assert.equal(f.job.errorCode, 'OUTPUT_SPEC_MISMATCH')
+    assert.equal(f.job.actualSpec, undefined)
+    assert.equal(f.job.generationStatus, 'SUCCEEDED')
+    assert.equal(f.job.billingStatus, 'SETTLED')
+    assert.equal(f.job.saveStatus, 'SAVED')
+    assert.equal((await f.store.listAssets(owner, 'task-a')).length, 1)
+    assert.equal(f.gateway.calls.submit.length, 1)
+  })
+
+  for (const count of [1, 3]) it(`detects returned count ${count} differing from requested two without rejecting deliverable originals`, async () => {
+    const f = await outputFixture({ count: 2 }, { count })
+    assert.equal(f.job.errorCode, 'OUTPUT_SPEC_MISMATCH')
+    assert.equal(f.job.saveStatus, 'SAVED')
+    assert.equal((await f.store.listAssets(owner, 'task-a')).length, count)
+  })
+
+  it('checks every locally inspected file when receipt dimensions are unknown and the first image matches', async () => {
+    const f = await outputFixture({ width: 1, height: 1, aspectRatio: '1:1', count: 2 }, { unknownDimensions: true, localSecondWide: true })
+    assert.equal(f.job.errorCode, 'OUTPUT_SPEC_MISMATCH')
+    assert.equal(f.job.actualSpec, undefined)
+    assert.equal(f.job.billingStatus, 'SETTLED')
+    assert.equal(f.job.saveStatus, 'SAVED')
+    const assets = await f.store.listAssets(owner, 'task-a')
+    assert.deepEqual(assets.map(asset => asset.width).sort(), [1, 2])
+    assert.equal((await f.service.getTaskMedia('task-a')).jobs[0].error, 'OUTPUT_SPEC_MISMATCH')
+    assert.equal(f.gateway.calls.submit.length, 1)
+  })
+
+  it('does not invent measured quality or mismatch equivalent ratios when all known dimensions agree', async () => {
+    const f = await outputFixture({ width: 1, height: 1, aspectRatio: '2:2', quality: 'ultra', count: 1 })
+    assert.notEqual(f.job.errorCode, 'OUTPUT_SPEC_MISMATCH')
+    assert.equal(f.job.actualSpec, undefined)
+    assert.equal(f.job.saveStatus, 'SAVED')
+  })
+
+  it('delivers and restores seventeen outputs without an arbitrary per-receipt or persistence count cap', async () => {
+    const f = await outputFixture({ count: 17 })
+    assert.equal(f.job.outputs.length, 17)
+    assert.equal((await f.store.listAssets(owner, 'task-a')).length, 17)
+    assert.equal(f.job.saveStatus, 'SAVED')
+    assert.notEqual(f.job.errorCode, 'OUTPUT_SPEC_MISMATCH')
+    const restored = await new MediaStore(f.root).getJob(owner, 'task-a', f.job.jobId)
+    assert.equal(restored?.outputs.length, 17)
+    assert.equal(f.gateway.calls.submit.length, 1)
+  })
+
+  it('saves and restores a new request after an optional field was filled and cleared', async () => {
+    const f = await outputFixture({ count: 1, quality: undefined })
+    assert.deepEqual(f.job.input.parameters, { count: 1 })
+    assert.deepEqual(f.job.request.requestedSpec, { count: 1 })
+    assert.deepEqual(f.job.quote.effectiveSpec, { count: 1 })
+    assert.equal(f.job.saveStatus, 'SAVED')
+    const restored = await new MediaStore(f.root).getJob(owner, 'task-a', f.job.jobId)
+    assert.deepEqual(restored?.input.requestedSpec, { count: 1 })
+    assert.equal(f.gateway.calls.submit.length, 1)
   })
 })

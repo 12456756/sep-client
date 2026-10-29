@@ -282,8 +282,8 @@ export async function runVideoV2Live(configPath: string, env: NodeJS.ProcessEnv 
       item.configVersion === profile.configVersion), 'profile-contract-mismatch')
     if (!existed) {
       const cap = profile.capabilities
-      const parameters = config.parameters ?? { durationSeconds: cap.durationsSeconds[0], aspectRatio: cap.aspectRatios[0],
-        resolution: cap.resolutions[0], frameRate: cap.frameRates[0], audio: cap.supportsAudio, outputFormat: cap.outputFormats[0] }
+      const parameters = config.parameters ?? videoParametersSchema.parse({ durationSeconds: cap.durationsSeconds[0], aspectRatio: cap.aspectRatios[0],
+        resolution: cap.resolutions[0], frameRate: cap.frameRates[0], audio: cap.supportsAudio, outputFormat: cap.outputFormats[0] })
       expectedParameters = parameters
       await current.host.generate(config.taskId, { profileId: config.profileId, operation: config.operation,
         localAssetIds: config.operation === 'image-to-video' ? ['live-png'] : [], creativeBrief: config.creativeBrief, parameters }, signal)

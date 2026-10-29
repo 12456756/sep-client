@@ -745,6 +745,34 @@ describe('ArrangementService', () => {
     assert.deepEqual(seenCapabilities, [{ id: 'cap-search', name: '联网搜索', description: '检索公开网页信息', type: 'SKILL' }])
   })
 
+  it('loads authorized media tool snapshots without preparing employee skills', async () => {
+    let seen: ArrangementPlannerEmployee['mediaTools']
+    let prepared = false
+    const mediaTools = { media_generate_image: { state: 'available', reason: 'authorized-runtime' },
+      video_generate: { state: 'unavailable', reason: 'host-unavailable' },
+      video_from_image: { state: 'unavailable', reason: 'host-unavailable' } } as const
+    const harness = planningHarness(async input => {
+      seen = input.employees[0]?.mediaTools
+      return { title: 'Planned report', nodes: [plannedNode] }
+    }, { employees: { async list() { return [employee()] }, async authorize() { prepared = true; throw new Error('Must not prepare skills') } },
+      async mediaToolAvailability(subscriptionId: string) { assert.equal(subscriptionId, 'sub-a'); return mediaTools } })
+    await harness.service.startPlanning('draft-a', 1)
+    await eventually(() => seen !== undefined)
+    assert.deepEqual(seen, mediaTools)
+    assert.equal(prepared, false)
+  })
+
+  it('keeps media tools unknown when the runtime query fails instead of reporting no tools', async () => {
+    let seen: ArrangementPlannerEmployee['mediaTools']
+    const harness = planningHarness(async input => {
+      seen = input.employees[0]?.mediaTools
+      return { title: 'Planned report', nodes: [plannedNode] }
+    }, { async mediaToolAvailability() { throw new Error('Runtime temporarily unavailable') } })
+    await harness.service.startPlanning('draft-a', 1)
+    await eventually(() => seen !== undefined)
+    assert.equal(seen!.video_generate.state, 'unknown')
+  })
+
   it('keeps enterprise suggestions and still asks the platform model about unresolved steps', async () => {
     let calls = 0
     const intentAnalysis = {

@@ -231,6 +231,7 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (general) workerPrompt += '\n\n【媒体执行能力】当前通用助手没有账号主体的图片/视频生成授权。需要真实 AI 生成时，应如实说明尚未开通，可以由用户选择有授权的员工继续；不能借用员工身份、令牌或本机密钥，不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
       const selection = queued.knowledge ?? queued.arrangement?.knowledge
       let trustedNames: string[] = []

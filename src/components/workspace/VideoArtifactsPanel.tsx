@@ -5,13 +5,14 @@ import { z } from 'zod'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
 import type { VideoJobView, VideoTaskView } from '../../shared/video-host'
-import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../shared/video-media'
+import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../shared/video-media'
+import { mediaSpecMetadataSchema, videoRequestedSpecSchema } from '../../shared/media-spec-contract'
 import { isVideoSubmissionRejectionCode } from '../../shared/video-errors'
 
 
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { operationFailure, responseError, type FeedbackOperation } from '../../shared/arrangement-feedback'
-import { mediaIssueMessage } from '../../shared/media-feedback'
+import { mediaIssueMessage, mediaSpecFailureMessage } from '../../shared/media-feedback'
 
 type Command = 'export' | 'resume' | 'retry'
 type JobAction = 'resume' | 'retry'
@@ -30,7 +31,11 @@ function queryLabel(value: number | undefined): string | null {
 }
 const jobSchema = z.object({
   jobId: localId, taskId: localId, profileId: localId, operation: videoOperationSchema,
-  parameters: videoParametersSchema, generationStatus: z.string().max(80),
+  specFailure: videoSpecFailureSchema.optional(),
+  parameters: videoRequestedSpecSchema, generationStatus: z.string().max(80),
+  protocolVersion: z.literal(3).optional(), specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
+  requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(), actualSpec: videoRequestedSpecSchema.optional(),
+  parameterSources: mediaSpecMetadataSchema.shape.parameterSources.optional(), acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
   billingStatus: videoBillingStatusSchema, amountCny: z.string().optional(), actualCostCny: z.string().optional(), amountUsd: z.string().optional(), createdAt: z.number().finite(), updatedAt: z.number().finite(),
@@ -52,12 +57,12 @@ function safeView(value: unknown, taskId: string): VideoTaskView | null {
 
 
 function failure(result: IpcCommandResult, operation: FeedbackOperation): string {
-  return responseError(result, operation).message
+  return result.error?.code ? mediaSpecFailureMessage({ ...result.error, code: result.error.code }) ?? responseError(result, operation).message : responseError(result, operation).message
 }
 
 export function videoTaskIssue(jobs: VideoJobView[]): string | null {
   for (const job of jobs) {
-    const message = mediaIssueMessage(job, 'video')
+    const message = job.specFailure ? mediaSpecFailureMessage(job.specFailure) ?? mediaIssueMessage(job, 'video') : mediaIssueMessage(job, 'video')
     if (message) return message
   }
   return null
@@ -113,8 +118,12 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
     const retry = generated && downloadable && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)
     const resume = !explicitlyRejected && job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
     return <article className="media-job" key={job.jobId} aria-label={`视频任务 ${job.jobId}`}>
-      <div className="media-job-heading"><strong>{job.operation === 'image-to-video' ? '图片生成视频' : '文字生成视频'}</strong><span>{job.parameters.durationSeconds} 秒 · {job.parameters.aspectRatio}</span></div>
-      <small className="media-job-id">配置 {job.profileId} · {job.parameters.resolution} · {job.parameters.frameRate} fps · {job.parameters.audio ? '含音频' : '无音频'}</small>
+      <div className="media-job-heading"><strong>{job.operation === 'image-to-video' ? '图片生成视频' : '文字生成视频'}</strong><span>{job.parameters.durationSeconds === undefined ? '时长由上游决定' : `${job.parameters.durationSeconds} 秒`} · {job.parameters.aspectRatio ?? '比例未指定'}</span></div>
+      <small className="media-job-id">配置 {job.profileId} · {job.parameters.resolution ?? '分辨率未指定'} · {job.parameters.frameRate === undefined ? '帧率未指定' : `${job.parameters.frameRate} fps`} · {job.parameters.audio === undefined ? '音频未指定' : job.parameters.audio ? '含音频' : '无音频'}</small>
+      {job.protocolVersion === 3 && <small>规格来源：{Object.entries(job.parameterSources ?? {}).map(([field, source]) => `${field}（${source === 'user' ? '用户要求' : source === 'model' ? '模型建议' : '上游决定'}）`).join('、') || '未指定字段由上游决定'} · 需求版本 {job.specRevision}</small>}
+      {job.actualSpec && <small>实际生成：{job.actualSpec.durationSeconds === undefined ? '时长待核验' : `${job.actualSpec.durationSeconds} 秒`} · {job.actualSpec.width && job.actualSpec.height ? `${job.actualSpec.width}×${job.actualSpec.height}` : job.actualSpec.resolution ?? '尺寸待核验'} · {job.actualSpec.frameRate === undefined ? '帧率待核验' : `${job.actualSpec.frameRate} fps`}</small>}
+      {job.specFailure && <p className="media-notice" role="alert">{mediaSpecFailureMessage(job.specFailure)}</p>}
+      {job.acceptance === 'mismatched' && <p className="media-notice" role="alert">实际视频与约定规格不符，原件和费用状态已保留；不会自动再次付费生成。</p>}
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[generation, mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
       <small>{videoBillingLabel(job)}</small>
@@ -133,7 +142,7 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
         <strong>视频成果 {index + 1}</strong>
         <small>{output.width} × {output.height} · {output.durationSeconds} 秒 · {output.mimeType}</small>
         {videoOutputIsSaved(job, output.outputId) ? <div className="media-job-actions">
-          <button type="button" className="media-command" disabled={busy} onClick={() => onPreview({ jobId: job.jobId, outputId: output.outputId })}><Play size={13} />预览视频成果 {index + 1}</button>
+          <button type="button" className="media-command" disabled={busy || !['video/mp4', 'video/webm'].includes(output.mimeType)} title={['video/mp4', 'video/webm'].includes(output.mimeType) ? undefined : '此格式支持导出原件后打开'} onClick={() => onPreview({ jobId: job.jobId, outputId: output.outputId })}><Play size={13} />预览视频成果 {index + 1}</button>
           <button type="button" className="media-command" disabled={busy} onClick={() => onExport({ jobId: job.jobId, outputId: output.outputId })}><Download size={13} />导出视频成果 {index + 1}</button>
         </div> : <p className="media-notice">此成果尚未确认保存到本地，保存后可预览或导出。</p>}
       </div>)}
@@ -248,7 +257,7 @@ function VideoTaskController({ taskId, visible = true, onSummary }: { taskId: st
       setError(null)
       queryFailure.current = false
       for (const job of next.jobs) {
-        const message = mediaIssueMessage(job, 'video')
+        const message = job.specFailure ? mediaSpecFailureMessage(job.specFailure) ?? mediaIssueMessage(job, 'video') : mediaIssueMessage(job, 'video')
         const key = `${job.jobId}:${message}`
         if (message && !seenIssues.current.has(key)) { seenIssues.current.add(key); notice.show(message, 'error', `video-job:${taskId}:${key}`, true) }
       }

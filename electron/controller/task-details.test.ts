@@ -6,6 +6,7 @@ import * as ts from 'typescript'
 import { z } from 'zod'
 import { INVOKE_CHANNELS } from './channels'
 import * as knowledgeSelection from '../../src/shared/knowledge-selection'
+import * as arrangementInput from '../../src/shared/arrangement-input'
 
 interface TestRoute {
   channel: string
@@ -13,7 +14,7 @@ interface TestRoute {
   handle(ctx: unknown, input: unknown): Promise<unknown>
 }
 
-function updateRoute(): TestRoute {
+function updateRoute(channel: string = INVOKE_CHANNELS.TASK_UPDATE_DETAILS): TestRoute {
   const exports: { taskRoutes?: TestRoute[] } = {}
   const source = readFileSync(new URL('./routes/task.ts', import.meta.url), 'utf8')
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
@@ -26,17 +27,28 @@ function updateRoute(): TestRoute {
     },
     '../../../src/shared/attachment-contracts': { attachmentRefSchema: z.any() },
     '../../../src/shared/knowledge-selection': knowledgeSelection,
+    '../../../src/shared/arrangement-input': arrangementInput,
   }
   runInNewContext(compiled, { exports, require: (name: string) => {
     assert.ok(name in imports, `unexpected route dependency: ${name}`)
     return imports[name]
   } })
-  const route = exports.taskRoutes?.find(entry => entry.channel === INVOKE_CHANNELS.TASK_UPDATE_DETAILS)
+  const route = exports.taskRoutes?.find(entry => entry.channel === channel)
   assert.ok(route)
   return route
 }
 
 describe('task detail update IPC', () => {
+  it('binds clarification replies to a node and forwards the request identity', async () => {
+    const route = updateRoute(INVOKE_CHANNELS.TASK_RETRY)
+    const inputReply = { requestId: 'request-a', text: '  8 秒竖屏  ' }
+    assert.equal(route.schema.safeParse({ taskId: 'task-a', inputReply }).success, false)
+    assert.equal(route.schema.safeParse({ taskId: 'task-a', nodeId: 'node-a', inputReply: { ...inputReply, text: '' } }).success, false)
+    const calls: unknown[][] = []
+    await route.handle({ tasks: { async retry(...args: unknown[]) { calls.push(args) } } },
+      route.schema.parse({ taskId: 'task-a', nodeId: 'node-a', inputReply }))
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['task-a', 'node-a', { requestId: 'request-a', text: '8 秒竖屏' }]])
+  })
   it('rejects missing patches, unknown keys, invalid titles and nonboolean pins', () => {
     const route = updateRoute()
     for (const input of [

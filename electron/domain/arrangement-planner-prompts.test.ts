@@ -44,6 +44,19 @@ describe('arrangement planner prompt separation', () => {
     assert.doesNotMatch(JSON.stringify(input), /skillIds|requiresUserConfirmation/)
   })
 
+  it('passes real tool availability and keeps unknown distinct from an unavailable tool', () => {
+    const mediaTools = { media_generate_image: { state: 'available', reason: 'authorized-runtime' },
+      video_generate: { state: 'unavailable', reason: 'runtime-unavailable' },
+      video_from_image: { state: 'unknown', reason: 'runtime-not-checked' } } as const
+    const input = buildArrangementPlannerInput(draft, [{ subscriptionId: 'sub', employeeId: 'employee', name: 'Creator',
+      allowedModels: ['model'], status: 'ACTIVE', mediaTools }], 'authorized')
+    assert.deepEqual(input.employeeCatalog[0]!.mediaTools, mediaTools)
+    const candidate = buildArrangementPlannerInput(draft, [{ subscriptionId: '', employeeId: 'candidate', name: 'Candidate',
+      allowedModels: [], status: 'ACTIVE', canExecute: false }], 'enterprise')
+    assert.equal(candidate.employeeCatalog[0]!.mediaTools?.video_generate.state, 'unknown')
+    assert.doesNotMatch(JSON.stringify(input), /accessToken|gatewayUrl|systemPrompt|skillPaths/)
+  })
+
   it('passes the user-selected knowledge scope and trusted catalog to the planner', () => {
     const source = structuredClone(draft) as typeof draft & { knowledge?: { mode: 'auto'; knowledgeBaseIds: string[] }; plannerKnowledgeCatalog?: Array<{ id: string; name: string }> }
     source.knowledge = { mode: 'auto', knowledgeBaseIds: ['kb-a'] }

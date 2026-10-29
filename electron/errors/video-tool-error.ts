@@ -1,6 +1,6 @@
 import { AppError } from './app-error'
 import { AuthApiError } from '../common/platform/platform-api'
-import { mediaToolFailure, type MediaToolFailure } from './media-tool-error'
+import { mediaSpecToolFailureFrom, mediaToolFailure, type MediaToolFailure } from './media-tool-error'
 import { videoErrorMessage } from '../../src/shared/video-errors'
 
 /** Fixed diagnostics: never forward arbitrary exception messages, causes or provider responses. */
@@ -32,7 +32,7 @@ function safeRequestId(value: unknown): string | undefined {
 const VIDEO_MESSAGES: Partial<Record<AppError['code'], string>> = {
   AUTH_REQUIRED: 'Video authentication expired. Sign in again before continuing.',
   PERMISSION_DENIED: 'Video authorization or approval was denied. Do not infer that no video model is configured.',
-  INVALID_ARGUMENT: 'Video input or explicit specifications are unsupported. Call video_get_job with {} to inspect video profiles and referenceAssets. Omit profileId and unspecified parameters to use host defaults. This is not a permission denial.',
+  INVALID_ARGUMENT: 'Video input or specifications are invalid. Call video_get_job with {} to inspect authorized profiles and referenceAssets. Preserve user requirements, propose missing specifications from the task context or ask the user. Do not substitute defaults. This is not a permission denial.',
   NOT_FOUND: 'The requested video resource was not found.',
   CONFLICT: 'A video operation is pending. Query the original job; do not automatically submit another paid request.',
   INVALID_STATE: 'The video state could not be confirmed. Query the original job; do not automatically submit another paid request.',
@@ -63,6 +63,7 @@ function authFailure(error: AuthApiError): { failure: MediaToolFailure; diagnost
 export function videoToolFailureFrom(error: unknown): MediaToolFailure {
   if (error instanceof AuthApiError) return authFailure(error).failure
   if (!(error instanceof AppError)) return mediaToolFailure('INTERNAL_ERROR', 'Video operation failed. Do not infer a missing profile or automatically resubmit a paid request.')
+  if (['MISSING_SPEC', 'SPEC_CONFLICT', 'UPGRADE_REQUIRED', 'ADAPTER_UNAVAILABLE', 'ADAPTER_FIELD_UNMAPPED', 'PRICE_UNAVAILABLE', 'UPSTREAM_SPEC_UNSUPPORTED', 'OUTPUT_SPEC_MISMATCH'].includes(error.code)) return mediaSpecToolFailureFrom(error)
   const businessMessage = videoErrorMessage(error.code)
   if (businessMessage) return mediaToolFailure(error.code, businessMessage)
   if (error.code === 'PERMISSION_DENIED' && error.details?.stage === 'video-quote') {

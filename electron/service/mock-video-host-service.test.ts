@@ -402,7 +402,7 @@ test('rejects unavailable capabilities, policies, path inputs and invalid refere
   const f = await setup()
   await assert.rejects(f.host.generate('task-a', { ...input(), localAssetIds: ['/tmp/private.png'] }))
   await assert.rejects(f.host.generate('../task', input()))
-  await assert.rejects(f.host.generate('task-a', { ...input(), parameters: { ...input().parameters, audio: true } }), { code: 'PERMISSION_DENIED' })
+  await assert.rejects(f.host.generate('task-a', { ...input(), parameters: { ...input().parameters, audio: true } }), { code: 'INVALID_ARGUMENT' })
   const readOnly = new MockVideoHostService({ ...f.options, policy: async () => ({ preset: 'read-only', allowedTools: [], workspaceDir: '/unused', allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled', approvalMode: 'confirm-each' }) })
   await assert.rejects(readOnly.generate('task-a', input()), { code: 'PERMISSION_DENIED' })
   const corrupt = new MockVideoHostService({ ...f.options, readReference: async () => ({ bytes, sha256: 'a'.repeat(64) }) })
@@ -849,12 +849,12 @@ for (const version of [1, 2] as const) {
         const mock = mode === 'mock'
         const host = new MockVideoHostService({ ...f.options, mock, gateway: owner => ({ ...f.options.gateway(owner),
           quote: async value => {
-            quoted.push(value.parameters.audio)
+            quoted.push(value.parameters.audio!)
             return { quoteId: 'audio-quote', requestHash: 'a'.repeat(64), status: 'quoted' as const,
               expiresAt: Date.now() + 60_000, amount: mock ? '0.000000' : '0.900000', currency: mock ? 'MOCK' : 'CNY' }
           },
           submit: async (value): Promise<VideoReceipt> => {
-            submitted.push(value.parameters.audio)
+            submitted.push(value.parameters.audio!)
             const receipt = { ...fixture.receipt, clientRequestId: value.clientRequestId, profileId: value.profileId, configVersion: value.configVersion,
               operation: value.operation }
             return mock
@@ -872,7 +872,7 @@ for (const version of [1, 2] as const) {
             assert.equal(stored?.request.parameters.audio, audio)
           } else {
             const count = quoted.length
-            await assert.rejects(host.generate('task-a', value), { code: 'PERMISSION_DENIED' })
+            await assert.rejects(host.generate('task-a', value), { code: 'INVALID_ARGUMENT' })
             assert.equal(quoted.length, count, 'Invalid audio must fail before quote or submit')
           }
           assert.equal(value.parameters.audio, audio)
@@ -884,3 +884,74 @@ for (const version of [1, 2] as const) {
     }
   }
 }
+
+test('V3 tool preserves partial model specifications outside advisory capability lists', async () => {
+  const f = await realSetup()
+  f.state.runtime = videoRuntimeSchema.parse({ ...f.state.runtime, protocolVersion: 3,
+    profiles: f.state.runtime.profiles.map(profile => ({ ...profile, operations: ['text-to-video'], capabilities: {
+      ...fixture.runtime.profiles[0].capabilities, supportsTextToVideo: true,
+      durationsSeconds: [], aspectRatios: [], resolutions: [], frameRates: [], outputFormats: [], audioModes: [],
+    } })), tools: ['video_generate', 'video_get_job'] })
+  const requestedSpec = { durationSeconds: 720, aspectRatio: '9:16', resolution: '8k', audio: false }
+  const metadata = { protocolVersion: 3, specRevision: 2, parameterSources: { durationSeconds: 'model', aspectRatio: 'user', resolution: 'model', audio: 'user' } }
+  let quotes = 0, submits = 0
+  const base = f.options.gateway(scope)
+  const host = new MockVideoHostService({ ...f.options, gateway: () => ({ ...base,
+    quote: async request => { quotes++; assert.equal('requirementId' in request, false); assert.deepEqual(request.parameters, requestedSpec); assert.deepEqual(request.requestedSpec, requestedSpec)
+      return { protocolVersion: 3, specRevision: 2, effectiveSpec: requestedSpec, quoteId: 'v3-quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.900000', currency: 'CNY' } },
+    submit: async request => { submits++; assert.deepEqual(request.requestedSpec, requestedSpec)
+      return { ...realReceipt(videoReceiptSchema.parse(fixture.receipt)), protocolVersion: 3, specRevision: 2, effectiveSpec: requestedSpec,
+        clientRequestId: request.clientRequestId, profileId: request.profileId, configVersion: request.configVersion, operation: request.operation } },
+  }) })
+  const raw = { creativeBrief: 'portrait cinematic story', requirementId: 'video-requirement', localAssetIds: [], requestedSpec, ...metadata }
+  const job = await host.generateTool('task-a', 'video_generate', raw)
+  assert.deepEqual(job.requestedSpec, requestedSpec)
+  assert.equal(job.parameters.audio, false)
+  assert.equal('frameRate' in job.parameters, false)
+  assert.equal(quotes, 1); assert.equal(submits, 1)
+  await assert.rejects(host.generateTool('task-a', 'video_generate', { creativeBrief: 'missing spec', localAssetIds: [] }), (error: unknown) => error instanceof AppError && error.code === 'MISSING_SPEC')
+  await assert.rejects(host.generateTool('task-a', 'video_generate', { ...raw, parameterSources: { frameRate: 'model' } }), (error: unknown) => error instanceof AppError && error.code === 'SPEC_CONFLICT')
+  assert.equal(quotes, 1)
+  await host.stopAll()
+})
+
+test('legacy video tools require complete explicit specifications and reject V3 negotiation', async () => {
+  const f = await setup()
+  const raw = { creativeBrief: 'make a video', localAssetIds: ['asset-a'] }
+  await assert.rejects(f.host.generateTool('task-a', 'video_from_image', raw), (error: unknown) => error instanceof AppError && error.code === 'MISSING_SPEC')
+  await assert.rejects(f.host.generateTool('task-a', 'video_from_image', { ...raw, protocolVersion: 3, specRevision: 1, parameterSources: {}, requestedSpec: {} }), (error: unknown) => error instanceof AppError && error.code === 'UPGRADE_REQUIRED')
+  assert.equal(f.gateway.calls.quote, 0)
+  await f.host.stopAll()
+})
+
+test('V3 submit failures expose persisted diagnostics while host recovery blocks another paid generation', async () => {
+  const f = await realSetup()
+  f.state.runtime = videoRuntimeSchema.parse({ ...fixture.runtime, protocolVersion: 3, executionMode: 'real',
+    profiles: fixture.runtime.profiles.map(profile => ({ ...profile, operations: ['text-to-video'], capabilities: { ...profile.capabilities, supportsTextToVideo: true } })),
+    tools: ['video_generate', 'video_get_job'] })
+  const spec = { resolution: '8k' }
+  let quotes = 0, submissions = 0
+  const remote = new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: scope.subscriptionId, token: async () => 'test-token', fetch: async () => {
+    submissions++
+    return new Response(JSON.stringify({ error: { code: 'UPSTREAM_SPEC_UNSUPPORTED', field: 'resolution', requestedValue: '8k', source: 'provider',
+      alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved', message: 'private-secret' } }), { status: 422, headers: { 'Content-Type': 'application/json' } })
+  } })
+  const options: MockVideoHostOptions = { ...f.options, gateway: () => ({ ...f.options.gateway(scope),
+    quote: async () => { quotes++; return { protocolVersion: 3, specRevision: 2, effectiveSpec: spec, quoteId: 'v3-quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.900000', currency: 'CNY' } },
+    submit: remote.submit.bind(remote), findReceipt: async () => null,
+  }) }
+  const raw = { creativeBrief: 'cinematic product story', protocolVersion: 3, specRevision: 2, requestedSpec: spec, parameterSources: { resolution: 'user' } }
+  const host = new MockVideoHostService(options)
+  const first = await host.generateTool('task-a', 'video_generate', raw)
+  assert.equal(first.generationStatus, 'SUBMISSION_UNKNOWN'); assert.equal(first.billingStatus, 'RECONCILING')
+  assert.equal(first.specFailure?.requestedValue, '8k'); assert.deepEqual(first.specFailure?.alternatives, [{ resolution: '1080p' }])
+  await assert.rejects(host.generateTool('task-a', 'video_generate', raw), { code: 'CONFLICT' })
+  await host.stopAll()
+  const reopened = new MockVideoHostService(options)
+  const saved = (await reopened.getTaskVideo('task-a')).jobs.find(job => job.jobId === first.jobId)!
+  assert.deepEqual(saved.specFailure, first.specFailure)
+  await assert.rejects(reopened.generateTool('task-a', 'video_generate', { ...raw, specRevision: 3, requestedSpec: { resolution: '1080p' } }), { code: 'CONFLICT' })
+  assert.equal(quotes, 1); assert.equal(submissions, 1)
+  assert.doesNotMatch(JSON.stringify(saved), /private-secret/)
+  await reopened.stopAll()
+})

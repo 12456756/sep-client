@@ -37,7 +37,10 @@ test('general chat preserves selected model, permissions and history across turn
     createWorker: options => ({
       async run(prompt) {
         contexts.push(options.context)
-        assert.ok(['first', 'second', 'third'].includes(prompt))
+        assert.ok(['first', 'second', 'third'].some(text => prompt.startsWith(`${text}\n\n`)))
+        assert.match(prompt, /当前通用助手没有账号主体的图片\/视频生成授权/)
+        assert.match(prompt, /不能借用员工身份/)
+        assert.match(prompt, /不能静默以脚本合成替代/)
         await mkdir(options.context.sessionDir, { recursive: true })
         const file = join(options.context.sessionDir, 'session.jsonl')
         await writeFile(file, '{}\n', 'utf8')

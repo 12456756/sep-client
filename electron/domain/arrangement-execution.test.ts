@@ -7,6 +7,7 @@ import {
   markArrangementNodeCompleted,
   markArrangementNodeFailed,
   markArrangementNodeRunning,
+  markArrangementNodeWaitingForInput,
   resumeArrangement,
   retryArrangementNode,
   stopArrangement,
@@ -19,6 +20,30 @@ const node = (id: string, dependsOn: string[] = []): ArrangementNode => ({
 })
 
 describe('ArrangementExecutionState', () => {
+  it('waits for a matching reply without failing or completing the node, then resumes only the affected branch', () => {
+    const plan = [node('done'), node('video', ['done']), node('dependent', ['video'])]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'done')
+    state = markArrangementNodeCompleted(state, plan, 'done', 'Saved original image')
+    state = markArrangementNodeRunning(state, 'video')
+    const inputRequest = { requestId: 'request', kind: 'media-spec' as const, question: '需要多长的视频？', requirements: [{ id: 'video', specRevision: 2 }] }
+    state = markArrangementNodeWaitingForInput(state, plan, 'video', inputRequest)
+    assert.equal(state.status, 'waiting-user')
+    assert.equal(state.nodes[1]!.status, 'interrupted')
+    assert.equal(state.nodes[1]!.error, null)
+    assert.deepEqual(state.failureNodeIds, [])
+    assert.equal(retryArrangementNode(state, plan, 'video'), state)
+    assert.equal(retryArrangementNode(state, plan, 'video', { requestId: 'old', text: '8 秒' }), state)
+    const resumed = retryArrangementNode(state, plan, 'video', { requestId: 'request', text: '8 秒，竖屏' })
+    assert.equal(resumed.status, 'running')
+    assert.equal(resumed.nodes[1]!.status, 'ready')
+    assert.equal(resumed.nodes[1]!.inputRequest, undefined)
+    assert.equal(resumed.nodes[1]!.inputReply?.text, '8 秒，竖屏')
+    assert.equal(resumed.nodes[1]!.mediaSpecRevisions?.video, 3)
+    assert.deepEqual(resumed.nodes[0], state.nodes[0])
+    assert.equal(resumed.nodes[2]!.status, 'pending')
+    assert.deepEqual(resumed.nodes[1]!.delivery, state.nodes[1]!.delivery)
+  })
   it('starts roots ready and releases dependents only after all dependencies complete', () => {
     const plan = [node('a'), node('b'), node('c', ['a', 'b'])]
     let state = createArrangementExecutionState(plan)
@@ -248,6 +273,40 @@ describe('ArrangementExecutionState', () => {
     state = markArrangementNodeCompleted(state, plan, 'a', 'done')
     state = interruptArrangement(state, 'client-crash')
     assert.equal(resumeArrangement(state).status, 'waiting-user')
+  })
+
+  it('keeps a parallel media question waiting after confirming completed work', () => {
+    const plan = [{ ...node('review'), requiresUserConfirmation: true }, node('media')]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'review')
+    state = markArrangementNodeRunning(state, 'media')
+    state = markArrangementNodeWaitingForInput(state, plan, 'media', { requestId: 'question', kind: 'media-spec', question: '视频多长？', requirements: [] })
+    state = markArrangementNodeCompleted(state, plan, 'review', 'done')
+    const question = structuredClone(state.nodes[1])
+    state = confirmArrangementNode(state, plan, 'review')
+    assert.equal(state.status, 'waiting-user')
+    assert.equal(state.nodes[0]?.pendingConfirmation, false)
+    assert.deepEqual(state.nodes[1], question)
+  })
+
+  it('resumes only interrupted peers while retaining unanswered questions and stopped evidence', () => {
+    const plan = [node('media'), node('peer')]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'media')
+    state = markArrangementNodeRunning(state, 'peer')
+    state = markArrangementNodeWaitingForInput(state, plan, 'media', { requestId: 'question', kind: 'media-spec', question: '视频多长？', requirements: [] })
+    const question = structuredClone(state.nodes[0])
+    const resumed = resumeArrangement(interruptArrangement(state, 'client-crash'))
+    assert.equal(resumed.status, 'running')
+    assert.equal(resumed.nodes[1]?.status, 'ready')
+    assert.deepEqual(resumed.nodes[0], question)
+    state = markArrangementNodeCompleted(state, plan, 'peer', 'done')
+    const waiting = resumeArrangement(interruptArrangement(state, 'client-exit'))
+    assert.equal(waiting.status, 'waiting-user')
+    assert.deepEqual(waiting.nodes[0], question)
+    const stopped = stopArrangement(waiting)
+    assert.deepEqual(stopped.nodes[0]?.inputRequest, question?.inputRequest)
+    assert.equal(resumeArrangement(stopped), stopped)
   })
 
   it('resumes an interrupted independent peer without approving a completed node', () => {

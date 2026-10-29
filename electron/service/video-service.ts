@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { z } from 'zod'
-import { videoBillingPending, videoReceiptSchema, videoRequestSchema, type VideoGatewayPort, type VideoReceipt } from '../../src/shared/video-media'
+import { videoBillingPending, videoReceiptSchema, videoSpecFailureSchema, videoRequestSchema, type VideoGatewayPort, type VideoReceipt } from '../../src/shared/video-media'
 import { receiptMatchesRequest, videoSubmissionRejected, videoLocalIdSchema, videoScopeSchema, videoStoredQuoteSchema,
   type LocalVideoJob, type VideoAssetState, type VideoScope, type VideoStorePort } from '../domain/video-media'
 import { abortableVideo } from '../data/video-files'
@@ -9,6 +9,8 @@ import { AppError } from '../errors/app-error'
 import { VideoRequestError } from '../errors/video-request-error'
 import { transportKind } from '../errors/operation-feedback'
 import { videoErrorMessage } from '../../src/shared/video-errors'
+import { mediaToolFailureFrom } from '../errors/media-tool-error'
+import { isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 
 type VideoInput = z.infer<typeof videoRequestSchema>
 export interface VideoServiceOptions {
@@ -59,7 +61,7 @@ export class VideoService {
     if ((job.executionMode ?? 'mock') !== this.mode) throw new AppError('PERMISSION_DENIED')
     return job
   }
-  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs'>>): Promise<LocalVideoJob> {
+  private update(job: LocalVideoJob, fields: Partial<Pick<LocalVideoJob, 'specFailure' | 'submission' | 'receipt' | 'trackingStatus' | 'saveStatus' | 'error' | 'lastQueriedAt' | 'providerWaitMs' | 'downloadMs'>>): Promise<LocalVideoJob> {
     return this.store.updateJob(this.scope, job.taskId, job.jobId, previous => ({ ...previous, ...fields, updatedAt: Math.max(this.now(), previous.updatedAt) }))
   }
 
@@ -73,6 +75,9 @@ export class VideoService {
     const quote = videoStoredQuoteSchema.parse(await abortableVideo(this.gateway.quote(structuredClone(input), signal), signal))
     signal.throwIfAborted()
     if (quote.status !== 'quoted' || quote.expiresAt <= this.now()) throw new Error('Video quote is unavailable or expired.')
+    if (input.protocolVersion === 3 && (quote.protocolVersion !== 3 || quote.specRevision !== input.specRevision || !quote.effectiveSpec || !mediaSpecsEqual(input.requestedSpec!, quote.effectiveSpec))) {
+      throw new AppError('SPEC_CONFLICT', { details: { field: 'effectiveSpec', source: 'platform', stage: 'video-quote' } })
+    }
     const now = this.now()
     const job: LocalVideoJob = {
       version: 1, executionMode: this.mode, scope: { ...this.scope }, taskId, jobId: `video_${randomUUID()}`,
@@ -110,7 +115,9 @@ export class VideoService {
           return this.update(job, { trackingStatus: 'STOPPED', error: error.businessCode })
         }
         // Persist uncertainty, never label a lost response as failure/success or re-submit.
-        return this.update(job, interrupted(error, 'SUBMISSION_UNKNOWN'))
+        const specDiagnostic = error instanceof AppError && isMediaSpecError(error.code) ? videoSpecFailureSchema.safeParse(mediaToolFailureFrom(error).error) : undefined
+        const specFailure = specDiagnostic?.success ? specDiagnostic.data : undefined
+        return this.update(job, { ...interrupted(error, 'SUBMISSION_UNKNOWN'), ...(specFailure ? { specFailure } : {}) })
       }
       // Keep persistence errors separate from network uncertainty: a confirmed
       // receipt write failure must propagate; disk still says MAYBE_SENT.
@@ -123,7 +130,7 @@ export class VideoService {
     const receipt = videoReceiptSchema.parse(value)
     if (!receiptMatchesRequest(job, receipt) || (job.receipt && job.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
     const terminal = ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(receipt.status)
-    return this.update(job, { receipt, submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode,
+    return this.update(job, { receipt, specFailure: undefined, submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode,
       ...(terminal && job.providerWaitMs === undefined ? { providerWaitMs: Math.max(0, this.now() - job.createdAt) } : {}) })
   }
 

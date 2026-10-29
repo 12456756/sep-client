@@ -25,6 +25,7 @@ import { resolveWorkType } from './work-type'
 import type { AttachmentRef, InputSnapshotRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentService } from './attachment-service'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
+import { arrangementInputReplySchema, type ArrangementInputReply } from '../../src/shared/arrangement-input'
 
 /**
  * 服务层用到的执行能力。实现由 `runtime/task-runtime.ts` 提供；
@@ -34,7 +35,7 @@ import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
  */
 export interface TaskExecutionPort {
   executeTask(taskId: string, options?: { conversation?: boolean; knowledge?: KnowledgeSelection }): Promise<void>
-  retryTask(taskId: string, options?: { conversation?: boolean; nodeId?: string }): Promise<void>
+  retryTask(taskId: string, options?: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply }): Promise<void>
   confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void>
   continueConversation(
     taskId: string,
@@ -130,13 +131,14 @@ export class TaskService {
   }
 
   /** 重试。与 execute 一样要先确认任务归属与员工可用性。 */
-  async retry(taskId: string, nodeId?: string): Promise<void> {
+  async retry(taskId: string, nodeId?: string, inputReply?: ArrangementInputReply): Promise<void> {
     const task = await this.requireTask(taskId)
     const conversation = await this.isConversation(taskId)
+    if (inputReply && (!nodeId || conversation || !arrangementInputReplySchema.safeParse(inputReply).success)) throw new AppError('INVALID_ARGUMENT')
     const plan = conversation ? await this.deps.workPlans?.get(this.scope(), taskId) : null
     if (conversation && plan?.conversation?.kind !== 'general') await this.requireAuthorizedEmployee(task.subscriptionId)
     try {
-      await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}) })
+      await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}), ...(inputReply ? { inputReply } : {}) })
     } catch (error) {
       try { await this.deps.taskManager.recordStartFailure?.(taskId, describeError(error)) } catch { /* preserve the original retry error */ }
       throw error

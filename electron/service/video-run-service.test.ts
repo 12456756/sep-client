@@ -83,7 +83,7 @@ test('real SDK handoff and finishRun preserve pending video output saving withou
         choices: [{ index: 0, delta, finish_reason: finishReason }],
       })}\n\n`)
       chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'generate-video', type: 'function',
-        function: { name: 'video_from_image', arguments: JSON.stringify({ creativeBrief: 'Product movement', localAssetIds: ['asset-a'] }) } }] })
+        function: { name: 'video_from_image', arguments: JSON.stringify({ creativeBrief: 'Product movement', localAssetIds: ['asset-a'], parameters: input().parameters }) } }] })
       chunk({}, 'tool_calls')
       response.end('data: [DONE]\n\n')
     })
@@ -162,18 +162,19 @@ test('arrangement media mode auto-approves upload and quote without approval req
   await f.service.finishRun('task-a', 'run-a')
 })
 
-test('run resolves the authorized profile and defaults without model-supplied configuration', async () => {
+test('run resolves the authorized profile while requiring explicit model-supplied specifications', async () => {
   const f = await setup(), tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
   try {
-    const job = await tools.execute('video_from_image', { creativeBrief: input().creativeBrief, localAssetIds: ['asset-a'] }) as { jobId: string }
+    await assert.rejects(tools.execute('video_from_image', { creativeBrief: input().creativeBrief, localAssetIds: ['asset-a'] }), { code: 'MISSING_SPEC' })
+    const job = await tools.execute('video_from_image', { creativeBrief: input().creativeBrief, localAssetIds: ['asset-a'], parameters: input().parameters }) as { jobId: string }
     const stored = await f.store.getJob(scope, 'task-a', job.jobId)
     assert.equal(stored?.request.profileId, f.state.runtime.defaultProfileId)
     assert.deepEqual(stored?.request.parameters, input().parameters)
     assert.equal(f.approvals.length, 2)
     await f.service.waitForRun('task-a', 'run-a')
     assert.equal(f.gateway.calls.submit, 1)
-    assert.equal(f.state.authorizations, 2, 'Only quote preparation and the post-approval check refresh runtime')
+    assert.equal(f.state.authorizations, 3, 'Missing-spec preflight and successful quote preparation each refresh runtime, then approval refreshes it again')
   } finally { await f.service.finishRun('task-a', 'run-a') }
 })
 
@@ -181,7 +182,7 @@ test('unsupported explicit specifications fail before quoting, approval or uploa
   const f = await setup(), tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
   try {
-    await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 12 } }), { code: 'INVALID_ARGUMENT' })
+    await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 12 } }), { code: 'MISSING_SPEC' })
     await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 'invalid' } }), { code: 'INVALID_ARGUMENT' })
     assert.equal(f.gateway.calls.quote, 0)
     assert.equal(f.state.uploads, 0)
@@ -250,7 +251,7 @@ test('text-to-video uses lightweight runtime authorization twice and never prepa
   try {
     const tools = await service.prepareRun(f.runInput)
     assert.ok(tools)
-    const result = await tools.execute('video_generate', { creativeBrief: 'A product video' }) as { jobId: string }
+    const result = await tools.execute('video_generate', { creativeBrief: 'A product video', parameters: input().parameters }) as { jobId: string }
     await service.waitForRun('task-a', 'run-a')
     assert.equal(f.state.authorizations, 2)
     assert.equal(quotes, 1)

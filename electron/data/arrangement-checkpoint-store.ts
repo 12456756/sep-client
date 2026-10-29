@@ -3,6 +3,7 @@ import { ScopePath, isSafeId, type TaskOwnerScope } from './scope-path'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
 import { nodeDeliveryProgressSchema } from '../domain/arrangement-delivery'
 import { modelRequestProgressSchema } from '../domain/model-request-progress'
+import { arrangementInputRequestSchema, arrangementInputReplySchema, arrangementMediaSpecRevisionsSchema } from '../../src/shared/arrangement-input'
 
 /** 已确认编排的可恢复进度快照；文件读写细节留在本存储适配器内。 */
 export interface ArrangementCheckpoint {
@@ -40,6 +41,9 @@ function parseCheckpoint(value: unknown, scope: TaskOwnerScope, taskId: string):
       (node.error !== null && typeof node.error !== 'string') ||
       (node.output !== null && typeof node.output !== 'string') ||
       (node.pendingConfirmation !== undefined && typeof node.pendingConfirmation !== 'boolean') ||
+      (node.inputRequest !== undefined && !arrangementInputRequestSchema.safeParse(node.inputRequest).success) ||
+      (node.inputReply !== undefined && !arrangementInputReplySchema.safeParse(node.inputReply).success) ||
+      (node.mediaSpecRevisions !== undefined && !arrangementMediaSpecRevisionsSchema.safeParse(node.mediaSpecRevisions).success) ||
       (node.sessionRunId !== undefined && (typeof node.sessionRunId !== 'string' || !isSafeId(node.sessionRunId))) ||
       (node.delivery !== undefined && !nodeDeliveryProgressSchema.safeParse(node.delivery).success) ||
       (node.modelRequestProgress !== undefined && !modelRequestProgressSchema.safeParse(node.modelRequestProgress).success))) return null

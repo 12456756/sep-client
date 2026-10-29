@@ -71,14 +71,13 @@ test('image choices are revalidated when a model or capability loses previous sp
   assert.deepEqual(imageFormAspectRatios({ ...pixelProfile, allowedSizes: ['1536x1024'] }), ['3:2'])
 })
 
-test('image SSR selects the server default model and its quality, and marks single-value specs fixed', () => {
+test('image SSR selects the authorized default model without applying its specification defaults', () => {
   const preferred = { ...pixelProfile, profileId: 'preferred', allowedQualities: ['high'], maxCount: 1 }
   const html = render(React.createElement(MediaCreationForm, { profiles: [profile, preferred], defaultProfileId: preferred.profileId,
     references: [], archived: false, busy: false, taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))
   assert.match(html, /value="preferred" selected=""/)
-  assert.match(html, /aria-label="图片质量"[^>]*disabled=""[^>]*><option selected="">high/)
-  assert.match(html, /数量（固定）<input[^>]*readOnly=""/i)
-  assert.match(html, /<option selected="">1536x1024/)
+  assert.match(html, /aria-label="图片quality"[^>]*value=""/)
+  assert.doesNotMatch(html, /（固定）|value="1536x1024"|value="high"/)
   assert.doesNotMatch(html, /<option value="">默认/)
 })
 function render(element: React.ReactElement): string {
@@ -177,13 +176,13 @@ test('authoritative gateway recovery flags hide unavailable tracking and expired
 test('SSR creation controls provide system reference selection, specs and no fee-confirmation modal', () => {
   const html = render(React.createElement(MediaCreationForm, { profiles: [profile], references: [], archived: false, busy: false,
     taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))
-  for (const text of ['图片模型', '编辑参考图', '从系统选择参考图', '图片比例', '图片数量', '图片尺寸', '图片质量', '创作需求']) assert.match(html, new RegExp(text))
-  assert.match(html, /max="4"/)
+  for (const text of ['图片模型', '编辑参考图', '从系统选择参考图', '图片aspectRatio', '图片数量', '图片size', '图片quality', '创作需求']) assert.match(html, new RegExp(text))
+  assert.doesNotMatch(html, /max="4"/)
   assert.match(html, /type="submit"/)
   assert.doesNotMatch(html, /role="dialog"|确认费用|视频|type="file"/)
   const minimal = render(React.createElement(MediaCreationForm, { profiles: [{ ...profile, allowedSizes: undefined, allowedQualities: undefined }], references: [], archived: true, busy: false,
     taskId: 'task-1', onImport: noop, onGenerate: noop, onPreview: noop }))
-  assert.doesNotMatch(minimal, /图片尺寸|图片质量/)
+  assert.match(minimal, /图片size|图片quality/)
   assert.doesNotMatch(minimal, /任务已归档/)
   assert.match(minimal, /select[^>]*disabled/)
 })
@@ -246,4 +245,49 @@ test('SSR panel is safe without browser IPC and escapes backend error text', () 
   const escaped = jobs(job({ error: '<script>bad()</script>' }))
   assert.doesNotMatch(escaped, /&lt;script&gt;/)
   assert.doesNotMatch(escaped, /<script>/)
+})
+
+test('V3 image creation renders empty freely editable specs and an explicit preference reuse action', () => {
+  const html = render(React.createElement(MediaCreationForm, { protocolVersion: 3, profiles: [pixelProfile],
+    references: [], archived: false, busy: false, taskId: 'task-v3', onImport: noop, onGenerate: noop, onPreview: noop }))
+  assert.match(html, /复用上次规格/)
+  assert.match(html, /未填写的规格保持未指定/)
+  assert.match(html, /aria-label="图片数量"[^>]*value=""/)
+  assert.match(html, /aria-label="图片quality"[^>]*value=""/)
+  assert.match(html, /aria-label="图片size"[^>]*value=""/)
+  assert.match(html, /aria-label="图片outputFormat"/)
+  assert.doesNotMatch(html, /max="4"|（固定）|value="1536x1024"|value="high"/)
+  assert.equal(mediaInputProblem({ ...pixelProfile, allowedAspectRatios: [] }, 'generate', 0, 'poster', true), null)
+})
+
+test('V3 image results distinguish requested, quoted and actual measured specifications', () => {
+  const html = jobs(job({ parameters: {}, requestedSpec: { width: 1600, height: 2400 },
+    effectiveSpec: { width: 1600, height: 2400 }, actualSpec: { width: 1598, height: 2400, outputFormat: 'image/webp' } }))
+  assert.match(html, /数量未指定/)
+  assert.match(html, /比例未指定/)
+  assert.match(html, /请求规格/)
+  assert.match(html, /报价规格/)
+  assert.match(html, /实际规格/)
+  assert.match(html, /上游报告，尚未实测核验/)
+  assert.match(html, /1598/)
+  assert.match(html, /image\/webp/)
+})
+
+test('V3 image form keeps saved historical preferences empty until the explicit reuse action', async () => {
+  const { MediaPreferenceScopeContext } = await import(new URL('../components/workspace/media-preference-scope.tsx', import.meta.url).href)
+  const previous = Reflect.get(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage: {
+    getItem: () => JSON.stringify({ aspectRatio: '3:2', size: '1536x1024', quality: 'high', count: 4 }), setItem: noop,
+  } } })
+  try {
+    const html = render(React.createElement(MediaPreferenceScopeContext.Provider, { value: { enterpriseId: 'e', memberId: 'm' } },
+      React.createElement(MediaCreationForm, { protocolVersion: 3, profiles: [pixelProfile], references: [], archived: false, busy: false,
+        taskId: 'historical-v3', onImport: noop, onGenerate: noop, onPreview: noop })))
+    assert.match(html, /复用上次规格/)
+    assert.match(html, /aria-label="图片数量"[^>]*value=""/)
+    assert.doesNotMatch(html, /value="1536x1024"|value="high"|value="4"/)
+  } finally {
+    if (previous === undefined) Reflect.deleteProperty(globalThis, 'window')
+    else Object.defineProperty(globalThis, 'window', { configurable: true, value: previous })
+  }
 })

@@ -5,6 +5,25 @@ import * as fixture from './fixtures/media-video-v1.json'
 import * as v2Fixture from './fixtures/media-video-v2.json'
 import { videoAllowedAudioModes, videoOutputSchema, videoProfileSchema, videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema, videoRuntimeSchema, videoQuoteResponseSchema } from './video-media'
 
+test('V3 video runtime contains advisory hints without specification defaults or membership rules', () => {
+  const profile = fixture.runtime.profiles[0]
+  const runtime = videoRuntimeSchema.parse({ ...fixture.runtime, protocolVersion: 3, executionMode: 'real',
+    profiles: [{ ...profile, capabilities: { ...profile.capabilities, durationsSeconds: [], aspectRatios: [], resolutions: [], frameRates: [], outputFormats: [] },
+      capabilityHints: { source: 'provider', observedAt: '2026-10-29T00:00:00Z', confidence: 'unknown' } }],
+  })
+  assert.equal(runtime.protocolVersion, 3)
+  assert.equal('defaults' in runtime.profiles[0].capabilities, false)
+})
+
+test('V3 video request retains omitted fields and rejects a second contradictory specification', () => {
+  const input = { ...fixture.quoteRequest, protocolVersion: 3, specRevision: 1, parameterSources: { durationSeconds: 'model', audio: 'user' },
+    parameters: { durationSeconds: 720, audio: false }, requestedSpec: { durationSeconds: 720, audio: false } }
+  const parsed = videoRequestSchema.parse(input)
+  assert.deepEqual(parsed.parameters, input.parameters)
+  assert.equal(videoRequestSchema.safeParse({ ...input, parameters: { durationSeconds: 4 } }).success, false)
+  assert.equal(videoRequestSchema.safeParse({ ...fixture.quoteRequest, parameters: {} }).success, false)
+})
+
 test('real video contracts are strict and cannot accept mock billing', () => {
   assert.equal(videoRuntimeSchema.parse({ ...fixture.runtime, executionMode: 'real' }).executionMode, 'real')
   for (const billingStatus of ['NOT_RESERVED', 'RESERVED', 'SETTLED', 'RELEASED', 'RECONCILING']) {
@@ -113,4 +132,12 @@ test('video receipts reject contradictory success and recovery states', () => {
   assert.equal(videoReceiptSchema.safeParse({ ...fixture.receipts.failed, recovery: { canQuery: false, canCancel: false, canDownload: true } }).success, false)
   assert.equal(videoReceiptSchema.safeParse({ ...fixture.receipts.succeeded, pollAfterMs: 1000 }).success, false)
   assert.equal(videoReceiptSchema.safeParse({ ...fixture.receipts.partial, outputs: [fixture.output, fixture.output] }).success, false)
+})
+
+test('V3 advisory audio modes never invent required audio and adapter metadata rejects arbitrary addresses', () => {
+  const profile = { capabilities: { supportsAudio: true } }
+  assert.deepEqual(videoAllowedAudioModes({ protocolVersion: 3, executionMode: 'real' }, profile), [])
+  const source = JSON.parse(JSON.stringify(fixture.runtime))
+  const runtime = { ...source, protocolVersion: 3, executionMode: 'real', profiles: source.profiles.map((item: Record<string, unknown>) => ({ ...item, adapterVersion: 'https://private.invalid?api_key=secret' })) }
+  assert.equal(videoRuntimeSchema.safeParse(runtime).success, false)
 })

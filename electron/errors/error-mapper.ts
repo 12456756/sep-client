@@ -26,9 +26,11 @@ import { AppError } from './app-error'
 import { ERROR_CODES, isErrorCode, type ErrorCode } from './error-codes'
 import { operationFeedback } from './operation-feedback'
 import type { FeedbackOperation } from '../../src/shared/arrangement-feedback'
+import { isMediaSpecError, type MediaSpecFailureContext } from '../../src/shared/media-spec-contract'
+import { mediaSpecToolFailureFrom } from './media-tool-error'
 
 /** 送到渲染进程的错误信封。message 是中文，绝不含技术细节。 */
-export interface IpcErrorEnvelope {
+export interface IpcErrorEnvelope extends MediaSpecFailureContext {
   code: ErrorCode
   message: string
   statusCode: number
@@ -105,7 +107,13 @@ function mapEnvelope(error: unknown, context: { authenticated?: boolean }): IpcE
       : status >= 500 ? 'SERVICE_UNAVAILABLE' : status === 400 || status === 413 || status === 415 ? 'INVALID_ARGUMENT' : 'INVALID_STATE'
     return { ...envelope(code, error.message), statusCode: status, platformCode: error.platformCode, requestId: error.requestId, retryAfterMs: error.retryAfterMs }
   }
-  if (error instanceof AppError) return envelope(error.code, error.userMessage)
+  if (error instanceof AppError) {
+    if (isMediaSpecError(error.code)) {
+      const { code: _code, message, ...context } = mediaSpecToolFailureFrom(error).error
+      return { ...envelope(error.code, message), ...context }
+    }
+    return envelope(error.code, error.userMessage)
+  }
   if (error instanceof AuthenticationRequiredError) return envelope('AUTH_REQUIRED')
   if (error instanceof AuthApiError) {
     if (error.resource === 'skills' && error.statusCode === 403 && /^Missing Origin or Referer header\.?$/i.test(error.message.trim())) {

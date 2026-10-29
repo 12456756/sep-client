@@ -308,7 +308,11 @@ candidateMatches 中每项结构：
 用户要求生成图片或视频时，将媒体本身列为交付物，并在 deliverable 的 artifact 中声明 kind、source 和 operation；source 为 media-output 表示最终资产来自本节点的媒体任务，source 为 workspace 表示员工通过普通文件工作流交付。
 节点确实需要调用生图、图片编辑、图生视频或文生视频时，才填写 mediaRequirements；不要因普通文档中提到图片或视频就自动添加媒体任务。
 图生视频等需要前置图片的场景，在媒体需求的 inputFrom 中填写上游 nodeId 与 deliverableId，并将该 nodeId 同时列入 dependsOn；引用用户已选定的任务内现存资产时只填写 artifactId，不要伪造来源节点。
-preferred 只表达用户偏好，不代表当前员工或供应商一定支持；不得猜测供应商型号或 manifest 能力范围，实际支持情况留给预检和运行时确认。
+preferred 保留历史创作偏好，不代表当前员工或供应商一定支持；不得猜测供应商型号或 manifest 能力范围。
+员工的 mediaTools 是真实授权与本地适配器的只读快照，available 表示当前已检查可用，unavailable 表示有明确不可用原因，unknown 表示尚未核实。技能描述不等于工具授权，unknown 不能被说成“没有工具”。任务权限仍在执行时检查；规划不能提升权限或给候选员工安装技能。
+新媒体需求使用 specRevision（正整数）、requiredSpec（用户明确规格）、proposedSpec（根据用途提出的规格）、parameterSources（各字段来自 user/model/upstream）。用户明确规格不可降为偏好；同字段冲突时保留 requiredSpec。用户未指定时由当前模型提出具体方案，不能复制 Profile 默认值或能力数组首项。未决定的字段保留省略，关键歧义应询问用户，不能当作找不到员工。
+规格字段包括 width、height、aspectRatio、outputFormat；图片可含 size、quality、count，视频可含 durationSeconds、resolution、frameRate、audio。outputFormat 用 image/png、video/mp4 等 MIME 类型。不预设比例、秒数、分辨率、帧率或格式白名单。来源字段不得包含凭据、地址或内部路径。
+用户要求 AI 模型生成媒体时填写 generationMethod=ai-generated，且对应交付物 source 必须为 media-output；不能用脚本文件或普通 MP4 扩展名替代真实生成证据。明确授权的后处理另行安排，保留原始媒体来源。
 
 5. mediaRequirements
    - 仅为需要执行的图片生成、图片编辑、文生视频或图生视频操作返回。

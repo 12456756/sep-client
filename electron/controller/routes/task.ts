@@ -5,6 +5,7 @@
  * scope 校验、员工授权、NOT_FOUND / INVALID_STATE 的判定全在 `service/`。
  */
 import { z } from 'zod'
+import { arrangementInputReplySchema } from '../../../src/shared/arrangement-input'
 import type { TaskRunRecord } from '../../data/task-run-store'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
@@ -39,8 +40,9 @@ const cancelInput = z.union([taskId, z.object({ taskId, reason: z.string().trim(
   .transform(value => typeof value === 'string' ? { taskId: value, reason: undefined } : value)
 const retryInput = z.union([
   taskId,
-  z.object({ taskId, nodeId: z.string().min(1).optional() }),
-]).transform(value => typeof value === 'string' ? { taskId: value, nodeId: undefined } : value)
+  z.object({ taskId, nodeId: z.string().min(1).optional(), inputReply: arrangementInputReplySchema.optional() }).strict()
+    .refine(value => !value.inputReply || !!value.nodeId),
+]).transform(value => typeof value === 'string' ? { taskId: value, nodeId: undefined, inputReply: undefined } : value)
 const updateTaskDetailsInput = z.object({
   taskId,
   title: z.string().trim().min(1).max(100).refine(value => !Array.from(value).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)).optional(),
@@ -78,7 +80,7 @@ export const taskRoutes = [
   }, { invalidMessage: TASK_ID_INVALID }),
 
   route(INVOKE_CHANNELS.TASK_RETRY, retryInput, async (ctx, input) => {
-    await ctx.tasks.retry(input.taskId, input.nodeId)
+    await ctx.tasks.retry(input.taskId, input.nodeId, input.inputReply)
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
 

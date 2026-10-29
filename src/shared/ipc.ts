@@ -230,6 +230,7 @@ export interface SwitchConversationEmployeeInput {
 export interface RetryTaskInput {
   taskId: string
   nodeId?: string
+  inputReply?: import('./arrangement-input').ArrangementInputReply
 }
 
 export interface TaskMessagesResult {

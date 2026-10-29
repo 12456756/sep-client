@@ -18,6 +18,9 @@ import type { MonitorParticipation } from '../common/platform/client-monitor-con
 import type { MediaHostTools, MediaRunPort } from '../domain/media-tools'
 import type { VideoHostTools, VideoRunPort } from '../domain/video-tools'
 import { DeliveryExecutionError } from '../domain/arrangement-delivery'
+import { AppError } from '../errors/app-error'
+import { ArrangementMediaService, type ArrangementMediaServiceOptions } from '../service/arrangement-media-service'
+import type { ArrangementMediaLink } from '../domain/arrangement-media'
 
 const scope: TaskOwnerScope = { memberId: 'member-arrangement', enterpriseId: 'enterprise-arrangement' }
 const employee: EmployeeRuntimeConfig = {
@@ -407,6 +410,163 @@ function arrangementRetryApi(runtime: TaskRuntime): { retryTask(taskId: string, 
 describe('TaskRuntime arrangement controls', () => {
   const directories: string[] = []
   after(async () => { await Promise.all(directories.map(directory => rm(directory, { recursive: true, force: true }))) })
+
+  it('keeps a missing requirement waiting when another requirement using the same tool succeeds', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-multi-media-input-'))
+    directories.push(root)
+    const runs = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runs)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('Media requirements', 'Generate media', root, employee.subscriptionId)
+    const arrangement = plan(task.id)
+    arrangement.workspace.path = root
+    arrangement.nodes[0]!.mediaRequirements = ['missing', 'complete'].map(id => ({ id, kind: 'video', operation: 'text-to-video', specRevision: 1 }))
+    const checkpoints = new MemoryCheckpointStore()
+    const runtime = new TaskRuntime({
+      taskManager: manager, taskRunStore: runs, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
+      getRefreshToken: () => 'token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+      resolveEmployee: () => employee, authorizeEmployee: async () => employee,
+      arrangementMedia: { async prepareNode() { return {
+        inputPrompt: '', recoverJobIds: [], readyForTracking: () => false, automaticSubmission: async () => undefined,
+        artifactSummary: async () => [], onJobCreated: async () => {}, materialize: async () => [],
+        bind: (media, video) => ({ media, video }),
+      } } },
+      video: { async prepareRun() { return { names: ['video_generate'], execute: async (_name, raw) => {
+        if ((raw as { requirementId: string }).requirementId === 'missing') throw new AppError('MISSING_SPEC')
+        return { jobId: 'existing-job' }
+      } } }, waitForRun: async () => {}, stopTask: async () => {} },
+      createWorker: options => ({ async run() {
+        await assert.rejects(options.context.videoTools!.execute('video_generate', { creativeBrief: 'Unknown duration', requirementId: 'missing' }), /规格/)
+        await options.context.videoTools!.execute('video_generate', { creativeBrief: 'Known duration', requirementId: 'complete' })
+        await options.onResponseSettled?.({ text: 'One video still needs a specification.', stopReason: 'stop' })
+      }, abort: async () => {}, dispose: async () => {} }),
+    })
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(async () => (await manager.getTask(task.id))?.activeRunId === null)
+      assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
+      assert.equal(checkpoints.value!.state.status, 'waiting-user')
+      assert.ok(checkpoints.value!.state.nodes[0]!.inputRequest)
+      assert.deepEqual(checkpoints.value!.state.failureNodeIds, [])
+    } finally { await runtime.stopAll() }
+  })
+
+  it('waits for missing media specs, survives restart and resumes with a new revision without resubmitting existing jobs', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-media-input-resume-'))
+    directories.push(root)
+    const runs = new TaskRunStore(root)
+    const manager = new TaskManager(root, null, undefined, runs)
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('media input', 'goal', root, employee.subscriptionId)
+    const arrangement = twoNodePlan(task.id)
+    arrangement.workspace.path = root
+    arrangement.nodes[0]!.deliverables = [{ id: 'report-a', path: 'node-a.txt', format: 'txt', name: 'Preparation', contentOutline: [], acceptanceCriteria: [] }]
+    arrangement.nodes[1]!.deliverables = [{ id: 'report', path: 'node-b.txt', format: 'txt', name: 'Media summary', contentOutline: [], acceptanceCriteria: [] }]
+    arrangement.nodes[1]!.mediaRequirements = [
+      { id: 'image', kind: 'image', operation: 'generate', specRevision: 1, proposedSpec: { aspectRatio: '1:1' } },
+      { id: 'video', kind: 'video', operation: 'text-to-video', specRevision: 1 },
+    ]
+    const checkpoints = new MemoryCheckpointStore()
+    const links: ArrangementMediaLink[] = []
+    const images: Array<{ jobId: string; runId: string; subscriptionId: string }> = []
+    const videos: Array<{ jobId: string; runId: string; taskId: string }> = []
+    const bridgeOptions = {
+      scope: { currentScope: () => scope }, getTask: (id: string) => manager.getTask(id),
+      plans: new MemoryPlanStore(arrangement), checkpoints, runs,
+      links: { list: async () => structuredClone(links), upsert: async (_scope: unknown, link: ArrangementMediaLink) => {
+        const index = links.findIndex(item => item.jobId === link.jobId)
+        if (index < 0) links.push(structuredClone(link)); else links[index] = structuredClone(link)
+        return link
+      } },
+      images: { listJobs: async () => images, getJob: async (_scope: unknown, _task: string, jobId: string) => images.find(job => job.jobId === jobId) },
+      videos: { listJobs: async () => videos, getJob: async (_scope: unknown, _task: string, jobId: string) => videos.find(job => job.jobId === jobId) },
+      assets: { outputs: async () => [] }, media: {},
+    } as unknown as ArrangementMediaServiceOptions
+    let aRuns = 0
+    let bRuns = 0
+    let sessionFile = ''
+    const makeRuntime = () => new TaskRuntime({
+      taskManager: manager, taskRunStore: runs, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: checkpoints,
+      arrangementMedia: new ArrangementMediaService(bridgeOptions),
+      getRefreshToken: () => 'token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+      resolveEmployee: () => employee, authorizeEmployee: async (subscriptionId, modelId) => ({ ...employee, subscriptionId, modelId: modelId ?? employee.modelId }),
+      media: { async prepareRun(input) { return { names: ['media_generate_image', 'media_get_job'], async execute(name) {
+        if (name === 'media_get_job') return { jobId: images[0]!.jobId }
+        images.push({ jobId: 'image-job', runId: input.runId, subscriptionId: input.subscriptionId })
+        await input.onJobCreated?.({ kind: 'image', operation: 'generate', jobId: 'image-job', localAssetIds: [] })
+        return { jobId: 'image-job' }
+      } } }, async waitForRun() {}, async stopTask() {} },
+      video: { async prepareRun(input) { return { names: ['video_generate'], async execute(_name, raw) {
+        const value = raw as { requestedSpec?: { durationSeconds?: number }; specRevision?: number; parameterSources?: { durationSeconds?: string } }
+        if (!value.requestedSpec?.durationSeconds) throw new AppError('MISSING_SPEC')
+        assert.equal(value.requestedSpec.durationSeconds, 8)
+        assert.equal(value.specRevision, 2)
+        assert.equal(value.parameterSources?.durationSeconds, 'user')
+        videos.push({ jobId: 'video-job', runId: input.runId, taskId: input.taskId })
+        await input.onJobCreated?.({ kind: 'video', operation: 'text-to-video', jobId: 'video-job', localAssetIds: [] })
+        return { jobId: 'video-job' }
+      } } }, async waitForRun() {}, async stopTask() {} },
+      createWorker: options => ({ async run(prompt) {
+        if (options.context.arrangementNodeId === 'node-a') {
+          aRuns++
+          await writeFile(join(root, 'node-a.txt'), 'Original preparation')
+          await options.onResponseSettled?.({ text: JSON.stringify({ nodeId: 'node-a', summary: 'Prepared', finalDeliverables: [{ id: 'report-a', path: 'node-a.txt' }] }), stopReason: 'stop' })
+          return
+        }
+        bRuns++
+        if (bRuns === 1) {
+          sessionFile = join(options.context.sessionDir, 'session.jsonl')
+          await mkdir(options.context.sessionDir, { recursive: true })
+          await writeFile(sessionFile, JSON.stringify({ type: 'session', id: 'media-logical' })+'\n')
+          await options.onSessionCreated?.({ sessionId: 'media-logical', sessionFile })
+        } else {
+          assert.equal(options.context.resumeSessionFile, sessionFile)
+          assert.match(prompt, /8 秒竖屏/)
+          assert.match(options.context.fixedSystemPrompt!, /"specRevision": 2/)
+        }
+        await options.context.mediaTools!.execute('media_generate_image', { creativeBrief: 'Product' }, new AbortController().signal)
+        if (bRuns === 1) {
+          await assert.rejects(options.context.videoTools!.execute('video_generate', { creativeBrief: 'Product' }, new AbortController().signal), /规格|MISSING_SPEC/)
+          await options.onResponseSettled?.({ text: JSON.stringify({ needsUserInput: { question: '视频用途和时长？' } }), stopReason: 'stop' })
+        } else {
+          await options.context.videoTools!.execute('video_generate', { creativeBrief: 'Product', requestedSpec: { durationSeconds: 8, aspectRatio: '9:16' },
+            parameterSources: { durationSeconds: 'user', aspectRatio: 'user' } }, new AbortController().signal)
+          await writeFile(join(root, 'node-b.txt'), 'Original image and new video completed')
+          await options.onResponseSettled?.({ text: JSON.stringify({ nodeId: 'node-b', summary: 'Done', finalDeliverables: [{ id: 'report', path: 'node-b.txt' }] }), stopReason: 'stop' })
+        }
+      }, async abort() {}, async dispose() {} }),
+    })
+    let runtime = makeRuntime()
+    try {
+      await runtime.executeTask(task.id)
+      await waitFor(async () => {
+        const status = (await manager.getTask(task.id))?.status
+        return status === TaskStatus.PAUSED || status === TaskStatus.FAILED || status === TaskStatus.COMPLETED
+      })
+      assert.equal((await manager.getTask(task.id))!.status, TaskStatus.PAUSED, JSON.stringify(checkpoints.value))
+      const waiting = checkpoints.value!.state.nodes[1]!
+      assert.equal(waiting.status, 'interrupted')
+      assert.equal(waiting.error, null)
+      assert.equal(checkpoints.value!.state.status, 'waiting-user')
+      assert.deepEqual(checkpoints.value!.state.failureNodeIds, [])
+      assert.equal(waiting.delivery?.validationAttempts ?? 0, 0)
+      assert.equal((await runs.list(scope, task.id)).find(run => run.arrangementNodeId === 'node-b')?.outcome, 'interrupted')
+      await runtime.stopAll()
+      runtime = makeRuntime()
+      await assert.rejects(runtime.retryTask(task.id, { nodeId: 'node-b', inputReply: { requestId: 'stale', text: '8 秒竖屏' } }), /问题已变化/)
+      assert.equal(checkpoints.value!.state.nodes[1]!.inputRequest!.requestId, waiting.inputRequest!.requestId)
+      await runtime.retryTask(task.id, { nodeId: 'node-b', inputReply: { requestId: waiting.inputRequest!.requestId, text: '8 秒竖屏' } })
+      await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.COMPLETED)
+      assert.equal(aRuns, 1)
+      assert.equal(bRuns, 2)
+      assert.equal(images.length, 1)
+      assert.equal(videos.length, 1)
+      assert.deepEqual(links.map(link => [link.kind, link.specRevision]), [['image', 1], ['video', 2]])
+      assert.equal(arrangement.nodes[1]!.mediaRequirements![1]!.specRevision, 1)
+    } finally { await runtime.stopAll() }
+  })
 
   it('notifies a timed out run only after parallel work settles and retries only the failed node', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-runtime-timeout-'))

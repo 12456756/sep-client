@@ -62,10 +62,39 @@ const executableEmployeeMediaRuntimeV2Schema = z.object({
   }
 })
 
-export const sepMediaRuntimeSchema = z.union([realMediaRuntimeSchema, executableEmployeeMediaRuntimeSchema, configurationMediaRuntimeSchema, executableEmployeeMediaRuntimeV2Schema])
+const executableEmployeeMediaRuntimeV3Schema = z.object({
+  protocolVersion: z.literal(3), executionAvailable: z.boolean(), defaultProfileId: z.string().nullable(),
+  tools: z.array(z.enum(['image_generate', 'image_edit'])).max(2),
+  profiles: z.array(sepMediaRuntimeProfileSchema.extend({ capabilities: z.object({
+    supportsReferenceImage: z.boolean(), sizes: z.array(z.string()).optional(),
+    maxOutputs: z.number().int().positive().optional(), qualities: z.array(z.string()).optional(),
+    maxWidth: z.number().int().positive().optional(), maxHeight: z.number().int().positive().optional(),
+  }).strict() })).max(64),
+}).strict().superRefine((value, context) => {
+  if (!value.executionAvailable && value.tools.length) context.addIssue({ code: 'custom', path: ['tools'], message: 'Disabled runtime cannot expose tools.' })
+  if (value.defaultProfileId !== null && !value.profiles.some(profile => profile.profileId === value.defaultProfileId)) context.addIssue({ code: 'custom', path: ['defaultProfileId'], message: 'Default profile is unavailable.' })
+})
+
+export const sepMediaRuntimeSchema = z.union([realMediaRuntimeSchema, executableEmployeeMediaRuntimeSchema, configurationMediaRuntimeSchema, executableEmployeeMediaRuntimeV2Schema, executableEmployeeMediaRuntimeV3Schema])
 
 export function toLocalMediaCapabilities(value: unknown): MediaCapabilities {
   const runtime = parseSepMediaRuntime(value)
+  if (runtime.protocolVersion === 3) {
+    const profiles: MediaCapabilities['profiles'] = runtime.profiles.map(profile => ({
+      profileId: profile.profileId, kind: 'image' as const, displayName: profile.displayName, configVersion: profile.configVersion,
+      operations: profile.operations.filter(operation => runtime.tools.includes(operation === 'edit' ? 'image_edit' : 'image_generate')),
+      executionMode: profile.executionMode,
+      capabilities: { referenceImage: profile.capabilities.supportsReferenceImage, cancel: true, recoverByRequestId: true },
+      allowedAspectRatios: [],
+      ...(profile.capabilities.sizes !== undefined ? { allowedSizes: profile.capabilities.sizes } : {}),
+      ...(profile.capabilities.qualities !== undefined ? { allowedQualities: profile.capabilities.qualities } : {}),
+    })).filter(profile => profile.operations.length > 0)
+    return {
+      protocolVersion: 3, defaultProfileId: profiles.some(profile => profile.profileId === runtime.defaultProfileId) ? runtime.defaultProfileId : null,
+      tools: runtime.executionAvailable && profiles.length ? ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'] : [],
+      profiles,
+    }
+  }
   if ('mock' in runtime || runtime.executionAvailable) return {
     protocolVersion: 1 as const,
     ...('defaultProfileId' in runtime ? { defaultProfileId: runtime.defaultProfileId } : {}),

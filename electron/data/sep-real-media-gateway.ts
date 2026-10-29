@@ -7,6 +7,7 @@ import { platformSourceHeaders } from '../common/platform/platform-source-header
 import { AppError } from '../errors/app-error'
 import { isErrorCode, type ErrorCode } from '../errors/error-codes'
 import { inspectMediaImage } from './media-image'
+import { imageRequestedSpecSchema, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const date = z.string().datetime({ offset: true })
@@ -20,21 +21,37 @@ const referenceSchema = z.object({ mock: z.literal(false), referenceId: id, expi
   width: z.number().int().positive().max(4096), height: z.number().int().positive().max(4096) }).strict()
 const money = z.string().regex(/^\d+\.\d{6}$/)
 const quoteSchema = z.object({ mock: z.literal(false), quoteId: id, expiresAt: date, semanticSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  protocolVersion: z.literal(3).optional(), effectiveSpec: imageRequestedSpecSchema.optional(),
   pricingStatus: z.literal('quoted'), amountCny: money, pricingVersion: z.string().min(1).max(128), billingStatus: z.literal('NOT_RESERVED'),
   funding: z.object({ creditCny: money, memberWalletCny: money, personalCny: money }).strict() }).strict()
-const receiptSchema = z.object({ mock: z.literal(false), receiptId: id, clientRequestId: id, profileId: id, configVersion: id,
+const legacyReceiptSchema = z.object({ mock: z.literal(false), receiptId: id, clientRequestId: id, profileId: id, configVersion: id,
+  protocolVersion: z.literal(3).optional(), actualSpec: imageRequestedSpecSchema.optional(),
   executionMode: z.literal('sync-response'), status: z.enum(['SUBMITTING','QUEUED','RUNNING','SUBMISSION_UNKNOWN','SUCCEEDED','PARTIAL_SUCCEEDED','FAILED','CANCELLED','RESULT_EXPIRED']),
-  pollAfterMs: z.number().int().nonnegative().nullable(), outputs: z.array(z.object({ outputId: id, kind: z.literal('image'), mimeType: z.literal('image/png'),
+    pollAfterMs: z.number().int().nonnegative().nullable(), outputs: z.array(z.object({ outputId: id, kind: z.literal('image'), mimeType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
     byteLength: z.number().int().positive().max(25 * 1024 * 1024), width: z.number().int().positive(), height: z.number().int().positive(),
     sha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: date.nullable() }).strict()).max(4),
   billingStatus: z.enum(['RESERVED','SETTLED','RELEASED','RECONCILING']), errorCode: z.string().nullable(),
   outputErrors: z.array(z.object({ index: z.number().int().min(0).max(3), code: z.string() }).strict()).max(4),
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict() }).strict()
+const receiptSchema = z.union([legacyReceiptSchema, legacyReceiptSchema.extend({
+  protocolVersion: z.literal(3),
+  executionMode: z.enum(['sync-response', 'async-query']),
+  outputs: z.array(legacyReceiptSchema.shape.outputs.element),
+  outputErrors: z.array(z.object({ index: z.number().int().nonnegative(), code: z.string() }).strict()),
+})])
 const MAX_JSON = 64 * 1024
 const MAX_CONTENT = 25 * 1024 * 1024
 const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,95}$/
 const SAFE_ERROR_FIELD = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/
 const SAFE_ERROR_RECOVERY = /^[a-z][a-z0-9_-]{0,63}$/
+const publicErrorMetadataSchema = z.object({
+  source: z.enum(['user', 'model', 'client', 'sep', 'platform', 'adapter', 'pricing', 'sub2api', 'provider', 'upstream', 'authorization']).optional(),
+  requestedValue: z.union([z.string().max(96).regex(/^(?:[A-Za-z0-9][A-Za-z0-9_.:-]*|image\/[A-Za-z0-9][A-Za-z0-9.+-]*)$/), z.number().finite(), z.boolean()]).optional(),
+  reasonCode: z.string().regex(SAFE_ERROR_CODE).optional(),
+  submissionState: z.enum(['not_submitted', 'submitted', 'unknown']).optional(),
+  billingState: z.enum(['not_reserved', 'reserved', 'settled', 'released', 'reconciling', 'unknown']).optional(),
+  retryable: z.boolean().optional(), alternatives: z.array(imageRequestedSpecSchema.refine(spec => Object.keys(spec).length > 0)).max(8).optional(),
+})
 const SAFE_ERROR_STAGES = new Set(['image-authorization', 'image-quote', 'image-submit', 'image-query', 'image-content'])
 
 export interface SepRealMediaGatewayOptions {
@@ -82,10 +99,11 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   async quote(subscriptionId: string, request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>, signal: AbortSignal): Promise<MediaQuote> {
     const raw = await this.json(subscriptionId, '/quotes', 'POST', this.body(request), quoteSchema, signal)
     const requestHash = realMediaSemanticHash(request)
+    if (request.protocolVersion === 3 && (raw.protocolVersion !== 3 || !raw.effectiveSpec || !mediaSpecsEqual(request.requestedSpec!, raw.effectiveSpec))) throw new AppError('SPEC_CONFLICT')
     if (raw.semanticSha256 !== requestHash) throw new AppError('PERMISSION_DENIED', { message: '图片报价与本次模型、输入或规格不匹配，请重新报价。' })
     const expiresAt = Date.parse(raw.expiresAt)
     if (expiresAt <= Date.now()) throw new AppError('PERMISSION_DENIED', { message: 'Media quote has expired.' })
-    return { quoteId: raw.quoteId, requestHash, expiresAt, status: 'quoted', amount: raw.amountCny,
+    return { ...(raw.effectiveSpec ? { effectiveSpec: raw.effectiveSpec } : {}), quoteId: raw.quoteId, requestHash, expiresAt, status: 'quoted', amount: raw.amountCny,
       currency: 'CNY', authorized: true, budgetAuthorized: true, allowUnknownCost: false }
   }
 
@@ -115,7 +133,8 @@ export class SepRealMediaGateway implements MediaGatewayPort {
     const expectedHash = response.headers.get('X-SHA256')
     const length = Number(response.headers.get('Content-Length'))
     const body = response.body
-    if (response.headers.get('Content-Type')?.split(';')[0] !== 'image/png' || response.headers.get('X-SEP-Media-Mock') !== 'false'
+    const mime = response.headers.get('Content-Type')?.split(';')[0]
+    if (!mime || !['image/png', 'image/jpeg', 'image/webp'].includes(mime) || response.headers.get('X-SEP-Media-Mock') !== 'false'
       || !expectedHash || !/^[a-f0-9]{64}$/.test(expectedHash) || !Number.isSafeInteger(length) || length <= 0 || length > MAX_CONTENT || !body) {
       await body?.cancel().catch(() => undefined)
       throw new AppError('SERVICE_UNAVAILABLE')
@@ -133,7 +152,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
         }
         if (size !== length || hash.digest('hex') !== expectedHash) throw new AppError('SERVICE_UNAVAILABLE')
         const all = Buffer.concat(chunks.map(chunk => Buffer.from(chunk)))
-        if (inspectMediaImage(all).mime !== 'image/png') throw new AppError('SERVICE_UNAVAILABLE')
+        if (inspectMediaImage(all).mime !== mime) throw new AppError('SERVICE_UNAVAILABLE')
         verified = true
       } catch { throw new AppError('SERVICE_UNAVAILABLE', { message: 'Media result could not be verified.' }) }
       finally {
@@ -146,6 +165,22 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   }
 
   private body(request: Omit<MediaRequest, 'clientRequestId' | 'quoteId'>) {
+    if (request.protocolVersion === 3) {
+      // A returned output needs at least this much JSON metadata. Refuse only
+      // counts that cannot fit the existing byte budget even at their minimum.
+      const minimumOutputBytes = Buffer.byteLength(JSON.stringify({ outputId: 'x', kind: 'image', mimeType: 'image/png',
+        byteLength: 1, width: 1, height: 1, sha256: '0'.repeat(64), expiresAt: null }), 'utf8') + 1
+      if (request.requestedSpec?.count !== undefined && request.requestedSpec.count > Math.floor(MAX_JSON / minimumOutputBytes)) {
+        throw new AppError('INVALID_ARGUMENT', { message: '请求的图片数量无法容纳在本地回执的 64 KiB 安全预算内，请拆分为多次明确的生成请求。',
+          details: { resource: 'image', stage: 'image-quote', field: 'count', source: 'client', requestedValue: request.requestedSpec.count,
+            reasonCode: 'LOCAL_RESPONSE_SIZE_LIMIT', submissionState: 'not_submitted', billingState: 'not_reserved' } })
+      }
+      return {
+      protocolVersion: 3, profileId: this.safeId(request.profileId), configVersion: this.safeId(request.configVersion), operation: request.operation,
+      referenceIds: request.referenceIds.map(value => this.safeId(value)), creativeBrief: request.creativeBrief.trim(),
+      requestedSpec: imageRequestedSpecSchema.parse(request.requestedSpec), parameterSources: request.parameterSources, specRevision: request.specRevision,
+      }
+    }
     const parameters = realMediaParameters(request.parameters)
     return { profileId: this.safeId(request.profileId), configVersion: this.safeId(request.configVersion), operation: request.operation,
       referenceIds: request.referenceIds.map(value => this.safeId(value)), creativeBrief: request.creativeBrief.trim(), parameters }
@@ -153,7 +188,7 @@ export class SepRealMediaGateway implements MediaGatewayPort {
   private safeId(value: string) { const parsed = id.safeParse(value); if (!parsed.success) throw new AppError('INVALID_ARGUMENT'); return parsed.data }
   private normalReceipt(value: z.infer<typeof receiptSchema>) {
     return { receiptId: value.receiptId, clientRequestId: value.clientRequestId, profileId: value.profileId, configVersion: value.configVersion,
-      status: value.status, pollAfterMs: value.pollAfterMs, outputs: value.outputs.map(output => ({ outputId: output.outputId, mime: output.mimeType as 'image/png',
+      status: value.status, actualSpec: value.actualSpec, pollAfterMs: value.pollAfterMs, outputs: value.outputs.map(output => ({ outputId: output.outputId, mime: output.mimeType,
         size: output.byteLength, width: output.width, height: output.height, sha256: output.sha256, expiresAt: output.expiresAt ? Date.parse(output.expiresAt) : null })),
       billingStatus: value.billingStatus, recovery: value.recovery, errorCode: value.errorCode, outputErrors: value.outputErrors }
   }
@@ -220,7 +255,8 @@ export class SepRealMediaGateway implements MediaGatewayPort {
       ? (error as Record<string, unknown>).recovery as string : undefined
     const mapped: ErrorCode = code && isErrorCode(code) ? code : status === 401 ? 'AUTH_REQUIRED' : status === 403 ? 'PERMISSION_DENIED' : status === 404 ? 'NOT_FOUND' : status === 429 ? 'RATE_LIMITED' : status === 400 ? 'INVALID_ARGUMENT' : 'SERVICE_UNAVAILABLE'
     const message = mapped === 'AUTH_REQUIRED' ? '图片服务认证已失效，请重新登录。' : mapped === 'PERMISSION_DENIED' ? '图片服务拒绝了当前授权或请求。' : mapped === 'INVALID_ARGUMENT' ? '图片服务拒绝了当前输入或规格。' : mapped === 'NOT_FOUND' ? '未找到对应的图片任务或资源。' : mapped === 'RATE_LIMITED' ? '图片服务请求过于频繁，请稍后重试。' : '图片服务暂时不可用，请查询原请求，不要自动重新生成。'
-    return new AppError(mapped, { message, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}) } })
+    const metadata = publicErrorMetadataSchema.safeParse(error)
+    return new AppError(mapped, { message, details: { resource: 'image', stage: SAFE_ERROR_STAGES.has(stage) ? stage : 'image-query', ...(code ? { businessCode: code } : {}), ...(field ? { field } : {}), ...(recovery ? { recovery } : {}), ...(metadata.success ? metadata.data : {}) } })
   }
   private async request(subscriptionId: string, path: string, method: 'GET'|'POST', body: unknown, signal: AbortSignal) {
     this.safeId(subscriptionId); signal.throwIfAborted()

@@ -1,15 +1,12 @@
-import { z } from 'zod'
 import type { MediaGenerationInput } from './media'
 import { videoParametersSchema, type VideoParameters } from './video-media'
+import { imageRequestedSpecSchema } from './media-spec-contract'
 
 export interface MediaPreferenceScope { enterpriseId: string; memberId: string }
-export type MediaParameterPreference = Partial<MediaGenerationInput['parameters'] & VideoParameters>
+export type MediaParameterPreference = Partial<MediaGenerationInput['parameters']> | Partial<VideoParameters>
 type StoragePort = Pick<Storage, 'getItem' | 'setItem'>
 type MediaKind = 'image' | 'video'
-const imagePreferenceSchema = z.object({
-  aspectRatio: z.string().min(1).max(32).optional(), count: z.number().int().min(1).max(16).optional(),
-  size: z.string().min(1).max(64).optional(), quality: z.string().min(1).max(64).optional(),
-}).strict()
+const imagePreferenceSchema = imageRequestedSpecSchema
 
 export function mediaPreferenceKey(scope: MediaPreferenceScope | null, kind: MediaKind, profileId?: string): string | null {
   if (!scope?.enterpriseId.trim() || !scope.memberId.trim() || !profileId?.trim()) return null
@@ -17,6 +14,9 @@ export function mediaPreferenceKey(scope: MediaPreferenceScope | null, kind: Med
 }
 
 /** Only parameter values are persisted; prompts, assets, quotes and identity tokens are excluded. */
+export function readMediaPreference(storage: StoragePort | null, key: string | null, kind: 'image'): Partial<MediaGenerationInput['parameters']>
+export function readMediaPreference(storage: StoragePort | null, key: string | null, kind: 'video'): Partial<VideoParameters>
+export function readMediaPreference(storage: StoragePort | null, key: string | null, kind: MediaKind): MediaParameterPreference
 export function readMediaPreference(storage: StoragePort | null, key: string | null, kind: MediaKind): MediaParameterPreference {
   if (!storage || !key) return {}
   try {

@@ -41,6 +41,7 @@ import type { MediaStorePort } from '../domain/media'
 import type { AttachmentService } from './attachment-service'
 import type { DraftAttachmentCandidate, NodeInputRef } from '../../src/shared/attachment-contracts'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
+import { unknownArrangementMediaTools, type ArrangementMediaTools } from '../domain/arrangement-media-availability'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -55,6 +56,7 @@ export interface ArrangementServiceDependencies {
   knowledgeCatalog?: (ids: readonly string[]) => Promise<Array<{ id: string; name: string }>>
   candidateEmployees?: ArrangementCandidateDirectory
   employeeCapabilities?: ArrangementEmployeeCapabilityDirectory
+  mediaToolAvailability?: (subscriptionId: string) => Promise<ArrangementMediaTools>
   onPlanningEvent?: (event: ArrangementPlanningProgress) => void
   employeeAccessRequests?: {
     create(input: EmployeeAccessRequestInput, idempotencyKey: string): Promise<EmployeeAccessRequest>
@@ -163,6 +165,7 @@ export class ArrangementService {
         nodeId: node.nodeId,
         status: node.status,
         ...(node.pendingConfirmation ? { pendingConfirmation: true } : {}),
+        ...(node.inputRequest ? { inputRequest: structuredClone(node.inputRequest) } : {}),
         finalFiles: node.delivery?.finalFiles ? structuredClone(node.delivery.finalFiles) : [],
       })),
       ...(media.length ? { media } : {}),
@@ -507,6 +510,14 @@ export class ArrangementService {
     const employees = await this.deps.employees.list()
     return Promise.all(employees.map(async employee => {
       let capabilities: ArrangementPlannerEmployee['capabilities'] = []
+      let mediaTools = unknownArrangementMediaTools()
+      if (this.deps.mediaToolAvailability) {
+        try {
+          mediaTools = await this.deps.mediaToolAvailability(employee.subscriptionId)
+        } catch (error) {
+          log.warn('employee media runtime unavailable during planning', { ...context, employeeId: employee.employeeId, ...planningErrorFields(error) })
+        }
+      }
       if (this.deps.employeeCapabilities) {
         try {
           capabilities = await this.deps.employeeCapabilities.list(employee.employeeId)
@@ -526,6 +537,7 @@ export class ArrangementService {
         position: employee.position,
         functionalCategory: employee.functionalCategory,
         capabilities,
+        mediaTools,
         allowedModels: [...employee.allowedModels],
         status: employee.status,
         source: 'authorized' as const,
