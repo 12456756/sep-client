@@ -5,7 +5,7 @@ import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { SkillDetail } from '../../components/enterprise/skills/SkillDetail';
 import { hasPersonalSkillVersion, selectSkillList, skillEmployeeOptions, skillUsageSummary, uniqueSkillBindings, type SkillSort } from '../../features/enterprise/skill-list-model';
 import { createSkillPageState, type SkillPageState } from '../../features/enterprise/skill-page-state';
-import { buildSkillVersions, findSkillVersion, unifiedSkillVersion } from '../../features/enterprise/skill-version-model';
+import { buildSkillSelectionOptions, findSkillVersion, unifiedSkillSelection } from '../../features/enterprise/skill-version-model';
 import type { AppRoute } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SkillLibraryItem } from '../../shared/skill-library';
@@ -71,9 +71,9 @@ function SkillList({ workspace, employeeFilterId, missingSkillId }: { workspace:
     workspace.navigate({ name: 'skills', skillId: id, sourceEmployeeId: state.employeeFilterId || undefined, returnTo: { name: 'skill-list' } });
   };
   const switchVersion = async (skill: SkillLibraryItem, versionId: string): Promise<void> => {
-    const versions = buildSkillVersions(skill);
+    const versions = buildSkillSelectionOptions(skill);
     const version = findSkillVersion(versions, versionId);
-    if (switching.current || !version?.usable || !skill.bindings.length || unifiedSkillVersion(skill, versions)?.id === version.id) return;
+    if (switching.current || !version?.usable || !skill.bindings.length || unifiedSkillSelection(skill, versions)?.id === version.id) return;
     switching.current = true;
     setPending({ skillId: skill.capability.id, versionId: version.id }); setSwitchError(null); setSwitchNotice('');
     try {
@@ -98,7 +98,7 @@ function SkillList({ workspace, employeeFilterId, missingSkillId }: { workspace:
     <div className="skill-list-meta"><p className="skill-caption" role="status">{hasCachedSkills || !workspace.skillsLoading && !hasError ? filtered ? `找到 ${matches.length} / ${total} 个技能` : `共 ${total} 个技能` : workspace.skillsLoading ? '正在确认技能数量' : '技能数量暂不可用'}</p>{filtered ? <button type="button" className="skill-text-button" onClick={() => update({ query: '', employeeFilterId: '', versionFilter: 'all' })}><X size={13} aria-hidden />清除筛选</button> : null}</div>
     {state.notice ? <p className="skill-caption" role="status">{state.notice}</p> : null}
     {switchNotice ? <p className="skill-caption" role="status">{switchNotice}</p> : null}
-    {switchError ? <div className="ent-banner danger skill-state-banner" role="alert"><span>{switchError.message}</span><div className="skill-switch-recovery"><button type="button" className="ent-btn sm" disabled={Boolean(pending) || !retrySkill || !findSkillVersion(buildSkillVersions(retrySkill), switchError.versionId)?.usable} onClick={() => { if (retrySkill) void switchVersion(retrySkill, switchError.versionId); }}>重试切换</button><button type="button" className="ent-btn sm" disabled={!canRetry || Boolean(pending)} onClick={() => void workspace.refreshSkills()}>刷新使用情况</button></div></div> : null}
+    {switchError ? <div className="ent-banner danger skill-state-banner" role="alert"><span>{switchError.message}</span><div className="skill-switch-recovery"><button type="button" className="ent-btn sm" disabled={Boolean(pending) || !retrySkill || !findSkillVersion(buildSkillSelectionOptions(retrySkill), switchError.versionId)?.usable} onClick={() => { if (retrySkill) void switchVersion(retrySkill, switchError.versionId); }}>重试切换</button><button type="button" className="ent-btn sm" disabled={!canRetry || Boolean(pending)} onClick={() => void workspace.refreshSkills()}>刷新使用情况</button></div></div> : null}
     {workspace.skillsWarning ? <div className="ent-banner info" role="status">{workspace.skillsWarning}</div> : null}
     {hasError ? <div className="ent-banner danger skill-state-banner" role="alert"><div><strong>{workspace.skillsError}</strong>{hasCachedSkills ? <span>已保留上次成功加载的技能列表。</span> : null}</div><button type="button" className="ent-btn sm" disabled={!canRetry} onClick={() => void workspace.refreshSkills()}>{workspace.skillsRetrySeconds != null && workspace.skillsRetrySeconds > 0 ? `${workspace.skillsRetrySeconds} 秒后重试` : '重试'}</button></div> : null}
     {workspace.skillsLoading && !hasCachedSkills ? <div className="skill-loading" role="status"><span className="ent-skeleton ent-skeleton-line wide" aria-hidden /><span className="ent-skeleton ent-skeleton-line medium" aria-hidden /><span>正在加载技能…</span></div> : null}
@@ -114,8 +114,8 @@ function SkillRow({ skill, options, pendingVersionId, disabled, onVersion, onOpe
   const bindings = uniqueSkillBindings(skill);
   const name = skill.capability.name.trim() || '未命名技能';
   const summary = skillUsageSummary(skill);
-  const versions = buildSkillVersions(skill);
-  const selected = unifiedSkillVersion(skill, versions);
+  const versions = buildSkillSelectionOptions(skill);
+  const selected = unifiedSkillSelection(skill, versions);
   return <li className="skill-row" data-skill-id={skill.capability.id}>
     <div className="skill-row-identity"><h2><button type="button" id={`skill-detail-${skill.capability.id}`} disabled={disabled} onClick={onOpen}>{name}</button>{hasPersonalSkillVersion(skill) ? <span className="skill-badge">有个人版本</span> : null}</h2>{skill.capability.description ? <details className="skill-description"><summary>{skill.capability.description}</summary><p>{skill.capability.description}</p></details> : null}</div>
     <div className="skill-row-employees">{(expanded ? bindings : bindings.slice(0, 2)).map(binding => {

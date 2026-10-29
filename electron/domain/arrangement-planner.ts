@@ -28,6 +28,8 @@ export interface ArrangementPlannerEmployee {
 }
 
 export interface ArrangementPlanningProgress {
+  sequence?: number
+  owner?: { memberId: string; enterpriseId: string }
   planningId: string
   draftId: string
   draftRevision: number

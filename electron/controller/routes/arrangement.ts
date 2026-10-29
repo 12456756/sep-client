@@ -105,6 +105,19 @@ const requestEmployeeAccessInput = z.object({ draftId, expectedRevision: revisio
 const getEmployeeAccessRequestInput = z.object({ draftId, requestId: z.string().min(1) })
 
 export const arrangementRoutes = [
+  route(INVOKE_CHANNELS.ARRANGE_LIST_PLANNING_RECORDS, NO_INPUT, async ctx => ({
+    success: true, records: await ctx.arrangements.listPlanningRecords(),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_GET_PLANNING_RECORD, draftId, async (ctx, id) => ({
+    success: true, snapshot: await ctx.arrangements.getPlanningRecord(id),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_CREATE_AND_PLAN, z.object({
+    requestId: z.string().uuid(), modelId: z.string().trim().min(1), document: createInput.extend({ mode: z.literal('auto'), nodes: z.array(node).max(0) }),
+  }).strict(), async (ctx, input) => ({
+    success: true, snapshot: await ctx.arrangements.createAndPlan({ ...input.document,
+      schemaVersion: input.document.attachmentCandidates?.length ? 2 : input.document.schemaVersion ?? 1, status: 'editing',
+    }, input.requestId, input.modelId),
+  })),
   route(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, confirmNodesInput, async (ctx, input) => {
     await ctx.tasks.confirmArrangementNodes(input.taskId, input.nodeIds)
     return { success: true }

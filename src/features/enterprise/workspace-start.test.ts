@@ -22,9 +22,12 @@ test('authenticated workspace starts on the personal home and navigation can ret
     useMemo: (factory: () => unknown) => factory(),
     useCallback: (callback: unknown) => callback,
     useEffect() {},
+    useSyncExternalStore: (_subscribe: unknown, getSnapshot: () => unknown) => getSnapshot(),
   }
   const imports = {
     react: hooks,
+    './auto-planning-scope': { usePlanningSession: () => ({ subscribe() {}, getRecords: () => [] }) },
+    './planning-records': { mergePlanningRecords: (items: unknown) => items },
     './use-arrangement-plans': { useArrangementPlans: () => ({ plans: {}, events: {}, executions: {}, recordEvent() {} }) },
     './use-skill-library': { useSkillLibrary: () => ({ skills: [] }) },
     './skill-load-state': { needsSkillLibrary: () => false },

@@ -52,7 +52,7 @@ export function WorkListPane({ works, records, selectedWorkId, filters, onFilter
     </div>
     <div className="ent-work-list-scroll">
       {!records.length && <div className="ent-work-list-empty"><p>{works.length ? '没有符合筛选条件的工作' : '还没有工作'}</p>{works.length ? <button type="button" className="ent-btn sm ghost" onClick={() => onFilters({ bucket: 'all', workType: 'all', search: '' })}><RotateCcw size={14} aria-hidden />清除筛选</button> : <button type="button" className="ent-btn sm ghost" onClick={onCreate}><Plus size={14} aria-hidden />开始第一项工作</button>}</div>}
-      {records.map(work => <div key={work.id} className="ent-work-row-wrap">
+      {records.map(work => <div key={work.recordKey ?? work.id} className="ent-work-row-wrap">
         <button type="button" className={`ent-work-row${work.id === selectedWorkId ? ' selected' : ''}`} aria-current={work.id === selectedWorkId ? 'true' : undefined} aria-label={`${work.title}，${workStatusLabel(work)}，${workTypeLabel(work.workType)}`} aria-keyshortcuts="Shift+F10" onClick={() => onSelect(work.id)}
           onContextMenu={event => { event.preventDefault(); onWorkMenu(work.id, event.currentTarget, { x: event.clientX, y: event.clientY }) }}
           onKeyDown={event => { if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') { event.preventDefault(); onWorkMenu(work.id, event.currentTarget) } }}>

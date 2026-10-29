@@ -42,6 +42,8 @@ import type { AttachmentService } from './attachment-service'
 import type { DraftAttachmentCandidate, NodeInputRef } from '../../src/shared/attachment-contracts'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
 import { unknownArrangementMediaTools, type ArrangementMediaTools } from '../domain/arrangement-media-availability'
+import { planningRecordSummary, type PlanningRecordChange, type PlanningProgressSnapshot, type PlanningRecordSnapshot, type PlanningRecordSummary } from '../../src/shared/auto-planning'
+import type { ArrangementProgressStorePort } from '../data/arrangement-progress-store'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -58,6 +60,8 @@ export interface ArrangementServiceDependencies {
   employeeCapabilities?: ArrangementEmployeeCapabilityDirectory
   mediaToolAvailability?: (subscriptionId: string) => Promise<ArrangementMediaTools>
   onPlanningEvent?: (event: ArrangementPlanningProgress) => void
+  onPlanningRecordChanged?: (change: PlanningRecordChange) => void
+  planningProgress?: ArrangementProgressStorePort
   employeeAccessRequests?: {
     create(input: EmployeeAccessRequestInput, idempotencyKey: string): Promise<EmployeeAccessRequest>
     get(requestId: string): Promise<EmployeeAccessRequest>
@@ -109,6 +113,11 @@ const log = logger.child('arrangement-service')
 export class ArrangementService {
   private readonly creationGate: TaskCreationGate
   private readonly confirmationFlights = new Map<string, Promise<{ plan: WorkPlan; execution: null }>>()
+  private generation = 0
+  private readonly progress = new Map<string, PlanningProgressSnapshot>()
+  private readonly planningOwners = new Map<string, { scope: { memberId: string; enterpriseId: string }; generation: number; draftId: string }>()
+  private readonly planningStarts = new Map<string, Promise<{ draftId: string; planningId: string; status: 'planning' }>>()
+  private readonly submissions = new Map<string, Promise<PlanningRecordSnapshot>>()
 
   constructor(private readonly deps: ArrangementServiceDependencies) {
     this.creationGate = deps.creationGate ?? new TaskCreationGate()
@@ -139,6 +148,111 @@ export class ArrangementService {
 
   async listDrafts(): Promise<ArrangementDraft[]> {
     return this.deps.drafts.list(requireScope(this.deps.scope))
+  }
+
+  async listPlanningRecords(): Promise<PlanningRecordSummary[]> {
+    const scope = requireScope(this.deps.scope)
+    const generation = this.generation
+    const drafts = await this.deps.drafts.list(scope)
+    this.assertPlanningScope(scope, generation)
+    const records: PlanningRecordSummary[] = []
+    for (const draft of drafts) {
+      if (draft.mode !== 'auto') continue
+      if (!await this.isPlanningTaskVisible(draft, generation)) continue
+      this.assertPlanningScope(scope, generation)
+      records.push(planningRecordSummary(await this.reconcilePlanning(draft)))
+    }
+    this.assertPlanningScope(scope, generation)
+    return records
+  }
+
+  async getPlanningRecord(draftId: string): Promise<PlanningRecordSnapshot> {
+    const scope = requireScope(this.deps.scope)
+    const generation = this.generation
+    const stored = await this.getDraft(draftId)
+    this.assertPlanningScope(scope, generation)
+    if (!await this.isPlanningTaskVisible(stored, generation)) throw new AppError('NOT_FOUND')
+    const draft = await this.reconcilePlanning(stored)
+    if (draft.mode !== 'auto') throw new AppError('INVALID_ARGUMENT')
+    const key = JSON.stringify([draft.owner, draftId])
+    const progress = this.progress.get(key) ?? await this.deps.planningProgress?.get(draft.owner, draftId) ?? null
+    this.assertPlanningScope(scope, generation)
+    return { draft, progress: progress && progress.planningId === draft.lastPlanning?.planningId ? structuredClone(progress) : null }
+  }
+
+  private async isPlanningTaskVisible(draft: ArrangementDraft, generation: number): Promise<boolean> {
+    if (!draft.confirmedWorkPlanId) return true
+    const task = await this.deps.taskManager.getTask(draft.confirmedWorkPlanId)
+    this.assertPlanningScope(draft.owner, generation)
+    if (!task) return false
+    // Media deletion preserves the task for receipts; its archive also hides the linked draft.
+    const archived = await this.deps.mediaStore?.isArchived(draft.owner, draft.confirmedWorkPlanId) ?? false
+    this.assertPlanningScope(draft.owner, generation)
+    return !archived
+  }
+
+  async createAndPlan(input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>, requestId: string, modelId: string): Promise<PlanningRecordSnapshot> {
+    const scope = requireScope(this.deps.scope)
+    const generation = this.generation
+    const key = JSON.stringify([scope, requestId])
+    const existing = this.submissions.get(key)
+    if (existing) return existing
+    const flight = (async () => {
+      if (input.mode !== 'auto' || input.nodes.length) throw new AppError('INVALID_ARGUMENT')
+      const previous = (await this.deps.drafts.list(scope)).find(draft => draft.mode === 'auto' && draft.planningRequestId === requestId)
+      this.assertPlanningScope(scope, generation)
+      const draft = previous ?? await this.createDraft({ ...input, planningRequestId: requestId, planningModelId: modelId })
+      this.assertPlanningScope(scope, generation)
+      // A persisted planning record can outlive the process that started it. Reuse
+      // the draft identity, but restart any planning that did not reach a terminal
+      // result so retries do not silently return an unfinished record.
+      if (!previous || previous.status === 'planning' || previous.status === 'planning-failed') {
+        await this.startPlanning(draft.id, draft.revision, modelId)
+      }
+      return this.getPlanningRecord(draft.id)
+    })()
+    this.submissions.set(key, flight)
+    try { return await flight } finally { if (this.submissions.get(key) === flight) this.submissions.delete(key) }
+  }
+
+  private async reconcilePlanning(draft: ArrangementDraft): Promise<ArrangementDraft> {
+    const generation = this.generation
+    const key = JSON.stringify([draft.owner, draft.id])
+    if (draft.status !== 'planning' || this.planningControllers.has(draft.lastPlanning?.planningId ?? '') || this.planningStarts.has(key)) return draft
+    this.assertPlanningScope(draft.owner, this.generation)
+    try {
+      const updated = await this.deps.drafts.update(draft.owner, draft.id, draft.revision, { ...draft, status: 'planning-failed',
+        lastPlanning: { planningId: draft.lastPlanning?.planningId ?? '', status: 'failed', message: '规划已中断，请重新规划' } })
+      this.assertPlanningScope(draft.owner, generation)
+      this.notifyPlanningRecord(updated)
+      return updated
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'DRAFT_REVISION_CONFLICT') return this.getDraft(draft.id)
+      throw error
+    }
+  }
+
+  private assertPlanningScope(scope: { memberId: string; enterpriseId: string }, generation: number): void {
+    const current = this.deps.scope.currentScope()
+    if (generation !== this.generation || !current || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+  }
+
+  cancelAllPlanning(): void {
+    this.generation++
+    for (const [id, controller] of this.planningControllers) { controller.abort(); this.deps.planner?.cancel?.(id) }
+    this.planningControllers.clear()
+    this.planningOwners.clear()
+    this.progress.clear()
+    this.planningStarts.clear()
+    this.submissions.clear()
+  }
+
+  private notifyPlanningRecord(draft: ArrangementDraft): void {
+    if (draft.mode !== 'auto') return
+    const current = this.deps.scope.currentScope()
+    if (current?.memberId === draft.owner.memberId && current.enterpriseId === draft.owner.enterpriseId) {
+      this.deps.onPlanningRecordChanged?.({ owner: draft.owner, draftId: draft.id, record: planningRecordSummary(draft) })
+    }
   }
 
   async getDraft(draftId: string): Promise<ArrangementDraft> {
@@ -221,10 +335,14 @@ export class ArrangementService {
     if (input.mode === 'auto' && input.nodes.length > 0) throw new AppError('INVALID_ARGUMENT')
     if (input.attachmentCandidates?.length && (!input.attachmentSessionId || !this.deps.attachments)) throw new AppError('INVALID_ARGUMENT', { message: '附件需要有效的导入会话。' })
     const scope = requireScope(this.deps.scope)
+    const generation = this.generation
     const draft = await this.deps.drafts.create(scope, input)
+    this.assertPlanningScope(scope, generation)
     if (input.attachmentCandidates?.length && input.attachmentSessionId && this.deps.attachments) {
       await this.deps.attachments.claimDraft(input.attachmentSessionId, draft.id, draft.revision, input.attachmentCandidates.map(item => item.attachment))
     }
+    this.assertPlanningScope(scope, generation)
+    this.notifyPlanningRecord(draft)
     return draft
   }
 
@@ -276,22 +394,51 @@ export class ArrangementService {
   }
 
   async deleteDraft(draftId: string): Promise<boolean> {
-    return this.deps.drafts.delete(requireScope(this.deps.scope), draftId)
+    const scope = requireScope(this.deps.scope)
+    const draft = await this.getDraft(draftId)
+    if (draft.status === 'planning' || draft.confirmedWorkPlanId) throw new AppError('INVALID_STATE')
+    const deleted = await this.deps.drafts.delete(scope, draftId)
+    if (deleted) {
+      this.progress.delete(JSON.stringify([scope, draftId]))
+      await this.deps.planningProgress?.delete(scope, draftId)
+      this.deps.onPlanningRecordChanged?.({ owner: scope, draftId, record: null })
+    }
+    return deleted
   }
 
   async startPlanning(draftId: string, expectedRevision: number, modelId?: string): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
     const scope = requireScope(this.deps.scope)
+    const key = JSON.stringify([scope, draftId])
+    const existing = this.planningStarts.get(key)
+    if (existing) return existing
+    const flight = this.startPlanningOnce(draftId, expectedRevision, modelId)
+    this.planningStarts.set(key, flight)
+    try { return await flight } finally { if (this.planningStarts.get(key) === flight) this.planningStarts.delete(key) }
+  }
+
+  private async startPlanningOnce(draftId: string, expectedRevision: number, modelId?: string): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
+    const scope = requireScope(this.deps.scope)
+    const generation = this.generation
     const draft = await this.getDraft(draftId)
+    this.assertPlanningScope(scope, generation)
+    if (draft.status === 'planning' && draft.lastPlanning && this.planningControllers.has(draft.lastPlanning.planningId)) {
+      return { draftId, planningId: draft.lastPlanning.planningId, status: 'planning' }
+    }
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
-    if (draft.mode !== 'auto' || !this.deps.planner) throw new AppError('INVALID_STATE')
+    if (draft.mode !== 'auto' || draft.confirmedWorkPlanId || !this.deps.planner) throw new AppError('INVALID_STATE')
     const planningId = randomUUID()
-    await this.deps.drafts.update(scope, draftId, expectedRevision, {
+    const updated = await this.deps.drafts.update(scope, draftId, expectedRevision, {
       ...draft,
+      planningModelId: modelId ?? draft.planningModelId,
       status: 'planning',
       lastPlanning: { planningId, status: 'planning', message: null },
     })
+    this.assertPlanningScope(scope, generation)
     const controller = new AbortController()
     this.planningControllers.set(planningId, controller)
+    this.planningOwners.set(planningId, { scope, generation, draftId })
+    this.progress.set(JSON.stringify([scope, draftId]), { owner: scope, draftId, planningId, modelId: modelId ?? draft.planningModelId ?? '', sequence: 0, events: [] })
+    this.notifyPlanningRecord(updated)
     this.emitPlanning({ planningId, draftId, draftRevision: expectedRevision + 1, type: 'arrangement_planning_started', occurredAt: Date.now(), data: {} })
     void this.runPlanning(planningId, draftId, expectedRevision + 1, controller, modelId).catch(error => {
       log.error('background planning failed', {
@@ -338,7 +485,9 @@ export class ArrangementService {
     }, accessRequestIdempotencyKey(draft.id, stepId, employeeId))
     const record = toArrangementAccessRequest(latest, candidate, stepId)
     const requests = [...(draft.employeeAccessRequests ?? []).filter(request => request.requestId !== record.requestId && !(request.stepId === stepId && request.employeeId === employeeId)), record]
-    return this.deps.drafts.update(scope, draftId, expectedRevision, { ...draft, employeeAccessRequests: requests })
+    const updated = await this.deps.drafts.update(scope, draftId, expectedRevision, { ...draft, employeeAccessRequests: requests })
+    this.notifyPlanningRecord(updated)
+    return updated
   }
 
   async getEmployeeAccessRequest(draftId: string, requestId: string): Promise<ArrangementDraft> {
@@ -353,12 +502,15 @@ export class ArrangementService {
     const record = toArrangementAccessRequest(latest, candidate, existing.stepId)
     const requests = [...(draft.employeeAccessRequests ?? []).filter(request => request.requestId !== requestId), record]
     if (record.status === 'APPROVED') await this.deps.employees.refresh()
-    return this.deps.drafts.update(scope, draftId, draft.revision, { ...draft, employeeAccessRequests: requests })
+    const updated = await this.deps.drafts.update(scope, draftId, draft.revision, { ...draft, employeeAccessRequests: requests })
+    this.notifyPlanningRecord(updated)
+    return updated
   }
 
   private readonly planningControllers = new Map<string, AbortController>()
 
   private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController, modelId?: string): Promise<void> {
+    const owner = this.planningOwners.get(planningId)!
     const context: LogFields = { planningId, runId: planningId, draftId, draftRevision: planningRevision, modelId, completedNodeCount: 0, unresolvedStepCount: 0 }
     let diagnosticContext: PlanningDiagnosticContext = { round: 1, employeeScope: 'authorized' }
     let phase: PlanningPhase = 'initialization'
@@ -373,6 +525,7 @@ export class ArrangementService {
     log.info('planning phase started', { ...context, ...diagnosticContext, phase })
     try {
       const current = await this.getDraft(draftId)
+      this.assertPlanningScope(owner.scope, owner.generation)
       context.taskTitle = current.goal
       if (current.attachmentCandidates?.some(candidate => candidate.mustUse) && !this.deps.attachments) {
         throw new AppError('INVALID_STATE', { message: '自动编排无法读取已要求使用的附件。' })
@@ -391,6 +544,7 @@ export class ArrangementService {
       context.unresolvedStepCount = current.unresolvedSteps?.length ?? 0
       nextPhase('employee-loading')
       const authorized = await this.loadAuthorizedPlannerEmployees({ ...context, ...diagnosticContext })
+      this.assertPlanningScope(owner.scope, owner.generation)
       context.employeeCount = authorized.length
       let planningDraft: ArrangementPlannerDraft = planningSource
       let employees: ArrangementPlannerEmployee[] = authorized
@@ -402,6 +556,7 @@ export class ArrangementService {
         diagnosticContext,
         onProgress: event => this.emitPlanning(event),
       })
+      this.assertPlanningScope(owner.scope, owner.generation)
       const intentAnalysis = result.intentAnalysis ?? current.intentAnalysis ?? undefined
       let unresolvedSteps = result.unresolvedSteps ?? []
       let candidateMatches = result.candidateMatches ?? []
@@ -411,6 +566,7 @@ export class ArrangementService {
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
         nextPhase('employee-loading', { round: 2, employeeScope: 'enterprise' })
         const enterpriseCandidates = await this.deps.candidateEmployees.listEnterprise()
+        this.assertPlanningScope(owner.scope, owner.generation)
         context.employeeCount = enterpriseCandidates.length
         if (enterpriseCandidates.length) {
           planningDraft = { ...planningSource, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes, candidateMatches }
@@ -422,6 +578,7 @@ export class ArrangementService {
             diagnosticContext,
             onProgress: event => this.emitPlanning(event),
           })
+          this.assertPlanningScope(owner.scope, owner.generation)
           executableNodes = mergeExecutableNodes(executableNodes, sanitizePlannerNodes(result.nodes, current.nodes))
           unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
           context.completedNodeCount = executableNodes.length
@@ -437,6 +594,7 @@ export class ArrangementService {
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
         nextPhase('employee-loading', { round: 3, employeeScope: 'platform' })
         const platform = await this.deps.candidateEmployees.listPlatform()
+        this.assertPlanningScope(owner.scope, owner.generation)
         context.employeeCount = platform.length
         if (platform.length) {
           planningDraft = { ...planningSource, intentAnalysis: intentAnalysis ?? null, unresolvedSteps, nodes: executableNodes, candidateMatches }
@@ -448,6 +606,7 @@ export class ArrangementService {
             diagnosticContext,
             onProgress: event => this.emitPlanning(event),
           })
+          this.assertPlanningScope(owner.scope, owner.generation)
           executableNodes = mergeExecutableNodes(executableNodes, sanitizePlannerNodes(result.nodes, current.nodes))
           unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
           context.completedNodeCount = executableNodes.length
@@ -461,6 +620,7 @@ export class ArrangementService {
       if (controller.signal.aborted) throw new PlanningCancelledError()
       nextPhase('finalization')
       const latest = await this.deps.drafts.get(requireScope(this.deps.scope), draftId)
+      this.assertPlanningScope(owner.scope, owner.generation)
       if (!latest || latest.revision !== planningRevision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') {
         log.info('planning result discarded', { ...context, ...diagnosticContext, phase, reason: 'draft-no-longer-current' })
         return
@@ -475,7 +635,9 @@ export class ArrangementService {
         status: unresolvedSteps.length ? 'awaiting-employee' : 'ready',
         lastPlanning: { planningId, status: 'ready', message: null },
       })
+      this.assertPlanningScope(owner.scope, owner.generation)
       log.info('planning completed', { ...context, ...diagnosticContext, phase, status: updated.status, elapsedMs: Date.now() - phaseStartedAt })
+      this.notifyPlanningRecord(updated)
       this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_completed', occurredAt: Date.now(), data: { title: updated.title } })
     } catch (error) {
       if (error instanceof PlanningCancelledError || controller.signal.aborted) {
@@ -486,6 +648,7 @@ export class ArrangementService {
       }
     } finally {
       this.planningControllers.delete(planningId)
+      this.planningOwners.delete(planningId)
     }
   }
 
@@ -552,9 +715,14 @@ export class ArrangementService {
     // There is no owner-safe draft transition left to write in that state.
     const scope = this.deps.scope.currentScope()
     if (!scope) return
+    const owner = this.planningOwners.get(planningId)
+    if (!owner || owner.generation !== this.generation || owner.scope.memberId !== scope.memberId || owner.scope.enterpriseId !== scope.enterpriseId) return
     const latest = await this.deps.drafts.get(scope, draftId)
+    this.assertPlanningScope(owner.scope, owner.generation)
     if (!latest || latest.revision !== revision || latest.lastPlanning?.planningId !== planningId) return
     const updated = await this.deps.drafts.update(scope, draftId, revision, { ...latest, status: 'editing', lastPlanning: { planningId, status: 'cancelled', message: null } })
+    if (owner.generation !== this.generation) return
+    this.notifyPlanningRecord(updated)
     this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_cancelled', occurredAt: Date.now(), data: {} })
   }
 
@@ -565,15 +733,31 @@ export class ArrangementService {
     // Treat that cleanup race as terminal rather than throwing a second auth error.
     const scope = this.deps.scope.currentScope()
     if (!scope) return
+    const owner = this.planningOwners.get(planningId)
+    if (!owner || owner.generation !== this.generation || owner.scope.memberId !== scope.memberId || owner.scope.enterpriseId !== scope.enterpriseId) return
     const latest = await this.deps.drafts.get(scope, draftId)
+    this.assertPlanningScope(owner.scope, owner.generation)
     if (!latest || latest.revision !== revision || latest.lastPlanning?.planningId !== planningId || latest.status !== 'planning') return
     const message = operationFeedback(error, 'planning').message
     const updated = await this.deps.drafts.update(scope, draftId, revision, { ...latest, status: 'planning-failed', lastPlanning: { planningId, status: 'failed', message } })
+    if (owner.generation !== this.generation) return
+    this.notifyPlanningRecord(updated)
     this.emitPlanning({ planningId, draftId, draftRevision: updated.revision, type: 'arrangement_planning_failed', occurredAt: Date.now(), data: { message: updated.lastPlanning?.message ?? undefined } })
   }
 
   private emitPlanning(event: ArrangementPlanningProgress): void {
-    this.deps.onPlanningEvent?.(event)
+    const owner = this.planningOwners.get(event.planningId)
+    if (!owner || owner.generation !== this.generation) return
+    const current = this.deps.scope.currentScope()
+    if (!current || current.memberId !== owner.scope.memberId || current.enterpriseId !== owner.scope.enterpriseId) return
+    const key = JSON.stringify([owner.scope, event.draftId])
+    const previous = this.progress.get(key)
+    if (!previous || previous.planningId !== event.planningId) return
+    const next = { ...event, owner: owner.scope, sequence: previous.sequence + 1 }
+    const snapshot = { ...previous, sequence: next.sequence, events: [...previous.events, next].slice(-128) }
+    this.progress.set(key, snapshot)
+    void this.deps.planningProgress?.save(owner.scope, snapshot).catch(error => log.error('planning progress persistence failed', { draftId: event.draftId, cause: describeError(error) }))
+    this.deps.onPlanningEvent?.(next)
   }
 
   async validateDraft(draftId: string): Promise<{ valid: boolean; issues: string[]; revision: number }> {
@@ -733,11 +917,12 @@ export class ArrangementService {
         currentSubscriptionId: draft.conversation?.kind === 'general' ? null : primarySubscription,
         createdAt: Date.now(),
       })
-      await this.deps.drafts.update(scope, draft.id, draft.revision, {
+      const confirmedDraft = await this.deps.drafts.update(scope, draft.id, draft.revision, {
         ...draft,
         status: 'confirmed',
         confirmedWorkPlanId: plan.id,
       })
+      this.notifyPlanningRecord(confirmedDraft)
       await this.deps.confirmations?.save(scope, { draftId, revision: expectedRevision, taskId: task.id, idempotencyKey, state: 'committed' })
       success = true
       return { plan, execution: null }

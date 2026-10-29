@@ -392,7 +392,7 @@ export interface ArrangementEmployeeAccessRequest {
 
 export interface ArrangementDraftDocument {
   knowledge?: KnowledgeSelection
-  schemaVersion: 1
+  schemaVersion: 1 | 2
   mode: ArrangementMode
   title: string
   goal: string
@@ -436,6 +436,8 @@ export interface ArrangementExecutionSettings {
 }
 
 export interface ArrangementDraft extends ArrangementDraftDocument {
+  planningModelId?: string
+  planningRequestId?: string
   id: string
   revision: number
   status: ArrangementDraftStatus
@@ -717,6 +719,8 @@ export type ArrangementPlanningProgressType =
   | 'arrangement_planning_cancelled'
 
 export interface ArrangementPlanningProgress {
+  sequence?: number
+  owner?: { memberId: string; enterpriseId: string }
   planningId: string
   draftId: string
   draftRevision: number

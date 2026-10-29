@@ -1,6 +1,7 @@
 import type { SkillVersion } from '../../shared/platform-supplement-contracts';
 import type { LocalSkillSubmission, SkillLibraryItem } from '../../shared/skill-library';
-import { localSkillVersionStatus, skillVersionLabel, skillVersionStatus } from './skill-labels';
+import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../shared/skill-library';
+import { localSkillVersionStatus, skillSelectionValue, skillVersionLabel, skillVersionStatus } from './skill-labels';
 import { uniqueSkillBindings } from './skill-list-model';
 
 export interface SkillVersionEntry {
@@ -41,6 +42,24 @@ export function buildSkillVersions(skill: SkillLibraryItem): SkillVersionEntry[]
 
 export function findSkillVersion(entries: readonly SkillVersionEntry[], id: string | null | undefined): SkillVersionEntry | undefined {
   return id ? entries.find(entry => entry.aliases.includes(id)) : undefined;
+}
+
+export function buildSkillSelectionOptions(skill: SkillLibraryItem): SkillVersionEntry[] {
+  const bindings = uniqueSkillBindings(skill);
+  const labels = [...new Set(bindings.map(binding => binding.currentVersion ? skillVersionLabel(binding.currentVersion) : '暂无可用版本'))];
+  return [{
+    id: FOLLOW_PLATFORM_SKILL_VERSION, aliases: [FOLLOW_PLATFORM_SKILL_VERSION],
+    label: labels.join(' / ') || '暂无可用版本', status: '',
+    usable: bindings.length > 0 && bindings.every(binding => binding.currentVersion !== null),
+    usedBy: bindings.filter(binding => skillSelectionValue({ ...skill, bindings: [binding] }) === FOLLOW_PLATFORM_SKILL_VERSION).map(binding => binding.subscriptionId),
+  }, ...buildSkillVersions(skill).filter(entry => entry.local || entry.version?.scope === 'PERSONAL')];
+}
+
+export function unifiedSkillSelection(skill: SkillLibraryItem, entries = buildSkillSelectionOptions(skill)): SkillVersionEntry | undefined {
+  const bindings = uniqueSkillBindings(skill);
+  const selected = bindings.map(binding => findSkillVersion(entries, skillSelectionValue({ ...skill, bindings: [binding] })));
+  const first = selected[0];
+  return first && selected.every(entry => entry?.id === first.id) ? first : undefined;
 }
 
 export function unifiedSkillVersion(skill: SkillLibraryItem, entries = buildSkillVersions(skill)): SkillVersionEntry | undefined {

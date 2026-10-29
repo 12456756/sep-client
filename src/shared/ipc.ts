@@ -1,5 +1,6 @@
 import type { KnowledgeSelection } from './knowledge-selection'
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
+import type { AutoPlanningInput, PlanningRecordChange, PlanningRecordSnapshot, PlanningRecordSummary } from './auto-planning'
 import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
 import type { DocumentPreview, DocumentPreviewRequest } from './document-preview'
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
@@ -385,6 +386,10 @@ export interface ElectronAPI {
   previewArrangementDocument: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { data?: DocumentPreview }>
   confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
+  listPlanningRecords: () => Promise<IpcCommandResult & { records?: PlanningRecordSummary[] }>
+  getPlanningRecord: (draftId: string) => Promise<IpcCommandResult & { snapshot?: PlanningRecordSnapshot }>
+  createAndPlanArrangement: (input: AutoPlanningInput) => Promise<IpcCommandResult & { snapshot?: PlanningRecordSnapshot }>
+  onPlanningRecordChanged: (callback: (change: PlanningRecordChange) => void) => () => void
   createArrangementDraft: (input: ArrangementDraftDocument) => Promise<ArrangementDraftResult>
   getArrangementDraft: (draftId: string) => Promise<ArrangementDraftResult>
   updateArrangementExecutionSettings: (input: { draftId: string; expectedRevision: number; settings: ArrangementExecutionSettings }) => Promise<ArrangementDraftResult>

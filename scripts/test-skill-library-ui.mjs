@@ -33,9 +33,9 @@ window.library=[{capability:{id:'cap',name:'数据分析',description:'读取数
 window.calls=[];window.previewCalls=[];window.failUpload=false;window.failList=false;window.failSelect=false;window.failSave=false;window.skippedCount=0;
 const makeEmployee=id=>({id,name:id==='sub-a'?'数据分析师':'报告撰写员',availability:'ready',assignedToMe:true,allowedModels:[],skillIds:['cap'],goodAt:[],cannotDo:[],permissions:[],avatar:null});
 window.electronAPI={
- listSkillLibrary:async()=>window.failList?{success:false,error:{message:'平台连接失败'}}:window.limited?{success:false,error:{statusCode:429,message:'请在 2 秒后重试'}}:{success:true,skippedCount:window.skippedCount,data:structuredClone(window.memberId==='other'?window.library.map(item=>({...item,versions:item.versions.filter(v=>v.scope!=='PERSONAL'),localVersions:[],usableVersionIds:['public','platform'],bindings:item.bindings.map(binding=>({...binding,selectedVersionId:'public'}))})):window.library)},
+ listSkillLibrary:async()=>window.failList?{success:false,error:{message:'平台连接失败'}}:window.limited?{success:false,error:{statusCode:429,message:'请在 2 秒后重试'}}:{success:true,skippedCount:window.skippedCount,data:structuredClone(window.memberId==='other'?window.library.map(item=>({...item,versions:item.versions.filter(v=>v.scope!=='PERSONAL'),localVersions:[],usableVersionIds:['public','platform'],bindings:item.bindings.map(binding=>({...binding,selectionMode:'follow-platform',selectedVersionId:'public'}))})):window.library)},
  previewLibrarySkill:async input=>{window.previewCalls.push(input);if(window.failPreview)return {success:false,error:{message:'读取失败测试'}};return {success:true,data:window.sources[input.versionId]??'# 技能内容\n'};},
- selectSkillVersion:async input=>{window.calls.push({kind:'select',...input});if(window.failSelect)return {success:false,error:{message:'版本切换失败测试'}};if(window.delaySelect)await new Promise(resolve=>window.resolveSelect=resolve);window.library=window.library.map(item=>item.capability.id!==input.capabilityId?item:({...item,bindings:item.bindings.map(b=>({...b,selectedVersionId:input.versionId}))}));return {success:true};},
+ selectSkillVersion:async input=>{window.calls.push({kind:'select',...input});if(window.failSelect)return {success:false,error:{message:'版本切换失败测试'}};if(window.delaySelect)await new Promise(resolve=>window.resolveSelect=resolve);window.library=window.library.map(item=>item.capability.id!==input.capabilityId?item:({...item,bindings:item.bindings.map(b=>({...b,selectionMode:input.versionId==='follow-platform'?'follow-platform':'personal',selectedVersionId:input.versionId==='follow-platform'?b.currentVersion.id:input.versionId}))}));return {success:true};},
  savePersonalSkill:async input=>{window.calls.push({kind:'save',...input});if(window.failSave)return {success:false,error:{message:'保存失败测试'}};if(window.delaySave)await new Promise(resolve=>window.resolveSave=resolve);window.sources[input.idempotencyKey]=input.request.content;const version={...approved,id:'saved-'+input.idempotencyKey,status:'PENDING_ENTERPRISE_REVIEW',createdAt:new Date().toISOString(),changeSummary:input.request.changeSummary};const item=window.library.find(s=>s.capability.id===input.request.capabilityId);if(!item.localVersions.some(v=>v.idempotencyKey===input.idempotencyKey))item.localVersions.push({...input,createdAt:new Date().toISOString(),...(window.failUpload?{}:{uploadedVersion:version})});item.usableVersionIds.push(input.idempotencyKey);if(window.failUpload)return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:false}};window.sources[version.id]=input.request.content;item.versions.push(version);return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:true,version}};},
  retryPersonalSkillUpload:async input=>{window.calls.push({kind:'retry',...input});const item=window.library.find(s=>s.capability.id===input.capabilityId);const local=item.localVersions.find(v=>v.idempotencyKey===input.idempotencyKey);const version={...approved,id:'retry-saved',status:'PENDING_ENTERPRISE_REVIEW',changeSummary:local.request.changeSummary};window.sources[version.id]=local.request.content;item.versions.push(version);item.localVersions=item.localVersions.map(v=>v.idempotencyKey===input.idempotencyKey?{...v,uploadedVersion:version}:v);return {success:true,data:{idempotencyKey:input.idempotencyKey,uploaded:true,version}};},
 };
@@ -89,7 +89,7 @@ createRoot(document.getElementById('root')).render(React.createElement(Fixture))
     assert.deepEqual(await page.getByLabel('版本范围').locator('option').allTextContents(), ['全部版本', '个人', '企业', '平台']);
     assert.equal(await page.locator('.skill-row').count(), 1);
     assert.equal(await page.locator('.skill-row select').count(), 1);
-    assert.equal(await candidate.locator('option:checked').textContent(), '多个版本');
+    assert.equal(await candidate.locator('option:checked').textContent(), '企业版 1.2.0');
     await page.getByLabel('搜索技能或员工').fill('数据分析师');
     await page.getByText('找到 1 / 1 个技能', { exact: true }).waitFor();
     await page.getByRole('button', { name: '筛选员工：报告撰写员' }).click();
@@ -128,7 +128,7 @@ createRoot(document.getElementById('root')).render(React.createElement(Fixture))
     const key = await savedKey();
     assert.equal(await page.evaluate(() => window.calls.find(c => c.kind === 'save').request.content), original + '\n## 个人调整\n明确输出验证依据。\n');
     await page.getByRole('button', { name: '返回列表切换', exact: true }).click();
-    assert.equal(await candidate.inputValue(), '');
+    assert.equal(await candidate.inputValue(), 'follow-platform');
     assert.equal(await candidate.locator('option[value="' + key + '"]').getAttribute('disabled'), null);
     await select(key);
     assert.equal(await page.evaluate(key => window.library[0].bindings.every(b => b.selectedVersionId === key), key), true);
@@ -145,14 +145,14 @@ createRoot(document.getElementById('root')).render(React.createElement(Fixture))
     await select('approved');
     await toList();
     await page.evaluate(() => { window.failSelect = true; });
-    await candidate.selectOption('public');
+    await candidate.selectOption('follow-platform');
     await page.getByRole('alert').filter({ hasText: '版本切换失败测试' }).waitFor();
     assert.equal(await page.evaluate(() => window.library[0].bindings.every(b => b.selectedVersionId === 'approved')), true);
     assert.equal(await candidate.inputValue(), 'approved');
     await page.evaluate(() => { window.failSelect = false; });
     await page.getByRole('button', { name: '重试切换', exact: true }).click();
     await page.getByRole('status').filter({ hasText: /^已切换为/ }).waitFor();
-    assert.equal(await candidate.inputValue(), 'public');
+    assert.equal(await candidate.inputValue(), 'follow-platform');
     assert.equal(await page.getByLabel('按员工筛选').inputValue(), 'sub-b');
     assert.equal(await page.getByLabel('技能排序').inputValue(), 'recent');
     log('PASS layout/read/edit/save/apply/aliases/review/filter return: ' + width);
@@ -173,14 +173,14 @@ createRoot(document.getElementById('root')).render(React.createElement(Fixture))
   assert.equal(await candidate.inputValue(), 'approved');
   await candidate.selectOption('approved');
   assert.equal(await page.evaluate(() => window.calls.filter(call => call.kind === 'select').length), 1);
-  await candidate.selectOption('platform');
+  await candidate.selectOption('follow-platform');
   await page.getByText('切换中…', { exact: true }).waitFor();
   await page.evaluate(() => window.switchUser());
   await candidate.waitFor();
-  assert.equal(await candidate.inputValue(), 'public');
+  assert.equal(await candidate.inputValue(), 'follow-platform');
   await page.evaluate(() => window.resolveSelect());
-  await page.waitForFunction(() => window.library[0].bindings.every(binding => binding.selectedVersionId === 'platform'));
-  assert.equal(await candidate.inputValue(), 'public');
+  await page.waitForFunction(() => window.library[0].bindings.every(binding => binding.selectionMode === 'follow-platform' && binding.selectedVersionId === binding.currentVersion.id));
+  assert.equal(await candidate.inputValue(), 'follow-platform');
   assert.equal(await page.getByRole('status').filter({ hasText: /^已切换为/ }).count(), 0);
   log('PASS inline switch busy guard, duplicate prevention and late identity result isolation');
 

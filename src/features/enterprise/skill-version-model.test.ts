@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SkillLibraryItem } from '../../shared/skill-library';
-import { buildSkillVersions, findSkillVersion, initialSkillViewingVersion, skillReadingParts, unifiedSkillVersion } from './skill-version-model';
+import { buildSkillSelectionOptions, buildSkillVersions, findSkillVersion, initialSkillViewingVersion, skillReadingParts, unifiedSkillSelection, unifiedSkillVersion } from './skill-version-model';
 
 const approved = { id: 'enterprise', capabilityId: 'skill', scope: 'ENTERPRISE', version: '1.0', status: 'ENTERPRISE_APPROVED' };
 const uploaded = { ...approved, id: 'uploaded', scope: 'PERSONAL', status: 'PENDING_ENTERPRISE_REVIEW', createdAt: '2026-10-20' };
@@ -33,6 +33,34 @@ test('mixed and unavailable usage do not create false uniformity, source only se
 test('no versions returns an empty viewing ID; dates sort without inventing timestamps', () => {
   assert.equal(initialSkillViewingVersion({ ...skill, versions: [], localVersions: [] }), '');
   assert.deepEqual(buildSkillVersions(skill).map(entry => entry.id), ['local', 'enterprise']);
+});
+
+test('selection offers the current public release and personal versions without removing public history', () => {
+  const historical = { ...approved, id: 'old', version: '0.9' };
+  const item = { ...skill, versions: [...skill.versions, historical], usableVersionIds: [...skill.usableVersionIds, historical.id] };
+  const options = buildSkillSelectionOptions(item);
+  assert.deepEqual(options.map(option => option.id), ['follow-platform', 'local']);
+  assert.equal(options[0].label, '企业版 1.0');
+  assert.equal(options[0].usable, true);
+  assert.equal(buildSkillVersions(item).length, 3);
+  assert.equal(unifiedSkillSelection(item, options)?.id, 'local');
+});
+
+test('public followers are one selection even when employee releases differ', () => {
+  const newer = { ...approved, id: 'enterprise-v2', version: '2.0' };
+  const item: SkillLibraryItem = { ...skill, versions: [...skill.versions, newer], bindings: [
+    { ...skill.bindings[0], selectedVersionId: approved.id, selectionMode: 'follow-platform' },
+    { ...skill.bindings[1], currentVersion: newer, selectedVersionId: newer.id, selectionMode: 'follow-platform' },
+  ] };
+  assert.equal(unifiedSkillSelection(item)?.id, 'follow-platform');
+  assert.equal(buildSkillSelectionOptions(item)[0].label, '企业版 1.0 / 企业版 2.0');
+  assert.equal(unifiedSkillSelection({ ...item, bindings: [item.bindings[0], skill.bindings[1]] }), undefined);
+});
+
+test('missing public releases disable following but do not disable owner personal versions', () => {
+  const item = { ...skill, bindings: skill.bindings.map(binding => ({ ...binding, currentVersion: null })) };
+  assert.equal(buildSkillSelectionOptions(item)[0].usable, false);
+  assert.equal(unifiedSkillSelection(item)?.id, 'local');
 });
 test('frontmatter is split for display only and unclosed metadata is ordinary text', () => {
   for (const newline of ['\n', '\r\n']) {
