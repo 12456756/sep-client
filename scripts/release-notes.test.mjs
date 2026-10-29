@@ -39,11 +39,11 @@ test('pure release notes reject invalid metadata and oversized or binary changes
   }
 })
 
-test('release notes argument parser keeps beta default and rejects conflicting channels and unsupported flags', () => {
-  assert.deepEqual(parseReleaseNotesArguments([], {}), { channel: 'beta', outputDir: 'dist', changesFile: undefined })
+test('release notes argument parser defaults to stable and rejects conflicting channels and unsupported flags', () => {
+  assert.deepEqual(parseReleaseNotesArguments([], {}), { channel: 'stable', outputDir: 'dist', changesFile: undefined })
   assert.equal(parseReleaseNotesArguments([], { SEP_RELEASE_CHANNEL: 'stable' }).channel, 'stable')
   assert.deepEqual(parseReleaseNotesArguments(['beta', 'dist/beta', '--changes-file', 'changes.txt'], { SEP_RELEASE_CHANNEL: 'beta' }), { channel: 'beta', outputDir: 'dist/beta', changesFile: 'changes.txt' })
-  assert.equal(parseReleaseNotesArguments(['--changes-file', 'changes.txt'], {}).channel, 'beta')
+  assert.equal(parseReleaseNotesArguments(['--changes-file', 'changes.txt'], {}).channel, 'stable')
   assert.throws(() => parseReleaseNotesArguments(['stable'], { SEP_RELEASE_CHANNEL: 'beta' }), /conflict/)
   for (const args of [['invalid'], ['beta', 'dist', 'extra'], ['--unknown'], ['beta', '--changes-file'], ['--changes-file', 'a', '--changes-file', 'b']]) {
     assert.throws(() => parseReleaseNotesArguments(args, {}))
@@ -63,7 +63,7 @@ test('importing release notes is silent and does not read package.json or create
 test('release notes CLI preserves legacy channel/output paths and environment-only selection', t => {
   const cwd = fixture(t)
   assert.equal(run(cwd).status, 0)
-  assert.match(readFileSync(join(cwd, 'dist/RELEASE-NOTES-beta.md'), 'utf8'), /SEP Client 1\.2\.3-beta\.4 \(beta\)/)
+  assert.match(readFileSync(join(cwd, 'dist/RELEASE-NOTES-stable.md'), 'utf8'), /SEP Client 1\.2\.3-beta\.4 \(stable\)/)
   assert.equal(run(cwd, ['stable', 'dist/stable']).status, 0)
   assert.match(readFileSync(join(cwd, 'dist/stable/RELEASE-NOTES-stable.md'), 'utf8'), /production/)
   assert.equal(run(cwd, [], { SEP_RELEASE_CHANNEL: 'stable' }).status, 0)
