@@ -14,6 +14,8 @@ const STATUS = {
 }
 
 export function workStatusLabel(work: WorkItem): string {
+  if (work.planningDraft) return work.planningDraft.status === 'planning' ? '正在规划'
+    : work.status === 'failed' ? '规划失败' : work.status === 'paused' ? '已取消规划' : work.nextUserAction ?? '正在准备规划';
   return STATUS[workStatusIndicator(work)].label
 }
 
@@ -23,8 +25,9 @@ export function workTypeLabel(workType: WorkItem['workType']): string {
 }
 
 export function WorkStatusIcon({ work, hint = true, focusable = true }: { work: WorkItem; hint?: boolean; focusable?: boolean }) {
-  const state = workStatusIndicator(work)
-  const { icon: Icon, label } = STATUS[state]
+  const state = work.planningDraft?.status === 'planning' ? 'running' : workStatusIndicator(work)
+  const { icon: Icon } = STATUS[state]
+  const label = workStatusLabel(work)
   const glyph = <span className={`ent-work-status is-${state}`} role="img" aria-label={label} tabIndex={hint && focusable ? 0 : undefined}><Icon size={18} aria-hidden /></span>
   return hint ? <IconHint label={label}>{glyph}</IconHint> : glyph
 }

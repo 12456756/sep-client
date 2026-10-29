@@ -1,0 +1,70 @@
+<!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><div id="root"></div><script type="module">
+window.$RefreshReg$=()=>{};window.$RefreshSig$=()=>type=>type;window.__vite_plugin_react_preamble_installed__=true;
+await import('/index.css');await import('/styles/enterprise.css');await import('/styles/arrange.css');
+const React=(await import('__REACT__')).default;
+const {createRoot}=(await import('__DOM__')).default;
+const {FeedbackProvider}=await import('/components/feedback/FeedbackProvider.tsx');
+const {WorkHubPage}=await import('/pages/enterprise/WorkHubPage.tsx');
+const {useEnterpriseWorkspace}=await import('/features/enterprise/useEnterpriseWorkspace.ts');
+const owner={memberId:'fixture-user',enterpriseId:'fixture-enterprise'};
+const instances=['调研员','报告撰写员'].map((name,i)=>({id:'sub-'+i,subscriptionId:'sub-'+i,employeeId:'employee-'+i,name,status:'ACTIVE',templateVersion:'1.0.0',template:{id:'employee-'+i,name,avatar:null},department:null,allowedModels:['model'],upgradeAvailable:false}));
+const options={userId:owner.memberId,userName:'测试用户',enterpriseId:owner.enterpriseId,enterpriseName:'隔离测试',instances,employeeStatuses:[]};
+const attachment={attachmentId:'attachment-a',sha256:'a'.repeat(64),displayName:'促销要求.txt',mediaType:'text/plain',byteLength:128,importSource:'picker',extractionStatus:'ready',warnings:[]};
+const saved=JSON.parse(sessionStorage.getItem('planning-fixture')||'{}');
+const drafts=new Map(saved.drafts||[]),progress=new Map(saved.progress||[]),tasks=new Map(saved.tasks||[]),plans=new Map(saved.plans||[]);
+const listeners=new Map();
+const subscribe=name=>callback=>{const set=listeners.get(name)||new Set();listeners.set(name,set);set.add(callback);return()=>set.delete(callback);};
+const publish=(name,value)=>(listeners.get(name)||[]).forEach(callback=>callback(structuredClone(value)));
+const persist=()=>sessionStorage.setItem('planning-fixture',JSON.stringify({drafts:[...drafts],progress:[...progress],tasks:[...tasks],plans:[...plans]}));
+const summary=draft=>({...draft,workDir:draft.workspace.path,nodes:undefined});
+const changed=draft=>{persist();publish('record',{owner,draftId:draft.id,record:summary(draft)});};
+window.counts={create:0,plan:0,cancel:0,start:0};
+window.lastId=[...drafts.keys()].at(-1);
+window.emit=(type,data={},id=window.lastId)=>{const draft=drafts.get(id),snapshot=progress.get(id);const event={owner,draftId:id,planningId:draft.lastPlanning.planningId,draftRevision:draft.revision,sequence:++snapshot.sequence,occurredAt:Date.now(),type,data};snapshot.events.push(event);persist();publish('planning',event);};
+const startPlan=draft=>{window.counts.plan++;draft.revision++;draft.status='planning';draft.lastPlanning={planningId:crypto.randomUUID(),status:'planning',message:null};drafts.set(draft.id,draft);progress.set(draft.id,{owner,draftId:draft.id,planningId:draft.lastPlanning.planningId,modelId:draft.planningModelId,sequence:0,events:[]});changed(draft);window.emit('arrangement_planning_started',{},draft.id);};
+window.complete=(id=window.lastId)=>{const draft=drafts.get(id);draft.revision++;draft.status='ready';draft.lastPlanning.status='ready';draft.nodes=instances.map((employee,i)=>({id:'node-'+i,subscriptionId:employee.id,modelId:'model',title:['市场调研','撰写报告'][i],instruction:'完成步骤',expectedOutput:'报告',dependsOn:i?['node-0']:[],skillIds:[],requiresUserConfirmation:false}));window.emit('arrangement_plan_ready',{planSummary:'分析市场并生成报告',planSteps:draft.nodes.map(node=>({id:node.id,title:node.title}))},id);changed(draft);window.emit('arrangement_planning_completed',{},id);};
+window.fail=(id=window.lastId)=>{const draft=drafts.get(id);draft.revision++;draft.status='planning-failed';draft.lastPlanning.status='failed';draft.lastPlanning.message='模型请求超时，请稍后重试';changed(draft);window.emit('arrangement_planning_failed',{message:draft.lastPlanning.message},id);};
+window.electronAPI={
+  beginAttachmentImport:async({target})=>({success:true,data:{sessionId:crypto.randomUUID(),target,status:'open',attachments:[]}}),cancelAttachmentImport:async()=>({success:true}),bindAttachmentPaste:()=>()=>{},
+  listAttachments:async()=>({success:true,data:[attachment]}),
+  listSkillLibrary:async()=>({success:true,data:[]}),getAllTasks:async()=>({success:true,tasks:[...tasks.values()]}),getTask:async id=>({success:true,task:tasks.get(id)}),getTaskMessages:async()=>({success:true,messages:[]}),getTaskTimeline:async()=>({success:true,events:[]}),getArrangementPlan:async id=>({success:true,plan:plans.get(id)||null}),getArrangementExecution:async()=>({success:true,execution:null}),
+  onTaskListUpdated:subscribe('tasks'),onTaskUpdated:subscribe('task'),onPiEvent:subscribe('pi'),onArrangementPlanningEvent:subscribe('planning'),onPlanningRecordChanged:subscribe('record'),
+  listPlanningRecords:async()=>({success:true,records:[...drafts.values()].map(summary)}),
+  getPlanningRecord:async id=>({success:true,snapshot:structuredClone({draft:drafts.get(id),progress:progress.get(id)||null})}),
+  createAndPlanArrangement:async input=>{window.counts.create++;if(window.slowCreate)await new Promise(resolve=>{window.releaseCreate=resolve;});const draft={...input.document,...(window.withAttachment?{attachmentSessionId:'session-a',attachmentCandidates:[{attachment:{attachmentId:attachment.attachmentId,sha256:attachment.sha256},mustUse:true}]}:{}),id:crypto.randomUUID(),owner,revision:1,planningModelId:input.modelId,status:'editing',createdAt:Date.now(),updatedAt:Date.now()};window.lastId=draft.id;startPlan(draft);return window.electronAPI.getPlanningRecord(draft.id);},
+  updateArrangementInputs:async({draftId,inputs})=>{window.lastInputs=inputs;const draft=drafts.get(draftId);Object.assign(draft,inputs);draft.revision++;changed(draft);return{success:true,draft:structuredClone(draft)};},
+  planArrangementDraft:async({draftId})=>{startPlan(drafts.get(draftId));return{success:true};},
+  cancelArrangementPlanning:async({draftId})=>{window.counts.cancel++;const draft=drafts.get(draftId);draft.revision++;draft.status='editing';draft.lastPlanning.status='cancelled';changed(draft);window.emit('arrangement_planning_cancelled',{},draftId);return{success:true};},
+  updateArrangementExecutionSettings:async({draftId,settings})=>{const draft=drafts.get(draftId);draft.revision++;draft.workspace.path=settings.workDir;draft.permissions=settings.permissions;changed(draft);return{success:true,draft:structuredClone(draft)};},
+  preflightArrangementDraft:async()=>({success:true,preflight:{canStart:true}}),
+  confirmAndStartArrangement:async({draftId})=>{window.counts.start++;const draft=drafts.get(draftId),id=crypto.randomUUID();const task={id,title:draft.title,prompt:draft.goal,status:'running',workDir:null,createdAt:Date.now(),startedAt:Date.now(),completedAt:null,error:null,files:[],logs:[],ownerId:owner.memberId,ownerEnterpriseId:owner.enterpriseId,subscriptionId:'sub-0',activeRunId:'run-1',workType:{state:'resolved',kind:'arrangement'}};const plan={...draft,id,sourceDraftId:draft.id,sourceDraftRevision:draft.revision,planHash:'fixture'};plans.set(id,plan);tasks.set(id,task);publish('task',task);draft.revision++;draft.status='confirmed';draft.confirmedWorkPlanId=id;changed(draft);return{success:true,plan,execution:{id,status:'running'}};},
+  selectDirectory:async()=>({success:true,path:'D:/fixture'}),
+};
+for(const method of ['updateArrangementExecutionSettings','preflightArrangementDraft','confirmAndStartArrangement','planArrangementDraft','updateArrangementInputs','requestEmployeeAccess']){
+  const original=window.electronAPI[method];
+  if(!original)continue;
+  window.electronAPI[method]=async input=>{
+    if(window.conflictNext===method){
+      window.conflictNext=null;
+      const draft=drafts.get(input.draftId);draft.revision++;persist();window.lastConflictRevision=draft.revision;
+      if(window.failReadOnConflict){window.failReadOnConflict=false;window.failedReadNext=true;}
+      return{success:false,error:{code:'DRAFT_REVISION_CONFLICT',message:'工作安排已更新，请重新加载后再操作'}};
+    }
+    return original(input);
+  };
+}
+const readRecord=window.electronAPI.getPlanningRecord;
+window.electronAPI.getPlanningRecord=async id=>{
+  if(window.failedReadNext){window.failedReadNext=false;return{success:false,error:{code:'NETWORK_ERROR',message:'网络连接失败，请检查网络'}};}
+  return readRecord(id);
+};
+function App(){
+  const workspace=useEnterpriseWorkspace(options);window.workspace=workspace;
+  React.useEffect(()=>{workspace.navigate({name:'arrange',mode:'auto'});},[workspace.navigate]);
+  const hub=['arrange','records','work'].includes(workspace.route.name);
+  return React.createElement('div',{className:'ent-shell',style:{height:'100vh',display:'flex',flexDirection:'column'}},
+    React.createElement('nav',{style:{display:'flex',gap:12,padding:8}},...['首页','员工','工作'].map((label,i)=>React.createElement('button',{key:label,onClick:()=>workspace.navigate(i===0?{name:'home'}:i===1?{name:'employees'}:{name:'records'})},label))),
+    hub?React.createElement(WorkHubPage,{workspace}):React.createElement('main',null,workspace.route.name==='home'?'首页内容':'员工内容'));
+}
+createRoot(document.getElementById('root')).render(React.createElement(FeedbackProvider,null,React.createElement(App)));
+</script></body></html>

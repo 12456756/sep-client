@@ -3,9 +3,9 @@
  * 编排内部再切换「自动 / 手动」，运行设置嵌入各自输入/操作区。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore, useCallback, useRef } from 'react';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
-import { responseError } from '../../shared/arrangement-feedback';
+import { recoverDraftRevisionConflict, responseError } from '../../shared/arrangement-feedback';
 import type { ArrangementDraft } from '../../shared/types';
 import { AutoArrange } from '../../components/enterprise/arrange/AutoArrange';
 import { ChatArrange } from '../../components/enterprise/arrange/ChatArrange';
@@ -22,6 +22,7 @@ import { useModelPreference } from '../../components/workspace/model-preference-
 import { useTaskModel } from '../../features/enterprise/use-task-model';
 
 interface Props {
+  planningDraftId?: string;
   workspace: EnterpriseWorkspace;
   templateId?: string;
   employeeId?: string;
@@ -41,7 +42,16 @@ function stepsFromTemplate(template: WorkTemplate, employees: SiliconEmployee[])
   return steps.map((step, index) => (index ? { ...step, dependsOn: [steps[index - 1]!.id] } : step));
 }
 
-export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWorkCreated }: Props) {
+export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWorkCreated, planningDraftId }: Props) {
+  const controller = workspace.planningController;
+  const saved = useSyncExternalStore(
+    useCallback(listener => controller && planningDraftId ? controller.subscribeRecord(planningDraftId, listener) : () => {}, [controller, planningDraftId]),
+    useCallback(() => planningDraftId ? controller?.getRecord(planningDraftId) : undefined, [controller, planningDraftId]),
+    () => undefined,
+  );
+  const hydrated = useRef(false);
+  const latestRoute = useRef(workspace.route);
+  latestRoute.current = workspace.route;
   /** 只有现在能派活的同事参与安排。暂时不可用的员工选了也开不了工。 */
   const employees = workspace.myEmployees.filter(item => item.availability !== 'unavailable');
   const orchestrationModels = (employees[0]?.allowedModels ?? []).filter(model => employees.every(item => item.allowedModels.includes(model)));
@@ -59,7 +69,14 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
     ? chatEmployees.find(employee => employee.id === chatEmployeeId)?.allowedModels ?? []
     : orchestrationModels;
   const taskModel = useTaskModel(`${mode}:${employeeId ?? ''}:${chatEmployeeId}`, sceneModels, defaultModelId);
-  const settings = { ...runSettings, modelId: activeMode === 'manual' ? runSettings.modelId : taskModel.modelId };
+  const settings = { ...runSettings, modelId: planningDraftId ? runSettings.modelId || saved?.draft.planningModelId || saved?.progress?.modelId || ''
+    : activeMode === 'manual' ? runSettings.modelId : taskModel.modelId };
+  useEffect(() => {
+    if (!saved || hydrated.current) return;
+    hydrated.current = true;
+    setSettings({ ...runSettings, workDir: saved.draft.workspace.path ?? '', permissions: { ...saved.draft.permissions },
+      modelId: saved.draft.planningModelId ?? saved.progress?.modelId ?? '' });
+  }, [saved, runSettings]);
   const changeSettings = (patch: Partial<RunSettings>): void => {
     if (activeMode !== 'manual' && patch.modelId !== undefined) taskModel.select(patch.modelId);
     setSettings(current => ({ ...current, ...patch }));
@@ -90,17 +107,19 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
   // 换画面时把上一屏的淡出状态清掉，否则返回时这一屏是半透明的。
   useEffect(() => {
     setLeaving(null);
+    if (planningDraftId) return;
     setChatEmployeeId(employeeId ?? GENERAL_ASSISTANT_ID);
     setSettings(current => ({ ...current, modelId: '' }));
-  }, [mode, employeeId, activeMode]);
+  }, [mode, employeeId, activeMode, planningDraftId]);
 
   useEffect(() => {
+    if (planningDraftId) return;
     if (activeMode === 'auto') {
       setSettings(current => ({ ...current, permissions: defaultAutoRunSettings().permissions }));
     } else if (activeMode === 'chat') {
       setSettings(current => ({ ...current, permissions: defaultConversationRunSettings().permissions }));
     }
-  }, [activeMode]);
+  }, [activeMode, planningDraftId]);
 
   const go = (next: ArrangeMode) => {
     if (reduced) { workspace.navigate({ name: 'arrange', mode: next }); return; }
@@ -122,17 +141,23 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
       if (!notice.isCurrent()) return draft;
       if (!updated.success || !updated.draft) throw responseError(updated, 'settings');
       draft = updated.draft;
+      controller?.updateDraft(draft);
       const preflight = await window.electronAPI.preflightArrangementDraft({ draftId: draft.id, expectedRevision: draft.revision });
       if (!notice.isCurrent()) return draft;
       if (!preflight.success || !preflight.preflight?.canStart) {
         throw responseError({ error: preflight.error ?? (preflight.preflight?.message ? { message: preflight.preflight.message } : undefined) }, 'preflight');
       }
       const result = await window.electronAPI.confirmAndStartArrangement({ draftId: draft.id, expectedRevision: draft.revision, idempotencyKey: crypto.randomUUID() });
-      if (!notice.isCurrent()) return draft;
       if (!result.success || !result.execution) throw responseError(result, 'start');
-      onWorkCreated?.();
-      workspace.navigate({ name: 'work', workId: result.execution.id });
+      await controller?.load(draft.id);
+      if (!notice.isCurrent()) return draft;
+      const current = latestRoute.current;
+      if (current.name === 'work' && current.workId === draft.id) workspace.replaceRoute({ name: 'work', workId: result.execution.id });
     } catch (cause) {
+      if (!notice.isCurrent()) return draft;
+      if (controller && await recoverDraftRevisionConflict(cause, () => controller.load(draft.id), error => notice.fail(error, 'read'))) {
+        return controller.getRecord(draft.id)?.draft ?? draft;
+      }
       notice.fail(cause, 'start');
     }
     return draft;
@@ -148,7 +173,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
     void workspace.startConversation(id, text, { workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, attachmentSessionId: session?.sessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) }).then(created => { if (created) onWorkCreated?.(); });
   };
 
-  if (!workspace.myEmployees.length) {
+  if (!workspace.myEmployees.length && !planningDraftId) {
     return (
       <div className="ent-arr">
         <Empty title="还没有可以安排的硅基员工">企业管理员给你分配员工后，就可以在这里安排工作了。</Empty>
@@ -161,8 +186,8 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
     : null);
 
   return (
-    <div className={`ent-arr ent-arr-mode-${activeMode}`}>
-      <div className="ent-arr-workbench-head">
+    <div className={`ent-arr ent-arr-mode-${activeMode}${planningDraftId ? ' ent-arr-restored' : ''}`}>
+      {!planningDraftId && <div className="ent-arr-workbench-head">
         <div className="ent-arr-mode-switch" role="tablist" aria-label="安排工作模式">
           <button
             type="button"
@@ -189,7 +214,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
             <button type="button" role="tab" aria-selected={activeMode === 'manual'} className={activeMode === 'manual' ? 'active' : undefined} onClick={() => go('manual')}>手动</button>
           </div>
         ) : null}
-      </div>
+      </div>}
 
       <div className={`ent-arr-view${leaving ? ' leaving' : ''}`} key={`${activeMode}-${employeeId ?? ''}`}>
         {activeMode === 'chat' ? (
@@ -211,6 +236,13 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
 
         {activeMode === 'auto' ? (
           <AutoArrange
+            recordId={planningDraftId}
+            onRecorded={draftId => {
+              if (latestRoute.current.name === 'arrange') {
+                workspace.navigate({ name: 'work', workId: draftId });
+              }
+              onWorkCreated?.();
+            }}
             employees={employees}
             busy={workspace.busy}
             onStart={startAuto}

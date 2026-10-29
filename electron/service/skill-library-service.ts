@@ -10,6 +10,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import type { SkillVersionStore } from '../data/skill-version-store'
 import type { SkillSubmissionStore } from '../data/skill-submission-store'
 import type { LocalSkillSubmission, SaveSkillInput, SaveSkillResult, SkillLibraryItem } from '../../src/shared/skill-library'
+import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../src/shared/skill-library'
 
 interface SkillPlatform {
   skills(employeeId: string, token: string): Promise<unknown>
@@ -104,10 +105,13 @@ export class SkillLibraryService {
         const previous = items.get(skill.capability.id)
         const selected = await this.options.versions.selected(scope, subscription.subscriptionId, skill.capability.id)
         const local = selected ? await this.options.versions.load(scope, subscription.subscriptionId, skill.capability.id, selected) : null
+        const personal = Boolean(local?.localSubmissionId || local?.sourceScope === 'PERSONAL' ||
+          [skill.currentVersion, ...skill.versions].some(version => version?.id === local?.baseSkillVersionId && version?.scope === 'PERSONAL'))
         const versions = [...new Map([...(previous?.versions ?? []), ...(skill.currentVersion ? [skill.currentVersion] : []), ...skill.versions].map(version => [version.id, version])).values()]
         items.set(skill.capability.id, {
           capability: skill.capability, versions, usableVersionIds: [], localVersions: [],
-          bindings: [...(previous?.bindings ?? []), { ...subscription, currentVersion: skill.currentVersion, selectedVersionId: local?.localSubmissionId ?? local?.baseSkillVersionId ?? skill.currentVersion?.id ?? null }],
+          bindings: [...(previous?.bindings ?? []), { ...subscription, currentVersion: skill.currentVersion,
+            selectionMode: personal ? 'personal' : 'follow-platform', selectedVersionId: local?.localSubmissionId ?? local?.baseSkillVersionId ?? skill.currentVersion?.id ?? null }],
         })
       }
     }
@@ -117,6 +121,13 @@ export class SkillLibraryService {
       const submissions = await this.options.submissions.list(scope, item.capability.id)
       return {
         ...item, versions,
+        bindings: item.bindings.map(binding => {
+          const selected = versions.find(version => version.id === binding.selectedVersionId)
+          const local = submissions.some(record => record.idempotencyKey === binding.selectedVersionId)
+          return local || selected?.scope === 'PERSONAL' || binding.selectionMode === 'personal'
+            ? { ...binding, selectionMode: 'personal' as const }
+            : { ...binding, selectionMode: 'follow-platform' as const, selectedVersionId: binding.currentVersion?.id ?? null }
+        }),
         // Selection tracks the actual local source, not a stale upload response.
         usableVersionIds: [
           ...versions.filter(version => canUseSkillVersion(version, scope.memberId)).map(version => version.id),
@@ -246,7 +257,7 @@ export class SkillLibraryService {
         const saved = await this.options.versions.save(scope, {
           subscriptionId: binding.subscriptionId, employeeId: binding.employeeId,
           capabilityId: input.capabilityId, baseSkillVersionId: local.request.parentVersionId,
-          localSubmissionId: local.idempotencyKey,
+          localSubmissionId: local.idempotencyKey, sourceScope: 'PERSONAL',
           versionId: `local-${createHash('sha256').update(local.idempotencyKey).digest('hex')}`,
           version: local.request.changeSummary || '个人修改版', content: local.request.content,
         })
@@ -256,9 +267,31 @@ export class SkillLibraryService {
       return
     }
     const { item, scope, token } = await this.authorized(input.capabilityId)
+    const followPlatform = async (): Promise<void> => {
+      const prepared = await loadBounded(item.bindings, async binding => {
+        this.checkScope(scope)
+        const version = binding.currentVersion
+        if (!version || !canUseSkillVersion(version, scope.memberId)) throw new Error('当前没有可用的发布版本。')
+        const { content } = await this.options.platform.preview(version.id, token)
+        if (!content.trim()) throw new Error('技能原文为空，不能启用。')
+        this.checkScope(scope)
+        const saved = await this.options.versions.savePlatform(scope, { subscriptionId: binding.subscriptionId,
+          employeeId: binding.employeeId, capabilityId: input.capabilityId, baseSkillVersionId: version.id,
+          sourceScope: version.scope as 'PLATFORM' | 'ENTERPRISE' | 'PERSONAL', version: version.version, content })
+        return { binding, saved }
+      })
+      for (const { binding, saved } of prepared) {
+        this.checkScope(scope)
+        await this.options.versions.select(scope, binding.subscriptionId, input.capabilityId, saved.versionId, true)
+      }
+    }
+    if (input.versionId === FOLLOW_PLATFORM_SKILL_VERSION) return followPlatform()
     const versions = await this.options.platform.list({ capabilityId: input.capabilityId }, token)
     const version = versions.find(value => value.id === input.versionId)
     if (!version || !canUseSkillVersion(version, scope.memberId)) throw new Error('该技能版本尚未审核通过或不允许使用。')
+    if (version.scope !== 'PERSONAL') {
+      return followPlatform()
+    }
     const { content } = await this.options.platform.preview(version.id, token)
     if (!content) throw new Error('技能原文为空，不能启用。')
     this.checkScope(scope)
@@ -266,7 +299,7 @@ export class SkillLibraryService {
     for (const binding of item.bindings) {
       const saved = await this.options.versions.savePlatform(scope, {
         subscriptionId: binding.subscriptionId, employeeId: binding.employeeId,
-        capabilityId: input.capabilityId, baseSkillVersionId: version.id, version: version.version, content,
+        capabilityId: input.capabilityId, baseSkillVersionId: version.id, sourceScope: 'PERSONAL', version: version.version, content,
       })
       this.checkScope(scope)
       await this.options.versions.select(scope, binding.subscriptionId, input.capabilityId, saved.versionId)

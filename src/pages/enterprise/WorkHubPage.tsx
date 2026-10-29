@@ -10,11 +10,16 @@ import { WorkDetailPage } from './WorkDetailPage'
 import { WorkListPane } from './WorkListPane'
 import { WorkListActions, type WorkMenuRequest } from './WorkListActions'
 import '../../styles/work-hub.css'
+import { PlanningScope } from '../../features/enterprise/auto-planning-scope'
 
 type CreationRoute = Extract<AppRoute, { name: 'arrange' }>
 
 export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
   const { route } = workspace
+  const resolveWorkId = (id: string | null) => {
+    if (!id || workspace.works.some(work => work.id === id)) return id
+    return workspace.works.find(work => work.recordKey === id)?.id ?? id
+  }
   const [state, setState] = useState<WorkHubState>(() => enterWorkHubRoute({ filters: readWorkRecordFilters(route), selectedWorkId: null }, route))
   const [creation, setCreation] = useState<CreationRoute>(() => route.name === 'arrange' ? route : { name: 'arrange' })
   const [creationVersion, setCreationVersion] = useState(0)
@@ -35,8 +40,8 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
   const nextOrder = refreshWorkOrder(workspace.works, order)
   useLayoutEffect(() => { setOrder(current => refreshWorkOrder(workspace.works, current)) }, [workspace.works])
   const creationRoute = route.name === 'arrange' ? route : creation
-  const selectedWorkId = route.name === 'arrange' ? null : route.name === 'work' ? route.workId
-    : workspace.works.some(work => work.id === state.selectedWorkId) ? state.selectedWorkId : null
+  const selectedWorkId = route.name === 'arrange' ? null : route.name === 'work' ? resolveWorkId(route.workId)
+    : workspace.works.some(work => work.id === resolveWorkId(state.selectedWorkId)) ? resolveWorkId(state.selectedWorkId) : null
   const selectedWork = workspace.works.find(work => work.id === selectedWorkId)
   const records = applyWorkOrder(filterWorkRecords(workspace.works, state.filters), nextOrder)
   const excluded = Boolean(selectedWork && !records.some(work => work.id === selectedWork.id))
@@ -45,7 +50,7 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
     setOrder(refreshWorkOrder(workspace.works))
     if (route.name === 'records') workspace.replaceRoute({ name: 'records', ...filters })
   }
-  return <div className={`ent-work-hub${listOpen ? ' list-open' : ''}`}>
+  return <PlanningScope controller={workspace.planningController}><div className={`ent-work-hub${listOpen ? ' list-open' : ''}`}>
     {listOpen && <WorkListPane works={workspace.works} records={records} selectedWorkId={selectedWorkId} filters={state.filters} onFilters={updateFilters} onSelect={workId => workspace.navigate({ name: 'work', workId })} onCreate={() => workspace.navigate(creation)} onClose={() => { setListOpen(false); dismissWorkMenu() }} onRetryTypes={() => workspace.retryWorkTypes()} menuWorkId={workMenu?.workId ?? null} onWorkMenu={openWorkMenu} />}
     <WorkListActions key={workspace.attachmentScopeKey} works={workspace.works} request={workMenu} busy={workspace.busy} onDismiss={dismissWorkMenu} onRename={workspace.renameWork} onPin={workspace.setWorkPinned} onDelete={workspace.deleteWork} />
     <main className="ent-work-main" aria-label={selectedWork ? `工作：${selectedWork.title}` : '新建工作'}>
@@ -55,7 +60,8 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
       <section className="ent-work-create" hidden={Boolean(selectedWorkId)} aria-label="新建工作">
         <ArrangeWorkPage key={creationVersion} workspace={workspace} templateId={creationRoute.templateId} employeeId={creationRoute.employeeId} mode={creationRoute.mode ?? 'pick'} onWorkCreated={() => setCreationVersion(version => version + 1)} />
       </section>
-      {selectedWorkId && <WorkDetailPage workspace={workspace} workId={selectedWorkId} />}
+      {selectedWork?.planningDraft ? <ArrangeWorkPage key={selectedWork.planningDraft.id} workspace={workspace} mode="auto" planningDraftId={selectedWork.planningDraft.id} />
+        : selectedWorkId && <WorkDetailPage workspace={workspace} workId={selectedWorkId} />}
     </main>
-  </div>
+  </div></PlanningScope>
 }

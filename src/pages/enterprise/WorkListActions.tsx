@@ -25,7 +25,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
   const returnFocus = useRef<HTMLElement | null>(null)
   const returnFallbacks = useRef<HTMLElement[]>([])
   const menuWork = works.find(work => work.id === request?.workId)
-  const cannotDelete = (work: WorkItem) => Boolean(work.isActive || work.status === 'running')
+  const cannotDelete = (work: WorkItem) => Boolean(work.isActive || work.status === 'running' || work.planningDraft?.status === 'planning')
 
   const restoreFocus = () => {
     const target = [returnFocus.current, ...returnFallbacks.current].find(element => element?.isConnected)
@@ -95,10 +95,10 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
     <div id="ent-work-context-menu" ref={menuRef} {...{ popover: 'manual' }} role="menu" aria-label="工作记录操作" className="ent-work-context-menu"
       onKeyDown={handleMenuKey}>
       {menuWork && <>
-        <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onPin(menuWork.id, !menuWork.pinnedAt) }}>
+        {!menuWork.planningDraft && <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onPin(menuWork.id, !menuWork.pinnedAt) }}>
           {menuWork.pinnedAt ? <PinOff size={16} aria-hidden /> : <Pin size={16} aria-hidden />}{menuWork.pinnedAt ? '取消置顶' : '置顶'}
-        </button>
-        <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onRename(menuWork.id) }}><Pencil size={16} aria-hidden />重命名</button>
+        </button>}
+        {!menuWork.planningDraft && <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onRename(menuWork.id) }}><Pencil size={16} aria-hidden />重命名</button>}
         <button type="button" role="menuitem" className="danger" disabled={busy || cannotDelete(menuWork)} aria-describedby={cannotDelete(menuWork) ? 'ent-work-delete-reason' : undefined} onClick={() => { void deleteWork(menuWork.id) }}><Trash2 size={16} aria-hidden />删除</button>
         {cannotDelete(menuWork) && <p id="ent-work-delete-reason">执行中的工作需先终止，再删除记录。</p>}
       </>}

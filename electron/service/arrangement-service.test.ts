@@ -313,6 +313,118 @@ function accessRequest(status: EmployeeAccessRequest['status'] = 'PENDING'): Emp
 }
 
 describe('ArrangementService', () => {
+  it('records a single background plan for concurrent submission retries without creating an execution task', async () => {
+    const result = deferred<ArrangementPlanningResult>()
+    const h = planningHarness(() => result.promise)
+    h.setStored(null)
+    const [first, second] = await Promise.all([h.service.createAndPlan(autoDraft(), 'request-a', 'model-a'), h.service.createAndPlan(autoDraft(), 'request-a', 'model-a')])
+    assert.equal(first.draft.id, second.draft.id)
+    await eventually(() => h.plannerCalls() === 1)
+    assert.equal(h.taskCreates(), 0)
+    assert.equal((await h.service.listPlanningRecords())[0]?.status, 'planning')
+    result.resolve({ title: 'Result', nodes: [plannedNode] })
+    await eventually(() => h.stored?.status === 'ready')
+    assert.equal((await h.service.createAndPlan(autoDraft(), 'request-a', 'model-a')).draft.status, 'ready')
+    assert.equal(h.plannerCalls(), 1)
+  })
+
+  it('keeps an orphaned plan as an interrupted record after a process restart', async () => {
+    const h = planningHarness(async () => ({ title: 'Result', nodes: [plannedNode] }))
+    h.setStored(persisted({ ...autoDraft(), status: 'planning', lastPlanning: { planningId: 'orphan', status: 'planning', message: null } }, 2))
+    const [record] = await h.service.listPlanningRecords()
+    assert.equal(record.status, 'planning-failed')
+    assert.equal(record.lastPlanning?.message, '规划已中断，请重新规划')
+    assert.equal(h.plannerCalls(), 0)
+  })
+
+  it('ignores old planning results and progress after logout and returning to the same account', async () => {
+    const result = deferred<ArrangementPlanningResult>()
+    let input: PlannerInput | undefined
+    const h = planningHarness(value => { input = value; return result.promise })
+    await h.service.startPlanning('draft-a', 1, 'model-a')
+    await eventually(() => input !== undefined)
+    h.service.cancelAllPlanning()
+    const count = h.events.length
+    input!.onProgress?.({ draftId: 'draft-a', planningId: input!.planningId, draftRevision: 2, occurredAt: 4, type: 'arrangement_plan_ready', data: {} })
+    result.resolve({ title: 'Old result', nodes: [plannedNode] })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(h.events.length, count)
+    assert.equal(h.stored?.status, 'planning')
+    assert.notEqual(h.stored?.title, 'Old result')
+  })
+
+  it('does not list the old planning record after its confirmed task is deleted', async () => {
+    const h = planningHarness(async () => ({ title: 'Result', nodes: [] }))
+    h.setStored(persisted({ ...autoDraft(), status: 'confirmed', confirmedWorkPlanId: 'deleted-task' }))
+    assert.deepEqual(await h.service.listPlanningRecords(), [])
+  })
+
+  it('does not republish an archived media task as a planning record after reopening the session', async () => {
+    const stored = persisted({ ...autoDraft(), status: 'confirmed', confirmedWorkPlanId: 'media-task' })
+    let archived = false
+    const dependencies = serviceDeps({
+      drafts: { async list() { return [structuredClone(stored)] }, async get() { return structuredClone(stored) } },
+      taskManager: { async getTask() { return { id: 'media-task' } } },
+      mediaStore: { async isArchived(owner: TaskOwnerScope, taskId: string) {
+        assert.deepEqual(owner, scope)
+        assert.equal(taskId, 'media-task')
+        return archived
+      } },
+    })
+    const service = new ArrangementService(dependencies)
+    assert.equal((await service.listPlanningRecords())[0]?.id, stored.id)
+    archived = true
+    assert.deepEqual(await service.listPlanningRecords(), [])
+    assert.deepEqual(await new ArrangementService(dependencies).listPlanningRecords(), [])
+    await assert.rejects(service.getPlanningRecord(stored.id),
+      (error: unknown) => error instanceof AppError && error.code === 'NOT_FOUND')
+    assert.equal(stored.status, 'confirmed')
+  })
+
+  it('does not reopen a planning record whose confirmed task was removed', async () => {
+    const h = planningHarness(async () => ({ title: 'Result', nodes: [] }))
+    h.setStored(persisted({ ...autoDraft(), status: 'confirmed', confirmedWorkPlanId: 'deleted-task' }))
+    await assert.rejects(h.service.getPlanningRecord('draft-a'),
+      (error: unknown) => error instanceof AppError && error.code === 'NOT_FOUND')
+  })
+
+  it('keeps historical unconfirmed automatic drafts visible without a migration or creation cutoff', async () => {
+    const drafts = (['editing', 'ready', 'planning-failed', 'awaiting-employee'] as const)
+      .map((status, index) => ({ ...persisted({ ...autoDraft(), status }), id: `historical-${index}`, createdAt: 1 }))
+    const service = new ArrangementService(serviceDeps({
+      drafts: { async list() { return drafts } },
+      mediaStore: { async isArchived() { assert.fail('Unconfirmed drafts have no task archive to check') } },
+    }))
+    assert.deepEqual((await service.listPlanningRecords()).map(record => record.id), drafts.map(draft => draft.id))
+  })
+
+  it('does not return old account planning records when the session changes during an archive read', async () => {
+    const archive = deferred<boolean>()
+    const entered = deferred<void>()
+    const h = planningHarness(async () => ({ title: 'Result', nodes: [] }), {
+      taskManager: { async getTask() { return { id: 'media-task' } } },
+      mediaStore: { async isArchived() { entered.resolve(); return archive.promise } },
+    })
+    h.setStored(persisted({ ...autoDraft(), status: 'confirmed', confirmedWorkPlanId: 'media-task' }))
+    const records = h.service.listPlanningRecords()
+    const rejected = assert.rejects(records, (error: unknown) => error instanceof AppError && error.code === 'AUTH_REQUIRED')
+    try {
+      await entered.promise
+      h.setScope({ memberId: 'other-member', enterpriseId: scope.enterpriseId })
+    } finally { archive.resolve(false) }
+    await rejected
+  })
+
+  it('does not expose a planning record when its deletion archive cannot be read', async () => {
+    const h = planningHarness(async () => ({ title: 'Result', nodes: [] }), {
+      taskManager: { async getTask() { return { id: 'media-task' } } },
+      mediaStore: { async isArchived() { throw new Error('Archive unavailable') } },
+    })
+    h.setStored(persisted({ ...autoDraft(), status: 'confirmed', confirmedWorkPlanId: 'media-task' }))
+    await assert.rejects(h.service.listPlanningRecords(), /Archive unavailable/)
+    await assert.rejects(h.service.getPlanningRecord('draft-a'), /Archive unavailable/)
+  })
+
   it('does not accept client-supplied nodes in an automatic draft', async () => {
     let creates = 0
     const harness = planningHarness(async () => ({ nodes: [] } as never), {
@@ -689,6 +801,26 @@ describe('ArrangementService', () => {
 
     gate.resolve({ title: 'Planned report', nodes: [plannedNode] })
     await eventually(() => harness.stored?.status === 'ready')
+  })
+
+  it('reuses an active planning attempt and exposes its current progress after reopening', async () => {
+    const gate = deferred<ArrangementPlanningResult>()
+    const harness = planningHarness(async input => {
+      input.onProgress({ planningId: input.planningId, draftId: 'draft-a', draftRevision: 2,
+        type: 'arrangement_plan_ready', occurredAt: Date.now(), data: { planSummary: 'Saved progress', planSteps: [{ id: 'n1', title: 'Research' }] } })
+      return gate.promise
+    })
+    const first = await harness.service.startPlanning('draft-a', 1, 'model-a')
+    const second = await harness.service.startPlanning('draft-a', 1, 'model-a')
+    assert.equal(second.planningId, first.planningId)
+    await eventually(() => harness.plannerCalls() === 1)
+    const reopened = await harness.service.getPlanningRecord('draft-a')
+    assert.equal(reopened.draft.status, 'planning')
+    assert.equal(reopened.progress?.events.at(-1)?.data.planSummary, 'Saved progress')
+    assert.equal(harness.taskCreates(), 0)
+    gate.resolve({ title: 'Planned report', nodes: [plannedNode] })
+    await eventually(() => harness.stored?.status === 'ready')
+    assert.equal((await harness.service.listPlanningRecords())[0]?.status, 'ready')
   })
 
   it('loads authorized employee capability summaries into the planner catalog', async () => {

@@ -1,4 +1,5 @@
 import type { NotificationUpdate } from '../../src/shared/notification-contracts'
+import type { PlanningRecordChange } from '../../src/shared/auto-planning'
 /**
  * electron/runtime/task-notifier.ts — 任务状态推送出口（只有接口）
  *
@@ -19,6 +20,7 @@ export interface TaskNotifier {
  * 所以两个接口分开声明——按最小需要注入，而不是把整个出口塞给每个使用者。
  */
 export interface RendererPort extends TaskNotifier {
+  planningRecordChanged?(change: PlanningRecordChange): void
   /** SEP platform notification updates. Optional for existing task-only ports. */
   notificationUpdated?(update: NotificationUpdate): void
   /** run 的执行事件流。 */

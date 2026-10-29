@@ -3,10 +3,11 @@ import { useState } from 'react';
 import { Empty } from '../../components/enterprise/atoms';
 import { EmployeeFace } from '../../components/enterprise/EmployeeFace';
 import { SkillDetail } from '../../components/enterprise/skills/SkillDetail';
-import { localSkillVersionStatus, selectedSkillVersion, skillVersionLabel, skillVersionStatus } from '../../features/enterprise/skill-labels';
+import { localSkillVersionStatus, skillSelectionValue, skillVersionLabel, skillVersionStatus } from '../../features/enterprise/skill-labels';
 import { filterSkillLibrary } from '../../features/enterprise/skill-search';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SkillLibraryItem } from '../../shared/skill-library';
+import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../shared/skill-library';
 import '../../styles/skills.css';
 
 interface Props { workspace: EnterpriseWorkspace; skillId?: string }
@@ -45,7 +46,7 @@ export function SkillsPage({ workspace, skillId }: Props) {
 function SkillCard({ skill, workspace }: { skill: SkillLibraryItem; workspace: EnterpriseWorkspace }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
-  const selected = selectedSkillVersion(skill);
+  const selected = skillSelectionValue(skill);
   const publicVersions = [...new Set(skill.bindings.map(binding => binding.currentVersion ? skillVersionLabel(binding.currentVersion) : '暂无可用版本'))];
   const select = async (versionId: string): Promise<void> => {
     setSaving(true); setError('');
@@ -64,8 +65,9 @@ function SkillCard({ skill, workspace }: { skill: SkillLibraryItem; workspace: E
         return <span className="skill-employee" key={binding.subscriptionId} title={`${employee?.name ?? binding.employeeId} · ${active ? skillVersionLabel(active) : local?.request.changeSummary || (local ? '个人修改版' : '版本不可用')}`}><EmployeeFace employee={employee} name={employee?.name ?? binding.employeeId} size="sm" round /><span>{employee?.name ?? binding.employeeId}</span></span>;
       })}</div></div>
       <label className="skill-active-version"><span className="skill-caption">当前使用版本</span><select className="ent-select" aria-label={`${skill.capability.name}当前使用版本`} value={selected} disabled={saving} onChange={event => void select(event.target.value)}>
-        {!selected ? <option value="" disabled>{skill.bindings.some(binding => binding.selectedVersionId) ? '员工使用不同版本' : '未选择版本'}</option> : !skill.versions.some(version => version.id === selected) && !skill.localVersions.some(version => version.idempotencyKey === selected) ? <option value={selected} disabled>已选版本不可用，请重新选择</option> : null}
-        {skill.versions.map(version => <option key={version.id} value={version.id} disabled={!skill.usableVersionIds.includes(version.id)}>{skillVersionLabel(version)}{!skill.usableVersionIds.includes(version.id) ? ` · ${skillVersionStatus(version.status)}` : ''}</option>)}
+        {!selected ? <option value="" disabled>员工使用不同版本</option> : selected !== FOLLOW_PLATFORM_SKILL_VERSION && !skill.versions.some(version => version.id === selected) && !skill.localVersions.some(version => version.idempotencyKey === selected) ? <option value={selected} disabled>已选版本不可用，请重新选择</option> : null}
+        <option value={FOLLOW_PLATFORM_SKILL_VERSION} disabled={skill.bindings.some(binding => !binding.currentVersion)}>{publicVersions.join(' / ')}</option>
+        {skill.versions.filter(version => version.scope === 'PERSONAL').map(version => <option key={version.id} value={version.id} disabled={!skill.usableVersionIds.includes(version.id)}>{skillVersionLabel(version)}{!skill.usableVersionIds.includes(version.id) ? ` · ${skillVersionStatus(version.status)}` : ''}</option>)}
         {skill.localVersions.map(version => <option key={version.idempotencyKey} value={version.idempotencyKey} disabled={!skill.usableVersionIds.includes(version.idempotencyKey)}>{version.request.changeSummary || '个人修改版'} · {localSkillVersionStatus(skill, version)}</option>)}
       </select></label>
       <button className="ent-btn primary" onClick={() => workspace.navigate({ name: 'skills', skillId: skill.capability.id })}>查看并调整<ChevronRight size={15} aria-hidden /></button>

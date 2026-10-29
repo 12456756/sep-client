@@ -177,6 +177,8 @@ export interface WorkTimelineEntry {
 }
 
 export interface WorkItem {
+  recordKey?: string;
+  planningDraft?: import('../../shared/auto-planning').PlanningRecordSummary;
   id: string;
   title: string;
   /** 本机持久化的置顶时间，未置顶为 null。 */

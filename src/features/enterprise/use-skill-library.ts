@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PersonalSkillVersionRequest } from '../../shared/platform-supplement-contracts';
 import type { SaveSkillResult, SkillLibraryItem } from '../../shared/skill-library';
+import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../shared/skill-library';
 import { classifySkillLoadError, formatSkillRateLimitMessage, type SkillLoadError, type SkillLoadErrorKind } from './skill-load-state';
 
 const FOCUS_REFRESH_COOLDOWN_MS = 30_000;
@@ -110,7 +111,9 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
   const selectSkillVersion = useCallback(async (capabilityId: string, versionId: string): Promise<void> => {
     const result = await window.electronAPI.selectSkillVersion({ capabilityId, versionId });
     if (!result.success) throw new Error(result.error?.message || '版本切换失败');
-    setSkills(current => current.map(item => item.capability.id === capabilityId ? { ...item, bindings: item.bindings.map(binding => ({ ...binding, selectedVersionId: versionId })) } : item));
+    setSkills(current => current.map(item => item.capability.id === capabilityId ? { ...item, bindings: item.bindings.map(binding => ({ ...binding,
+      selectionMode: versionId === FOLLOW_PLATFORM_SKILL_VERSION ? 'follow-platform' : 'personal',
+      selectedVersionId: versionId === FOLLOW_PLATFORM_SKILL_VERSION ? binding.currentVersion?.id ?? null : versionId })) } : item));
     await refreshSkills();
   }, [refreshSkills]);
   const saveSkillSource = useCallback(async (request: PersonalSkillVersionRequest, idempotencyKey: string): Promise<SaveSkillResult> => {

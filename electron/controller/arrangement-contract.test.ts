@@ -42,6 +42,20 @@ const document = {
 }
 
 describe('arrangement work contract IPC', () => {
+  it('creates and starts automatic planning atomically using a validated submission key', async () => {
+    const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_AND_PLAN)!
+    const input = { requestId: '9d93a254-e4d4-4231-9cf3-e4b58c7d331a', modelId: 'model-a', document: { ...document, mode: 'auto', nodes: [] } }
+    assert.equal(route.schema.safeParse(input).success, true)
+    for (const invalid of [{ ...input, requestId: '' }, { ...input, modelId: ' ' },
+      { ...input, document: { ...input.document, nodes: [node] } }, { ...input, document: { ...input.document, mode: 'manual' } }]) {
+      assert.equal(route.schema.safeParse(invalid).success, false)
+    }
+    const calls: unknown[] = []
+    const context = { arrangements: { createAndPlan: async (...args: unknown[]) => { calls.push(args); return { draft: {}, progress: null } } } }
+    await route.handle(context as never, route.schema.parse(input) as never)
+    assert.deepEqual(calls, [[{ ...input.document, schemaVersion: 1, status: 'editing' }, input.requestId, input.modelId]])
+  })
+
   it('returns validated public preflight reasons without exposing internal diagnostics', async () => {
     const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_PREFLIGHT_DRAFT)!
     const publicFields = { preflightId: 'check-a', draftId: 'draft-a', draftRevision: 1, valid: false, canStart: false,

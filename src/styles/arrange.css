@@ -50,6 +50,11 @@
 /* 换画面：当前这屏淡出 8px，下一屏淡入 8px。没有翻转、没有缩放。 */
 .ent-arr-view { animation: arr-in 240ms var(--arr-ease) both; }
 .ent-arr-view.leaving { animation: arr-out 200ms ease-out both; }
+.ent-arr-restored .ent-arr-view { animation: none; }
+.ent-arr-restored .ent-arr-foot { position: static; }
+.ent-arr-restored .ent-aa-goalnode, .ent-arr-restored .ent-flowcard { transition: none; }
+.ent-arr-restored .ent-aa-link.in .ent-aa-link-line { animation: none; stroke-dashoffset: 0; }
+.ent-arr-restored .ent-aa-link.in .ent-aa-link-tip { animation: none; opacity: 1; }
 @keyframes arr-in { from { opacity: 0; transform: translateY(8px); } }
 @keyframes arr-out { to { opacity: 0; transform: translateY(8px); } }
 

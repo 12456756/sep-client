@@ -11,6 +11,7 @@ export interface LocalSkillVersion {
   employeeId: string
   capabilityId: string
   localSubmissionId?: string
+  sourceScope?: 'PLATFORM' | 'ENTERPRISE' | 'PERSONAL'
   baseSkillVersionId: string
   version: string
   content: string
@@ -57,19 +58,22 @@ export class SkillVersionStore {
       return item?.versionId === versionId && item.subscriptionId === subscriptionId && item.capabilityId === capabilityId && typeof item.content === 'string' ? { ...item } : null
     })
   }
-  async select(scope: TaskOwnerScope, subscriptionId: string, capabilityId: string, versionId: string): Promise<void> {
+  async select(scope: TaskOwnerScope, subscriptionId: string, capabilityId: string, versionId: string, automatic = false): Promise<void> {
     const current = await this.load(scope, subscriptionId, capabilityId, versionId)
     if (!current) throw new Error('Skill version not found.')
     await this.writes.run(this.selectionFile(scope, subscriptionId), async () => {
       const selections = await this.selections(scope, subscriptionId)
-      await writeJsonAtomic(this.selectionFile(scope, subscriptionId), { ...selections, [capabilityId]: { versionId } })
+      await writeJsonAtomic(this.selectionFile(scope, subscriptionId), { ...selections, [capabilityId]: { versionId, ...(automatic ? { automatic: true } : {}) } })
     })
   }
-  async selectDefault(scope: TaskOwnerScope, subscriptionId: string, capabilityId: string, versionId: string): Promise<void> {
+  async selectDefault(scope: TaskOwnerScope, subscriptionId: string, capabilityId: string, versionId: string, expectedSelection?: SkillSelection | null): Promise<void> {
     await this.writes.run(this.selectionFile(scope, subscriptionId), async () => {
       const selections = await this.selections(scope, subscriptionId)
       const selection = selections[capabilityId]
-      if (selection && selection.automatic !== true) return
+      // Preparation may migrate a legacy public pointer only if no user selection changed meanwhile.
+      if (expectedSelection !== undefined) {
+        if (selection?.versionId !== expectedSelection?.versionId || selection?.automatic !== expectedSelection?.automatic || selection?.pendingVersionId !== expectedSelection?.pendingVersionId) return
+      } else if (selection && selection.automatic !== true) return
       const current = await this.load(scope, subscriptionId, capabilityId, versionId)
       if (!current) throw new Error('Skill version not found.')
       await writeJsonAtomic(this.selectionFile(scope, subscriptionId), { ...selections, [capabilityId]: { versionId, automatic: true } })

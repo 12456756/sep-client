@@ -1,4 +1,5 @@
 import type { UpdateState } from '../../src/shared/ipc'
+import type { PlanningRecordChange } from '../../src/shared/auto-planning'
 import type { NotificationUpdate } from '../../src/shared/notification-contracts'
 /**
  * electron/bootstrap/renderer-bridge.ts — main -> renderer 的唯一推送出口
@@ -49,6 +50,10 @@ export class RendererBridge implements RendererPort {
 
   arrangementPlanningEvent(event: ArrangementPlanningProgress): void {
     this.send(EVENT_CHANNELS.ARRANGEMENT_PLANNING_EVENT, event)
+  }
+
+  planningRecordChanged(change: PlanningRecordChange): void {
+    this.send(EVENT_CHANNELS.ARRANGEMENT_RECORD_CHANGED, change)
   }
 
   approvalRequest(request: ToolAuthorizationRequest): void {

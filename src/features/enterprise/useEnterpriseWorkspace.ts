@@ -18,7 +18,9 @@ import { useFeedback } from '../../components/feedback/FeedbackProvider';
  * 页面组件只消费这里返回的对象，不直接调用 window.electronAPI。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { usePlanningSession } from './auto-planning-scope';
+import { mergePlanningRecords } from './planning-records';
 import type { ArrangementDraftDocument, ClientTask, ClientTaskMessage, EmployeeAvatarSource, EmployeeStatus, Subscription } from '../../shared/types';
 import {
   WORK_TEMPLATES,
@@ -175,6 +177,7 @@ function readReviewed(enterpriseId: string): Record<string, number> {
 }
 
 export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
+  planningController?: import('./auto-planning-controller').AutoPlanningController;
   attachmentScopeKey: string;
   overview: EnterpriseOverview;
   /** 企业全部员工，含未分配给我的。 */
@@ -237,6 +240,8 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
 export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpriseName, instances, employeeStatuses }: Options): EnterpriseWorkspace {
   const [tasks, setTasks] = useState<ClientTask[]>([]);
   const scopeKey = JSON.stringify([userId, enterpriseId]);
+  const planningController = usePlanningSession({ memberId: userId, enterpriseId });
+  const planningRecords = useSyncExternalStore(planningController.subscribe, planningController.getRecords, planningController.getRecords);
   const { capture: captureFeedback } = useOperationFeedback(scopeKey);
   const feedback = useFeedback();
   const deletedRecords = useMemo(() => ({ scopeKey, ids: new Set<string>() }), [scopeKey]);
@@ -360,8 +365,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         arrangementExecution: arrangement.executions[task.id],
       });
     });
-    return items.sort((left, right) => right.updatedAt - left.updatedAt);
-  }, [scopedTasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events, arrangement.executions]);
+    return mergePlanningRecords(items, planningRecords, deletedTaskIds);
+  }, [scopedTasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events, arrangement.executions, planningRecords, deletedTaskIds]);
 
   /** 员工是否正在处理工作，用于卡片状态。 */
   const employees = useMemo<SiliconEmployee[]>(() => {
@@ -822,6 +827,23 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const setWorkPinned = useCallback((workId: string, pinned: boolean) => updateWorkDetails(workId, { pinned }), [updateWorkDetails]);
 
   const deleteWork = useCallback(async (workId: string): Promise<boolean> => {
+    const planningRecord = planningController.getRecords().find(record => record.id === workId);
+    if (planningRecord) {
+      if (planningRecord.status === 'planning') { captureFeedback().show('请先取消编排，再删除记录', 'warning'); return false; }
+      const notice = captureFeedback();
+      return feedback.confirm({ key: `delete-planning:${scopeKey}:${workId}`, message: '确认删除这条规划记录？',
+        actionLabel: '删除', busyLabel: '正在删除', onConfirm: async () => {
+          try {
+            const result = await window.electronAPI.deleteArrangementDraft(workId) as { success: boolean; error?: { message: string } };
+            if (!result.success) throw responseError(result, 'workDelete');
+            if (notice.isCurrent()) {
+              planningController.remove(workId);
+              setRoute(current => current.name === 'work' && current.workId === workId ? { name: 'records' } : current);
+            }
+            return { success: true };
+          } catch (error) { return { success: false, message: feedbackMessage(error, 'workDelete') }; }
+        } });
+    }
     const cache = taskTypeCache.current;
     const notice = captureFeedback();
     const ok = await feedback.confirm({ key: `delete:${scopeKey}:${workId}`,
@@ -845,7 +867,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       setRoute(current => (current.name === 'work' && current.workId === workId ? { name: 'records' } : current));
     }
     return ok && taskTypeCache.current === cache;
-  }, [clearRuntimeState, deletedTaskIds, run, feedback, scopeKey, captureFeedback]);
+  }, [clearRuntimeState, deletedTaskIds, run, feedback, scopeKey, captureFeedback, planningController]);
 
   // ── 常用工作 ──────────────────────────────────────────────────────────
   /** 写盘失败（无痕模式、配额满）不阻断界面：内存里仍然保留，只是下次打开会丢。 */
@@ -931,6 +953,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
    */
   return {
     ...skillLibrary,
+    planningController,
     attachmentScopeKey: scopeKey,
     overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, busy,
     canGoBack: history.length > 0,

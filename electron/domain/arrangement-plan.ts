@@ -225,6 +225,8 @@ export interface EffectiveTaskPermissionPolicy {
 }
 
 export interface ArrangementDraft {
+  planningModelId?: string
+  planningRequestId?: string
   id: string
   schemaVersion: 1 | 2
   revision: number
