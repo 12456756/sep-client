@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { zipSync, strToU8, unzipSync } from 'fflate'
 import { PDFDocument } from 'pdf-lib'
-import { validateDeliveryFiles, revalidateDeliveryFiles, resolveDeliveryFiles } from './arrangement-delivery-files'
+import { validateDeliveryFiles, revalidateDeliveryFiles, resolveDeliveryFiles, deliveryFileIssue } from './arrangement-delivery-files'
 import type { ArrangementNode } from '../domain/arrangement-plan'
 import { applicationResourcesDirectory } from './application-resources'
 import * as officeManifest from '../../resources/office/manifest.json'
@@ -44,6 +44,35 @@ function officePackage(format: 'docx' | 'xlsx' | 'pptx'): Uint8Array {
 }
 
 describe('final delivery file validation', () => {
+  it('restores snapshots only from matching approved bytes and never invents a new version', async () => {
+    const f = await fixture()
+    const taskDirectory = join(f.root, 'task')
+    await writeFile(f.file, 'Approved findings')
+    const accepted = await validateDeliveryFiles(f.root, f.node, f.submission, 'run', undefined, { taskDirectory })
+    assert.ok(accepted.ok)
+    const file = accepted.files[0]!
+    const snapshot = join(taskDirectory, 'delivery-snapshots', file.snapshot!.sha256 + '.txt')
+    await writeFile(snapshot, 'Corrupt bytes')
+    const restored = await resolveDeliveryFiles(f.root, [file], undefined, { taskDirectory, repairSnapshots: true })
+    assert.deepEqual(restored.issues, [])
+    assert.deepEqual(restored.files, [file])
+    assert.equal(await readFile(snapshot, 'utf8'), 'Approved findings')
+    await rm(snapshot)
+    await writeFile(f.file, 'Changed findings')
+    const blocked = await resolveDeliveryFiles(f.root, [file], undefined, { taskDirectory, repairSnapshots: true })
+    assert.equal(blocked.files.length, 0)
+    assert.equal(blocked.issues[0]?.code, 'SNAPSHOT_CHANGED')
+  })
+
+  it('retains disk and permission errors instead of misreporting a document format problem', () => {
+    for (const code of ['ENOSPC', 'EACCES', 'EPERM', 'EIO', 'EBUSY']) {
+      const issue = deliveryFileIssue(Object.assign(new Error('I/O problem'), { code }), 'report', 'deliverables/report.txt')
+      assert.equal(issue.code, code)
+      assert.equal(issue.deliverableId, 'report')
+      assert.equal(issue.path, 'deliverables/report.txt')
+      assert.doesNotMatch(issue.message, /重新生成有效文档/)
+    }
+  })
   it('does not approve media mappings or typed media through the ordinary workspace validator', async () => {
     const f = await fixture('png')
     await writeFile(f.file, 'A filename and an asset ID do not prove a valid image')

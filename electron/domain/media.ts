@@ -139,7 +139,8 @@ export interface MediaStorePort {
   readAsset(scope: TaskOwnerScope, taskId: string, assetId: string): Promise<Uint8Array>
   importReference(scope: TaskOwnerScope, taskId: string, selectedPath: string): Promise<LocalMediaAsset>
   deriveReferenceFromOutput(scope: TaskOwnerScope, taskId: string, assetId: string, signal: AbortSignal, validate?: () => void): Promise<LocalMediaAsset>
-  saveOutput(scope: TaskOwnerScope, taskId: string, jobId: string, output: MediaOutput, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<LocalMediaAsset>
+  isOutputSaved?(scope: TaskOwnerScope, taskId: string, jobId: string, outputId: string): Promise<boolean>
+  saveOutput(scope: TaskOwnerScope, taskId: string, jobId: string, output: MediaOutput, stream: AsyncIterable<Uint8Array>, signal: AbortSignal, options?: { repairCorrupt?: boolean }): Promise<LocalMediaAsset>
   exportAsset(scope: TaskOwnerScope, taskId: string, assetId: string, selectedPath: string): Promise<void>
   saveSnapshot(scope: TaskOwnerScope, snapshot: MediaRunSnapshot): Promise<void>
   getSnapshot(scope: TaskOwnerScope, taskId: string, runId?: string): Promise<MediaRunSnapshot | null>

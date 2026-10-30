@@ -28,7 +28,7 @@ export interface VideoRunPort {
     /** Stop the current employee turn after an external media submission failure. */
     onTerminalFailure?: (error: unknown) => void | Promise<void>
   }): Promise<VideoHostTools | undefined>
-  waitForRun(taskId: string, runId: string): Promise<void>
+  waitForRun(taskId: string, runId: string, options?: { recoverOriginal?: boolean; signal?: AbortSignal }): Promise<void>
   stopTask(taskId: string): Promise<void>
   finishRun?(taskId: string, runId: string): Promise<void>
 }

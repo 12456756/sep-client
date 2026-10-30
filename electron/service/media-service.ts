@@ -16,6 +16,7 @@ import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import { transportKind } from '../errors/operation-feedback'
 import { requireScope, type ScopeSource } from './scope-guard'
+import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
 
 const log = logger.child('media-service')
 const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'])
@@ -527,33 +528,39 @@ export class MediaService {
       }
     }
   }
-  private async save(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal): Promise<void> {
+  private async outputSaved(scope: TaskOwnerScope, job: LocalMediaJob, outputId: string): Promise<boolean> {
+    if (this.options.store.isOutputSaved) return this.options.store.isOutputSaved(scope, job.taskId, job.jobId, outputId)
+    return (await this.options.store.listAssets(scope, job.taskId)).some(asset => asset.jobId === job.jobId && asset.outputId === outputId && asset.status === 'SAVED')
+  }
+
+  private async save(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, repair = false): Promise<void> {
     if (!job.outputs.length || !job.receiptId) return
     const downloadStartedAt = Date.now()
     let downloaded = 0
     let failed = 0, expired = 0
-    const initialAssets = await this.options.store.listAssets(scope, job.taskId)
-    const missing = job.outputs.filter(output => !initialAssets.some(asset => asset.jobId === job.jobId && asset.outputId === output.outputId && asset.status === 'SAVED'))
+    const missing = []
+    for (const output of job.outputs) if (!await this.outputSaved(scope, job, output.outputId)) missing.push(output)
     if (!missing.length) {
-      this.recordOutputMismatch(job, initialAssets)
+      this.recordOutputMismatch(job, await this.options.store.listAssets(scope, job.taskId))
       job.saveStatus = 'SAVED'; await this.options.store.saveJob(scope, job)
       return
     }
     job.saveStatus = 'SAVING'; await this.options.store.saveJob(scope, job)
     for (const output of job.outputs) {
-      const assets = await this.options.store.listAssets(scope, job.taskId)
-      if (assets.some(asset => asset.jobId === job.jobId && asset.outputId === output.outputId && asset.status === 'SAVED')) continue
+      if (await this.outputSaved(scope, job, output.outputId)) continue
       if (output.expiresAt !== null && output.expiresAt <= Date.now()) { failed++; expired++; continue }
       if (job.recovery?.canDownload === false) { failed++; continue }
       try {
         await this.network(scope, parent, async signal => {
           const stream = await this.gateway().content(job.subscriptionId, job.receiptId!, output.outputId, signal)
-          await this.options.store.saveOutput(scope, job.taskId, job.jobId, output, stream, signal)
+          await this.options.store.saveOutput(scope, job.taskId, job.jobId, output, stream, signal, { repairCorrupt: repair })
         })
         downloaded++
       } catch (error) {
         if (parent.aborted) throw parent.reason
         if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) throw error
+        log.warn('original image download failed', { taskId: job.taskId, jobId: job.jobId, outputId: output.outputId,
+          error: error instanceof Error ? error.name + ': ' + error.message : String(error) })
         failed++
       }
     }
@@ -564,12 +571,12 @@ export class MediaService {
     this.recordOutputMismatch(job, await this.options.store.listAssets(scope, job.taskId))
     await this.options.store.saveJob(scope, job)
   }
-  private async track(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, epoch = this.epoch): Promise<void> {
+  private async track(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, epoch = this.epoch, repair = false): Promise<void> {
     const trackingStartedAt = Date.now()
     let polls = 0
     try {
       // Generation may finish before billing. Deliver its outputs before querying the original receipt further.
-      if (terminal.has(job.generationStatus)) await this.save(scope, job, parent)
+      if (terminal.has(job.generationStatus)) await this.save(scope, job, parent, repair)
       while (!terminal.has(job.generationStatus) || this.needsBillingQuery(job)) {
         this.assert(scope, epoch); parent.throwIfAborted()
         if (job.receiptId && job.recovery?.canQuery === false) {
@@ -592,7 +599,7 @@ export class MediaService {
           if (receipt === null) throw new AppError('NOT_FOUND')
           this.acceptReceipt(job, receipt)
           await this.options.store.saveJob(scope, job)
-          await this.save(scope, job, parent)
+          await this.save(scope, job, parent, repair)
         } catch (error) {
           if (parent.aborted) throw parent.reason
           if (error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')) {
@@ -637,7 +644,7 @@ export class MediaService {
     const { scope, job } = await this.job(taskId, jobId)
     return this.viewJob(job, await this.options.store.listAssets(scope, taskId))
   }
-  async resume(taskId: string, jobId: string): Promise<void> {
+  async resume(taskId: string, jobId: string, repair = false): Promise<void> {
     mediaId.parse(taskId); mediaId.parse(jobId)
     const epoch = this.epoch, scope = this.scope(), key = this.key(scope, jobId)
     const taskKey = this.key(scope, taskId), stopVersion = this.taskStops.get(taskKey) ?? 0
@@ -659,7 +666,7 @@ export class MediaService {
       this.assert(scope, epoch)
       job.trackingStatus = 'ACTIVE'; job.attempts = 0; job.nextPollAt = Date.now()
       await this.options.store.saveJob(scope, job)
-      const promise = this.track(scope, job, controller.signal, epoch).finally(finish)
+      const promise = this.track(scope, job, controller.signal, epoch, repair).finally(finish)
       this.activities.set(key, { taskId, controller, promise })
       trackingStarted = true
       void promise.finally(() => this.releaseActivity(key, controller)).catch(() => undefined)
@@ -678,7 +685,7 @@ export class MediaService {
       if (!trackingStarted) { this.releaseActivity(key, controller); finish() }
     }
   }
-  async retrySave(taskId: string, jobId: string): Promise<void> { await this.resume(taskId, jobId) }
+  async retrySave(taskId: string, jobId: string): Promise<void> { await this.resume(taskId, jobId, true) }
   async redo(taskId: string, jobId: string): Promise<MediaJobView> {
     const { job } = await this.job(taskId, jobId)
     if (!terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE', { message: '原请求尚未结束或提交状态不明，不能重做。' })
@@ -723,19 +730,32 @@ export class MediaService {
     check()
     if (settlementError) throw settlementError
   }
-  async waitForRun(taskId: string, runId: string): Promise<void> {
+  async waitForRun(taskId: string, runId: string, options: { recoverOriginal?: boolean; signal?: AbortSignal } = {}): Promise<void> {
     const { scope } = await this.task(taskId)
+    const stopKey = this.key(scope, taskId), stopVersion = this.taskStops.get(stopKey) ?? 0, epoch = this.epoch
+    const recoveries = new Map<string, number>()
     const isDelivered = (job: LocalMediaJob): boolean =>
       (job.generationStatus === 'SUCCEEDED' || job.generationStatus === 'PARTIAL_SUCCEEDED') && job.saveStatus === 'SAVED'
     for (;;) {
+      options.signal?.throwIfAborted()
+      this.assert(scope, epoch)
+      if ((this.taskStops.get(stopKey) ?? 0) !== stopVersion) throw new Error('Media run stopped.')
       const recoveredIds = this.runRecoveries.get(this.key(scope, taskId) + ':' + runId) ?? []
       const recoveredSet = new Set(recoveredIds)
       const jobs = (await this.options.store.listJobs(scope, taskId)).filter(job => job.runId === runId || recoveredSet.has(job.jobId))
       // Runs without image work are valid (for example, video-only runs).
       if (jobs.length === 0) return
-      const pending = jobs.filter(job => !isDelivered(job))
+      const pending = []
+      for (const job of jobs) {
+        let saved = isDelivered(job)
+        if (saved && options.recoverOriginal) for (const output of job.outputs) {
+          if (!await this.outputSaved(scope, job, output.outputId)) { saved = false; break }
+        }
+        if (!saved) pending.push(job)
+      }
       if (!pending.length) return
       if (pending.some(job => ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus))) {
+        if (options.recoverOriginal && pending.some(job => job.generationStatus === 'RESULT_EXPIRED')) throw new ArrangementMediaRecoveryError('download', new Error('Original image output expired.'))
         throw new AppError('INVALID_STATE', { message: '图片尚未完整交付，请查看图片任务状态。' })
       }
       const activity = pending.map(job => this.activities.get(this.key(scope, job.jobId))?.promise).find(Boolean)
@@ -744,6 +764,20 @@ export class MediaService {
         // and local materialization are ready; billing reconciliation may continue.
         await Promise.race([activity, delay(100)])
         continue
+      }
+      if (options.recoverOriginal) {
+        if (pending.some(job => job.trackingStatus === 'AUTH_REQUIRED')) throw new AppError('AUTH_REQUIRED')
+        const recoverable = pending.find(job => (recoveries.get(job.jobId) ?? 0) < 3 && job.receiptId &&
+          job.recovery?.canDownload !== false && job.outputs.some(output => output.expiresAt === null || output.expiresAt > Date.now()))
+        if (recoverable) {
+          recoveries.set(recoverable.jobId, (recoveries.get(recoverable.jobId) ?? 0) + 1)
+          await delay(100 * 2 ** ((recoveries.get(recoverable.jobId) ?? 1) - 1), undefined, { signal: options.signal })
+          this.assert(scope, epoch)
+          if ((this.taskStops.get(stopKey) ?? 0) !== stopVersion) throw new Error('Media run stopped.')
+          await this.retrySave(taskId, recoverable.jobId)
+          continue
+        }
+        throw new ArrangementMediaRecoveryError('download', new Error('Original image output unavailable or automatic saving exhausted.'))
       }
       if (pending.some(job => job.saveStatus === 'SAVE_FAILED')) {
         throw new AppError('INVALID_STATE', { message: '图片尚未完整交付，请查看图片任务状态。' })

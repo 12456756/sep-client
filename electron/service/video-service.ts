@@ -11,6 +11,7 @@ import { transportKind } from '../errors/operation-feedback'
 import { videoErrorMessage } from '../../src/shared/video-errors'
 import { mediaToolFailureFrom } from '../errors/media-tool-error'
 import { isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
+import { logger } from '../common/logger'
 
 type VideoInput = z.infer<typeof videoRequestSchema>
 export interface VideoServiceOptions {
@@ -169,6 +170,8 @@ export class VideoService {
         await this.store.saveOutput(this.scope, job.taskId, job.jobId, output, source, signal)
       } catch (error) {
         failed = true
+        logger.child('video-service').warn('original video download failed', { taskId: job.taskId, jobId: job.jobId, outputId: output.outputId,
+          error: error instanceof Error ? error.name + ': ' + error.message : String(error) })
         if (error instanceof AppError) interruption = interrupted(error, 'VIDEO_SAVE_FAILED')
         if (interruption?.trackingStatus === 'AUTH_REQUIRED') break
       }

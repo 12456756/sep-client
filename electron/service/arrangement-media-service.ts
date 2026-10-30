@@ -1,8 +1,9 @@
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import type { ArrangementMediaLink, ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
-import type { ArrangementMediaAssetsPort, ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
+import type { ArrangementMediaAsset, ArrangementMediaAssetsPort, ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
 import { ArrangementMediaSubmissionError } from '../domain/arrangement-media-runtime'
+import { arrangementMediaMimeByFormat } from '../domain/arrangement-plan'
 import type { MediaStorePort } from '../domain/media'
 import type { VideoStorePort } from '../domain/video-media'
 import { videoSpecAcceptance } from '../domain/video-media'
@@ -124,12 +125,16 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       assert()
       return saved
     }
+    const assetDetails = new Map<string, ArrangementMediaAsset>()
     const refresh = async () => {
       await check()
       for (const link of links.values()) {
         const assets = await this.options.assets.outputs(scope, input.taskId, link)
         const outputs = new Map<string, ArrangementMediaLink['outputs'][number]>(link.outputs.map(output => [output.artifactId, { ...output, status: 'missing' }]))
-        for (const asset of assets) outputs.set(asset.artifactId, { artifactId: asset.artifactId, sha256: asset.sha256, status: asset.status })
+        for (const asset of assets) {
+          assetDetails.set(asset.artifactId, asset)
+          outputs.set(asset.artifactId, { artifactId: asset.artifactId, sha256: asset.sha256, status: asset.status })
+        }
         await save({ ...link, outputs: [...outputs.values()] })
       }
     }
@@ -146,7 +151,10 @@ export class ArrangementMediaService implements ArrangementMediaPort {
     const describe = async () => {
       await writes.run('links', refresh)
       return [...links.values()].map(link => ({ kind: link.kind, jobId: link.jobId, operation: link.operation,
-        assets: link.outputs.map(output => ({ ...output })) }))
+        assets: link.outputs.map(output => {
+          const detail = assetDetails.get(output.artifactId)
+          return { ...output, ...(detail ? { mime: detail.mime, size: detail.size } : {}) }
+        }) }))
     }
     const onJobCreated = async (job: MediaJobCreated) => writes.run('links', async () => {
       await check()
@@ -314,6 +322,17 @@ export class ArrangementMediaService implements ArrangementMediaPort {
           if (!deliverable || !link || deliverable.artifact?.source === 'workspace' ||
             (deliverable.artifact?.operation && link.operation !== deliverable.artifact.operation)) throw new ArrangementMediaSubmissionError('媒体交付必须来自当前节点匹配操作的已保存输出，请查询原任务并修正资产映射，不要重新生成。')
           await assertAcceptedOutput(link)
+          const confirmed = [...links.values()].flatMap(item => item.materializations)
+            .find(item => item.deliverableId === deliverable.id && (item.status === 'saved' || item.sha256))
+          if (confirmed && confirmed.sourceArtifactId !== mapping.artifactId) throw new ArrangementMediaSubmissionError(
+            '交付物 ' + JSON.stringify(deliverable.id) + ' 已确认原资产 ' + JSON.stringify(confirmed.sourceArtifactId) +
+            '，请保留该资产映射，不要替换已确认内容。')
+          const asset = assetDetails.get(mapping.artifactId)
+          const expectedMimes = arrangementMediaMimeByFormat[deliverable.format.toLowerCase()] ?? []
+          if (!asset || !expectedMimes.includes(asset.mime)) throw new ArrangementMediaSubmissionError(
+            '交付物 ' + JSON.stringify(deliverable.id) + ' 要求格式 ' + JSON.stringify(deliverable.format) +
+            '，当前资产 ' + JSON.stringify(mapping.artifactId) + ' 的实际类型为 ' + JSON.stringify(asset?.mime ?? 'unknown') +
+            '。请从已核验清单选择格式匹配的原资产；不要只修改扩展名或重新生成媒体。')
           const prior = link.materializations.find(item => item.deliverableId === deliverable.id)
           const materialization = { deliverableId: deliverable.id, path: prior?.path ?? deliverable.path, sourceArtifactId: mapping.artifactId, status: 'pending' as const }
           await save({ ...link, materializations: [...link.materializations.filter(item => item.deliverableId !== deliverable.id), { ...materialization, ...(prior?.sha256 ? { sha256: prior.sha256 } : {}) }] })

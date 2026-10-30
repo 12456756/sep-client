@@ -91,6 +91,8 @@ export class MediaPersistenceError extends Error {
   }
 }
 
+class MediaContentError extends MediaPersistenceError {}
+
 function sha256(bytes: Uint8Array | string): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
@@ -147,7 +149,8 @@ export class MediaStore implements MediaStorePort {
     try {
       const stat = await handle.stat()
       // Atomic replacement can unlink an already opened inode; its descriptor still owns valid bytes.
-      if (!stat.isFile() || stat.size === 0 || stat.size > maxBytes || (!external && stat.nlink > 1)) throw new MediaPersistenceError('Invalid media file size or type.')
+      if (!stat.isFile() || (!external && stat.nlink > 1)) throw new MediaPersistenceError('Invalid media file size or type.')
+      if (stat.size === 0 || stat.size > maxBytes) throw new MediaContentError('Invalid media file size or type.')
       const result = Buffer.alloc(stat.size)
       let offset = 0
       while (offset < result.length) {
@@ -336,9 +339,11 @@ export class MediaStore implements MediaStorePort {
 
   private async verifiedBytes(scope: TaskOwnerScope, asset: LocalMediaAsset): Promise<Buffer> {
     const bytes = await this.bytes(this.assetFile(scope, asset))
-    const image = inspectMediaImage(bytes)
+    let image: ReturnType<typeof inspectMediaImage>
+    try { image = inspectMediaImage(bytes) }
+    catch { throw new MediaContentError('Media asset content is not a valid image.') }
     if (sha256(bytes) !== asset.sha256 || image.mime !== asset.mime || image.size !== asset.size || image.width !== asset.width || image.height !== asset.height) {
-      throw new MediaPersistenceError('Media asset content no longer matches its manifest.')
+      throw new MediaContentError('Media asset content no longer matches its manifest.')
     }
     return bytes
   }
@@ -353,7 +358,7 @@ export class MediaStore implements MediaStorePort {
     return asset
   }
 
-  async listAssets(scope: TaskOwnerScope, taskId: string): Promise<LocalMediaAsset[]> {
+  async listAssets(scope: TaskOwnerScope, taskId: string, options: { recoverableOutputs?: boolean } = {}): Promise<LocalMediaAsset[]> {
     const ids = new Set<string>()
     for (const name of await this.names(join(this.paths.mediaRoot(scope, taskId), 'assets'))) {
       const id = this.manifestId(name.endsWith('.commit') ? name.slice(0, -7) : name)
@@ -361,7 +366,15 @@ export class MediaStore implements MediaStorePort {
     }
     const assets: LocalMediaAsset[] = []
     for (const id of ids) {
-      const asset = await this.getAsset(scope, taskId, id)
+      let asset: LocalMediaAsset | null
+      try { asset = await this.getAsset(scope, taskId, id) }
+      catch (error) {
+        if (!options.recoverableOutputs || !(error instanceof MediaContentError)) throw error
+        const original = await this.assetRecord(scope, taskId, id)
+        if (!original || original.source !== 'output') throw error
+        await this.assertPath(this.assetFile(scope, original))
+        asset = { ...original, status: 'MISSING' }
+      }
       if (asset) assets.push(asset)
     }
     return assets.sort((a, b) => a.createdAt - b.createdAt || a.localAssetId.localeCompare(b.localAssetId))
@@ -433,7 +446,18 @@ export class MediaStore implements MediaStorePort {
     })
   }
 
-  async saveOutput(scope: TaskOwnerScope, taskId: string, jobId: string, value: MediaOutput, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<LocalMediaAsset> {
+  async isOutputSaved(scope: TaskOwnerScope, taskId: string, jobId: string, outputId: string): Promise<boolean> {
+    const asset = await this.assetRecord(scope, taskId, assetId('output', JSON.stringify([jobId, outputId])))
+    if (!asset) return false
+    await this.assertPath(this.assetFile(scope, asset))
+    try { await this.verifiedBytes(scope, asset); return true }
+    catch (error) {
+      if (missing(error) || error instanceof MediaContentError) return false
+      throw error
+    }
+  }
+
+  async saveOutput(scope: TaskOwnerScope, taskId: string, jobId: string, value: MediaOutput, stream: AsyncIterable<Uint8Array>, signal: AbortSignal, options: { repairCorrupt?: boolean } = {}): Promise<LocalMediaAsset> {
     const output = mediaOutputSchema.parse(value)
     const id = assetId('output', JSON.stringify([jobId, output.outputId]))
     this.file(scope, taskId, 'jobs', jobId)
@@ -442,13 +466,20 @@ export class MediaStore implements MediaStorePort {
       const job = await this.getJob(scope, taskId, jobId)
       if (!job || !job.outputs.some(item => isDeepStrictEqual(item, output))) throw new MediaPersistenceError('Output is not authorized by the stored media job.')
       const existing = await this.assetRecord(scope, taskId, id)
+      let corrupt = false
       if (existing) {
         this.validateOutput(output, existing)
+        await this.assertPath(this.assetFile(scope, existing))
         try {
           await this.verifiedBytes(scope, existing)
           await this.write(this.file(scope, taskId, 'assets', id), existing)
           return existing
-        } catch (error) { if (!missing(error)) throw error }
+        } catch (error) {
+          if (!missing(error)) {
+            if (!options.repairCorrupt || !(error instanceof MediaContentError)) throw error
+            corrupt = true
+          }
+        }
       }
       const file = this.file(scope, taskId, 'files', id, `.${extensions[output.mime]}`)
       // Even loss of both metadata files must not overwrite an orphaned final image.
@@ -472,6 +503,7 @@ export class MediaStore implements MediaStorePort {
           await this.write(`${manifest}.commit`, asset)
           signal.throwIfAborted()
           await this.assertPath(file)
+          if (corrupt) await rename(file, file + '.corrupt-' + randomUUID())
           await rename(part, file)
           await this.write(manifest, asset)
         })

@@ -583,6 +583,20 @@ describe('MediaService authorization and request semantics', () => {
     assert.deepEqual(await f.store.readAsset(owner, 'task-a', asset.localAssetId), MOCK_MEDIA_PNG)
   })
 
+  for (const damage of ['missing', 'corrupt'] as const) it('automatically restores ' + damage + ' image bytes from the original job in arrangement mode', async () => {
+    const f = await fixture({}, new MockMediaGateway({ initialStatus: 'SUCCEEDED' }))
+    const generated = await f.service.generateTaskMedia('task-a', input())
+    await f.service.waitForRun('task-a', generated.runId)
+    const [asset] = await f.store.listAssets(owner, 'task-a')
+    const path = join(new ScopePath(f.root).mediaRoot(owner, 'task-a'), asset.relativePath)
+    if (damage === 'missing') await rm(path)
+    else await writeFile(path, 'broken image')
+    await f.service.waitForRun('task-a', generated.runId, { recoverOriginal: true })
+    assert.deepEqual(await f.store.readAsset(owner, 'task-a', asset.localAssetId), MOCK_MEDIA_PNG)
+    assert.equal(f.gateway.calls.submit.length, 1)
+    assert.equal(f.gateway.calls.quote.length, 1)
+  })
+
   it('rechecks authoritative cancellation permission after waiting for approval', async () => {
     const approval = deferred<boolean>()
     const entered = deferred<void>()
@@ -1162,10 +1176,15 @@ describe('MediaService local delivery and original-request recovery', () => {
   it('drains every pending original request while limiting recovery to four activities', async () => {
     const f = await fixture({}, new MockMediaGateway({ initialStatus: 'QUEUED', pollStatuses: ['SUCCEEDED'] }))
     let active = 0, maximum = 0
+    const overlap = deferred<void>()
     const original = f.gateway.getReceipt.bind(f.gateway)
     f.gateway.getReceipt = async (...args) => {
       active++; maximum = Math.max(maximum, active)
-      try { await delay(15); return await original(...args) } finally { active-- }
+      if (active >= 2) overlap.resolve()
+      try {
+        await Promise.race([overlap.promise, delay(1000).then(() => assert.fail('Recovery did not start concurrent requests.'))])
+        return await original(...args)
+      } finally { active-- }
     }
     for (let i = 0; i < 7; i++) {
       const job = notSentJob()

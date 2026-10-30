@@ -75,6 +75,7 @@ interface Scenario {
   missingVideoCapability?: boolean
   holdNode?: 'image' | 'video'
   correctMapping?: boolean
+  mappingFailures?: number
   associationFailure?: boolean
   hostDelivery?: boolean
   mixedMedia?: boolean
@@ -235,6 +236,9 @@ async function fixture(scenario: Scenario = {}) {
         const manifest = { nodeId: node, summary: 'Saved output',
           finalDeliverables: plan.nodes.find(item => item.id === node)!.deliverables!.map(file => ({ id: file.id, path: file.path })),
           mediaDeliverables: [{ deliverableId: deliverable.id, artifactId: scenario.foreignMapping ? 'out_' + 'f'.repeat(64) : artifactId }],
+        }
+        for (let failure = 1; failure < (scenario.mappingFailures ?? 1); failure++) {
+          assert.ok(await options.onResponseSettled!({ stopReason: 'stop', text: JSON.stringify(manifest) }))
         }
         let response = await options.onResponseSettled!({ stopReason: 'stop', text: JSON.stringify(manifest) })
         if (scenario.correctMapping && response) {
@@ -446,14 +450,16 @@ test('backend E2E: foreign output mapping never publishes an unrelated artifact'
   assert.equal(f.videoGateway.calls.submit, 0)
 })
 
-test('backend E2E: model corrects an invalid mapping using the existing generated outputs', async () => {
-  const f = await fixture({ foreignMapping: true, correctMapping: true })
+for (const mappingFailures of [1, 7]) test(`backend E2E: model corrects ${mappingFailures} invalid mappings using the existing generated outputs`, async () => {
+  const f = await fixture({ foreignMapping: true, correctMapping: true, mappingFailures })
   await f.runtime.executeTask(f.task.id)
   const task = await f.settled()
   assert.equal(task?.status, TaskStatus.COMPLETED, task?.error ?? undefined)
   assert.deepEqual(f.started, ['image', 'video'])
   assert.equal(f.imageGateway.calls.submit.length, 1); assert.equal(f.videoGateway.calls.submit, 1)
-  assert.deepEqual((await f.checkpoints.get(scope, f.task.id))!.state.nodes.map(node => node.delivery!.validationAttempts), [2, 2])
+  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/picture.png')), MOCK_MEDIA_PNG)
+  assert.deepEqual(await readFile(join(f.workspace, 'deliverables/movie.mp4')), MOCK_VIDEO_BYTES)
+  assert.deepEqual((await f.checkpoints.get(scope, f.task.id))!.state.nodes.map(node => node.delivery!.validationAttempts), [mappingFailures + 1, mappingFailures + 1])
 })
 
 test('backend E2E: rejected approval never submits generation', async () => {
