@@ -6,6 +6,8 @@ import { compileFunction } from 'node:vm'
 import * as React from 'react'
 import * as ts from 'typescript'
 import type { WorkItem } from '../../features/enterprise/types'
+import type { PlanningRecordSummary } from '../../shared/auto-planning'
+import type { FeedbackNotice } from '../../shared/feedback-controller'
 import type { WorkListActions } from './WorkListActions'
 
 type Props = Parameters<typeof WorkListActions>[0]
@@ -18,11 +20,15 @@ const compiled = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOp
 const work = { id: 'a', title: '季度报告', status: 'completed', pinnedAt: null } as WorkItem
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 
-function mount(overrides: Partial<Props> = {}) {
+function mount(overrides: Partial<Props> = {}, writeText: (text: string) => Promise<void> = async () => {}) {
   const oldWindow = Reflect.get(globalThis, 'window')
   const oldDocument = Reflect.get(globalThis, 'document')
   const oldNode = Reflect.get(globalThis, 'Node')
   const oldAnimationFrame = Reflect.get(globalThis, 'requestAnimationFrame')
+  const oldNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  const notices: FeedbackNotice[] = []
+  const copied: string[] = []
+  let feedbackActive = true
   const cells: unknown[] = []
   let cursor = 0
   let pending: (() => void)[] = []
@@ -44,7 +50,7 @@ function mount(overrides: Partial<Props> = {}) {
   const search = button()
   const list = { ...button(), querySelectorAll: () => [previousRow, trigger, nextRow] }
   const trigger = { ...button(), closest: (selector: string) => selector === '.ent-work-list' ? list : { querySelector: () => trigger } } as unknown as HTMLElement
-  const items = [button(true), button(true), button(true)]
+  const items = [button(true), button(true), button(true), button(true)]
   const menu = Object.assign(new TestNode(), { open: false, style: { left: '', top: '' }, showPopover() { this.open = true }, hidePopover() { this.open = false }, contains(target: unknown) { return target === this },
     matches() { return this.open }, getBoundingClientRect: () => ({ width: 200, height: 150 }), querySelector: () => items[0], querySelectorAll: () => items })
   const dialog = { open: false, showModal() { this.open = modalOpen = true; previousModalFocus = doc.activeElement },
@@ -54,6 +60,10 @@ function mount(overrides: Partial<Props> = {}) {
   Reflect.set(globalThis, 'document', doc)
   Reflect.set(globalThis, 'Node', TestNode)
   Reflect.set(globalThis, 'requestAnimationFrame', (callback: () => void) => setImmediate(callback))
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { async writeText(text: string) {
+    copied.push(text)
+    await writeText(text)
+  } } } })
   const hooks = {
     useRef: (initial: unknown) => { const i = cursor++; if (!(i in cells)) cells[i] = { current: initial }; return cells[i] },
     useState: (initial: unknown) => { const i = cursor++; if (!(i in cells)) cells[i] = initial; return [cells[i], (next: unknown) => { cells[i] = typeof next === 'function' ? next(cells[i]) : next }] },
@@ -64,7 +74,13 @@ function mount(overrides: Partial<Props> = {}) {
     },
   }
   const loaded = { exports: {} }
-  compileFunction(compiled, ['require', 'exports', 'module'], { filename: filename.pathname })((id: string) => id === 'react' ? hooks : require(id), loaded.exports, loaded)
+  compileFunction(compiled, ['require', 'exports', 'module'], { filename: filename.pathname })((id: string) => {
+    if (id === 'react') return hooks
+    if (id === '../../components/feedback/use-operation-feedback') return { useOperationFeedback: () => ({ capture: () => ({
+      show(message: string, tone: FeedbackNotice['tone'] = 'error') { if (feedbackActive) notices.push({ message, tone }) },
+    }) }) }
+    return require(id)
+  }, loaded.exports, loaded)
   const Component = (loaded.exports as { WorkListActions: typeof WorkListActions }).WorkListActions
   const props: Props = { works: [work], request: { workId: 'a', x: 1000, y: 750, trigger }, busy: false,
     onDismiss: () => { props.request = null }, onRename: async () => true, onPin: async () => true, onDelete: async () => true, ...overrides }
@@ -89,12 +105,14 @@ function mount(overrides: Partial<Props> = {}) {
   const click = (label: string) => { const element = find(e => e.type === 'button' && e.props.children === label || e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes(label)); (element.props.onClick as () => void)() }
   const submit = () => { (find(e => e.type === 'form').props.onSubmit as (event: unknown) => void)({ preventDefault() {} }) }
   render()
-  return { props, menu, dialog, input, trigger, previousRow, nextRow, list, search, doc, items, listeners, find, render, click, submit, cleanup() {
+  return { props, menu, dialog, input, trigger, previousRow, nextRow, list, search, doc, items, listeners, find, render, click, submit, copied, notices, cleanup() {
+    feedbackActive = false
     effects.forEach(effect => effect.cleanup?.())
     if (oldWindow === undefined) Reflect.deleteProperty(globalThis, 'window'); else Reflect.set(globalThis, 'window', oldWindow)
     if (oldDocument === undefined) Reflect.deleteProperty(globalThis, 'document'); else Reflect.set(globalThis, 'document', oldDocument)
     if (oldNode === undefined) Reflect.deleteProperty(globalThis, 'Node'); else Reflect.set(globalThis, 'Node', oldNode)
     if (oldAnimationFrame === undefined) Reflect.deleteProperty(globalThis, 'requestAnimationFrame'); else Reflect.set(globalThis, 'requestAnimationFrame', oldAnimationFrame)
+    if (oldNavigator === undefined) Reflect.deleteProperty(globalThis, 'navigator'); else Object.defineProperty(globalThis, 'navigator', oldNavigator)
   } }
 }
 
@@ -120,7 +138,7 @@ test('menu is clamped to the viewport, restores focus on escape and supports arr
     key({ key: 'ArrowDown', preventDefault() {} })
     assert.equal(ui.doc.activeElement, ui.items[1])
     key({ key: 'End', preventDefault() {} })
-    assert.equal(ui.doc.activeElement, ui.items[2])
+    assert.equal(ui.doc.activeElement, ui.items[3])
     key({ key: 'Escape', preventDefault() {} })
     assert.equal(ui.props.request, null)
     assert.equal(ui.menu.open, false)
@@ -135,6 +153,58 @@ test('pin and unpin target the menu row without requiring selection', async () =
     try { ui.click(pinnedAt ? '取消置顶' : '置顶'); await tick(); assert.equal(ui.props.request, null) } finally { ui.cleanup() }
   }
   assert.deepEqual(calls, [['a', true], ['a', false]])
+})
+
+test('copy uses the menu task ID, keeps its full value and follows rename', async () => {
+  const id = 'f6ea2132-47e5-45d2-9e2a-fa3a673ab583'
+  const ui = mount({ works: [{ ...work, id, recordKey: 'draft-list-key' }], request: null })
+  ui.props.request = { workId: id, x: 20, y: 20, trigger: ui.trigger }
+  ui.render()
+  try {
+    const labels = React.Children.toArray(ui.find(e => e.props.role === 'menu').props.children as React.ReactNode)
+      .flatMap(child => React.isValidElement<{ children: React.ReactNode }>(child) ? React.Children.toArray(child.props.children) : [])
+      .filter((child): child is React.ReactElement<{ children: React.ReactNode }> => React.isValidElement(child) && child.props.role === 'menuitem')
+      .map(child => React.Children.toArray(child.props.children).filter(part => typeof part === 'string').join(''))
+    assert.deepEqual(labels, ['置顶', '重命名', '复制任务ID', '删除'])
+    ui.click('任务ID'); await tick()
+    assert.deepEqual(ui.copied, [id])
+    assert.deepEqual(ui.notices, [{ message: '任务ID已复制', tone: 'success' }])
+    assert.equal(ui.menu.open, false)
+    assert.equal(ui.props.request, null)
+    assert.equal(ui.doc.activeElement, ui.trigger)
+  } finally { ui.cleanup() }
+})
+
+test('copy remains available for running tasks while the workspace is busy', async () => {
+  const ui = mount({ busy: true, works: [{ ...work, status: 'running', isActive: true }] })
+  try {
+    assert.notEqual(ui.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('任务ID')).props.disabled, true)
+    ui.click('任务ID'); await tick()
+    assert.deepEqual(ui.copied, ['a'])
+  } finally { ui.cleanup() }
+})
+
+test('copy distinguishes unconfirmed drafts from drafts linked to a formal task', async () => {
+  for (const confirmedWorkPlanId of [null, 'formal-task-id']) {
+    const ui = mount({ works: [{ ...work, id: 'draft-id', planningDraft: { id: 'draft-id', confirmedWorkPlanId } as PlanningRecordSummary }], request: null })
+    ui.props.request = { workId: 'draft-id', x: 20, y: 20, trigger: ui.trigger }
+    ui.render()
+    try {
+      const label = confirmedWorkPlanId ? '任务ID' : '草稿ID'
+      ui.click(label); await tick()
+      assert.deepEqual(ui.copied, [confirmedWorkPlanId ?? 'draft-id'])
+      assert.deepEqual(ui.notices, [{ message: `${label}已复制`, tone: 'success' }])
+    } finally { ui.cleanup() }
+  }
+})
+
+test('clipboard rejection reports failure without a success notice', async () => {
+  const ui = mount({}, async () => { throw new Error('Clipboard denied') })
+  try {
+    ui.click('任务ID'); await tick()
+    assert.deepEqual(ui.notices, [{ message: '任务ID复制失败，请重试', tone: 'error' }])
+    assert.equal(ui.props.request, null)
+  } finally { ui.cleanup() }
 })
 
 test('rename and delete delegate to shared workspace confirmations without a second dialog', async () => {
