@@ -146,7 +146,10 @@ export class VideoRunService implements VideoRunPort {
         ? job.error : job.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED')
       run.tracking = host.track(input.taskId)
       void run.tracking.catch(() => undefined)
-      return job
+      await this.waitForJobs(run, [job.jobId], false)
+      const completed = (await host.getTaskVideo(input.taskId)).jobs.find(item => item.jobId === job.jobId)
+      if (!completed) throw new AppError('INVALID_STATE')
+      return completed
     }) }
   }
 
@@ -156,6 +159,11 @@ export class VideoRunService implements VideoRunPort {
     while (run.pending.size) await Promise.all([...run.pending])
     run.controller.signal.throwIfAborted()
     if (!run.jobs.size) return
+    await this.waitForJobs(run, [...run.jobs])
+  }
+
+  private async waitForJobs(run: Run, jobIds: readonly string[], throwOnFailure = true): Promise<void> {
+    const { taskId } = run
     let trackingError: unknown
     let trackingDone = false
     if (!run.tracking) return
@@ -163,17 +171,18 @@ export class VideoRunService implements VideoRunPort {
     for (;;) {
       run.controller.signal.throwIfAborted()
       const trackingWasDone = trackingDone
-      const trackedBeforeRead = [...run.jobs].filter(id => run.host.hasActiveTracker(taskId, id))
+      const trackedBeforeRead = jobIds.filter(id => run.host.hasActiveTracker(taskId, id))
       const view = await run.host.getTaskVideo(taskId)
       // The read may have captured pre-save state while the tracker completed.
       if (!trackingWasDone && trackingDone || trackedBeforeRead.some(id => !run.host.hasActiveTracker(taskId, id))) continue
       let complete = true
-      for (const id of run.jobs) {
+      for (const id of jobIds) {
         const job = view.jobs.find(job => job.jobId === id)
         if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED') {
           complete = false
           const failed = job && (['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus) || ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
           // An observing host may finish its own loop while another host is saving.
+          if (failed && !throwOnFailure) return
           if (failed || trackingDone && !run.host.hasActiveTracker(taskId, id)) {
             const error = trackingError instanceof AppError ? trackingError : new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
             await this.notifyTerminalFailure(run, error)

@@ -101,9 +101,7 @@ test('real SDK handoff and finishRun preserve pending video output saving withou
       toolPolicy: { preset: 'full-local', approvalMode: 'auto-approve', allowedTools: [], allowedPaths: [], deniedPaths: [], commandPolicy: 'restricted', workspaceDir: f.root },
       videoTools: { names: tools.names, execute: async (name, raw, signal) => {
         toolSignal = signal
-        const result = await tools.execute(name, raw, signal)
-        await downloading
-        return result
+        return tools.execute(name, raw, signal)
       } } },
     runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
     createTokenManager: () => ({ async initialize() {}, async getValidToken() { return 'local-fixture' }, stop() {} }),
@@ -111,17 +109,17 @@ test('real SDK handoff and finishRun preserve pending video output saving withou
     shouldYieldAfterToolTurn: () => f.gateway.calls.submit > 0,
   })
   try {
-    await worker.run('Generate a product video and leave saving to the host.')
-    assert.equal(toolSignal?.aborted, true)
+    let runSettled = false
+    const running = worker.run('Generate a product video and wait until its saved result is available.')
+      .finally(() => { runSettled = true })
+    await downloading
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(runSettled, false, 'the assistant turn must remain open while the generated video is saving')
+    assert.equal(toolSignal?.aborted, false)
     assert.equal(downloadSignal?.aborted, false)
-    await f.service.finishRun('task-a', 'run-a')
-    assert.equal(downloadSignal?.aborted, false, 'Finishing the model run must not cancel the host download.')
     release()
-    const deadline = Date.now() + 5_000
-    while ((await f.store.listJobs(scope))[0].saveStatus !== 'SAVED') {
-      assert.ok(Date.now() < deadline, 'The original video output must finish saving after the run facade closes.')
-      await new Promise<void>(resolve => setTimeout(resolve, 10))
-    }
+    await running
+    assert.equal(toolSignal?.aborted, true)
     assert.equal((await f.store.listJobs(scope))[0].saveStatus, 'SAVED')
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
@@ -149,6 +147,36 @@ test('run facade binds two host approvals to real run and awaits original output
   assert.equal(f.state.uploads, 1)
   await f.service.finishRun('task-a', 'run-a')
   await assert.rejects(tools.execute('video_from_image', input()))
+})
+
+test('generation tool waits for terminal video status and local save before returning to the model', { timeout: 10_000 }, async context => {
+  const f = await setup()
+  let entered!: () => void, release!: () => void
+  const downloading = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const content = f.gateway.content.bind(f.gateway)
+  context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+    entered()
+    await gate
+    return content(...args)
+  })
+  const tools = await f.service.prepareRun(f.runInput)
+  assert.ok(tools)
+  let settled = false
+  const generating = tools.execute('video_from_image', input()).then(value => { settled = true; return value })
+  try {
+    await downloading
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(settled, false, 'the model must not continue while output bytes are still saving')
+    release()
+    const result = await generating as { generationStatus: string; saveStatus: string }
+    assert.equal(result.generationStatus, 'SUCCEEDED')
+    assert.equal(result.saveStatus, 'SAVED')
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally {
+    release()
+    await f.service.finishRun('task-a', 'run-a')
+  }
 })
 
 test('arrangement media mode auto-approves upload and quote without approval requests', async () => {
@@ -362,28 +390,32 @@ test('rereads a video snapshot captured before its tracker finishes', { timeout:
   try {
     const tools = await service.prepareRun(f.runInput)
     assert.ok(tools)
-    const job = await tools.execute('video_from_image', input()) as { jobId: string }
+    const generation = tools.execute('video_from_image', input()) as Promise<{ jobId: string }>
     await queryActive
     const listJobs = f.store.listJobs.bind(f.store)
+    const submitted = (await listJobs(scope))[0]!
     let holdSnapshot = true
     context.mock.method(f.store, 'listJobs', async (...args: Parameters<typeof listJobs>) => {
       const jobs = await listJobs(...args)
       if (holdSnapshot) { holdSnapshot = false; snapshotStarted(); await snapshotGate }
       return jobs
     })
-    const delivery = service.waitForRun('task-a', 'run-a')
-    void delivery.catch(() => undefined)
+    await new Promise(resolve => setTimeout(resolve, 10))
     await snapshotActive
     releaseQuery()
     for (let attempt = 0; attempt < 100; attempt++) {
-      if ((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus === 'SAVED') break
+      if ((await f.store.getJob(scope, 'task-a', submitted.jobId))?.saveStatus === 'SAVED') break
       await new Promise(resolve => setTimeout(resolve, 5))
     }
-    assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus, 'SAVED')
+    const saved = await f.store.listJobs(scope)
+    const job = saved[0]
+    assert.equal(job?.saveStatus, 'SAVED')
     // Let the terminal save settle its tracker while the earlier read stays held.
     await new Promise(resolve => setTimeout(resolve, 20))
     releaseSnapshot()
-    await delivery
+    const generated = await generation
+    assert.equal(generated.jobId, job?.jobId)
+    await service.waitForRun('task-a', 'run-a')
     assert.equal(f.gateway.calls.submit, 1)
   } finally { releaseQuery(); releaseSnapshot(); await service.stopAll() }
 })
