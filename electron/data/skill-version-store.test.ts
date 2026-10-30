@@ -124,6 +124,23 @@ describe('SkillVersionStore', () => {
     assert.deepEqual((await store.selections(scope, 'sub-a'))['cap-a'], { versionId: second.versionId })
   })
 
+  it('migrates only the observed legacy pointer and preserves a newer personal selection', async () => {
+    const store = new SkillVersionStore(await mkdtemp(join(tmpdir(), 'sep-skills-migrate-race-')))
+    const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }
+    const input = { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a', baseSkillVersionId: 'v1', version: '1', content: '# Old' }
+    const first = await store.savePlatform(scope, input)
+    const next = await store.savePlatform(scope, { ...input, baseSkillVersionId: 'v2' })
+    const personal = await store.save(scope, { ...input, localSubmissionId: 'personal-source', content: '# Personal' })
+    await store.select(scope, 'sub-a', 'cap-a', first.versionId)
+    await store.selectDefault(scope, 'sub-a', 'cap-a', next.versionId, { versionId: first.versionId })
+    assert.deepEqual((await store.selections(scope, 'sub-a'))['cap-a'], { versionId: next.versionId, automatic: true })
+    const observed = (await store.selections(scope, 'sub-a'))['cap-a']
+    await store.select(scope, 'sub-a', 'cap-a', personal.versionId)
+    await store.selectDefault(scope, 'sub-a', 'cap-a', first.versionId, observed)
+    await store.selectDefault(scope, 'sub-a', 'cap-a', first.versionId, null)
+    assert.deepEqual((await store.selections(scope, 'sub-a'))['cap-a'], { versionId: personal.versionId })
+  })
+
   it('preserves concurrent capability selections and rejects dot path segments', async () => {
     const store = new SkillVersionStore(await mkdtemp(join(tmpdir(), 'sep-skills-race-')))
     const scope = { enterpriseId: 'enterprise-a', memberId: 'member-a' }

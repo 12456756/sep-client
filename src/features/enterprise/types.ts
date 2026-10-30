@@ -177,6 +177,8 @@ export interface WorkTimelineEntry {
 }
 
 export interface WorkItem {
+  recordKey?: string;
+  planningDraft?: import('../../shared/auto-planning').PlanningRecordSummary;
   id: string;
   title: string;
   /** 本机持久化的置顶时间，未置顶为 null。 */
@@ -293,7 +295,7 @@ export type AppRoute =
   | { name: 'arrange'; templateId?: string; mode?: ArrangeMode; employeeId?: string }
   | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped'; workType?: 'all' | 'conversation' | 'arrangement'; search?: string }
   | { name: 'work'; workId: string }
-  | { name: 'skills'; skillId?: string }
+  | { name: 'skills'; skillId?: string; employeeFilterId?: string; sourceEmployeeId?: string; returnTo?: { name: 'skill-list' } | { name: 'employee'; employeeId: string } }
   | { name: 'knowledge'; kbId?: string }
   | { name: 'compute-center' };
 

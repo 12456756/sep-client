@@ -26,7 +26,7 @@ function confirmationLogs() {
   })
   return { logs, done }
 }
-async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
+async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW', publicVersions = [published]) {
   const root = await mkdtemp(join(tmpdir(), 'sep-library-'))
   const versions = new SkillVersionStore(join(root, 'versions'))
   const submissions = new SkillSubmissionStore(root)
@@ -44,13 +44,13 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
     scope: { currentScope: () => currentScope }, token: async () => { if (offline) throw new Error('offline'); return 'test-token' }, versions, submissions,
     subscriptions: async () => [{ subscriptionId: 'sub-a', employeeId: 'emp-a' }, { subscriptionId: 'sub-b', employeeId: 'emp-b' }],
     platform: {
-      skills: async (id: string) => ({ subscriptionId: id === 'emp-a' ? 'sub-a' : 'sub-b', canManage: false, skills: [{ capability: { id: 'cap', name: 'Analysis', description: 'Raw skill', type: 'SKILL' }, currentVersion: published, versions: personal ? [published, personal] : [published], upgradeAvailable: false }] }),
+      skills: async (id: string) => ({ subscriptionId: id === 'emp-a' ? 'sub-a' : 'sub-b', canManage: false, skills: [{ capability: { id: 'cap', name: 'Analysis', description: 'Raw skill', type: 'SKILL' }, currentVersion: publicVersions[0], versions: personal ? [...publicVersions, personal] : publicVersions, upgradeAvailable: false }] }),
       list: async (input, _token, signal) => {
         queries.push(input)
         if (personal && confirmation) return confirmation(signal)
         if (personal && verificationError) throw verificationError
         if (personal) assert.equal((await submissions.list(scope, 'cap'))[0]?.uploadedVersion?.id, personal.id)
-        return personal && !hideSubmission ? [published, personal] : [published]
+        return personal && !hideSubmission ? [...publicVersions, personal] : publicVersions
       },
       preview: async () => ({ content }),
       create: async (request, key) => {
@@ -67,6 +67,36 @@ async function fixture(uploadStatus = 'PENDING_ENTERPRISE_REVIEW') {
 }
 
 describe('SkillLibraryService', () => {
+  it('uses follow mode when returning from personal content or selecting a public history entry', async () => {
+    const latest = { ...published, id: 'v2', scope: 'ENTERPRISE', status: 'ENTERPRISE_APPROVED', version: '2.0' }
+    const f = await fixture('ENTERPRISE_APPROVED', [latest, published])
+    const saved = await f.service.save({ request: { capabilityId: 'cap', parentVersionId: 'v1', content }, idempotencyKey: 'follow-platform-local-01' })
+    await f.service.select({ capabilityId: 'cap', versionId: saved.idempotencyKey })
+    await f.service.select({ capabilityId: 'cap', versionId: 'follow-platform' })
+    for (const subscription of ['sub-a', 'sub-b']) {
+      assert.deepEqual((await f.versions.selections(scope, subscription)).cap, { versionId: 'platform-v2', automatic: true })
+    }
+    await f.service.select({ capabilityId: 'cap', versionId: 'v1' })
+    assert.deepEqual((await f.versions.selections(scope, 'sub-a')).cap, { versionId: 'platform-v2', automatic: true })
+    assert.equal((await f.service.list())[0].bindings[0].selectedVersionId, 'v2')
+  })
+
+  it('displays the current public version instead of a legacy pinned version', async () => {
+    const f = await fixture()
+    const old = await f.versions.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'emp-a', capabilityId: 'cap', baseSkillVersionId: 'old-public', version: '0.1', content: '# Old' })
+    await f.versions.select(scope, 'sub-a', 'cap', old.versionId)
+    const item = (await f.service.list())[0]
+    assert.equal(item.bindings[0].selectedVersionId, 'v1')
+  })
+  it('keeps a known personal selection visible when remote history no longer contains it', async () => {
+    const f = await fixture()
+    const saved = await f.versions.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'emp-a', capabilityId: 'cap',
+      baseSkillVersionId: 'personal-removed', sourceScope: 'PERSONAL', version: 'mine', content: '# Mine' })
+    await f.versions.select(scope, 'sub-a', 'cap', saved.versionId)
+    const binding = (await f.service.list())[0].bindings[0]
+    assert.equal(binding.selectedVersionId, 'personal-removed')
+    assert.equal(binding.selectionMode, 'personal')
+  })
   it('queries the submitted capability after persisting its successful receipt and logs confirmation', async () => {
     const { logs, done } = confirmationLogs()
     const f = await fixture()

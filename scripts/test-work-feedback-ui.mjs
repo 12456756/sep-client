@@ -45,7 +45,7 @@ mode==='document'?React.createElement(DocumentPreviewDialog,{taskId:'task-a',nod
 approval?React.createElement(ToolApprovalDialog,{request:approval,onApprove:approve,onDeny:deny}):null);}
 createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode,null,React.createElement(FeedbackProvider,null,React.createElement(Harness))));
 </script></body></html>`
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ channel: process.env.SEP_BROWSER_CHANNEL || 'chrome', headless: true })
 let checks = 0
 try {
   for (const width of [1200, 375]) {

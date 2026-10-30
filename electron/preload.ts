@@ -1,4 +1,5 @@
 import type { NotificationUpdate } from '../src/shared/notification-contracts';
+import type { PlanningRecordChange } from '../src/shared/auto-planning';
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { ElectronAPI, UpdateState } from '../src/shared/ipc';
 import type { KnowledgeRequestInput } from '../src/shared/knowledge-contracts';
@@ -218,6 +219,14 @@ const electronAPI = {
   previewArrangementDocument: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PREVIEW_DOCUMENT, input),
   confirmArrangementNodes: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, input),
   listArrangementDrafts: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS),
+  listPlanningRecords: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_PLANNING_RECORDS),
+  getPlanningRecord: draftId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_PLANNING_RECORD, draftId),
+  createAndPlanArrangement: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CREATE_AND_PLAN, input),
+  onPlanningRecordChanged: callback => {
+    const handler = (_event: IpcRendererEvent, change: PlanningRecordChange) => callback(change);
+    ipcRenderer.on(EVENT_CHANNELS.ARRANGEMENT_RECORD_CHANGED, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.ARRANGEMENT_RECORD_CHANGED, handler);
+  },
   createArrangementDraft: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT, input),
   getArrangementDraft: draftId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_DRAFT, draftId),
   updateArrangementExecutionSettings: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_UPDATE_EXECUTION_SETTINGS, input),

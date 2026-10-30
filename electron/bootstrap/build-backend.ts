@@ -44,6 +44,7 @@ import { TaskService } from '../service/task-service'
 import { TaskCreationGate } from '../service/task-creation-gate'
 import { ArrangementService } from '../service/arrangement-service'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
+import { ArrangementProgressStore } from '../data/arrangement-progress-store'
 import { ArrangementConfirmationStore } from '../data/arrangement-confirmation-store'
 import { ClientMonitorApi } from '../common/platform/client-monitor-api'
 import { ClientMonitorStore } from '../data/client-monitor-store'
@@ -337,6 +338,7 @@ class BackendRuntime {
     this.arrangements = new ArrangementService({
       scope: this,
       drafts: arrangementDrafts,
+      planningProgress: new ArrangementProgressStore(userDataDir),
       attachments: this.attachments,
       employees: this.employees,
       workPlans: this.workPlans,
@@ -355,6 +357,7 @@ class BackendRuntime {
         cancel: planningId => { this.arrangementPlanner.peek()?.cancel?.(planningId) },
       },
       onPlanningEvent: event => this.renderer.arrangementPlanningEvent(event),
+      onPlanningRecordChanged: change => this.renderer.planningRecordChanged?.(change),
       employeeAccessRequests: {
         async create(input, idempotencyKey) {
           const accessToken = await platformSession.getValidAccessToken()
@@ -464,6 +467,7 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.arrangements.cancelAllPlanning()
     this.sessionRecovery.stop()
     await this.clientMonitor.stop()
     this.attachmentExtractionRuntime.peek()?.stop()

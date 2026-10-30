@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useFeedback } from './FeedbackProvider'
 import type { FeedbackNotice } from '../../shared/feedback-controller'
-import { feedbackMessage, type FeedbackOperation } from '../../shared/arrangement-feedback'
+import { feedbackMessage, isDraftRevisionConflict, type FeedbackOperation } from '../../shared/arrangement-feedback'
 
 export function useOperationFeedback(bindingKey = '') {
   const feedback = useFeedback()
@@ -22,7 +22,9 @@ export function useOperationFeedback(bindingKey = '') {
     const show = (message: string, tone: FeedbackNotice['tone'] = 'error', key?: string, once = false) => {
       if (isCurrent()) feedback.show({ message, tone, key, once })
     }
-    return { isCurrent, show, fail: (error: unknown, operation: FeedbackOperation, key?: string, once = false) => show(feedbackMessage(error, operation), 'error', key, once) }
+    return { isCurrent, show, fail: (error: unknown, operation: FeedbackOperation, key?: string, once = false) => {
+      if (!isDraftRevisionConflict(error)) show(feedbackMessage(error, operation), 'error', key, once)
+    } }
   }, [feedback])
   return { capture }
 }

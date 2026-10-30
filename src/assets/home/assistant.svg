@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <defs><linearGradient id="r" x1="19" y1="18" x2="47" y2="48" gradientUnits="userSpaceOnUse"><stop stop-color="#ec5759"/><stop offset="1" stop-color="#b72432"/></linearGradient><linearGradient id="b" x1="22" y1="29" x2="40" y2="43" gradientUnits="userSpaceOnUse"><stop stop-color="#354453"/><stop offset="1" stop-color="#14232c"/></linearGradient></defs>
+  <style>
+    .assistant-bot { animation: assistant-float 3.6s ease-in-out infinite; }
+    .assistant-eyes { transform-box: fill-box; transform-origin: center; animation: assistant-blink 6s linear infinite; }
+    .assistant-antenna { transform-box: fill-box; transform-origin: center; animation: assistant-pulse 2.4s ease-in-out infinite; }
+    @keyframes assistant-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.8px); } }
+    @keyframes assistant-blink { 0%, 44%, 48%, 100% { transform: scaleY(1); } 46% { transform: scaleY(.12); } }
+    @keyframes assistant-pulse { 0%, 100% { opacity: .7; transform: scale(1); } 50% { opacity: 1; transform: scale(1.15); } }
+    @media (prefers-reduced-motion: reduce) { .assistant-bot, .assistant-eyes, .assistant-antenna { animation: none; } }
+  </style>
+  <circle cx="32" cy="32" r="30.5" fill="white" stroke="#f5b4b9" stroke-width="1.5"/>
+  <ellipse cx="32" cy="47" rx="17" ry="3" fill="#f3dadd"/>
+  <g class="assistant-bot">
+  <path d="M32 20v-5" stroke="#cb3541" stroke-width="3" stroke-linecap="round"/><circle class="assistant-antenna" cx="32" cy="14" r="3" fill="url(#r)"/>
+  <rect x="10" y="29" width="5" height="11" rx="2.5" fill="#bf303c"/><rect x="49" y="29" width="5" height="11" rx="2.5" fill="#bf303c"/>
+  <rect x="14" y="22" width="36" height="24" rx="11" fill="url(#r)"/>
+  <rect x="17" y="25" width="30" height="18" rx="8" fill="#f7f4f2"/>
+  <rect x="19" y="27" width="26" height="14" rx="6" fill="url(#b)"/>
+  <g class="assistant-eyes"><ellipse cx="26" cy="33.5" rx="2.2" ry="3" fill="#dcf5f6"/><ellipse cx="38" cy="33.5" rx="2.2" ry="3" fill="#dcf5f6"/></g>
+  <path d="M30 38h4" stroke="#8eb1bd" stroke-width="1.3" stroke-linecap="round"/>
+  </g>
+</svg>

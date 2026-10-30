@@ -31,10 +31,10 @@ interface StatusPresentation {
 }
 
 export const EMPLOYEE_AVAILABILITY: Record<EmployeeAvailability, StatusPresentation> = {
-  ready: { label: '空闲', tone: 'ready', hint: '现在就能接受新的工作安排' },
+  ready: { label: '可用', tone: 'ready', hint: '可选择这位员工开始对话' },
   // 「工作中」和工作的「正在进行」共用主色浅底（设计稿如此），不另分一支颜色。
-  working: { label: '工作中', tone: 'busy', hint: '正在处理其他工作，可以排队' },
-  'needs-auth': { label: '需要授权', tone: 'attention', hint: '需要你开启本机操作权限后才能开始' },
+  working: { label: '工作中', tone: 'busy', hint: '正在处理工作，新工作将按实际执行策略处理' },
+  'needs-auth': { label: '授权待确认', tone: 'attention', hint: '员工授权状态尚未确认，请刷新后重试' },
   unavailable: { label: '暂时不可用', tone: 'muted', hint: '企业暂停了这位员工，或授权已到期' },
 };
 

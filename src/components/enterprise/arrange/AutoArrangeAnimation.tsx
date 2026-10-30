@@ -17,6 +17,7 @@ const TITLES: Record<Phase, string> = {
 };
 
 interface Props {
+  restored?: boolean;
   draft: ArrangementDraft;
   employees: SiliconEmployee[];
   planning: boolean;
@@ -72,10 +73,13 @@ export function AutoArrangeEmployees({ nodes, employees, ready, exiting = false,
 }
 
 /** Timers control presentation only; selected employees and workflow come from the final draft. */
-export function AutoArrangeAnimation({ draft, employees, planning, planningEvents, children }: Props): JSX.Element {
-  const [phase, setPhase] = useState<Phase>('analyzing');
+export function AutoArrangeAnimation({ draft, employees, planning, planningEvents, children, restored = false }: Props): JSX.Element {
+  const [phase, setPhase] = useState<Phase>(() => restored
+    ? !planning ? 'done' : planningEvents.some(event => event.type === 'arrangement_employee_considering') ? 'matching'
+      : planningEvents.some(event => event.type === 'arrangement_plan_ready') ? 'planning' : 'analyzing'
+    : 'analyzing');
   const [thought, setThought] = useState(0);
-  const [rows, setRows] = useState(0);
+  const [rows, setRows] = useState(() => restored ? 1 + draft.nodes.length * 2 : 0);
   const [teamExiting, setTeamExiting] = useState(false);
   const [teamStageHeight, setTeamStageHeight] = useState(0);
   const teamStageRef = useRef<HTMLDivElement>(null);
@@ -87,9 +91,11 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
   const nodeCount = draft.nodes.length;
   const selectedCount = new Set(draft.nodes.map(node => node.subscriptionId)).size;
   const { leaveAtMs, flowAtMs } = getTeamAnimationTiming(selectedCount, reduced);
-  const planEvent = planningEvents.find(event => event.type === 'arrangement_plan_ready');
+  const planEvent = [...planningEvents].reverse().find(event => event.type === 'arrangement_plan_ready');
   const hasConsideringEvent = planningEvents.some(event => event.type === 'arrangement_employee_considering');
-  const terminalEvent = planningEvents.find(event => event.type === 'arrangement_planning_failed' || event.type === 'arrangement_planning_cancelled');
+  const terminalEvent = planningEvents.find(event => event.type === 'arrangement_planning_failed' || event.type === 'arrangement_planning_cancelled')
+    ?? (draft.status === 'planning-failed' ? { type: 'arrangement_planning_failed' }
+      : draft.lastPlanning?.status === 'cancelled' ? { type: 'arrangement_planning_cancelled' } : null);
   const stopped = draft.status === 'awaiting-employee' || Boolean(terminalEvent);
 
   useEffect(() => {
@@ -103,19 +109,24 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
   }, [phase, beat]);
 
   useEffect(() => {
+    if (restored) {
+      setPhase(!planning ? 'done' : hasConsideringEvent ? 'matching' : planEvent ? 'planning' : 'analyzing');
+      setRows(1 + nodeCount * 2);
+      return;
+    }
     if (phase === 'analyzing' && planEvent) setPhase('planning');
     if (phase === 'planning' && (hasConsideringEvent || ready)) setPhase('matching');
-  }, [phase, planEvent, hasConsideringEvent, ready]);
+  }, [phase, planEvent, hasConsideringEvent, ready, restored, planning, nodeCount]);
 
   useEffect(() => {
-    if (phase !== 'matching' || !ready || stopped) return;
+    if (restored || phase !== 'matching' || !ready || stopped) return;
     setTeamExiting(false);
     const timers = [
       window.setTimeout(() => setTeamExiting(true), leaveAtMs),
       window.setTimeout(() => setPhase('flowing'), flowAtMs),
     ];
     return () => timers.forEach(window.clearTimeout);
-  }, [phase, ready, stopped, leaveAtMs, flowAtMs]);
+  }, [phase, ready, stopped, leaveAtMs, flowAtMs, restored]);
 
   useEffect(() => {
     const stage = teamStageRef.current;
@@ -129,7 +140,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
   }, [phase, ready, selectedCount]);
 
   useEffect(() => {
-    if (phase !== 'flowing') return;
+    if (restored || phase !== 'flowing') return;
     const total = 1 + nodeCount * 2;
     const timers = [window.setTimeout(() => setRows(1), 40 * beat)];
     for (let index = 2; index <= total; index += 1) {
@@ -137,7 +148,7 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
     }
     timers.push(window.setTimeout(() => setPhase('done'), ((total - 1) * 380 + 360) * beat));
     return () => timers.forEach(window.clearTimeout);
-  }, [phase, nodeCount, beat]);
+  }, [phase, nodeCount, beat, restored]);
 
   useEffect(() => {
     if (phase !== 'flowing') return;

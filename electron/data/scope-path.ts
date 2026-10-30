@@ -210,6 +210,11 @@ export class ScopePath {
     return path
   }
 
+  arrangementProgressFile(scope: TaskOwnerScope, draftId: string): string {
+    assertSafeId(draftId, 'draftId')
+    return join(this.ownerRoot(scope), 'arrangement-progress', `${draftId}.json`)
+  }
+
   attachmentImportsRoot(scope: TaskOwnerScope): string {
     return join(this.ownerRoot(scope), 'attachment-imports')
   }

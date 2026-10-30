@@ -1,10 +1,13 @@
 import type { PersonalSkillVersionRequest, SkillVersion } from './platform-supplement-contracts'
 
+export const FOLLOW_PLATFORM_SKILL_VERSION = 'follow-platform'
+
 export interface SkillBinding {
   subscriptionId: string
   employeeId: string
   currentVersion: SkillVersion | null
   selectedVersionId: string | null
+  selectionMode?: 'follow-platform' | 'personal'
 }
 
 export interface LocalSkillSubmission {

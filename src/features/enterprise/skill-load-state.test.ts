@@ -5,9 +5,10 @@ import { classifySkillLoadError, formatSkillRateLimitMessage, needsSkillLibrary 
 test('loads the skill library only for views that consume it, not chat or task execution', () => {
   assert.equal(needsSkillLibrary({ name: 'skills' }), true);
   assert.equal(needsSkillLibrary({ name: 'employee', employeeId: 'sub-1' }), true);
+  assert.equal(needsSkillLibrary({ name: 'employees' }), true);
   assert.equal(needsSkillLibrary({ name: 'arrange', mode: 'manual' }), true);
   for (const route of [
-    { name: 'organization' }, { name: 'home' }, { name: 'employees' },
+    { name: 'organization' }, { name: 'home' },
     { name: 'arrange' }, { name: 'arrange', mode: 'pick' },
     { name: 'arrange', mode: 'chat' }, { name: 'arrange', mode: 'auto' },
     { name: 'work', workId: 'task-1' }, { name: 'records' }, { name: 'compute-center' },

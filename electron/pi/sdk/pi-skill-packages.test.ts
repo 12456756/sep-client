@@ -648,7 +648,7 @@ describe('SkillStore', () => {
     assert.deepEqual(await readFile(join(second.skillPaths[0]!, 'SKILL.md')), Buffer.from(secondRuntime.content))
   })
 
-  it('rejects an explicitly selected old approved version instead of migrating it', async () => {
+  it('follows the runtime version despite a legacy explicitly selected public version', async () => {
     const firstRuntime = artifactFixture()
     serveArtifact(firstRuntime)
     const { skills, versions } = await createStore()
@@ -660,10 +660,11 @@ describe('SkillStore', () => {
     secondRuntime.artifact.versionId = secondRuntime.versionId
     secondRuntime.artifact.downloadPath = '/client/subscriptions/sub-a/skills/cap-a/versions/version-v2/artifact'
     serveArtifact(secondRuntime)
-    await assert.rejects(skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [secondRuntime] }), /not the currently approved runtime version/)
-    assert.deepEqual((await versions.selections(scope, 'sub-a'))['cap-a'], { versionId: 'platform-version-v1' })
+    const second = await skills.prepare({ ...request(), skillArtifactProtocolVersion: 1, runtimeSkills: [secondRuntime] })
+    assert.equal(second.skills[0]?.baseSkillVersionId, 'version-v2')
+    assert.deepEqual((await versions.selections(scope, 'sub-a'))['cap-a'], { versionId: 'platform-version-v2', automatic: true })
     assert.deepEqual(await readFile(join(first.skillPaths[0]!, 'SKILL.md')), Buffer.from(firstRuntime.content))
-    assert.equal(await versions.load(scope, 'sub-a', 'cap-a', 'platform-version-v2'), null)
+    assert.deepEqual(await readFile(join(second.skillPaths[0]!, 'SKILL.md')), Buffer.from(secondRuntime.content))
   })
 
   it('stops before publishing or selecting an artifact downloaded after logout', async () => {
@@ -681,6 +682,82 @@ describe('SkillStore', () => {
     assert.equal(downloads(), 1)
     assert.equal(await versions.load(scope, 'sub-a', 'cap-a', 'platform-version-v1'), null)
     assert.deepEqual(await versions.selections(scope, 'sub-a'), {})
+  })
+
+  it('retains the legacy public pointer when the next artifact download fails', async () => {
+    const firstRuntime = artifactFixture()
+    serveArtifact(firstRuntime)
+    const { skills, versions } = await createStore()
+    const first = await skills.prepare({ ...request(), runtimeSkills: [firstRuntime] })
+    await versions.select(scope, 'sub-a', 'cap-a', 'platform-version-v1')
+    const runtime = artifactFixture(firstRuntime.content + '\nUpdated')
+    runtime.versionId = 'version-v2'
+    runtime.version = '2.0'
+    runtime.artifact.versionId = runtime.versionId
+    runtime.artifact.downloadPath = '/client/subscriptions/sub-a/skills/cap-a/versions/version-v2/artifact'
+    serveArtifact(runtime, { status: 500 })
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), { statusCode: 500 })
+    assert.deepEqual((await versions.selections(scope, 'sub-a'))['cap-a'], { versionId: 'platform-version-v1' })
+    assert.equal(await readFile(join(first.skillPaths[0], 'SKILL.md'), 'utf8'), firstRuntime.content)
+  })
+
+  it('uses the runtime specified public version when the catalog has a newer release', async () => {
+    const runtime = artifactFixture()
+    serveArtifact(runtime)
+    const fetch = globalThis.fetch
+    globalThis.fetch = async (input, init) => {
+      if (String(input).endsWith('/skills')) {
+        const historical = skillsPayload('version-v1', '1.0').skills[0].currentVersion
+        return jsonResponse(skillsPayload('version-v2', '2.0', [historical]))
+      }
+      return fetch(input, init)
+    }
+    const { skills, versions } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    assert.equal(prepared.skills[0]?.baseSkillVersionId, runtime.versionId)
+    assert.deepEqual((await versions.selections(scope, 'sub-a'))['cap-a'], { versionId: 'platform-version-v1', automatic: true })
+  })
+
+  it('keeps an approved owner personal selection fixed with the artifact protocol', async () => {
+    const runtime = artifactFixture()
+    serveArtifact(runtime)
+    const fetch = globalThis.fetch
+    globalThis.fetch = async (input, init) => String(input).endsWith('/skills')
+      ? jsonResponse(skillsPayload('version-v1', '1.0', [personal()])) : fetch(input, init)
+    const { skills, versions } = await createStore()
+    const saved = await versions.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a',
+      baseSkillVersionId: personal().id, version: 'personal', content: '# My approved content' })
+    await versions.select(scope, 'sub-a', 'cap-a', saved.versionId)
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+    assert.equal(await readSkillBody(prepared.skillPaths[0]), '# My approved content')
+    assert.equal(prepared.skills[0].source, 'owner-local')
+    assert.equal(prepared.skills[0].artifact, undefined)
+    assert.equal(await versions.selected(scope, 'sub-a', 'cap-a'), saved.versionId)
+  })
+
+  it('does not silently replace a known personal version removed from the remote list', async () => {
+    installPlatformMock({ versionId: 'version-v2', version: '2.0', content: '# Public' })
+    const { skills, versions } = await createStore()
+    const saved = await versions.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a',
+      baseSkillVersionId: 'personal-v1', sourceScope: 'PERSONAL', version: 'mine', content: '# Mine' })
+    await versions.select(scope, 'sub-a', 'cap-a', saved.versionId)
+    await assert.rejects(skills.prepare(request()), /not approved/)
+    assert.equal(await versions.selected(scope, 'sub-a', 'cap-a'), saved.versionId)
+  })
+
+  it('migrates a legacy enterprise selection to the current enterprise release', async () => {
+    const payload = skillsPayload('enterprise-v2', '2.0')
+    payload.skills[0].currentVersion.scope = 'ENTERPRISE'
+    payload.skills[0].currentVersion.status = 'ENTERPRISE_APPROVED'
+    globalThis.fetch = async input => String(input).endsWith('/skills')
+      ? jsonResponse(payload) : jsonResponse({ content: '# Enterprise v2' })
+    const { skills, versions } = await createStore()
+    const old = await versions.savePlatform(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a',
+      baseSkillVersionId: 'enterprise-v1', version: '1', content: '# Old enterprise' })
+    await versions.select(scope, 'sub-a', 'cap-a', old.versionId)
+    const prepared = await skills.prepare(request())
+    assert.equal(await readSkillBody(prepared.skillPaths[0]), '# Enterprise v2')
+    assert.deepEqual((await versions.selections(scope, 'sub-a'))['cap-a'], { versionId: 'platform-enterprise-v2', automatic: true })
   })
 
   it('executes an unuploaded personal source only in its owner scope and keeps runtime paths isolated', async () => {
@@ -761,6 +838,7 @@ describe('SkillStore', () => {
     installPlatformMock(state)
     const { versions, skills } = await createStore()
     const first = await skills.prepare(request())
+    await versions.select(scope, 'sub-a', 'cap-a', 'platform-version-v1')
     state.versionId = 'version-v2'
     state.version = '2.0'
     state.content = '# Platform v2'

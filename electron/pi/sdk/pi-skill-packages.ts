@@ -245,8 +245,17 @@ export class SkillStore {
         ? await this.versions.load(scope, input.subscriptionId, skill.capability.id, selected)
         : null
       const isOwnerLocalVersion = Boolean(input.memberId && selectedVersion?.localSubmissionId)
-      const isAutomaticSelection = selection?.automatic === true && !isOwnerLocalVersion
-        && selected === `platform-${selectedVersion?.baseSkillVersionId}`
+      const selectedMetadataBeforeInstall = selectedVersion
+        ? skillsResponse.skills.flatMap(item => item.capability.id === skill.capability.id
+          ? [item.currentVersion, ...item.versions] : []).find(version => version?.id === selectedVersion.baseSkillVersionId)
+        : undefined
+      const isPersonalSelection = isOwnerLocalVersion || selectedMetadataBeforeInstall?.scope === 'PERSONAL' || selectedVersion?.sourceScope === 'PERSONAL'
+      const isAutomaticSelection = !isPersonalSelection && (!selected || selected.startsWith('platform-') &&
+        (!selectedVersion || selected === `platform-${selectedVersion.baseSkillVersionId}`))
+      if (selected && !isAutomaticSelection && !isOwnerLocalVersion && (
+        !selectedVersion || selected !== `platform-${selectedVersion.baseSkillVersionId}` ||
+        selectedMetadataBeforeInstall?.scope !== 'PERSONAL' || !canUseSkillVersion(selectedMetadataBeforeInstall, input.memberId ?? '')
+      )) throw new Error('Selected skill version is not approved or is no longer available.')
       if (!canUseSkillVersion(skill.currentVersion, input.memberId ?? '') && !isOwnerLocalVersion) continue
       const platformVersionId = `platform-${skill.currentVersion.id}`
       const cachedPlatform = scope && this.versions
@@ -263,10 +272,9 @@ export class SkillStore {
           artifact.approvedContentSha256 !== createHash('sha256').update(runtimeSkill.content).digest('hex')) {
           throw new Error('Approved skill artifact identity or content mismatch.')
         }
-        if (!isOwnerLocalVersion && selected && selected !== platformVersionId && !isAutomaticSelection) throw new Error('Selected skill version is not the currently approved runtime version.')
         const entry = await this.artifactEntry(input, skillRoot, artifact, runtimeSkill.content)
         checkCurrent(input)
-        if (!isOwnerLocalVersion) {
+        if (!isPersonalSelection) {
           const versionKey = createHash('sha256').update(JSON.stringify([artifact.versionId, artifact.artifactSha256])).digest('hex')
           const parent = join(skillRoot, safeSegment(skill.capability.id), versionKey)
           const packageRoot = join(parent, entry.name)
@@ -305,9 +313,9 @@ export class SkillStore {
           checkCurrent(input)
           if (scope && this.versions) {
             await this.versions.savePlatform(scope, { subscriptionId: input.subscriptionId, employeeId: input.employeeId,
-              capabilityId: skill.capability.id, baseSkillVersionId: artifact.versionId, version: runtimeSkill.version, content: runtimeSkill.content })
+              capabilityId: skill.capability.id, baseSkillVersionId: artifact.versionId, sourceScope: skill.currentVersion.scope as 'PLATFORM' | 'ENTERPRISE' | 'PERSONAL', version: runtimeSkill.version, content: runtimeSkill.content })
             checkCurrent(input)
-            await this.versions.selectDefault(scope, input.subscriptionId, skill.capability.id, platformVersionId)
+            await this.versions.selectDefault(scope, input.subscriptionId, skill.capability.id, platformVersionId, selection ?? null)
           }
           checkCurrent(input)
           paths.push(target)
@@ -327,17 +335,18 @@ export class SkillStore {
           employeeId: input.employeeId,
           capabilityId: skill.capability.id,
           baseSkillVersionId: skill.currentVersion.id,
+          sourceScope: skill.currentVersion.scope as 'PLATFORM' | 'ENTERPRISE' | 'PERSONAL',
           version: skill.currentVersion.version,
           content: platformContent,
         }))
         : null
       checkCurrent(input)
-      if (scope && this.versions && platform) await this.versions.selectDefault(scope, input.subscriptionId, skill.capability.id, platform.versionId)
       const activeVersionId = (isAutomaticSelection ? platform?.versionId : selected) ?? platform?.versionId ?? null
       const activeVersion = (isAutomaticSelection || selectedVersion?.versionId === platform?.versionId ? platform : selectedVersion) ?? (activeVersionId && scope && this.versions
         ? await this.versions.load(scope, input.subscriptionId, skill.capability.id, activeVersionId)
         : null)
-      const availableVersions: SkillVersion[] = [skill.currentVersion, ...skill.versions]
+      const availableVersions: SkillVersion[] = [skill.currentVersion, ...skill.versions,
+        ...skillsResponse.skills.flatMap(item => item.capability.id === skill.capability.id && item.currentVersion ? [item.currentVersion] : [])]
       const selectedMetadata = activeVersion
         ? availableVersions.find(version => version.id === activeVersion.baseSkillVersionId)
         : null
@@ -375,7 +384,7 @@ export class SkillStore {
       const snapshot: PreparedEmployeeSkill = {
         capabilityId: skill.capability.id, versionId,
         baseSkillVersionId: activeVersion?.baseSkillVersionId ?? skill.currentVersion.id,
-        version, source: isOwnerLocalVersion ? 'owner-local' : 'approved',
+        version, source: isPersonalSelection ? 'owner-local' : 'approved',
         name: entry.name, description: entry.description, content: entry.content, sha256, path: target,
       }
       checkCurrent(input)
@@ -394,6 +403,10 @@ export class SkillStore {
       } finally {
         // Only this operation's private staging tree can be deleted; published paths stay alive.
         await rm(temporary, { recursive: true, force: true })
+      }
+      checkCurrent(input)
+      if (scope && this.versions && platform && isAutomaticSelection) {
+        await this.versions.selectDefault(scope, input.subscriptionId, skill.capability.id, platform.versionId, selection ?? null)
       }
       checkCurrent(input)
       paths.push(target)

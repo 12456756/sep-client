@@ -101,6 +101,9 @@ export const INVOKE_CHANNELS = {
   ARRANGE_PREVIEW_DOCUMENT: 'arrange:preview-document',
   ARRANGE_CONFIRM_NODES: 'arrange:confirm-nodes',
   ARRANGE_LIST_DRAFTS: 'arrange:list-drafts',
+  ARRANGE_LIST_PLANNING_RECORDS: 'arrange:list-planning-records',
+  ARRANGE_GET_PLANNING_RECORD: 'arrange:get-planning-record',
+  ARRANGE_CREATE_AND_PLAN: 'arrange:create-and-plan',
   ARRANGE_CREATE_DRAFT: 'arrange:create-draft',
   ARRANGE_GET_DRAFT: 'arrange:get-draft',
   ARRANGE_UPDATE_EXECUTION_SETTINGS: 'arrange:update-execution-settings',
@@ -133,6 +136,7 @@ export const EVENT_CHANNELS = {
   TASK_UPDATED: 'task:updated',
   TASK_LIST_UPDATED: 'task:list-updated',
   ARRANGEMENT_PLANNING_EVENT: 'arrangement:planning-event',
+  ARRANGEMENT_RECORD_CHANGED: 'arrangement:record-changed',
 } as const
 
 export type InvokeChannel = (typeof INVOKE_CHANNELS)[keyof typeof INVOKE_CHANNELS]
@@ -179,6 +183,9 @@ export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import
   [INVOKE_CHANNELS.AUTH_GET_EMPLOYEE_STATUS]: 'employeeStatus',
   [INVOKE_CHANNELS.ARRANGE_GET_CONTEXT]: 'read',
   [INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT]: 'create',
+  [INVOKE_CHANNELS.ARRANGE_LIST_PLANNING_RECORDS]: 'read',
+  [INVOKE_CHANNELS.ARRANGE_GET_PLANNING_RECORD]: 'read',
+  [INVOKE_CHANNELS.ARRANGE_CREATE_AND_PLAN]: 'planning',
   [INVOKE_CHANNELS.ARRANGE_GET_DRAFT]: 'read',
   [INVOKE_CHANNELS.ARRANGE_UPDATE_EXECUTION_SETTINGS]: 'settings',
   [INVOKE_CHANNELS.ARRANGE_UPDATE_INPUTS]: 'attachments',

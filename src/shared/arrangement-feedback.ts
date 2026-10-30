@@ -35,10 +35,22 @@ export const arrangementPreflightFeedbackSchema = z.object({
 }).strict()
 
 /** Only validated IPC messages and local validation messages may use this error. */
-export class UserFeedbackError extends Error {}
+export class UserFeedbackError extends Error {
+  constructor(message: string, readonly code?: string) { super(message) }
+}
 
-export function responseError(result: { error?: { message?: string } }, operation: FeedbackOperation): UserFeedbackError {
-  return new UserFeedbackError(result.error?.message || operationFailure(operation))
+export function responseError(result: { error?: { message?: string; code?: string } }, operation: FeedbackOperation): UserFeedbackError {
+  return new UserFeedbackError(result.error?.message || operationFailure(operation), result.error?.code)
+}
+
+export function isDraftRevisionConflict(error: unknown): boolean {
+  return error instanceof UserFeedbackError && error.code === 'DRAFT_REVISION_CONFLICT'
+}
+
+export async function recoverDraftRevisionConflict(error: unknown, reload: () => Promise<unknown>, onReloadFailure: (error: unknown) => void): Promise<boolean> {
+  if (!isDraftRevisionConflict(error)) return false
+  try { await reload() } catch (cause) { onReloadFailure(cause) }
+  return true
 }
 
 export function feedbackMessage(error: unknown, operation: FeedbackOperation): string {

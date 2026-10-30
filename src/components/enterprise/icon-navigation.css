@@ -50,7 +50,7 @@
   background: var(--ent-brand-tint);
 }
 
-.ent-side.ent-icon-nav .ent-icon-brand-button:active,
+.ent-side.ent-icon-nav button.ent-icon-brand-button:active,
 .ent-side.ent-icon-nav .ent-icon-account-button:active,
 .ent-side.ent-icon-nav .ent-icon-nav-item:active {
   transform: scale(.96);
@@ -66,19 +66,22 @@
   transition: transform 200ms cubic-bezier(.16, 1, .3, 1);
 }
 
+.ent-side.ent-icon-nav span.ent-icon-brand-button { cursor: default; }
+
 .ent-side.ent-icon-nav .ent-icon-brand-button .ent-enterprise-logo {
-  width: 30px;
-  height: 30px;
+  width: 36px;
+  height: 36px;
+  flex-basis: 36px;
   object-fit: contain;
   border-radius: 8px;
 }
 
 .ent-side.ent-icon-nav .ent-icon-items {
-  flex: 0 1 auto;
+  flex: 1 1 auto;
   justify-content: flex-start;
   gap: 8px;
-  margin-block: auto;
-  padding: 12px 0;
+  margin: 32px 0 0;
+  padding: 0 0 12px;
   overflow-y: auto;
 }
 
@@ -145,39 +148,15 @@
 }
 
 .ent-side.ent-icon-nav .ent-icon-account-button .ent-face {
-  width: 28px;
-  height: 28px;
+  width: 36px;
+  height: 36px;
 }
 
 .ent-side.ent-icon-nav .ent-icon-account-fallback {
   display: none;
 }
 
-.ent-side.ent-icon-nav .ent-icon-nav-toggle {
-  display: flex;
-  width: 40px;
-  min-height: 40px;
-  flex: 0 0 40px;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  margin: 8px auto 0;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  color: var(--ent-ink-2);
-  background: transparent;
-  cursor: pointer;
-  -webkit-app-region: no-drag;
-  transition: color 140ms ease, background-color 140ms ease;
-}
-
-.ent-side.ent-icon-nav .ent-icon-nav-toggle:hover {
-  color: var(--ent-brand-ink);
-  background: var(--ent-brand-tint);
-}
-
-.ent-side.ent-icon-nav :is(.ent-icon-nav-toggle, .ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item):focus-visible {
+.ent-side.ent-icon-nav :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item):focus-visible {
   outline: 2px solid var(--ent-brand-solid);
   outline-offset: 2px;
 }
@@ -194,7 +173,7 @@
   white-space: nowrap;
 }
 
-.ent-side.ent-icon-nav:not(.collapsed) :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item.ent-nav-item, .ent-icon-nav-toggle) {
+.ent-side.ent-icon-nav:not(.collapsed) :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item.ent-nav-item) {
   display: flex;
   width: 100%;
   align-items: center;
@@ -203,7 +182,7 @@
   padding-inline: 18px;
 }
 
-.ent-side.ent-icon-nav:not(.collapsed) :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item, .ent-icon-nav-toggle) > :is(svg, .ent-face, .ent-enterprise-logo) {
+.ent-side.ent-icon-nav:not(.collapsed) :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item) > :is(svg, .ent-face, .ent-enterprise-logo) {
   flex-shrink: 0;
 }
 
@@ -305,14 +284,13 @@
   .ent-side.ent-icon-nav .ent-icon-brand-button,
   .ent-side.ent-icon-nav .ent-icon-account-button,
   .ent-side.ent-icon-nav .ent-icon-nav-item,
-  .ent-side.ent-icon-nav .ent-icon-nav-toggle,
   .ent-side.ent-icon-nav .ent-icon-nav-item svg,
   .ent-side.ent-icon-nav .ent-icon-brand-button svg,
   .ent-side.ent-icon-nav .ent-icon-account-button svg,
   .ent-side.ent-icon-nav .ent-enterprise-logo,
   .ent-side.ent-icon-nav .ent-icon-account-button .ent-face,
   .ent-icon-hint { transition: none; animation: none; }
-  .ent-side.ent-icon-nav .ent-icon-brand-button:active,
+  .ent-side.ent-icon-nav button.ent-icon-brand-button:active,
   .ent-side.ent-icon-nav .ent-icon-account-button:active,
   .ent-side.ent-icon-nav .ent-icon-nav-item:active { transform: none; }
   .ent-side.ent-icon-nav :is(.ent-icon-brand-button, .ent-icon-account-button, .ent-icon-nav-item):is(:hover, :focus-visible) > :is(svg, .ent-enterprise-logo, .ent-face) { transform: none; }

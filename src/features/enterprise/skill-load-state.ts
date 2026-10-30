@@ -1,7 +1,7 @@
 import type { AppRoute } from './types';
 
 export function needsSkillLibrary(route: AppRoute): boolean {
-  return route.name === 'skills' || route.name === 'employee'
+  return route.name === 'skills' || route.name === 'employee' || route.name === 'employees'
     || route.name === 'arrange' && route.mode === 'manual';
 }
 

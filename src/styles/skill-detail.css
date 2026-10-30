@@ -1,0 +1,51 @@
+.skill-detail-navigation,.skill-detail-notice,.skill-content-toolbar,.skill-editor-footer,.skill-inline-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
+.skill-detail-navigation,.skill-detail-notice,.skill-content-toolbar,.skill-editor-footer { justify-content:space-between; }
+.skill-detail-heading h1 { margin:0; font-size:23px; font-weight:650; overflow-wrap:anywhere; }
+.skill-detail-tabs { display:flex; gap:24px; border-bottom:1px solid var(--ent-line); }
+.skill-detail-tabs > button { padding:4px 0 12px; border:0; border-bottom:2px solid transparent; color:var(--ent-ink-3); font:inherit; background:none; cursor:pointer; }
+.skill-detail-tabs > button[aria-selected=true] { border-color:var(--ent-brand); color:var(--ent-brand-ink); font-weight:600; }
+.skill-detail-tabs > button:disabled { cursor:default; opacity:.5; }
+.skill-content-toolbar { margin-bottom:12px; }
+.skill-document { min-width:0; border:1px solid var(--ent-line); border-radius:var(--ent-radius-lg); background:var(--ent-panel); overflow:hidden; }
+.skill-document-empty { padding:28px 20px; color:var(--ent-ink-3); font-size:13px; }
+.skill-reading { padding:22px 26px; overflow-wrap:anywhere; line-height:1.8; font-size:13px; }
+.skill-reading > :first-child { margin-top:0; }
+.skill-reading > :last-child { margin-bottom:0; }
+.skill-reading h1 { font-size:21px; }
+.skill-reading h2 { font-size:17px; }
+.skill-reading h3 { font-size:15px; }
+.skill-reading p,.skill-reading ul,.skill-reading ol { margin-block:12px; }
+.skill-reading pre { overflow:auto; padding:12px; background:var(--ent-panel-subtle); font-size:12px; }
+.skill-reading table { display:block; max-width:100%; overflow:auto; border-collapse:collapse; }
+.skill-reading th,.skill-reading td { padding:7px 12px; border:1px solid var(--ent-line); }
+.skill-reading blockquote { border-left:3px solid var(--ent-line-strong); margin:12px 0; padding-left:14px; color:var(--ent-ink-3); }
+.skill-source { display:block; width:100%; min-height:360px; padding:22px; resize:vertical; border:0; background:var(--ent-panel-subtle); color:var(--ent-ink); font:13px/1.9 Consolas,'Cascadia Code',monospace; tab-size:2; }
+.skill-source.editing { background:var(--ent-panel); box-shadow:inset 3px 0 var(--ent-brand); }
+.skill-source:focus-visible { outline:2px solid var(--ent-brand); outline-offset:-2px; }
+.skill-editor-footer { padding-top:12px; justify-content:flex-end; }
+.skill-history-toolbar { display:flex; justify-content:flex-end; }
+.skill-viewing-version { font-size:13px; color:var(--ent-ink-2); }
+.skill-version-row { display:flex; align-items:center; flex-wrap:wrap; gap:12px; padding:16px 0; border-bottom:1px solid var(--ent-line-soft); }
+.skill-version-row:last-child { border-bottom:0; }
+.skill-version-row.active { border-left:2px solid var(--ent-brand); padding-left:12px; }
+.skill-version-row > svg { color:var(--ent-ink-3); flex-shrink:0; }
+.skill-version-info { flex:1; min-width:160px; overflow-wrap:anywhere; }
+.skill-version-info strong { display:flex; align-items:center; flex-wrap:wrap; gap:7px; font-size:13px; font-weight:500; }
+.skill-version-info small { display:block; margin-top:5px; font-size:12px; color:var(--ent-ink-3); }
+.skill-version-info small.skill-error { color:var(--ent-danger); }
+.skill-version-used { margin-top:6px; font-size:12px; color:var(--ent-brand-ink); }
+.skill-version-used summary { cursor:pointer; }
+.skill-version-used summary svg { vertical-align:middle; margin-right:4px; }
+.skill-version-used p { margin:6px 0 0; color:var(--ent-ink-2); }
+.skill-dialog-overlay { position:fixed; inset:0; background:var(--ent-overlay); z-index:100; }
+.skill-save-dialog { position:fixed; z-index:101; top:50%; left:50%; transform:translate(-50%,-50%); width:min(460px,calc(100vw - 32px)); max-height:calc(100vh - 40px); overflow:auto; padding:26px; border:1px solid var(--ent-line); border-radius:var(--ent-radius-lg); background:var(--ent-panel); color:var(--ent-ink); box-shadow:0 24px 72px rgb(32 33 38 / 20%); }
+.skill-save-dialog h2 { margin:0; padding-right:16px; font-size:20px; font-weight:600; }
+.skill-save-dialog > p { margin:12px 0 24px; color:var(--ent-ink-2); font-size:13px; line-height:1.8; }
+.skill-save-dialog footer { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:10px; margin-top:24px; }
+.skill-dialog-close { position:absolute; top:16px; right:16px; border:0; padding:5px; border-radius:5px; background:transparent; color:var(--ent-ink-3); cursor:pointer; }
+@container (max-width:639px) {
+ .skill-reading { padding:18px; }
+ .skill-inline-actions { max-width:100%; }
+ .skill-inline-actions .ent-btn { white-space:normal; }
+ .skill-save-dialog { padding:20px; }
+}

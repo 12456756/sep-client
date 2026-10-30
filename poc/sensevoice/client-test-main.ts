@@ -1,10 +1,13 @@
-import { app, BrowserWindow, dialog, utilityProcess } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, utilityProcess } from 'electron'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { SpeechService } from '../../electron/service/speech-service'
 import { SpeechSettingsStore } from '../../electron/data/speech-settings-store'
 import { SpeechRuntime } from '../../electron/runtime/speech-runtime'
 import { registerRoutes } from '../../electron/controller/router'
+import { INVOKE_CHANNELS } from '../../electron/controller/channels'
+import { randomUUID } from 'node:crypto'
+import type { AttachmentImportSession, AttachmentImportTarget } from '../../src/shared/attachment-contracts'
 import { speechRoutes } from '../../electron/controller/routes/speech'
 import type { RequestContext } from '../../electron/controller/request-context'
 import { installSpeechPermissions } from '../../electron/bootstrap/speech-permissions'
@@ -52,6 +55,19 @@ void app.whenReady().then(async () => {
   const url = pathToFileURL(join(directory, 'renderer/poc/sensevoice/client-test.html')).href
   installSpeechPermissions(window, url, speech)
   registerRoutes({ speech, window: () => window.isDestroyed() ? null : window } as RequestContext, { routes: speechRoutes, listeners: [] })
+  // Composers eagerly open an attachment session. Keep this speech-only harness
+  // independent of attachment persistence and file dialogs.
+  const attachmentSessions = new Map<string, AttachmentImportSession>()
+  ipcMain.handle(INVOKE_CHANNELS.ATTACHMENT_BEGIN, (_event, { target }: { target: AttachmentImportTarget }) => {
+    const now = Date.now()
+    const session: AttachmentImportSession = { schemaVersion: 1, sessionId: randomUUID(), owner: { memberId: 'test-u', enterpriseId: 'test-e' },
+      status: 'open', target, createdAt: now, expiresAt: now + 60_000, attachments: [], revision: 0 }
+    attachmentSessions.set(session.sessionId, session)
+    return { success: true, data: session }
+  })
+  ipcMain.handle(INVOKE_CHANNELS.ATTACHMENT_LIST, (_event, { sessionId }: { sessionId: string }) => ({ success: true, data: attachmentSessions.get(sessionId) }))
+  ipcMain.handle(INVOKE_CHANNELS.ATTACHMENT_CANCEL, (_event, { sessionId }: { sessionId: string }) => ({ success: true, cancelled: attachmentSessions.delete(sessionId) }))
+
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.session.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !details.url.startsWith('file:') && !details.url.startsWith('data:') }))
   window.on('closed', () => { speech.stop(); app.quit() })
