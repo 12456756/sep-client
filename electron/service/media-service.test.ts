@@ -2030,6 +2030,28 @@ describe('MediaService review lifecycle regressions', () => {
 })
 
 describe('V3 image specifications', () => {
+  it('accepts a quoted pixel size derived from explicit dimensions without adding generation defaults', async () => {
+    const gateway = new MockMediaGateway({ initialStatus: 'SUCCEEDED' })
+    const quote = gateway.quote.bind(gateway)
+    gateway.quote = async (...args) => ({ ...await quote(...args),
+      effectiveSpec: { ...args[1].requestedSpec, size: '1600x2400' } })
+    const f = await fixture({}, gateway)
+    f.employee.media = { protocolVersion: 3, executionAvailable: true, defaultProfileId: 'image-v3', tools: ['image_generate'], profiles: [{
+      profileId: 'image-v3', kind: 'image', displayName: 'V3', configVersion: 'cfg', operations: ['generate'], executionMode: 'sync-response',
+      capabilities: { supportsReferenceImage: false },
+    }] }
+    const spec = { width: 1600, height: 2400, count: 1, quality: 'high' }
+    const view = await f.service.generateTaskMedia('task-a', { profileId: 'image-v3', operation: 'generate', localAssetIds: [],
+      creativeBrief: 'poster', protocolVersion: 3, parameters: spec, requestedSpec: spec,
+      parameterSources: { width: 'user', height: 'user', count: 'model', quality: 'model' }, specRevision: 1 })
+    await f.service.waitForRun('task-a', view.runId)
+    assert.equal(gateway.calls.submit.length, 1)
+    assert.deepEqual(gateway.calls.submit[0].request.requestedSpec, spec)
+    const saved = await f.store.getJob(owner, 'task-a', view.jobId)
+    assert.deepEqual(saved?.quote.effectiveSpec, { ...spec, size: '1600x2400' })
+    assert.deepEqual(saved?.input.requestedSpec, spec)
+  })
+
   for (const [tool, forbiddenOperation] of [['image_generate', 'edit'], ['image_edit', 'generate']] as const) {
     it(`rejects ${forbiddenOperation} before reference upload or quote when only ${tool} is authorized`, async () => {
       const f = await fixture()

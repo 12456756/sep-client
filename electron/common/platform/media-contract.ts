@@ -6,6 +6,27 @@ import { AppError } from '../../errors/app-error'
 
 export const mediaId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const opaqueId = z.string().min(1).max(256)
+const mediaV3HintSchema = z.object({
+  field: z.string().trim().min(1).max(128),
+  values: z.array(z.union([z.string().trim().min(1).max(128), z.number().finite(), z.boolean()])).max(128),
+  source: z.string().trim().min(1).max(256),
+  observedAt: z.string().datetime({ offset: true }).nullable(),
+  confidence: z.enum(['verified', 'declared', 'unknown']),
+}).strict()
+const mediaV3AdapterSchema = z.object({
+  id: z.string().trim().min(1).max(128),
+  version: z.string().trim().min(1).max(128),
+  available: z.boolean(),
+  reason: z.string().trim().min(1).max(128).optional(),
+  operations: z.array(z.string().trim().min(1).max(128)).max(8),
+  referenceSupport: z.object({
+    maxCount: z.number().int().nonnegative().safe(),
+    maxInputBytes: z.number().int().positive().safe(),
+    mimeTypes: z.array(z.string().trim().min(1).max(128)).max(16),
+  }).strict(),
+  supportsTaskQuery: z.boolean(),
+  supportsCancel: z.boolean(),
+}).strict()
 export const imageMimeSchema = z.enum(['image/png', 'image/jpeg', 'image/webp'])
 export const mediaParametersSchema = z.object({
   aspectRatio: z.string().min(1).max(32), count: z.number().int().min(1).max(16),
@@ -44,6 +65,10 @@ export const mediaProfileSchema = z.object({
   defaultQuality: z.string().min(1).max(64).optional(),
   maxCount: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
   maxCountSource: z.literal('local-output-safety').optional(),
+  adapter: mediaV3AdapterSchema.optional(),
+  authorized: z.boolean().optional(),
+  unavailableReason: z.string().trim().min(1).max(128).optional(),
+  capabilityHints: z.array(mediaV3HintSchema).max(32).optional(),
 }).strict().superRefine((profile, context) => {
   if (profile.defaultSize !== undefined && !profile.allowedSizes?.includes(profile.defaultSize)) context.addIssue({ code: 'custom', path: ['defaultSize'], message: 'Default size must be allowed.' })
   if (profile.defaultQuality !== undefined && !profile.allowedQualities?.includes(profile.defaultQuality)) context.addIssue({ code: 'custom', path: ['defaultQuality'], message: 'Default quality must be allowed.' })

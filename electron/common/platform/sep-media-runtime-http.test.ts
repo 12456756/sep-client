@@ -23,7 +23,7 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
       response.end(JSON.stringify({ statusCode: 401, message: 'Unauthorized' }))
       return
     }
-    if (path !== '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=2&skillArtifactProtocolVersion=1&videoProtocolVersion=2') {
+    if (path !== '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=3&skillArtifactProtocolVersion=1&videoProtocolVersion=3') {
       response.writeHead(404)
       response.end()
       return
@@ -109,5 +109,5 @@ test('SEP runtime contract passes through actual HTTP without enabling media exe
   })
   assert.equal(requests.length, 11)
   assert.equal(requests.filter(request => request.authenticated).length, 10)
-  assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=2&skillArtifactProtocolVersion=1&videoProtocolVersion=2'))
+  assert.ok(requests.every(request => request.path === '/api/client/subscriptions/sub-http/runtime?mediaProtocolVersion=3&skillArtifactProtocolVersion=1&videoProtocolVersion=3'))
 })

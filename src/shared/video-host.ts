@@ -3,8 +3,9 @@ import { videoParametersSchema, videoOperationSchema, type VideoOutput, type Vid
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoRequestedSpec, type MediaParameterSources } from './media-spec-contract'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+const profileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
 export const videoGenerationInputSchema = z.object({
-  profileId: id,
+  profileId,
   operation: videoOperationSchema,
   localAssetIds: z.array(id).max(4),
   creativeBrief: z.string().trim().min(1).max(4000),
@@ -32,9 +33,11 @@ export const videoToolGenerationInputSchema = z.object({
   protocolVersion: z.literal(3).optional(), requestedSpec: videoRequestedSpecSchema.optional(),
   specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(), parameterSources: mediaSpecMetadataSchema.shape.parameterSources.optional(),
   // Retain previously persisted tool calls without requiring new calls to know these fields.
-  profileId: id.optional(),
+  profileId: profileId.optional(),
   operation: videoOperationSchema.optional(),
 }).strict().refine(value => new Set(value.localAssetIds).size === value.localAssetIds.length)
+  .refine(value => value.parameters === undefined || value.protocolVersion === 3 || videoParametersSchema.partial().safeParse(value.parameters).success,
+    'Legacy video parameters are invalid.')
   .refine(value => !value.parameters || !value.requestedSpec || mediaSpecsEqual(value.parameters, value.requestedSpec), 'Video specifications conflict.')
 
 export const videoToolJobInputSchema = z.object({ jobId: id.optional() }).strict()

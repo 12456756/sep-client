@@ -16,6 +16,9 @@ const receipt = videoReceiptSchema.parse({ ...fixture.receipts.succeeded, mock: 
   amountCny: '0.900000', actualCostCny: '0.800000', amountUsd: '0.12', outputs: [output] })
 const quote = { ...fixture.quote, mock: false, billingStatus: 'NOT_RESERVED', amountCny: '0.900000', amountUsd: '0.12',
   pricingVersion: 'real-v1', usdToCnyRate: 7.5, funding: { creditCny: '0.500000', memberWalletCny: '0.400000', personalCny: '0.000000' } }
+const requestedSpecV3 = { durationSeconds: 720, aspectRatio: '9:16', resolution: '8k', audio: false }
+const billingDimensionsV3 = { model: 'provider-video-v1', operation: 'image-to-video' as const, durationSeconds: 720, resolution: '8k' }
+const quoteV3 = { ...quote, protocolVersion: 3, semanticHashVersion: 3, specRevision: 2, effectiveSpec: requestedSpecV3, billingDimensions: billingDimensionsV3 }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }) }
 function gateway(fetcher: typeof fetch) {
   return new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: 'sub-1', token: async () => 'employment-token', fetch: fetcher })
@@ -39,13 +42,40 @@ test('V3 video quote transmits requested specification without legacy parameters
     const body = JSON.parse(String(init?.body))
     assert.equal('parameters' in body, false)
     assert.deepEqual(body.requestedSpec, requestedSpec)
-    return json({ ...quote, protocolVersion: 3, specRevision: 2, effectiveSpec: requestedSpec })
+    return json({ ...quoteV3, effectiveSpec: requestedSpec, billingDimensions: { ...billingDimensionsV3, durationSeconds: requestedSpec.durationSeconds, resolution: requestedSpec.resolution } })
   })
-  assert.deepEqual((await adapter.quote(request, signal)).effectiveSpec, requestedSpec)
+  const acceptedQuote = await adapter.quote(request, signal)
+  assert.deepEqual(acceptedQuote.effectiveSpec, requestedSpec)
+  assert.equal(acceptedQuote.protocolVersion, 3)
+  assert.equal(acceptedQuote.specRevision, 2)
   assert.equal(calls, 1)
-  const changed = gateway(async () => json({ ...quote, protocolVersion: 3, specRevision: 2, effectiveSpec: { ...requestedSpec, durationSeconds: 4 } }))
+  const changed = gateway(async () => json({ ...quoteV3, effectiveSpec: { ...requestedSpec, durationSeconds: 4 } }))
   await assert.rejects(changed.quote(request, signal), { code: 'SPEC_CONFLICT' })
   await assert.rejects(gateway(async () => json(quote)).quote(request, signal), { code: 'SPEC_CONFLICT' })
+  await assert.rejects(gateway(async () => json({ ...quoteV3, semanticHashVersion: undefined })).quote(request, signal), { code: 'SPEC_CONFLICT' })
+  await assert.rejects(gateway(async () => json({ ...quoteV3, billingDimensions: { ...billingDimensionsV3, durationSeconds: 4 } })).quote(request, signal), { code: 'SPEC_CONFLICT' })
+})
+
+test('V3 receipt preserves SEP measured delivery evidence and rejects incomplete bindings', async () => {
+  const request = videoRequestWithIdentitySchema.parse({ ...fixture.request, protocolVersion: 3, specRevision: 2,
+    parameterSources: { durationSeconds: 'model', aspectRatio: 'user', resolution: 'model', audio: 'user' },
+    parameters: requestedSpecV3, requestedSpec: requestedSpecV3 })
+  const v3Receipt = { ...receipt, protocolVersion: 3, semanticHashVersion: 3, specRevision: 2,
+    effectiveSpec: requestedSpecV3, billingDimensions: billingDimensionsV3, deliveryStatus: 'matched',
+    actualSpec: { durationSeconds: 720, width: 1080, height: 1920, frameRate: 30, mimeType: 'video/mp4', hasAudio: false, source: 'measured' } }
+  const adapter = gateway(async () => json(v3Receipt))
+  const accepted = await adapter.submit(request, signal)
+  assert.deepEqual(accepted.actualSpec, v3Receipt.actualSpec)
+  assert.equal(accepted.deliveryStatus, 'matched')
+  assert.equal(accepted.acceptance, 'matched')
+  for (const invalid of [
+    { ...v3Receipt, semanticHashVersion: undefined },
+    { ...v3Receipt, billingDimensions: { ...billingDimensionsV3, resolution: '720p' } },
+    { ...v3Receipt, deliveryStatus: 'unknown', acceptance: 'matched' },
+    { ...v3Receipt, actualSpec: undefined },
+  ]) {
+    await assert.rejects(gateway(async () => json(invalid)).submit(request, signal))
+  }
 })
 
 test('real adapter uses only SEP video-real paths and preserves actual quote metadata', async () => {

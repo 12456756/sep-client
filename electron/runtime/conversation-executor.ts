@@ -141,11 +141,11 @@ export class ConversationExecutor {
         },
       }
       this.options.workers.register(active)
-      const mediaTools = general ? undefined : await this.options.media?.prepareRun({
+      const mediaTools = await this.options.media?.prepareRun({
         taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
-      const videoTools = general ? undefined : await this.options.video?.prepareRun({
+      const videoTools = await this.options.video?.prepareRun({
         taskId, runId: runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
@@ -170,7 +170,7 @@ export class ConversationExecutor {
           resumeSessionFile: queued.resumeSessionFile,
           additionalSkillPaths: general ? [] : employee.additionalSkillPaths,
           systemPrompt: general ? undefined : employee.systemPrompt,
-          ...(general ? { useNativeSystemPrompt: true, disableSkills: true, modelRequestAwareness: false, transformSystemPrompt: translatePiNativeSystemPrompt } : {}),
+          ...(general ? { useNativeSystemPrompt: true, disableSkills: true, enableCommonTools: true, modelRequestAwareness: false, transformSystemPrompt: translatePiNativeSystemPrompt } : {}),
           mediaTools,
           videoTools,
           toolPolicy,
@@ -231,7 +231,7 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
-      if (general) workerPrompt += '\n\n【媒体执行能力】当前通用助手没有账号主体的图片/视频生成授权。需要真实 AI 生成时，应如实说明尚未开通，可以由用户选择有授权的员工继续；不能借用员工身份、令牌或本机密钥，不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
+      if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具；按用户需求分析本次规格，缺少关键信息时与用户交互。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
       const selection = queued.knowledge ?? queued.arrangement?.knowledge
       let trustedNames: string[] = []

@@ -112,12 +112,18 @@ export function videoSpecAcceptance(job: Pick<LocalVideoJob, 'request' | 'receip
 } {
   if (job.request.protocolVersion !== 3 || !job.receipt) return { acceptance: 'unknown' }
   const receipt = job.receipt
+  const measured = receipt.actualSpec
+  const reportedSpec = measured && 'mimeType' in measured ? {
+    durationSeconds: measured.durationSeconds, width: measured.width, height: measured.height,
+    frameRate: measured.frameRate, outputFormat: measured.mimeType,
+    ...(measured.hasAudio === null ? {} : { audio: measured.hasAudio }),
+  } : measured ?? {}
   const measuredSpecs = receipt.outputs.length ? receipt.outputs.map(output => ({
-    ...receipt.actualSpec,
+    ...reportedSpec,
     width: output.width, height: output.height, durationSeconds: output.durationSeconds,
     frameRate: output.frameRate, outputFormat: output.mimeType,
     aspectRatio: `${output.width}:${output.height}`,
-  })) : [{ ...receipt.actualSpec }]
+  })) : [reportedSpec]
   const requested = job.request.requestedSpec ?? {}
   const entries = Object.entries(requested).filter(([, value]) => value !== undefined)
   const differs = measuredSpecs.some(spec => entries.some(([key, value]) => {

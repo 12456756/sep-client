@@ -26,6 +26,22 @@ test('unknown audio verification remains unknown while equivalent measured ratio
   assert.equal(videoSpecAcceptance(job({ aspectRatio: `${fixture.output.width * 2}:${fixture.output.height * 2}` })).acceptance, 'matched')
 })
 
+test('SEP measured audio is mapped without treating unknown audio as verified', () => {
+  for (const hasAudio of [true, false, null]) {
+    const value = job({ audio: false }, {
+      durationSeconds: fixture.output.durationSeconds, width: fixture.output.width,
+      height: fixture.output.height, frameRate: fixture.output.frameRate,
+      mimeType: 'video/mp4', hasAudio, source: 'measured',
+    })
+    const original = structuredClone(value.receipt)
+    const result = videoSpecAcceptance(value)
+    assert.equal(result.acceptance, hasAudio === null ? 'unknown' : hasAudio ? 'mismatched' : 'matched')
+    assert.equal(result.actualSpec?.audio, hasAudio ?? undefined)
+    assert.equal(result.actualSpec?.outputFormat, 'video/mp4')
+    assert.deepEqual(value.receipt, original)
+  }
+})
+
 
 test('every video output is checked and any explicit mismatch prevents acceptance', () => {
   const value = job({ width: fixture.output.width })

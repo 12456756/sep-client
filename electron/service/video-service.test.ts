@@ -681,7 +681,8 @@ for (const states of [
     assert.doesNotMatch(JSON.stringify(recovered), /private-secret|private\.invalid|apiKey|Bearer/)
     recoveredReceipt = { mock: false, receiptId: 'recovered-v3-receipt', clientRequestId: first.request.clientRequestId,
       profileId: first.request.profileId, configVersion: first.request.configVersion, operation: first.request.operation,
-      protocolVersion: 3, specRevision: 2, effectiveSpec: requestedSpec, status: 'QUEUED', pollAfterMs: 1000,
+      protocolVersion: 3, semanticHashVersion: 3, specRevision: 2, effectiveSpec: requestedSpec,
+      billingDimensions: { model: 'provider-video-v1', operation: first.request.operation, durationSeconds: 1, resolution: requestedSpec.resolution ?? '8k' }, deliveryStatus: 'matched', status: 'QUEUED', pollAfterMs: 1000,
       outputs: [], billingStatus: 'RESERVED', amountCny: '0.900000', errorCode: null,
       recovery: { canQuery: true, canCancel: false, canDownload: false } }
     const confirmed = await restored.resume('task-a', first.jobId)

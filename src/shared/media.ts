@@ -21,6 +21,10 @@ export interface MediaProfile {
   defaultQuality?: string
   maxCount?: number
   maxCountSource?: 'local-output-safety'
+  adapter?: { id: string; version: string; available: boolean; reason?: string; operations: string[]; referenceSupport: { maxCount: number; maxInputBytes: number; mimeTypes: string[] }; supportsTaskQuery: boolean; supportsCancel: boolean }
+  authorized?: boolean
+  unavailableReason?: string
+  capabilityHints?: Array<{ field: string; values: Array<string | number | boolean>; source: string; observedAt: string | null; confidence: 'verified' | 'declared' | 'unknown' }>
 }
 
 export interface MediaCapabilities {

@@ -62,36 +62,54 @@ const executableEmployeeMediaRuntimeV2Schema = z.object({
   }
 })
 
-const executableEmployeeMediaRuntimeV3Schema = z.object({
-  protocolVersion: z.literal(3), executionAvailable: z.boolean(), defaultProfileId: z.string().nullable(),
-  tools: z.array(z.enum(['image_generate', 'image_edit'])).max(2),
-  profiles: z.array(sepMediaRuntimeProfileSchema.extend({ capabilities: z.object({
-    supportsReferenceImage: z.boolean(), sizes: z.array(z.string()).optional(),
-    maxOutputs: z.number().int().positive().optional(), qualities: z.array(z.string()).optional(),
-    maxWidth: z.number().int().positive().optional(), maxHeight: z.number().int().positive().optional(),
-  }).strict() })).max(64),
-}).strict().superRefine((value, context) => {
+const mediaProfileIdV3 = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/)
+const mediaLabelV3 = z.string().trim().min(1).max(128).regex(/^[^\p{Cc}\p{Cf}]+$/u)
+const mediaCapabilityHintV3 = z.object({ field: mediaLabelV3, values: z.array(z.union([mediaLabelV3, z.number().finite(), z.boolean()])).max(128), source: mediaLabelV3.max(256), observedAt: z.string().datetime({ offset: true }).nullable(), confidence: z.enum(['verified', 'declared', 'unknown']) }).strict()
+const mediaAdapterV3 = z.object({ id: mediaLabelV3, version: mediaLabelV3, available: z.boolean(), reason: mediaLabelV3.optional(), operations: z.array(mediaLabelV3).max(8), referenceSupport: z.object({ maxCount: z.number().int().nonnegative().safe(), maxInputBytes: z.number().int().positive().safe(), mimeTypes: z.array(mediaLabelV3).max(16) }).strict(), supportsTaskQuery: z.boolean(), supportsCancel: z.boolean() }).strict()
+const sepMediaRuntimeV3ProfileSchema = z.object({ profileId: mediaProfileIdV3, kind: z.literal('image'), displayName: z.string().trim().min(1).max(80), configVersion: z.string().trim().min(1).max(80).regex(/^[^\p{Cc}\p{Cf}]+$/u), operations: z.array(mediaLabelV3).min(1).max(8), executionMode: z.enum(['sync-response', 'async-query']), authorized: z.boolean(), adapter: mediaAdapterV3, capabilityHints: z.array(mediaCapabilityHintV3).max(32), unavailableReason: mediaLabelV3.optional() }).strict()
+const legacyMediaRuntimeV3ProfileSchema = sepMediaRuntimeProfileSchema.extend({ capabilities: z.object({ supportsReferenceImage: z.boolean(), sizes: z.array(z.string()).optional(), maxOutputs: z.number().int().positive().optional(), qualities: z.array(z.string()).optional(), maxWidth: z.number().int().positive().optional(), maxHeight: z.number().int().positive().optional() }).strict() }).strict()
+const legacyExecutableEmployeeMediaRuntimeV3Schema = z.object({ protocolVersion: z.literal(3), executionAvailable: z.boolean(), defaultProfileId: z.string().nullable(), tools: z.array(z.enum(['image_generate', 'image_edit'])).max(2), profiles: z.array(legacyMediaRuntimeV3ProfileSchema).max(64) }).strict().superRefine((value, context) => {
   if (!value.executionAvailable && value.tools.length) context.addIssue({ code: 'custom', path: ['tools'], message: 'Disabled runtime cannot expose tools.' })
   if (value.defaultProfileId !== null && !value.profiles.some(profile => profile.profileId === value.defaultProfileId)) context.addIssue({ code: 'custom', path: ['defaultProfileId'], message: 'Default profile is unavailable.' })
 })
+const executableEmployeeMediaRuntimeV3Schema = z.object({ protocolVersion: z.literal(3), executionMode: z.enum(['real', 'disabled', 'mock']), executionAvailable: z.boolean(), defaultProfileId: mediaProfileIdV3.nullable(), tools: z.array(mediaLabelV3).max(8), profiles: z.array(sepMediaRuntimeV3ProfileSchema).max(64) }).strict().superRefine((value, context) => {
+  if (!value.executionAvailable && value.tools.length) context.addIssue({ code: 'custom', path: ['tools'], message: 'Disabled runtime cannot expose tools.' })
+  if (new Set(value.profiles.map(profile => profile.profileId)).size !== value.profiles.length) context.addIssue({ code: 'custom', path: ['profiles'], message: 'Duplicate profiles.' })
+  if (value.defaultProfileId !== null && !value.profiles.some(profile => profile.profileId === value.defaultProfileId)) context.addIssue({ code: 'custom', path: ['defaultProfileId'], message: 'Default profile is unavailable.' })
+  const executable = value.profiles.some(profile => profile.authorized && profile.adapter.available && !profile.unavailableReason && profile.operations.some(operation => profile.adapter.operations.includes(operation)))
+  if (value.executionAvailable && (value.executionMode !== 'real' || !executable)) context.addIssue({ code: 'custom', path: ['executionAvailable'], message: 'Missing executable authorized adapter.' })
+})
 
-export const sepMediaRuntimeSchema = z.union([realMediaRuntimeSchema, executableEmployeeMediaRuntimeSchema, configurationMediaRuntimeSchema, executableEmployeeMediaRuntimeV2Schema, executableEmployeeMediaRuntimeV3Schema])
+export const sepMediaRuntimeSchema = z.union([realMediaRuntimeSchema, executableEmployeeMediaRuntimeSchema, configurationMediaRuntimeSchema, executableEmployeeMediaRuntimeV2Schema, executableEmployeeMediaRuntimeV3Schema, legacyExecutableEmployeeMediaRuntimeV3Schema])
 
 export function toLocalMediaCapabilities(value: unknown): MediaCapabilities {
   const runtime = parseSepMediaRuntime(value)
   if (runtime.protocolVersion === 3) {
-    const profiles: MediaCapabilities['profiles'] = runtime.profiles.map(profile => ({
+    if (runtime.profiles.length === 0 || 'capabilities' in runtime.profiles[0]!) {
+      const legacyRuntime = runtime as z.infer<typeof legacyExecutableEmployeeMediaRuntimeV3Schema>
+      const profiles: MediaCapabilities['profiles'] = legacyRuntime.profiles.map(profile => ({
+        profileId: profile.profileId, kind: 'image' as const, displayName: profile.displayName, configVersion: profile.configVersion,
+        operations: profile.operations.filter(operation => legacyRuntime.tools.includes(operation === 'edit' ? 'image_edit' : 'image_generate')) as Array<'generate' | 'edit'>,
+        executionMode: profile.executionMode, capabilities: { referenceImage: profile.capabilities.supportsReferenceImage, cancel: true, recoverByRequestId: true }, allowedAspectRatios: [],
+        ...(profile.capabilities.sizes !== undefined ? { allowedSizes: profile.capabilities.sizes } : {}), ...(profile.capabilities.qualities !== undefined ? { allowedQualities: profile.capabilities.qualities } : {}),
+      })).filter(profile => profile.operations.length > 0)
+      return { protocolVersion: 3, defaultProfileId: profiles.some(profile => profile.profileId === legacyRuntime.defaultProfileId) ? legacyRuntime.defaultProfileId : null, tools: legacyRuntime.executionAvailable && profiles.length ? ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'] : [], profiles }
+    }
+    const v3Runtime = runtime as z.infer<typeof executableEmployeeMediaRuntimeV3Schema>
+    const profiles: MediaCapabilities['profiles'] = v3Runtime.profiles.map(profile => ({
       profileId: profile.profileId, kind: 'image' as const, displayName: profile.displayName, configVersion: profile.configVersion,
-      operations: profile.operations.filter(operation => runtime.tools.includes(operation === 'edit' ? 'image_edit' : 'image_generate')),
+      operations: profile.operations.filter((operation): operation is 'generate' | 'edit' =>
+        (operation === 'generate' || operation === 'edit')
+        && v3Runtime.tools.includes(operation === 'edit' ? 'image_edit' : 'image_generate')
+        && profile.authorized && profile.adapter.available && !profile.unavailableReason && profile.adapter.operations.includes(operation)),
       executionMode: profile.executionMode,
-      capabilities: { referenceImage: profile.capabilities.supportsReferenceImage, cancel: true, recoverByRequestId: true },
+      capabilities: { referenceImage: profile.adapter.referenceSupport.maxCount > 0, cancel: profile.adapter.supportsCancel, recoverByRequestId: profile.adapter.supportsTaskQuery },
       allowedAspectRatios: [],
-      ...(profile.capabilities.sizes !== undefined ? { allowedSizes: profile.capabilities.sizes } : {}),
-      ...(profile.capabilities.qualities !== undefined ? { allowedQualities: profile.capabilities.qualities } : {}),
+      adapter: profile.adapter, authorized: profile.authorized, ...(profile.unavailableReason ? { unavailableReason: profile.unavailableReason } : {}), capabilityHints: profile.capabilityHints,
     })).filter(profile => profile.operations.length > 0)
     return {
-      protocolVersion: 3, defaultProfileId: profiles.some(profile => profile.profileId === runtime.defaultProfileId) ? runtime.defaultProfileId : null,
-      tools: runtime.executionAvailable && profiles.length ? ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'] : [],
+      protocolVersion: 3, defaultProfileId: profiles.some(profile => profile.profileId === v3Runtime.defaultProfileId) ? v3Runtime.defaultProfileId : null,
+      tools: v3Runtime.executionAvailable && profiles.length ? ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'] : [],
       profiles,
     }
   }

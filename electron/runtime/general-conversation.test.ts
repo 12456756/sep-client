@@ -9,6 +9,10 @@ import { TaskRunStore } from '../data/task-run-store'
 import { WorkPlanStore } from '../data/work-plan-store'
 import { effectivePermissionPolicy } from '../domain/arrangement-plan'
 import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
+import type { MediaHostTools } from '../domain/media-tools'
+import type { VideoHostTools } from '../domain/video-tools'
+import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
+import { videoRuntimeSchema } from '../../src/shared/video-media'
 
 test('general chat preserves selected model, permissions and history across turns and restart without employee behavior', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sep-general-chat-'))
@@ -17,6 +21,15 @@ test('general chat preserves selected model, permissions and history across turn
   const plans = new WorkPlanStore(root)
   const runs = new TaskRunStore(root)
   const contexts: PiTaskWorkerOptions['context'][] = []
+  const preparations: Array<{ kind: string; subscriptionId: string }> = []
+  const toolCalls: string[] = []
+  const completedMedia: string[] = []
+  const media = { profileId: 'image-profile' }
+  const video = videoRuntimeSchema.parse(videoFixture.runtime)
+  const mediaTools: MediaHostTools = { names: ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'],
+    async execute(name) { toolCalls.push(name); return { ok: true } } }
+  const videoTools: VideoHostTools = { names: ['video_generate', 'video_from_image', 'video_get_job'],
+    async execute(name) { toolCalls.push(name); return { ok: true } } }
   let subscriptionId = 'subscription-a'
   let runtime: TaskRuntime | undefined
   const settle = async (id: string) => {
@@ -30,17 +43,35 @@ test('general chat preserves selected model, permissions and history across turn
     taskManager: manager, taskRunStore: runs, workPlanStore: plans,
     resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://unused' }),
     authorizeEmployee: async () => assert.fail('must not authorize employee or prepare skills'),
-    authorizeModel: async modelId => ({ subscriptionId, modelId, gatewayUrl: 'http://unused' }),
+    authorizeModel: async modelId => ({ subscriptionId, modelId, gatewayUrl: 'http://unused', media, video }),
     getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
     knowledgeSearch: async () => assert.fail('must not search employee knowledge'),
-    media: { async prepareRun() { assert.fail('must not prepare employee media') }, async stopTask() {}, async waitForRun() {} },
+    media: { async prepareRun(input) {
+      assert.deepEqual(input.employee.media, media)
+      assert.equal(input.employee.runtimeSnapshot, undefined)
+      assert.equal(input.toolPolicy?.preset, 'full-local')
+      preparations.push({ kind: 'image', subscriptionId: input.subscriptionId })
+      return mediaTools
+    }, async stopTask() {}, async waitForRun() { completedMedia.push('image') } },
+    video: { async prepareRun(input) {
+      assert.deepEqual(input.employee.video, videoFixture.runtime)
+      assert.equal(input.employee.runtimeSnapshot, undefined)
+      assert.equal(input.toolPolicy?.preset, 'full-local')
+      preparations.push({ kind: 'video', subscriptionId: input.subscriptionId })
+      return videoTools
+    }, async stopTask() {}, async waitForRun() { completedMedia.push('video') } },
     createWorker: options => ({
       async run(prompt) {
         contexts.push(options.context)
         assert.ok(['first', 'second', 'third'].some(text => prompt.startsWith(`${text}\n\n`)))
-        assert.match(prompt, /当前通用助手没有账号主体的图片\/视频生成授权/)
-        assert.match(prompt, /不能借用员工身份/)
+        assert.doesNotMatch(prompt, /当前通用助手没有账号主体的图片\/视频生成授权/)
+        assert.match(prompt, /优先使用当前会话已提供的图片\/视频工具/)
         assert.match(prompt, /不能静默以脚本合成替代/)
+        assert.equal(options.context.mediaTools, mediaTools)
+        assert.equal(options.context.videoTools, videoTools)
+        await options.context.mediaTools.execute('media_generate_image', {})
+        await options.context.videoTools.execute('video_generate', {})
+        await options.context.videoTools.execute('video_from_image', {})
         await mkdir(options.context.sessionDir, { recursive: true })
         const file = join(options.context.sessionDir, 'session.jsonl')
         await writeFile(file, '{}\n', 'utf8')
@@ -56,7 +87,7 @@ test('general chat preserves selected model, permissions and history across turn
       id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1, owner: scope, mode: 'conversation',
       title: 'general', goal: 'first', nodes: [], confirmedInputs: [],
       conversation: { kind: 'general', modelId: 'selected', participants: [{ subscriptionId, modelId: 'selected' }], activeSubscriptionId: subscriptionId },
-      workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'workspace-edit', approvalMode: 'confirm-each' }),
+      workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'full-local', approvalMode: 'auto-approve' }),
       planHash: 'general', createdAt: Date.now(),
     })
     runtime = createRuntime()
@@ -76,13 +107,20 @@ test('general chat preserves selected model, permissions and history across turn
       assert.equal(context.systemPrompt, undefined)
       assert.equal(context.useNativeSystemPrompt, true)
       assert.equal(context.disableSkills, true)
+      assert.equal(context.enableCommonTools, true)
       assert.deepEqual(context.additionalSkillPaths, [])
-      assert.equal(context.toolPolicy?.preset, 'workspace-edit')
+      assert.equal(context.toolPolicy?.preset, 'full-local')
+      assert.equal(context.toolPolicy?.approvalMode, 'auto-approve')
       assert.equal(context.transformSystemPrompt?.('unknown dynamic text'), 'unknown dynamic text')
     }
     assert.equal(contexts[1].resumeSessionFile, join(contexts[0].sessionDir, 'session.jsonl'))
     assert.equal(contexts[2].resumeSessionFile, contexts[1].resumeSessionFile)
     assert.deepEqual((await runs.list(scope, task.id)).map(run => run.subscriptionId).sort(), ['subscription-a', 'subscription-b', 'subscription-b'])
+    assert.deepEqual(preparations, ['subscription-a', 'subscription-b', 'subscription-b'].flatMap(id => [
+      { kind: 'image', subscriptionId: id }, { kind: 'video', subscriptionId: id },
+    ]))
+    assert.deepEqual(toolCalls, Array.from({ length: 3 }, () => ['media_generate_image', 'video_generate', 'video_from_image']).flat())
+    assert.deepEqual(completedMedia, ['image', 'video', 'image', 'video', 'image', 'video'])
   } finally { await runtime?.stopAll(); await rm(root, { recursive: true, force: true }) }
 })
 

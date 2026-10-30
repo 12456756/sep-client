@@ -3,14 +3,20 @@ import { imageAspectRatio } from './media-spec'
 
 const positive = z.number().finite().positive().max(Number.MAX_SAFE_INTEGER)
 const pixels = positive.int()
-const token = z.string().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/)
+const label = z.string().trim().min(1).max(128).regex(/^[^\p{Cc}\p{Cf}]+$/u)
+  .refine(value => !/^[a-z][a-z0-9+.-]*:\/\//i.test(value))
+const mediaFormatLabel = label.refine(value => !/^image\//i.test(value))
 const ratio = z.string().max(32).regex(/^[1-9]\d*:[1-9]\d*$/).refine(value =>
   value.split(':').every(part => Number.isSafeInteger(Number(part))))
-const size = z.string().max(64).regex(/^[1-9]\d*x[1-9]\d*$/).refine(value => imageAspectRatio(value) !== undefined)
 const dimensions = { width: pixels.optional(), height: pixels.optional(), aspectRatio: ratio.optional() }
 
 function validateDimensions(value: { size?: string; width?: number; height?: number; aspectRatio?: string }, context: z.RefinementCtx): void {
-  const parsed = value.size?.split('x').map(Number)
+  const sizeMatch = value.size?.match(/^([1-9]\d*)x([1-9]\d*)$/)
+  const parsed = sizeMatch ? sizeMatch.slice(1).map(Number) : undefined
+  if (parsed && parsed.some(part => !Number.isSafeInteger(part))) {
+    context.addIssue({ code: 'custom', path: ['size'], message: 'Pixel size exceeds the supported integer range.' })
+    return
+  }
   if (parsed && (value.width !== undefined && parsed[0] !== value.width || value.height !== undefined && parsed[1] !== value.height)) {
     context.addIssue({ code: 'custom', path: ['size'], message: 'Pixel size conflicts with explicit dimensions.' })
   }
@@ -23,17 +29,20 @@ function validateDimensions(value: { size?: string; width?: number; height?: num
 
 /** New requests carry decisions, never platform defaults or capability membership rules. */
 export const imageRequestedSpecSchema = z.object({
-  ...dimensions, size: size.optional(), count: pixels.optional(), quality: token.optional(),
+  ...dimensions, size: label.optional(), count: pixels.optional(), quality: label.optional(),
   outputFormat: z.string().max(96).regex(/^image\/[a-zA-Z0-9][a-zA-Z0-9.+-]*$/).optional(),
 }).strict().superRefine(validateDimensions)
 
 export const videoRequestedSpecSchema = z.object({
-  ...dimensions, durationSeconds: positive.optional(), resolution: token.optional(),
+  ...dimensions, durationSeconds: positive.int().optional(), resolution: label.optional(),
   frameRate: positive.optional(), audio: z.boolean().optional(),
-  outputFormat: z.string().max(96).regex(/^video\/[a-zA-Z0-9][a-zA-Z0-9.+-]*$/).optional(),
+  outputFormat: mediaFormatLabel.optional(),
 }).strict().superRefine(validateDimensions)
 
-export const mediaParameterSourceSchema = z.enum(['user', 'model', 'upstream'])
+export const mediaParameterSourceSchema = z.union([
+  z.enum(['user', 'model', 'upstream']),
+  z.object({ source: z.enum(['user', 'model', 'upstream']), decisionRef: z.string().min(1).max(256) }).strict(),
+])
 export const mediaParameterSourcesSchema = z.partialRecord(z.enum([
   'width', 'height', 'aspectRatio', 'size', 'count', 'quality', 'durationSeconds', 'resolution', 'frameRate', 'audio', 'outputFormat',
 ]), mediaParameterSourceSchema)
@@ -89,4 +98,17 @@ export function mediaSpecsEqual(requested: Record<string, unknown>, effective: R
     return [key, value]
   }))
   return normalized(requested) === normalized(effective)
+}
+
+/** SEP may express requested pixel dimensions as a numeric size in its effective result. */
+export function imageEffectiveSpecMatches(requested: Record<string, unknown>, effective: Record<string, unknown>): boolean {
+  const width = requested.width
+  const height = requested.height
+  if (typeof width === 'number' && typeof height === 'number' && requested.size === undefined
+    && typeof effective.size === 'string' && effective.size === `${width}x${height}`) {
+    const normalizedEffective = { ...effective }
+    delete normalizedEffective.size
+    return mediaSpecsEqual(requested, normalizedEffective)
+  }
+  return mediaSpecsEqual(requested, effective)
 }

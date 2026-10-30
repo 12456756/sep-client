@@ -51,6 +51,23 @@ function parse<T>(contract: z.ZodType<T>, value: unknown, code = 'VIDEO_INVALID_
   return result.data
 }
 
+function validateV3Receipt(receipt: VideoReceipt, request?: VideoRequest): VideoReceipt {
+  if (receipt.protocolVersion !== 3) {
+    if (request?.protocolVersion === 3) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
+    return receipt
+  }
+  const measured = receipt.actualSpec !== undefined && 'source' in receipt.actualSpec && receipt.actualSpec.source === 'measured'
+  if (receipt.semanticHashVersion !== 3 || receipt.specRevision === undefined || !receipt.effectiveSpec || !receipt.billingDimensions ||
+    receipt.billingDimensions.operation !== receipt.operation || receipt.deliveryStatus === undefined || receipt.acceptance !== receipt.deliveryStatus ||
+    (receipt.status === 'SUCCEEDED' || receipt.status === 'PARTIAL_SUCCEEDED') && !measured ||
+    receipt.deliveryStatus === 'matched' && !measured ||
+    request && (receipt.specRevision !== request.specRevision || !mediaSpecsEqual(request.requestedSpec!, receipt.effectiveSpec) ||
+      receipt.billingDimensions.operation !== request.operation || receipt.billingDimensions.durationSeconds !== request.requestedSpec!.durationSeconds || receipt.billingDimensions.resolution !== request.requestedSpec!.resolution)) {
+    throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
+  }
+  return receipt
+}
+
 async function abortable<T>(signal: AbortSignal, action: () => Promise<T>): Promise<T> {
   signal.throwIfAborted()
   return new Promise<T>((resolve, reject) => {
@@ -107,7 +124,7 @@ class SepVideoGateway implements VideoGatewayPort {
     if (request.protocolVersion === 3 && this.options.mock) throw new AppError('UPGRADE_REQUIRED')
     const { parameters: _parameters, ...versioned } = request
     const value = await this.json('/quotes', 'POST', request.protocolVersion === 3 ? versioned : request, videoQuoteResponseSchema, signal)
-    if (request.protocolVersion === 3 && (value.mock || value.protocolVersion !== 3 || value.specRevision !== request.specRevision || !value.effectiveSpec || !mediaSpecsEqual(request.requestedSpec!, value.effectiveSpec))) {
+    if (request.protocolVersion === 3 && (value.mock || value.protocolVersion !== 3 || value.semanticHashVersion !== 3 || value.specRevision !== request.specRevision || !value.effectiveSpec || !mediaSpecsEqual(request.requestedSpec!, value.effectiveSpec) || !value.billingDimensions || value.billingDimensions.operation !== request.operation || value.billingDimensions.durationSeconds !== request.requestedSpec!.durationSeconds || value.billingDimensions.resolution !== request.requestedSpec!.resolution)) {
       throw new AppError('SPEC_CONFLICT', { details: { field: 'effectiveSpec', source: 'platform', stage: 'video-quote' } })
     }
     return { quoteId: value.quoteId, requestHash: value.semanticSha256.toLowerCase(), expiresAt: Date.parse(value.expiresAt), status: value.pricingStatus, amount: value.amountCny, currency: value.mock ? 'MOCK' : 'CNY',
@@ -119,16 +136,15 @@ class SepVideoGateway implements VideoGatewayPort {
     const request = parse(videoRequestWithIdentitySchema, input, 'VIDEO_INVALID_REQUEST')
     if (request.protocolVersion === 3 && this.options.mock) throw new AppError('UPGRADE_REQUIRED')
     const { parameters: _parameters, ...versioned } = request
-    const receipt = await this.json('/requests', 'POST', request.protocolVersion === 3 ? versioned : request, videoReceiptSchema, signal)
+    const receipt = validateV3Receipt(await this.receipt('/requests', 'POST', request.protocolVersion === 3 ? versioned : request, signal), request)
     if (receipt.clientRequestId !== request.clientRequestId || receipt.profileId !== request.profileId || receipt.configVersion !== request.configVersion || receipt.operation !== request.operation) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
-    if (request.protocolVersion === 3 && (receipt.protocolVersion !== 3 || receipt.specRevision !== request.specRevision || !receipt.effectiveSpec || !mediaSpecsEqual(request.requestedSpec!, receipt.effectiveSpec))) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
     return receipt
   }
 
   async findReceipt(clientRequestId: string, signal: AbortSignal): Promise<VideoReceipt | null> {
     const requestId = parse(id, clientRequestId, 'VIDEO_INVALID_REQUEST')
     try {
-      const receipt = await this.json(`/requests/by-client-id/${requestId}`, 'GET', undefined, videoReceiptSchema, signal)
+      const receipt = await this.receipt(`/requests/by-client-id/${requestId}`, 'GET', undefined, signal)
       if (receipt.clientRequestId !== requestId) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
       return receipt
     } catch (error) {
@@ -138,14 +154,14 @@ class SepVideoGateway implements VideoGatewayPort {
   }
 
   async getReceipt(receiptId: string, signal: AbortSignal): Promise<VideoReceipt> {
-    const receipt = await this.json(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}`, 'GET', undefined, videoReceiptSchema, signal)
+    const receipt = await this.receipt(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}`, 'GET', undefined, signal)
     if (receipt.receiptId !== receiptId) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
     return receipt
   }
 
   async cancel(receiptId: string, signal: AbortSignal): Promise<void> {
     if (!this.options.mock) {
-      const receipt = await this.json(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}/cancel`, 'POST', {}, videoReceiptSchema, signal)
+      const receipt = await this.receipt(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}/cancel`, 'POST', {}, signal)
       if (receipt.receiptId !== receiptId) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
       return
     }
@@ -191,6 +207,11 @@ class SepVideoGateway implements VideoGatewayPort {
         reader.releaseLock()
       }
     })()
+  }
+
+  private async receipt(path: string, method: 'GET' | 'POST', body: unknown, signal: AbortSignal): Promise<VideoReceipt> {
+    const receipt = await this.json(path, method, body, videoReceiptSchema, signal)
+    return validateV3Receipt(receipt.deliveryStatus && receipt.acceptance === undefined ? { ...receipt, acceptance: receipt.deliveryStatus } : receipt)
   }
 
   private async realContent(receiptId: string, outputId: string, signal: AbortSignal): Promise<AsyncIterable<Uint8Array>> {

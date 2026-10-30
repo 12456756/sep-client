@@ -5,14 +5,29 @@ import * as fixture from './fixtures/media-video-v1.json'
 import * as v2Fixture from './fixtures/media-video-v2.json'
 import { videoAllowedAudioModes, videoOutputSchema, videoProfileSchema, videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema, videoRuntimeSchema, videoQuoteResponseSchema } from './video-media'
 
-test('V3 video runtime contains advisory hints without specification defaults or membership rules', () => {
-  const profile = fixture.runtime.profiles[0]
-  const runtime = videoRuntimeSchema.parse({ ...fixture.runtime, protocolVersion: 3, executionMode: 'real',
-    profiles: [{ ...profile, capabilities: { ...profile.capabilities, durationsSeconds: [], aspectRatios: [], resolutions: [], frameRates: [], outputFormats: [] },
-      capabilityHints: { source: 'provider', observedAt: '2026-10-29T00:00:00Z', confidence: 'unknown' } }],
-  })
-  assert.equal(runtime.protocolVersion, 3)
-  assert.equal('defaults' in runtime.profiles[0].capabilities, false)
+test('SEP V3 video runtime normalizes advisory hints and round-trips without inventing audio defaults', () => {
+  const runtime = {
+    protocolVersion: 3,
+    executionMode: 'real',
+    executionAvailable: true,
+    defaultProfileId: 'video-v3',
+    tools: ['video_generate', 'video_from_image'],
+    profiles: [{
+      profileId: 'video-v3', configVersion: 'cfg-v3', kind: 'video', displayName: 'V3 video',
+      operations: ['text-to-video', 'image-to-video'], executionMode: 'async-query', authorized: true,
+      adapter: { id: 'adapter-v3', version: '1', available: true, operations: ['text-to-video', 'image-to-video'],
+        referenceSupport: { maxCount: 1, maxInputBytes: 10485760, mimeTypes: ['image/png'] },
+        supportsTaskQuery: true, supportsCancel: false },
+      capabilityHints: [{ field: 'durationSeconds', values: [8, 12], source: 'adapter', observedAt: null, confidence: 'declared' }],
+    }],
+  }
+  const normalized = videoRuntimeSchema.parse(runtime)
+  assert.equal(normalized.protocolVersion, 3)
+  assert.deepEqual(normalized.profiles[0]?.capabilityHints, runtime.profiles[0].capabilityHints)
+  assert.equal(normalized.profiles[0]?.capabilities.supportsTaskQuery, true)
+  assert.equal(normalized.profiles[0]?.capabilities.supportsAudio, false)
+  assert.equal('audioModes' in (normalized.profiles[0]?.capabilities ?? {}), false)
+  assert.deepEqual(videoRuntimeSchema.parse(normalized), normalized)
 })
 
 test('V3 video request retains omitted fields and rejects a second contradictory specification', () => {
@@ -69,6 +84,13 @@ test('all shared receipt states and video metadata parse without alteration', ()
   for (const receipt of Object.values(fixture.receipts)) assert.deepEqual(videoReceiptSchema.parse(receipt), receipt)
   assert.deepEqual(videoOutputSchema.parse(fixture.output), fixture.output)
   assert.equal(createHash('sha256').update(Buffer.from(fixture.mediaFixture.base64, 'base64')).digest('hex'), fixture.output.sha256)
+})
+
+test('shared receipt schema restores historical V3 records with partial actual-spec evidence', () => {
+  const historical = { ...fixture.receipts.succeeded, protocolVersion: 3, specRevision: 1,
+    effectiveSpec: { durationSeconds: 4, aspectRatio: '16:9', resolution: '720p', frameRate: 24, audio: false, outputFormat: 'video/mp4' },
+    actualSpec: { width: 1280 } }
+  assert.deepEqual(videoReceiptSchema.parse(historical), historical)
 })
 
 test('video runtime rejects dangling defaults, duplicate profiles and unsupported tools', () => {

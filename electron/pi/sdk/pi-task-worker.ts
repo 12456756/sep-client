@@ -37,6 +37,7 @@ export interface PiTaskWorkerContext {
   disableSkills?: boolean
   modelRequestAwareness?: boolean
   transformSystemPrompt?: PiAgentSessionConfig['transformSystemPrompt']
+  enableCommonTools?: PiAgentSessionConfig['enableCommonTools']
   mediaTools?: PiAgentSessionConfig['mediaTools']
   videoTools?: PiAgentSessionConfig['videoTools']
   employeeProfile?: PiAgentSessionConfig['employeeProfile']
@@ -157,6 +158,7 @@ export class PiTaskWorker {
         disableSkills: this.context.disableSkills,
         modelRequestAwareness: this.context.modelRequestAwareness,
         transformSystemPrompt: this.context.transformSystemPrompt,
+        enableCommonTools: this.context.enableCommonTools,
         mediaTools: this.context.mediaTools,
         videoTools: this.context.videoTools,
         employeeProfile: this.context.employeeProfile,

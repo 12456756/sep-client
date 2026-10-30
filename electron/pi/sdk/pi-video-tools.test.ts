@@ -109,6 +109,12 @@ describe('video tools through the mocked Pi SDK extension API', () => {
     assert.match(schema, /requestedSpec/)
     assert.match(schema, /requirementId/)
     assert.match(schema, /parameterSources/)
+    const fields = (runtime.definitions.get('video_generate')!.parameters as { properties: Record<string, { pattern?: string; properties: Record<string, { pattern?: string }> }> }).properties
+    assert.equal(fields.profileId.pattern, '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
+    assert.equal(fields.requestedSpec.properties.outputFormat.pattern, undefined)
+    const containerInput = { ...input, profileId: 'video.profile', requestedSpec: { ...input.requestedSpec, outputFormat: 'mp4' } }
+    assert.deepEqual((await runtime.execute('video_generate', containerInput)).details, { isError: false })
+    assert.deepEqual(runtime.calls[1].input, { ...containerInput, localAssetIds: [] })
   })
 
   it('returns structured missing-spec context without diagnosing missing authorization', async () => {

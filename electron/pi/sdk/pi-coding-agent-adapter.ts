@@ -96,7 +96,7 @@ const VIDEO_TOOL_NAMES: readonly VideoToolName[] = ['video_from_image', 'video_g
 function mediaInputValidationFailure(error: z.ZodError) {
   const fields = new Set(['width', 'height', 'size', 'aspectRatio', 'count', 'quality', 'durationSeconds', 'resolution', 'frameRate', 'audio', 'outputFormat'])
   const issue = error.issues.find(item => (item.path[0] === 'parameters' || item.path[0] === 'requestedSpec') && fields.has(String(item.path[1])))
-  const conflict = issue?.code === 'custom'
+  const conflict = error.issues.some(item => item.code === 'custom' && /conflict|contradictory/i.test(item.message))
   return mediaToolFailureFrom(new AppError(conflict ? 'SPEC_CONFLICT' : 'INVALID_ARGUMENT', { details: {
     source: 'client', stage: 'input-validation', ...(issue ? { field: `${String(issue.path[0])}.${String(issue.path[1])}` } : {}),
   } }))
@@ -172,14 +172,15 @@ function safeVideoResult(result: unknown, names: readonly VideoToolName[]): unkn
 
 function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly VideoToolName[]): ToolDefinition[] {
   const id = Type.String({ pattern: '^[A-Za-z0-9_-]{1,128}$' })
+  const profileId = Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' })
   const parameters = Type.Object({
-    durationSeconds: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+    durationSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
     aspectRatio: Type.Optional(Type.String({ pattern: '^[1-9]\\d*:[1-9]\\d*$', maxLength: 32 })),
-    resolution: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+    resolution: Type.Optional(Type.String({ pattern: '^(?![a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/)[^\\u0000-\\u001F\\u007F]+$', minLength: 1, maxLength: 128 })),
     width: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
     height: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
     frameRate: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: Number.MAX_SAFE_INTEGER })), audio: Type.Optional(Type.Boolean()),
-    outputFormat: Type.Optional(Type.String({ pattern: '^video/[a-zA-Z0-9][a-zA-Z0-9.+-]*$', maxLength: 96 })),
+    outputFormat: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   }, { additionalProperties: false })
   return names.map(name => {
     const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
@@ -190,7 +191,7 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
         : `Generate a video using ${operation}. Inspect video_get_job({}) for actual authorization, profiles and protocol version. Preserve user specifications; propose missing specifications from purpose, context and reference assets, or ask about consequential ambiguity. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters require explicit complete decisions; missing fields are never filled by the host. Never silently change specifications, switch model or substitute script animation. ${name === 'video_from_image' ? 'Supply one SAVED task-local referenceAssets localAssetId; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report tool error codes and their source, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
       parameters: name === 'video_get_job' ? Type.Object({ jobId: Type.Optional(id) }, { additionalProperties: false })
         : Type.Object({
-          profileId: Type.Optional(id), operation: Type.Optional(Type.Literal(operation)),
+          profileId: Type.Optional(profileId), operation: Type.Optional(Type.Literal(operation)),
           localAssetIds: name === 'video_from_image' ? Type.Array(id, { minItems: 1, maxItems: 1 }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
           creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters: Type.Optional(parameters),
           requestedSpec: Type.Optional(parameters), ...mediaDecisionToolProperties(),
@@ -283,7 +284,10 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
 }
 
 function mediaDecisionToolProperties() {
-  const source = Type.Union([Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream')])
+  const source = Type.Union([
+    Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream'),
+    Type.Object({ source: Type.Union([Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream')]), decisionRef: Type.String({ minLength: 1, maxLength: 256 }) }, { additionalProperties: false }),
+  ])
   return {
     requirementId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
     protocolVersion: Type.Optional(Type.Literal(3)),
@@ -303,7 +307,14 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
     height: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
     size: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
     quality: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-    outputFormat: Type.Optional(Type.String({ pattern: '^image/[a-zA-Z0-9][a-zA-Z0-9.+-]*$', maxLength: 96 })),
+  }, { additionalProperties: false })
+  const requestedSpec = Type.Object({
+    aspectRatio: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
+    count: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    width: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    height: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    size: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    quality: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   }, { additionalProperties: false })
   const parameters = {
     media_get_capabilities: Type.Object({}, { additionalProperties: false }),
@@ -312,7 +323,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
       operation: Type.Optional(Type.Union([Type.Literal('generate'), Type.Literal('edit')])),
       localAssetIds: Type.Optional(Type.Array(id, { maxItems: 16 })),
       creativeBrief: Type.String({ minLength: 1, maxLength: 20_000 }),
-      parameters: Type.Optional(spec), requestedSpec: Type.Optional(spec), ...mediaDecisionToolProperties(),
+      parameters: Type.Optional(spec), requestedSpec: Type.Optional(requestedSpec), ...mediaDecisionToolProperties(),
     }, { additionalProperties: false }),
     media_get_job: Type.Object({ jobId: id }, { additionalProperties: false }),
     media_cancel_job: Type.Object({ jobId: id, cancelUpstream: Type.Boolean() }, { additionalProperties: false }),
@@ -1007,7 +1018,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     // Execution-disabled/planner policies must not gain external tools or spawn MCP servers.
     const canUseMcp = !config.disableTools && (!config.toolPolicy || config.toolPolicy.allowedTools.length > 0 || isUnrestrictedToolPolicy(config.toolPolicy))
     const servers = canUseMcp ? config.mcpServers ?? await loadHostMcpServers() : []
-    const common: CommonSkillsResult = !config.disableSkills && config.employeeProfile && canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG
+    const commonEnabled = config.enableCommonTools === true || (!config.disableSkills && !!config.employeeProfile)
+    const common: CommonSkillsResult = commonEnabled && canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG
       ? prepareCommonSkills() : { skills: [], unavailable: [] }
     if (common.skills.length && config.resumeSessionFile) {
       try {
@@ -1046,15 +1058,17 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
         extensionFactories: buildExtensions(config, mcp),
-        ...(config.disableSkills ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) } : employeeSkillLoaderOptions(
-          config.workspaceDir,
-          config.agentDir,
-          config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
-          loadSkills,
-          commonPaths,
-        )),
+        ...(config.disableSkills && !commonPaths.length
+          ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) }
+          : employeeSkillLoaderOptions(
+            config.workspaceDir,
+            config.agentDir,
+            config.disableSkills ? undefined : config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
+            loadSkills,
+            commonPaths,
+          )),
         noContextFiles: true,
-        additionalSkillPaths: config.disableSkills ? [] : [...(config.additionalSkillPaths ?? []), ...commonPaths],
+        additionalSkillPaths: config.disableSkills ? commonPaths : [...(config.additionalSkillPaths ?? []), ...commonPaths],
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,

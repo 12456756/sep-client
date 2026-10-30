@@ -306,8 +306,11 @@ describe('V3 image quotes', () => {
     const spec = { width: 1600, height: 2400, quality: 'ultra', count: 7 }
     const input = { ...request, protocolVersion: 3 as const, parameters: spec, requestedSpec: spec,
       parameterSources: { width: 'user' as const, height: 'user' as const, quality: 'model' as const, count: 'user' as const }, specRevision: 2 }
-    const quote = { mock: false, protocolVersion: 3, quoteId: 'quote-v3', expiresAt: new Date(Date.now() + 60000).toISOString(),
-      semanticSha256: realMediaSemanticHash(input), effectiveSpec: spec, pricingStatus: 'quoted', amountCny: '1.000000', pricingVersion: 'p1',
+    const quote = { mock: false, protocolVersion: 3, semanticHashVersion: 3, specRevision: 2, profileId: input.profileId, configVersion: input.configVersion,
+      modelId: 'image-model', adapterVersion: 'adapter-v1', amountUsd: '0.01', connectionFingerprint: 'b'.repeat(64),
+      billingDimensions: { size: '1600x2400', count: 7, quality: 'ultra' }, normalizationNotes: [],
+      quoteId: 'quote-v3', expiresAt: new Date(Date.now() + 60000).toISOString(),
+      semanticSha256: 'c'.repeat(64), effectiveSpec: spec, pricingStatus: 'quoted', amountCny: '1.000000', pricingVersion: 'p1',
       billingStatus: 'NOT_RESERVED', funding: { creditCny: '1.000000', memberWalletCny: '0.000000', personalCny: '0.000000' } }
     const { gateway, calls } = create(async () => json(quote))
     const result = await gateway.quote('sub-1', input, signal())
@@ -318,12 +321,18 @@ describe('V3 image quotes', () => {
     assert.equal('aspectRatio' in body.requestedSpec, false)
     const changed = create(async () => json({ ...quote, effectiveSpec: { ...spec, width: 1024 } }))
     await assert.rejects(changed.gateway.quote('sub-1', input, signal()), safeError('SPEC_CONFLICT'))
+    const unmapped = create(async () => assert.fail('Unsupported adapter fields must be rejected before network access.'))
+    await assert.rejects(unmapped.gateway.quote('sub-1', { ...input, requestedSpec: { ...spec, outputFormat: 'image/png' } }, signal()),
+      error => error instanceof AppError && error.code === 'ADAPTER_FIELD_UNMAPPED')
+    assert.equal(unmapped.calls.length, 0)
   })
 })
 
 describe('V3 asynchronous image receipts', () => {
   it('accepts an authorized V3 async receipt while preserving the legacy execution-mode contract', async () => {
-    const asynchronous = { ...receipt, protocolVersion: 3, executionMode: 'async-query', status: 'RUNNING' }
+    const asynchronous = { ...receipt, protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
+      effectiveSpec: { size: '1024x1024', count: 1, quality: 'high' }, acceptance: { status: 'matched', mismatchedFields: [], unknownFields: [] },
+      executionMode: 'async-query', status: 'RUNNING' }
     const accepted = create(async () => json(asynchronous))
     assert.equal((await accepted.gateway.getReceipt('sub-1', receipt.receiptId, signal())).status, 'RUNNING')
     const legacy = create(async () => json({ ...receipt, executionMode: 'async-query' }))
@@ -333,7 +342,9 @@ describe('V3 asynchronous image receipts', () => {
 
 describe('V3 image output resource boundaries', () => {
   it('reads seventeen outputs and high-index output errors within the response byte budget', async () => {
-    const raw = { ...receipt, protocolVersion: 3, status: 'SUCCEEDED', billingStatus: 'SETTLED',
+    const raw = { ...receipt, protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
+      effectiveSpec: { size: '1024x1024', count: 1, quality: 'high' }, acceptance: { status: 'matched', mismatchedFields: [], unknownFields: [] },
+      status: 'SUCCEEDED', billingStatus: 'SETTLED',
       outputs: Array.from({ length: 17 }, (_, index) => ({ outputId: `output-${index}`, kind: 'image', mimeType: 'image/png',
         byteLength: png.length, width: 1, height: 1, sha256: pngHeaders['X-SHA256'], expiresAt: null })),
       outputErrors: [{ index: 20, code: 'OUTPUT_FAILED' }] }

@@ -900,7 +900,8 @@ test('V3 tool preserves partial model specifications outside advisory capability
     quote: async request => { quotes++; assert.equal('requirementId' in request, false); assert.deepEqual(request.parameters, requestedSpec); assert.deepEqual(request.requestedSpec, requestedSpec)
       return { protocolVersion: 3, specRevision: 2, effectiveSpec: requestedSpec, quoteId: 'v3-quote', requestHash: 'a'.repeat(64), expiresAt: Date.now() + 60_000, status: 'quoted', amount: '0.900000', currency: 'CNY' } },
     submit: async request => { submits++; assert.deepEqual(request.requestedSpec, requestedSpec)
-      return { ...realReceipt(videoReceiptSchema.parse(fixture.receipt)), protocolVersion: 3, specRevision: 2, effectiveSpec: requestedSpec,
+      return { ...realReceipt(videoReceiptSchema.parse(fixture.receipt)), protocolVersion: 3, semanticHashVersion: 3, specRevision: 2, effectiveSpec: requestedSpec,
+        billingDimensions: { model: 'provider-video-v1', operation: 'text-to-video', durationSeconds: requestedSpec.durationSeconds, resolution: requestedSpec.resolution }, deliveryStatus: 'matched',
         clientRequestId: request.clientRequestId, profileId: request.profileId, configVersion: request.configVersion, operation: request.operation } },
   }) })
   const raw = { creativeBrief: 'portrait cinematic story', requirementId: 'video-requirement', localAssetIds: [], requestedSpec, ...metadata }

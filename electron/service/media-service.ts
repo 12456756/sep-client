@@ -11,7 +11,7 @@ import { mediaToolGenerationInputSchema } from '../../src/shared/media-host'
 import { mediaId, mediaQuoteSchema, mediaReceiptSchema, parseMediaCapabilities, parseMediaInput } from '../common/platform/media-contract'
 import { realMediaParameters, realMediaSemanticHash } from '../common/platform/real-media-semantics'
 import { imageAspectRatio } from '../../src/shared/media-spec'
-import { isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
+import { imageEffectiveSpecMatches, isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import { transportKind } from '../errors/operation-feedback'
@@ -267,7 +267,10 @@ export class MediaService {
         const operation = requested.operation ?? (localAssetIds.length && profile.operations.includes('edit')
           ? 'edit' : profile.operations.includes('generate') ? 'generate' : 'edit')
         if (capabilities.protocolVersion === 3) {
-          if (requested.protocolVersion !== 3 || !requested.requestedSpec || !requested.parameterSources || !requested.specRevision) throw new AppError('MISSING_SPEC')
+          if (requested.protocolVersion !== 3) throw new AppError('MISSING_SPEC', { details: { field: 'protocolVersion', source: 'client', stage: 'input-validation', submissionState: 'not_submitted' } })
+          if (!requested.requestedSpec) throw new AppError('MISSING_SPEC', { details: { field: 'requestedSpec', source: 'client', stage: 'input-validation', submissionState: 'not_submitted' } })
+          if (!requested.parameterSources) throw new AppError('MISSING_SPEC', { details: { field: 'parameterSources', source: 'client', stage: 'input-validation', submissionState: 'not_submitted' } })
+          if (!requested.specRevision) throw new AppError('MISSING_SPEC', { details: { field: 'specRevision', source: 'client', stage: 'input-validation', submissionState: 'not_submitted' } })
           if (requested.parameters && !mediaSpecsEqual(requested.parameters, requested.requestedSpec)) throw new AppError('SPEC_CONFLICT')
           return this.generate(input.taskId, parseMediaInput({ profileId: profile.profileId, operation, localAssetIds,
             creativeBrief: requested.creativeBrief, parameters: requested.requestedSpec, protocolVersion: 3,
@@ -290,7 +293,8 @@ export class MediaService {
         const aspectRatio = requestedParameters.aspectRatio
         const quality = requestedParameters.quality
         const count = requestedParameters.count
-        if (aspectRatio === undefined || count === undefined) throw new AppError('MISSING_SPEC')
+        if (aspectRatio === undefined) throw new AppError('MISSING_SPEC', { details: { field: 'parameters.aspectRatio', source: 'client', stage: 'input-validation', submissionState: 'not_submitted' } })
+        if (count === undefined) throw new AppError('MISSING_SPEC', { details: { field: 'parameters.count', source: 'client', stage: 'input-validation', submissionState: 'not_submitted' } })
         if (!aspectRatio || (quality && !profile.allowedQualities?.includes(quality)) || (size && imageAspectRatio(size) && imageAspectRatio(size) !== aspectRatio)) {
           throw new AppError('INVALID_ARGUMENT')
         }
@@ -400,7 +404,7 @@ export class MediaService {
       const quoteRequest = { ...semantic, referenceIds, requestHash }
       const readQuote = async () => {
         const next = mediaQuoteSchema.parse(await this.network(scope, parent, s => gateway.quote(binding.subscriptionId, quoteRequest, s)))
-        if (negotiated && (!next.effectiveSpec || !mediaSpecsEqual(input.requestedSpec!, next.effectiveSpec))) throw new AppError('SPEC_CONFLICT')
+        if (negotiated && (!next.effectiveSpec || !imageEffectiveSpecMatches(input.requestedSpec!, next.effectiveSpec))) throw new AppError('SPEC_CONFLICT')
         // Keep legacy quote fields readable; unknown prices cannot authorize generation.
         if (next.requestHash !== requestHash || !next.authorized || !next.budgetAuthorized
           || next.status !== 'quoted' || next.amount === null || !next.currency?.trim()) throw new AppError('PERMISSION_DENIED')

@@ -56,14 +56,22 @@ const session = {
 }
 
 describe('general assistant model authorization', () => {
-  it('borrows a valid model grant without loading employee runtime or skills', async () => {
+  it('loads shared media tools through a valid model grant without employee behavior or skills', async () => {
     const skills = fakeSkills()
+    const manifest = runtimeManifest()
+    const media = { profileId: 'image-profile' }
+    const requested: string[] = []
     const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [
       subscription('sub-a', 'model-a'), subscription('sub-b', 'model-b'),
-    ]), skills, GATEWAY, { async getRuntime() { assert.fail('must not load employee runtime') } })
-    assert.deepEqual(await authorizer.authorizeModel('model-b'), { subscriptionId: 'sub-b', modelId: 'model-b', gatewayUrl: GATEWAY })
+    ]), skills, GATEWAY, { async getRuntime(id) {
+      requested.push(id)
+      return { ...manifest, subscriptionId: id, runtime: { ...manifest.runtime, allowedModels: ['model-b'], media, video: videoFixture.runtime } }
+    } })
+    assert.deepEqual(await authorizer.authorizeModel('model-b'), { subscriptionId: 'sub-b', modelId: 'model-b', gatewayUrl: GATEWAY, media, video: videoFixture.runtime })
+    assert.deepEqual(requested, ['sub-b'])
     assert.equal(skills.prepared(), 0)
     assert.equal(await authorizer.authorizeModel('missing'), null)
+    assert.deepEqual(requested, ['sub-b'])
   })
 
   it('keeps the current valid subscription and falls back only for the same model', async () => {
@@ -74,6 +82,33 @@ describe('general assistant model authorization', () => {
     await authorizer.refresh()
     assert.equal((await authorizer.authorizeModel('model', 'sub-b'))?.subscriptionId, 'sub-a')
     assert.equal(await authorizer.authorizeModel('other', 'sub-a'), null)
+  })
+
+  it('rejects revoked model grants and mismatched runtime identities', async () => {
+    const manifest = runtimeManifest()
+    const skills = fakeSkills()
+    let current = { ...manifest, runtime: { ...manifest.runtime, allowedModels: ['other'] } }
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a', 'model')]), skills, GATEWAY, {
+      getRuntime: async () => current,
+    })
+    assert.equal(await authorizer.authorizeModel('model'), null)
+    current = { ...manifest, subscriptionId: 'wrong-subscription', runtime: { ...manifest.runtime, allowedModels: ['model'] } }
+    await assert.rejects(authorizer.authorizeModel('model'), /identity mismatch/)
+    assert.equal(skills.prepared(), 0)
+  })
+
+  it('discards capabilities when the signed-in scope changes during runtime loading', async () => {
+    const runtime = deferred<unknown>(), started = deferred<void>()
+    const skills = fakeSkills()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a', 'first')]), skills, GATEWAY, {
+      getRuntime: () => { started.resolve(); return runtime.promise },
+    })
+    const pending = authorizer.authorizeModel('first')
+    await started.promise
+    authorizer.clear()
+    runtime.resolve(runtimeManifest())
+    assert.equal(await pending, null)
+    assert.equal(skills.prepared(), 0)
   })
 })
 

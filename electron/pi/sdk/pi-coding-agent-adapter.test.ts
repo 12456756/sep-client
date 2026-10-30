@@ -369,9 +369,27 @@ describe('common Office skills with the real Pi SDK', () => {
     const system = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
     assert.match(system, /<name>officecli<\/name>/)
   })
+  it('advertises common Office for a general session without employee skills', async t => {
+    if (process.env.SEP_MCP_CONFIG || !prepareCommonSkills().office) {
+      t.skip('Requires prepared Office resources and default host MCP configuration.'); return
+    }
+    const { bodies } = await mediaSession({ mcpServers: undefined, disableSkills: true, enableCommonTools: true,
+      additionalSkillPaths: ['missing-employee-skill'], employeeProfile: undefined, useNativeSystemPrompt: true,
+      systemPrompt: 'EMPLOYEE_OVERRIDE_MUST_NOT_APPEAR' }, undefined, jobView, async root => {
+      const skill = join(root, '.pi', 'skills', 'local-only')
+      await mkdir(skill, { recursive: true })
+      await writeFile(join(skill, 'SKILL.md'), '---\nname: local-only\ndescription: LOCAL_SKILL_MUST_NOT_APPEAR\n---\nLocal instructions.')
+      await writeFile(join(root, '.pi', 'SYSTEM.md'), 'LOCAL_SYSTEM_OVERRIDE_MUST_NOT_APPEAR')
+    })
+    assert.ok(bodies[0].tools?.some(tool => tool.function.name === OFFICE_TOOL_NAME))
+    const system = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+    assert.match(system, /<name>officecli<\/name>/)
+    assert.doesNotMatch(system, /EMPLOYEE_OVERRIDE_MUST_NOT_APPEAR|LOCAL_SKILL_MUST_NOT_APPEAR|LOCAL_SYSTEM_OVERRIDE_MUST_NOT_APPEAR|<employee_profile>/)
+  })
   for (const overrides of [
     { mcpServers: [] },
     { mcpServers: undefined, disableTools: true },
+    { mcpServers: undefined, disableTools: true, disableSkills: true, enableCommonTools: true },
     { mcpServers: undefined, disableSkills: true },
     { mcpServers: undefined, toolPolicy: { ...readOnlyPolicy, allowedTools: [] } },
   ] satisfies Array<Partial<PiAgentSessionConfig>>) {
@@ -394,13 +412,13 @@ describe('trusted media host tools with the real Pi SDK', () => {
     assert.equal(result.jobId, 'job-a')
     assert.deepEqual(result.parameters, parameters)
   })
-  it('does not accept legacy named image sizes as V3 job specifications', async () => {
+  it('accepts SEP named image sizes as V3 job specifications', async () => {
     const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, {
       ...jobView, protocolVersion: 3, parameters: { ...generationInput.parameters, size: 'small' },
     })
     const result = JSON.parse(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content)
-    assert.equal(result.ok, false)
-    assert.equal(result.error.code, 'MEDIA_FAILED')
+    assert.equal(result.jobId, 'job-a')
+    assert.equal(result.parameters.size, 'small')
   })
   it('explains contradictory image dimensions before dispatch without echoing the creative brief', async () => {
     const { bodies, executions } = await mediaSession({}, { name: 'media_generate_image', input: {
