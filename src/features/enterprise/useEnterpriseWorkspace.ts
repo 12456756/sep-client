@@ -843,15 +843,8 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   }, [arrangement.executions, run, works]);
 
   const stopWork = useCallback(async (workId: string, reason: string) => {
-    const notice = captureFeedback();
-    return feedback.confirm({ key: `stop:${scopeKey}:${workId}`, message: '确认终止当前工作？已完成的操作和已产出的文件不会撤销，平台上的图片或视频任务可能仍在执行。',
-      actionLabel: '终止工作', busyLabel: '正在终止', input: { label: '终止原因（选填）', value: '', maxLength: 2000 },
-      onConfirm: async value => {
-        if (!notice.isCurrent()) return { success: false };
-        try { return { success: await run(() => window.electronAPI.cancelTask(workId, value.trim() || reason), 'workStop', true) }; }
-        catch (cause) { return { success: false, message: feedbackMessage(cause, 'workStop') }; }
-      } });
-  }, [run, feedback, scopeKey, captureFeedback]);
+    return run(() => window.electronAPI.cancelTask(workId, reason.trim() || '用户终止了这项工作'), 'workStop');
+  }, [run]);
 
   const retryWork = useCallback(async (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => {
     await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId, ...(inputReply ? { inputReply } : {}) } : workId), 'workRetry');

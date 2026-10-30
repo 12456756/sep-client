@@ -2,9 +2,7 @@
  * 工作记录。一条记录就是一项工作的完整交代：
  * 谁参与、现在什么状态、最后给了什么结果、有没有事情还等着你。
  *
- * 「删除记录」和「终止当前工作」都要二次确认，
- * 并且明确告诉用户终止之后哪些东西还留着 —— 已完成的动作、已产生的文件、
- * 已确认的内容和终止原因都会保留，不会一起消失。
+ * 删除记录由 workspace 统一确认；终止操作直接提交取消请求。
  */
 
 import { Activity, CheckCircle2, ChevronDown, CircleHelp, ClipboardCheck, FileCheck2, History, LoaderCircle, MessageSquare, PlayCircle, RotateCcw, Search, StopCircle, Trash2, Workflow } from 'lucide-react';

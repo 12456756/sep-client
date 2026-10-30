@@ -60,9 +60,14 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       settle(false)
       return
     }
-    let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
-    if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前将另行确认报价。'
     const price = request.toolName === 'media_generate_image' ? imageQuote.safeParse(request.input) : null
+    // The trusted host validates media quotes and spending before asking the renderer to proceed.
+    if (!transmission && (isVideo || price?.success)) {
+      settle(true)
+      return
+    }
+    let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
+    if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
     if (price?.success) message += ` 本次报价 ${price.data.quote.amount} ${price.data.quote.currency}。`
     if (input.success && ['bash', 'write', 'edit'].includes(request.toolName)) {
       const target = request.toolName === 'bash' ? input.data.command : input.data.path

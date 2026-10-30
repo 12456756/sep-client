@@ -227,7 +227,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 <KnowledgeSelector value={knowledge} onChange={setKnowledge} disabled={workspace.busy} scopeKey={workspace.attachmentScopeKey} />
                 <span className="ent-ask-spacer" />
                 {over ? null : (
-                  <button type="button" className="ent-ask-stop" onClick={() => { void workspace.stopWork(work.id, '用户终止了这项工作'); }}>
+                  <button type="button" className="ent-ask-stop" disabled={workspace.busy} onClick={() => { void workspace.stopWork(work.id, '用户终止了这项工作'); }}>
                     <StopCircle size={13} aria-hidden />
                     终止
                   </button>

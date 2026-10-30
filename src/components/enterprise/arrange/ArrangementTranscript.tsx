@@ -28,8 +28,6 @@ export function ArrangementTranscriptView({ work, employees, nodes, loading = fa
   const body = useRef<HTMLDivElement>(null)
   const follow = useRef(true)
   const [hasNewContent, setHasNewContent] = useState(false)
-  const [stopping, setStopping] = useState(false)
-  const [reason, setReason] = useState('')
   const active = nodes.filter(node => node.step.state === 'running' || node.step.state === 'waiting-user')
   useEffect(() => {
     if (follow.current && body.current) body.current.scrollTop = body.current.scrollHeight
@@ -46,14 +44,8 @@ export function ArrangementTranscriptView({ work, employees, nodes, loading = fa
           {active.map(node => <button type="button" key={node.step.id} onClick={() => jump(node.step.id)}>{node.step.title}</button>)}</>
           : <span>{work.status === 'completed' ? '全部工作已完成' : work.status === 'paused' ? '工作已终止' : work.status === 'failed' ? '工作已中断' : '等待执行'}</span>}
       </div>
-      {work.isActive ? <button type="button" className="ent-btn sm ghost" disabled={busy} onClick={() => setStopping(value => !value)}><StopCircle size={14} aria-hidden />终止</button> : null}
+      {work.isActive ? <button type="button" className="ent-btn sm ghost" disabled={busy} onClick={() => { void onStop(work.id, '用户终止了这项工作') }}><StopCircle size={14} aria-hidden />终止</button> : null}
     </div>
-    {stopping ? <div className="ent-transcript-stop" role="group" aria-label="确认终止编排">
-      <span>终止后保留已完成的工作和文件。</span>
-      <input className="ent-input" aria-label="终止原因" placeholder="终止原因（可留空）" value={reason} onChange={event => setReason(event.target.value)} />
-      <button type="button" className="ent-btn sm" onClick={() => setStopping(false)}>取消</button>
-      <button type="button" className="ent-btn sm danger" disabled={busy} onClick={() => { void onStop(work.id, reason.trim() || '用户终止了这项工作').then(ok => { if (ok) setStopping(false) }) }}>确认终止</button>
-    </div> : null}
     <div className="ent-transcript-body" ref={body} onScroll={() => {
       const el = body.current
       if (!el) return

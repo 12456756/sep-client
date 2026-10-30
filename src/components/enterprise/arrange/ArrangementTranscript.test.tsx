@@ -61,4 +61,10 @@ describe('arrangement process interface', () => {
     assert.match(html, /A visible answer/)
     assert.doesNotMatch(html, /复制回答/)
   })
+
+  it('submits arrangement termination directly without an inline confirmation step', () => {
+    const html = render()
+    assert.match(html, /终止<\/button>/)
+    assert.doesNotMatch(html, /确认终止编排|确认终止|终止原因/)
+  })
 })
