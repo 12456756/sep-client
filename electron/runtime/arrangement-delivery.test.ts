@@ -15,7 +15,7 @@ import { DeliveryExecutionError } from '../domain/arrangement-delivery'
 
 const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
-async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; stopReason?: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>, media?: ArrangementExecutionOptions['media'], onEvent?: (event: TaskExecutionEvent) => void) {
+async function fixture(onSubmit: (id: string, iteration: number, root: string) => Promise<{ text: string; stopReason?: string; afterAccept?: () => Promise<void> }>, onAuthorize?: (id: string) => Promise<void>, media?: ArrangementExecutionOptions['media'], onEvent?: (event: TaskExecutionEvent) => void | Promise<void>, onWorkerAbort?: (id: string) => void) {
   const root = await mkdtemp(join(tmpdir(), 'sep-node-delivery-'))
   roots.push(root)
   await mkdir(join(root, 'deliverables'))
@@ -44,7 +44,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
     async onEvent(event) {
       if (event.type === 'arrangement_node_completed') assert.equal(saved?.state.nodes.find(node => node.nodeId === (event.data as { nodeId: string }).nodeId)?.status, 'completed')
       events.push(event)
-      onEvent?.(event)
+      await onEvent?.(event)
     },
     createWorker: options => {
       contexts.push(options.context)
@@ -60,7 +60,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
           prompt = correction.continueWith
         }
         throw new Error('Delivery loop exceeded limit')
-      }, async abort() {}, async dispose() {} }
+      }, async abort() { onWorkerAbort?.(options.context.modelId) }, async dispose() {} }
     },
   })
   return { root, plan, executor, contexts, prompts, events, runs, checkpoints, checkpoint: () => saved }
@@ -68,6 +68,55 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
 function submission(id: string): string { return JSON.stringify({ nodeId: id, summary: 'private summary '+id, finalDeliverables: [{ id: 'report', path: `deliverables/${id}.txt` }] }) }
 
 describe('automatic arrangement final file handover', () => {
+  it('quiesces old parallel consumers before owner repair and rejects their stale completion', async () => {
+    let releaseOld!: () => void, enteredOld!: () => void
+    const held = new Promise<void>(resolve => { releaseOld = resolve })
+    const entered = new Promise<void>(resolve => { enteredOld = resolve })
+    const counts = new Map<string, number>()
+    let aborts = 0
+    const f = await fixture(async (id, _iteration, root) => {
+      counts.set(id, (counts.get(id) ?? 0) + 1)
+      await writeFile(join(root, 'deliverables/' + id + '.txt'), 'Findings ' + id + ' version ' + counts.get(id))
+      if (id === 'b' && counts.get(id) === 1) {
+        const file = f.checkpoint()!.state.nodes[0]!.delivery!.finalFiles[0]!
+        await rm(join(f.root, 'deliverables/a.txt'))
+        await rm(join(f.runs.getTaskDir(f.plan.owner, 'task'), 'delivery-snapshots', file.snapshot!.sha256 + '.txt'))
+        enteredOld()
+        await held
+      }
+      if (id === 'd') await entered
+      return { text: submission(id) }
+    }, undefined, undefined, undefined, id => { if (id === 'b') { aborts++; releaseOld() } })
+    f.plan.nodes.push({ ...f.plan.nodes[1]!, id: 'd', modelId: 'd', title: 'd', dependsOn: [],
+      deliverables: [{ ...f.plan.nodes[1]!.deliverables![0]!, path: 'deliverables/d.txt' }] })
+    f.plan.nodes.push({ ...f.plan.nodes[1]!, id: 'c', modelId: 'c', title: 'c', dependsOn: ['a', 'd'],
+      deliverables: [{ ...f.plan.nodes[1]!.deliverables![0]!, path: 'deliverables/c.txt' }] })
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.equal(aborts, 1)
+    assert.equal(counts.get('a'), 2)
+    assert.equal(counts.get('b'), 2)
+    assert.equal(counts.get('c'), 1)
+    assert.ok(f.prompts.some(prompt => prompt.includes('PREDECESSOR_REPAIRED')))
+    assert.equal(f.events.filter(event => event.type === 'arrangement_node_completed' && (event.data as { nodeId: string }).nodeId === 'b').length, 1)
+  })
+  it('repairs a missing predecessor in its own employee before starting the downstream worker', async () => {
+    const worked: string[] = []
+    const f = await fixture(async (id, _iteration, root) => {
+      worked.push(id)
+      await writeFile(join(root, 'deliverables/' + id + '.txt'), 'Restored findings ' + id)
+      return { text: submission(id), afterAccept: id === 'a' && worked.length === 1 ? async () => {
+        await rm(join(root, 'deliverables/a.txt'))
+        const file = f.checkpoint()!.state.nodes[0]!.delivery!.finalFiles[0]!
+        await rm(join(f.runs.getTaskDir(f.plan.owner, 'task'), 'delivery-snapshots', file.snapshot!.sha256 + '.txt'))
+      } : undefined }
+    })
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(worked, ['a', 'a', 'b'])
+    assert.ok(f.prompts.some(prompt => prompt.includes('FILE_MISSING')))
+    assert.equal(f.events.filter(event => event.type === 'arrangement_node_failed').length, 0)
+  })
   it('keeps the current node data in the native system and sends only start or actual correction in user messages', async () => {
     const f = await fixture(async (id, iteration, root) => {
       const prompt = f.prompts.at(-1)!
@@ -93,7 +142,11 @@ describe('automatic arrangement final file handover', () => {
         assert.match(system, /不得修改前置最终成果或指定快照/)
         assert.doesNotMatch(system, /执行指令：Do a|private summary a/)
       }
-      if (iteration > 1) assert.match(prompt, /当前节点尚未通过最终交付校验[\s\S]*请承接已有上下文和工具结果[\s\S]*否则先完成剩余工作，再提交/)
+      if (iteration > 1) {
+        assert.match(prompt, /你的最终回复不是合法的 JSON[\s\S]*保留已有工作和有效成果[\s\S]*如果实际工作尚未完成，先完成剩余工作/)
+        assert.ok(prompt.includes(JSON.stringify(node.id)))
+        assert.ok(prompt.includes(JSON.stringify(node.deliverables![0]!.path)))
+      }
       else assert.equal(prompt, '开始你的工作。')
       if (iteration === 1) return { text: '' }
       await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
@@ -109,14 +162,15 @@ describe('automatic arrangement final file handover', () => {
     const f = await fixture(async (id, iteration, root) => {
       if (id === 'a' && iteration === 1) return { text: 'not JSON' }
       if (id === 'a' && iteration === 2) {
-        assert.match(f.prompts.at(-1)!, /^当前节点尚未通过最终交付校验/)
-        assert.match(f.prompts.at(-1)!, /不要重复创建已有有效文件或重复收集已有信息/)
+        assert.match(f.prompts.at(-1)!, /^你的最终回复不是合法的 JSON/)
+        assert.match(f.prompts.at(-1)!, /不要因此重复研究、生成图片或视频、下载或者修改已有有效文件/)
         assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.issues[0]?.code, 'INVALID_SUBMISSION')
         return { text: submission(id) }
       }
       if (id === 'a') {
-        assert.match(f.prompts.at(-1)!, /^你的提交格式已通过校验，但实际交付文件未通过校验/)
-        assert.doesNotMatch(f.prompts.at(-1)!, /本次尚未检查实际文件|FILE_MISSING|失败项目|第 \d+ 次/)
+        assert.match(f.prompts.at(-1)!, /^当前交付记录或实际文件未通过校验/)
+        assert.match(f.prompts.at(-1)!, /FILE_MISSING/)
+        assert.doesNotMatch(f.prompts.at(-1)!, /本次尚未检查实际文件|第 \d+ 次/)
         assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.issues[0]?.code, 'FILE_MISSING')
       }
       await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
@@ -160,7 +214,7 @@ describe('automatic arrangement final file handover', () => {
         if (id === 'b' || iteration === 8) return { text: submission(id) }
         if (iteration > 1) {
           assert.equal(f.checkpoint()?.state.nodes[0]?.delivery?.issues[0]?.code, scenario.issue)
-          assert.match(f.prompts.at(-1)!, /^当前节点尚未通过最终交付校验/)
+          assert.match(f.prompts.at(-1)!, scenario.issue === 'INVALID_SUBMISSION' ? /^你的最终回复不是合法的 JSON/ : /^当前节点尚未通过最终交付校验/)
           assert.equal(f.contexts.length, 1)
         }
         return scenario
@@ -217,8 +271,9 @@ describe('automatic arrangement final file handover', () => {
         const run = await f.runs.get(f.plan.owner, 'task', f.contexts[0]!.runId)
         assert.equal(run?.outcome, 'running')
         if (iteration > 1) {
-          assert.match(f.prompts.at(-1)!, /^你的提交格式已通过校验，但实际交付文件未通过校验/)
-          assert.doesNotMatch(f.prompts.at(-1)!, /第 \d+ 次|FILE_MISSING/)
+          assert.match(f.prompts.at(-1)!, /^当前交付记录或实际文件未通过校验/)
+          assert.match(f.prompts.at(-1)!, /FILE_MISSING/)
+          assert.doesNotMatch(f.prompts.at(-1)!, /第 \d+ 次/)
         }
       } else {
         assert.equal(f.checkpoint()?.state.nodes[0]?.status, 'completed')
@@ -251,7 +306,7 @@ describe('automatic arrangement final file handover', () => {
     assert.match(f.contexts[0]?.fixedSystemPrompt ?? '', /存在与当前工作相关的 Skill 时，必须读取其 SKILL.md/)
     assert.match(f.contexts[1]?.fixedSystemPrompt ?? '', /deliverables\/a.txt/)
     assert.doesNotMatch(f.contexts[1]?.fixedSystemPrompt ?? '', /private summary a/)
-    assert.match(f.prompts[1]!, /^你的提交格式已通过校验，但实际交付文件未通过校验/)
+    assert.match(f.prompts[1]!, /^当前交付记录或实际文件未通过校验/)
     assert.equal(f.events.filter(event => event.type === 'arrangement_node_completed').length, 2)
   })
   it('keeps correcting missing files beyond five validations before starting the dependent node', async () => {
@@ -286,7 +341,7 @@ describe('automatic arrangement final file handover', () => {
     const result = await f.executor.execute(f.plan, 'task', 'resume', state)
     assert.equal(result.status, 'completed')
     assert.equal(f.prompts.length, 4)
-    assert.match(f.prompts[0]!, /你的提交格式已通过校验，但实际交付文件未通过校验/)
+    assert.match(f.prompts[0]!, /当前交付记录或实际文件未通过校验/)
     assert.doesNotMatch(f.prompts[0]!, /第 20 次|最多/)
     assert.equal(result.state.nodes[0]?.delivery?.validationAttempts, 23)
   })
@@ -433,7 +488,7 @@ describe('automatic arrangement final file handover', () => {
       return { text: iteration === 1 ? 'I have completed the work.' : submission(id) }
     })
     assert.equal((await f.executor.execute(f.plan, 'task', 'run')).status, 'completed')
-    assert.match(f.prompts[1]!, /^当前节点尚未通过最终交付校验/)
+    assert.match(f.prompts[1]!, /^你的最终回复不是合法的 JSON/)
   })
   it('hands over the frozen predecessor even if a later tool overwrites the workspace original', async () => {
     const f = await fixture(async (id, _iteration, root) => {

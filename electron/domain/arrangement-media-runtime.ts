@@ -8,6 +8,13 @@ import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 
 export class ArrangementMediaSubmissionError extends Error {}
 
+export class ArrangementMediaRecoveryError extends Error {
+  constructor(readonly phase: 'download' | 'copy', cause: unknown) {
+    super('Original media recovery failed: ' + phase, { cause })
+    this.name = 'ArrangementMediaRecoveryError'
+  }
+}
+
 export interface ArrangementMediaAsset {
   artifactId: string
   kind: 'image' | 'video'
@@ -31,7 +38,8 @@ export interface ArrangementMediaSession {
   /** Only media-only nodes with every declared operation durably associated may yield. */
   readyForTracking(): boolean
   automaticSubmission(): Promise<DeliverySubmission | undefined>
-  artifactSummary(): Promise<Array<{ kind: 'image' | 'video'; jobId: string; assets: ArrangementMediaLink['outputs'] }>>
+  artifactSummary(): Promise<Array<{ kind: 'image' | 'video'; jobId: string;
+    assets: Array<ArrangementMediaLink['outputs'][number] & { mime?: string; size?: number }> }>>
   onJobCreated(job: MediaJobCreated): Promise<void>
   bind(media?: MediaHostTools, video?: VideoHostTools): { media?: MediaHostTools; video?: VideoHostTools }
   materialize(submission: DeliverySubmission): Promise<FinalDeliveryFile[]>

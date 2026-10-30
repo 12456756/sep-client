@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { constants, type Stats } from 'node:fs'
+import { constants, createReadStream, type Stats } from 'node:fs'
 import { copyFile, lstat, mkdir, open, realpath, rm } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { inspectMediaImage } from './media-image'
 import { MAX_VIDEO_BYTES } from './video-files'
 import { arrangementMediaMimeByFormat, isSafeDeliveryPath, type ArrangementDeliverable } from '../domain/arrangement-plan'
 import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
+import { publishDeliverySnapshot } from './delivery-snapshot-recovery'
 
 export interface ArrangementMediaSource {
   kind: 'image' | 'video'
@@ -193,24 +194,30 @@ export async function materializeArrangementMedia(
       return { id: deliverable.id, path: targetPath, format: deliverable.format, size: source.size, sha256: source.sha256.toLowerCase(), sourceArtifact: { kind: source.kind, artifactId: source.artifactId, sha256: source.sha256.toLowerCase() }, nodeRunId, validatedAt: Date.now(), snapshot: { sha256: source.sha256.toLowerCase(), size: source.size, source: 'confirmed' } }
     }
     if (await lstat(target).catch(() => undefined)) fail('MEDIA_DESTINATION_CONFLICT')
-  } else if (await lstat(snapshot).catch(() => undefined)) fail('SNAPSHOT_CHANGED')
+  }
   const part = join(taskRoot, `.media-${randomUUID()}.tmp`)
   let handle: Awaited<ReturnType<typeof open>> | undefined
   try {
-    handle = await open(part, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
-    let length = 0; const hash = createHash('sha256')
-    for await (const chunk of source.stream()) {
-      signal.throwIfAborted(); if (!(chunk instanceof Uint8Array)) fail('MEDIA_INVALID_STREAM')
-      const bytes = Buffer.from(chunk); length += bytes.length
-      if (length > source.size || length > (source.kind === 'video' ? MAX_VIDEO_BYTES : 32 * 1024 * 1024)) fail('MEDIA_TOO_LARGE')
-      hash.update(bytes); await writeChunk(handle, bytes)
+    if (await existingMatches(snapshot, source, signal)) {
+      await readAndVerify(snapshot, source, signal)
+      await copyFile(snapshot, part, constants.COPYFILE_EXCL)
+    } else {
+      handle = await open(part, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600)
+      let length = 0; const hash = createHash('sha256')
+      for await (const chunk of source.stream()) {
+        signal.throwIfAborted(); if (!(chunk instanceof Uint8Array)) fail('MEDIA_INVALID_STREAM')
+        const bytes = Buffer.from(chunk); length += bytes.length
+        if (length > source.size || length > (source.kind === 'video' ? MAX_VIDEO_BYTES : 32 * 1024 * 1024)) fail('MEDIA_TOO_LARGE')
+        hash.update(bytes); await writeChunk(handle, bytes)
+      }
+      signal.throwIfAborted(); if (length !== source.size || hash.digest('hex') !== source.sha256.toLowerCase()) fail('MEDIA_INTEGRITY_MISMATCH')
+      await handle.sync(); await handle.close(); handle = undefined
     }
-    signal.throwIfAborted(); if (length !== source.size || hash.digest('hex') !== source.sha256.toLowerCase()) fail('MEDIA_INTEGRITY_MISMATCH')
-    await handle.sync(); await handle.close(); handle = undefined
     await readAndVerify(part, source, signal)
     validate?.(); signal.throwIfAborted()
     await assertSafeExistingPath(taskRoot, snapshot)
-    if (!(await existingMatches(snapshot, source, signal))) await publishNoClobber(part, snapshot, source, signal)
+    if (!(await existingMatches(snapshot, source, signal))) await publishDeliverySnapshot(part, snapshot,
+      path => readAndVerify(path, source, signal), () => assertSafeExistingPath(taskRoot, snapshot), signal)
     await assertSafeExistingPath(taskRoot, snapshot, false)
     const targetPart = `${target}.${randomUUID()}.tmp`
     try {
@@ -250,3 +257,25 @@ export async function resolveArrangementMediaFile(workspace: string, file: Final
 }
 
 export const resolveArrangementMedia = resolveArrangementMediaFile
+
+export async function restoreArrangementMediaSnapshot(workspace: string, file: FinalDeliveryFile, taskDirectory: string | undefined, signal?: AbortSignal): Promise<void> {
+  if (!file.snapshot || !file.sourceArtifact || !taskDirectory || file.snapshot.sha256 !== file.sha256 || file.snapshot.size !== file.size || file.sourceArtifact.sha256 !== file.sha256) fail('SNAPSHOT_CHANGED')
+  const actualSignal = signal ?? new AbortController().signal
+  const root = await realpath(workspace)
+  if (!isSafeDeliveryPath(file.path)) fail('UNSAFE_PATH')
+  const path = resolve(root, ...file.path.split(/[\\/]/))
+  await assertSafeExistingPath(root, path, false)
+  const source = { kind: file.sourceArtifact.kind, artifactId: file.sourceArtifact.artifactId, sha256: file.sha256, size: file.size,
+    mime: arrangementMediaMimeByFormat[file.format.toLowerCase()]?.[0] ?? '', stream: () => createReadStream(path, { signal: actualSignal }) }
+  await readAndVerify(path, source, actualSignal)
+  const taskRoot = await realpath(taskDirectory), snapshot = snapshotPath(taskRoot, file.sha256, file.format)
+  actualSignal.throwIfAborted()
+  await ensureDirectory(taskRoot, dirname(snapshot))
+  const part = join(taskRoot, '.snapshot-recovery-' + randomUUID() + '.tmp')
+  try {
+    await copyFile(path, part, constants.COPYFILE_EXCL)
+    await readAndVerify(part, source, actualSignal)
+    await publishDeliverySnapshot(part, snapshot, candidate => readAndVerify(candidate, source, actualSignal),
+      () => assertSafeExistingPath(taskRoot, snapshot), actualSignal)
+  } finally { await rm(part, { force: true }) }
+}

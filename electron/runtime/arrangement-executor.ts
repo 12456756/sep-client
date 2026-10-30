@@ -10,8 +10,9 @@ import { randomUUID } from 'node:crypto'
 import { cleanupRun } from './run-cleanup'
 import { WriteChain } from '../data/write-chain'
 import { recoverArrangementSession } from '../data/arrangement-session-recovery'
-import { validateDeliveryFiles, resolveDeliveryFiles } from '../data/arrangement-delivery-files'
-import { DeliveryExecutionError, buildDeliveryCorrection, deliveryPlanIssues, parseDeliverySubmission, parseRecordedDeliverySubmission, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
+import { resolveDeliveryFiles } from '../data/arrangement-delivery-files'
+import { DeliveryExecutionError, deliveryPlanIssues, parseRecordedDeliverySubmission, type DeliveryIssue, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
+import { ArrangementDeliveryValidation, buildArrangementDeliveryCorrection, resolveArrangementNodeFailure } from './arrangement-delivery-validation'
 import type { TaskExecutionEvent } from '../../src/shared/types'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunStorePort } from '../data/task-run-store'
@@ -26,6 +27,7 @@ import {
   markArrangementNodeWaitingForInput,
   resumeArrangement,
   retryArrangementNode,
+  reopenArrangementNodeForRepair,
   interruptArrangement,
   stopArrangement,
   type ArrangementExecutionState,
@@ -39,12 +41,10 @@ import type { MediaRunPort, MediaHostTools } from '../domain/media-tools'
 import type { VideoRunPort, VideoHostTools } from '../domain/video-tools'
 import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
-import { ArrangementMediaSubmissionError } from '../domain/arrangement-media-runtime'
 import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import type { ModelTraceFactory } from '../domain/model-trace'
-import { runtimeFeedback } from '../errors/runtime-feedback'
 import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
 import { arrangementClarificationSchema, type ArrangementInputRequest, type ArrangementInputReply } from '../../src/shared/arrangement-input'
 
@@ -87,10 +87,14 @@ export interface ArrangementNodeEvent {
 
 type NodeExecutionResult =
   | { ok: true; nodeId: string; output: string | null; completion: ArrangementNodeEvent }
-  | { ok: false; nodeId: string; error: string; terminal: boolean; failure: ArrangementNodeEvent; inputRequest?: ArrangementInputRequest }
+  | { ok: false; nodeId: string; error: string; terminal: boolean; failure: ArrangementNodeEvent; inputRequest?: ArrangementInputRequest; repair?: { nodeId: string; issues: DeliveryIssue[] } }
 
 class ArrangementInputRequiredError extends Error {
   constructor(readonly request: ArrangementInputRequest) { super('Media specifications require user input.') }
+}
+
+class PredecessorRepairRequired extends Error {
+  constructor(readonly nodeId: string, readonly issues: DeliveryIssue[]) { super('Predecessor delivery requires owner repair: ' + nodeId) }
 }
 
 export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output?: string | null; files?: readonly (FinalDeliveryFile & { readPath?: string })[] }[], knowledgeContext = ''): string {
@@ -161,7 +165,7 @@ ${mediaDeliverables.length ? '媒体提交成功后，由主进程跟踪原任�
 确认节点工作结束后，只返回以下严格 JSON，不附加其他文字、Markdown 或推理过程：
 ${JSON.stringify(ending, null, 2)}
 提交只是申请结束，后端校验通过才算完成。收到校验失败原因后，修复问题，保留有效成果，不重复已完成的操作。
-修复并重新确认节点全部工作结束后，再提交完整最终 JSON。最多校验 5 次（首次提交加 4 次修正）。`
+修复并重新确认节点全部工作结束后，再提交完整最终 JSON。`
   }
   const dependencyText = dependencies.length === 0
     ? '没有可用的前置节点输出。'
@@ -261,6 +265,11 @@ export class ArrangementExecutor {
     const inFlight = new Map<string, Promise<NodeExecutionResult>>()
     const results: Array<{ nodeId: string; result: NodeExecutionResult } | { error: unknown }> = []
     const terminalFailures = new Set<string>()
+    const epochs = new Map<string, number>()
+    const invalidatedRuns = new Set<string>()
+    const repairRoots = new Set<string>()
+    const cancellations = new Map<string, AbortController>()
+    const canStart = (nodeId: string) => !inFlight.has(nodeId) && !(repairRoots.has(nodeId) && invalidatedRuns.size)
     let acceptingRetries = true
     let wakeScheduler!: () => void
     let wake = new Promise<void>(resolve => { wakeScheduler = resolve })
@@ -285,7 +294,10 @@ export class ArrangementExecutor {
       for (const checkpoint of current.nodes.filter(node => node.status === 'ready')) {
         if (this.abortRequested) break
         const node = nodes.get(checkpoint.nodeId)
-        if (!node || inFlight.has(checkpoint.nodeId)) continue
+        if (!node || !canStart(checkpoint.nodeId)) continue
+        const epoch = epochs.get(node.id) ?? 0
+        const cancellation = new AbortController()
+        cancellations.set(node.id, cancellation)
         let running!: ArrangementExecutionState['nodes'][number]
         await mutate(async () => {
           if (this.abortRequested) return
@@ -296,6 +308,7 @@ export class ArrangementExecutor {
         })
         if (!running || running.status !== 'running') continue
         const updateNode = async (operation: (state: ArrangementExecutionState) => ArrangementExecutionState) => mutate(async () => {
+          if ((epochs.get(node.id) ?? 0) !== epoch) return
           current = operation(current)
           await this.persist(plan, taskId, arrangementRunId, current)
         })
@@ -303,7 +316,7 @@ export class ArrangementExecutor {
           sessionRunId => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, sessionRunId } : item) })),
           (kind, recoveredSession) => this.requestProgressWrites.run(taskId, async () => {
             this.checkExecutionControl()
-            let progress!: ModelRequestProgress
+            let progress = advanceModelRequestProgress(running.modelRequestProgress, kind, recoveredSession ? 'since-resume' : undefined)
             await updateNode(state => {
               const previous = state.nodes.find(item => item.nodeId === node.id)!.modelRequestProgress
               progress = advanceModelRequestProgress(previous, kind, recoveredSession ? 'since-resume' : undefined)
@@ -313,7 +326,8 @@ export class ArrangementExecutor {
           }),
           delivery => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, delivery } : item) })),
           (nodeId, files) => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === nodeId && item.delivery
-            ? { ...item, delivery: { ...item.delivery, finalFiles: files } } : item) })))
+            ? { ...item, delivery: { ...item.delivery, finalFiles: files } } : item) })),
+          AbortSignal.any([this.validationCancellation.signal, cancellation.signal]))
         inFlight.set(node.id, promise)
         void promise.then(result => { results.push({ nodeId: node.id, result }); signalScheduler() },
           error => { results.push({ error }); signalScheduler() })
@@ -347,13 +361,32 @@ export class ArrangementExecutor {
           return true
         })
         if (settled) return { status: current.status, state: current, error: current.nodes.find(node => node.status === 'failed')?.error ?? undefined }
-        if (this.abortRequested || current.nodes.some(node => node.status === 'ready')) continue
+        if (this.abortRequested || current.nodes.some(node => node.status === 'ready' && canStart(node.nodeId))) continue
         const winner = results.shift()
         if (!winner) { await wake; continue }
         if ('error' in winner) throw winner.error
         inFlight.delete(winner.nodeId)
+        cancellations.delete(winner.nodeId)
+        if (invalidatedRuns.delete(winner.nodeId)) continue
         await mutate(async () => {
           const result = winner.result
+          if (!result.ok && result.repair) {
+            const before = current
+            current = reopenArrangementNodeForRepair(current, plan.nodes, result.repair.nodeId, result.repair.issues)
+            repairRoots.add(result.repair.nodeId)
+            for (const item of current.nodes) {
+              if (item === before.nodes.find(previous => previous.nodeId === item.nodeId)) continue
+              epochs.set(item.nodeId, (epochs.get(item.nodeId) ?? 0) + 1)
+              terminalFailures.delete(item.nodeId)
+              if (inFlight.has(item.nodeId)) {
+                invalidatedRuns.add(item.nodeId)
+                cancellations.get(item.nodeId)?.abort(new Error('Predecessor delivery was invalidated; resume after owner repair.'))
+              }
+            }
+            await this.persist(plan, taskId, arrangementRunId, current)
+            await this.emitStateEvent(plan, taskId, arrangementRunId, current, result.repair.nodeId)
+            return
+          }
           if (result.ok) current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
           else {
             current = result.inputRequest ? markArrangementNodeWaitingForInput(current, plan.nodes, result.nodeId, result.inputRequest)
@@ -409,6 +442,7 @@ export class ArrangementExecutor {
     saveModelRequestProgress: (kind: ModelRequestKind, recoveredSession: boolean) => Promise<ModelRequestProgress>,
     saveDelivery: (delivery: NodeDeliveryProgress) => Promise<void>,
     savePredecessorFiles: (nodeId: string, files: FinalDeliveryFile[]) => Promise<void>,
+    signal: AbortSignal,
   ): Promise<NodeExecutionResult> {
     const nodeRunId = randomUUID()
     const modelTrace = this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
@@ -417,12 +451,15 @@ export class ArrangementExecutor {
       ? this.options.taskRunStore.getPaths(this.options.scope, taskId, nodeRunId)
       : null
     const structured = plan.mode === 'auto' || !!node.deliverables?.length
-    const fileOptions = { taskDirectory: paths?.taskDir, allowWorkspaceChanges: true }
+    const fileOptions = { taskDirectory: paths?.taskDir, allowWorkspaceChanges: true, repairSnapshots: true }
     const dependencies: Array<{ node: ArrangementNode; output: string | null; files: (FinalDeliveryFile & { readPath?: string })[] }> = node.dependsOn.map(id => ({ node: plan.nodes.find(item => item.id === id)!, output: state.nodes.find(item => item.nodeId === id)?.output ?? null,
       files: state.nodes.find(item => item.nodeId === id)?.delivery?.finalFiles ?? [] }))
     let prompt = structured ? '开始你的工作。' : buildArrangementNodePrompt(plan, node, dependencies)
     let output = ''
     let worker: TaskWorkerPort | null = null
+    const checkControl = () => { this.checkExecutionControl(); signal.throwIfAborted() }
+    const abortWorker = () => { void worker?.abort().catch(() => undefined) }
+    signal.addEventListener('abort', abortWorker, { once: true })
     let created = false
     let startedAt: string | undefined
     const metadata = () => ({ title: node.title, modelId: node.modelId, ...(startedAt ? { startedAt } : {}) })
@@ -448,7 +485,7 @@ export class ArrangementExecutor {
       if (missingSpecTools.delete(name)) inputRequired = missingSpecTools.values().next().value
     }
     try {
-      this.checkExecutionControl()
+      checkControl()
       const requiresMediaBridge = !!node.mediaRequirements?.length ||
         !!node.deliverables?.some(file => file.artifact?.kind === 'image' || file.artifact?.kind === 'video')
       if (requiresMediaBridge && !this.options.arrangementMedia) {
@@ -460,10 +497,11 @@ export class ArrangementExecutor {
       if (structured) {
         for (const dependency of dependencies) {
           const progress = state.nodes.find(item => item.nodeId === dependency.node.id)
-          const complete = progress?.status === 'completed' && !progress.pendingConfirmation && parseRecordedDeliverySubmission(dependency.node, dependency.files).ok
-          if (!complete) throw new DeliveryExecutionError(`前置节点 ${dependency.node.id} 缺少已确认的最终交付记录，不能启动下游节点。`)
-          const resolved = await resolveDeliveryFiles(workspaceDir, dependency.files, this.validationCancellation.signal, fileOptions)
-          if (resolved.issues.length) throw new DeliveryExecutionError(`前置最终文件失效：${resolved.issues.map(issue => `${issue.path ?? ''} ${issue.message}`).join('\n')}`)
+          if (progress?.status !== 'completed' || progress.pendingConfirmation) throw new DeliveryExecutionError('前置节点尚未确认完成，不能启动下游节点。')
+          const recorded = parseRecordedDeliverySubmission(dependency.node, dependency.files)
+          if (!recorded.ok) throw new PredecessorRepairRequired(dependency.node.id, recorded.issues)
+          const resolved = await resolveDeliveryFiles(workspaceDir, dependency.files, signal, fileOptions)
+          if (resolved.issues.length) throw new PredecessorRepairRequired(dependency.node.id, resolved.issues)
           if (resolved.files.some((file, index) => file !== dependency.files[index])) {
             await savePredecessorFiles(dependency.node.id, resolved.files)
           }
@@ -475,30 +513,34 @@ export class ArrangementExecutor {
           dependency.files = resolved.files.map((file, index) => ({ ...file, readPath: resolved.readPaths[index] }))
         }
         if (delivery.finalFiles.length) {
-          const complete = parseRecordedDeliverySubmission(node, delivery.finalFiles, delivery.summary ?? 'verified').ok
-          const resolved = complete ? await resolveDeliveryFiles(workspaceDir, delivery.finalFiles, this.validationCancellation.signal, fileOptions) : null
-          const issues = resolved?.issues ?? [{ message: '交付记录与计划不一致。' }]
-          if (issues.length) throw new DeliveryExecutionError(`已验收最终文件失效：${issues.map(issue => issue.message).join('\n')}`)
-          if (resolved) {
-            delivery = { ...delivery, finalFiles: resolved.files }
+          const recorded = parseRecordedDeliverySubmission(node, delivery.finalFiles, delivery.summary ?? 'verified')
+          const resolved = recorded.ok ? await resolveDeliveryFiles(workspaceDir, delivery.finalFiles, signal, fileOptions) : null
+          const issues = !recorded.ok ? recorded.issues : resolved?.issues ?? []
+          if (issues.length) {
+            delivery = { ...delivery, finalFiles: [], issues, pendingSubmission: recorded.ok ? recorded.submission : undefined }
             await saveDelivery(delivery)
+          } else {
+            if (resolved) {
+              delivery = { ...delivery, finalFiles: resolved.files }
+              await saveDelivery(delivery)
+            }
+            checkControl()
+            output = delivery.summary ?? ''
+            startedAt = new Date().toISOString()
+            if (this.options.scope && this.options.taskRunStore) {
+              // Recovery gets a new completion receipt; prior terminal runs stay immutable.
+              await this.options.taskRunStore.create(this.options.scope, {
+                taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
+                runtimeKey: `${node.subscriptionId}:${node.modelId}`, workspaceDir, prompt,
+                arrangementNodeId: node.id, resumedFromRunId: delivery.finalFiles[0]!.nodeRunId,
+              })
+              created = true
+              await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
+            }
+            return { ok: true, nodeId: node.id, output: output || null, completion: { type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id,
+              nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
+              data: { ...metadata(), output: output || null, finalDeliverables: delivery.finalFiles, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
           }
-          this.checkExecutionControl()
-          output = delivery.summary ?? ''
-          startedAt = new Date().toISOString()
-          if (this.options.scope && this.options.taskRunStore) {
-            // Recovery gets a new completion receipt; prior terminal runs stay immutable.
-            await this.options.taskRunStore.create(this.options.scope, {
-              taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
-              runtimeKey: `${node.subscriptionId}:${node.modelId}`, workspaceDir, prompt,
-              arrangementNodeId: node.id, resumedFromRunId: delivery.finalFiles[0]!.nodeRunId,
-            })
-            created = true
-            await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
-          }
-          return { ok: true, nodeId: node.id, output: output || null, completion: { type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id,
-            nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
-            data: { ...metadata(), output: output || null, finalDeliverables: delivery.finalFiles, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
         }
 
       }
@@ -511,21 +553,21 @@ export class ArrangementExecutor {
       if (checkpoint.inputReply) prompt += `\n\n【用户补充的媒体需求】\n${JSON.stringify(checkpoint.inputReply.text)}\n根据用户补充内容更新拟提交的结构化规格与来源；保留已确认硬要求，不重复提交已有或状态未知的媒体任务。`
       const employee = await this.options.authorizeEmployee(node.subscriptionId, node.modelId)
       if (!employee) throw new Error('The selected employee is no longer available.')
-      this.checkExecutionControl()
+      checkControl()
       let knowledgeContext = ''
       const selection = node.knowledge ?? plan.knowledge
       const knowledge = knowledgeRequest(node.instruction, selection, [], node.knowledgeQuery ?? '')
       if (knowledge) {
         let result: KnowledgeSearchResult | null = null
         try {
-          result = await this.options.knowledgeSearch?.(knowledge, this.validationCancellation.signal) ?? null
+          result = await this.options.knowledgeSearch?.(knowledge, signal) ?? null
         } catch {
-          this.validationCancellation.signal.throwIfAborted()
+          signal.throwIfAborted()
         }
         knowledgeContext = formatKnowledgeContext(knowledge.query, result)
       }
-      this.checkExecutionControl()
-      if (structured && delivery.issues.length) prompt += `\n\n${buildDeliveryCorrection(delivery.issues)}`
+      checkControl()
+      if (structured && delivery.issues.length) prompt += `\n\n${buildArrangementDeliveryCorrection(delivery.issues, node)}`
       const nodeAttachmentRefs = (node.inputRefs ?? []).flatMap(ref => ref.kind === 'attachment' ? [ref.attachment] : [])
       const attachmentInputs = this.options.scope && nodeAttachmentRefs.length && this.options.attachmentInputs
         ? await this.options.attachmentInputs.resolveTaskInputs(this.options.scope, taskId, nodeAttachmentRefs)
@@ -546,7 +588,7 @@ export class ArrangementExecutor {
         readableAttachmentPaths: attachmentInputs?.attachments.flatMap(item => item.readPath ? [item.readPath] : []) ?? [] }
       if (requiresMediaBridge) mediaSession = await this.options.arrangementMedia!.prepareNode({
         taskId, arrangementRunId, nodeRunId, attempt: checkpoint.attempt, planHash: plan.planHash, node,
-        signal: this.validationCancellation.signal,
+        signal,
         ...(checkpoint.mediaSpecRevisions ? { specRevisions: checkpoint.mediaSpecRevisions } : {}),
       })
       const rawMediaTools = await this.options.media?.prepareRun({
@@ -586,33 +628,32 @@ export class ArrangementExecutor {
         await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
         throw new Error('Arrangement execution was interrupted.')
       }
-      this.checkExecutionControl()
+      checkControl()
+      const deliveryValidation = new ArrangementDeliveryValidation({
+        node, workspaceDir, nodeRunId, signal, fileOptions, mediaSession,
+        getProgress: () => delivery,
+        saveProgress: async progress => { delivery = progress; await saveDelivery(progress) },
+        checkControl,
+        waitForMedia: async () => { await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId, { recoverOriginal: true, signal }), this.options.video?.waitForRun(taskId, nodeRunId, { recoverOriginal: true, signal })]) },
+        onChecked: async check => {
+          await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_delivery_checked', arrangementRunId, nodeId: node.id, nodeRunId,
+            subscriptionId: node.subscriptionId, data: { validationAttempts: check.validationAttempts, accepted: check.accepted, issues: check.issues } })
+          logger.child('arrangement-executor').info(check.accepted ? 'delivery validation passed' : 'delivery validation failed', {
+            taskTitle: plan.goal, nodeTitle: node.title, validationKind: check.validationKind, elapsedMs: check.elapsedMs,
+          })
+          void modelTrace?.({ phase: '', kind: 'status', text: `${check.validationKind === 'files' ? '实际交付文件校验' : '提交格式校验'}${check.accepted ? '通过' : '失败'}\n${JSON.stringify(check.issues, null, 2)}` }).catch(() => undefined)
+        },
+      })
       if (mediaSession && (delivery.pendingSubmission || mediaSession.readyForTracking())) {
-        delivery = { ...delivery, mediaPhase: 'waiting-media', mediaWaitStartedAt: delivery.mediaWaitStartedAt ?? Date.now() }
-        await saveDelivery(delivery)
-        await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
-        this.checkExecutionControl()
-        const submission = delivery.pendingSubmission ?? await mediaSession.automaticSubmission()
-        const parsed = submission ? parseDeliverySubmission(node, JSON.stringify(submission)) : null
-        if (parsed) {
-          if (!parsed.ok) throw new DeliveryExecutionError('待恢复的媒体交付清单与计划不一致。')
-          delivery = { ...delivery, mediaPhase: 'materializing', pendingSubmission: parsed.submission }
-          await saveDelivery(delivery)
-          const materializeStartedAt = Date.now()
-          const mediaFiles = await mediaSession.materialize(parsed.submission)
-          const materializeMs = Date.now() - materializeStartedAt
-          const validationStartedAt = Date.now()
-          const result = await validateDeliveryFiles(workspaceDir, node, parsed.submission, nodeRunId, this.validationCancellation.signal, { ...fileOptions, mediaFiles })
-          if (!result.ok) throw new Error(result.issues.map(issue => issue.message).join('\n'))
-          this.checkExecutionControl()
-          output = parsed.submission.summary
-          delivery = { ...delivery, issues: [], finalFiles: result.files, summary: output, pendingSubmission: undefined,
-            mediaPhase: 'delivered', materializeMs, deliveryMs: Date.now() - validationStartedAt }
-          await saveDelivery(delivery)
+        const result = await deliveryValidation.resume()
+        if (result.status === 'failed') throw result.error
+        if (result.status === 'correction') prompt += '\n\n' + result.continueWith
+        if (result.status === 'accepted') {
+          output = result.submission.summary
           if (created && this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
           return { ok: true, nodeId: node.id, output, completion: { type: 'arrangement_node_completed', arrangementRunId, nodeId: node.id,
             nodeRunId, subscriptionId: node.subscriptionId, attempt: checkpoint.attempt,
-            data: { ...metadata(), output, finalDeliverables: result.files, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
+            data: { ...metadata(), output, finalDeliverables: delivery.finalFiles, status: 'COMPLETED', completedAt: new Date().toISOString() } } }
         }
       }
       let mediaHandoffUsed = mediaSession?.readyForTracking() === true
@@ -650,7 +691,7 @@ export class ArrangementExecutor {
           return true
         },
         ...(structured || node.mediaRequirements?.length ? { onResponseSettled: async (response: { text: string; stopReason?: string }): Promise<{ continueWith: string } | void> => {
-          this.checkExecutionControl()
+          checkControl()
           if (node.mediaRequirements?.length && (!response.stopReason || response.stopReason === 'stop')) {
             let clarification: ReturnType<typeof arrangementClarificationSchema.safeParse> | undefined
             try { clarification = arrangementClarificationSchema.safeParse(JSON.parse(response.text)) } catch { /* Delivery parsing handles other responses. */ }
@@ -658,59 +699,14 @@ export class ArrangementExecutor {
             if (inputRequired) return
           }
           if (!structured) return
-          if (mediaSession) {
-            delivery = { ...delivery, mediaPhase: 'waiting-media', mediaWaitStartedAt: delivery.mediaWaitStartedAt ?? Date.now() }
-            await saveDelivery(delivery)
-          }
-          await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
-          this.checkExecutionControl()
-          this.validationCancellation.signal.throwIfAborted()
-          delivery = { ...delivery, validationAttempts: delivery.validationAttempts + 1, finalFiles: [], summary: undefined }
-          await saveDelivery(delivery)
-          let parsed = parseDeliverySubmission(node, response.text, response.stopReason)
-          if (!parsed.ok && mediaSession && (!response.stopReason || response.stopReason === 'stop')) {
-            const automatic = await mediaSession.automaticSubmission()
-            if (automatic) parsed = parseDeliverySubmission(node, JSON.stringify(automatic))
-          }
-          if (parsed.ok && mediaSession) {
-            delivery = { ...delivery, pendingSubmission: parsed.submission, mediaPhase: 'materializing' }
-            await saveDelivery(delivery)
-          }
-          const materializeStartedAt = Date.now()
-          let validationStartedAt = materializeStartedAt
-          const result = await (async () => {
-            try {
-              const mediaFiles = parsed.ok && mediaSession ? await mediaSession.materialize(parsed.submission) : undefined
-              validationStartedAt = Date.now()
-              return parsed.ok
-                ? await validateDeliveryFiles(workspaceDir, node, parsed.submission, nodeRunId, this.validationCancellation.signal, { ...fileOptions, mediaFiles })
-                : parsed
-            } catch (error) {
-              if (!(error instanceof ArrangementMediaSubmissionError)) throw error
-              return { ok: false as const, issues: [{ code: 'MEDIA_DELIVERY_MANIFEST_MISMATCH', message: error.message }] }
-            }
-          })()
-          this.validationCancellation.signal.throwIfAborted()
-          this.checkExecutionControl()
-          if (result.ok && parsed.ok) {
-            output = parsed.submission.summary
+          const result = await deliveryValidation.settle(response)
+          if (result.status === 'failed') throw result.error
+          if (result.status === 'accepted') {
+            output = result.submission.summary
             accepted = true
-            delivery = { ...delivery, issues: [], finalFiles: result.files, summary: output, pendingSubmission: undefined,
-              ...(mediaSession ? { mediaPhase: 'delivered' as const, materializeMs: validationStartedAt - materializeStartedAt, deliveryMs: Date.now() - validationStartedAt } : {}) }
-          } else {
-            delivery = { ...delivery, issues: result.ok ? [] : result.issues, pendingSubmission: undefined }
+            return
           }
-          await saveDelivery(delivery)
-          await this.emitNodeEvent(taskId, arrangementRunId, { type: 'arrangement_delivery_checked', arrangementRunId, nodeId: node.id, nodeRunId,
-            subscriptionId: node.subscriptionId, data: { validationAttempts: delivery.validationAttempts, accepted, issues: delivery.issues } })
-          logger.child('arrangement-executor').info(accepted ? 'delivery validation passed' : 'delivery validation failed', {
-            taskTitle: plan.goal, nodeTitle: node.title, validationKind: parsed.ok ? 'files' : 'submission', elapsedMs: Date.now() - validationStartedAt,
-          })
-          void modelTrace?.({ phase: '', kind: 'status', text: `${parsed.ok ? '实际交付文件校验' : '提交格式校验'}${accepted ? '通过' : '失败'}\n${JSON.stringify(delivery.issues, null, 2)}` }).catch(() => undefined)
-          if (accepted) return
-          if (mediaSession && node.deliverables?.every(file => file.artifact?.source === 'media-output') && delivery.validationAttempts >= 2) throw new DeliveryExecutionError(`媒体交付仍需明确选择或修复：${delivery.issues.map(issue => issue.message).join('\n')}。请保留原媒体任务后处理。`)
-          const artifacts = mediaSession ? `\n【主进程已核验的媒体资产】\n${JSON.stringify(await mediaSession.artifactSummary())}\n仅从这些原任务资产选择交付，不等待、不重新生成。` : ''
-          return { continueWith: buildDeliveryCorrection(delivery.issues) + artifacts }
+          return { continueWith: result.continueWith }
         } } : {}),
         onEvent: async event => {
           if (event.type === 'turn_start') output = ''
@@ -745,7 +741,7 @@ export class ArrangementExecutor {
         },
       })
       this.activeWorkers.set(nodeRunId, worker)
-      this.checkExecutionControl()
+      checkControl()
       startedAt = new Date().toISOString()
       await this.emitNodeEvent(taskId, arrangementRunId, {
         type: 'arrangement_node_started', arrangementRunId, nodeId: node.id, nodeRunId,
@@ -755,7 +751,7 @@ export class ArrangementExecutor {
       // Start the worker before the second abort check: an abort can arrive while
       // the worker is being constructed, before it has installed its own stop hook.
       const runPromise = worker.run(`${prompt}${!structured && knowledgeContext ? `\n\n${knowledgeContext}` : ''}`)
-      if (this.abortRequested) await worker.abort()
+      if (signal.aborted || this.abortRequested) await worker.abort()
       let runError: unknown
       try {
         await runPromise
@@ -765,9 +761,9 @@ export class ArrangementExecutor {
       if (terminalMediaFailure !== undefined) throw terminalMediaFailure
       if (inputRequired) throw new ArrangementInputRequiredError(inputRequired)
       if (runError !== undefined) throw runError
-      if (!this.abortRequested) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId), this.options.video?.waitForRun(taskId, nodeRunId)])
+      if (!this.abortRequested && !signal.aborted) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId, { signal }), this.options.video?.waitForRun(taskId, nodeRunId, { signal })])
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
-      this.checkExecutionControl()
+      checkControl()
       if (!accepted) throw new DeliveryExecutionError('节点未经过最终交付校验，不能确认完成。')
       if (this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'completed')
       const completion: ArrangementNodeEvent = {
@@ -776,7 +772,7 @@ export class ArrangementExecutor {
       }
       return { ok: true, nodeId: node.id, output: output || null, completion }
     } catch (error) {
-      const interrupted = this.abortRequested
+      const interrupted = this.abortRequested || signal.aborted
       if (!interrupted && (error instanceof ArrangementInputRequiredError || error instanceof AppError && error.code === 'MISSING_SPEC')) {
         const inputRequest = error instanceof ArrangementInputRequiredError ? error.request : requestInput('请补充生成用途及尚未明确的媒体规格，或说明由模型根据用途提出方案。')
         if (created && this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'interrupted')
@@ -787,10 +783,7 @@ export class ArrangementExecutor {
       }
       logger.child('arrangement-executor').warn('node execution failed', { taskId, arrangementRunId, nodeId: node.id, nodeRunId,
         interrupted, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
-      const feedback = runtimeFeedback(error)
-      const message = interrupted ? '工作已停止' : error instanceof DeliveryExecutionError && feedback.code === 'INTERNAL_ERROR'
-        ? RUNTIME_FAILURE_MESSAGES.DELIVERY_FAILED : feedback.message
-      const terminal = (error instanceof DeliveryExecutionError || terminalMediaFailure !== undefined) && !interrupted
+      const { message, terminal } = resolveArrangementNodeFailure(error, interrupted, terminalMediaFailure !== undefined)
       if (created && this.options.scope && this.options.taskRunStore) {
         await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, interrupted ? 'interrupted' : 'failed', message).catch(() => undefined)
       }
@@ -799,8 +792,10 @@ export class ArrangementExecutor {
         attempt: checkpoint.attempt, data: { ...metadata(), output: output || null, error: message,
           status: interrupted ? this.stopRequested ? 'CANCELLED' : 'PAUSED' : 'FAILED', completedAt: new Date().toISOString() },
       }
-      return { ok: false, nodeId: node.id, error: message, terminal, failure }
+      return { ok: false, nodeId: node.id, error: message, terminal, failure,
+        ...(!interrupted && error instanceof PredecessorRepairRequired ? { repair: { nodeId: error.nodeId, issues: error.issues } } : {}) }
     } finally {
+      signal.removeEventListener('abort', abortWorker)
       await cleanupRun(taskId, nodeRunId, [
         ['video', () => this.options.video?.finishRun?.(taskId, nodeRunId)],
         ['registry', () => this.activeWorkers.delete(nodeRunId)],

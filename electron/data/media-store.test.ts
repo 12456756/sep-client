@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { promises as fs, type Mode, type PathLike } from 'node:fs'
 import { link, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { syncBuiltinESMExports } from 'node:module'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { LocalMediaJob, MediaOutput, MediaRunSnapshot } from '../domain/media'
 import { MediaStore } from './media-store'
@@ -498,6 +498,37 @@ describe('MediaStore jobs and snapshots', () => {
 })
 
 describe('MediaStore images', () => {
+  it('reports corrupt original outputs as recoverable only through the host recovery view', async () => {
+    const f = await fixture()
+    await f.store.saveJob(owner, job())
+    const asset = await f.store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    const path = join(f.paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    await writeFile(path, 'broken image')
+    await assert.rejects(f.store.listAssets(owner, 'task-a'))
+    assert.equal(await f.store.isOutputSaved(owner, 'task-a', 'job-a', output().outputId), false)
+    assert.equal((await f.store.listAssets(owner, 'task-a', { recoverableOutputs: true }))[0]?.status, 'MISSING')
+    await assert.rejects(f.store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal()))
+    const recovered = await f.store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal(), { repairCorrupt: true })
+    assert.equal(recovered.sha256, asset.sha256)
+    assert.deepEqual(await f.store.readAsset(owner, 'task-a', asset.localAssetId), png)
+    assert.ok((await readdir(join(f.paths.mediaRoot(owner, 'task-a'), 'files'))).some(name => name.includes('.corrupt-')))
+  })
+
+  it('never recovers images from conflicting commit evidence or unsafe hardlinks', async () => {
+    const f = await fixture()
+    await f.store.saveJob(owner, job())
+    const asset = await f.store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal())
+    const path = join(f.paths.mediaRoot(owner, 'task-a'), asset.relativePath)
+    await link(path, join(f.directory, 'retained.png'))
+    await assert.rejects(f.store.isOutputSaved(owner, 'task-a', 'job-a', output().outputId))
+    await assert.rejects(f.store.listAssets(owner, 'task-a', { recoverableOutputs: true }))
+    await assert.rejects(f.store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal(), { repairCorrupt: true }))
+    await rm(join(f.directory, 'retained.png'))
+    const manifest = join(f.paths.mediaRoot(owner, 'task-a'), 'assets', asset.localAssetId + '.json')
+    await writeFile(manifest, JSON.stringify({ ...asset, createdAt: asset.createdAt + 1 }))
+    await assert.rejects(f.store.listAssets(owner, 'task-a', { recoverableOutputs: true }), /commit and manifest disagree/)
+    await assert.rejects(f.store.saveOutput(owner, 'task-a', 'job-a', output(), stream(), signal(), { repairCorrupt: true }), /commit and manifest disagree/)
+  })
   it('copies native selections into scope-owned files and deduplicates references', async () => {
     const { store, paths, selected, root } = await fixture()
     const asset = await store.importReference(owner, 'task-a', selected)
@@ -671,7 +702,7 @@ describe('MediaStore images', () => {
     const failing = (async function* () {
       yield png
       await mkdir(join(paths.mediaRoot(owner, 'task-a'), 'assets'), { recursive: true })
-      await symlink(selected, manifest)
+      await symlink(process.platform === 'win32' ? dirname(selected) : selected, manifest, process.platform === 'win32' ? 'junction' : 'file')
     })()
     await assert.rejects(store.saveOutput(owner, 'task-a', 'job-a', output(), failing, signal()), /symbolic/)
     assert.deepEqual(await readFile(join(paths.mediaRoot(owner, 'task-a'), 'files', `${id}.png`)), png)

@@ -10,6 +10,7 @@ import {
   markArrangementNodeWaitingForInput,
   resumeArrangement,
   retryArrangementNode,
+  reopenArrangementNodeForRepair,
   stopArrangement,
 } from './arrangement-execution'
 import type { ArrangementNode } from '../domain/arrangement-plan'
@@ -43,6 +44,20 @@ describe('ArrangementExecutionState', () => {
     assert.deepEqual(resumed.nodes[0], state.nodes[0])
     assert.equal(resumed.nodes[2]!.status, 'pending')
     assert.deepEqual(resumed.nodes[1]!.delivery, state.nodes[1]!.delivery)
+  })
+  it('returns invalidated work to its owner and clears all dependent accepted outputs without losing sessions', () => {
+    const plan = [node('a'), node('b', ['a']), node('c', ['b']), node('independent')]
+    const original = createArrangementExecutionState(plan)
+    original.nodes = original.nodes.map(item => ({ ...item, status: 'completed', output: 'old', sessionRunId: item.nodeId,
+      delivery: { validationAttempts: 9, finalFiles: [], issues: [], summary: 'old' } }))
+    const next = reopenArrangementNodeForRepair(original, plan, 'a', [{ code: 'FILE_MISSING', path: 'a.txt', message: 'Missing original' }])
+    assert.deepEqual(next.nodes.map(item => item.status), ['ready', 'pending', 'pending', 'completed'])
+    assert.equal(next.nodes[0]?.delivery?.issues[0]?.code, 'FILE_MISSING')
+    assert.equal(next.nodes[1]?.delivery?.issues[0]?.code, 'PREDECESSOR_REPAIRED')
+    assert.equal(next.nodes[1]?.sessionRunId, 'b')
+    assert.equal(next.nodes[1]?.delivery?.summary, undefined)
+    assert.equal(next.nodes[0]?.delivery?.validationAttempts, 9)
+    assert.equal(original.nodes[1]?.output, 'old')
   })
   it('starts roots ready and releases dependents only after all dependencies complete', () => {
     const plan = [node('a'), node('b'), node('c', ['a', 'b'])]

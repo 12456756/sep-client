@@ -7,6 +7,8 @@ import { AppError } from '../errors/app-error'
 import { isErrorCode } from '../errors/error-codes'
 import { abortableVideo } from '../data/video-files'
 import { MockVideoHostService, type MockVideoHostOptions } from './mock-video-host-service'
+import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
+import { setTimeout as delay } from 'node:timers/promises'
 
 type RunInput = Parameters<VideoRunPort['prepareRun']>[0]
 interface Run {
@@ -146,33 +148,42 @@ export class VideoRunService implements VideoRunPort {
         ? job.error : job.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED')
       run.tracking = host.track(input.taskId)
       void run.tracking.catch(() => undefined)
-      await this.waitForJobs(run, [job.jobId], false)
-      const completed = (await host.getTaskVideo(input.taskId)).jobs.find(item => item.jobId === job.jobId)
+      await this.waitForJobs(run, [job.jobId], signal, false)
+      const completed = (await abortableVideo(host.getTaskVideo(input.taskId), signal)).jobs.find(item => item.jobId === job.jobId)
       if (!completed) throw new AppError('INVALID_STATE')
       return completed
     }) }
   }
 
-  async waitForRun(taskId: string, runId: string): Promise<void> {
+  async waitForRun(taskId: string, runId: string, options: { recoverOriginal?: boolean; signal?: AbortSignal } = {}): Promise<void> {
     const run = this.runs.get(this.key(taskId, runId))
     if (!run) return
-    while (run.pending.size) await Promise.all([...run.pending])
-    run.controller.signal.throwIfAborted()
+    const signal = AbortSignal.any([run.controller.signal, ...(options.signal ? [options.signal] : [])])
+    signal.throwIfAborted()
+    while (run.pending.size) await abortableVideo(Promise.all([...run.pending]), signal)
+    signal.throwIfAborted()
     if (!run.jobs.size) return
-    await this.waitForJobs(run, [...run.jobs])
+    await this.waitForJobs(run, [...run.jobs], signal, true, options.recoverOriginal === true)
   }
 
-  private async waitForJobs(run: Run, jobIds: readonly string[], throwOnFailure = true): Promise<void> {
+  private async waitForJobs(
+    run: Run,
+    jobIds: readonly string[],
+    signal: AbortSignal,
+    throwOnFailure = true,
+    recoverOriginal = false,
+  ): Promise<void> {
     const { taskId } = run
     let trackingError: unknown
     let trackingDone = false
+    const recoveries = new Map<string, number>()
     if (!run.tracking) return
     void run.tracking.then(() => { trackingDone = true }, error => { trackingDone = true; trackingError = error })
-    for (;;) {
-      run.controller.signal.throwIfAborted()
+    tracking: for (;;) {
+      signal.throwIfAborted()
       const trackingWasDone = trackingDone
       const trackedBeforeRead = jobIds.filter(id => run.host.hasActiveTracker(taskId, id))
-      const view = await run.host.getTaskVideo(taskId)
+      const view = await abortableVideo(run.host.getTaskVideo(taskId), signal)
       // The read may have captured pre-save state while the tracker completed.
       if (!trackingWasDone && trackingDone || trackedBeforeRead.some(id => !run.host.hasActiveTracker(taskId, id))) continue
       let complete = true
@@ -186,12 +197,28 @@ export class VideoRunService implements VideoRunPort {
           if (failed || trackingDone && !run.host.hasActiveTracker(taskId, id)) {
             const error = trackingError instanceof AppError ? trackingError : new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
             await this.notifyTerminalFailure(run, error)
+            if (recoverOriginal && job?.generationStatus === 'RESULT_EXPIRED' && !terminalVideoFailure(error)) throw new ArrangementMediaRecoveryError('download', error)
+            if (recoverOriginal && !terminalVideoFailure(error) && job && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
+              if ((recoveries.get(id) ?? 0) < 3) {
+                recoveries.set(id, (recoveries.get(id) ?? 0) + 1)
+                await delay(100 * 2 ** ((recoveries.get(id) ?? 1) - 1), undefined, { signal })
+                try { await abortableVideo(run.host.retrySave(taskId, id), signal) }
+                catch (failure) {
+                  signal.throwIfAborted()
+                  await this.notifyTerminalFailure(run, failure)
+                  if (terminalVideoFailure(failure)) throw failure
+                  if (recoveries.get(id) === 3) throw new ArrangementMediaRecoveryError('download', failure)
+                }
+                continue tracking
+              }
+              throw new ArrangementMediaRecoveryError('download', error)
+            }
             throw error
           }
         }
       }
       if (complete) return
-      await new Promise<void>(resolve => setTimeout(resolve, 100))
+      await delay(100, undefined, { signal })
     }
   }
 

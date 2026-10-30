@@ -60,6 +60,59 @@ async function setup(scenario: MockVideoScenario = 'success') {
   return { root, options, state, store, gateway, approvals, runInput, service: new VideoRunService(options) }
 }
 
+test('arrangement automatically retries the original video download without a second quote or submission', async () => {
+  const f = await setup()
+  const original = f.options.gateway
+  let downloads = 0, submits = 0, quotes = 0
+  f.options.gateway = owner => {
+    const gateway = original(owner)
+    return { ...gateway,
+      quote: async (...args) => { quotes++; return gateway.quote(...args) },
+      submit: async (...args) => { submits++; return gateway.submit(...args) },
+      content: async (...args) => {
+        if (++downloads <= 2) throw new AppError('NETWORK_ERROR')
+        return gateway.content(...args)
+      },
+    }
+  }
+  const service = new VideoRunService(f.options)
+  try {
+    const tools = await service.prepareRun(f.runInput)
+    assert.ok(tools)
+    await tools.execute('video_from_image', input())
+    await service.waitForRun('task-a', 'run-a', { recoverOriginal: true })
+    assert.equal(downloads, 3)
+    assert.equal(submits, 1)
+    assert.equal(quotes, 1)
+    assert.equal((await f.store.listJobs(scope))[0]?.saveStatus, 'SAVED')
+  } finally { await service.stopAll() }
+})
+
+test('run delivery cancellation interrupts a stalled video state read', { timeout: 5_000 }, async context => {
+  const f = await setup()
+  let entered!: () => void, release!: () => void
+  const reading = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const controller = new AbortController()
+  try {
+    const tools = await f.service.prepareRun(f.runInput)
+    assert.ok(tools)
+    await tools.execute('video_from_image', input())
+    const getTaskVideo = MockVideoHostService.prototype.getTaskVideo
+    context.mock.method(MockVideoHostService.prototype, 'getTaskVideo', async function (this: MockVideoHostService, taskId: string) {
+      entered()
+      await gate
+      return getTaskVideo.call(this, taskId)
+    })
+    const waiting = f.service.waitForRun('task-a', 'run-a', { signal: controller.signal })
+    const rejected = assert.rejects(waiting, { message: 'Delivery cancelled.' })
+    await reading
+    controller.abort(new Error('Delivery cancelled.'))
+    await rejected
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { release(); await f.service.stopAll() }
+})
+
 test('real SDK handoff and finishRun preserve pending video output saving without another submission', { timeout: 20_000 }, async context => {
   const f = await setup()
   let entered!: () => void, release!: () => void

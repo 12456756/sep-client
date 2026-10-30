@@ -332,6 +332,18 @@ describe('TaskRuntime arrangement integration', () => {
 })
 
 describe('arrangement node prompt media contract', () => {
+  it('does not state a validation attempt limit in current or legacy structured prompts', () => {
+    const base = plan('task-prompt-validation')
+    const node = { ...base.nodes[0]!,
+      deliverables: [{ id: 'report', name: 'Report', format: 'txt', path: 'deliverables/report.txt', contentOutline: ['Report'], acceptanceCriteria: ['Saved'] }] }
+    for (const mode of ['auto', 'manual'] as const) {
+      const workPlan = { ...base, mode }
+      for (const prompt of [buildArrangementNodeSystemPrompt(workPlan, node, [], employee), buildArrangementNodePrompt(workPlan, node, [])]) {
+        assert.doesNotMatch(prompt, /最多校验|首次提交加/)
+      }
+    }
+  })
+
   it('passes structured preferences and declared references to the employee in manual and auto plans', () => {
     const base = plan('task-media-preferences')
     const mediaRequirements = [{ id: 'motion', kind: 'video' as const, operation: 'image-to-video' as const,
@@ -1399,7 +1411,7 @@ describe('TaskRuntime arrangement controls', () => {
               await options.onSessionCreated?.({ sessionId: 'logical-b', sessionFile })
             } else {
               assert.equal(options.context.resumeSessionFile, sessionFile)
-              assert.match(prompt, /当前节点尚未通过最终交付校验[\s\S]*请承接已有上下文和工具结果[\s\S]*否则先完成剩余工作，再提交/)
+              assert.match(prompt, /你的最终回复不是合法的 JSON[\s\S]*保留已有工作和有效成果[\s\S]*如果实际工作尚未完成，先完成剩余工作/)
               const node = arrangement.nodes.find(item => item.id === id)!
               const system = options.context.fixedSystemPrompt!
               for (const value of [node.objective!, node.instruction, node.expectedOutput, JSON.stringify(node.deliverables, null, 2)]) {
@@ -1522,6 +1534,7 @@ describe('TaskRuntime arrangement controls', () => {
     await runtime.executeTask(task.id)
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.RUNNING)
     await waitFor(() => ((runtime as unknown as { pendingFileTools: Map<string, unknown> }).pendingFileTools.size === 1))
+    await waitFor(() => release !== null)
     await runtime.stopArrangement(task.id, 'user stopped')
     assert.equal((await manager.getTask(task.id))?.status, TaskStatus.PAUSED)
     assert.equal(checkpoints.value?.state.status, 'stopped')

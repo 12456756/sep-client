@@ -1,5 +1,5 @@
 import type { ArrangementNode } from './arrangement-plan'
-import type { NodeDeliveryProgress } from './arrangement-delivery'
+import type { DeliveryIssue, NodeDeliveryProgress } from './arrangement-delivery'
 import type { ModelRequestProgress } from './model-request-progress'
 import { arrangementInputReplySchema, type ArrangementInputRequest, type ArrangementInputReply } from '../../src/shared/arrangement-input'
 
@@ -190,6 +190,19 @@ export function retryArrangementNode(
 export function stopArrangement(state: ArrangementExecutionState): ArrangementExecutionState {
   if (state.status === 'completed' || state.status === 'stopped') return state
   return { ...state, status: 'stopped', nodes: state.nodes.map(node => node.status === 'completed' ? { ...node } : { ...node, status: 'stopped' as const }) }
+}
+
+export function reopenArrangementNodeForRepair(state: ArrangementExecutionState, planNodes: readonly ArrangementNode[], nodeId: string, issues: readonly DeliveryIssue[]): ArrangementExecutionState {
+  if (state.status === 'stopped') return state
+  const affected = descendantNodeIds(planNodes, nodeId)
+  affected.add(nodeId)
+  return { ...state, status: 'running', failureNodeIds: state.failureNodeIds.filter(id => !affected.has(id)),
+    nodes: state.nodes.map(node => {
+      if (!affected.has(node.nodeId)) return node
+      return { ...node, status: node.nodeId === nodeId ? 'ready' : 'pending', error: null, output: null, pendingConfirmation: false,
+        delivery: { validationAttempts: node.delivery?.validationAttempts ?? 0, finalFiles: [],
+          issues: node.nodeId === nodeId ? [...issues] : [{ code: 'PREDECESSOR_REPAIRED', message: '前置成果需要恢复或修复。重新读取本次提供的已核验前置成果，重新核实受影响的本节点文件；保留其他有效工作，不得使用旧版本直接交付。' }] } }
+    }) }
 }
 
 export function interruptArrangement(

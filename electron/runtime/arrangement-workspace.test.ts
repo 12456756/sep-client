@@ -96,7 +96,9 @@ for (const { manual, invalidDelivery } of [{ manual: false, invalidDelivery: fal
             if (!correction) return
             assert.equal((await manager.getTask(context.taskId))?.status, TaskStatus.RUNNING)
             assert.equal((await checkpoints.get(scope, context.taskId))?.state.nodes.find(node => node.nodeId === nodeId)?.status, 'running')
-            assert.match(correction.continueWith, /实际交付文件未通过校验/)
+            assert.match(correction.continueWith, /当前交付记录或实际文件未通过校验/)
+            assert.match(correction.continueWith, /FILE_MISSING/)
+            assert.ok(correction.continueWith.includes(`${nodeId}-result.txt`))
             assert.equal((await checkpoints.get(scope, context.taskId))?.state.nodes.find(node => node.nodeId === nodeId)?.delivery?.issues[0]?.code, 'FILE_MISSING')
           }
           assert.fail('The repaired eighth submission must be accepted')

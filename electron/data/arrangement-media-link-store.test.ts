@@ -79,6 +79,23 @@ describe('ArrangementMediaLinkStore', () => {
     assert.deepEqual(await store.list(scope, 'other-task'), [])
   })
 
+  it('only rebinds pending materializations that have never recorded a verified hash', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-media-links-'))
+    roots.push(root)
+    const store = new ArrangementMediaLinkStore(root)
+    const outputs: ArrangementMediaLink['outputs'] = [
+      { artifactId: 'img_1', sha256: 'a'.repeat(64), status: 'saved' },
+      { artifactId: 'img_2', sha256: 'b'.repeat(64), status: 'saved' },
+    ]
+    const pending = { deliverableId: 'image', path: 'image.png', sourceArtifactId: 'img_1', status: 'pending' as const }
+    await store.upsert(scope, link({ outputs, materializations: [pending] }))
+    const verified = { ...pending, sourceArtifactId: 'img_2', sha256: 'b'.repeat(64), status: 'saved' as const }
+    await store.upsert(scope, link({ outputs, materializations: [verified], updatedAt: 2 }))
+    await store.upsert(scope, link({ outputs, materializations: [{ ...verified, status: 'pending' }], updatedAt: 3 }))
+    await assert.rejects(store.upsert(scope, link({ outputs, materializations: [{ ...pending, sha256: 'a'.repeat(64) }], updatedAt: 4 })))
+    assert.equal((await store.get(scope, 'task-a', 'image', 'job-a'))!.materializations[0]!.sourceArtifactId, 'img_2')
+  })
+
   it('rejects invalid operations, duplicate materializations and unsafe target paths', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-media-links-'))
     roots.push(root)

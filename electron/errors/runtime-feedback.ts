@@ -5,6 +5,7 @@ import { AuthenticationRequiredError } from '../common/platform/authentication-r
 import { AuthApiError } from '../common/platform/platform-api'
 import { AppError } from './app-error'
 import { transportKind } from './operation-feedback'
+import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
 
 function failure(code: RuntimeFailureCode): RuntimeFailure { return { code, message: RUNTIME_FAILURE_MESSAGES[code] } }
 
@@ -18,6 +19,7 @@ const unrecoverableSessionMessages = new Set([
 
 export function runtimeFeedback(error: unknown): RuntimeFailure {
   if (error instanceof Error) {
+    if (error instanceof ArrangementMediaRecoveryError) return failure(error.phase === 'download' ? 'MEDIA_DOWNLOAD_FAILED' : 'MEDIA_DELIVERY_FAILED')
     const known = (Object.keys(RUNTIME_FAILURE_MESSAGES) as RuntimeFailureCode[]).find(code => RUNTIME_FAILURE_MESSAGES[code] === error.message)
     if (known) return failure(known)
     const transport = transportKind(error)
