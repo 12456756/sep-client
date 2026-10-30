@@ -54,6 +54,7 @@ unused/task-workspaces/
 
 # pi local state (per-machine, not project config)
 .pi/
+.pi-sessions/
 
 # Local speech POC assets (pinned metadata is tracked)
 resources/speech/sensevoice-int8/*.onnx
