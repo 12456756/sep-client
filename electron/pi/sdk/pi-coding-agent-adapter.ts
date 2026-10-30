@@ -29,7 +29,7 @@ import type { VideoToolName } from '../../domain/video-tools'
 import { videoToolGenerationInputSchema, videoToolJobInputSchema } from '../../../src/shared/video-host'
 import { videoBillingStatusSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../../src/shared/video-media'
 import { mediaToolGenerationInputSchema } from '../../../src/shared/media-host'
-import { imageRequestedSpecSchema, videoRequestedSpecSchema, mediaParameterSourcesSchema } from '../../../src/shared/media-spec-contract'
+import { imageRequestedSpecSchema, videoRequestedSpecSchema, videoActualSpecSchema, mediaParameterSourcesSchema } from '../../../src/shared/media-spec-contract'
 import { mediaCapabilitiesSchema, mediaId, mediaParametersSchema } from '../../common/platform/media-contract'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import { videoToolFailureDiagnostic, videoToolFailureFrom } from '../../errors/video-tool-error'
@@ -120,7 +120,7 @@ const videoJobResultSchema = z.object({
   specFailure: videoSpecFailureSchema.optional(),
   protocolVersion: z.literal(3).optional(), specRevision: z.number().int().positive().optional(),
   requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(),
-  actualSpec: videoRequestedSpecSchema.optional(), parameterSources: mediaParameterSourcesSchema.optional(),
+  actualSpec: videoActualSpecSchema.optional(), parameterSources: mediaParameterSourcesSchema.optional(),
   acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
   generationStatus: z.enum(['NOT_SUBMITTED', 'SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),

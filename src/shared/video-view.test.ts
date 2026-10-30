@@ -75,6 +75,22 @@ test('video results panel has no duplicate creation form or technical configurat
   assert.doesNotMatch(html, /<form|<select|<textarea|视频模型|视频时长|提交视频生成|从系统选择视频参考图/)
 })
 
+test('saved videos with fractional actual-spec duration remain visible with mismatch and billing details', () => {
+  const actual = { ...output, width: 1344, height: 768, durationSeconds: 4.458333 }
+  const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({
+    protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 },
+    actualSpec: { durationSeconds: actual.durationSeconds, width: actual.width, height: actual.height, frameRate: actual.frameRate, audio: true, outputFormat: actual.mimeType },
+    acceptance: 'mismatched', error: 'OUTPUT_SPEC_MISMATCH',
+    generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVED', outputs: [actual],
+    billingStatus: 'SETTLED', actualCostCny: '28.800000',
+  })] } })
+  assert.match(html, /实际生成：4\.458333 秒/)
+  assert.match(html, /预览视频成果 1/)
+  assert.match(html, /导出视频成果 1/)
+  assert.match(html, /实付 ¥28\.800000/)
+  assert.doesNotMatch(html, /尚无视频任务/)
+})
+
 test('real terminal billing stays visible and resumable while preserving measured output metadata', () => {
   const actual = { ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }
   const view: VideoTaskView = { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({

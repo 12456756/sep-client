@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { videoOutputSchema, videoReceiptSchema, videoSpecFailureSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import type { VideoOutput, VideoReceipt } from '../../src/shared/video-media'
 import { isVideoSubmissionRejectionCode } from '../../src/shared/video-errors'
-import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema } from '../../src/shared/media-spec-contract'
+import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec } from '../../src/shared/media-spec-contract'
 
 export const videoLocalIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const scopeSegment = z.string().min(1).max(256).refine(value => !/[\\/]/.test(value) && value !== '.' && value !== '..')
@@ -107,7 +107,7 @@ export interface VideoStorePort {
 
 /** Receipt measurements describe the delivered artifact; unknown fields never imply acceptance. */
 export function videoSpecAcceptance(job: Pick<LocalVideoJob, 'request' | 'receipt'>): {
-  actualSpec?: import('../../src/shared/media-spec-contract').VideoRequestedSpec
+  actualSpec?: VideoActualSpec
   acceptance: 'matched' | 'mismatched' | 'unknown'
 } {
   if (job.request.protocolVersion !== 3 || !job.receipt) return { acceptance: 'unknown' }

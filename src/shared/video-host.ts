@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { videoParametersSchema, videoOperationSchema, type VideoOutput, type VideoRuntime, type VideoReceipt, type VideoSpecFailure } from './video-media'
-import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoRequestedSpec, type MediaParameterSources } from './media-spec-contract'
+import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec, type VideoRequestedSpec, type MediaParameterSources } from './media-spec-contract'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const profileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
@@ -53,7 +53,7 @@ export interface VideoJobView {
   specRevision?: number
   requestedSpec?: VideoRequestedSpec
   effectiveSpec?: VideoRequestedSpec
-  actualSpec?: VideoRequestedSpec
+  actualSpec?: VideoActualSpec
   parameterSources?: MediaParameterSources
   acceptance?: 'matched' | 'mismatched' | 'unknown'
   generationStatus: string

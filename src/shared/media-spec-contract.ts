@@ -39,6 +39,11 @@ export const videoRequestedSpecSchema = z.object({
   outputFormat: mediaFormatLabel.optional(),
 }).strict().superRefine(validateDimensions)
 
+/** Delivered duration is a measurement and may include fractional seconds. */
+export const videoActualSpecSchema = z.object({
+  ...videoRequestedSpecSchema.shape, durationSeconds: positive.optional(),
+}).strict().superRefine(validateDimensions)
+
 export const mediaParameterSourceSchema = z.union([
   z.enum(['user', 'model', 'upstream']),
   z.object({ source: z.enum(['user', 'model', 'upstream']), decisionRef: z.string().min(1).max(256) }).strict(),
@@ -52,6 +57,7 @@ export const mediaSpecMetadataSchema = z.object({
 
 export type ImageRequestedSpec = z.infer<typeof imageRequestedSpecSchema>
 export type VideoRequestedSpec = z.infer<typeof videoRequestedSpecSchema>
+export type VideoActualSpec = z.infer<typeof videoActualSpecSchema>
 export type MediaParameterSources = z.infer<typeof mediaParameterSourcesSchema>
 export type MediaSpecMetadata = z.infer<typeof mediaSpecMetadataSchema>
 

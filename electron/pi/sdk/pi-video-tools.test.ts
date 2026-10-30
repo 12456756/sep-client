@@ -24,7 +24,7 @@ const job: VideoJobView = {
   generationStatus: 'QUEUED', trackingStatus: 'ACTIVE', saveStatus: 'PENDING', billingStatus: 'MOCK_NOT_CHARGED',
   createdAt: 1, updatedAt: 2, error: null, outputs: [],
 }
-const output = {
+const output: VideoJobView['outputs'][number] = {
   outputId: 'output-a', kind: 'video', mimeType: 'video/mp4', byteLength: 50, sha256: 'a'.repeat(64),
   durationSeconds: 5, width: 1280, height: 720, frameRate: 24, thumbnailOutputId: null, expiresAt: null,
 }
@@ -96,6 +96,37 @@ function value(result: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>['execu
 }
 
 describe('video tools through the mocked Pi SDK extension API', () => {
+  it('preserves saved real video results with fractional measured duration across generation and queries', async () => {
+    const completed: VideoJobView = {
+      ...job, protocolVersion: 3, specRevision: 1,
+      parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 },
+      actualSpec: { durationSeconds: 4.458333, width: 1344, height: 768, aspectRatio: '1344:768', frameRate: 24, audio: true, outputFormat: 'video/mp4' },
+      acceptance: 'mismatched', error: 'OUTPUT_SPEC_MISMATCH',
+      generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVED',
+      billingStatus: 'SETTLED', amountCny: '28.800000', actualCostCny: '28.800000',
+      outputs: [{ ...output, durationSeconds: 4.458333, width: 1344, height: 768 }],
+    }
+    for (const [name, input, payload] of [
+      ['video_generate', { creativeBrief: 'A product video' }, completed],
+      ['video_from_image', { creativeBrief: 'A product video', localAssetIds: ['asset-a'] }, { ...completed, operation: 'image-to-video' }],
+      ['video_get_job', { jobId: completed.jobId }, completed],
+      ['video_get_job', {}, { mock: false, runtime: { ...videoFixture.runtime, executionMode: 'real' }, jobs: [completed] }],
+    ] as const) {
+      const runtime = await sdk({}, payload)
+      const result = await runtime.execute(name, input)
+      assert.deepEqual(result.details, { isError: false })
+      const parsed = JSON.parse(value(result))
+      const returned = 'jobs' in parsed ? parsed.jobs[0] : parsed
+      assert.equal(returned.generationStatus, 'SUCCEEDED')
+      assert.equal(returned.saveStatus, 'SAVED')
+      assert.deepEqual(returned.actualSpec, completed.actualSpec)
+      assert.deepEqual(returned.outputs, completed.outputs)
+      assert.equal(returned.acceptance, 'mismatched')
+      assert.equal(returned.error, 'OUTPUT_SPEC_MISMATCH')
+      assert.equal(returned.actualCostCny, '28.800000')
+    }
+  })
+
   it('accepts a versioned model proposal beyond legacy specifications without changing user audio intent', async () => {
     const runtime = await sdk()
     const input = { creativeBrief: 'A portrait product video', requirementId: 'video-b', protocolVersion: 3, specRevision: 2,

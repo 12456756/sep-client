@@ -93,6 +93,16 @@ test('shared receipt schema restores historical V3 records with partial actual-s
   assert.deepEqual(videoReceiptSchema.parse(historical), historical)
 })
 
+test('video receipts preserve fractional duration in normalized and supplier-measured actual specifications', () => {
+  for (const actualSpec of [
+    { durationSeconds: 4.458333, width: 1344, height: 768, frameRate: 24, outputFormat: 'video/mp4', audio: true },
+    { durationSeconds: 4.458333, width: 1344, height: 768, frameRate: 24, mimeType: 'video/mp4', hasAudio: true, source: 'measured' },
+  ]) {
+    const receipt = { ...fixture.receipts.succeeded, actualSpec }
+    assert.deepEqual(videoReceiptSchema.parse(receipt), receipt)
+  }
+})
+
 test('video runtime rejects dangling defaults, duplicate profiles and unsupported tools', () => {
   assert.equal(videoRuntimeSchema.safeParse({ ...fixture.runtime, defaultProfileId: 'missing' }).success, false)
   assert.equal(videoRuntimeSchema.safeParse({ ...fixture.runtime, profiles: [...fixture.runtime.profiles, ...fixture.runtime.profiles] }).success, false)

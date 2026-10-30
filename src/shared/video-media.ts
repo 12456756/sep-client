@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoRequestedSpec } from './media-spec-contract'
+import { mediaSpecMetadataSchema, mediaSpecsEqual, videoActualSpecSchema, videoRequestedSpecSchema, type VideoRequestedSpec } from './media-spec-contract'
 
 /** Persist only validated public specification diagnostics, never upstream free text. */
 export const videoSpecFailureSchema = z.object({
@@ -271,7 +271,7 @@ const videoReceiptBaseSchema = z.object({
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict(),
   protocolVersion: z.literal(3).optional(),
   specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
-  actualSpec: z.union([videoRequestedSpecSchema, z.object({
+  actualSpec: z.union([videoActualSpecSchema, z.object({
     durationSeconds: z.number().positive(), width: z.number().int().positive(), height: z.number().int().positive(),
     frameRate: z.number().positive(), mimeType: z.string().min(1).max(128), hasAudio: z.boolean().nullable(),
     source: z.literal('measured'),

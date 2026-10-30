@@ -26,6 +26,21 @@ test('unknown audio verification remains unknown while equivalent measured ratio
   assert.equal(videoSpecAcceptance(job({ aspectRatio: `${fixture.output.width * 2}:${fixture.output.height * 2}` })).acceptance, 'matched')
 })
 
+test('fractional delivered duration remains measured evidence while mismatches preserve successful generation and billing', () => {
+  const value = job({ durationSeconds: 4 }, {
+    durationSeconds: 4.458333, width: 1344, height: 768, frameRate: 24,
+    mimeType: 'video/mp4', hasAudio: true, source: 'measured',
+  })
+  value.receipt.outputs = [{ ...output, durationSeconds: 4.458333, width: 1344, height: 768 }]
+  const original = structuredClone(value)
+  const result = videoSpecAcceptance(value)
+  assert.equal(result.acceptance, 'mismatched')
+  assert.equal(result.actualSpec?.durationSeconds, 4.458333)
+  assert.equal(result.actualSpec?.audio, true)
+  assert.equal(value.receipt.status, 'SUCCEEDED')
+  assert.deepEqual(value, original)
+})
+
 test('SEP measured audio is mapped without treating unknown audio as verified', () => {
   for (const hasAudio of [true, false, null]) {
     const value = job({ audio: false }, {

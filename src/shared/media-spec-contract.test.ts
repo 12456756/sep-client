@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { imageEffectiveSpecMatches, imageRequestedSpecSchema, videoRequestedSpecSchema, mediaSpecMetadataSchema, mediaSpecsEqual } from './media-spec-contract'
+import { imageEffectiveSpecMatches, imageRequestedSpecSchema, videoActualSpecSchema, videoRequestedSpecSchema, mediaSpecMetadataSchema, mediaSpecsEqual } from './media-spec-contract'
 
 test('media specifications preserve omissions and explicit false without platform defaults', () => {
   assert.deepEqual(imageRequestedSpecSchema.parse({}), {})
@@ -14,6 +14,18 @@ test('new specifications accept provider values beyond legacy lists and resource
   assert.deepEqual(imageRequestedSpecSchema.parse({ size: '2048x1152', quality: 'ultra', count: 20 }), { size: '2048x1152', quality: 'ultra', count: 20 })
   const spec = { durationSeconds: 720, aspectRatio: '9:16', resolution: '8k', frameRate: 29.97, audio: false, outputFormat: 'video/quicktime' }
   assert.deepEqual(videoRequestedSpecSchema.parse(spec), spec)
+})
+
+test('actual video measurements allow fractional duration while requests remain integer-only', () => {
+  const spec = { durationSeconds: 4.458333, width: 1344, height: 768, aspectRatio: '7:4', frameRate: 24, audio: true, outputFormat: 'video/mp4' }
+  assert.deepEqual(videoActualSpecSchema.parse(spec), spec)
+  assert.equal(videoRequestedSpecSchema.safeParse(spec).success, false)
+  assert.deepEqual(videoActualSpecSchema.parse({ audio: false }), { audio: false })
+  for (const invalid of [
+    { durationSeconds: 0 }, { durationSeconds: -1 }, { durationSeconds: Infinity }, { durationSeconds: NaN },
+    { width: 1344.5 }, { width: 1344, height: 768, aspectRatio: '16:9' },
+    { outputFormat: 'https://private.example' }, { url: 'https://private.example' },
+  ]) assert.equal(videoActualSpecSchema.safeParse(invalid).success, false)
 })
 
 test('invalid, contradictory or untrusted specifications fail before submission', () => {

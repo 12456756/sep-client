@@ -6,7 +6,7 @@ import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import { mediaGenerationLabels, mediaSaveLabels, mediaTrackingLabels } from '../../shared/media-view'
 import type { VideoJobView, VideoTaskView } from '../../shared/video-host'
 import { videoBillingPending, videoBillingStatusSchema, videoOperationSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../shared/video-media'
-import { mediaSpecMetadataSchema, videoRequestedSpecSchema } from '../../shared/media-spec-contract'
+import { mediaSpecMetadataSchema, videoActualSpecSchema, videoRequestedSpecSchema } from '../../shared/media-spec-contract'
 import { isVideoSubmissionRejectionCode } from '../../shared/video-errors'
 
 
@@ -34,7 +34,7 @@ const jobSchema = z.object({
   specFailure: videoSpecFailureSchema.optional(),
   parameters: videoRequestedSpecSchema, generationStatus: z.string().max(80),
   protocolVersion: z.literal(3).optional(), specRevision: mediaSpecMetadataSchema.shape.specRevision.optional(),
-  requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(), actualSpec: videoRequestedSpecSchema.optional(),
+  requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(), actualSpec: videoActualSpecSchema.optional(),
   parameterSources: mediaSpecMetadataSchema.shape.parameterSources.optional(), acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
