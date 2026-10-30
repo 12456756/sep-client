@@ -27,7 +27,7 @@ export class ArrangementMediaAssets implements ArrangementMediaAssetsPort {
   }
 
   async outputs(scope: TaskOwnerScope, taskId: string, link: ArrangementMediaLink): Promise<ArrangementMediaAsset[]> {
-    if (link.kind === 'image') return (await this.images.listAssets(scope, taskId))
+    if (link.kind === 'image') return (await this.images.listAssets(scope, taskId, { recoverableOutputs: true }))
       .filter(asset => asset.source === 'output' && asset.jobId === link.jobId)
       .map(asset => ({ artifactId: asset.localAssetId, kind: 'image', sha256: asset.sha256, size: asset.size, mime: asset.mime,
         status: asset.status === 'SAVED' ? 'saved' : 'missing' }))

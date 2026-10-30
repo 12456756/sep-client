@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { appendFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
+import { appendFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { link, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, it } from 'node:test'
@@ -50,7 +50,9 @@ describe('arrangement media files', () => {
     const root = await mkdtemp(join(tmpdir(), 'arrangement-media-')); const task = join(root, 'task'); const media = source(PNG, 'image', 'image/png')
     const controller = new AbortController(); const stream = async function* () { yield PNG.subarray(0, 10); controller.abort(); yield PNG.subarray(10) }
     await assert.rejects(materializeArrangementMedia(root, deliverable('png'), { ...media, stream }, 'run-1', task, controller.signal), /aborted/i)
-    const outside = join(root, 'outside'); await writeFile(outside, Buffer.from('keep')); await symlink(outside, join(root, 'linked.png'))
+    const outside = join(root, 'outside'); await writeFile(outside, Buffer.from('keep'))
+    if (process.platform === 'win32') await link(outside, join(root, 'linked.png'))
+    else await symlink(outside, join(root, 'linked.png'))
     await assert.rejects(materializeArrangementMedia(root, deliverable('png', 'linked.png'), media, 'run-1', task, signal()), /UNSAFE_PATH/)
     assert.equal((await lstat(outside)).isFile(), true)
   })
@@ -62,6 +64,28 @@ describe('arrangement media files', () => {
     await assert.rejects(resolveArrangementMedia(root, file, task, signal()), /SNAPSHOT_CHANGED/)
   })
 
+  it('restores a corrupt snapshot from verified original media without replacing different workspace bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arrangement-media-')); const task = join(root, 'task')
+    const media = source(PNG, 'image', 'image/png')
+    const first = await materializeArrangementMedia(root, deliverable('png'), media, 'run-1', task, signal())
+    await writeFile(join(task, 'delivery-snapshots', media.sha256 + '.png'), Buffer.from('damaged'))
+    const restored = await materializeArrangementMedia(root, deliverable('png'), media, 'run-2', task, signal())
+    assert.equal(restored.sha256, first.sha256)
+    assert.deepEqual(await readFile(await resolveArrangementMedia(root, restored, task, signal())), PNG)
+    assert.ok(readdirSync(join(task, 'delivery-snapshots')).some(name => name.includes('.corrupt-')))
+  })
+
+  it('copies a saved snapshot when the original source is no longer readable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arrangement-media-')); const task = join(root, 'task')
+    const media = source(PNG, 'image', 'image/png')
+    const first = await materializeArrangementMedia(root, deliverable('png'), media, 'run-1', task, signal())
+    rmSync(join(root, first.path))
+    const restored = await materializeArrangementMedia(root, deliverable('png'), {
+      ...media, stream: async function* () { yield await Promise.reject(new Error('original unavailable')) },
+    }, 'run-2', task, signal())
+    assert.deepEqual(await readFile(join(root, restored.path)), PNG)
+  })
+
   it('requires the task directory when a frozen snapshot was declared', async () => {
     const root = await mkdtemp(join(tmpdir(), 'arrangement-media-')); const task = join(root, 'task')
     const file = await materializeArrangementMedia(root, deliverable('png'), source(PNG, 'image', 'image/png'), 'run-1', task, signal())
@@ -71,10 +95,12 @@ describe('arrangement media files', () => {
   it('rechecks the snapshot directory after the authorization callback', async () => {
     const root = await mkdtemp(join(tmpdir(), 'arrangement-media-')); const task = join(root, 'task'); const outside = join(root, 'outside')
     await mkdir(outside)
+    await mkdir(join(task, 'delivery-snapshots'), { recursive: true })
     let validations = 0
     await assert.rejects(materializeArrangementMedia(root, deliverable('png'), source(PNG, 'image', 'image/png'), 'run-1', task, signal(), () => {
-      if (++validations !== 2) return
-      rmSync(join(task, 'delivery-snapshots'), { recursive: true }); symlinkSync(outside, join(task, 'delivery-snapshots'))
+      if (++validations !== 1) return
+      renameSync(join(task, 'delivery-snapshots'), join(task, 'previous-snapshots'))
+      symlinkSync(outside, join(task, 'delivery-snapshots'), 'junction')
     }), /UNSAFE_PATH/)
     assert.deepEqual(readdirSync(outside), [])
     await assert.rejects(lstat(join(root, 'deliverables/output.png')), { code: 'ENOENT' })
@@ -102,7 +128,7 @@ describe('arrangement media files', () => {
 
   it('fails closed when the snapshot directory is a symlink', async () => {
     const root = await mkdtemp(join(tmpdir(), 'arrangement-media-')); const task = join(root, 'task'); const outside = join(root, 'outside')
-    await mkdir(task, { recursive: true }); await mkdir(outside); await symlink(outside, join(task, 'delivery-snapshots'))
+    await mkdir(task, { recursive: true }); await mkdir(outside); await symlink(outside, join(task, 'delivery-snapshots'), 'junction')
     await assert.rejects(materializeArrangementMedia(root, deliverable('png'), source(PNG, 'image', 'image/png'), 'run-1', task, signal()), /UNSAFE_PATH/)
   })
 

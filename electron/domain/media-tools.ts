@@ -29,7 +29,7 @@ export interface MediaRunPort {
     onJobCreated?: (job: MediaJobCreated) => Promise<void>
     recoverJobIds?: readonly string[]
   }): Promise<MediaHostTools | undefined>
-  waitForRun(taskId: string, runId: string): Promise<void>
+  waitForRun(taskId: string, runId: string, options?: { recoverOriginal?: boolean; signal?: AbortSignal }): Promise<void>
   stopTask(taskId: string): Promise<void>
   resume?(taskId: string, jobId: string): Promise<void>
 }

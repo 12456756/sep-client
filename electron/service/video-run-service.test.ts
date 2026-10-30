@@ -60,6 +60,34 @@ async function setup(scenario: MockVideoScenario = 'success') {
   return { root, options, state, store, gateway, approvals, runInput, service: new VideoRunService(options) }
 }
 
+test('arrangement automatically retries the original video download without a second quote or submission', async () => {
+  const f = await setup()
+  const original = f.options.gateway
+  let downloads = 0, submits = 0, quotes = 0
+  f.options.gateway = owner => {
+    const gateway = original(owner)
+    return { ...gateway,
+      quote: async (...args) => { quotes++; return gateway.quote(...args) },
+      submit: async (...args) => { submits++; return gateway.submit(...args) },
+      content: async (...args) => {
+        if (++downloads <= 2) throw new AppError('NETWORK_ERROR')
+        return gateway.content(...args)
+      },
+    }
+  }
+  const service = new VideoRunService(f.options)
+  try {
+    const tools = await service.prepareRun(f.runInput)
+    assert.ok(tools)
+    await tools.execute('video_from_image', input())
+    await service.waitForRun('task-a', 'run-a', { recoverOriginal: true })
+    assert.equal(downloads, 3)
+    assert.equal(submits, 1)
+    assert.equal(quotes, 1)
+    assert.equal((await f.store.listJobs(scope))[0]?.saveStatus, 'SAVED')
+  } finally { await service.stopAll() }
+})
+
 test('real SDK handoff and finishRun preserve pending video output saving without another submission', { timeout: 20_000 }, async context => {
   const f = await setup()
   let entered!: () => void, release!: () => void

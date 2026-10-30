@@ -15,6 +15,8 @@ export const RUNTIME_FAILURE_MESSAGES = {
   MODEL_NOT_ALLOWED: '所选模型不可用，请联系平台管理员',
   DELIVERY_FAILED: '工作成果校验未通过，请联系平台管理员',
   MEDIA_UNAVAILABLE: '当前媒体交付暂不可用，请联系平台管理员',
+  MEDIA_DOWNLOAD_FAILED: '图片或视频下载失败，自动恢复未成功，请联系平台管理员',
+  MEDIA_DELIVERY_FAILED: '图片或视频已生成，但保存到交付目录失败，请联系平台管理员',
   STORAGE_FAILED: '工作运行结果保存失败，请联系平台管理员',
   SESSION_UNRECOVERABLE: '工作历史会话无法恢复，请联系平台管理员',
   SIDE_EFFECT_UNCONFIRMED: '上次操作结果尚未确认，请先核实后再重试',

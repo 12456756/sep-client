@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { link, lstat, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, open, realpath, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { unzipSync } from 'fflate'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { PDFDocument } from 'pdf-lib'
 import { isSafeDeliveryPath, type ArrangementNode } from '../domain/arrangement-plan'
 import { finalDeliveryFileSchema, type DeliveryIssue, type DeliverySubmission, type FinalDeliveryFile } from '../domain/arrangement-delivery'
-import { resolveArrangementMediaFile } from './arrangement-media-files'
+import { resolveArrangementMediaFile, restoreArrangementMediaSnapshot } from './arrangement-media-files'
+import { publishDeliverySnapshot } from './delivery-snapshot-recovery'
 
 const MAX_BYTES = 64 * 1024 * 1024
 const MAX_XML_BYTES = 8 * 1024 * 1024
@@ -17,6 +18,8 @@ type FileResult = { ok: true; files: FinalDeliveryFile[] } | { ok: false; issues
 export interface DeliveryFileOptions {
   taskDirectory?: string
   allowWorkspaceChanges?: boolean
+  /** Execution recovery only; previews remain strictly read-only. */
+  repairSnapshots?: boolean
   /** Main-process media coordinator receipts, never model/renderer-provided records. */
   mediaFiles?: readonly FinalDeliveryFile[]
 }
@@ -47,9 +50,15 @@ async function saveSnapshot(taskDirectory: string, file: FinalDeliveryFile, byte
     signal?.throwIfAborted()
     await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 })
     signal?.throwIfAborted()
-    // Publishing must not overwrite a previously archived version, even after a crash.
-    try { await link(temporary, target) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error }
+    await publishDeliverySnapshot(temporary, target, async path => {
+      const bytes = await readWorkspaceFile(root, relative(root, path).split(sep).join('/'), signal).catch(error => {
+        if (error instanceof Error && error.message === 'EMPTY_FILE') throw new Error('SNAPSHOT_CHANGED')
+        throw error
+      })
+      if (bytes.length !== snapshot.size || createHash('sha256').update(bytes).digest('hex') !== snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
+    }, async () => {
+      if ((await lstat(directory)).isSymbolicLink() || await realpath(directory) !== directory) throw new Error('UNSAFE_PATH')
+    }, signal)
     const verified = await readWorkspaceFile(root, snapshotRelativePath(saved), signal)
     if (verified.length !== snapshot.size || createHash('sha256').update(verified).digest('hex') !== snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
     return saved
@@ -145,8 +154,9 @@ async function validateFormat(bytes: Buffer, format: string): Promise<void> {
   }
 }
 
-function fileIssue(error: unknown, id: string, path: string): DeliveryIssue {
-  const code = error instanceof Error ? error.message : ''
+export function deliveryFileIssue(error: unknown, id: string, path: string): DeliveryIssue {
+  const errno = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+  const code = typeof errno === 'string' ? errno : error instanceof Error ? error.message : ''
   const messages: Record<string, string> = {
     UNSAFE_PATH: '路径越界或使用了不安全的文件链接，请在共享工作区规定位置保存真实文件。',
     NOT_A_FILE: '交付路径不是普通文件。', EMPTY_FILE: '文件为空，请写入实际成果。',
@@ -158,6 +168,11 @@ function fileIssue(error: unknown, id: string, path: string): DeliveryIssue {
     MEDIA_MIME_MISMATCH: '媒体文件的真实类型与交付格式不一致。',
     MEDIA_DESTINATION_CONFLICT: '目标路径已有不同内容，请保留现有文件并处理冲突后重试落盘。',
     PREDECESSOR_FILE_CHANGED: '已确认的前置媒体文件被修改，不能替换原始来源。',
+    ENOSPC: '磁盘空间不足，客户端无法保存成果；不要重新生成、删除无关文件或更换计划路径。',
+    EACCES: '成果目录没有读写权限；不要修改系统权限或更换计划路径。',
+    EPERM: '系统拒绝访问成果文件；不要修改系统权限或更换计划路径。',
+    EBUSY: '成果文件暂时被占用，请完成保存后重试。',
+    EIO: '保存或读取成果时发生磁盘 I/O 错误。',
   }
   const missing = !!error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'
   return { code: missing ? 'FILE_MISSING' : messages[code] ? code : 'INVALID_FORMAT', deliverableId: id, path,
@@ -191,7 +206,7 @@ export async function validateDeliveryFiles(workspace: string, node: Arrangement
       signal?.throwIfAborted()
       const file = { id: expected.id, path: expected.path, format: expected.format, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), nodeRunId, validatedAt: Date.now() }
       files.push(options.taskDirectory ? await saveSnapshot(options.taskDirectory, file, bytes, 'confirmed', signal) : file)
-    } catch (error) { signal?.throwIfAborted(); issues.push(fileIssue(error, expected.id, expected.path)) }
+    } catch (error) { signal?.throwIfAborted(); issues.push(deliveryFileIssue(error, expected.id, expected.path)) }
   }
   return issues.length ? { ok: false, issues } : { ok: true, files }
 }
@@ -203,7 +218,14 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
     if (!finalDeliveryFileSchema.safeParse(file).success || !isSafeDeliveryPath(file.path)) { result.issues.push({ code: 'INVALID_DELIVERY_RECORD', message: '前置最终交付记录不完整或路径无效。' }); continue }
     try {
       if (file.sourceArtifact) {
-        const path = await resolveArrangementMediaFile(workspace, file, options.taskDirectory, signal)
+        let path: string
+        try { path = await resolveArrangementMediaFile(workspace, file, options.taskDirectory, signal) }
+        catch (error) {
+          signal?.throwIfAborted()
+          if (!options.repairSnapshots || !file.snapshot || !(error instanceof Error) || !['SNAPSHOT_CHANGED', 'SNAPSHOT_UNAVAILABLE'].includes(error.message)) throw error
+          await restoreArrangementMediaSnapshot(workspace, file, options.taskDirectory, signal)
+          path = await resolveArrangementMediaFile(workspace, file, options.taskDirectory, signal)
+        }
         result.files.push(file)
         result.readPaths.push(path)
         continue
@@ -211,9 +233,21 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
       if (file.snapshot) {
         if (!options.taskDirectory) throw new Error('SNAPSHOT_UNAVAILABLE')
         let bytes: Buffer
-        try { bytes = await readWorkspaceFile(options.taskDirectory, snapshotRelativePath(file), signal) }
-        catch (error) { signal?.throwIfAborted(); if (error instanceof Error && error.message === 'UNSAFE_PATH') throw error; throw new Error('SNAPSHOT_UNAVAILABLE') }
-        if (bytes.length !== file.snapshot.size || createHash('sha256').update(bytes).digest('hex') !== file.snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
+        try {
+          bytes = await readWorkspaceFile(options.taskDirectory, snapshotRelativePath(file), signal)
+          if (bytes.length !== file.snapshot.size || createHash('sha256').update(bytes).digest('hex') !== file.snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
+        } catch (error) {
+          signal?.throwIfAborted()
+          const issue = deliveryFileIssue(error, file.id, file.path)
+          if (!options.repairSnapshots || !['FILE_MISSING', 'SNAPSHOT_CHANGED', 'EMPTY_FILE'].includes(issue.code)) {
+            if (issue.code === 'FILE_MISSING') throw new Error('SNAPSHOT_UNAVAILABLE')
+            throw error
+          }
+          bytes = await readWorkspaceFile(workspace, file.path, signal)
+          if (bytes.length !== file.snapshot.size || createHash('sha256').update(bytes).digest('hex') !== file.snapshot.sha256) throw new Error('SNAPSHOT_CHANGED')
+          await validateFormat(bytes, file.format)
+          await saveSnapshot(options.taskDirectory, file, bytes, file.snapshot.source, signal)
+        }
         result.files.push(file)
         result.readPaths.push(resolve(await realpath(options.taskDirectory), snapshotRelativePath(file)))
         continue
@@ -232,9 +266,9 @@ export async function resolveDeliveryFiles(workspace: string, files: readonly Fi
       result.readPaths.push(saved.snapshot ? resolve(await realpath(options.taskDirectory!), snapshotRelativePath(saved)) : resolve(await realpath(workspace), file.path))
     } catch (error) {
       signal?.throwIfAborted()
-      const issue = fileIssue(error, file.id, file.path)
+      const issue = deliveryFileIssue(error, file.id, file.path)
       if (file.sourceArtifact && !file.snapshot && issue.code === 'MEDIA_INTEGRITY_MISMATCH') {
-        result.issues.push(fileIssue(new Error('PREDECESSOR_FILE_CHANGED'), file.id, file.path))
+        result.issues.push(deliveryFileIssue(new Error('PREDECESSOR_FILE_CHANGED'), file.id, file.path))
       } else result.issues.push(issue)
     }
   }
