@@ -404,6 +404,36 @@ describe('common Office skills with the real Pi SDK', () => {
 })
 
 describe('trusted media host tools with the real Pi SDK', () => {
+  it('preserves nested V3 image hints and adapter metadata in the actual model continuation', async () => {
+    const sizes = Array.from({ length: 128 }, (_, index) => `${1024 + index}x1024`)
+    const profile = {
+      profileId: 'image-v3', kind: 'image', displayName: 'Image V3', configVersion: 'cfg-v3',
+      operations: ['generate', 'edit'], executionMode: 'sync-response',
+      capabilities: { referenceImage: true, cancel: false, recoverByRequestId: false }, allowedAspectRatios: [],
+      authorized: true,
+      adapter: { id: 'sub2api-image', version: '3', available: true, operations: ['generate', 'edit'],
+        referenceSupport: { maxCount: 4, maxInputBytes: 5242880, mimeTypes: ['image/png'] },
+        supportsTaskQuery: false, supportsCancel: false },
+      capabilityHints: [{ field: 'size', values: sizes, source: 'profile-config', observedAt: null, confidence: 'declared' },
+        { field: 'quality', values: ['high'], source: 'Bearer private-hint-token', observedAt: null, confidence: 'unknown' }],
+    }
+    const { bodies } = await mediaSession({}, { name: 'media_get_capabilities', input: {} }, {
+      capabilities: { protocolVersion: 3, defaultProfileId: profile.profileId, tools: mediaNames, profiles: [profile] },
+      referenceAssets: [], apiKey: 'private-capability-key',
+    })
+    const text = bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content
+    const result = JSON.parse(text)
+    const visible = result.capabilities.profiles[0]
+    assert.deepEqual(visible.adapter, profile.adapter)
+    assert.deepEqual(visible.capabilityHints[0], profile.capabilityHints[0])
+    assert.equal(visible.capabilityHints[1].source, 'Bearer [redacted]')
+    assert.doesNotMatch(text, /max-depth|private-hint-token|private-capability-key/)
+    const definition = bodies[0].tools!.find(tool => tool.function.name === 'media_generate_image')!
+    assert.match(definition.function.description, /ratio alone does not determine pixel dimensions/)
+    assert.match(definition.function.description, /MISSING_SPEC/)
+    assert.match(definition.function.description, /execute in the current turn without requesting confirmation of routine specifications/)
+    assert.match(definition.function.description, /distinguish submitted, generated and saved/)
+  })
   it('preserves a historical named image size when projecting the original job', async () => {
     const parameters = { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' }
     const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, { ...jobView, parameters })

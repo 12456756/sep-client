@@ -460,12 +460,19 @@ export class MediaService {
       await this.options.store.saveJob(scope, job)
       this.assert(scope, epoch)
       const submitted = job
+      let saved!: () => void
+      const initialSave = new Promise<void>(resolve => { saved = resolve })
       // Once the submitted job is durable, model handoff cannot cancel host-owned saving.
       // Explicit task/session stops still abort the activity controller.
-      const tracking = this.track(scope, submitted, controller.signal, epoch).finally(finish)
+      const tracking = this.track(scope, submitted, controller.signal, epoch, saved).finally(finish)
       this.activities.set(activityKey, { taskId, controller, promise: tracking })
       trackingStarted = true
       void tracking.finally(() => this.releaseActivity(activityKey, controller)).catch(() => undefined)
+      if (job.profile.executionMode === 'sync-response' && (job.generationStatus === 'SUCCEEDED' || job.generationStatus === 'PARTIAL_SUCCEEDED')) {
+        await initialSave
+        this.assert(scope, epoch)
+        return await this.getJobView(taskId, jobId)
+      }
       const assets = await this.options.store.listAssets(scope, taskId)
       this.assert(scope, epoch)
       return this.viewJob(job, assets)
@@ -568,12 +575,13 @@ export class MediaService {
     this.recordOutputMismatch(job, await this.options.store.listAssets(scope, job.taskId))
     await this.options.store.saveJob(scope, job)
   }
-  private async track(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, epoch = this.epoch): Promise<void> {
+  private async track(scope: TaskOwnerScope, job: LocalMediaJob, parent: AbortSignal, epoch = this.epoch, onInitialSave?: () => void): Promise<void> {
     const trackingStartedAt = Date.now()
     let polls = 0
     try {
       // Generation may finish before billing. Deliver its outputs before querying the original receipt further.
       if (terminal.has(job.generationStatus)) await this.save(scope, job, parent)
+      onInitialSave?.()
       while (!terminal.has(job.generationStatus) || this.needsBillingQuery(job)) {
         this.assert(scope, epoch); parent.throwIfAborted()
         if (job.receiptId && job.recovery?.canQuery === false) {
@@ -625,7 +633,8 @@ export class MediaService {
       if (!parent.aborted) log.warn('media tracking interrupted', { taskId: job.taskId, jobId: job.jobId, authChanged: error instanceof AppError && error.code === 'AUTH_REQUIRED' })
     } finally {
       job.updatedAt = Date.now()
-      await this.options.store.saveJob(scope, job)
+      try { await this.options.store.saveJob(scope, job) }
+      finally { onInitialSave?.() }
     }
   }
   private async job(taskId: string, jobId: string) {

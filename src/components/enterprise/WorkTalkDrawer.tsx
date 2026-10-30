@@ -16,6 +16,7 @@ import { ConversationSessionsContext, createConversationSessions } from '../../f
 import { GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistant';
 import { KnowledgeSelector } from './KnowledgeSelector';
 import { noKnowledgeSelection } from '../../shared/knowledge-selection';
+import { ConversationMedia } from '../../features/enterprise/conversation-media';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -179,6 +180,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 </div>
               )
             ))}
+            <ConversationMedia taskId={work.id} visible />
           </div>
         </div>
 

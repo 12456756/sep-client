@@ -262,6 +262,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     workType,
     status,
     isActive: task.activeRunId !== null && (task.status === 'running' || task.status === 'waiting_approval' || task.status === 'pending'),
+    activeRunId: task.activeRunId,
     executionHealth: task.executionHealth,
     queuedAt: task.queuedAt ?? null,
     currentRunStartedAt: task.currentRunStartedAt ?? null,
@@ -348,12 +349,13 @@ function buildMessages(
           ? decodeWorkMeta(message.content)?.goal ?? readableGoal(message.content)
           : message.content,
         createdAt: message.createdAt,
+        runId: message.runId,
         attachments: message.attachments,
       }))
     : [{ id: `${task.id}-goal`, role: 'user', content: decodeWorkMeta(task.prompt)?.goal ?? readableGoal(task.prompt), createdAt: task.createdAt }];
 
   if (streamingText) {
-    source.push({ id: `${task.id}-streaming`, role: 'employee', employeeId, employeeName, content: streamingText, createdAt: Date.now() });
+    source.push({ id: `${task.id}-streaming`, role: 'employee', employeeId, employeeName, content: streamingText, createdAt: Date.now(), runId: streamingRunId });
   }
   if (task.error) {
     source.push({ id: `${task.id}-error`, role: 'system', content: `工作中断：${task.error}`, createdAt: task.completedAt ?? Date.now() });

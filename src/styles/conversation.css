@@ -156,3 +156,12 @@
     height: calc(100vh - var(--ent-titlebar) - var(--ent-topbar) - 420px);
   }
 }
+
+.ent-talk-media { margin: 10px 0 14px 38px; max-width: min(640px, calc(100% - 38px)); }
+.ent-talk-media-run > small { color: var(--ent-ink-3); font-size: 11px; }
+.ent-talk-media-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; margin-top: 6px; }
+.ent-talk-media-asset { margin: 0; border: 1px solid var(--ent-line); background: var(--ent-surface, #fff); }
+.ent-talk-media-asset img { display: block; width: 100%; aspect-ratio: 1; object-fit: contain; background: #f5f5f5; }
+.ent-talk-media-asset button { width: 100%; min-height: 120px; border: 0; background: #f5f5f5; color: var(--ent-ink-2); cursor: pointer; }
+.ent-talk-media-asset figcaption { padding: 4px 6px; color: var(--ent-ink-3); font-size: 10px; }
+.ent-talk-media-status { margin: 8px 0 8px 38px; color: var(--ent-ink-3); font-size: 11px; }

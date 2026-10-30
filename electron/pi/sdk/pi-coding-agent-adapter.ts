@@ -280,7 +280,8 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
         ? z.object({ capabilities: mediaCapabilitiesSchema, referenceAssets: z.array(mediaAssetResultSchema) }).parse(result)
         : mediaCapabilitiesSchema.parse(result))
     : mediaJobResultSchema.parse(result)
-  return { value: redactValue(value), isError: false }
+  // Validated capability hints include nested arrays beyond the log redactor's limits.
+  return { value: redactValue(value, 0, '', { maxDepth: 8, maxArrayLength: 128 }), isError: false }
 }
 
 function mediaDecisionToolProperties() {
@@ -334,7 +335,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
   }
   const descriptions = {
     media_get_capabilities: 'Get the currently authorized image capability and the task reference images selected in the image panel.',
-    media_generate_image: "Generate or edit an image. Inspect media_get_capabilities for actual authorization and protocol version. Preserve user specifications; propose missing specifications from purpose, context and selected task reference images, or ask about consequential ambiguity. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters need explicit complete decisions; the host never supplies business defaults. Use selected references when relevant; specify localAssetIds only for different saved referenceAssets. Never silently alter specifications, switch models or substitute scripted art. The host validates cost and obtains approval before submission.",
+    media_generate_image: "Generate or edit an image. Inspect media_get_capabilities for actual authorization and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and selected task reference images, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. A ratio alone does not determine pixel dimensions: decide size or width/height from the intended use. Pricing may also need count and quality; infer these decisions from the brief. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. On MISSING_SPEC, use the reported field and submissionState to complete missing routine decisions; clarify only consequential ambiguity. Never automatically repeat a paid submission or one with unknown submission state. Legacy parameters need explicit complete decisions; the host never supplies business defaults. Use selected references when relevant; specify localAssetIds only for different saved referenceAssets. Never silently alter specifications, switch models or substitute scripted art. The host validates cost and obtains approval before submission. Report the actual generation and local save states, available assets and chosen specifications; distinguish submitted, generated and saved. After success, state completion clearly instead of asking permission to begin.",
     media_get_job: 'Read cached status and task-local assets of an image job. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait; end the turn after submission.',
     media_cancel_job: 'Stop tracking an image job, optionally requesting upstream cancellation through the host approval policy.',
   }

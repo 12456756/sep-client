@@ -1007,6 +1007,7 @@ export class TaskRuntime {
           event.type === 'approval_requested' ? TaskStatus.WAITING_APPROVAL : TaskStatus.RUNNING)
       }
     } else if (event.type === 'tool_execution_start') {
+      this.events.markResponseBoundary(persistedEvent.runId)
       const data = event.data as ToolExecutionData
       if (typeof data.toolId === 'string' && typeof data.toolName === 'string') {
         this.events.sideEffectStarted(event.runId, data.toolId, data.toolName, event.occurredAt)

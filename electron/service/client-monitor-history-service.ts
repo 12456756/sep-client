@@ -4,6 +4,7 @@ import type { ConversationMessage } from '../domain/conversation-context'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunRecord } from '../data/task-run-store'
 import { isMonitorTerminal, type ClientTaskStatusRequest, type MonitorStatus, type ContentRecovery } from '../common/platform/client-monitor-contract'
+import { finalResponseFromEvents } from '../../src/shared/run-response'
 
 export interface MonitorHistoryRun {
   runId: string
@@ -96,7 +97,7 @@ export class ClientMonitorHistoryService implements ClientMonitorHistorySource {
         if (!content.some(message => message.type === 'model_output')) {
           const output = taskType === 'arrangement'
             ? events.filter(event => event.type === 'arrangement_node_completed').map(event => object(event.data).output).filter((value): value is string => typeof value === 'string').join('\n\n')
-            : events.filter(event => event.type === 'text_delta').map(event => object(event.data).text).filter((value): value is string => typeof value === 'string').join('')
+            : finalResponseFromEvents(events)
           if (output.length > 0) content.push({ messageId: `${run.id}-assistant`, type: 'model_output', content: output, occurredAt: run.endedAt ?? run.startedAt, source: 'timeline', completeness: run.outcome === 'interrupted' || run.outcome === 'stopped' ? 'partial' : 'unverified' })
         }
         let status = outcomeStatus[run.outcome]

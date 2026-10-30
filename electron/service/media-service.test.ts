@@ -238,6 +238,11 @@ describe('real media billing recovery and canonical sizes', () => {
       it(`continues original receipt queries after ${status} with ${billingStatus}`, async () => {
         const f = await realFixture({ status, billingStatus })
         const view = await f.generate({ aspectRatio: '1:1', size: '1024x1024', count: status === 'PARTIAL_SUCCEEDED' ? 2 : 1, quality: 'medium' })
+        if (status !== 'FAILED') {
+          assert.equal(view.saveStatus, 'SAVED', 'Synchronous generation returns the local delivery state before billing settles.')
+          assert.equal(view.assets.length, 1)
+          assert.equal(view.billingStatus, billingStatus)
+        }
         await waitUntil(async () => f.calls.some(call => call.path === '/requests/real-receipt'))
         const pending = (await f.store.getJob(owner, 'task-a', view.jobId))!
         assert.equal(pending.generationStatus, status)
@@ -260,6 +265,41 @@ describe('real media billing recovery and canonical sizes', () => {
       })
     }
   }
+
+  it('waits for synchronous local saving but returns before billing reconciliation', async context => {
+    const f = await realFixture()
+    const entered = deferred<void>(), release = deferred<void>()
+    const gateway = f.options.gateway!
+    const content = gateway.content.bind(gateway)
+    context.mock.method(gateway, 'content', async (...args: Parameters<typeof content>) => {
+      entered.resolve()
+      await release.promise
+      return content(...args)
+    })
+    let returned = false
+    const generating = f.generate().then(view => { returned = true; return view })
+    try {
+      await entered.promise
+      assert.equal(returned, false)
+      release.resolve()
+      const view = await generating
+      assert.equal(view.saveStatus, 'SAVED')
+      assert.equal(view.assets.length, 1)
+      assert.equal(view.billingStatus, 'RECONCILING')
+      assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+    } finally { release.resolve(); await generating }
+  })
+
+  it('reports synchronous save failure without losing the successful generation or resubmitting', async context => {
+    const f = await realFixture({ billingStatus: 'SETTLED' })
+    context.mock.method(f.options.gateway!, 'content', async () => { throw new Error('download failed') })
+    const view = await f.generate()
+    assert.equal(view.generationStatus, 'SUCCEEDED')
+    assert.equal(view.saveStatus, 'SAVE_FAILED')
+    assert.equal(view.assets.length, 0)
+    assert.equal(view.error, 'MEDIA_FAILED')
+    assert.equal(f.calls.filter(call => call.path === '/requests').length, 1)
+  })
 
   it('recovers a lost submission response by original client ID then receipt ID without another POST', async () => {
     const f = await realFixture({ lostSubmit: true })

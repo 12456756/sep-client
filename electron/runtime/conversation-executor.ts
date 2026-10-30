@@ -231,7 +231,7 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
-      if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具；按用户需求分析本次规格，缺少关键信息时与用户交互。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
+      if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
       const selection = queued.knowledge ?? queued.arrangement?.knowledge
       let trustedNames: string[] = []

@@ -13,6 +13,7 @@ import type { MediaHostTools } from '../domain/media-tools'
 import type { VideoHostTools } from '../domain/video-tools'
 import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoRuntimeSchema } from '../../src/shared/video-media'
+import { ConversationContextStore } from '../domain/conversation-context'
 
 test('general chat preserves selected model, permissions and history across turns and restart without employee behavior', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sep-general-chat-'))
@@ -67,11 +68,21 @@ test('general chat preserves selected model, permissions and history across turn
         assert.doesNotMatch(prompt, /当前通用助手没有账号主体的图片\/视频生成授权/)
         assert.match(prompt, /优先使用当前会话已提供的图片\/视频工具/)
         assert.match(prompt, /不能静默以脚本合成替代/)
+        assert.match(prompt, /未指定的常规规格由模型.*本轮直接执行/)
+        assert.match(prompt, /不要仅为确认.*追加一轮对话/)
         assert.equal(options.context.mediaTools, mediaTools)
         assert.equal(options.context.videoTools, videoTools)
         await options.context.mediaTools.execute('media_generate_image', {})
         await options.context.videoTools.execute('video_generate', {})
         await options.context.videoTools.execute('video_from_image', {})
+        const emit = (type: string, data: unknown) => options.onEvent({
+          taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
+          sequence: 0, occurredAt: Date.now(), type, data,
+        })
+        await emit('text_delta', { text: 'I will generate a square image.' })
+        await emit('tool_execution_start', { toolId: 'image-tool', toolName: 'media_generate_image' })
+        await emit('tool_execution_end', { toolId: 'image-tool', toolName: 'media_generate_image', success: true })
+        await emit('text_delta', { text: 'Generated and saved.' })
         await mkdir(options.context.sessionDir, { recursive: true })
         const file = join(options.context.sessionDir, 'session.jsonl')
         await writeFile(file, '{}\n', 'utf8')
@@ -121,6 +132,9 @@ test('general chat preserves selected model, permissions and history across turn
     ]))
     assert.deepEqual(toolCalls, Array.from({ length: 3 }, () => ['media_generate_image', 'video_generate', 'video_from_image']).flat())
     assert.deepEqual(completedMedia, ['image', 'video', 'image', 'video', 'image', 'video'])
+    const messages = await new ConversationContextStore(runs.getTaskDir(scope, task.id)).listMessages()
+    assert.deepEqual(messages.filter(message => message.role === 'assistant').map(message => message.content),
+      ['Generated and saved.', 'Generated and saved.', 'Generated and saved.'])
   } finally { await runtime?.stopAll(); await rm(root, { recursive: true, force: true }) }
 })
 

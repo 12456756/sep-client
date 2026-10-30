@@ -193,6 +193,25 @@ describe('SepRealMediaGateway response lifecycle', () => {
 })
 
 describe('SepRealMediaGateway', () => {
+  it('preserves missing-spec request diagnostics without submitting or retrying generation', async () => {
+    const { gateway, calls } = create(async () => json({ error: {
+      code: 'MISSING_SPEC', field: 'requestedSpec.size', source: 'request', stage: 'quote',
+      recovery: 'revise_request', submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false,
+      message: privateDetail,
+    } }, 422))
+    await assert.rejects(gateway.quote('subscription-1', request, signal()), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'MISSING_SPEC')
+      assert.deepEqual(error.details, {
+        resource: 'image', stage: 'image-quote', businessCode: 'MISSING_SPEC', field: 'requestedSpec.size',
+        source: 'request', recovery: 'revise_request', submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false,
+      })
+      assert.doesNotMatch(JSON.stringify(error), /private-secret|private\.example|fixture-employment-token/)
+      return true
+    })
+    assert.equal(calls.length, 1)
+    assert.match(calls[0].url, /\/quotes$/)
+  })
   it('sends the configured Web origin on JSON writes, uploads and recovery requests', async () => {
     const calls: string[] = []
     const gateway = new SepRealMediaGateway({ baseUrl: 'https://api.example/api/',

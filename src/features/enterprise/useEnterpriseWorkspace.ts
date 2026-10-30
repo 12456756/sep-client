@@ -44,6 +44,7 @@ import type {
 import { upgradeDraftSteps, validateGraph } from './work-graph';
 import { buildWorkItem, completedStepCount, getArrangementDisplayEvents } from './work-mapping';
 import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
+import { RunResponseBuffer } from '../../shared/run-response';
 import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
 import { mapEnterpriseOrganization, mapOrganizationEmployees } from './organization-mapping';
 import type { OrganizationCarbonEmployee } from './organization-model';
@@ -297,7 +298,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const [arrangeSeed, setArrangeSeed] = useState<ArrangeSeed | null>(null);
   const [savedFlows, setSavedFlows] = useState<SavedWorkFlow[]>(() => readSavedFlows(enterpriseId));
   const [reviewedAt, setReviewedAt] = useState<Record<string, number>>(() => readReviewed(enterpriseId));
-  const streamingText = useRef(new Map<string, string>());
+  const streamingText = useRef(new RunResponseBuffer());
   const runtimeActivities = useRef(new Map<string, WorkActivity[]>());
   const latestRunByTask = useRef(new Map<string, string>());
   const messagesByTask = useRef(new Map<string, ClientTaskMessage[]>());
@@ -618,10 +619,11 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       recordArrangementEvent(event);
       latestRunByTask.current.set(event.taskId, event.runId);
       const key = runtimeKey(event.taskId, event.runId);
+      if (event.type === 'tool_execution_start') streamingText.current.markToolBoundary(key);
       if (event.type === 'text_delta') {
         const data = event.data as { text?: unknown };
         if (typeof data.text === 'string') {
-          streamingText.current.set(key, `${streamingText.current.get(key) ?? ''}${data.text}`);
+          streamingText.current.append(key, data.text);
         }
       }
       const previous = runtimeActivities.current.get(key) ?? [];

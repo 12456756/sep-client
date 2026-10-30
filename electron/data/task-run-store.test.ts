@@ -111,6 +111,14 @@ describe('TaskRunStore', () => {
     await createRun('run-a', 'first question')
     await store.events.appendEvent(owner, {
       taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 1,
+      type: 'text_delta', occurredAt: 0, data: { text: 'I will generate.' },
+    })
+    await store.events.appendEvent(owner, {
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 2,
+      type: 'tool_execution_start', occurredAt: 0, data: { toolName: 'media_generate_image' },
+    })
+    await store.events.appendEvent(owner, {
+      taskId: 'task-a', runId: 'run-a', subscriptionId: 'employee-a', sequence: 3,
       type: 'text_delta', occurredAt: 1, data: { text: 'first ' },
     })
     await store.events.appendEvent(owner, {

@@ -27,6 +27,12 @@ describe('arrangement retry display regressions', () => {
     assert.equal(work.currentEmployeeName, '通用助手')
     assert.deepEqual(work.participants, ['builtin:general-assistant'])
     assert.equal(work.messages.find(message => message.role === 'employee')?.employeeName, '通用助手')
+    assert.equal(work.messages.find(message => message.role === 'employee')?.runId, 'run')
+  })
+
+  it('keeps the active run identity for media produced before the final reply', () => {
+    const work = buildWorkItem({ task: { ...task, activeRunId: 'run-live' }, employees: [] })
+    assert.equal(work.activeRunId, 'run-live')
   })
   it('projects a historical pending task as arranging without execution timestamps', () => {
     const work = buildWorkItem({ task: { ...task, status: 'pending', startedAt: null, completedAt: null, activeRunId: null, createdAt: 1 }, employees: [] })

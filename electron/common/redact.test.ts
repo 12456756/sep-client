@@ -72,6 +72,23 @@ describe('redactValue', () => {
   it('drops values it cannot represent instead of leaking them', () => {
     assert.deepEqual(redactValue({ fn: () => undefined, ok: 1 }), { ok: 1 })
   })
+
+  it('keeps schema-bounded tool data intact with local limits while preserving credential redaction', () => {
+    const values = Array.from({ length: 128 }, (_, index) => `${1024 + index}x1024`)
+    const value = { capabilities: { profiles: [{ capabilityHints: [{ field: 'size', values,
+      source: 'Bearer private-token', apiKey: 'private-key' }] }] } }
+    assert.match(JSON.stringify(redactValue(value)), /max-depth/)
+    const expected = { capabilities: { profiles: [{ capabilityHints: [{ field: 'size', values,
+      source: 'Bearer [redacted]', apiKey: '[redacted]' }] }] } }
+    assert.deepEqual(redactValue(value, 0, '', { maxDepth: 8, maxArrayLength: 128 }), expected)
+    assert.equal((redactValue(values) as unknown[]).length, 50)
+    assert.equal((redactValue([...values, 'extra'], 0, '', { maxArrayLength: 128 }) as unknown[]).length, 128)
+    let deep: unknown = { apiKey: 'private-deep-key' }
+    for (let level = 0; level < 10; level++) deep = { nested: deep }
+    const bounded = JSON.stringify(redactValue(deep, 0, '', { maxDepth: 8 }))
+    assert.match(bounded, /max-depth/)
+    assert.doesNotMatch(bounded, /private-deep-key/)
+  })
 })
 
 describe('describeError', () => {

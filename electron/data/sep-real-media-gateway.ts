@@ -60,7 +60,7 @@ const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,95}$/
 const SAFE_ERROR_FIELD = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/
 const SAFE_ERROR_RECOVERY = /^[a-z][a-z0-9_-]{0,63}$/
 const publicErrorMetadataSchema = z.object({
-  source: z.enum(['user', 'model', 'client', 'sep', 'platform', 'adapter', 'pricing', 'sub2api', 'provider', 'upstream', 'authorization']).optional(),
+  source: z.enum(['user', 'model', 'request', 'client', 'sep', 'platform', 'adapter', 'pricing', 'sub2api', 'provider', 'upstream', 'authorization']).optional(),
   requestedValue: z.union([z.string().max(96).regex(/^(?:[A-Za-z0-9][A-Za-z0-9_.:-]*|image\/[A-Za-z0-9][A-Za-z0-9.+-]*)$/), z.number().finite(), z.boolean()]).optional(),
   reasonCode: z.string().regex(SAFE_ERROR_CODE).optional(),
   submissionState: z.enum(['not_submitted', 'submitted', 'unknown']).optional(),

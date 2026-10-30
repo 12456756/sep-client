@@ -146,6 +146,7 @@ export interface SharedContext {
 export interface WorkMessage {
   id: string;
   role: 'user' | 'employee' | 'system';
+  runId?: string;
   /** 说话的员工，system 与 user 为空。 */
   employeeId?: string;
   employeeName?: string;
@@ -195,6 +196,7 @@ export interface WorkItem {
   status: WorkStatus;
   /** Whether a current run owns this task; an unstarted arrangement is not active. */
   isActive?: boolean;
+  activeRunId?: string | null;
   executionHealth?: 'start-failed';
   queuedAt?: number | null;
   currentRunStartedAt?: number | null;
