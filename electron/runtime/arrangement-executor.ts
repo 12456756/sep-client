@@ -13,7 +13,8 @@ import { recoverArrangementSession } from '../data/arrangement-session-recovery'
 import { resolveDeliveryFiles } from '../data/arrangement-delivery-files'
 import { DeliveryExecutionError, deliveryPlanIssues, parseRecordedDeliverySubmission, type DeliveryIssue, type FinalDeliveryFile, type NodeDeliveryProgress } from '../domain/arrangement-delivery'
 import { ArrangementDeliveryValidation, buildArrangementDeliveryCorrection, resolveArrangementNodeFailure } from './arrangement-delivery-validation'
-import type { TaskExecutionEvent } from '../../src/shared/types'
+import type { TaskExecutionEvent, ArrangementEmployeeReplacement } from '../../src/shared/types'
+import type { ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
 import type { TaskOwnerScope } from '../data/scope-path'
 import type { TaskRunStorePort } from '../data/task-run-store'
 import type { ArrangementCheckpoint, ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
@@ -25,8 +26,10 @@ import {
   markArrangementNodeFailed,
   markArrangementNodeRunning,
   markArrangementNodeWaitingForInput,
+  markArrangementNodeWaitingForEmployee,
   resumeArrangement,
   retryArrangementNode,
+  retryArrangementEmployeeReplacement,
   reopenArrangementNodeForRepair,
   interruptArrangement,
   stopArrangement,
@@ -66,6 +69,8 @@ export interface ArrangementExecutionOptions {
   onApprovalRequest: PiTaskWorkerOptions['onApprovalRequest']
   onEvent: (event: TaskExecutionEvent) => Promise<void>
   authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
+  findReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
+  replacePlanEmployee?: (taskId: string, nodeId: string, subscriptionId: string) => Promise<void>
   workspaceRoot: string
   arrangementSubscriptionId: string
   media?: MediaRunPort
@@ -87,7 +92,7 @@ export interface ArrangementNodeEvent {
 
 type NodeExecutionResult =
   | { ok: true; nodeId: string; output: string | null; completion: ArrangementNodeEvent }
-  | { ok: false; nodeId: string; error: string; terminal: boolean; failure: ArrangementNodeEvent; inputRequest?: ArrangementInputRequest; repair?: { nodeId: string; issues: DeliveryIssue[] } }
+  | { ok: false; nodeId: string; error: string; terminal: boolean; failure: ArrangementNodeEvent; inputRequest?: ArrangementInputRequest; employeeReplacement?: Omit<ArrangementEmployeeReplacement, 'status' | 'updatedAt'>; repair?: { nodeId: string; issues: DeliveryIssue[] } }
 
 class ArrangementInputRequiredError extends Error {
   constructor(readonly request: ArrangementInputRequest) { super('Media specifications require user input.') }
@@ -95,6 +100,11 @@ class ArrangementInputRequiredError extends Error {
 
 class PredecessorRepairRequired extends Error {
   constructor(readonly nodeId: string, readonly issues: DeliveryIssue[]) { super('Predecessor delivery requires owner repair: ' + nodeId) }
+}
+
+class EmployeeReplacementRequiredError extends Error {
+  constructor(readonly originalSubscriptionId: string, readonly reason: string,
+    readonly candidates: ArrangementEmployeeReplacement['candidates'] = []) { super('The selected employee is no longer available.') }
 }
 
 export function buildArrangementNodePrompt(plan: WorkPlan, node: ArrangementNode, dependencies: readonly { node: ArrangementNode; output?: string | null; files?: readonly (FinalDeliveryFile & { readPath?: string })[] }[], knowledgeContext = ''): string {
@@ -234,6 +244,7 @@ export class ArrangementExecutor {
   }
 
   async execute(plan: WorkPlan, taskId: string, arrangementRunId: string, requestedState?: ArrangementExecutionState): Promise<ArrangementExecutionResult> {
+    plan = structuredClone(plan)
     this.taskId = taskId
     this.abortRequested = false
     this.stopRequested = false
@@ -261,7 +272,7 @@ export class ArrangementExecutor {
     await this.emitStateEvent(plan, taskId, arrangementRunId, state)
     let current = state
     const nodes = nodeMap(plan)
-    if (state.status === 'completed' || state.status === 'stopped' || state.status === 'waiting-user' || state.status === 'failed') return { status: state.status, state }
+    if (state.status === 'completed' || state.status === 'stopped' || state.status === 'waiting-user' || state.status === 'waiting-employee' || state.status === 'failed') return { status: state.status, state }
     const inFlight = new Map<string, Promise<NodeExecutionResult>>()
     const results: Array<{ nodeId: string; result: NodeExecutionResult } | { error: unknown }> = []
     const terminalFailures = new Set<string>()
@@ -277,10 +288,11 @@ export class ArrangementExecutor {
     const mutate = <T>(operation: () => Promise<T>): Promise<T> => this.stateWrites.run(taskId, operation)
     this.liveRetryHandler = async (nodeId, inputReply) => mutate(async () => {
       if (this.abortRequested || !acceptingRetries) return false
-      if (!current.nodes.some(node => node.nodeId === nodeId && (node.status === 'failed' || node.inputRequest))) {
+      if (!current.nodes.some(node => node.nodeId === nodeId && (node.status === 'failed' || node.status === 'waiting-employee' || node.inputRequest))) {
         throw new AppError('INVALID_STATE', { message: '只能重试当前失败的节点。' })
       }
-      const next = retryArrangementNode(current, plan.nodes, nodeId, inputReply)
+      const next = current.nodes.some(node => node.nodeId === nodeId && node.status === 'waiting-employee')
+        ? retryArrangementEmployeeReplacement(current, plan.nodes, nodeId) : retryArrangementNode(current, plan.nodes, nodeId, inputReply)
       if (next === current) return false
       current = next
       terminalFailures.delete(nodeId)
@@ -327,7 +339,9 @@ export class ArrangementExecutor {
           delivery => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, delivery } : item) })),
           (nodeId, files) => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === nodeId && item.delivery
             ? { ...item, delivery: { ...item.delivery, finalFiles: files } } : item) })),
-          AbortSignal.any([this.validationCancellation.signal, cancellation.signal]))
+          AbortSignal.any([this.validationCancellation.signal, cancellation.signal]),
+          replacement => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === node.id
+            ? { ...item, employeeReplacement: replacement } : item) })))
         inFlight.set(node.id, promise)
         void promise.then(result => { results.push({ nodeId: node.id, result }); signalScheduler() },
           error => { results.push({ error }); signalScheduler() })
@@ -355,7 +369,8 @@ export class ArrangementExecutor {
           if (current.nodes.some(node => node.status === 'running')) current = interruptArrangement(current, 'runtime-error')
           else current = { ...current, status: current.nodes.some(node => node.pendingConfirmation || node.inputRequest) ? 'waiting-user'
             : current.nodes.every(node => node.status === 'completed') ? 'completed'
-              : terminalFailures.size ? 'failed' : 'waiting-user' }
+              : current.nodes.some(node => node.status === 'waiting-employee') ? 'waiting-employee'
+                : terminalFailures.size ? 'failed' : 'waiting-user' }
           await this.persist(plan, taskId, arrangementRunId, current)
           await this.emitStateEvent(plan, taskId, arrangementRunId, current)
           return true
@@ -388,7 +403,9 @@ export class ArrangementExecutor {
             return
           }
           if (result.ok) current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
-          else {
+          else if (result.employeeReplacement) {
+            current = markArrangementNodeWaitingForEmployee(current, plan.nodes, result.nodeId, result.employeeReplacement)
+          } else {
             current = result.inputRequest ? markArrangementNodeWaitingForInput(current, plan.nodes, result.nodeId, result.inputRequest)
               : markArrangementNodeFailed(current, plan.nodes, result.nodeId, result.error)
             if (result.terminal) terminalFailures.add(result.nodeId)
@@ -443,6 +460,7 @@ export class ArrangementExecutor {
     saveDelivery: (delivery: NodeDeliveryProgress) => Promise<void>,
     savePredecessorFiles: (nodeId: string, files: FinalDeliveryFile[]) => Promise<void>,
     signal: AbortSignal,
+    saveReplacement: (replacement: ArrangementEmployeeReplacement) => Promise<void>,
   ): Promise<NodeExecutionResult> {
     const nodeRunId = randomUUID()
     const modelTrace = this.options.createModelTrace?.({ taskId, runId: nodeRunId, title: plan.goal, phase: `节点：${node.title}` })
@@ -551,8 +569,29 @@ export class ArrangementExecutor {
         ? '沿用当前节点保存的会话和进度，继续完成未完成的工作，不要重做已完成操作。'
         : '沿用此会话中已保存的任务目标、工具结果和执行进度，从中断处继续完成当前节点。不要重新开始任务，也不要重复已经完成的操作；对结果不确定的操作先核实。'
       if (checkpoint.inputReply) prompt += `\n\n【用户补充的媒体需求】\n${JSON.stringify(checkpoint.inputReply.text)}\n根据用户补充内容更新拟提交的结构化规格与来源；保留已确认硬要求，不重复提交已有或状态未知的媒体任务。`
-      const employee = await this.options.authorizeEmployee(node.subscriptionId, node.modelId)
-      if (!employee) throw new Error('The selected employee is no longer available.')
+      let employee = await this.options.authorizeEmployee(node.subscriptionId, node.modelId)
+      if (!employee) {
+        const originalSubscriptionId = node.subscriptionId
+        const search = await this.options.findReplacement?.({ taskId, planningId: nodeRunId, taskGoal: plan.goal, node, signal })
+        checkControl()
+        const replacement = search?.replacement
+        if (!replacement) throw new EmployeeReplacementRequiredError(originalSubscriptionId, '原执行员工已不可用，未找到可直接执行该节点的替代员工。', search?.candidates)
+        const authorizedReplacement = await this.options.authorizeEmployee(replacement.subscriptionId, node.modelId)
+        checkControl()
+        if (!authorizedReplacement) throw new EmployeeReplacementRequiredError(originalSubscriptionId, '候选替代员工在最终授权校验时已不可用。')
+        await saveReplacement({ nodeId: node.id, originalSubscriptionId, replacementSubscriptionId: replacement.subscriptionId,
+          previousSubscriptionIds: [...new Set([...(checkpoint.employeeReplacement?.previousSubscriptionIds ?? []),
+            ...(checkpoint.employeeReplacement ? [checkpoint.employeeReplacement.originalSubscriptionId] : []), originalSubscriptionId])],
+          status: 'replaced', reason: replacement.rationale, updatedAt: Date.now() })
+        checkControl()
+        await this.options.replacePlanEmployee?.(taskId, node.id, replacement.subscriptionId)
+        Object.assign(node, { subscriptionId: replacement.subscriptionId })
+        executionNode.subscriptionId = replacement.subscriptionId
+        employee = authorizedReplacement
+        logger.child('arrangement-executor').info('employee automatically replaced', {
+          taskId, nodeId: node.id, originalSubscriptionId, replacementSubscriptionId: replacement.subscriptionId, rationale: replacement.rationale,
+        })
+      }
       checkControl()
       let knowledgeContext = ''
       const selection = node.knowledge ?? plan.knowledge
@@ -773,6 +812,12 @@ export class ArrangementExecutor {
       return { ok: true, nodeId: node.id, output: output || null, completion }
     } catch (error) {
       const interrupted = this.abortRequested || signal.aborted
+      if (!interrupted && error instanceof EmployeeReplacementRequiredError) {
+        return { ok: false, nodeId: node.id, error: '', terminal: false,
+          employeeReplacement: { nodeId: node.id, originalSubscriptionId: error.originalSubscriptionId, reason: error.reason, candidates: error.candidates },
+          failure: { type: 'arrangement_node_progress', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
+            attempt: checkpoint.attempt, data: { ...metadata(), status: 'WAITING_EMPLOYEE' } } }
+      }
       if (!interrupted && (error instanceof ArrangementInputRequiredError || error instanceof AppError && error.code === 'MISSING_SPEC')) {
         const inputRequest = error instanceof ArrangementInputRequiredError ? error.request : requestInput('请补充生成用途及尚未明确的媒体规格，或说明由模型根据用途提出方案。')
         if (created && this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'interrupted')
@@ -824,7 +869,10 @@ export class ArrangementExecutor {
       type: 'arrangement_state_changed', arrangementRunId, nodeId,
       data: { status: state.status, nodeId, nodeStatus: state.nodes.find(node => node.nodeId === nodeId)?.status, planHash: plan.planHash,
         nodeStates: state.nodes.map(node => ({ nodeId: node.nodeId, status: node.status, pendingConfirmation: node.pendingConfirmation,
-          ...(node.inputRequest ? { inputRequest: node.inputRequest } : {}) })) },
+          ...(node.employeeReplacement ? { employeeReplacement: node.employeeReplacement } : {}),
+          ...(node.inputRequest ? { inputRequest: node.inputRequest } : {}) })),
+        ...(state.nodes.find(node => node.nodeId === nodeId)?.employeeReplacement
+          ? { employeeReplacement: state.nodes.find(node => node.nodeId === nodeId)!.employeeReplacement } : {}) },
     })
   }
 

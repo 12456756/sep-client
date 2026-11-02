@@ -410,6 +410,8 @@ export interface ElectronAPI {
   requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>
   getEmployeeAccessRequest: (input: GetEmployeeAccessRequestInput) => Promise<ArrangementDraftResult>
   deleteTask: (input: string | { taskId: string; includeExecutions: true }) => Promise<IpcCommandResult>
+  requestReplacementEmployeeAccess: (input: { taskId: string; nodeId: string; employeeId: string }) => Promise<ArrangementExecutionResult>
+  refreshReplacementEmployeeAccess: (input: { taskId: string }) => Promise<ArrangementExecutionResult>
   updateTaskDetails: (input: { taskId: string; title?: string; pinned?: boolean }) => Promise<TaskResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>

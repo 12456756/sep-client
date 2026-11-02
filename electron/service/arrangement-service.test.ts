@@ -13,8 +13,11 @@ import type {
 } from '../domain/arrangement-planner'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
+import type { ArrangementCheckpoint } from '../data/arrangement-checkpoint-store'
+import { TaskStatus } from '../../src/shared/types'
 import { setLogSink, type LogRecord } from '../common/logger'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
+import type { ArrangementMediaTools } from '../domain/arrangement-media-availability'
 
 const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
@@ -195,12 +198,108 @@ function employee(allowedModels = ['model-a']) {
   }
 }
 
+it('searches replacement by original node contract, then enterprise and platform without creating a new task', async () => {
+  const node = draft().nodes[0]!
+  const calls: string[] = []
+  const candidate = { subscriptionId: 'platform:researcher', employeeId: 'researcher', name: 'Researcher',
+    status: 'APPROVED', source: 'platform', canApply: true, canExecute: false, allowedModels: [] }
+  const service = new ArrangementService(serviceDeps({
+    workPlans: { async get() { return { id: 'task-a', goal: 'Original goal', nodes: [node], confirmedInputs: ['Original input'], sourceDraftId: 'draft-a' } } },
+    drafts: { async get() { return null } },
+    employees: { async list() { return [employee()] } },
+    candidateEmployees: { async listEnterprise() { return [] }, async listPlatform() { return [candidate] } },
+    planner: { async findReplacement(input: { stage: string; confirmedInputs: string[] }) {
+      calls.push(input.stage)
+      assert.deepEqual(input.confirmedInputs, ['Original input'])
+      return input.stage === 'platform' ? { subscriptionId: candidate.subscriptionId, rationale: 'Matches the original work' } : null
+    } },
+  }))
+  const result = await service.findEmployeeReplacement({ taskId: 'task-a', planningId: 'repair-a', taskGoal: 'Original goal', node,
+    signal: new AbortController().signal })
+  assert.deepEqual(calls, ['platform'])
+  assert.equal(result.replacement, null)
+  assert.equal(result.candidates[0]?.employeeId, candidate.employeeId)
+  assert.equal(result.candidates[0]?.canExecute, false)
+})
+
 function persisted(input: Omit<ArrangementDraft, 'id' | 'owner' | 'revision' | 'createdAt' | 'updatedAt'>, revision = 1): ArrangementDraft {
   return {
     ...structuredClone(input), id: 'draft-a', schemaVersion: 1, revision, owner: { ...scope },
     createdAt: 1, updatedAt: revision,
   }
 }
+
+describe('replacement employee applications', () => {
+  function harness(options: { mediaNode?: boolean; mediaAvailable?: boolean } = {}) {
+    const candidate = { stepId: 'n1', employeeId: 'new-employee', subscriptionId: null, source: 'platform' as const,
+      name: 'Researcher', rationale: 'Matches research skills', canExecute: false as const, canApply: true as const }
+    const planNode = options.mediaNode ? { ...draft().nodes[0]!, deliverables: [{ id: 'video', name: 'Video', format: 'mp4', path: 'deliverables/video.mp4',
+      contentOutline: ['Generated video'], acceptanceCriteria: ['Playable video'], artifact: { kind: 'video' as const, source: 'media-output' as const, operation: 'text-to-video' as const } }] } : draft().nodes[0]!
+    let checkpoint: ArrangementCheckpoint = { version: 1, taskId: 'task-a', owner: scope, planHash: 'hash', activeRunId: null,
+      updatedAt: 1, state: { status: 'waiting-employee', failureNodeIds: [], interruptionReason: null,
+        nodes: [{ nodeId: 'n1', status: 'waiting-employee', attempt: 1, error: null, output: null,
+          employeeReplacement: { nodeId: 'n1', originalSubscriptionId: 'sub-a', status: 'waiting', reason: 'Unavailable', updatedAt: 1, candidates: [candidate] } }] } }
+    let status: EmployeeAccessRequest['status'] = 'PENDING'
+    let mediaAvailable = options.mediaAvailable ?? true
+    let activeRunId: string | null = null
+    let creates = 0
+    const retries: unknown[] = []
+    const request = () => ({ requestId: 'request-a', status, employee: { employeeId: 'new-employee', subscriptionId: 'sub-new', name: 'Researcher' },
+      requestedCapabilities: [], createdAt: '2026-11-02', updatedAt: '2026-11-02' })
+    const service = new ArrangementService(serviceDeps({
+      taskManager: { async getTask() { return { id: 'task-a', activeRunId, status: TaskStatus.PAUSED } } },
+      drafts: { async get() { return null } },
+      employees: { async refresh() { return [{ ...employee(), employeeId: 'new-employee', subscriptionId: 'sub-new' }] } },
+      workPlans: { async get() { return { id: 'task-a', sourceDraftId: 'draft-a', planHash: 'hash', goal: 'Original goal', nodes: [planNode] } } },
+      arrangementCheckpoints: { async get() { return structuredClone(checkpoint) }, async save(_scope: unknown, next: ArrangementCheckpoint) { checkpoint = structuredClone(next) } },
+      employeeAccessRequests: { async create(input: EmployeeAccessRequestInput) { creates++; assert.equal(input.targetType, 'PLATFORM_EMPLOYEE'); return request() }, async get() { return request() } },
+      ...(options.mediaNode ? { mediaToolAvailability: async () => {
+        const state = mediaAvailable ? 'available' : 'unavailable'
+        return {
+          media_generate_image: { state, reason: mediaAvailable ? 'authorized-runtime' : 'runtime-unavailable' },
+          video_generate: { state, reason: mediaAvailable ? 'authorized-runtime' : 'runtime-unavailable' },
+          video_from_image: { state, reason: mediaAvailable ? 'authorized-runtime' : 'runtime-unavailable' },
+        } satisfies ArrangementMediaTools
+      } } : {}),
+      execution: async () => ({ async retryTask(...args: unknown[]) { retries.push(args); activeRunId = 'new-run' } }),
+    }))
+    return { service, retries, creates: () => creates, checkpoint: () => checkpoint, approve: () => { status = 'APPROVED' },
+      setMediaAvailable: (value: boolean) => { mediaAvailable = value }, active: () => { activeRunId = 'active' } }
+  }
+
+  it('persists a single application and automatically resumes the original node after approval', async () => {
+    const f = harness()
+    await f.service.requestReplacementEmployeeAccess('task-a', 'n1', 'new-employee')
+    await f.service.requestReplacementEmployeeAccess('task-a', 'n1', 'new-employee')
+    assert.equal(f.creates(), 1)
+    assert.equal(f.checkpoint().state.nodes[0]?.employeeReplacement?.accessRequests?.[0]?.status, 'PENDING')
+    assert.deepEqual(f.retries, [])
+    f.approve()
+    await f.service.refreshReplacementEmployeeAccess('task-a')
+    assert.deepEqual(f.retries, [['task-a', { nodeId: 'n1' }]])
+    await f.service.refreshReplacementEmployeeAccess('task-a')
+    assert.equal(f.retries.length, 1)
+  })
+
+  it('rejects forged candidates and does not overwrite a running executor checkpoint', async () => {
+    const f = harness()
+    await assert.rejects(f.service.requestReplacementEmployeeAccess('task-a', 'n1', 'forged'))
+    f.active()
+    await assert.rejects(f.service.requestReplacementEmployeeAccess('task-a', 'n1', 'new-employee'))
+    assert.equal(f.creates(), 0)
+  })
+
+  it('does not resume an approved replacement until the required media tool is available', async () => {
+    const f = harness({ mediaNode: true, mediaAvailable: false })
+    await f.service.requestReplacementEmployeeAccess('task-a', 'n1', 'new-employee')
+    f.approve()
+    await f.service.refreshReplacementEmployeeAccess('task-a')
+    assert.deepEqual(f.retries, [])
+    f.setMediaAvailable(true)
+    await f.service.refreshReplacementEmployeeAccess('task-a')
+    assert.deepEqual(f.retries, [['task-a', { nodeId: 'n1' }]])
+  })
+})
 
 async function eventually(check: () => boolean): Promise<void> {
   for (let attempt = 0; attempt < 100; attempt += 1) {

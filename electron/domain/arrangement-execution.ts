@@ -2,6 +2,7 @@ import type { ArrangementNode } from './arrangement-plan'
 import type { DeliveryIssue, NodeDeliveryProgress } from './arrangement-delivery'
 import type { ModelRequestProgress } from './model-request-progress'
 import { arrangementInputReplySchema, type ArrangementInputRequest, type ArrangementInputReply } from '../../src/shared/arrangement-input'
+import type { ArrangementEmployeeReplacement } from '../../src/shared/types'
 
 /**
  * 已确认编排的纯状态机。
@@ -9,8 +10,8 @@ import { arrangementInputReplySchema, type ArrangementInputRequest, type Arrange
  * 这里不读写文件，也不启动 worker，只根据节点依赖计算 ready、blocked、retry、resume
  * 等状态，并始终返回新的快照。持久化和实际执行分别由 data/runtime 层负责。
  */
-export type ArrangementNodeStatus = 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
-export type ArrangementExecutionStatus = 'queued' | 'running' | 'waiting-user' | 'interrupted' | 'completed' | 'stopped' | 'failed'
+export type ArrangementNodeStatus = 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped' | 'waiting-employee'
+export type ArrangementExecutionStatus = 'queued' | 'running' | 'waiting-user' | 'waiting-employee' | 'interrupted' | 'completed' | 'stopped' | 'failed'
 
 export interface ArrangementNodeCheckpoint {
   nodeId: string
@@ -27,6 +28,7 @@ export interface ArrangementNodeCheckpoint {
   /** User-owned reply persisted before admission so a restart cannot lose it. */
   inputReply?: ArrangementInputReply
   mediaSpecRevisions?: Record<string, number>
+  employeeReplacement?: ArrangementEmployeeReplacement
 }
 
 export interface ArrangementExecutionState {
@@ -96,7 +98,8 @@ export function markArrangementNodeCompleted(
   const status = ordered.some(node => node.status === 'running' || node.status === 'ready') ? 'running'
     : ordered.some(node => node.pendingConfirmation) ? 'waiting-user'
       : ordered.every(node => node.status === 'completed') ? 'completed'
-        : ordered.some(node => node.status === 'failed' || node.inputRequest) ? 'waiting-user' : 'running'
+        : ordered.some(node => node.status === 'waiting-employee') ? 'waiting-employee'
+          : ordered.some(node => node.status === 'failed' || node.inputRequest) ? 'waiting-user' : 'running'
   return { ...state, status, nodes: ordered }
 }
 
@@ -113,7 +116,8 @@ export function confirmArrangementNode(state: ArrangementExecutionState, planNod
   })
   const status = released.some(node => node.status === 'running' || node.status === 'ready') ? 'running'
     : released.some(node => node.status === 'failed' || node.pendingConfirmation || node.inputRequest) ? 'waiting-user'
-      : released.every(node => node.status === 'completed') ? 'completed' : 'running'
+      : released.every(node => node.status === 'completed') ? 'completed'
+        : released.some(node => node.status === 'waiting-employee') ? 'waiting-employee' : 'running'
   return { ...state, status, nodes: released }
 }
 
@@ -136,6 +140,52 @@ export function markArrangementNodeFailed(
   return { ...state, status: active ? 'running' : 'waiting-user', nodes, failureNodeIds: [...new Set([...state.failureNodeIds, nodeId])] }
 }
 
+export function markArrangementNodeWaitingForEmployee(
+  state: ArrangementExecutionState,
+  planNodes: readonly ArrangementNode[],
+  nodeId: string,
+  replacement: Omit<ArrangementEmployeeReplacement, 'nodeId' | 'status' | 'updatedAt'>,
+): ArrangementExecutionState {
+  const current = nodeMap(state).get(nodeId)
+  if (!current || !['running', 'interrupted', 'ready', 'pending'].includes(current.status)) return state
+  const blocked = descendantNodeIds(planNodes, nodeId)
+  const retainedCandidates = current.employeeReplacement?.candidates?.filter(candidate =>
+    current.employeeReplacement?.accessRequests?.some(request => request.employeeId === candidate.employeeId && request.source === candidate.source)) ?? []
+  const candidates = [...new Map([...retainedCandidates, ...(replacement.candidates ?? [])].map(candidate =>
+    [`${candidate.source}:${candidate.employeeId}`, candidate])).values()]
+  const nodes = state.nodes.map(node => node.nodeId === nodeId
+    ? { ...node, status: 'waiting-employee' as const, error: null,
+      employeeReplacement: { ...current.employeeReplacement, nodeId, ...replacement, candidates,
+        status: 'waiting' as const, updatedAt: Date.now() } }
+    : blocked.has(node.nodeId) && node.status !== 'completed' ? { ...node, status: 'blocked' as const } : { ...node })
+  return {
+    ...state,
+    status: nodes.some(node => node.status === 'running' || node.status === 'ready') ? 'running' : 'waiting-employee',
+    nodes,
+  }
+}
+
+export function retryArrangementEmployeeReplacement(
+  state: ArrangementExecutionState,
+  planNodes: readonly ArrangementNode[],
+  nodeId: string,
+): ArrangementExecutionState {
+  const current = nodeMap(state).get(nodeId)
+  if (!current || current.status !== 'waiting-employee' || current.employeeReplacement?.nodeId !== nodeId) return state
+  const descendants = descendantNodeIds(planNodes, nodeId)
+  const stillBlocked = new Set(state.nodes.filter(node => node.nodeId !== nodeId &&
+    (node.status === 'failed' || node.status === 'waiting-employee' || node.inputRequest))
+    .flatMap(node => [...descendantNodeIds(planNodes, node.nodeId)]))
+  const completedIds = new Set(state.nodes.filter(node => node.status === 'completed' && !node.pendingConfirmation).map(node => node.nodeId))
+  const nodes = state.nodes.map(node => {
+    if (node.nodeId === nodeId) return { ...node, status: 'ready' as const, error: null }
+    if (!descendants.has(node.nodeId) || stillBlocked.has(node.nodeId) || node.status !== 'blocked') return { ...node }
+    const planNode = planNodes.find(item => item.id === node.nodeId)
+    return { ...node, status: planNode?.dependsOn.every(id => completedIds.has(id)) ? 'ready' as const : 'pending' as const }
+  })
+  return { ...state, status: 'running', nodes }
+}
+
 export function markArrangementNodeWaitingForInput(
   state: ArrangementExecutionState, planNodes: readonly ArrangementNode[], nodeId: string, inputRequest: ArrangementInputRequest,
 ): ArrangementExecutionState {
@@ -154,7 +204,7 @@ export function retryArrangementNode(
   nodeId?: string,
   inputReply?: ArrangementInputReply,
 ): ArrangementExecutionState {
-  if (state.status !== 'waiting-user' && state.status !== 'failed' && !(state.status === 'running' && nodeId)) return state
+  if (state.status !== 'waiting-user' && state.status !== 'waiting-employee' && state.status !== 'failed' && !(state.status === 'running' && nodeId)) return state
   if (!nodeId && state.nodes.some(node => node.pendingConfirmation)) return state
   if (inputReply && (!nodeId || !arrangementInputReplySchema.safeParse(inputReply).success ||
     !state.nodes.some(node => node.nodeId === nodeId && node.inputRequest?.requestId === inputReply.requestId))) return state
@@ -164,7 +214,7 @@ export function retryArrangementNode(
     (inputReply ? node.inputRequest?.requestId === inputReply.requestId && node.status === 'interrupted' : node.status === 'failed')).map(node => node.nodeId))
   if (retryIds.size === 0) return state
   const descendantsToRelease = new Set([...retryIds].flatMap(id => [...descendantNodeIds(planNodes, id)]))
-  const stillBlocked = new Set(state.nodes.filter(node => (node.status === 'failed' || node.inputRequest) && !retryIds.has(node.nodeId))
+  const stillBlocked = new Set(state.nodes.filter(node => (node.status === 'failed' || node.status === 'waiting-employee' || node.inputRequest) && !retryIds.has(node.nodeId))
     .flatMap(node => [...descendantNodeIds(planNodes, node.nodeId)]))
   const completedIds = new Set(state.nodes.filter(node => node.status === 'completed' && !node.pendingConfirmation).map(node => node.nodeId))
   const nodes = state.nodes.map(node => {
@@ -223,7 +273,8 @@ export function resumeArrangement(state: ArrangementExecutionState): Arrangement
   const resumed = {
     ...state,
     status: state.nodes.some(node => node.status === 'interrupted' && !node.inputRequest || node.status === 'ready') ? 'running' as const
-      : state.nodes.some(node => node.pendingConfirmation || node.inputRequest) ? 'waiting-user' as const : 'running' as const,
+      : state.nodes.some(node => node.pendingConfirmation || node.inputRequest) ? 'waiting-user' as const
+        : state.nodes.some(node => node.status === 'waiting-employee') ? 'waiting-employee' as const : 'running' as const,
     interruptionReason: null,
     nodes: state.nodes.map(node => node.status === 'interrupted' && !node.inputRequest ? { ...node, status: 'ready' as const } : { ...node }),
   }

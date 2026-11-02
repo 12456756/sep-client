@@ -105,6 +105,12 @@ const requestEmployeeAccessInput = z.object({ draftId, expectedRevision: revisio
 const getEmployeeAccessRequestInput = z.object({ draftId, requestId: z.string().min(1) })
 
 export const arrangementRoutes = [
+  route(INVOKE_CHANNELS.ARRANGE_REQUEST_REPLACEMENT_ACCESS, z.object({ taskId, nodeId: z.string().min(1), employeeId: z.string().min(1) }).strict(), async (ctx, input) => ({
+    success: true, execution: await ctx.arrangements.requestReplacementEmployeeAccess(input.taskId, input.nodeId, input.employeeId),
+  })),
+  route(INVOKE_CHANNELS.ARRANGE_REFRESH_REPLACEMENT_ACCESS, z.object({ taskId }).strict(), async (ctx, input) => ({
+    success: true, execution: await ctx.arrangements.refreshReplacementEmployeeAccess(input.taskId),
+  })),
   route(INVOKE_CHANNELS.ARRANGE_LIST_PLANNING_RECORDS, NO_INPUT, async ctx => ({
     success: true, records: await ctx.arrangements.listPlanningRecords(),
   })),

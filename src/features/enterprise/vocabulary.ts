@@ -44,6 +44,7 @@ export const WORK_STATUS: Record<WorkStatus, StatusPresentation> = {
   arranging: { label: '安排中', tone: 'muted', hint: '还没开始，可继续修改安排' },
   running: { label: '正在进行', tone: 'busy', hint: '员工正在处理' },
   'waiting-user': { label: '等待你确认', tone: 'attention', hint: '需要你确认后才能继续' },
+  'waiting-employee': { label: '等待替代员工', tone: 'attention', hint: '原员工已不可用，等待合适员工授权后继续' },
   completed: { label: '已完成', tone: 'ready', hint: '结果已交付，可查看工作结果' },
   failed: { label: '需要重试', tone: 'danger', hint: '执行中断，可重试或换其他员工' },
   // 「已终止」而不是「已暂停」：终止之后不会自己接着跑，要用「重新执行」从头开一遍。
@@ -55,6 +56,7 @@ export const WORK_STEP_STATE: Record<WorkStepState, StatusPresentation> = {
   pending: { label: '等待开始', tone: 'muted', hint: '前面的步骤完成后自动开始' },
   running: { label: '正在处理', tone: 'busy', hint: '员工正在完成这一步' },
   'waiting-user': { label: '等待你确认', tone: 'attention', hint: '这一步的结果需要你确认' },
+  'waiting-employee': { label: '等待替代员工', tone: 'attention', hint: '系统正在寻找满足当前节点要求的已授权员工' },
   done: { label: '已完成', tone: 'ready', hint: '这一步已产出结果' },
   failed: { label: '未完成', tone: 'danger', hint: '这一步中断了' },
   blocked: { label: '等待前置节点', tone: 'muted', hint: '前置节点完成后才会开始' },

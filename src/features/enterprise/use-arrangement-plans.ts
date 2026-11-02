@@ -58,10 +58,20 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
     void (async () => {
       const isCurrent = () => notice.isCurrent() && mounted.current && scope.current.generation === requestGeneration && requested.current.get(taskId) === request
       try {
-        const result = await window.electronAPI.getArrangementExecution(taskId)
+        let result = await window.electronAPI.getArrangementExecution(taskId)
         if (!isCurrent()) return
         if (!result.success) throw responseError(result, 'workExecution')
+        if (!result.execution?.activeRunId && result.execution?.nodes.some(node => node.status === 'waiting-employee' &&
+          node.employeeReplacement?.accessRequests?.some(record => record.status === 'PENDING' || record.status === 'APPROVED'))) {
+          result = await window.electronAPI.refreshReplacementEmployeeAccess({ taskId })
+          if (!isCurrent()) return
+          if (!result.success) throw responseError(result, 'workExecution')
+        }
         setExecutions(previous => ({ ...previous, [taskId]: result.execution ?? null }))
+        if (result.execution?.nodes.some(node => node.employeeReplacement?.status === 'replaced')) {
+          const updated = await window.electronAPI.getArrangementPlan(taskId)
+          if (isCurrent() && updated.success && updated.plan) setPlans(previous => ({ ...previous, [taskId]: updated.plan! }))
+        }
       } catch (cause) {
         if (isCurrent()) notice.fail(cause, 'workExecution', `arrangement-read:${taskId}:workExecution`, true)
       } finally {
@@ -128,7 +138,7 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
     const refresh = async (): Promise<void> => {
       for (const task of tasks) {
         if (!active || task.workType?.state !== 'resolved' || task.workType.kind !== 'arrangement' ||
-          (task.status !== 'running' && task.status !== 'pending' && task.status !== 'waiting_approval' && !task.activeRunId)) continue
+          (task.status !== 'running' && task.status !== 'pending' && task.status !== 'paused' && task.status !== 'waiting_approval' && !task.activeRunId)) continue
         const request = requested.current.get(task.id)
         if (!request) continue
         loadExecution(task.id, request, generation)
@@ -138,5 +148,14 @@ export function useArrangementPlans(tasks: ClientTask[], scopeKey: string) {
     const timer = window.setInterval(() => { void refresh() }, EXECUTION_REFRESH_INTERVAL)
     return () => { active = false; window.clearInterval(timer) }
   }, [tasks, generation, loadExecution]);
-  return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, executions: loadedScope === scopeKey ? executions : {}, recordEvent };
+  const requestReplacementAccess = useCallback(async (taskId: string, nodeId: string, employeeId: string): Promise<void> => {
+    const notice = capture()
+    try {
+      const result = await window.electronAPI.requestReplacementEmployeeAccess({ taskId, nodeId, employeeId })
+      if (!notice.isCurrent() || !mounted.current) return
+      if (!result.success) throw responseError(result, 'request')
+      setExecutions(previous => ({ ...previous, [taskId]: result.execution ?? null }))
+    } catch (cause) { if (notice.isCurrent()) notice.fail(cause, 'request') }
+  }, [capture])
+  return { plans: loadedScope === scopeKey ? plans : {}, events: loadedScope === scopeKey ? events : {}, executions: loadedScope === scopeKey ? executions : {}, recordEvent, requestReplacementAccess };
 }

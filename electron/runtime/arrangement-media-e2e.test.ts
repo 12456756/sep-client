@@ -534,18 +534,22 @@ test('backend E2E: final confirmation settles the task without running another w
   assert.deepEqual(f.started, ['video'])
 })
 
-for (const failDuring of ['authorization', 'admission'] as const) test(`backend E2E: confirmation ${failDuring} failure preserves the pending checkpoint`, async () => {
+for (const failDuring of ['authorization', 'admission'] as const) test(`backend E2E: employee lost during confirmation ${failDuring} preserves media while waiting for replacement`, async () => {
   const f = await fixture({ confirmation: true })
   await f.runtime.executeTask(f.task.id)
   assert.equal((await f.settled())?.status, TaskStatus.PAUSED)
   const original = (await f.checkpoints.get(scope, f.task.id))!
   f.authorization.denyAt = f.authorization.calls + (failDuring === 'authorization' ? 1 : 2)
-  await assert.rejects(f.runtime.confirmArrangementNodes(f.task.id, ['image']))
-  assert.deepEqual(await f.checkpoints.get(scope, f.task.id), original)
+  await f.runtime.confirmArrangementNodes(f.task.id, ['image'])
+  await f.settled()
+  const waiting = (await f.checkpoints.get(scope, f.task.id))!
+  assert.equal(waiting.state.nodes[1]?.status, 'waiting-employee')
+  assert.equal(waiting.state.nodes[0]?.status, 'completed')
+  assert.deepEqual(waiting.state.nodes[0]?.delivery, original.state.nodes[0]?.delivery)
   assert.equal((await f.manager.getTask(f.task.id))!.status, TaskStatus.PAUSED)
   assert.equal(f.videoGateway.calls.submit, 0)
   f.authorization.denyAt = 0
-  await f.runtime.confirmArrangementNodes(f.task.id, ['image'])
+  await f.runtime.retryTask(f.task.id, { nodeId: 'video' })
   const final = await f.settled()
   assert.equal(final?.status, TaskStatus.COMPLETED, final?.error ?? undefined)
   assert.equal(f.imageGateway.calls.submit.length, 1); assert.equal(f.videoGateway.calls.submit, 1)

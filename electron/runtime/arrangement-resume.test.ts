@@ -35,6 +35,37 @@ async function fixture() {
   return { root, runs, manager, task, plan, checkpoints: new ArrangementCheckpointStore(root) }
 }
 async function fsWriteCorrupt(file: string) { await writeFile(file, '{truncated json') }
+
+for (const replace of [true, false]) it(`keeps the same task and node when admission employee is unavailable (replacement=${replace})`, async () => {
+  const f = await fixture()
+  f.plan.nodes = [f.plan.nodes[0]!]
+  let stored = structuredClone(f.plan)
+  const attempted: string[] = []
+  const runtime = new TaskRuntime({ taskManager: f.manager, taskRunStore: f.runs,
+    workPlanStore: { async get() { return structuredClone(stored) }, async save(_owner, plan) { stored = structuredClone(plan) } },
+    arrangementCheckpointStore: f.checkpoints, getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+    resolveEmployee: id => id === 'replacement' ? { subscriptionId: id, modelId: 'a', gatewayUrl: 'http://invalid' } : null,
+    authorizeEmployee: async (id, model) => id === 'replacement' ? { subscriptionId: id, modelId: model ?? 'a', gatewayUrl: 'http://invalid' } : null,
+    findEmployeeReplacement: async () => ({ replacement: replace ? { subscriptionId: 'replacement', rationale: 'Qualified researcher' } : null, candidates: [] }),
+    createWorker: options => ({ async run() { attempted.push(options.context.subscriptionId) }, async abort() {}, async dispose() {} }),
+  })
+  try {
+    await runtime.executeTask(f.task.id)
+    await waitFor(async () => ['completed', 'paused'].includes((await f.manager.getTask(f.task.id))!.status))
+    assert.equal(stored.id, f.plan.id)
+    assert.equal(stored.planHash, f.plan.planHash)
+    assert.equal(stored.nodes[0]?.id, 'a')
+    if (replace) {
+      assert.equal(stored.nodes[0]?.subscriptionId, 'replacement')
+      assert.deepEqual(attempted, ['replacement'])
+    } else {
+      const checkpoint = await f.checkpoints.get(scope, f.task.id)
+      assert.equal(checkpoint?.state.status, 'waiting-employee')
+      assert.equal(checkpoint?.state.nodes[0]?.status, 'waiting-employee')
+      assert.deepEqual(attempted, [])
+    }
+  } finally { await runtime.stopAll() }
+})
 async function waitFor(predicate: () => Promise<boolean>) {
   const until = Date.now() + 4000
   while (Date.now() < until) { if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 10)) }
@@ -219,21 +250,24 @@ it('interrupts orphaned running nodes instead of spinning with no active workers
   assert.deepEqual(result.state.nodes.map(node => node.status), ['completed', 'interrupted'])
 })
 
-for (const scenario of ['resume', 'legacy', 'missing', 'corrupt', 'foreign-session', 'uncertain-side-effect', 'admission-failed', 'queue-failed'] as const) {
+for (const scenario of ['resume', 'employee-replaced', 'legacy', 'missing', 'corrupt', 'foreign-session', 'uncertain-side-effect', 'admission-failed', 'queue-failed'] as const) {
   it('preserves serial node progress when '+scenario, async () => {
     const f = await fixture()
     const attempts: string[] = []
     const resumed: Array<string | undefined> = []
     let savedSession: string | undefined
     let rejectAuthorization = false
+    let originalUnavailable = false
     const runtime = new TaskRuntime({ taskManager: f.manager, taskRunStore: f.runs,
-      workPlanStore: { async get() { return f.plan }, async save() {} }, arrangementCheckpointStore: f.checkpoints,
+      workPlanStore: { async get() { return f.plan }, async save(_scope, plan) { Object.assign(f.plan, plan) } }, arrangementCheckpointStore: f.checkpoints,
       getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
       resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'a', gatewayUrl: 'http://invalid' }),
-      authorizeEmployee: async () => {
+      authorizeEmployee: async (subscriptionId) => {
         if (rejectAuthorization) throw new Error('authorization rejected')
-        return { subscriptionId: 'employee', modelId: 'a', gatewayUrl: 'http://invalid' }
+        if (originalUnavailable && subscriptionId === 'employee') return null
+        return { subscriptionId, modelId: 'a', gatewayUrl: 'http://invalid' }
       },
+      findEmployeeReplacement: async () => ({ replacement: { subscriptionId: 'new-employee', rationale: 'Same research skills' }, candidates: [] }),
       createWorker: options => ({ async run(prompt) {
         const { context } = options
         attempts.push(context.modelId)
@@ -267,6 +301,7 @@ for (const scenario of ['resume', 'legacy', 'missing', 'corrupt', 'foreign-sessi
     await runtime.executeTask(f.task.id)
     await waitFor(async () => (await f.manager.getTask(f.task.id))?.status === TaskStatus.PAUSED)
     const checkpoint = (await f.checkpoints.get(scope, f.task.id))!
+    if (scenario === 'employee-replaced') originalUnavailable = true
     if (scenario === 'legacy') {
       for (const node of checkpoint.state.nodes) delete (node as unknown as { sessionRunId?: string }).sessionRunId
       await f.checkpoints.save(scope, checkpoint)

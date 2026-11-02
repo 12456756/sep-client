@@ -9,7 +9,7 @@ interface Props {
 }
 
 const labels: Record<WorkStepState, string> = {
-  done: '已完成', running: '进行中', 'waiting-user': '等待确认', failed: '失败',
+  done: '已完成', running: '进行中', 'waiting-user': '等待确认', 'waiting-employee': '寻找替代员工', failed: '失败',
   blocked: '等待前置节点', interrupted: '已中断', stopped: '已停止', skipped: '已跳过', pending: '未开始',
 };
 
