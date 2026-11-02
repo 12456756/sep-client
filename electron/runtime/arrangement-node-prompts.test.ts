@@ -40,6 +40,11 @@ describe('arrangement node system prompt', () => {
     assert.match(result, /"id": "strategy", \/\//)
     assert.match(result, /"path": "deliverables\/策略.docx" \/\//)
     assert.match(result, /实际输出必须删除全部注释/)
+    assert.match(result, /## 四、执行原则/)
+    assert.match(result, /必要工作包括但不限于：读取资料、搜索信息、调用工具、执行代码、生成文件、验证结果或整理证据/)
+    assert.match(result, /当任务依赖外部信息、最新信息、事实依据、数据或来源时，应使用当前实际可用且获授权的工具进行必要的获取和核验/)
+    assert.doesNotMatch(result, /最少的有效步骤、最少的必要工具调用，尽快完成/)
+    assert.doesNotMatch(result, /所有交付物满足验收要求后必须立即结束，禁止继续优化、重复检查或执行额外操作/)
     assert.doesNotMatch(result, /Old override|最多校验|首次提交加|当前执行次数|responsibility_judgment/)
   })
 

@@ -189,6 +189,8 @@
 .ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: linear-gradient(135deg, #ead5dc 0%, #f2dcd6 24%, #f0e6e5 48%, #eef0f4 78%, #f5f6f8 100%); }
 /* macOS 窗口按钮留在侧栏顶部，右侧工具栏与它们共用顶部空间。 */
 [data-platform='darwin'] .ent-shell { padding-top: 0; }
+/* Windows 使用标题栏覆盖层，侧栏品牌区和右侧全局操作直接进入顶部标题栏区域。 */
+[data-platform='win32'] .ent-shell { padding-top: 0; }
 [data-platform='darwin'] .ent-shell > .ent-side.ent-icon-nav { padding-top: calc(var(--window-chrome-height) + 8px); }
 [data-platform='darwin'] .ent-shell .ent-top { min-height: 52px; }
 :root[data-platform='darwin']:has(.ent-shell) .electron-window-chrome { width: var(--ent-side-w-collapsed); right: auto; }
