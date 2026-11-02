@@ -195,6 +195,10 @@ export interface SelectDirectoryResult extends IpcCommandResult {
   path?: string | null
 }
 
+export interface DefaultWorkspaceDirectoryResult extends IpcCommandResult {
+  path?: string | null
+}
+
 export interface CreateTaskInput extends CreateTaskRequest {
   subscriptionId: string
 }
@@ -385,6 +389,7 @@ export interface ElectronAPI {
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
   previewArrangementDocument: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { data?: DocumentPreview }>
+  openWorkDeliverable: (input: DocumentPreviewRequest) => Promise<IpcCommandResult>
   confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
   listPlanningRecords: () => Promise<IpcCommandResult & { records?: PlanningRecordSummary[] }>
@@ -408,6 +413,9 @@ export interface ElectronAPI {
   updateTaskDetails: (input: { taskId: string; title?: string; pinned?: boolean }) => Promise<TaskResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>
+  getDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
+  selectDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
+  clearDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
   onPiEvent: (callback: (event: TaskExecutionEvent) => void) => () => void
   onToolApprovalRequest: (callback: (request: ToolAuthorizationRequest) => void) => () => void
   onTaskUpdated: (callback: (task: ClientTask) => void) => () => void

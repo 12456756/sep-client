@@ -1,7 +1,7 @@
 /** 会话显示对话，编排显示实时节点消息；结果和工作信息按需查看。 */
 
 import {
-  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, Info, LoaderCircle,
+  AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, FolderOpen, Info, LoaderCircle,
   RotateCcw, StopCircle, Trash2, X, XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -53,12 +53,21 @@ type Panel = 'results' | 'process' | 'info' | null;
 
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   const { capture } = useOperationFeedback(work.id);
-  const copyPath = async (path: string) => {
-    const notice = capture();
-    if (!await copy(path)) notice.show('路径复制失败，请联系平台管理员');
-  };
-  const team = useTeam(work, workspace);
   const isConversation = work.kind === 'conversation';
+  const openOutputDirectory = async (file: WorkItem['deliverables'][number]) => {
+    const notice = capture()
+    const input = isConversation
+      ? { taskId: work.id, fileId: file.id }
+      : file.nodeId && file.deliverableId ? { taskId: work.id, nodeId: file.nodeId, deliverableId: file.deliverableId } : null
+    if (!input) return
+    try {
+      const result = await window.electronAPI.openWorkDeliverable(input)
+      if (!result.success) notice.show(result.error?.message || '打开文件所在目录失败，请联系平台管理员')
+    } catch (error) {
+      notice.fail(error, 'workOpenDirectory')
+    }
+  }
+  const team = useTeam(work, workspace);
   const finished = work.status === 'completed';
   /** 这项工作已经不会自己往前走了。耗时、结束时间、能不能终止都按它算。 */
   const over = finished || work.status === 'paused' || work.status === 'failed';
@@ -239,8 +248,8 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
                             {file.format ? isConversation
                               ? <DocumentPreviewButton taskId={work.id} fileId={file.id} name={file.name} format={file.format} />
                               : file.nodeId && file.deliverableId ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null : null}
-                            <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copyPath(file.path)}>
-                              复制路径
+                            <button type="button" className="ent-icon-btn" title="打开文件所在目录" aria-label="打开文件所在目录" onClick={() => void openOutputDirectory(file)}>
+                              <FolderOpen size={15} aria-hidden />
                             </button>
                           </div>
                         </li>

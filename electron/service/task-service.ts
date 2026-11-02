@@ -307,6 +307,16 @@ export class TaskService {
     return this.deps.taskManager.prepareDirectorySelection(currentPath)
   }
 
+  async getDefaultWorkspaceDirectory(): Promise<string | null> {
+    this.scope()
+    return this.deps.taskManager.getDefaultWorkspaceDirectory()
+  }
+
+  async setDefaultWorkspaceDirectory(path: string | null): Promise<void> {
+    this.scope()
+    await this.deps.taskManager.setDefaultWorkspaceDirectory(path)
+  }
+
   async messages(taskId: string): Promise<ClientTaskMessage[]> {
     const task = await this.requireTask(taskId)
     const scope = this.scope()

@@ -100,6 +100,7 @@ export const INVOKE_CHANNELS = {
   ARRANGE_GET_PLAN: 'arrange:get-plan',
   ARRANGE_GET_EXECUTION: 'arrange:get-execution',
   ARRANGE_PREVIEW_DOCUMENT: 'arrange:preview-document',
+  WORK_OPEN_DELIVERABLE: 'work:open-deliverable',
   ARRANGE_CONFIRM_NODES: 'arrange:confirm-nodes',
   ARRANGE_LIST_DRAFTS: 'arrange:list-drafts',
   ARRANGE_LIST_PLANNING_RECORDS: 'arrange:list-planning-records',
@@ -119,6 +120,9 @@ export const INVOKE_CHANNELS = {
   ARRANGE_REQUEST_EMPLOYEE_ACCESS: 'arrange:request-employee-access',
   ARRANGE_GET_EMPLOYEE_ACCESS_REQUEST: 'arrange:get-employee-access-request',
   UTIL_SELECT_DIRECTORY: 'util:select-directory',
+  WORKSPACE_GET_DEFAULT_DIRECTORY: 'workspace:get-default-directory',
+  WORKSPACE_SELECT_DEFAULT_DIRECTORY: 'workspace:select-default-directory',
+  WORKSPACE_CLEAR_DEFAULT_DIRECTORY: 'workspace:clear-default-directory',
   WINDOW_SET_THEME: 'window:set-theme',
 } as const
 
@@ -163,6 +167,7 @@ export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import
   [INVOKE_CHANNELS.ARRANGE_GET_PLAN]: 'workPlan',
   [INVOKE_CHANNELS.ARRANGE_GET_EXECUTION]: 'workExecution',
   [INVOKE_CHANNELS.ARRANGE_PREVIEW_DOCUMENT]: 'documentPreview',
+  [INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE]: 'workOpenDirectory',
   [INVOKE_CHANNELS.MEDIA_GET_TASK]: 'imageRead',
   [INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION]: 'imageSelection',
   [INVOKE_CHANNELS.MEDIA_IMPORT_REFERENCES]: 'imageImport',
@@ -210,6 +215,9 @@ export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import
   [INVOKE_CHANNELS.SPEECH_RECOGNIZE]: 'speech',
   [INVOKE_CHANNELS.SPEECH_OPEN_SYSTEM_SETTINGS]: 'speech',
   [INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY]: 'directory',
+  [INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY]: 'settings',
+  [INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY]: 'settings',
+  [INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY]: 'settings',
 }
 
 /** 全部通道名，供契约测试与边界脚本使用。 */

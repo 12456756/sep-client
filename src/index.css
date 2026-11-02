@@ -160,7 +160,7 @@ button, input, textarea, select, label { -webkit-app-region: no-drag; }
 .composer-select { display: inline-flex; min-width: 0; align-items: center; gap: 4px; color: #77706d; }
 .composer-select select { max-width: 120px; min-height: 28px; border: 0; font-size: 10px; }
 .workspace-directory-button { min-width: 0; max-width: 210px; }
-.workspace-directory-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-directory-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; }
 .permission-select select { max-width: 58px; }
 .conversation-artifacts { min-width: 0; overflow-y: auto; padding: 22px 18px; border-left: 1px solid var(--workspace-line); background: #fafaf8; }
 .artifacts-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--workspace-line); }

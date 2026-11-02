@@ -28,7 +28,17 @@ test('preview joins owner-local planned deliveries with node completion, indepen
         delivery: { validationAttempts: 1, issues: [], finalFiles: [{ id: 'report', path: 'report.md', format: 'md', size: 5, sha256: 'a'.repeat(64), nodeRunId: 'node-run', validatedAt: 1 }] } },
       { nodeId: 'peer', status: 'running', attempt: 1, error: null, output: null }] } }
   await plans.save(owner, plan); await checkpoints.save(owner, checkpoint)
+  await writeFile(join(root, 'report.md'), 'hello')
   assert.equal((await store.getDelivery(owner, 'task', 'node', 'report'))?.status, 'completed')
+  assert.equal(await store.getDeliveryPath(owner, 'task', 'node', 'report'), join(root, 'report.md'))
+  assert.equal(await store.getDeliveryPath({ ...owner, memberId: 'other' }, 'task', 'node', 'report'), null)
+  const node = checkpoint.state.nodes[0]
+  const file = node.delivery!.finalFiles[0]
+  await checkpoints.save(owner, { ...checkpoint, state: { ...checkpoint.state, nodes: [
+    { ...node, delivery: { ...node.delivery!, finalFiles: [{ ...file, sourceArtifact: { kind: 'image', artifactId: 'asset', sha256: file.sha256 } }] } },
+  ] } })
+  assert.equal(await store.getDeliveryPath(owner, 'task', 'node', 'report'), join(root, 'report.md'))
+  await checkpoints.save(owner, checkpoint)
   assert.equal(await store.getDelivery({ ...owner, memberId: 'other' }, 'task', 'node', 'report'), null)
   assert.equal(await store.getDelivery(owner, 'task', 'peer', 'report'), null)
   assert.equal(await store.getDelivery(owner, 'task', 'node', 'forged'), null)
@@ -56,6 +66,7 @@ test('conversation previews read registered task files without requiring a DAG o
   const f = await conversationFixture(t)
   const first = await f.store.readConversation(f.owner, f.task, 'task-file-0')
   assert.ok(first)
+  assert.equal(await f.store.getConversationPath(f.owner, f.task, 'task-file-0'), f.path)
   assert.equal(first.name, 'report.MD')
   assert.equal(first.format, 'md')
   assert.equal(Buffer.from(first.bytes).toString(), '# conversation report')
@@ -95,4 +106,30 @@ test('conversation previews reject missing, empty and oversized files without cr
   await rm(f.path)
   await assert.rejects(f.store.readConversation(f.owner, f.task, 'task-file-0'))
   assert.equal(await f.store.getDelivery(f.owner, 'task', 'node', 'report'), null)
+})
+
+test('output locations support any format without reading bytes and reject foreign or escaped files', async t => {
+  const f = await conversationFixture(t)
+  const archive = join(f.workspace, 'result.zip')
+  await writeFile(archive, '')
+  const task = { ...f.task, files: [archive] }
+  assert.equal(await f.store.getConversationPath(f.owner, task, 'task-file-0'), archive)
+  assert.equal(await f.store.getConversationPath(f.owner, { ...task, files: ['result.zip'] }, 'task-file-0'), archive)
+  assert.equal(await f.store.getConversationPath(f.owner, { ...task, ownerId: 'other' }, 'task-file-0'), null)
+  assert.equal(await f.store.getConversationPath(f.owner, task, 'other-file-0'), null)
+  const outside = join(f.root, 'private.zip')
+  await writeFile(outside, '')
+  const internal = join(f.root, 'internal')
+  await mkdir(internal)
+  const internalFile = join(internal, 'result.zip')
+  await writeFile(internalFile, '')
+  const linked = join(f.workspace, 'linked')
+  await symlink(f.root, linked, process.platform === 'win32' ? 'junction' : 'dir')
+  const linkedInside = join(f.workspace, 'linked-internal')
+  await symlink(internal, linkedInside, process.platform === 'win32' ? 'junction' : 'dir')
+  for (const path of [outside, '../private.zip', join(linked, 'private.zip'), join(linkedInside, 'result.zip'), f.workspace]) {
+    await assert.rejects(f.store.getConversationPath(f.owner, { ...task, files: [path] }, 'task-file-0'))
+  }
+  await rm(archive)
+  await assert.rejects(f.store.getConversationPath(f.owner, task, 'task-file-0'))
 })

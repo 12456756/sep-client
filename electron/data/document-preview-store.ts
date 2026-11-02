@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { basename, extname, relative, resolve } from 'node:path'
+import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { lstat, realpath } from 'node:fs/promises'
 import { supportsDocumentPreview } from '../../src/shared/document-preview'
 import type { TaskReadView } from '../../src/shared/types'
 import type { WorkPlanStorePort } from './work-plan-store'
@@ -24,6 +25,19 @@ export class DocumentPreviewStore {
     return { status: node.status, file, workspace: plan.workspace.path ?? '' }
   }
 
+  async getDeliveryPath(scope: TaskOwnerScope, taskId: string, nodeId: string, deliverableId: string) {
+    const delivery = await this.getDelivery(scope, taskId, nodeId, deliverableId)
+    if (!delivery || delivery.status !== 'completed') return null
+    return resolveExistingFile(delivery.workspace, delivery.file.path)
+  }
+
+  async getConversationPath(scope: TaskOwnerScope, task: TaskReadView, fileId: string) {
+    if (task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId ||
+      task.workType.state !== 'resolved' || task.workType.kind !== 'conversation' || !task.workDir) return null
+    const path = task.files.find((_file, index) => `${task.id}-file-${index}` === fileId)
+    return path ? resolveExistingFile(task.workDir, path) : null
+  }
+
   read(scope: TaskOwnerScope, taskId: string, file: FinalDeliveryFile, workspace: string) {
     return readDeliveryPreviewFile(workspace, file, this.paths.taskDir(scope, taskId))
   }
@@ -40,4 +54,24 @@ export class DocumentPreviewStore {
     const bytes = await readWorkspaceFile(workspace, localPath)
     return { name: basename(path), format, bytes, version: createHash('sha256').update(bytes).digest('hex') }
   }
+}
+
+async function resolveExistingFile(workspace: string, filePath: string): Promise<string> {
+  const root = await realpath(workspace)
+  const requested = resolve(root, filePath)
+  const lexical = relative(root, requested)
+  if (!lexical || lexical === '..' || lexical.startsWith(`..${sep}`) || isAbsolute(lexical)) throw new Error('UNSAFE_PATH')
+  const segments = lexical.split(sep)
+  let current = root
+  for (const [index, segment] of segments.entries()) {
+    current = resolve(current, segment)
+    const entry = await lstat(current)
+    if (entry.isSymbolicLink() || (index === segments.length - 1 ? !entry.isFile() : !entry.isDirectory())) throw new Error('UNSAFE_PATH')
+  }
+  const info = await lstat(requested)
+  if (info.isSymbolicLink() || !info.isFile()) throw new Error('UNSAFE_PATH')
+  const actual = await realpath(requested)
+  const inside = relative(root, actual)
+  if (!inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside)) throw new Error('UNSAFE_PATH')
+  return actual
 }

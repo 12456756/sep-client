@@ -180,6 +180,9 @@ const electronAPI = {
   updateTaskDetails: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_UPDATE_DETAILS, input),
   getTaskStats: () => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_STATS),
   selectDirectory: currentPath => ipcRenderer.invoke(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, currentPath),
+  getDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY),
+  selectDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY),
+  clearDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY),
   setWindowTheme: theme => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_SET_THEME, theme),
   onPiEvent: callback => {
     const handler = (_event: IpcRendererEvent, data: TaskExecutionEvent) => callback(data);
@@ -218,6 +221,7 @@ const electronAPI = {
   getArrangementPlan: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_PLAN, taskId),
   getArrangementExecution: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_EXECUTION, taskId),
   previewArrangementDocument: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PREVIEW_DOCUMENT, input),
+  openWorkDeliverable: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE, input),
   confirmArrangementNodes: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, input),
   listArrangementDrafts: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS),
   listPlanningRecords: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_PLANNING_RECORDS),

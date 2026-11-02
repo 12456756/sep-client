@@ -118,7 +118,7 @@ it('keeps parallel questions available only while the arrangement can accept rep
 })
 
 // Check handlers and effect ownership; native focus behavior still needs window verification.
-function mountDetail() {
+function mountDetail(item: WorkItem = work) {
   const cells: unknown[] = [];
   const effects = new Map<number, { deps?: readonly unknown[]; cleanup?: () => void }>();
   let cursor = 0;
@@ -147,9 +147,9 @@ function mountDetail() {
   );
   const Page = (loaded.exports as typeof import('./WorkDetailPage')).WorkDetailPage;
   let navigated = false;
-  const workspace = { works: [work], employees: [], myEmployees: [], busy: false,
+  const workspace = { works: [item], employees: [], myEmployees: [], busy: false,
     navigate: () => { navigated = true; } } as unknown as EnterpriseWorkspace;
-  const root = Page({ workspace, workId: work.id });
+  const root = Page({ workspace, workId: item.id });
   const renderBody = root.type as (props: unknown) => React.ReactElement;
   let elements: React.ReactElement<Record<string, unknown>>[] = [];
   const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; },
@@ -224,6 +224,30 @@ describe('WorkDetailPage media entry', () => {
       assert.equal(page.dialog.open, false);
     }
     page.unmount();
+  });
+
+  it('opens the directory for the registered output identity in conversation and arrangement work', async () => {
+    const calls: unknown[] = [];
+    const previousWindow = Reflect.get(globalThis, 'window');
+    Object.defineProperty(globalThis, 'window', { configurable: true, value: { electronAPI: {
+      openWorkDeliverable: async (input: unknown) => { calls.push(input); return { success: true }; },
+    } } });
+    try {
+      const conversation = { ...work, deliverables: [{ id: `${work.id}-file-0`, name: 'report.zip', path: 'C:\\work\\report.zip', note: '' }] };
+      const conversationPage = mountDetail(conversation);
+      await (conversationPage.find(element => element.props['aria-label'] === '打开文件所在目录').props.onClick as () => Promise<void>)();
+      assert.deepEqual(calls.pop(), { taskId: work.id, fileId: `${work.id}-file-0` });
+      conversationPage.unmount();
+
+      const arrangement = { ...work, kind: 'flow' as const, deliverables: [{ id: 'node-a:report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '', nodeId: 'node-a', deliverableId: 'report' }] };
+      const arrangementPage = mountDetail(arrangement);
+      await (arrangementPage.find(element => element.props['aria-label'] === '打开文件所在目录').props.onClick as () => Promise<void>)();
+      assert.deepEqual(calls.pop(), { taskId: work.id, nodeId: 'node-a', deliverableId: 'report' });
+      arrangementPage.unmount();
+    } finally {
+      if (previousWindow === undefined) Reflect.deleteProperty(globalThis, 'window');
+      else Object.defineProperty(globalThis, 'window', { configurable: true, value: previousWindow });
+    }
   });
 
   it('ignores nested preview cancellation and inside clicks, and closes on its own Escape or backdrop', () => {
@@ -321,7 +345,8 @@ describe('WorkDetailPage media entry', () => {
     })) })
     for (const format of ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
     assert.doesNotMatch(html, /aria-label="预览文档：report\.zip"/)
-    assert.match(html, /复制路径/)
+    assert.match(html, /title="打开文件所在目录"/)
+    assert.match(html, /aria-label="打开文件所在目录"/)
   });
 
   it('offers accepted node documents while parallel arrangement nodes are still running', () => {
@@ -336,6 +361,6 @@ describe('WorkDetailPage media entry', () => {
     const html = renderDetail(flow);
     assert.match(html, /最终产物/);
     assert.match(html, /aria-label="预览文档：report\.docx"/);
-    assert.match(html, /复制路径/);
+    assert.match(html, /title="打开文件所在目录"/);
   });
 });

@@ -10,7 +10,7 @@ import { KnowledgeApi } from '../common/platform/knowledge-api'
  * 所有存储、服务和运行时依赖都在这里绑定。除运行时的惰性加载外，业务模块不创建
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { shell, systemPreferences } from 'electron'
 import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
@@ -330,6 +330,12 @@ class BackendRuntime {
     this.documentPreviews = new DocumentPreviewService({
       scope: this,
       getDelivery: (...args) => previewFiles.getDelivery(...args),
+      getDeliveryPath: (...args) => previewFiles.getDeliveryPath(...args),
+      getConversationPath: async (scope, taskId, fileId) => previewFiles.getConversationPath(scope, await this.tasks.get(taskId), fileId),
+      openFileDirectory: async filePath => {
+        const error = await shell.openPath(dirname(filePath))
+        if (error) throw new Error('OPEN_DIRECTORY_FAILED')
+      },
       read: (...args) => previewFiles.read(...args),
       readConversation: async (scope, taskId, fileId) => previewFiles.readConversation(scope, await this.tasks.get(taskId), fileId),
       render: (format, bytes, validate) => this.documentPreviewRuntime.get().then(runtime => { validate(); return runtime.render(format, bytes) }),
