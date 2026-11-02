@@ -13,6 +13,7 @@ interface TestRoute {
   channel: string
   schema: z.ZodType
   handle(ctx: unknown, input: unknown): Promise<SelectDirectoryResult>
+  trustedMainFrame?: boolean
 }
 
 // Run the actual route with the native dialog replaced; Node cannot load Electron UI APIs.
@@ -29,7 +30,7 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
     '../channels': { INVOKE_CHANNELS, SEND_CHANNELS },
     '../router': {
       NO_INPUT: z.undefined(),
-      route: (channel: string, schema: z.ZodType, handle: TestRoute['handle']) => ({ channel, schema, handle }),
+      route: (channel: string, schema: z.ZodType, handle: TestRoute['handle'], options?: { trustedMainFrame?: boolean }) => ({ channel, schema, handle, ...options }),
       listener: () => ({}),
     },
   }
@@ -40,12 +41,17 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
   const route = exports.systemRoutes?.find(entry => entry.channel === INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY)
   assert.ok(route)
   const paths: Array<string | undefined> = []
+  const saved: Array<string | null> = []
   const defaultPath = join(process.cwd(), 'default-workspace')
   const ctx = {
     window: () => ({}),
-    tasks: { async prepareDirectorySelection(path?: string) { paths.push(path); return defaultPath } },
+    tasks: {
+      async prepareDirectorySelection(path?: string) { paths.push(path); return defaultPath },
+      async getDefaultWorkspaceDirectory() { return saved.at(-1) ?? null },
+      async setDefaultWorkspaceDirectory(path: string | null) { saved.push(path) },
+    },
   }
-  return { route, calls, paths, defaultPath, ctx }
+  return { route, calls, paths, saved, defaultPath, ctx, routes: exports.systemRoutes ?? [] }
 }
 
 describe('directory selection IPC', () => {
@@ -81,5 +87,35 @@ describe('directory selection IPC', () => {
     await assert.rejects(() => route.handle({ ...ctx, window: () => null }, undefined), { code: 'INTERNAL_ERROR' })
     assert.equal(calls.length, 0)
     assert.equal(paths.length, 0)
+  })
+
+  it('reads and saves an absolute default workspace parent or clears it', async () => {
+    const { defaultPath, routes, saved, ctx, calls } = harness()
+    const get = routes.find(item => item.channel === INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY)!
+    const select = routes.find(item => item.channel === INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY)!
+    const clear = routes.find(item => item.channel === INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY)!
+    const read = await get.handle(ctx, undefined)
+    assert.equal(read.success, true)
+    assert.equal(read.path, null)
+    assert.equal(get.trustedMainFrame, true)
+    const selected = await select.handle(ctx, select.schema.parse(undefined))
+    assert.equal(selected.success, true)
+    assert.equal(selected.path, join(process.cwd(), 'selected'))
+    assert.equal(select.trustedMainFrame, true)
+    assert.equal(calls[0]?.defaultPath, defaultPath)
+    const cleared = await clear.handle(ctx, clear.schema.parse(undefined))
+    assert.equal(cleared.success, true)
+    assert.equal(cleared.path, null)
+    assert.equal(clear.trustedMainFrame, true)
+    assert.deepEqual(saved, [join(process.cwd(), 'selected'), null])
+  })
+
+  it('does not change the default parent when its native directory picker is canceled', async () => {
+    const { routes, saved, ctx } = harness({ canceled: true, filePaths: [] })
+    const select = routes.find(item => item.channel === INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY)!
+    const result = await select.handle(ctx, select.schema.parse(undefined))
+    assert.equal(result.success, false)
+    assert.equal(result.path, null)
+    assert.deepEqual(saved, [])
   })
 })

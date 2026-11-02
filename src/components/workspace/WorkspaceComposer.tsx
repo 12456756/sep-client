@@ -1,6 +1,7 @@
 import { ArrowUp, Bot, ChevronRight, FileText, FolderOpen, LoaderCircle, Paperclip, Plus, ShieldCheck, Sparkles, Wrench, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { isSubmitEnter } from '../../shared/composer-shortcut';
+import { formatDirectoryPath } from '../../shared/path-display';
 import type { AvailableEmployee, AvailableSkill, AvailableWorkflow, ConversationDraft, LocalWorkspaceBinding, Task } from '../../features/workspace/useWorkspaceDemo';
 import { WorkspaceEmployeeAvatar } from './WorkspaceEmployeeAvatar';
 
@@ -28,6 +29,7 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
   const [workflowId, setWorkflowId] = useState('');
   const [workflowInputs, setWorkflowInputs] = useState<Record<string, string | number | boolean>>({});
   const [workspace, setWorkspace] = useState<LocalWorkspaceBinding>(draft.workspace);
+  const [defaultWorkspacePath, setDefaultWorkspacePath] = useState('');
   const [employeeIds, setEmployeeIds] = useState<string[]>(() => {
     const initial = activeEmployeeId || draft.employeeId || currentTask?.employeeId;
     return initial ? [initial] : [];
@@ -42,11 +44,33 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
   const workflow = workflows.find(item => item.id === workflowId);
   const selectedSkillIds = draft.skillIds;
   const workspaceLocked = Boolean(currentTask);
+  const visibleWorkspacePath = workspace.path || currentTask?.workspace.path || defaultWorkspacePath;
   const requiredInputsComplete = workflow?.inputs.every(input => !input.required || String(workflowInputs[input.id] ?? '').trim()) ?? false;
   const canSubmit = mode === 'conversation' ? Boolean(text.trim() && employee && !busy) : Boolean(workflow && requiredInputsComplete && !busy);
   const employeeSelection = selectedEmployeeId;
 
   useEffect(() => setWorkspace(draft.workspace), [draft.workspace.path, draft.workspace.displayName, draft.workspace.accessMode]);
+  useEffect(() => {
+    let changedDuringLoad = false;
+    const onDefaultWorkspaceChanged = (event: Event) => {
+      changedDuringLoad = true;
+      setDefaultWorkspacePath((event as CustomEvent<string | null>).detail ?? '');
+    };
+    if (draft.workspace.path) {
+      setDefaultWorkspacePath('');
+      window.addEventListener('default-workspace-directory-changed', onDefaultWorkspaceChanged);
+      return () => window.removeEventListener('default-workspace-directory-changed', onDefaultWorkspaceChanged);
+    }
+    let mounted = true;
+    void window.electronAPI.getDefaultWorkspaceDirectory().then(result => {
+      if (mounted && !changedDuringLoad && result.success && result.path) setDefaultWorkspacePath(result.path);
+    }).catch(() => undefined);
+    window.addEventListener('default-workspace-directory-changed', onDefaultWorkspaceChanged);
+    return () => {
+      mounted = false;
+      window.removeEventListener('default-workspace-directory-changed', onDefaultWorkspaceChanged);
+    };
+  }, [draft.workspace.path]);
   useEffect(() => {
     const initial = activeEmployeeId || draft.employeeId || currentTask?.employeeId;
     setEmployeeIds(initial ? [initial] : []);
@@ -156,7 +180,7 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
         </div>}
       </div>
       {mode === 'conversation' && <label className="composer-model-control"><Sparkles size={14} /><span>模型</span><select value={draft.modelId} disabled={!employee} onChange={event => onDraftChange({ modelId: event.target.value })} title="选择模型"><option value="">默认</option>{employee?.modelOptions.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></label>}
-      {(mode === 'workflow' || mode === 'conversation') && <div className={`composer-workspace-group ${workspaceLocked ? 'locked' : ''}`} aria-label="工作目录设置"><button className="workspace-tool-button workspace-directory-button" type="button" onClick={() => void chooseDirectory()} disabled={workspaceLocked} title={workspaceLocked ? '已创建的对话不能修改工作目录' : (workspace.path || '选择工作目录')}><FolderOpen size={15} /><span>{workspace.displayName || '选择工作目录'}</span></button><label className="composer-permission-control"><ShieldCheck size={14} /><span>权限</span><select value={workspace.accessMode} onChange={event => updateWorkspace({ ...workspace, accessMode: event.target.value as LocalWorkspaceBinding['accessMode'] })} title="设置工作目录权限"><option value="read-write">读写</option><option value="read-only">只读</option></select></label></div>}
+      {(mode === 'workflow' || mode === 'conversation') && <div className={`composer-workspace-group ${workspaceLocked ? 'locked' : ''}`} aria-label="工作目录设置"><button className="workspace-tool-button workspace-directory-button" type="button" onClick={() => void chooseDirectory()} disabled={workspaceLocked} title={workspaceLocked ? '已创建的对话不能修改工作目录' : (visibleWorkspacePath || '选择工作目录')}><FolderOpen size={15} /><span>{visibleWorkspacePath ? formatDirectoryPath(visibleWorkspacePath) : '选择工作目录'}</span></button><label className="composer-permission-control"><ShieldCheck size={14} /><span>权限</span><select value={workspace.accessMode} onChange={event => updateWorkspace({ ...workspace, accessMode: event.target.value as LocalWorkspaceBinding['accessMode'] })} title="设置工作目录权限"><option value="read-write">读写</option><option value="read-only">只读</option></select></label></div>}
     </div><button className="workspace-submit" onClick={submit} disabled={!canSubmit} aria-label="安排工作" title={busy ? '正在安排工作' : '安排工作'}>{busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>
   </section>;
 }

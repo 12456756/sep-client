@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, rm, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import type {
   ClientTask,
   ClientTaskLogLevel,
@@ -10,6 +11,7 @@ import { TaskStatus } from '../../src/shared/types'
 import { TaskPersistenceError, TaskStore, type TaskStorePort } from '../data/task-store'
 import { ScopePath, TaskScopeError, assertSafeId, type TaskOwnerScope, type WorkspaceDirectoryNames } from '../data/scope-path'
 import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
+import { DefaultWorkspaceSettingsStore } from '../data/default-workspace-settings-store'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
 import { ArrangementCheckpointStore, type ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { MediaStore } from '../data/media-store'
@@ -62,6 +64,7 @@ function cloneTasks(tasks: Map<string, Task>): Map<string, Task> {
 export class TaskManager {
   private readonly paths: ScopePath
   private readonly workspaceDirectories: WorkspaceDirectoryStore
+  private readonly defaultWorkspaceSettings: DefaultWorkspaceSettingsStore
   private currentWorkspaceNames: WorkspaceDirectoryNames | undefined
   private tasks = new Map<string, Task>()
   /** Cached from the existing durable archive markers, scoped to the current owner. */
@@ -92,6 +95,7 @@ export class TaskManager {
   ) {
     this.paths = new ScopePath(userDataDir)
     this.workspaceDirectories = new WorkspaceDirectoryStore(userDataDir)
+    this.defaultWorkspaceSettings = new DefaultWorkspaceSettingsStore(userDataDir)
     this.notifier = notifier ?? silentTaskNotifier
     this.store = store
     this.runStore = runStore
@@ -339,12 +343,35 @@ export class TaskManager {
       return chosen
     }
     this.assertCurrentScope(scope, generation)
+    const configured = await this.defaultWorkspaceSettings.read()
+    if (configured) {
+      await mkdir(configured, { recursive: true })
+      this.assertCurrentScope(scope, generation)
+      return configured
+    }
     const names = await this.workspaceDirectories.resolve(scope, this.currentWorkspaceNames)
     this.assertCurrentScope(scope, generation)
     const defaultPath = this.paths.defaultWorkspaceRoot(scope, names)
     await mkdir(defaultPath, { recursive: true })
     this.assertCurrentScope(scope, generation)
     return defaultPath
+  }
+
+  async getDefaultWorkspaceDirectory(): Promise<string | null> {
+    const scope = await this.requireCurrentUser()
+    const generation = this.generation
+    this.assertCurrentScope(scope, generation)
+    const path = await this.defaultWorkspaceSettings.read()
+    this.assertCurrentScope(scope, generation)
+    return path
+  }
+
+  async setDefaultWorkspaceDirectory(path: string | null): Promise<void> {
+    const scope = await this.requireCurrentUser()
+    const generation = this.generation
+    this.assertCurrentScope(scope, generation)
+    await this.defaultWorkspaceSettings.write(path)
+    this.assertCurrentScope(scope, generation)
   }
 
   async createTask(
@@ -360,9 +387,10 @@ export class TaskManager {
     const id = reservedId ?? randomUUID()
     assertSafeId(id, 'taskId')
     if (this.tasks.has(id)) throw new TaskScopeError('Task already exists.')
-    const names = workDir?.trim() ? undefined : await this.workspaceDirectories.resolve(user, this.currentWorkspaceNames)
+    const configured = workDir?.trim() ? null : await this.defaultWorkspaceSettings.read()
+    const names = workDir?.trim() || configured ? undefined : await this.workspaceDirectories.resolve(user, this.currentWorkspaceNames)
     this.assertCurrentScope(user, generation)
-    const resolvedWorkDir = workDir?.trim() || this.paths.defaultWorkspaceDir(user, id, names)
+    const resolvedWorkDir = workDir?.trim() || (configured ? join(configured, id) : this.paths.defaultWorkspaceDir(user, id, names))
     await mkdir(resolvedWorkDir, { recursive: true })
     const task: Task = {
       id, title, prompt, status: TaskStatus.PENDING, workDir: resolvedWorkDir,
