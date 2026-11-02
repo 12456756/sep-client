@@ -33,7 +33,7 @@ button, input, textarea, select, label { -webkit-app-region: no-drag; }
 }
 /* Windows paints the native overlay with this color; match it without forcing a
    light strip over the dark brand panel on macOS. */
-[data-platform='win32'] .electron-window-chrome { background: #f7f8fc; }
+[data-platform='win32'] .electron-window-chrome { background: var(--work-rail, #f7f8fc); }
 
 
 @keyframes workspace-spin { to { transform: rotate(360deg); } }

@@ -1,8 +1,5 @@
 /* Workspace colors: warm surfaces, brand selection, and semantic work states. */
 .ent-shell.ent-work-shell {
-  --work-canvas: #fffdfb;
-  --work-rail: #f8f1ef;
-  --work-list: #f4efed;
   --work-hover: #ebe3e1;
   --work-selected: #f1dedd;
   --work-selected-ink: #8f2d34;
@@ -19,9 +16,6 @@
   background: var(--work-canvas);
 }
 .ent-shell.ent-work-shell.dark {
-  --work-canvas: #1a1d26;
-  --work-rail: #261f27;
-  --work-list: #201f27;
   --work-hover: #302b35;
   --work-selected: #422c33;
   --work-selected-ink: #f2c2c6;
@@ -41,7 +35,6 @@
 .ent-shell.ent-work-shell .ent-side.ent-icon-nav { background: var(--work-rail); }
 .ent-shell.ent-work-shell .ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item.active { color: #fff; background: var(--ent-brand-solid); box-shadow: none; }
 .ent-shell.ent-work-shell .ent-side.ent-icon-nav .ent-icon-nav-item.ent-nav-item.active:hover { background: var(--ent-brand-hover); }
-.ent-shell.ent-work-shell .ent-shell-main::before, .ent-shell.ent-work-shell.dark .ent-shell-main::before { display: none; }
 .ent-scroll.ent-scroll-work { display: flex; max-width: none; overflow: hidden; }
 .ent-work-hub { display: flex; flex: 1; min-width: 0; min-height: 0; height: 100%; background: var(--work-canvas); }
 .ent-work-list { display: flex; flex: 0 0 304px; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--ent-line); background: var(--work-list); }

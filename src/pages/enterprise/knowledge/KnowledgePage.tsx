@@ -12,7 +12,6 @@ import '../../../styles/knowledge.css'
 export function KnowledgePage({ kbId, navigate }: { kbId?: string; navigate(route: AppRoute): void }) {
   const { client, pending } = useKnowledgeClient()
   return <main className="ent-page kb-page">
-    <div className="kb-info">企业资料由平台托管。上传后由平台处理，成员只能访问已获授权的知识库。</div>
     {pending > 0 ? <div className="kb-pending" role="status"><span>正在请求平台，限流时会按平台要求等待…</span><button className="ent-btn sm" onClick={() => client.cancelAll()}>取消请求</button></div> : null}
     {kbId ? <KnowledgeDetail key={kbId} client={client} kbId={kbId} back={() => { client.cancelAll(); navigate({ name: 'knowledge' }) }} />
       : <KnowledgeList client={client} open={id => { client.cancelAll(); navigate({ name: 'knowledge', kbId: id }) }} />}

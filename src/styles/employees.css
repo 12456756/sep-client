@@ -1,7 +1,7 @@
 @import './employee-portrait.css';
 
 .ent-shell:has(.ent-employees-page),
-.ent-shell:has(.ent-employees-page) .ent-shell-main { background: var(--ent-canvas); }
+.ent-shell:has(.ent-employees-page) .ent-shell-main { background: var(--work-canvas); }
 .ent-shell.dark :is(.ent-employees-page, .ent-employee-detail) {
   --ent-ready: #78d7a8;
   --ent-busy: #f0a1a6;

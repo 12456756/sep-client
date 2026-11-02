@@ -1,4 +1,4 @@
-.ent-shell .ent-scroll-skills { background:var(--ent-canvas); }
+.ent-shell .ent-scroll-skills { background:var(--work-canvas); }
 .skill-library,.skill-detail { display:flex; flex-direction:column; gap:16px; min-width:0; max-width:1280px; margin-inline:auto; container-type:inline-size; }
 .skill-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; min-width:0; }
 .skill-toolbar > .ent-select { flex:0 1 auto; min-width:0; max-width:230px; width:auto; }

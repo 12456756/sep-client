@@ -13,7 +13,7 @@
   min-height: 100%;
   padding: 24px 18px 20px 23px;
   color: var(--home-ink);
-  background: radial-gradient(ellipse at 40% 0, #f8e5e5 0, transparent 48%), linear-gradient(115deg, #f7eeee, #f5f4f6 80%);
+  background: var(--work-canvas);
 }
 .sep-home *, .sep-home-dialog *, .sep-home-dialog { box-sizing: border-box; }
 .sep-home button { font: inherit; cursor: pointer; }
@@ -146,7 +146,7 @@
 .sep-home-picker-list button > span:nth-child(2) { flex: 1; }
 .sep-home-picker-list strong { display: block; font-size: 13px; }
 .sep-home-picker-list small { display: block; margin-top: 4px; color: #8995aa; font-size: 11px; }
-.ent-shell.dark .sep-home { --home-ink: #e5dfeb; --home-muted: #a49aaf; --home-line: #3b323f; --home-panel: #28232d; --home-brand: #ed929d; background: radial-gradient(ellipse at 35% 0, #36272f, transparent 65%), #211e28; }
+.ent-shell.dark .sep-home { --home-ink: #e5dfeb; --home-muted: #a49aaf; --home-line: #3b323f; --home-panel: #28232d; --home-brand: #ed929d; background: var(--work-canvas); }
 .ent-shell.dark .sep-home-assistant, .ent-shell.dark .sep-home-panel, .ent-shell.dark .sep-home-employee, .ent-shell.dark .sep-home-popular, .ent-shell.dark .sep-home-popular-card, .ent-shell.dark .sep-home-stat { border-color: #443541; background: var(--home-panel); }
 .ent-shell.dark .sep-home-composer, .ent-shell.dark .sep-home-shortcut, .ent-shell.dark .sep-home-composer-actions > button { border-color: #4d3946; }
 .ent-shell.dark .sep-home-greeting p, .ent-shell.dark .sep-home-assistant-heading p, .ent-shell.dark .sep-home-stat small { color: #b0a4b8; }
