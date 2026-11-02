@@ -38,10 +38,10 @@ export function WorkListPane({ works, records, selectedWorkId, filters, onFilter
   const unresolved = countUnresolvedWorkRecordTypes(works, filters)
   return <aside className="ent-work-list" aria-label="工作列表" tabIndex={-1}>
     <header className="ent-work-list-heading">
+      <label className="ent-work-search"><Search size={15} aria-hidden /><input type="search" placeholder="搜索工作或员工" aria-label="搜索工作或员工" value={filters.search} onChange={event => onFilters({ ...filters, search: event.target.value })} /></label>
       <IconHint label="新建工作"><button type="button" aria-label="新建工作" className="ent-work-icon create" onClick={onCreate}><Plus size={18} aria-hidden /></button></IconHint>
       <IconHint label="收起工作列表"><button type="button" aria-label="收起工作列表" className="ent-work-icon" onClick={onClose}><X size={16} aria-hidden /></button></IconHint>
     </header>
-    <label className="ent-work-search"><Search size={15} aria-hidden /><input type="search" placeholder="搜索工作或员工" aria-label="搜索工作或员工" value={filters.search} onChange={event => onFilters({ ...filters, search: event.target.value })} /></label>
     <div className="ent-work-filters status-filters" role="group" aria-label="按状态筛选工作">
       {BUCKETS.map(({ id, label, icon: Icon }) => <IconHint key={id} label={`${label} · ${statuses[id]} 项`} side="bottom"><button type="button" className={`bucket-${id}`} aria-label={`${label}，${statuses[id]} 项`} aria-pressed={filters.bucket === id} onClick={() => onFilters({ ...filters, bucket: id })}><Icon size={16} className={id === 'active' && statuses.active > 0 ? 'ent-spin' : undefined} aria-hidden /><span>{statuses[id]}</span></button></IconHint>)}
     </div>
