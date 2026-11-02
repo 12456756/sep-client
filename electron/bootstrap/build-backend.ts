@@ -365,6 +365,7 @@ class BackendRuntime {
       execution: () => this.getTaskRuntime(),
       planner: {
         plan: input => this.arrangementPlanner.get().then(planner => planner.plan(input)),
+        findReplacement: input => this.arrangementPlanner.get().then(planner => planner.findReplacement?.(input) ?? null),
         cancel: planningId => { this.arrangementPlanner.peek()?.cancel?.(planningId) },
       },
       onPlanningEvent: event => this.renderer.arrangementPlanningEvent(event),
@@ -602,6 +603,7 @@ class BackendRuntime {
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),
       authorizeModel: (modelId, preferredSubscriptionId) => this.employees.authorizeModel(modelId, preferredSubscriptionId),
+      findEmployeeReplacement: input => this.arrangements.findEmployeeReplacement(input),
       userDataDir: this.userDataDir,
       // 必须显式注入：运行时的默认值是 `process.cwd()`，打包后那是安装目录，
       // 而这个根被用作 workDir 为空时的兜底（workspaceDir 与 .pi-runs/.pi-sessions），

@@ -150,6 +150,7 @@ const LOOK: Record<WorkItem['status'], { icon: typeof Workflow; kind: string; no
   running: { icon: Loader2, kind: 'live', note: '正在进行' },
   arranging: { icon: Workflow, kind: '', note: '已安排好，还没开工' },
   'waiting-user': { icon: Hourglass, kind: 'call', note: '等你拍板' },
+  'waiting-employee': { icon: Hourglass, kind: 'call', note: '正在寻找替代员工' },
   completed: { icon: FileCheck2, kind: 'done', note: '已完成' },
   failed: { icon: XCircle, kind: 'stop', note: '中断了，等你处理' },
   paused: { icon: PauseCircle, kind: '', note: '已终止' },

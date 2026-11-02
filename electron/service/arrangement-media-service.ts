@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 import type { ArrangementMediaLink, ArrangementMediaLinkStorePort } from '../domain/arrangement-media'
 import type { ArrangementMediaAsset, ArrangementMediaAssetsPort, ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
-import { ArrangementMediaSubmissionError } from '../domain/arrangement-media-runtime'
+import { ArrangementMediaSubmissionError, ArrangementMediaRecoveryError } from '../domain/arrangement-media-runtime'
 import { arrangementMediaMimeByFormat } from '../domain/arrangement-plan'
 import type { MediaStorePort } from '../domain/media'
 import type { VideoStorePort } from '../domain/video-media'
@@ -63,10 +63,18 @@ export class ArrangementMediaService implements ArrangementMediaPort {
     await check()
     if (!plan || !plan.workspace.path) throw new AppError('INVALID_STATE', { message: '媒体编排需要已分配的共享工作区。' })
     const all = await this.options.links.list(scope, input.taskId)
+    const recoveryCheckpoint = await this.options.checkpoints.get(scope, input.taskId)
+    const replacement = recoveryCheckpoint?.planHash === input.planHash
+      ? recoveryCheckpoint.state.nodes.find(node => node.nodeId === input.node.id)?.employeeReplacement : undefined
+    const subscriptions = new Set([input.node.subscriptionId])
+    if (replacement?.status === 'replaced' && replacement.nodeId === input.node.id && replacement.replacementSubscriptionId === input.node.subscriptionId) {
+      subscriptions.add(replacement.originalSubscriptionId)
+      for (const id of replacement.previousSubscriptionIds ?? []) subscriptions.add(id)
+    }
     const nodeRuns = new Set((await this.options.runs.list(scope, input.taskId))
-      .filter(run => run.arrangementNodeId === input.node.id && run.subscriptionId === input.node.subscriptionId).map(run => run.id))
+      .filter(run => run.arrangementNodeId === input.node.id && subscriptions.has(run.subscriptionId)).map(run => run.id))
     const imageJobs = (await this.options.images.listJobs(scope, input.taskId)).filter(job => nodeRuns.has(job.runId) && job.submission !== 'NOT_SENT')
-    const videoJobs = (await this.options.videos?.listJobs({ ...scope, subscriptionId: input.node.subscriptionId }) ?? [])
+    const videoJobs = (await Promise.all([...subscriptions].map(subscriptionId => this.options.videos?.listJobs({ ...scope, subscriptionId }) ?? []))).flat()
       .filter(job => job.taskId === input.taskId && job.runId && nodeRuns.has(job.runId) && job.submission !== 'NOT_SENT')
     if (imageJobs.some(job => !all.some(link => link.kind === 'image' && link.jobId === job.jobId)) ||
       videoJobs.some(job => !all.some(link => link.kind === 'video' && link.jobId === job.jobId))) {
@@ -78,7 +86,7 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       ...(input.specRevisions?.[requirement.id] ? { specRevision: input.specRevisions[requirement.id] } : {}) }))
     for (const link of all.filter(link => link.nodeId === input.node.id)) {
       const run = await this.options.runs.get(scope, input.taskId, link.nodeRunId)
-      if (run?.arrangementNodeId !== input.node.id || run.subscriptionId !== input.node.subscriptionId || link.subscriptionId !== input.node.subscriptionId) throw new AppError('INVALID_STATE')
+      if (run?.arrangementNodeId !== input.node.id || run.subscriptionId !== link.subscriptionId || !subscriptions.has(link.subscriptionId)) throw new AppError('INVALID_STATE')
       if (link.kind === 'video') {
         const job = await this.options.videos?.getJob({ ...scope, subscriptionId: link.subscriptionId }, input.taskId, link.jobId)
         if (!job || job.runId !== link.nodeRunId) throw new AppError('INVALID_STATE')
@@ -143,7 +151,7 @@ export class ArrangementMediaService implements ArrangementMediaPort {
       const mismatched = link.kind === 'image'
         ? (await this.options.images.getJob(scope, input.taskId, link.jobId))?.errorCode === 'OUTPUT_SPEC_MISMATCH'
         : await (async () => {
-          const job = await this.options.videos?.getJob({ ...scope, subscriptionId: input.node.subscriptionId }, input.taskId, link.jobId)
+          const job = await this.options.videos?.getJob({ ...scope, subscriptionId: link.subscriptionId }, input.taskId, link.jobId)
           return job ? videoSpecAcceptance(job).acceptance === 'mismatched' : false
         })()
       if (mismatched) throw new ArrangementMediaSubmissionError('原媒体输出与请求规格不符，不能作为最终交付。已保留原任务和文件，请处理规格差异后继续，不要重新提交生成。')
@@ -155,6 +163,14 @@ export class ArrangementMediaService implements ArrangementMediaPort {
           const detail = assetDetails.get(output.artifactId)
           return { ...output, ...(detail ? { mime: detail.mime, size: detail.size } : {}) }
         }) }))
+    }
+    const inheritedJob = async (kind: 'image' | 'video', jobId: string) => {
+      const link = links.get(kind + ':' + jobId)
+      if (!link || link.subscriptionId === input.node.subscriptionId) return undefined
+      await writes.run('links', refresh)
+      const assets = links.get(kind + ':' + jobId)!.outputs.filter(output => output.status === 'saved')
+      if (!assets.length) throw new ArrangementMediaRecoveryError('download', new Error('Original employee media is not saved; keep the original job and do not regenerate.'))
+      return { jobId, generationStatus: 'SUCCEEDED', saveStatus: 'SAVED', artifacts: assets, reused: true }
     }
     const onJobCreated = async (job: MediaJobCreated) => writes.run('links', async () => {
       await check()
@@ -270,13 +286,17 @@ export class ArrangementMediaService implements ArrangementMediaPort {
             const operation = (raw as { operation?: string } | null)?.operation
             const value = await normalize(raw, operation === 'generate' ? 'generate' : operation === 'edit' || references.size ? 'edit' : 'generate')
             if ('recovered' in value) {
-              return media.execute('media_get_job', { jobId: value.jobId }, signal)
+              return await inheritedJob('image', String(value.jobId)) ?? media.execute('media_get_job', { jobId: value.jobId }, signal)
             }
             try { return await media.execute(name, value, signal) } finally {
               submittingRequirements.delete(operation === 'generate' ? 'generate' : operation === 'edit' || references.size ? 'edit' : 'generate')
             }
           }
           if (name === 'media_get_job' || name === 'media_cancel_job') await assertJob('image', raw)
+          if (name === 'media_get_job') {
+            const inherited = await inheritedJob('image', (raw as { jobId: string }).jobId)
+            if (inherited) return inherited
+          }
           const result = await media.execute(name, raw, signal)
           if (name === 'media_get_capabilities' && result && typeof result === 'object') {
             const referenceAssets = await Promise.all([...references.keys()].map(id => this.options.images.getAsset(scope, input.taskId, id)))
@@ -300,13 +320,18 @@ export class ArrangementMediaService implements ArrangementMediaPort {
           if (name !== 'video_get_job') {
             const value = await normalize(raw, name === 'video_from_image' ? 'image-to-video' : 'text-to-video')
             if ('recovered' in value) {
-              return augment(await video.execute('video_get_job', { jobId: value.jobId }, signal))
+              return augment(await inheritedJob('video', String(value.jobId)) ?? await video.execute('video_get_job', { jobId: value.jobId }, signal))
             }
             try { return await augment(await video.execute(name, value, signal)) } finally {
               submittingRequirements.delete(name === 'video_from_image' ? 'image-to-video' : 'text-to-video')
             }
           }
           await assertJob('video', raw, true)
+          const jobId = (raw as { jobId?: string }).jobId
+          if (jobId) {
+            const inherited = await inheritedJob('video', jobId)
+            if (inherited) return augment(inherited)
+          }
           return augment(await video.execute(name, raw, signal))
         } } : undefined,
         }

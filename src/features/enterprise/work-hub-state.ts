@@ -16,6 +16,7 @@ export type StatusIndicator = 'running' | 'attention' | 'completed' | 'failed' |
 export function workStatusIndicator(work: Pick<WorkItem, 'status' | 'queuedAt' | 'isActive' | 'currentRunStartedAt'>): StatusIndicator {
   if (work.status === 'failed') return 'failed'
   if (work.status === 'waiting-user') return 'attention'
+  if (work.status === 'waiting-employee') return 'attention'
   if (work.status === 'completed') return 'completed'
   if (work.status === 'paused') return 'paused'
   if (work.queuedAt && !work.currentRunStartedAt) return 'queued'

@@ -403,6 +403,8 @@ export interface ElectronAPI {
   cancelArrangementPlanning: (input: CancelArrangementPlanningInput) => Promise<ArrangementPlanningCancelResult>
   requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>
   getEmployeeAccessRequest: (input: GetEmployeeAccessRequestInput) => Promise<ArrangementDraftResult>
+  requestReplacementEmployeeAccess: (input: { taskId: string; nodeId: string; employeeId: string }) => Promise<ArrangementExecutionResult>
+  refreshReplacementEmployeeAccess: (input: { taskId: string }) => Promise<ArrangementExecutionResult>
   deleteTask: (taskId: string) => Promise<IpcCommandResult>
   updateTaskDetails: (input: { taskId: string; title?: string; pinned?: boolean }) => Promise<TaskResult>
   getTaskStats: () => Promise<TaskStatsResult>

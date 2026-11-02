@@ -33,7 +33,9 @@ import { runtimeFailureNoticeSchema } from '../../src/shared/runtime-feedback'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
 import { ArrangementExecutor } from './arrangement-executor'
-import { createArrangementExecutionState, confirmArrangementNode, interruptArrangement, resumeArrangement, retryArrangementNode, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
+import { WriteChain } from '../data/write-chain'
+import type { ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
+import { createArrangementExecutionState, confirmArrangementNode, interruptArrangement, resumeArrangement, retryArrangementNode, retryArrangementEmployeeReplacement, markArrangementNodeWaitingForEmployee, stopArrangement, type ArrangementExecutionState } from '../domain/arrangement-execution'
 import { arrangementInputReplySchema, type ArrangementInputReply } from '../../src/shared/arrangement-input'
 import { shouldPushTaskEvent } from './task-event-visibility'
 import { silentTaskMonitor, type MonitorTaskStartedInput, type MonitorTaskFinishedInput, type MonitorTaskContentInput, type MonitorTaskQueuedInput, type TaskMonitorPort } from '../domain/task-monitor'
@@ -95,6 +97,7 @@ export interface TaskRuntimeOptions {
   arrangementMedia?: ArrangementMediaPort
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
+  findEmployeeReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
 }
 
 export class TaskRuntime {
@@ -115,6 +118,9 @@ export class TaskRuntime {
   private readonly arrangementMedia: ArrangementMediaPort | undefined
   private readonly knowledgeSearch: KnowledgeSearchPort | undefined
   private readonly attachmentInputs: AttachmentInputPort | undefined
+  private readonly findEmployeeReplacement: TaskRuntimeOptions['findEmployeeReplacement']
+  private readonly arrangementPreparations = new Map<string, AbortController>()
+  private readonly arrangementPlanWrites = new WriteChain()
   private readonly activeArrangements = new Map<string, { taskId: string; runId: string; subscriptionId: string; executor: ArrangementExecutor; completion: Promise<void>; releaseWorkspace: () => void; control: ControlIntent; controlReason?: string }>()
   private readonly locks: WorkspaceLockManager
   private readonly approvals: ToolApprovals
@@ -165,6 +171,7 @@ export class TaskRuntime {
     this.arrangementMedia = options.arrangementMedia
     this.knowledgeSearch = options.knowledgeSearch
     this.attachmentInputs = options.attachmentInputs
+    this.findEmployeeReplacement = options.findEmployeeReplacement
     this.locks = new WorkspaceLockManager(this.getTaskWorkspaceRoot())
     this.events = new EventPipeline({ handle: event => this.handleWorkerEvent(event) })
     this.approvals = new ToolApprovals({
@@ -292,21 +299,82 @@ export class TaskRuntime {
       if (checkpoint?.state.status === 'stopped') {
         throw new Error('Stopped arrangements cannot be executed again.')
       }
-      const primarySubscriptionId = arrangement.nodes[0]?.subscriptionId ?? task.subscriptionId
-      if (!primarySubscriptionId) throw new Error('Select a silicon employee before executing the task.')
-      const employee = await this.authorizeEmployee(primarySubscriptionId)
-      if (!employee) throw new Error('The selected employee is no longer available.')
-      if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
-      const runId = randomUUID()
-      await this.taskManager.admitTask(taskId, runId)
-      const admittedTask = await this.taskManager.getTask(taskId)
-      if (!admittedTask || admittedTask.activeRunId !== runId) return
-      this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: arrangement.goal, conversation: false, arrangement, knowledge: taskKnowledge,
-        ...(arrangement.inputSnapshot?.attachments?.length ? { attachmentRefs: arrangement.inputSnapshot.attachments } : {}) })
-      this.reportMonitorQueued({ taskId, runId, prompt: arrangement.goal, subscriptionId: primarySubscriptionId, title: task.title, modelId: employee.modelId, taskType: 'arrangement' })
-      this.reportMonitorInput({ taskId, runId, content: arrangement.goal })
-      void this.pump()
-      return
+      if (this.arrangementPreparations.has(taskId)) throw new AppError('INVALID_STATE')
+      const controller = new AbortController()
+      this.arrangementPreparations.set(taskId, controller)
+      const check = () => {
+        controller.signal.throwIfAborted()
+        const owner = this.taskManager.getCurrentUserScope()
+        if (!scope || owner?.memberId !== scope.memberId || owner.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+      }
+      try {
+        let activePlan = arrangement
+        const primaryNode = activePlan.nodes.find(node => checkpoint?.state.nodes.find(item => item.nodeId === node.id)?.status === 'ready') ??
+          activePlan.nodes.find(node => !checkpoint || !['completed', 'waiting-employee', 'blocked'].includes(checkpoint.state.nodes.find(item => item.nodeId === node.id)?.status ?? 'pending')) ??
+          (checkpoint?.state.status === 'completed' ? activePlan.nodes[0] : undefined)
+        let primarySubscriptionId = primaryNode?.subscriptionId ?? task.subscriptionId
+        if (!primarySubscriptionId) throw new Error('Select a silicon employee before executing the task.')
+        let employee = await this.authorizeEmployee(primarySubscriptionId)
+        check()
+        if (!employee && primaryNode) {
+          const search = await this.findEmployeeReplacement?.({ taskId,
+            planningId: randomUUID(), taskGoal: activePlan.goal, node: primaryNode, signal: controller.signal,
+          })
+          check()
+          const replacement = search?.replacement
+          const candidate = replacement && await this.authorizeEmployee(replacement.subscriptionId, primaryNode.modelId)
+          check()
+          if (replacement && candidate) {
+            activePlan = { ...activePlan, nodes: activePlan.nodes.map(node => node.id === primaryNode.id
+              ? { ...node, subscriptionId: replacement.subscriptionId } : node) }
+            const state = checkpoint?.state ?? createArrangementExecutionState(activePlan.nodes)
+            await this.saveArrangementCheckpoint(scope!, taskId, activePlan.planHash, null, { ...state, nodes: state.nodes.map(node => node.nodeId === primaryNode.id
+              ? { ...node, employeeReplacement: { nodeId: primaryNode.id, originalSubscriptionId: primaryNode.subscriptionId,
+                previousSubscriptionIds: [...new Set([...(node.employeeReplacement?.previousSubscriptionIds ?? []),
+                  ...(node.employeeReplacement ? [node.employeeReplacement.originalSubscriptionId] : []), primaryNode.subscriptionId])],
+                replacementSubscriptionId: replacement.subscriptionId, reason: replacement.rationale, status: 'replaced', updatedAt: Date.now() } } : node) })
+            check()
+            await this.workPlanStore!.save(scope!, activePlan)
+            primarySubscriptionId = replacement.subscriptionId
+            employee = candidate
+            log.info('arrangement primary employee automatically replaced', {
+              taskId, nodeId: primaryNode.id, replacementSubscriptionId: replacement.subscriptionId,
+            })
+          } else {
+            if (!scope || !this.arrangementCheckpointStore) throw new AppError('INVALID_STATE')
+            const baseState = checkpoint?.state ?? createArrangementExecutionState(activePlan.nodes)
+            const waiting = markArrangementNodeWaitingForEmployee(baseState, activePlan.nodes, primaryNode.id, {
+              originalSubscriptionId: primaryNode.subscriptionId, candidates: search?.candidates ?? [],
+              reason: '原执行员工已不可用，暂未找到可直接执行的替代员工；已有工作和文件已保留。',
+            })
+            check()
+            await this.saveArrangementCheckpoint(scope, taskId, activePlan.planHash, null, waiting)
+            // A missing branch must not prevent independent ready nodes from running.
+            for (const peer of activePlan.nodes.filter(node => waiting.nodes.some(item => item.nodeId === node.id && item.status === 'ready'))) {
+              const authorized = await this.authorizeEmployee(peer.subscriptionId)
+              check()
+              if (authorized) { employee = authorized; primarySubscriptionId = peer.subscriptionId; break }
+            }
+            if (!employee) {
+              if (task.status !== TaskStatus.PAUSED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PAUSED)
+              return
+            }
+          }
+        }
+        if (!employee) throw new AppError('INVALID_STATE')
+        check()
+        if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
+        const runId = randomUUID()
+        await this.taskManager.admitTask(taskId, runId)
+        const admittedTask = await this.taskManager.getTask(taskId)
+        if (!admittedTask || admittedTask.activeRunId !== runId) return
+        this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: activePlan.goal, conversation: false, arrangement: activePlan, knowledge: taskKnowledge,
+          ...(activePlan.inputSnapshot?.attachments?.length ? { attachmentRefs: activePlan.inputSnapshot.attachments } : {}) })
+        this.reportMonitorQueued({ taskId, runId, prompt: activePlan.goal, subscriptionId: primarySubscriptionId, title: task.title, modelId: employee.modelId, taskType: 'arrangement' })
+        this.reportMonitorInput({ taskId, runId, content: activePlan.goal })
+        void this.pump()
+        return
+      } finally { if (this.arrangementPreparations.get(taskId) === controller) this.arrangementPreparations.delete(taskId) }
     }
     const general = arrangement?.mode === 'conversation' && arrangement.conversation?.kind === 'general'
     const selectedSubscriptionId = task.subscriptionId
@@ -403,8 +471,6 @@ export class TaskRuntime {
         !checkpoint.state.nodes.some(node => node.nodeId === id && node.status === 'completed' && node.pendingConfirmation))) {
         throw new AppError('INVALID_STATE', { message: '存在不可确认的节点。' })
       }
-      const primary = plan.nodes[0]
-      if (!primary || !await this.authorizeEmployee(primary.subscriptionId)) throw new Error('The selected employee is no longer available.')
       const currentScope = this.taskManager.getCurrentUserScope()
       const currentTask = await this.taskManager.getTask(taskId)
       const currentPlan = await this.workPlanStore.get(scope, taskId)
@@ -432,6 +498,7 @@ export class TaskRuntime {
   }
 
   async stopArrangement(taskId: string, reason?: string): Promise<void> {
+    this.arrangementPreparations.get(taskId)?.abort()
     const activeArrangement = this.activeArrangements.get(taskId)
     if (activeArrangement) {
       activeArrangement.control = 'stop'
@@ -493,7 +560,7 @@ export class TaskRuntime {
           ? await this.arrangementCheckpointStore.get(scope, task.id)
           : null
         const waitingNode = liveCheckpoint?.state.nodes.find(node => node.nodeId === nodeId)
-        if (waitingNode?.status !== 'failed' && !waitingNode?.inputRequest) {
+        if (waitingNode?.status !== 'failed' && waitingNode?.status !== 'waiting-employee' && !waitingNode?.inputRequest) {
           throw new AppError('INVALID_STATE', { message: '只能重试当前失败的节点。' })
         }
         await active.completion
@@ -521,7 +588,13 @@ export class TaskRuntime {
     if (checkpoint.planHash !== plan.planHash) throw new AppError('INVALID_STATE', { message: '编排计划与恢复进度不一致，无法重试。' })
     if (checkpoint.state.status === 'stopped' || checkpoint.state.status === 'completed') throw new AppError('INVALID_STATE', { message: '这项编排已终止或完成，不能重试。' })
     let nextState: ArrangementExecutionState
-    if (checkpoint.state.status === 'waiting-user' || checkpoint.state.status === 'failed') {
+    if (checkpoint.state.nodes.some(node => node.status === 'waiting-employee' && (!nodeId || node.nodeId === nodeId))) {
+      nextState = checkpoint.state
+      for (const node of checkpoint.state.nodes.filter(node => node.status === 'waiting-employee' && (!nodeId || node.nodeId === nodeId))) {
+        nextState = retryArrangementEmployeeReplacement(nextState, plan.nodes, node.nodeId)
+      }
+      if (nextState === checkpoint.state) throw new AppError('INVALID_STATE', { message: '待补员节点状态已变化，请刷新后重试。' })
+    } else if (checkpoint.state.status === 'waiting-user' || checkpoint.state.status === 'waiting-employee' || checkpoint.state.status === 'failed') {
       nextState = retryArrangementNode(checkpoint.state, plan.nodes, nodeId, inputReply)
       if (nextState === checkpoint.state) throw new AppError('INVALID_STATE', { message: inputReply ? '补充回复对应的问题已变化，请刷新后重新回答。' : '没有可重试的失败节点；等待补充规格的节点需要先提交回复。' })
     } else {
@@ -538,14 +611,17 @@ export class TaskRuntime {
     }
     // Authorization must not consume the failed checkpoint before admission.
     const primary = plan.nodes[0]
-    if (!primary || !await this.authorizeEmployee(primary.subscriptionId)) throw new Error('The selected employee is no longer available.')
+    if (!primary) throw new Error('Arrangement plan has no executable nodes.')
     try {
       await this.saveArrangementCheckpoint(scope, task.id, checkpoint.planHash, null, nextState)
       if (task.status !== TaskStatus.PENDING) await this.taskManager.updateTaskStatus(task.id, TaskStatus.PENDING)
       await this.executeTask(task.id, { conversation: false })
     } catch (error) {
       const current = await this.taskManager.getTask(task.id)
-      if (current && !current.activeRunId) {
+      const latestCheckpoint = await this.arrangementCheckpointStore.get(scope, task.id)
+      if (current && !current.activeRunId && latestCheckpoint?.state.status !== 'stopped' &&
+        !latestCheckpoint?.state.nodes.some(node => node.status === 'waiting-employee') &&
+        this.taskManager.getCurrentUserScope()?.memberId === scope.memberId && this.taskManager.getCurrentUserScope()?.enterpriseId === scope.enterpriseId) {
         await this.arrangementCheckpointStore.save(scope, checkpoint)
         await this.taskManager.updateTaskStatus(task.id, task.status, task.error ?? undefined)
       }
@@ -570,6 +646,7 @@ export class TaskRuntime {
   }
 
   async pauseTask(taskId: string): Promise<void> {
+    this.arrangementPreparations.get(taskId)?.abort()
     const activeArrangement = this.activeArrangements.get(taskId)
     if (activeArrangement) {
       activeArrangement.control = 'pause'
@@ -598,6 +675,7 @@ export class TaskRuntime {
   }
 
   async cancelTask(taskId: string, reason?: string): Promise<void> {
+    this.arrangementPreparations.get(taskId)?.abort()
     const stopReason = redactText(reason?.trim() || '用户终止了这项工作')
     const activeArrangement = this.activeArrangements.get(taskId)
     if (activeArrangement) {
@@ -649,6 +727,7 @@ export class TaskRuntime {
   }
 
   async stopAll(): Promise<void> {
+    for (const controller of this.arrangementPreparations.values()) controller.abort()
     if (this.lifecycleAuditTimer) clearInterval(this.lifecycleAuditTimer)
     this.lifecycleAuditTimer = null
     this.approvals.denyAll()
@@ -828,6 +907,15 @@ export class TaskRuntime {
         arrangementMedia: this.arrangementMedia,
         knowledgeSearch: this.knowledgeSearch,
         attachmentInputs: this.attachmentInputs,
+        findReplacement: this.findEmployeeReplacement,
+        replacePlanEmployee: (taskId, nodeId, subscriptionId) => this.arrangementPlanWrites.run(taskId, async () => {
+          const owner = scope
+          const currentScope = this.taskManager.getCurrentUserScope()
+          if (currentScope?.memberId !== owner?.memberId || currentScope?.enterpriseId !== owner?.enterpriseId) throw new AppError('AUTH_REQUIRED')
+          const currentPlan = owner && this.workPlanStore ? await this.workPlanStore.get(owner, taskId) : null
+          if (!owner || !currentPlan || currentPlan.planHash !== plan.planHash || !currentPlan.nodes.some(node => node.id === nodeId)) throw new AppError('INVALID_STATE', { message: '替代员工无法绑定到原编排节点。' })
+          await this.workPlanStore!.save(owner, { ...currentPlan, nodes: currentPlan.nodes.map(node => node.id === nodeId ? { ...node, subscriptionId } : node) })
+        }),
       })
       this.activeArrangements.set(taskId, {
         taskId,
@@ -858,7 +946,7 @@ export class TaskRuntime {
               ? 'completed'
               : result.status === 'interrupted'
                 ? 'interrupted'
-                : result.status === 'stopped' || result.status === 'waiting-user'
+                : result.status === 'stopped' || result.status === 'waiting-user' || result.status === 'waiting-employee'
                   ? 'stopped'
                   : 'failed'
       if (parentCreated && scope && this.taskRunStore) {
@@ -873,7 +961,7 @@ export class TaskRuntime {
               ? TaskStatus.PAUSED
               : result.status === 'interrupted'
                 ? TaskStatus.INTERRUPTED
-                : result.status === 'stopped' || result.status === 'waiting-user'
+                : result.status === 'stopped' || result.status === 'waiting-user' || result.status === 'waiting-employee'
                   ? TaskStatus.PAUSED
                   : result.status === 'completed'
                     ? TaskStatus.COMPLETED

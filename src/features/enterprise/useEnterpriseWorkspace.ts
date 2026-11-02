@@ -228,6 +228,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
   retryWork: (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => Promise<void>;
+  requestReplacementAccess: (workId: string, nodeId: string, employeeId: string) => Promise<void>;
   renameWork: (workId: string, title?: string) => Promise<boolean>;
   setWorkPinned: (workId: string, pinned: boolean) => Promise<boolean>;
   deleteWork: (workId: string) => Promise<boolean>;
@@ -1019,7 +1020,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, replaceRoute, retryWorkTypes, workListLoad, goBack,
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
-    stopWork, retryWork, renameWork, setWorkPinned, deleteWork,
+    stopWork, retryWork, requestReplacementAccess: arrangement.requestReplacementAccess, renameWork, setWorkPinned, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,
     organizationMembers, organizationEmployees, organizationStatus, organizationError, currentUserAvatar,

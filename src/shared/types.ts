@@ -494,15 +494,18 @@ export interface ArrangementFinalFileSnapshot {
 
 export interface ArrangementNodeExecutionSnapshot {
   nodeId: string
-  status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
+  status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped' | 'waiting-employee'
   finalFiles: ArrangementFinalFileSnapshot[]
   pendingConfirmation?: boolean
   inputRequest?: import('./arrangement-input').ArrangementInputRequest
+  employeeReplacement?: ArrangementEmployeeReplacement
 }
+
+export type ArrangementEmployeeReplacement = import('./arrangement-employee-replacement').ArrangementEmployeeReplacement
 
 export interface ArrangementExecutionSnapshot {
   activeRunId: string | null
-  status: 'queued' | 'running' | 'waiting-user' | 'interrupted' | 'completed' | 'stopped' | 'failed'
+  status: 'queued' | 'running' | 'waiting-user' | 'waiting-employee' | 'interrupted' | 'completed' | 'stopped' | 'failed'
   nodes: ArrangementNodeExecutionSnapshot[]
   media?: ArrangementMediaSummary[]
   updatedAt: number

@@ -15,6 +15,8 @@ import {
   buildArrangementPlannerInput,
   buildArrangementPlannerUserPrompt,
   buildArrangementPlannerRepairPrompt,
+  buildArrangementReplacementPrompt,
+  ARRANGEMENT_REPLACEMENT_RULES,
   isArrangementPlannerValidationPhase,
 } from '../domain/arrangement-planner-prompts'
 import { transformArrangementPlannerSystemPrompt } from '../pi/sdk/pi-planner-system-prompt'
@@ -23,6 +25,7 @@ import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker
 import type { TaskToolPolicy, TaskWorkerPort } from './run-types'
 import type { ModelTraceFactory, ModelTraceRecorder } from '../domain/model-trace'
 import { runtimePhaseLabel } from '../common/runtime-log-format'
+import { requiredArrangementMediaTools } from '../domain/arrangement-media-availability'
 
 export interface ArrangementPlannerRuntimeOptions {
   createModelTrace?: ModelTraceFactory
@@ -71,6 +74,71 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
 
   cancel(planningId: string): void {
     this.planningControllers.get(planningId)?.abort()
+  }
+
+  async findReplacement(input: Parameters<NonNullable<ArrangementPlannerPort['findReplacement']>>[0]): Promise<{ subscriptionId: string; rationale: string } | null> {
+    const planningId = input.planningId
+    input.signal?.throwIfAborted()
+    const stage = input.stage ?? 'authorized'
+    const requiredMediaTools = requiredArrangementMediaTools(input.node)
+    const employees = input.employees.filter(employee => employee.subscriptionId !== input.node.subscriptionId && (stage === 'authorized'
+      ? employee.status === 'ACTIVE' && employee.canExecute !== false && employee.allowedModels.includes(input.node.modelId) &&
+        requiredMediaTools.every(tool => employee.mediaTools?.[tool].state === 'available')
+      : employee.source === stage && employee.canApply === true))
+    if (!employees.length) return null
+    const plannerEmployee = selectPlannerEmployee(input.plannerEmployees ?? employees, this.options, input.plannerModelId)
+    const modelId = input.plannerModelId ?? plannerEmployee.allowedModels[0]
+    if (!modelId) return null
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    input.signal?.addEventListener('abort', abort, { once: true })
+    this.planningControllers.set(planningId, controller)
+    try {
+      const prompt = buildArrangementReplacementPrompt({ ...input, employees, stage })
+      const trace = input.taskId ? this.options.createModelTrace?.({ taskId: input.taskId, runId: planningId,
+        title: input.taskGoal, phase: '替代员工匹配' }) : undefined
+      let selection: { subscriptionId: string; rationale: string } | null = null
+      let accepted = false
+      let rejectTool!: (error: Error) => void
+      const toolFailure = new Promise<never>((_, reject) => { rejectTool = reject })
+      const worker = this.createWorker(planningId, plannerEmployee, modelId, event => {
+        if (event.type === 'tool_execution_start') rejectTool(new AppError('PLANNING_FAILED'))
+      }, async response => {
+        controller.signal.throwIfAborted()
+        validateSettledResponse(response)
+        accepted = false
+        selection = null
+        try {
+          const parsed = parseReplacementJson(response.text)
+          if (parsed && !employees.some(employee => employee.subscriptionId === parsed.subscriptionId)) {
+            throw new Error('subscriptionId is not in the candidate catalog')
+          }
+          selection = parsed
+          accepted = true
+        } catch {
+          return { continueWith: `替代员工匹配回复校验未通过。只能返回目录中的 subscriptionId 与非空 rationale，或 null。不得生成编排计划。\n${prompt}` }
+        }
+      }, trace, input.taskGoal, '替代员工匹配', ARRANGEMENT_REPLACEMENT_RULES)
+      let abortHandler!: () => void
+      const aborted = new Promise<never>((_resolve, reject) => {
+        abortHandler = () => { void worker.abort().catch(() => undefined); reject(createAbortError()) }
+        controller.signal.addEventListener('abort', abortHandler, { once: true })
+      })
+      try {
+        if (controller.signal.aborted) { abortHandler(); await aborted }
+        else await Promise.race([worker.run(prompt), aborted, toolFailure])
+        controller.signal.throwIfAborted()
+        if (!accepted) throw new AppError('PLANNING_FAILED')
+      } finally {
+        controller.signal.removeEventListener('abort', abortHandler)
+        if (!accepted || controller.signal.aborted) await worker.abort().catch(() => undefined)
+        await worker.dispose().catch(() => undefined)
+      }
+      return selection
+    } finally {
+      if (input.signal) input.signal.removeEventListener('abort', abort)
+      if (this.planningControllers.get(planningId) === controller) this.planningControllers.delete(planningId)
+    }
   }
 
   async plan(input: Parameters<ArrangementPlannerPort['plan']>[0]): Promise<ArrangementPlanningResult> {
@@ -274,6 +342,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     modelTrace?: ModelTraceRecorder,
     taskTitle?: string,
     tracePhase?: string,
+    systemRules?: string,
   ): TaskWorkerPort {
     const workspaceDir = this.options.workspaceRoot
     const context: PiTaskWorkerOptions['context'] = {
@@ -287,7 +356,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
       agentDir: this.options.getAgentDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'agent'),
       sessionDir: this.options.getSessionDir?.(planningId) ?? join(workspaceDir, '.pi-arrangement-planning', planningId, 'sessions'),
       additionalSkillPaths: this.options.additionalSkillPaths ? [...this.options.additionalSkillPaths] : undefined,
-      transformSystemPrompt: transformArrangementPlannerSystemPrompt,
+      transformSystemPrompt: systemRules ? () => systemRules : transformArrangementPlannerSystemPrompt,
       toolPolicy: {
         ...PLANNER_POLICY,
         allowedPaths: [workspaceDir],
@@ -310,6 +379,17 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
     }
     return this.options.createWorker?.(workerOptions) ?? new PiTaskWorker(workerOptions)
   }
+}
+
+function parseReplacementJson(raw: string): { subscriptionId: string; rationale: string } | null {
+  const trimmed = raw.trim()
+  const value: unknown = JSON.parse(trimmed)
+  if (value === null) return null
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid employee replacement response')
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).length !== 2 || typeof record.subscriptionId !== 'string' || !record.subscriptionId.trim() ||
+    typeof record.rationale !== 'string' || !record.rationale.trim()) throw new Error('Invalid employee replacement response')
+  return { subscriptionId: record.subscriptionId, rationale: record.rationale }
 }
 
 function validateSettledResponse(response: { text: string; stopReason?: string }): void {

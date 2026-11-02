@@ -94,6 +94,27 @@ it('renders a media question and an empty reply form instead of an approval acti
   assert.doesNotMatch(html, /确认，继续/)
 })
 
+it('shows each missing employee alongside parallel questions and application status', () => {
+  const execution: NonNullable<WorkItem['arrangementExecution']> = { activeRunId: null, status: 'waiting-user', updatedAt: 3,
+    nodes: [{ nodeId: 'missing', status: 'waiting-employee', finalFiles: [], employeeReplacement: {
+      nodeId: 'missing', originalSubscriptionId: 'old', reason: '原员工已不可用', status: 'waiting', updatedAt: 3,
+      candidates: [{ stepId: 'missing', employeeId: 'new', subscriptionId: null, source: 'platform', name: '市场分析员工',
+        rationale: '具备市场分析技能', canExecute: false, canApply: true }],
+    } }, { nodeId: 'video', status: 'interrupted', finalFiles: [], inputRequest: {
+      requestId: 'question-a', kind: 'media-spec', question: '需要多长的视频？', requirements: [],
+    } }] }
+  const item: WorkItem = { ...work, kind: 'flow', status: 'waiting-user', arrangementExecution: execution }
+  const html = renderDetail(item)
+  assert.match(html, /市场分析员工/)
+  assert.match(html, /申请员工/)
+  assert.match(html, /重新查找/)
+  assert.match(html, /提交补充并继续/)
+  execution.nodes[0]!.employeeReplacement!.accessRequests = [{ requestId: 'req', stepId: 'missing', employeeId: 'new', subscriptionId: null,
+    source: 'platform', name: '市场分析员工', status: 'PENDING', requestedCapabilities: [], createdAt: '2026-11-02', updatedAt: '2026-11-02' }]
+  assert.match(renderDetail(item), /已申请，等待审批/)
+  assert.doesNotMatch(renderDetail(item), />申请员工</)
+})
+
 it('keeps parallel questions available only while the arrangement can accept replies', () => {
   const inputRequest = { requestId: 'question-a', kind: 'media-spec' as const, question: '需要多长的视频？', requirements: [] }
   const pending = { ...work, kind: 'flow' as const, status: 'running' as const,

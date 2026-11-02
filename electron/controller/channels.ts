@@ -117,6 +117,8 @@ export const INVOKE_CHANNELS = {
   ARRANGE_CANCEL_PLAN: 'arrange:cancel-plan',
   ARRANGE_REQUEST_EMPLOYEE_ACCESS: 'arrange:request-employee-access',
   ARRANGE_GET_EMPLOYEE_ACCESS_REQUEST: 'arrange:get-employee-access-request',
+  ARRANGE_REQUEST_REPLACEMENT_ACCESS: 'arrange:request-replacement-access',
+  ARRANGE_REFRESH_REPLACEMENT_ACCESS: 'arrange:refresh-replacement-access',
   UTIL_SELECT_DIRECTORY: 'util:select-directory',
   WINDOW_SET_THEME: 'window:set-theme',
 } as const
@@ -196,6 +198,8 @@ export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import
   [INVOKE_CHANNELS.ARRANGE_CANCEL_PLAN]: 'cancel',
   [INVOKE_CHANNELS.ARRANGE_REQUEST_EMPLOYEE_ACCESS]: 'request',
   [INVOKE_CHANNELS.ARRANGE_GET_EMPLOYEE_ACCESS_REQUEST]: 'requestStatus',
+  [INVOKE_CHANNELS.ARRANGE_REQUEST_REPLACEMENT_ACCESS]: 'request',
+  [INVOKE_CHANNELS.ARRANGE_REFRESH_REPLACEMENT_ACCESS]: 'requestStatus',
   [INVOKE_CHANNELS.ATTACHMENT_BEGIN]: 'attachment',
   [INVOKE_CHANNELS.ATTACHMENT_SELECT]: 'attachment',
   [INVOKE_CHANNELS.ATTACHMENT_LIST]: 'attachment',

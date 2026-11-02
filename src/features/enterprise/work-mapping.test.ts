@@ -84,6 +84,17 @@ describe('arrangement retry display regressions', () => {
     assert.equal(work.steps[0]?.state, 'failed')
   })
 
+  it('projects an unavailable employee checkpoint as waiting for replacement, not failure', () => {
+    const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-employee', updatedAt: 4,
+      nodes: [{ nodeId: 'node-a', status: 'waiting-employee', finalFiles: [],
+        employeeReplacement: { nodeId: 'node-a', originalSubscriptionId: 'sub-old', reason: 'Unavailable', status: 'waiting', updatedAt: 4 } }] }
+    const work = buildWorkItem({ task: { ...task, status: 'paused', activeRunId: null }, employees: [], plan,
+      arrangementExecution: execution })
+    assert.equal(work.status, 'waiting-employee')
+    assert.equal(work.steps[0]?.state, 'waiting-employee')
+    assert.deepEqual(work.arrangementExecution?.nodes[0]?.employeeReplacement, execution.nodes[0]?.employeeReplacement)
+  })
+
   it('shows explicit confirmation from either a checkpoint or a newer event as waiting for the user', () => {
     const confirmationPlan = { ...plan, nodes: [{ ...plan.nodes[0]!, requiresUserConfirmation: true }] }
     const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-user', updatedAt: 4,

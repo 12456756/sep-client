@@ -27,7 +27,7 @@ import {
 } from '../domain/arrangement-plan'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import { requireScope, type ScopeSource } from './scope-guard'
-import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirectory, ArrangementPlannerPort, ArrangementPlannerDraft, ArrangementPlanningProgress, ArrangementPlannerEmployee } from '../domain/arrangement-planner'
+import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirectory, ArrangementPlannerPort, ArrangementPlannerDraft, ArrangementPlanningProgress, ArrangementPlannerEmployee, ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
 import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementEmployeeAccessRequest } from '../domain/arrangement-plan'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 import { TaskCreationGate } from './task-creation-gate'
@@ -41,9 +41,10 @@ import type { MediaStorePort } from '../domain/media'
 import type { AttachmentService } from './attachment-service'
 import type { DraftAttachmentCandidate, NodeInputRef } from '../../src/shared/attachment-contracts'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
-import { unknownArrangementMediaTools, type ArrangementMediaTools } from '../domain/arrangement-media-availability'
+import { requiredArrangementMediaTools, unknownArrangementMediaTools, type ArrangementMediaTools } from '../domain/arrangement-media-availability'
 import { planningRecordSummary, type PlanningRecordChange, type PlanningProgressSnapshot, type PlanningRecordSnapshot, type PlanningRecordSummary } from '../../src/shared/auto-planning'
 import type { ArrangementProgressStorePort } from '../data/arrangement-progress-store'
+import { WriteChain } from '../data/write-chain'
 
 export interface ArrangementServiceDependencies {
   scope: ScopeSource
@@ -118,6 +119,7 @@ export class ArrangementService {
   private readonly planningOwners = new Map<string, { scope: { memberId: string; enterpriseId: string }; generation: number; draftId: string }>()
   private readonly planningStarts = new Map<string, Promise<{ draftId: string; planningId: string; status: 'planning' }>>()
   private readonly submissions = new Map<string, Promise<PlanningRecordSnapshot>>()
+  private readonly replacementWrites = new WriteChain()
 
   constructor(private readonly deps: ArrangementServiceDependencies) {
     this.creationGate = deps.creationGate ?? new TaskCreationGate()
@@ -146,8 +148,164 @@ export class ArrangementService {
     }
   }
 
+  async findEmployeeReplacement(input: ArrangementReplacementSearchInput): Promise<ArrangementReplacementSearchResult> {
+    const scope = requireScope(this.deps.scope)
+    const generation = this.generation
+    const check = () => { input.signal.throwIfAborted(); this.assertPlanningScope(scope, generation) }
+    const plan = await this.deps.workPlans.get(scope, input.taskId)
+    check()
+    const node = plan?.nodes.find(item => item.id === input.node.id)
+    if (!plan || !node || node.subscriptionId !== input.node.subscriptionId) throw new AppError('INVALID_STATE')
+    const authorized = await this.loadAuthorizedPlannerEmployees({ taskId: plan.id, nodeId: node.id })
+    check()
+    const source = await this.deps.drafts.get(scope, plan.sourceDraftId)
+    check()
+    const plannerModelId = source?.planningModelId && authorized.some(employee => employee.allowedModels.includes(source.planningModelId!))
+      ? source.planningModelId : authorized.some(employee => employee.allowedModels.includes(node.modelId)) ? node.modelId : undefined
+    if (!this.deps.planner?.findReplacement || !authorized.some(employee => employee.allowedModels.length)) {
+      return { replacement: null, candidates: [] }
+    }
+    const search = async (stage: 'authorized' | 'enterprise' | 'platform', employees: ArrangementPlannerEmployee[]) => {
+      check()
+      if (!employees.length) return null
+      const result = await this.deps.planner!.findReplacement!({ ...input, taskGoal: plan.goal, node, stage, employees,
+        plannerEmployees: authorized, plannerModelId, confirmedInputs: plan.confirmedInputs,
+        dependencies: plan.nodes.filter(item => node.dependsOn.includes(item.id)).map(item => ({
+          id: item.id, title: item.title, expectedOutput: item.expectedOutput, deliverables: item.deliverables,
+        })),
+      })
+      check()
+      if (result && !employees.some(employee => employee.subscriptionId === result.subscriptionId)) throw new AppError('PLANNING_FAILED')
+      return result
+    }
+    const requiredMediaTools = requiredArrangementMediaTools(node)
+    const available = authorized.filter(employee => employee.subscriptionId !== node.subscriptionId && employee.status === 'ACTIVE' &&
+      employee.canExecute !== false && employee.allowedModels.includes(node.modelId) &&
+      requiredMediaTools.every(tool => employee.mediaTools?.[tool].state === 'available'))
+    const replacement = await search('authorized', available)
+    if (replacement) return { replacement, candidates: [] }
+    for (const stage of ['enterprise', 'platform'] as const) {
+      const directory = stage === 'enterprise' ? await this.deps.candidateEmployees?.listEnterprise() : await this.deps.candidateEmployees?.listPlatform()
+      check()
+      const employees = (directory ?? []).filter(employee => employee.canApply && employee.source === stage)
+      const result = await search(stage, employees)
+      if (!result) continue
+      const candidate = employees.find(employee => employee.subscriptionId === result.subscriptionId)!
+      return { replacement: null, candidates: [{ stepId: node.id, employeeId: candidate.employeeId,
+        subscriptionId: stage === 'enterprise' ? candidate.subscriptionId : null, source: stage, name: candidate.name,
+        rationale: result.rationale, canExecute: false, canApply: true }] }
+    }
+    return { replacement: null, candidates: [] }
+  }
+
   async listDrafts(): Promise<ArrangementDraft[]> {
     return this.deps.drafts.list(requireScope(this.deps.scope))
+  }
+
+  async requestReplacementEmployeeAccess(taskId: string, nodeId: string, employeeId: string): Promise<ArrangementExecutionSnapshot | null> {
+    const scope = requireScope(this.deps.scope)
+    const generation = this.generation
+    await this.replacementWrites.run(JSON.stringify([scope, taskId]), async () => {
+      const { plan, checkpoint, replacement } = await this.replacementAccessContext(taskId, nodeId)
+      this.assertPlanningScope(scope, generation)
+      const candidate = replacement.candidates?.find(item => item.employeeId === employeeId && item.canApply)
+      if (!candidate || !this.deps.employeeAccessRequests) throw new AppError('INVALID_ARGUMENT')
+      const existing = replacement.accessRequests?.find(item => item.employeeId === employeeId && item.source === candidate.source)
+      const capabilities = (await this.deps.drafts.get(scope, plan.sourceDraftId))?.intentAnalysis?.steps
+        .find(step => step.id === (plan.nodes.find(node => node.id === nodeId)?.stepId ?? nodeId))?.requiredCapabilityIds ?? []
+      this.assertPlanningScope(scope, generation)
+      const request = existing ? await this.deps.employeeAccessRequests.get(existing.requestId) : await this.deps.employeeAccessRequests.create({
+        targetType: candidate.source === 'enterprise' ? 'ENTERPRISE_SUBSCRIPTION' : 'PLATFORM_EMPLOYEE',
+        subscriptionId: candidate.source === 'enterprise' ? candidate.subscriptionId : null,
+        employeeId: candidate.source === 'platform' ? candidate.employeeId : null,
+        reason: `原任务补充执行员工。任务：${plan.goal}\n节点：${plan.nodes.find(node => node.id === nodeId)?.title}\n匹配依据：${candidate.rationale}`.slice(0, 2000),
+        requestedCapabilities: capabilities,
+      }, accessRequestIdempotencyKey(taskId, nodeId, `${candidate.source}:${employeeId}`))
+      this.assertPlanningScope(scope, generation)
+      const current = await this.replacementAccessContext(taskId, nodeId)
+      if (current.checkpoint.updatedAt !== checkpoint.updatedAt) throw new AppError('INVALID_STATE')
+      const record = toArrangementAccessRequest(request, candidate, nodeId)
+      await this.deps.arrangementCheckpoints!.save(scope, { ...checkpoint, updatedAt: Date.now(), state: { ...checkpoint.state,
+        nodes: checkpoint.state.nodes.map(node => node.nodeId === nodeId ? { ...node, employeeReplacement: { ...replacement,
+          updatedAt: Date.now(), accessRequests: [...(replacement.accessRequests ?? []).filter(item => item.requestId !== record.requestId), record] } } : node) } })
+    })
+    return this.refreshReplacementEmployeeAccess(taskId)
+  }
+
+  async refreshReplacementEmployeeAccess(taskId: string): Promise<ArrangementExecutionSnapshot | null> {
+    const scope = requireScope(this.deps.scope)
+    const generation = this.generation
+    let resumeNodeId: string | undefined
+    await this.replacementWrites.run(JSON.stringify([scope, taskId]), async () => {
+      if (!this.deps.arrangementCheckpoints || !this.deps.employeeAccessRequests) return
+      const task = await this.deps.taskManager.getTask(taskId)
+      this.assertPlanningScope(scope, generation)
+      if (!task || task.activeRunId || task.status !== TaskStatus.PAUSED) return
+      const checkpoint = await this.deps.arrangementCheckpoints.get(scope, taskId)
+      if (!checkpoint || ['stopped', 'completed'].includes(checkpoint.state.status)) return
+      const state = structuredClone(checkpoint.state)
+      let changed = false
+      for (const node of state.nodes.filter(node => node.status === 'waiting-employee')) {
+        const replacement = node.employeeReplacement
+        if (!replacement) continue
+        for (const record of replacement.accessRequests ?? []) {
+          if (record.status !== 'PENDING' && record.status !== 'APPROVED') continue
+          const latest = await this.deps.employeeAccessRequests.get(record.requestId)
+          this.assertPlanningScope(scope, generation)
+          const candidate = replacement.candidates?.find(item => item.employeeId === record.employeeId && item.source === record.source)
+          if (!candidate) continue
+          Object.assign(record, toArrangementAccessRequest(latest, candidate, node.nodeId))
+          changed = true
+          if (record.status === 'APPROVED') {
+            const employees = await this.deps.employees.refresh()
+            this.assertPlanningScope(scope, generation)
+            const plan = await this.deps.workPlans.get(scope, taskId)
+            const planNode = plan?.nodes.find(item => item.id === node.nodeId)
+            const authorized = employees.find(employee => employee.employeeId === record.employeeId &&
+              employee.subscriptionId !== replacement.originalSubscriptionId && employee.status === 'ACTIVE' &&
+              planNode && employee.allowedModels.includes(planNode.modelId))
+            if (authorized && planNode) {
+              const requiredMediaTools = requiredArrangementMediaTools(planNode)
+              let mediaTools: ArrangementMediaTools | undefined
+              if (requiredMediaTools.length && this.deps.mediaToolAvailability) {
+                try { mediaTools = await this.deps.mediaToolAvailability(authorized.subscriptionId) } catch (error) {
+                  log.warn('replacement employee media runtime unavailable during approval refresh', { taskId, nodeId: node.nodeId, ...planningErrorFields(error) })
+                }
+                this.assertPlanningScope(scope, generation)
+              }
+              if (requiredMediaTools.every(tool => mediaTools?.[tool].state === 'available')) resumeNodeId ??= node.nodeId
+            }
+          }
+        }
+      }
+      const currentTask = await this.deps.taskManager.getTask(taskId)
+      const current = await this.deps.arrangementCheckpoints.get(scope, taskId)
+      this.assertPlanningScope(scope, generation)
+      if (currentTask?.activeRunId || currentTask?.status !== TaskStatus.PAUSED || current?.updatedAt !== checkpoint.updatedAt) { resumeNodeId = undefined; return }
+      if (changed) await this.deps.arrangementCheckpoints.save(scope, { ...checkpoint, state, updatedAt: Date.now() })
+    })
+    this.assertPlanningScope(scope, generation)
+    if (resumeNodeId) {
+      const execution = await this.deps.execution()
+      this.assertPlanningScope(scope, generation)
+      await execution.retryTask(taskId, { nodeId: resumeNodeId })
+    }
+    return this.getExecution(taskId)
+  }
+
+  private async replacementAccessContext(taskId: string, nodeId: string) {
+    const scope = requireScope(this.deps.scope)
+    const generation = this.generation
+    const task = await this.deps.taskManager.getTask(taskId)
+    const plan = await this.deps.workPlans.get(scope, taskId)
+    const checkpoint = await this.deps.arrangementCheckpoints?.get(scope, taskId)
+    this.assertPlanningScope(scope, generation)
+    const node = checkpoint?.state.nodes.find(item => item.nodeId === nodeId)
+    if (!task || task.activeRunId || task.status !== TaskStatus.PAUSED || !plan || checkpoint?.planHash !== plan.planHash ||
+      !checkpoint || ['stopped', 'completed'].includes(checkpoint.state.status) || node?.status !== 'waiting-employee' || !node.employeeReplacement) {
+      throw new AppError('INVALID_STATE')
+    }
+    return { plan, checkpoint, replacement: node.employeeReplacement }
   }
 
   async listPlanningRecords(): Promise<PlanningRecordSummary[]> {
@@ -280,6 +438,7 @@ export class ArrangementService {
         status: node.status,
         ...(node.pendingConfirmation ? { pendingConfirmation: true } : {}),
         ...(node.inputRequest ? { inputRequest: structuredClone(node.inputRequest) } : {}),
+        ...(node.employeeReplacement ? { employeeReplacement: structuredClone(node.employeeReplacement) } : {}),
         finalFiles: node.delivery?.finalFiles ? structuredClone(node.delivery.finalFiles) : [],
       })),
       ...(media.length ? { media } : {}),

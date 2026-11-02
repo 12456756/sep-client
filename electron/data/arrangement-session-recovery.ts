@@ -27,7 +27,7 @@ export async function recoverArrangementSession(
       if (run.arrangementNodeId === node.id) candidates.set(run.id, run)
       const events = await store.events.getTimeline(scope, taskId, run.id)
       for (const event of events) {
-        if (!event.type.startsWith('arrangement_node_')) continue
+        if (!['arrangement_node_started', 'arrangement_node_completed', 'arrangement_node_failed'].includes(event.type)) continue
         const data = event.data as { nodeId?: unknown; nodeRunId?: unknown } | null
         if (data?.nodeId !== node.id || typeof data.nodeRunId !== 'string') continue
         const record = await store.get(scope, taskId, data.nodeRunId)
@@ -45,7 +45,11 @@ export async function recoverArrangementSession(
     if (!previous.sessionFile || !previous.sessionId) throw new Error('失败节点的历史会话记录不完整，无法继续已有上下文。')
   } else return null
 
-  if (previous.subscriptionId !== node.subscriptionId || previous.modelId !== node.modelId ||
+  const replacement = checkpoint.employeeReplacement
+  const replacedSession = replacement?.status === 'replaced' && replacement.nodeId === node.id &&
+    replacement.replacementSubscriptionId === node.subscriptionId &&
+    (replacement.originalSubscriptionId === previous.subscriptionId || replacement.previousSubscriptionIds?.includes(previous.subscriptionId))
+  if ((!replacedSession && previous.subscriptionId !== node.subscriptionId) || previous.modelId !== node.modelId ||
       (previous.arrangementNodeId && previous.arrangementNodeId !== node.id) ||
       resolve(previous.workspaceDir) !== resolve(workspaceDir)) {
     throw new Error('失败节点的历史会话与当前节点或工作目录不一致，无法恢复。')

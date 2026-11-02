@@ -1,5 +1,6 @@
 import type { MediaCapabilities } from '../../src/shared/media'
 import { videoRuntimeSchema } from '../../src/shared/video-media'
+import type { ArrangementNode } from './arrangement-plan'
 
 export interface ArrangementMediaToolAvailability {
   state: 'available' | 'unavailable' | 'unknown'
@@ -10,6 +11,21 @@ export type ArrangementMediaTools = Record<'media_generate_image' | 'video_gener
 export function unknownArrangementMediaTools(): ArrangementMediaTools {
   return Object.fromEntries(['media_generate_image', 'video_generate', 'video_from_image'].map(name =>
     [name, { state: 'unknown', reason: 'runtime-not-checked' }])) as ArrangementMediaTools
+}
+
+export function requiredArrangementMediaTools(node: Pick<ArrangementNode, 'mediaRequirements' | 'deliverables'>): Array<keyof ArrangementMediaTools> {
+  const requirements = (node.mediaRequirements ?? []).filter(requirement => requirement.required !== false)
+  const artifacts = (node.deliverables ?? [])
+    .map(deliverable => deliverable.artifact)
+    .filter((artifact): artifact is NonNullable<NonNullable<ArrangementNode['deliverables']>[number]['artifact']> => artifact?.source === 'media-output')
+  return [...new Set([
+    ...requirements.map(requirement => requirement.kind === 'image'
+      ? 'media_generate_image' as const
+      : requirement.operation === 'image-to-video' ? 'video_from_image' as const : 'video_generate' as const),
+    ...artifacts.map(artifact => artifact.kind === 'image'
+      ? 'media_generate_image' as const
+      : artifact.operation === 'image-to-video' ? 'video_from_image' as const : 'video_generate' as const),
+  ])]
 }
 
 /** Safe summary only: no profiles, URLs, tokens, manifests or skill installation. */
