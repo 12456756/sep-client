@@ -3,8 +3,10 @@
  * IPC 通道两侧均引用此文件
  */
 
+import type { KnowledgeSelection } from './knowledge-selection'
 import type { LoginFeedbackReason } from './login-feedback'
 import type { ArrangementBlockingIssue } from './arrangement-feedback'
+import type { MediaSpecFailureContext } from './media-spec-contract'
 
 // ──────────────────────────── Auth ─────────────────────────────
 
@@ -131,6 +133,7 @@ export type ClientTaskRunOutcome = 'running' | 'completed' | 'failed' | 'cancell
 
 /** Renderer-safe summary of one persisted execution attempt. */
 export interface ClientTaskRun {
+  knowledge?: KnowledgeSelection
   id: string
   taskId: string
   subscriptionId: string
@@ -164,6 +167,8 @@ export interface ClientTaskStats {
 }
 
 export type TaskErrorCode =
+  | 'MISSING_SPEC' | 'SPEC_CONFLICT' | 'UPGRADE_REQUIRED' | 'ADAPTER_UNAVAILABLE'
+  | 'ADAPTER_FIELD_UNMAPPED' | 'PRICE_UNAVAILABLE' | 'UPSTREAM_SPEC_UNSUPPORTED' | 'OUTPUT_SPEC_MISMATCH'
   | 'AUTH_REQUIRED'
   | 'INVALID_ARGUMENT'
   | 'NOT_FOUND'
@@ -171,7 +176,7 @@ export type TaskErrorCode =
   | 'PERSISTENCE_ERROR'
   | 'INTERNAL_ERROR'
 
-export interface TaskError {
+export interface TaskError extends MediaSpecFailureContext {
   code: TaskErrorCode
   message: string
 }
@@ -273,6 +278,8 @@ export interface ArrangementMediaSummary {
 }
 
 export interface ArrangementNodeSnapshot {
+  knowledge?: KnowledgeSelection
+  knowledgeQuery?: string
   id: string
   subscriptionId: string
   modelId: string
@@ -299,6 +306,7 @@ export interface ArrangementPermissionSnapshot {
 }
 
 export interface ArrangementPlanSnapshot {
+  knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1
   sourceDraftId: string
@@ -324,6 +332,8 @@ export interface ArrangementPlanSnapshot {
 export type ArrangementDraftStatus = 'editing' | 'planning' | 'planning-failed' | 'awaiting-employee' | 'ready' | 'preflight-failed' | 'confirmed'
 
 export interface ArrangementDraftNode {
+  knowledge?: KnowledgeSelection
+  knowledgeQuery?: string
   id: string
   stepId?: string
   subscriptionId: string
@@ -381,6 +391,7 @@ export interface ArrangementEmployeeAccessRequest {
 }
 
 export interface ArrangementDraftDocument {
+  knowledge?: KnowledgeSelection
   schemaVersion: 1 | 2
   mode: ArrangementMode
   title: string
@@ -417,6 +428,8 @@ export interface ArrangementDraftDocument {
 }
 
 export interface ArrangementExecutionSettings {
+  knowledge?: KnowledgeSelection
+  nodeKnowledge?: Array<{ nodeId: string; knowledge: KnowledgeSelection | null }>
   modelId?: string
   workDir: string | null
   permissions: ArrangementDraftDocument['permissions']
@@ -484,6 +497,7 @@ export interface ArrangementNodeExecutionSnapshot {
   status: 'pending' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'interrupted' | 'stopped'
   finalFiles: ArrangementFinalFileSnapshot[]
   pendingConfirmation?: boolean
+  inputRequest?: import('./arrangement-input').ArrangementInputRequest
 }
 
 export interface ArrangementExecutionSnapshot {
@@ -501,6 +515,7 @@ export interface ArrangementExecutionResult {
 }
 
 export interface CreateTaskRequest {
+  knowledge?: KnowledgeSelection
   title: string
   prompt: string
   workDir?: string

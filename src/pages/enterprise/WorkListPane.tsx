@@ -43,11 +43,11 @@ export function WorkListPane({ works, records, selectedWorkId, filters, onFilter
     </header>
     <label className="ent-work-search"><Search size={15} aria-hidden /><input type="search" placeholder="搜索工作或员工" aria-label="搜索工作或员工" value={filters.search} onChange={event => onFilters({ ...filters, search: event.target.value })} /></label>
     <div className="ent-work-filters status-filters" role="group" aria-label="按状态筛选工作">
-      {BUCKETS.map(({ id, label, icon: Icon }) => <IconHint key={id} label={`${label} · ${statuses[id]} 项`} side="bottom"><button type="button" className={`bucket-${id}`} aria-label={`${label}，${statuses[id]} 项`} aria-pressed={filters.bucket === id} onClick={() => onFilters({ ...filters, bucket: id })}><Icon size={16} aria-hidden /><span>{statuses[id]}</span></button></IconHint>)}
+      {BUCKETS.map(({ id, label, icon: Icon }) => <IconHint key={id} label={`${label} · ${statuses[id]} 项`} side="bottom"><button type="button" className={`bucket-${id}`} aria-label={`${label}，${statuses[id]} 项`} aria-pressed={filters.bucket === id} onClick={() => onFilters({ ...filters, bucket: id })}><Icon size={16} className={id === 'active' && statuses.active > 0 ? 'ent-spin' : undefined} aria-hidden /><span>{statuses[id]}</span></button></IconHint>)}
     </div>
     <div className="ent-work-filters type-filters" role="group" aria-label="按类型筛选工作">
       {TYPES.map(({ id, label, icon: Icon }) => <IconHint key={id} label={`${label} · ${types[id]} 项`} side="bottom"><button type="button" aria-label={`${label}，${types[id]} 项`} aria-pressed={filters.workType === id} onClick={() => onFilters({ ...filters, workType: id })}><Icon size={14} aria-hidden /><span>{types[id]}</span></button></IconHint>)}
-      {unresolved.loading > 0 && <IconHint label={`${unresolved.loading} 项工作类型加载中，仅显示在全部类型中`}><span role="status" tabIndex={0} aria-label={`${unresolved.loading} 项工作类型加载中`}><LoaderCircle size={14} aria-hidden /></span></IconHint>}
+      {unresolved.loading > 0 && <IconHint label={`${unresolved.loading} 项工作类型加载中，仅显示在全部类型中`}><span role="status" tabIndex={0} aria-label={`${unresolved.loading} 项工作类型加载中`}><LoaderCircle size={14} className="ent-spin" aria-hidden /></span></IconHint>}
       {unresolved.unavailable > 0 && <IconHint label={`${unresolved.unavailable} 项工作类型暂不可用，点击重试`}><button type="button" onClick={onRetryTypes} aria-label="重新读取工作类型"><CircleHelp size={14} aria-hidden /></button></IconHint>}
     </div>
     <div className="ent-work-list-scroll">

@@ -1,4 +1,5 @@
 import type { MediaGenerationStatus, MediaSaveStatus, MediaTrackingStatus } from './media'
+import { MEDIA_SPEC_ERROR_MESSAGES, imageRequestedSpecSchema, videoRequestedSpecSchema, type MediaSpecFailureContext } from './media-spec-contract'
 
 export interface MediaIssueState {
   generationStatus: MediaGenerationStatus | string
@@ -8,6 +9,7 @@ export interface MediaIssueState {
 }
 
 export const MEDIA_BUSINESS_MESSAGES: Readonly<Record<string, string>> = {
+  ...MEDIA_SPEC_ERROR_MESSAGES,
   INSUFFICIENT_FUNDS: '可用资金不足，请联系平台管理员',
   VIDEO_BUDGET_EXCEEDED: '已超过企业视频预算，请联系平台管理员',
   MEDIA_FORBIDDEN: '当前账号没有视频生成权限，请联系平台管理员',
@@ -21,6 +23,33 @@ export const MEDIA_BUSINESS_MESSAGES: Readonly<Record<string, string>> = {
   PERMISSION_DENIED: '当前媒体任务权限不可用，请联系平台管理员',
   RATE_LIMITED: '请求过于频繁，请稍后重试',
   AUTH_REQUIRED: '登录状态已失效，请重新登录',
+}
+
+const SPEC_LABELS: Readonly<Record<string, string>> = {
+  size: '尺寸', width: '宽度', height: '高度', aspectRatio: '比例', count: '数量', quality: '质量',
+  durationSeconds: '时长（秒）', resolution: '分辨率', frameRate: '帧率', audio: '音轨', outputFormat: '格式',
+}
+const SPEC_SOURCES: Readonly<Record<string, string>> = { client: '客户端', sep: '平台', platform: '平台', adapter: '适配器',
+  pricing: '报价服务', sub2api: '上游网关', provider: '上游模型', upstream: '上游', authorization: '授权服务' }
+
+/** Direct IPC failures expose safe business context, never provider response text. */
+export function mediaSpecFailureMessage(error: { code: string; message?: string } & MediaSpecFailureContext): string | null {
+  if (!Object.hasOwn(MEDIA_SPEC_ERROR_MESSAGES, error.code)) return null
+  const parts = [MEDIA_SPEC_ERROR_MESSAGES[error.code]]
+  if (error.source && Object.hasOwn(SPEC_SOURCES, error.source)) parts.push(`来源：${SPEC_SOURCES[error.source]}`)
+  const field = error.field?.split('.').at(-1)
+  if (field && Object.hasOwn(SPEC_LABELS, field)) {
+    const spec = { [field]: error.requestedValue }
+    const valid = imageRequestedSpecSchema.safeParse(spec).success || videoRequestedSpecSchema.safeParse(spec).success
+    parts.push(`${SPEC_LABELS[field]}${valid && error.requestedValue !== undefined ? `：${String(error.requestedValue)}` : ''}`)
+  }
+  const alternatives = error.alternatives?.slice(0, 8).flatMap(spec => {
+    const image = imageRequestedSpecSchema.safeParse(spec), video = videoRequestedSpecSchema.safeParse(spec)
+    const parsed = image.success ? image.data : video.success ? video.data : undefined
+    return parsed ? [Object.entries(parsed).map(([key, value]) => `${SPEC_LABELS[key]} ${String(value)}`).join('、')].filter(Boolean) : []
+  })
+  if (alternatives?.length) parts.push(`可选方案（尚未执行）：${alternatives.join('；')}`)
+  return parts.join('；')
 }
 
 export function mediaIssueMessage(job: MediaIssueState, kind: 'image' | 'video'): string | null {

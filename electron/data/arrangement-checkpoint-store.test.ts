@@ -15,6 +15,26 @@ afterEach(async () => {
 })
 
 describe('ArrangementCheckpointStore', () => {
+  it('persists clarification identity, accepted reply and effective revisions across store restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-input-checkpoint-'))
+    roots.push(root)
+    const store = new ArrangementCheckpointStore(root)
+    const state = createArrangementExecutionState([])
+    state.status = 'waiting-user'
+    state.nodes = [{ nodeId: 'node', status: 'interrupted', attempt: 1, error: null, output: null,
+      inputRequest: { requestId: 'question', kind: 'media-spec', question: '视频用途？', requirements: [{ id: 'video', specRevision: 2 }] },
+      mediaSpecRevisions: { video: 2 } }]
+    const checkpoint = { version: 1 as const, taskId: 'task-a', owner: scope, planHash: 'plan-a', activeRunId: null, state, updatedAt: 1 }
+    await store.save(scope, checkpoint)
+    assert.deepEqual((await new ArrangementCheckpointStore(root).get(scope, 'task-a'))?.state.nodes[0], state.nodes[0])
+    state.nodes[0] = { ...state.nodes[0]!, status: 'ready', inputRequest: undefined, inputReply: { requestId: 'question', text: '8 秒竖屏' }, mediaSpecRevisions: { video: 3 } }
+    await store.save(scope, checkpoint)
+    assert.deepEqual((await new ArrangementCheckpointStore(root).get(scope, 'task-a'))?.state.nodes[0]?.inputReply, state.nodes[0].inputReply)
+    assert.deepEqual((await store.get(scope, 'task-a'))?.state.nodes[0]?.mediaSpecRevisions, { video: 3 })
+    state.nodes[0].mediaSpecRevisions = { video: 0 }
+    await store.save(scope, { ...checkpoint, taskId: 'invalid-revision' })
+    assert.equal(await store.get(scope, 'invalid-revision'), null)
+  })
   it('accepts old checkpoints and rejects corrupt model request counters', async () => {
     const root = await mkdtemp(join(tmpdir(), 'sep-arrangement-checkpoint-'))
     roots.push(root)

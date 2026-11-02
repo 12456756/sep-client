@@ -3,8 +3,12 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const channel = process.env.SEP_RELEASE_CHANNEL || process.argv[2] || 'beta'
+const channel = process.env.SEP_RELEASE_CHANNEL || process.argv[2] || 'stable'
 if (!['beta', 'stable'].includes(channel)) throw new Error(`Unsupported release channel: ${channel}`)
+if (process.env.SEP_RELEASE_CHANNEL && process.argv[2] && process.env.SEP_RELEASE_CHANNEL !== process.argv[2]) {
+  throw new Error('SEP_RELEASE_CHANNEL conflicts with the requested build channel')
+}
+if (channel === 'beta') throw new Error('The beta channel is retired; use stable')
 const file = resolve(root, `config/release.${channel}.json`)
 const release = JSON.parse(await readFile(file, 'utf8'))
 if (channel === 'stable' && !(process.env.SEP_BASE_URL || release.sepBaseUrl)) {

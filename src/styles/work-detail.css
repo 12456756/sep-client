@@ -15,6 +15,11 @@
 .ent-work-hub .ent-wk-detail { display: flex; flex: 1; gap: 0; min-height: 0; min-width: 0; overflow: hidden; }
 .ent-work-hub .ent-wk-detail-main { display: flex; flex: 1; flex-direction: column; gap: 0; min-width: 0; min-height: 0; }
 .ent-work-hub .ent-wk-detail-main > .ent-flow-act { flex-shrink: 0; max-height: 28vh; margin: 12px 20px 0; padding: 9px 12px; overflow-y: auto; border-radius: 6px; }
+.ent-media-input-requests { display: grid; gap: 12px; }
+.ent-media-input-form { display: grid; width: 100%; gap: 8px; }
+.ent-media-input-form label { display: grid; gap: 4px; }
+.ent-media-input-form textarea { width: 100%; resize: vertical; padding: 8px; border: 1px solid var(--ent-line); border-radius: 6px; color: inherit; background: var(--ent-panel); font: inherit; }
+.ent-media-input-form button { justify-self: start; }
 .ent-work-hub .ent-wk-detail-main > .ent-chat-panel { flex: 1; height: auto; min-height: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 .ent-work-hub .ent-chat-panel .ent-drawer-head { flex-shrink: 0; min-height: 44px; padding: 10px 24px; border: 0; }
 .ent-work-hub .ent-chat-panel .ent-drawer-id h2 { margin: 0; color: var(--ent-ink-2); font-size: 12px; font-weight: 500; }

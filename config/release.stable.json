@@ -1,6 +1,6 @@
 {
   "channel": "stable",
   "environment": "production",
-  "sepBaseUrl": "",
-  "gatewayUrl": ""
+  "sepBaseUrl": "https://longdaosep.cn/api",
+  "gatewayUrl": "https://longdaosep.cn/api/gateway/v1"
 }

@@ -28,7 +28,7 @@ export function WorkStatusIcon({ work, hint = true, focusable = true }: { work: 
   const state = work.planningDraft?.status === 'planning' ? 'running' : workStatusIndicator(work)
   const { icon: Icon } = STATUS[state]
   const label = workStatusLabel(work)
-  const glyph = <span className={`ent-work-status is-${state}`} role="img" aria-label={label} tabIndex={hint && focusable ? 0 : undefined}><Icon size={18} aria-hidden /></span>
+  const glyph = <span className={`ent-work-status is-${state}`} role="img" aria-label={label} tabIndex={hint && focusable ? 0 : undefined}><Icon size={18} className={state === 'running' ? 'ent-spin' : undefined} aria-hidden /></span>
   return hint ? <IconHint label={label}>{glyph}</IconHint> : glyph
 }
 
@@ -36,6 +36,6 @@ export function WorkTypeTag({ workType, hint = true, focusable = true }: { workT
   const Icon = workType.state === 'resolved' ? workType.kind === 'conversation' ? MessageSquare : Workflow
     : workType.state === 'loading' ? LoaderCircle : CircleHelp
   const label = workTypeLabel(workType)
-  const tag = <span className="ent-work-type-tag" role="img" aria-label={label} tabIndex={hint && focusable ? 0 : undefined}><Icon size={13} aria-hidden /></span>
+  const tag = <span className="ent-work-type-tag" role="img" aria-label={label} tabIndex={hint && focusable ? 0 : undefined}><Icon size={13} className={workType.state === 'loading' ? 'ent-spin' : undefined} aria-hidden /></span>
   return hint ? <IconHint label={label}>{tag}</IconHint> : tag
 }

@@ -1,7 +1,8 @@
 import type { MediaGenerationInput, MediaGenerationStatus, MediaJobView, MediaOperation, MediaProfile, MediaSaveStatus, MediaTrackingStatus } from './media'
 import { imageAspectRatio } from './media-spec'
-import { videoAllowedAudioModes } from './video-media'
+import { videoAllowedAudioModes, videoParametersSchema } from './video-media'
 import type { VideoParameters, VideoRuntime } from './video-media'
+import type { VideoRequestedSpec } from './media-spec-contract'
 
 /** Preserve an explicit available choice; otherwise use the server default before list order. */
 export function selectMediaProfile<T extends { profileId: string }>(profiles: readonly T[], selectedId?: string, defaultProfileId?: string | null): T | undefined {
@@ -27,7 +28,7 @@ export function imageFormSizes(profile: MediaProfile): string[] {
 export function imageFormParameters(profile: MediaProfile, choices: Partial<MediaGenerationInput['parameters']> = {}, preferred: 'size' | 'aspectRatio' = 'size'): MediaGenerationInput['parameters'] | null {
   const ratios = imageFormAspectRatios(profile)
   const sizes = imageFormSizes(profile)
-  if (!ratios.length || profile.maxCount < 1 || profile.allowedSizes?.length && !sizes.length) return null
+  if (!ratios.length || profile.maxCount === undefined || profile.maxCount < 1 || profile.allowedSizes?.length && !sizes.length) return null
   const chosenSize = choices.size && sizes.includes(choices.size) ? choices.size : undefined
   const defaultSize = profile.defaultSize && sizes.includes(profile.defaultSize) ? profile.defaultSize : undefined
   let size: string | undefined = chosenSize ?? defaultSize ?? sizes[0]
@@ -46,21 +47,23 @@ export function imageFormParameters(profile: MediaProfile, choices: Partial<Medi
 }
 
 type VideoFormProfile = VideoRuntime['profiles'][number]
-export function videoFormParameters(runtime: Pick<VideoRuntime, 'protocolVersion' | 'executionMode'>, profile: VideoFormProfile, choices: Partial<VideoParameters> = {}): VideoParameters | null {
+export function videoFormParameters(runtime: Pick<VideoRuntime, 'protocolVersion' | 'executionMode'>, profile: VideoFormProfile, choices: VideoRequestedSpec = {}): VideoParameters | null {
+  if (runtime.protocolVersion === 3) return null
   const caps = profile.capabilities
   const audioModes = videoAllowedAudioModes(runtime, profile)
   if (![caps.durationsSeconds, caps.aspectRatios, caps.resolutions, caps.frameRates, caps.outputFormats, audioModes].every(values => values.length)) return null
   function pick<T>(values: T[], chosen: T | undefined, fallback: T | undefined): T {
     return chosen !== undefined && values.includes(chosen) ? chosen : fallback !== undefined && values.includes(fallback) ? fallback : values[0]
   }
-  return {
+  const result = videoParametersSchema.safeParse({
     durationSeconds: pick(caps.durationsSeconds, choices.durationSeconds, caps.defaults?.durationSeconds),
     aspectRatio: pick(caps.aspectRatios, choices.aspectRatio, caps.defaults?.aspectRatio),
     resolution: pick(caps.resolutions, choices.resolution, caps.defaults?.resolution),
     frameRate: pick(caps.frameRates, choices.frameRate, caps.defaults?.frameRate),
     audio: pick(audioModes, choices.audio, caps.defaultAudio ?? caps.defaults?.audio ?? caps.supportsAudio),
     outputFormat: pick(caps.outputFormats, choices.outputFormat, caps.defaults?.outputFormat),
-  }
+  })
+  return result.success ? result.data : null
 }
 
 export interface MediaStatusLabel {
@@ -111,13 +114,13 @@ export function mediaJobActions(job: MediaJobView, archived: boolean): {
   }
 }
 
-export function mediaInputProblem(profile: MediaProfile | undefined, operation: MediaOperation, referenceCount: number, brief: string): string | null {
+export function mediaInputProblem(profile: MediaProfile | undefined, operation: MediaOperation, referenceCount: number, brief: string, negotiated = false): string | null {
   if (!profile) return '图片能力尚未配置'
   if (!profile.operations.includes(operation)) return operation === 'edit' ? '当前配置不支持图片编辑' : '当前配置不支持图片生成'
   if (operation === 'edit' && !profile.capabilities.referenceImage) return '当前配置不支持参考图编辑'
   if (operation === 'edit' && referenceCount === 0) return '请先选择编辑所需的参考图'
   if (referenceCount > 0 && !profile.capabilities.referenceImage) return '当前配置不支持参考图，请取消选择或切换配置'
-  if (!profile.allowedAspectRatios.length || profile.maxCount < 1) return '当前配置没有可用的图片规格'
+  if (!negotiated && (!profile.allowedAspectRatios.length || profile.maxCount === undefined || profile.maxCount < 1)) return '当前配置没有可用的图片规格'
   if (!brief.trim()) return '请填写创作需求'
   return null
 }

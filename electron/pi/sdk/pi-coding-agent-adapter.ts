@@ -27,9 +27,10 @@ import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
 import { videoToolGenerationInputSchema, videoToolJobInputSchema } from '../../../src/shared/video-host'
-import { videoBillingStatusSchema, videoOutputSchema, videoParametersSchema, videoRuntimeSchema } from '../../../src/shared/video-media'
+import { videoBillingStatusSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../../src/shared/video-media'
 import { mediaToolGenerationInputSchema } from '../../../src/shared/media-host'
-import { mediaCapabilitiesSchema, mediaGenerationInputSchema, mediaId } from '../../common/platform/media-contract'
+import { imageRequestedSpecSchema, videoRequestedSpecSchema, videoActualSpecSchema, mediaParameterSourcesSchema } from '../../../src/shared/media-spec-contract'
+import { mediaCapabilitiesSchema, mediaId, mediaParametersSchema } from '../../common/platform/media-contract'
 import { mediaToolFailure, mediaToolFailureFrom } from '../../errors/media-tool-error'
 import { videoToolFailureDiagnostic, videoToolFailureFrom } from '../../errors/video-tool-error'
 import { AppError } from '../../errors/app-error'
@@ -92,6 +93,15 @@ function registeredMediaNames(config: PiAgentSessionConfig): MediaToolName[] {
 
 const VIDEO_TOOL_NAMES: readonly VideoToolName[] = ['video_from_image', 'video_generate', 'video_get_job']
 
+function mediaInputValidationFailure(error: z.ZodError) {
+  const fields = new Set(['width', 'height', 'size', 'aspectRatio', 'count', 'quality', 'durationSeconds', 'resolution', 'frameRate', 'audio', 'outputFormat'])
+  const issue = error.issues.find(item => (item.path[0] === 'parameters' || item.path[0] === 'requestedSpec') && fields.has(String(item.path[1])))
+  const conflict = error.issues.some(item => item.code === 'custom' && /conflict|contradictory/i.test(item.message))
+  return mediaToolFailureFrom(new AppError(conflict ? 'SPEC_CONFLICT' : 'INVALID_ARGUMENT', { details: {
+    source: 'client', stage: 'input-validation', ...(issue ? { field: `${String(issue.path[0])}.${String(issue.path[1])}` } : {}),
+  } }))
+}
+
 function registeredVideoNames(config: PiAgentSessionConfig): VideoToolName[] {
   if (config.disableTools || !config.videoTools) return []
   return VIDEO_TOOL_NAMES.filter(name => config.videoTools?.names.includes(name) && (
@@ -106,7 +116,12 @@ const videoId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const videoJobResultSchema = z.object({
   jobId: videoId, taskId: videoId, profileId: videoId,
   operation: z.enum(['image-to-video', 'text-to-video']),
-  parameters: videoParametersSchema.extend({ aspectRatio: z.string().regex(/^\d+:\d+$/).max(32) }),
+  parameters: videoRequestedSpecSchema,
+  specFailure: videoSpecFailureSchema.optional(),
+  protocolVersion: z.literal(3).optional(), specRevision: z.number().int().positive().optional(),
+  requestedSpec: videoRequestedSpecSchema.optional(), effectiveSpec: videoRequestedSpecSchema.optional(),
+  actualSpec: videoActualSpecSchema.optional(), parameterSources: mediaParameterSourcesSchema.optional(),
+  acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
   generationStatus: z.enum(['NOT_SUBMITTED', 'SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
@@ -157,25 +172,29 @@ function safeVideoResult(result: unknown, names: readonly VideoToolName[]): unkn
 
 function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly VideoToolName[]): ToolDefinition[] {
   const id = Type.String({ pattern: '^[A-Za-z0-9_-]{1,128}$' })
+  const profileId = Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' })
   const parameters = Type.Object({
-    durationSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 600 })),
-    aspectRatio: Type.Optional(Type.String({ pattern: '^\\d+:\\d+$' })),
-    resolution: Type.Optional(Type.Union(['480p', '720p', '1080p', '4k'].map(value => Type.Literal(value)))),
-    frameRate: Type.Optional(Type.Integer({ minimum: 1, maximum: 120 })), audio: Type.Optional(Type.Boolean()),
-    outputFormat: Type.Optional(Type.Union([Type.Literal('video/mp4'), Type.Literal('video/webm')])),
+    durationSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    aspectRatio: Type.Optional(Type.String({ pattern: '^[1-9]\\d*:[1-9]\\d*$', maxLength: 32 })),
+    resolution: Type.Optional(Type.String({ pattern: '^(?![a-zA-Z][a-zA-Z0-9+.-]*:\\/\\/)[^\\u0000-\\u001F\\u007F]+$', minLength: 1, maxLength: 128 })),
+    width: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    height: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    frameRate: Type.Optional(Type.Number({ exclusiveMinimum: 0, maximum: Number.MAX_SAFE_INTEGER })), audio: Type.Optional(Type.Boolean()),
+    outputFormat: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
   }, { additionalProperties: false })
   return names.map(name => {
     const operation = name === 'video_from_image' ? 'image-to-video' : 'text-to-video'
     return {
       name, label: name, executionMode: 'sequential',
       description: name === 'video_get_job'
-        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait; end the turn after submission. Image capabilities do not describe video availability.'
-        : `Generate a video using ${operation}. Supply creativeBrief; the host selects the authorized video profile and backend defaults. Do not require users to configure profileId or technical parameters. Only specify parameters explicitly requested by the user, using video_get_job with {} to check supported values. ${name === 'video_from_image' ? 'Supply one SAVED task-local referenceAssets localAssetId; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report tool error codes, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
+        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. The host tracks and saves submitted jobs; generation tools return only after terminal status and local save are known. Never poll this tool or use sleep to wait. Image capabilities do not describe video availability.'
+        : `Generate a video using ${operation}. Inspect video_get_job({}) for actual authorization, profiles and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and reference assets, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters require explicit complete decisions; missing fields are never filled by the host. Never silently change specifications, switch model or substitute script animation. ${name === 'video_from_image' ? 'Supply one SAVED task-local referenceAssets localAssetId; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report the actual generation and local save states and chosen specifications; distinguish submitted, generated and saved. Report tool error codes and their source, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
       parameters: name === 'video_get_job' ? Type.Object({ jobId: Type.Optional(id) }, { additionalProperties: false })
         : Type.Object({
-          profileId: Type.Optional(id), operation: Type.Optional(Type.Literal(operation)),
+          profileId: Type.Optional(profileId), operation: Type.Optional(Type.Literal(operation)),
           localAssetIds: name === 'video_from_image' ? Type.Array(id, { minItems: 1, maxItems: 1 }) : Type.Optional(Type.Array(id, { maxItems: 0 })),
           creativeBrief: Type.String({ minLength: 1, maxLength: 4000 }), parameters: Type.Optional(parameters),
+          requestedSpec: Type.Optional(parameters), ...mediaDecisionToolProperties(),
         }, { additionalProperties: false }),
       async execute(_toolCallId, input, signal) {
         const failure = (message: string) => ({ content: [{ type: 'text' as const, text: message }], details: { isError: true } })
@@ -183,7 +202,8 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
           // Recheck the facade and task policy at dispatch, including direct SDK execution.
           if (!registeredVideoNames(config).includes(name)) return failure('Video tool is not enabled for this run.')
           const parsed = name === 'video_get_job' ? videoToolJobInputSchema.safeParse(input) : videoToolGenerationInputSchema.safeParse(input)
-          if (!parsed.success || ('creativeBrief' in parsed.data && (parsed.data.operation !== undefined && parsed.data.operation !== operation || parsed.data.localAssetIds.length !== (name === 'video_from_image' ? 1 : 0)))) {
+          if (!parsed.success) return failure(JSON.stringify(mediaInputValidationFailure(parsed.error)))
+          if ('creativeBrief' in parsed.data && (parsed.data.operation !== undefined && parsed.data.operation !== operation || parsed.data.localAssetIds.length !== (name === 'video_from_image' ? 1 : 0))) {
             return failure(JSON.stringify(videoToolFailureFrom(new AppError('INVALID_ARGUMENT'))))
           }
           if (signal?.aborted) return failure('Video tool request cancelled.')
@@ -227,13 +247,17 @@ const mediaAssetResultSchema = z.object({
 })
 const mediaJobResultSchema = z.object({
   jobId: mediaId, taskId: z.string(), runId: z.string(), profileId: z.string(), operation: z.enum(['generate', 'edit']),
-  parameters: mediaGenerationInputSchema.shape.parameters,
+  parameters: z.union([imageRequestedSpecSchema, mediaParametersSchema]),
+  protocolVersion: z.literal(3).optional(), specRevision: z.number().int().positive().optional(),
+  requestedSpec: imageRequestedSpecSchema.optional(), effectiveSpec: imageRequestedSpecSchema.optional(),
+  actualSpec: imageRequestedSpecSchema.optional(), parameterSources: mediaParameterSourcesSchema.optional(),
+  acceptance: z.enum(['matched', 'mismatched', 'unknown']).optional(),
   generationStatus: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   trackingStatus: z.enum(['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED']),
   saveStatus: z.enum(['PENDING', 'SAVING', 'SAVED', 'SAVE_FAILED', 'MISSING']),
   billingStatus: z.string(), error: z.string().nullable(), createdAt: z.number(), updatedAt: z.number(),
   assets: z.array(mediaAssetResultSchema), canCancelUpstream: z.boolean(),
-})
+}).refine(job => (job.protocolVersion === 3 ? imageRequestedSpecSchema : mediaParametersSchema).safeParse(job.parameters).success)
 
 function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown; isError: boolean } {
   // Project business views only: quotes, provider credentials, URLs and transport DTOs never reach Pi.
@@ -244,6 +268,9 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
       field: z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/).optional(),
       stage: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/).optional(),
       recovery: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
+      source: z.string().max(32).optional(), requestedValue: z.union([z.string().max(96), z.number().finite(), z.boolean()]).optional(),
+      reasonCode: z.string().max(96).optional(), submissionState: z.string().max(32).optional(), billingState: z.string().max(32).optional(), retryable: z.boolean().optional(),
+      alternatives: z.array(z.union([imageRequestedSpecSchema, videoRequestedSpecSchema])).max(8).optional(),
     }) }).safeParse(result)
     if (parsed.success) return { value: mediaToolFailure(parsed.data.error.code, parsed.data.error.message, parsed.data.error), isError: true }
     throw new Error('Invalid media business error.')
@@ -253,11 +280,43 @@ function safeMediaResult(name: MediaToolName, result: unknown): { value: unknown
         ? z.object({ capabilities: mediaCapabilitiesSchema, referenceAssets: z.array(mediaAssetResultSchema) }).parse(result)
         : mediaCapabilitiesSchema.parse(result))
     : mediaJobResultSchema.parse(result)
-  return { value: redactValue(value), isError: false }
+  // Validated capability hints include nested arrays beyond the log redactor's limits.
+  return { value: redactValue(value, 0, '', { maxDepth: 8, maxArrayLength: 128 }), isError: false }
+}
+
+function mediaDecisionToolProperties() {
+  const source = Type.Union([
+    Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream'),
+    Type.Object({ source: Type.Union([Type.Literal('user'), Type.Literal('model'), Type.Literal('upstream')]), decisionRef: Type.String({ minLength: 1, maxLength: 256 }) }, { additionalProperties: false }),
+  ])
+  return {
+    requirementId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    protocolVersion: Type.Optional(Type.Literal(3)),
+    specRevision: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    parameterSources: Type.Optional(Type.Object(Object.fromEntries([
+      'width', 'height', 'aspectRatio', 'size', 'count', 'quality', 'durationSeconds', 'resolution', 'frameRate', 'audio', 'outputFormat',
+    ].map(key => [key, Type.Optional(source)])), { additionalProperties: false })),
+  }
 }
 
 function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly MediaToolName[]): ToolDefinition[] {
   const id = Type.String({ pattern: '^[A-Za-z0-9_-]{1,128}$' })
+  const spec = Type.Object({
+    aspectRatio: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
+    count: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    width: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    height: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    size: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+    quality: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+  }, { additionalProperties: false })
+  const requestedSpec = Type.Object({
+    aspectRatio: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })),
+    count: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    width: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    height: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
+    size: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+    quality: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
+  }, { additionalProperties: false })
   const parameters = {
     media_get_capabilities: Type.Object({}, { additionalProperties: false }),
     media_generate_image: Type.Object({
@@ -265,11 +324,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
       operation: Type.Optional(Type.Union([Type.Literal('generate'), Type.Literal('edit')])),
       localAssetIds: Type.Optional(Type.Array(id, { maxItems: 16 })),
       creativeBrief: Type.String({ minLength: 1, maxLength: 20_000 }),
-      parameters: Type.Optional(Type.Object({
-        aspectRatio: Type.Optional(Type.String({ minLength: 1, maxLength: 32 })), count: Type.Optional(Type.Integer({ minimum: 1, maximum: 16 })),
-        size: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-        quality: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
-      }, { additionalProperties: false })),
+      parameters: Type.Optional(spec), requestedSpec: Type.Optional(requestedSpec), ...mediaDecisionToolProperties(),
     }, { additionalProperties: false }),
     media_get_job: Type.Object({ jobId: id }, { additionalProperties: false }),
     media_cancel_job: Type.Object({ jobId: id, cancelUpstream: Type.Boolean() }, { additionalProperties: false }),
@@ -280,7 +335,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
   }
   const descriptions = {
     media_get_capabilities: 'Get the currently authorized image capability and the task reference images selected in the image panel.',
-    media_generate_image: "Create an image from the user's creative brief. The host selects the authorized image profile and fills supported defaults. Use the task reference images selected in the image panel when relevant; request localAssetIds only when the user names a different saved referenceAssets item. Specify profile, operation or supported parameters only when the user explicitly asks. The host validates cost and obtains approval before submission.",
+    media_generate_image: "Generate or edit an image. Inspect media_get_capabilities for actual authorization and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and selected task reference images, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. A ratio alone does not determine pixel dimensions: decide size or width/height from the intended use. Pricing may also need count and quality; infer these decisions from the brief. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. On MISSING_SPEC, use the reported field and submissionState to complete missing routine decisions; clarify only consequential ambiguity. Never automatically repeat a paid submission or one with unknown submission state. Legacy parameters need explicit complete decisions; the host never supplies business defaults. Use selected references when relevant; specify localAssetIds only for different saved referenceAssets. Never silently alter specifications, switch models or substitute scripted art. The host validates cost and obtains approval before submission. Report the actual generation and local save states, available assets and chosen specifications; distinguish submitted, generated and saved. After success, state completion clearly instead of asking permission to begin.",
     media_get_job: 'Read cached status and task-local assets of an image job. The host tracks and saves submitted jobs. Never poll this tool or use sleep to wait; end the turn after submission.',
     media_cancel_job: 'Stop tracking an image job, optionally requesting upstream cancellation through the host approval policy.',
   }
@@ -290,7 +345,7 @@ function mediaToolDefinitions(config: PiAgentSessionConfig, names: readonly Medi
       try {
         const parsed = validators[name].safeParse(input)
         if (!parsed.success) return {
-          content: [{ type: 'text', text: 'Invalid media tool input.' }], details: { isError: true },
+          content: [{ type: 'text', text: JSON.stringify(mediaInputValidationFailure(parsed.error)) }], details: { isError: true },
         }
         if (signal?.aborted) throw new Error('Cancelled media call.')
         const result = safeMediaResult(name, await config.mediaTools!.execute(name, parsed.data, signal))
@@ -964,7 +1019,8 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     // Execution-disabled/planner policies must not gain external tools or spawn MCP servers.
     const canUseMcp = !config.disableTools && (!config.toolPolicy || config.toolPolicy.allowedTools.length > 0 || isUnrestrictedToolPolicy(config.toolPolicy))
     const servers = canUseMcp ? config.mcpServers ?? await loadHostMcpServers() : []
-    const common: CommonSkillsResult = !config.disableSkills && config.employeeProfile && canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG
+    const commonEnabled = config.enableCommonTools === true || (!config.disableSkills && !!config.employeeProfile)
+    const common: CommonSkillsResult = commonEnabled && canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG
       ? prepareCommonSkills() : { skills: [], unavailable: [] }
     if (common.skills.length && config.resumeSessionFile) {
       try {
@@ -1003,15 +1059,17 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
         extensionFactories: buildExtensions(config, mcp),
-        ...(config.disableSkills ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) } : employeeSkillLoaderOptions(
-          config.workspaceDir,
-          config.agentDir,
-          config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
-          loadSkills,
-          commonPaths,
-        )),
+        ...(config.disableSkills && !commonPaths.length
+          ? { noSkills: true, skillsOverride: () => ({ skills: [], diagnostics: [] }) }
+          : employeeSkillLoaderOptions(
+            config.workspaceDir,
+            config.agentDir,
+            config.disableSkills ? undefined : config.employeeProfile ? config.additionalSkillPaths ?? [] : undefined,
+            loadSkills,
+            commonPaths,
+          )),
         noContextFiles: true,
-        additionalSkillPaths: config.disableSkills ? [] : [...(config.additionalSkillPaths ?? []), ...commonPaths],
+        additionalSkillPaths: config.disableSkills ? commonPaths : [...(config.additionalSkillPaths ?? []), ...commonPaths],
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,

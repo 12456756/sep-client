@@ -139,7 +139,7 @@
 
 /* 深色主题只覆盖语义令牌，页面组件不需要分别维护两套颜色。 */
 .ent-shell.dark,
-:root:has(.ent-shell.dark) :is(.kb-overlay, .kb-dialog, .kb-document-drawer, .skill-dialog-overlay, .skill-save-dialog) {
+:root:has(.ent-shell.dark) :is(.kb-overlay, .kb-dialog, .kb-document-drawer, .skill-dialog-overlay, .skill-save-dialog, .ent-knowledge-popover, .ent-model-popover) {
   --ent-canvas: #11131a;
   --ent-shell: #11131a;
   --ent-panel: #1a1d26;

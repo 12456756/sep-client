@@ -75,6 +75,22 @@ test('video results panel has no duplicate creation form or technical configurat
   assert.doesNotMatch(html, /<form|<select|<textarea|视频模型|视频时长|提交视频生成|从系统选择视频参考图/)
 })
 
+test('saved videos with fractional actual-spec duration remain visible with mismatch and billing details', () => {
+  const actual = { ...output, width: 1344, height: 768, durationSeconds: 4.458333 }
+  const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({
+    protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 },
+    actualSpec: { durationSeconds: actual.durationSeconds, width: actual.width, height: actual.height, frameRate: actual.frameRate, audio: true, outputFormat: actual.mimeType },
+    acceptance: 'mismatched', error: 'OUTPUT_SPEC_MISMATCH',
+    generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', saveStatus: 'SAVED', outputs: [actual],
+    billingStatus: 'SETTLED', actualCostCny: '28.800000',
+  })] } })
+  assert.match(html, /实际生成：4\.458333 秒/)
+  assert.match(html, /预览视频成果 1/)
+  assert.match(html, /导出视频成果 1/)
+  assert.match(html, /实付 ¥28\.800000/)
+  assert.doesNotMatch(html, /尚无视频任务/)
+})
+
 test('real terminal billing stays visible and resumable while preserving measured output metadata', () => {
   const actual = { ...output, width: 1344, height: 768, durationSeconds: 4.458333, frameRate: 24 }
   const view: VideoTaskView = { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({
@@ -461,4 +477,14 @@ test('pending commands and export feedback are visible and disable all mutations
     assert.doesNotMatch(html, /<button(?![^>]*disabled="")[^>]*>/)
   }
   assert.doesNotMatch(panel({ notice: { message: '视频已导出', tone: 'success' } }), /视频已导出/)
+})
+
+test('persisted submit diagnostics explain unsupported specifications without hiding uncertainty', () => {
+  const pending = job({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED', billingStatus: 'RECONCILING',
+    error: 'UPSTREAM_SPEC_UNSUPPORTED', specFailure: { code: 'UPSTREAM_SPEC_UNSUPPORTED', source: 'provider', field: 'resolution', requestedValue: '8k',
+      alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved' } })
+  const issue = videoTaskIssue([pending])
+  assert.match(issue, /8k/); assert.match(issue, /1080p/); assert.match(issue, /上游模型/)
+  const html = render(React.createElement(VideoTaskContent, { taskId: 'task-1', view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [pending] }, busy: false, pending: null, onAction: noop, onPreview: noop, onExport: noop }))
+  assert.match(html, /8k/); assert.match(html, /1080p/); assert.match(html, /提交结果不明/)
 })

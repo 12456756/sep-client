@@ -44,6 +44,20 @@ it('does not use one run_completed event to certify multiple assistant messages'
   assert.equal((await history.read(scope))[0].runs[0].messages.find(message => message.type === 'model_output')?.completeness, 'complete')
 })
 
+it('recovers the final tool response without the preliminary generation promise', async () => {
+  const history = new ClientMonitorHistoryService({
+    scopeProvider: () => scope, listTasks: async () => [task], listRuns: async () => [run('run-1', 'completed', 2)],
+    listMessages: async () => [],
+    getTimeline: async () => [
+      { taskId: 'task', runId: 'run-1', subscriptionId: 'sub', sequence: 1, type: 'text_delta', occurredAt: 2, data: { text: 'I will generate.' } },
+      { taskId: 'task', runId: 'run-1', subscriptionId: 'sub', sequence: 2, type: 'tool_execution_start', occurredAt: 3, data: {} },
+      { taskId: 'task', runId: 'run-1', subscriptionId: 'sub', sequence: 3, type: 'text_delta', occurredAt: 4, data: { text: 'Generated and saved.' } },
+    ],
+  })
+  const output = (await history.read(scope))[0].runs[0].messages.find(message => message.type === 'model_output')
+  assert.equal(output?.content, 'Generated and saved.')
+})
+
 it('recovers bound canonical orphan messages under their original run without status or v2 proof', async () => {
   const messages: ConversationMessage[] = [
     { id: 'output-1', taskId: 'task', turnId: 'orphan-1', runId: 'orphan-1', subscriptionId: 'sub', modelId: 'model', role: 'assistant', content: 'answer', createdAt: 3 },

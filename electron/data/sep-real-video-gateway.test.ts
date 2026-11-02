@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
+import { AppError } from '../errors/app-error'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 import { SEP_MEDIA_MOCK_PNG_BASE64 } from '../common/platform/sep-media-gateway-contract'
@@ -15,6 +16,9 @@ const receipt = videoReceiptSchema.parse({ ...fixture.receipts.succeeded, mock: 
   amountCny: '0.900000', actualCostCny: '0.800000', amountUsd: '0.12', outputs: [output] })
 const quote = { ...fixture.quote, mock: false, billingStatus: 'NOT_RESERVED', amountCny: '0.900000', amountUsd: '0.12',
   pricingVersion: 'real-v1', usdToCnyRate: 7.5, funding: { creditCny: '0.500000', memberWalletCny: '0.400000', personalCny: '0.000000' } }
+const requestedSpecV3 = { durationSeconds: 720, aspectRatio: '9:16', resolution: '8k', audio: false }
+const billingDimensionsV3 = { model: 'provider-video-v1', operation: 'image-to-video' as const, durationSeconds: 720, resolution: '8k' }
+const quoteV3 = { ...quote, protocolVersion: 3, semanticHashVersion: 3, specRevision: 2, effectiveSpec: requestedSpecV3, billingDimensions: billingDimensionsV3 }
 function json(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }) }
 function gateway(fetcher: typeof fetch) {
   return new SepRealVideoGateway({ mock: false, baseUrl: 'https://sep.invalid/api', subscriptionId: 'sub-1', token: async () => 'employment-token', fetch: fetcher })
@@ -27,6 +31,52 @@ async function collect(source: AsyncIterable<Uint8Array>) {
 function content(value = bytes, headers: Record<string, string> = {}) {
   return new Response(new Uint8Array(value), { headers: { 'Content-Type': 'video/mp4', ...headers } })
 }
+
+test('V3 video quote transmits requested specification without legacy parameters or injected defaults', async () => {
+  const requestedSpec = { durationSeconds: 720, aspectRatio: '9:16', resolution: '8k', audio: false }
+  const request = videoRequestSchema.parse({ ...fixture.quoteRequest, protocolVersion: 3, specRevision: 2,
+    parameterSources: { durationSeconds: 'model', aspectRatio: 'user', resolution: 'model', audio: 'user' }, parameters: requestedSpec, requestedSpec })
+  let calls = 0
+  const adapter = gateway(async (_url, init) => {
+    calls++
+    const body = JSON.parse(String(init?.body))
+    assert.equal('parameters' in body, false)
+    assert.deepEqual(body.requestedSpec, requestedSpec)
+    return json({ ...quoteV3, effectiveSpec: requestedSpec, billingDimensions: { ...billingDimensionsV3, durationSeconds: requestedSpec.durationSeconds, resolution: requestedSpec.resolution } })
+  })
+  const acceptedQuote = await adapter.quote(request, signal)
+  assert.deepEqual(acceptedQuote.effectiveSpec, requestedSpec)
+  assert.equal(acceptedQuote.protocolVersion, 3)
+  assert.equal(acceptedQuote.specRevision, 2)
+  assert.equal(calls, 1)
+  const changed = gateway(async () => json({ ...quoteV3, effectiveSpec: { ...requestedSpec, durationSeconds: 4 } }))
+  await assert.rejects(changed.quote(request, signal), { code: 'SPEC_CONFLICT' })
+  await assert.rejects(gateway(async () => json(quote)).quote(request, signal), { code: 'SPEC_CONFLICT' })
+  await assert.rejects(gateway(async () => json({ ...quoteV3, semanticHashVersion: undefined })).quote(request, signal), { code: 'SPEC_CONFLICT' })
+  await assert.rejects(gateway(async () => json({ ...quoteV3, billingDimensions: { ...billingDimensionsV3, durationSeconds: 4 } })).quote(request, signal), { code: 'SPEC_CONFLICT' })
+})
+
+test('V3 receipt preserves SEP measured delivery evidence and rejects incomplete bindings', async () => {
+  const request = videoRequestWithIdentitySchema.parse({ ...fixture.request, protocolVersion: 3, specRevision: 2,
+    parameterSources: { durationSeconds: 'model', aspectRatio: 'user', resolution: 'model', audio: 'user' },
+    parameters: requestedSpecV3, requestedSpec: requestedSpecV3 })
+  const v3Receipt = { ...receipt, protocolVersion: 3, semanticHashVersion: 3, specRevision: 2,
+    effectiveSpec: requestedSpecV3, billingDimensions: billingDimensionsV3, deliveryStatus: 'matched',
+    actualSpec: { durationSeconds: 720, width: 1080, height: 1920, frameRate: 30, mimeType: 'video/mp4', hasAudio: false, source: 'measured' } }
+  const adapter = gateway(async () => json(v3Receipt))
+  const accepted = await adapter.submit(request, signal)
+  assert.deepEqual(accepted.actualSpec, v3Receipt.actualSpec)
+  assert.equal(accepted.deliveryStatus, 'matched')
+  assert.equal(accepted.acceptance, 'matched')
+  for (const invalid of [
+    { ...v3Receipt, semanticHashVersion: undefined },
+    { ...v3Receipt, billingDimensions: { ...billingDimensionsV3, resolution: '720p' } },
+    { ...v3Receipt, deliveryStatus: 'unknown', acceptance: 'matched' },
+    { ...v3Receipt, actualSpec: undefined },
+  ]) {
+    await assert.rejects(gateway(async () => json(invalid)).submit(request, signal))
+  }
+})
 
 test('real adapter uses only SEP video-real paths and preserves actual quote metadata', async () => {
   const urls: string[] = []
@@ -255,4 +305,29 @@ test('real response rejects oversized output and unverified mock pricing', async
   const oversized = gateway(async () => json({ ...receipt, outputs: [{ ...output, byteLength: 256 * 1024 * 1024 + 1 }] }))
   await assert.rejects(oversized.getReceipt(receipt.receiptId, signal), { gatewayCode: 'VIDEO_INVALID_RESPONSE' })
   await assert.rejects(gateway(async () => json(fixture.quote)).quote(videoRequestSchema.parse(fixture.quoteRequest), signal), { gatewayCode: 'VIDEO_MODE_MISMATCH' })
+})
+
+test('video specification errors retain safe diagnostics and discard raw upstream secrets', async () => {
+  const adapter = gateway(async () => json({ error: { code: 'UPSTREAM_SPEC_UNSUPPORTED', source: 'provider', field: 'resolution', requestedValue: '8k',
+    reasonCode: 'UNSUPPORTED_RESOLUTION', alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false,
+    message: 'Bearer upstream-secret https://private.invalid', reason: 'token=private-secret', body: { apiKey: 'hidden-secret' } } }, 422))
+  await assert.rejects(adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal), (error: unknown) => {
+    assert.ok(error instanceof AppError)
+    assert.equal(error.code, 'UPSTREAM_SPEC_UNSUPPORTED')
+    assert.deepEqual(error.details, { source: 'provider', field: 'resolution', requestedValue: '8k', reasonCode: 'UNSUPPORTED_RESOLUTION', alternatives: [{ resolution: '1080p' }], submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false })
+    assert.doesNotMatch(JSON.stringify(error), /secret|private\.invalid|apiKey/)
+    return true
+  })
+})
+
+test('malformed specification diagnostic types cannot crash error parsing or reflect upstream values', async () => {
+  const adapter = gateway(async () => json({ error: { code: 'UPSTREAM_SPEC_UNSUPPORTED', field: { token: 'private-secret' },
+    requestedValue: { raw: 'private-secret' }, source: ['provider'], reasonCode: 'https://private.invalid', alternatives: [{ resolution: '1080p' }] } }, 422))
+  await assert.rejects(adapter.quote(videoRequestSchema.parse(fixture.quoteRequest), signal), (error: unknown) => {
+    assert.ok(error instanceof AppError)
+    assert.equal(error.code, 'UPSTREAM_SPEC_UNSUPPORTED')
+    assert.deepEqual(error.details, { alternatives: [{ resolution: '1080p' }] })
+    assert.doesNotMatch(JSON.stringify(error), /private-secret|private\.invalid/)
+    return true
+  })
 })

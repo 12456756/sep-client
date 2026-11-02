@@ -1,6 +1,23 @@
 import * as assert from 'node:assert/strict'
 import { it } from 'node:test'
-import { mediaIssueMessage } from './media-feedback'
+import { mediaIssueMessage, mediaSpecFailureMessage } from './media-feedback'
+
+it('explains specification failures instead of reporting unavailable employees or missing permissions', () => {
+  const job = { generationStatus: 'FAILED', trackingStatus: 'STOPPED' as const, saveStatus: 'PENDING' as const }
+  assert.match(mediaIssueMessage({ ...job, error: 'MISSING_SPEC' }, 'video')!, /规格尚未确定/)
+  assert.match(mediaIssueMessage({ ...job, error: 'PRICE_UNAVAILABLE' }, 'image')!, /可靠报价/)
+  assert.match(mediaIssueMessage({ ...job, error: 'OUTPUT_SPEC_MISMATCH' }, 'video')!, /实际产物/)
+})
+
+it('shows the safe failure source, field and suggested specifications without free-form upstream text', () => {
+  const message = mediaSpecFailureMessage({ code: 'UPSTREAM_SPEC_UNSUPPORTED', message: 'secret upstream body',
+    field: 'requestedSpec.durationSeconds', requestedValue: 8, source: 'provider', reasonCode: 'UNSUPPORTED_DURATION', alternatives: [{ durationSeconds: 6 }] })!
+  assert.match(message, /上游模型/)
+  assert.match(message, /时长.*8/)
+  assert.match(message, /6/)
+  assert.doesNotMatch(message, /secret upstream/)
+  assert.equal(mediaSpecFailureMessage({ code: 'UNKNOWN', message: 'private' }), null)
+})
 
 it('preserves uncertain submission and never echoes raw supplier errors', () => {
   const job = { generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED' as const, saveStatus: 'PENDING' as const, error: 'INSUFFICIENT_FUNDS' }

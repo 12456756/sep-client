@@ -417,3 +417,19 @@ describe('VideoStore disk durability and scope safety', () => {
     assert.equal((await f.store.getAsset(scope, 'task-a', 'job-a', 'output-a'))?.status, 'MISSING')
   })
 })
+
+
+it('preserves unknown upstream video containers as hash-verified opaque exports across restart', async () => {
+  const f = await fixture(false)
+  const opaque = { ...output(), mimeType: 'video/quicktime' }
+  await f.store.updateJob(scope, 'task-a', 'job-a', value => ({ ...value, submission: 'RECEIPTED', receipt: {
+    mock: true, receiptId: 'receipt-a', clientRequestId: value.request.clientRequestId, profileId: value.request.profileId,
+    configVersion: value.request.configVersion, operation: value.request.operation, status: 'SUCCEEDED', outputs: [opaque],
+    pollAfterMs: null, billingStatus: 'MOCK_NOT_CHARGED', errorCode: null, recovery: { canQuery: false, canCancel: false, canDownload: true },
+  } }))
+  const asset = await f.store.saveOutput(scope, 'task-a', 'job-a', opaque, stream(), signal())
+  assert.ok(asset.relativePath.endsWith('.bin'))
+  const reopened = new VideoStore(f.root)
+  assert.equal((await reopened.getAsset(scope, 'task-a', 'job-a', opaque.outputId))?.output.mimeType, 'video/quicktime')
+  assert.deepEqual(await reopened.readAsset(scope, 'task-a', 'job-a', opaque.outputId), MOCK_VIDEO_BYTES)
+})

@@ -15,6 +15,7 @@ import { TaskEventStore, type TaskEventStorePort } from './task-event-store'
 import { WriteChain } from './write-chain'
 import { TaskPersistenceError } from './task-store'
 import type { AttachmentView } from '../../src/shared/attachment-contracts'
+import { knowledgeSelectionSchema, type KnowledgeSelection } from '../../src/shared/knowledge-selection'
 
 export type { ConversationSessionPaths, TaskRunPaths } from './scope-path'
 
@@ -48,6 +49,7 @@ export interface TaskRunRecord {
   resumedFromRunId?: string
   executionKind?: 'conversation' | 'arrangement'
   attachmentMetadata?: AttachmentView[]
+  knowledge?: KnowledgeSelection
 }
 
 export interface CreateTaskRunInput {
@@ -62,6 +64,7 @@ export interface CreateTaskRunInput {
   resumedFromRunId?: string
   executionKind?: 'conversation' | 'arrangement'
   attachmentMetadata?: AttachmentView[]
+  knowledge?: KnowledgeSelection
 }
 
 export interface TaskRunStorePort {
@@ -124,6 +127,7 @@ export class TaskRunStore implements TaskRunStorePort {
       ...(input.resumedFromRunId ? { resumedFromRunId: input.resumedFromRunId } : {}),
       ...(input.executionKind ? { executionKind: input.executionKind } : {}),
       ...(input.attachmentMetadata?.length ? { attachmentMetadata: structuredClone(input.attachmentMetadata) } : {}),
+      ...(input.knowledge ? { knowledge: structuredClone(input.knowledge) } : {}),
     }
     await Promise.all([
       mkdir(join(paths.taskDir, 'runs'), { recursive: true }),
@@ -274,6 +278,7 @@ export class TaskRunStore implements TaskRunStorePort {
   ): boolean {
     return Boolean(
       record &&
+      (record.knowledge === undefined || knowledgeSelectionSchema.safeParse(record.knowledge).success) &&
       record.version === 3 &&
       record.id === runId &&
       record.taskId === taskId &&

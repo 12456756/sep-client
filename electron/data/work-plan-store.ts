@@ -2,6 +2,7 @@ import { diagnoseJsonWithBackup, readJsonWithBackup, writeJsonAtomic, type JsonR
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 import type { WorkPlan } from '../domain/arrangement-plan'
 import { TaskPersistenceError } from './task-store'
+import { knowledgeSelectionSchema } from '../../src/shared/knowledge-selection'
 
 export interface WorkPlanStorePort {
   save(scope: TaskOwnerScope, plan: WorkPlan): Promise<void>
@@ -21,6 +22,8 @@ function parsePlan(value: unknown, scope: TaskOwnerScope, taskId: string): WorkP
     !Array.isArray(plan.nodes) || !plan.workspace || plan.workspace.mode !== 'shared' ||
     !plan.permissions || typeof plan.planHash !== 'string' || typeof plan.createdAt !== 'number'
   ) return null
+  if (plan.knowledge !== undefined && !knowledgeSelectionSchema.safeParse(plan.knowledge).success) return null
+  if (plan.nodes.some(node => node.knowledge !== undefined && !knowledgeSelectionSchema.safeParse(node.knowledge).success)) return null
   return structuredClone(plan as WorkPlan)
 }
 

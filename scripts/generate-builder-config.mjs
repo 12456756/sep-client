@@ -71,6 +71,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.ar
       throw new Error('SEP_RELEASE_CHANNEL conflicts with the requested build channel')
     }
     if (!Object.hasOwn(UPDATE_FEEDS, channel)) throw new Error('channel must be beta or stable')
+    if (channel === 'beta') throw new Error('The beta channel is retired; use stable')
     if (signed) preflightSigning()
     await generateBuilderConfig(channel, process.cwd(), { signed })
     console.log(`builder config: .release/electron-builder.${channel}${signed ? '.signed' : ''}.json (${signed ? 'signed release' : 'local package, NOT release-approved'}, output: dist/${signed ? '' : 'local/'}${channel}, publishing disabled by packaging command)`)

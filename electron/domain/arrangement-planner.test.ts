@@ -152,6 +152,15 @@ describe('arrangement node work contract parsing', () => {
     assert.deepEqual(result.nodes[0]?.deliverables, [deliverable])
   })
 
+  it('ignores model supplied knowledge scope and restores the user node override', () => {
+    const selected = { mode: 'manual' as const, knowledgeBaseIds: ['kb-a'], sources: [{ knowledgeBaseId: 'kb-a', sourceId: 'source-a' }] }
+    const existing = { ...draft.nodes[0], id: 'node-1', knowledge: selected }
+    const result = parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ ...node, knowledge: { mode: 'auto', knowledgeBaseIds: ['kb-attacker'] } }] }), { ...draft, nodes: [existing] }, [authorized])
+    assert.deepEqual(result.nodes[0]?.knowledge, selected)
+    const newNode = parseArrangementPlannerOutput(JSON.stringify({ title: 'Report', nodes: [{ ...node, knowledge: { mode: 'auto', knowledgeBaseIds: ['kb-attacker'] } }] }), { ...draft, nodes: [] }, [authorized])
+    assert.equal(newNode.nodes[0]?.knowledge, undefined)
+  })
+
   it('preserves media requirements and typed image/video deliverables from planner output', () => {
     const result = parseArrangementPlannerOutput(JSON.stringify({
       title: 'Create an image and video',
@@ -178,6 +187,17 @@ describe('arrangement node work contract parsing', () => {
   const imageFile = { ...deliverable, id: 'poster', format: 'png', path: 'deliverables/poster.png' }
   const videoFile = { ...deliverable, id: 'video', format: 'mp4', path: 'deliverables/video.mp4' }
   const source = { nodeId: 'image', deliverableId: 'poster' }
+  it('requires real media provenance when AI generation is explicitly required', () => {
+    const requirement = { id: 'video', kind: 'video', operation: 'text-to-video', generationMethod: 'ai-generated',
+      specRevision: 1, requiredSpec: { durationSeconds: 8, audio: false }, proposedSpec: { resolution: '8k' } }
+    for (const source of ['workspace', 'either']) {
+      assert.throws(() => parse({ mediaRequirements: [requirement], deliverables: [{ ...videoFile,
+        artifact: { kind: 'video', source, operation: 'text-to-video' } }] }), /artifact.source/)
+    }
+    const result = parse({ mediaRequirements: [requirement], deliverables: [{ ...videoFile,
+      artifact: { kind: 'video', source: 'media-output', operation: 'text-to-video' } }] })
+    assert.deepEqual(result.nodes[0]!.mediaRequirements![0], requirement)
+  })
   function parseMediaPair(imageRequirement: unknown, videoRequirement: unknown, withArtifacts = false) {
     return parseArrangementPlannerOutput(JSON.stringify({ title: 'Product media', nodes: [
       { ...node, id: 'image', mediaRequirements: [imageRequirement], deliverables: [{ ...imageFile,

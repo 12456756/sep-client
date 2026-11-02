@@ -18,6 +18,7 @@ import type { TaskExecutionEvent } from '../../src/shared/types'
 import { hasSideEffects } from '../common/constants'
 import { describeError } from '../common/redact'
 import { logger } from '../common/logger'
+import { RunResponseBuffer } from '../../src/shared/run-response'
 
 const log = logger.child('run-events')
 
@@ -36,7 +37,7 @@ export interface EventPipelineOptions {
 
 export class EventPipeline {
   private readonly chains = new Map<string, Promise<void>>()
-  private readonly responses = new Map<string, string>()
+  private readonly responses = new RunResponseBuffer()
   private readonly inFlightSideEffects = new Map<string, Map<string, PendingSideEffect>>()
 
   constructor(private readonly options: EventPipelineOptions) {}
@@ -81,7 +82,11 @@ export class EventPipeline {
 
   /** 累积 `text_delta`。整段回复在 run 收尾时作为助手消息落进对话上下文。 */
   appendResponse(runId: string, text: string): void {
-    this.responses.set(runId, `${this.responses.get(runId) ?? ''}${text}`)
+    this.responses.append(runId, text)
+  }
+
+  markResponseBoundary(runId: string): void {
+    this.responses.markToolBoundary(runId)
   }
 
   /** 取出并清掉累积的回复。 */

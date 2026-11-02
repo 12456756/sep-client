@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { materializeArrangementMedia, resolveArrangementMedia, type ArrangementMediaSource } from './arrangement-media-files'
+import { resolveDeliveryFiles } from './arrangement-delivery-files'
 import type { ArrangementDeliverable } from '../domain/arrangement-plan'
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
@@ -73,6 +74,17 @@ describe('arrangement media files', () => {
     assert.equal(restored.sha256, first.sha256)
     assert.deepEqual(await readFile(await resolveArrangementMedia(root, restored, task, signal())), PNG)
     assert.ok(readdirSync(join(task, 'delivery-snapshots')).some(name => name.includes('.corrupt-')))
+  })
+
+  it('restores a deleted snapshot directory from matching workspace media without reopening delivery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'arrangement-media-')); const task = join(root, 'task')
+    const file = await materializeArrangementMedia(root, deliverable('png'), source(PNG, 'image', 'image/png'), 'run-1', task, signal())
+    rmSync(join(task, 'delivery-snapshots'), { recursive: true })
+    const result = await resolveDeliveryFiles(root, [file], signal(), { taskDirectory: task, repairSnapshots: true })
+    assert.deepEqual(result.issues, [])
+    assert.deepEqual(result.files, [file])
+    assert.deepEqual(await readFile(result.readPaths[0]!), PNG)
+    assert.deepEqual(await readFile(join(root, file.path)), PNG)
   })
 
   it('copies a saved snapshot when the original source is no longer readable', async () => {

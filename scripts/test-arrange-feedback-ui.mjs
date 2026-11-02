@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { log } from 'node:console'
+import { previewBrowserOptions, selectComposerModel } from './model-picker-helpers.mjs';
 import { chromium } from 'playwright-core'
 
 // Real pages and hooks with isolated IPC responses; no platform requests or task execution.
@@ -26,7 +27,7 @@ const html = readFileSync(new URL('./fixtures/auto-arrange.html', import.meta.ur
     window.electronAPI.cancelSpeechRecording=async()=>({success:true});
     function SettingsApp(){window.feedback=useFeedback();const [visible,setVisible]=React.useState(true);window.toggleSpeechSettings=setVisible;return visible?React.createElement(SpeechSettings):null;}
     function App(){`)
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ ...previewBrowserOptions(), headless: true })
 let checks = 0
 try {
   for (const width of [1200, 375]) {
@@ -56,7 +57,7 @@ try {
     const dismiss = () => page.getByRole('button', { name: '知道了', exact: true }).click()
     const start = async () => {
       await page.getByRole('textbox', { name: '工作目标', exact: true }).fill('保留我的工作目标')
-      await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('model')
+      await selectComposerModel(page, 'model')
       await page.getByRole('button', { name: '开始自动编排', exact: true }).click()
     }
 

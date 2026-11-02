@@ -90,3 +90,48 @@ test('receipt input does not accept arbitrary output URLs or oversized content',
   assert.equal(mediaReceiptSchema.safeParse({ ...receipt, outputs: [{ ...output, url: 'https://untrusted.test/image' }] }).success, false)
   assert.equal(mediaReceiptSchema.safeParse({ ...receipt, outputs: [{ ...output, size: 33 * 1024 * 1024 }] }).success, false)
 })
+
+test('V3 runtime preserves its negotiated version and advisory specifications do not become defaults', () => {
+  const capabilities = parseMediaCapabilities({ protocolVersion: 3, executionAvailable: true, defaultProfileId: 'image-v3',
+    tools: ['image_generate'], profiles: [{ profileId: 'image-v3', kind: 'image', displayName: 'Image', configVersion: 'cfg',
+      operations: ['generate'], executionMode: 'sync-response', capabilities: { supportsReferenceImage: false } }] })
+  assert.equal(capabilities.protocolVersion, 3)
+  assert.deepEqual(capabilities.profiles[0].allowedAspectRatios, [])
+  assert.equal(capabilities.profiles[0].defaultSize, undefined)
+  assert.equal(capabilities.profiles[0].maxCountSource, undefined)
+  assert.equal(capabilities.profiles[0].maxCount, undefined)
+  const input = { protocolVersion: 3, profileId: 'image-v3', operation: 'generate', creativeBrief: 'poster', localAssetIds: [],
+    requestedSpec: { width: 1600, height: 2400, quality: 'ultra', count: 12 }, parameters: { width: 1600, height: 2400, quality: 'ultra', count: 12 },
+    parameterSources: { width: 'user', height: 'model', quality: 'model', count: 'user' }, specRevision: 2 }
+  assert.deepEqual(mediaGenerationInputSchema.parse(input), input)
+  assert.equal(mediaGenerationInputSchema.safeParse({ ...input, specRevision: undefined }).success, false)
+})
+
+test('V3 operation exposure is the intersection of profile support and runtime authorization', () => {
+  const profile = { profileId: 'image-v3', kind: 'image', displayName: 'Image', configVersion: 'cfg',
+    operations: ['generate', 'edit'], executionMode: 'sync-response', capabilities: { supportsReferenceImage: true } }
+  for (const [tools, expected] of [
+    [['image_generate'], ['generate']], [['image_edit'], ['edit']], [['image_generate', 'image_edit'], ['generate', 'edit']],
+  ]) {
+    const capabilities = parseMediaCapabilities({ protocolVersion: 3, executionAvailable: true, defaultProfileId: profile.profileId, tools, profiles: [profile] })
+    assert.deepEqual(capabilities.profiles[0].operations, expected)
+    assert.equal(mediaCapabilitiesSchema.safeParse(capabilities).success, true)
+  }
+  const unavailable = parseMediaCapabilities({ protocolVersion: 3, executionAvailable: true, defaultProfileId: profile.profileId,
+    tools: ['image_generate'], profiles: [{ ...profile, operations: ['edit'] }] })
+  assert.deepEqual(unavailable.profiles, [])
+  assert.deepEqual(unavailable.tools, [])
+  assert.equal(unavailable.defaultProfileId, null)
+})
+
+test('new V3 inputs normalize cleared optional fields without rewriting historical legacy input', () => {
+  const parameters = { count: 1, quality: undefined }
+  const parsed = mediaGenerationInputSchema.parse({ protocolVersion: 3, profileId: 'image-v3', operation: 'generate', localAssetIds: [],
+    creativeBrief: 'poster', parameters, requestedSpec: parameters, parameterSources: { count: 'user' }, specRevision: 1 })
+  assert.deepEqual(parsed.parameters, { count: 1 })
+  assert.deepEqual(parsed.requestedSpec, { count: 1 })
+  assert.deepEqual(parsed, JSON.parse(JSON.stringify(parsed)))
+  const legacy = { profileId: 'legacy', operation: 'generate', localAssetIds: [], creativeBrief: 'poster',
+    parameters: { aspectRatio: '1:1', count: 1, quality: undefined } }
+  assert.deepEqual(mediaGenerationInputSchema.parse(legacy), legacy)
+})

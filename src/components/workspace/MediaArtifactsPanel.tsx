@@ -2,21 +2,29 @@ import { Download, ImagePlus, Image as ImageIcon, LoaderCircle, Play, RefreshCw,
 import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ElectronAPI, IpcCommandResult } from '../../shared/ipc'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaOperation, MediaPreview, MediaProfile, MediaTaskView } from '../../shared/media'
-import { imageFormAspectRatios, imageFormParameters, imageFormSizes, mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from '../../shared/media-view'
+import { mediaGenerationLabels, mediaInputProblem, mediaJobActions, mediaSaveLabels, mediaTrackingLabels, selectMediaProfile } from '../../shared/media-view'
 import { videoRuntimeSchema } from '../../shared/video-media'
 import { VideoTaskPanel } from './VideoArtifactsPanel'
 import { useMediaParameterPreferences } from './media-preference-scope'
+import { imageRequestedSpecSchema, type ImageRequestedSpec, type MediaParameterSources } from '../../shared/media-spec-contract'
 
 
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { useFeedback } from '../feedback/FeedbackProvider'
 import { operationFailure, responseError, feedbackMessage, type FeedbackOperation } from '../../shared/arrangement-feedback'
-import { mediaIssueMessage } from '../../shared/media-feedback'
+import { mediaIssueMessage, mediaSpecFailureMessage } from '../../shared/media-feedback'
 
 type Command = 'import' | 'video-import' | 'selection' | 'generate' | 'export' | 'retry' | 'cancel' | 'resume' | 'redo'
 type JobAction = Exclude<Command, 'import' | 'video-import' | 'selection' | 'generate' | 'export'>
 type CommandFeedback = { pending: Command | null }
 const POLL_INTERVAL = 3000
+const IMAGE_SPEC_LABELS: Record<keyof ImageRequestedSpec, string> = { width: '宽度', height: '高度', aspectRatio: '比例', size: '尺寸', count: '数量', quality: '质量', outputFormat: '格式' }
+function imageSpecSummary(spec: ImageRequestedSpec, sources?: MediaParameterSources): string {
+  return Object.entries(spec).filter(([, value]) => value !== undefined).map(([field, value]) => {
+    const source = sources?.[field as keyof MediaParameterSources]
+    return `${IMAGE_SPEC_LABELS[field as keyof ImageRequestedSpec]} ${String(value)}${source ? `（${source === 'user' ? '用户指定' : source === 'model' ? '模型建议' : '上游决定'}）` : ''}`
+  }).join('、') || '未指定，由模型协商或上游确认'
+}
 
 function elapsedLabel(value: number | undefined): string | null {
   if (value === undefined || !Number.isFinite(value) || value < 0) return null
@@ -39,6 +47,7 @@ export function MediaCommandFeedback({ pending, id }: Partial<CommandFeedback> &
   return <p id={id} className="media-notice" role="status" aria-atomic="true"><LoaderCircle size={13} aria-hidden />正在处理图片操作</p>
 }
 function failure(result: IpcCommandResult, operation: FeedbackOperation): string {
+  if (result.error?.code) { const specMessage = mediaSpecFailureMessage({ ...result.error, code: result.error.code }); if (specMessage) return specMessage }
   return responseError(result, operation).message
 }
 
@@ -126,13 +135,14 @@ export function MediaAssetGrid({ taskId, assets, references = false, selected = 
       {references ? <label className="media-reference-select"><input type="checkbox" checked={selected.includes(asset.localAssetId)} disabled={disabled || asset.status !== 'SAVED'} onChange={() => onSelect?.(asset.localAssetId)} />参考图 {index + 1}</label> : <span>成果 {index + 1}</span>}
       {!references && asset.status === 'SAVED' && <button type="button" className="media-icon-button" disabled={disabled} title={`导出成果 ${index + 1}`} aria-label={`导出成果 ${index + 1}`} onClick={() => onExport?.(asset)}><Download size={14} /></button>}
     </div>
-    <small>{asset.width} × {asset.height} · {asset.mime.replace('image/', '').toUpperCase()}</small>
+    <small>{asset.status === 'SAVED' ? '本地文件实测：' : ''}{asset.width} × {asset.height} · {asset.mime.replace('image/', '').toUpperCase()}</small>
     <small className={`media-tone-${mediaSaveLabels[asset.status].tone}`}>{mediaSaveLabels[asset.status].label}</small>
   </div>)}</div>
 }
 
-export function MediaCreationForm({ profiles, defaultProfileId, references, archived, busy, onImport, onGenerate, taskId, onPreview, feedback }: {
+export function MediaCreationForm({ profiles, protocolVersion, defaultProfileId, references, archived, busy, onImport, onGenerate, taskId, onPreview, feedback }: {
   profiles: MediaProfile[]; references: MediaAssetView[]; archived: boolean; busy: boolean; taskId: string
+  protocolVersion?: 1 | 3
   defaultProfileId?: string | null
   onImport: () => void; onGenerate: (input: MediaGenerationInput) => void; onPreview: (asset: MediaAssetView) => void
   feedback?: CommandFeedback
@@ -147,21 +157,19 @@ export function MediaCreationForm({ profiles, defaultProfileId, references, arch
   const preferences = useMediaParameterPreferences('image', profile?.profileId)
   const binding = JSON.stringify([preferences.key, profile, operation])
   const [choices, setChoices] = useState<{ binding: string; parameters: Partial<MediaGenerationInput['parameters']> }>({ binding: '', parameters: {} })
-  const parameters = profile ? imageFormParameters(profile, choices.binding === binding ? choices.parameters : preferences.parameters) : null
-  const ratios = profile ? imageFormAspectRatios(profile) : []
-  const sizes = profile ? imageFormSizes(profile) : []
-  const qualities = profile?.allowedQualities ?? []
+  const negotiated = protocolVersion === 3
+  const parameters = profile ? choices.binding === binding ? choices.parameters : {} : null
   const selectedIds = selected.filter(assetId => references.some(asset => asset.localAssetId === assetId && asset.status === 'SAVED'))
-  const problem = archived ? '任务已归档，只可查看已有成果' : profile && !parameters ? '当前配置没有可用的图片规格' : mediaInputProblem(profile, operation, selectedIds.length, brief)
+  const problem = archived ? '任务已归档，只可查看已有成果' : profile && !parameters ? '当前配置没有可用的图片规格' : mediaInputProblem(profile, operation, selectedIds.length, brief, negotiated)
   useEffect(() => {
     setSelected([])
   }, [binding])
   useEffect(() => {
     if (profile && profileId !== profile.profileId) setProfileId(profile.profileId)
   }, [profile, profileId])
-  function changeParameters(patch: Partial<MediaGenerationInput['parameters']>, preferred: 'size' | 'aspectRatio' = 'size'): void {
+  function changeParameters(patch: Partial<MediaGenerationInput['parameters']>): void {
     if (!profile) return
-    const next = imageFormParameters(profile, { ...parameters, ...patch }, preferred)
+    const next = { ...parameters, ...patch }
     setChoices({ binding, parameters: next ?? {} })
     if (next) preferences.save(next)
   }
@@ -170,7 +178,11 @@ export function MediaCreationForm({ profiles, defaultProfileId, references, arch
     event.preventDefault()
     if (busy) return
     if (!profile || !parameters || problem) { capture().show(problem || '图片生成配置不可用，请联系平台管理员', 'warning'); return }
-    onGenerate({ profileId: profile.profileId, operation, localAssetIds: selectedIds, creativeBrief: brief.trim(), parameters })
+    if (negotiated && !imageRequestedSpecSchema.safeParse(parameters).success) { capture().show('图片规格有冲突或格式错误，请检查填写内容。', 'warning'); return }
+    onGenerate({ profileId: profile.profileId, operation, localAssetIds: selectedIds, creativeBrief: brief.trim(), parameters,
+      ...(negotiated ? { protocolVersion: 3 as const, requestedSpec: parameters, specRevision: 1,
+        parameterSources: Object.fromEntries(Object.entries(parameters).filter(([, value]) => value !== undefined).map(([key]) => [key, 'user' as const])) } : {}),
+    })
   }}>
     <label htmlFor={`${id}-profile`}>图片模型</label>
     <select id={`${id}-profile`} value={profile?.profileId || ''} disabled={busy || archived || !profiles.length} onChange={event => setProfileId(event.target.value)}>
@@ -185,10 +197,10 @@ export function MediaCreationForm({ profiles, defaultProfileId, references, arch
     <div className="media-subheading"><span>商品参考图</span><button type="button" className="media-icon-button" title="从系统选择参考图" aria-label="从系统选择参考图" disabled={busy || archived || !profile?.capabilities.referenceImage} onClick={onImport}><ImagePlus size={16} /></button></div>
     {references.length > 0 ? <MediaAssetGrid taskId={taskId} assets={references} references selected={selectedIds} disabled={busy || archived} onSelect={assetId => setSelected(value => value.includes(assetId) ? value.filter(item => item !== assetId) : [...value, assetId])} onPreview={onPreview} /> : <p className="artifact-empty">尚无参考图</p>}
     <div className="media-specs">
-      <label>比例{ratios.length === 1 ? '（固定）' : ''}<select aria-label="图片比例" value={parameters?.aspectRatio || ''} disabled={busy || archived || !parameters || ratios.length === 1} onChange={event => changeParameters({ aspectRatio: event.target.value }, 'aspectRatio')}>{ratios.map(value => <option key={value}>{value}</option>)}</select></label>
-      <label>数量{profile?.maxCount === 1 ? '（固定）' : ''}<input aria-label="图片数量" type="number" min={1} max={profile?.maxCount || 1} step={1} value={parameters?.count ?? 1} disabled={busy || archived || !parameters} readOnly={profile?.maxCount === 1} onChange={event => changeParameters({ count: Number(event.target.value) })} /></label>
-      {!!profile?.allowedSizes?.length && <label>尺寸{sizes.length === 1 ? '（固定）' : ''}<select aria-label="图片尺寸" value={parameters?.size ?? ''} disabled={busy || archived || !parameters || sizes.length === 1} onChange={event => changeParameters({ size: event.target.value })}>{sizes.map(value => <option key={value}>{value}</option>)}</select></label>}
-      {!!qualities.length && <label>质量{qualities.length === 1 ? '（固定）' : ''}<select aria-label="图片质量" value={parameters?.quality ?? ''} disabled={busy || archived || !parameters || qualities.length === 1} onChange={event => changeParameters({ quality: event.target.value })}>{qualities.map(value => <option key={value}>{value}</option>)}</select></label>}
+        <p className="media-notice">未填写的规格保持未指定，由模型协商或上游确认。</p>
+        <button type="button" disabled={busy || archived} onClick={() => setChoices({ binding, parameters: preferences.parameters })}>复用上次规格</button>
+        {(['aspectRatio', 'size', 'quality', 'outputFormat'] as const).map(field => <label key={field}>{({ aspectRatio: '比例', size: '尺寸', quality: '质量', outputFormat: '输出格式' })[field]}<input aria-label={`图片${field}`} value={parameters?.[field] ?? ''} disabled={busy || archived} onChange={event => changeParameters({ [field]: event.target.value || undefined })} /></label>)}
+        <label>数量<input aria-label="图片数量" type="number" min={1} step={1} value={parameters?.count ?? ''} disabled={busy || archived} onChange={event => changeParameters({ count: event.target.value === '' ? undefined : Number(event.target.value) })} /></label>
     </div>
     <label htmlFor={`${id}-brief`}>创作需求</label>
     <textarea id={`${id}-brief`} rows={4} value={brief} disabled={busy || archived} placeholder="用途、画面要求、不可改变的商品特征" onChange={event => setBrief(event.target.value)} />
@@ -201,7 +213,11 @@ export function MediaJobList({ jobs, archived, busy, onAction }: { jobs: MediaJo
   return <div className="media-jobs">{jobs.map(job => {
     const actions = mediaJobActions(job, archived)
     return <div className="media-job" key={job.jobId}>
-      <div className="media-job-heading"><strong>{job.operation === 'edit' ? '图片编辑' : '图片生成'} · {job.parameters.count} 张</strong><span>{job.parameters.aspectRatio}</span></div>
+      <div className="media-job-heading"><strong>{job.operation === 'edit' ? '图片编辑' : '图片生成'} · {job.parameters.count === undefined ? '数量未指定' : `${job.parameters.count} 张`}</strong><span>{job.parameters.aspectRatio ?? '比例未指定'}</span></div>
+      {job.requestedSpec && <small>请求规格：{imageSpecSummary(job.requestedSpec, job.parameterSources)}</small>}
+      {job.effectiveSpec && <small>报价规格：{imageSpecSummary(job.effectiveSpec)}</small>}
+      {job.actualSpec && <small>实际规格（上游报告，尚未实测核验）：{imageSpecSummary(job.actualSpec)}</small>}
+      {job.requestedSpec && !job.actualSpec && <small>实际规格尚未核验，请查看已保存文件的尺寸。</small>}
       <small className="media-job-id">配置 {job.profileId}{job.parameters.size ? ` · ${job.parameters.size}` : ''}{job.parameters.quality ? ` · ${job.parameters.quality}` : ''}</small>
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[mediaGenerationLabels[job.generationStatus], mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>

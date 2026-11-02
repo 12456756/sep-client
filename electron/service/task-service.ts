@@ -24,6 +24,8 @@ import { TaskCreationGate } from './task-creation-gate'
 import { resolveWorkType } from './work-type'
 import type { AttachmentRef, InputSnapshotRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentService } from './attachment-service'
+import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
+import { arrangementInputReplySchema, type ArrangementInputReply } from '../../src/shared/arrangement-input'
 
 /**
  * 服务层用到的执行能力。实现由 `runtime/task-runtime.ts` 提供；
@@ -32,13 +34,13 @@ import type { AttachmentService } from './attachment-service'
  * 类型模块，import 它不会把 SDK 拉进来。
  */
 export interface TaskExecutionPort {
-  executeTask(taskId: string, options?: { conversation?: boolean }): Promise<void>
-  retryTask(taskId: string, options?: { conversation?: boolean; nodeId?: string }): Promise<void>
+  executeTask(taskId: string, options?: { conversation?: boolean; knowledge?: KnowledgeSelection }): Promise<void>
+  retryTask(taskId: string, options?: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply }): Promise<void>
   confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void>
   continueConversation(
     taskId: string,
     prompt: string,
-    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef },
+    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; knowledge?: KnowledgeSelection },
   ): Promise<void>
   switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void>
   pauseTask(taskId: string): Promise<void>
@@ -67,6 +69,7 @@ export interface CreateTaskInput {
   subscriptionId: string
   attachmentSessionId?: string
   attachmentRefs?: AttachmentRef[]
+  knowledge?: KnowledgeSelection
 }
 
 export class TaskService {
@@ -99,6 +102,7 @@ export class TaskService {
         participantSubscriptionIds: [input.subscriptionId],
         currentSubscriptionId: input.subscriptionId,
         createdAt: Date.now(),
+        ...(input.knowledge ? { knowledge: structuredClone(input.knowledge) } : {}),
       })
       this.assertScope(scope)
       success = true
@@ -111,8 +115,15 @@ export class TaskService {
   /** 首次执行。是不是对话任务由元数据决定，而不是由调用方声明。 */
   async execute(taskId: string): Promise<void> {
     const conversation = await this.isConversation(taskId)
+    const scope = this.scope()
+    const metadata = await this.deps.taskMetadataStore.load(scope, taskId)
+    const workPlan = await this.deps.workPlans?.get(scope, taskId)
+    this.assertScope(scope)
     try {
-      await (await this.deps.execution()).executeTask(taskId, { conversation })
+      await (await this.deps.execution()).executeTask(taskId, {
+        conversation,
+        ...(workPlan ? {} : metadata?.knowledge ? { knowledge: structuredClone(metadata.knowledge) } : {}),
+      })
     } catch (error) {
       try { await this.deps.taskManager.recordStartFailure?.(taskId, describeError(error)) } catch { /* preserve the original start error */ }
       throw error
@@ -120,13 +131,14 @@ export class TaskService {
   }
 
   /** 重试。与 execute 一样要先确认任务归属与员工可用性。 */
-  async retry(taskId: string, nodeId?: string): Promise<void> {
+  async retry(taskId: string, nodeId?: string, inputReply?: ArrangementInputReply): Promise<void> {
     const task = await this.requireTask(taskId)
     const conversation = await this.isConversation(taskId)
+    if (inputReply && (!nodeId || conversation || !arrangementInputReplySchema.safeParse(inputReply).success)) throw new AppError('INVALID_ARGUMENT')
     const plan = conversation ? await this.deps.workPlans?.get(this.scope(), taskId) : null
     if (conversation && plan?.conversation?.kind !== 'general') await this.requireAuthorizedEmployee(task.subscriptionId)
     try {
-      await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}) })
+      await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}), ...(inputReply ? { inputReply } : {}) })
     } catch (error) {
       try { await this.deps.taskManager.recordStartFailure?.(taskId, describeError(error)) } catch { /* preserve the original retry error */ }
       throw error

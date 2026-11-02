@@ -1,0 +1,33 @@
+.ent-knowledge-picker { position: relative; flex: 0 0 auto; }
+.ent-knowledge-picker *, .ent-knowledge-picker *::before, .ent-knowledge-picker *::after, .ent-knowledge-popover, .ent-knowledge-popover *, .ent-model-picker *, .ent-model-popover, .ent-model-popover * { box-sizing: border-box; }
+.ent-tool-button { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; padding: 0 9px; border: 0; border-radius: 8px; color: var(--ent-ink-2); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+.ent-tool-button:hover:not(:disabled), .ent-tool-button[aria-expanded="true"] { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
+.ent-tool-button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.ent-tool-button:disabled { opacity: .55; cursor: not-allowed; }
+.ent-tool-button svg.down { transform: rotate(180deg); }
+.ent-knowledge-popover, .ent-model-popover { position: fixed; z-index: 1100; display: flex; width: min(360px, calc(100vw - 32px)); max-height: min(560px, 70vh); flex-direction: column; gap: 10px; padding: 12px; overflow: auto; border: 1px solid var(--ent-line); border-radius: 10px; color: var(--ent-ink); background: var(--ent-panel); box-shadow: 0 12px 34px rgba(28, 34, 42, .18); }
+.ent-knowledge-head, .ent-model-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ent-knowledge-search, .ent-model-search { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 8px; border: 1px solid var(--ent-line); border-radius: 7px; }
+.ent-knowledge-search input, .ent-model-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: none; font: inherit; font-size: 12px; }
+.ent-knowledge-bases, .ent-model-options { display: flex; max-height: 150px; flex-direction: column; gap: 2px; overflow: auto; }
+.ent-knowledge-base, .ent-model-option { display: flex; align-items: center; justify-content: space-between; min-height: 30px; padding: 5px 7px; border: 0; border-radius: 6px; color: var(--ent-ink); background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.ent-knowledge-base:hover, .ent-model-option:hover, .ent-model-option[aria-selected="true"] { background: var(--ent-panel-subtle); }
+.ent-knowledge-muted, .ent-knowledge-hint { color: var(--ent-ink-3); font-size: 12px; line-height: 1.5; }
+.ent-knowledge-hint { margin: 0; }
+.ent-knowledge-more { min-height: 28px; border: 1px solid var(--ent-line); border-radius: 6px; color: var(--ent-ink-2); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+.ent-knowledge-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ent-danger, #b42318); font-size: 12px; }
+.ent-knowledge-error button { border: 0; color: inherit; background: transparent; text-decoration: underline; cursor: pointer; }
+
+.ent-model-picker { position: relative; min-width: 0; max-width: 100%; }
+.ent-model-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; min-height: 32px; padding: 0 9px; border: 0; border-radius: 8px; color: var(--ent-ink-2); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
+.ent-model-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-model-trigger > svg, .ent-model-option > svg { flex: 0 0 auto; }
+.ent-model-trigger:hover:not(:disabled), .ent-model-trigger[aria-expanded="true"] { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
+.ent-model-trigger:focus-visible, .ent-model-option:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.ent-model-trigger:disabled { opacity: .55; cursor: not-allowed; }
+.ent-model-trigger svg.down { transform: rotate(180deg); }
+.ent-model-options { max-height: 300px; flex-shrink: 1; }
+.ent-model-option { flex: 0 0 auto; gap: 10px; }
+.ent-model-option > span { min-width: 0; overflow-wrap: anywhere; }
+.ent-knowledge-search:focus-within, .ent-model-search:focus-within { border-color: var(--ent-brand); box-shadow: 0 0 0 2px var(--ent-brand-softer); }
+.ent-knowledge-search input:focus-visible, .ent-model-search input:focus-visible { outline: 0; box-shadow: none; }

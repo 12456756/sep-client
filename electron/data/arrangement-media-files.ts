@@ -269,6 +269,8 @@ export async function restoreArrangementMediaSnapshot(workspace: string, file: F
     mime: arrangementMediaMimeByFormat[file.format.toLowerCase()]?.[0] ?? '', stream: () => createReadStream(path, { signal: actualSignal }) }
   await readAndVerify(path, source, actualSignal)
   const taskRoot = await realpath(taskDirectory), snapshot = snapshotPath(taskRoot, file.sha256, file.format)
+  actualSignal.throwIfAborted()
+  await ensureDirectory(taskRoot, dirname(snapshot))
   const part = join(taskRoot, '.snapshot-recovery-' + randomUUID() + '.tmp')
   try {
     await copyFile(path, part, constants.COPYFILE_EXCL)

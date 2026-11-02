@@ -88,6 +88,31 @@ test('arrangement automatically retries the original video download without a se
   } finally { await service.stopAll() }
 })
 
+test('run delivery cancellation interrupts a stalled video state read', { timeout: 5_000 }, async context => {
+  const f = await setup()
+  let entered!: () => void, release!: () => void
+  const reading = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const controller = new AbortController()
+  try {
+    const tools = await f.service.prepareRun(f.runInput)
+    assert.ok(tools)
+    await tools.execute('video_from_image', input())
+    const getTaskVideo = MockVideoHostService.prototype.getTaskVideo
+    context.mock.method(MockVideoHostService.prototype, 'getTaskVideo', async function (this: MockVideoHostService, taskId: string) {
+      entered()
+      await gate
+      return getTaskVideo.call(this, taskId)
+    })
+    const waiting = f.service.waitForRun('task-a', 'run-a', { signal: controller.signal })
+    const rejected = assert.rejects(waiting, { message: 'Delivery cancelled.' })
+    await reading
+    controller.abort(new Error('Delivery cancelled.'))
+    await rejected
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { release(); await f.service.stopAll() }
+})
+
 test('real SDK handoff and finishRun preserve pending video output saving without another submission', { timeout: 20_000 }, async context => {
   const f = await setup()
   let entered!: () => void, release!: () => void
@@ -111,7 +136,7 @@ test('real SDK handoff and finishRun preserve pending video output saving withou
         choices: [{ index: 0, delta, finish_reason: finishReason }],
       })}\n\n`)
       chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'generate-video', type: 'function',
-        function: { name: 'video_from_image', arguments: JSON.stringify({ creativeBrief: 'Product movement', localAssetIds: ['asset-a'] }) } }] })
+        function: { name: 'video_from_image', arguments: JSON.stringify({ creativeBrief: 'Product movement', localAssetIds: ['asset-a'], parameters: input().parameters }) } }] })
       chunk({}, 'tool_calls')
       response.end('data: [DONE]\n\n')
     })
@@ -129,9 +154,7 @@ test('real SDK handoff and finishRun preserve pending video output saving withou
       toolPolicy: { preset: 'full-local', approvalMode: 'auto-approve', allowedTools: [], allowedPaths: [], deniedPaths: [], commandPolicy: 'restricted', workspaceDir: f.root },
       videoTools: { names: tools.names, execute: async (name, raw, signal) => {
         toolSignal = signal
-        const result = await tools.execute(name, raw, signal)
-        await downloading
-        return result
+        return tools.execute(name, raw, signal)
       } } },
     runtime: { createSession: config => new PiCodingAgentAdapter().createSession({ ...config, mcpServers: [] }) },
     createTokenManager: () => ({ async initialize() {}, async getValidToken() { return 'local-fixture' }, stop() {} }),
@@ -139,17 +162,17 @@ test('real SDK handoff and finishRun preserve pending video output saving withou
     shouldYieldAfterToolTurn: () => f.gateway.calls.submit > 0,
   })
   try {
-    await worker.run('Generate a product video and leave saving to the host.')
-    assert.equal(toolSignal?.aborted, true)
+    let runSettled = false
+    const running = worker.run('Generate a product video and wait until its saved result is available.')
+      .finally(() => { runSettled = true })
+    await downloading
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(runSettled, false, 'the assistant turn must remain open while the generated video is saving')
+    assert.equal(toolSignal?.aborted, false)
     assert.equal(downloadSignal?.aborted, false)
-    await f.service.finishRun('task-a', 'run-a')
-    assert.equal(downloadSignal?.aborted, false, 'Finishing the model run must not cancel the host download.')
     release()
-    const deadline = Date.now() + 5_000
-    while ((await f.store.listJobs(scope))[0].saveStatus !== 'SAVED') {
-      assert.ok(Date.now() < deadline, 'The original video output must finish saving after the run facade closes.')
-      await new Promise<void>(resolve => setTimeout(resolve, 10))
-    }
+    await running
+    assert.equal(toolSignal?.aborted, true)
     assert.equal((await f.store.listJobs(scope))[0].saveStatus, 'SAVED')
     assert.equal(f.gateway.calls.quote, 1)
     assert.equal(f.gateway.calls.submit, 1)
@@ -179,6 +202,36 @@ test('run facade binds two host approvals to real run and awaits original output
   await assert.rejects(tools.execute('video_from_image', input()))
 })
 
+test('generation tool waits for terminal video status and local save before returning to the model', { timeout: 10_000 }, async context => {
+  const f = await setup()
+  let entered!: () => void, release!: () => void
+  const downloading = new Promise<void>(resolve => { entered = resolve })
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const content = f.gateway.content.bind(f.gateway)
+  context.mock.method(f.gateway, 'content', async (...args: Parameters<typeof content>) => {
+    entered()
+    await gate
+    return content(...args)
+  })
+  const tools = await f.service.prepareRun(f.runInput)
+  assert.ok(tools)
+  let settled = false
+  const generating = tools.execute('video_from_image', input()).then(value => { settled = true; return value })
+  try {
+    await downloading
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(settled, false, 'the model must not continue while output bytes are still saving')
+    release()
+    const result = await generating as { generationStatus: string; saveStatus: string }
+    assert.equal(result.generationStatus, 'SUCCEEDED')
+    assert.equal(result.saveStatus, 'SAVED')
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally {
+    release()
+    await f.service.finishRun('task-a', 'run-a')
+  }
+})
+
 test('arrangement media mode auto-approves upload and quote without approval requests', async () => {
   const f = await setup(), tools = await f.service.prepareRun({ ...f.runInput, autoApproveMedia: true })
   assert.ok(tools)
@@ -190,18 +243,19 @@ test('arrangement media mode auto-approves upload and quote without approval req
   await f.service.finishRun('task-a', 'run-a')
 })
 
-test('run resolves the authorized profile and defaults without model-supplied configuration', async () => {
+test('run resolves the authorized profile while requiring explicit model-supplied specifications', async () => {
   const f = await setup(), tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
   try {
-    const job = await tools.execute('video_from_image', { creativeBrief: input().creativeBrief, localAssetIds: ['asset-a'] }) as { jobId: string }
+    await assert.rejects(tools.execute('video_from_image', { creativeBrief: input().creativeBrief, localAssetIds: ['asset-a'] }), { code: 'MISSING_SPEC' })
+    const job = await tools.execute('video_from_image', { creativeBrief: input().creativeBrief, localAssetIds: ['asset-a'], parameters: input().parameters }) as { jobId: string }
     const stored = await f.store.getJob(scope, 'task-a', job.jobId)
     assert.equal(stored?.request.profileId, f.state.runtime.defaultProfileId)
     assert.deepEqual(stored?.request.parameters, input().parameters)
     assert.equal(f.approvals.length, 2)
     await f.service.waitForRun('task-a', 'run-a')
     assert.equal(f.gateway.calls.submit, 1)
-    assert.equal(f.state.authorizations, 2, 'Only quote preparation and the post-approval check refresh runtime')
+    assert.equal(f.state.authorizations, 3, 'Missing-spec preflight and successful quote preparation each refresh runtime, then approval refreshes it again')
   } finally { await f.service.finishRun('task-a', 'run-a') }
 })
 
@@ -209,7 +263,7 @@ test('unsupported explicit specifications fail before quoting, approval or uploa
   const f = await setup(), tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)
   try {
-    await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 12 } }), { code: 'INVALID_ARGUMENT' })
+    await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 12 } }), { code: 'MISSING_SPEC' })
     await assert.rejects(tools.execute('video_from_image', { creativeBrief: 'Product video', localAssetIds: ['asset-a'], parameters: { durationSeconds: 'invalid' } }), { code: 'INVALID_ARGUMENT' })
     assert.equal(f.gateway.calls.quote, 0)
     assert.equal(f.state.uploads, 0)
@@ -278,7 +332,7 @@ test('text-to-video uses lightweight runtime authorization twice and never prepa
   try {
     const tools = await service.prepareRun(f.runInput)
     assert.ok(tools)
-    const result = await tools.execute('video_generate', { creativeBrief: 'A product video' }) as { jobId: string }
+    const result = await tools.execute('video_generate', { creativeBrief: 'A product video', parameters: input().parameters }) as { jobId: string }
     await service.waitForRun('task-a', 'run-a')
     assert.equal(f.state.authorizations, 2)
     assert.equal(quotes, 1)
@@ -389,28 +443,32 @@ test('rereads a video snapshot captured before its tracker finishes', { timeout:
   try {
     const tools = await service.prepareRun(f.runInput)
     assert.ok(tools)
-    const job = await tools.execute('video_from_image', input()) as { jobId: string }
+    const generation = tools.execute('video_from_image', input()) as Promise<{ jobId: string }>
     await queryActive
     const listJobs = f.store.listJobs.bind(f.store)
+    const submitted = (await listJobs(scope))[0]!
     let holdSnapshot = true
     context.mock.method(f.store, 'listJobs', async (...args: Parameters<typeof listJobs>) => {
       const jobs = await listJobs(...args)
       if (holdSnapshot) { holdSnapshot = false; snapshotStarted(); await snapshotGate }
       return jobs
     })
-    const delivery = service.waitForRun('task-a', 'run-a')
-    void delivery.catch(() => undefined)
+    await new Promise(resolve => setTimeout(resolve, 10))
     await snapshotActive
     releaseQuery()
     for (let attempt = 0; attempt < 100; attempt++) {
-      if ((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus === 'SAVED') break
+      if ((await f.store.getJob(scope, 'task-a', submitted.jobId))?.saveStatus === 'SAVED') break
       await new Promise(resolve => setTimeout(resolve, 5))
     }
-    assert.equal((await f.store.getJob(scope, 'task-a', job.jobId))?.saveStatus, 'SAVED')
+    const saved = await f.store.listJobs(scope)
+    const job = saved[0]
+    assert.equal(job?.saveStatus, 'SAVED')
     // Let the terminal save settle its tracker while the earlier read stays held.
     await new Promise(resolve => setTimeout(resolve, 20))
     releaseSnapshot()
-    await delivery
+    const generated = await generation
+    assert.equal(generated.jobId, job?.jobId)
+    await service.waitForRun('task-a', 'run-a')
     assert.equal(f.gateway.calls.submit, 1)
   } finally { releaseQuery(); releaseSnapshot(); await service.stopAll() }
 })

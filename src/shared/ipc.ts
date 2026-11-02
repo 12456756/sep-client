@@ -1,3 +1,4 @@
+import type { KnowledgeSelection } from './knowledge-selection'
 import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, NotificationUpdate } from './notification-contracts'
 import type { AutoPlanningInput, PlanningRecordChange, PlanningRecordSnapshot, PlanningRecordSummary } from './auto-planning'
 import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
@@ -203,6 +204,7 @@ export interface ExecuteTaskInput {
 }
 
 export interface ContinueTaskInput {
+  knowledge?: KnowledgeSelection
   taskId: string
   prompt: string
   attachmentSessionId?: string
@@ -212,6 +214,7 @@ export interface ContinueTaskInput {
 }
 
 export interface CreateConversationInput {
+  knowledge?: KnowledgeSelection
   title: string
   prompt: string
   workDir?: string
@@ -228,6 +231,7 @@ export interface SwitchConversationEmployeeInput {
 export interface RetryTaskInput {
   taskId: string
   nodeId?: string
+  inputReply?: import('./arrangement-input').ArrangementInputReply
 }
 
 export interface TaskMessagesResult {

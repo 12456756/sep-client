@@ -54,6 +54,8 @@ export interface PiAgentSessionConfig {
   disableSkills?: boolean
   /** Host-only transform of the SDK-assembled prompt; preserves SDK resource loading. */
   transformSystemPrompt?: (systemPrompt: string) => string
+  /** Enable trusted built-in common capabilities while keeping employee skills disabled. */
+  enableCommonTools?: boolean
   mediaTools?: import('../../domain/media-tools').MediaHostTools
   videoTools?: import('../../domain/video-tools').VideoHostTools
   employeeProfile?: import('../../domain/employee-profile').EmployeeProfile

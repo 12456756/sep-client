@@ -75,6 +75,7 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
     if (!saved || hydrated.current) return;
     hydrated.current = true;
     setSettings({ ...runSettings, workDir: saved.draft.workspace.path ?? '', permissions: { ...saved.draft.permissions },
+      knowledge: saved.draft.knowledge ?? defaultAutoRunSettings().knowledge,
       modelId: saved.draft.planningModelId ?? saved.progress?.modelId ?? '' });
   }, [saved, runSettings]);
   const changeSettings = (patch: Partial<RunSettings>): void => {
@@ -136,6 +137,8 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
           modelId: settings.modelId || undefined,
           workDir: settings.workDir.trim() || null,
           permissions: { ...settings.permissions },
+          knowledge: settings.knowledge,
+          nodeKnowledge: draft.nodes.map(node => ({ nodeId: node.id, knowledge: node.knowledge ?? null })),
         },
       });
       if (!notice.isCurrent()) return draft;
@@ -164,13 +167,13 @@ export function ArrangeWorkPage({ workspace, templateId, employeeId, mode, onWor
   };
 
   const startManual = (draft: ManualDraft) => {
-    void workspace.arrangeWork({ ...draft, templateId: template?.id, workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, sharedSkillIds: [], attachmentSessionId: draft.attachmentSession?.sessionId, attachmentCandidates: draft.attachmentRefs?.map(item => ({ attachment: { attachmentId: item.attachmentId, sha256: item.sha256 }, mustUse: draft.mustUseAttachments ?? true })) }).then(created => { if (created) onWorkCreated?.(); });
+    void workspace.arrangeWork({ ...draft, knowledge: settings.knowledge, templateId: template?.id, workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, sharedSkillIds: [], attachmentSessionId: draft.attachmentSession?.sessionId, attachmentCandidates: draft.attachmentRefs?.map(item => ({ attachment: { attachmentId: item.attachmentId, sha256: item.sha256 }, mustUse: draft.mustUseAttachments ?? true })) }).then(created => { if (created) onWorkCreated?.(); });
   };
 
   const startChat = (id: string, text: string, attachments: AttachmentView[], session: AttachmentImportSession | null) => {
     if (!settings.modelId || !sceneModels.includes(settings.modelId)) return;
     taskModel.commit();
-    void workspace.startConversation(id, text, { workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, attachmentSessionId: session?.sessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) }).then(created => { if (created) onWorkCreated?.(); });
+    void workspace.startConversation(id, text, { knowledge: settings.knowledge, workDir: settings.workDir, modelId: settings.modelId, permissions: settings.permissions, attachmentSessionId: session?.sessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) }).then(created => { if (created) onWorkCreated?.(); });
   };
 
   if (!workspace.myEmployees.length && !planningDraftId) {

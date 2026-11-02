@@ -125,12 +125,25 @@ export class EmployeeAuthorizer {
     return this.readDirectory(false)
   }
 
-  /** Model-only grant: no employee identity, runtime manifest or skill preparation. */
+  /** General assistant: reuse the grant's shared tools without employee behavior or skills. */
   async authorizeModel(modelId: string, preferredSubscriptionId?: string): Promise<EmployeeRuntimeConfig | null> {
+    const scope = this.captureScope()
+    if (!scope) return null
     const instances = await this.list()
+    if (!scope.isCurrent()) return null
     const available = instances.filter(instance => instance.status === 'ACTIVE' && instance.allowedModels.includes(modelId))
     const selected = available.find(instance => instance.subscriptionId === preferredSubscriptionId) ?? available[0]
-    return selected ? { subscriptionId: selected.subscriptionId, modelId, gatewayUrl: this.gatewayUrl } : null
+    if (!selected) return null
+    const grant = { subscriptionId: selected.subscriptionId, modelId, gatewayUrl: this.gatewayUrl }
+    if (!this.runtimeProvider) return grant
+    const current = await this.readRuntime(selected.subscriptionId)
+    if (!scope.isCurrent() || !current?.scope.isCurrent() || !current.manifest
+      || !current.instance.allowedModels.includes(modelId) || !current.manifest.runtime.allowedModels.includes(modelId)) return null
+    return {
+      ...grant,
+      ...(current.manifest.runtime.media !== undefined ? { media: current.manifest.runtime.media } : {}),
+      ...(current.manifest.runtime.video !== undefined ? { video: current.manifest.runtime.video } : {}),
+    }
   }
 
   /** Host fence for external invalidation and observed video policy changes. */

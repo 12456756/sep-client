@@ -33,20 +33,20 @@ export function redactOptionalText(value: string | undefined | null): string | n
  * 深度脱敏任意值。键名命中敏感词直接替换，字符串走 redactText，
  * 数组与对象限量限深——日志与事件载荷都不该无界增长。
  */
-export function redactValue(value: unknown, depth = 0, key = ''): unknown {
+export function redactValue(value: unknown, depth = 0, key = '', limits: { maxDepth?: number; maxArrayLength?: number } = {}): unknown {
   // This exact numeric diagnostic is a count, never an authentication token.
   if (key === 'estimatedThinkingTokens' && typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value
   if (SENSITIVE_KEY.test(key)) return '[redacted]'
   if (value === null || typeof value === 'boolean' || typeof value === 'number') return value
   if (typeof value === 'string') return redactText(value)
   if (typeof value !== 'object') return undefined
-  if (depth >= MAX_DEPTH) return '[max-depth]'
+  if (depth >= (limits.maxDepth ?? MAX_DEPTH)) return '[max-depth]'
   if (Array.isArray(value)) {
-    return value.slice(0, MAX_ARRAY_LENGTH).map(item => redactValue(item, depth + 1))
+    return value.slice(0, limits.maxArrayLength ?? MAX_ARRAY_LENGTH).map(item => redactValue(item, depth + 1, '', limits))
   }
   const output: Record<string, unknown> = {}
   for (const [entryKey, entryValue] of Object.entries(value).slice(0, MAX_OBJECT_KEYS)) {
-    const redacted = redactValue(entryValue, depth + 1, entryKey)
+    const redacted = redactValue(entryValue, depth + 1, entryKey, limits)
     if (redacted !== undefined) output[entryKey] = redacted
   }
   return output

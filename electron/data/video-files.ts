@@ -172,8 +172,9 @@ export class VideoFiles {
         const { bytesRead } = await handle.read(buffer, 0, buffer.length, length)
         if (!bytesRead) break
         if (length === 0) {
+          // Only recognized containers are decoded locally; others stay opaque hash-verified .bin exports.
           const valid = expected.mimeType === 'video/mp4' ? bytesRead >= 16 && buffer.toString('ascii', 4, 8) === 'ftyp' :
-            bytesRead >= 4 && buffer.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
+            expected.mimeType === 'video/webm' ? bytesRead >= 4 && buffer.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3])) : /^video\/[a-zA-Z0-9][a-zA-Z0-9.+-]*$/.test(expected.mimeType)
           if (!valid) throw new VideoIntegrityError('Video container does not match receipt MIME type.')
         }
         length += bytesRead

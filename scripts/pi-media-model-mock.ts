@@ -71,7 +71,7 @@ function generation(capabilities: Capabilities, references: unknown[], scenario:
   const count = scenario === 'PARTIAL' ? 2 : 1
   if (!profile || profile.executionMode !== (scenario === 'ASYNC' ? 'async-query' : 'sync-response')
     || !profile.operations.includes(operation)
-    || profile.maxCount < count
+    || profile.maxCount === undefined || profile.maxCount < count
     || (operation === 'edit' && !profile.capabilities.referenceImage)
     || !toolNames.slice(1).every(name => capabilities.tools.some(tool => tool === name))) fail('CAPABILITIES_UNAVAILABLE')
   const localAssetIds: string[] = []

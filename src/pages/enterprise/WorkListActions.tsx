@@ -1,5 +1,6 @@
-import { Pencil, Pin, PinOff, Trash2 } from 'lucide-react'
+import { Copy, Pencil, Pin, PinOff, Trash2 } from 'lucide-react'
 import { useEffect, useRef, type KeyboardEvent } from 'react'
+import { useOperationFeedback } from '../../components/feedback/use-operation-feedback'
 import type { WorkItem } from '../../features/enterprise/types'
 
 export interface WorkMenuRequest {
@@ -21,10 +22,12 @@ interface Props {
 
 /** Workspace actions own their shared confirmation and feedback dialogs. */
 export function WorkListActions({ works, request, busy, onDismiss, onRename, onPin, onDelete }: Props) {
+  const { capture } = useOperationFeedback()
   const menuRef = useRef<HTMLDivElement | null>(null)
   const returnFocus = useRef<HTMLElement | null>(null)
   const returnFallbacks = useRef<HTMLElement[]>([])
   const menuWork = works.find(work => work.id === request?.workId)
+  const identifierLabel = menuWork?.planningDraft && !menuWork.planningDraft.confirmedWorkPlanId ? '草稿ID' : '任务ID'
   const cannotDelete = (work: WorkItem) => Boolean(work.isActive || work.status === 'running' || work.planningDraft?.status === 'planning')
 
   const restoreFocus = () => {
@@ -70,6 +73,17 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
     if (request && !menuWork) onDismiss()
   }, [request, menuWork, onDismiss])
 
+  const copyIdentifier = async (work: WorkItem) => {
+    const notice = capture()
+    const identifier = work.planningDraft?.confirmedWorkPlanId ?? work.id
+    closeMenu()
+    try {
+      await navigator.clipboard.writeText(identifier)
+      notice.show(`${identifierLabel}已复制`, 'success')
+    } catch {
+      notice.show(`${identifierLabel}复制失败，请重试`)
+    }
+  }
   const deleteWork = async (workId: string) => {
     const targets = [returnFocus.current, ...returnFallbacks.current]
     closeMenu()
@@ -99,6 +113,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
           {menuWork.pinnedAt ? <PinOff size={16} aria-hidden /> : <Pin size={16} aria-hidden />}{menuWork.pinnedAt ? '取消置顶' : '置顶'}
         </button>}
         {!menuWork.planningDraft && <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onRename(menuWork.id) }}><Pencil size={16} aria-hidden />重命名</button>}
+        <button type="button" role="menuitem" onClick={() => { void copyIdentifier(menuWork) }}><Copy size={16} aria-hidden />复制{identifierLabel}</button>
         <button type="button" role="menuitem" className="danger" disabled={busy || cannotDelete(menuWork)} aria-describedby={cannotDelete(menuWork) ? 'ent-work-delete-reason' : undefined} onClick={() => { void deleteWork(menuWork.id) }}><Trash2 size={16} aria-hidden />删除</button>
         {cannotDelete(menuWork) && <p id="ent-work-delete-reason">执行中的工作需先终止，再删除记录。</p>}
       </>}

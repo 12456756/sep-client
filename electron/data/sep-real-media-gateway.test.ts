@@ -193,6 +193,25 @@ describe('SepRealMediaGateway response lifecycle', () => {
 })
 
 describe('SepRealMediaGateway', () => {
+  it('preserves missing-spec request diagnostics without submitting or retrying generation', async () => {
+    const { gateway, calls } = create(async () => json({ error: {
+      code: 'MISSING_SPEC', field: 'requestedSpec.size', source: 'request', stage: 'quote',
+      recovery: 'revise_request', submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false,
+      message: privateDetail,
+    } }, 422))
+    await assert.rejects(gateway.quote('subscription-1', request, signal()), error => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'MISSING_SPEC')
+      assert.deepEqual(error.details, {
+        resource: 'image', stage: 'image-quote', businessCode: 'MISSING_SPEC', field: 'requestedSpec.size',
+        source: 'request', recovery: 'revise_request', submissionState: 'not_submitted', billingState: 'not_reserved', retryable: false,
+      })
+      assert.doesNotMatch(JSON.stringify(error), /private-secret|private\.example|fixture-employment-token/)
+      return true
+    })
+    assert.equal(calls.length, 1)
+    assert.match(calls[0].url, /\/quotes$/)
+  })
   it('sends the configured Web origin on JSON writes, uploads and recovery requests', async () => {
     const calls: string[] = []
     const gateway = new SepRealMediaGateway({ baseUrl: 'https://api.example/api/',
@@ -298,5 +317,74 @@ describe('SepRealMediaGateway', () => {
       'X-SHA256': '0'.repeat(64), 'X-SEP-Media-Mock': 'false' } }))
     await assert.rejects(async () => { for await (const _chunk of await bad.content('subscription-1', 'receipt-1', 'output-1', signal())) { /* drain */ } },
       error => error instanceof AppError && !error.message.includes(token))
+  })
+})
+
+describe('V3 image quotes', () => {
+  it('transmits free specifications unchanged and rejects a quote that silently changes them', async () => {
+    const spec = { width: 1600, height: 2400, quality: 'ultra', count: 7 }
+    const input = { ...request, protocolVersion: 3 as const, parameters: spec, requestedSpec: spec,
+      parameterSources: { width: 'user' as const, height: 'user' as const, quality: 'model' as const, count: 'user' as const }, specRevision: 2 }
+    const quote = { mock: false, protocolVersion: 3, semanticHashVersion: 3, specRevision: 2, profileId: input.profileId, configVersion: input.configVersion,
+      modelId: 'image-model', adapterVersion: 'adapter-v1', amountUsd: '0.01', connectionFingerprint: 'b'.repeat(64),
+      billingDimensions: { size: '1600x2400', count: 7, quality: 'ultra' }, normalizationNotes: [],
+      quoteId: 'quote-v3', expiresAt: new Date(Date.now() + 60000).toISOString(),
+      semanticSha256: 'c'.repeat(64), effectiveSpec: spec, pricingStatus: 'quoted', amountCny: '1.000000', pricingVersion: 'p1',
+      billingStatus: 'NOT_RESERVED', funding: { creditCny: '1.000000', memberWalletCny: '0.000000', personalCny: '0.000000' } }
+    const { gateway, calls } = create(async () => json(quote))
+    const result = await gateway.quote('sub-1', input, signal())
+    assert.deepEqual(result.effectiveSpec, spec)
+    const body = JSON.parse(calls[0].body)
+    assert.deepEqual(body.requestedSpec, spec)
+    assert.equal('parameters' in body, false)
+    assert.equal('aspectRatio' in body.requestedSpec, false)
+    const changed = create(async () => json({ ...quote, effectiveSpec: { ...spec, width: 1024 } }))
+    await assert.rejects(changed.gateway.quote('sub-1', input, signal()), safeError('SPEC_CONFLICT'))
+    const unmapped = create(async () => assert.fail('Unsupported adapter fields must be rejected before network access.'))
+    await assert.rejects(unmapped.gateway.quote('sub-1', { ...input, requestedSpec: { ...spec, outputFormat: 'image/png' } }, signal()),
+      error => error instanceof AppError && error.code === 'ADAPTER_FIELD_UNMAPPED')
+    assert.equal(unmapped.calls.length, 0)
+  })
+})
+
+describe('V3 asynchronous image receipts', () => {
+  it('accepts an authorized V3 async receipt while preserving the legacy execution-mode contract', async () => {
+    const asynchronous = { ...receipt, protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
+      effectiveSpec: { size: '1024x1024', count: 1, quality: 'high' }, acceptance: { status: 'matched', mismatchedFields: [], unknownFields: [] },
+      executionMode: 'async-query', status: 'RUNNING' }
+    const accepted = create(async () => json(asynchronous))
+    assert.equal((await accepted.gateway.getReceipt('sub-1', receipt.receiptId, signal())).status, 'RUNNING')
+    const legacy = create(async () => json({ ...receipt, executionMode: 'async-query' }))
+    await assert.rejects(legacy.gateway.getReceipt('sub-1', receipt.receiptId, signal()), safeError('SERVICE_UNAVAILABLE'))
+  })
+})
+
+describe('V3 image output resource boundaries', () => {
+  it('reads seventeen outputs and high-index output errors within the response byte budget', async () => {
+    const raw = { ...receipt, protocolVersion: 3, semanticHashVersion: 3, specRevision: 1,
+      effectiveSpec: { size: '1024x1024', count: 1, quality: 'high' }, acceptance: { status: 'matched', mismatchedFields: [], unknownFields: [] },
+      status: 'SUCCEEDED', billingStatus: 'SETTLED',
+      outputs: Array.from({ length: 17 }, (_, index) => ({ outputId: `output-${index}`, kind: 'image', mimeType: 'image/png',
+        byteLength: png.length, width: 1, height: 1, sha256: pngHeaders['X-SHA256'], expiresAt: null })),
+      outputErrors: [{ index: 20, code: 'OUTPUT_FAILED' }] }
+    const { gateway } = create(async () => json(raw))
+    const result = await gateway.getReceipt('sub-1', receipt.receiptId, signal())
+    assert.equal(result.outputs.length, 17)
+    assert.deepEqual(result.outputErrors, [{ index: 20, code: 'OUTPUT_FAILED' }])
+  })
+
+  it('rejects a count that cannot fit the response safety budget before any network or paid submission', async () => {
+    const { gateway, calls } = create(async () => assert.fail('No upstream call is authorized before local safety validation.'))
+    const spec = { count: 10000 }
+    await assert.rejects(gateway.quote('sub-1', { ...request, protocolVersion: 3, parameters: spec, requestedSpec: spec,
+      parameterSources: { count: 'user' }, specRevision: 1 }, signal()), (error: unknown) => {
+      assert.ok(error instanceof AppError)
+      assert.equal(error.code, 'INVALID_ARGUMENT')
+      assert.equal(error.details?.source, 'client')
+      assert.equal(error.details?.reasonCode, 'LOCAL_RESPONSE_SIZE_LIMIT')
+      assert.equal(error.details?.submissionState, 'not_submitted')
+      return true
+    })
+    assert.equal(calls.length, 0)
   })
 })

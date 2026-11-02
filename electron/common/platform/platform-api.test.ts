@@ -31,7 +31,7 @@ describe('employee runtime skill artifact negotiation errors', () => {
       let calls = 0
       globalThis.fetch = async (input, init) => {
         calls++
-        assert.equal(String(input), `${config.SEP_BASE_URL}/client/subscriptions/sub-1/runtime?mediaProtocolVersion=2&skillArtifactProtocolVersion=1&videoProtocolVersion=2`)
+        assert.equal(String(input), `${config.SEP_BASE_URL}/client/subscriptions/sub-1/runtime?mediaProtocolVersion=3&skillArtifactProtocolVersion=1&videoProtocolVersion=3`)
         assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer access')
         return response({ statusCode: status, message: 'Rejected' }, status)
       }

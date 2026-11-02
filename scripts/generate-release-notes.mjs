@@ -46,10 +46,10 @@ export function parseReleaseNotesArguments(args, env = {}) {
   if (explicitChannel && env.SEP_RELEASE_CHANNEL && explicitChannel !== env.SEP_RELEASE_CHANNEL) {
     throw new ReleaseNotesError('SEP_RELEASE_CHANNEL conflicts with the explicit channel')
   }
-  return { channel: explicitChannel ?? env.SEP_RELEASE_CHANNEL ?? 'beta', outputDir: positional[1] ?? 'dist', changesFile }
+  return { channel: explicitChannel ?? env.SEP_RELEASE_CHANNEL ?? 'stable', outputDir: positional[1] ?? 'dist', changesFile }
 }
 
-export function createReleaseNotes({ version, channel = 'beta', environment = channel === 'stable' ? 'production' : 'integration', generatedAt, changes = '' } = {}) {
+export function createReleaseNotes({ version, channel = 'stable', environment = channel === 'stable' ? 'production' : 'integration', generatedAt, changes = '' } = {}) {
   requireChannel(channel)
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new ReleaseNotesError('package version must be a release version string')

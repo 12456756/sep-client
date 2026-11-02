@@ -275,6 +275,14 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
 /** 等待确认、失败与终止后的恢复操作始终留在主对话区。 */
 function NeedsYou({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
 
+  const execution = work.arrangementExecution;
+  const canReply = (work.status === 'running' || work.status === 'waiting-user') &&
+    (execution?.status === 'running' || execution?.status === 'waiting-user');
+  const waiting = canReply ? execution.nodes.filter(node => node.status === 'interrupted' && node.inputRequest) : [];
+  if (waiting.length) return <section className="ent-flow-act ent-media-input-requests" aria-label="补充媒体规格">
+    {waiting.map(node => <MediaInputReplyForm key={node.inputRequest!.requestId} work={work} workspace={workspace} nodeId={node.nodeId} request={node.inputRequest!} />)}
+  </section>;
+
   if (work.status === 'waiting-user') {
     return (
       <div className="ent-flow-act">
@@ -315,6 +323,27 @@ function NeedsYou({ work, workspace }: { work: WorkItem; workspace: EnterpriseWo
   }
 
   return null;
+}
+
+function MediaInputReplyForm({ work, workspace, nodeId, request }: {
+  work: WorkItem; workspace: EnterpriseWorkspace; nodeId: string; request: import('../../shared/arrangement-input').ArrangementInputRequest;
+}) {
+  const [text, setText] = useState('');
+  const title = work.steps.find(step => step.id === nodeId)?.title ?? '当前媒体工作';
+  return <form className="ent-media-input-form" onSubmit={event => {
+    event.preventDefault();
+    if (!workspace.busy && text.trim()) void workspace.retryWork(work.id, nodeId, { requestId: request.requestId, text: text.trim() });
+  }}>
+    <strong>{title}需要补充信息</strong>
+    <p>{request.question}</p>
+    <small>补充尚未确定的规格。已确认要求和已提交的生成任务会保留；修改它们需要重新编排。</small>
+    <label>
+      <span>补充规格或用途</span>
+      <textarea value={text} onChange={event => setText(event.target.value)} maxLength={4_000} rows={3}
+        placeholder="例如：用于手机竖屏展示，8 秒，无音频；其他规格请根据用途提出方案。" disabled={workspace.busy} required />
+    </label>
+    <button type="submit" className="ent-btn primary sm" disabled={workspace.busy || !text.trim()}>提交补充并继续</button>
+  </form>;
 }
 
 /**

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type SetStateAction } from 'react'
 import type { ArrangementDraft, ArrangementDraftDocument, ArrangementPlanningProgress } from '../../shared/types'
+import type { KnowledgeSelection } from '../../shared/knowledge-selection'
 import type { AttachmentRef } from '../../shared/attachment-contracts'
 import { recoverDraftRevisionConflict, responseError } from '../../shared/arrangement-feedback'
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback'
@@ -41,14 +42,14 @@ export function useAutoPlanning(bindingKey = '', recordId?: string, onRecorded?:
     if (next) controller?.updateDraft(next)
     else setLocalId(null)
   }
-  const start = async (goal: string, workDir: string, modelId: string, attachmentRefs: AttachmentRef[] = [], attachmentSessionId?: string, mustUseAttachments = true, permissions: ArrangementDraftDocument['permissions'] = { preset: 'read-only' }): Promise<void> => {
+  const start = async (goal: string, workDir: string, modelId: string, attachmentRefs: AttachmentRef[] = [], attachmentSessionId?: string, mustUseAttachments = true, permissions: ArrangementDraftDocument['permissions'] = { preset: 'read-only' }, knowledge?: KnowledgeSelection): Promise<void> => {
     if (submittingRef.current || !controller) return
     const notice = capture()
     if (!goal.trim() || !modelId) { notice.show(!goal.trim() ? '请填写工作目标' : '请选择需要使用的模型', 'warning'); return }
     submittingRef.current = true; setSubmitting(true)
     try {
       const result = await controller.start({ requestId: crypto.randomUUID(), modelId, document: {
-        schemaVersion: 1, mode: 'auto', title: goal.trim().slice(0, 40), goal: goal.trim(), confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [],
+        schemaVersion: 1, mode: 'auto', title: goal.trim().slice(0, 40), goal: goal.trim(), knowledge, confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [],
         attachmentCandidates: attachmentRefs.map(attachment => ({ attachment, mustUse: mustUseAttachments })), attachmentSessionId,
         workspace: { mode: 'shared', path: workDir || null }, permissions, lastPlanning: null,
       } })

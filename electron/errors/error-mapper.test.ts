@@ -31,6 +31,17 @@ describe('error code table', () => {
 })
 
 describe('toEnvelope', () => {
+  it('preserves bounded specification context across IPC without forwarding provider bodies', () => {
+    const result = toEnvelope(appError('UPSTREAM_SPEC_UNSUPPORTED', { message: 'private provider body', details: {
+      field: 'requestedSpec.durationSeconds', requestedValue: 8, source: 'provider', submissionState: 'not_submitted',
+      billingState: 'not_reserved', rawResponse: 'private token', reason: 'private provider body',
+    } }))
+    assert.equal(result.code, 'UPSTREAM_SPEC_UNSUPPORTED')
+    assert.equal(result.field, 'requestedSpec.durationSeconds')
+    assert.equal(result.requestedValue, 8)
+    assert.equal(result.source, 'provider')
+    assert.doesNotMatch(JSON.stringify(result), /private|rawResponse/)
+  })
   it('keeps a platform rate-limit cooldown in the renderer-safe envelope', () => {
     const error = new AuthApiError({ statusCode: 429, message: 'upstream-private-message', retryAfterMs: 65_000 }, 'notifications')
     assert.deepEqual(toEnvelope(error, { authenticated: true }), {

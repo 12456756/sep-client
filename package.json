@@ -1,6 +1,6 @@
 {
   "name": "longsilicon",
-  "version": "0.2.3",
+  "version": "0.2.5",
   "description": "硅基员工平台客户端",
   "type": "module",
   "main": "out/main/index.js",
@@ -18,7 +18,7 @@
     "lint": "eslint . --ext .ts,.tsx",
     "auth:smoke": "bash scripts/test-auth-flow.sh",
     "check:boundaries": "tsx scripts/check-boundaries.ts",
-    "test:renderer": "tsx --test src/features/enterprise/*.test.ts src/features/knowledge/*.test.ts src/features/speech/*.test.ts src/shared/*.test.ts src/components/enterprise/arrange/*.test.tsx src/features/update/*.test.ts src/components/enterprise/UpdateNotice.test.tsx src/components/enterprise/update-restart.test.ts src/pages/enterprise/WorkDetailPage.test.tsx src/pages/enterprise/EmployeesPage.test.tsx src/pages/enterprise/EmployeeDetailPage.test.tsx src/components/enterprise/AppSideNav.test.tsx src/pages/enterprise/WorkListPane.test.tsx src/pages/enterprise/WorkListActions.test.tsx",
+    "test:renderer": "tsx --test src/features/enterprise/*.test.ts src/features/knowledge/*.test.ts src/features/speech/*.test.ts src/shared/*.test.ts src/components/ToolApprovalDialog.test.tsx src/components/enterprise/arrange/*.test.tsx src/features/update/*.test.ts src/components/enterprise/UpdateNotice.test.tsx src/components/enterprise/update-restart.test.ts src/pages/enterprise/WorkDetailPage.test.tsx src/pages/enterprise/EmployeesPage.test.tsx src/pages/enterprise/EmployeeDetailPage.test.tsx src/components/enterprise/AppSideNav.test.tsx src/pages/enterprise/WorkListPane.test.tsx src/pages/enterprise/WorkListActions.test.tsx",
     "test:employees:ui": "node scripts/test-employees-ui.mjs",
     "test:tasks": "tsx --test electron/bootstrap/*.test.ts electron/common/*.test.ts electron/common/platform/*.test.ts electron/controller/*.test.ts electron/data/*.test.ts electron/domain/*.test.ts electron/errors/*.test.ts electron/pi/sdk/*.test.ts electron/runtime/*.test.ts electron/service/*.test.ts",
     "test:invariants": "tsx --test electron/runtime/concurrency-invariants.test.ts electron/runtime/defect-regressions.test.ts electron/runtime/run-parts.test.ts electron/runtime/task-runtime.test.ts electron/service/employee-authorizer.test.ts electron/common/load-once.test.ts electron/controller/ipc-contract.test.ts electron/controller/app-lifecycle.test.ts electron/errors/*.test.ts",
@@ -37,11 +37,8 @@
     "speech:prepare": "node scripts/prepare-speech-assets.mjs",
     "speech:verify": "node scripts/verify-speech-assets.mjs",
     "office:prepare": "node scripts/office-assets.mjs",
-    "release:config:beta": "node scripts/generate-runtime-config.mjs beta",
     "release:config:stable": "node scripts/generate-runtime-config.mjs stable",
-    "package:beta": "npm run release:preflight && npm run release:config:beta && npm run release:builder:signed:beta && electron-vite build && electron-builder --config .release/electron-builder.beta.signed.json --publish never && node scripts/verify-release-signatures.mjs beta && node scripts/verify-update-manifest.mjs dist/beta && node scripts/generate-checksums.mjs dist/beta && node scripts/generate-release-notes.mjs beta dist/beta",
     "package:stable": "npm run release:preflight && npm run release:config:stable && npm run release:builder:signed:stable && electron-vite build && electron-builder --config .release/electron-builder.stable.signed.json --publish never && node scripts/verify-release-signatures.mjs stable && node scripts/verify-update-manifest.mjs dist/stable && node scripts/generate-checksums.mjs dist/stable && node scripts/generate-release-notes.mjs stable dist/stable",
-    "package:local:beta": "npm run release:config:beta && npm run release:builder:beta && electron-vite build && electron-builder --config .release/electron-builder.beta.json --publish never",
     "package:local:stable": "npm run release:config:stable && npm run release:builder:stable && electron-vite build && electron-builder --config .release/electron-builder.stable.json --publish never",
     "release:preflight": "node scripts/release-signing.mjs",
     "release:prepare-download-update": "node scripts/prepare-download-update.mjs",
@@ -57,9 +54,7 @@
     "verify:release-signatures": "node scripts/verify-release-signatures.mjs",
     "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/office-assets.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
     "verify:packaged-runtime": "node scripts/verify-packaged-runtime.mjs",
-    "release:builder:beta": "node scripts/generate-builder-config.mjs beta",
     "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
-    "release:builder:signed:beta": "node scripts/generate-builder-config.mjs beta --signed",
     "release:builder:signed:stable": "node scripts/generate-builder-config.mjs stable --signed",
     "verify:update-manifest": "node scripts/verify-update-manifest.mjs",
     "test:update-feed": "node scripts/test-update-feed.mjs",
@@ -141,7 +136,9 @@
     "mac": {
       "category": "public.app-category.business",
       "icon": "build/icon.icns",
-      "signIgnore": ["/Contents/Resources/office/officecli-mac-(arm64|x64)$"],
+      "signIgnore": [
+        "/Contents/Resources/office/officecli-mac-(arm64|x64)$"
+      ],
       "extendInfo": {
         "NSMicrophoneUsageDescription": "用于将您主动录制的语音在本机转换为输入文字。"
       },
@@ -184,12 +181,33 @@
       "node_modules/sherpa-onnx-*/**/*"
     ],
     "extraResources": [
-      { "from": "resources/common-skills", "to": "common-skills", "filter": ["officecli/SKILL.md"] },
-      { "from": "resources/office", "to": "office", "filter": ["manifest.json", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.txt"] },
+      {
+        "from": "resources/common-skills",
+        "to": "common-skills",
+        "filter": [
+          "officecli/SKILL.md"
+        ]
+      },
+      {
+        "from": "resources/office",
+        "to": "office",
+        "filter": [
+          "manifest.json",
+          "LICENSE",
+          "NOTICE",
+          "THIRD-PARTY-NOTICES.txt"
+        ]
+      },
       {
         "from": "resources/speech/sensevoice-int8",
         "to": "speech/sensevoice-int8",
-        "filter": ["model.int8.onnx", "tokens.txt", "MODEL_LICENSE", "RUNTIME_LICENSE", "manifest.json"]
+        "filter": [
+          "model.int8.onnx",
+          "tokens.txt",
+          "MODEL_LICENSE",
+          "RUNTIME_LICENSE",
+          "manifest.json"
+        ]
       }
     ],
     "beforePack": "scripts/speech-before-pack.cjs",

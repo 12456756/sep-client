@@ -50,6 +50,16 @@ describe('employee system prompt', () => {
     assert.match(prompt, /工具可用性、费用及审批限制保持不变/)
   })
 
+  it('requires model-proposed structured specifications and transparent generation provenance', () => {
+    const prompt = buildEmployeeSystemPrompt({ name: 'Employee' })
+    assert.match(prompt, /用户明确规格优先/)
+    assert.match(prompt, /requestedSpec/)
+    assert.match(prompt, /MISSING_SPEC/)
+    assert.match(prompt, /不能静默/)
+    assert.match(prompt, /脚本/)
+    assert.match(prompt, /能力提示不是规格白名单/)
+  })
+
   it('includes only the four identity fields and keeps profile text inside the data section', () => {
     const profile = {
       name: 'Employee & helper', position: 'Analyst', functionalCategory: 'Finance',

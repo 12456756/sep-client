@@ -18,6 +18,8 @@ export const arrangementMediaLinkSchema = z.object({
   kind: z.enum(['image', 'video']),
   operation: z.enum(['generate', 'edit', 'image-to-video', 'text-to-video']),
   jobId: localId,
+  requirementId: localId.optional(),
+  specRevision: z.number().int().positive().safe().optional(),
   inputs: z.array(z.object({ artifactId: arrangementMediaArtifactIdSchema, sha256, sourceNodeId: localId.optional() }).strict()),
   outputs: z.array(z.object({
     artifactId: arrangementMediaArtifactIdSchema,
@@ -62,7 +64,7 @@ export interface ArrangementMediaLinkStorePort {
 }
 
 export function assertArrangementMediaLinkUpdate(previous: ArrangementMediaLink, next: ArrangementMediaLink): void {
-  const stable = ['version', 'owner', 'taskId', 'arrangementRunId', 'nodeId', 'nodeRunId', 'attempt', 'subscriptionId', 'kind', 'operation', 'jobId', 'inputs', 'createdAt'] as const
+  const stable = ['version', 'owner', 'taskId', 'arrangementRunId', 'nodeId', 'nodeRunId', 'attempt', 'subscriptionId', 'kind', 'operation', 'jobId', 'requirementId', 'specRevision', 'inputs', 'createdAt'] as const
   if (stable.some(key => !isDeepStrictEqual(previous[key], next[key])) || next.updatedAt < previous.updatedAt) {
     throw new Error('Media job association and original inputs cannot change.')
   }

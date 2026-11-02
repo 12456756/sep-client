@@ -148,7 +148,10 @@ export class VideoRunService implements VideoRunPort {
         ? job.error : job.error === 'PERMISSION_DENIED' ? 'PERMISSION_DENIED' : 'AUTH_REQUIRED')
       run.tracking = host.track(input.taskId)
       void run.tracking.catch(() => undefined)
-      return job
+      await this.waitForJobs(run, [job.jobId], signal, false)
+      const completed = (await abortableVideo(host.getTaskVideo(input.taskId), signal)).jobs.find(item => item.jobId === job.jobId)
+      if (!completed) throw new AppError('INVALID_STATE')
+      return completed
     }) }
   }
 
@@ -160,6 +163,17 @@ export class VideoRunService implements VideoRunPort {
     while (run.pending.size) await abortableVideo(Promise.all([...run.pending]), signal)
     signal.throwIfAborted()
     if (!run.jobs.size) return
+    await this.waitForJobs(run, [...run.jobs], signal, true, options.recoverOriginal === true)
+  }
+
+  private async waitForJobs(
+    run: Run,
+    jobIds: readonly string[],
+    signal: AbortSignal,
+    throwOnFailure = true,
+    recoverOriginal = false,
+  ): Promise<void> {
+    const { taskId } = run
     let trackingError: unknown
     let trackingDone = false
     const recoveries = new Map<string, number>()
@@ -168,22 +182,23 @@ export class VideoRunService implements VideoRunPort {
     tracking: for (;;) {
       signal.throwIfAborted()
       const trackingWasDone = trackingDone
-      const trackedBeforeRead = [...run.jobs].filter(id => run.host.hasActiveTracker(taskId, id))
+      const trackedBeforeRead = jobIds.filter(id => run.host.hasActiveTracker(taskId, id))
       const view = await abortableVideo(run.host.getTaskVideo(taskId), signal)
       // The read may have captured pre-save state while the tracker completed.
       if (!trackingWasDone && trackingDone || trackedBeforeRead.some(id => !run.host.hasActiveTracker(taskId, id))) continue
       let complete = true
-      for (const id of run.jobs) {
+      for (const id of jobIds) {
         const job = view.jobs.find(job => job.jobId === id)
         if (!job || !['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus) || job.saveStatus !== 'SAVED') {
           complete = false
           const failed = job && (['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(job.generationStatus) || ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
           // An observing host may finish its own loop while another host is saving.
+          if (failed && !throwOnFailure) return
           if (failed || trackingDone && !run.host.hasActiveTracker(taskId, id)) {
             const error = trackingError instanceof AppError ? trackingError : new AppError(job && videoErrorMessage(job.error) && isErrorCode(job.error) ? job.error : 'INVALID_STATE')
             await this.notifyTerminalFailure(run, error)
-            if (options.recoverOriginal && job?.generationStatus === 'RESULT_EXPIRED' && !terminalVideoFailure(error)) throw new ArrangementMediaRecoveryError('download', error)
-            if (options.recoverOriginal && !terminalVideoFailure(error) && job && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
+            if (recoverOriginal && job?.generationStatus === 'RESULT_EXPIRED' && !terminalVideoFailure(error)) throw new ArrangementMediaRecoveryError('download', error)
+            if (recoverOriginal && !terminalVideoFailure(error) && job && ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(job.generationStatus)) {
               if ((recoveries.get(id) ?? 0) < 3) {
                 recoveries.set(id, (recoveries.get(id) ?? 0) + 1)
                 await delay(100 * 2 ** ((recoveries.get(id) ?? 1) - 1), undefined, { signal })

@@ -289,6 +289,27 @@ describe('EventPipeline', () => {
     assert.equal(pipeline.takeResponse('run-b'), 'other')
   })
 
+  it('keeps the final response after tools without joining preliminary commentary', () => {
+    const pipeline = new EventPipeline({ handle: async () => {} })
+    pipeline.appendResponse('run-a', 'I will generate an image.')
+    pipeline.markResponseBoundary('run-a')
+    pipeline.markResponseBoundary('run-a')
+    pipeline.appendResponse('run-a', 'Generated and ')
+    pipeline.appendResponse('run-a', 'saved.')
+    assert.equal(pipeline.takeResponse('run-a'), 'Generated and saved.')
+  })
+
+  it('retains partial commentary when a tool fails before any final response', () => {
+    const pipeline = new EventPipeline({ handle: async () => {} })
+    pipeline.appendResponse('run-a', 'Working on the image.')
+    pipeline.markResponseBoundary('run-a')
+    assert.equal(pipeline.takeResponse('run-a'), 'Working on the image.')
+    pipeline.markResponseBoundary('run-a')
+    pipeline.forgetRun('run-a')
+    pipeline.appendResponse('run-a', 'New response')
+    assert.equal(pipeline.takeResponse('run-a'), 'New response')
+  })
+
   // 不变式 I7：只有副作用工具需要 SIDE_EFFECT_UNKNOWN；判定点只有一个。
   it('tracks only side-effecting tools as in-flight, and clears them on end', () => {
     const pipeline = new EventPipeline({ handle: async () => {} })

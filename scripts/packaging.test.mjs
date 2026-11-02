@@ -68,12 +68,20 @@ function run(dir, script, args = [], extraEnv = {}) {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('SEP_')))
   return spawnSync(process.execPath, [resolve(dir, 'scripts', script), ...args], { cwd: dir, env: { ...env, ...extraEnv }, encoding: 'utf8' })
 }
-test('beta config is generated and stable requires an explicit base URL', () => {
+test('runtime generation defaults to stable and rejects retired beta builds', () => {
   const dir = fixture()
-  assert.equal(run(dir, 'generate-runtime-config.mjs', ['beta']).status, 0)
+  assert.equal(run(dir, 'generate-runtime-config.mjs').status, 0)
   const generated = readFileSync(resolve(dir, 'electron/common/runtime-config.generated.ts'), 'utf8')
-  assert.match(generated, /"channel": "beta"/)
+  assert.match(generated, /"channel": "stable"/)
+  assert.match(generated, /"environment": "production"/)
   assert.match(generated, /longdaosep\.cn/)
+  for (const [args, env] of [[['beta'], {}], [[], { SEP_RELEASE_CHANNEL: 'beta' }], [['stable'], { SEP_RELEASE_CHANNEL: 'beta' }]]) {
+    const result = run(dir, 'generate-runtime-config.mjs', args, env)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /retired|conflicts/)
+    assert.equal(readFileSync(resolve(dir, 'electron/common/runtime-config.generated.ts'), 'utf8'), generated)
+  }
+  writeFileSync(resolve(dir, 'config/release.stable.json'), JSON.stringify({ channel: 'stable', environment: 'production', sepBaseUrl: '', gatewayUrl: '' }))
   assert.notEqual(run(dir, 'generate-runtime-config.mjs', ['stable']).status, 0)
   assert.equal(run(dir, 'generate-runtime-config.mjs', ['stable'], { SEP_BASE_URL: 'https://example.test/api', SEP_GATEWAY_URL: 'https://example.test/api/gateway/v1' }).status, 0)
   assert.match(readFileSync(resolve(dir, 'electron/common/runtime-config.generated.ts'), 'utf8'), /example\.test/)
@@ -89,9 +97,9 @@ test('checksums cover installers and release notes are generated', () => {
   const version = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')).version
   assert.match(readFileSync(resolve(dir, 'dist/RELEASE-NOTES-beta.md'), 'utf8'), new RegExp(`SEP Client ${version} \\(beta\\)`))
 })
-test('release scripts keep channel selection and do not force cross-platform packaging', () => {
+test('release scripts select stable and do not force cross-platform packaging', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
-  for (const channel of ['beta', 'stable']) {
+  for (const channel of ['stable']) {
     assert.match(pkg.scripts['package:' + channel], new RegExp('release:config:' + channel))
     assert.match(pkg.scripts['package:' + channel], new RegExp('release:builder:signed:' + channel))
     assert.match(pkg.scripts['package:' + channel], new RegExp(`electron-builder --config \\.release/electron-builder\\.${channel}\\.signed\\.json --publish never`))
@@ -103,6 +111,7 @@ test('release scripts keep channel selection and do not force cross-platform pac
     assert.match(pkg.scripts['package:' + channel], new RegExp(`generate-release-notes\\.mjs ${channel} dist/${channel}`))
     assert.doesNotMatch(pkg.scripts['package:' + channel], /npm run build|--mac --win/)
   }
+  for (const name of ['package:beta', 'package:local:beta', 'release:config:beta', 'release:builder:beta', 'release:builder:signed:beta']) assert.equal(pkg.scripts[name], undefined)
   assert.equal(pkg.dependencies['@earendil-works/pi-coding-agent'], '0.83.0')
   assert.equal(pkg.dependencies['@earendil-works/pi-ai'], '0.83.0')
 })
@@ -130,11 +139,10 @@ test('notification WebSocket transport is a direct production dependency', () =>
   assert.notEqual(lock.packages['node_modules/ws'].dev, true)
 })
 
-test('channel builder configs preserve packaging settings and pass the installed builder schema', async () => {
+test('stable builder config preserves packaging settings and passes the installed builder schema', async () => {
   const dir = fixture()
   const original = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')).build
-  const urls = []
-  for (const channel of ['beta', 'stable']) {
+  for (const channel of ['stable']) {
     assert.equal(run(dir, 'generate-builder-config.mjs', [channel]).status, 0)
     const path = resolve(dir, `.release/electron-builder.${channel}.json`)
     const config = JSON.parse(readFileSync(path, 'utf8'))
@@ -151,14 +159,12 @@ test('channel builder configs preserve packaging settings and pass the installed
     ])
     assert.equal(config.mac.icon, original.mac.icon)
     assert.equal(config.mac.category, original.mac.category)
-    urls.push(config.publish[0].url)
     const effective = await getConfig(dir, path)
     await validateConfiguration(effective, new DebugLogger(false))
     assert.deepEqual(effective.publish, config.publish)
     assert.equal(effective.appId, original.appId)
     assert.equal(effective.directories.output, config.directories.output)
   }
-  assert.notEqual(urls[0], urls[1])
   assert.equal(JSON.stringify(JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')).build), JSON.stringify(original))
 })
 
@@ -172,11 +178,21 @@ test('builder generation rejects unknown, missing and conflicting channels befor
   assert.match(result.stderr, /conflicts/)
 })
 
+test('builder CLI rejects retired beta generation before writing unsigned or signed configs', () => {
+  const dir = fixture()
+  for (const args of [['beta'], ['beta', '--signed']]) {
+    const result = run(dir, 'generate-builder-config.mjs', args)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /retired/)
+  }
+  assert.equal(existsSync(resolve(dir, '.release')), false)
+})
+
 test('signed builder CLI fails before writing config without explicit release identity and rejects unknown flags', () => {
   const dir = fixture()
-  const result = run(dir, 'generate-builder-config.mjs', ['beta', '--signed'])
+  const result = run(dir, 'generate-builder-config.mjs', ['stable', '--signed'])
   assert.notEqual(result.status, 0)
-  assert.equal(existsSync(resolve(dir, '.release/electron-builder.beta.signed.json')), false)
+  assert.equal(existsSync(resolve(dir, '.release/electron-builder.stable.signed.json')), false)
   for (const args of [['beta', '--unsigned'], ['beta', '--signed', '--extra']]) {
     const invalid = run(dir, 'generate-builder-config.mjs', args)
     assert.notEqual(invalid.status, 0)

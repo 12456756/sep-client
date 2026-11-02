@@ -1,3 +1,4 @@
+import { videoOutputExtension } from '../../../src/shared/video-media'
 import { dialog } from 'electron'
 import { z } from 'zod'
 import { videoGenerationInputSchema } from '../../../src/shared/video-host'
@@ -50,7 +51,7 @@ export const videoRoutes = [
     const preview = await host(ctx).outputInfo(input.taskId, input.jobId, input.outputId)
     const window = ctx.window()
     if (!window) throw appError('INTERNAL_ERROR')
-    const extension = preview.mimeType === 'video/webm' ? 'webm' : 'mp4'
+    const extension = videoOutputExtension(preview.mimeType)
     const selected = await dialog.showSaveDialog(window, { title: '导出视频', defaultPath: `${input.outputId}.${extension}`, filters: [{ name: '视频', extensions: [extension] }] })
     if (selected.canceled || !selected.filePath) return { success: true, cancelled: true }
     await selection.export(input.jobId, input.outputId, selected.filePath)

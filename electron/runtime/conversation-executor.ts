@@ -31,7 +31,8 @@ import type { MonitorTaskContentInput, MonitorTaskQueuedInput, MonitorTaskStarte
 import { logger } from '../common/logger'
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
-import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
+import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
+import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
 
 const log = logger.child('conversation-executor')
@@ -71,7 +72,7 @@ export class ConversationExecutor {
   async continue(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[] } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection } = {},
   ): Promise<void> {
     await this.continueAs(taskId, prompt, undefined, recovery)
   }
@@ -140,11 +141,11 @@ export class ConversationExecutor {
         },
       }
       this.options.workers.register(active)
-      const mediaTools = general ? undefined : await this.options.media?.prepareRun({
+      const mediaTools = await this.options.media?.prepareRun({
         taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
-      const videoTools = general ? undefined : await this.options.video?.prepareRun({
+      const videoTools = await this.options.video?.prepareRun({
         taskId, runId: runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
@@ -169,7 +170,7 @@ export class ConversationExecutor {
           resumeSessionFile: queued.resumeSessionFile,
           additionalSkillPaths: general ? [] : employee.additionalSkillPaths,
           systemPrompt: general ? undefined : employee.systemPrompt,
-          ...(general ? { useNativeSystemPrompt: true, disableSkills: true, modelRequestAwareness: false, transformSystemPrompt: translatePiNativeSystemPrompt } : {}),
+          ...(general ? { useNativeSystemPrompt: true, disableSkills: true, enableCommonTools: true, modelRequestAwareness: false, transformSystemPrompt: translatePiNativeSystemPrompt } : {}),
           mediaTools,
           videoTools,
           toolPolicy,
@@ -206,6 +207,7 @@ export class ConversationExecutor {
           workspaceDir: task.workDir ?? this.options.workspaceRoot(),
           prompt: queued.prompt,
           executionKind: 'conversation',
+          ...(queued.knowledge ? { knowledge: queued.knowledge } : {}),
           ...(attachmentMetadata ? { attachmentMetadata } : {}),
         })
         runCreated = true
@@ -229,16 +231,26 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
-      if (queued.conversation && !general && this.options.knowledgeSearch && active.control === 'none') {
-        const knowledgeQuery = queued.prompt.trim().slice(0, 1_000).trimEnd()
-        let result: KnowledgeSearchResult | null = null
+      const selection = queued.knowledge ?? queued.arrangement?.knowledge
+      let trustedNames: string[] = []
+      if (selection?.mode === 'auto' && this.options.knowledgeSearch?.describe && active.control === 'none') {
         try {
-          result = await this.options.knowledgeSearch(knowledgeQuery, knowledgeCancellation.signal)
+          trustedNames = (await this.options.knowledgeSearch.describe(selection.knowledgeBaseIds, knowledgeCancellation.signal)).map(item => item.name)
         } catch (error) {
           if (knowledgeCancellation.signal.aborted) throw error
         }
-        workerPrompt = `${workerPrompt}\n\n${formatKnowledgeContext(knowledgeQuery, result)}`
+      }
+      const request = knowledgeRequest(queued.prompt, selection, trustedNames)
+      if (queued.conversation && request && this.options.knowledgeSearch && active.control === 'none') {
+        let result: KnowledgeSearchResult | null = null
+        try {
+          result = await this.options.knowledgeSearch(request, knowledgeCancellation.signal)
+        } catch (error) {
+          if (knowledgeCancellation.signal.aborted) throw error
+        }
+        workerPrompt = `${workerPrompt}\n\n${formatKnowledgeContext(request.query, result)}`
       }
       if (active.control !== 'none') {
         await this.finalize(active, queued, scope, runCreated)
@@ -291,7 +303,7 @@ export class ConversationExecutor {
     taskId: string,
     prompt: string,
     employeeOverride: string | undefined,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[] },
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection },
   ): Promise<void> {
     const task = await this.options.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
@@ -350,6 +362,7 @@ export class ConversationExecutor {
       workerPrompt,
       degradedRecovery,
       attachmentRefs: recovery.attachmentRefs,
+      knowledge: recovery.knowledge ?? arrangement?.knowledge,
     }
     this.options.enqueue(queued)
     this.options.onQueued?.({

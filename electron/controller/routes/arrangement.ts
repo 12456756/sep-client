@@ -4,6 +4,7 @@ import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
 import { arrangementNodeWorkContractSchema, type ArrangementDraft } from '../../domain/arrangement-plan'
 import { draftAttachmentCandidateSchema, nodeInputRefSchema } from '../../../src/shared/attachment-contracts'
+import { knowledgeSelectionSchema } from '../../../src/shared/knowledge-selection'
 
 const draftId = z.string().min(1)
 const taskId = z.string().min(1)
@@ -41,6 +42,7 @@ const draftDocument = z.object({
   status: z.enum(['editing', 'planning', 'planning-failed', 'awaiting-employee', 'ready', 'preflight-failed', 'confirmed']),
   title: z.string(),
   goal: z.string(),
+  knowledge: knowledgeSelectionSchema.optional(),
   confirmedInputs: z.array(z.string()),
   attachmentCandidates: z.array(draftAttachmentCandidateSchema).max(10).optional(),
   attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
@@ -92,6 +94,8 @@ const executionSettingsInput = z.object({
     modelId: z.string().trim().min(1).optional(),
     workDir: z.string().trim().min(1).nullable(),
     permissions: permissions.strict(),
+    knowledge: knowledgeSelectionSchema.optional(),
+    nodeKnowledge: z.array(z.object({ nodeId: z.string().min(1), knowledge: knowledgeSelectionSchema.nullable() }).strict()).optional(),
   }).strict(),
 }).strict()
 const confirmInput = z.object({ draftId, expectedRevision: revision, idempotencyKey: z.string().min(1).max(256) })

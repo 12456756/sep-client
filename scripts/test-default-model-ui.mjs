@@ -4,6 +4,7 @@ import { log } from 'node:console';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import process from 'node:process';
+import { previewBrowserOptions, selectComposerModel, composerModelOptions } from './model-picker-helpers.mjs';
 import { chromium } from 'playwright-core';
 
 const origin = process.env.SEP_PREVIEW_ORIGIN ?? 'http://127.0.0.1:5191';
@@ -49,7 +50,7 @@ window.completePlanning=()=>{
 render();
 </script></body></html>`;
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const browser = await chromium.launch({ ...previewBrowserOptions(), headless: true });
 try {
   for (const [width, height] of [[1200, 850], [960, 640], [390, 844]]) {
     const page = await browser.newPage({ viewport: { width, height }, reducedMotion: 'reduce' });
@@ -79,28 +80,28 @@ try {
     await page.screenshot({ path: join(tmpdir(), 'sep-default-model-settings-' + width + '.png') });
     await closeSettings();
     await work();
-    assert.equal(await model().inputValue(), 'gpt');
-    await model().selectOption('first');
+    assert.equal(await model().textContent(), 'gpt');
+    await selectComposerModel(page, 'first');
     await page.evaluate(() => window.reorderModels());
-    assert.equal(await model().inputValue(), 'first', 'catalog refresh must preserve an explicit choice');
+    assert.equal(await model().textContent(), 'first', 'catalog refresh must preserve an explicit choice');
     await openSettings();
     assert.equal(await page.getByLabel('默认模型', { exact: true }).inputValue(), 'gpt', 'task choices must not overwrite the preference');
     await page.getByLabel('默认模型', { exact: true }).selectOption('first');
     await closeSettings();
-    assert.equal(await model().inputValue(), 'first');
+    assert.equal(await model().textContent(), 'first');
     await page.getByRole('tab', { name: '编排', exact: true }).click();
-    assert.equal(await model().inputValue(), 'first');
+    assert.equal(await model().textContent(), 'first');
     await openSettings();
     await page.getByLabel('默认模型', { exact: true }).selectOption('gpt');
     await closeSettings();
-    assert.equal(await model().inputValue(), 'first', 'changing preferences must not change an existing composer');
+    assert.equal(await model().textContent(), 'first', 'changing preferences must not change an existing composer');
     await page.getByRole('tab', { name: '会话', exact: true }).click();
-    assert.equal(await model().inputValue(), 'gpt', 'a new scene should use the latest default');
+    assert.equal(await model().textContent(), 'gpt', 'a new scene should use the latest default');
     await page.locator('.ent-chat-whobtn').click();
     await page.getByRole('option', { name: /员工A/ }).click();
-    assert.deepEqual((await model().locator('option').allTextContents()).sort(), ['first', 'gpt', 'private-a'].sort());
-    assert.equal(await model().inputValue(), 'gpt');
-    await model().selectOption('private-a');
+    assert.deepEqual((await composerModelOptions(page)).sort(), ['first', 'gpt', 'private-a'].sort());
+    assert.equal(await model().textContent(), 'gpt');
+    await selectComposerModel(page, 'private-a');
     await page.getByRole('textbox', { name: '工作目标', exact: true }).fill('测试默认模型');
     await page.getByRole('button', { name: '开始工作', exact: true }).click();
     await page.waitForFunction(() => window.requests.length === 1);
@@ -108,7 +109,7 @@ try {
     await page.reload();
     await work();
     await page.getByRole('tab', { name: '编排', exact: true }).click();
-    assert.equal(await model().inputValue(), 'gpt');
+    assert.equal(await model().textContent(), 'gpt');
     await page.getByRole('textbox', { name: '工作目标', exact: true }).fill('测试默认模型编排');
     await page.getByRole('button', { name: '开始自动编排', exact: true }).click();
     await page.waitForFunction(() => window.plans.length === 1);
@@ -118,7 +119,7 @@ try {
     await closeSettings();
     await page.evaluate(() => window.completePlanning());
     await page.getByRole('button', { name: '执行设置', exact: true }).click();
-    assert.equal(await model().inputValue(), 'gpt', 'an existing plan must retain its committed model');
+    assert.equal(await model().textContent(), 'gpt', 'an existing plan must retain its committed model');
     await openSettings();
     await page.getByLabel('默认模型', { exact: true }).selectOption('gpt');
     await closeSettings();
@@ -129,7 +130,7 @@ try {
     assert.match(await page.getByLabel('默认模型', { exact: true }).locator('option:checked').textContent(), /当前不可用/);
     await closeSettings();
     await page.getByRole('tab', { name: '会话', exact: true }).click();
-    assert.equal(await model().inputValue(), 'first');
+    assert.equal(await model().textContent(), 'first');
     await page.evaluate(() => window.updateFixture({ userId: 'other-member' }));
     await openSettings();
     assert.equal(await page.getByLabel('默认模型', { exact: true }).inputValue(), '');

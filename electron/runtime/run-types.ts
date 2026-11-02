@@ -52,6 +52,7 @@ export interface QueuedRun {
   degradedRecovery?: { originalSessionFile: string; mode: SessionRecoveryMode }
   arrangement?: WorkPlan
   attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]
+  knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection
 }
 
 export interface ActiveRun {

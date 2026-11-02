@@ -126,7 +126,7 @@ export class SkillLibraryService {
           const local = submissions.some(record => record.idempotencyKey === binding.selectedVersionId)
           return local || selected?.scope === 'PERSONAL' || binding.selectionMode === 'personal'
             ? { ...binding, selectionMode: 'personal' as const }
-            : { ...binding, selectionMode: 'follow-platform' as const, selectedVersionId: binding.currentVersion?.id ?? null }
+            : { ...binding, selectionMode: 'follow-platform' as const, selectedVersionId: binding.currentVersion?.id ?? binding.selectedVersionId }
         }),
         // Selection tracks the actual local source, not a stale upload response.
         usableVersionIds: [
@@ -267,10 +267,13 @@ export class SkillLibraryService {
       return
     }
     const { item, scope, token } = await this.authorized(input.capabilityId)
-    const followPlatform = async (): Promise<void> => {
+    const followPlatform = async (fallback?: SkillVersion): Promise<void> => {
       const prepared = await loadBounded(item.bindings, async binding => {
         this.checkScope(scope)
-        const version = binding.currentVersion
+        // A bound employee may temporarily have no current release. An explicit
+        // approved history selection is still usable in that case; the follow
+        // sentinel itself must continue to require a current release.
+        const version = binding.currentVersion ?? fallback
         if (!version || !canUseSkillVersion(version, scope.memberId)) throw new Error('当前没有可用的发布版本。')
         const { content } = await this.options.platform.preview(version.id, token)
         if (!content.trim()) throw new Error('技能原文为空，不能启用。')
@@ -282,7 +285,7 @@ export class SkillLibraryService {
       })
       for (const { binding, saved } of prepared) {
         this.checkScope(scope)
-        await this.options.versions.select(scope, binding.subscriptionId, input.capabilityId, saved.versionId, true)
+        await this.options.versions.select(scope, binding.subscriptionId, input.capabilityId, saved.versionId, Boolean(binding.currentVersion))
       }
     }
     if (input.versionId === FOLLOW_PLATFORM_SKILL_VERSION) return followPlatform()
@@ -290,7 +293,7 @@ export class SkillLibraryService {
     const version = versions.find(value => value.id === input.versionId)
     if (!version || !canUseSkillVersion(version, scope.memberId)) throw new Error('该技能版本尚未审核通过或不允许使用。')
     if (version.scope !== 'PERSONAL') {
-      return followPlatform()
+      return followPlatform(version)
     }
     const { content } = await this.options.platform.preview(version.id, token)
     if (!content) throw new Error('技能原文为空，不能启用。')

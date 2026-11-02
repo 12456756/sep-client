@@ -27,6 +27,7 @@ test('work rows use one named button with semantic status and unknown-type icons
     assert.match(html, /aria-label="季度报告，已完成，类型暂不可用"/)
     assert.match(html, /role="img" aria-label="已完成"/)
     assert.match(html, /role="img" aria-label="类型暂不可用"/)
+    assert.doesNotMatch(html, /aria-label="已完成"[^>]*>.*class="ent-spin"/s)
     assert.match(html, /aria-label="按状态筛选工作"/)
     assert.match(html, /aria-label="按类型筛选工作"/)
     const rowStart = html.indexOf('class="ent-work-row selected"')
@@ -36,6 +37,27 @@ test('work rows use one named button with semantic status and unknown-type icons
     assert.doesNotMatch(row, /aria-label="会话"/)
     assert.match(html, /aria-label="更多操作：季度报告" aria-haspopup="menu"/)
   } finally { if (oldReact === undefined) Reflect.deleteProperty(globalThis, 'React'); else Reflect.set(globalThis, 'React', oldReact) }
+})
+
+test('running and loading status icons use the shared spin animation', () => {
+  const running = { ...work, id: 'running', status: 'running' } as unknown as WorkItem
+  const loading = { ...work, id: 'loading', workType: { state: 'loading' } } as unknown as WorkItem
+  const html = renderToStaticMarkup(React.createElement(WorkListPane, { ...props(), works: [running, loading], records: [running, loading] }))
+  assert.match(html, /class="ent-work-status is-running"[^>]*>\s*<svg[^>]*class="[^"]*ent-spin[^"]*"/)
+  assert.match(html, /aria-label="类型加载中"[^>]*>\s*<svg[^>]*class="[^"]*ent-spin[^"]*"/)
+})
+
+test('the active filter icon stays still when there are no active works', () => {
+  const idleHtml = renderToStaticMarkup(React.createElement(WorkListPane, props()))
+  const idleStart = idleHtml.indexOf('class="bucket-active"')
+  const idleButton = idleHtml.slice(idleStart, idleHtml.indexOf('</button>', idleStart))
+  assert.doesNotMatch(idleButton, /ent-spin/)
+
+  const active = { ...work, id: 'active', status: 'running', isActive: true } as unknown as WorkItem
+  const activeHtml = renderToStaticMarkup(React.createElement(WorkListPane, { ...props(), works: [active], records: [active] }))
+  const activeStart = activeHtml.indexOf('class="bucket-active"')
+  const activeButton = activeHtml.slice(activeStart, activeHtml.indexOf('</button>', activeStart))
+  assert.match(activeButton, /ent-spin/)
 })
 
 test('type filters preserve the current state bucket and search; selecting only opens work', () => {

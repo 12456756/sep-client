@@ -1,9 +1,32 @@
 import { z } from 'zod'
+import { imageRequestedSpecSchema, mediaParameterSourcesSchema, mediaSpecsEqual, omitUndefinedMediaFields } from '../../../src/shared/media-spec-contract'
 import type { MediaCapabilities, MediaGenerationInput } from '../../../src/shared/media'
 import { toLocalMediaCapabilities } from './sep-media-runtime-contract'
+import { AppError } from '../../errors/app-error'
 
 export const mediaId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const opaqueId = z.string().min(1).max(256)
+const mediaV3HintSchema = z.object({
+  field: z.string().trim().min(1).max(128),
+  values: z.array(z.union([z.string().trim().min(1).max(128), z.number().finite(), z.boolean()])).max(128),
+  source: z.string().trim().min(1).max(256),
+  observedAt: z.string().datetime({ offset: true }).nullable(),
+  confidence: z.enum(['verified', 'declared', 'unknown']),
+}).strict()
+const mediaV3AdapterSchema = z.object({
+  id: z.string().trim().min(1).max(128),
+  version: z.string().trim().min(1).max(128),
+  available: z.boolean(),
+  reason: z.string().trim().min(1).max(128).optional(),
+  operations: z.array(z.string().trim().min(1).max(128)).max(8),
+  referenceSupport: z.object({
+    maxCount: z.number().int().nonnegative().safe(),
+    maxInputBytes: z.number().int().positive().safe(),
+    mimeTypes: z.array(z.string().trim().min(1).max(128)).max(16),
+  }).strict(),
+  supportsTaskQuery: z.boolean(),
+  supportsCancel: z.boolean(),
+}).strict()
 export const imageMimeSchema = z.enum(['image/png', 'image/jpeg', 'image/webp'])
 export const mediaParametersSchema = z.object({
   aspectRatio: z.string().min(1).max(32), count: z.number().int().min(1).max(16),
@@ -12,25 +35,46 @@ export const mediaParametersSchema = z.object({
 export const mediaGenerationInputSchema = z.object({
   profileId: opaqueId, operation: z.enum(['generate', 'edit']),
   localAssetIds: z.array(mediaId).max(16), creativeBrief: z.string().trim().min(1).max(20_000),
-  parameters: mediaParametersSchema,
-}).strict()
+  parameters: z.union([mediaParametersSchema, imageRequestedSpecSchema]),
+  protocolVersion: z.literal(3).optional(), requestedSpec: imageRequestedSpecSchema.optional(),
+  parameterSources: mediaParameterSourcesSchema.optional(), specRevision: z.number().int().positive().optional(),
+}).strict().superRefine((value, context) => {
+  if (value.protocolVersion === 3) {
+    if (!value.requestedSpec || !value.parameterSources || !value.specRevision) context.addIssue({ code: 'custom', message: 'V3 specification metadata is required.' })
+    else if (!mediaSpecsEqual(value.parameters, value.requestedSpec)) context.addIssue({ code: 'custom', path: ['parameters'], message: 'Parameters conflict with requested specification.' })
+    else if (Object.keys(value.parameterSources).some(key => value.requestedSpec![key as keyof typeof value.requestedSpec] === undefined)
+      || Object.entries(value.requestedSpec).some(([key, item]) => item !== undefined && value.parameterSources![key as keyof typeof value.parameterSources] === undefined)) {
+      context.addIssue({ code: 'custom', path: ['parameterSources'], message: 'Every specified field must have exactly one source.' })
+    }
+  } else if (!mediaParametersSchema.safeParse(value.parameters).success || value.requestedSpec !== undefined || value.parameterSources !== undefined || value.specRevision !== undefined) {
+    context.addIssue({ code: 'custom', message: 'Invalid legacy specification.' })
+  }
+}).transform(value => value.protocolVersion === 3 ? {
+  ...value, parameters: omitUndefinedMediaFields(value.parameters), requestedSpec: omitUndefinedMediaFields(value.requestedSpec!),
+  parameterSources: omitUndefinedMediaFields(value.parameterSources!),
+} : value)
 export const mediaProfileSchema = z.object({
   profileId: opaqueId, kind: z.literal('image'), displayName: z.string().min(1).max(200),
   configVersion: opaqueId, operations: z.array(z.enum(['generate', 'edit'])).min(1).max(2),
   executionMode: z.enum(['async-query', 'sync-response']),
   capabilities: z.object({ referenceImage: z.boolean(), cancel: z.boolean(), recoverByRequestId: z.boolean() }).strict(),
-  allowedAspectRatios: z.array(z.string().min(1).max(32)).min(1).max(32),
+  allowedAspectRatios: z.array(z.string().min(1).max(32)).max(32),
   allowedSizes: z.array(z.string().min(1).max(64)).max(32).optional(),
   allowedQualities: z.array(z.string().min(1).max(64)).max(32).optional(),
   defaultSize: z.string().min(1).max(64).optional(),
   defaultQuality: z.string().min(1).max(64).optional(),
-  maxCount: z.number().int().min(1).max(16),
+  maxCount: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER).optional(),
+  maxCountSource: z.literal('local-output-safety').optional(),
+  adapter: mediaV3AdapterSchema.optional(),
+  authorized: z.boolean().optional(),
+  unavailableReason: z.string().trim().min(1).max(128).optional(),
+  capabilityHints: z.array(mediaV3HintSchema).max(32).optional(),
 }).strict().superRefine((profile, context) => {
   if (profile.defaultSize !== undefined && !profile.allowedSizes?.includes(profile.defaultSize)) context.addIssue({ code: 'custom', path: ['defaultSize'], message: 'Default size must be allowed.' })
   if (profile.defaultQuality !== undefined && !profile.allowedQualities?.includes(profile.defaultQuality)) context.addIssue({ code: 'custom', path: ['defaultQuality'], message: 'Default quality must be allowed.' })
 })
 export const mediaCapabilitiesSchema = z.object({
-  protocolVersion: z.literal(1),
+  protocolVersion: z.union([z.literal(1), z.literal(3)]),
   defaultProfileId: opaqueId.nullable().optional(),
   tools: z.array(z.enum(['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job'])).max(4),
   profiles: z.array(mediaProfileSchema).max(64),
@@ -42,17 +86,19 @@ export const mediaOutputSchema = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(), expiresAt: z.number().int().nonnegative().nullable(),
 }).strict()
 export const mediaRecoverySchema = z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict()
-export const mediaOutputErrorsSchema = z.array(z.object({ index: z.number().int().min(0).max(15), code: mediaId }).strict()).max(16)
+export const mediaOutputErrorsSchema = z.array(z.object({ index: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER), code: mediaId }).strict())
 export const mediaReceiptSchema = z.object({
   receiptId: opaqueId, clientRequestId: mediaId, profileId: opaqueId, configVersion: opaqueId,
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
-  pollAfterMs: z.number().int().nonnegative().max(86_400_000).nullable(), outputs: z.array(mediaOutputSchema).max(16),
+  pollAfterMs: z.number().int().nonnegative().max(86_400_000).nullable(), outputs: z.array(mediaOutputSchema),
+  actualSpec: imageRequestedSpecSchema.optional(),
   billingStatus: z.string().min(1).max(64),
   recovery: mediaRecoverySchema.optional(), errorCode: mediaId.nullable().optional(), outputErrors: mediaOutputErrorsSchema.optional(),
 }).strict()
 
 /** Internal port format; HTTP adapters must validate and translate their wire contracts. */
 export const mediaQuoteSchema = z.object({
+  effectiveSpec: imageRequestedSpecSchema.optional(),
   quoteId: opaqueId, requestHash: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.number().int().positive(),
   status: z.enum(['quoted', 'unavailable']), amount: z.string().regex(/^\d+(?:\.\d+)?$/).max(100).nullable(),
   currency: z.string().min(1).max(32).nullable(), authorized: z.boolean(), budgetAuthorized: z.boolean(), allowUnknownCost: z.boolean(),
@@ -69,5 +115,11 @@ export function parseMediaCapabilities(value: unknown): MediaCapabilities {
 }
 
 export function parseMediaInput(value: unknown): MediaGenerationInput {
+  if (typeof value === 'object' && value !== null && 'parameters' in value && typeof value.parameters === 'object' && value.parameters !== null
+    && (!('protocolVersion' in value) || value.protocolVersion !== 3)) {
+    for (const field of ['aspectRatio', 'count'] as const) {
+      if (!(field in value.parameters)) throw new AppError('MISSING_SPEC', { details: { field } })
+    }
+  }
   return mediaGenerationInputSchema.parse(value)
 }

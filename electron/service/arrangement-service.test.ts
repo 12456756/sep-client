@@ -337,6 +337,21 @@ describe('ArrangementService', () => {
     assert.equal(h.plannerCalls(), 0)
   })
 
+  it('restarts an interrupted request when the same request is submitted again', async () => {
+    const result = deferred<ArrangementPlanningResult>()
+    const h = planningHarness(() => result.promise)
+    h.setStored(persisted({ ...autoDraft(), status: 'planning-failed', planningRequestId: 'request-a', planningModelId: 'model-a',
+      lastPlanning: { planningId: 'orphan', status: 'failed', message: '规划已中断，请重新规划' } }, 2))
+
+    const record = await h.service.createAndPlan(autoDraft(), 'request-a', 'model-a')
+
+    assert.equal(record.draft.status, 'planning')
+    assert.equal(h.plannerCalls(), 1)
+    result.resolve({ title: 'Recovered result', nodes: [plannedNode] })
+    await eventually(() => h.stored?.status === 'ready')
+    assert.equal(h.stored?.title, 'Recovered result')
+  })
+
   it('ignores old planning results and progress after logout and returning to the same account', async () => {
     const result = deferred<ArrangementPlanningResult>()
     let input: PlannerInput | undefined
@@ -469,6 +484,36 @@ describe('ArrangementService', () => {
     })
     assert.deepEqual(updated.nodes, original.nodes)
     assert.deepEqual(updated.workspace, original.workspace)
+  })
+
+  it('saves selected knowledge scopes and restores node inheritance with null', async () => {
+    const harness = planningHarness(async () => ({ nodes: [] } as never))
+    const original = persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode] })
+    harness.setStored(original)
+    const updated = await harness.service.updateExecutionSettings(original.id, original.revision, {
+      workDir: null, permissions: { preset: 'read-only' },
+      knowledge: { mode: 'auto', knowledgeBaseIds: ['kb-global'] },
+      nodeKnowledge: [{ nodeId: plannedNode.id, knowledge: { mode: 'none', knowledgeBaseIds: [] } }],
+    })
+    assert.deepEqual(updated.knowledge, { mode: 'auto', knowledgeBaseIds: ['kb-global'] })
+    assert.deepEqual(updated.nodes[0].knowledge, { mode: 'none', knowledgeBaseIds: [] })
+    const inherited = await harness.service.updateExecutionSettings(updated.id, updated.revision, {
+      workDir: null, permissions: { preset: 'read-only' }, nodeKnowledge: [{ nodeId: plannedNode.id, knowledge: null }],
+    })
+    assert.equal(inherited.nodes[0].knowledge, undefined)
+    assert.deepEqual(inherited.knowledge, updated.knowledge)
+  })
+
+  it('rejects duplicate or unknown knowledge node overrides without writing', async () => {
+    const harness = planningHarness(async () => ({ nodes: [] } as never))
+    const original = persisted({ ...autoDraft(), status: 'ready', nodes: [plannedNode] })
+    harness.setStored(original)
+    for (const nodeIds of [[plannedNode.id, plannedNode.id], ['unknown-node']]) {
+      await assert.rejects(harness.service.updateExecutionSettings(original.id, original.revision, {
+        workDir: null, permissions: { preset: 'read-only' }, nodeKnowledge: nodeIds.map(nodeId => ({ nodeId, knowledge: null })),
+      }), (error: unknown) => error instanceof AppError && error.code === 'INVALID_ARGUMENT')
+    }
+    assert.equal(harness.updates.length, 0)
   })
 
   it('rejects stale execution settings without writing over a newer plan', async () => {
@@ -845,6 +890,34 @@ describe('ArrangementService', () => {
     await service.startPlanning('draft-a', 1)
     await eventually(() => Array.isArray(seenCapabilities))
     assert.deepEqual(seenCapabilities, [{ id: 'cap-search', name: '联网搜索', description: '检索公开网页信息', type: 'SKILL' }])
+  })
+
+  it('loads authorized media tool snapshots without preparing employee skills', async () => {
+    let seen: ArrangementPlannerEmployee['mediaTools']
+    let prepared = false
+    const mediaTools = { media_generate_image: { state: 'available', reason: 'authorized-runtime' },
+      video_generate: { state: 'unavailable', reason: 'host-unavailable' },
+      video_from_image: { state: 'unavailable', reason: 'host-unavailable' } } as const
+    const harness = planningHarness(async input => {
+      seen = input.employees[0]?.mediaTools
+      return { title: 'Planned report', nodes: [plannedNode] }
+    }, { employees: { async list() { return [employee()] }, async authorize() { prepared = true; throw new Error('Must not prepare skills') } },
+      async mediaToolAvailability(subscriptionId: string) { assert.equal(subscriptionId, 'sub-a'); return mediaTools } })
+    await harness.service.startPlanning('draft-a', 1)
+    await eventually(() => seen !== undefined)
+    assert.deepEqual(seen, mediaTools)
+    assert.equal(prepared, false)
+  })
+
+  it('keeps media tools unknown when the runtime query fails instead of reporting no tools', async () => {
+    let seen: ArrangementPlannerEmployee['mediaTools']
+    const harness = planningHarness(async input => {
+      seen = input.employees[0]?.mediaTools
+      return { title: 'Planned report', nodes: [plannedNode] }
+    }, { async mediaToolAvailability() { throw new Error('Runtime temporarily unavailable') } })
+    await harness.service.startPlanning('draft-a', 1)
+    await eventually(() => seen !== undefined)
+    assert.equal(seen!.video_generate.state, 'unknown')
   })
 
   it('keeps enterprise suggestions and still asks the platform model about unresolved steps', async () => {

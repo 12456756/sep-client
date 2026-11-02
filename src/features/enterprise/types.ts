@@ -1,6 +1,7 @@
 import type { EmployeeAvatarAsset } from '../../shared/types'
 import type { ArrangementExecutionSnapshot, WorkTypeReadResult } from '../../shared/types'
 import type { WorkActivity } from '../../shared/work-activity'
+import type { KnowledgeSelection } from '../../shared/knowledge-selection'
 
 /**
  * 客户端业务域模型 —— 面向「企业 / 硅基员工 / 工作」而非「Agent / 任务 / DAG」。
@@ -130,6 +131,8 @@ export interface WorkDraftStep {
   x: number;
   y: number;
   inputRefs?: import('../../shared/attachment-contracts').NodeInputRef[];
+  knowledge?: import('../../shared/knowledge-selection').KnowledgeSelection | null;
+  knowledgeQuery?: string;
 }
 
 /** 切换员工时同步给下一位员工的共享背景。 */
@@ -143,6 +146,7 @@ export interface SharedContext {
 export interface WorkMessage {
   id: string;
   role: 'user' | 'employee' | 'system';
+  runId?: string;
   /** 说话的员工，system 与 user 为空。 */
   employeeId?: string;
   employeeName?: string;
@@ -177,6 +181,7 @@ export interface WorkTimelineEntry {
 }
 
 export interface WorkItem {
+  knowledge?: KnowledgeSelection;
   recordKey?: string;
   planningDraft?: import('../../shared/auto-planning').PlanningRecordSummary;
   id: string;
@@ -191,6 +196,7 @@ export interface WorkItem {
   status: WorkStatus;
   /** Whether a current run owns this task; an unstarted arrangement is not active. */
   isActive?: boolean;
+  activeRunId?: string | null;
   executionHealth?: 'start-failed';
   queuedAt?: number | null;
   currentRunStartedAt?: number | null;

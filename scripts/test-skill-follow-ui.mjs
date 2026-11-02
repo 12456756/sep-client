@@ -37,7 +37,7 @@ function App(){
 createRoot(document.getElementById('root')).render(React.createElement(App));
 </script></body></html>`
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ channel: process.env.SEP_BROWSER_CHANNEL || 'chrome', headless: true })
 try {
   for (const { width, source } of [1280, 390].flatMap(width => ['enterprise', 'platform'].map(source => ({ width, source })))) {
     const page = await browser.newPage({ viewport: { width, height: 900 } })

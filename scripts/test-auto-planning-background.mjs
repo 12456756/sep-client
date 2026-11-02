@@ -12,7 +12,7 @@ const main = await (await fetch(origin + '/main.tsx')).text()
 const html = readFileSync(new URL('./fixtures/auto-planning-background.html', import.meta.url), 'utf8')
   .replace('__REACT__', main.match(/from "([^"]*react\.js[^"]*)"/)[1])
   .replace('__DOM__', main.match(/from "([^"]*react-dom_client[^"]*)"/)[1])
-const browser = await chromium.launch({ channel: 'msedge', headless: true })
+const browser = await chromium.launch({ channel: process.env.SEP_BROWSER_CHANNEL || 'chrome', headless: true })
 try {
   for (const width of [1280, 390]) {
     const page = await browser.newPage({ viewport: { width, height: 850 } })
@@ -25,14 +25,19 @@ try {
     const closeList = async () => { if (width < 1180 && await page.getByRole('button', { name: '收起工作列表', exact: true }).isVisible()) await page.getByRole('button', { name: '收起工作列表', exact: true }).click() }
     const submit = async goal => {
       await page.getByRole('textbox', { name: '工作目标', exact: true }).fill(goal)
-      await page.getByRole('combobox', { name: '模型', exact: true }).selectOption('model')
+      await page.getByRole('combobox', { name: '模型', exact: true }).click()
+      await page.getByRole('option', { name: 'model', exact: true }).click()
       await page.getByRole('button', { name: '开始自动编排', exact: true }).click()
     }
     try {
       await page.goto(origin + '/__planning-background')
+      await page.getByTitle('选择知识库', { exact: true }).click()
+      await page.getByRole('button', { name: '公司制度', exact: true }).click()
+      await page.getByRole('button', { name: '关闭', exact: true }).click()
       await page.evaluate(() => { window.withAttachment = true })
       await submit('设计电商促销方案')
       await page.waitForFunction(() => window.workspace.works.some(work => work.planningDraft?.status === 'planning'))
+      assert.deepEqual(await page.evaluate(() => window.workspace.planningController.getRecord(window.lastId).draft.knowledge), { mode: 'auto', knowledgeBaseIds: ['policy'] })
       await openList()
       assert.equal(await rows.count(), 1)
       await closeList()
@@ -65,7 +70,8 @@ try {
       await page.getByRole('button', { name: '确认并开始工作', exact: true }).waitFor({ timeout: 1500 })
       await page.getByText('促销要求.txt', { exact: true }).first().waitFor()
       await page.getByRole('button', { name: '执行设置', exact: true }).click()
-      assert.equal(await page.getByRole('combobox', { name: '模型', exact: true }).inputValue(), 'model')
+      assert.equal(await page.getByRole('combobox', { name: '模型', exact: true }).textContent(), 'model')
+      assert.equal(await page.locator('.ent-knowledge-node-summary').getByTitle('选择知识库', { exact: true }).first().textContent(), '知识库 · 1')
       assert.equal(await page.evaluate(() => window.workspace.planningController.getRecord(window.lastId).draft.permissions.approvalMode), 'auto-approve')
       await page.getByRole('button', { name: '执行设置', exact: true }).click()
       for (const method of ['updateArrangementExecutionSettings', 'preflightArrangementDraft', 'confirmAndStartArrangement']) {
@@ -86,6 +92,7 @@ try {
       await openList()
       assert.equal(await rows.count(), 1, 'confirmation keeps one record')
       assert.equal(await page.evaluate(() => window.counts.start), 1)
+      assert.deepEqual(await page.evaluate(() => window.lastSettings.knowledge), { mode: 'auto', knowledgeBaseIds: ['policy'] })
       await closeList()
       await page.evaluate(() => { window.withAttachment = false })
       await page.evaluate(() => window.workspace.navigate({ name: 'arrange', mode: 'auto' }))

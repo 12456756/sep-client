@@ -1,4 +1,4 @@
-import { ArrowRight, RefreshCw, Settings2, Workflow, X } from 'lucide-react';
+import { ArrowRight, RefreshCw, Settings2, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useOperationFeedback } from '../../feedback/use-operation-feedback';
 import { recoverDraftRevisionConflict, responseError } from '../../../shared/arrangement-feedback';
@@ -10,6 +10,7 @@ import { useAutoPlanning } from '../../../features/enterprise/use-auto-planning'
 import { GoalComposer } from './GoalComposer';
 import { RunSettingsBar, RunSettingsDirectory } from './RunSettingsDrawer';
 import type { AttachmentImportSession, AttachmentView, NodeInputRef } from '../../../shared/attachment-contracts';
+import { KnowledgeSelector } from '../KnowledgeSelector';
 
 type Props = {
   recordId?: string;
@@ -134,7 +135,7 @@ export function AutoArrange({ employees, busy, onStart, onPlanningStart, setting
   const submitGoal = () => {
     onPlanningStart?.();
     setSubmitted(true);
-    void start(goal, settings.workDir, settings.modelId, attachmentRefs.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })), attachmentSession?.sessionId, mustUseAttachments, settings.permissions);
+    void start(goal, settings.workDir, settings.modelId, attachmentRefs.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })), attachmentSession?.sessionId, mustUseAttachments, settings.permissions, settings.knowledge);
   };
 
   const requestAccess = async (stepId: string, employeeId: string): Promise<void> => {
@@ -163,12 +164,6 @@ export function AutoArrange({ employees, busy, onStart, onPlanningStart, setting
     <div className="ent-auto-arrange">
       {!draft ? (
         <section className="ent-arr-auto">
-        {!submitted && !planning ? (
-          <div className="ent-arr-empty-state" aria-hidden="true">
-            <span className="ent-arr-empty-icon"><Workflow size={24} strokeWidth={1.8} /></span>
-            <p>描述一个目标，开始编排</p>
-          </div>
-        ) : null}
         <GoalComposer
           showExamples={!submitted && !planning}
           busy={busy || planning}
@@ -200,6 +195,16 @@ export function AutoArrange({ employees, busy, onStart, onPlanningStart, setting
             const existing = node.inputRefs?.find((ref): ref is Extract<NodeInputRef, { kind: 'attachment' }> => ref.kind === 'attachment' && ref.attachment.attachmentId === attachment.attachmentId);
             return <label key={attachment.attachmentId}><input type="checkbox" checked={Boolean(existing)} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, event.target.checked ? {} : null)} />{attachment.displayName}{existing ? <><select aria-label={`${node.title}中${attachment.displayName}的用途`} value={existing.purpose} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, { purpose: event.target.value as Extract<NodeInputRef, { kind: 'attachment' }>['purpose'] })}><option value="reference">参考</option><option value="analysis">分析</option><option value="vision">视觉</option><option value="media-source">媒体源</option></select><small><input type="checkbox" checked={existing.required} disabled={planning || attachmentSaveBusy} onChange={event => patchNodeAttachment(node.id, attachment, { required: event.target.checked })} />节点必需</small></> : null}</label>;
           })}</div>)}</div> : null}
+          <div className="ent-knowledge-node-summary">
+            <div className="ent-knowledge-node-row"><strong>全局知识库</strong><KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={planning || starting} scopeKey={attachmentBindingKey} /></div>
+            <strong>节点知识库</strong>
+            {draft.nodes.map(node => <div className="ent-knowledge-node-row" key={node.id}>
+              <span>{node.title}<small>{node.knowledge ? '单独设置' : '继承全局'}</small></span>
+              <KnowledgeSelector value={node.knowledge ?? settings.knowledge} onChange={knowledge => setDraft(current => current ? { ...current, nodes: current.nodes.map(item => item.id === node.id ? { ...item, knowledge } : item) } : current)} disabled={planning || starting || attachmentSaveBusy} scopeKey={attachmentBindingKey} />
+              <button type="button" className="ent-arr-second" disabled={planning || starting || attachmentSaveBusy || !node.knowledge} onClick={() => setDraft(current => current ? { ...current, nodes: current.nodes.map(item => item.id === node.id ? { ...item, knowledge: undefined } : item) } : current)}>继承全局</button>
+              {node.knowledgeQuery ? <small>按需查询：{node.knowledgeQuery}</small> : <small>此步骤未规划知识检索。</small>}
+            </div>)}
+          </div>
           {attachmentDirty ? <div className="ent-attachment-save"><button type="button" className="ent-arr-second" disabled={planning || attachmentSaveBusy} onClick={() => void saveAttachmentAssignments()}>{attachmentSaveBusy ? '保存附件分配中…' : '保存附件分配'}</button><span>保存后本次编排按新分配执行</span></div> : null}
           {draft.status === 'awaiting-employee' ? (
             <section className="ent-aa-waiting">

@@ -89,6 +89,7 @@ test('global cancellation stops a multi-file upload and ignores the late first r
 
 test('reopening the first preview page returns to the active version, not the previous historical result', async t => {
   const page = await openPage(t, { detail: true })
+  assert.equal(await page.getByRole('tab', { name: '检索', exact: true }).count(), 0)
   await page.getByRole('button', { name: '查看', exact: true }).click()
   const dialog = page.getByRole('dialog')
   await dialog.getByText('v2 body 0', { exact: true }).waitFor()

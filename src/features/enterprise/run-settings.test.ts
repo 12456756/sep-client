@@ -10,6 +10,7 @@ test('automatic orchestration defaults to full local access, automatic approval,
   assert.deepEqual(defaultAutoRunSettings('model-a'), {
     workDir: '', modelId: 'model-a',
     permissions: { preset: 'full-local', approvalMode: 'auto-approve' },
+    knowledge: { mode: 'none', knowledgeBaseIds: [] },
   });
   assert.equal(defaultAutoRunSettings().modelId, '');
 });
@@ -30,4 +31,13 @@ test('conversation document keeps the real model, permission and directory witho
 test('conversation document uses conversation permission defaults when settings are omitted', () => {
   const doc = conversationDocument('title', 'prompt', 'employee', 'model-b');
   assert.deepEqual(doc.permissions, { preset: 'full-local', approvalMode: 'auto-approve' });
+  assert.deepEqual(doc.knowledge, { mode: 'none', knowledgeBaseIds: [] });
+});
+
+test('conversation document preserves explicitly selected scope for employees and the general assistant', () => {
+  const knowledge = { mode: 'auto' as const, knowledgeBaseIds: ['policy', 'product'] };
+  for (const employee of ['employee', 'general']) {
+    const doc = conversationDocument('title', '根据公司制度回答', employee, 'model', { knowledge });
+    assert.deepEqual(doc.knowledge, knowledge);
+  }
 });

@@ -24,6 +24,7 @@ import {
   markArrangementNodeCompleted,
   markArrangementNodeFailed,
   markArrangementNodeRunning,
+  markArrangementNodeWaitingForInput,
   resumeArrangement,
   retryArrangementNode,
   reopenArrangementNodeForRepair,
@@ -36,15 +37,16 @@ import type { PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
 import { buildArrangementNodeSystemPrompt } from './arrangement-node-prompts'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../domain/model-request-progress'
-import type { MediaRunPort } from '../domain/media-tools'
-import type { VideoRunPort } from '../domain/video-tools'
+import type { MediaRunPort, MediaHostTools } from '../domain/media-tools'
+import type { VideoRunPort, VideoHostTools } from '../domain/video-tools'
 import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { ArrangementMediaPort, ArrangementMediaSession } from '../domain/arrangement-media-runtime'
-import { formatKnowledgeContext, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
+import { formatKnowledgeContext, knowledgeRequest, type KnowledgeSearchPort, type KnowledgeSearchResult } from '../common/knowledge-context'
 import { logger } from '../common/logger'
 import { AppError } from '../errors/app-error'
 import type { ModelTraceFactory } from '../domain/model-trace'
 import { RUNTIME_FAILURE_MESSAGES } from '../../src/shared/runtime-feedback'
+import { arrangementClarificationSchema, type ArrangementInputRequest, type ArrangementInputReply } from '../../src/shared/arrangement-input'
 
 export interface ArrangementExecutionResult {
   status: ArrangementExecutionState['status']
@@ -85,7 +87,11 @@ export interface ArrangementNodeEvent {
 
 type NodeExecutionResult =
   | { ok: true; nodeId: string; output: string | null; completion: ArrangementNodeEvent }
-  | { ok: false; nodeId: string; error: string; terminal: boolean; failure: ArrangementNodeEvent; repair?: { nodeId: string; issues: DeliveryIssue[] } }
+  | { ok: false; nodeId: string; error: string; terminal: boolean; failure: ArrangementNodeEvent; inputRequest?: ArrangementInputRequest; repair?: { nodeId: string; issues: DeliveryIssue[] } }
+
+class ArrangementInputRequiredError extends Error {
+  constructor(readonly request: ArrangementInputRequest) { super('Media specifications require user input.') }
+}
 
 class PredecessorRepairRequired extends Error {
   constructor(readonly nodeId: string, readonly issues: DeliveryIssue[]) { super('Predecessor delivery requires owner repair: ' + nodeId) }
@@ -138,7 +144,9 @@ ${node.mediaRequirements?.length ? `
 【本节点媒体要求】
 ${JSON.stringify(node.mediaRequirements, null, 2)}
 按以上 operation 和 inputFrom 完成媒体操作。前置资产使用后端提供的参考资产，不得猜测资产 ID、路径或重新生成前置成果。
-preferred 中的风格、场景、比例、时长等是业务偏好；先读取媒体能力清单，再选择支持的参数，不得把任意偏好字段直接作为工具参数。
+requiredSpec 是用户硬要求，proposedSpec 是模型建议；用户要求优先。使用 requirementId 指明当前需求的 id，并通过 requestedSpec、parameterSources、specRevision 结构化提交，不从默认值或能力数组首项补齐，也不把静态能力提示当规格白名单。preferred 中的风格、场景等用于创作提示，不得把任意创作字段直接作为规格参数。
+读取工具真实可用性后执行；关键信息缺失时提出具体问题，不得声称完成。上游不支持时说明原因，不改规格、换模型或用脚本视频静默替代。generationMethod=ai-generated 的交付必须由真实媒体任务与已保存资产证明，单有 MP4 文件或模型自述不构成生成证据。
+确实需要用户补充关键规格或选择素材时，只返回 {"needsUserInput":{"question":"需要用户回答的具体问题"}}，进入等待输入；这不是交付完成。用户回复后沿用当前会话、已完成成果和原媒体任务，仅继续尚未完成的需求。
 inputSelection 是选图意图；当前每项需求只解析一个明确来源。多张候选未确定或用户尚未选图时，应说明缺少的选择，不得擅自选图或声称已完成。
 ` : ''}
 
@@ -200,7 +208,7 @@ export class ArrangementExecutor {
   private readonly stateWrites = new WriteChain()
   private abortRequested = false
   private stopRequested = false
-  private liveRetryHandler: ((nodeId: string) => Promise<boolean>) | null = null
+  private liveRetryHandler: ((nodeId: string, inputReply?: ArrangementInputReply) => Promise<boolean>) | null = null
   private validationCancellation = new AbortController()
   private taskId: string | null = null
 
@@ -221,8 +229,8 @@ export class ArrangementExecutor {
     await this.abort()
   }
 
-  retryFailedNode(nodeId: string): Promise<boolean> {
-    return this.liveRetryHandler?.(nodeId) ?? Promise.resolve(false)
+  retryFailedNode(nodeId: string, inputReply?: ArrangementInputReply): Promise<boolean> {
+    return this.liveRetryHandler?.(nodeId, inputReply) ?? Promise.resolve(false)
   }
 
   async execute(plan: WorkPlan, taskId: string, arrangementRunId: string, requestedState?: ArrangementExecutionState): Promise<ArrangementExecutionResult> {
@@ -267,12 +275,12 @@ export class ArrangementExecutor {
     let wake = new Promise<void>(resolve => { wakeScheduler = resolve })
     const signalScheduler = () => { wakeScheduler(); wake = new Promise<void>(resolve => { wakeScheduler = resolve }) }
     const mutate = <T>(operation: () => Promise<T>): Promise<T> => this.stateWrites.run(taskId, operation)
-    this.liveRetryHandler = async nodeId => mutate(async () => {
+    this.liveRetryHandler = async (nodeId, inputReply) => mutate(async () => {
       if (this.abortRequested || !acceptingRetries) return false
-      if (!current.nodes.some(node => node.nodeId === nodeId && node.status === 'failed')) {
+      if (!current.nodes.some(node => node.nodeId === nodeId && (node.status === 'failed' || node.inputRequest))) {
         throw new AppError('INVALID_STATE', { message: '只能重试当前失败的节点。' })
       }
-      const next = retryArrangementNode(current, plan.nodes, nodeId)
+      const next = retryArrangementNode(current, plan.nodes, nodeId, inputReply)
       if (next === current) return false
       current = next
       terminalFailures.delete(nodeId)
@@ -345,7 +353,7 @@ export class ArrangementExecutor {
           // Closing admission and finalizing share the same queue as live retries.
           acceptingRetries = false
           if (current.nodes.some(node => node.status === 'running')) current = interruptArrangement(current, 'runtime-error')
-          else current = { ...current, status: current.nodes.some(node => node.pendingConfirmation) ? 'waiting-user'
+          else current = { ...current, status: current.nodes.some(node => node.pendingConfirmation || node.inputRequest) ? 'waiting-user'
             : current.nodes.every(node => node.status === 'completed') ? 'completed'
               : terminalFailures.size ? 'failed' : 'waiting-user' }
           await this.persist(plan, taskId, arrangementRunId, current)
@@ -381,9 +389,10 @@ export class ArrangementExecutor {
           }
           if (result.ok) current = markArrangementNodeCompleted(current, plan.nodes, result.nodeId, result.output)
           else {
-            current = markArrangementNodeFailed(current, plan.nodes, result.nodeId, result.error)
+            current = result.inputRequest ? markArrangementNodeWaitingForInput(current, plan.nodes, result.nodeId, result.inputRequest)
+              : markArrangementNodeFailed(current, plan.nodes, result.nodeId, result.error)
             if (result.terminal) terminalFailures.add(result.nodeId)
-            if (current.status === 'waiting-user' && terminalFailures.size && !current.nodes.some(node => node.pendingConfirmation)) current = { ...current, status: 'failed' }
+            if (current.status === 'waiting-user' && terminalFailures.size && !current.nodes.some(node => node.pendingConfirmation || node.inputRequest)) current = { ...current, status: 'failed' }
           }
           await this.persist(plan, taskId, arrangementRunId, current)
           if (result.ok) await this.emitNodeEvent(taskId, arrangementRunId, result.completion)
@@ -458,6 +467,23 @@ export class ArrangementExecutor {
     let accepted = !structured
     let mediaSession: ArrangementMediaSession | undefined
     let terminalMediaFailure: unknown
+    let inputRequired: ArrangementInputRequest | undefined
+    const missingSpecTools = new Map<string, ArrangementInputRequest>()
+    const executionNode = { ...node, ...(node.mediaRequirements ? { mediaRequirements: node.mediaRequirements.map(requirement => ({ ...requirement,
+      ...(checkpoint.mediaSpecRevisions?.[requirement.id] ? { specRevision: checkpoint.mediaSpecRevisions[requirement.id] } : {}) })) } : {}) }
+    const requestInput = (question: string): ArrangementInputRequest => ({ requestId: randomUUID(), kind: 'media-spec', question,
+      requirements: (executionNode.mediaRequirements ?? []).map(requirement => ({ id: requirement.id, ...(requirement.specRevision ? { specRevision: requirement.specRevision } : {}) })) })
+    const mediaInputKey = (name: string, raw: unknown) => JSON.stringify([name,
+      raw && typeof raw === 'object' && 'requirementId' in raw && typeof raw.requirementId === 'string' ? raw.requirementId : null])
+    const observeMissingSpec = (name: string, error: unknown) => {
+      if (error instanceof AppError && error.code === 'MISSING_SPEC') {
+        missingSpecTools.set(name, requestInput('请补充生成用途及尚未明确的图片或视频规格，或说明由模型根据用途提出方案。'))
+        inputRequired = missingSpecTools.values().next().value
+      }
+    }
+    const resolveMissingSpec = (name: string) => {
+      if (missingSpecTools.delete(name)) inputRequired = missingSpecTools.values().next().value
+    }
     try {
       checkControl()
       const requiresMediaBridge = !!node.mediaRequirements?.length ||
@@ -524,18 +550,21 @@ export class ArrangementExecutor {
       if (recovery) prompt = structured
         ? '沿用当前节点保存的会话和进度，继续完成未完成的工作，不要重做已完成操作。'
         : '沿用此会话中已保存的任务目标、工具结果和执行进度，从中断处继续完成当前节点。不要重新开始任务，也不要重复已经完成的操作；对结果不确定的操作先核实。'
+      if (checkpoint.inputReply) prompt += `\n\n【用户补充的媒体需求】\n${JSON.stringify(checkpoint.inputReply.text)}\n根据用户补充内容更新拟提交的结构化规格与来源；保留已确认硬要求，不重复提交已有或状态未知的媒体任务。`
       const employee = await this.options.authorizeEmployee(node.subscriptionId, node.modelId)
       if (!employee) throw new Error('The selected employee is no longer available.')
       checkControl()
       let knowledgeContext = ''
-      if (node.knowledgeQuery) {
+      const selection = node.knowledge ?? plan.knowledge
+      const knowledge = knowledgeRequest(node.instruction, selection, [], node.knowledgeQuery ?? '')
+      if (knowledge) {
         let result: KnowledgeSearchResult | null = null
         try {
-          result = await this.options.knowledgeSearch?.(node.knowledgeQuery, signal) ?? null
+          result = await this.options.knowledgeSearch?.(knowledge, signal) ?? null
         } catch {
           signal.throwIfAborted()
         }
-        knowledgeContext = formatKnowledgeContext(node.knowledgeQuery, result)
+        knowledgeContext = formatKnowledgeContext(knowledge.query, result)
       }
       checkControl()
       if (structured && delivery.issues.length) prompt += `\n\n${buildArrangementDeliveryCorrection(delivery.issues, node)}`
@@ -560,6 +589,7 @@ export class ArrangementExecutor {
       if (requiresMediaBridge) mediaSession = await this.options.arrangementMedia!.prepareNode({
         taskId, arrangementRunId, nodeRunId, attempt: checkpoint.attempt, planHash: plan.planHash, node,
         signal,
+        ...(checkpoint.mediaSpecRevisions ? { specRevisions: checkpoint.mediaSpecRevisions } : {}),
       })
       const rawMediaTools = await this.options.media?.prepareRun({
         taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, employee, toolPolicy,
@@ -579,7 +609,21 @@ export class ArrangementExecutor {
           await worker?.abort().catch(() => undefined)
         },
       })
-      const { media: mediaTools, video: videoTools } = mediaSession?.bind(rawMediaTools, rawVideoTools) ?? { media: rawMediaTools, video: rawVideoTools }
+      const bound = mediaSession?.bind(rawMediaTools, rawVideoTools) ?? { media: rawMediaTools, video: rawVideoTools }
+      const mediaTools: MediaHostTools | undefined = bound.media && node.mediaRequirements?.length ? { ...bound.media, execute: async (name, raw, signal) => {
+        try {
+          const result = await bound.media!.execute(name, raw, signal)
+          if (name === 'media_generate_image') resolveMissingSpec(mediaInputKey(name, raw))
+          return result
+        } catch (error) { observeMissingSpec(mediaInputKey(name, raw), error); throw error }
+      } } : bound.media
+      const videoTools: VideoHostTools | undefined = bound.video && node.mediaRequirements?.length ? { ...bound.video, execute: async (name, raw, signal) => {
+        try {
+          const result = await bound.video!.execute(name, raw, signal)
+          if (name === 'video_generate' || name === 'video_from_image') resolveMissingSpec(mediaInputKey(name, raw))
+          return result
+        } catch (error) { observeMissingSpec(mediaInputKey(name, raw), error); throw error }
+      } } : bound.video
       if (this.abortRequested) {
         await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
         throw new Error('Arrangement execution was interrupted.')
@@ -631,7 +675,7 @@ export class ArrangementExecutor {
             useNativeSystemPrompt: true,
             modelRequestAwareness: false,
             transformSystemPrompt: translatePiNativeSystemPrompt,
-            fixedSystemPrompt: buildArrangementNodeSystemPrompt(plan, node, dependencies, employee, knowledgeContext) +
+            fixedSystemPrompt: buildArrangementNodeSystemPrompt(plan, executionNode, dependencies, employee, knowledgeContext) +
               (mediaSession ? `\n【已授权媒体输入与原任务】\n${mediaSession.inputPrompt}\n媒体最终文件由主进程根据 mediaDeliverables 自动保存，勿自行写入或覆盖计划中的媒体路径。不要等待或轮询媒体任务；恢复时使用原任务，不重新生成。` : ''),
           } : { systemPrompt: employee.systemPrompt }),
           mediaTools, videoTools, toolPolicy,
@@ -646,7 +690,15 @@ export class ArrangementExecutor {
           mediaHandoffUsed = true
           return true
         },
-        ...(structured ? { onResponseSettled: async (response: { text: string; stopReason?: string }): Promise<{ continueWith: string } | void> => {
+        ...(structured || node.mediaRequirements?.length ? { onResponseSettled: async (response: { text: string; stopReason?: string }): Promise<{ continueWith: string } | void> => {
+          checkControl()
+          if (node.mediaRequirements?.length && (!response.stopReason || response.stopReason === 'stop')) {
+            let clarification: ReturnType<typeof arrangementClarificationSchema.safeParse> | undefined
+            try { clarification = arrangementClarificationSchema.safeParse(JSON.parse(response.text)) } catch { /* Delivery parsing handles other responses. */ }
+            if (clarification?.success) inputRequired = requestInput(clarification.data.needsUserInput.question)
+            if (inputRequired) return
+          }
+          if (!structured) return
           const result = await deliveryValidation.settle(response)
           if (result.status === 'failed') throw result.error
           if (result.status === 'accepted') {
@@ -707,6 +759,7 @@ export class ArrangementExecutor {
         runError = error
       }
       if (terminalMediaFailure !== undefined) throw terminalMediaFailure
+      if (inputRequired) throw new ArrangementInputRequiredError(inputRequired)
       if (runError !== undefined) throw runError
       if (!this.abortRequested && !signal.aborted) await Promise.all([this.options.media?.waitForRun(taskId, nodeRunId, { signal }), this.options.video?.waitForRun(taskId, nodeRunId, { signal })])
       if (this.abortRequested) throw new Error('Arrangement execution was interrupted.')
@@ -720,6 +773,14 @@ export class ArrangementExecutor {
       return { ok: true, nodeId: node.id, output: output || null, completion }
     } catch (error) {
       const interrupted = this.abortRequested || signal.aborted
+      if (!interrupted && (error instanceof ArrangementInputRequiredError || error instanceof AppError && error.code === 'MISSING_SPEC')) {
+        const inputRequest = error instanceof ArrangementInputRequiredError ? error.request : requestInput('请补充生成用途及尚未明确的媒体规格，或说明由模型根据用途提出方案。')
+        if (created && this.options.scope && this.options.taskRunStore) await this.options.taskRunStore.finish(this.options.scope, taskId, nodeRunId, 'interrupted')
+        return { ok: false, nodeId: node.id, error: '', terminal: false, inputRequest, failure: {
+          type: 'arrangement_node_progress', arrangementRunId, nodeId: node.id, nodeRunId, subscriptionId: node.subscriptionId,
+          attempt: checkpoint.attempt, data: { ...metadata(), status: 'WAITING_INPUT', inputRequest },
+        } }
+      }
       logger.child('arrangement-executor').warn('node execution failed', { taskId, arrangementRunId, nodeId: node.id, nodeRunId,
         interrupted, error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) })
       const { message, terminal } = resolveArrangementNodeFailure(error, interrupted, terminalMediaFailure !== undefined)
@@ -762,7 +823,8 @@ export class ArrangementExecutor {
     await this.emitNodeEvent(taskId, arrangementRunId, {
       type: 'arrangement_state_changed', arrangementRunId, nodeId,
       data: { status: state.status, nodeId, nodeStatus: state.nodes.find(node => node.nodeId === nodeId)?.status, planHash: plan.planHash,
-        nodeStates: state.nodes.map(node => ({ nodeId: node.nodeId, status: node.status, pendingConfirmation: node.pendingConfirmation })) },
+        nodeStates: state.nodes.map(node => ({ nodeId: node.nodeId, status: node.status, pendingConfirmation: node.pendingConfirmation,
+          ...(node.inputRequest ? { inputRequest: node.inputRequest } : {}) })) },
     })
   }
 

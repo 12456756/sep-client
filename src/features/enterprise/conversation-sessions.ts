@@ -1,8 +1,10 @@
 import { createContext } from 'react'
 import type { RetainedAttachmentState } from './use-attachment-composer'
+import type { KnowledgeSelection } from '../../shared/knowledge-selection'
 
 export interface ConversationSessionState {
   draft: string
+  knowledge?: KnowledgeSelection
   attachment: RetainedAttachmentState
   scrollTop: number
   followsLatest: boolean
@@ -10,6 +12,7 @@ export interface ConversationSessionState {
   attachmentEpoch: number
   subscribe: (listener: () => void) => () => void
   setDraft: (draft: string) => void
+  setKnowledge: (knowledge: KnowledgeSelection) => void
   acceptSend: (sentDraft: string) => void
 }
 
@@ -39,11 +42,13 @@ export function createConversationSessions(cancelSession: (sessionId: string) =>
           revision: 0, attachmentEpoch: 0,
           subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
           setDraft(draft) { if (current.draft === draft) return; current.draft = draft; notify() },
+          setKnowledge(knowledge) { current.knowledge = knowledge; notify() },
           acceptSend(sentDraft) {
             if (current.draft === sentDraft) current.draft = ''
             current.attachment.session = null
             current.attachment.attachments = []
             current.attachmentEpoch++
+            if (current.knowledge?.mode === 'manual') current.knowledge = { ...current.knowledge, sources: [] }
             notify()
           },
         }

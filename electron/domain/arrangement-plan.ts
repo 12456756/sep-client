@@ -1,6 +1,8 @@
+import { knowledgeSelectionSchema, type KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { AppError } from '../errors/app-error'
 import { z } from 'zod'
 import type { DraftAttachmentCandidate, InputSnapshotRef, NodeInputRef } from '../../src/shared/attachment-contracts'
+import { imageRequestedSpecSchema, videoRequestedSpecSchema, mediaParameterSourcesSchema } from '../../src/shared/media-spec-contract'
 
 export type ArrangementMode = 'conversation' | 'auto' | 'manual'
 export type DraftStatus = 'editing' | 'planning' | 'planning-failed' | 'awaiting-employee' | 'ready' | 'preflight-failed' | 'confirmed'
@@ -97,6 +99,11 @@ export const arrangementMediaRequirementSchema = z.object({
   kind: z.enum(['image', 'video']),
   operation: mediaOperationSchema,
   required: z.boolean().optional(),
+  specRevision: z.number().int().positive().safe().optional(),
+  requiredSpec: z.union([imageRequestedSpecSchema, videoRequestedSpecSchema]).optional(),
+  proposedSpec: z.union([imageRequestedSpecSchema, videoRequestedSpecSchema]).optional(),
+  parameterSources: mediaParameterSourcesSchema.optional(),
+  generationMethod: z.enum(['ai-generated', 'script', 'either']).optional(),
   inputFrom: z.object({
     nodeId: arrangementId.optional(),
     deliverableId: arrangementId.optional(),
@@ -116,6 +123,16 @@ export const arrangementMediaRequirementSchema = z.object({
     count: z.number().int().positive().safe().optional(),
   }).catchall(z.json()).optional(),
 }).strict().superRefine((requirement, context) => {
+  for (const field of ['requiredSpec', 'proposedSpec'] as const) {
+    const spec = requirement[field]
+    if (spec !== undefined) {
+      const parsed = (requirement.kind === 'image' ? imageRequestedSpecSchema : videoRequestedSpecSchema).safeParse(spec)
+      if (!parsed.success) context.addIssue({ code: 'custom', path: [field], message: 'Requested specification does not match media kind.' })
+    }
+  }
+  if ((requirement.requiredSpec || requirement.proposedSpec || requirement.parameterSources) && !requirement.specRevision) {
+    context.addIssue({ code: 'custom', path: ['specRevision'], message: 'Structured media specifications require a revision.' })
+  }
   const expectedKind = requirement.operation === 'image-to-video' || requirement.operation === 'text-to-video' ? 'video' : 'image'
   if (requirement.kind !== expectedKind) context.addIssue({ code: 'custom', path: ['kind'], message: 'Media operation and output kind do not match.' })
   if (requirement.operation === 'text-to-video' && requirement.inputFrom) {
@@ -147,6 +164,7 @@ export function isSafeDeliveryPath(value: string): boolean {
 }
 
 export const arrangementNodeWorkContractSchema = z.object({
+  knowledge: knowledgeSelectionSchema.optional(),
   objective: deliveryText.optional(),
   knowledgeQuery: z.string().trim().min(1).max(1_000).optional(),
   deliverables: z.array(z.object({
@@ -167,11 +185,22 @@ export const arrangementNodeWorkContractSchema = z.object({
     }
   }).optional(),
   inputRefs: z.array(nodeInputRefSchema).max(64).optional(),
+}).superRefine((node, context) => {
+  for (const [index, file] of (node.deliverables ?? []).entries()) {
+    const kind = arrangementMediaKindForFormat(file.format) ??
+      (file.artifact?.kind === 'image' || file.artifact?.kind === 'video' ? file.artifact.kind : undefined)
+    if (!kind || !node.mediaRequirements?.some(requirement => requirement.kind === kind && requirement.generationMethod === 'ai-generated')) continue
+    if (file.artifact?.source !== 'media-output') context.addIssue({ code: 'custom', path: ['deliverables', index, 'artifact', 'source'],
+      message: 'AI-generated media deliverables must use real media job output.' })
+    if (file.artifact && file.artifact.kind !== kind) context.addIssue({ code: 'custom', path: ['deliverables', index, 'artifact', 'kind'],
+      message: 'AI-generated media deliverable kind must match its format.' })
+  }
 })
 
 export type ArrangementDeliverable = NonNullable<z.infer<typeof arrangementNodeWorkContractSchema>['deliverables']>[number]
 
 export interface ArrangementNode {
+  knowledge?: KnowledgeSelection
   id: string
   subscriptionId: string
   modelId: string
@@ -209,6 +238,8 @@ export interface RequestedTaskPermissionPolicy {
 }
 
 export interface ArrangementExecutionSettings {
+  knowledge?: KnowledgeSelection
+  nodeKnowledge?: Array<{ nodeId: string; knowledge: KnowledgeSelection | null }>
   modelId?: string
   workDir: string | null
   permissions: RequestedTaskPermissionPolicy
@@ -225,6 +256,7 @@ export interface EffectiveTaskPermissionPolicy {
 }
 
 export interface ArrangementDraft {
+  knowledge?: KnowledgeSelection
   planningModelId?: string
   planningRequestId?: string
   id: string
@@ -255,6 +287,7 @@ export interface ArrangementDraft {
 }
 
 export interface WorkPlan {
+  knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1 | 2
   sourceDraftId: string
@@ -322,6 +355,10 @@ export function effectivePermissionPolicy(
 }
 
 export function validateArrangementDraft(draft: ArrangementDraft): void {
+  if (draft.knowledge !== undefined && !knowledgeSelectionSchema.safeParse(draft.knowledge).success) throw new AppError('INVALID_ARGUMENT')
+  for (const node of draft.nodes) {
+    if (node.knowledge !== undefined && !knowledgeSelectionSchema.safeParse(node.knowledge).success) throw new AppError('INVALID_ARGUMENT')
+  }
   if (!draft.id || !draft.owner.memberId || !draft.owner.enterpriseId) throw new AppError('INVALID_ARGUMENT')
   if (!draft.title.trim() && !draft.goal.trim()) throw new AppError('INVALID_ARGUMENT')
   if (draft.mode === 'conversation') {

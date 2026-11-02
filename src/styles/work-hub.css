@@ -153,6 +153,7 @@
 .ent-work-context-menu button:disabled { opacity: .55; cursor: not-allowed; }
 .ent-work-context-menu p { margin: 4px 10px 6px; color: var(--ent-ink-3); font-size: 11px; line-height: 1.6; }
 @media (hover: none) { .ent-work-row-menu { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .ent-work-hub .ent-spin { animation: none; } }
 @media (max-width: 1179px) {
   .ent-work-list { flex-basis: 280px; }
   .ent-work-excluded { align-items: flex-start; padding-inline: 12px; }

@@ -41,6 +41,7 @@ import type { MediaStorePort } from '../domain/media'
 import type { AttachmentService } from './attachment-service'
 import type { DraftAttachmentCandidate, NodeInputRef } from '../../src/shared/attachment-contracts'
 import type { ArrangementExecutionState } from '../domain/arrangement-execution'
+import { unknownArrangementMediaTools, type ArrangementMediaTools } from '../domain/arrangement-media-availability'
 import { planningRecordSummary, type PlanningRecordChange, type PlanningProgressSnapshot, type PlanningRecordSnapshot, type PlanningRecordSummary } from '../../src/shared/auto-planning'
 import type { ArrangementProgressStorePort } from '../data/arrangement-progress-store'
 
@@ -54,8 +55,10 @@ export interface ArrangementServiceDependencies {
   creationGate?: TaskCreationGate
   execution: () => Promise<TaskExecutionPort>
   planner?: ArrangementPlannerPort
+  knowledgeCatalog?: (ids: readonly string[]) => Promise<Array<{ id: string; name: string }>>
   candidateEmployees?: ArrangementCandidateDirectory
   employeeCapabilities?: ArrangementEmployeeCapabilityDirectory
+  mediaToolAvailability?: (subscriptionId: string) => Promise<ArrangementMediaTools>
   onPlanningEvent?: (event: ArrangementPlanningProgress) => void
   onPlanningRecordChanged?: (change: PlanningRecordChange) => void
   planningProgress?: ArrangementProgressStorePort
@@ -200,7 +203,12 @@ export class ArrangementService {
       this.assertPlanningScope(scope, generation)
       const draft = previous ?? await this.createDraft({ ...input, planningRequestId: requestId, planningModelId: modelId })
       this.assertPlanningScope(scope, generation)
-      if (!previous) await this.startPlanning(draft.id, draft.revision, modelId)
+      // A persisted planning record can outlive the process that started it. Reuse
+      // the draft identity, but restart any planning that did not reach a terminal
+      // result so retries do not silently return an unfinished record.
+      if (!previous || previous.status === 'planning' || previous.status === 'planning-failed') {
+        await this.startPlanning(draft.id, draft.revision, modelId)
+      }
       return this.getPlanningRecord(draft.id)
     })()
     this.submissions.set(key, flight)
@@ -271,6 +279,7 @@ export class ArrangementService {
         nodeId: node.nodeId,
         status: node.status,
         ...(node.pendingConfirmation ? { pendingConfirmation: true } : {}),
+        ...(node.inputRequest ? { inputRequest: structuredClone(node.inputRequest) } : {}),
         finalFiles: node.delivery?.finalFiles ? structuredClone(node.delivery.finalFiles) : [],
       })),
       ...(media.length ? { media } : {}),
@@ -346,9 +355,20 @@ export class ArrangementService {
     const draft = await this.getDraft(draftId)
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
     if (draft.mode !== 'auto' || !['ready', 'preflight-failed'].includes(draft.status) || draft.confirmedWorkPlanId) throw new AppError('INVALID_STATE')
+    const nodeKnowledge = settings.nodeKnowledge ?? []
+    const nodeKnowledgeIds = new Set(nodeKnowledge.map(item => item.nodeId))
+    if (nodeKnowledgeIds.size !== nodeKnowledge.length || nodeKnowledge.some(item => !draft.nodes.some(node => node.id === item.nodeId))) throw new AppError('INVALID_ARGUMENT')
     return this.deps.drafts.update(scope, draftId, expectedRevision, {
       ...draft,
-      nodes: draft.nodes.map(node => ({ ...node, modelId: settings.modelId ?? node.modelId })),
+      ...(settings.knowledge ? { knowledge: structuredClone(settings.knowledge) } : {}),
+      nodes: draft.nodes.map(node => {
+        const override = nodeKnowledge.find(item => item.nodeId === node.id)
+        return {
+          ...node,
+          modelId: settings.modelId ?? node.modelId,
+          ...(override ? (override.knowledge === null ? { knowledge: undefined } : { knowledge: structuredClone(override.knowledge) }) : {}),
+        }
+      }),
       workspace: { ...draft.workspace, path: settings.workDir ?? draft.workspace.path },
       permissions: structuredClone(settings.permissions),
     })
@@ -516,7 +536,10 @@ export class ArrangementService {
           mustUse: current.attachmentCandidates?.find(candidate => candidate.attachment.attachmentId === material.attachmentId)?.mustUse ?? false,
         })))
         : []
-      const planningSource = { ...current, plannerAttachmentMaterials }
+      const plannerKnowledgeCatalog = current.knowledge && current.knowledge.mode !== 'none' && current.knowledge.knowledgeBaseIds.length
+        ? await this.loadPlannerKnowledgeCatalog(current.knowledge.knowledgeBaseIds)
+        : []
+      const planningSource = { ...current, plannerAttachmentMaterials, plannerKnowledgeCatalog }
       context.completedNodeCount = current.nodes.length
       context.unresolvedStepCount = current.unresolvedSteps?.length ?? 0
       nextPhase('employee-loading')
@@ -537,7 +560,7 @@ export class ArrangementService {
       const intentAnalysis = result.intentAnalysis ?? current.intentAnalysis ?? undefined
       let unresolvedSteps = result.unresolvedSteps ?? []
       let candidateMatches = result.candidateMatches ?? []
-      let executableNodes = mergeExecutableNodes([], result.nodes)
+      let executableNodes = mergeExecutableNodes([], sanitizePlannerNodes(result.nodes, current.nodes))
       context.completedNodeCount = executableNodes.length
       context.unresolvedStepCount = unresolvedSteps.length
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
@@ -556,7 +579,7 @@ export class ArrangementService {
             onProgress: event => this.emitPlanning(event),
           })
           this.assertPlanningScope(owner.scope, owner.generation)
-          executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
+          executableNodes = mergeExecutableNodes(executableNodes, sanitizePlannerNodes(result.nodes, current.nodes))
           unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
           context.completedNodeCount = executableNodes.length
           context.unresolvedStepCount = unresolvedSteps.length
@@ -584,7 +607,7 @@ export class ArrangementService {
             onProgress: event => this.emitPlanning(event),
           })
           this.assertPlanningScope(owner.scope, owner.generation)
-          executableNodes = mergeExecutableNodes(executableNodes, result.nodes)
+          executableNodes = mergeExecutableNodes(executableNodes, sanitizePlannerNodes(result.nodes, current.nodes))
           unresolvedSteps = result.unresolvedSteps ?? unresolvedSteps
           context.completedNodeCount = executableNodes.length
           context.unresolvedStepCount = unresolvedSteps.length
@@ -629,10 +652,35 @@ export class ArrangementService {
     }
   }
 
+  private async loadPlannerKnowledgeCatalog(ids: readonly string[]): Promise<Array<{ id: string; name: string }>> {
+    if (!this.deps.knowledgeCatalog) throw new AppError('INVALID_STATE', { message: '知识库目录服务不可用。' })
+    const expected = new Set(ids)
+    const catalog = await this.deps.knowledgeCatalog(ids)
+    const seen = new Set<string>()
+    for (const item of catalog) {
+      if (!expected.has(item.id) || seen.has(item.id) || !item.name.trim()) {
+        throw new AppError('INVALID_STATE', { message: '知识库目录与用户选择不一致。' })
+      }
+      seen.add(item.id)
+    }
+    if (catalog.length !== ids.length) {
+      throw new AppError('INVALID_STATE', { message: '知识库目录与用户选择不一致。' })
+    }
+    return catalog.map(item => ({ id: item.id, name: item.name }))
+  }
+
   private async loadAuthorizedPlannerEmployees(context: LogFields): Promise<ArrangementPlannerEmployee[]> {
     const employees = await this.deps.employees.list()
     return Promise.all(employees.map(async employee => {
       let capabilities: ArrangementPlannerEmployee['capabilities'] = []
+      let mediaTools = unknownArrangementMediaTools()
+      if (this.deps.mediaToolAvailability) {
+        try {
+          mediaTools = await this.deps.mediaToolAvailability(employee.subscriptionId)
+        } catch (error) {
+          log.warn('employee media runtime unavailable during planning', { ...context, employeeId: employee.employeeId, ...planningErrorFields(error) })
+        }
+      }
       if (this.deps.employeeCapabilities) {
         try {
           capabilities = await this.deps.employeeCapabilities.list(employee.employeeId)
@@ -652,6 +700,7 @@ export class ArrangementService {
         position: employee.position,
         functionalCategory: employee.functionalCategory,
         capabilities,
+        mediaTools,
         allowedModels: [...employee.allowedModels],
         status: employee.status,
         source: 'authorized' as const,
@@ -849,6 +898,7 @@ export class ArrangementService {
           ? { ...structuredClone(draft.conversation), participants: [{ subscriptionId: primarySubscription, modelId: draft.conversation.modelId! }], activeSubscriptionId: primarySubscription }
           : draft.conversation ? structuredClone(draft.conversation) : null,
         nodes: structuredClone(draft.nodes),
+        ...(draft.knowledge ? { knowledge: structuredClone(draft.knowledge) } : {}),
         workspace: { mode: 'shared' as const, path: task.workDir },
         permissions: preflight.permissionPolicy,
         confirmedInputs: [...draft.confirmedInputs],
@@ -927,6 +977,15 @@ function mergeExecutableNodes(
     byStep.set(key, node)
   }
   return order.map(key => byStep.get(key)!).filter(Boolean)
+}
+
+function sanitizePlannerNodes(nodes: readonly ArrangementNode[], userNodes: readonly ArrangementNode[]): ArrangementNode[] {
+  const knowledgeById = new Map(userNodes.filter(node => node.knowledge !== undefined).map(node => [node.id, node.knowledge]))
+  return nodes.map(node => {
+    const knowledge = knowledgeById.get(node.id)
+    const { knowledge: _modelKnowledge, ...withoutModelKnowledge } = node
+    return knowledge === undefined ? withoutModelKnowledge : { ...withoutModelKnowledge, knowledge: structuredClone(knowledge) }
+  })
 }
 
 function requestedCapabilityIds(draft: ArrangementDraft, stepId: string): string[] {

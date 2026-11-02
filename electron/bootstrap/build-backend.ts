@@ -11,7 +11,6 @@ import { KnowledgeApi } from '../common/platform/knowledge-api'
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { shell, systemPreferences } from 'electron'
 import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
@@ -43,6 +42,8 @@ import { ConversationService } from '../service/conversation-service'
 import { TaskService } from '../service/task-service'
 import { TaskCreationGate } from '../service/task-creation-gate'
 import { ArrangementService } from '../service/arrangement-service'
+import { summarizeArrangementMediaTools } from '../domain/arrangement-media-availability'
+import { parseMediaCapabilities } from '../common/platform/media-contract'
 import { ArrangementDraftStore } from '../data/arrangement-draft-store'
 import { ArrangementProgressStore } from '../data/arrangement-progress-store'
 import { ArrangementConfirmationStore } from '../data/arrangement-confirmation-store'
@@ -337,6 +338,16 @@ class BackendRuntime {
     const platformSession = this.authSession
     this.arrangements = new ArrangementService({
       scope: this,
+      mediaToolAvailability: async subscriptionId => {
+        const runtime = await this.employees.authorizeRuntime(subscriptionId)
+        let image: import('../../src/shared/media').MediaCapabilities | null = null
+        if (runtime && realMediaGateway) {
+          try { image = parseMediaCapabilities(mediaCapabilities?.(runtime) ?? runtime.media) } catch { /* Invalid manifest is unavailable, never a grant. */ }
+        }
+        return summarizeArrangementMediaTools({ authorized: runtime !== null, image, imageHost: !!realMediaGateway,
+          video: runtime?.video, videoHostMode: this.videoRuns ? config.SEP_VIDEO_REAL_ENABLED ? 'real' : 'mock' : undefined })
+      },
+      knowledgeCatalog: ids => this.knowledge.describeForRuntime([...ids]),
       drafts: arrangementDrafts,
       planningProgress: new ArrangementProgressStore(userDataDir),
       attachments: this.attachments,
@@ -599,9 +610,10 @@ class BackendRuntime {
       workPlanStore: this.workPlans,
       arrangementCheckpointStore: this.arrangementCheckpoints,
       monitor: this.clientMonitor,
-      knowledgeSearch: (query, signal) => this.knowledge.execute({
-        action: 'search', requestId: randomUUID(), query, topK: 5,
-      }, signal),
+      knowledgeSearch: Object.assign(
+        (request: import('../common/knowledge-context').KnowledgeSearchRequest, signal?: AbortSignal) => this.knowledge.searchForRuntime(request, signal),
+        { describe: (ids: string[], signal?: AbortSignal) => this.knowledge.describeForRuntime(ids, signal) },
+      ),
       media: this.media,
       video: this.videoRuns,
       arrangementMedia: this.arrangementMedia,

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { AppError } from '../errors/app-error'
 import type { MediaGenerationStatus } from '../../src/shared/media'
 import type { MediaCapabilities, MediaGatewayPort, MediaOutput, MediaQuote, MediaReceipt, MediaRequest } from '../domain/media'
 import { inspectMediaImage } from './media-image'
@@ -76,6 +77,7 @@ export class MockMediaGateway implements MediaGatewayPort {
     const existingId = this.requests.get(key)
     if (existingId) return this.result(this.record(subscriptionId, existingId))
     const receiptId = `mock-receipt-${this.receipts.size + 1}`
+    if (request.parameters.count === undefined) throw new AppError('MISSING_SPEC')
     const outputs = Array.from({ length: request.parameters.count }, (_, index): MediaOutput => ({
       outputId: `${receiptId}-output-${index + 1}`, mime: 'image/png', size: MOCK_MEDIA_PNG.length,
       width: 1, height: 1, sha256: MOCK_MEDIA_PNG_SHA256, expiresAt: null,

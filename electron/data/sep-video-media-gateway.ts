@@ -14,6 +14,9 @@ import { inspectMediaImage } from './media-image'
 import { config } from '../common/config'
 import { platformSourceHeaders } from '../common/platform/platform-source-headers'
 import { videoErrorMessage } from '../../src/shared/video-errors'
+import { mediaToolFailureFrom } from '../errors/media-tool-error'
+import type { ErrorCode } from '../errors/error-codes'
+import { isMediaSpecError, mediaSpecsEqual } from '../../src/shared/media-spec-contract'
 
 const id = schema.string().regex(/^[a-zA-Z0-9_-]{1,128}$/)
 const JSON_BUDGET = 256 * 1024
@@ -46,6 +49,23 @@ function parse<T>(contract: z.ZodType<T>, value: unknown, code = 'VIDEO_INVALID_
   const result = contract.safeParse(value)
   if (!result.success) throw new SepVideoGatewayError(code)
   return result.data
+}
+
+function validateV3Receipt(receipt: VideoReceipt, request?: VideoRequest): VideoReceipt {
+  if (receipt.protocolVersion !== 3) {
+    if (request?.protocolVersion === 3) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
+    return receipt
+  }
+  const measured = receipt.actualSpec !== undefined && 'source' in receipt.actualSpec && receipt.actualSpec.source === 'measured'
+  if (receipt.semanticHashVersion !== 3 || receipt.specRevision === undefined || !receipt.effectiveSpec || !receipt.billingDimensions ||
+    receipt.billingDimensions.operation !== receipt.operation || receipt.deliveryStatus === undefined || receipt.acceptance !== receipt.deliveryStatus ||
+    (receipt.status === 'SUCCEEDED' || receipt.status === 'PARTIAL_SUCCEEDED') && !measured ||
+    receipt.deliveryStatus === 'matched' && !measured ||
+    request && (receipt.specRevision !== request.specRevision || !mediaSpecsEqual(request.requestedSpec!, receipt.effectiveSpec) ||
+      receipt.billingDimensions.operation !== request.operation || receipt.billingDimensions.durationSeconds !== request.requestedSpec!.durationSeconds || receipt.billingDimensions.resolution !== request.requestedSpec!.resolution)) {
+    throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
+  }
+  return receipt
 }
 
 async function abortable<T>(signal: AbortSignal, action: () => Promise<T>): Promise<T> {
@@ -101,14 +121,22 @@ class SepVideoGateway implements VideoGatewayPort {
 
   async quote(input: Omit<VideoRequest, 'clientRequestId' | 'quoteId'>, signal: AbortSignal): Promise<VideoQuote> {
     const request = parse(videoRequestSchema, input, 'VIDEO_INVALID_REQUEST')
-    const value = await this.json('/quotes', 'POST', request, videoQuoteResponseSchema, signal)
+    if (request.protocolVersion === 3 && this.options.mock) throw new AppError('UPGRADE_REQUIRED')
+    const { parameters: _parameters, ...versioned } = request
+    const value = await this.json('/quotes', 'POST', request.protocolVersion === 3 ? versioned : request, videoQuoteResponseSchema, signal)
+    if (request.protocolVersion === 3 && (value.mock || value.protocolVersion !== 3 || value.semanticHashVersion !== 3 || value.specRevision !== request.specRevision || !value.effectiveSpec || !mediaSpecsEqual(request.requestedSpec!, value.effectiveSpec) || !value.billingDimensions || value.billingDimensions.operation !== request.operation || value.billingDimensions.durationSeconds !== request.requestedSpec!.durationSeconds || value.billingDimensions.resolution !== request.requestedSpec!.resolution)) {
+      throw new AppError('SPEC_CONFLICT', { details: { field: 'effectiveSpec', source: 'platform', stage: 'video-quote' } })
+    }
     return { quoteId: value.quoteId, requestHash: value.semanticSha256.toLowerCase(), expiresAt: Date.parse(value.expiresAt), status: value.pricingStatus, amount: value.amountCny, currency: value.mock ? 'MOCK' : 'CNY',
-      ...(!value.mock ? { amountUsd: value.amountUsd, pricingVersion: value.pricingVersion, usdToCnyRate: value.usdToCnyRate, funding: value.funding } : {}) }
+      ...(!value.mock ? { amountUsd: value.amountUsd, pricingVersion: value.pricingVersion, usdToCnyRate: value.usdToCnyRate, funding: value.funding,
+        ...(value.protocolVersion === 3 ? { protocolVersion: 3 as const, specRevision: value.specRevision, effectiveSpec: value.effectiveSpec } : {}) } : {}) }
   }
 
   async submit(input: VideoRequest, signal: AbortSignal): Promise<VideoReceipt> {
     const request = parse(videoRequestWithIdentitySchema, input, 'VIDEO_INVALID_REQUEST')
-    const receipt = await this.json('/requests', 'POST', request, videoReceiptSchema, signal)
+    if (request.protocolVersion === 3 && this.options.mock) throw new AppError('UPGRADE_REQUIRED')
+    const { parameters: _parameters, ...versioned } = request
+    const receipt = validateV3Receipt(await this.receipt('/requests', 'POST', request.protocolVersion === 3 ? versioned : request, signal), request)
     if (receipt.clientRequestId !== request.clientRequestId || receipt.profileId !== request.profileId || receipt.configVersion !== request.configVersion || receipt.operation !== request.operation) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
     return receipt
   }
@@ -116,7 +144,7 @@ class SepVideoGateway implements VideoGatewayPort {
   async findReceipt(clientRequestId: string, signal: AbortSignal): Promise<VideoReceipt | null> {
     const requestId = parse(id, clientRequestId, 'VIDEO_INVALID_REQUEST')
     try {
-      const receipt = await this.json(`/requests/by-client-id/${requestId}`, 'GET', undefined, videoReceiptSchema, signal)
+      const receipt = await this.receipt(`/requests/by-client-id/${requestId}`, 'GET', undefined, signal)
       if (receipt.clientRequestId !== requestId) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
       return receipt
     } catch (error) {
@@ -126,14 +154,14 @@ class SepVideoGateway implements VideoGatewayPort {
   }
 
   async getReceipt(receiptId: string, signal: AbortSignal): Promise<VideoReceipt> {
-    const receipt = await this.json(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}`, 'GET', undefined, videoReceiptSchema, signal)
+    const receipt = await this.receipt(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}`, 'GET', undefined, signal)
     if (receipt.receiptId !== receiptId) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
     return receipt
   }
 
   async cancel(receiptId: string, signal: AbortSignal): Promise<void> {
     if (!this.options.mock) {
-      const receipt = await this.json(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}/cancel`, 'POST', {}, videoReceiptSchema, signal)
+      const receipt = await this.receipt(`/requests/${parse(id, receiptId, 'VIDEO_INVALID_REQUEST')}/cancel`, 'POST', {}, signal)
       if (receipt.receiptId !== receiptId) throw new SepVideoGatewayError('VIDEO_RECEIPT_MISMATCH')
       return
     }
@@ -179,6 +207,11 @@ class SepVideoGateway implements VideoGatewayPort {
         reader.releaseLock()
       }
     })()
+  }
+
+  private async receipt(path: string, method: 'GET' | 'POST', body: unknown, signal: AbortSignal): Promise<VideoReceipt> {
+    const receipt = await this.json(path, method, body, videoReceiptSchema, signal)
+    return validateV3Receipt(receipt.deliveryStatus && receipt.acceptance === undefined ? { ...receipt, acceptance: receipt.deliveryStatus } : receipt)
   }
 
   private async realContent(receiptId: string, outputId: string, signal: AbortSignal): Promise<AsyncIterable<Uint8Array>> {
@@ -257,6 +290,7 @@ class SepVideoGateway implements VideoGatewayPort {
     if (!response.ok) {
       const stage = method === 'POST' ? path === '/quotes' ? 'video-quote' : path === '/requests' ? 'video-submit' : undefined : undefined
       const details = await this.errorDetails(response, signal)
+      if (details.businessCode && isMediaSpecError(details.businessCode)) throw new AppError(details.businessCode as ErrorCode, { details: details.specDetails })
       throw new SepVideoGatewayError('VIDEO_HTTP_ERROR', response.status, stage, details)
     }
     return response
@@ -300,7 +334,7 @@ class SepVideoGateway implements VideoGatewayPort {
     return (response.headers.get('Content-Type') ?? '').split(';', 1)[0].trim().toLowerCase()
   }
 
-  private async errorDetails(response: Response, signal: AbortSignal): Promise<{ businessCode: string | null; source: VideoErrorSource; requestId: string | null }> {
+  private async errorDetails(response: Response, signal: AbortSignal): Promise<{ businessCode: string | null; source: VideoErrorSource; requestId: string | null; specDetails?: Record<string, unknown> }> {
     const headerRequestId = response.headers.get('x-request-id')
     const requestId = headerRequestId && /^[A-Za-z0-9_-]{1,128}$/.test(headerRequestId) ? headerRequestId : null
     if (this.mime(response) !== 'application/json') { this.discard(response); return { businessCode: null, source: null, requestId } }
@@ -334,7 +368,9 @@ class SepVideoGateway implements VideoGatewayPort {
         if (headerRequestId !== null && (requestId === null || safeBodyRequestId !== null && safeBodyRequestId !== requestId)) {
           return { businessCode: null, source: null, requestId: null }
         }
-        return { businessCode, source, requestId: safeBodyRequestId ?? requestId }
+        const safe = businessCode && isMediaSpecError(businessCode) ? mediaToolFailureFrom(new AppError(businessCode as ErrorCode, { details: error })).error : undefined
+        const specDetails = safe ? Object.fromEntries(Object.entries(safe).filter(([key]) => key !== 'code' && key !== 'message')) : undefined
+        return { businessCode, source, requestId: safeBodyRequestId ?? requestId, specDetails }
       } finally {
         void reader.cancel().catch(() => undefined)
         reader.releaseLock()

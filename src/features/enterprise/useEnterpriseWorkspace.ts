@@ -44,11 +44,13 @@ import type {
 import { upgradeDraftSteps, validateGraph } from './work-graph';
 import { buildWorkItem, completedStepCount, getArrangementDisplayEvents } from './work-mapping';
 import { applyRuntimeEvent, runtimeKey } from '../../shared/work-activity';
+import { RunResponseBuffer } from '../../shared/run-response';
 import type { EnterpriseOrganization } from '../../shared/platform-supplement-contracts';
 import { mapEnterpriseOrganization, mapOrganizationEmployees } from './organization-mapping';
 import type { OrganizationCarbonEmployee } from './organization-model';
 import { TaskReadCache, mergeInitialTaskQuery, mergeTaskList, mergeTaskUpdate } from './task-read-cache';
 import type { AttachmentRef, AttachmentView, DraftAttachmentCandidate } from '../../shared/attachment-contracts';
+import type { KnowledgeSelection } from '../../shared/knowledge-selection';
 
 /**
  * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
@@ -71,6 +73,7 @@ function busyEmployeeIds(works: WorkItem[]): Set<string> {
 
 /** 「安排工作」页提交的内容。 */
 export interface ArrangeWorkDraft {
+  knowledge?: KnowledgeSelection;
   modelId?: string;
   permissions?: ArrangementDraftDocument['permissions'];
   title: string;
@@ -103,6 +106,7 @@ export interface ArrangeSeed {
  * 技能还没有下发通道，所以页面必须写清它现在生效到哪一层。
  */
 export interface ConversationOptions {
+  knowledge?: KnowledgeSelection;
   modelId?: string;
   permissions?: ArrangementDraftDocument['permissions'];
   workDir?: string;
@@ -219,11 +223,11 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   goBack: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>;
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
-  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string) => Promise<boolean>;
+  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string, knowledge?: KnowledgeSelection) => Promise<boolean>;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
-  retryWork: (workId: string, nodeId?: string) => Promise<void>;
+  retryWork: (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => Promise<void>;
   renameWork: (workId: string, title?: string) => Promise<boolean>;
   setWorkPinned: (workId: string, pinned: boolean) => Promise<boolean>;
   deleteWork: (workId: string) => Promise<boolean>;
@@ -294,7 +298,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const [arrangeSeed, setArrangeSeed] = useState<ArrangeSeed | null>(null);
   const [savedFlows, setSavedFlows] = useState<SavedWorkFlow[]>(() => readSavedFlows(enterpriseId));
   const [reviewedAt, setReviewedAt] = useState<Record<string, number>>(() => readReviewed(enterpriseId));
-  const streamingText = useRef(new Map<string, string>());
+  const streamingText = useRef(new RunResponseBuffer());
   const runtimeActivities = useRef(new Map<string, WorkActivity[]>());
   const latestRunByTask = useRef(new Map<string, string>());
   const messagesByTask = useRef(new Map<string, ClientTaskMessage[]>());
@@ -615,10 +619,11 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       recordArrangementEvent(event);
       latestRunByTask.current.set(event.taskId, event.runId);
       const key = runtimeKey(event.taskId, event.runId);
+      if (event.type === 'tool_execution_start') streamingText.current.markToolBoundary(key);
       if (event.type === 'text_delta') {
         const data = event.data as { text?: unknown };
         if (typeof data.text === 'string') {
-          streamingText.current.set(key, `${streamingText.current.get(key) ?? ''}${data.text}`);
+          streamingText.current.append(key, data.text);
         }
       }
       const previous = runtimeActivities.current.get(key) ?? [];
@@ -757,12 +762,15 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         dependsOn: step.dependsOn.filter(dep => kept.has(dep)),
         skillIds: [...step.skillIds],
         inputRefs: step.inputRefs ?? [],
+        ...(step.knowledge ? { knowledge: step.knowledge } : {}),
+        knowledgeQuery: step.knowledgeQuery,
       };
     });
     if (nodes.some(node => !node.modelId)) { notice.show('请选择需要使用的模型', 'warning'); return false; }
     const document: ArrangementDraftDocument = {
       schemaVersion: 1,
       mode: 'manual',
+      knowledge: draft.knowledge,
       title: draft.title.trim() || draft.goal.trim().slice(0, 40),
       goal: draft.goal.trim() || draft.title.trim(),
       confirmedInputs: draft.confirmedInputs.filter(Boolean),
@@ -804,7 +812,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     }
   }, [myEmployees, navigate, captureFeedback]);
 
-  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string): Promise<boolean> => {
+  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string, knowledge?: KnowledgeSelection): Promise<boolean> => {
     const prompt = text.trim();
     if (!prompt || attachments.length && !attachmentSessionId) return false;
     const message: ClientTaskMessage = {
@@ -813,7 +821,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     pendingMessages.current.set(workId, [...(pendingMessages.current.get(workId) ?? []), message]);
     setTasks(current => [...current]);
     const notice = captureFeedback();
-    const ok = await run(() => window.electronAPI.continueTask({ taskId: workId, prompt, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) }), 'workSend');
+    const ok = await run(() => window.electronAPI.continueTask({ taskId: workId, prompt, knowledge, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) }), 'workSend');
     if (!notice.isCurrent()) return false;
     if (ok) return true;
       pendingMessages.current.set(workId, (pendingMessages.current.get(workId) ?? []).filter(item => item.id !== message.id));
@@ -837,18 +845,11 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   }, [arrangement.executions, run, works]);
 
   const stopWork = useCallback(async (workId: string, reason: string) => {
-    const notice = captureFeedback();
-    return feedback.confirm({ key: `stop:${scopeKey}:${workId}`, message: '确认终止当前工作？已完成的操作和已产出的文件不会撤销，平台上的图片或视频任务可能仍在执行。',
-      actionLabel: '终止工作', busyLabel: '正在终止', input: { label: '终止原因（选填）', value: '', maxLength: 2000 },
-      onConfirm: async value => {
-        if (!notice.isCurrent()) return { success: false };
-        try { return { success: await run(() => window.electronAPI.cancelTask(workId, value.trim() || reason), 'workStop', true) }; }
-        catch (cause) { return { success: false, message: feedbackMessage(cause, 'workStop') }; }
-      } });
-  }, [run, feedback, scopeKey, captureFeedback]);
+    return run(() => window.electronAPI.cancelTask(workId, reason.trim() || '用户终止了这项工作'), 'workStop');
+  }, [run]);
 
-  const retryWork = useCallback(async (workId: string, nodeId?: string) => {
-    await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId } : workId), 'workRetry');
+  const retryWork = useCallback(async (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => {
+    await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId, ...(inputReply ? { inputReply } : {}) } : workId), 'workRetry');
   }, [run]);
 
   const updateWorkDetails = useCallback(async (workId: string, patch: { title?: string; pinned?: boolean }, quiet = false): Promise<boolean> => {

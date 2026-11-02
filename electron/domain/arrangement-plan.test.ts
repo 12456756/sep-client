@@ -101,6 +101,33 @@ describe('arrangement plan domain', () => {
     }] }).success, false)
   })
 
+  for (const kind of ['image', 'video'] as const) it(`enforces explicitly AI-generated ${kind} provenance for schemas, manual drafts and node validation`, () => {
+    const format = kind === 'image' ? 'png' : 'mp4'
+    const operation = kind === 'image' ? 'generate' as const : 'text-to-video' as const
+    const mediaNode: ArrangementNode = { ...node('media'), mediaRequirements: [{ id: 'generation', kind, operation, generationMethod: 'ai-generated' }],
+      deliverables: [{ id: 'result', name: 'Result', format, path: `result.${format}`, contentOutline: ['Media'], acceptanceCriteria: ['Generated media'] }] }
+    const manualDraft = (value: ArrangementNode) => ({ id: 'draft', schemaVersion: 1 as const, revision: 1, owner: { memberId: 'm', enterpriseId: 'e' },
+      mode: 'manual' as const, status: 'editing' as const, title: 'Media', goal: 'Generate media', confirmedInputs: [], sharedSkillIds: [],
+      conversation: null, nodes: [value], workspace: { mode: 'shared' as const, path: null }, permissions: { preset: 'read-only' as const },
+      createdAt: 1, updatedAt: 1, lastPlanning: null })
+    for (const artifact of [undefined, { kind }, { kind, source: 'workspace' as const }, { kind, source: 'either' as const },
+      { kind: kind === 'image' ? 'video' as const : 'image' as const, source: 'media-output' as const }]) {
+      const invalid = { ...mediaNode, deliverables: [{ ...mediaNode.deliverables![0]!, ...(artifact ? { artifact } : {}) }] }
+      assert.equal(arrangementNodeWorkContractSchema.safeParse(invalid).success, false)
+      assert.throws(() => validateArrangementNodes([invalid]), AppError)
+      assert.throws(() => validateArrangementDraft(manualDraft(invalid)), AppError)
+    }
+    const valid = { ...mediaNode, deliverables: [{ ...mediaNode.deliverables![0]!, artifact: { kind, source: 'media-output' as const, operation } }] }
+    assert.doesNotThrow(() => validateArrangementNodes([valid]))
+    assert.doesNotThrow(() => validateArrangementDraft(manualDraft(valid)))
+    for (const generationMethod of [undefined, 'script', 'either'] as const) {
+      const legacy = { ...mediaNode, mediaRequirements: [{ ...mediaNode.mediaRequirements![0]!, generationMethod }] }
+      assert.doesNotThrow(() => validateArrangementNodes([legacy]))
+      const workspace = { ...legacy, deliverables: [{ ...legacy.deliverables![0]!, artifact: { kind, source: 'workspace' as const } }] }
+      assert.doesNotThrow(() => validateArrangementDraft(manualDraft(workspace)))
+    }
+  })
+
   it('maps permission presets to a bounded tool policy', () => {
     const policy = effectivePermissionPolicy({ preset: 'full-local', commandPolicy: 'confirm-each' }, 'workspace-edit')
     assert.deepEqual(policy.allowedTools, ['read', 'grep', 'find', 'ls', 'write', 'edit'])

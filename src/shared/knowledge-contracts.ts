@@ -28,6 +28,7 @@ export const knowledgeRequestSchema = z.discriminatedUnion('action', [
   request('createBase', { name: z.string().trim().min(1).max(100), description: z.string().max(500).optional() }),
   request('updateBase', { ...kbFields, name: z.string().trim().min(1).max(100), description: z.string().max(500) }),
   request('deleteBase', kbFields), request('documents', kbFields), request('getDocument', docFields),
+  request('source', { ...kbFields, sourceId: knowledgeIdSchema }),
   request('uploadDocument', { ...kbFields, file: knowledgeFileSchema, idempotencyKey: keySchema }),
   request('replaceDocument', { ...mutationFields, file: knowledgeFileSchema }),
   request('retryDocument', mutationFields), request('deleteDocument', mutationFields), request('versions', docFields),
@@ -102,6 +103,7 @@ export const knowledgeSearchResponseSchema = z.object({
   results: z.array(z.object({
     sourceId: knowledgeIdSchema, knowledgeBaseId: knowledgeIdSchema, knowledgeBaseName: z.string(),
     documentId: knowledgeIdSchema, documentName: z.string(), versionId: knowledgeIdSchema, content: z.string(), location,
+    isCurrent: z.boolean().optional(),
     tokenCount: z.number().nonnegative().optional(), truncated: z.boolean().optional(),
   })),
 })
@@ -115,6 +117,11 @@ export const knowledgeResponseSchemas = {
     z.object({ addedMemberIds: z.array(knowledgeIdSchema), existingMemberIds: z.array(knowledgeIdSchema) }),
     z.undefined(),
   ]), revoke: z.undefined(), search: knowledgeSearchResponseSchema,
+  source: z.object({
+    sourceId: knowledgeIdSchema, knowledgeBaseId: knowledgeIdSchema,
+    documentId: knowledgeIdSchema, documentName: filenameSchema, versionId: knowledgeIdSchema,
+    content: z.string(), location, isCurrent: z.boolean(),
+  }),
 } satisfies Record<KnowledgeAction, z.ZodType>
 export type KnowledgeData<A extends KnowledgeAction> = z.output<(typeof knowledgeResponseSchemas)[A]>
 export type KnowledgeBase = z.output<typeof knowledgeBaseSchema>
