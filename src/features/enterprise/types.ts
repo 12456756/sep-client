@@ -158,6 +158,7 @@ export interface WorkMessage {
 export interface WorkDeliverable {
   id: string;
   name: string;
+  category?: 'intermediate' | 'final';
   /** 文件在本机的完整路径。界面上只在需要时展示，复制路径按它。 */
   path: string;
   note: string;
@@ -181,6 +182,7 @@ export interface WorkTimelineEntry {
 }
 
 export interface WorkItem {
+  executionGroup?: { rootTaskId: string; number: number };
   knowledge?: KnowledgeSelection;
   recordKey?: string;
   planningDraft?: import('../../shared/auto-planning').PlanningRecordSummary;
@@ -300,7 +302,7 @@ export type AppRoute =
   /** employeeId 只在 chat 下有意义：从员工页点「安排工作」时预选那位同事。 */
   | { name: 'arrange'; templateId?: string; mode?: ArrangeMode; employeeId?: string }
   | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped'; workType?: 'all' | 'conversation' | 'arrangement'; search?: string }
-  | { name: 'work'; workId: string }
+  | { name: 'work'; workId: string; executionTaskId?: string }
   | { name: 'skills'; skillId?: string; employeeFilterId?: string; sourceEmployeeId?: string; returnTo?: { name: 'skill-list' } | { name: 'employee'; employeeId: string } }
   | { name: 'knowledge'; kbId?: string }
   | { name: 'compute-center' };

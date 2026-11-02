@@ -97,6 +97,8 @@ export interface ClientTaskLog {
 /** Serialized task shape returned by Electron main. */
 export interface ClientTask {
   id: string
+  /** Complete executions share a root; SDK retries remain inside one task. */
+  executionGroup?: { rootTaskId: string; number: number }
   title: string
   /** Local pin order timestamp; null means the task is not pinned. */
   pinnedAt?: number | null

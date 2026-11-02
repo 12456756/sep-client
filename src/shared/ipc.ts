@@ -373,6 +373,7 @@ export interface ElectronAPI {
   switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>
+  rerunTask: (input: { taskId: string; requestId: string }) => Promise<TaskResult>
   getTask: (taskId: string) => Promise<TaskResult>
   getAllTasks: () => Promise<TaskListResult>
   listTaskRuns: (taskId: string) => Promise<TaskRunListResult>
@@ -403,7 +404,7 @@ export interface ElectronAPI {
   cancelArrangementPlanning: (input: CancelArrangementPlanningInput) => Promise<ArrangementPlanningCancelResult>
   requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>
   getEmployeeAccessRequest: (input: GetEmployeeAccessRequestInput) => Promise<ArrangementDraftResult>
-  deleteTask: (taskId: string) => Promise<IpcCommandResult>
+  deleteTask: (input: string | { taskId: string; includeExecutions: true }) => Promise<IpcCommandResult>
   updateTaskDetails: (input: { taskId: string; title?: string; pinned?: boolean }) => Promise<TaskResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>

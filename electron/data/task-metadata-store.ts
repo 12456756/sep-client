@@ -18,6 +18,7 @@ export interface TaskMetadata {
   currentSubscriptionId: string | null
   createdAt: number
   knowledge?: KnowledgeSelection
+  executionGroup?: { rootTaskId: string; number: number; requestId: string }
 }
 
 const KINDS: readonly TaskKind[] = ['conversation', 'arrangement']
@@ -31,6 +32,9 @@ function parseMetadata(value: unknown, taskId: string): TaskMetadata | null {
     !Array.isArray(metadata.participantSubscriptionIds)
   ) return null
   if (metadata.knowledge !== undefined && !knowledgeSelectionSchema.safeParse(metadata.knowledge).success) return null
+  const group = metadata.executionGroup
+  if (group !== undefined && (!group || !/^[A-Za-z0-9_-]{1,128}$/.test(group.rootTaskId)
+    || !Number.isSafeInteger(group.number) || group.number < 2 || !/^[A-Za-z0-9_-]{1,128}$/.test(group.requestId))) return null
   return { ...metadata, participantSubscriptionIds: [...metadata.participantSubscriptionIds], ...(metadata.knowledge ? { knowledge: structuredClone(metadata.knowledge) } : {}) }
 }
 

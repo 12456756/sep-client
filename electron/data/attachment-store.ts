@@ -15,6 +15,7 @@ import { inspectMediaImage } from './media-image'
 const MIME: Record<string, string> = { txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', pdf: 'application/pdf', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' }
 
 export interface AttachmentStorePort {
+  copyTaskInputs?(scope: TaskOwnerScope, sourceTaskId: string, taskId: string, snapshot: InputSnapshotRef): Promise<InputSnapshotRef>
   begin(scope: TaskOwnerScope, target: AttachmentImportTarget, now?: number): Promise<AttachmentImportSession>
   get(scope: TaskOwnerScope, sessionId: string): Promise<AttachmentImportSession | null>
   list(scope: TaskOwnerScope): Promise<AttachmentImportSession[]>
@@ -219,6 +220,29 @@ export class AttachmentStore implements AttachmentStorePort {
       await writeJsonAtomic(this.paths.attachmentTaskManifest(scope, taskId), { snapshot, snapshots, items: mergedItems, extractionTextById: mergedText })
       await writeJsonAtomic(journal, { ...journalEntry, status: 'committed', snapshot })
       return snapshot
+    })
+  }
+
+  /** Copy only confirmed input bytes, never artifacts or an expiring import session. */
+  async copyTaskInputs(scope: TaskOwnerScope, sourceTaskId: string, taskId: string, snapshot: InputSnapshotRef): Promise<InputSnapshotRef> {
+    return this.writes.run(this.paths.scopeKey(scope), async () => {
+      const metadata = await this.readTaskMetadata(scope, sourceTaskId)
+      const items: AttachmentView[] = []
+      const extractionTextById: Record<string, string> = {}
+      for (const ref of snapshot.attachments) {
+        const item = metadata.items.find(item => item.attachmentId === ref.attachmentId && item.sha256 === ref.sha256)
+        if (!item) throw new Error('ATTACHMENT_REFERENCE_INVALID')
+        const bytes = await this.readTask(scope, sourceTaskId, ref.attachmentId)
+        if (createHash('sha256').update(bytes).digest('hex') !== ref.sha256 || bytes.length !== item.byteLength) throw new Error('ATTACHMENT_INTEGRITY_MISMATCH')
+        const target = this.paths.attachmentTaskBlob(scope, taskId, ref.attachmentId)
+        await mkdir(target.replace(/[/\\][^/\\]+$/, ''), { recursive: true })
+        await writeFile(target, bytes, { flag: 'wx', mode: 0o600 })
+        items.push(clone(item))
+        if (metadata.extractionTextById[ref.attachmentId] !== undefined) extractionTextById[ref.attachmentId] = metadata.extractionTextById[ref.attachmentId]
+      }
+      const copied: InputSnapshotRef = { ...clone(snapshot), snapshotId: `snapshot-${randomUUID()}` }
+      await writeJsonAtomic(this.paths.attachmentTaskManifest(scope, taskId), { snapshot: copied, snapshots: [copied], items, extractionTextById })
+      return copied
     })
   }
 

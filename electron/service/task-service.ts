@@ -21,6 +21,7 @@ import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { JsonReadDiagnostic } from '../data/atomic-file'
 import { describeError } from '../common/redact'
 import { TaskCreationGate } from './task-creation-gate'
+import { WriteChain } from '../data/write-chain'
 import { resolveWorkType } from './work-type'
 import type { AttachmentRef, InputSnapshotRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentService } from './attachment-service'
@@ -74,6 +75,7 @@ export interface CreateTaskInput {
 
 export class TaskService {
   private readonly creationGate: TaskCreationGate
+  private readonly groupWrites = new WriteChain()
 
   constructor(private readonly deps: TaskServiceDependencies) {
     this.creationGate = deps.creationGate ?? new TaskCreationGate()
@@ -145,6 +147,77 @@ export class TaskService {
     }
   }
 
+  /** Start a complete execution from an immutable confirmed plan, without planning again. */
+  async rerun(taskId: string, requestId: string): Promise<TaskReadView> {
+    const scope = this.scope()
+    const source = await this.requireTask(taskId)
+    const sourceMetadata = await this.deps.taskMetadataStore.load(scope, taskId)
+    this.assertScope(scope)
+    const rootTaskId = sourceMetadata?.executionGroup?.rootTaskId ?? taskId
+    return this.groupWrites.run(JSON.stringify([scope, rootTaskId]), async () => {
+      this.assertScope(scope)
+      const members = await this.executionMembers(scope, rootTaskId)
+      this.assertScope(scope)
+      const existing = members.find(item => item.metadata?.executionGroup?.requestId === requestId)
+      if (existing) {
+        const projected = await this.projectTask(scope, existing.task)
+        this.assertScope(scope)
+        return projected
+      }
+      if (!members.some(item => item.task.id === taskId)) throw new AppError('NOT_FOUND')
+      if (members.some(({ task }) => task.activeRunId || task.status === 'running' || task.status === 'waiting_approval' || (task.status === 'pending' && task.executionHealth !== 'start-failed'))) {
+        throw new AppError('INVALID_STATE', { message: '这项工作有尚未结束的运行，请先结束后再重新执行。' })
+      }
+      const plan = await this.deps.workPlans?.get(scope, taskId)
+      if (sourceMetadata?.kind !== 'arrangement' || !plan || plan.mode === 'conversation' || plan.nodes.length === 0) {
+        throw new AppError('INVALID_STATE', { message: '只有已确认计划的流程工作支持重新执行。' })
+      }
+      for (const subscriptionId of new Set(plan.nodes.map(node => node.subscriptionId))) await this.requireAuthorizedEmployee(subscriptionId)
+      this.assertScope(scope)
+      const canonical = members.find(item => item.task.id === rootTaskId)?.task ?? source
+      const number = Math.max(1, ...members.map(item => item.metadata?.executionGroup?.number ?? 1)) + 1
+      const lease = this.creationGate.begin(scope)
+      let createdId: string | undefined
+      let saved = false
+      try {
+        const task = await this.deps.taskManager.createTask(canonical.title, source.prompt, undefined, source.subscriptionId)
+        createdId = task.id
+        lease.taskCreated(task.id)
+        this.assertScope(scope)
+        const inputSnapshot = plan.inputSnapshot
+          ? await this.deps.attachments?.copyTaskInputs(scope, taskId, task.id, plan.inputSnapshot) : undefined
+        if (plan.inputSnapshot && !inputSnapshot) throw new AppError('INVALID_STATE', { message: '无法复制已确认的输入附件。' })
+        this.assertScope(scope)
+        await this.deps.workPlans!.save(scope, { ...structuredClone(plan), id: task.id, title: canonical.title,
+          workspace: { mode: 'shared', path: task.workDir }, ...(inputSnapshot ? { inputSnapshot } : {}),
+          planHash: `${plan.planHash}:rerun:${task.id}`, createdAt: Date.now() })
+        await this.deps.taskMetadataStore.save(scope, { version: 1, taskId: task.id, kind: 'arrangement',
+          participantSubscriptionIds: [...new Set(plan.nodes.map(node => node.subscriptionId))], currentSubscriptionId: source.subscriptionId ?? null,
+          createdAt: Date.now(), executionGroup: { rootTaskId, number, requestId },
+          ...(plan.knowledge ? { knowledge: structuredClone(plan.knowledge) } : {}) })
+        this.assertScope(scope)
+        saved = true
+      } finally {
+        if (!saved && createdId) {
+          // TaskManager checks scope itself; never delete after an account switch.
+          try { this.assertScope(scope); await this.deps.taskManager.deleteTask(createdId) } catch { /* retain the original creation error */ }
+        }
+        lease.finish(saved)
+      }
+      await this.execute(createdId!)
+      this.assertScope(scope)
+      const projected = await this.projectTask(scope, await this.requireTask(createdId!))
+      this.assertScope(scope)
+      return projected
+    })
+  }
+
+  private async executionMembers(scope: TaskOwnerScope, rootTaskId: string) {
+    const tasks = await this.deps.taskManager.getAllTasks()
+    const entries = await Promise.all(tasks.map(async task => ({ task, metadata: await this.deps.taskMetadataStore.load(scope, task.id) })))
+    return entries.filter(item => (item.metadata?.executionGroup?.rootTaskId ?? item.task.id) === rootTaskId)
+  }
+
   async confirmArrangementNodes(taskId: string, nodeIds: string[]): Promise<void> {
     await this.requireTask(taskId)
     await (await this.deps.execution()).confirmArrangementNodes(taskId, nodeIds)
@@ -175,6 +248,31 @@ export class TaskService {
         : '工作状态已变化，无法删除，请刷新后重试。'
       throw new AppError('INVALID_STATE', { message })
     }
+  }
+
+  async deleteExecutionGroup(taskId: string): Promise<void> {
+    const scope = this.scope()
+    await this.requireTask(taskId)
+    const metadata = await this.deps.taskMetadataStore.load(scope, taskId)
+    const rootTaskId = metadata?.executionGroup?.rootTaskId ?? taskId
+    this.assertScope(scope)
+    return this.groupWrites.run(JSON.stringify([scope, rootTaskId]), async () => {
+      this.assertScope(scope)
+      const members = await this.executionMembers(scope, rootTaskId)
+      this.assertScope(scope)
+      if (!members.length) throw new AppError('NOT_FOUND')
+      if (members.some(({ task }) => task.activeRunId || task.status === 'running' || task.status === 'waiting_approval')) {
+        throw new AppError('INVALID_STATE', { message: '任务正在执行，无法删除。' })
+      }
+      const archived: string[] = []
+      for (const { task } of members) {
+        if (await this.deps.media?.archiveIfMedia(task.id)) archived.push(task.id)
+        this.assertScope(scope)
+      }
+      if (!await this.deps.taskManager.deleteTaskRecords(members.map(item => item.task.id), archived, scope)) {
+        throw new AppError('INVALID_STATE', { message: '工作状态已变化，无法删除，请刷新后重试。' })
+      }
+    })
   }
 
   async updateDetails(taskId: string, input: { title?: string; pinned?: boolean }): Promise<TaskReadView> {
@@ -282,7 +380,8 @@ export class TaskService {
       this.diagnose(() => this.deps.taskMetadataStore.diagnose(scope, task.id)),
       this.diagnose(plans?.diagnose ? () => plans.diagnose!(scope, task.id) : undefined),
     ])
-    return { ...task, workType: resolveWorkType(metadata, plan, task.prompt) }
+    const group = metadata.state === 'found' ? metadata.value.executionGroup : undefined
+    return { ...task, ...(group ? { executionGroup: { rootTaskId: group.rootTaskId, number: group.number } } : {}), workType: resolveWorkType(metadata, plan, task.prompt) }
   }
 
   private async requireTask(taskId: string): Promise<ClientTask> {

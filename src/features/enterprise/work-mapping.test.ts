@@ -179,6 +179,23 @@ describe('arrangement retry display regressions', () => {
     assert.equal(work.steps[1]?.state, 'running')
   })
 
+  it('classifies deliverables by the last employee in planned order', () => {
+    const classifiedPlan = { ...plan, nodes: [
+      { ...plan.nodes[0]!, id: 'node-a', subscriptionId: 'employee-a', title: 'Research' },
+      { ...plan.nodes[0]!, id: 'node-b', subscriptionId: 'employee-b', title: 'Final report', dependsOn: ['node-a'] },
+    ] }
+    const work = buildWorkItem({ task, employees: [], plan: classifiedPlan, arrangementExecution: {
+      activeRunId: 'run-a', status: 'completed', updatedAt: 10, nodes: [
+        { nodeId: 'node-a', status: 'completed', finalFiles: [{ ...finalFile, id: 'notes' }] },
+        { nodeId: 'node-b', status: 'completed', finalFiles: [{ ...finalFile, id: 'report' }] },
+      ],
+    } })
+
+    assert.deepEqual(work.deliverables.map(file => [file.deliverableId, file.category]), [
+      ['notes', 'intermediate'], ['report', 'final'],
+    ])
+  })
+
   it('does not mistake an explicitly stopped arrangement for a retryable failure', () => {
     const stopped: TaskExecutionEvent = { ...failed, sequence: 2, type: 'stop_requested', data: { reason: 'user stopped' } }
     const work = buildWorkItem({ task: { ...task, status: 'paused', error: 'user stopped' }, employees: [], plan, arrangementEvents: [failed, stopped] })
