@@ -233,7 +233,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel taskId={work.id} media={work.arrangementExecution.media} /> : null}
             {work.deliverables.length ? (
               <div className="ent-wk-final-files">
-                {groupDeliverables(work.deliverables).map(group => (
+                {groupDeliverables(work.deliverables, isConversation).map(group => (
                   <section key={group.key} className="ent-wk-final-group">
                     {group.title ? <h3>{group.title}</h3> : null}
                     <ul className="ent-wk-files ent-wk-files-side">
@@ -491,9 +491,20 @@ function WorkActivityRow({ activity }: { activity: WorkActivity }) {
   );
 }
 
-function groupDeliverables(files: WorkItem['deliverables']): Array<{ key: string; title: string; files: WorkItem['deliverables'] }> {
+function groupDeliverables(files: WorkItem['deliverables'], isConversation: boolean): Array<{ key: string; title: string; files: WorkItem['deliverables'] }> {
   const groups: Array<{ key: string; title: string; files: WorkItem['deliverables'] }> = [];
+  if (!isConversation) {
+    for (const category of ['final', 'intermediate'] as const) {
+      const categorizedFiles = files.filter(file => file.category === category);
+      if (categorizedFiles.length) groups.push({
+        key: category,
+        title: category === 'final' ? '最终产物' : '中间产物',
+        files: categorizedFiles,
+      });
+    }
+  }
   for (const file of files) {
+    if (!isConversation && file.category) continue;
     const key = file.nodeId ?? 'all';
     let group = groups.find(item => item.key === key);
     if (!group) {

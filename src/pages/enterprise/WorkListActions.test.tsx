@@ -6,7 +6,6 @@ import { compileFunction } from 'node:vm'
 import * as React from 'react'
 import * as ts from 'typescript'
 import type { WorkItem } from '../../features/enterprise/types'
-import type { PlanningRecordSummary } from '../../shared/auto-planning'
 import type { FeedbackNotice } from '../../shared/feedback-controller'
 import type { WorkListActions } from './WorkListActions'
 
@@ -17,7 +16,7 @@ const filename = new URL('./WorkListActions.tsx', import.meta.url)
 const compiled = ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX,
 } }).outputText
-const work = { id: 'a', title: '季度报告', status: 'completed', pinnedAt: null } as WorkItem
+const work = { id: 'a', title: '季度报告', status: 'completed', pinnedAt: null, kind: 'flow', workType: { state: 'resolved', kind: 'arrangement' } } as WorkItem
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
 
 function mount(overrides: Partial<Props> = {}, writeText: (text: string) => Promise<void> = async () => {}) {
@@ -50,7 +49,7 @@ function mount(overrides: Partial<Props> = {}, writeText: (text: string) => Prom
   const search = button()
   const list = { ...button(), querySelectorAll: () => [previousRow, trigger, nextRow] }
   const trigger = { ...button(), closest: (selector: string) => selector === '.ent-work-list' ? list : { querySelector: () => trigger } } as unknown as HTMLElement
-  const items = [button(true), button(true), button(true), button(true)]
+  const items = Array.from({ length: 4 }, () => button(true))
   const menu = Object.assign(new TestNode(), { open: false, style: { left: '', top: '' }, showPopover() { this.open = true }, hidePopover() { this.open = false }, contains(target: unknown) { return target === this },
     matches() { return this.open }, getBoundingClientRect: () => ({ width: 200, height: 150 }), querySelector: () => items[0], querySelectorAll: () => items })
   const dialog = { open: false, showModal() { this.open = modalOpen = true; previousModalFocus = doc.activeElement },
@@ -83,7 +82,7 @@ function mount(overrides: Partial<Props> = {}, writeText: (text: string) => Prom
   }, loaded.exports, loaded)
   const Component = (loaded.exports as { WorkListActions: typeof WorkListActions }).WorkListActions
   const props: Props = { works: [work], request: { workId: 'a', x: 1000, y: 750, trigger }, busy: false,
-    onDismiss: () => { props.request = null }, onRename: async () => true, onPin: async () => true, onDelete: async () => true, ...overrides }
+    onDismiss: () => { props.request = null }, onRename: async () => true, onPin: async () => true, onRetry: async () => {}, onDelete: async () => true, ...overrides }
   let elements: Element[] = []
   const find = (predicate: (element: Element) => boolean): Element => { const element = elements.find(predicate); assert.ok(element); return element }
   function render() {
@@ -155,56 +154,34 @@ test('pin and unpin target the menu row without requiring selection', async () =
   assert.deepEqual(calls, [['a', true], ['a', false]])
 })
 
-test('copy uses the menu task ID, keeps its full value and follows rename', async () => {
-  const id = 'f6ea2132-47e5-45d2-9e2a-fa3a673ab583'
-  const ui = mount({ works: [{ ...work, id, recordKey: 'draft-list-key' }], request: null })
-  ui.props.request = { workId: id, x: 20, y: 20, trigger: ui.trigger }
-  ui.render()
+test('menu replaces copy with retry and a disabled scheduling placeholder', async () => {
+  const calls: string[] = []
+  const ui = mount({ onRetry: async id => { calls.push(id) } })
   try {
-    const labels = React.Children.toArray(ui.find(e => e.props.role === 'menu').props.children as React.ReactNode)
+    const menu = ui.find(e => e.props.role === 'menu')
+    const labels = React.Children.toArray(menu.props.children as React.ReactNode)
       .flatMap(child => React.isValidElement<{ children: React.ReactNode }>(child) ? React.Children.toArray(child.props.children) : [])
       .filter((child): child is React.ReactElement<{ children: React.ReactNode }> => React.isValidElement(child) && child.props.role === 'menuitem')
       .map(child => React.Children.toArray(child.props.children).filter(part => typeof part === 'string').join(''))
-    assert.deepEqual(labels, ['置顶', '重命名', '复制任务ID', '删除'])
-    ui.click('任务ID'); await tick()
-    assert.deepEqual(ui.copied, [id])
-    assert.deepEqual(ui.notices, [{ message: '任务ID已复制', tone: 'success' }])
-    assert.equal(ui.menu.open, false)
+    assert.deepEqual(labels, ['置顶', '重命名', '重新执行', '加入定时任务（开发中）', '删除'])
+    assert.equal(ui.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('加入定时任务（开发中）')).props.disabled, true)
+    ui.click('重新执行'); await tick()
+    assert.deepEqual(calls, ['a'])
     assert.equal(ui.props.request, null)
-    assert.equal(ui.doc.activeElement, ui.trigger)
   } finally { ui.cleanup() }
 })
 
-test('copy remains available for running tasks while the workspace is busy', async () => {
-  const ui = mount({ busy: true, works: [{ ...work, status: 'running', isActive: true }] })
-  try {
-    assert.notEqual(ui.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('任务ID')).props.disabled, true)
-    ui.click('任务ID'); await tick()
-    assert.deepEqual(ui.copied, ['a'])
-  } finally { ui.cleanup() }
-})
-
-test('copy distinguishes unconfirmed drafts from drafts linked to a formal task', async () => {
-  for (const confirmedWorkPlanId of [null, 'formal-task-id']) {
-    const ui = mount({ works: [{ ...work, id: 'draft-id', planningDraft: { id: 'draft-id', confirmedWorkPlanId } as PlanningRecordSummary }], request: null })
-    ui.props.request = { workId: 'draft-id', x: 20, y: 20, trigger: ui.trigger }
-    ui.render()
-    try {
-      const label = confirmedWorkPlanId ? '任务ID' : '草稿ID'
-      ui.click(label); await tick()
-      assert.deepEqual(ui.copied, [confirmedWorkPlanId ?? 'draft-id'])
-      assert.deepEqual(ui.notices, [{ message: `${label}已复制`, tone: 'success' }])
-    } finally { ui.cleanup() }
+test('retry is disabled while the workspace is busy or the work is active', () => {
+  for (const props of [
+    { busy: true },
+    { works: [{ ...work, status: 'running' as const, isActive: true }] },
+    { works: [{ ...work, status: 'arranging' as const }] },
+    { works: [{ ...work, kind: 'conversation' as const, workType: { state: 'resolved' as const, kind: 'conversation' as const } }] },
+    { works: [{ ...work, workType: { state: 'unavailable' as const } }] },
+  ]) {
+    const ui = mount(props)
+    try { assert.equal(ui.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('重新执行')).props.disabled, true) } finally { ui.cleanup() }
   }
-})
-
-test('clipboard rejection reports failure without a success notice', async () => {
-  const ui = mount({}, async () => { throw new Error('Clipboard denied') })
-  try {
-    ui.click('任务ID'); await tick()
-    assert.deepEqual(ui.notices, [{ message: '任务ID复制失败，请重试', tone: 'error' }])
-    assert.equal(ui.props.request, null)
-  } finally { ui.cleanup() }
 })
 
 test('rename and delete delegate to shared workspace confirmations without a second dialog', async () => {

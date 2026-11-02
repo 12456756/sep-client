@@ -85,7 +85,7 @@ export function mergeTaskUpdate(current: readonly ClientTask[], incoming: Client
   if (index === -1) return [incoming, ...current]
   if (isStaleActiveUpdate(current[index]!, incoming)) return [...current]
   const next = [...current]
-  next[index] = { ...incoming, workType: mergeWorkType(current[index].workType, incoming.workType) }
+  next[index] = { ...incoming, executionGroup: incoming.executionGroup ?? current[index].executionGroup, workType: mergeWorkType(current[index].workType, incoming.workType) }
   return next
 }
 
@@ -95,7 +95,7 @@ export function mergeTaskList(current: readonly ClientTask[], incoming: readonly
     .map(task => {
       const existing = byId.get(task.id)
       if (existing && isStaleActiveUpdate(existing, task)) return existing
-      return { ...task, workType: mergeWorkType(existing?.workType, task.workType) }
+      return { ...task, executionGroup: task.executionGroup ?? existing?.executionGroup, workType: mergeWorkType(existing?.workType, task.workType) }
     })
 }
 
@@ -135,7 +135,7 @@ export function mergeInitialTaskQuery(current: readonly ClientTask[], queried: r
     queried = queried.filter(task => !deletedIds.has(task.id))
   }
   const queriedById = new Map(queried.map(task => [task.id, task]))
-  const liveWithTypes = current.map(task => ({ ...task, workType: mergeWorkType(task.workType, queriedById.get(task.id)?.workType) }))
+  const liveWithTypes = current.map(task => ({ ...task, executionGroup: task.executionGroup ?? queriedById.get(task.id)?.executionGroup, workType: mergeWorkType(task.workType, queriedById.get(task.id)?.workType) }))
   if (receivedList) return liveWithTypes
   const currentById = new Map(liveWithTypes.map(task => [task.id, task]))
   return [...queried.map(task => {
@@ -144,7 +144,7 @@ export function mergeInitialTaskQuery(current: readonly ClientTask[], queried: r
     if (pushedIds.has(task.id) || isStaleActiveUpdate(live, task)) {
       return { ...live, workType: mergeWorkType(live.workType, task.workType) }
     }
-    return { ...task, workType: mergeWorkType(live.workType, task.workType) }
+    return { ...task, executionGroup: task.executionGroup ?? live.executionGroup, workType: mergeWorkType(live.workType, task.workType) }
   }),
     ...liveWithTypes.filter(task => !queriedById.has(task.id))]
 }

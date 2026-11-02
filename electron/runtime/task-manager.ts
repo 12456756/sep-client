@@ -652,6 +652,31 @@ export class TaskManager {
     return cloneTask(updated)
   }
 
+  /** Delete a topic atomically so a newly admitted member cannot cause partial deletion. */
+  async deleteTaskRecords(taskIds: readonly string[], archivedIds: readonly string[], scope: TaskOwnerScope): Promise<boolean> {
+    const generation = this.generation
+    const currentScope = await this.requireCurrentUser()
+    this.assertCurrentScope(currentScope, generation)
+    if (currentScope.memberId !== scope.memberId || currentScope.enterpriseId !== scope.enterpriseId) throw new TaskScopeError()
+    const archived = new Set(archivedIds)
+    let deleted = false
+    await this.commit(nextTasks => {
+      if (taskIds.some(id => {
+        const task = nextTasks.get(id)
+        return !task || task.activeRunId || isTaskExecutionStatus(task.status)
+      })) return
+      for (const id of taskIds) if (!archived.has(id)) nextTasks.delete(id)
+      deleted = true
+    }, generation)
+    this.assertCurrentScope(currentScope, generation)
+    if (deleted) {
+      // Media history remains available internally, as with single-record archival.
+      for (const id of archived) this.hiddenTaskIds.add(id)
+      this.notifyTaskListUpdate()
+    }
+    return deleted
+  }
+
   /** Called only after the service has durably archived the record. History stays readable internally. */
   hideTaskRecord(taskId: string, scope: TaskOwnerScope): void {
     if (!this.currentUser || this.currentUser.memberId !== scope.memberId || this.currentUser.enterpriseId !== scope.enterpriseId) {

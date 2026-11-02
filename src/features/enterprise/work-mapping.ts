@@ -254,6 +254,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     }));
   return {
     id: task.id,
+    executionGroup: task.executionGroup,
     knowledge: plan?.knowledge,
     title: task.title,
     pinnedAt: task.pinnedAt ?? null,
@@ -446,12 +447,14 @@ function isFinalFile(value: unknown): value is ArrangementFinalFileSnapshot {
 function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution: ArrangementExecutionSnapshot | null, workspace: string | null): WorkDeliverable[] {
   if (!plan || !execution) return []
   const files: WorkDeliverable[] = []
+  const finalEmployeeId = plan.nodes.at(-1)?.subscriptionId
   for (const node of plan.nodes) {
     const state = execution.nodes.find(item => item.nodeId === node.id)
     if (state?.status !== 'completed') continue
     for (const file of state?.finalFiles ?? []) files.push({
       id: `${node.id}:${file.id}`,
       name: file.path.split(/[\\/]/).pop() || file.path,
+      category: node.subscriptionId === finalEmployeeId ? 'final' : 'intermediate',
       path: workspace && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(file.path)
         ? `${workspace.replace(/[\\/]+$/, '')}${workspace.includes('\\') ? '\\' : '/'}${file.path.replace(/[\\/]/g, workspace.includes('\\') ? '\\' : '/')}`
         : file.path,

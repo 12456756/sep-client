@@ -39,6 +39,27 @@ function updateRoute(channel: string = INVOKE_CHANNELS.TASK_UPDATE_DETAILS): Tes
 }
 
 describe('task detail update IPC', () => {
+  it('validates rerun request identity and returns the newly created execution', async () => {
+    const route = updateRoute(INVOKE_CHANNELS.TASK_RERUN)
+    for (const input of ['task-a', { taskId: 'task-a' }, { taskId: '../task', requestId: 'request' },
+      { taskId: 'task-a', requestId: '' }, { taskId: 'task-a', requestId: 'request', plan: {} }]) {
+      assert.equal(route.schema.safeParse(input).success, false)
+    }
+    const calls: unknown[][] = []
+    const result = await route.handle({ tasks: { async rerun(...args: unknown[]) { calls.push(args); return { id: 'task-b' } } } },
+      route.schema.parse({ taskId: 'task-a', requestId: 'request' }))
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['task-a', 'request']])
+    assert.deepEqual(JSON.parse(JSON.stringify(result)), { success: true, task: { id: 'task-b' } })
+  })
+  it('keeps single-task deletion compatible and routes grouped deletion explicitly', async () => {
+    const route = updateRoute(INVOKE_CHANNELS.TASK_DELETE)
+    const calls: string[] = []
+    const ctx = { tasks: { async delete(id: string) { calls.push(`single:${id}`) }, async deleteExecutionGroup(id: string) { calls.push(`group:${id}`) } } }
+    assert.equal(route.schema.safeParse({ taskId: 'task-a', includeExecutions: false }).success, false)
+    await route.handle(ctx, route.schema.parse('task-a'))
+    await route.handle(ctx, route.schema.parse({ taskId: 'task-a', includeExecutions: true }))
+    assert.deepEqual(calls, ['single:task-a', 'group:task-a'])
+  })
   it('binds clarification replies to a node and forwards the request identity', async () => {
     const route = updateRoute(INVOKE_CHANNELS.TASK_RETRY)
     const inputReply = { requestId: 'request-a', text: '  8 秒竖屏  ' }

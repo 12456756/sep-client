@@ -353,12 +353,13 @@ describe('WorkDetailPage media entry', () => {
     const flow = { ...work, kind: 'flow' as const, status: 'running' as const,
       workType: { state: 'resolved' as const, kind: 'arrangement' as const },
       deliverables: [{ id: 'node-a:report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '节点最终交付物 · A',
-        nodeId: 'node-a', nodeTitle: 'A', deliverableId: 'report', format: 'docx' }],
+        category: 'final' as const, nodeId: 'node-a', nodeTitle: 'A', deliverableId: 'report', format: 'docx' }],
       arrangementExecution: { activeRunId: 'run', status: 'running' as const, updatedAt: 1,
         nodes: [{ nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'report.docx', format: 'docx', size: 5,
           sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 1, snapshot: { sha256: 'a'.repeat(64), size: 5, source: 'confirmed' as const } }] },
         { nodeId: 'node-b', status: 'running' as const, finalFiles: [] }] } };
     const html = renderDetail(flow);
+    assert.match(html, /最终产物/);
     assert.match(html, /aria-label="预览文档：report\.docx"/);
     assert.match(html, /title="打开文件所在目录"/);
   });

@@ -158,6 +158,7 @@ const electronAPI = {
   continueTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CONTINUE, input),
   getTaskMessages: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_MESSAGES, taskId),
   retryTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_RETRY, input),
+  rerunTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_RERUN, input),
   getTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET, taskId),
   getTaskMedia: (taskId, options) => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_GET_TASK, options ? { taskId, ...options } : taskId),
   setMediaReferenceSelection: input => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION, input),
