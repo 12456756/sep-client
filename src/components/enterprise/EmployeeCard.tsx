@@ -8,7 +8,6 @@ import { relativeTime } from '../../features/enterprise/vocabulary';
 import type { SkillLibraryItem } from '../../shared/skill-library';
 import { AvailabilityChip } from './atoms';
 import { EmployeeFace } from './EmployeeFace';
-import { EmployeePortrait } from './EmployeePortrait';
 
 interface Props {
   employee: SiliconEmployee;
@@ -34,8 +33,6 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false, skills
     <MessageSquareText size={13} aria-hidden />开始对话
   </button>;
   const summary = employee.intro.trim();
-  const introduction = summary.replace(/[。.!！?？；;，,、\s]+$/u, '');
-  const speech = introduction.startsWith('我') ? introduction : introduction ? `${/^(可以|能够|能|擅长|负责|专注)/u.test(introduction) ? '我' : '我可以'}${introduction}` : '';
   const recent = employee.lastWorkedAt ? <span className="ent-emp-card-recent">最近使用：{relativeTime(employee.lastWorkedAt)}</span> : null;
 
   if (compact) {
@@ -49,18 +46,15 @@ export function EmployeeCard({ employee, onOpen, onChat, compact = false, skills
     </div>;
   }
 
-  return <article className={`ent-emp-card ent-emp-person${employee.assignedToMe ? '' : ' off'}`}>
+  return <article className={`ent-emp-card ent-emp-avatar-card${employee.assignedToMe ? '' : ' off'}`}>
     {open}
-    <div className="ent-emp-person-stage">
-      {speech || names.length ? <div className="ent-emp-speech" aria-label="员工自我介绍"><p>
-        {speech}{names.length ? <>{speech ? '，擅长' : '我擅长'}{names.map((name, index) => <React.Fragment key={name}>{index ? index === names.length - 1 ? '和' : '、' : ''}<strong>{name}</strong></React.Fragment>)}</> : null}。
-      </p></div> : null}
-      <span className="ent-emp-person-halo" aria-hidden />
-      <EmployeePortrait employee={employee} />
-      <span className="ent-emp-person-ground" aria-hidden />
-    </div>
-    <header><div className="ent-emp-card-id"><strong title={employee.name}>{employee.name}</strong></div></header>
-    {recent ? <div className="ent-emp-person-recent">{recent}</div> : null}
+    <header className="ent-emp-avatar-header">
+      <EmployeeFace employee={employee} size="lg" />
+      <div className="ent-emp-card-id"><strong title={employee.name}>{employee.name}</strong><AvailabilityChip value={employee.availability} /></div>
+    </header>
+    {summary ? <p className="ent-emp-avatar-intro">{summary}</p> : null}
+    {names.length ? <div className="ent-emp-avatar-skills" aria-label="员工技能">{names.slice(0, 3).map(name => <span className="ent-tag" key={name}>{name}</span>)}{names.length > 3 ? <span className="ent-tag more">+{names.length - 3}</span> : null}</div> : null}
+    {recent}
     {reason ? <p id={disabledReasonId} className="ent-emp-disabled-reason">{reason}</p> : null}
     <footer>{chat}</footer>
   </article>;
