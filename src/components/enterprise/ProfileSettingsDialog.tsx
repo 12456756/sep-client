@@ -5,6 +5,7 @@ import type { UploadInput } from '../../shared/ipc'
 import { EmployeeFace } from './EmployeeFace'
 import { SpeechSettings } from '../speech/SpeechSettings'
 import { DefaultModelSettings } from './DefaultModelSettings'
+import { DefaultWorkspaceSettings } from './DefaultWorkspaceSettings'
 
 interface Props {
   profile: ClientProfile | null
@@ -86,6 +87,7 @@ export function ProfileSettingsDialog({
             </div>
           ) : null}
           <DefaultModelSettings models={models} />
+          <DefaultWorkspaceSettings />
           <SpeechSettings />
           {localError || error ? <p className="ent-profile-error" role="alert">{localError || error}</p> : null}
           <button type="button" className="ent-profile-refresh" disabled={uploading !== null} onClick={refreshProfile}>

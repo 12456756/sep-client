@@ -195,6 +195,10 @@ export interface SelectDirectoryResult extends IpcCommandResult {
   path?: string | null
 }
 
+export interface DefaultWorkspaceDirectoryResult extends IpcCommandResult {
+  path?: string | null
+}
+
 export interface CreateTaskInput extends CreateTaskRequest {
   subscriptionId: string
 }
@@ -407,6 +411,9 @@ export interface ElectronAPI {
   updateTaskDetails: (input: { taskId: string; title?: string; pinned?: boolean }) => Promise<TaskResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>
+  getDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
+  selectDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
+  clearDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
   onPiEvent: (callback: (event: TaskExecutionEvent) => void) => () => void
   onToolApprovalRequest: (callback: (request: ToolAuthorizationRequest) => void) => () => void
   onTaskUpdated: (callback: (task: ClientTask) => void) => () => void
