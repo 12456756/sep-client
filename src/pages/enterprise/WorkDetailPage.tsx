@@ -73,16 +73,8 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
   const inspector = useRef<HTMLDialogElement | null>(null);
   const [mediaSummary, setMediaSummary] = useState<{ images: number | null; videos: number | null; error: string | null }>({ images: null, videos: null, error: null });
   const handleMediaSummary = useCallback((summary: typeof mediaSummary) => setMediaSummary(summary), []);
-  const arrangementMedia = work.arrangementExecution?.media;
-  const countArrangement = (kind: 'image' | 'video') => arrangementMedia ? new Set(arrangementMedia.filter(item => item.kind === kind).flatMap(item => item.outputs.filter(output => output.status === 'saved').map(output => output.artifactId))).size : null;
-  const images = isConversation ? mediaSummary.images : countArrangement('image');
-  const videos = isConversation ? mediaSummary.videos : countArrangement('video');
-  const resultCounts = [
-    `${work.deliverables.length} 个文件`,
-    images !== null ? `${images} 张图片` : null,
-    videos !== null ? `${videos} 个视频` : null,
-  ].filter((item): item is string => Boolean(item));
-  const resultsTitle = resultCounts.length ? `产出结果：${resultCounts.join('、')}` : '产出结果';
+  const noConversationResults = mediaSummary.images === 0 && mediaSummary.videos === 0 && !mediaSummary.error;
+  const showEmptyResults = work.deliverables.length === 0 && (isConversation ? noConversationResults : !work.arrangementExecution?.media?.length);
   const inspectorCloseButton = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     const dialog = inspector.current;
@@ -147,7 +139,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         <WorkTypeTag workType={work.workType} />
         <h1>{work.title}</h1>
         <div className="ent-wk-head-actions">
-          <IconHint label={resultsTitle} side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看产出结果" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'results'} onClick={() => openInspector('results')}><FileOutput size={16} aria-hidden /></button></IconHint>
+          <IconHint label="产出结果" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看产出结果" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'results'} onClick={() => openInspector('results')}><FileOutput size={16} aria-hidden /></button></IconHint>
           {isConversation ? <IconHint label="工作过程" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作过程" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'process'} onClick={() => openInspector('process')}><LoaderCircle size={16} aria-hidden /></button></IconHint> : null}
           <IconHint label="工作信息" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作信息" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'info'} onClick={() => openInspector('info')}><Info size={16} aria-hidden /></button></IconHint>
         </div>
@@ -219,39 +211,28 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
         >
           <div className="ent-wk-inspector-heading"><strong id={`work-inspector-title-${work.id}`}>{panel === 'results' ? '产出结果' : panel === 'process' ? '工作过程' : '工作信息'}</strong><button ref={inspectorCloseButton} type="button" className="ent-icon-btn" aria-label="关闭详情面板" onClick={() => setPanel(null)}><X size={16} aria-hidden /></button></div>
           <section className="ent-panel ent-wk-inspector-content" aria-label="产出结果" hidden={panel !== 'results'}>
-            <p className="ent-hint">{resultCounts.join('、')}</p>
-            {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} /> : null}
+            {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} presentation="results" /> : null}
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel taskId={work.id} media={work.arrangementExecution.media} /> : null}
             {work.deliverables.length ? (
               <div className="ent-wk-final-files">
-                {groupDeliverables(work.deliverables).map(group => (
-                  <section key={group.key} className="ent-wk-final-group">
-                    {group.title ? <h3>{group.title}</h3> : null}
-                    <ul className="ent-wk-files ent-wk-files-side">
-                      {group.files.map(file => (
-                        <li key={file.id}>
-                          <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
-                          <span>
-                            <strong title={file.name}>{file.name}</strong>
-                            <small>{file.note}</small>
-                          </span>
-                          <div className="ent-wk-file-actions">
-                            {file.format ? isConversation
-                              ? <DocumentPreviewButton taskId={work.id} fileId={file.id} name={file.name} format={file.format} />
-                              : file.nodeId && file.deliverableId ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null : null}
-                            <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copyPath(file.path)}>
-                              复制路径
-                            </button>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
+                <ul className="ent-wk-files ent-wk-files-side">
+                  {work.deliverables.map(file => (
+                    <li key={file.id}>
+                      <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
+                      <span><strong title={file.name}>{file.name}</strong></span>
+                      <div className="ent-wk-file-actions">
+                        {file.format ? isConversation
+                          ? <DocumentPreviewButton taskId={work.id} fileId={file.id} name={file.name} format={file.format} />
+                          : file.nodeId && file.deliverableId ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null : null}
+                        <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copyPath(file.path)}>
+                          复制路径
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               </div>
-            ) : (
-              <p className="ent-hint">员工还没有产出文件。产出之后会列在这里。</p>
-            )}
+            ) : showEmptyResults ? <p className="ent-hint">暂无产出结果</p> : null}
           </section>
 
           {/* 普通会话的结构化活动仍可单独查看。 */}
@@ -480,20 +461,6 @@ function WorkActivityRow({ activity }: { activity: WorkActivity }) {
       <time>{hhmm(activity.endedAt ?? activity.startedAt)}</time>
     </li>
   );
-}
-
-function groupDeliverables(files: WorkItem['deliverables']): Array<{ key: string; title: string; files: WorkItem['deliverables'] }> {
-  const groups: Array<{ key: string; title: string; files: WorkItem['deliverables'] }> = [];
-  for (const file of files) {
-    const key = file.nodeId ?? 'all';
-    let group = groups.find(item => item.key === key);
-    if (!group) {
-      group = { key, title: file.nodeTitle ?? '', files: [] };
-      groups.push(group);
-    }
-    group.files.push(file);
-  }
-  return groups;
 }
 
 /** 只缩短目录的展示文本；悬停和复制始终使用完整路径。 */

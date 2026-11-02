@@ -586,9 +586,15 @@
   box-shadow: none !important;
 }
 .ent-shell :is(input, textarea, select):focus-visible {
-  outline: 2px solid var(--ent-line-strong) !important;
-  outline-offset: 2px;
+  outline: none !important;
   box-shadow: none !important;
+}
+/* 输入控件只保留静态中性边框，聚焦时不再出现红色或额外外圈。 */
+.ent-shell :is(.ent-ask, .ent-arrangebar-card, .ent-goal, .ent-chat-ask, .ent-mn-composer, .org-search, .org-tree-search):focus-within,
+.ent-shell :is(.ent-knowledge-search, .ent-model-search):focus-within {
+  border-color: var(--ent-line-strong);
+  box-shadow: none;
+  outline: none;
 }
 /* 会话与编排输入区由外框表达聚焦，内部文本框不再单独显示焦点环。 */
 .ent-shell .ent-arrangebar-input:focus-visible, .ent-shell .ent-ask-input:focus-visible,
@@ -1272,7 +1278,7 @@
 .ent-toolbar { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 /* 页内搜索。顶栏的全局搜索已经撤掉，搜索框下沉到真正需要它的页面。 */
 .ent-find { display: inline-flex; align-items: center; gap: 7px; min-width: 176px; padding: 0 10px; border: 1px solid var(--ent-line-strong); border-radius: 999px; background: var(--ent-panel); color: var(--ent-ink-3); transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
-.ent-find:focus-within { border-color: var(--ent-brand); box-shadow: var(--ent-glow-ring); }
+.ent-find:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
 .ent-find svg { flex: 0 0 auto; }
 .ent-find input { width: 100%; min-height: 30px; border: 0; background: none; color: var(--ent-ink); font-size: var(--ent-fs-body); outline: none; }
 .ent-find input::placeholder { color: var(--ent-ink-3); }
@@ -2389,7 +2395,7 @@
 .org-tree-node { display: grid; min-width: 0; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 9px; width: 100%; padding: 10px; border: 1px solid transparent; border-radius: 11px; color: var(--ent-ink); background: transparent; font: inherit; text-align: left; cursor: pointer; transition: border-color var(--ent-ease), background var(--ent-ease), transform var(--ent-ease); }
 .org-tree-node:hover, .org-tree-node.selected { border-color: var(--ent-brand-border); background: var(--ent-brand-softer); }
 .org-tree-node:hover { transform: translateX(1px); }
-.org-tree-node:focus-visible, .org-tree-silicon-node:focus-visible, .org-tree-search input:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.org-tree-node:focus-visible, .org-tree-silicon-node:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
 .org-tree-node > svg { color: var(--ent-ink-3); }
 .org-tree-department-node { padding-left: calc(10px + (var(--org-depth, 0) * 12px)); border-color: var(--ent-line); background: var(--ent-panel); box-shadow: 0 3px 12px rgb(32 35 43 / 4%); }
 .org-tree-department-node.selected { border-color: var(--ent-brand-border); box-shadow: 0 4px 14px rgb(185 54 63 / 10%); }

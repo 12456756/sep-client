@@ -102,9 +102,10 @@ function VideoFeedback({ pending }: { pending: Command | null }) {
 }
 
 
-export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
+export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compact = false }: {
   jobs: VideoJobView[]; busy: boolean; onAction: (job: VideoJobView, action: JobAction) => void
   onPreview: (selection: OutputSelection) => void; onExport: (selection: OutputSelection) => void
+  compact?: boolean
 }) {
   return <div className="media-jobs video-jobs">{jobs.map(job => {
     const explicitlyRejected = job.generationStatus === 'FAILED' && job.trackingStatus === 'STOPPED' && isVideoSubmissionRejectionCode(job.error)
@@ -117,6 +118,28 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
     const downloadable = videoJobCanDownload(job) && job.outputs.some(output => !videoOutputIsSaved(job, output.outputId) && (!output.expiresAt || Date.parse(output.expiresAt) > Date.now()))
     const retry = generated && downloadable && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)
     const resume = !explicitlyRejected && job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
+    if (compact) {
+      const issue = job.specFailure ? mediaSpecFailureMessage(job.specFailure) ?? mediaIssueMessage(job, 'video') : mediaIssueMessage(job, 'video')
+      const savedOutputs = job.outputs.filter(output => videoOutputIsSaved(job, output.outputId))
+      const status = issue || (job.acceptance === 'mismatched' ? '生成结果与要求不一致，已保留原件'
+        : unfinished ? generation.label
+          : videoBillingPending(job.billingStatus) ? '生成完成，费用核对中'
+            : savedOutputs.length === 0 ? mediaSaveLabels[job.saveStatus].label : null)
+      return <article className="media-result-job" key={job.jobId}>
+        {status && <p className="media-result-status" role={issue || job.acceptance === 'mismatched' ? 'alert' : 'status'}>{status}</p>}
+        {(resume || retry) && <div className="media-job-actions">
+          {resume && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />继续</button>}
+          {retry && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'retry')}><Download size={13} />重新保存</button>}
+        </div>}
+        {job.outputs.map((output, index) => <div className="media-result-output" key={output.outputId}>
+          <strong>视频成果 {index + 1}</strong>
+          {videoOutputIsSaved(job, output.outputId) ? <div className="media-job-actions">
+            <button type="button" className="media-command" disabled={busy || !['video/mp4', 'video/webm'].includes(output.mimeType)} title={['video/mp4', 'video/webm'].includes(output.mimeType) ? undefined : '此格式支持导出原件后打开'} onClick={() => onPreview({ jobId: job.jobId, outputId: output.outputId })}><Play size={13} />预览</button>
+            <button type="button" className="media-command" disabled={busy} onClick={() => onExport({ jobId: job.jobId, outputId: output.outputId })}><Download size={13} />导出</button>
+          </div> : null}
+        </div>)}
+      </article>
+    }
     return <article className="media-job" key={job.jobId} aria-label={`视频任务 ${job.jobId}`}>
       <div className="media-job-heading"><strong>{job.operation === 'image-to-video' ? '图片生成视频' : '文字生成视频'}</strong><span>{job.parameters.durationSeconds === undefined ? '时长由上游决定' : `${job.parameters.durationSeconds} 秒`} · {job.parameters.aspectRatio ?? '比例未指定'}</span></div>
       <small className="media-job-id">配置 {job.profileId} · {job.parameters.resolution ?? '分辨率未指定'} · {job.parameters.frameRate === undefined ? '帧率未指定' : `${job.parameters.frameRate} fps`} · {job.parameters.audio === undefined ? '音频未指定' : job.parameters.audio ? '含音频' : '无音频'}</small>
@@ -151,18 +174,19 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport }: {
 }
 
 /** Presentation only: no IPC, remote URLs or eager media reads. */
-export function VideoTaskContent({ taskId, view: value, busy, pending, onAction, onPreview, onExport, visible = true }: {
+export function VideoTaskContent({ taskId, view: value, busy, pending, onAction, onPreview, onExport, visible = true, presentation = 'full' }: {
   taskId: string; view: VideoTaskView | null; busy: boolean; pending: Command | null
   visible?: boolean
+  presentation?: 'full' | 'results'
   onAction: (job: VideoJobView, action: JobAction) => void; onPreview: (selection: OutputSelection) => void; onExport: (selection: OutputSelection) => void
 }) {
   const view = safeView(value, taskId)
   if (!view) return null
-  return <section className="artifact-section media-artifacts video-artifacts" aria-label="视频成果" hidden={!visible}>
-    <h3><Film size={15} />视频成果{view.mock && <span className="video-mock-badge">Mock · 不收费</span>}</h3>
-    {view.mock && <p className="media-notice">仅供 Mock 视频验证 · MOCK_NOT_CHARGED</p>}
+  return <section className={`artifact-section media-artifacts video-artifacts${presentation === 'results' ? ' media-results-compact' : ''}`} aria-label="视频成果" hidden={!visible}>
+    {presentation === 'full' && <h3><Film size={15} />视频成果{view.mock && <span className="video-mock-badge">Mock · 不收费</span>}</h3>}
+    {presentation === 'full' && view.mock && <p className="media-notice">仅供 Mock 视频验证 · MOCK_NOT_CHARGED</p>}
     <VideoFeedback pending={pending} />
-    {view.jobs.length ? <VideoJobList jobs={view.jobs} busy={busy} onAction={onAction} onPreview={onPreview} onExport={onExport} /> : <p className="artifact-empty">尚无视频任务</p>}
+    {view.jobs.length ? <VideoJobList jobs={view.jobs} busy={busy} onAction={onAction} onPreview={onPreview} onExport={onExport} compact={presentation === 'results'} /> : presentation === 'full' ? <p className="artifact-empty">尚无视频任务</p> : null}
   </section>
 }
 
@@ -223,7 +247,7 @@ function VideoPreviewDialog({ taskId, selection, busy, pending, onClose, onExpor
   </dialog>
 }
 
-function VideoTaskController({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void }) {
+function VideoTaskController({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
   const [view, setView] = useState<VideoTaskView | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
   const { capture } = useOperationFeedback(taskId)
@@ -319,15 +343,15 @@ function VideoTaskController({ taskId, visible = true, onSummary }: { taskId: st
     onSummary?.({ outputs: outputCount, error: summaryError })
   }, [onSummary, outputCount, summaryError])
   return <>
-    {visible ? <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending}
+    {visible ? <VideoTaskContent taskId={taskId} view={view} busy={busy} pending={pending} presentation={presentation}
       onAction={(job, action) => { void run(action, api => action === 'resume' ? api.resumeVideoTracking({ taskId, jobId: job.jobId }) : api.retryVideoSave({ taskId, jobId: job.jobId })) }}
       onPreview={setPreview} onExport={exportOutput} /> : null}
     {visible && preview && previewAvailable && <VideoPreviewDialog key={`${taskId}:${preview.jobId}:${preview.outputId}`} taskId={taskId} selection={preview} busy={busy} pending={pending} onClose={() => setPreview(null)} onExport={() => exportOutput(preview)} />}
   </>
 }
 
-export function VideoTaskPanel({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void }) {
-  return <VideoTaskController key={taskId} taskId={taskId} visible={visible} onSummary={onSummary} />
+export function VideoTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
+  return <VideoTaskController key={taskId} taskId={taskId} visible={visible} onSummary={onSummary} presentation={presentation} />
 }
 
 export { VideoTaskPanel as VideoArtifactsPanel }

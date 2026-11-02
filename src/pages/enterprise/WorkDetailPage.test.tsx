@@ -219,6 +219,7 @@ describe('WorkDetailPage media entry', () => {
       assert.equal(page.navigated(), false);
       const media = page.find(element => element.type === MediaArtifactsPanel);
       assert.equal(media.props.visible, label === '查看产出结果');
+      assert.equal(media.props.presentation, 'results');
       (page.find(element => element.props['aria-label'] === '关闭详情面板').props.onClick as () => void)();
       page.render();
       assert.equal(page.dialog.open, false);
@@ -322,6 +323,20 @@ describe('WorkDetailPage media entry', () => {
     for (const format of ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
     assert.doesNotMatch(html, /aria-label="预览文档：report\.zip"/)
     assert.match(html, /复制路径/)
+  });
+
+  it('keeps file results to the name and actions without notes or premature empty copy', () => {
+    const html = renderDetail({ ...work, deliverables: [{ id: 'report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '内部节点交付说明', format: 'docx' }] });
+    assert.match(html, /report\.docx/);
+    assert.doesNotMatch(html, /内部节点交付说明|暂无产出结果|员工还没有产出文件/);
+  });
+
+  it('shows one short empty state for an arrangement with no file or media results', () => {
+    const flow = { ...work, kind: 'flow' as const, workType: { state: 'resolved' as const, kind: 'arrangement' as const },
+      arrangementExecution: { activeRunId: null, status: 'completed' as const, nodes: [], updatedAt: 1, media: [] } };
+    const html = renderDetail(flow);
+    assert.match(html, /暂无产出结果/);
+    assert.doesNotMatch(html, /员工还没有产出文件|尚无视频任务/);
   });
 
   it('offers accepted node documents while parallel arrangement nodes are still running', () => {

@@ -45,7 +45,7 @@
 .ent-work-icon.create:hover { color: #fff; background: var(--ent-brand-hover); }
 .ent-work-search { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0 16px 12px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: 6px; color: var(--ent-ink-3); background: var(--ent-panel); }
 .ent-work-search input { width: 100%; min-width: 0; height: 34px; padding: 0; border: 0; outline: 0; color: var(--ent-ink); background: transparent; font: inherit; font-size: 12px; }
-.ent-work-search:focus-within { outline: 2px solid var(--ent-brand, #ae383d); outline-offset: 2px; }
+.ent-work-search:focus-within { border-color: var(--ent-line-strong); outline: none; }
 .ent-work-filters { display: flex; align-items: center; gap: 4px; padding: 0 16px 8px; }
 .ent-work-filters button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 36px; min-height: 32px; padding: 5px 8px; border: 0; border-radius: 6px; color: var(--ent-ink-2); background: transparent; font: inherit; font-size: 11px; font-variant-numeric: tabular-nums; cursor: pointer; }
 .ent-work-filters button:hover { background: var(--work-hover); }
@@ -125,7 +125,7 @@
 .ent-work-hub .ent-aa-team { border-color: var(--ent-line); background: var(--work-list); }
 .ent-work-hub .ent-wk-inspector-heading { background: var(--work-list); }
 .ent-work-hub .ent-wk-inspector-trigger[aria-expanded='true'] { color: var(--work-selected-ink); background: var(--work-selected); }
-.ent-work-hub .ent-conversation-foot .ent-ask:focus-within { border-color: var(--ent-brand); }
+.ent-work-hub .ent-conversation-foot .ent-ask:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
 .ent-work-hub .ent-say.user p { background: var(--work-selected); }
 
 /* Row actions stay separate from the selection button; popovers escape list clipping. */

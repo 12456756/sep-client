@@ -123,20 +123,22 @@ function AssetImage({ taskId, asset, large = false }: { taskId: string; asset: M
   </div>
 }
 
-export function MediaAssetGrid({ taskId, assets, references = false, selected = [], disabled = false, onSelect, onPreview, onExport }: {
+export function MediaAssetGrid({ taskId, assets, references = false, selected = [], disabled = false, onSelect, onPreview, onExport, compact = false }: {
   taskId: string; assets: MediaAssetView[]; references?: boolean; selected?: string[]; disabled?: boolean
+  compact?: boolean
   onSelect?: (id: string) => void; onPreview: (asset: MediaAssetView) => void; onExport?: (asset: MediaAssetView) => void
 }) {
   return <div className="media-grid">{assets.map((asset, index) => <div className="media-asset" key={asset.localAssetId}>
     <button type="button" className="media-preview-button" disabled={asset.status !== 'SAVED'} onClick={() => onPreview(asset)} title={`放大查看${references ? '参考图' : '成果'} ${index + 1}`} aria-label={`放大查看${references ? '参考图' : '成果'} ${index + 1}`}>
       <AssetImage key={`${taskId}:${asset.localAssetId}:${asset.status}`} taskId={taskId} asset={asset} />
     </button>
-    <div className="media-asset-caption">
+    {!compact && <div className="media-asset-caption">
       {references ? <label className="media-reference-select"><input type="checkbox" checked={selected.includes(asset.localAssetId)} disabled={disabled || asset.status !== 'SAVED'} onChange={() => onSelect?.(asset.localAssetId)} />参考图 {index + 1}</label> : <span>成果 {index + 1}</span>}
       {!references && asset.status === 'SAVED' && <button type="button" className="media-icon-button" disabled={disabled} title={`导出成果 ${index + 1}`} aria-label={`导出成果 ${index + 1}`} onClick={() => onExport?.(asset)}><Download size={14} /></button>}
-    </div>
-    <small>{asset.status === 'SAVED' ? '本地文件实测：' : ''}{asset.width} × {asset.height} · {asset.mime.replace('image/', '').toUpperCase()}</small>
-    <small className={`media-tone-${mediaSaveLabels[asset.status].tone}`}>{mediaSaveLabels[asset.status].label}</small>
+    </div>}
+    {compact && asset.status === 'SAVED' && <button type="button" className="media-command" disabled={disabled} onClick={() => onExport?.(asset)}><Download size={13} />导出图片 {index + 1}</button>}
+    {!compact && <><small>{asset.status === 'SAVED' ? '本地文件实测：' : ''}{asset.width} × {asset.height} · {asset.mime.replace('image/', '').toUpperCase()}</small>
+    <small className={`media-tone-${mediaSaveLabels[asset.status].tone}`}>{mediaSaveLabels[asset.status].label}</small></>}
   </div>)}</div>
 }
 
@@ -209,9 +211,22 @@ export function MediaCreationForm({ profiles, protocolVersion, defaultProfileId,
   </form>
 }
 
-export function MediaJobList({ jobs, archived, busy, onAction }: { jobs: MediaJobView[]; archived: boolean; busy: boolean; onAction: (job: MediaJobView, action: JobAction, cancelUpstream?: boolean) => void }) {
+export function MediaJobList({ jobs, archived, busy, onAction, compact = false }: { jobs: MediaJobView[]; archived: boolean; busy: boolean; onAction: (job: MediaJobView, action: JobAction, cancelUpstream?: boolean) => void; compact?: boolean }) {
   return <div className="media-jobs">{jobs.map(job => {
     const actions = mediaJobActions(job, archived)
+    if (compact) {
+      const issue = mediaIssueMessage(job, 'image')
+      const pending = ['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(job.generationStatus)
+      if (!issue && !pending && !actions.retrySave && !actions.resumeTracking) return null
+      const label = issue || (pending ? mediaGenerationLabels[job.generationStatus as keyof typeof mediaGenerationLabels]?.label || '正在生成图片' : mediaSaveLabels[job.saveStatus].label)
+      return <div className="media-result-status" key={job.jobId} role={issue ? 'alert' : 'status'}>
+        <span>{label}</span>
+        <div className="media-job-actions">
+          {actions.resumeTracking && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />继续</button>}
+          {actions.retrySave && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'retry')}><Download size={13} />重新保存</button>}
+        </div>
+      </div>
+    }
     return <div className="media-job" key={job.jobId}>
       <div className="media-job-heading"><strong>{job.operation === 'edit' ? '图片编辑' : '图片生成'} · {job.parameters.count === undefined ? '数量未指定' : `${job.parameters.count} 张`}</strong><span>{job.parameters.aspectRatio ?? '比例未指定'}</span></div>
       {job.requestedSpec && <small>请求规格：{imageSpecSummary(job.requestedSpec, job.parameterSources)}</small>}
@@ -256,7 +271,7 @@ function MediaPreviewDialog({ taskId, asset, busy, onClose, onExport, feedback }
   </dialog>
 }
 
-function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void }) {
+function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { outputs: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
   const [view, setView] = useState<MediaTaskView | null>(null)
   const [videoReferenceAvailable, setVideoReferenceAvailable] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -390,11 +405,13 @@ function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string;
   const busy = pending !== null
   const feedback = { pending }
   if (!visible) return null
-  return <section className="artifact-section media-artifacts" aria-label="图片创作与成果" hidden={!visible}>
-    <h3><ImageIcon size={15} />图片创作与成果<button type="button" className="media-icon-button" title="刷新图片能力与任务" aria-label="刷新图片能力与任务" onClick={() => { void refresh(true) }}><RefreshCw size={14} /></button></h3>
-    {!view && !error && <p className="artifact-empty" role="status">正在读取图片能力</p>}
-    {!preview && !view?.capabilities?.tools.includes('media_generate_image') && <MediaCommandFeedback {...feedback} />}
+  return <section className={`artifact-section media-artifacts${presentation === 'results' ? ' media-results-compact' : ''}`} aria-label="图片成果" hidden={!visible}>
+    {presentation === 'full' && <h3><ImageIcon size={15} />图片创作与成果<button type="button" className="media-icon-button" title="刷新图片能力与任务" aria-label="刷新图片能力与任务" onClick={() => { void refresh(true) }}><RefreshCw size={14} /></button></h3>}
+    {!view && !error && <p className="artifact-empty" role="status">{presentation === 'results' ? '正在读取成果' : '正在读取图片能力'}</p>}
+    {error && <p className="media-notice" role="alert">图片成果暂时无法读取</p>}
+    {presentation === 'full' && !preview && !view?.capabilities?.tools.includes('media_generate_image') && <MediaCommandFeedback {...feedback} />}
     {view && <>
+      {presentation === 'full' && <>
       {!view.capabilities?.tools.includes('media_generate_image') && <p className="media-notice">图片生成配置不可用</p>}
       <div className="media-subheading"><span>创作参考图</span><button type="button" className="media-command" disabled={busy || view.archived} onClick={() => { void run('import', api => api.importMediaReferences(taskId)) }}><ImagePlus size={14} />导入参考图</button></div>
       {references.length > 0 ? <MediaAssetGrid taskId={taskId} assets={references} references selected={view.selectedReferenceIds} disabled={busy || view.archived} onSelect={assetId => {
@@ -404,14 +421,15 @@ function MediaTaskPanel({ taskId, visible = true, onSummary }: { taskId: string;
         void run('selection', api => api.setMediaReferenceSelection({ taskId, assetIds: [...selected] }))
       }} onPreview={setPreview} /> : <p className="artifact-empty">尚无参考图</p>}
       {!view.capabilities?.tools.includes('media_generate_image') && videoReferenceAvailable && <div className="media-subheading"><span>视频参考图</span><button type="button" className="media-command" disabled={busy || view.archived} onClick={() => { void run('video-import', api => api.importVideoReferences(taskId)) }}><ImagePlus size={14} />导入视频参考图</button></div>}
-      {!!jobs.length && <><h4>图片任务</h4><MediaJobList jobs={jobs} archived={view.archived} busy={busy} onAction={jobAction} /></>}
-      {outputs.size > 0 && <><h4>图片成果</h4><MediaAssetGrid taskId={taskId} assets={[...outputs.values()]} onPreview={setPreview} onExport={exportAsset} disabled={busy} /></>}
+      </>}
+      {!!jobs.length && <MediaJobList jobs={jobs} archived={view.archived} busy={busy} onAction={jobAction} compact={presentation === 'results'} />}
+      {outputs.size > 0 && <>{presentation === 'results' ? <h3 className="media-results-heading">图片成果</h3> : <h4>图片成果</h4>}<MediaAssetGrid taskId={taskId} assets={[...outputs.values()]} onPreview={setPreview} onExport={exportAsset} disabled={busy} compact={presentation === 'results'} /></>}
     </>}
     {preview && <MediaPreviewDialog key={preview.localAssetId} taskId={taskId} asset={preview} busy={busy} feedback={feedback} onClose={() => setPreview(null)} onExport={() => exportAsset(preview)} />}
   </section>
 }
 
-export function MediaArtifactsPanel({ taskId, visible = true, onSummary }: { taskId: string; visible?: boolean; onSummary?: (summary: { images: number | null; videos: number | null; error: string | null }) => void }) {
+export function MediaArtifactsPanel({ taskId, visible = true, onSummary, presentation = 'full' }: { taskId: string; visible?: boolean; onSummary?: (summary: { images: number | null; videos: number | null; error: string | null }) => void; presentation?: 'full' | 'results' }) {
   const [imageSummary, setImageSummary] = useState<{ outputs: number | null; error: string | null }>({ outputs: null, error: null })
   const [videoSummary, setVideoSummary] = useState<{ outputs: number | null; error: string | null }>({ outputs: null, error: null })
   const imageCount = imageSummary.outputs
@@ -419,5 +437,5 @@ export function MediaArtifactsPanel({ taskId, visible = true, onSummary }: { tas
   const mediaError = imageSummary.error || videoSummary.error
   useEffect(() => { onSummary?.({ images: imageCount, videos: videoCount, error: mediaError }) }, [imageCount, mediaError, onSummary, videoCount])
   const onImageSummary = useCallback((summary: { outputs: number | null; error: string | null }) => setImageSummary(summary), [])
-  return <><MediaTaskPanel key={taskId} taskId={taskId} visible={visible} onSummary={onImageSummary} /><VideoTaskPanel taskId={taskId} visible={visible} onSummary={setVideoSummary} /></>
+  return <><MediaTaskPanel key={taskId} taskId={taskId} visible={visible} onSummary={onImageSummary} presentation={presentation} /><VideoTaskPanel taskId={taskId} visible={visible} onSummary={setVideoSummary} presentation={presentation} /></>
 }

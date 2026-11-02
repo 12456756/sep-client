@@ -212,6 +212,7 @@
 .compute-share progress { width: 90px; height: 5px; accent-color: var(--ent-brand); }
 .compute-share span { min-width: 45px; }
 .compute-page :is(button, input, select):focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.compute-page :is(input, select):focus-visible { outline: none; box-shadow: none; }
 
 .compute-type { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
 .compute-type.positive, .compute-money-positive { color: var(--ent-ready); }
