@@ -7,6 +7,9 @@ import { requireScope, type ScopeSource } from './scope-guard'
 interface Options {
   scope: ScopeSource
   getDelivery(scope: TaskOwnerScope, taskId: string, nodeId: string, deliverableId: string): Promise<{ status: string; file: FinalDeliveryFile; workspace: string } | null>
+  getDeliveryPath(scope: TaskOwnerScope, taskId: string, nodeId: string, deliverableId: string): Promise<string | null>
+  getConversationPath?(scope: TaskOwnerScope, taskId: string, fileId: string): Promise<string | null>
+  openFileDirectory(filePath: string): Promise<void>
   read(scope: TaskOwnerScope, taskId: string, file: FinalDeliveryFile, workspace: string): Promise<{ bytes: Uint8Array; source: DocumentPreview['source'] }>
   readConversation?(scope: TaskOwnerScope, taskId: string, fileId: string): Promise<{ name: string; format: string; version: string; bytes: Uint8Array } | null>
   render(format: string, bytes: Uint8Array, validate: () => void): Promise<DocumentPreviewContent>
@@ -78,6 +81,28 @@ export class DocumentPreviewService {
       throw new AppError('INVALID_STATE', { message: '文档交付版本已更新，请重新打开预览。' })
     }
     return { name: file.path.split(/[\\/]/).pop() || file.id, format: file.format, version: version(file), source: local.source, content }
+  }
+
+  async openDirectory(raw: DocumentPreviewRequest): Promise<void> {
+    const input = documentPreviewRequestSchema.parse(raw)
+    const scope = requireScope(this.options.scope), epoch = this.epoch
+    const assert = () => {
+      const current = requireScope(this.options.scope)
+      if (epoch !== this.epoch || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    }
+    try {
+      const filePath = 'fileId' in input
+        ? await this.options.getConversationPath?.(scope, input.taskId, input.fileId)
+        : await this.options.getDeliveryPath(scope, input.taskId, input.nodeId, input.deliverableId)
+      assert()
+      if (!filePath) throw new AppError('INTERNAL_ERROR')
+      await this.options.openFileDirectory(filePath)
+    } catch (error) {
+      assert()
+      if (error instanceof AppError) throw error
+      throw new AppError('INTERNAL_ERROR', { cause: error })
+    }
+    assert()
   }
 
   private async convert(key: string, format: string, bytes: Uint8Array, assert: () => void): Promise<DocumentPreviewContent> {

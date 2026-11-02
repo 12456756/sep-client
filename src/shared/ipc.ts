@@ -384,6 +384,7 @@ export interface ElectronAPI {
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
   previewArrangementDocument: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { data?: DocumentPreview }>
+  openWorkDeliverable: (input: DocumentPreviewRequest) => Promise<IpcCommandResult>
   confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
   listPlanningRecords: () => Promise<IpcCommandResult & { records?: PlanningRecordSummary[] }>

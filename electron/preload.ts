@@ -217,6 +217,7 @@ const electronAPI = {
   getArrangementPlan: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_PLAN, taskId),
   getArrangementExecution: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_EXECUTION, taskId),
   previewArrangementDocument: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_PREVIEW_DOCUMENT, input),
+  openWorkDeliverable: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE, input),
   confirmArrangementNodes: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, input),
   listArrangementDrafts: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS),
   listPlanningRecords: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_PLANNING_RECORDS),
