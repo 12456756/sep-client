@@ -168,13 +168,14 @@ describe('arrangement retry display regressions', () => {
     const execution = {
       activeRunId: 'retry-run', status: 'running' as const, updatedAt: 5,
       nodes: [
-        { nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'deliverables/report.md', format: 'md', size: 10, sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 4 }] },
+        { nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'deliverables/report.md', format: 'md', size: 10, sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 4, sourceArtifact: { kind: 'image' as const, artifactId: 'image-asset', sha256: 'a'.repeat(64) } }] },
         { nodeId: 'node-b', status: 'running' as const, finalFiles: [] },
       ],
     }
     const work = buildWorkItem({ task: { ...task, activeRunId: 'retry-run' }, employees: [], plan: retryPlan, arrangementExecution: execution })
     assert.deepEqual(work.deliverables.map(file => file.path), ['deliverables/report.md'])
     assert.equal(work.deliverables[0]?.nodeTitle, 'Node A')
+    assert.deepEqual(work.deliverables[0]?.sourceArtifact, { kind: 'image', artifactId: 'image-asset', sha256: 'a'.repeat(64) })
     assert.equal(work.steps[0]?.state, 'done')
     assert.equal(work.steps[1]?.state, 'running')
   })

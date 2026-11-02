@@ -7,6 +7,9 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  RESULT_FILE_PREVIEW: 'result-file:preview',
+  RESULT_FILE_RELEASE: 'result-file:release',
+  RESULT_FILE_REVEAL: 'result-file:reveal',
   ATTACHMENT_BEGIN: 'attachment:begin',
   ATTACHMENT_SELECT: 'attachment:select',
   ATTACHMENT_LIST: 'attachment:list',

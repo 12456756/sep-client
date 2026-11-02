@@ -13,7 +13,7 @@ import { IconHint } from '../../components/enterprise/IconHint';
 import { WorkStatusIcon, WorkTypeTag } from '../../components/enterprise/WorkIndicators';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
-import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
+import { ResultFileCard } from '../../components/workspace/ResultFileCard';
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee, WorkActivity, WorkItem } from '../../features/enterprise/types';
@@ -52,11 +52,6 @@ export function WorkDetailPage({ workspace, workId }: Props) {
 type Panel = 'results' | 'process' | 'info' | null;
 
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
-  const { capture } = useOperationFeedback(work.id);
-  const copyPath = async (path: string) => {
-    const notice = capture();
-    if (!await copy(path)) notice.show('路径复制失败，请联系平台管理员');
-  };
   const team = useTeam(work, workspace);
   const isConversation = work.kind === 'conversation';
   const finished = work.status === 'completed';
@@ -212,25 +207,12 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           <div className="ent-wk-inspector-heading"><strong id={`work-inspector-title-${work.id}`}>{panel === 'results' ? '产出结果' : panel === 'process' ? '工作过程' : '工作信息'}</strong><button ref={inspectorCloseButton} type="button" className="ent-icon-btn" aria-label="关闭详情面板" onClick={() => setPanel(null)}><X size={16} aria-hidden /></button></div>
           <section className="ent-panel ent-wk-inspector-content" aria-label="产出结果" hidden={panel !== 'results'}>
             {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} presentation="results" /> : null}
-            {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel taskId={work.id} media={work.arrangementExecution.media} /> : null}
+            {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel media={work.arrangementExecution.media} deliverables={work.deliverables} /> : null}
             {work.deliverables.length ? (
               <div className="ent-wk-final-files">
-                <ul className="ent-wk-files ent-wk-files-side">
-                  {work.deliverables.map(file => (
-                    <li key={file.id}>
-                      <span className={`ent-wk-kind ${kindOf(file.name)}`} aria-hidden>{extOf(file.name)}</span>
-                      <span><strong title={file.name}>{file.name}</strong></span>
-                      <div className="ent-wk-file-actions">
-                        {file.format ? isConversation
-                          ? <DocumentPreviewButton taskId={work.id} fileId={file.id} name={file.name} format={file.format} />
-                          : file.nodeId && file.deliverableId ? <DocumentPreviewButton taskId={work.id} nodeId={file.nodeId} deliverableId={file.deliverableId} name={file.name} format={file.format} version={file.previewVersion} /> : null : null}
-                        <button type="button" className="ent-btn sm" title={file.path} onClick={() => void copyPath(file.path)}>
-                          复制路径
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
+                <div className="result-file-list">
+                  {work.deliverables.map(file => <ResultFileCard key={file.id} taskId={work.id} file={file} visible={panel === 'results'} conversation={isConversation} />)}
+                </div>
               </div>
             ) : showEmptyResults ? <p className="ent-hint">暂无产出结果</p> : null}
           </section>
@@ -495,19 +477,4 @@ async function copy(text: string): Promise<boolean> {
 function hhmm(at: number): string {
   const date = new Date(at);
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
-}
-
-const KIND: Record<string, string> = {
-  pdf: 'pdf', xlsx: 'sheet', xls: 'sheet', csv: 'sheet', pptx: 'slide', ppt: 'slide',
-  docx: 'doc', doc: 'doc', md: 'doc', txt: 'doc',
-};
-
-function extOf(name: string): string {
-  const ext = name.includes('.') ? name.split('.').pop()! : '';
-  return (ext || 'file').slice(0, 4).toUpperCase();
-}
-
-function kindOf(name: string): string {
-  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
-  return KIND[ext] ?? 'other';
 }

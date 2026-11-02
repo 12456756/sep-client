@@ -461,6 +461,7 @@ function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution:
       deliverableId: file.id,
       format: file.format,
       previewVersion: `${file.nodeRunId}:${file.snapshot?.sha256 ?? file.sha256}`,
+      sourceArtifact: file.sourceArtifact,
     })
   }
   return files

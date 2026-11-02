@@ -3,6 +3,7 @@ import type { NotificationPage, NotificationQuery, NotificationCategoryQuery, No
 import type { AutoPlanningInput, PlanningRecordChange, PlanningRecordSnapshot, PlanningRecordSummary } from './auto-planning'
 import type { KnowledgeRequestInput, KnowledgeResult } from './knowledge-contracts'
 import type { DocumentPreview, DocumentPreviewRequest } from './document-preview'
+import type { ResultFileRequest, ResultFilePreview } from './result-files'
 import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from './speech-contracts'
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
@@ -384,6 +385,9 @@ export interface ElectronAPI {
   getArrangementPlan: (taskId: string) => Promise<ArrangementPlanResult>
   getArrangementExecution: (taskId: string) => Promise<ArrangementExecutionResult>
   previewArrangementDocument: (input: DocumentPreviewRequest) => Promise<IpcCommandResult & { data?: DocumentPreview }>
+  previewResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult & { data?: ResultFilePreview }>
+  releaseResultFilePreview: (input: { url: string }) => Promise<IpcCommandResult>
+  revealResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult>
   confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
   listPlanningRecords: () => Promise<IpcCommandResult & { records?: PlanningRecordSummary[] }>

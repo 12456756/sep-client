@@ -158,7 +158,7 @@ export interface WorkMessage {
 export interface WorkDeliverable {
   id: string;
   name: string;
-  /** 文件在本机的完整路径。界面上只在需要时展示，复制路径按它。 */
+  /** 文件在本机的完整路径，仅用于展示；文件操作按交付物身份解析。 */
   path: string;
   note: string;
   nodeId?: string;
@@ -167,6 +167,7 @@ export interface WorkDeliverable {
   deliverableId?: string;
   format?: string;
   previewVersion?: string;
+  sourceArtifact?: { kind: 'image' | 'video'; artifactId: string; sha256: string };
 }
 
 export type { WorkActivity, WorkActivityState } from '../../shared/work-activity'

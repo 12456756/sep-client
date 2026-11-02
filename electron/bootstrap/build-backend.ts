@@ -4,6 +4,8 @@ import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { SkillLibraryService } from '../service/skill-library-service'
 import { KnowledgeService } from '../service/knowledge-service'
 import { KnowledgeApi } from '../common/platform/knowledge-api'
+import { ResultFileService } from '../service/result-file-service'
+import { ResultFileStore } from '../data/result-file-store'
 /**
  * 后端组合根。
  *
@@ -111,6 +113,7 @@ class BackendRuntime {
   private readonly attachmentStore: AttachmentStore
   private readonly attachmentExtractionRuntime: LazyAsync<AttachmentExtractionRuntime>
   readonly documentPreviews: DocumentPreviewService
+  readonly resultFiles: ResultFileService
   private readonly documentPreviewRuntime: LazyAsync<DocumentPreviewRuntime>
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
@@ -327,6 +330,11 @@ class BackendRuntime {
     this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
+    this.resultFiles = new ResultFileService({
+      scope: this,
+      store: new ResultFileStore(userDataDir, previewFiles, taskId => this.tasks.get(taskId)),
+      reveal: path => shell.showItemInFolder(path),
+    })
     this.documentPreviews = new DocumentPreviewService({
       scope: this,
       getDelivery: (...args) => previewFiles.getDelivery(...args),
@@ -485,6 +493,7 @@ class BackendRuntime {
     await this.attachments.stop()
     this.knowledge.clear()
     this.documentPreviews.clear()
+    this.resultFiles.clear()
     this.speech.stop()
     this.notifications.stop()
     for (const entry of this.employmentTokens.values()) entry.manager.stop()

@@ -18,11 +18,20 @@ import { buildArrangementTranscript } from '../../features/enterprise/arrangemen
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
+import { useResultFilePreview } from '../../features/enterprise/use-result-file-preview';
 import type { WorkItem } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
 import * as vocabulary from '../../features/enterprise/vocabulary';
 import * as generalAssistant from '../../features/enterprise/general-assistant';
+
+const cardFilename = fileURLToPath(new URL('../../components/workspace/ResultFileCard.tsx', import.meta.url));
+const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+const cardModule = { exports: {} };
+const cardDependencies: Record<string, unknown> = { react: React, 'react/jsx-runtime': jsxRuntime, 'lucide-react': icons,
+  '../../features/enterprise/use-result-file-preview': { useResultFilePreview }, './DocumentPreviewButton': { DocumentPreviewButton }, './result-file-card.css': {} };
+compileFunction(cardSource, ['require', 'exports', 'module'], { filename: cardFilename })((id: string) => { assert.ok(Object.hasOwn(cardDependencies, id), `unexpected card import: ${id}`); return cardDependencies[id] }, cardModule.exports, cardModule);
+const { ResultFileCard, ResultFileMedia, resultFileRequest } = cardModule.exports as typeof import('../../components/workspace/ResultFileCard');
 
 // Isolate CSS drawers and the browser-only motion hook; render the real page and media panel.
 const dependencies: Record<string, unknown> = {
@@ -41,6 +50,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
+  '../../components/workspace/ResultFileCard': { ResultFileCard },
   '../../components/feedback/use-operation-feedback': { useOperationFeedback },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
@@ -81,6 +91,40 @@ function renderDetail(item: WorkItem): string {
     else Object.defineProperty(globalThis, 'React', { configurable: true, value: previousReact });
   }
 }
+
+it('renders actual image and video elements with direct media interaction', () => {
+  const image = renderToStaticMarkup(React.createElement(ResultFileMedia, { preview: { url: 'sep-result://preview/image', mime: 'image/png', kind: 'image' }, name: 'mug.png', onZoom() {}, onError() {} }));
+  assert.match(image, /<img[^>]+src="sep-result:\/\/preview\/image"/);
+  assert.match(image, /aria-label="放大查看 mug.png"/);
+  const video = renderToStaticMarkup(React.createElement(ResultFileMedia, { preview: { url: 'sep-result://preview/video', mime: 'video/mp4', kind: 'video' }, name: 'mug.mp4', onZoom() {}, onError() {} }));
+  assert.match(video, /<video[^>]+controls=""[^>]+preload="metadata"[^>]+playsinline=""/);
+  assert.doesNotMatch(image + video, /预览图片|预览视频|复制路径/);
+});
+
+it('associates each final media file with its original delivery identity only once', () => {
+  const file = { id: 'node-a:mug', name: 'mug.png', path: '/work/mug.png', note: '', nodeId: 'node-a', deliverableId: 'mug', format: 'png', sourceArtifact: { kind: 'image' as const, artifactId: 'asset-a', sha256: 'a'.repeat(64) } };
+  assert.deepEqual(resultFileRequest('task-a', file), { taskId: 'task-a', nodeId: 'node-a', deliverableId: 'mug' });
+  const html = renderDetail({ ...work, kind: 'flow', deliverables: [file] });
+  assert.equal((html.match(/aria-label="产物 mug.png"/g) ?? []).length, 1);
+  assert.match(html, /打开 mug.png 所在文件夹/);
+  assert.doesNotMatch(html, /正在读取媒体|预览图片|复制路径/);
+});
+
+it('keeps pending media visible but removes delivery status after final acceptance including historical files', () => {
+  const previousReact = Reflect.get(globalThis, 'React');
+  Object.defineProperty(globalThis, 'React', { configurable: true, value: React });
+  try {
+  const media = [{ nodeId: 'node-a', nodeRunId: 'run-a', kind: 'image' as const, operation: 'generate' as const, phase: 'ready' as const, jobId: 'job-a', outputs: [{ artifactId: 'asset-a', status: 'saved' as const }], inputs: [], pendingActions: [] }];
+  const pending = renderToStaticMarkup(React.createElement(ArrangementMediaPanel, { media, deliverables: [] }));
+  assert.match(pending, /正在整理交付/);
+  const done = renderToStaticMarkup(React.createElement(ArrangementMediaPanel, { media, deliverables: [{ id: 'final', nodeId: 'node-a', name: 'mug.png', path: '/work/mug.png', note: '' }] }));
+  assert.equal(done, '');
+  assert.equal(renderToStaticMarkup(React.createElement(ArrangementMediaPanel, { media: [{ ...media[0], outputs: [] }], deliverables: [] })), '');
+  } finally {
+    if (previousReact === undefined) Reflect.deleteProperty(globalThis, 'React');
+    else Object.defineProperty(globalThis, 'React', { configurable: true, value: previousReact });
+  }
+});
 
 it('renders a media question and an empty reply form instead of an approval action', () => {
   const html = renderDetail({ ...work, kind: 'flow', status: 'waiting-user',
@@ -322,7 +366,8 @@ describe('WorkDetailPage media entry', () => {
     })) })
     for (const format of ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
     assert.doesNotMatch(html, /aria-label="预览文档：report\.zip"/)
-    assert.match(html, /复制路径/)
+    assert.match(html, /打开所在文件夹/)
+    assert.doesNotMatch(html, /复制路径/)
   });
 
   it('keeps file results to the name and actions without notes or premature empty copy', () => {
@@ -350,6 +395,6 @@ describe('WorkDetailPage media entry', () => {
         { nodeId: 'node-b', status: 'running' as const, finalFiles: [] }] } };
     const html = renderDetail(flow);
     assert.match(html, /aria-label="预览文档：report\.docx"/);
-    assert.match(html, /复制路径/);
+    assert.match(html, /打开所在文件夹/);
   });
 });
