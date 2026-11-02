@@ -13,6 +13,8 @@ import { isVideoSubmissionRejectionCode } from '../../shared/video-errors'
 import { useOperationFeedback } from '../feedback/use-operation-feedback'
 import { operationFailure, responseError, type FeedbackOperation } from '../../shared/arrangement-feedback'
 import { mediaIssueMessage, mediaSpecFailureMessage } from '../../shared/media-feedback'
+import { ResultFileCard } from './ResultFileCard'
+import type { WorkDeliverable } from '../../features/enterprise/types'
 
 type Command = 'export' | 'resume' | 'retry'
 type JobAction = 'resume' | 'retry'
@@ -101,6 +103,10 @@ function VideoFeedback({ pending }: { pending: Command | null }) {
   return pending ? <p className="media-notice" role="status" aria-atomic="true"><LoaderCircle size={13} aria-hidden />正在处理视频操作</p> : null
 }
 
+function videoResultFile(job: VideoJobView, output: VideoJobView['outputs'][number], index: number): WorkDeliverable {
+  return { id: `${job.jobId}-${output.outputId}`, name: `视频成果${index + 1}.${output.mimeType.split('/')[1] || 'bin'}`, path: '', note: '', format: output.mimeType.split('/')[1], sourceArtifact: { kind: 'video', artifactId: output.outputId, sha256: output.sha256 } }
+}
+
 
 export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compact = false }: {
   jobs: VideoJobView[]; busy: boolean; onAction: (job: VideoJobView, action: JobAction) => void
@@ -132,11 +138,9 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
           {retry && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'retry')}><Download size={13} />重新保存</button>}
         </div>}
         {job.outputs.map((output, index) => <div className="media-result-output" key={output.outputId}>
-          <strong>视频成果 {index + 1}</strong>
-          {videoOutputIsSaved(job, output.outputId) ? <div className="media-job-actions">
-            <button type="button" className="media-command" disabled={busy || !['video/mp4', 'video/webm'].includes(output.mimeType)} title={['video/mp4', 'video/webm'].includes(output.mimeType) ? undefined : '此格式支持导出原件后打开'} onClick={() => onPreview({ jobId: job.jobId, outputId: output.outputId })}><Play size={13} />预览</button>
-            <button type="button" className="media-command" disabled={busy} onClick={() => onExport({ jobId: job.jobId, outputId: output.outputId })}><Download size={13} />导出</button>
-          </div> : null}
+          {videoOutputIsSaved(job, output.outputId) && (['video/mp4', 'video/webm'].includes(output.mimeType)
+            ? <ResultFileCard taskId={job.taskId} file={videoResultFile(job, output, index)} mediaRequest={{ taskId: job.taskId, jobId: job.jobId, outputId: output.outputId }} />
+            : <div className="media-job-actions"><strong>视频成果 {index + 1}</strong><button type="button" className="media-command" disabled={busy} onClick={() => onExport({ jobId: job.jobId, outputId: output.outputId })}><Download size={13} />导出</button></div>)}
         </div>)}
       </article>
     }

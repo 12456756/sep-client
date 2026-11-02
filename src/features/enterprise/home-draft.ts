@@ -6,6 +6,7 @@ import type { RetainedAttachmentState } from './use-attachment-composer'
 export interface HomeDraft {
   text: string
   employeeId: string
+  modelId: string
   composerId: string
   epoch: number
   attachment: RetainedAttachmentState
@@ -13,7 +14,7 @@ export interface HomeDraft {
 
 export function createHomeDraft(): HomeDraft {
   return {
-    text: '', employeeId: GENERAL_ASSISTANT_ID,
+    text: '', employeeId: GENERAL_ASSISTANT_ID, modelId: '',
     composerId: `home-${crypto.randomUUID()}`, epoch: 0,
     attachment: { session: null, attachments: [] },
   }

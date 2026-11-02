@@ -7,11 +7,14 @@ import { WorkPlanStore } from '../../electron/data/work-plan-store'
 import { ArrangementCheckpointStore } from '../../electron/data/arrangement-checkpoint-store'
 import { DocumentPreviewStore } from '../../electron/data/document-preview-store'
 import { ResultFileStore } from '../../electron/data/result-file-store'
+import { MediaStore } from '../../electron/data/media-store'
+import { VideoStore } from '../../electron/data/video-store'
 import { ResultFileService } from '../../electron/service/result-file-service'
 import { installResultFileProtocol, registerResultFileScheme } from '../../electron/bootstrap/result-file-protocol'
 import type { WorkPlan } from '../../electron/domain/arrangement-plan'
 import type { TaskReadView } from '../../src/shared/types'
 import * as fixture from '../../src/shared/fixtures/media-video-v1.json'
+import { seedConversationResults } from './result-files-conversation'
 
 registerResultFileScheme()
 const root = process.env.SEP_RESULT_TEST_ROOT!
@@ -29,6 +32,7 @@ void app.whenReady().then(async () => {
     { id: 'document', path: 'brief.md', format: 'md', bytes: Buffer.from('# Product brief\nAccepted final file.') },
   ]
   await Promise.all(files.map(file => writeFile(join(workspace, file.path), file.bytes)))
+  const conversation = await seedConversationResults(root, owner, files[0].bytes, files[1].bytes)
   const plans = new WorkPlanStore(root)
   const checkpoints = new ArrangementCheckpointStore(root)
   const plan: WorkPlan = {
@@ -57,7 +61,8 @@ void app.whenReady().then(async () => {
     workType: { state: 'resolved', kind: 'arrangement' } }
   const service = new ResultFileService({
     scope: { currentScope: () => scope },
-    store: new ResultFileStore(root, new DocumentPreviewStore(root, plans, checkpoints), async () => task),
+    store: new ResultFileStore(root, new DocumentPreviewStore(root, plans, checkpoints), async taskId => taskId === 'conversation-test'
+      ? { ...task, id: taskId, workType: { state: 'resolved', kind: 'conversation' } } : task, new MediaStore(root), new VideoStore(root)),
     reveal: path => { revealed.push(path) },
   })
   const revealed: string[] = []
@@ -73,8 +78,12 @@ void app.whenReady().then(async () => {
   })
   invoke('preview', service.preview.bind(service))
   invoke('release', service.release.bind(service))
-  invoke('reveal', service.reveal.bind(service))
-  ipcMain.handle('result-test:state', () => ({ revealed, requests }))
+  const revealCalls: unknown[] = []
+  invoke('reveal', async (input: Parameters<typeof service.reveal>[0]) => { revealCalls.push(input); await service.reveal(input) })
+  ipcMain.handle('result-test:state', () => ({ revealed, revealCalls, requests, imagePath: conversation.imagePath, videoPath: conversation.videoPath }))
+  ipcMain.handle('result-test:images', (_event, taskId: string) => ({ success: true, data: taskId === 'conversation-test' ? conversation.images
+    : { capabilities: null, unavailableReason: null, assets: [], selectedReferenceIds: [], jobs: [], archived: false } }))
+  ipcMain.handle('result-test:videos', (_event, taskId: string) => ({ success: true, data: taskId === 'conversation-test' ? conversation.videos : null }))
   ipcMain.handle('result-test:logout', () => { scope = null; service.clear() })
   ipcMain.handle('result-test:replace', async () => writeFile(join(workspace, 'product.png'), 'changed'))
   const window = new BrowserWindow({ width: 1280, height: 900, show: false,

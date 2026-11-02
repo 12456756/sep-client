@@ -97,7 +97,7 @@ it('renders actual image and video elements with direct media interaction', () =
   assert.match(image, /<img[^>]+src="sep-result:\/\/preview\/image"/);
   assert.match(image, /aria-label="放大查看 mug.png"/);
   const video = renderToStaticMarkup(React.createElement(ResultFileMedia, { preview: { url: 'sep-result://preview/video', mime: 'video/mp4', kind: 'video' }, name: 'mug.mp4', onZoom() {}, onError() {} }));
-  assert.match(video, /<video[^>]+controls=""[^>]+preload="metadata"[^>]+playsinline=""/);
+  assert.match(video, /<video[^>]+controls=""[^>]+preload="auto"[^>]+playsinline=""/);
   assert.doesNotMatch(image + video, /预览图片|预览视频|复制路径/);
 });
 

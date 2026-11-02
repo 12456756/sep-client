@@ -52,6 +52,10 @@
 .sep-home-composer-actions { flex-wrap: wrap; gap: 12px; }
 .sep-home-composer-actions > button { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; border: 1px solid #e8eaf0; border-radius: 8px; color: #758094; background: transparent; font-size: 12px; white-space: nowrap; }
 .sep-home-composer-actions > button:hover { color: var(--home-brand); border-color: #e4a7b0; background: #fff8f9; }
+.sep-home-model-control { min-width: 0; max-width: min(240px, 34vw); border: 1px solid #e8eaf0; border-radius: 8px; }
+.sep-home-model-control .ent-model-trigger { min-height: 30px; color: #758094; }
+.sep-home-model-control .ent-model-trigger:hover:not(:disabled), .sep-home-model-control .ent-model-trigger[aria-expanded="true"] { color: var(--home-brand); background: #fff8f9; }
+.sep-home-model-control .ent-model-trigger:disabled { opacity: .55; }
 .sep-home-composer-send { flex-shrink: 0; gap: 15px; }
 .sep-home-composer-actions > .sep-home-paperclip { display: grid; place-items: center; width: 26px; height: 32px; padding: 0; color: var(--home-muted); border: 0; background: transparent; }
 .sep-home-composer .speech-actions { color: var(--home-muted); }

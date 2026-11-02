@@ -14,6 +14,7 @@ const files: WorkDeliverable[] = [
 ]
 
 export function ResultFilesHarness() {
+  const conversation = new URLSearchParams(window.location.search).has('conversation')
   const work: WorkItem = {
     id: 'results-test', title: '商品主图与展示视频', goal: '制作商品主图与展示视频', kind: 'flow',
     workType: { state: 'resolved', kind: 'arrangement' }, status: 'completed', progress: 100,
@@ -23,8 +24,10 @@ export function ResultFilesHarness() {
     stopReason: null, workDir: null,
     arrangementExecution: { activeRunId: null, status: 'completed', updatedAt: 2, nodes: [] },
   }
-  const workspace = { works: [work], employees: [], myEmployees: [], busy: false, canGoBack: false, attachmentScopeKey: 'result-test' } as unknown as EnterpriseWorkspace
+  const item: WorkItem = conversation ? { ...work, id: 'conversation-test', kind: 'conversation',
+    workType: { state: 'resolved', kind: 'conversation' }, deliverables: [], arrangementExecution: undefined } : work
+  const workspace = { works: [item], employees: [], myEmployees: [], busy: false, canGoBack: false, attachmentScopeKey: 'result-test' } as unknown as EnterpriseWorkspace
   return <FeedbackProvider><main className="ent-shell" style={{ height: '100dvh' }}><div className="ent-work-hub" style={{ flex: 1, minWidth: 0 }}>
-    <WorkDetailPage workspace={workspace} workId={work.id} />
+    <WorkDetailPage workspace={workspace} workId={item.id} />
   </div></main></FeedbackProvider>
 }

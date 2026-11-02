@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./components/workspace/document-preview.css";
+@import "./components/workspace/result-file-card.css";
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body, #root { width: 100%; min-width: 0; min-height: 100%; margin: 0; }

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, writeFile, mkdir, symlink, realpath } from 'node:fs/promises'
+import { mkdtemp, writeFile, mkdir, symlink, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -10,6 +10,10 @@ import type { TaskReadView } from '../../src/shared/types'
 import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
 import { materializeArrangementMedia } from './arrangement-media-files'
 import { ScopePath } from './scope-path'
+import { MediaStore } from './media-store'
+import { VideoStore } from './video-store'
+import { seedConversationResults } from '../../scripts/fixtures/result-files-conversation'
+import { MOCK_VIDEO_BYTES } from './mock-video-media-gateway'
 
 const scope = { memberId: 'member', enterpriseId: 'enterprise' }
 const input = { taskId: 'task', nodeId: 'node', deliverableId: 'file' }
@@ -79,4 +83,29 @@ test('previews the accepted immutable snapshot while reveal always targets the o
   f.file.nodeRunId = 'replacement-run'
   await assert.rejects(file.authorize!())
   await file.close()
+})
+
+test('streams persisted conversation image and video outputs with owner and integrity checks', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'sep-result-history-')))
+  const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', 'base64')
+  const seeded = await seedConversationResults(root, scope, image, MOCK_VIDEO_BYTES)
+  const task = { id: 'conversation-test', ownerId: scope.memberId, ownerEnterpriseId: scope.enterpriseId, subscriptionId: 'sub', workType: { state: 'resolved', kind: 'conversation' } } as unknown as TaskReadView
+  const store = new ResultFileStore(root, {} as DocumentPreviewStore, async () => task, new MediaStore(root), new VideoStore(root))
+  const imageInput = { taskId: 'conversation-test', assetId: seeded.images.assets[0].localAssetId }
+  const videoInput = { taskId: 'conversation-test', jobId: 'video-job', outputId: seeded.videos.jobs[0].outputs[0].outputId }
+  const imageFile = await store.open(scope, imageInput)
+  assert.equal(imageFile.mime, 'image/png')
+  assert.equal((await new Response(imageFile.stream(0, imageFile.size - 1, new AbortController().signal, () => undefined)).arrayBuffer()).byteLength, image.length)
+  assert.equal(await store.revealPath(scope, imageInput), seeded.imagePath)
+  await imageFile.close()
+  const videoFile = await store.open(scope, videoInput)
+  assert.equal(videoFile.mime, 'video/mp4')
+  assert.equal((await new Response(videoFile.stream(0, 9, new AbortController().signal, () => undefined)).arrayBuffer()).byteLength, 10)
+  assert.equal(await store.revealPath(scope, videoInput), seeded.videoPath)
+  await videoFile.close()
+  await assert.rejects(store.open({ ...scope, memberId: 'other' }, imageInput))
+  await rm(seeded.imagePath)
+  await assert.rejects(store.open(scope, imageInput))
+  await writeFile(seeded.videoPath, Buffer.from('tampered'))
+  await assert.rejects(store.open(scope, videoInput))
 })

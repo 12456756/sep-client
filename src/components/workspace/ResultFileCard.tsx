@@ -4,13 +4,13 @@ import type { WorkDeliverable } from '../../features/enterprise/types'
 import { useResultFilePreview, type ResultFilePreviewSource } from '../../features/enterprise/use-result-file-preview'
 import type { ResultFileRequest } from '../../shared/result-files'
 import { DocumentPreviewButton } from './DocumentPreviewButton'
-import './result-file-card.css'
 
 export interface ResultFileCardProps {
   taskId: string
   file: WorkDeliverable
   visible?: boolean
   conversation?: boolean
+  mediaRequest?: ResultFileRequest
 }
 
 export function resultFileRequest(taskId: string, file: WorkDeliverable): ResultFileRequest | null {
@@ -32,7 +32,7 @@ export function ResultFileMedia({ preview, name, onZoom, onError }: {
 }) {
   return preview.kind === 'image'
     ? <button type="button" className="result-file-image" onClick={onZoom} title={`放大查看 ${name}`} aria-label={`放大查看 ${name}`}><img src={preview.url} alt={name} onError={onError} /></button>
-    : <video className="result-file-video" src={preview.url} controls preload="metadata" playsInline aria-label={`播放 ${name}`} onError={onError} />
+    : <video className="result-file-video" src={preview.url} controls preload="auto" playsInline aria-label={`播放 ${name}`} onError={onError} />
 }
 
 function EnlargedImage({ preview, name, onClose, onError }: { preview: ResultFilePreviewSource; name: string; onClose: () => void; onError: () => void }) {
@@ -61,9 +61,9 @@ function InlineMedia({ request, name, version }: { request: ResultFileRequest; n
   </>
 }
 
-export function ResultFileCard({ taskId, file, visible = true, conversation = false }: ResultFileCardProps) {
-  const request = resultFileRequest(taskId, file)
-  const kind = conversation ? null : mediaKind(file)
+export function ResultFileCard({ taskId, file, visible = true, conversation = false, mediaRequest }: ResultFileCardProps) {
+  const request = mediaRequest ?? resultFileRequest(taskId, file)
+  const kind = mediaRequest ? mediaKind(file) : conversation ? null : mediaKind(file)
   const [opening, setOpening] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const mounted = useRef(true)
@@ -72,7 +72,7 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
     if (!request) return
     setOpening(true); setError(null)
     try {
-      const result = await window.electronAPI.openWorkDeliverable(request)
+      const result = await window.electronAPI.revealResultFile(request)
       if (mounted.current && !result.success) setError(result.error?.message || '暂时无法打开所在文件夹，请重试。')
     } catch { if (mounted.current) setError('暂时无法打开所在文件夹，请重试。') }
     finally { if (mounted.current) setOpening(false) }
@@ -83,8 +83,8 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
       {!kind ? <FileText size={22} aria-hidden /> : null}
       <strong className="result-file-name" title={file.name}>{file.name}</strong>
       <div className="result-file-actions">
-        {!kind && file.format && request ? <DocumentPreviewButton {...request} name={file.name} format={file.format} version={file.previewVersion} /> : null}
-        <button type="button" className="ent-btn sm" disabled={opening || !request} onClick={() => void reveal()} title="打开文件所在目录" aria-label={`打开 ${file.name} 所在文件夹`}>
+        {!mediaRequest && !kind && file.format && request && ('nodeId' in request || 'fileId' in request) ? <DocumentPreviewButton {...request} name={file.name} format={file.format} version={file.previewVersion} /> : null}
+        <button type="button" className="ent-btn sm" aria-busy={opening} disabled={opening || !request} onClick={() => void reveal()} title="打开文件所在目录" aria-label={`打开 ${file.name} 所在文件夹`}>
           {opening ? <LoaderCircle size={14} className="animate-spin" /> : <FolderOpen size={14} />}<span>打开所在文件夹</span>
         </button>
       </div>

@@ -30,6 +30,14 @@ test('result file routes only accept trusted main-frame identities and never ren
     if (!release) {
       assert.equal(route.schema.safeParse({ taskId: '../escape', fileId: 'file' }).success, false)
       assert.equal(route.schema.safeParse({ taskId: 'task', fileId: 'task-file-0' }).success, true)
+      for (const identity of [{ taskId: 'task', assetId: 'image-output' }, { taskId: 'task', jobId: 'video-job', outputId: 'video-output' }]) {
+        assert.equal(route.schema.safeParse(identity).success, true)
+        assert.equal(route.schema.safeParse({ ...identity, path: '/private/secret' }).success, false)
+        assert.equal(route.schema.safeParse({ ...identity, fileId: 'mixed-identity' }).success, false)
+      }
+      assert.equal(route.schema.safeParse({ taskId: 'task', jobId: 'job' }).success, false)
+      assert.equal(route.schema.safeParse({ taskId: 'task', assetId: '../escape' }).success, false)
+      assert.equal(route.schema.safeParse({ taskId: 'task', jobId: 'job', outputId: '../escape' }).success, false)
     }
     assert.equal((await route.handle(ctx as never, input as never) as { success: boolean }).success, true)
   }

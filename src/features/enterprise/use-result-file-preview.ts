@@ -12,10 +12,9 @@ export function useResultFilePreview(request: ResultFileRequest, version?: strin
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   const disposeRef = useRef<(() => void) | null>(null)
-  const { taskId } = request
-  const nodeId = 'nodeId' in request ? request.nodeId : undefined
-  const deliverableId = 'deliverableId' in request ? request.deliverableId : undefined
-  const fileId = 'fileId' in request ? request.fileId : undefined
+  const requestRef = useRef(request)
+  requestRef.current = request
+  const requestKey = JSON.stringify(request)
   useEffect(() => {
     let active = true
     let url: string | undefined
@@ -34,8 +33,7 @@ export function useResultFilePreview(request: ResultFileRequest, version?: strin
     disposeRef.current = dispose
     setPreview(null)
     setError(null)
-    const input: ResultFileRequest = nodeId && deliverableId ? { taskId, nodeId, deliverableId } : { taskId, fileId: fileId! }
-    void window.electronAPI.previewResultFile(input).then(result => {
+    void window.electronAPI.previewResultFile(requestRef.current).then(result => {
       if (result.success && result.data) {
         url = result.data.url
         if (!active) { releaseCurrent(); return }
@@ -43,7 +41,7 @@ export function useResultFilePreview(request: ResultFileRequest, version?: strin
       } else if (active) setError(result.error?.message || '媒体暂时无法读取，请重试。')
     }).catch(() => { if (active) setError('媒体暂时无法读取，请重试。') })
     return dispose
-  }, [taskId, nodeId, deliverableId, fileId, version, attempt])
+  }, [requestKey, version, attempt])
   return {
     preview,
     error,

@@ -9,6 +9,12 @@ import type { DocumentPreviewStore } from './document-preview-store'
 import { ScopePath, type TaskOwnerScope } from './scope-path'
 import { resolveArrangementMediaFile } from './arrangement-media-files'
 import { AppError } from '../errors/app-error'
+import type { MediaStorePort } from '../domain/media'
+import type { VideoStorePort } from '../domain/video-media'
+
+type VerifiedVideoStore = VideoStorePort & {
+  verifiedAssetPath(scope: { enterpriseId: string; memberId: string; subscriptionId: string }, taskId: string, jobId: string, outputId: string): Promise<string>
+}
 
 const types: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', mp4: 'video/mp4', webm: 'video/webm' }
 export interface OpenResultFile {
@@ -27,18 +33,43 @@ export interface ResultFileStorePort {
 
 export class ResultFileStore implements ResultFileStorePort {
   private readonly paths: ScopePath
-  constructor(root: string, private readonly deliveries: DocumentPreviewStore, private readonly getTask: (taskId: string) => Promise<TaskReadView>) {
+  constructor(root: string, private readonly deliveries: DocumentPreviewStore, private readonly getTask: (taskId: string) => Promise<TaskReadView>,
+    private readonly media?: MediaStorePort, private readonly videos?: VideoStorePort) {
     this.paths = new ScopePath(root)
   }
 
   private async task(scope: TaskOwnerScope, taskId: string): Promise<TaskReadView> {
     const task = await this.getTask(taskId)
-    if (task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId) throw new AppError('NOT_FOUND')
+    if (task.id !== taskId || task.ownerId !== scope.memberId || task.ownerEnterpriseId !== scope.enterpriseId) throw new AppError('NOT_FOUND')
     return task
   }
 
   private async resolve(scope: TaskOwnerScope, input: ResultFileRequest, original: boolean) {
     const task = await this.task(scope, input.taskId)
+    if ('assetId' in input) {
+      const asset = await this.media?.getAsset(scope, input.taskId, input.assetId)
+      if (!asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
+      await this.media?.readAsset(scope, input.taskId, input.assetId)
+      const root = resolve(this.paths.mediaRoot(scope, input.taskId))
+      const path = resolve(root, asset.relativePath)
+      const rel = relative(root, path)
+      if (!rel || isAbsolute(rel) || rel.startsWith(`..${sep}`) || rel === '..') throw new AppError('PERMISSION_DENIED')
+      const canonical = await realpath(path)
+      if (canonical !== path) throw new AppError('PERMISSION_DENIED')
+      const stat = await lstat(path)
+      if (stat.isSymbolicLink() || !stat.isFile()) throw new AppError('PERMISSION_DENIED')
+      return { path, format: asset.mime.slice(asset.mime.indexOf('/') + 1), version: `${asset.localAssetId}:${asset.sha256}:${asset.relativePath}`, expected: { size: asset.size, sha256: asset.sha256 } }
+    }
+    if ('jobId' in input) {
+      if (!task.subscriptionId || !this.videos) throw new AppError('NOT_FOUND')
+      const videoScope = { ...scope, subscriptionId: task.subscriptionId }
+      const job = await this.videos.getJob(videoScope, input.taskId, input.jobId)
+      const output = job?.receipt?.outputs.find(item => item.outputId === input.outputId)
+      const asset = output && await this.videos.getAsset(videoScope, input.taskId, input.jobId, input.outputId)
+      if (!job || !output || !asset || asset.status !== 'SAVED') throw new AppError('NOT_FOUND')
+      const path = await (this.videos as VerifiedVideoStore).verifiedAssetPath(videoScope, input.taskId, input.jobId, input.outputId)
+      return { path, format: output.mimeType.slice(output.mimeType.indexOf('/') + 1), version: `${asset.localAssetId}:${output.sha256}:${asset.relativePath}`, expected: { size: output.byteLength, sha256: output.sha256.toLowerCase() } }
+    }
     if ('fileId' in input) {
       if (task.workType.state !== 'resolved' || task.workType.kind !== 'conversation' || !task.workDir) throw new AppError('NOT_FOUND')
       const name = task.files.find((_file, index) => `${task.id}-file-${index}` === input.fileId)
