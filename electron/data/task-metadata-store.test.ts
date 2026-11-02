@@ -27,3 +27,20 @@ it('diagnoses metadata with backup and scope isolation without changing load sem
   assert.deepEqual(await store.diagnose(scope, value.taskId), { state: 'unavailable' })
   assert.deepEqual(await store.diagnose(scope, value.taskId), { state: 'unavailable' })
 })
+
+it('accepts persisted execution lineage and rejects invalid group IDs or ordinals', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-execution-metadata-'))
+  roots.push(root)
+  const store = new TaskMetadataStore(root)
+  const value = { version: 1 as const, taskId: 'task-b', kind: 'arrangement' as const, participantSubscriptionIds: [], currentSubscriptionId: null, createdAt: 1,
+    executionGroup: { rootTaskId: 'task-a', number: 2, requestId: 'request-a' } }
+  await store.save(scope, value)
+  assert.deepEqual((await store.load(scope, value.taskId))?.executionGroup, value.executionGroup)
+  for (const [index, invalid] of [{ ...value.executionGroup, rootTaskId: '../other' }, { ...value.executionGroup, number: 1 },
+    { ...value.executionGroup, number: 2.5 }, { ...value.executionGroup, requestId: '' }].entries()) {
+    // Isolate each malformed file from the valid backup used by normal recovery.
+    const taskId = `invalid-${index}`
+    await store.save(scope, { ...value, taskId, executionGroup: invalid })
+    assert.equal(await store.load(scope, taskId), null)
+  }
+})

@@ -10,7 +10,7 @@ export type WorkRecord = Pick<WorkItem,
 const BUCKET_MATCHERS: Record<WorkRecordBucket, (work: WorkRecord) => boolean> = {
   all: () => true,
   active: work => work.isActive === true || work.planningDraft?.status === 'planning',
-  mine: work => work.status === 'waiting-user' || Boolean(work.nextUserAction),
+  mine: work => work.status === 'waiting-user' || work.status === 'waiting-employee' || Boolean(work.nextUserAction),
   done: work => work.status === 'completed',
   stopped: work => work.status === 'failed' || work.status === 'paused',
 }

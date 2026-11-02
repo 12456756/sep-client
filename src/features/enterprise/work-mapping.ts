@@ -8,6 +8,7 @@
 
 import { runtimeKey } from '../../shared/work-activity';
 import { arrangementInputRequestSchema } from '../../shared/arrangement-input';
+import { arrangementEmployeeReplacementSchema } from '../../shared/arrangement-employee-replacement';
 import type { ArrangementExecutionSnapshot, ArrangementFinalFileSnapshot, ArrangementPlanSnapshot, TaskExecutionEvent, ClientTask, ClientTaskMessage } from '../../shared/types';
 import { GENERAL_ASSISTANT_ID } from './general-assistant';
 import type {
@@ -221,6 +222,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     if (latestState?.type !== 'stop_requested' && effectiveExecution?.status === 'waiting-user') {
       status = effectiveExecution.nodes.some(node => node.pendingConfirmation || node.inputRequest) ? 'waiting-user' : 'failed';
     }
+    if (effectiveExecution?.status === 'waiting-employee') status = 'waiting-employee';
   }
   const legacyProgress = task.status === 'pending' && task.activeRunId === null
     ? 0
@@ -237,7 +239,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
   const progress = plan && plan.mode !== 'conversation' && steps.length
     ? steps.filter(step => step.state === 'done').length / steps.length * 100 : legacyProgress;
   const currentEmployeeId = plan?.mode === 'conversation' && plan.conversation?.kind === 'general' ? GENERAL_ASSISTANT_ID : activeEmployeeId
-    ?? steps.find(step => step.state === 'running' || step.state === 'waiting-user')?.employeeId
+    ?? steps.find(step => step.state === 'running' || step.state === 'waiting-user' || step.state === 'waiting-employee')?.employeeId
     ?? task.subscriptionId
     ?? steps[0]?.employeeId
     ?? '';
@@ -254,6 +256,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     }));
   return {
     id: task.id,
+    executionGroup: task.executionGroup,
     knowledge: plan?.knowledge,
     title: task.title,
     pinnedAt: task.pinnedAt ?? null,
@@ -273,7 +276,8 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     currentEmployeeId,
     currentEmployeeName: nameOf(currentEmployeeId),
     steps,
-    nextUserAction: effectiveExecution?.nodes.find(node => node.inputRequest)?.inputRequest?.question ?? nextUserAction(status, steps),
+    nextUserAction: effectiveExecution?.nodes.find(node => node.inputRequest)?.inputRequest?.question ??
+      (effectiveExecution?.nodes.some(node => node.status === 'waiting-employee') ? '部分节点等待替代员工，可申请推荐员工或重新查找' : nextUserAction(status, steps)),
     createdAt: task.createdAt,
     startedAt: task.startedAt,
     completedAt: task.completedAt,
@@ -401,7 +405,7 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
   let changed = false
   for (const event of events) {
     if (persisted && event.occurredAt <= persisted.updatedAt) continue
-    const data = event.data as { status?: string; nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status']; pendingConfirmation?: boolean; inputRequest?: unknown }>; finalDeliverables?: unknown } | null
+    const data = event.data as { status?: string; nodeId?: string; nodeStatus?: string; nodeStates?: Array<{ nodeId: string; status: ArrangementExecutionSnapshot['nodes'][number]['status']; pendingConfirmation?: boolean; inputRequest?: unknown; employeeReplacement?: unknown }>; finalDeliverables?: unknown } | null
     if (event.type === 'arrangement_state_changed' && data?.status) {
       status = data.status as typeof status
       changed = true
@@ -413,6 +417,8 @@ function executionFromEvents(plan: ArrangementPlanSnapshot | undefined, events: 
           target.status = saved.status; target.pendingConfirmation = saved.pendingConfirmation
           const inputRequest = arrangementInputRequestSchema.safeParse(saved.inputRequest)
           target.inputRequest = inputRequest.success ? inputRequest.data : undefined
+          const replacement = arrangementEmployeeReplacementSchema.safeParse(saved.employeeReplacement)
+          target.employeeReplacement = replacement.success && replacement.data.nodeId === target.nodeId ? replacement.data : undefined
           changed = true
         }
       }
@@ -446,12 +452,14 @@ function isFinalFile(value: unknown): value is ArrangementFinalFileSnapshot {
 function finalDeliverables(plan: ArrangementPlanSnapshot | undefined, execution: ArrangementExecutionSnapshot | null, workspace: string | null): WorkDeliverable[] {
   if (!plan || !execution) return []
   const files: WorkDeliverable[] = []
+  const finalEmployeeId = plan.nodes.at(-1)?.subscriptionId
   for (const node of plan.nodes) {
     const state = execution.nodes.find(item => item.nodeId === node.id)
     if (state?.status !== 'completed') continue
     for (const file of state?.finalFiles ?? []) files.push({
       id: `${node.id}:${file.id}`,
       name: file.path.split(/[\\/]/).pop() || file.path,
+      category: node.subscriptionId === finalEmployeeId ? 'final' : 'intermediate',
       path: workspace && !/^(?:[A-Za-z]:[\\/]|[\\/])/.test(file.path)
         ? `${workspace.replace(/[\\/]+$/, '')}${workspace.includes('\\') ? '\\' : '/'}${file.path.replace(/[\\/]/g, workspace.includes('\\') ? '\\' : '/')}`
         : file.path,
@@ -472,6 +480,7 @@ function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskEx
   const checkpoint = execution?.nodes.find(node => node.nodeId === nodeId)
   const saved = checkpoint?.status
   if (checkpoint?.inputRequest) return 'waiting-user'
+  if (saved === 'waiting-employee') return 'waiting-employee'
   if (saved === 'completed') return checkpoint?.pendingConfirmation ? 'waiting-user' : 'done'
   if (saved === 'running') return status === 'paused' || status === 'failed' ? 'interrupted' : 'running'
   if (saved === 'failed') return 'failed'
@@ -487,6 +496,7 @@ function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskEx
       const saved = data.nodeStates.find(node => node.nodeId === nodeId)?.status;
       if (saved === 'completed') state = 'done';
       else if (saved === 'running') state = 'running';
+      else if (saved === 'waiting-employee') state = 'waiting-employee';
       else if (saved === 'failed') state = 'failed';
       else if (saved === 'blocked') state = 'blocked';
       else if (saved === 'interrupted') state = 'interrupted';
@@ -499,6 +509,7 @@ function arrangementStepState(nodeId: string, status: WorkStatus, events: TaskEx
     if (event.type === 'arrangement_node_failed') state = data.status === 'PAUSED' ? 'interrupted' : data.status === 'CANCELLED' ? 'stopped' : 'failed';
     if (event.type === 'arrangement_state_changed') {
       if (data.nodeStatus === 'waiting-user') state = 'waiting-user';
+      if (data.nodeStatus === 'waiting-employee') state = 'waiting-employee';
       if (data.nodeStatus === 'completed') state = 'done';
       if (data.nodeStatus === 'failed') state = 'failed';
       if (data.nodeStatus === 'blocked') state = 'blocked';

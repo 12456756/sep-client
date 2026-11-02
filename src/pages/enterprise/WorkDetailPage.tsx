@@ -52,8 +52,8 @@ export function WorkDetailPage({ workspace, workId }: Props) {
 type Panel = 'results' | 'process' | 'info' | null;
 
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
-  const team = useTeam(work, workspace);
   const isConversation = work.kind === 'conversation';
+  const team = useTeam(work, workspace);
   const finished = work.status === 'completed';
   /** 这项工作已经不会自己往前走了。耗时、结束时间、能不能终止都按它算。 */
   const over = finished || work.status === 'paused' || work.status === 'failed';
@@ -210,9 +210,14 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel media={work.arrangementExecution.media} deliverables={work.deliverables} /> : null}
             {work.deliverables.length ? (
               <div className="ent-wk-final-files">
-                <div className="result-file-list">
-                  {work.deliverables.map(file => <ResultFileCard key={file.id} taskId={work.id} file={file} visible={panel === 'results'} conversation={isConversation} />)}
-                </div>
+                {groupDeliverables(work.deliverables, isConversation).map(group => (
+                  <section key={group.key} className="ent-wk-final-group">
+                    {group.title ? <h3>{group.title}</h3> : null}
+                    <div className="result-file-list">
+                      {group.files.map(file => <ResultFileCard key={file.id} taskId={work.id} file={file} visible={panel === 'results'} conversation={isConversation} />)}
+                    </div>
+                  </section>
+                ))}
               </div>
             ) : showEmptyResults ? <p className="ent-hint">暂无产出结果</p> : null}
           </section>
@@ -239,10 +244,12 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
 function NeedsYou({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
 
   const execution = work.arrangementExecution;
+  const missing = execution?.nodes.filter(node => node.status === 'waiting-employee') ?? [];
   const canReply = (work.status === 'running' || work.status === 'waiting-user') &&
     (execution?.status === 'running' || execution?.status === 'waiting-user');
   const waiting = canReply ? execution.nodes.filter(node => node.status === 'interrupted' && node.inputRequest) : [];
-  if (waiting.length) return <section className="ent-flow-act ent-media-input-requests" aria-label="补充媒体规格">
+  if (waiting.length || missing.length) return <section className="ent-flow-act ent-media-input-requests" aria-label={missing.length ? '等待替代员工' : '补充媒体规格'}>
+    {missing.map(node => <ReplacementEmployeeActions key={node.nodeId} work={work} workspace={workspace} node={node} />)}
     {waiting.map(node => <MediaInputReplyForm key={node.inputRequest!.requestId} work={work} workspace={workspace} nodeId={node.nodeId} request={node.inputRequest!} />)}
   </section>;
 
@@ -286,6 +293,36 @@ function NeedsYou({ work, workspace }: { work: WorkItem; workspace: EnterpriseWo
   }
 
   return null;
+}
+
+function ReplacementEmployeeActions({ work, workspace, node }: {
+  work: WorkItem; workspace: EnterpriseWorkspace; node: import('../../shared/types').ArrangementNodeExecutionSnapshot;
+}) {
+  const [pending, setPending] = useState(false);
+  const replacement = node.employeeReplacement;
+  const disabled = pending || workspace.busy || work.isActive;
+  const title = work.steps.find(step => step.id === node.nodeId)?.title ?? node.nodeId;
+  return <div className="ent-media-input-form">
+    <strong>{title}等待替代员工</strong>
+    <p>{replacement?.reason ?? '原执行员工已不可用，已完成成果保留。'}</p>
+    {(replacement?.candidates ?? []).map(candidate => {
+      const request = replacement?.accessRequests?.find(item => item.employeeId === candidate.employeeId && item.source === candidate.source);
+      return <div key={`${candidate.source}:${candidate.employeeId}`}>
+        <p>{candidate.name} · {candidate.source === 'enterprise' ? '公司员工' : '平台员工'}</p>
+        <p>{candidate.rationale}</p>
+        {request ? <p role="status">{({ PENDING: '已申请，等待审批', APPROVED: '已获批，等待执行权限生效后自动继续', REJECTED: '申请未通过', CANCELLED: '申请已取消' })[request.status]}{request.message ? `：${request.message}` : ''}</p>
+          : <button type="button" className="ent-btn primary sm" disabled={disabled} onClick={() => {
+            setPending(true);
+            void workspace.requestReplacementAccess(work.id, node.nodeId, candidate.employeeId).finally(() => setPending(false));
+          }}><CheckCircle2 size={13} aria-hidden />申请员工</button>}
+      </div>;
+    })}
+    {!replacement?.candidates?.length ? <p>暂未找到合适人选，可在员工目录更新后重新查找。</p> : null}
+    {work.isActive ? <small>其他节点仍在执行，结束后可申请；也可现在重新查找。</small> : null}
+    <button type="button" className="ent-btn sm" disabled={pending || workspace.busy} onClick={() => void workspace.retryWork(work.id, node.nodeId)}>
+      <RotateCcw size={13} aria-hidden />重新查找
+    </button>
+  </div>;
 }
 
 function MediaInputReplyForm({ work, workspace, nodeId, request }: {
@@ -445,6 +482,30 @@ function WorkActivityRow({ activity }: { activity: WorkActivity }) {
   );
 }
 
+function groupDeliverables(files: WorkItem['deliverables'], isConversation: boolean): Array<{ key: string; title: string; files: WorkItem['deliverables'] }> {
+  const groups: Array<{ key: string; title: string; files: WorkItem['deliverables'] }> = [];
+  if (!isConversation) {
+    for (const category of ['final', 'intermediate'] as const) {
+      const categorizedFiles = files.filter(file => file.category === category);
+      if (categorizedFiles.length) groups.push({
+        key: category,
+        title: category === 'final' ? '最终产物' : '中间产物',
+        files: categorizedFiles,
+      });
+    }
+  }
+  for (const file of files) {
+    if (!isConversation && file.category) continue;
+    const key = file.nodeId ?? 'all';
+    let group = groups.find(item => item.key === key);
+    if (!group) {
+      group = { key, title: file.nodeTitle ?? '', files: [] };
+      groups.push(group);
+    }
+    group.files.push(file);
+  }
+  return groups;
+}
 /** 只缩短目录的展示文本；悬停和复制始终使用完整路径。 */
 function PathValue({ path }: { path: string }) {
   const { capture } = useOperationFeedback(path);

@@ -38,6 +38,7 @@ const LEAD: Record<WorkStatus, { label: string; icon: typeof ClipboardCheck }> =
   arranging: { label: '查看安排', icon: Workflow },
   running: { label: '查看进展', icon: Activity },
   'waiting-user': { label: '去确认', icon: CheckCircle2 },
+  'waiting-employee': { label: '查看补员进度', icon: Activity },
   completed: { label: '查看完成情况', icon: ClipboardCheck },
   failed: { label: '去重试', icon: RotateCcw },
   paused: { label: '去重新执行', icon: PlayCircle },

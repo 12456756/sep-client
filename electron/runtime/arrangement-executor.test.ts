@@ -1137,7 +1137,8 @@ describe('TaskRuntime arrangement controls', () => {
     await runtime.executeTask(task.id)
     await waitFor(async () => (await manager.getTask(task.id))?.status === TaskStatus.PAUSED)
 
-    assert.ok(events.some(event => event.type === 'arrangement_node_failed'))
+    assert.equal(events.some(event => event.type === 'arrangement_node_failed'), false)
+    assert.ok(events.some(event => event.type === 'arrangement_node_progress' && (event.data as { status?: string })?.status === 'WAITING_EMPLOYEE'))
     assert.equal(workers, 0)
     assert.equal(monitorEvents.filter(({ participation }) => participation).length, 0)
     assert.equal(inputs.filter(input => input.participation).length, 0)
@@ -1173,6 +1174,12 @@ describe('TaskRuntime arrangement controls', () => {
         },
       })
       await executor.execute(plan('task'), 'task', 'parent-run')
+      if (outcome === 'denied') {
+        assert.equal(events.some(event => event.type === 'arrangement_node_failed'), false)
+        assert.ok(events.some(event => event.type === 'arrangement_node_progress' && (event.data as { status?: string })?.status === 'WAITING_EMPLOYEE'))
+        assert.equal(workers, 0)
+        return
+      }
       const terminal = events.find(event => event.type === 'arrangement_node_failed')!
       const data = terminal.data as { status: string; startedAt?: string; completedAt: string; output: string | null; nodeRunId: string; subscriptionId: string }
       assert.ok(data.nodeRunId); assert.ok(Number.isFinite(Date.parse(data.completedAt)))

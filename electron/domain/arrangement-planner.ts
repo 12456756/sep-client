@@ -27,6 +27,19 @@ export interface ArrangementPlannerEmployee {
   status: string
 }
 
+export interface ArrangementReplacementSearchInput {
+  taskId: string
+  planningId: string
+  taskGoal: string
+  node: ArrangementNode
+  signal: AbortSignal
+}
+
+export interface ArrangementReplacementSearchResult {
+  replacement: { subscriptionId: string; rationale: string } | null
+  candidates: ArrangementCandidateMatch[]
+}
+
 export interface ArrangementPlanningProgress {
   sequence?: number
   owner?: { memberId: string; enterpriseId: string }
@@ -83,6 +96,19 @@ export interface ArrangementPlannerPort {
     signal?: AbortSignal
     onProgress: (event: ArrangementPlanningProgress) => void
   }): Promise<ArrangementPlanningResult>
+  findReplacement?(input: {
+    planningId: string
+    taskGoal: string
+    node: ArrangementNode
+    stage?: ArrangementPlanningStage
+    confirmedInputs?: readonly string[]
+    dependencies?: readonly Pick<ArrangementNode, 'id' | 'title' | 'expectedOutput' | 'deliverables'>[]
+    taskId?: string
+    employees: readonly ArrangementPlannerEmployee[]
+    plannerEmployees?: readonly ArrangementPlannerEmployee[]
+    plannerModelId?: string
+    signal?: AbortSignal
+  }): Promise<{ subscriptionId: string; rationale: string } | null>
   cancel?(planningId: string): void
 }
 

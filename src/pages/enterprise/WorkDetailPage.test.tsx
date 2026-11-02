@@ -138,6 +138,27 @@ it('renders a media question and an empty reply form instead of an approval acti
   assert.doesNotMatch(html, /确认，继续/)
 })
 
+it('shows each missing employee alongside parallel questions and application status', () => {
+  const execution: NonNullable<WorkItem['arrangementExecution']> = { activeRunId: null, status: 'waiting-user', updatedAt: 3,
+    nodes: [{ nodeId: 'missing', status: 'waiting-employee', finalFiles: [], employeeReplacement: {
+      nodeId: 'missing', originalSubscriptionId: 'old', reason: '原员工已不可用', status: 'waiting', updatedAt: 3,
+      candidates: [{ stepId: 'missing', employeeId: 'new', subscriptionId: null, source: 'platform', name: '市场分析员工',
+        rationale: '具备市场分析技能', canExecute: false, canApply: true }],
+    } }, { nodeId: 'video', status: 'interrupted', finalFiles: [], inputRequest: {
+      requestId: 'question-a', kind: 'media-spec', question: '需要多长的视频？', requirements: [],
+    } }] }
+  const item: WorkItem = { ...work, kind: 'flow', status: 'waiting-user', arrangementExecution: execution }
+  const html = renderDetail(item)
+  assert.match(html, /市场分析员工/)
+  assert.match(html, /申请员工/)
+  assert.match(html, /重新查找/)
+  assert.match(html, /提交补充并继续/)
+  execution.nodes[0]!.employeeReplacement!.accessRequests = [{ requestId: 'req', stepId: 'missing', employeeId: 'new', subscriptionId: null,
+    source: 'platform', name: '市场分析员工', status: 'PENDING', requestedCapabilities: [], createdAt: '2026-11-02', updatedAt: '2026-11-02' }]
+  assert.match(renderDetail(item), /已申请，等待审批/)
+  assert.doesNotMatch(renderDetail(item), />申请员工</)
+})
+
 it('keeps parallel questions available only while the arrangement can accept replies', () => {
   const inputRequest = { requestId: 'question-a', kind: 'media-spec' as const, question: '需要多长的视频？', requirements: [] }
   const pending = { ...work, kind: 'flow' as const, status: 'running' as const,
@@ -162,7 +183,7 @@ it('keeps parallel questions available only while the arrangement can accept rep
 })
 
 // Check handlers and effect ownership; native focus behavior still needs window verification.
-function mountDetail() {
+function mountDetail(item: WorkItem = work) {
   const cells: unknown[] = [];
   const effects = new Map<number, { deps?: readonly unknown[]; cleanup?: () => void }>();
   let cursor = 0;
@@ -191,9 +212,9 @@ function mountDetail() {
   );
   const Page = (loaded.exports as typeof import('./WorkDetailPage')).WorkDetailPage;
   let navigated = false;
-  const workspace = { works: [work], employees: [], myEmployees: [], busy: false,
+  const workspace = { works: [item], employees: [], myEmployees: [], busy: false,
     navigate: () => { navigated = true; } } as unknown as EnterpriseWorkspace;
-  const root = Page({ workspace, workId: work.id });
+  const root = Page({ workspace, workId: item.id });
   const renderBody = root.type as (props: unknown) => React.ReactElement;
   let elements: React.ReactElement<Record<string, unknown>>[] = [];
   const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; },
@@ -269,6 +290,24 @@ describe('WorkDetailPage media entry', () => {
       assert.equal(page.dialog.open, false);
     }
     page.unmount();
+  });
+
+  it('passes registered output identities to result cards for conversations and arrangements', () => {
+    const conversationFile = { id: `${work.id}-file-0`, name: 'report.zip', path: 'C:\\work\\report.zip', note: '' };
+    const conversationPage = mountDetail({ ...work, deliverables: [conversationFile] });
+    const conversationCard = conversationPage.find(element => element.type === ResultFileCard);
+    assert.equal(conversationCard.props.taskId, work.id);
+    assert.equal(conversationCard.props.file, conversationFile);
+    assert.equal(conversationCard.props.conversation, true);
+    conversationPage.unmount();
+
+    const arrangementFile = { id: 'node-a:report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '', nodeId: 'node-a', deliverableId: 'report' };
+    const arrangementPage = mountDetail({ ...work, kind: 'flow', deliverables: [arrangementFile] });
+    const arrangementCard = arrangementPage.find(element => element.type === ResultFileCard);
+    assert.equal(arrangementCard.props.taskId, work.id);
+    assert.equal(arrangementCard.props.file, arrangementFile);
+    assert.equal(arrangementCard.props.conversation, false);
+    arrangementPage.unmount();
   });
 
   it('ignores nested preview cancellation and inside clicks, and closes on its own Escape or backdrop', () => {
@@ -388,12 +427,13 @@ describe('WorkDetailPage media entry', () => {
     const flow = { ...work, kind: 'flow' as const, status: 'running' as const,
       workType: { state: 'resolved' as const, kind: 'arrangement' as const },
       deliverables: [{ id: 'node-a:report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '节点最终交付物 · A',
-        nodeId: 'node-a', nodeTitle: 'A', deliverableId: 'report', format: 'docx' }],
+        category: 'final' as const, nodeId: 'node-a', nodeTitle: 'A', deliverableId: 'report', format: 'docx' }],
       arrangementExecution: { activeRunId: 'run', status: 'running' as const, updatedAt: 1,
         nodes: [{ nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'report.docx', format: 'docx', size: 5,
           sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 1, snapshot: { sha256: 'a'.repeat(64), size: 5, source: 'confirmed' as const } }] },
         { nodeId: 'node-b', status: 'running' as const, finalFiles: [] }] } };
     const html = renderDetail(flow);
+    assert.match(html, /最终产物/);
     assert.match(html, /aria-label="预览文档：report\.docx"/);
     assert.match(html, /打开所在文件夹/);
   });

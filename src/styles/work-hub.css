@@ -1,4 +1,15 @@
 /* Workspace colors: warm surfaces, brand selection, and semantic work states. */
+.ent-work-executions { padding: 32px; overflow: auto; }
+.ent-work-executions h1 { margin: 0 0 8px; font-size: 22px; overflow-wrap: anywhere; }
+.ent-work-executions header p { color: var(--ent-ink-3); margin: 0 0 24px; }
+.ent-work-executions ol { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.ent-work-executions li > button { width: 100%; display: flex; align-items: center; gap: 16px; text-align: left; padding: 20px; border: 1px solid var(--ent-line); border-radius: 8px; background: var(--work-canvas); color: inherit; font: inherit; cursor: pointer; }
+.ent-work-executions li > button:hover { background: var(--work-hover); }
+.ent-work-execution-name { display: grid; gap: 8px; flex: 1; min-width: 0; }
+.ent-work-execution-name small { color: var(--ent-ink-3); overflow-wrap: anywhere; }
+.ent-work-execution-back { display: flex; align-items: center; gap: 16px; padding: 12px 24px; color: var(--ent-ink-3); border-bottom: 1px solid var(--ent-line); }
+.ent-work-execution-back button { display: flex; align-items: center; gap: 6px; background: transparent; border: 0; color: var(--work-selected-ink); cursor: pointer; }
+@media (max-width: 600px) { .ent-work-executions { padding: 20px 12px; } .ent-work-executions li > button { gap: 10px; padding: 16px 12px; flex-wrap: wrap; } }
 .ent-shell.ent-work-shell {
   --work-hover: #ebe3e1;
   --work-selected: #f1dedd;

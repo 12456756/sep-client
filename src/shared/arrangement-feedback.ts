@@ -16,7 +16,7 @@ export const FEEDBACK_OPERATIONS = {
   imageResume: '图片跟踪恢复', imageSave: '图片成果重新保存', imageCancel: '图片取消请求',
   videoRead: '视频任务读取', videoGenerate: '视频生成', videoImport: '参考图导入',
   videoPreview: '视频预览', videoExport: '视频导出', videoResume: '视频跟踪恢复', videoSave: '视频成果重新保存',
-  documentPreview: '文档预览',
+  documentPreview: '文档预览', workOpenDirectory: '打开文件所在目录',
 } as const
 
 export type FeedbackOperation = keyof typeof FEEDBACK_OPERATIONS

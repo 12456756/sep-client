@@ -228,6 +228,8 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
   retryWork: (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => Promise<void>;
+  rerunWork: (workId: string) => Promise<void>;
+  requestReplacementAccess: (workId: string, nodeId: string, employeeId: string) => Promise<void>;
   renameWork: (workId: string, title?: string) => Promise<boolean>;
   setWorkPinned: (workId: string, pinned: boolean) => Promise<boolean>;
   deleteWork: (workId: string) => Promise<boolean>;
@@ -400,7 +402,12 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         arrangementExecution: arrangement.executions[task.id],
       });
     });
-    return mergePlanningRecords(items, planningRecords, deletedTaskIds);
+    const byId = new Map(items.map(item => [item.id, item]));
+    const namedItems = items.map(item => {
+      const root = item.executionGroup && byId.get(item.executionGroup.rootTaskId);
+      return root ? { ...item, title: root.title, pinnedAt: root.pinnedAt } : item;
+    });
+    return mergePlanningRecords(namedItems, planningRecords, deletedTaskIds);
   }, [scopedTasks, myEmployees, activeEmployeeByWork, arrangement.plans, arrangement.events, arrangement.executions, planningRecords, deletedTaskIds]);
 
   /** 员工是否正在处理工作，用于卡片状态。 */
@@ -454,7 +461,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
    */
   useEffect(() => {
     if (route.name !== 'work') return;
-    const work = works.find(item => item.id === route.workId);
+    const members = works.filter(item => (item.executionGroup?.rootTaskId ?? item.id) === route.workId);
+    const selectedId = route.executionTaskId ?? (members.length === 1 ? members[0]!.id : members.length > 1 ? null : route.workId);
+    const work = works.find(item => item.id === selectedId);
     if (!work) return;
     setReviewedAt(current => {
       if ((current[work.id] ?? 0) >= work.updatedAt) return current;
@@ -508,6 +517,10 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const typeCache = new TaskReadCache(async task => {
       try {
         const result = await api.getTask(task.id);
+        if (active && !deletedTaskIds.has(task.id) && result.success && result.task?.executionGroup) {
+          const executionGroup = result.task.executionGroup;
+          setTasks(current => current.map(item => item.id === task.id ? { ...item, executionGroup } : item));
+        }
         if (active && (!result.success || result.task?.workType?.state === 'unavailable')) readFailure(`type:${task.id}`, result, 'workType');
         else failedReads.delete(`type:${task.id}`);
         return result.success && result.task?.workType ? result.task.workType : { state: 'unavailable' };
@@ -852,13 +865,38 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId, ...(inputReply ? { inputReply } : {}) } : workId), 'workRetry');
   }, [run]);
 
+  const rerunInFlight = useRef(new Set<string>());
+  const rerunWork = useCallback(async (workId: string) => {
+    const work = works.find(item => item.id === workId);
+    const rootTaskId = work?.executionGroup?.rootTaskId ?? workId;
+    const key = JSON.stringify([scopeKey, rootTaskId]);
+    if (rerunInFlight.current.has(key)) return;
+    rerunInFlight.current.add(key);
+    const notice = captureFeedback();
+    try {
+      // The record menu starts from the latest confirmed execution of this topic.
+      const source = works.filter(item => (item.executionGroup?.rootTaskId ?? item.id) === rootTaskId)
+        .sort((a, b) => (b.executionGroup?.number ?? 1) - (a.executionGroup?.number ?? 1))[0];
+      await run(async () => {
+        const result = await window.electronAPI.rerunTask({ taskId: source?.id ?? workId, requestId: crypto.randomUUID() });
+        if (notice.isCurrent() && result.success && result.task) {
+          const task = result.task;
+          setTasks(current => mergeTaskUpdate(current, task, deletedTaskIds));
+          navigate({ name: 'work', workId: rootTaskId, executionTaskId: task.id });
+        }
+        return result;
+      }, 'workRetry');
+    } finally { rerunInFlight.current.delete(key); }
+  }, [scopeKey, works, captureFeedback, run, deletedTaskIds, navigate]);
+
   const updateWorkDetails = useCallback(async (workId: string, patch: { title?: string; pinned?: boolean }, quiet = false): Promise<boolean> => {
+    const rootTaskId = works.find(work => work.id === workId)?.executionGroup?.rootTaskId ?? workId;
     const cache = taskTypeCache.current;
     const ok = await run(async () => {
-      const result = await window.electronAPI.updateTaskDetails({ taskId: workId, ...patch });
+      const result = await window.electronAPI.updateTaskDetails({ taskId: rootTaskId, ...patch });
       if (taskTypeCache.current === cache && result.success && result.task) {
         const updated = result.task;
-        setTasks(current => current.map(task => task.id === workId ? {
+        setTasks(current => current.map(task => (task.executionGroup?.rootTaskId ?? task.id) === rootTaskId ? {
           ...task,
           ...(patch.title !== undefined ? { title: updated.title } : {}),
           ...(patch.pinned !== undefined ? { pinnedAt: updated.pinnedAt ?? null } : {}),
@@ -867,7 +905,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       return result;
     }, patch.title !== undefined ? 'workRename' : patch.pinned ? 'workPin' : 'workUnpin', quiet);
     return ok && taskTypeCache.current === cache;
-  }, [run]);
+  }, [run, works]);
 
   const renameWork = useCallback(async (workId: string, title?: string): Promise<boolean> => {
     const notice = captureFeedback();
@@ -900,30 +938,34 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
           } catch (error) { return { success: false, message: feedbackMessage(error, 'workDelete') }; }
         } });
     }
+    const rootTaskId = works.find(work => work.id === workId)?.executionGroup?.rootTaskId ?? workId;
+    const memberIds = works.filter(work => (work.executionGroup?.rootTaskId ?? work.id) === rootTaskId).map(work => work.id);
     const cache = taskTypeCache.current;
     const notice = captureFeedback();
     const ok = await feedback.confirm({ key: `delete:${scopeKey}:${workId}`,
-      message: '确认删除这条工作记录？已产出的文件仍保留，此操作不会取消平台上的图片或视频任务。',
+      message: memberIds.length > 1 ? `确认删除这项工作及其全部 ${memberIds.length} 次运行记录？已产出的文件仍保留。` : '确认删除这条工作记录？已产出的文件仍保留，此操作不会取消平台上的图片或视频任务。',
       actionLabel: '删除', busyLabel: '正在删除', onConfirm: async () => {
         if (!notice.isCurrent()) return { success: false };
-        try { return { success: await run(() => window.electronAPI.deleteTask(workId), 'workDelete', true) }; }
+        try { return { success: await run(() => window.electronAPI.deleteTask(memberIds.length > 1 ? { taskId: workId, includeExecutions: true } : workId), 'workDelete', true) }; }
         catch (cause) { return { success: false, message: feedbackMessage(cause, 'workDelete') }; }
       } });
     if (ok && taskTypeCache.current === cache) {
       // Only successful deletions suppress snapshots already in flight before the IPC reply.
-      deletedTaskIds.add(workId);
-      messagesByTask.current.delete(workId);
-      pendingMessages.current.delete(workId);
-      clearRuntimeState(workId);
+      for (const id of memberIds.length ? memberIds : [workId]) {
+        deletedTaskIds.add(id);
+        messagesByTask.current.delete(id);
+        pendingMessages.current.delete(id);
+        clearRuntimeState(id);
+      }
       setTasks(current => {
-        const next = current.filter(task => task.id !== workId);
+        const next = current.filter(task => !deletedTaskIds.has(task.id));
         cache?.retain(next);
         return next;
       });
-      setRoute(current => (current.name === 'work' && current.workId === workId ? { name: 'records' } : current));
+      setRoute(current => (current.name === 'work' && (current.workId === rootTaskId || memberIds.includes(current.workId)) ? { name: 'records' } : current));
     }
     return ok && taskTypeCache.current === cache;
-  }, [clearRuntimeState, deletedTaskIds, run, feedback, scopeKey, captureFeedback, planningController]);
+  }, [clearRuntimeState, deletedTaskIds, run, feedback, scopeKey, captureFeedback, planningController, works]);
 
   // ── 常用工作 ──────────────────────────────────────────────────────────
   /** 写盘失败（无痕模式、配额满）不阻断界面：内存里仍然保留，只是下次打开会丢。 */
@@ -1019,7 +1061,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     arrangeSeed, seedArrange: setArrangeSeed, userName,
     navigate, replaceRoute, retryWorkTypes, workListLoad, goBack,
     startConversation, arrangeWork, sendMessage, switchEmployee, confirmStep,
-    stopWork, retryWork, renameWork, setWorkPinned, deleteWork,
+    stopWork, retryWork, rerunWork, requestReplacementAccess: arrangement.requestReplacementAccess, renameWork, setWorkPinned, deleteWork,
     saveFlow, deleteSavedFlow, runSavedFlow,
     setPermission, setPermissionScope, chooseFolder,
     organizationMembers, organizationEmployees, organizationStatus, organizationError, currentUserAvatar,

@@ -158,6 +158,7 @@ const electronAPI = {
   continueTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CONTINUE, input),
   getTaskMessages: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_MESSAGES, taskId),
   retryTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_RETRY, input),
+  rerunTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_RERUN, input),
   getTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET, taskId),
   getTaskMedia: (taskId, options) => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_GET_TASK, options ? { taskId, ...options } : taskId),
   setMediaReferenceSelection: input => ipcRenderer.invoke(INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION, input),
@@ -179,6 +180,9 @@ const electronAPI = {
   updateTaskDetails: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_UPDATE_DETAILS, input),
   getTaskStats: () => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_STATS),
   selectDirectory: currentPath => ipcRenderer.invoke(INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY, currentPath),
+  getDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY),
+  selectDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY),
+  clearDefaultWorkspaceDirectory: () => ipcRenderer.invoke(INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY),
   setWindowTheme: theme => ipcRenderer.invoke(INVOKE_CHANNELS.WINDOW_SET_THEME, theme),
   onPiEvent: callback => {
     const handler = (_event: IpcRendererEvent, data: TaskExecutionEvent) => callback(data);
@@ -220,6 +224,7 @@ const electronAPI = {
   previewResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_PREVIEW, input),
   releaseResultFilePreview: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_RELEASE, input),
   revealResultFile: input => ipcRenderer.invoke(INVOKE_CHANNELS.RESULT_FILE_REVEAL, input),
+  openWorkDeliverable: input => ipcRenderer.invoke(INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE, input),
   confirmArrangementNodes: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES, input),
   listArrangementDrafts: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_DRAFTS),
   listPlanningRecords: () => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_LIST_PLANNING_RECORDS),
@@ -243,6 +248,8 @@ const electronAPI = {
   cancelArrangementPlanning: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_CANCEL_PLAN, input),
   requestEmployeeAccess: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_REQUEST_EMPLOYEE_ACCESS, input),
   getEmployeeAccessRequest: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_GET_EMPLOYEE_ACCESS_REQUEST, input),
+  requestReplacementEmployeeAccess: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_REQUEST_REPLACEMENT_ACCESS, input),
+  refreshReplacementEmployeeAccess: input => ipcRenderer.invoke(INVOKE_CHANNELS.ARRANGE_REFRESH_REPLACEMENT_ACCESS, input),
 } satisfies ElectronAPI;
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

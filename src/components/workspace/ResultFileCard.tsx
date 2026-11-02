@@ -72,7 +72,7 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
     if (!request) return
     setOpening(true); setError(null)
     try {
-      const result = await window.electronAPI.revealResultFile(request)
+      const result = await window.electronAPI.openWorkDeliverable(request)
       if (mounted.current && !result.success) setError(result.error?.message || '暂时无法打开所在文件夹，请重试。')
     } catch { if (mounted.current) setError('暂时无法打开所在文件夹，请重试。') }
     finally { if (mounted.current) setOpening(false) }
@@ -84,7 +84,7 @@ export function ResultFileCard({ taskId, file, visible = true, conversation = fa
       <strong className="result-file-name" title={file.name}>{file.name}</strong>
       <div className="result-file-actions">
         {!kind && file.format && request ? <DocumentPreviewButton {...request} name={file.name} format={file.format} version={file.previewVersion} /> : null}
-        <button type="button" className="ent-btn sm" disabled={opening || !request} onClick={() => void reveal()} title="打开所在文件夹" aria-label={`打开 ${file.name} 所在文件夹`}>
+        <button type="button" className="ent-btn sm" disabled={opening || !request} onClick={() => void reveal()} title="打开文件所在目录" aria-label={`打开 ${file.name} 所在文件夹`}>
           {opening ? <LoaderCircle size={14} className="animate-spin" /> : <FolderOpen size={14} />}<span>打开所在文件夹</span>
         </button>
       </div>

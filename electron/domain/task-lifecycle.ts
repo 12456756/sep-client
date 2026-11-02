@@ -19,7 +19,7 @@ export interface TaskLifecycleRunEvidence {
 export interface TaskLifecycleCheckpointEvidence {
   activeRunId: string | null
   lastRunId: string | null
-  status: 'queued' | 'running' | 'waiting-user' | 'interrupted' | 'completed' | 'stopped' | 'failed'
+  status: 'queued' | 'running' | 'waiting-user' | 'waiting-employee' | 'interrupted' | 'completed' | 'stopped' | 'failed'
   updatedAt: number
 }
 
@@ -57,6 +57,7 @@ function statusForCheckpoint(status: TaskLifecycleCheckpointEvidence['status']):
     case 'completed': return TaskStatus.COMPLETED
     case 'failed': return TaskStatus.FAILED
     case 'stopped':
+    case 'waiting-employee':
     case 'waiting-user': return TaskStatus.PAUSED
     case 'interrupted': return TaskStatus.INTERRUPTED
     default: return null

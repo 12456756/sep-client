@@ -126,6 +126,64 @@ class FakeWorker implements TaskWorkerPort {
 }
 
 describe('PiArrangementPlanner', () => {
+  for (const text of ['{"subscriptionId":"invented","rationale":"Match"}', '{"subscriptionId":"sub-writer","rationale":"Match","nodes":[]}', '{}']) {
+    it(`rejects an unaccepted replacement response: ${text}`, async () => {
+      let correction: unknown
+      const planner = new PiArrangementPlanner({ gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+        getRefreshToken: () => 'mock', onAuthenticationRequired() {},
+        createWorker: options => ({ async run() { correction = await options.onResponseSettled?.({ text, stopReason: 'stop' }) }, async abort() {}, async dispose() {} }),
+      })
+      await assert.rejects(planner.findReplacement({ planningId: 'replace-invalid', taskGoal: draft.goal, employees,
+        node: { id: 'node', subscriptionId: 'old', modelId: 'model-writer', title: 'Write', instruction: 'Write', expectedOutput: 'Report', dependsOn: [], skillIds: [] } }))
+      assert.ok(correction && typeof correction === 'object' && 'continueWith' in correction)
+    })
+  }
+
+  it('cancels a pending employee match without accepting a late response', async () => {
+    const controller = new AbortController()
+    let entered!: () => void
+    const started = new Promise<void>(resolve => { entered = resolve })
+    let aborted = 0
+    let disposed = 0
+    const planner = new PiArrangementPlanner({ gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace', getRefreshToken: () => 'mock', onAuthenticationRequired() {},
+      createWorker: () => ({ async run() { entered(); await new Promise(() => {}) }, async abort() { aborted++ }, async dispose() { disposed++ } }),
+    })
+    const run = planner.findReplacement({ planningId: 'replace-cancel', taskGoal: draft.goal, employees, signal: controller.signal,
+      node: { id: 'node', subscriptionId: 'old', modelId: 'model-writer', title: 'Write', instruction: 'Write', expectedOutput: 'Report', dependsOn: [], skillIds: [] } })
+    const rejection = assert.rejects(run, error => error instanceof Error && error.name === 'AbortError')
+    await started
+    controller.abort()
+    await rejection
+    assert.ok(aborted > 0)
+    assert.equal(disposed, 1)
+  })
+  it('selects only an authorized replacement that supports the original node model', async () => {
+    let captured = ''
+    const planner = new PiArrangementPlanner({
+      gatewayUrl: 'http://gateway.test/v1', workspaceRoot: 'C:/workspace',
+      getRefreshToken: () => 'test-token', onAuthenticationRequired() {},
+      createWorker: options => ({
+        async run(prompt) {
+          captured = prompt
+          await options.onResponseSettled?.({ stopReason: 'stop', text: JSON.stringify({ subscriptionId: 'sub-writer', rationale: 'The writer has relevant research and reporting skills.' }) })
+        }, async abort() {}, async dispose() {},
+      }),
+    })
+    const result = await planner.findReplacement!({ planningId: 'replace-a', taskId: 'task-a', taskGoal: draft.goal,
+      node: { id: 'node-a', subscriptionId: 'sub-paused', modelId: 'model-writer', title: 'Write report',
+        instruction: 'Research and write', expectedOutput: 'Report', dependsOn: [], skillIds: [], requiresUserConfirmation: false },
+      employees: [
+        { subscriptionId: 'sub-paused', employeeId: 'paused', name: 'Paused', status: 'ACTIVE', allowedModels: ['model-writer'] },
+        { subscriptionId: 'sub-research', employeeId: 'research', name: 'Wrong model', status: 'ACTIVE', allowedModels: ['model-research'] },
+        employees[1]!,
+      ], signal: new AbortController().signal,
+    })
+    assert.equal(result?.subscriptionId, 'sub-writer')
+    assert.match(captured, /node-a/)
+    assert.match(captured, /sub-writer/)
+    assert.doesNotMatch(captured, /sub-paused.*candidate/i)
+  })
+
   it('emits employee selection after normalizing a media plan instead of failing the entire plan', async () => {
     const progress: ArrangementPlanningProgress[] = []
     const planner = new PiArrangementPlanner({

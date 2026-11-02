@@ -196,6 +196,10 @@ export interface SelectDirectoryResult extends IpcCommandResult {
   path?: string | null
 }
 
+export interface DefaultWorkspaceDirectoryResult extends IpcCommandResult {
+  path?: string | null
+}
+
 export interface CreateTaskInput extends CreateTaskRequest {
   subscriptionId: string
 }
@@ -374,6 +378,7 @@ export interface ElectronAPI {
   switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>
+  rerunTask: (input: { taskId: string; requestId: string }) => Promise<TaskResult>
   getTask: (taskId: string) => Promise<TaskResult>
   getAllTasks: () => Promise<TaskListResult>
   listTaskRuns: (taskId: string) => Promise<TaskRunListResult>
@@ -388,6 +393,7 @@ export interface ElectronAPI {
   previewResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult & { data?: ResultFilePreview }>
   releaseResultFilePreview: (input: { url: string }) => Promise<IpcCommandResult>
   revealResultFile: (input: ResultFileRequest) => Promise<IpcCommandResult>
+  openWorkDeliverable: (input: DocumentPreviewRequest) => Promise<IpcCommandResult>
   confirmArrangementNodes: (input: { taskId: string; nodeIds: string[] }) => Promise<IpcCommandResult>
   listArrangementDrafts: () => Promise<ArrangementDraftListResult>
   listPlanningRecords: () => Promise<IpcCommandResult & { records?: PlanningRecordSummary[] }>
@@ -407,10 +413,15 @@ export interface ElectronAPI {
   cancelArrangementPlanning: (input: CancelArrangementPlanningInput) => Promise<ArrangementPlanningCancelResult>
   requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>
   getEmployeeAccessRequest: (input: GetEmployeeAccessRequestInput) => Promise<ArrangementDraftResult>
-  deleteTask: (taskId: string) => Promise<IpcCommandResult>
+  deleteTask: (input: string | { taskId: string; includeExecutions: true }) => Promise<IpcCommandResult>
+  requestReplacementEmployeeAccess: (input: { taskId: string; nodeId: string; employeeId: string }) => Promise<ArrangementExecutionResult>
+  refreshReplacementEmployeeAccess: (input: { taskId: string }) => Promise<ArrangementExecutionResult>
   updateTaskDetails: (input: { taskId: string; title?: string; pinned?: boolean }) => Promise<TaskResult>
   getTaskStats: () => Promise<TaskStatsResult>
   selectDirectory: (currentPath?: string) => Promise<SelectDirectoryResult>
+  getDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
+  selectDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
+  clearDefaultWorkspaceDirectory: () => Promise<DefaultWorkspaceDirectoryResult>
   onPiEvent: (callback: (event: TaskExecutionEvent) => void) => () => void
   onToolApprovalRequest: (callback: (request: ToolAuthorizationRequest) => void) => () => void
   onTaskUpdated: (callback: (task: ClientTask) => void) => () => void

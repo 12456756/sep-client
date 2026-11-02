@@ -6,6 +6,7 @@ import {
   buildArrangementPlannerInput,
   buildArrangementPlannerUserPrompt,
   buildArrangementPlannerRepairPrompt,
+  buildArrangementReplacementPrompt,
   type ArrangementPlanningStage,
 } from './arrangement-planner-prompts'
 import type { ArrangementDraft } from './arrangement-plan'
@@ -20,6 +21,25 @@ const draft: ArrangementDraft = {
 }
 
 describe('arrangement planner prompt separation', () => {
+  it('constrains employee replacement to the existing node contract and authorized catalog', () => {
+    const prompt = buildArrangementReplacementPrompt({
+      taskGoal: 'Create a product launch plan.',
+      node: { ...({ id: 'node-a', title: 'Research', instruction: 'Assess the market', expectedOutput: 'Market report',
+        deliverables: [{ id: 'report', name: 'Report', format: 'md', path: 'deliverables/report.md', contentOutline: ['Findings'], acceptanceCriteria: ['Evidence'] }], dependsOn: ['node-0'],
+        mediaRequirements: [], modelId: 'model-a', subscriptionId: 'sub-old' } as const) },
+      employees: [{ subscriptionId: 'sub-new', employeeId: 'employee-new', name: 'Researcher', position: 'Research',
+        description: 'Market research', functionalCategory: 'Research', allowedModels: ['model-a'], status: 'ACTIVE', canExecute: true }],
+    })
+    assert.match(prompt, /Create a product launch plan/)
+    assert.match(prompt, /node-a/)
+    assert.match(prompt, /sub-old/)
+    assert.match(prompt, /node-0/)
+    assert.match(prompt, /sub-new/)
+    assert.match(prompt, /subscriptionId/)
+    assert.match(prompt, /null/)
+    assert.match(prompt, /不得修改/)
+  })
+
   for (const [stage, heading] of [
     ['authorized', '第一阶段：已授权员工匹配'],
     ['enterprise', '第二阶段：企业待授权员工推荐'],
@@ -109,6 +129,6 @@ describe('arrangement planner prompt separation', () => {
   it('keeps the fixed rules synchronized with the approved document', async () => {
     const document = await readFile(new URL('../../prompts/arrangement-planner-prompts.md', import.meta.url), 'utf8')
     const rules = document.slice(document.indexOf('# 硅基员工自动编排规划 Agent')).trim()
-    assert.equal(ARRANGEMENT_PLANNER_RULES, rules.replace('"path": "deliverables/具体文件"', '"path": "deliverables/具体文件.docx"'))
+    assert.equal(ARRANGEMENT_PLANNER_RULES, rules.replace(/\r\n/g, '\n').replace('"path": "deliverables/具体文件"', '"path": "deliverables/具体文件.docx"'))
   })
 })

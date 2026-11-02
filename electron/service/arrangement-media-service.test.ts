@@ -6,7 +6,7 @@ import type { ArrangementMediaLink } from '../domain/arrangement-media'
 import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoReceiptSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 
-async function fixture(specRevisions?: Record<string, number>, existing: ArrangementMediaLink[] = [], multiple = false) {
+async function fixture(specRevisions?: Record<string, number>, existing: ArrangementMediaLink[] = [], multiple = false, replacement = false) {
   const owner = { memberId: 'member', enterpriseId: 'enterprise' }
   const node: ArrangementNode = { id: 'node', subscriptionId: 'employee', modelId: 'model', title: 'Video', instruction: 'Generate video',
     expectedOutput: 'AI video', dependsOn: [], skillIds: [], mediaRequirements: [{ id: 'video', kind: 'video', operation: 'text-to-video',
@@ -16,19 +16,33 @@ async function fixture(specRevisions?: Record<string, number>, existing: Arrange
     node.deliverables = [{ id: 'result', path: 'result.mp4', name: 'Result', contentOutline: [], acceptanceCriteria: [],
       format: 'mp4', artifact: { kind: 'video', source: 'media-output', operation: 'text-to-video' } }]
   }
+  if (replacement) node.subscriptionId = 'replacement'
   const saved: ArrangementMediaLink[] = [...existing]
   const options = {
     scope: { currentScope: () => owner }, getTask: async () => ({ subscriptionId: 'employee' }),
     plans: { get: async () => ({ planHash: 'hash', nodes: [node], workspace: { path: '/workspace' } }) },
-    checkpoints: { get: async () => specRevisions ? { planHash: 'hash', state: { nodes: [{ nodeId: node.id, mediaSpecRevisions: specRevisions }] } } : null }, runs: { list: async () => [], get: async () => ({ arrangementNodeId: 'node', subscriptionId: 'employee' }) },
+    checkpoints: { get: async () => specRevisions || replacement ? { planHash: 'hash', state: { nodes: [{ nodeId: node.id, mediaSpecRevisions: specRevisions,
+      ...(replacement ? { employeeReplacement: { nodeId: node.id, status: 'replaced', originalSubscriptionId: 'employee', replacementSubscriptionId: 'replacement' } } : {}) }] } } : null }, runs: { list: async () => [], get: async () => ({ arrangementNodeId: 'node', subscriptionId: 'employee' }) },
     links: { list: async () => saved, upsert: async (_scope: unknown, link: ArrangementMediaLink) => { saved.push(link); return link } },
     images: { listJobs: async () => [] }, videos: { listJobs: async () => [], getJob: async (_scope: unknown, _taskId: string, jobId: string) => ({ runId: saved.find(link => link.jobId === jobId)?.nodeRunId ?? 'run' }) },
-    assets: { outputs: async () => [] }, media: {},
+    assets: { outputs: async () => replacement ? existing.flatMap(link => link.outputs.map(output => ({ ...output, kind: link.kind, size: 1, mime: 'video/mp4' }))) : [] }, media: {},
   } as unknown as ArrangementMediaServiceOptions
   const service = new ArrangementMediaService(options)
   const session = await service.prepareNode({ taskId: 'task', arrangementRunId: 'arrangement', nodeRunId: 'run', attempt: 1, planHash: 'hash', node, signal: new AbortController().signal, ...(specRevisions ? { specRevisions } : {}) })
   return { session, saved, node }
 }
+
+test('a replacement reuses the original employee saved media without a new paid tool call', async () => {
+  const link: ArrangementMediaLink = { version: 1, owner: { memberId: 'member', enterpriseId: 'enterprise' }, taskId: 'task',
+    arrangementRunId: 'parent', nodeId: 'node', nodeRunId: 'prior-run', attempt: 1, subscriptionId: 'employee', kind: 'video', operation: 'text-to-video',
+    jobId: 'original-job', requirementId: 'video', specRevision: 2, inputs: [],
+    outputs: [{ artifactId: 'saved-artifact', sha256: 'a'.repeat(64), status: 'saved' }], materializations: [], createdAt: 1, updatedAt: 1 }
+  const f = await fixture(undefined, [link], false, true)
+  const tools = f.session.bind(undefined, { names: ['video_generate'], execute: async () => { assert.fail('must reuse original media locally') } }).video!
+  const result = await tools.execute('video_generate', { requirementId: 'video', creativeBrief: 'Original video' }, new AbortController().signal) as { jobId: string; artifacts: Array<{ artifactId: string }> }
+  assert.equal(result.jobId, 'original-job')
+  assert.equal(result.artifacts[0]?.artifactId, 'saved-artifact')
+})
 
 test('arrangement bridge carries exact user requirements, model suggestions and durable requirement identity', async () => {
   const f = await fixture()

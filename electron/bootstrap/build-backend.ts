@@ -12,7 +12,7 @@ import { ResultFileStore } from '../data/result-file-store'
  * 所有存储、服务和运行时依赖都在这里绑定。除运行时的惰性加载外，业务模块不创建
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { shell, systemPreferences } from 'electron'
 import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
@@ -338,6 +338,12 @@ class BackendRuntime {
     this.documentPreviews = new DocumentPreviewService({
       scope: this,
       getDelivery: (...args) => previewFiles.getDelivery(...args),
+      getDeliveryPath: (...args) => previewFiles.getDeliveryPath(...args),
+      getConversationPath: async (scope, taskId, fileId) => previewFiles.getConversationPath(scope, await this.tasks.get(taskId), fileId),
+      openFileDirectory: async filePath => {
+        const error = await shell.openPath(dirname(filePath))
+        if (error) throw new Error('OPEN_DIRECTORY_FAILED')
+      },
       read: (...args) => previewFiles.read(...args),
       readConversation: async (scope, taskId, fileId) => previewFiles.readConversation(scope, await this.tasks.get(taskId), fileId),
       render: (format, bytes, validate) => this.documentPreviewRuntime.get().then(runtime => { validate(); return runtime.render(format, bytes) }),
@@ -373,6 +379,7 @@ class BackendRuntime {
       execution: () => this.getTaskRuntime(),
       planner: {
         plan: input => this.arrangementPlanner.get().then(planner => planner.plan(input)),
+        findReplacement: input => this.arrangementPlanner.get().then(planner => planner.findReplacement?.(input) ?? null),
         cancel: planningId => { this.arrangementPlanner.peek()?.cancel?.(planningId) },
       },
       onPlanningEvent: event => this.renderer.arrangementPlanningEvent(event),
@@ -611,6 +618,7 @@ class BackendRuntime {
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),
       authorizeModel: (modelId, preferredSubscriptionId) => this.employees.authorizeModel(modelId, preferredSubscriptionId),
+      findEmployeeReplacement: input => this.arrangements.findEmployeeReplacement(input),
       userDataDir: this.userDataDir,
       // 必须显式注入：运行时的默认值是 `process.cwd()`，打包后那是安装目录，
       // 而这个根被用作 workDir 为空时的兜底（workspaceDir 与 .pi-runs/.pi-sessions），

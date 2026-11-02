@@ -83,6 +83,30 @@ describe('directory selection starting path', () => {
     assert.equal(task.workDir, chosen)
   })
 
+  it('creates distinct task workspaces beneath the configured default parent and can clear it', async () => {
+    const { userDataDir, manager, service } = await harness()
+    const parent = join(userDataDir, 'configured-parent')
+    await mkdir(parent)
+    await service.setDefaultWorkspaceDirectory(parent)
+    assert.equal(await service.getDefaultWorkspaceDirectory(), parent)
+    assert.equal(await service.prepareDirectorySelection(), parent)
+    const first = await manager.createTask('first', 'goal')
+    const second = await manager.createTask('second', 'goal')
+    assert.equal(first.workDir, join(parent, first.id))
+    assert.equal(second.workDir, join(parent, second.id))
+    assert.notEqual(first.workDir, second.workDir)
+    const restored = new TaskManager(userDataDir)
+    await restored.setCurrentUser(owner.memberId, owner.enterpriseId, workspaceNames)
+    assert.equal(await restored.getDefaultWorkspaceDirectory(), parent)
+    const chosen = join(userDataDir, 'one-off')
+    assert.equal((await manager.createTask('chosen', 'goal', chosen)).workDir, chosen)
+    await service.setDefaultWorkspaceDirectory(null)
+    assert.equal(await service.getDefaultWorkspaceDirectory(), null)
+    const fallback = await manager.createTask('fallback', 'goal')
+    assert.equal(fallback.workDir, join(new ScopePath(userDataDir).defaultWorkspaceRoot(owner, workspaceNames), fallback.id))
+    assert.equal(await service.prepareDirectorySelection(), new ScopePath(userDataDir).defaultWorkspaceRoot(owner, workspaceNames))
+  })
+
   for (const operation of ['createTask', 'prepareDirectorySelection'] as const) {
     it(`rejects ${operation} if the owner changes during directory resolution`, async t => {
       const { userDataDir, manager } = await harness()

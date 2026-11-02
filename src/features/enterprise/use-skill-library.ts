@@ -34,6 +34,8 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
 
     const request = ++generation.current;
     lastRefreshAt.current = now;
+    loadErrorRef.current = null;
+    setLoadError(null);
     setLoading(true);
     inFlightRequest.current = request;
     const requestPromise = Promise.resolve().then(async () => {

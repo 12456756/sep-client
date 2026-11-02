@@ -8,6 +8,8 @@ import {
   markArrangementNodeFailed,
   markArrangementNodeRunning,
   markArrangementNodeWaitingForInput,
+  markArrangementNodeWaitingForEmployee,
+  retryArrangementEmployeeReplacement,
   resumeArrangement,
   retryArrangementNode,
   reopenArrangementNodeForRepair,
@@ -21,6 +23,44 @@ const node = (id: string, dependsOn: string[] = []): ArrangementNode => ({
 })
 
 describe('ArrangementExecutionState', () => {
+  it('keeps a shared descendant blocked until every missing employee has been restored', () => {
+    const plan = [node('a'), node('b'), node('join', ['a', 'b'])]
+    let state = createArrangementExecutionState(plan)
+    for (const id of ['a', 'b']) state = markArrangementNodeWaitingForEmployee(state, plan, id, { originalSubscriptionId: id, reason: 'unavailable' })
+    assert.equal(state.status, 'waiting-employee')
+    state = retryArrangementEmployeeReplacement(state, plan, 'a')
+    assert.equal(state.nodes[2]?.status, 'blocked')
+    assert.equal(state.nodes[1]?.status, 'waiting-employee')
+    state = markArrangementNodeRunning(state, 'a')
+    state = markArrangementNodeCompleted(state, plan, 'a', 'saved')
+    assert.equal(state.status, 'waiting-employee')
+    state = retryArrangementEmployeeReplacement(state, plan, 'b')
+    assert.equal(state.nodes[2]?.status, 'pending')
+    state = markArrangementNodeRunning(state, 'b')
+    state = markArrangementNodeCompleted(state, plan, 'b')
+    assert.equal(state.nodes[2]?.status, 'ready')
+  })
+  it('waits for replacement without losing completed work and releases only the affected branch on retry', () => {
+    const plan = [node('done'), node('missing', ['done']), node('dependent', ['missing']), node('independent')]
+    let state = createArrangementExecutionState(plan)
+    state = markArrangementNodeRunning(state, 'done')
+    state = markArrangementNodeCompleted(state, plan, 'done', 'preserved output')
+    state = markArrangementNodeRunning(state, 'missing')
+    state = markArrangementNodeWaitingForEmployee(state, plan, 'missing', {
+      originalSubscriptionId: 'sub-old', reason: 'employee is no longer authorized',
+    })
+    assert.equal(state.status, 'running')
+    assert.equal(state.nodes.find(item => item.nodeId === 'missing')?.status, 'waiting-employee')
+    assert.equal(state.nodes.find(item => item.nodeId === 'dependent')?.status, 'blocked')
+    assert.equal(state.nodes.find(item => item.nodeId === 'independent')?.status, 'ready')
+    const retried = retryArrangementEmployeeReplacement(state, plan, 'missing')
+    assert.equal(retried.status, 'running')
+    assert.equal(retried.nodes.find(item => item.nodeId === 'missing')?.status, 'ready')
+    assert.equal(retried.nodes.find(item => item.nodeId === 'dependent')?.status, 'pending')
+    assert.equal(retried.nodes.find(item => item.nodeId === 'done')?.output, 'preserved output')
+    assert.equal(retried.nodes.find(item => item.nodeId === 'independent')?.status, 'ready')
+  })
+
   it('waits for a matching reply without failing or completing the node, then resumes only the affected branch', () => {
     const plan = [node('done'), node('video', ['done']), node('dependent', ['video'])]
     let state = createArrangementExecutionState(plan)

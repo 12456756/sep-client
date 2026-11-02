@@ -84,6 +84,17 @@ describe('arrangement retry display regressions', () => {
     assert.equal(work.steps[0]?.state, 'failed')
   })
 
+  it('projects an unavailable employee checkpoint as waiting for replacement, not failure', () => {
+    const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-employee', updatedAt: 4,
+      nodes: [{ nodeId: 'node-a', status: 'waiting-employee', finalFiles: [],
+        employeeReplacement: { nodeId: 'node-a', originalSubscriptionId: 'sub-old', reason: 'Unavailable', status: 'waiting', updatedAt: 4 } }] }
+    const work = buildWorkItem({ task: { ...task, status: 'paused', activeRunId: null }, employees: [], plan,
+      arrangementExecution: execution })
+    assert.equal(work.status, 'waiting-employee')
+    assert.equal(work.steps[0]?.state, 'waiting-employee')
+    assert.deepEqual(work.arrangementExecution?.nodes[0]?.employeeReplacement, execution.nodes[0]?.employeeReplacement)
+  })
+
   it('shows explicit confirmation from either a checkpoint or a newer event as waiting for the user', () => {
     const confirmationPlan = { ...plan, nodes: [{ ...plan.nodes[0]!, requiresUserConfirmation: true }] }
     const execution: ArrangementExecutionSnapshot = { activeRunId: null, status: 'waiting-user', updatedAt: 4,
@@ -178,6 +189,23 @@ describe('arrangement retry display regressions', () => {
     assert.deepEqual(work.deliverables[0]?.sourceArtifact, { kind: 'image', artifactId: 'image-asset', sha256: 'a'.repeat(64) })
     assert.equal(work.steps[0]?.state, 'done')
     assert.equal(work.steps[1]?.state, 'running')
+  })
+
+  it('classifies deliverables by the last employee in planned order', () => {
+    const classifiedPlan = { ...plan, nodes: [
+      { ...plan.nodes[0]!, id: 'node-a', subscriptionId: 'employee-a', title: 'Research' },
+      { ...plan.nodes[0]!, id: 'node-b', subscriptionId: 'employee-b', title: 'Final report', dependsOn: ['node-a'] },
+    ] }
+    const work = buildWorkItem({ task, employees: [], plan: classifiedPlan, arrangementExecution: {
+      activeRunId: 'run-a', status: 'completed', updatedAt: 10, nodes: [
+        { nodeId: 'node-a', status: 'completed', finalFiles: [{ ...finalFile, id: 'notes' }] },
+        { nodeId: 'node-b', status: 'completed', finalFiles: [{ ...finalFile, id: 'report' }] },
+      ],
+    } })
+
+    assert.deepEqual(work.deliverables.map(file => [file.deliverableId, file.category]), [
+      ['notes', 'intermediate'], ['report', 'final'],
+    ])
   })
 
   it('does not mistake an explicitly stopped arrangement for a retryable failure', () => {

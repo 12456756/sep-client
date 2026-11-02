@@ -84,9 +84,9 @@ export interface SiliconEmployee {
 
 // ─────────────────────────────── 工作 ────────────────────────────────
 
-export type WorkStatus = 'arranging' | 'running' | 'waiting-user' | 'completed' | 'failed' | 'paused';
+export type WorkStatus = 'arranging' | 'running' | 'waiting-user' | 'waiting-employee' | 'completed' | 'failed' | 'paused';
 
-export type WorkStepState = 'pending' | 'running' | 'waiting-user' | 'done' | 'failed' | 'blocked' | 'interrupted' | 'stopped' | 'skipped';
+export type WorkStepState = 'pending' | 'running' | 'waiting-user' | 'waiting-employee' | 'done' | 'failed' | 'blocked' | 'interrupted' | 'stopped' | 'skipped';
 
 /** 一个工作步骤只表达业务信息：由谁完成、完成什么、需要什么、产出什么。 */
 export interface WorkStep {
@@ -158,7 +158,8 @@ export interface WorkMessage {
 export interface WorkDeliverable {
   id: string;
   name: string;
-  /** 文件在本机的完整路径，仅用于展示；文件操作按交付物身份解析。 */
+  category?: 'intermediate' | 'final';
+  /** 文件在本机的完整路径，仅用于展示；文件操作由主进程按产物标识解析。 */
   path: string;
   note: string;
   nodeId?: string;
@@ -182,6 +183,7 @@ export interface WorkTimelineEntry {
 }
 
 export interface WorkItem {
+  executionGroup?: { rootTaskId: string; number: number };
   knowledge?: KnowledgeSelection;
   recordKey?: string;
   planningDraft?: import('../../shared/auto-planning').PlanningRecordSummary;
@@ -301,7 +303,7 @@ export type AppRoute =
   /** employeeId 只在 chat 下有意义：从员工页点「安排工作」时预选那位同事。 */
   | { name: 'arrange'; templateId?: string; mode?: ArrangeMode; employeeId?: string }
   | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped'; workType?: 'all' | 'conversation' | 'arrangement'; search?: string }
-  | { name: 'work'; workId: string }
+  | { name: 'work'; workId: string; executionTaskId?: string }
   | { name: 'skills'; skillId?: string; employeeFilterId?: string; sourceEmployeeId?: string; returnTo?: { name: 'skill-list' } | { name: 'employee'; employeeId: string } }
   | { name: 'knowledge'; kbId?: string }
   | { name: 'compute-center' };
