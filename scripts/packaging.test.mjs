@@ -154,7 +154,7 @@ test('stable builder config preserves packaging settings and passes the installe
     assert.equal(run(dir, 'generate-builder-config.mjs', [channel]).status, 0)
     const path = resolve(dir, `.release/electron-builder.${channel}.json`)
     const config = JSON.parse(readFileSync(path, 'utf8'))
-    assert.deepEqual(config.publish, [{ provider: 'generic', url: `https://download.longdaosep.cn/sep-client/${channel}/`, channel: 'latest' }])
+    assert.deepEqual(config.publish, [{ provider: 'generic', url: `https://sep.longdaoec.com/sep-client/${channel}/`, channel: 'latest' }])
     assert.equal(config.directories.output, `dist/local/${channel}`)
     assert.equal(config.detectUpdateChannel, false)
     assert.equal(config.generateUpdatesFilesForAllChannels, false)

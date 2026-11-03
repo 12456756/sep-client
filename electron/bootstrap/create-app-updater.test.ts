@@ -185,7 +185,7 @@ describe('createAppUpdater behavior', () => {
       await updater.check()
       await updater.download()
       assert.deepEqual(harness.openExternal.mock.calls.map(call => call.arguments), [[
-        'https://download.longdaosep.cn/sep-client/beta/0.1.3/SEP-Client-0.1.3-mac-arm64.dmg',
+        'https://sep.longdaoec.com/sep-client/beta/0.1.3/SEP-Client-0.1.3-mac-arm64.dmg',
       ]])
       assert.equal(harness.driver.downloadUpdate.mock.callCount(), 0)
       assert.equal(harness.driver.quitAndInstall.mock.callCount(), 0)

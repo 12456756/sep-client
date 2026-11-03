@@ -6,10 +6,10 @@ it('builds versioned HTTPS download links for the current channel and architectu
   for (const channel of ['beta', 'stable'] as const) {
     for (const arch of ['arm64', 'x64']) {
       assert.equal(externalUpdateDownloadUrl(channel, '0.2.1', 'darwin', arch),
-        'https://download.longdaosep.cn/sep-client/' + channel + '/0.2.1/SEP-Client-0.2.1-mac-' + arch + '.dmg')
+        'https://sep.longdaoec.com/sep-client/' + channel + '/0.2.1/SEP-Client-0.2.1-mac-' + arch + '.dmg')
     }
     assert.equal(externalUpdateDownloadUrl(channel, '0.2.1-beta.1', 'win32', 'x64'),
-      'https://download.longdaosep.cn/sep-client/' + channel + '/0.2.1-beta.1/SEP-Client-0.2.1-beta.1-win-x64.exe')
+      'https://sep.longdaoec.com/sep-client/' + channel + '/0.2.1-beta.1/SEP-Client-0.2.1-beta.1-win-x64.exe')
   }
 })
 
