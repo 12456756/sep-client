@@ -61,6 +61,7 @@ export class ConversationService {
     if (!task || !task.subscriptionId) {
       throw new AppError('NOT_FOUND', { message: '未找到任务或其硅基员工绑定。' })
     }
+    if (task.scheduledOrigin) throw new AppError('INVALID_STATE', { message: '定时执行记录不能追加对话，请在定时任务中处理。' })
     const plan = await this.deps.workPlans?.get(scope, input.taskId)
     if (plan && plan.mode !== 'conversation') throw new AppError('INVALID_ARGUMENT')
     if (this.deps.queue) {
@@ -116,6 +117,7 @@ export class ConversationService {
   }
 
   private async switchEmployeeNow(taskId: string, subscriptionId: string): Promise<void> {
+    if ((await this.deps.taskManager.getTask(taskId))?.scheduledOrigin) throw new AppError('INVALID_STATE', { message: '定时执行不能中途更换员工，请修改任务配置。' })
     const plan = await this.deps.workPlans?.get(requireScope(this.deps.scope), taskId)
     if (plan?.conversation?.kind === 'general') throw new AppError('INVALID_STATE', { message: '通用助手会话不支持切换员工，请新建员工对话。' })
     if (!await this.deps.employees.authorize(subscriptionId)) {

@@ -12,10 +12,11 @@ interface Props {
   title: string
   allowEmpty: boolean
   disabled?: boolean
+  portalWithinControl?: boolean
   onChange: (modelId: string) => void
 }
 
-export function ModelSelector({ models, value, title, allowEmpty, disabled = false, onChange }: Props) {
+export function ModelSelector({ models, value, title, allowEmpty, disabled = false, portalWithinControl = false, onChange }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const { root, popover, position } = useAnchoredPopover(open, setOpen, true)
@@ -75,6 +76,6 @@ export function ModelSelector({ models, value, title, allowEmpty, disabled = fal
         {!filtered.length ? <span className="ent-knowledge-muted" role="status">没有匹配的模型</span> : null}
       </div>
       {catalog.error ? <div className="ent-model-catalog-error" role="status"><span>模型计费信息加载失败</span>{catalog.retry ? <button type="button" onClick={catalog.retry}>重试</button> : null}</div> : null}
-    </div>, document.body) : null}
+    </div>, portalWithinControl && root.current ? root.current : document.body) : null}
   </div>
 }

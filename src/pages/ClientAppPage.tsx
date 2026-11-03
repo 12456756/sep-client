@@ -39,6 +39,7 @@ import { SkillsPage } from './enterprise/SkillsPage';
 import { ComputeCenterPage } from './enterprise/ComputeCenterPage';
 import { OrganizationPage } from './enterprise/OrganizationPage';
 import { KnowledgePage } from './enterprise/knowledge/KnowledgePage';
+import { ScheduledTasksPage } from './enterprise/ScheduledTasksPage';
 import '../styles/enterprise.css';
 import '../styles/notifications.css';
 import '../styles/updates.css';
@@ -46,6 +47,7 @@ import '../styles/arrange.css';
 import '../styles/compute-center.css';
 import '../styles/employees.css';
 import '../styles/employee-detail.css';
+import '../styles/scheduled-tasks.css';
 
 interface Props {
   update?: UpdateModel;
@@ -265,6 +267,8 @@ function PageBody({ workspace, userName, employeeLoad, employeeStatusLoad, draft
     case 'records':
     case 'work':
       return <WorkHubPage key={workspace.attachmentScopeKey} workspace={workspace} />;
+    case 'scheduled':
+      return <ScheduledTasksPage workspace={workspace} scopeKey={workspace.attachmentScopeKey} />;
     case 'skills':
       return <SkillsPage workspace={workspace} skillId={route.skillId} employeeFilterId={route.employeeFilterId} sourceEmployeeId={route.sourceEmployeeId} returnTo={route.returnTo} />;
     case 'compute-center':

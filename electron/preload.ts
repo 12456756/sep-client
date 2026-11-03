@@ -80,6 +80,23 @@ function registerPasteTarget(input: PasteTarget): () => void {
 }
 
 const electronAPI = {
+  submitScheduledCreation: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_SUBMIT_CREATION, input),
+  cancelScheduledCreation: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CANCEL_CREATION, input),
+  listScheduledTasks: () => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_LIST),
+  getScheduledWorkSource: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_WORK_SOURCE, taskId),
+  createScheduledTaskFromWork: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CREATE_FROM_WORK, input),
+  editScheduledTaskFromWork: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_EDIT_FROM_WORK, input),
+  interpretScheduleTime: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_INTERPRET_TIME, input),
+  createScheduledTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CREATE, input),
+  editScheduledTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_EDIT, input),
+  planScheduledTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_PLAN, input),
+  confirmScheduledTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CONFIRM, input),
+  pauseScheduledTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_PAUSE, input),
+  deleteScheduledTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_DELETE, input),
+  checkScheduledRun: id => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CHECK, id),
+  acknowledgeScheduledRun: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_ACKNOWLEDGE, input),
+  cancelScheduledRun: id => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CANCEL, id),
+  resumeScheduledTasks: () => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_RESUME_SCHEDULER),
   requestKnowledge: (input: KnowledgeRequestInput) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_REQUEST, input),
   cancelKnowledgeRequests: (requestIds: string[]) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_CANCEL, requestIds),
   getSpeechPermission: () => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_PERMISSION),

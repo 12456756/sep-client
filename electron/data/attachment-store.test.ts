@@ -1,12 +1,29 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { AttachmentStore } from './attachment-store'
 import type { TaskOwnerScope } from './scope-path'
+import { ScopePath } from './scope-path'
 
 const scope: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+
+test('frozen input copy can resume after an existing identical blob but never overwrites a corrupt one', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-attachment-copy-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const store = new AttachmentStore(root), paths = new ScopePath(root)
+  const session = await store.begin(scope, { kind: 'draft', draftId: 'draft', expectedRevision: 1 })
+  const bytes = Buffer.from('confirmed bytes')
+  const item = await store.importBytes(scope, session.sessionId, bytes, 'requirements.txt', 'text/plain')
+  const snapshot = await store.freeze(scope, 'source', session.sessionId, [item])
+  await store.copyTaskInputs(scope, 'source', 'template', snapshot)
+  const repeated = await store.copyTaskInputs(scope, 'source', 'template', snapshot)
+  assert.deepEqual(repeated.attachments, snapshot.attachments)
+  assert.deepEqual(await store.readTask(scope, 'template', item.attachmentId), bytes)
+  await writeFile(paths.attachmentTaskBlob(scope, 'template', item.attachmentId), 'corrupted bytes')
+  await assert.rejects(store.copyTaskInputs(scope, 'source', 'template', snapshot), /ATTACHMENT_INTEGRITY_MISMATCH/)
+})
 
 test('stores bytes in an owner scoped session and verifies hash on read', async () => {
   const root = await mkdtemp(join(tmpdir(), 'sep-attachment-'))

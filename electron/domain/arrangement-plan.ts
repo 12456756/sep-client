@@ -287,6 +287,7 @@ export interface ArrangementDraft {
 }
 
 export interface WorkPlan {
+  scheduledOrigin?: import('../../src/shared/scheduled-tasks').ScheduledOrigin
   knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1 | 2

@@ -4,7 +4,7 @@
  * 写入使用临时文件和同目录 rename，并保留 `.bak` 以便写入失败或主文件损坏时恢复。
  * 损坏文件会被隔离，不能阻止其他任务继续启动。
  */
-import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { WriteChain } from './write-chain'
@@ -45,6 +45,8 @@ export interface AtomicWriteOptions {
    * 只有"丢了也无所谓、且写入极频繁"的文件才该关掉它。
    */
   backup?: boolean
+  restoreBackupOnFailure?: boolean
+  durable?: boolean
 }
 
 /**
@@ -65,13 +67,17 @@ export async function writeJsonAtomic(
 async function writeJsonFile(
   file: string,
   content: string,
-  { backup = true }: AtomicWriteOptions,
+  { backup = true, durable = false, restoreBackupOnFailure = true }: AtomicWriteOptions,
 ): Promise<void> {
   const temporaryFile = `${file}.${randomUUID()}.tmp`
   const backupFile = backupPath(file)
   try {
     await mkdir(dirname(file), { recursive: true })
-    await writeFile(temporaryFile, content, { encoding: 'utf8', mode: FILE_MODE })
+    const handle = await open(temporaryFile, 'wx', FILE_MODE)
+    try {
+      await handle.writeFile(content, 'utf8')
+      if (durable) await handle.sync()
+    } finally { await handle.close() }
     try {
       await chmod(temporaryFile, FILE_MODE)
     } catch {
@@ -86,7 +92,7 @@ async function writeJsonFile(
     try {
       await rm(temporaryFile, { force: true })
       // 回滚：目标文件已经没了而备份还在，就把备份放回去。
-      if (backup && !await pathExists(file) && await pathExists(backupFile)) {
+      if (backup && restoreBackupOnFailure && !await pathExists(file) && await pathExists(backupFile)) {
         await copyFile(backupFile, file)
       }
     } catch {

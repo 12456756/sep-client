@@ -22,9 +22,11 @@ import { knowledgeRoutes } from './knowledge'
 import { documentPreviewRoutes } from './document-preview'
 import { attachmentRoutes } from './attachments'
 import { resultFileRoutes } from './result-files'
+import { scheduledRoutes } from './scheduled'
 
 export const routes: readonly Route[] = [
   ...resultFileRoutes,
+  ...scheduledRoutes,
   ...attachmentRoutes,
   ...documentPreviewRoutes,
   ...knowledgeRoutes,

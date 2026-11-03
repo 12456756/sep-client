@@ -85,6 +85,7 @@ export interface TaskRuntimeOptions {
   onApprovalRequest: (request: ToolAuthorizationRequest) => void
   resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   authorizeEmployee?: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
+  authorizeScheduledEmployee?: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
   authorizeModel?: (modelId: string, preferredSubscriptionId?: string) => Promise<EmployeeRuntimeConfig | null>
   createWorker?: (options: PiTaskWorkerOptions) => TaskWorkerPort
   taskRunStore?: TaskRunStorePort
@@ -109,6 +110,7 @@ export class TaskRuntime {
   private readonly onEvent: (event: TaskExecutionEvent) => void
   private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   private readonly authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
+  private readonly authorizeScheduledEmployee: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
   private readonly authorizeModel: TaskRuntimeOptions['authorizeModel']
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
@@ -156,6 +158,11 @@ export class TaskRuntime {
     this.authorizeEmployee = options.authorizeEmployee ?? (async (subscriptionId, modelId) => {
       const employee = this.resolveEmployee(subscriptionId)
       return employee && (!modelId || employee.modelId === modelId) ? employee : null
+    })
+    this.authorizeScheduledEmployee = options.authorizeScheduledEmployee ?? (async (subscriptionId, modelId) => {
+      const employee = await this.authorizeEmployee(subscriptionId, modelId)
+      if (!employee) throw new AppError('EMPLOYEE_UNAVAILABLE')
+      return employee
     })
     this.createWorker = workerOptions => {
       const context = workerOptions.context
@@ -277,7 +284,8 @@ export class TaskRuntime {
     }
   }
 
-  async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; signal?: AbortSignal } = {}): Promise<void> {
+  async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; signal?: AbortSignal; beforeAdmission?: () => void } = {}): Promise<void> {
+    options.beforeAdmission?.()
     this.startLifecycleAudit()
     options.signal?.throwIfAborted()
     const scope = this.taskManager.getCurrentUserScope()
@@ -324,7 +332,9 @@ export class TaskRuntime {
           (checkpoint?.state.status === 'completed' ? activePlan.nodes[0] : undefined)
         let primarySubscriptionId = primaryNode?.subscriptionId ?? task.subscriptionId
         if (!primarySubscriptionId) throw new Error('Select a silicon employee before executing the task.')
-        let employee = await this.authorizeEmployee(primarySubscriptionId)
+        let employee = arrangement.scheduledOrigin
+          ? await this.authorizeScheduledEmployee(primarySubscriptionId, primaryNode?.modelId ?? '')
+          : await this.authorizeEmployee(primarySubscriptionId)
         check()
         if (!employee && primaryNode) {
           const search = await this.findEmployeeReplacement?.({ taskId,
@@ -375,7 +385,7 @@ export class TaskRuntime {
         check()
         if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
         const runId = randomUUID()
-        await this.taskManager.admitTask(taskId, runId)
+        await this.taskManager.admitTask(taskId, runId, options.beforeAdmission)
         const admittedTask = await this.taskManager.getTask(taskId)
         if (!admittedTask || admittedTask.activeRunId !== runId) return
         this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: activePlan.goal, conversation: false, arrangement: activePlan, knowledge: taskKnowledge,
@@ -405,7 +415,7 @@ export class TaskRuntime {
 
     const runId = randomUUID()
     assertCurrent()
-    await this.taskManager.admitTask(taskId, runId)
+    await this.taskManager.admitTask(taskId, runId, options.beforeAdmission)
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
     const isConversation = arrangement?.mode === 'conversation' || options.conversation === true
@@ -933,7 +943,9 @@ export class TaskRuntime {
         onAuthenticationRequired: this.onAuthenticationRequired,
         onApprovalRequest: request => this.approvals.request(request),
         onEvent: event => this.enqueueEvent(event),
-        authorizeEmployee: this.authorizeEmployee,
+        authorizeEmployee: (subscriptionId, modelId) => plan.scheduledOrigin
+          ? this.authorizeScheduledEmployee(subscriptionId, modelId ?? '')
+          : this.authorizeEmployee(subscriptionId, modelId),
         workspaceRoot: task.workDir ?? this.getTaskWorkspaceRoot(),
         arrangementSubscriptionId: queued.subscriptionId,
         media: this.media,

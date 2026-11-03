@@ -117,6 +117,9 @@ export const authRoutes = [
       void ctx.backend.resumeClientMonitor().catch(error => {
         log.warn('client monitor resume failed', { cause: describeError(error) })
       })
+      void ctx.backend.resumeScheduledTasks().catch(error => {
+        log.warn('scheduled task recovery failed after login', { cause: describeError(error) })
+      })
       return { success: true, data: { user: response.user, enterprise: response.enterprise } }
     } catch (error) {
       // 登录失败必须把半成品会话清干净，否则下一次调用会带着一个坏令牌走。

@@ -1,4 +1,4 @@
-import { BookOpen, Building2, CircleUserRound, Gauge, LayoutGrid, ListTodo, LogOut, Settings, Users, Workflow } from 'lucide-react';
+import { BookOpen, Building2, CalendarClock, CircleUserRound, Gauge, LayoutGrid, ListTodo, LogOut, Settings, Users, Workflow } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 import type { AppRoute, AppRouteName } from '../../features/enterprise/types';
@@ -25,6 +25,7 @@ interface Props {
 const MAIN: { name: AppRouteName; label: string; icon: typeof Users; route: AppRoute }[] = [
   { name: 'home', label: '首页', icon: LayoutGrid, route: { name: 'home' } },
   { name: 'records', label: '工作', icon: Workflow, route: { name: 'records' } },
+  { name: 'scheduled', label: '定时任务', icon: CalendarClock, route: { name: 'scheduled' } },
   { name: 'employees', label: '硅基员工', icon: Users, route: { name: 'employees' } },
   { name: 'skills', label: '员工技能', icon: ListTodo, route: { name: 'skills' } },
   { name: 'knowledge', label: '知识库', icon: BookOpen, route: { name: 'knowledge' } },
