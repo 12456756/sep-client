@@ -17,6 +17,7 @@ import { GENERAL_ASSISTANT_ID } from '../../features/enterprise/general-assistan
 import { KnowledgeSelector } from './KnowledgeSelector';
 import { noKnowledgeSelection } from '../../shared/knowledge-selection';
 import { ConversationMedia } from '../../features/enterprise/conversation-media';
+import { useConversationQueue } from '../../features/enterprise/use-conversation-queue';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -33,7 +34,7 @@ export function WorkTalkDrawer({ work, workspace, onClose }: Props) {
     <>
       <div className="ent-drawer-back" role="presentation" onMouseDown={onClose} />
       <aside className="ent-drawer wide" role="dialog" aria-modal="true" aria-labelledby="ent-talk-title" ref={panel}>
-        <WorkConversation work={work} workspace={workspace} onClose={onClose} />
+        <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} onClose={onClose} />
       </aside>
     </>
   );
@@ -52,6 +53,7 @@ function formatAttachmentBytes(bytes: number): string {
 }
 
 export function WorkConversation({ work, workspace, onClose }: ConversationProps) {
+  const queued = useConversationQueue(work.id, workspace.attachmentScopeKey);
   const inheritedSessions = useContext(ConversationSessionsContext);
   const [localSessions] = useState(() => createConversationSessions(sessionId => { void window.electronAPI.cancelAttachmentImport({ sessionId }).catch(() => undefined); }));
   const sessions = inheritedSessions ?? localSessions;
@@ -61,6 +63,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
   useEffect(() => { if (!inheritedSessions) return localSessions.retainOwner(); }, [inheritedSessions, localSessions]);
   const body = useRef<HTMLDivElement | null>(null);
   useSyncExternalStore(savedSession.subscribe, () => savedSession.revision, () => savedSession.revision);
+  const sending = savedSession.sending;
   const draft = savedSession.draft;
   const setDraft = useCallback((update: SetStateAction<string>) => {
     savedSession.setDraft(typeof update === 'function' ? update(savedSession.draft) : update);
@@ -129,14 +132,20 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
 
   const send = async () => {
     const text = draft.trim();
-    if (!text || workspace.busy || speech.busy) return;
+    if (!text || workspace.busy || speech.busy || attachmentsBusy || savedSession.sending) return;
+    const fingerprint = JSON.stringify([text, attachmentSession?.sessionId, attachments.map(item => item.attachmentId), knowledge]);
+    const messageId = savedSession.beginSend(fingerprint);
+    if (!messageId) return;
     followsLatest.current = true;
     setHasNewContent(false);
-    const sent = await workspace.sendMessage(work.id, text, attachments, attachmentSession?.sessionId, knowledge);
-    if (!sent) return;
-    savedSession.acceptSend(draft);
-    setAttachments([]);
-    setAttachmentSession(null);
+    try {
+      const sent = await workspace.sendMessage(work.id, text, attachments, attachmentSession?.sessionId, knowledge, messageId);
+      if (!sent) return;
+      savedSession.acceptSend(draft);
+      setAttachments([]);
+      setAttachmentSession(null);
+      void queued.refresh();
+    } finally { savedSession.finishSend(); }
   };
 
   return (
@@ -185,6 +194,13 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
         </div>
 
         <div className="ent-drawer-foot ent-conversation-foot">
+          {queued.queue.items.length > 0 || queued.queue.failed ? <details className="ent-conversation-queue">
+            <summary>等待处理 {queued.queue.items.length}/10{queued.queue.paused ? ' · 已暂停' : ''}</summary>
+            {queued.queue.failed ? <p>未完成：{queued.queue.failed.prompt}</p> : null}
+            <ol>{queued.queue.items.map(item => <li key={item.id}>{item.prompt}{item.attachmentNames.length ? <small>附件：{item.attachmentNames.join('、')}</small> : null}</li>)}</ol>
+            {queued.queue.paused ? <button type="button" className="ent-btn sm" disabled={queued.busy || work.isActive} onClick={() => void queued.resume()}>{queued.queue.failed || work.status === 'failed' ? '重试并继续' : '继续处理'}</button> : null}
+            {over ? <button type="button" className="ent-btn sm ghost" disabled={workspace.busy} onClick={() => void workspace.stopWork(work.id, '用户终止了这项工作')}>终止</button> : null}
+          </details> : null}
           {hasNewContent ? <button type="button" className="ent-btn sm ent-new-content" onClick={scrollToLatest}>
             <ArrowDown size={14} aria-hidden />有新内容，回到最新
           </button> : null}
@@ -199,13 +215,13 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                 {...speech.inputProps}
                 className="ent-ask-input"
                 value={draft}
-                placeholder={over ? '这项工作已经结束，说一句会重新开始跟进' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
+                placeholder={queued.queue.paused ? '可继续添加信息，点击继续处理后依次执行' : isReplying ? '补充信息将排队依次处理' : `告诉 ${work.currentEmployeeName} 下一步要做什么`}
                 aria-label="给员工的下一句话"
                 onChange={event => { setDraft(event.target.value); setEditorVersion(version => version + 1); }}
                 onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); send(); } }}
               />
               <div className="ent-ask-bar">
-                <AttachmentComposer key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+                <AttachmentComposer key={savedSession.attachmentEpoch} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId }} bindingKey={`${workspace.attachmentScopeKey}:${work.id}`} retainedState={retainedAttachments} disabled={workspace.busy || sending} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
                 {/* 换人只对对话式工作有意义：流程工作的每一步都各自写了由谁来做，
                     在这里换掉「当前员工」会和步骤上的安排对不上。 */}
                 {work.currentEmployeeId === GENERAL_ASSISTANT_ID ? (
@@ -216,7 +232,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                     <select
                       value={work.currentEmployeeId}
                       aria-label="换一位员工接手"
-                      disabled={workspace.busy || work.status === 'running' || work.status === 'waiting-user'}
+                      disabled={workspace.busy || sending || work.isActive || queued.queue.items.length > 0 || !!queued.queue.failed}
                       onChange={event => void workspace.switchEmployee(work.id, event.target.value)}
                     >
                       {workspace.myEmployees.map(item => (
@@ -226,7 +242,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                     <ChevronDown size={13} aria-hidden />
                   </label>
                 ) : null}
-                <KnowledgeSelector value={knowledge} onChange={setKnowledge} disabled={workspace.busy} scopeKey={workspace.attachmentScopeKey} />
+                <KnowledgeSelector value={knowledge} onChange={setKnowledge} disabled={workspace.busy || sending} scopeKey={workspace.attachmentScopeKey} />
                 <span className="ent-ask-spacer" />
                 {over ? null : (
                   <button type="button" className="ent-ask-stop" disabled={workspace.busy} onClick={() => { void workspace.stopWork(work.id, '用户终止了这项工作'); }}>
@@ -235,7 +251,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                   </button>
                 )}
                 <SpeechInputActions speech={speech} disabled={workspace.busy} />
-                <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || speech.busy || attachmentsBusy} aria-label="发送">
+                <button type="button" className="ent-ask-send" onClick={send} disabled={!draft.trim() || workspace.busy || sending || speech.busy || attachmentsBusy} aria-label="发送">
                   <Send size={15} aria-hidden />
                 </button>
               </div>

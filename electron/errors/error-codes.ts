@@ -11,6 +11,7 @@
  */
 
 export const ERROR_CODES = {
+  CONVERSATION_QUEUE_FULL: { status: 409, retryable: false, level: 'warn', message: '任务队列已经满了' },
   AUTH_REQUIRED: { status: 401, retryable: false, level: 'warn', message: '请重新登录。' },
   INVALID_ARGUMENT: { status: 400, retryable: false, level: 'warn', message: '请求参数不合法。' },
   MISSING_SPEC: { status: 422, retryable: false, level: 'warn', message: '生成规格尚未确定，请根据用途补充方案或向用户确认。' },

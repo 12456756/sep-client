@@ -41,6 +41,9 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import { EmployeeAuthorizer } from '../service/employee-authorizer'
 import { EmployeeDirectory } from '../service/employee-directory'
 import { ConversationService } from '../service/conversation-service'
+import { ConversationQueueService } from '../service/conversation-queue-service'
+import { ConversationQueueStore } from '../data/conversation-queue-store'
+import { runtimeFailureEvent } from '../errors/runtime-feedback'
 import { TaskService } from '../service/task-service'
 import { TaskCreationGate } from '../service/task-creation-gate'
 import { ArrangementService } from '../service/arrangement-service'
@@ -108,6 +111,7 @@ class BackendRuntime {
   readonly employees: EmployeeAuthorizer
   readonly tasks: TaskService
   readonly conversations: ConversationService
+  readonly conversationQueue: ConversationQueueService
   readonly arrangements: ArrangementService
   readonly attachments: AttachmentService
   private readonly attachmentStore: AttachmentStore
@@ -327,8 +331,24 @@ class BackendRuntime {
       execution: () => this.getTaskRuntime(),
       attachments: this.attachments,
     }
-    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media })
-    this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans })
+    this.conversationQueue = new ConversationQueueService({ scope: this, store: new ConversationQueueStore(userDataDir),
+      getTask: taskId => this.taskManager.getTask(taskId),
+      isBusy: taskId => this.runtime.peek()?.hasConversationRun(taskId) ?? false,
+      start: async (taskId, entry, signal) => {
+        const runtime = await this.getTaskRuntime()
+        signal.throwIfAborted()
+        await runtime.continueConversation(taskId, entry.prompt, { runId: entry.runId, signal, mode: entry.mode, confirmed: entry.confirmed,
+          knowledge: entry.knowledge, attachmentRefs: entry.attachmentRefs })
+      },
+      retry: async (taskId, signal) => {
+        const runtime = await this.getTaskRuntime()
+        signal.throwIfAborted()
+        await runtime.retryTask(taskId, { conversation: true, signal })
+      },
+      onFailure: (taskId, entry, error, scope, subscriptionId) => this.renderer.taskEvent(runtimeFailureEvent({ taskId, runId: entry.runId, subscriptionId, owner: scope }, error)),
+    })
+    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media, conversationQueue: this.conversationQueue })
+    this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans, queue: this.conversationQueue })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
     this.resultFiles = new ResultFileService({
       scope: this,
@@ -493,6 +513,7 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.conversationQueue.stop()
     this.arrangements.cancelAllPlanning()
     this.sessionRecovery.stop()
     await this.clientMonitor.stop()
@@ -511,6 +532,7 @@ class BackendRuntime {
   }
 
   resumeClientMonitor(): Promise<void> {
+    this.conversationQueue.start()
     return this.sessionRecovery.resume()
   }
 
@@ -609,6 +631,7 @@ class BackendRuntime {
     }
     const { TaskRuntime } = await import('../runtime/task-runtime')
     const runtime = new TaskRuntime({
+      onConversationSettled: (taskId, runId, owner) => this.conversationQueue.settled(taskId, runId, owner),
       createModelTrace: this.createModelTrace,
       taskManager: this.taskManager,
       getRefreshToken: () => this.authSession.getRefreshToken(),

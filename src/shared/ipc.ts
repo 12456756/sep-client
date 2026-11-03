@@ -214,6 +214,7 @@ export interface ExecuteTaskInput {
 }
 
 export interface ContinueTaskInput {
+  messageId?: string
   knowledge?: KnowledgeSelection
   taskId: string
   prompt: string
@@ -381,6 +382,7 @@ export interface ElectronAPI {
   createConversation: (data: CreateConversationInput) => Promise<TaskResult>
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult>
+  conversationQueue: (input: { taskId: string; action: 'get' | 'resume' }) => Promise<IpcCommandResult & { queue?: import('./conversation-queue').ConversationQueueView }>
   switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>

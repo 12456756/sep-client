@@ -179,7 +179,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           {work.kind === 'flow' ? <FailedNodeActions work={work} busy={workspace.busy} onRetry={workspace.retryWork} /> : null}
 
           {isConversation ? <section className="ent-chat-panel" aria-label="工作对话">
-            <WorkConversation work={work} workspace={workspace} />
+            <WorkConversation key={`${workspace.attachmentScopeKey}:${work.id}`} work={work} workspace={workspace} />
           </section> : <ArrangementTranscript work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey}
             busy={workspace.busy} onStop={workspace.stopWork} onResults={() => openInspector('results')} />}
         </div>

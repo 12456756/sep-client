@@ -7,6 +7,7 @@ import { TaskManager } from '../runtime/task-manager'
 import { ScopePath, type TaskOwnerScope } from '../data/scope-path'
 import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { TaskService, type TaskServiceDependencies } from './task-service'
+import { ConversationService, type ConversationServiceDependencies } from './conversation-service'
 
 const owner: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const workspaceNames = { enterpriseName: 'Acme Studio', memberName: 'Alice' }
@@ -234,6 +235,18 @@ function harness(extra: Record<string, unknown> = {}) {
     taskRunStore: {}, execution: async () => ({}), ...extra,
   } as unknown as TaskServiceDependencies)
 }
+
+it('queue reads support legacy conversations and reject arrangements or unavailable type evidence', async () => {
+  let reads = 0
+  const make = (tasks: TaskService) => new ConversationService({
+    scope: { currentScope: () => scope }, tasks,
+    queue: { async view() { reads++; return { paused: false, items: [], failed: null } } },
+  } as unknown as ConversationServiceDependencies)
+  assert.deepEqual(await make(harness()).queue(task.id, 'get'), { paused: false, items: [], failed: null })
+  await assert.rejects(() => make(harness({ workPlans: { async diagnose() { return { state: 'found', value: { mode: 'auto' } } } } })).queue(task.id, 'get'))
+  await assert.rejects(() => make(harness({ workPlans: undefined })).queue(task.id, 'get'))
+  assert.equal(reads, 1)
+})
 
 it('retries a general conversation without employee authorization or skill preparation', async () => {
   let retryOptions: unknown

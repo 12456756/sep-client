@@ -17,6 +17,9 @@ import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentService } from './attachment-service'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
+import type { ConversationQueueService } from './conversation-queue-service'
+import { createHash } from 'node:crypto'
+import type { ConversationQueueView } from '../../src/shared/conversation-queue'
 
 export interface ConversationServiceDependencies {
   scope: ScopeSource
@@ -27,9 +30,11 @@ export interface ConversationServiceDependencies {
   execution: () => Promise<TaskExecutionPort>
   attachments?: AttachmentService
   workPlans?: WorkPlanStorePort
+  queue?: ConversationQueueService
 }
 
 export interface ContinueConversationInput {
+  messageId?: string
   taskId: string
   prompt: string
   recoveryMode?: SessionRecoveryMode | undefined
@@ -48,8 +53,7 @@ export class ConversationService {
   }
 
   /**
-   * 追加一轮。任务必须已绑定员工且该员工当下可用——排队过的 run 依赖入队时的
-   * 那一次授权结果（C4）。
+   * 先持久化本轮输入；真正执行时再次授权，避免等待期间授权发生变化。
    */
   async continue(input: ContinueConversationInput): Promise<void> {
     const scope = requireScope(this.deps.scope)
@@ -58,6 +62,29 @@ export class ConversationService {
       throw new AppError('NOT_FOUND', { message: '未找到任务或其硅基员工绑定。' })
     }
     const plan = await this.deps.workPlans?.get(scope, input.taskId)
+    if (plan && plan.mode !== 'conversation') throw new AppError('INVALID_ARGUMENT')
+    if (this.deps.queue) {
+      if (!input.messageId) throw new AppError('INVALID_ARGUMENT')
+      const type = (await this.deps.tasks.get(input.taskId)).workType
+      if (type.state !== 'resolved' || type.kind !== 'conversation') throw new AppError('INVALID_ARGUMENT')
+      const current = requireScope(this.deps.scope)
+      if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+      const requestKey = createHash('sha256').update(JSON.stringify([input.prompt, input.attachmentSessionId, input.attachmentRefs, input.knowledge, input.recoveryMode, input.confirmRecovery])).digest('hex')
+      await this.deps.queue.enqueue(input.taskId, { id: input.messageId, prompt: input.prompt, requestKey }, async () => {
+        if (plan?.conversation?.kind !== 'general' && !await this.deps.employees.authorize(task.subscriptionId!)) throw new AppError('EMPLOYEE_UNAVAILABLE')
+        const current = requireScope(this.deps.scope)
+        if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+        let attachmentRefs
+        let attachmentNames: string[] = []
+        if (input.attachmentRefs?.length) {
+          if (!input.attachmentSessionId || !this.deps.attachments) throw new AppError('INVALID_ARGUMENT')
+          attachmentNames = (await this.deps.attachments.validateRefs(scope, input.attachmentSessionId, input.attachmentRefs)).map(item => item.displayName)
+          attachmentRefs = (await this.deps.attachments.claimTask(input.attachmentSessionId, input.taskId, input.attachmentRefs)).attachments
+        }
+        return { attachmentRefs, attachmentNames, knowledge: input.knowledge ?? plan?.knowledge ?? { mode: 'none' as const, knowledgeBaseIds: [] }, mode: input.recoveryMode, confirmed: input.confirmRecovery }
+      })
+      return
+    }
     if (plan?.conversation?.kind !== 'general' && !await this.deps.employees.authorize(task.subscriptionId)) {
       throw new AppError('INVALID_ARGUMENT')
     }
@@ -84,6 +111,11 @@ export class ConversationService {
    * 顺序反过来会在运行时拒绝时留下不一致的元数据。
    */
   async switchEmployee(taskId: string, subscriptionId: string): Promise<void> {
+    if (this.deps.queue) return this.deps.queue.whenIdle(taskId, () => this.switchEmployeeNow(taskId, subscriptionId))
+    return this.switchEmployeeNow(taskId, subscriptionId)
+  }
+
+  private async switchEmployeeNow(taskId: string, subscriptionId: string): Promise<void> {
     const plan = await this.deps.workPlans?.get(requireScope(this.deps.scope), taskId)
     if (plan?.conversation?.kind === 'general') throw new AppError('INVALID_STATE', { message: '通用助手会话不支持切换员工，请新建员工对话。' })
     if (!await this.deps.employees.authorize(subscriptionId)) {
@@ -102,6 +134,17 @@ export class ConversationService {
       currentSubscriptionId: subscriptionId,
       participantSubscriptionIds,
     })
+  }
+
+  async queue(taskId: string, action: 'get' | 'resume'): Promise<ConversationQueueView> {
+    if (!this.deps.queue) throw new AppError('INTERNAL_ERROR')
+    const scope = requireScope(this.deps.scope)
+    const type = (await this.deps.tasks.get(taskId)).workType
+    if (type.state !== 'resolved' || type.kind !== 'conversation') throw new AppError('INVALID_ARGUMENT')
+    const current = requireScope(this.deps.scope)
+    if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    if (action === 'resume') await this.deps.queue.resume(taskId)
+    return this.deps.queue.view(taskId)
   }
 }
 

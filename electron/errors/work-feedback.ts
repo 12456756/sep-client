@@ -9,6 +9,7 @@ const reasons: Readonly<Record<string, string>> = {
   '只有已确认计划的流程工作支持重新执行。': '只有已确认计划的流程工作支持重新执行，当前记录没有可复用的确认计划。',
   '无法复制已确认的输入附件。': '重新执行所需的原附件复制失败，请确认附件仍存在后重试。',
   '工作状态已变化，无法删除，请刷新后重试。': '工作状态已变化，暂时无法删除，请刷新工作记录后重试。',
+  '还有等待处理的信息，请先处理或终止后再切换员工。': '还有等待处理的信息，请先处理或终止后再切换员工',
   '任务正在执行，无法删除。': '工作正在执行，请先终止工作，再删除记录',
   '未找到该执行记录。': '未找到这次执行记录，请重新加载工作过程',
   '通用助手会话不支持切换员工，请新建员工对话。': '通用助手会话不支持切换员工，请新建员工对话',
@@ -45,6 +46,7 @@ export function workFeedbackMessage(error: unknown, operation: FeedbackOperation
   if (!operation.startsWith('work') && !operation.startsWith('image') && !operation.startsWith('video') && operation !== 'documentPreview') return null
   if (error instanceof AppError && Object.hasOwn(reasons, error.userMessage)) return reasons[error.userMessage]
   const messages: Partial<Record<ErrorCode, string>> = {
+    CONVERSATION_QUEUE_FULL: '任务队列已经满了',
     INSUFFICIENT_FUNDS: MEDIA_BUSINESS_MESSAGES.INSUFFICIENT_FUNDS,
     VIDEO_BUDGET_EXCEEDED: MEDIA_BUSINESS_MESSAGES.VIDEO_BUDGET_EXCEEDED,
     MEDIA_FORBIDDEN: MEDIA_BUSINESS_MESSAGES.MEDIA_FORBIDDEN,

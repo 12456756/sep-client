@@ -157,6 +157,7 @@ const electronAPI = {
   createTask: data => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CREATE, data),
   executeTask: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_EXECUTE, taskId),
   continueTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_CONTINUE, input),
+  conversationQueue: input => ipcRenderer.invoke(INVOKE_CHANNELS.CONVERSATION_QUEUE, input),
   getTaskMessages: taskId => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_GET_MESSAGES, taskId),
   retryTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_RETRY, input),
   rerunTask: input => ipcRenderer.invoke(INVOKE_CHANNELS.TASK_RERUN, input),
