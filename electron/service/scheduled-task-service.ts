@@ -357,10 +357,13 @@ export class ScheduledTaskService {
               scheduledTaskId: item.id, occurrenceId: missedId, revision: item.revision,
               scheduledAt: missedAt, consolidated,
             } })
+            const missedIssue: ScheduledOccurrence['error'] = {
+              code: 'MISFIRE_COALESCED', message: consolidated ? '长期停机期间的较早时间点已合并；仅补执行最近一次安排。' : '此时间点已错过，仅补执行最近一次安排。', action: 'blocked',
+            }
             data.occurrences.push({ id: missedId, definitionId: item.id, revision: item.revision, scheduledAt: missedAt, taskId: randomUUID(),
               input: structuredClone(item.input), plan: structuredClone(item.plan), status: 'missed', firstEligibleAt: this.now(),
               startDeadline: Math.min(this.now() + 3600000, missedAt + 86400000), startedAt: null, finishedAt: this.now(), nextRetryAt: null,
-              error: { code: 'MISFIRE_COALESCED', message: consolidated ? '长期停机期间的较早时间点已合并；仅补执行最近一次安排。' : '此时间点已错过，仅补执行最近一次安排。', action: 'blocked' },
+              error: missedIssue,
               attempts: [], stopReason: null })
           }
           const id = occurrenceId(item.id, scheduledAt)
