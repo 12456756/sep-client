@@ -40,7 +40,7 @@ function setup(options: { saveFails?: boolean; saveFailureReason?: 'accounts_rea
     zod: { z },
     '../../common/platform/platform-api': {
       AuthApiError,
-      getEmployeeStatus: () => read, getEnterpriseOrganization: () => read, getEmployeeSkills: () => read, previewSkill: () => read,
+      getEmployeeStatus: () => read, getEnabledModels: () => read, getEnterpriseOrganization: () => read, getEmployeeSkills: () => read, previewSkill: () => read,
       login: async () => {
       if (options.loginFails) throw new Error('login rejected')
       return response
@@ -157,7 +157,8 @@ describe('login background recovery', () => {
 
   for (const channel of [
     INVOKE_CHANNELS.AUTH_GET_INSTANCES, INVOKE_CHANNELS.AUTH_GET_EMPLOYEE_STATUS,
-    INVOKE_CHANNELS.AUTH_GET_ORGANIZATION, INVOKE_CHANNELS.SUBSCRIPTION_GET_SKILLS, INVOKE_CHANNELS.SUBSCRIPTION_PREVIEW_SKILL,
+    INVOKE_CHANNELS.AUTH_GET_ORGANIZATION, INVOKE_CHANNELS.AUTH_GET_ENABLED_MODELS,
+    INVOKE_CHANNELS.SUBSCRIPTION_GET_SKILLS, INVOKE_CHANNELS.SUBSCRIPTION_PREVIEW_SKILL,
   ]) {
     it(`${channel} ignores an old session failure and still invalidates the current session`, async () => {
       for (const stale of [false, true]) {

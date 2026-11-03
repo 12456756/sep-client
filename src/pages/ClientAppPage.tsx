@@ -24,6 +24,7 @@ import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { useRuntimeFeedback } from '../components/feedback/use-runtime-feedback';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
+import { ModelCatalogProvider } from '../components/enterprise/ModelCatalogContext';
 import { useHomeDraftOwner } from '../features/enterprise/home-draft';
 import { useEmployeePageScroll } from '../features/enterprise/use-employee-page-scroll';
 import { useSkillPageScroll } from '../features/enterprise/use-skill-page-scroll';
@@ -187,7 +188,9 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
           ref={scroll}
         >
           <ConversationSessionsContext.Provider value={conversationSessions}>
-            <PageBody workspace={contentWorkspace} userName={displayUserName} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} draft={homeDraft} />
+            <ModelCatalogProvider models={contentWorkspace.modelCatalog} error={contentWorkspace.modelCatalogLoad?.error} retry={contentWorkspace.modelCatalogLoad?.retry}>
+              <PageBody workspace={contentWorkspace} userName={displayUserName} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} draft={homeDraft} />
+            </ModelCatalogProvider>
           </ConversationSessionsContext.Provider>
         </div>
         {route.name === 'employee' ? <EmployeeDetailDrawer key={route.employeeId} workspace={workspace} employeeId={route.employeeId} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} /> : null}

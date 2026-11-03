@@ -20,7 +20,9 @@
 
 .ent-model-picker { position: relative; min-width: 0; max-width: 100%; }
 .ent-model-trigger { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; min-width: 0; min-height: 32px; padding: 0 9px; border: 0; border-radius: 8px; color: var(--ent-ink-2); background: transparent; font: inherit; font-size: 12px; cursor: pointer; }
-.ent-model-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-model-trigger > span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-model-trigger > small { min-width: 0; max-width: 46%; overflow: hidden; color: var(--ent-ink-3); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.ent-model-trigger > small.is-free { color: #16834b; font-weight: 600; }
 .ent-model-trigger > svg, .ent-model-option > svg { flex: 0 0 auto; }
 .ent-model-trigger:hover:not(:disabled), .ent-model-trigger[aria-expanded="true"] { color: var(--ent-brand-ink); background: var(--ent-brand-softer); }
 .ent-model-trigger:focus-visible, .ent-model-option:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
@@ -28,6 +30,10 @@
 .ent-model-trigger svg.down { transform: rotate(180deg); }
 .ent-model-options { max-height: 300px; flex-shrink: 1; }
 .ent-model-option { flex: 0 0 auto; gap: 10px; }
-.ent-model-option > span { min-width: 0; overflow-wrap: anywhere; }
+.ent-model-option-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
+.ent-model-option-copy small { color: var(--ent-ink-3); font-size: 10px; line-height: 1.35; }
+.ent-model-option-copy small.is-free { color: #16834b; font-weight: 600; }
+.ent-model-catalog-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ent-danger, #b42318); font-size: 12px; }
+.ent-model-catalog-error button { border: 0; color: inherit; background: transparent; text-decoration: underline; cursor: pointer; }
 .ent-knowledge-search:focus-within, .ent-model-search:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
 .ent-knowledge-search input:focus-visible, .ent-model-search input:focus-visible { outline: 0; box-shadow: none; }

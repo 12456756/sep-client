@@ -19,7 +19,7 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close() })
 
-async function openPage(t, { models = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'], modelId = 'gpt-5.6-luna', conversation = true, dark = false, width = 1100 } = {}) {
+async function openPage(t, { models = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra'], modelId = 'gpt-5.6-luna', conversation = true, dark = false, width = 1100, catalog = [] } = {}) {
   const page = await browser.newPage({ viewport: { width, height: 850 } })
   t.after(() => page.close())
   await page.route(/\/main\.tsx(?:\?.*)?$/, route => route.fulfill({ contentType: 'text/javascript', body: `${entry}
@@ -27,16 +27,32 @@ async function openPage(t, { models = ['gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6-t
     import '/styles/enterprise.css';
     import '/styles/arrange.css';
     import { RunSettingsBar } from '/components/enterprise/arrange/RunSettingsDrawer.tsx';
+    import { ModelCatalogProvider } from '/components/enterprise/ModelCatalogContext.tsx';
     function Fixture() {
       const [settings, setSettings] = React.useState({ modelId: ${JSON.stringify(modelId)} });
-      return React.createElement('main', { className: ${JSON.stringify(dark ? 'ent-shell dark' : '')}, style: { position: 'absolute', left: 32, right: 32, bottom: 32, height: 80, display: 'flex', alignItems: 'flex-end', transform: 'translateZ(0)', overflow: 'hidden' } },
+      return React.createElement(ModelCatalogProvider, { models: ${JSON.stringify(catalog)} }, React.createElement('main', { className: ${JSON.stringify(dark ? 'ent-shell dark' : '')}, style: { position: 'absolute', left: 32, right: 32, bottom: 32, height: 80, display: 'flex', alignItems: 'flex-end', transform: 'translateZ(0)', overflow: 'hidden' } },
         React.createElement(RunSettingsBar, { settings, models: ${JSON.stringify(models)}, conversation: ${conversation}, onChange: patch => setSettings(current => ({ ...current, ...patch })) }),
-        React.createElement('output', { id: 'selected-model' }, settings.modelId));
+        React.createElement('output', { id: 'selected-model' }, settings.modelId)));
     }
     ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(Fixture));` }))
   await page.goto(base)
   return page
 }
+
+test('model catalog shows SEP display names and billing labels without widening authorization', async t => {
+  const page = await openPage(t, {
+    models: ['model-authorized'], modelId: 'model-authorized', catalog: [
+      { modelId: 'model-authorized', displayName: '可用模型', billingMultiplier: '1', discountLabel: '按中转倍率计费', isFree: false },
+      { modelId: 'model-not-authorized', displayName: '未授权模型', billingMultiplier: '0', discountLabel: '活动免费', isFree: true },
+    ],
+  })
+  const trigger = page.getByRole('combobox', { name: '模型', exact: true })
+  assert.equal(await trigger.textContent(), '可用模型1×')
+  await trigger.click()
+  assert.equal(await page.getByRole('option').count(), 1)
+  assert.equal(await page.getByRole('option', { name: '可用模型', exact: true }).textContent(), '可用模型1×')
+  assert.equal(await page.getByText('未授权模型', { exact: true }).count(), 0)
+})
 
 test('model selection opens a searchable popover above the trigger with the knowledge picker style', async t => {
   const page = await openPage(t)
