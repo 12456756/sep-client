@@ -74,7 +74,7 @@ test('runtime generation defaults to stable and rejects retired beta builds', ()
   const generated = readFileSync(resolve(dir, 'electron/common/runtime-config.generated.ts'), 'utf8')
   assert.match(generated, /"channel": "stable"/)
   assert.match(generated, /"environment": "production"/)
-  assert.match(generated, /longdaosep\.cn/)
+  assert.match(generated, /sep\.longdaoec\.com/)
   for (const [args, env] of [[['beta'], {}], [[], { SEP_RELEASE_CHANNEL: 'beta' }], [['stable'], { SEP_RELEASE_CHANNEL: 'beta' }]]) {
     const result = run(dir, 'generate-runtime-config.mjs', args, env)
     assert.notEqual(result.status, 0)

@@ -24,6 +24,7 @@ import { useClientProfile } from '../features/enterprise/use-client-profile';
 import { useRuntimeFeedback } from '../components/feedback/use-runtime-feedback';
 import { displayedEnterpriseLogo, displayedUserAvatar } from '../features/enterprise/profile-display';
 import { useEnterpriseWorkspace } from '../features/enterprise/useEnterpriseWorkspace';
+import { ModelCatalogProvider } from '../components/enterprise/ModelCatalogContext';
 import { useHomeDraftOwner } from '../features/enterprise/home-draft';
 import { useEmployeePageScroll } from '../features/enterprise/use-employee-page-scroll';
 import { useSkillPageScroll } from '../features/enterprise/use-skill-page-scroll';
@@ -38,6 +39,7 @@ import { SkillsPage } from './enterprise/SkillsPage';
 import { ComputeCenterPage } from './enterprise/ComputeCenterPage';
 import { OrganizationPage } from './enterprise/OrganizationPage';
 import { KnowledgePage } from './enterprise/knowledge/KnowledgePage';
+import { ScheduledTasksPage } from './enterprise/ScheduledTasksPage';
 import '../styles/enterprise.css';
 import '../styles/notifications.css';
 import '../styles/updates.css';
@@ -45,6 +47,7 @@ import '../styles/arrange.css';
 import '../styles/compute-center.css';
 import '../styles/employees.css';
 import '../styles/employee-detail.css';
+import '../styles/scheduled-tasks.css';
 
 interface Props {
   update?: UpdateModel;
@@ -187,7 +190,9 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
           ref={scroll}
         >
           <ConversationSessionsContext.Provider value={conversationSessions}>
-            <PageBody workspace={contentWorkspace} userName={displayUserName} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} draft={homeDraft} />
+            <ModelCatalogProvider models={contentWorkspace.modelCatalog} error={contentWorkspace.modelCatalogLoad?.error} retry={contentWorkspace.modelCatalogLoad?.retry}>
+              <PageBody workspace={contentWorkspace} userName={displayUserName} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} draft={homeDraft} />
+            </ModelCatalogProvider>
           </ConversationSessionsContext.Provider>
         </div>
         {route.name === 'employee' ? <EmployeeDetailDrawer key={route.employeeId} workspace={workspace} employeeId={route.employeeId} employeeLoad={employeeLoad} employeeStatusLoad={employeeStatusLoad} /> : null}
@@ -262,6 +267,8 @@ function PageBody({ workspace, userName, employeeLoad, employeeStatusLoad, draft
     case 'records':
     case 'work':
       return <WorkHubPage key={workspace.attachmentScopeKey} workspace={workspace} />;
+    case 'scheduled':
+      return <ScheduledTasksPage workspace={workspace} scopeKey={workspace.attachmentScopeKey} />;
     case 'skills':
       return <SkillsPage workspace={workspace} skillId={route.skillId} employeeFilterId={route.employeeFilterId} sourceEmployeeId={route.sourceEmployeeId} returnTo={route.returnTo} />;
     case 'compute-center':

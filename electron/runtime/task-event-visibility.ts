@@ -39,7 +39,7 @@ const IMPORTANT_EVENT_TYPES = new Set([
  * this policy only controls the low-latency push stream used by work details.
  */
 export function classifyTaskEvent(event: TaskExecutionEvent): TaskEventVisibility {
-  if (event.type === 'text_delta') return 'stream'
+  if (event.type === 'text_delta' || event.type === 'thinking_delta') return 'stream'
   if (IMPORTANT_EVENT_TYPES.has(event.type)) return 'important'
   if (INTERNAL_EVENT_TYPES.has(event.type)) return 'internal'
 

@@ -3,6 +3,7 @@ import { unzipSync } from 'fflate'
 import { XMLParser } from 'fast-xml-parser'
 import { posix } from 'node:path'
 import type { DocumentPreviewContent } from '../../src/shared/document-preview'
+import { DocumentPreviewError } from '../errors/document-preview-error'
 
 const escape = (text: string) => text.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
@@ -14,7 +15,7 @@ function officeEntries(bytes: Uint8Array, extract: boolean): Record<string, Uint
   let total = 0, count = 0
   // Match delivery validation's archive budget before third-party readers expand the ZIP.
   return unzipSync(bytes, { filter: entry => {
-    if (++count > 2048 || (total += entry.originalSize) > 64 * 1024 * 1024) throw new Error('文档解压后过大，请复制路径查看原件。')
+    if (++count > 2048 || (total += entry.originalSize) > 64 * 1024 * 1024) throw new DocumentPreviewError('OFFICE_TOO_LARGE')
     return extract && /\.(?:xml|rels|png|jpe?g|webp)$/i.test(entry.name)
   } })
 }
@@ -36,7 +37,8 @@ async function spreadsheet(bytes: Uint8Array): Promise<DocumentPreviewContent> {
   const book = new ExcelJS.Workbook()
   const workbookBuffer = Buffer.alloc(bytes.byteLength)
   workbookBuffer.set(bytes)
-  await book.xlsx.load(workbookBuffer as unknown as Parameters<typeof book.xlsx.load>[0])
+  try { await book.xlsx.load(workbookBuffer as unknown as Parameters<typeof book.xlsx.load>[0]) }
+  catch (cause) { throw new DocumentPreviewError('SPREADSHEET_PARSE_FAILED', { cause }) }
   const sections: { title: string; html: string }[] = []
   const notices = [officeNotice]
   let missingFormula = false
@@ -45,7 +47,7 @@ async function spreadsheet(bytes: Uint8Array): Promise<DocumentPreviewContent> {
     const columnCount = sheet.columnCount
     // Sparse sheets still produce a rectangular table, so budget before creating empty cells.
     previewCells += sheet.actualRowCount * columnCount
-    if (previewCells > maxSpreadsheetPreviewCells) throw new Error('表格预览单元格过多，请复制路径查看原件。')
+    if (previewCells > maxSpreadsheetPreviewCells) throw new DocumentPreviewError('SPREADSHEET_TOO_LARGE')
     return { sheet, columnCount }
   })
   for (const { sheet, columnCount } of sheets) {
@@ -85,7 +87,7 @@ function xml(entries: Record<string, Uint8Array>, name: string): Xml {
   const bytes = entries[name]
   if (!bytes) return {}
   const text = new TextDecoder().decode(bytes)
-  if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('此文档包含不支持的 XML 声明。')
+  if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new DocumentPreviewError('UNSUPPORTED_XML')
   return record(xmlParser.parse(text))
 }
 function textOf(value: unknown): string {
@@ -125,7 +127,7 @@ function presentation(bytes: Uint8Array): DocumentPreviewContent {
     const html = [...lines.map(line => `<p>${escape(line)}</p>`), ...images].join('')
     return { title: `第 ${index + 1} 页`, html: html || '<p>本页没有可提取的文本或图片，请查看原件。</p>' }
   })
-  if (!sections.length) throw new Error('演示文稿中没有可读取的页面。')
+  if (!sections.length) throw new DocumentPreviewError('PRESENTATION_EMPTY')
   return { kind: 'html', sections, notices: [officeNotice, '演示文稿按页面展示文字和嵌入图片，不播放动画。'] }
 }
 

@@ -76,6 +76,7 @@ function filePathFromInput(input: unknown): string | null {
 }
 
 export interface TaskRuntimeOptions {
+  onConversationSettled?: (taskId: string, runId: string, owner: { memberId: string; enterpriseId: string }) => Promise<void>
   createModelTrace?: ModelTraceFactory
   taskManager: TaskManager
   getRefreshToken: () => string
@@ -84,6 +85,7 @@ export interface TaskRuntimeOptions {
   onApprovalRequest: (request: ToolAuthorizationRequest) => void
   resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   authorizeEmployee?: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
+  authorizeScheduledEmployee?: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
   authorizeModel?: (modelId: string, preferredSubscriptionId?: string) => Promise<EmployeeRuntimeConfig | null>
   createWorker?: (options: PiTaskWorkerOptions) => TaskWorkerPort
   taskRunStore?: TaskRunStorePort
@@ -101,12 +103,14 @@ export interface TaskRuntimeOptions {
 }
 
 export class TaskRuntime {
+  private readonly onConversationSettled: TaskRuntimeOptions['onConversationSettled']
   private readonly taskManager: TaskManager
   private readonly getRefreshToken: () => string
   private readonly onAuthenticationRequired: () => void
   private readonly onEvent: (event: TaskExecutionEvent) => void
   private readonly resolveEmployee: (subscriptionId: string) => EmployeeRuntimeConfig | null
   private readonly authorizeEmployee: (subscriptionId: string, modelId?: string) => Promise<EmployeeRuntimeConfig | null>
+  private readonly authorizeScheduledEmployee: (subscriptionId: string, modelId: string) => Promise<EmployeeRuntimeConfig>
   private readonly authorizeModel: TaskRuntimeOptions['authorizeModel']
   private readonly taskRunStore: TaskRunStorePort | null
   private readonly getTaskWorkspaceRoot: () => string
@@ -143,6 +147,7 @@ export class TaskRuntime {
   private readonly startingRuns = new Map<string, string>()
 
   constructor(options: TaskRuntimeOptions) {
+    this.onConversationSettled = options.onConversationSettled
     this.createModelTrace = options.createModelTrace
     this.taskManager = options.taskManager
     this.getRefreshToken = options.getRefreshToken
@@ -153,6 +158,11 @@ export class TaskRuntime {
     this.authorizeEmployee = options.authorizeEmployee ?? (async (subscriptionId, modelId) => {
       const employee = this.resolveEmployee(subscriptionId)
       return employee && (!modelId || employee.modelId === modelId) ? employee : null
+    })
+    this.authorizeScheduledEmployee = options.authorizeScheduledEmployee ?? (async (subscriptionId, modelId) => {
+      const employee = await this.authorizeEmployee(subscriptionId, modelId)
+      if (!employee) throw new AppError('EMPLOYEE_UNAVAILABLE')
+      return employee
     })
     this.createWorker = workerOptions => {
       const context = workerOptions.context
@@ -274,14 +284,22 @@ export class TaskRuntime {
     }
   }
 
-  async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection } = {}): Promise<void> {
+  async executeTask(taskId: string, options: { conversation?: boolean; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; signal?: AbortSignal; beforeAdmission?: () => void } = {}): Promise<void> {
+    options.beforeAdmission?.()
     this.startLifecycleAudit()
+    options.signal?.throwIfAborted()
+    const scope = this.taskManager.getCurrentUserScope()
+    const assertCurrent = () => {
+      options.signal?.throwIfAborted()
+      const current = this.taskManager.getCurrentUserScope()
+      if (!scope || scope.memberId !== current?.memberId || scope.enterpriseId !== current.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    }
     const task = await this.taskManager.getTask(taskId)
+    assertCurrent()
     if (!task) throw new Error('Task not found.')
     if (task.status === TaskStatus.COMPLETED || task.status === TaskStatus.FAILED) {
       throw new Error('Terminal tasks cannot be executed.')
     }
-    const scope = this.taskManager.getCurrentUserScope()
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
     const taskKnowledge = arrangement?.mode === 'conversation'
       ? options.knowledge ?? arrangement.knowledge
@@ -314,7 +332,9 @@ export class TaskRuntime {
           (checkpoint?.state.status === 'completed' ? activePlan.nodes[0] : undefined)
         let primarySubscriptionId = primaryNode?.subscriptionId ?? task.subscriptionId
         if (!primarySubscriptionId) throw new Error('Select a silicon employee before executing the task.')
-        let employee = await this.authorizeEmployee(primarySubscriptionId)
+        let employee = arrangement.scheduledOrigin
+          ? await this.authorizeScheduledEmployee(primarySubscriptionId, primaryNode?.modelId ?? '')
+          : await this.authorizeEmployee(primarySubscriptionId)
         check()
         if (!employee && primaryNode) {
           const search = await this.findEmployeeReplacement?.({ taskId,
@@ -365,7 +385,7 @@ export class TaskRuntime {
         check()
         if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
         const runId = randomUUID()
-        await this.taskManager.admitTask(taskId, runId)
+        await this.taskManager.admitTask(taskId, runId, options.beforeAdmission)
         const admittedTask = await this.taskManager.getTask(taskId)
         if (!admittedTask || admittedTask.activeRunId !== runId) return
         this.admission.push({ taskId, runId, subscriptionId: primarySubscriptionId, employee, prompt: activePlan.goal, conversation: false, arrangement: activePlan, knowledge: taskKnowledge,
@@ -383,20 +403,23 @@ export class TaskRuntime {
     const employee = general
       ? modelId ? await this.authorizeModel?.(modelId, selectedSubscriptionId ?? undefined) : null
       : await this.authorizeEmployee(selectedSubscriptionId!, modelId)
+    assertCurrent()
     if (!employee) throw new Error('The selected employee is no longer available.')
     const subscriptionId = employee.subscriptionId
     if (general && selectedSubscriptionId !== subscriptionId) await this.taskManager.setTaskEmployee(taskId, subscriptionId)
+    assertCurrent()
 
     if (task.status === TaskStatus.PAUSED || task.status === TaskStatus.INTERRUPTED) {
       await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
     }
 
     const runId = randomUUID()
-    await this.taskManager.admitTask(taskId, runId)
+    assertCurrent()
+    await this.taskManager.admitTask(taskId, runId, options.beforeAdmission)
     const admittedTask = await this.taskManager.getTask(taskId)
     if (!admittedTask || admittedTask.activeRunId !== runId) return
     const isConversation = arrangement?.mode === 'conversation' || options.conversation === true
-    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: isConversation, arrangement: arrangement ?? undefined,
+    this.admission.push({ taskId, runId, subscriptionId, employee, prompt: task.prompt, conversation: isConversation, signal: options.signal, arrangement: arrangement ?? undefined,
       knowledge: taskKnowledge,
       ...(arrangement?.inputSnapshot?.attachments?.length ? { attachmentRefs: arrangement.inputSnapshot.attachments } : {}) })
     this.reportMonitorQueued({ taskId, runId, prompt: task.prompt, subscriptionId, title: task.title, modelId: employee.modelId, taskType: isConversation ? 'conversation' : 'arrangement',
@@ -408,7 +431,7 @@ export class TaskRuntime {
   async continueConversation(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: import('../../src/shared/knowledge-selection').KnowledgeSelection; runId?: string; signal?: AbortSignal } = {},
   ): Promise<void> {
     this.startLifecycleAudit()
     const knowledge = recovery.knowledge ?? await this.latestKnowledgeSelection(taskId)
@@ -419,15 +442,22 @@ export class TaskRuntime {
     })
   }
 
+  /** Final task status can be published before worker disposal completes. */
+  hasConversationRun(taskId: string): boolean {
+    return this.startingRuns.has(taskId) || !!this.workers.active(taskId) || this.admission.runIdsFor(taskId).length > 0
+  }
+
   async switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void> {
     return this.conversationExecutor.switchEmployee(taskId, subscriptionId)
   }
 
-  async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply } = {}): Promise<void> {
+  async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply; signal?: AbortSignal } = {}): Promise<void> {
+    options.signal?.throwIfAborted()
     const task = await this.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     const scope = this.taskManager.getCurrentUserScope()
     const arrangement = scope && this.workPlanStore ? await this.workPlanStore.get(scope, taskId) : null
+    options.signal?.throwIfAborted()
     if (options.inputReply && (!options.nodeId || !arrangement || arrangement.mode === 'conversation' || !arrangementInputReplySchema.safeParse(options.inputReply).success)) throw new AppError('INVALID_ARGUMENT')
     if (task.status === TaskStatus.PENDING && task.executionHealth === 'start-failed' && !task.activeRunId) {
       await this.executeTask(taskId, { ...options, knowledge: await this.latestKnowledgeSelection(taskId) })
@@ -437,7 +467,9 @@ export class TaskRuntime {
       await this.retryArrangement(task, arrangement, options.nodeId, options.inputReply)
       return
     }
-    if (task.status !== TaskStatus.FAILED && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.INTERRUPTED) {
+    const stoppedConversation = task.status === TaskStatus.PAUSED && (arrangement?.mode === 'conversation' || options.conversation === true)
+    if (stoppedConversation && (task.activeRunId || this.hasConversationRun(taskId))) throw new AppError('INVALID_STATE')
+    if (!stoppedConversation && task.status !== TaskStatus.FAILED && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.INTERRUPTED) {
       throw new Error('Only terminal or interrupted tasks can be retried.')
     }
     await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
@@ -805,6 +837,12 @@ export class TaskRuntime {
             }
             continue
           }
+          if (queued.signal?.aborted) {
+            if (!this.admission.take(queued.runId)) continue
+            await this.taskManager.settleTaskRun(queued.taskId, queued.runId, TaskStatus.INTERRUPTED)
+            await this.conversationSettled(queued, task)
+            continue
+          }
           if (!this.resolveEmployee(queued.subscriptionId)) {
             if (!this.admission.take(queued.runId)) continue
             log.warn('dropped queued run', {
@@ -818,6 +856,7 @@ export class TaskRuntime {
             this.reportMonitorFinished({ taskId: queued.taskId, runId: queued.runId, status: 'FAILED', error, completedAt: Date.now() })
             const owner = this.taskManager.getCurrentUserScope()
             if (owner) this.notifyRunFailure(runtimeFailureEvent({ taskId: queued.taskId, runId: queued.runId, subscriptionId: queued.subscriptionId, owner }, new Error(error)))
+            await this.conversationSettled(queued, task)
             continue
           }
           const releaseWorkspace = this.locks.acquire(queued.runId, task.workDir)
@@ -854,7 +893,14 @@ export class TaskRuntime {
     } finally {
       if (this.startingRuns.get(queued.taskId) === queued.runId) this.startingRuns.delete(queued.taskId)
       this.clearPendingFileTools(queued.taskId, queued.runId)
+      await this.conversationSettled(queued, task)
     }
+  }
+
+  private async conversationSettled(queued: QueuedRun, task: NonNullable<Awaited<ReturnType<TaskManager['getTask']>>>): Promise<void> {
+    if (!queued.conversation) return
+    await this.onConversationSettled?.(queued.taskId, queued.runId, { memberId: task.ownerId, enterpriseId: task.ownerEnterpriseId })
+      .catch(error => log.warn('conversation queue settlement failed', { taskId: queued.taskId, error }))
   }
 
   private async startArrangementRun(
@@ -899,7 +945,9 @@ export class TaskRuntime {
         onAuthenticationRequired: this.onAuthenticationRequired,
         onApprovalRequest: request => this.approvals.request(request),
         onEvent: event => this.enqueueEvent(event),
-        authorizeEmployee: this.authorizeEmployee,
+        authorizeEmployee: (subscriptionId, modelId) => plan.scheduledOrigin
+          ? this.authorizeScheduledEmployee(subscriptionId, modelId ?? '')
+          : this.authorizeEmployee(subscriptionId, modelId),
         workspaceRoot: task.workDir ?? this.getTaskWorkspaceRoot(),
         arrangementSubscriptionId: queued.subscriptionId,
         media: this.media,

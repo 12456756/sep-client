@@ -29,6 +29,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
     confirmedInputs: [], planHash: 'hash', createdAt: Date.now(),
   }
   const contexts: PiTaskWorkerOptions['context'][] = []
+  const workers: PiTaskWorkerOptions[] = []
   const prompts: string[] = []
   const events: TaskExecutionEvent[] = []
   let saved: ArrangementCheckpoint | null = null
@@ -47,6 +48,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
       await onEvent?.(event)
     },
     createWorker: options => {
+      workers.push(options)
       contexts.push(options.context)
       return { async run(initial) {
         let prompt = initial
@@ -63,7 +65,7 @@ async function fixture(onSubmit: (id: string, iteration: number, root: string) =
       }, async abort() { onWorkerAbort?.(options.context.modelId) }, async dispose() {} }
     },
   })
-  return { root, plan, executor, contexts, prompts, events, runs, checkpoints, checkpoint: () => saved }
+  return { root, plan, executor, contexts, workers, prompts, events, runs, checkpoints, checkpoint: () => saved }
 }
 function submission(id: string): string { return JSON.stringify({ nodeId: id, summary: 'private summary '+id, finalDeliverables: [{ id: 'report', path: `deliverables/${id}.txt` }] }) }
 
@@ -373,6 +375,86 @@ describe('automatic arrangement final file handover', () => {
     assert.equal(result.status, 'completed')
     assert.deepEqual(result.state.nodes.map(node => node.modelRequestProgress?.executionRounds), [3, 3])
     assert.deepEqual(f.checkpoint()?.state.nodes.map(node => node.modelRequestProgress?.requestAttempts), [3, 3])
+  })
+  it('persists the first automatic retry and overflow recovery from the latest node counts', async () => {
+    const f = await fixture(async (id, _iteration, root) => {
+      const request = f.workers.find(worker => worker.context.modelId === id)!.onModelRequest!
+      assert.deepEqual(await request('retry'), {
+        executionRounds: 1, requestAttempts: 2, executionRetries: 1, compactionAttempts: 0,
+      })
+      await request('compaction')
+      const recovered = await request('recovery')
+      assert.deepEqual(recovered, {
+        executionRounds: 1, requestAttempts: 4, executionRetries: 2, compactionAttempts: 1,
+      })
+      assert.deepEqual(f.checkpoint()?.state.nodes.find(node => node.nodeId === id)?.modelRequestProgress, recovered)
+      await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
+      return { text: submission(id) }
+    })
+    f.plan.nodes[1]!.dependsOn = []
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'completed')
+    assert.deepEqual(result.state.nodes.map(node => node.modelRequestProgress?.requestAttempts), [4, 4])
+  })
+  it('does not commit an unsaved retry count to later checkpoints', async () => {
+    let retried = false
+    let saveAttempted = false
+    const f = await fixture(async id => {
+      await f.workers.find(worker => worker.context.modelId === id)!.onModelRequest!('retry')
+      retried = true
+      return { text: submission(id) }
+    })
+    const save = f.checkpoints.save.bind(f.checkpoints)
+    f.checkpoints.save = async (scope, value) => {
+      if (value.state.nodes[0]?.modelRequestProgress?.requestAttempts === 2) {
+        saveAttempted = true
+        throw new Error('ENOSPC')
+      }
+      await save(scope, value)
+    }
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'waiting-user')
+    assert.equal(saveAttempted, true)
+    assert.equal(retried, false)
+    assert.equal(result.state.nodes[0]?.modelRequestProgress?.requestAttempts, 1)
+    assert.equal(f.checkpoint()?.state.nodes[0]?.modelRequestProgress?.requestAttempts, 1)
+  })
+  it('rejects retries from cancelled node workers without allocating another request', async () => {
+    const f = await fixture(async id => {
+      await f.executor.abort()
+      await assert.rejects(f.workers.find(worker => worker.context.modelId === id)!.onModelRequest!('retry'))
+      assert.equal(f.checkpoint()?.state.nodes[0]?.modelRequestProgress?.requestAttempts, 1)
+      return { text: submission(id) }
+    })
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'interrupted')
+    assert.equal(result.state.nodes[0]?.modelRequestProgress?.requestAttempts, 1)
+  })
+  it('rejects a completed predecessor worker trying to allocate another request', async () => {
+    const f = await fixture(async (id, _iteration, root) => {
+      if (id === 'b') {
+        await assert.rejects(f.workers[0]!.onModelRequest!('retry'), { code: 'INVALID_STATE' })
+        assert.equal(f.checkpoint()?.state.nodes[0]?.modelRequestProgress?.requestAttempts, 1)
+      }
+      await writeFile(join(root, `deliverables/${id}.txt`), 'Final findings '+id)
+      return { text: submission(id) }
+    })
+    assert.equal((await f.executor.execute(f.plan, 'task', 'run')).status, 'completed')
+  })
+  it('does not release a persisted request snapshot after cancellation during saving', async () => {
+    const f = await fixture(async id => {
+      await assert.rejects(f.workers.find(worker => worker.context.modelId === id)!.onModelRequest!('retry'))
+      return { text: submission(id) }
+    })
+    const save = f.checkpoints.save.bind(f.checkpoints)
+    f.checkpoints.save = async (scope, value) => {
+      await save(scope, value)
+      if (value.state.nodes[0]?.modelRequestProgress?.requestAttempts === 2) await f.executor.abort()
+    }
+    const result = await f.executor.execute(f.plan, 'task', 'run')
+    assert.equal(result.status, 'interrupted')
+    assert.equal(result.state.nodes[0]?.modelRequestProgress?.requestAttempts, 2)
+    assert.equal(f.checkpoint()?.state.nodes[0]?.modelRequestProgress?.requestAttempts, 2)
   })
   it('marks missing legacy counts only for recovered sessions and preserves that origin on later resumes', async () => {
     const f = await fixture(async (id, _iteration, root) => {

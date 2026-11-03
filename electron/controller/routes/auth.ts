@@ -6,7 +6,7 @@
  */
 import { app, safeStorage } from 'electron'
 import { z } from 'zod'
-import { AuthApiError, getEmployeeSkills, getEmployeeStatus, getEnterpriseOrganization, login, previewSkill } from '../../common/platform/platform-api'
+import { AuthApiError, getEmployeeSkills, getEmployeeStatus, getEnabledModels, getEnterpriseOrganization, login, previewSkill } from '../../common/platform/platform-api'
 import { AuthenticationRequiredError } from '../../common/platform/authentication-required-error'
 import { LoginFeedbackError } from '../../common/platform/login-error'
 import { getDeviceFingerprint } from '../../common/platform/device-fingerprint'
@@ -117,6 +117,9 @@ export const authRoutes = [
       void ctx.backend.resumeClientMonitor().catch(error => {
         log.warn('client monitor resume failed', { cause: describeError(error) })
       })
+      void ctx.backend.resumeScheduledTasks().catch(error => {
+        log.warn('scheduled task recovery failed after login', { cause: describeError(error) })
+      })
       return { success: true, data: { user: response.user, enterprise: response.enterprise } }
     } catch (error) {
       // 登录失败必须把半成品会话清干净，否则下一次调用会带着一个坏令牌走。
@@ -202,6 +205,20 @@ export const authRoutes = [
     try {
       const accessToken = await ctx.backend.authSession.getValidAccessToken()
       return { success: true, data: await getEmployeeStatus(accessToken) }
+    } catch (error) {
+      if (revision === ctx.backend.authSession.getSessionRevision() &&
+        (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized))) {
+        ctx.backend.invalidateAuthentication()
+      }
+      throw error
+    }
+  }),
+
+  route(INVOKE_CHANNELS.AUTH_GET_ENABLED_MODELS, NO_INPUT, async ctx => {
+    const revision = ctx.backend.authSession.getSessionRevision()
+    try {
+      const accessToken = await ctx.backend.authSession.getValidAccessToken()
+      return { success: true, data: await getEnabledModels(accessToken) }
     } catch (error) {
       if (revision === ctx.backend.authSession.getSessionRevision() &&
         (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized))) {

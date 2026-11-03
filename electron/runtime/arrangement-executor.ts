@@ -326,16 +326,31 @@ export class ArrangementExecutor {
         })
         const promise = this.executeNode(plan, taskId, arrangementRunId, node, running, current,
           sessionRunId => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, sessionRunId } : item) })),
-          (kind, recoveredSession) => this.requestProgressWrites.run(taskId, async () => {
+          (kind, recoveredSession) => this.requestProgressWrites.run(taskId, () => mutate(async () => {
             this.checkExecutionControl()
-            let progress = advanceModelRequestProgress(running.modelRequestProgress, kind, recoveredSession ? 'since-resume' : undefined)
-            await updateNode(state => {
-              const previous = state.nodes.find(item => item.nodeId === node.id)!.modelRequestProgress
-              progress = advanceModelRequestProgress(previous, kind, recoveredSession ? 'since-resume' : undefined)
-              return { ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, modelRequestProgress: progress } : item) }
-            })
+            cancellation.signal.throwIfAborted()
+            this.validationCancellation.signal.throwIfAborted()
+            const latest = current.nodes.find(item => item.nodeId === node.id)
+            if ((epochs.get(node.id) ?? 0) !== epoch || latest?.status !== 'running') {
+              throw new AppError('INVALID_STATE', { message: '节点执行状态已变更，不能继续发送模型请求。' })
+            }
+            let progress: ModelRequestProgress
+            try {
+              progress = advanceModelRequestProgress(latest.modelRequestProgress, kind, recoveredSession ? 'since-resume' : undefined)
+            } catch (cause) {
+              logger.child('arrangement-executor').error('invalid model request progress', {
+                taskId, arrangementRunId, nodeId: node.id, requestKind: kind, progress: latest.modelRequestProgress,
+              })
+              throw new AppError('INVALID_STATE', { message: '节点模型请求计数状态无效。', cause })
+            }
+            const next = { ...current, nodes: current.nodes.map(item => item.nodeId === node.id ? { ...item, modelRequestProgress: progress } : item) }
+            await this.persist(plan, taskId, arrangementRunId, next)
+            current = next
+            this.checkExecutionControl()
+            cancellation.signal.throwIfAborted()
+            this.validationCancellation.signal.throwIfAborted()
             return progress
-          }),
+          })),
           delivery => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === node.id ? { ...item, delivery } : item) })),
           (nodeId, files) => updateNode(state => ({ ...state, nodes: state.nodes.map(item => item.nodeId === nodeId && item.delivery
             ? { ...item, delivery: { ...item.delivery, finalFiles: files } } : item) })),

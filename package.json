@@ -78,6 +78,7 @@
     "@xyflow/react": "^12.11.5",
     "chardet": "2.2.0",
     "class-variance-authority": "^0.7.1",
+    "cron-parser": "5.10.2",
     "clsx": "^2.1.1",
     "dompurify": "3.4.17",
     "electron-store": "^11.0.2",

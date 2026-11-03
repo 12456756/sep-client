@@ -245,7 +245,7 @@ test('image summaries preserve saved output counts while reporting task failures
   const failed = job({ generationStatus: 'FAILED', saveStatus: 'SAVE_FAILED', error: '上游拒绝' })
   const view = { capabilities: null, unavailableReason: null, assets: [asset], selectedReferenceIds: [], jobs: [failed], archived: false }
   assert.equal(savedImageOutputCount('task-1', view, [failed]), 1)
-  assert.equal(mediaTaskIssue([failed]), '图片成果保存失败，请联系平台管理员')
+  assert.equal(mediaTaskIssue([failed]), '图片成果下载、文件校验或本地保存失败，请重新保存原结果，并检查磁盘空间和保存权限，勿重复生成。')
   assert.equal(savedImageOutputCount('task-1', null, [failed]), null)
   assert.equal(savedImageOutputCount('task-1', view, [failed], true), null)
 })

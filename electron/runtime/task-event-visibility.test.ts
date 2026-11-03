@@ -18,6 +18,7 @@ function event(type: string, data: unknown = {}): TaskExecutionEvent {
 test('streams text deltas and important execution events', () => {
   const cases: Array<[string, unknown, TaskEventVisibility]> = [
     ['text_delta', { text: 'hello' }, 'stream'],
+    ['thinking_delta', { text: 'Inspecting the available files' }, 'stream'],
     ['tool_execution_start', { toolName: 'read', toolId: 'read-1' }, 'important'],
     ['tool_execution_start', { toolName: 'write', toolId: 'write-1' }, 'important'],
     ['tool_execution_end', { toolName: 'edit', toolId: 'edit-1', success: true }, 'important'],

@@ -34,13 +34,14 @@ function setup(options: { saveFails?: boolean; saveFailureReason?: 'accounts_rea
     taskManager: { setCurrentUser: async () => { calls.push('scope'); if (options.workspaceFails) throw new Error('scope failed') }, clearCurrentUser: () => { calls.push('clear-scope') } },
     employees: { clear: () => { calls.push('clear-employees') } },
     resumeClientMonitor: () => { calls.push('recovery'); return recovery },
+    resumeScheduledTasks: () => { calls.push('scheduled-recovery'); return recovery },
   } }
   const dependencies: Record<string, unknown> = {
     electron: { app: { getVersion: () => 'test' }, safeStorage: { isEncryptionAvailable: () => options.encryptionAvailable ?? true } },
     zod: { z },
     '../../common/platform/platform-api': {
       AuthApiError,
-      getEmployeeStatus: () => read, getEnterpriseOrganization: () => read, getEmployeeSkills: () => read, previewSkill: () => read,
+      getEmployeeStatus: () => read, getEnabledModels: () => read, getEnterpriseOrganization: () => read, getEmployeeSkills: () => read, previewSkill: () => read,
       login: async () => {
       if (options.loginFails) throw new Error('login rejected')
       return response
@@ -141,6 +142,7 @@ describe('login background recovery', () => {
       assert.equal(result?.success, true)
       assert.ok(harness.calls.indexOf('recovery') > harness.calls.indexOf('save-account'))
       assert.ok(harness.calls.indexOf('recovery') > harness.calls.indexOf('clear-employees'))
+      assert.ok(harness.calls.indexOf('scheduled-recovery') > harness.calls.indexOf('clear-employees'))
     } finally { harness.finishRecovery(); await pending }
   })
 
@@ -157,7 +159,8 @@ describe('login background recovery', () => {
 
   for (const channel of [
     INVOKE_CHANNELS.AUTH_GET_INSTANCES, INVOKE_CHANNELS.AUTH_GET_EMPLOYEE_STATUS,
-    INVOKE_CHANNELS.AUTH_GET_ORGANIZATION, INVOKE_CHANNELS.SUBSCRIPTION_GET_SKILLS, INVOKE_CHANNELS.SUBSCRIPTION_PREVIEW_SKILL,
+    INVOKE_CHANNELS.AUTH_GET_ORGANIZATION, INVOKE_CHANNELS.AUTH_GET_ENABLED_MODELS,
+    INVOKE_CHANNELS.SUBSCRIPTION_GET_SKILLS, INVOKE_CHANNELS.SUBSCRIPTION_PREVIEW_SKILL,
   ]) {
     it(`${channel} ignores an old session failure and still invalidates the current session`, async () => {
       for (const stale of [false, true]) {

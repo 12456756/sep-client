@@ -18,10 +18,11 @@ interface Props {
   onPin: (workId: string, pinned: boolean) => Promise<boolean>
   onRetry: (workId: string) => Promise<void>
   onDelete: (workId: string) => Promise<boolean>
+  onSchedule: (work: WorkItem) => void
 }
 
 /** Workspace actions own their shared confirmation and feedback dialogs. */
-export function WorkListActions({ works, request, busy, onDismiss, onRename, onPin, onRetry, onDelete }: Props) {
+export function WorkListActions({ works, request, busy, onDismiss, onRename, onPin, onRetry, onDelete, onSchedule }: Props) {
   const menuRef = useRef<HTMLDivElement | null>(null)
   const returnFocus = useRef<HTMLElement | null>(null)
   const returnFallbacks = useRef<HTMLElement[]>([])
@@ -103,7 +104,7 @@ export function WorkListActions({ works, request, busy, onDismiss, onRename, onP
         </button>}
         {!menuWork.planningDraft && <button type="button" role="menuitem" disabled={busy} onClick={() => { closeMenu(); void onRename(menuWork.id) }}><Pencil size={16} aria-hidden />重命名</button>}
         {!menuWork.planningDraft && <button type="button" role="menuitem" disabled={cannotRetry(menuWork)} onClick={() => { closeMenu(); void onRetry(menuWork.id) }}><RotateCcw size={16} aria-hidden />重新执行</button>}
-        <button type="button" role="menuitem" disabled aria-label="加入定时任务（开发中）"><CalendarClock size={16} aria-hidden />加入定时任务（开发中）</button>
+        <button type="button" role="menuitem" disabled={busy || Boolean(menuWork.planningDraft) || menuWork.workType?.state !== 'resolved' || menuWork.workType.kind !== 'arrangement'} onClick={() => { closeMenu(); onSchedule(menuWork) }}><CalendarClock size={16} aria-hidden />加入定时任务</button>
         <button type="button" role="menuitem" className="danger" disabled={busy || cannotDelete(menuWork)} aria-describedby={cannotDelete(menuWork) ? 'ent-work-delete-reason' : undefined} onClick={() => { void deleteWork(menuWork.id) }}><Trash2 size={16} aria-hidden />删除</button>
         {cannotDelete(menuWork) && <p id="ent-work-delete-reason">执行中的工作需先终止，再删除记录。</p>}
       </>}

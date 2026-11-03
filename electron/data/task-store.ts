@@ -36,6 +36,10 @@ function isTaskStatus(value: unknown): value is ClientTask['status'] {
 function parseTask(value: unknown): ClientTask | null {
   if (!value || typeof value !== 'object') return null
   const item = value as Partial<ClientTask>
+  if (item.scheduledOrigin !== undefined && (!item.scheduledOrigin || typeof item.scheduledOrigin.definitionId !== 'string'
+    || !item.scheduledOrigin.definitionId || typeof item.scheduledOrigin.occurrenceId !== 'string' || !item.scheduledOrigin.occurrenceId)) return null
+  if (item.scheduledAdmission !== undefined && (!item.scheduledOrigin || !item.scheduledAdmission || typeof item.scheduledAdmission.runId !== 'string'
+    || !item.scheduledAdmission.runId || typeof item.scheduledAdmission.admittedAt !== 'number' || !Number.isFinite(item.scheduledAdmission.admittedAt))) return null
   if (
     typeof item.id !== 'string' ||
     item.id.length === 0 ||
@@ -87,6 +91,8 @@ function parseTask(value: unknown): ClientTask | null {
     ownerEnterpriseId: item.ownerEnterpriseId,
     subscriptionId: typeof item.subscriptionId === 'string' ? item.subscriptionId : null,
     activeRunId: typeof item.activeRunId === 'string' ? item.activeRunId : null,
+    ...(item.scheduledOrigin ? { scheduledOrigin: { definitionId: item.scheduledOrigin.definitionId, occurrenceId: item.scheduledOrigin.occurrenceId } } : {}),
+    ...(item.scheduledAdmission ? { scheduledAdmission: { runId: item.scheduledAdmission.runId, admittedAt: item.scheduledAdmission.admittedAt } } : {}),
     stateRevision: typeof item.stateRevision === 'number' && Number.isSafeInteger(item.stateRevision) && item.stateRevision >= 0 ? item.stateRevision : 0,
     queuedAt: typeof item.queuedAt === 'number' && Number.isFinite(item.queuedAt) ? item.queuedAt : null,
     currentRunStartedAt: typeof item.currentRunStartedAt === 'number' && Number.isFinite(item.currentRunStartedAt) ? item.currentRunStartedAt : null,
@@ -183,7 +189,7 @@ export class TaskStore implements TaskStorePort {
       tasks: tasks.map(task => ({ ...task, files: [...task.files], logs: task.logs.map(log => ({ ...log })) })),
     }
     try {
-      await writeJsonAtomic(this.paths.taskSnapshotFile(scope), envelope)
+      await writeJsonAtomic(this.paths.taskSnapshotFile(scope), envelope, { durable: tasks.some(task => !!task.scheduledOrigin) })
     } catch (error) {
       throw new TaskPersistenceError(error instanceof Error ? error.message : undefined)
     }

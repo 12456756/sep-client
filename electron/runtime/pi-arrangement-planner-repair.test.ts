@@ -68,7 +68,10 @@ describe('planning validation repair requests', () => {
     assert.ok(h.prompts[0]!.startsWith('目前是自动编排的第一阶段'))
     assert.ok(h.prompts[1]!.includes(expected))
     assert.doesNotMatch(h.prompts[1]!, /PRIVATE_BAD_REPLY|stopReason|具体错误|第一阶段/)
-    const data = (prompt: string) => JSON.parse(prompt.slice(prompt.indexOf('{'), prompt.lastIndexOf('}') + 1))
+    const data = (prompt: string) => {
+      const text = prompt.includes('本轮规划数据：') ? prompt.slice(prompt.indexOf('本轮规划数据：')) : prompt
+      return JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1))
+    }
     assert.deepEqual(data(h.prompts[1]!), data(h.prompts[0]!))
     assert.equal(typeof h.config?.transformSystemPrompt, 'function')
     assert.equal(h.config?.systemPrompt, undefined)
@@ -80,6 +83,20 @@ describe('planning validation repair requests', () => {
     const result = await h.planner.plan({ planningId: 'p', draft, employees, onProgress() {} })
     assert.equal(result.title, 'Report')
     assert.equal(h.prompts.length, 9)
+  })
+
+  it('sends the exact attachment failure to the worker and accepts the corrected response', async () => {
+    const attachment = { attachmentId: 'photo', sha256: 'a'.repeat(64) }
+    const withAttachment = { ...draft, attachmentCandidates: [{ attachment, mustUse: true }] }
+    const invalid = { title: 'Report', nodes: [{ ...node, inputRefs: [{ type: 'attachment', ...attachment, required: true, purpose: 'analysis' }] }] }
+    const corrected = { title: 'Report', nodes: [{ ...node, inputRefs: [{ kind: 'attachment', attachment, required: true, purpose: 'analysis' }] }] }
+    const h = harness([{ text: JSON.stringify(invalid), stopReason: 'stop' }, { text: JSON.stringify(corrected), stopReason: 'stop' }])
+    const result = await h.planner.plan({ planningId: 'p', draft: withAttachment, employees, onProgress() {} })
+    assert.equal(result.nodes[0]!.inputRefs![0]!.kind, 'attachment')
+    assert.match(h.prompts[1]!, /nodes\[0\].inputRefs\[0\].kind/)
+    assert.match(h.prompts[1]!, /"attachment": \{/)
+    assert.match(h.prompts[1]!, /尚未执行/)
+    assert.doesNotMatch(h.prompts[1]!, /stack|causeFingerprint/)
   })
 
   it('can cancel during repeated content corrections', async () => {

@@ -72,7 +72,7 @@ export class ConversationExecutor {
   async continue(
     taskId: string,
     prompt: string,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection } = {},
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal } = {},
   ): Promise<void> {
     await this.continueAs(taskId, prompt, undefined, recovery)
   }
@@ -105,6 +105,7 @@ export class ConversationExecutor {
     const knowledgeCancellation = new AbortController()
 
     try {
+      queued.signal?.throwIfAborted()
       const runPaths = scope && this.options.taskRunStore
         ? this.options.taskRunStore.getPaths(scope, taskId, runId)
         : null
@@ -155,6 +156,7 @@ export class ConversationExecutor {
         await this.finalize(active, queued, scope, runCreated)
         return
       }
+      queued.signal?.throwIfAborted()
       worker = this.options.createWorker({
         context: {
           taskId,
@@ -303,14 +305,22 @@ export class ConversationExecutor {
     taskId: string,
     prompt: string,
     employeeOverride: string | undefined,
-    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection },
+    recovery: { mode?: SessionRecoveryMode; confirmed?: boolean; attachmentRefs?: AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal },
   ): Promise<void> {
+    recovery.signal?.throwIfAborted()
+    const scope = this.options.taskManager.getCurrentUserScope()
     const task = await this.options.taskManager.getTask(taskId)
     if (!task) throw new Error('Task not found.')
     if (!prompt.trim()) throw new Error('A message is required.')
     const employeeId = employeeOverride ?? task.subscriptionId
     if (!employeeId) throw new Error('The selected employee is no longer available.')
-    const scope = this.options.taskManager.getCurrentUserScope()
+    const assertScope = () => {
+      recovery.signal?.throwIfAborted()
+      const current = this.options.taskManager.getCurrentUserScope()
+      if (!scope || current?.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new ConversationRecoveryError('SESSION_UNRECOVERABLE', 'Conversation scope changed.')
+    }
+    assertScope()
+    if (task.ownerId !== scope?.memberId || task.ownerEnterpriseId !== scope?.enterpriseId) throw new Error('Task not found.')
     const arrangement = scope && this.options.workPlanStore ? await this.options.workPlanStore.get(scope, taskId) : null
     const general = arrangement?.mode === 'conversation' && arrangement.conversation?.kind === 'general'
     const modelId = general ? arrangement.conversation!.modelId : arrangement?.conversation?.participants.find(item => item.subscriptionId === employeeId)?.modelId
@@ -319,6 +329,7 @@ export class ConversationExecutor {
       : await this.options.authorizeEmployee(employeeId, modelId)
     if (!employee) throw new Error('The selected employee is no longer available.')
     if (!scope || !this.options.taskRunStore) throw new Error('Conversation storage is unavailable.')
+    assertScope()
 
     const contextStore = this.conversationStore(scope, taskId)
     const sharedSession = await contextStore.getSharedSession()
@@ -338,17 +349,30 @@ export class ConversationExecutor {
       degradedRecovery = { originalSessionFile: sharedSession.sessionFile, mode }
       workerPrompt = this.buildRecoveryPrompt(await contextStore.listMessages(), prompt.trim())
       resumeSessionFile = undefined
+      assertScope()
       await this.replaceConversationAdapter(scope, taskId)
     }
 
+    assertScope()
+    const currentTask = await this.options.taskManager.getTask(taskId)
+    assertScope()
+    if (currentTask?.activeRunId) throw new Error('Task already has an active execution.')
     if (task.status !== TaskStatus.PENDING) await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)
     if (employee.subscriptionId !== task.subscriptionId) {
       await this.options.taskManager.setTaskEmployee(taskId, employee.subscriptionId)
       await this.conversationAdapter(scope, taskId).reset()
     }
-    const runId = randomUUID()
+    assertScope()
+    const runId = recovery.runId ?? randomUUID()
     await this.options.taskManager.admitTask(taskId, runId)
     const admittedTask = await this.options.taskManager.getTask(taskId)
+    try { assertScope() } catch (error) {
+      const current = this.options.taskManager.getCurrentUserScope()
+      if (current?.memberId === scope.memberId && current.enterpriseId === scope.enterpriseId) {
+        await this.options.taskManager.settleTaskRun(taskId, runId, TaskStatus.INTERRUPTED)
+      }
+      throw error
+    }
     if (!admittedTask || admittedTask.activeRunId !== runId) return
     const queued: QueuedRun = {
       taskId,
@@ -357,6 +381,7 @@ export class ConversationExecutor {
       employee,
       prompt: prompt.trim(),
       conversation: true,
+      signal: recovery.signal,
       arrangement: arrangement ?? undefined,
       resumeSessionFile,
       workerPrompt,

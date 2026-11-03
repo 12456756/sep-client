@@ -13,6 +13,7 @@ interface SharedProps {
   settings: RunSettings;
   models: string[];
   conversation?: boolean;
+  portalWithinControl?: boolean;
   onChange: (patch: Partial<RunSettings>) => void;
 }
 
@@ -20,6 +21,7 @@ interface DirectoryProps {
   settings: RunSettings;
   onChange: (patch: Partial<RunSettings>) => void;
   onChooseFolder: (currentPath?: string) => Promise<string | null>;
+  allowedPresets?: RunSettings['permissions']['preset'][];
 }
 
 interface Props extends SharedProps, DirectoryProps {
@@ -40,7 +42,7 @@ function directoryLabel(workDir: string): string {
  * 既占位又读不懂。这里把两者移到目录行——语义上它们和「选哪个目录」同属
  * 「这次工作在什么环境下跑」，放在一起才讲得通。
  */
-export function RunSettingsDirectory({ settings, onChange, onChooseFolder }: DirectoryProps) {
+export function RunSettingsDirectory({ settings, onChange, onChooseFolder, allowedPresets }: DirectoryProps) {
   const [defaultWorkspacePath, setDefaultWorkspacePath] = useState('');
   const permission = RUN_PERMISSIONS.find(item => item.id === settings.permissions.preset);
   const autoApprove = settings.permissions.approvalMode === 'auto-approve';
@@ -86,7 +88,7 @@ export function RunSettingsDirectory({ settings, onChange, onChooseFolder }: Dir
           value={settings.permissions.preset}
           onChange={event => onChange({ permissions: { ...settings.permissions, preset: event.target.value as RunSettings['permissions']['preset'] } })}
         >
-          {RUN_PERMISSIONS.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+          {RUN_PERMISSIONS.filter(item => !allowedPresets || allowedPresets.includes(item.id)).map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
       </label>
 
@@ -106,12 +108,13 @@ export function RunSettingsDirectory({ settings, onChange, onChooseFolder }: Dir
   );
 }
 
-export function RunSettingsBar({ settings, models, conversation = false, onChange }: SharedProps) {
+export function RunSettingsBar({ settings, models, conversation = false, portalWithinControl = false, onChange }: SharedProps) {
   const modelLabel = settings.modelId || (conversation ? models[0] : '') || '模型';
 
   return (
     <div className="ent-rs-inline">
       <ModelSelector
+        portalWithinControl={portalWithinControl}
         models={models}
         value={models.includes(settings.modelId) ? settings.modelId : conversation ? models[0] ?? '' : ''}
         title={modelLabel}

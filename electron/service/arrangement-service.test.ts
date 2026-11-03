@@ -37,6 +37,23 @@ describe('public arrangement preflight reasons', () => {
 })
 
 describe('general assistant conversation', () => {
+  it('returns the confirmed conversation immediately and delegates initial preparation to the queue owner', async () => {
+    let stored = persisted({ ...draft(), mode: 'conversation', nodes: [],
+      conversation: { kind: 'general', modelId: 'model-a', participants: [], activeSubscriptionId: null } })
+    const scheduled: string[] = []
+    const service = new ArrangementService(serviceDeps({
+      employees: { async list() { return [employee()] } },
+      drafts: { async get() { return stored }, async update(_s: unknown, _id: string, revision: number, patch: ArrangementDraft) { stored = { ...patch, revision: revision + 1 }; return stored } },
+      taskManager: { async createTask() { return { id: 'task-a', workDir: null } }, async getTask() { return { id: 'task-a', status: 'pending', activeRunId: null } } },
+      conversationQueue: { scheduleInitial(taskId: string) { scheduled.push(taskId) } },
+      execution: async () => { assert.fail('runtime preparation must not block the creation response') },
+    }))
+    const result = await service.confirmAndStart(stored.id, 1, 'initial')
+    assert.equal(stored.status, 'confirmed')
+    assert.deepEqual(result.execution, { id: 'task-a', status: 'queued' })
+    assert.deepEqual(scheduled, ['task-a'])
+  })
+
   it('resolves a real model subscription at preflight and preserves general mode in the plan', async () => {
     let stored = persisted({ ...draft(), mode: 'conversation', nodes: [],
       conversation: { kind: 'general', modelId: 'model-a', participants: [], activeSubscriptionId: null } })
@@ -1202,7 +1219,7 @@ describe('ArrangementService', () => {
       assert.equal(failed?.fields.phase, `round-${round}`)
       assert.equal(failed?.fields.completedNodeCount, 1)
       assert.equal(failed?.fields.unresolvedStepCount, 1)
-      assert.deepEqual(harness.events.at(-1)?.data, { message: '自动编排失败，请联系平台管理员' })
+      assert.deepEqual(harness.events.at(-1)?.data, { message: '自动编排失败，客户端没有取得具体原因，请重试；持续失败请联系平台管理员。' })
       assert.doesNotMatch(JSON.stringify([logs, harness.events, harness.stored]), /private-backend-error|private-token/)
     } finally { restore() }
   })
@@ -1313,7 +1330,7 @@ describe('ArrangementService', () => {
     await eventually(() => harness.stored?.status === 'planning-failed')
 
     assert.deepEqual(harness.stored?.lastPlanning?.status, 'failed')
-    assert.equal(harness.stored?.lastPlanning?.message, '自动编排失败，请联系平台管理员')
+    assert.equal(harness.stored?.lastPlanning?.message, '自动编排失败，客户端没有取得具体原因，请重试；持续失败请联系平台管理员。')
     assert.equal(harness.events.at(-1)?.type, 'arrangement_planning_failed')
   })
 
@@ -1357,9 +1374,9 @@ describe('ArrangementService', () => {
     const harness = planningHarness(async () => { throw new AppError('PLANNING_FAILED', { message }) })
     await harness.service.startPlanning('draft-a', 1, 'model-a')
     await eventually(() => harness.stored?.status === 'planning-failed')
-    assert.equal(harness.stored?.lastPlanning?.message, '自动编排模型响应异常，请联系平台管理员')
+    assert.equal(harness.stored?.lastPlanning?.message, '编排模型返回了不支持的工具调用，已停止规划，请重新编排；持续失败请联系平台管理员检查模型配置。')
     assert.equal(harness.events.at(-1)?.type, 'arrangement_planning_failed')
-    assert.equal(harness.events.at(-1)?.data.message, '自动编排模型响应异常，请联系平台管理员')
+    assert.equal(harness.events.at(-1)?.data.message, '编排模型返回了不支持的工具调用，已停止规划，请重新编排；持续失败请联系平台管理员检查模型配置。')
     assert.equal(harness.events.some(event => event.type === 'arrangement_planning_completed'), false)
   })
 

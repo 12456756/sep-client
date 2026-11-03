@@ -45,6 +45,30 @@ describe('employee runtime skill artifact negotiation errors', () => {
   }
 })
 
+describe('SEP enabled model catalog', () => {
+  it('loads billing metadata with the authenticated API request and accepts legacy entries', async () => {
+    const calls: Array<{ url: string; authorization: string | null }> = []
+    globalThis.fetch = async (input, init) => {
+      calls.push({ url: String(input), authorization: new Headers(init?.headers).get('Authorization') })
+      return response([
+        { modelId: 'model-a', displayName: '模型 A', billingMultiplier: '1', discountLabel: '按中转倍率计费', isFree: false },
+        { id: 'legacy', label: 'Legacy model' },
+      ])
+    }
+
+    assert.deepEqual(await api.getEnabledModels('access'), [
+      { modelId: 'model-a', displayName: '模型 A', billingMultiplier: '1', discountLabel: '按中转倍率计费', isFree: false },
+      { modelId: 'legacy', displayName: 'Legacy model', billingMultiplier: null, discountLabel: null, isFree: null },
+    ])
+    assert.deepEqual(calls, [{ url: `${config.SEP_BASE_URL}/models/enabled`, authorization: 'Bearer access' }])
+  })
+
+  it('rejects malformed model catalog responses', async () => {
+    globalThis.fetch = async () => response([{ modelId: 7 }])
+    await assert.rejects(api.getEnabledModels('access'))
+  })
+})
+
 describe('SEP 2026-09-16 supplemental API contract', () => {
   it('reads organization and overview without enterpriseId or field remapping', async () => {
     const organization = { ...overview, departments: [], members: [{ id: 'member-1', userId: 'user-1', name: 'Member', departmentId: null, position: null, avatar: null }], grants: [] }

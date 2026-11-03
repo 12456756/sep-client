@@ -8,6 +8,7 @@ import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from '.
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
+import type { ModelCatalogEntry } from './model-catalog-contracts'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from './attachment-contracts'
 import type {
   ComputeAllowance,
@@ -31,6 +32,7 @@ import type {
 } from './profile-wallet-contracts'
 import type {
   ClientTask,
+  TaskReadView,
   ClientTaskStats,
   CreateTaskRequest,
   Subscription,
@@ -158,6 +160,10 @@ export interface OrganizationResult extends IpcCommandResult {
   data?: EnterpriseOrganization
 }
 
+export interface ModelCatalogResult extends IpcCommandResult {
+  data?: ModelCatalogEntry[]
+}
+
 export interface ComputeCenterOverview {
   allowance: ComputeAllowance
   wallet: PersonalWallet
@@ -209,6 +215,7 @@ export interface ExecuteTaskInput {
 }
 
 export interface ContinueTaskInput {
+  messageId?: string
   knowledge?: KnowledgeSelection
   taskId: string
   prompt: string
@@ -294,6 +301,23 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  getScheduledWorkSource: (taskId: string) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').WorkScheduleContext }>
+  createScheduledTaskFromWork: (value: import('./scheduled-tasks').CreateWorkSchedule) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
+  editScheduledTaskFromWork: (value: import('./scheduled-tasks').EditWorkSchedule) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
+  submitScheduledCreation: (value: import('./scheduled-creation').ScheduledCreationRequest) => Promise<IpcCommandResult & { data?: import('./scheduled-creation').ScheduledCreation }>
+  cancelScheduledCreation: (value: { id: string; expectedRevision: number }) => Promise<IpcCommandResult & { data?: import('./scheduled-creation').ScheduledCreation }>
+  listScheduledTasks: () => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledSnapshot }>
+  interpretScheduleTime: (value: import('./scheduled-tasks').ScheduleTimeRequest) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduleTimeResult }>
+  createScheduledTask: (value: { requestId: string; input: import('./scheduled-tasks').ScheduleInput }) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
+  editScheduledTask: (value: import('./scheduled-tasks').ScheduleMutation & { input: import('./scheduled-tasks').ScheduleInput }) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
+  planScheduledTask: (value: import('./scheduled-tasks').ScheduleMutation) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
+  confirmScheduledTask: (value: import('./scheduled-tasks').ScheduleMutation) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
+  pauseScheduledTask: (value: import('./scheduled-tasks').ScheduleMutation) => Promise<IpcCommandResult>
+  deleteScheduledTask: (value: import('./scheduled-tasks').ScheduleMutation) => Promise<IpcCommandResult>
+  checkScheduledRun: (id: string) => Promise<IpcCommandResult>
+  acknowledgeScheduledRun: (value: { id: string; confirmed: true }) => Promise<IpcCommandResult>
+  cancelScheduledRun: (id: string) => Promise<IpcCommandResult>
+  resumeScheduledTasks: () => Promise<IpcCommandResult>
   requestKnowledge: <R extends KnowledgeRequestInput>(input: R) => Promise<KnowledgeResult<R['action']>>
   cancelKnowledgeRequests: (requestIds: string[]) => Promise<IpcCommandResult>
   getSpeechPermission: () => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>
@@ -359,6 +383,7 @@ export interface ElectronAPI {
   getSubscriptions: () => Promise<InstanceListResult>
   getEmployeeStatus: () => Promise<EmployeeStatusResult>
   getEnterpriseOrganization: () => Promise<OrganizationResult>
+  getEnabledModels: () => Promise<ModelCatalogResult>
   getClientProfile: () => Promise<ClientProfileResult>
   uploadUserAvatar: (input: UploadInput) => Promise<UserAvatarUploadResult>
   uploadEnterpriseLogo: (input: UploadInput) => Promise<EnterpriseLogoUploadResult>
@@ -375,6 +400,7 @@ export interface ElectronAPI {
   createConversation: (data: CreateConversationInput) => Promise<TaskResult>
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult>
+  conversationQueue: (input: { taskId: string; action: 'get' | 'resume' }) => Promise<IpcCommandResult & { queue?: import('./conversation-queue').ConversationQueueView }>
   switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>
@@ -408,7 +434,7 @@ export interface ElectronAPI {
   validateArrangementDraft: (draftId: string) => Promise<unknown>
   preflightArrangementDraft: (input: { draftId: string; expectedRevision: number }) => Promise<ArrangementDraftPreflightResult>
   confirmArrangementDraft: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<unknown>
-  confirmAndStartArrangement: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<{ success: boolean; plan?: ArrangementPlanSnapshot; execution?: { id: string; status: 'queued' | 'running' }; error?: TaskError }>
+  confirmAndStartArrangement: (input: { draftId: string; expectedRevision: number; idempotencyKey: string }) => Promise<{ success: boolean; plan?: ArrangementPlanSnapshot; task?: TaskReadView; execution?: { id: string; status: 'queued' | 'running' }; error?: TaskError }>
   planArrangementDraft: (input: PlanArrangementDraftInput) => Promise<ArrangementPlanningStartResult>
   cancelArrangementPlanning: (input: CancelArrangementPlanningInput) => Promise<ArrangementPlanningCancelResult>
   requestEmployeeAccess: (input: RequestEmployeeAccessInput) => Promise<ArrangementDraftResult>

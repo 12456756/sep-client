@@ -25,7 +25,7 @@ export const mediaRoutes = [
     if (!window) throw appError('INTERNAL_ERROR')
     const result = await dialog.showOpenDialog(window, { title: '导入商品参考图', properties: ['openFile', 'multiSelections'], filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
     if (result.canceled) return { success: true, data: [] }
-    if (result.filePaths.length > 16) throw appError('INVALID_ARGUMENT')
+    if (result.filePaths.length > 16) throw appError('INVALID_ARGUMENT', { details: { reason: 'reference-import-limit' } })
     return { success: true, data: await selection.import(result.filePaths) }
   }),
   route(INVOKE_CHANNELS.MEDIA_GENERATE, z.object({ taskId: mediaId, input: mediaGenerationInputSchema }).strict(), async (ctx, input) => ({ success: true, data: await ctx.media.generateTaskMedia(input.taskId, input.input) })),

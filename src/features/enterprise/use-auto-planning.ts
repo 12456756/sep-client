@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type Se
 import type { ArrangementDraft, ArrangementDraftDocument, ArrangementPlanningProgress } from '../../shared/types'
 import type { KnowledgeSelection } from '../../shared/knowledge-selection'
 import type { AttachmentRef } from '../../shared/attachment-contracts'
-import { recoverDraftRevisionConflict, responseError } from '../../shared/arrangement-feedback'
+import { operationFailure, recoverDraftRevisionConflict, responseError } from '../../shared/arrangement-feedback'
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback'
 import { usePlanningController } from './auto-planning-scope'
 const EMPTY_EVENTS: ArrangementPlanningProgress[] = []
@@ -34,7 +34,7 @@ export function useAutoPlanning(bindingKey = '', recordId?: string, onRecorded?:
   useEffect(() => { void reload() }, [reload])
   useEffect(() => {
     if (draft?.status !== 'planning-failed') return
-    capture().show(draft.lastPlanning?.message || '自动编排失败，请联系平台管理员', 'error', `planning:${draft.id}:${draft.lastPlanning?.planningId}`, true)
+    capture().show(draft.lastPlanning?.message || operationFailure('planning'), 'error', `planning:${draft.id}:${draft.lastPlanning?.planningId}`, true)
   }, [draft?.status, draft?.id, draft?.lastPlanning?.planningId, draft?.lastPlanning?.message, capture])
 
   const setDraft = (value: SetStateAction<ArrangementDraft | null>): void => {

@@ -2,7 +2,7 @@
 export const generatedRuntimeConfig = {
   "channel": "stable",
   "environment": "production",
-  "sepBaseUrl": "https://longdaosep.cn/api",
-  "gatewayUrl": "https://longdaosep.cn/api/gateway/v1",
-  "buildTime": "2026-11-02T11:22:31.684Z"
+  "sepBaseUrl": "https://sep.longdaoec.com/api",
+  "gatewayUrl": "https://sep.longdaoec.com/api/gateway/v1",
+  "buildTime": "2026-11-03T05:29:45.959Z"
 } as const
