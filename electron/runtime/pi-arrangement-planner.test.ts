@@ -619,7 +619,8 @@ for (const scenario of ['thinking-stop', 'thinking-length', 'long-final', 'netwo
       }
       if (scenario === 'thinking-stop' || scenario === 'thinking-length') {
         const repair = requests[1]!.messages.filter(message => message.role === 'user').at(-1)?.content
-        assert.equal(repair, buildArrangementPlannerRepairPrompt('response-assembly', buildArrangementPlannerInput(draft, employees, 'authorized')))
+        assert.equal(repair, buildArrangementPlannerRepairPrompt('response-assembly', buildArrangementPlannerInput(draft, employees, 'authorized'),
+          new AppError('PLANNING_FAILED', { details: { reason: scenario === 'thinking-length' ? 'output-truncated' : 'empty-response' } })))
       }
       if (scenario === 'network-retry') assert.deepEqual(requests[1]!.messages, requests[0]!.messages)
     } finally {

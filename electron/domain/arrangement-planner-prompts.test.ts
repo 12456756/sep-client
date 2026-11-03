@@ -112,12 +112,14 @@ describe('arrangement planner prompt separation', () => {
     ['json-parse', 'JSON 语法错误'], ['output-validation', '输出结构与节点工作要求检查'],
     ['employee-validation', '员工有效性检查'], ['model-validation', '模型有效性检查'],
     ['dag-validation', '草稿与执行节点依赖检查'],
-  ] as const) it(`repairs ${phase} with only the check description and the same stage data`, () => {
+  ] as const) it(`repairs ${phase} with stage-specific structure and the same trusted data`, () => {
     for (const stage of ['authorized', 'enterprise', 'platform'] as ArrangementPlanningStage[]) {
       const input = buildArrangementPlannerInput(draft, [], stage)
       const prompt = buildArrangementPlannerRepairPrompt(phase, input)
       assert.ok(prompt.includes(phrase))
       assert.ok(prompt.includes(JSON.stringify(input, null, 2)))
+      assert.match(prompt, /当前阶段完整输出结构/)
+      assert.match(prompt, /保留用户目标/)
       assert.doesNotMatch(prompt, /具体错误|stopReason|上一份实际原始回复|第一阶段|第二阶段|第三阶段/)
     }
   })

@@ -11,6 +11,7 @@ import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestPr
 import { setLogLevel, setLogSink, type LogRecord } from '../../common/logger'
 import type { ModelTraceEntry } from '../../domain/model-trace'
 import { redactModelTraceText } from '../../common/redact'
+import { AppError } from '../../errors/app-error'
 
 import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
 
@@ -448,6 +449,20 @@ describe('real SDK model request awareness', () => {
     })
   }
 
+  it('retries an interrupted response stream using the persisted execution count', { timeout: 30_000 }, async t => {
+    const f = await fixture(t, (_body, response) => {
+      if (f.requests.length === 1) {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        chunk(response, { role: 'assistant' })
+        setTimeout(() => response.destroy(), 10)
+      } else answer(response, 'Recovered result')
+    })
+    await f.session.prompt('Complete the node.')
+    assert.equal(f.requests.length, 2)
+    assert.deepEqual(f.kinds, ['execution', 'retry'])
+    assert.deepEqual(f.progress(), { executionRounds: 1, requestAttempts: 2, executionRetries: 1, compactionAttempts: 0 })
+  })
+
   it('waits for persisted counters before sending a request', { timeout: 30_000 }, async t => {
     let release!: () => void
     let entered!: () => void
@@ -495,6 +510,21 @@ describe('real SDK model request awareness', () => {
     assert.deepEqual(f.kinds, ['execution'])
     await assert.rejects(f.session.prompt('Continue'), /计数保存失败/)
     assert.deepEqual(f.kinds, ['execution'])
+    assert.ok(f.logs.some(record => record.message === 'model request preparation failed'
+      && record.fields.errorCode === 'PERSISTENCE_ERROR' && record.fields.stage === 'persist'))
+  })
+
+  it('reports invalid counter state separately without provider I/O or repair retries', { timeout: 30_000 }, async t => {
+    const f = await fixture(t, (_body, response) => answer(response, 'Must not happen'), async () => {
+      throw new AppError('INVALID_STATE', { message: 'private diagnostic body' })
+    })
+    await assert.rejects(f.session.prompt('Complete the node.'), /计数状态无效/)
+    await assert.rejects(f.session.prompt('Continue'), /计数状态无效/)
+    assert.equal(f.requests.length, 0)
+    assert.deepEqual(f.kinds, ['execution'])
+    assert.ok(f.logs.some(record => record.message === 'model request preparation failed'
+      && record.fields.errorCode === 'INVALID_STATE' && record.fields.requestKind === 'execution'))
+    assert.doesNotMatch(JSON.stringify(f.logs), /private diagnostic body/)
   })
 
   for (const overflow of [false, true]) {
