@@ -18,11 +18,20 @@ import { buildArrangementTranscript } from '../../features/enterprise/arrangemen
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { DocumentPreviewButton } from '../../components/workspace/DocumentPreviewButton';
+import { useResultFilePreview } from '../../features/enterprise/use-result-file-preview';
 import type { WorkItem } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import * as workProcess from '../../features/enterprise/work-process';
 import * as vocabulary from '../../features/enterprise/vocabulary';
 import * as generalAssistant from '../../features/enterprise/general-assistant';
+
+const cardFilename = fileURLToPath(new URL('../../components/workspace/ResultFileCard.tsx', import.meta.url));
+const cardSource = ts.transpileModule(readFileSync(cardFilename, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX } }).outputText;
+const cardModule = { exports: {} };
+const cardDependencies: Record<string, unknown> = { react: React, 'react/jsx-runtime': jsxRuntime, 'lucide-react': icons,
+  '../../features/enterprise/use-result-file-preview': { useResultFilePreview }, './DocumentPreviewButton': { DocumentPreviewButton }, './result-file-card.css': {} };
+compileFunction(cardSource, ['require', 'exports', 'module'], { filename: cardFilename })((id: string) => { assert.ok(Object.hasOwn(cardDependencies, id), `unexpected card import: ${id}`); return cardDependencies[id] }, cardModule.exports, cardModule);
+const { ResultFileCard, ResultFileMedia, resultFileRequest } = cardModule.exports as typeof import('../../components/workspace/ResultFileCard');
 
 // Isolate CSS drawers and the browser-only motion hook; render the real page and media panel.
 const dependencies: Record<string, unknown> = {
@@ -41,6 +50,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
+  '../../components/workspace/ResultFileCard': { ResultFileCard },
   '../../components/feedback/use-operation-feedback': { useOperationFeedback },
   '../../features/enterprise/work-process': workProcess,
   '../../features/enterprise/use-reduced-motion': { usePrefersReducedMotion: () => false },
@@ -81,6 +91,40 @@ function renderDetail(item: WorkItem): string {
     else Object.defineProperty(globalThis, 'React', { configurable: true, value: previousReact });
   }
 }
+
+it('renders actual image and video elements with direct media interaction', () => {
+  const image = renderToStaticMarkup(React.createElement(ResultFileMedia, { preview: { url: 'sep-result://preview/image', mime: 'image/png', kind: 'image' }, name: 'mug.png', onZoom() {}, onError() {} }));
+  assert.match(image, /<img[^>]+src="sep-result:\/\/preview\/image"/);
+  assert.match(image, /aria-label="放大查看 mug.png"/);
+  const video = renderToStaticMarkup(React.createElement(ResultFileMedia, { preview: { url: 'sep-result://preview/video', mime: 'video/mp4', kind: 'video' }, name: 'mug.mp4', onZoom() {}, onError() {} }));
+  assert.match(video, /<video[^>]+controls=""[^>]+preload="auto"[^>]+playsinline=""/);
+  assert.doesNotMatch(image + video, /预览图片|预览视频|复制路径/);
+});
+
+it('associates each final media file with its original delivery identity only once', () => {
+  const file = { id: 'node-a:mug', name: 'mug.png', path: '/work/mug.png', note: '', nodeId: 'node-a', deliverableId: 'mug', format: 'png', sourceArtifact: { kind: 'image' as const, artifactId: 'asset-a', sha256: 'a'.repeat(64) } };
+  assert.deepEqual(resultFileRequest('task-a', file), { taskId: 'task-a', nodeId: 'node-a', deliverableId: 'mug' });
+  const html = renderDetail({ ...work, kind: 'flow', deliverables: [file] });
+  assert.equal((html.match(/aria-label="产物 mug.png"/g) ?? []).length, 1);
+  assert.match(html, /打开 mug.png 所在文件夹/);
+  assert.doesNotMatch(html, /正在读取媒体|预览图片|复制路径/);
+});
+
+it('keeps pending media visible but removes delivery status after final acceptance including historical files', () => {
+  const previousReact = Reflect.get(globalThis, 'React');
+  Object.defineProperty(globalThis, 'React', { configurable: true, value: React });
+  try {
+  const media = [{ nodeId: 'node-a', nodeRunId: 'run-a', kind: 'image' as const, operation: 'generate' as const, phase: 'ready' as const, jobId: 'job-a', outputs: [{ artifactId: 'asset-a', status: 'saved' as const }], inputs: [], pendingActions: [] }];
+  const pending = renderToStaticMarkup(React.createElement(ArrangementMediaPanel, { media, deliverables: [] }));
+  assert.match(pending, /正在整理交付/);
+  const done = renderToStaticMarkup(React.createElement(ArrangementMediaPanel, { media, deliverables: [{ id: 'final', nodeId: 'node-a', name: 'mug.png', path: '/work/mug.png', note: '' }] }));
+  assert.equal(done, '');
+  assert.equal(renderToStaticMarkup(React.createElement(ArrangementMediaPanel, { media: [{ ...media[0], outputs: [] }], deliverables: [] })), '');
+  } finally {
+    if (previousReact === undefined) Reflect.deleteProperty(globalThis, 'React');
+    else Object.defineProperty(globalThis, 'React', { configurable: true, value: previousReact });
+  }
+});
 
 it('renders a media question and an empty reply form instead of an approval action', () => {
   const html = renderDetail({ ...work, kind: 'flow', status: 'waiting-user',
@@ -139,7 +183,7 @@ it('keeps parallel questions available only while the arrangement can accept rep
 })
 
 // Check handlers and effect ownership; native focus behavior still needs window verification.
-function mountDetail() {
+function mountDetail(item: WorkItem = work) {
   const cells: unknown[] = [];
   const effects = new Map<number, { deps?: readonly unknown[]; cleanup?: () => void }>();
   let cursor = 0;
@@ -168,9 +212,9 @@ function mountDetail() {
   );
   const Page = (loaded.exports as typeof import('./WorkDetailPage')).WorkDetailPage;
   let navigated = false;
-  const workspace = { works: [work], employees: [], myEmployees: [], busy: false,
+  const workspace = { works: [item], employees: [], myEmployees: [], busy: false,
     navigate: () => { navigated = true; } } as unknown as EnterpriseWorkspace;
-  const root = Page({ workspace, workId: work.id });
+  const root = Page({ workspace, workId: item.id });
   const renderBody = root.type as (props: unknown) => React.ReactElement;
   let elements: React.ReactElement<Record<string, unknown>>[] = [];
   const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; },
@@ -240,11 +284,30 @@ describe('WorkDetailPage media entry', () => {
       assert.equal(page.navigated(), false);
       const media = page.find(element => element.type === MediaArtifactsPanel);
       assert.equal(media.props.visible, label === '查看产出结果');
+      assert.equal(media.props.presentation, 'results');
       (page.find(element => element.props['aria-label'] === '关闭详情面板').props.onClick as () => void)();
       page.render();
       assert.equal(page.dialog.open, false);
     }
     page.unmount();
+  });
+
+  it('passes registered output identities to result cards for conversations and arrangements', () => {
+    const conversationFile = { id: `${work.id}-file-0`, name: 'report.zip', path: 'C:\\work\\report.zip', note: '' };
+    const conversationPage = mountDetail({ ...work, deliverables: [conversationFile] });
+    const conversationCard = conversationPage.find(element => element.type === ResultFileCard);
+    assert.equal(conversationCard.props.taskId, work.id);
+    assert.equal(conversationCard.props.file, conversationFile);
+    assert.equal(conversationCard.props.conversation, true);
+    conversationPage.unmount();
+
+    const arrangementFile = { id: 'node-a:report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '', nodeId: 'node-a', deliverableId: 'report' };
+    const arrangementPage = mountDetail({ ...work, kind: 'flow', deliverables: [arrangementFile] });
+    const arrangementCard = arrangementPage.find(element => element.type === ResultFileCard);
+    assert.equal(arrangementCard.props.taskId, work.id);
+    assert.equal(arrangementCard.props.file, arrangementFile);
+    assert.equal(arrangementCard.props.conversation, false);
+    arrangementPage.unmount();
   });
 
   it('ignores nested preview cancellation and inside clicks, and closes on its own Escape or backdrop', () => {
@@ -342,20 +405,36 @@ describe('WorkDetailPage media entry', () => {
     })) })
     for (const format of ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'txt']) assert.match(html, new RegExp(`aria-label="预览文档：report\\.${format}"`))
     assert.doesNotMatch(html, /aria-label="预览文档：report\.zip"/)
-    assert.match(html, /复制路径/)
+    assert.match(html, /打开所在文件夹/)
+    assert.doesNotMatch(html, /复制路径/)
+  });
+
+  it('keeps file results to the name and actions without notes or premature empty copy', () => {
+    const html = renderDetail({ ...work, deliverables: [{ id: 'report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '内部节点交付说明', format: 'docx' }] });
+    assert.match(html, /report\.docx/);
+    assert.doesNotMatch(html, /内部节点交付说明|暂无产出结果|员工还没有产出文件/);
+  });
+
+  it('shows one short empty state for an arrangement with no file or media results', () => {
+    const flow = { ...work, kind: 'flow' as const, workType: { state: 'resolved' as const, kind: 'arrangement' as const },
+      arrangementExecution: { activeRunId: null, status: 'completed' as const, nodes: [], updatedAt: 1, media: [] } };
+    const html = renderDetail(flow);
+    assert.match(html, /暂无产出结果/);
+    assert.doesNotMatch(html, /员工还没有产出文件|尚无视频任务/);
   });
 
   it('offers accepted node documents while parallel arrangement nodes are still running', () => {
     const flow = { ...work, kind: 'flow' as const, status: 'running' as const,
       workType: { state: 'resolved' as const, kind: 'arrangement' as const },
       deliverables: [{ id: 'node-a:report', name: 'report.docx', path: 'C:\\work\\report.docx', note: '节点最终交付物 · A',
-        nodeId: 'node-a', nodeTitle: 'A', deliverableId: 'report', format: 'docx' }],
+        category: 'final' as const, nodeId: 'node-a', nodeTitle: 'A', deliverableId: 'report', format: 'docx' }],
       arrangementExecution: { activeRunId: 'run', status: 'running' as const, updatedAt: 1,
         nodes: [{ nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'report.docx', format: 'docx', size: 5,
           sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 1, snapshot: { sha256: 'a'.repeat(64), size: 5, source: 'confirmed' as const } }] },
         { nodeId: 'node-b', status: 'running' as const, finalFiles: [] }] } };
     const html = renderDetail(flow);
+    assert.match(html, /最终产物/);
     assert.match(html, /aria-label="预览文档：report\.docx"/);
-    assert.match(html, /复制路径/);
+    assert.match(html, /打开所在文件夹/);
   });
 });

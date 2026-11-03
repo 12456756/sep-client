@@ -7,6 +7,7 @@ import { GENERAL_ASSISTANT_ID, generalAssistant } from '../../../features/enterp
 import { useAttachmentComposer } from '../../../features/enterprise/use-attachment-composer'
 import type { ConversationOptions } from '../../../features/enterprise/useEnterpriseWorkspace'
 import type { SiliconEmployee } from '../../../features/enterprise/types'
+import { ModelSelector } from '../ModelSelector'
 import type { AttachmentView } from '../../../shared/attachment-contracts'
 import { isSubmitEnter } from '../../../shared/composer-shortcut'
 import { EmployeeFace } from '../EmployeeFace'
@@ -64,6 +65,7 @@ function LiveAssistant(props: Props & { editor: Editor }) {
 
 function AssistantForm({ employees, draft, onSubmit, onCreate, demo, busy, editor, attachment }: Props & { editor: Editor; attachment?: Attachments }) {
   const [employeeId, setEmployeeId] = useState(draft.employeeId)
+  const [modelId, setModelId] = useState(draft.modelId)
   const [panel, setPanel] = useState<'employee' | 'demo' | 'file' | null>(null)
   const [query, setQuery] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -77,7 +79,20 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, demo, busy, edito
   const blocked = busy || submitting || Boolean(attachment?.busy) || speech.busy
   const selectionProblem = !employee ? '所选员工已不在当前授权列表，请重新选择。'
     : !demo && (employee.availability === 'unavailable' || employee.availability === 'needs-auth' || !employee.allowedModels.length) ? '该员工当前不可用，请检查授权或选择其他员工。' : null
-  const selectEmployee = (id: string) => { draft.employeeId = id; setEmployeeId(id); setPanel(null); setError(null); input.current?.focus() }
+  const models = employee?.allowedModels ?? []
+  const selectedModel = models.includes(modelId) ? modelId : models[0] ?? ''
+  const selectEmployee = (id: string) => {
+    const nextEmployee = id === GENERAL_ASSISTANT_ID ? assistant : employees.find(item => item.id === id)
+    const nextModelId = nextEmployee?.allowedModels[0] ?? ''
+    draft.employeeId = id
+    draft.modelId = nextModelId
+    setEmployeeId(id)
+    setModelId(nextModelId)
+    setPanel(null)
+    setError(null)
+    input.current?.focus()
+  }
+  const selectModel = (nextModelId: string) => { draft.modelId = nextModelId; setModelId(nextModelId); setError(null) }
   const submit = async () => {
     if (blocked || submitLock.current || !editor.text.trim()) return
     if (demo) { setPanel('demo'); return }
@@ -87,6 +102,7 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, demo, busy, edito
     setError(null)
     try {
       const success = await onSubmit(employeeId, editor.text.trim(), {
+        modelId: selectedModel,
         attachmentSessionId: draft.attachment.session?.sessionId,
         attachmentRefs: attachment?.attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })),
       })
@@ -112,6 +128,9 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, demo, busy, edito
       <div className="sep-home-composer-toolbar"><div className="sep-home-composer-actions">
         <button type="button" className="sep-home-paperclip" aria-label="添加附件" title="上传文件" disabled={blocked} onClick={() => demo ? setPanel('file') : attachment?.select()}><Paperclip size={20} aria-hidden /></button>
         <button type="button" disabled={blocked} onClick={() => { setQuery(''); setPanel('employee') }}><Settings size={15} aria-hidden /><span>选择员工</span></button>
+        <div className="sep-home-model-control" aria-label="选择模型">
+          <ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={blocked} onChange={selectModel} />
+        </div>
       </div><div className="sep-home-composer-send"><SpeechInputActions speech={speech} disabled={demo || busy || submitting || Boolean(attachment?.busy)} /><button type="button" className="sep-home-send" aria-label="发送需求" disabled={blocked || !editor.text.trim()} onClick={() => { void submit() }}>{submitting || attachment?.busy ? <LoaderCircle size={19} aria-hidden /> : <Send size={19} aria-hidden />}</button></div></div>
     </div>
     {error || attachment?.error ? <p role="alert" className="sep-home-composer-error">{error ?? attachment?.error}</p> : null}

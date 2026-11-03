@@ -43,6 +43,11 @@ const retryInput = z.union([
   z.object({ taskId, nodeId: z.string().min(1).optional(), inputReply: arrangementInputReplySchema.optional() }).strict()
     .refine(value => !value.inputReply || !!value.nodeId),
 ]).transform(value => typeof value === 'string' ? { taskId: value, nodeId: undefined, inputReply: undefined } : value)
+const rerunInput = z.object({
+  taskId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+  requestId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/),
+}).strict()
+const deleteInput = z.union([taskId, z.object({ taskId, includeExecutions: z.literal(true) }).strict()])
 const updateTaskDetailsInput = z.object({
   taskId,
   title: z.string().trim().min(1).max(100).refine(value => !Array.from(value).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)).optional(),
@@ -84,6 +89,11 @@ export const taskRoutes = [
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
 
+  route(INVOKE_CHANNELS.TASK_RERUN, rerunInput, async (ctx, input) => ({
+    success: true,
+    task: await ctx.tasks.rerun(input.taskId, input.requestId),
+  }), { invalidMessage: '重新执行参数不合法。' }),
+
   route(INVOKE_CHANNELS.TASK_PAUSE, taskId, async (ctx, id) => {
     await ctx.tasks.pause(id)
     return { success: true }
@@ -94,8 +104,9 @@ export const taskRoutes = [
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
 
-  route(INVOKE_CHANNELS.TASK_DELETE, taskId, async (ctx, id) => {
-    await ctx.tasks.delete(id)
+  route(INVOKE_CHANNELS.TASK_DELETE, deleteInput, async (ctx, input) => {
+    if (typeof input === 'string') await ctx.tasks.delete(input)
+    else await ctx.tasks.deleteExecutionGroup(input.taskId)
     return { success: true }
   }, { invalidMessage: TASK_ID_INVALID }),
 

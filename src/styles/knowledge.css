@@ -1,4 +1,6 @@
 .kb-page { max-width: 1400px; margin: 0 auto; }
+.kb-page:has(> .kb-toolbar) { display: flex; min-height: 100%; flex-direction: column; }
+.kb-page:has(> .kb-toolbar) > .kb-pager { margin-top: auto; }
 .kb-page h1,.kb-page h2,.kb-page h3 { margin: 0; color: var(--ent-ink); }
 .kb-page h1 { font-size: 24px; }.kb-page h2 { font-size: 19px; }.kb-page p { color: var(--ent-ink-2); line-height: 1.65; }
 .kb-info { padding: 12px 16px; border: 1px solid var(--ent-line); border-radius: 10px; background: var(--ent-panel-subtle); color: var(--ent-ink-2); font-size: 13px; margin-bottom: 18px; }

@@ -179,15 +179,33 @@ describe('arrangement retry display regressions', () => {
     const execution = {
       activeRunId: 'retry-run', status: 'running' as const, updatedAt: 5,
       nodes: [
-        { nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'deliverables/report.md', format: 'md', size: 10, sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 4 }] },
+        { nodeId: 'node-a', status: 'completed' as const, finalFiles: [{ id: 'report', path: 'deliverables/report.md', format: 'md', size: 10, sha256: 'a'.repeat(64), nodeRunId: 'node-run-a', validatedAt: 4, sourceArtifact: { kind: 'image' as const, artifactId: 'image-asset', sha256: 'a'.repeat(64) } }] },
         { nodeId: 'node-b', status: 'running' as const, finalFiles: [] },
       ],
     }
     const work = buildWorkItem({ task: { ...task, activeRunId: 'retry-run' }, employees: [], plan: retryPlan, arrangementExecution: execution })
     assert.deepEqual(work.deliverables.map(file => file.path), ['deliverables/report.md'])
     assert.equal(work.deliverables[0]?.nodeTitle, 'Node A')
+    assert.deepEqual(work.deliverables[0]?.sourceArtifact, { kind: 'image', artifactId: 'image-asset', sha256: 'a'.repeat(64) })
     assert.equal(work.steps[0]?.state, 'done')
     assert.equal(work.steps[1]?.state, 'running')
+  })
+
+  it('classifies deliverables by the last employee in planned order', () => {
+    const classifiedPlan = { ...plan, nodes: [
+      { ...plan.nodes[0]!, id: 'node-a', subscriptionId: 'employee-a', title: 'Research' },
+      { ...plan.nodes[0]!, id: 'node-b', subscriptionId: 'employee-b', title: 'Final report', dependsOn: ['node-a'] },
+    ] }
+    const work = buildWorkItem({ task, employees: [], plan: classifiedPlan, arrangementExecution: {
+      activeRunId: 'run-a', status: 'completed', updatedAt: 10, nodes: [
+        { nodeId: 'node-a', status: 'completed', finalFiles: [{ ...finalFile, id: 'notes' }] },
+        { nodeId: 'node-b', status: 'completed', finalFiles: [{ ...finalFile, id: 'report' }] },
+      ],
+    } })
+
+    assert.deepEqual(work.deliverables.map(file => [file.deliverableId, file.category]), [
+      ['notes', 'intermediate'], ['report', 'final'],
+    ])
   })
 
   it('does not mistake an explicitly stopped arrangement for a retryable failure', () => {

@@ -10,6 +10,7 @@ import { videoFormParameters } from './media-view'
 
 // Dynamic import keeps TSX outside the shared Node tsconfig's compilation graph.
 const { VideoTaskContent, VideoTaskPanel, VideoArtifactsPanel, videoOutputIsSaved, savedVideoOutputCount, videoTaskIssue } = await import(new URL('../components/workspace/VideoArtifactsPanel.tsx', import.meta.url).href)
+const { ResultFileCard } = await import(new URL('../components/workspace/ResultFileCard.tsx', import.meta.url).href)
 const { canImportVideoReference } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
 const { VideoCreationForm } = await import(new URL('../testing/VideoCreationForm.tsx', import.meta.url).href)
 
@@ -73,6 +74,17 @@ test('video results panel has no duplicate creation form or technical configurat
   const html = panel()
   assert.match(html, /视频成果/)
   assert.doesNotMatch(html, /<form|<select|<textarea|视频模型|视频时长|提交视频生成|从系统选择视频参考图/)
+})
+
+test('saved conversation video output uses inline playback and folder reveal', () => {
+  const html = render(React.createElement(ResultFileCard, {
+    taskId: 'task-1',
+    file: { id: 'job-1-output-1', name: '视频成果1.mp4', path: '', note: '', format: 'mp4', sourceArtifact: { kind: 'video', artifactId: 'output-1', sha256: 'a'.repeat(64) } },
+    mediaRequest: { taskId: 'task-1', jobId: 'job-1', outputId: 'output-1' },
+  }))
+  assert.match(html, /视频成果1\.mp4/)
+  assert.match(html, /打开所在文件夹/)
+  assert.doesNotMatch(html, /预览视频成果|导出视频成果/)
 })
 
 test('saved videos with fractional actual-spec duration remain visible with mismatch and billing details', () => {

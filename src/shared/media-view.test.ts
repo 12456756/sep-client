@@ -8,6 +8,7 @@ import { imageAspectRatio } from './media-spec'
 
 // Shared tests also compile under the Node tsconfig, which intentionally has no JSX setting.
 const { MediaArtifactsPanel, MediaAssetGrid, MediaCommandFeedback, MediaCreationForm, MediaJobList, mediaTaskIssue, savedImageOutputCount } = await import(new URL('../components/workspace/MediaArtifactsPanel.tsx', import.meta.url).href)
+const { ResultFileCard } = await import(new URL('../components/workspace/ResultFileCard.tsx', import.meta.url).href)
 
 const profile: MediaProfile = {
   profileId: 'image-profile', kind: 'image', displayName: '商品图片', configVersion: '1', operations: ['generate', 'edit'],
@@ -79,6 +80,17 @@ test('image SSR selects the authorized default model without applying its specif
   assert.match(html, /aria-label="图片quality"[^>]*value=""/)
   assert.doesNotMatch(html, /（固定）|value="1536x1024"|value="high"/)
   assert.doesNotMatch(html, /<option value="">默认/)
+})
+
+test('saved conversation image output uses the unified result card actions', () => {
+  const html = render(React.createElement(ResultFileCard, {
+    taskId: 'task-1',
+    file: { id: 'asset-1', name: '图片成果.png', path: '', note: '', format: 'png', sourceArtifact: { kind: 'image', artifactId: 'asset-1', sha256: 'a'.repeat(64) } },
+    mediaRequest: { taskId: 'task-1', assetId: 'asset-1' },
+  }))
+  assert.match(html, /图片成果\.png/)
+  assert.match(html, /打开所在文件夹/)
+  assert.doesNotMatch(html, /预览|导出/)
 })
 function render(element: React.ReactElement): string {
   const previous = Reflect.get(globalThis, 'React')

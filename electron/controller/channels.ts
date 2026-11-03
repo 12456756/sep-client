@@ -7,6 +7,9 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  RESULT_FILE_PREVIEW: 'result-file:preview',
+  RESULT_FILE_RELEASE: 'result-file:release',
+  RESULT_FILE_REVEAL: 'result-file:reveal',
   ATTACHMENT_BEGIN: 'attachment:begin',
   ATTACHMENT_SELECT: 'attachment:select',
   ATTACHMENT_LIST: 'attachment:list',
@@ -85,6 +88,7 @@ export const INVOKE_CHANNELS = {
   TASK_SWITCH_EMPLOYEE: 'task:switch-employee',
   TASK_GET_MESSAGES: 'task:get-messages',
   TASK_RETRY: 'task:retry',
+  TASK_RERUN: 'task:rerun',
   TASK_GET: 'task:get',
   TASK_GET_ALL: 'task:get-all',
   TASK_LIST_RUNS: 'task:list-runs',
@@ -99,6 +103,7 @@ export const INVOKE_CHANNELS = {
   ARRANGE_GET_PLAN: 'arrange:get-plan',
   ARRANGE_GET_EXECUTION: 'arrange:get-execution',
   ARRANGE_PREVIEW_DOCUMENT: 'arrange:preview-document',
+  WORK_OPEN_DELIVERABLE: 'work:open-deliverable',
   ARRANGE_CONFIRM_NODES: 'arrange:confirm-nodes',
   ARRANGE_LIST_DRAFTS: 'arrange:list-drafts',
   ARRANGE_LIST_PLANNING_RECORDS: 'arrange:list-planning-records',
@@ -120,6 +125,9 @@ export const INVOKE_CHANNELS = {
   ARRANGE_REQUEST_REPLACEMENT_ACCESS: 'arrange:request-replacement-access',
   ARRANGE_REFRESH_REPLACEMENT_ACCESS: 'arrange:refresh-replacement-access',
   UTIL_SELECT_DIRECTORY: 'util:select-directory',
+  WORKSPACE_GET_DEFAULT_DIRECTORY: 'workspace:get-default-directory',
+  WORKSPACE_SELECT_DEFAULT_DIRECTORY: 'workspace:select-default-directory',
+  WORKSPACE_CLEAR_DEFAULT_DIRECTORY: 'workspace:clear-default-directory',
   WINDOW_SET_THEME: 'window:set-theme',
 } as const
 
@@ -157,12 +165,14 @@ export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import
   [INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE]: 'workSwitch',
   [INVOKE_CHANNELS.TASK_CANCEL]: 'workStop',
   [INVOKE_CHANNELS.TASK_RETRY]: 'workRetry',
+  [INVOKE_CHANNELS.TASK_RERUN]: 'workRetry',
   [INVOKE_CHANNELS.TASK_DELETE]: 'workDelete',
   [INVOKE_CHANNELS.TASK_UPDATE_DETAILS]: 'workRename',
   [INVOKE_CHANNELS.ARRANGE_CONFIRM_NODES]: 'workConfirm',
   [INVOKE_CHANNELS.ARRANGE_GET_PLAN]: 'workPlan',
   [INVOKE_CHANNELS.ARRANGE_GET_EXECUTION]: 'workExecution',
   [INVOKE_CHANNELS.ARRANGE_PREVIEW_DOCUMENT]: 'documentPreview',
+  [INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE]: 'workOpenDirectory',
   [INVOKE_CHANNELS.MEDIA_GET_TASK]: 'imageRead',
   [INVOKE_CHANNELS.MEDIA_SET_REFERENCE_SELECTION]: 'imageSelection',
   [INVOKE_CHANNELS.MEDIA_IMPORT_REFERENCES]: 'imageImport',
@@ -212,6 +222,9 @@ export const FEEDBACK_OPERATION_BY_CHANNEL: Partial<Record<InvokeChannel, import
   [INVOKE_CHANNELS.SPEECH_RECOGNIZE]: 'speech',
   [INVOKE_CHANNELS.SPEECH_OPEN_SYSTEM_SETTINGS]: 'speech',
   [INVOKE_CHANNELS.UTIL_SELECT_DIRECTORY]: 'directory',
+  [INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY]: 'settings',
+  [INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY]: 'settings',
+  [INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY]: 'settings',
 }
 
 /** 全部通道名，供契约测试与边界脚本使用。 */

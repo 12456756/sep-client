@@ -4,12 +4,13 @@ import { DocumentPreviewService } from './document-preview-service'
 import type { FinalDeliveryFile } from '../domain/arrangement-delivery'
 import type { DocumentPreviewContent } from '../../src/shared/document-preview'
 
-function fixture() {
+function fixture(overrides: Partial<Pick<ConstructorParameters<typeof DocumentPreviewService>[0], 'getDeliveryPath' | 'getConversationPath' | 'openFileDirectory'>> = {}) {
   let scope: { memberId: string; enterpriseId: string } | null = { memberId: 'member', enterpriseId: 'enterprise' }
   let status = 'completed'
   let hash = 'a'.repeat(64)
   let renders = 0
   let reads = 0
+  const opened: string[] = []
   let release: (() => void) | undefined
   const file = (): FinalDeliveryFile => ({ id: 'report', path: 'report.md', format: 'md', size: 5, sha256: hash,
     nodeRunId: 'run-1', validatedAt: 1, snapshot: { sha256: hash, size: 5, source: 'confirmed' } })
@@ -17,12 +18,16 @@ function fixture() {
     scope: { currentScope: () => scope },
     getDelivery: async (_scope, taskId, nodeId, id) => taskId === 'task' && nodeId === 'node' && id === 'report'
       ? { status, file: file(), workspace: '/unused' } : null,
+    getDeliveryPath: async (_scope, taskId, nodeId, id) => taskId === 'task' && nodeId === 'node' && id === 'report' && status === 'completed' ? '/work/report.md' : null,
+    getConversationPath: async (_scope, taskId, fileId) => taskId === 'task' && fileId === 'task-file-0' ? '/work/report.md' : null,
+    openFileDirectory: async path => { opened.push(path) },
     read: async () => { reads++; return { bytes: Buffer.from('hello'), source: 'snapshot' as const } },
     render: async (): Promise<DocumentPreviewContent> => { renders++; if (release) await new Promise<void>(resolve => { release = resolve }); return { kind: 'markdown', text: 'hello' } },
+    ...overrides,
   })
   return { service, setScope: (value: typeof scope) => { scope = value }, setStatus: (value: string) => { status = value },
     changeVersion: () => { hash = 'b'.repeat(64) }, counts: () => ({ reads, renders }),
-    defer: () => { release = () => undefined }, release: () => release?.() }
+    defer: () => { release = () => undefined }, release: () => release?.(), opened }
 }
 const request = { taskId: 'task', nodeId: 'node', deliverableId: 'report' }
 
@@ -46,6 +51,45 @@ test('running/unaccepted nodes, forged identities and unauthenticated users cann
   f.setScope(null)
   await assert.rejects(f.service.preview(request))
   assert.deepEqual(f.counts(), { reads: 0, renders: 0 })
+})
+
+test('opens only registered completed output directories and requires authentication', async () => {
+  const f = fixture()
+  await f.service.openDirectory(request)
+  await f.service.openDirectory(conversationRequest)
+  assert.deepEqual(f.opened, ['/work/report.md', '/work/report.md'])
+  f.setStatus('running')
+  await assert.rejects(f.service.openDirectory(request))
+  f.setScope(null)
+  await assert.rejects(f.service.openDirectory(conversationRequest))
+  assert.equal(f.opened.length, 2)
+})
+
+test('never opens an obsolete account directory after an in-flight lookup completes or fails', async () => {
+  for (const input of [request, { taskId: 'task', fileId: 'task-file-0' }]) {
+    for (const outcome of ['success', 'error', 'clear'] as const) {
+      let resolve!: (path: string) => void
+      let reject!: (error: Error) => void
+      const lookup = new Promise<string>((done, fail) => { resolve = done; reject = fail })
+      const f = fixture({ getConversationPath: () => lookup, getDeliveryPath: () => lookup })
+      const pending = f.service.openDirectory(input)
+      if (outcome === 'clear') f.service.clear()
+      else f.setScope({ memberId: 'other', enterpriseId: 'enterprise' })
+      if (outcome === 'error') reject(new Error('private filesystem diagnostics'))
+      else resolve('/work/report.md')
+      await assert.rejects(pending, { code: 'AUTH_REQUIRED' })
+      assert.deepEqual(f.opened, [])
+    }
+  }
+})
+
+test('wraps directory opener failures without exposing filesystem diagnostics', async () => {
+  const f = fixture({ openFileDirectory: async () => { throw new Error('private filesystem diagnostics') } })
+  await assert.rejects(f.service.openDirectory(request), error => {
+    assert.equal((error as { code: string }).code, 'INTERNAL_ERROR')
+    assert.doesNotMatch((error as Error).message, /private/)
+    return true
+  })
 })
 
 test('account changes discard an in-flight result, without touching task state', async () => {
@@ -90,6 +134,8 @@ function conversationFixture() {
   const service = new DocumentPreviewService({
     scope: { currentScope: () => scope },
     getDelivery: async () => null,
+    getDeliveryPath: async () => null,
+    openFileDirectory: async () => undefined,
     read: async () => { throw new Error('Conversation must not use node delivery reads') },
     readConversation: async (_scope, taskId, fileId) => available && taskId === 'task' && fileId === 'task-file-0'
       ? { name: 'report.md', format: 'md', version, bytes: Buffer.from('# conversation') } : null,

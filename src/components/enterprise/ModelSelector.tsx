@@ -9,10 +9,11 @@ interface Props {
   value: string
   title: string
   allowEmpty: boolean
+  disabled?: boolean
   onChange: (modelId: string) => void
 }
 
-export function ModelSelector({ models, value, title, allowEmpty, onChange }: Props) {
+export function ModelSelector({ models, value, title, allowEmpty, disabled = false, onChange }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const { root, popover, position } = useAnchoredPopover(open, setOpen, true)
@@ -41,7 +42,7 @@ export function ModelSelector({ models, value, title, allowEmpty, onChange }: Pr
   }
 
   return <div className="ent-model-picker ent-rs-model" ref={root} title={title}>
-    <button type="button" className="ent-model-trigger" role="combobox" aria-label="模型" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} disabled={!models.length}
+    <button type="button" className="ent-model-trigger" role="combobox" aria-label="模型" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? listId : undefined} disabled={disabled || !models.length}
       onClick={() => { setQuery(''); setOpen(current => !current) }}
       onKeyDown={event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); setQuery(''); setOpen(true) } }}>
       <span>{value || '模型'}</span><ChevronUp size={13} aria-hidden className={open ? '' : 'down'} />

@@ -37,6 +37,7 @@ it('treats subscription inactive as unavailable, without inventing an expiry dat
 })
 
 it('uses operation-specific work messages and preserves only verified business reasons', () => {
+  assert.equal(toEnvelope(new Error('private path'), { feedbackOperation: 'workOpenDirectory' }).message, '打开文件所在目录失败，请联系平台管理员')
   assert.equal(toEnvelope(new Error('private path and token'), { feedbackOperation: 'workDelete' }).message, '工作记录删除失败，请联系平台管理员')
   assert.equal(toEnvelope(appError('INVALID_STATE', { message: '任务正在执行，无法删除。' }), { feedbackOperation: 'workDelete' }).message, '工作正在执行，请先终止工作，再删除记录')
   assert.equal(toEnvelope(appError('INVALID_STATE', { message: '只能重试当前失败的节点。' }), { feedbackOperation: 'workRetry' }).message, '只能重试当前失败的节点')

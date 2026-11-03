@@ -85,6 +85,11 @@ export class AttachmentService {
     return this.store.freeze(scope, taskId, claim.sessionId, refs)
   }
 
+  copyTaskInputs(scope: TaskOwnerScope, sourceTaskId: string, taskId: string, snapshot: InputSnapshotRef): Promise<InputSnapshotRef> {
+    if (!this.store.copyTaskInputs) throw new Error('ATTACHMENT_COPY_UNAVAILABLE')
+    return this.store.copyTaskInputs(scope, sourceTaskId, taskId, snapshot)
+  }
+
   async latestTaskSnapshot(scope: TaskOwnerScope, taskId: string): Promise<InputSnapshotRef | null> {
     return this.store.readTaskSnapshot(scope, taskId)
   }

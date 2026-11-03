@@ -9,6 +9,7 @@ describe('home draft', () => {
     const second = createHomeDraft();
     assert.equal(first.text, '');
     assert.equal(first.employeeId, GENERAL_ASSISTANT_ID);
+    assert.equal(first.modelId, '');
     assert.equal(first.epoch, 0);
     assert.deepEqual(first.attachment, { session: null, attachments: [] });
     assert.notEqual(first.composerId, second.composerId);

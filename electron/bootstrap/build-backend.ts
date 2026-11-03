@@ -4,13 +4,15 @@ import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { SkillLibraryService } from '../service/skill-library-service'
 import { KnowledgeService } from '../service/knowledge-service'
 import { KnowledgeApi } from '../common/platform/knowledge-api'
+import { ResultFileService } from '../service/result-file-service'
+import { ResultFileStore } from '../data/result-file-store'
 /**
  * 后端组合根。
  *
  * 所有存储、服务和运行时依赖都在这里绑定。除运行时的惰性加载外，业务模块不创建
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { shell, systemPreferences } from 'electron'
 import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
@@ -111,6 +113,7 @@ class BackendRuntime {
   private readonly attachmentStore: AttachmentStore
   private readonly attachmentExtractionRuntime: LazyAsync<AttachmentExtractionRuntime>
   readonly documentPreviews: DocumentPreviewService
+  readonly resultFiles: ResultFileService
   private readonly documentPreviewRuntime: LazyAsync<DocumentPreviewRuntime>
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
@@ -327,9 +330,20 @@ class BackendRuntime {
     this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media })
     this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
+    this.resultFiles = new ResultFileService({
+      scope: this,
+      store: new ResultFileStore(userDataDir, previewFiles, taskId => this.tasks.get(taskId), mediaStore, videoStore),
+      reveal: path => shell.showItemInFolder(path),
+    })
     this.documentPreviews = new DocumentPreviewService({
       scope: this,
       getDelivery: (...args) => previewFiles.getDelivery(...args),
+      getDeliveryPath: (...args) => previewFiles.getDeliveryPath(...args),
+      getConversationPath: async (scope, taskId, fileId) => previewFiles.getConversationPath(scope, await this.tasks.get(taskId), fileId),
+      openFileDirectory: async filePath => {
+        const error = await shell.openPath(dirname(filePath))
+        if (error) throw new Error('OPEN_DIRECTORY_FAILED')
+      },
       read: (...args) => previewFiles.read(...args),
       readConversation: async (scope, taskId, fileId) => previewFiles.readConversation(scope, await this.tasks.get(taskId), fileId),
       render: (format, bytes, validate) => this.documentPreviewRuntime.get().then(runtime => { validate(); return runtime.render(format, bytes) }),
@@ -486,6 +500,7 @@ class BackendRuntime {
     await this.attachments.stop()
     this.knowledge.clear()
     this.documentPreviews.clear()
+    this.resultFiles.clear()
     this.speech.stop()
     this.notifications.stop()
     for (const entry of this.employmentTokens.values()) entry.manager.stop()

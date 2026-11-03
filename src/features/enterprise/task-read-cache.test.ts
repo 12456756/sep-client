@@ -11,6 +11,12 @@ const task = (id = 'task-a'): ClientTask => ({
 const type: WorkTypeReadResult = { state: 'resolved', kind: 'arrangement' }
 
 describe('task query/event reconciliation', () => {
+  it('preserves complete execution lineage across raw events and initial query races', () => {
+    const projected = { ...task(), executionGroup: { rootTaskId: 'root', number: 2 } }
+    assert.deepEqual(mergeTaskUpdate([projected], task())[0]?.executionGroup, projected.executionGroup)
+    assert.deepEqual(mergeTaskList([projected], [task()])[0]?.executionGroup, projected.executionGroup)
+    assert.deepEqual(mergeInitialTaskQuery([task()], [projected], new Set([task().id]), true)[0]?.executionGroup, projected.executionGroup)
+  })
   it('ignores delayed single and list events for a successfully deleted record', () => {
     const removed = new Set(['task-a'])
     const current = [task('other')]

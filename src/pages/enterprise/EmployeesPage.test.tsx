@@ -3,7 +3,6 @@ import { it } from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { EmployeeCard } from '../../components/enterprise/EmployeeCard';
-import { EmployeePortrait } from '../../components/enterprise/EmployeePortrait';
 import { EmployeesPage } from './EmployeesPage';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee } from '../../features/enterprise/types';
@@ -69,40 +68,30 @@ it('employee card omits unavailable description, empty skills and empty last-wor
   assert.doesNotMatch(html, /ent-emp-speech/);
 });
 
-it('speech combines the actual introduction and all unique skills without duplicating content below the name', () => {
+it('avatar card combines the real introduction, status and unique skills', () => {
   const second = { ...skill, capability: { ...skill.capability, id: 'skill-b', name: '商品机会评分' } };
   const html = renderToStaticMarkup(createElement(EmployeeCard, {
     employee: { ...employee, intro: '筛选有需求证据但尚未充分满足的商品机会。' },
     skills: [skill, second, skill], onOpen: () => undefined,
   }));
-  assert.match(html, /我可以筛选有需求证据但尚未充分满足的商品机会，擅长<strong>市场机会分析<\/strong>和<strong>商品机会评分<\/strong>。/);
+  assert.match(html, /ent-emp-avatar-intro/);
+  assert.match(html, /ent-emp-avatar-skills/);
+  assert.match(html, /市场机会分析/);
+  assert.match(html, /商品机会评分/);
   assert.equal((html.match(/市场机会分析/g) ?? []).length, 1);
   assert.equal((html.match(/筛选有需求证据/g) ?? []).length, 1);
-  assert.doesNotMatch(html, /ent-emp-card-intro|ent-emp-card-skills/);
-  assert.match(html, /<header><div class="ent-emp-card-id"><strong title="测试员工">测试员工<\/strong><\/div><\/header>/);
-  assert.doesNotMatch(html, /ent-emp-person-status|class="ent-chip/);
+  assert.match(html, /class="ent-chip ready"/);
+  assert.doesNotMatch(html, /ent-emp-person-stage|employee-portrait/);
 });
 
-for (const [intro, expected] of [
-  ['我可以分析商品机会。', '我可以分析商品机会。'],
-  ['可以分析商品机会。', '我可以分析商品机会。'],
-  ['负责整理资料！', '我负责整理资料。'],
-  ['分析商品机会', '我可以分析商品机会。'],
-]) {
-  it(`speech retains first-person grammar for introduction: ${intro}`, () => {
-    const html = renderToStaticMarkup(createElement(EmployeeCard, { employee: { ...employee, intro }, onOpen: () => undefined }));
-    assert.ok(html.includes(expected));
-    assert.doesNotMatch(html, /我可以我|我可以可以|擅长|ent-emp-card-intro/);
-  });
-}
-
-it('skills alone form a real first-person introduction and blank skill names are omitted', () => {
+it('skills alone render as compact tags and blank skill names are omitted', () => {
   const blank = { ...skill, capability: { ...skill.capability, name: ' ' } };
   const html = renderToStaticMarkup(createElement(EmployeeCard, {
     employee: { ...employee, intro: ' ' }, skills: [skill, blank], onOpen: () => undefined,
   }));
-  assert.match(html, /我擅长<strong>市场机会分析<\/strong>。/);
-  assert.doesNotMatch(html, /我可以|ent-emp-card-intro|ent-emp-card-skills/);
+  assert.match(html, /class="ent-emp-avatar-skills"/);
+  assert.match(html, /市场机会分析/);
+  assert.doesNotMatch(html, /ent-emp-avatar-intro/);
 });
 
 it('controlled scope takes precedence over a standalone initial scope', () => {
@@ -195,41 +184,12 @@ it('directory omits the redundant page title and introductory copy', () => {
   assert.doesNotMatch(html, /<h1|找到合适的员工，把工作交给它完成。/);
 });
 
-it('people view shows the selected digital companion while compact rows retain their small identity avatar', () => {
+it('people view shows the selected employee avatar while compact rows retain their small identity avatar', () => {
   const portrait = renderToStaticMarkup(createElement(EmployeeCard, { employee, onOpen: () => undefined, onChat: () => undefined }));
-  assert.match(portrait, /ent-emp-person-stage/);
-  assert.match(portrait, /class="employee-portrait/);
-  assert.match(portrait, /data-character="soft-digital-companion"/);
-  assert.match(portrait, /data-palette="[^"]+"/);
-  assert.match(portrait, /data-expression="[^"]+"/);
-  assert.doesNotMatch(portrait, /employee-portrait-orbit/);
-  assert.doesNotMatch(portrait, /ent-card\s/);
+  assert.match(portrait, /ent-emp-avatar-card/);
+  assert.match(portrait, /ent-face lg/);
+  assert.doesNotMatch(portrait, /ent-emp-person-stage|employee-portrait/);
   const compact = renderToStaticMarkup(createElement(EmployeeCard, { employee, compact: true, onOpen: () => undefined }));
   assert.match(compact, /ent-face sm/);
   assert.doesNotMatch(compact, /class="employee-portrait/);
-});
-
-it('a platform avatar never replaces the unified illustrated employee identity', () => {
-  const html = renderToStaticMarkup(createElement(EmployeePortrait, { employee: { ...employee, avatar: 'https://example.invalid/old-face.png' } }));
-  assert.doesNotMatch(html, /<image|<img|old-face/);
-  assert.match(html, /employee-portrait-head/);
-  assert.match(html, /employee-portrait-body/);
-  assert.match(html, /employee-portrait-visor/);
-  assert.doesNotMatch(html, /employee-portrait-hair|employee-portrait-skin|<svg/);
-});
-
-it('real employee status changes the pose while preserving generated appearance', () => {
-  const identities = new Set<string>();
-  const poses = new Set<string>();
-  for (const availability of ['ready', 'working', 'unavailable', 'needs-auth'] as const) {
-    const html = renderToStaticMarkup(createElement(EmployeePortrait, { employee: { ...employee, availability } }));
-    identities.add(html.match(/data-appearance="([^"]+)"/)![1]);
-    poses.add(html.match(/employee-portrait-pose-([^"\s]+)/)![1]);
-    assert.match(html, new RegExp(`data-pose="${availability}"`));
-    assert.match(html, /aria-label="测试员工，.+数字员工形象"/);
-    assert.equal(html.includes('employee-portrait-laptop'), availability === 'working');
-    assert.equal(html.includes('employee-portrait-document'), availability === 'needs-auth');
-  }
-  assert.equal(identities.size, 1);
-  assert.equal(poses.size, 4);
 });

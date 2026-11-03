@@ -4,7 +4,7 @@
  * 设计决定（与 index.css 的旧工作台样式并存，不互相覆盖）：
  * 1. 主色是品牌红；工作状态、成功、提醒和错误仍各自保留语义色。
  * 2. 状态一律「颜色 + 图标 + 文字」三者同时表达，不依赖单一颜色。
- * 3. 工作画布由低对比玫瑰灰过渡到冷灰，阅读与交互面板保持清晰表面。
+ * 3. 页面共用工作区暖白画布，导航与顶部栏使用统一的浅暖灰表面。
  * 4. 数值一律给图形：进度条、圆环、时间轴圆点，不靠一串文字描述。
  */
 
@@ -35,9 +35,12 @@
   --ent-dark-ink: #f6f7fb;
   --ent-dark-ink-2: #a9aec4;
 
-  /* Shell color fallbacks; the renderer paints the continuous canvas gradient. */
-  --ent-canvas: #f0eef1;
-  --ent-shell: #f5f3f5;
+  /* Shared work-area palette used by every page in the enterprise shell. */
+  --work-canvas: #fffdfb;
+  --work-rail: #f8f1ef;
+  --work-list: #f4efed;
+  --ent-canvas: var(--work-canvas);
+  --ent-shell: var(--work-rail);
   --ent-panel: #ffffff;
   --ent-panel-subtle: #fbf9fa;
   --ent-overlay: rgb(24 28 38 / 34%);
@@ -140,8 +143,11 @@
 /* 深色主题只覆盖语义令牌，页面组件不需要分别维护两套颜色。 */
 .ent-shell.dark,
 :root:has(.ent-shell.dark) :is(.kb-overlay, .kb-dialog, .kb-document-drawer, .skill-dialog-overlay, .skill-save-dialog, .ent-knowledge-popover, .ent-model-popover) {
-  --ent-canvas: #11131a;
-  --ent-shell: #11131a;
+  --work-canvas: #1a1d26;
+  --work-rail: #261f27;
+  --work-list: #201f27;
+  --ent-canvas: var(--work-canvas);
+  --ent-shell: var(--work-rail);
   --ent-panel: #1a1d26;
   --ent-panel-subtle: #20242f;
   --ent-overlay: rgb(5 7 12 / 62%);
@@ -172,34 +178,33 @@
   --ent-glow-ring: 0 0 0 3px rgb(240 82 92 / 22%);
 }
 .ent-shell.dark .ent-top,
-.ent-shell.dark .ent-side { background: var(--ent-panel); }
+.ent-shell.dark .ent-side { background: var(--work-rail); }
 .ent-shell.dark .ent-top-icon { color: var(--ent-ink-2); }
 .ent-shell.dark .ent-face.placeholder { color: #e7b9bd; }
 
 /* ── 外壳 ───────────────────────────────────────────────────────────── */
 
 /*
- * 外壳按设计稿：左边一条通高的白色导航，右边一整片浅冷灰的内容区，
- * 两者之间只有一条极浅的线，不用深色边框。
+ * 左侧导航与顶部栏使用同一浅暖灰表面，页面内容统一落在工作区暖白画布上。
  *
- * 内容区顶部是一条白色的 Header（.ent-top），它同时承担三件事：写当前页面的名字、
+ * 内容区顶部的 Header（.ent-top）同时承担三件事：写当前页面的名字、
  * 当 Electron 的窗口拖拽区、把 Windows 的窗口按钮（titleBarOverlay 画在右上角，
  * 44 高）让开 —— 不留出右边那一段的话关闭按钮会压在标题上。
  */
-.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: linear-gradient(135deg, #ead5dc 0%, #f2dcd6 24%, #f0e6e5 48%, #eef0f4 78%, #f5f6f8 100%); }
+.ent-shell { display: flex; min-width: 0; min-height: 100dvh; height: 100dvh; box-sizing: border-box; padding-top: var(--ent-drag-h); color: var(--ent-ink); background: var(--work-canvas); }
 /* macOS 窗口按钮留在侧栏顶部，右侧工具栏与它们共用顶部空间。 */
 [data-platform='darwin'] .ent-shell { padding-top: 0; }
+/* Windows 使用标题栏覆盖层，侧栏品牌区和右侧全局操作直接进入顶部标题栏区域。 */
+[data-platform='win32'] .ent-shell { padding-top: 0; }
 [data-platform='darwin'] .ent-shell > .ent-side.ent-icon-nav { padding-top: calc(var(--window-chrome-height) + 8px); }
 [data-platform='darwin'] .ent-shell .ent-top { min-height: 52px; }
 :root[data-platform='darwin']:has(.ent-shell) .electron-window-chrome { width: var(--ent-side-w-collapsed); right: auto; }
-.ent-shell-main { position: relative; isolation: isolate; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: linear-gradient(135deg, rgb(234 213 220 / 36%), rgb(240 230 229 / 22%) 44%, rgb(238 240 244 / 48%)); }
-.ent-shell-main::before { position: absolute; z-index: 0; right: -100px; bottom: -170px; width: min(42vw, 420px); aspect-ratio: 1; content: ''; opacity: .02; background: #ae383d; -webkit-mask: url('../assets/logo.png') center / contain no-repeat; mask: url('../assets/logo.png') center / contain no-repeat; pointer-events: none; }
+.ent-shell-main { position: relative; isolation: isolate; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: var(--work-canvas); }
 .ent-shell-main > .ent-top, .ent-shell-main > .ent-scroll { position: relative; z-index: 1; }
 /* Global header panels sit above page-local search bars and organization nodes. */
 .ent-shell-main > .ent-top { z-index: 20; }
-.ent-shell.dark { background: #11131a; }
-.ent-shell.dark .ent-shell-main { background: linear-gradient(135deg, #171519, #181a21 48%, #171d26); }
-.ent-shell.dark .ent-shell-main::before { background: #e8b2b6; opacity: .025; }
+.ent-shell.dark { background: var(--work-canvas); }
+.ent-shell.dark .ent-shell-main { background: var(--work-canvas); }
 
 /* 内容区域滚动容器 - 添加最大宽度约束 */
 .ent-scroll {
@@ -264,7 +269,7 @@
   flex-direction: column;
   min-height: 0;
   padding: 0 14px 12px;
-  background: var(--ent-panel);
+  background: var(--work-rail);
   box-shadow: inset -1px 0 0 var(--ent-line-soft);
   transition: width var(--duration-normal) var(--ent-ease);
 }
@@ -460,13 +465,13 @@
 /* ── 页面抬头 ─────────────────────────────────────────────────────────── */
 
 /*
- * 抬头是一条白色的横条（设计稿 56~64 高），底下一条极浅的线把它和内容区分开。
+ * 抬头使用统一浅暖灰底色（设计稿 56~64 高），底下一条极浅的线把它和内容区分开。
  * 它同时是窗口拖拽区，所以右边固定让出 150px 给 Windows 的窗口按钮 ——
  * 那三颗按钮由 titleBarOverlay 画在右上角，任何内容压过去都会被它盖住。
  * 首页、工作详情、安排工作不写标题（它们的第一行就是内容），这条横条仍然在。
  */
 /* Keep fixed notification/update panels anchored to the viewport, without a filter containing block. */
-.ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 28px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: rgb(255 255 255 / 76%); }
+.ent-top { display: flex; flex: 0 0 auto; align-items: center; gap: 14px; min-height: 60px; padding: 8px 28px 8px 28px; border-bottom: 1px solid var(--ent-line-soft); background: var(--work-rail); }
 [data-platform='win32'] .ent-top { padding-right: calc(28px + var(--window-controls-inset)); }
 
 .ent-top-sidebar-toggle { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; padding: 0; border: 0; border-radius: 8px; color: var(--ent-ink-2); background: transparent; cursor: pointer; transition: color 140ms ease, background-color 140ms ease; }
@@ -531,6 +536,14 @@
 .ent-profile-error { margin: 0; padding: 9px 11px; border-radius: 7px; color: var(--ent-danger); background: var(--ent-danger-bg); font-size: 12px; line-height: 1.6; }
 .ent-profile-refresh { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; border: 0; color: var(--ent-ink-3); background: transparent; font-size: 12px; cursor: pointer; }
 .ent-profile-refresh:hover { color: var(--ent-brand-ink); }
+.ent-default-workspace-settings { display: grid; gap: 8px; padding-top: 16px; border-top: 1px solid var(--ent-line-soft); }
+.ent-default-workspace-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ent-default-workspace-heading > div:first-child { display: grid; min-width: 0; gap: 4px; }
+.ent-default-workspace-heading strong { color: var(--ent-ink); font-size: 14px; }
+.ent-default-workspace-heading span { color: var(--ent-ink-3); font-size: 12px; }
+.ent-default-workspace-actions { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ent-default-workspace-actions .ent-btn { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ent-default-workspace-path { overflow: hidden; color: var(--ent-ink-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .ent-default-model-settings { display: grid; gap: 8px; min-width: 0; padding-top: 16px; border-top: 1px solid var(--ent-line-soft); }
 .ent-default-model-settings label { color: var(--ent-ink); font-size: 14px; }
 .ent-default-model-settings select { width: 100%; min-width: 0; min-height: 36px; padding: 7px 10px; border: 1px solid var(--ent-line); border-radius: 6px; color: var(--ent-ink); background: var(--ent-panel); font: inherit; font-size: 13px; }
@@ -576,6 +589,22 @@
   outline: 2px solid var(--ent-brand) !important;
   outline-offset: 2px;
   box-shadow: 0 0 0 3px rgb(217 75 82 / 18%) !important;
+}
+/* Inputs use a neutral focus state; the brand focus ring remains on buttons. */
+.ent-shell :is(input, textarea, select):focus {
+  border-color: var(--ent-line-strong) !important;
+  box-shadow: none !important;
+}
+.ent-shell :is(input, textarea, select):focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+/* 输入控件只保留静态中性边框，聚焦时不再出现红色或额外外圈。 */
+.ent-shell :is(.ent-ask, .ent-arrangebar-card, .ent-goal, .ent-chat-ask, .ent-mn-composer, .org-search, .org-tree-search):focus-within,
+.ent-shell :is(.ent-knowledge-search, .ent-model-search):focus-within {
+  border-color: var(--ent-line-strong);
+  box-shadow: none;
+  outline: none;
 }
 /* 会话与编排输入区由外框表达聚焦，内部文本框不再单独显示焦点环。 */
 .ent-shell .ent-arrangebar-input:focus-visible, .ent-shell .ent-ask-input:focus-visible,
@@ -1259,7 +1288,7 @@
 .ent-toolbar { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
 /* 页内搜索。顶栏的全局搜索已经撤掉，搜索框下沉到真正需要它的页面。 */
 .ent-find { display: inline-flex; align-items: center; gap: 7px; min-width: 176px; padding: 0 10px; border: 1px solid var(--ent-line-strong); border-radius: 999px; background: var(--ent-panel); color: var(--ent-ink-3); transition: border-color var(--ent-ease), box-shadow var(--ent-ease); }
-.ent-find:focus-within { border-color: var(--ent-brand); box-shadow: var(--ent-glow-ring); }
+.ent-find:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
 .ent-find svg { flex: 0 0 auto; }
 .ent-find input { width: 100%; min-height: 30px; border: 0; background: none; color: var(--ent-ink); font-size: var(--ent-fs-body); outline: none; }
 .ent-find input::placeholder { color: var(--ent-ink-3); }
@@ -2376,7 +2405,7 @@
 .org-tree-node { display: grid; min-width: 0; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 9px; width: 100%; padding: 10px; border: 1px solid transparent; border-radius: 11px; color: var(--ent-ink); background: transparent; font: inherit; text-align: left; cursor: pointer; transition: border-color var(--ent-ease), background var(--ent-ease), transform var(--ent-ease); }
 .org-tree-node:hover, .org-tree-node.selected { border-color: var(--ent-brand-border); background: var(--ent-brand-softer); }
 .org-tree-node:hover { transform: translateX(1px); }
-.org-tree-node:focus-visible, .org-tree-silicon-node:focus-visible, .org-tree-search input:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.org-tree-node:focus-visible, .org-tree-silicon-node:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
 .org-tree-node > svg { color: var(--ent-ink-3); }
 .org-tree-department-node { padding-left: calc(10px + (var(--org-depth, 0) * 12px)); border-color: var(--ent-line); background: var(--ent-panel); box-shadow: 0 3px 12px rgb(32 35 43 / 4%); }
 .org-tree-department-node.selected { border-color: var(--ent-brand-border); box-shadow: 0 4px 14px rgb(185 54 63 / 10%); }

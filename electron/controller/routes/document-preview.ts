@@ -7,4 +7,8 @@ export const documentPreviewRoutes = [
     success: true,
     data: await ctx.documentPreviews.preview(input),
   })),
+  route(INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE, documentPreviewRequestSchema, async (ctx, input) => {
+    await ctx.documentPreviews.openDirectory(input)
+    return { success: true }
+  }),
 ]

@@ -4,8 +4,10 @@
  */
 
 import { FolderOpen, ShieldCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { ModelSelector } from '../ModelSelector';
 import { RUN_PERMISSIONS, type RunSettings } from '../../../features/enterprise/run-settings';
+import { formatDirectoryPath } from '../../../shared/path-display';
 
 interface SharedProps {
   settings: RunSettings;
@@ -27,7 +29,7 @@ interface Props extends SharedProps, DirectoryProps {
 }
 
 function directoryLabel(workDir: string): string {
-  return workDir.trim() ? workDir.split(/[\\/]/).filter(Boolean).at(-1) ?? '选择目录' : '选择目录';
+  return workDir.trim() ? formatDirectoryPath(workDir) : '选择目录';
 }
 
 /**
@@ -39,19 +41,42 @@ function directoryLabel(workDir: string): string {
  * 「这次工作在什么环境下跑」，放在一起才讲得通。
  */
 export function RunSettingsDirectory({ settings, onChange, onChooseFolder }: DirectoryProps) {
+  const [defaultWorkspacePath, setDefaultWorkspacePath] = useState('');
   const permission = RUN_PERMISSIONS.find(item => item.id === settings.permissions.preset);
   const autoApprove = settings.permissions.approvalMode === 'auto-approve';
+
+  useEffect(() => {
+    let changedDuringLoad = false;
+    const onDefaultWorkspaceChanged = (event: Event) => {
+      changedDuringLoad = true;
+      setDefaultWorkspacePath((event as CustomEvent<string | null>).detail ?? '');
+    };
+    if (settings.workDir.trim()) {
+      setDefaultWorkspacePath('');
+    }
+    let mounted = true;
+    void window.electronAPI.getDefaultWorkspaceDirectory().then(result => {
+      if (mounted && !changedDuringLoad && result.success && result.path) setDefaultWorkspacePath(result.path);
+    }).catch(() => undefined);
+    window.addEventListener('default-workspace-directory-changed', onDefaultWorkspaceChanged);
+    return () => {
+      mounted = false;
+      window.removeEventListener('default-workspace-directory-changed', onDefaultWorkspaceChanged);
+    };
+  }, [settings.workDir]);
+
+  const displayPath = settings.workDir.trim() || defaultWorkspacePath;
 
   return (
     <div className="ent-rs-env">
       <button
         type="button"
         className="ent-rs-directory"
-        title={settings.workDir || '选择本次工作的目录'}
+        title={displayPath || '选择本次工作的目录'}
         onClick={() => void onChooseFolder(settings.workDir).then(path => { if (path) onChange({ workDir: path }); })}
       >
         <FolderOpen size={16} aria-hidden />
-        <span>{directoryLabel(settings.workDir)}</span>
+        <span>{directoryLabel(displayPath)}</span>
       </button>
 
       <label className="ent-rs-compact ent-rs-permission" title={permission?.hint ?? '访问权限'}>

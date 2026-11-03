@@ -7,7 +7,7 @@ import * as contracts from '../../src/shared/document-preview'
 import { INVOKE_CHANNELS } from './channels'
 import type { Route } from './router'
 
-function previewRoute(): Route {
+function previewRoute(channel: Route['channel'] = INVOKE_CHANNELS.ARRANGE_PREVIEW_DOCUMENT): Route {
   const source = readFileSync(new URL('./routes/document-preview.ts', import.meta.url), 'utf8')
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   const module = { exports: {} as { documentPreviewRoutes: Route[] } }
@@ -20,8 +20,10 @@ function previewRoute(): Route {
     assert.ok(Object.hasOwn(dependencies, name), name)
     return dependencies[name]
   }, module.exports, module)
-  assert.equal(module.exports.documentPreviewRoutes.length, 1)
-  return module.exports.documentPreviewRoutes[0]
+  assert.equal(module.exports.documentPreviewRoutes.length, 2)
+  const found = module.exports.documentPreviewRoutes.find(entry => entry.channel === channel)
+  assert.ok(found)
+  return found
 }
 
 it('document preview IPC accepts delivery identities only and delegates without filesystem paths', async () => {
@@ -53,5 +55,19 @@ it('conversation preview accepts a task file identity, never a path or mixed nod
   const calls: unknown[] = []
   const context = { documentPreviews: { preview: async (value: unknown) => { calls.push(value); return { name: 'report.docx' } } } }
   await route.handle(context as never, input as never)
+  assert.deepEqual(calls, [input])
+})
+
+it('open output directory IPC reuses trusted file identities and rejects renderer paths', async () => {
+  const route = previewRoute(INVOKE_CHANNELS.WORK_OPEN_DELIVERABLE)
+  const input = { taskId: 'task-a', fileId: 'task-a-file-0' }
+  assert.deepEqual(route.schema.parse(input), input)
+  for (const invalid of [
+    { ...input, path: 'C:\\private' }, { ...input, fileId: '../secret' },
+    { ...input, nodeId: 'node-a', deliverableId: 'file-a' }, null,
+  ]) assert.equal(route.schema.safeParse(invalid).success, false)
+  const calls: unknown[] = []
+  const context = { documentPreviews: { openDirectory: async (value: unknown) => { calls.push(value) } } }
+  assert.deepEqual(await route.handle(context as never, input as never), { success: true })
   assert.deepEqual(calls, [input])
 })

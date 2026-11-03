@@ -9,7 +9,7 @@ import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { appError } from '../../errors/app-error'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from '../channels'
-import { listener, route } from '../router'
+import { NO_INPUT, listener, route } from '../router'
 
 /**
  * 审批响应。`requestId` 必填（C5）——缺了就不批，不做任何推断。
@@ -24,6 +24,7 @@ const approvalResponse = z.object({
 
 const windowTheme = z.enum(['light', 'dark'])
 const directorySelection = z.string().trim().max(32768).refine(path => !path || isAbsolute(path)).optional()
+const trusted = { trustedMainFrame: true } as const
 
 const WINDOW_THEME_COLORS = {
   light: { color: '#f7f8fc', symbolColor: '#5c6375', background: '#f7f8fc' },
@@ -31,6 +32,25 @@ const WINDOW_THEME_COLORS = {
 } as const
 
 export const systemRoutes = [
+  route(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY, NO_INPUT, async ctx => ({ success: true, path: await ctx.tasks.getDefaultWorkspaceDirectory() }), { ...trusted, errorShape: 'ipc' }),
+  route(INVOKE_CHANNELS.WORKSPACE_SELECT_DEFAULT_DIRECTORY, NO_INPUT, async ctx => {
+    const window = ctx.window()
+    if (!window) throw appError('INTERNAL_ERROR', { details: { reason: 'main window unavailable' } })
+    const defaultPath = await ctx.tasks.prepareDirectorySelection()
+    const result = await dialog.showOpenDialog(window, {
+      properties: ['openDirectory', 'createDirectory'],
+      title: '选择默认工作目录',
+      defaultPath,
+    })
+    if (result.canceled || result.filePaths.length === 0) return { success: false, path: null }
+    const path = result.filePaths[0]!
+    await ctx.tasks.setDefaultWorkspaceDirectory(path)
+    return { success: true, path }
+  }, { ...trusted, errorShape: 'ipc' }),
+  route(INVOKE_CHANNELS.WORKSPACE_CLEAR_DEFAULT_DIRECTORY, NO_INPUT, async ctx => {
+    await ctx.tasks.setDefaultWorkspaceDirectory(null)
+    return { success: true, path: null }
+  }, { ...trusted, errorShape: 'ipc' }),
   route(INVOKE_CHANNELS.WINDOW_SET_THEME, windowTheme, async (ctx, input) => {
     const window = ctx.window()
     if (!window) throw appError('INTERNAL_ERROR', { details: { reason: 'main window unavailable' } })

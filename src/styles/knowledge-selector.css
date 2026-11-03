@@ -29,5 +29,5 @@
 .ent-model-options { max-height: 300px; flex-shrink: 1; }
 .ent-model-option { flex: 0 0 auto; gap: 10px; }
 .ent-model-option > span { min-width: 0; overflow-wrap: anywhere; }
-.ent-knowledge-search:focus-within, .ent-model-search:focus-within { border-color: var(--ent-brand); box-shadow: 0 0 0 2px var(--ent-brand-softer); }
+.ent-knowledge-search:focus-within, .ent-model-search:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
 .ent-knowledge-search input:focus-visible, .ent-model-search input:focus-visible { outline: 0; box-shadow: none; }

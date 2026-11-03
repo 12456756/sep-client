@@ -19,6 +19,7 @@ export interface RequestContext {
   readonly arrangements: Backend['arrangements']
   readonly attachments: Backend['attachments']
   readonly documentPreviews: Backend['documentPreviews']
+  readonly resultFiles: Backend['resultFiles']
   readonly employees: Backend['employees']
   readonly media: Backend['media']
   readonly speech: Backend['speech']
@@ -51,6 +52,7 @@ export function createRequestContext(
     arrangements: backend.arrangements,
     attachments: backend.attachments,
     documentPreviews: backend.documentPreviews,
+    resultFiles: backend.resultFiles,
     employees: backend.employees,
     media: backend.media,
     speech: backend.speech,

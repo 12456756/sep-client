@@ -12,6 +12,7 @@ import { app, BrowserWindow, dialog, safeStorage } from 'electron';
 import { createBackend } from './bootstrap/build-backend';
 import { createAppUpdater } from './bootstrap/create-app-updater';
 import { createMainWindow } from './bootstrap/main-window';
+import { registerResultFileScheme, installResultFileProtocol } from './bootstrap/result-file-protocol';
 import { RendererBridge } from './bootstrap/renderer-bridge';
 import { installShutdownHandler } from './bootstrap/shutdown';
 import type { SpeechPermissionGate } from './bootstrap/speech-permissions';
@@ -26,6 +27,7 @@ import {
 } from './errors/error-reporter';
 
 const log = logger.child('main');
+registerResultFileScheme();
 
 /** main -> renderer 的唯一出口，同时持有当前窗口。 */
 const bridge = new RendererBridge();
@@ -64,6 +66,8 @@ app.whenReady().then(async () => {
     });
 
     const updater = createAppUpdater(backend, bridge);
+    const uninstallResultFiles = installResultFileProtocol(backend.resultFiles);
+    app.once('will-quit', uninstallResultFiles);
     registerRoutes(createRequestContext(backend, () => bridge.currentWindow(), updater), { routes, listeners });
     app.once('before-quit', () => updater.dispose());
     installShutdownHandler({

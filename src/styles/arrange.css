@@ -323,7 +323,7 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 
 .ent-chat-pop { position: absolute; z-index: 30; bottom: calc(100% + 10px); left: 0; display: flex; box-sizing: border-box; width: min(360px, calc(100vw - 32px)); max-height: min(420px, calc(100vh - 180px)); flex-direction: column; padding: 10px; overflow: hidden; border: 1px solid var(--ent-line); border-radius: 14px; background: var(--ent-panel); box-shadow: var(--ent-shadow-lift); animation: arr-pop-up 160ms ease-out both; }
 .ent-chat-find { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: 8px; color: var(--ent-ink-3); }
-.ent-chat-find:focus-within { border-color: var(--ent-brand); }
+.ent-chat-find:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
 .ent-chat-find input { width: 100%; min-height: 32px; border: 0; background: none; color: var(--ent-ink); font-family: inherit; font-size: 13px; outline: none; }
 .ent-chat-find input::placeholder { color: var(--arr-place); }
 .ent-chat-pop ul { display: flex; min-height: 0; flex: 1 1 auto; flex-direction: column; gap: 2px; margin: 6px -2px 0 0; padding: 0 2px 0 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; }
