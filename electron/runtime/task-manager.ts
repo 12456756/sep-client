@@ -54,7 +54,10 @@ export interface TaskLifecycleAuditResult {
 type Task = ClientTask
 
 function cloneTask(task: Task): Task {
-  return { ...task, files: [...task.files], logs: task.logs.map(log => ({ ...log })) }
+  return { ...task,
+    ...(task.scheduledOrigin ? { scheduledOrigin: { ...task.scheduledOrigin } } : {}),
+    ...(task.scheduledAdmission ? { scheduledAdmission: { ...task.scheduledAdmission } } : {}),
+    files: [...task.files], logs: task.logs.map(log => ({ ...log })) }
 }
 
 function cloneTasks(tasks: Map<string, Task>): Map<string, Task> {
@@ -379,14 +382,21 @@ export class TaskManager {
     prompt: string,
     workDir?: string,
     subscriptionId: string | null = null,
-    reservedId?: string,
+    reserved?: string | { id: string; origin: import('../../src/shared/scheduled-tasks').ScheduledOrigin },
   ): Promise<Task> {
     const user = await this.requireCurrentUser()
     const generation = this.generation
     this.assertCurrentScope(user, generation)
-    const id = reservedId ?? randomUUID()
+    const reservation = typeof reserved === 'object' ? reserved : undefined
+    const id = typeof reserved === 'object' ? reserved.id : reserved ?? randomUUID()
     assertSafeId(id, 'taskId')
-    if (this.tasks.has(id)) throw new TaskScopeError('Task already exists.')
+    if (reservation) {
+      const existing = this.tasks.get(id)
+      if (existing) {
+        if (existing.scheduledOrigin?.occurrenceId !== reservation.origin.occurrenceId || existing.scheduledOrigin.definitionId !== reservation.origin.definitionId) throw new TaskAdmissionError('Reserved task belongs to another occurrence.')
+        return cloneTask(existing)
+      }
+    } else if (this.tasks.has(id)) throw new TaskScopeError('Task already exists.')
     const configured = workDir?.trim() ? null : await this.defaultWorkspaceSettings.read()
     const names = workDir?.trim() || configured ? undefined : await this.workspaceDirectories.resolve(user, this.currentWorkspaceNames)
     this.assertCurrentScope(user, generation)
@@ -397,10 +407,18 @@ export class TaskManager {
       createdAt: Date.now(), startedAt: null, completedAt: null, error: null, files: [], logs: [],
       ownerId: user.memberId, ownerEnterpriseId: user.enterpriseId,
       subscriptionId, activeRunId: null,
+      ...(reservation ? { scheduledOrigin: { ...reservation.origin } } : {}),
     }
+    let persistedTask = task
     try {
       await this.commit(nextTasks => {
-        if (nextTasks.has(task.id)) throw new TaskAdmissionError('Task reservation already exists.')
+        const existing = nextTasks.get(task.id)
+        if (existing) {
+          if (!reservation || existing.scheduledOrigin?.occurrenceId !== reservation.origin.occurrenceId
+            || existing.scheduledOrigin.definitionId !== reservation.origin.definitionId) throw new TaskAdmissionError('Task already exists.')
+          persistedTask = existing
+          return
+        }
         nextTasks.set(task.id, task)
       }, generation)
     } catch (error) {
@@ -408,15 +426,17 @@ export class TaskManager {
       throw error
     }
     this.notifyTaskUpdate(task.id)
-    return cloneTask(task)
+    return cloneTask(persistedTask)
   }
 
-  async admitTask(taskId: string, runId: string): Promise<void> {
+  async admitTask(taskId: string, runId: string, guard?: () => void): Promise<void> {
     await this.requireTask(taskId)
     await this.commit(nextTasks => {
+      guard?.()
       const nextTask = nextTasks.get(taskId)
       if (!nextTask) throw new TaskScopeError('Task not found.')
       if (nextTask.activeRunId) throw new TaskAdmissionError()
+      if (nextTask.scheduledAdmission) throw new TaskAdmissionError('Scheduled occurrence was already admitted.')
       if (nextTask.status !== TaskStatus.PENDING) {
         throw new TaskAdmissionError(`Task cannot be admitted while it is ${nextTask.status}.`)
       }
@@ -424,6 +444,7 @@ export class TaskManager {
       nextTask.startFailureAt = null
       nextTask.error = null
       nextTask.activeRunId = runId
+      if (nextTask.scheduledOrigin) nextTask.scheduledAdmission = { runId, admittedAt: Date.now() }
       nextTask.queuedAt = Date.now()
       nextTask.currentRunStartedAt = null
     })

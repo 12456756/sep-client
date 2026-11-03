@@ -34,6 +34,7 @@ function setup(options: { saveFails?: boolean; saveFailureReason?: 'accounts_rea
     taskManager: { setCurrentUser: async () => { calls.push('scope'); if (options.workspaceFails) throw new Error('scope failed') }, clearCurrentUser: () => { calls.push('clear-scope') } },
     employees: { clear: () => { calls.push('clear-employees') } },
     resumeClientMonitor: () => { calls.push('recovery'); return recovery },
+    resumeScheduledTasks: () => { calls.push('scheduled-recovery'); return recovery },
   } }
   const dependencies: Record<string, unknown> = {
     electron: { app: { getVersion: () => 'test' }, safeStorage: { isEncryptionAvailable: () => options.encryptionAvailable ?? true } },
@@ -141,6 +142,7 @@ describe('login background recovery', () => {
       assert.equal(result?.success, true)
       assert.ok(harness.calls.indexOf('recovery') > harness.calls.indexOf('save-account'))
       assert.ok(harness.calls.indexOf('recovery') > harness.calls.indexOf('clear-employees'))
+      assert.ok(harness.calls.indexOf('scheduled-recovery') > harness.calls.indexOf('clear-employees'))
     } finally { harness.finishRecovery(); await pending }
   })
 

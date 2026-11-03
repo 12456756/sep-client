@@ -117,6 +117,7 @@ export class TaskService {
 
   /** 首次执行。是不是对话任务由元数据决定，而不是由调用方声明。 */
   async execute(taskId: string): Promise<void> {
+    if ((await this.requireTask(taskId)).scheduledOrigin) throw new AppError('INVALID_STATE', { message: '定时任务由调度器执行，请在定时任务记录中处理。' })
     const conversation = await this.isConversation(taskId)
     const scope = this.scope()
     const metadata = await this.deps.taskMetadataStore.load(scope, taskId)
@@ -136,6 +137,7 @@ export class TaskService {
   /** 重试。与 execute 一样要先确认任务归属与员工可用性。 */
   async retry(taskId: string, nodeId?: string, inputReply?: ArrangementInputReply): Promise<void> {
     const task = await this.requireTask(taskId)
+    if (task.scheduledOrigin) throw new AppError('INVALID_STATE', { message: '定时任务不能直接重跑，请先核查本次已有成果和操作。' })
     const conversation = await this.isConversation(taskId)
     if (conversation && (nodeId || inputReply)) throw new AppError('INVALID_ARGUMENT')
     if (conversation && this.deps.conversationQueue) {

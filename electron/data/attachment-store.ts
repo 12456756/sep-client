@@ -236,7 +236,11 @@ export class AttachmentStore implements AttachmentStorePort {
         if (createHash('sha256').update(bytes).digest('hex') !== ref.sha256 || bytes.length !== item.byteLength) throw new Error('ATTACHMENT_INTEGRITY_MISMATCH')
         const target = this.paths.attachmentTaskBlob(scope, taskId, ref.attachmentId)
         await mkdir(target.replace(/[/\\][^/\\]+$/, ''), { recursive: true })
-        await writeFile(target, bytes, { flag: 'wx', mode: 0o600 })
+        try { await writeFile(target, bytes, { flag: 'wx', mode: 0o600 }) } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+          const existing = await readFile(target)
+          if (existing.length !== bytes.length || createHash('sha256').update(existing).digest('hex') !== ref.sha256) throw new Error('ATTACHMENT_INTEGRITY_MISMATCH')
+        }
         items.push(clone(item))
         if (metadata.extractionTextById[ref.attachmentId] !== undefined) extractionTextById[ref.attachmentId] = metadata.extractionTextById[ref.attachmentId]
       }

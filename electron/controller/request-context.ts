@@ -21,6 +21,8 @@ export interface RequestContext {
   readonly documentPreviews: Backend['documentPreviews']
   readonly resultFiles: Backend['resultFiles']
   readonly employees: Backend['employees']
+  readonly scheduledTasks: Backend['scheduledTasks']
+  readonly scheduledCreations: Backend['scheduledCreations']
   readonly media: Backend['media']
   readonly speech: Backend['speech']
   /** Explicit opt-in composition only; isolated harnesses may override it. */
@@ -54,6 +56,8 @@ export function createRequestContext(
     documentPreviews: backend.documentPreviews,
     resultFiles: backend.resultFiles,
     employees: backend.employees,
+    scheduledTasks: backend.scheduledTasks,
+    scheduledCreations: backend.scheduledCreations,
     media: backend.media,
     speech: backend.speech,
     video: video ?? backend.video,

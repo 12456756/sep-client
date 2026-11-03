@@ -1,5 +1,5 @@
 import { buildArrangementPlannerInput, buildArrangementPlannerUserPrompt, type ArrangementPlanningStage } from './arrangement-planner-prompts'
-import { planningContractFailure, planningFailure, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
+import { planningContractFailure, planningFailure, planningFieldFailure, type PlanningDiagnosticContext, type PlanningPhase } from '../errors/planning-diagnostics'
 import { arrangementMediaKindForFormat, arrangementNodeWorkContractSchema, validateArrangementDraft, type ArrangementCandidateMatch, type ArrangementDraft, type ArrangementIntentAnalysis, type ArrangementNode, type ArrangementUnresolvedStep } from './arrangement-plan'
 import { normalizePlannerMediaContract } from './arrangement-planner-media'
 import type { ArrangementMediaTools } from './arrangement-media-availability'
@@ -122,7 +122,7 @@ export function buildArrangementPlannerPrompt(
 
 export function parseArrangementPlannerOutput(
   raw: string,
-  draft: ArrangementDraft,
+  draft: ArrangementPlannerDraft,
   employees: readonly ArrangementPlannerEmployee[],
   onPhase?: (phase: PlanningPhase) => void,
 ): ArrangementPlanningResult {
@@ -132,28 +132,34 @@ export function parseArrangementPlannerOutput(
   let value: unknown
   try { value = JSON.parse(json) as unknown } catch (error) { throw planningFailure('json-parse', 'invalid-json', error) }
   onPhase?.('output-validation')
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw planningFailure('output-validation', 'invalid-output-shape')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw planningFieldFailure('output-validation', 'invalid-output-shape', [], '返回一个完整规划 JSON 对象，不能返回数组、null 或文字。')
   const record = value as Record<string, unknown>
   if (typeof record.title !== 'string' || !Array.isArray(record.nodes) || record.nodes.length > 32) {
-    throw planningFailure('output-validation', 'invalid-output-shape')
+    throw planningFieldFailure('output-validation', 'invalid-output-shape', typeof record.title !== 'string' ? ['title'] : ['nodes'], 'title 必须是字符串，nodes 必须是最多 32 项的数组；其余顶层结构按系统协议填写。')
   }
   const employeeById = new Map(employees.map(employee => [employee.subscriptionId, employee]))
   const intentAnalysis = parseIntentAnalysis(record.intentAnalysis)
   const unresolvedSteps = parseUnresolvedSteps(record.unresolvedSteps)
   const candidateMatches = parseCandidateMatches(record.candidateMatches, employees, intentAnalysis, unresolvedSteps)
-  if (record.nodes.length === 0 && unresolvedSteps.length === 0) throw planningFailure('output-validation', 'empty-plan')
+  if (record.nodes.length === 0 && unresolvedSteps.length === 0) throw planningFieldFailure('output-validation', 'empty-plan', ['nodes'], '不能返回空计划；生成可执行节点，或将必要但未解决的工作保留在 unresolvedSteps。')
   const nodes = record.nodes.map((candidate, index) => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFailure('output-validation', 'invalid-node')
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFieldFailure('output-validation', 'invalid-node', ['nodes', index], '每个执行节点必须是对象，字段按节点完整结构填写。')
     const item = normalizePlannerMediaContract(candidate as Record<string, unknown>)
     const subscriptionId = stringField(item.subscriptionId)
     const modelId = stringField(item.modelId)
-    if (!subscriptionId || !modelId) throw planningFailure('output-validation', 'missing-node-fields')
+    if (!subscriptionId || !modelId) throw planningFieldFailure('output-validation', 'missing-node-fields', ['nodes', index, !subscriptionId ? 'subscriptionId' : 'modelId'], '执行节点必须填写非空 subscriptionId 和 modelId，且逐字来自该员工目录。')
     const { knowledge: _modelKnowledge, ...plannerContract } = item
     const contract = arrangementNodeWorkContractSchema.safeParse(plannerContract)
     if (!contract.success) throw planningContractFailure(index, contract.error.issues)
     for (const [requirementIndex, requirement] of (contract.data.mediaRequirements ?? []).entries()) {
       if (requirement.required !== false && !requirement.inputFrom && (requirement.operation === 'edit' || requirement.operation === 'image-to-video')) {
-        throw planningContractFailure(index, [{ path: ['mediaRequirements', requirementIndex, 'inputFrom'], code: 'custom' }], '请指定已选图片或上游图片交付物后重新规划。')
+        const bindings = (contract.data.inputRefs ?? []).filter(ref => ref.kind === 'attachment' && ref.purpose === 'media-source')
+        const selectedImage = bindings.length === 1 && bindings.every(ref => ref.kind === 'attachment' &&
+          draft.attachmentCandidates?.some(candidate => candidate.attachment.attachmentId === ref.attachment.attachmentId && candidate.attachment.sha256 === ref.attachment.sha256) &&
+          draft.plannerAttachmentMaterials?.some(material => material.attachment.attachmentId === ref.attachment.attachmentId &&
+            material.attachment.sha256 === ref.attachment.sha256 && material.mediaType.startsWith('image/')))
+        if (!selectedImage) throw planningContractFailure(index, [{ path: ['mediaRequirements', requirementIndex, 'inputFrom'], code: 'custom' }],
+          '请指定真实 inputFrom，或在 inputRefs 绑定唯一且已核验的图片附件并标记 purpose=media-source；多张附件须先明确选择，不得编造 artifactId。')
       }
     }
     for (const [fileIndex, file] of (contract.data.deliverables ?? []).entries()) {
@@ -187,27 +193,29 @@ export function parseArrangementPlannerOutput(
   })
   const allowedAttachments = new Map((draft.attachmentCandidates ?? []).map(candidate => [candidate.attachment.attachmentId, candidate]))
   const usedAttachmentIds = new Set((draft.nodes ?? []).flatMap(node => (node.inputRefs ?? []).flatMap(ref => ref.kind === 'attachment' ? [ref.attachment.attachmentId] : [])))
-  for (const node of nodes) {
-    if (node.inputRefs?.some(ref => ref.kind === 'deliverable')) throw planningFailure('output-validation', 'invalid-planner-input-reference')
-    for (const ref of node.inputRefs ?? []) {
+  for (const [nodeIndex, node] of nodes.entries()) {
+    if (node.inputRefs?.some(ref => ref.kind === 'deliverable')) throw planningFieldFailure('output-validation', 'invalid-planner-input-reference', ['nodes', nodeIndex, 'inputRefs'], '规划 inputRefs 仅允许 kind=attachment；上游媒体交付引用使用 inputFrom 和 dependsOn。')
+    for (const [refIndex, ref] of (node.inputRefs ?? []).entries()) {
       if (ref.kind !== 'attachment') continue
       const allowed = allowedAttachments.get(ref.attachment.attachmentId)
-      if (!allowed || allowed.attachment.sha256 !== ref.attachment.sha256) throw planningFailure('output-validation', 'invalid-attachment-reference')
+      if (!allowed || allowed.attachment.sha256 !== ref.attachment.sha256) throw planningFieldFailure('output-validation', 'invalid-attachment-reference', ['nodes', nodeIndex, 'inputRefs', refIndex, 'attachment'], '附件编号及 sha256 必须逐字复制本轮 attachments 对应项的 attachment 对象，不能猜测或使用其他任务附件。')
       usedAttachmentIds.add(ref.attachment.attachmentId)
     }
   }
   if ((draft.attachmentCandidates ?? []).some(candidate => candidate.mustUse && !usedAttachmentIds.has(candidate.attachment.attachmentId))) {
-    throw planningFailure('output-validation', 'required-attachment-unassigned')
+    throw planningFieldFailure('output-validation', 'required-attachment-unassigned', ['nodes'], '本轮 attachments 中 mustUse=true 的每个附件必须绑定到至少一个执行节点，已有有效绑定可保留。')
   }
-  if (nodes.some(node => !node.title || !node.instruction)) throw planningFailure('output-validation', 'missing-node-fields')
+  for (const [index, node] of nodes.entries()) {
+    if (!node.title || !node.instruction) throw planningFieldFailure('output-validation', 'missing-node-fields', ['nodes', index, !node.title ? 'title' : 'instruction'], '节点 title 和 instruction 必须是非空字符串，明确业务工作和执行要求。')
+  }
   onPhase?.('employee-validation')
-  for (const node of nodes) {
+  for (const [index, node] of nodes.entries()) {
     const employee = employeeById.get(node.subscriptionId)
-    if (!employee || employee.status !== 'ACTIVE' || employee.canExecute === false) throw planningFailure('employee-validation', 'employee-unavailable')
+    if (!employee || employee.status !== 'ACTIVE' || employee.canExecute === false) throw planningFieldFailure('employee-validation', 'employee-unavailable', ['nodes', index, 'subscriptionId'], '执行节点必须选择本轮目录中可执行的有效员工订阅；待授权推荐阶段 nodes 返回空数组。')
   }
   onPhase?.('model-validation')
-  for (const node of nodes) {
-    if (!employeeById.get(node.subscriptionId)!.allowedModels.includes(node.modelId)) throw planningFailure('model-validation', 'model-not-allowed')
+  for (const [index, node] of nodes.entries()) {
+    if (!employeeById.get(node.subscriptionId)!.allowedModels.includes(node.modelId)) throw planningFieldFailure('model-validation', 'model-not-allowed', ['nodes', index, 'modelId'], 'modelId 必须逐字使用该节点员工 allowedModels 中的一个值，不得采用其他员工的模型权限。')
   }
   const planned: ArrangementDraft = {
     ...structuredClone(draft),
@@ -233,31 +241,31 @@ export function parseArrangementPlannerOutput(
 
 function parseIntentAnalysis(value: unknown): ArrangementIntentAnalysis | undefined {
   if (value === undefined) return undefined
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw planningFailure('output-validation', 'invalid-intent-analysis')
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw planningFieldFailure('output-validation', 'invalid-intent-analysis', ['intentAnalysis'], 'intentAnalysis 必须为含 summary 和非空 steps 的对象。')
   const record = value as Record<string, unknown>
-  if (typeof record.summary !== 'string' || !Array.isArray(record.steps) || record.steps.length === 0) throw planningFailure('output-validation', 'invalid-intent-analysis')
-  const steps = record.steps.map(candidate => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFailure('output-validation', 'invalid-intent-step')
+  if (typeof record.summary !== 'string' || !Array.isArray(record.steps) || record.steps.length === 0) throw planningFieldFailure('output-validation', 'invalid-intent-analysis', ['intentAnalysis', typeof record.summary !== 'string' ? 'summary' : 'steps'], 'summary 必须为字符串，steps 必须为非空步骤对象数组。')
+  const steps = record.steps.map((candidate, index) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFieldFailure('output-validation', 'invalid-intent-step', ['intentAnalysis', 'steps', index], '意图步骤必须为对象，包含 id、title、能力字符串数组及 dependsOn 字符串数组。')
     const item = candidate as Record<string, unknown>
     const id = stringField(item.id)
     const title = stringField(item.title)
-    if (!id || !title) throw planningFailure('output-validation', 'invalid-intent-step')
+    if (!id || !title) throw planningFieldFailure('output-validation', 'invalid-intent-step', ['intentAnalysis', 'steps', index, !id ? 'id' : 'title'], '意图步骤 id、title 必须为非空字符串，能力与依赖字段为字符串数组。')
     const requiredCapabilityIds = stringArray(item.requiredCapabilityIds)
     return { id, title, requiredCapabilities: stringArray(item.requiredCapabilities), ...(requiredCapabilityIds.length ? { requiredCapabilityIds } : {}), dependsOn: stringArray(item.dependsOn) }
   })
-  if (new Set(steps.map(step => step.id)).size !== steps.length) throw planningFailure('output-validation', 'duplicate-intent-step')
+  if (new Set(steps.map(step => step.id)).size !== steps.length) throw planningFieldFailure('output-validation', 'duplicate-intent-step', ['intentAnalysis', 'steps'], '每个意图步骤 id 必须唯一，修正重复 ID 并同步关联引用。')
   return { summary: record.summary.trim(), steps }
 }
 
 function parseUnresolvedSteps(value: unknown): ArrangementUnresolvedStep[] {
   if (value === undefined) return []
-  if (!Array.isArray(value)) throw planningFailure('output-validation', 'invalid-unresolved-steps')
-  return value.map(candidate => {
-    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFailure('output-validation', 'invalid-unresolved-step')
+  if (!Array.isArray(value)) throw planningFieldFailure('output-validation', 'invalid-unresolved-steps', ['unresolvedSteps'], 'unresolvedSteps 必须是对象数组，没有未解决工作时返回 []。')
+  return value.map((candidate, index) => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) throw planningFieldFailure('output-validation', 'invalid-unresolved-step', ['unresolvedSteps', index], '未解决步骤必须是对象，包含 stepId、reason 和能力字符串数组。')
     const item = candidate as Record<string, unknown>
     const stepId = stringField(item.stepId)
     const reason = stringField(item.reason)
-    if (!stepId || !reason) throw planningFailure('output-validation', 'invalid-unresolved-step')
+    if (!stepId || !reason) throw planningFieldFailure('output-validation', 'invalid-unresolved-step', ['unresolvedSteps', index, !stepId ? 'stepId' : 'reason'], 'stepId 和 reason 必须为非空字符串，指向实际步骤并说明未解决原因。')
     const requiredCapabilityIds = stringArray(item.requiredCapabilityIds)
     return { stepId, reason, requiredCapabilities: stringArray(item.requiredCapabilities), ...(requiredCapabilityIds.length ? { requiredCapabilityIds } : {}) }
   })
