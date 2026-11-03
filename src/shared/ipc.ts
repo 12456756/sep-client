@@ -299,6 +299,14 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  getSkillImportState: () => Promise<IpcCommandResult & { data?: import('./skill-import-contracts').SkillImportStateView }>
+  confirmSkillImportConsent: (input: { pairingId: string; rememberDevice: boolean; scope: 'user' | 'project' | 'all'; rootIds: string[] }) => Promise<IpcCommandResult>
+  selectSkillImportRoot: () => Promise<IpcCommandResult>
+  removeSkillImportRoot: (input: { rootId: string }) => Promise<IpcCommandResult>
+  cancelSkillImport: (input: { sessionId: string }) => Promise<IpcCommandResult>
+  revokeSkillImportDevice: (input: { deviceId: string; instanceId: string }) => Promise<IpcCommandResult>
+  setSkillImportVisible: (input: { visible: boolean }) => Promise<IpcCommandResult>
+  onSkillImportStateChanged: (callback: (state: import('./skill-import-contracts').SkillImportStateView) => void) => () => void
   requestKnowledge: <R extends KnowledgeRequestInput>(input: R) => Promise<KnowledgeResult<R['action']>>
   cancelKnowledgeRequests: (requestIds: string[]) => Promise<IpcCommandResult>
   getSpeechPermission: () => Promise<IpcCommandResult & { data?: { permission: SpeechPermission } }>

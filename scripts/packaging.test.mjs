@@ -22,6 +22,14 @@ test('macOS packaging declares microphone purpose and signed audio input access'
   }
 })
 
+test('local and signed installers preserve the Skills import system protocol', () => {
+  const build = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).build
+  assert.deepEqual(build.protocols, [{ name: 'SEP Skills Import', schemes: ['sep-import'] }])
+  assert.deepEqual(createBuilderConfig(build, 'stable').protocols, build.protocols)
+  const signed = createBuilderConfig(build, 'stable', { signed: true, platform: 'darwin', env: { SEP_MAC_TEAM_ID: 'ABCDE12345', APPLE_KEYCHAIN_PROFILE: 'test-profile' } })
+  assert.deepEqual(signed.protocols, build.protocols)
+})
+
 test('local packages require ad hoc signing even with certificate discovery disabled', () => {
   const base = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).build
   for (const channel of ['beta', 'stable']) {

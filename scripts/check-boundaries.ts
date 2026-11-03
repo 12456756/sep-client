@@ -50,10 +50,10 @@ function isTextFile(path: string): boolean {
 }
 
 function loadSourceFiles(): SourceFile[] {
-  const listed = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' })
+  const listed = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z'], { encoding: 'utf8' })
   const strict = new TextDecoder('utf-8', { fatal: true })
   const files: SourceFile[] = []
-  for (const path of listed.split('\0')) {
+  for (const path of new Set(listed.split('\0'))) {
     // .agents/ 只保存本地开发技能，不属于应用源码或发布内容。
     if (!path || path.startsWith('.agents/') || !isTextFile(path)) continue
     let bytes: Buffer

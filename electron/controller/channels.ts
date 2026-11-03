@@ -7,6 +7,13 @@
 
 /** renderer -> main，`ipcRenderer.invoke` / `ipcMain.handle`。 */
 export const INVOKE_CHANNELS = {
+  SKILL_IMPORT_STATE: 'skill-import:state',
+  SKILL_IMPORT_CONSENT: 'skill-import:consent',
+  SKILL_IMPORT_SELECT_ROOT: 'skill-import:select-root',
+  SKILL_IMPORT_REMOVE_ROOT: 'skill-import:remove-root',
+  SKILL_IMPORT_CANCEL: 'skill-import:cancel',
+  SKILL_IMPORT_REVOKE: 'skill-import:revoke',
+  SKILL_IMPORT_VISIBLE: 'skill-import:visible',
   RESULT_FILE_PREVIEW: 'result-file:preview',
   RESULT_FILE_RELEASE: 'result-file:release',
   RESULT_FILE_REVEAL: 'result-file:reveal',
@@ -139,6 +146,7 @@ export const SEND_CHANNELS = {
 
 /** main -> renderer，`webContents.send` / `ipcRenderer.on`。 */
 export const EVENT_CHANNELS = {
+  SKILL_IMPORT_STATE_CHANGED: 'skill-import:state-changed',
   UPDATE_STATE_CHANGED: 'update:state-changed',
   NOTIFICATION_UPDATED: 'notifications:updated',
   AUTH_REQUIRED: 'auth:required',
