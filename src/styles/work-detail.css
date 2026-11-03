@@ -82,13 +82,13 @@
 .ent-transcript-node-name { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; }
 .ent-transcript-node-name strong { font-size: 13px; font-weight: 600; line-height: 1.6; }
 .ent-transcript-node-name small { font-size: 11px; color: var(--ent-ink-3); }
-.ent-transcript-node-body { height: min(480px, 55dvh); padding: 8px 12px 18px 27px; overflow-y: auto; overscroll-behavior: auto; scrollbar-width: thin; scrollbar-color: var(--ent-line-strong) transparent; }
+.ent-transcript-node-body { height: auto; max-height: min(480px, 55dvh); padding: 8px 12px 18px 27px; overflow-y: auto; overscroll-behavior-y: auto; scrollbar-width: thin; scrollbar-color: var(--ent-line-strong) transparent; }
 .ent-transcript-node-body[hidden] { display: none; }
 .ent-transcript-thinking { margin: 0 0 16px; padding: 10px 12px; border-left: 2px solid var(--ent-line-strong); background: var(--ent-panel-subtle); color: var(--ent-ink-2); font-size: 12px; }
 .ent-transcript-thinking > summary, .ent-transcript-thinking.short > span { display: flex; align-items: center; gap: 7px; min-height: 22px; font-size: 12px; }
 .ent-transcript-thinking > summary { cursor: pointer; }
 .ent-transcript-thinking > summary > span { margin-left: auto; color: var(--ent-ink-3); font-size: 11px; }
-.ent-transcript-thinking p { margin: 8px 0 0; max-height: 360px; overflow-y: auto; white-space: pre-wrap; line-height: 1.8; }
+.ent-transcript-thinking p { margin: 8px 0 0; max-height: 360px; overflow-y: auto; overscroll-behavior-y: auto; white-space: pre-wrap; line-height: 1.8; }
 .ent-transcript-reply { margin-bottom: 16px; min-width: 0; }
 .ent-transcript-reply .ent-markdown { max-width: 100%; }
 .ent-transcript-reply .ent-markdown :is(h1, h2, h3) { font-size: 15px; line-height: 1.6; }
