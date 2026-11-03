@@ -227,16 +227,16 @@ test('cancellation cannot become a correction or increment validation counts', a
 
 test('unified failure presentation preserves current UI text and terminal classification', () => {
   assert.deepEqual(resolveArrangementNodeFailure(new ArrangementMediaRecoveryError('download', new Error('Original expired')), false, false), {
-    message: '图片或视频下载失败，自动恢复未成功，请联系平台管理员', terminal: false,
+    message: '原图片或视频下载失败，自动恢复未成功，请恢复原任务下载，勿重复生成。', terminal: false,
   })
   assert.deepEqual(resolveArrangementNodeFailure(new ArrangementMediaRecoveryError('copy', new Error('ENOSPC')), false, false), {
-    message: '图片或视频已生成，但保存到交付目录失败，请联系平台管理员', terminal: false,
+    message: '图片或视频已生成，但无法保存到交付目录，请检查目录权限和磁盘空间后恢复交付，勿重复生成。', terminal: false,
   })
   assert.deepEqual(resolveArrangementNodeFailure(new DeliveryExecutionError('Invalid manifest'), false, false), {
-    message: '工作成果校验未通过，请联系平台管理员', terminal: true,
+    message: '工作成果未满足计划中的交付要求，请检查交付清单、文件路径和文件内容后重试。', terminal: true,
   })
   assert.deepEqual(resolveArrangementNodeFailure(new Error('EACCES'), false, false), {
-    message: '工作运行失败，请联系平台管理员', terminal: false,
+    message: '工作运行失败，客户端没有取得更具体的原因，请重试并保留发生时间，便于排查。', terminal: false,
   })
   assert.deepEqual(resolveArrangementNodeFailure(new AppError('AUTH_REQUIRED'), false, true), {
     message: '登录验证未通过，请重新登录', terminal: true,

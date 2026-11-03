@@ -261,7 +261,7 @@ test('definitive business rejection shows its cause without recovery or regenera
     jobs: [job({ generationStatus: 'FAILED', trackingStatus: 'STOPPED',
       billingStatus: 'NOT_RESERVED', error: 'VIDEO_BUDGET_EXCEEDED' })] } })
   assert.doesNotMatch(html, /role="alert"/)
-  assert.equal(videoTaskIssue([job({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', error: 'VIDEO_BUDGET_EXCEEDED' })]), '已超过企业视频预算，请联系平台管理员')
+  assert.equal(videoTaskIssue([job({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', error: 'VIDEO_BUDGET_EXCEEDED' })]), '已达到企业视频预算上限，请联系企业管理员调整预算后重试。')
   assert.match(html, /提交被拒绝/)
   assert.match(html, /尚未预占/)
   assert.doesNotMatch(html, /生成失败|恢复跟踪|重新保存|重新生成|提交结果不明|Video job reported/)
@@ -366,10 +366,10 @@ test('saved videos expose local preview and native export actions without eager 
 test('video summaries preserve saved outputs while reporting generation or tracking failures', () => {
   const failed = job({ generationStatus: 'FAILED', trackingStatus: 'AUTH_REQUIRED', saveStatus: 'SAVE_FAILED', outputs: [output], error: 'MEDIA_FORBIDDEN' })
   assert.equal(savedVideoOutputCount([failed]), 0)
-  assert.equal(videoTaskIssue([failed]), '当前账号没有视频生成权限，请联系平台管理员')
+  assert.equal(videoTaskIssue([failed]), '当前账号没有视频生成权限，请联系企业管理员开通权限。')
   const partial = job({ generationStatus: 'FAILED', saveStatus: 'SAVE_FAILED', outputs: [output], savedOutputIds: ['output-1'], error: 'unknown-error' })
   assert.equal(savedVideoOutputCount([partial]), 1)
-  assert.equal(videoTaskIssue([partial]), '视频成果保存失败，请联系平台管理员')
+  assert.equal(videoTaskIssue([partial]), '视频成果下载、文件校验或本地保存失败，请重新保存原结果，并检查磁盘空间和保存权限，勿重复生成。')
   assert.equal(savedVideoOutputCount(null), null)
   assert.equal(savedVideoOutputCount([partial], true), null)
 })
@@ -477,7 +477,7 @@ test('unknown video errors use fixed copy and feedback stays above results witho
   assert.equal(html.split('&lt;script&gt;').length - 1, 0)
   assert.doesNotMatch(html, /role="alert"/)
   assert.doesNotMatch(html, /<form|<select|<textarea/)
-  assert.match(videoTaskIssue([job({ error: attack })])!, /请联系平台管理员/)
+  assert.match(videoTaskIssue([job({ error: attack })])!, /原任务/)
 })
 
 test('pending commands and export feedback are visible and disable all mutations', () => {

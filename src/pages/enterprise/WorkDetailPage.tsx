@@ -511,7 +511,7 @@ function PathValue({ path }: { path: string }) {
   const { capture } = useOperationFeedback(path);
   const copyPath = async () => {
     const notice = capture();
-    if (!await copy(path)) notice.show('路径复制失败，请联系平台管理员');
+    if (!await copy(path)) notice.show('路径复制失败，请重试；仍失败时可手动复制路径。');
   };
   const separator = path.includes('\\') ? '\\' : '/';
   const parts = path.split(/[\\/]/).filter(Boolean);

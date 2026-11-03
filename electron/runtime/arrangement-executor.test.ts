@@ -882,7 +882,7 @@ describe('TaskRuntime arrangement controls', () => {
       })
       const result = await executor.execute(arrangement, 'task', 'run')
       assert.equal(result.status, 'failed')
-      assert.equal(result.error, '当前媒体交付暂不可用，请联系平台管理员')
+      assert.equal(result.error, '当前流程暂不支持该媒体交付方式，请保留已生成的媒体资产，不要重复生成。')
       assert.equal(prepared, 0)
       assert.equal(workers, 0)
     }

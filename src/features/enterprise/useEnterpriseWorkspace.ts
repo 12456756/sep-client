@@ -725,7 +725,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     setBusy(true);
     try {
       const modelId = options?.modelId || employee.allowedModels[0];
-      if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请联系平台管理员' : '所选员工不支持当前模型，请重新选择');
+      if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请更换员工或联系平台管理员配置模型。' : '所选员工不支持当前模型，请重新选择');
       const document = { ...conversationDocument(title, goal, employeeId, modelId, options), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
       const created = await api.createArrangementDraft(document);
       if (!notice.isCurrent()) return false;
@@ -975,7 +975,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       window.localStorage.setItem(savedFlowsKey(enterpriseId), JSON.stringify(next));
       return true;
     } catch {
-      captureFeedback().show('常用工作未能保存到本机，请联系平台管理员');
+      captureFeedback().show('常用工作未能保存到本机，本机应用存储写入失败，请重启客户端后重试。');
       return false;
     }
   }, [enterpriseId, captureFeedback]);

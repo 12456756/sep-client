@@ -187,17 +187,17 @@ export class MediaService {
   }
   async setReferenceSelection(taskId: string, assetIds: readonly string[]): Promise<void> {
     const { scope } = await this.task(taskId), epoch = this.epoch
-    if (new Set(assetIds).size !== assetIds.length || assetIds.length > 16) throw new AppError('INVALID_ARGUMENT')
-    if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE')
+    if (new Set(assetIds).size !== assetIds.length || assetIds.length > 16) throw new AppError('INVALID_ARGUMENT', { details: { reason: 'reference-selection-limit' } })
+    if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE', { details: { reason: 'reference-task-archived' } })
     const assets = await this.options.store.listAssets(scope, taskId)
     this.assert(scope, epoch)
     const available = new Set(assets.filter(asset => asset.source === 'reference' && asset.status === 'SAVED').map(asset => asset.localAssetId))
-    if (assetIds.some(assetId => !available.has(assetId))) throw new AppError('INVALID_ARGUMENT')
+    if (assetIds.some(assetId => !available.has(assetId))) throw new AppError('INVALID_ARGUMENT', { details: { reason: 'reference-selection-missing' } })
     this.selectedReferences.set(this.key(scope, taskId), [...assetIds])
   }
   async importReferences(taskId: string, paths: readonly string[]): Promise<MediaAssetView[]> {
     const { scope } = await this.task(taskId), epoch = this.epoch
-    if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE')
+    if (await this.options.store.isArchived(scope, taskId)) throw new AppError('INVALID_STATE', { details: { reason: 'reference-task-archived' } })
     const imported: MediaAssetView[] = []
     for (const path of paths) { this.assert(scope, epoch); imported.push(this.viewAsset(await this.options.store.importReference(scope, taskId, path))) }
     this.assert(scope, epoch)
@@ -725,7 +725,7 @@ export class MediaService {
     const check = () => { this.assert(scope, epoch); parent.throwIfAborted() }
     check()
     if (cancelUpstream) {
-      if (!initial.receiptId || !initial.profile.capabilities.cancel || initial.recovery?.canCancel === false || terminal.has(initial.generationStatus)) throw new AppError('INVALID_STATE')
+      if (!initial.receiptId || !initial.profile.capabilities.cancel || initial.recovery?.canCancel === false || terminal.has(initial.generationStatus)) throw new AppError('INVALID_STATE', { details: { reason: 'media-cancel-unavailable' } })
       const policy = binding ? binding.toolPolicy : await this.options.policy?.(taskId)
       check()
       if (policy && (policy.preset === 'read-only' || (policy.preset !== 'full-local' && !policy.allowedTools.includes('media_cancel_job')))) throw new AppError('PERMISSION_DENIED')
@@ -735,7 +735,7 @@ export class MediaService {
           input: { jobId, cancelUpstream: true, billing: '取消不代表退款，上游可能已产生费用。' },
         }))
         check()
-        if (!approved) throw new AppError('PERMISSION_DENIED')
+        if (!approved) throw new AppError('PERMISSION_DENIED', { details: { reason: 'media-cancel-denied' } })
       }
     }
     const activity = this.activities.get(key)
@@ -748,7 +748,7 @@ export class MediaService {
     const { job } = await this.job(taskId, jobId)
     check()
     if (cancelUpstream) {
-      if (!job.receiptId || !job.profile.capabilities.cancel || job.recovery?.canCancel === false || terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE')
+      if (!job.receiptId || !job.profile.capabilities.cancel || job.recovery?.canCancel === false || terminal.has(job.generationStatus)) throw new AppError('INVALID_STATE', { details: { reason: 'media-cancel-unavailable' } })
       this.acceptReceipt(job, await this.network(scope, parent, signal => this.gateway().cancel(job.subscriptionId, job.receiptId!, signal)))
     }
     check()

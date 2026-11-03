@@ -280,7 +280,7 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
       }
       if (result.data === null) { setView(null); setPreview(null); setError(null); return }
       const next = safeView(result.data, taskId)
-      if (!next) { setView(null); setPreview(null); setError('视频任务数据异常，请联系平台管理员'); if (!queryFailure.current) { queryFailure.current = true; notice.show('视频任务数据异常，请联系平台管理员') }; return }
+      if (!next) { setView(null); setPreview(null); setError('视频任务数据不完整或执行模式不匹配，请刷新任务；持续失败请联系平台管理员。'); if (!queryFailure.current) { queryFailure.current = true; notice.show('视频任务数据不完整或执行模式不匹配，请刷新任务；持续失败请联系平台管理员。') }; return }
       setView(next)
       setError(null)
       queryFailure.current = false

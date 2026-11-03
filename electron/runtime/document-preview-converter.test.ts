@@ -3,7 +3,28 @@ import { test } from 'node:test'
 import { strToU8, zipSync } from 'fflate'
 import { createRequire } from 'node:module'
 import { convertDocumentPreview } from './document-preview-converter'
+import { DocumentPreviewError } from '../errors/document-preview-error'
 const ExcelJS = createRequire(import.meta.url)('exceljs') as typeof import('exceljs')
+
+test('conversion failures carry bounded reasons instead of raw parser diagnostics', async () => {
+  await assert.rejects(convertDocumentPreview('xlsx', zipSync({ 'xl/workbook.xml': strToU8('<workbook><sheets>') })), error => {
+    assert.ok(error instanceof DocumentPreviewError)
+    assert.equal(error.reason, 'SPREADSHEET_PARSE_FAILED')
+    assert.match(error.message, /Excel 文件无法解析/)
+    return true
+  })
+  const entries = Object.fromEntries(Array.from({ length: 2049 }, (_, index) => [`part${index}.xml`, strToU8('<part/>')]))
+  await assert.rejects(convertDocumentPreview('docx', zipSync(entries)), error => {
+    assert.ok(error instanceof DocumentPreviewError)
+    assert.equal(error.reason, 'OFFICE_TOO_LARGE')
+    return true
+  })
+  await assert.rejects(convertDocumentPreview('pptx', zipSync({ 'ppt/presentation.xml': strToU8('<presentation/>') })), error => {
+    assert.ok(error instanceof DocumentPreviewError)
+    assert.equal(error.reason, 'PRESENTATION_EMPTY')
+    return true
+  })
+})
 
 test('text and markdown are returned as content, not executable HTML', async () => {
   assert.deepEqual(await convertDocumentPreview('md', Buffer.from('# Heading')), { kind: 'markdown', text: '# Heading' })
@@ -44,7 +65,7 @@ test('Excel preview rejects a small sparse workbook before expanding millions of
   for (let row = 1; row <= 1000; row++) sheet.getCell(`XFD${row}`).value = 'value'
   const bytes = new Uint8Array(await book.xlsx.writeBuffer())
   assert.ok(bytes.byteLength < 64 * 1024)
-  await assert.rejects(convertDocumentPreview('xlsx', bytes), /表格预览单元格过多.*查看原件/)
+  await assert.rejects(convertDocumentPreview('xlsx', bytes), /超过 10 万单元格.*本地表格软件打开/)
 })
 
 test('Excel preview applies the cell budget across all visible sheets', async () => {
@@ -53,7 +74,7 @@ test('Excel preview applies the cell budget across all visible sheets', async ()
     const sheet = book.addWorksheet(name)
     for (let row = 1; row <= 4; row++) sheet.getCell(`XFD${row}`).value = name
   }
-  await assert.rejects(convertDocumentPreview('xlsx', new Uint8Array(await book.xlsx.writeBuffer())), /表格预览单元格过多/)
+  await assert.rejects(convertDocumentPreview('xlsx', new Uint8Array(await book.xlsx.writeBuffer())), /超过 10 万单元格/)
 })
 
 test('Excel preview preserves sparse column positions within budget and skips hidden sheets', async () => {
