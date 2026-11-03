@@ -191,10 +191,10 @@ export const arrangementRoutes = [
     success: true,
     ...(await ctx.arrangements.confirmDraft(input.draftId, input.expectedRevision, input.idempotencyKey)),
   })),
-  route(INVOKE_CHANNELS.ARRANGE_CONFIRM_AND_START, confirmInput, async (ctx, input) => ({
-    success: true,
-    ...(await ctx.arrangements.confirmAndStart(input.draftId, input.expectedRevision, input.idempotencyKey)),
-  })),
+  route(INVOKE_CHANNELS.ARRANGE_CONFIRM_AND_START, confirmInput, async (ctx, input) => {
+    const result = await ctx.arrangements.confirmAndStart(input.draftId, input.expectedRevision, input.idempotencyKey)
+    return { success: true, ...result, task: await ctx.tasks.get(result.plan.id) }
+  }),
   route(INVOKE_CHANNELS.ARRANGE_PLAN_DRAFT, planInput, async (ctx, input) => ({
     success: true,
     ...(await ctx.arrangements.startPlanning(input.draftId, input.expectedRevision, input.modelId)),

@@ -30,6 +30,7 @@ const dependencies: Record<string, unknown> = {
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },
   '../../features/enterprise/conversation-media': { ConversationMedia: empty },
   '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {} }) },
+  './ConversationMessages': { ConversationMessages: empty },
 }
 const filename = fileURLToPath(new URL('../../components/enterprise/WorkTalkDrawer.tsx', import.meta.url))
 const source = ts.transpileModule(readFileSync(filename, 'utf8'), {
@@ -71,4 +72,13 @@ test('paused failed work offers retry first; a restored pending queue offers exp
   queue = { paused: false, failed: null, items: [] }
   const idle = render()
   assert.doesNotMatch(idle, /ent-conversation-queue|<select[^>]+disabled/)
+})
+
+test('only a live background preparation is shown as preparing; restored unstarted work has a start action', () => {
+  queue = { preparing: true, paused: false, items: [], failed: null }
+  assert.match(render('arranging'), /正在准备执行，请稍候/)
+  assert.doesNotMatch(render('arranging'), />开始执行<\/button>/)
+  queue = { preparing: false, paused: false, items: [], failed: null }
+  assert.match(render('arranging'), /尚未开始/)
+  assert.match(render('arranging'), />开始执行<\/button>/)
 })

@@ -37,6 +37,23 @@ describe('public arrangement preflight reasons', () => {
 })
 
 describe('general assistant conversation', () => {
+  it('returns the confirmed conversation immediately and delegates initial preparation to the queue owner', async () => {
+    let stored = persisted({ ...draft(), mode: 'conversation', nodes: [],
+      conversation: { kind: 'general', modelId: 'model-a', participants: [], activeSubscriptionId: null } })
+    const scheduled: string[] = []
+    const service = new ArrangementService(serviceDeps({
+      employees: { async list() { return [employee()] } },
+      drafts: { async get() { return stored }, async update(_s: unknown, _id: string, revision: number, patch: ArrangementDraft) { stored = { ...patch, revision: revision + 1 }; return stored } },
+      taskManager: { async createTask() { return { id: 'task-a', workDir: null } }, async getTask() { return { id: 'task-a', status: 'pending', activeRunId: null } } },
+      conversationQueue: { scheduleInitial(taskId: string) { scheduled.push(taskId) } },
+      execution: async () => { assert.fail('runtime preparation must not block the creation response') },
+    }))
+    const result = await service.confirmAndStart(stored.id, 1, 'initial')
+    assert.equal(stored.status, 'confirmed')
+    assert.deepEqual(result.execution, { id: 'task-a', status: 'queued' })
+    assert.deepEqual(scheduled, ['task-a'])
+  })
+
   it('resolves a real model subscription at preflight and preserves general mode in the plan', async () => {
     let stored = persisted({ ...draft(), mode: 'conversation', nodes: [],
       conversation: { kind: 'general', modelId: 'model-a', participants: [], activeSubscriptionId: null } })

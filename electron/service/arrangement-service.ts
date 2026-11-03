@@ -74,6 +74,7 @@ export interface ArrangementServiceDependencies {
   mediaStore?: MediaStorePort
   attachments?: AttachmentService
   confirmations?: import('../data/arrangement-confirmation-store').ArrangementConfirmationStorePort
+  conversationQueue?: Pick<import('./conversation-queue-service').ConversationQueueService, 'scheduleInitial'>
 }
 
 export interface ArrangementContext {
@@ -1095,6 +1096,10 @@ export class ArrangementService {
     const task = await this.deps.taskManager.getTask(confirmed.plan.id)
     if (!task) throw new AppError('NOT_FOUND')
     if (task.status === TaskStatus.PENDING && task.activeRunId === null) {
+      if (confirmed.plan.mode === 'conversation' && this.deps.conversationQueue) {
+        this.deps.conversationQueue.scheduleInitial(task.id)
+        return { plan: confirmed.plan, execution: { id: task.id, status: 'queued' } }
+      }
       try {
         await (await this.deps.execution()).executeTask(task.id, { conversation: confirmed.plan.mode === 'conversation' })
       } catch (error) {

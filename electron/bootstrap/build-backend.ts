@@ -334,6 +334,18 @@ class BackendRuntime {
     this.conversationQueue = new ConversationQueueService({ scope: this, store: new ConversationQueueStore(userDataDir),
       getTask: taskId => this.taskManager.getTask(taskId),
       isBusy: taskId => this.runtime.peek()?.hasConversationRun(taskId) ?? false,
+      startInitial: async (taskId, signal) => {
+        const runtime = await this.getTaskRuntime()
+        signal.throwIfAborted()
+        await runtime.executeTask(taskId, { conversation: true, signal })
+      },
+      onInitialFailure: async (taskId, error, owner, signal) => {
+        signal.throwIfAborted()
+        const changed = await this.taskManager.recordStartFailure(taskId, describeError(error))
+        if (signal.aborted || !changed) return
+        const task = await this.taskManager.getTask(taskId)
+        if (!signal.aborted && task) this.renderer.taskEvent(runtimeFailureEvent({ taskId, runId: taskId, subscriptionId: task.subscriptionId ?? taskId, owner }, error))
+      },
       start: async (taskId, entry, signal) => {
         const runtime = await this.getTaskRuntime()
         signal.throwIfAborted()
@@ -396,6 +408,7 @@ class BackendRuntime {
       videoStore,
       creationGate,
       confirmations: arrangementConfirmations,
+      conversationQueue: this.conversationQueue,
       execution: () => this.getTaskRuntime(),
       planner: {
         plan: input => this.arrangementPlanner.get().then(planner => planner.plan(input)),

@@ -457,7 +457,9 @@ export class TaskRuntime {
       await this.retryArrangement(task, arrangement, options.nodeId, options.inputReply)
       return
     }
-    if (task.status !== TaskStatus.FAILED && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.INTERRUPTED) {
+    const stoppedConversation = task.status === TaskStatus.PAUSED && (arrangement?.mode === 'conversation' || options.conversation === true)
+    if (stoppedConversation && (task.activeRunId || this.hasConversationRun(taskId))) throw new AppError('INVALID_STATE')
+    if (!stoppedConversation && task.status !== TaskStatus.FAILED && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.INTERRUPTED) {
       throw new Error('Only terminal or interrupted tasks can be retried.')
     }
     await this.taskManager.updateTaskStatus(taskId, TaskStatus.PENDING)

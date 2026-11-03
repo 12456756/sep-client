@@ -41,6 +41,120 @@ test('accepts ten waiting messages atomically, deduplicates and rejects overflow
   } finally { await f.cleanup() }
 })
 
+test('initial preparation returns immediately, deduplicates starts and keeps follow-ups behind the initial run', async () => {
+  const f = await fixture()
+  let release!: () => void
+  let starts = 0
+  const ready = new Promise<void>(resolve => { release = resolve })
+  const service = new ConversationQueueService({ ...f.options, startInitial: async (_id, signal) => {
+    starts++
+    await ready
+    signal.throwIfAborted()
+    f.task.activeRunId = 'initial'
+    f.task.status = 'running'
+  } })
+  try {
+    f.task.activeRunId = null; f.task.status = 'pending'
+    service.scheduleInitial('task')
+    service.scheduleInitial('task')
+    assert.equal((await service.view('task')).preparing, true)
+    await service.enqueue('task', { id: 'later', prompt: 'later' }, async () => ({}))
+    await service.view('task')
+    assert.deepEqual(f.started, [])
+    assert.equal(starts, 1)
+    release()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    f.task.lastRunId = 'initial'; f.task.activeRunId = null; f.task.status = 'completed'
+    await service.settled('task', 'initial')
+    assert.equal((await service.view('task')).preparing, false)
+    assert.deepEqual(f.started, ['later'])
+  } finally { release(); service.stop(); await f.cleanup() }
+})
+
+test('cancelling initial preparation prevents a late launch and does not report a startup error', async () => {
+  const f = await fixture()
+  let release!: () => void
+  let admitted = false
+  let failed = false
+  const ready = new Promise<void>(resolve => { release = resolve })
+  const service = new ConversationQueueService({ ...f.options, startInitial: async (_id, signal) => {
+    await ready; signal.throwIfAborted(); admitted = true
+  }, onInitialFailure: async () => { failed = true } })
+  try {
+    f.task.activeRunId = null; f.task.status = 'pending'
+    service.scheduleInitial('task')
+    await service.cancel('task', async () => { f.task.status = 'paused' })
+    release()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(admitted, false)
+    assert.equal(failed, false)
+    assert.equal((await service.view('task')).paused, true)
+  } finally { release(); service.stop(); await f.cleanup() }
+})
+
+test('a detached initial failure pauses pending messages and records the failure in the current account only', async () => {
+  const f = await fixture()
+  let release!: () => void
+  let failure: unknown
+  const ready = new Promise<void>(resolve => { release = resolve })
+  const service = new ConversationQueueService({ ...f.options, startInitial: async () => {
+    await ready; throw new Error('Request timed out.')
+  }, onInitialFailure: async (_id, error) => { failure = error; f.task.executionHealth = 'start-failed' } })
+  try {
+    f.task.activeRunId = null; f.task.status = 'pending'
+    service.scheduleInitial('task')
+    await service.enqueue('task', { id: 'later', prompt: 'later' }, async () => ({}))
+    release()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal((failure as Error)?.message, 'Request timed out.')
+    assert.equal((await service.view('task')).paused, true)
+    assert.deepEqual(f.started, [])
+  } finally { release(); service.stop(); await f.cleanup() }
+})
+
+test('logout fences initial preparation even after signing into the same account again', async () => {
+  const f = await fixture()
+  let release!: () => void
+  let admitted = false
+  let failed = false
+  const ready = new Promise<void>(resolve => { release = resolve })
+  const service = new ConversationQueueService({ ...f.options, startInitial: async (_id, signal) => {
+    await ready; signal.throwIfAborted(); admitted = true
+  }, onInitialFailure: async () => { failed = true } })
+  try {
+    f.task.activeRunId = null; f.task.status = 'pending'
+    service.scheduleInitial('task')
+    service.stop(); service.start()
+    release()
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(admitted, false)
+    assert.equal(failed, false)
+  } finally { release(); service.stop(); await f.cleanup() }
+})
+
+test('a restored unstarted task runs its original request before queued follow-ups on explicit resume', async () => {
+  const f = await fixture()
+  let starts = 0
+  const service = new ConversationQueueService({ ...f.options, startInitial: async () => {
+    starts++; f.task.activeRunId = 'initial'; f.task.status = 'running'
+  } })
+  try {
+    f.task.activeRunId = null; f.task.status = 'pending'
+    assert.equal((await service.view('task')).preparing, false)
+    await service.enqueue('task', { id: 'later', prompt: 'later' }, async () => ({}))
+    await service.view('task')
+    assert.equal(starts, 0)
+    assert.deepEqual(f.started, [])
+    await service.resume('task')
+    await new Promise(resolve => setTimeout(resolve, 10))
+    assert.equal(starts, 1)
+    assert.deepEqual(f.started, [])
+    f.task.lastRunId = 'initial'; f.task.activeRunId = null; f.task.status = 'completed'
+    await service.settled('task', 'initial')
+    assert.deepEqual(f.started, ['later'])
+  } finally { service.stop(); await f.cleanup() }
+})
+
 test('starts one message at a time after cleanup, preserves order, pauses on failure and retries before continuing', async () => {
   const f = await fixture()
   try {

@@ -1,4 +1,4 @@
-import { ArrowDown, ChevronDown, Paperclip, Send, StopCircle, X } from 'lucide-react';
+import { ArrowDown, ChevronDown, Send, StopCircle, X } from 'lucide-react';
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { SetStateAction } from 'react';
 import { isSubmitEnter } from '../../shared/composer-shortcut';
@@ -6,7 +6,6 @@ import type { WorkItem } from '../../features/enterprise/types';
 import { useDrawer } from '../../features/enterprise/use-drawer';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import { EmployeeFace } from './EmployeeFace';
-import { MessageContent } from './MessageContent';
 import '../../styles/conversation.css';
 import { useSpeechInput } from '../../features/speech/use-speech-input';
 import { SpeechInputActions } from '../speech/SpeechInputActions';
@@ -18,6 +17,7 @@ import { KnowledgeSelector } from './KnowledgeSelector';
 import { noKnowledgeSelection } from '../../shared/knowledge-selection';
 import { ConversationMedia } from '../../features/enterprise/conversation-media';
 import { useConversationQueue } from '../../features/enterprise/use-conversation-queue';
+import { ConversationMessages } from './ConversationMessages';
 
 const FOLLOW_THRESHOLD_PX = 48;
 
@@ -44,12 +44,6 @@ interface ConversationProps {
   work: WorkItem;
   workspace: EnterpriseWorkspace;
   onClose?: () => void;
-}
-
-function formatAttachmentBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export function WorkConversation({ work, workspace, onClose }: ConversationProps) {
@@ -105,12 +99,15 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
   const latestMessage = work.messages.at(-1);
   const latestMessageId = latestMessage?.id;
   const latestContent = latestMessage?.content;
-  const isReplying = work.isActive === true;
+  const preparing = (queued.queue.preparing === true || queued.queue.preparing === undefined && !work.lastRunId) && work.status === 'arranging' && !work.isActive;
+  const unstarted = queued.queue.preparing === false && work.status === 'arranging' && !work.isActive && !work.lastRunId;
+  const isReplying = work.isActive === true || preparing;
   const hasStreamingReply = work.messages.some(message => message.id === `${work.id}-streaming`);
   const statusText = work.status === 'completed' ? '本轮回复已完成，可继续提问'
     : work.status === 'paused' ? '工作已终止，已收到的内容仍保留'
       : work.status === 'failed' ? '本轮回复中断，请查看提示后重试'
         : work.status === 'waiting-user' ? '等待你的确认'
+          : preparing ? '正在准备执行，请稍候…'
           : work.status === 'arranging' && !isReplying ? '尚未开始'
             : work.status === 'arranging' ? '正在排队，请稍候'
           : hasStreamingReply ? '正在回复…' : '正在处理，请稍候…';
@@ -170,25 +167,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
           if (followsLatest.current) setHasNewContent(false);
         }}>
           <div className="ent-talk">
-            {work.messages.map(message => (
-              message.role === 'system' ? (
-                <p className="ent-talk-sys" key={message.id}>{message.content}</p>
-              ) : (
-                <div className={`ent-say${message.role === 'user' ? ' user' : ''}`} key={message.id}>
-                  {message.role === 'employee' ? (
-                    <span className="ent-say-who">
-                      <EmployeeFace employee={workspace.employees.find(item => item.id === (message.employeeId || work.currentEmployeeId))} name={message.employeeName} size="sm" round />
-                      {message.employeeName}
-                    </span>
-                  ) : null}
-                  {message.role === 'user' ? <p>{message.content}</p> : <MessageContent content={message.content} />}
-                  {message.role === 'user' && message.attachments?.length ? <div className="ent-message-attachments" aria-label="本轮附件">{message.attachments.map(item => <span key={item.attachmentId} title={`${item.mediaType} · ${item.sha256.slice(0, 12)}`}><Paperclip size={12} aria-hidden />{item.displayName}<small>{formatAttachmentBytes(item.byteLength)}</small></span>)}</div> : null}
-                  <time className="ent-message-time" dateTime={new Date(message.createdAt).toISOString()}>
-                    {new Date(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                  </time>
-                </div>
-              )
-            ))}
+            <ConversationMessages work={work} employees={workspace.employees} scopeKey={workspace.attachmentScopeKey} preparing={preparing} />
             <ConversationMedia taskId={work.id} visible />
           </div>
         </div>
@@ -207,6 +186,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
           <p className="ent-conversation-status" role="status">
             {isReplying ? <span className="ent-reply-dot" aria-hidden /> : null}{statusText}
           </p>
+          {unstarted ? <button type="button" className="ent-btn sm" disabled={queued.busy || workspace.busy} onClick={() => void queued.resume()}>开始执行</button> : null}
           <div className="ent-ask">
           <div className="ent-composer-attachments" ref={setAttachmentListContainer} />
           <textarea
@@ -232,7 +212,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
                     <select
                       value={work.currentEmployeeId}
                       aria-label="换一位员工接手"
-                      disabled={workspace.busy || sending || work.isActive || queued.queue.items.length > 0 || !!queued.queue.failed}
+                      disabled={workspace.busy || sending || isReplying || queued.queue.items.length > 0 || !!queued.queue.failed}
                       onChange={event => void workspace.switchEmployee(work.id, event.target.value)}
                     >
                       {workspace.myEmployees.map(item => (

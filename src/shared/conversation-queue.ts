@@ -8,6 +8,7 @@ export const conversationQueueItemSchema = z.object({
   attachmentNames: z.array(z.string()),
 })
 export const conversationQueueViewSchema = z.object({
+  preparing: z.boolean().optional(),
   paused: z.boolean(),
   items: z.array(conversationQueueItemSchema),
   failed: conversationQueueItemSchema.nullable(),

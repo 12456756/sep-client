@@ -652,7 +652,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const unsubscribePi = api.onPiEvent(event => {
       if (!active || deletedTaskIds.has(event.taskId)) return;
       // The selected arrangement detail owns its high-frequency transcript subscription.
-      if (event.type === 'arrangement_node_progress') return;
+      if (event.type === 'arrangement_node_progress' || event.type === 'thinking_delta') return;
       recordArrangementEvent(event);
       latestRunByTask.current.set(event.taskId, event.runId);
       const key = runtimeKey(event.taskId, event.runId);
@@ -762,14 +762,14 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         draft = updated.draft;
       }
       const input = { draftId: draft.id, expectedRevision: draft.revision };
-      const preflight = await api.preflightArrangementDraft(input);
-      if (!notice.isCurrent()) return false;
-      if (!preflight.success || !preflight.preflight?.canStart) {
-        throw responseError({ error: preflight.error ?? (preflight.preflight?.message ? { message: preflight.preflight.message } : undefined) }, 'preflight');
-      }
       const started = await api.confirmAndStartArrangement({ ...input, idempotencyKey: crypto.randomUUID() });
       if (!notice.isCurrent()) return false;
       if (!started.success || !started.execution) throw responseError(started, 'start');
+      if (started.task) setTasks(current => {
+        const latest = current.find(task => task.id === started.task!.id);
+        // A pushed run/failure can arrive before the creation response.
+        return mergeTaskUpdate(current, latest ? { ...latest, workType: started.task!.workType } : started.task!, deletedTaskIds);
+      });
       setActiveEmployeeByWork(current => ({ ...current, [started.execution!.id]: employeeId }));
       navigate({ name: 'work', workId: started.execution.id });
       return true;
@@ -779,7 +779,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     } finally {
       if (notice.isCurrent()) setBusy(false);
     }
-  }, [myEmployees, navigate, captureFeedback]);
+  }, [myEmployees, navigate, captureFeedback, deletedTaskIds]);
 
   const arrangeWork = useCallback(async (draft: ArrangeWorkDraft): Promise<boolean> => {
     const notice = captureFeedback();
@@ -857,6 +857,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       const result = await window.electronAPI.continueTask({ taskId: workId, messageId, prompt, knowledge, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) });
       if (!notice.isCurrent()) return false;
       if (!result.success) throw responseError(result, 'workSend');
+      notice.show('任务已加入队列', 'success', `conversation-queued:${workId}:${messageId}`);
       return true;
     } catch (error) { if (notice.isCurrent()) notice.fail(error, 'workSend'); return false; }
   }, [captureFeedback]);
