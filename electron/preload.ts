@@ -140,6 +140,7 @@ const electronAPI = {
   logout: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LOGOUT),
   getSubscriptions: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_INSTANCES),
   getEmployeeStatus: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_EMPLOYEE_STATUS),
+  getEnabledModels: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_ENABLED_MODELS),
   getEnterpriseOrganization: () => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_GET_ORGANIZATION),
   getClientProfile: () => ipcRenderer.invoke(INVOKE_CHANNELS.PROFILE_GET),
   uploadUserAvatar: input => ipcRenderer.invoke(INVOKE_CHANNELS.PROFILE_UPLOAD_AVATAR, input),

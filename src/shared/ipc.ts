@@ -8,6 +8,7 @@ import type { SpeechAudio, SpeechPermission, SpeechResult, SpeechStart } from '.
 import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, MediaTaskView } from './media'
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
+import type { ModelCatalogEntry } from './model-catalog-contracts'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from './attachment-contracts'
 import type {
   ComputeAllowance,
@@ -156,6 +157,10 @@ export interface EmployeeStatusResult extends IpcCommandResult {
 
 export interface OrganizationResult extends IpcCommandResult {
   data?: EnterpriseOrganization
+}
+
+export interface ModelCatalogResult extends IpcCommandResult {
+  data?: ModelCatalogEntry[]
 }
 
 export interface ComputeCenterOverview {
@@ -359,6 +364,7 @@ export interface ElectronAPI {
   getSubscriptions: () => Promise<InstanceListResult>
   getEmployeeStatus: () => Promise<EmployeeStatusResult>
   getEnterpriseOrganization: () => Promise<OrganizationResult>
+  getEnabledModels: () => Promise<ModelCatalogResult>
   getClientProfile: () => Promise<ClientProfileResult>
   uploadUserAvatar: (input: UploadInput) => Promise<UserAvatarUploadResult>
   uploadEnterpriseLogo: (input: UploadInput) => Promise<EnterpriseLogoUploadResult>

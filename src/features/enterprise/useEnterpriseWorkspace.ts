@@ -51,6 +51,7 @@ import type { OrganizationCarbonEmployee } from './organization-model';
 import { TaskReadCache, mergeInitialTaskQuery, mergeTaskList, mergeTaskUpdate } from './task-read-cache';
 import type { AttachmentRef, AttachmentView, DraftAttachmentCandidate } from '../../shared/attachment-contracts';
 import type { KnowledgeSelection } from '../../shared/knowledge-selection';
+import type { ModelCatalogEntry } from '../../shared/model-catalog-contracts';
 
 /**
  * 谁被一项正在跑的工作占着 —— 处在其中的员工不算「空闲」。
@@ -186,6 +187,9 @@ function readReviewed(enterpriseId: string): Record<string, number> {
 export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   planningController?: import('./auto-planning-controller').AutoPlanningController;
   attachmentScopeKey: string;
+  /** SEP model names and billing labels; allowedModels remains the authorization source. */
+  modelCatalog?: readonly ModelCatalogEntry[];
+  modelCatalogLoad?: { loading: boolean; error: string | null; retry: () => void };
   overview: EnterpriseOverview;
   /** 当前账号的员工订阅，含本机工作与技能信息。 */
   employees: SiliconEmployee[];
@@ -293,6 +297,10 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const [organizationStatus, setOrganizationStatus] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
   const [organizationError, setOrganizationError] = useState<string | null>(null);
   const organizationRequestRef = useRef(0);
+  const [modelCatalogState, setModelCatalogState] = useState<{ scopeKey: string; models: ModelCatalogEntry[]; loading: boolean; error: string | null }>({
+    scopeKey, models: [], loading: true, error: null,
+  });
+  const modelCatalogRequestRef = useRef(0);
   const skillLibrary = useSkillLibrary(scopeKey, needsSkillLibrary(route));
   const { skills } = skillLibrary;
   const [permissionOverrides, setPermissionOverrides] = useState<Record<string, OperationPermission[]>>({});
@@ -306,6 +314,39 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const messagesByTask = useRef(new Map<string, ClientTaskMessage[]>());
   const pendingMessages = useRef(new Map<string, ClientTaskMessage[]>());
   const taskTypeCache = useRef<TaskReadCache | null>(null);
+  const refreshModelCatalog = useCallback(async (): Promise<void> => {
+    const requestId = modelCatalogRequestRef.current + 1;
+    modelCatalogRequestRef.current = requestId;
+    setModelCatalogState(current => ({
+      scopeKey,
+      models: current.scopeKey === scopeKey ? current.models : [],
+      loading: true,
+      error: null,
+    }));
+    try {
+      const result = await window.electronAPI.getEnabledModels();
+      if (requestId !== modelCatalogRequestRef.current) return;
+      if (!result.success || !result.data) {
+        setModelCatalogState(current => ({ ...current, loading: false, error: result.error?.message ?? '模型计费信息加载失败' }));
+        return;
+      }
+      setModelCatalogState({ scopeKey, models: result.data, loading: false, error: null });
+    } catch (error) {
+      if (requestId !== modelCatalogRequestRef.current) return;
+      setModelCatalogState(current => ({ ...current, loading: false, error: error instanceof Error ? error.message : '模型计费信息加载失败' }));
+    }
+  }, [scopeKey]);
+
+  useEffect(() => {
+    void refreshModelCatalog();
+    const onFocus = () => { void refreshModelCatalog(); };
+    window.addEventListener('focus', onFocus);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      modelCatalogRequestRef.current += 1;
+    };
+  }, [refreshModelCatalog]);
+
   const refreshOrganization = useCallback(async (): Promise<void> => {
     const requestId = organizationRequestRef.current + 1;
     organizationRequestRef.current = requestId;
@@ -1053,6 +1094,10 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     ...skillLibrary,
     planningController,
     attachmentScopeKey: scopeKey,
+    modelCatalog: modelCatalogState.scopeKey === scopeKey ? modelCatalogState.models : [],
+    modelCatalogLoad: modelCatalogState.scopeKey === scopeKey
+      ? { loading: modelCatalogState.loading, error: modelCatalogState.error, retry: () => { void refreshModelCatalog(); } }
+      : { loading: true, error: null, retry: () => { void refreshModelCatalog(); } },
     overview, employees, myEmployees, templates, savedFlows, works, unreviewedWorkIds, route, busy,
     employeePageState, updateEmployeePageState,
     skillPageState, updateSkillPageState, registerSkillLeaveGuard,

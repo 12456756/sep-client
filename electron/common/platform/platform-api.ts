@@ -49,6 +49,7 @@ export type {
   PersonalRechargeRequest, PersonalRechargeStatusResponse, UserAvatarUploadResponse,
 } from '../../../src/shared/profile-wallet-contracts'
 import type { Subscription } from '../../../src/shared/types'
+import { modelCatalogSchema, type ModelCatalogEntry } from '../../../src/shared/model-catalog-contracts'
 
 export type { Subscription } from '../../../src/shared/types'
 
@@ -201,6 +202,7 @@ type AuthApiResource =
   | 'profile'
   | 'employee-directory'
   | 'employee-access-requests'
+  | 'model-catalog'
 
 export class AuthApiError extends Error {
   constructor(
@@ -249,7 +251,7 @@ async function parseError(response: Response, resource?: AuthApiResource): Promi
 }
 
 async function getJson<T>(path: string, accessToken: string, resource: AuthApiResource, signal?: AbortSignal): Promise<T> {
-  const boundedRead = ['notifications', 'skills', 'subscriptions'].includes(resource)
+  const boundedRead = ['notifications', 'skills', 'subscriptions', 'model-catalog'].includes(resource)
   const failTransport = (error: unknown): never => {
     if (boundedRead && !signal?.aborted && (error instanceof TypeError || isTransportTimeout(error))) {
       throw new AuthApiError({ statusCode: 0, message: 'Platform read connection failed or timed out' }, resource)
@@ -382,6 +384,11 @@ export async function refreshAccessToken(refreshToken: string): Promise<RefreshR
 export async function getSubscriptions(accessToken: string): Promise<Subscription[]> {
   const data = await getJson<Subscription[]>('/client/subscriptions', accessToken, 'subscriptions')
   return normalizeSubscriptions(data)
+}
+
+/** SEP's enabled platform models provide display and billing metadata; employee authorization remains separate. */
+export async function getEnabledModels(accessToken: string): Promise<ModelCatalogEntry[]> {
+  return modelCatalogSchema.parse(await getJson<unknown>('/models/enabled', accessToken, 'model-catalog'))
 }
 
 /** Negotiate model-decided media specifications independently from employee skill artifacts. */

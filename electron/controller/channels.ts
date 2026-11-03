@@ -62,6 +62,7 @@ export const INVOKE_CHANNELS = {
   AUTH_GET_INSTANCES: 'auth:get-instances',
   AUTH_GET_EMPLOYEE_STATUS: 'auth:get-employee-status',
   AUTH_GET_ORGANIZATION: 'auth:get-organization',
+  AUTH_GET_ENABLED_MODELS: 'auth:get-enabled-models',
   NOTIFICATION_LIST: 'notifications:list',
   NOTIFICATION_UNREAD_COUNT: 'notifications:unread-count',
   NOTIFICATION_MARK_READ: 'notifications:mark-read',
