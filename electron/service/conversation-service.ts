@@ -55,7 +55,7 @@ export class ConversationService {
   /**
    * 先持久化本轮输入；真正执行时再次授权，避免等待期间授权发生变化。
    */
-  async continue(input: ContinueConversationInput): Promise<void> {
+  async continue(input: ContinueConversationInput): Promise<{ queued: boolean }> {
     const scope = requireScope(this.deps.scope)
     const task = await this.deps.taskManager.getTask(input.taskId)
     if (!task || !task.subscriptionId) {
@@ -71,7 +71,7 @@ export class ConversationService {
       const current = requireScope(this.deps.scope)
       if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
       const requestKey = createHash('sha256').update(JSON.stringify([input.prompt, input.attachmentSessionId, input.attachmentRefs, input.knowledge, input.recoveryMode, input.confirmRecovery])).digest('hex')
-      await this.deps.queue.enqueue(input.taskId, { id: input.messageId, prompt: input.prompt, requestKey }, async () => {
+      const result = await this.deps.queue.enqueue(input.taskId, { id: input.messageId, prompt: input.prompt, requestKey }, async () => {
         if (plan?.conversation?.kind !== 'general' && !await this.deps.employees.authorize(task.subscriptionId!)) throw new AppError('EMPLOYEE_UNAVAILABLE')
         const current = requireScope(this.deps.scope)
         if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
@@ -84,7 +84,7 @@ export class ConversationService {
         }
         return { attachmentRefs, attachmentNames, knowledge: input.knowledge ?? plan?.knowledge ?? { mode: 'none' as const, knowledgeBaseIds: [] }, mode: input.recoveryMode, confirmed: input.confirmRecovery }
       })
-      return
+      return { queued: result.queued }
     }
     if (plan?.conversation?.kind !== 'general' && !await this.deps.employees.authorize(task.subscriptionId)) {
       throw new AppError('INVALID_ARGUMENT')
@@ -105,6 +105,7 @@ export class ConversationService {
       ...(inputSnapshot ? { inputSnapshot } : {}),
       ...(input.knowledge ? { knowledge: input.knowledge } : {}),
     })
+    return { queued: false }
   }
 
   /**

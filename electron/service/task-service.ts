@@ -140,14 +140,14 @@ export class TaskService {
     if (task.scheduledOrigin) throw new AppError('INVALID_STATE', { message: '定时任务不能直接重跑，请先核查本次已有成果和操作。' })
     const conversation = await this.isConversation(taskId)
     if (conversation && (nodeId || inputReply)) throw new AppError('INVALID_ARGUMENT')
-    if (conversation && this.deps.conversationQueue) {
-      const queue = await this.deps.conversationQueue.view(taskId)
-      if (queue.failed || queue.items.length) { await this.deps.conversationQueue.resume(taskId); return }
-    }
     if (inputReply && (!nodeId || conversation || !arrangementInputReplySchema.safeParse(inputReply).success)) throw new AppError('INVALID_ARGUMENT')
-    const plan = conversation ? await this.deps.workPlans?.get(this.scope(), taskId) : null
-    if (conversation && plan?.conversation?.kind !== 'general') await this.requireAuthorizedEmployee(task.subscriptionId)
     try {
+      if (conversation && this.deps.conversationQueue) {
+        await this.deps.conversationQueue.resume(taskId, { retryOriginal: true })
+        return
+      }
+      const plan = conversation ? await this.deps.workPlans?.get(this.scope(), taskId) : null
+      if (conversation && plan?.conversation?.kind !== 'general') await this.requireAuthorizedEmployee(task.subscriptionId)
       await (await this.deps.execution()).retryTask(taskId, { conversation, ...(nodeId ? { nodeId } : {}), ...(inputReply ? { inputReply } : {}) })
     } catch (error) {
       try { await this.deps.taskManager.recordStartFailure?.(taskId, describeError(error)) } catch { /* preserve the original retry error */ }

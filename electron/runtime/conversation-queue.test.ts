@@ -8,6 +8,10 @@ import { TaskRuntime } from './task-runtime'
 import { TaskRunStore } from '../data/task-run-store'
 import { ConversationQueueStore } from '../data/conversation-queue-store'
 import { ConversationQueueService } from '../service/conversation-queue-service'
+import { TaskMetadataStore } from '../data/task-metadata-store'
+import { TaskService } from '../service/task-service'
+import { ConversationService } from '../service/conversation-service'
+import type { EmployeeAuthorizer } from '../service/employee-authorizer'
 
 async function waitFor(predicate: () => boolean | Promise<boolean>) {
   const deadline = Date.now() + 6000
@@ -16,6 +20,61 @@ async function waitFor(predicate: () => boolean | Promise<boolean>) {
     await new Promise(resolve => setTimeout(resolve, 10))
   }
 }
+
+test('task retry with an empty paused queue drains follow-ups only after the recovered worker is disposed', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'conversation-empty-retry-'))
+  const manager = new TaskManager(root), runs = new TaskRunStore(root), metadata = new TaskMetadataStore(root)
+  await manager.initialize(); await manager.setCurrentUser('member', 'enterprise')
+  const scope = { currentScope: () => manager.getCurrentUserScope() }
+  const task = await manager.createTask('retry', 'initial', join(root, 'workspace'), 'employee')
+  await metadata.save(scope.currentScope()!, { version: 1, taskId: task.id, kind: 'conversation', participantSubscriptionIds: ['employee'], currentSubscriptionId: 'employee', createdAt: 1 })
+  const started: string[] = [], disposed: string[] = []
+  const gates = new Map<string, () => void>()
+  const runtime: TaskRuntime = new TaskRuntime({ taskManager: manager, taskRunStore: runs,
+    resolveEmployee: () => ({ subscriptionId: 'employee', modelId: 'model', gatewayUrl: 'http://unused' }),
+    getRefreshToken: () => 'fixture', onAuthenticationRequired() {}, onEvent() {}, onApprovalRequest() {},
+    onConversationSettled: (id, runId, owner) => queue.settled(id, runId, owner),
+    createWorker: options => {
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      gates.set(options.context.runId, release)
+      return { async run(prompt) {
+        assert.equal(disposed.length, started.length, 'dispose the previous worker before executing a follow-up')
+        started.push(prompt)
+        await mkdir(options.context.sessionDir, { recursive: true })
+        const file = join(options.context.sessionDir, 'session.jsonl')
+        await writeFile(file, '{}\n')
+        await options.onSessionCreated?.({ sessionId: 'shared', sessionFile: file })
+        if (started.length === 1) throw new Error('Request timed out.')
+        await gate
+      }, async abort() { release() }, async dispose() { disposed.push(options.context.runId) } }
+    },
+  })
+  const queue: ConversationQueueService = new ConversationQueueService({ scope, store: new ConversationQueueStore(root),
+    getTask: id => manager.getTask(id), isBusy: id => runtime.hasConversationRun(id),
+    start: (id, entry, signal) => runtime.continueConversation(id, entry.prompt, { runId: entry.runId, signal }),
+    retry: (id, signal) => runtime.retryTask(id, { conversation: true, signal }),
+  })
+  const employees = { async authorize() { return true } } as unknown as EmployeeAuthorizer
+  const tasks = new TaskService({ scope, taskManager: manager, taskRunStore: runs, taskMetadataStore: metadata, employees, execution: async () => runtime, conversationQueue: queue })
+  const conversations = new ConversationService({ scope, taskManager: manager, taskMetadataStore: metadata, employees, tasks, execution: async () => runtime, queue })
+  try {
+    await runtime.executeTask(task.id, { conversation: true })
+    await waitFor(async () => (await queue.view(task.id)).paused && !runtime.hasConversationRun(task.id))
+    assert.equal((await queue.view(task.id)).items.length, 0)
+    await tasks.retry(task.id)
+    await waitFor(() => started.length === 2)
+    assert.equal((await queue.view(task.id)).paused, false)
+    assert.deepEqual(await conversations.continue({ taskId: task.id, messageId: 'later', prompt: 'follow-up' }), { queued: true })
+    gates.get((await manager.getTask(task.id))!.activeRunId!)!()
+    await waitFor(() => started.length === 3)
+    assert.deepEqual(started, ['initial', 'initial', 'follow-up'])
+    gates.get('later')!()
+    await waitFor(async () => !runtime.hasConversationRun(task.id) && (await queue.view(task.id)).items.length === 0)
+    assert.deepEqual(await conversations.continue({ taskId: task.id, messageId: 'idle', prompt: 'run immediately' }), { queued: false })
+    await waitFor(() => started.length === 4)
+  } finally { queue.stop(); for (const release of gates.values()) release(); await runtime.stopAll(); await rm(root, { recursive: true, force: true }) }
+})
 
 test('real conversation runs drain FIFO only after disposal, pause on failure and resume the failed prompt with its knowledge', async () => {
   const root = await mkdtemp(join(tmpdir(), 'conversation-queue-runtime-'))
