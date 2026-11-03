@@ -41,7 +41,7 @@ export interface TaskExecutionPort {
   continueConversation(
     taskId: string,
     prompt: string,
-    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; knowledge?: KnowledgeSelection },
+    recovery?: { mode?: SessionRecoveryMode; confirmed?: boolean; inputSnapshot?: InputSnapshotRef; attachmentRefs?: import('../../src/shared/attachment-contracts').AttachmentRef[]; knowledge?: KnowledgeSelection; runId?: string; signal?: AbortSignal },
   ): Promise<void>
   switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void>
   pauseTask(taskId: string): Promise<void>
@@ -61,6 +61,7 @@ export interface TaskServiceDependencies {
   execution: () => Promise<TaskExecutionPort>
   media?: { archiveIfMedia(taskId: string): Promise<boolean>; isArchived?(taskId: string): Promise<boolean> }
   attachments?: AttachmentService
+  conversationQueue?: import('./conversation-queue-service').ConversationQueueService
 }
 
 export interface CreateTaskInput {
@@ -116,6 +117,7 @@ export class TaskService {
 
   /** 首次执行。是不是对话任务由元数据决定，而不是由调用方声明。 */
   async execute(taskId: string): Promise<void> {
+    if ((await this.requireTask(taskId)).scheduledOrigin) throw new AppError('INVALID_STATE', { message: '定时任务由调度器执行，请在定时任务记录中处理。' })
     const conversation = await this.isConversation(taskId)
     const scope = this.scope()
     const metadata = await this.deps.taskMetadataStore.load(scope, taskId)
@@ -135,7 +137,13 @@ export class TaskService {
   /** 重试。与 execute 一样要先确认任务归属与员工可用性。 */
   async retry(taskId: string, nodeId?: string, inputReply?: ArrangementInputReply): Promise<void> {
     const task = await this.requireTask(taskId)
+    if (task.scheduledOrigin) throw new AppError('INVALID_STATE', { message: '定时任务不能直接重跑，请先核查本次已有成果和操作。' })
     const conversation = await this.isConversation(taskId)
+    if (conversation && (nodeId || inputReply)) throw new AppError('INVALID_ARGUMENT')
+    if (conversation && this.deps.conversationQueue) {
+      const queue = await this.deps.conversationQueue.view(taskId)
+      if (queue.failed || queue.items.length) { await this.deps.conversationQueue.resume(taskId); return }
+    }
     if (inputReply && (!nodeId || conversation || !arrangementInputReplySchema.safeParse(inputReply).success)) throw new AppError('INVALID_ARGUMENT')
     const plan = conversation ? await this.deps.workPlans?.get(this.scope(), taskId) : null
     if (conversation && plan?.conversation?.kind !== 'general') await this.requireAuthorizedEmployee(task.subscriptionId)
@@ -224,12 +232,17 @@ export class TaskService {
   }
 
   async pause(taskId: string): Promise<void> {
-    await (await this.deps.execution()).pauseTask(taskId)
+    await this.requireTask(taskId)
+    const stop = async () => (await this.deps.execution()).pauseTask(taskId)
+    if (await this.isConversation(taskId) && this.deps.conversationQueue) await this.deps.conversationQueue.cancel(taskId, stop)
+    else await stop()
   }
 
   async cancel(taskId: string, reason?: string): Promise<void> {
     await this.requireTask(taskId)
-    await (await this.deps.execution()).cancelTask(taskId, reason)
+    const stop = async () => (await this.deps.execution()).cancelTask(taskId, reason)
+    if (await this.isConversation(taskId) && this.deps.conversationQueue) await this.deps.conversationQueue.cancel(taskId, stop)
+    else await stop()
   }
 
   /** Media records retain receipts; ordinary running-task deletion is guarded inside TaskManager's commit. */
@@ -414,6 +427,11 @@ export class TaskService {
   }
 
   private async isConversation(taskId: string): Promise<boolean> {
+    if (this.deps.conversationQueue) {
+      const type = (await this.get(taskId)).workType
+      if (type.state !== 'resolved') throw new AppError('INVALID_STATE')
+      return type.kind === 'conversation'
+    }
     const metadata = await this.deps.taskMetadataStore.load(this.scope(), taskId)
     return metadata?.kind === 'conversation'
   }

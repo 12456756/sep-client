@@ -20,7 +20,7 @@ const browser = await chromium.launch({ executablePath, headless: true })
 try {
   for (const [width, height] of [[1440, 900], [390, 844]]) {
     const page = await browser.newPage({ viewport: { width, height }, reducedMotion: 'reduce' })
-    const lines = Array.from({ length: 60 }, (_, i) => `<p>Message ${i + 1}</p>`).join('')
+    const lines = '<p>Message 1</p>'
     await page.setContent(`<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
       <style>html,body{margin:0;height:100%;font:14px Arial}*{box-sizing:border-box}
       .fixture{display:flex;flex-direction:column;height:100dvh}.spacer{height:320px;flex-shrink:0}
@@ -30,12 +30,18 @@ try {
       <div class="ent-transcript-content"><section class="ent-transcript-goal"><strong>You</strong><p>Report</p></section>
       <div class="spacer"></div><section class="ent-transcript-node"><h2>Employee messages</h2>
       <div class="ent-transcript-node-body" tabindex="0"><details class="ent-transcript-thinking" open>
-      <summary>Thinking</summary><p>${'Thinking line\n'.repeat(80)}</p></details>${lines}</div></section>
+      <summary>Thinking</summary><p>Thinking line</p></details>${lines}</div></section>
       <div class="spacer"></div></div></div></section></main></body></html>`)
     const inner = page.locator('.ent-transcript-node-body')
     const outer = page.locator('.ent-transcript-body')
+    const initial = await inner.evaluate(el => ({ height: el.clientHeight, overflow: el.scrollHeight }))
+    assert.equal(initial.height, initial.overflow, 'short details must grow to fit without empty scroll space')
+    await inner.evaluate(el => {
+      el.insertAdjacentHTML('beforeend', Array.from({ length: 60 }, (_, i) => `<p>Message ${i + 2}</p>`).join(''))
+    })
     const size = await inner.evaluate(el => ({ height: el.clientHeight, overflow: el.scrollHeight }))
-    assert.ok(size.overflow > size.height, 'node must have internally scrollable content')
+    assert.ok(size.height > initial.height, 'details must grow as messages arrive')
+    assert.ok(size.overflow > size.height, 'long details must scroll after reaching the cap')
     const position = async (scrollTop) => {
       await inner.evaluate((el, top) => {
         const parent = el.closest('.ent-transcript-body')
@@ -73,11 +79,11 @@ try {
     const thinkingOuter = await outer.evaluate(el => el.scrollTop)
     await page.mouse.wheel(0, -120)
     await page.waitForFunction(top => document.querySelector('.ent-transcript-body').scrollTop < top - 30, thinkingOuter, { timeout: 2000 })
-    assert.equal(await inner.evaluate(el => el.clientHeight), size.height, 'scroll chaining must preserve node height')
+    assert.equal(await inner.evaluate(el => el.clientHeight), size.height, 'scroll chaining must preserve the capped node height')
     assert.equal(await page.evaluate(() => document.documentElement.scrollHeight), height, 'document must stay within viewport')
     assert.equal(await outer.evaluate(el => getComputedStyle(el).overscrollBehaviorY), 'contain', 'outer transcript must remain contained')
     await page.screenshot({ path: join(output, `${width}.png`) })
-    log(`PASS ${width}x${height}: internal scrolling, top/bottom chaining, nested thinking and fixed height`)
+    log(`PASS ${width}x${height}: growing capped details, internal scrolling, top/bottom chaining and nested thinking`)
     await page.close()
   }
 } finally { await browser.close() }

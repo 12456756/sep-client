@@ -10,17 +10,17 @@ export interface MediaIssueState {
 
 export const MEDIA_BUSINESS_MESSAGES: Readonly<Record<string, string>> = {
   ...MEDIA_SPEC_ERROR_MESSAGES,
-  INSUFFICIENT_FUNDS: '可用资金不足，请联系平台管理员',
-  VIDEO_BUDGET_EXCEEDED: '已超过企业视频预算，请联系平台管理员',
-  MEDIA_FORBIDDEN: '当前账号没有视频生成权限，请联系平台管理员',
+  INSUFFICIENT_FUNDS: '当前账号可用资金不足，请联系企业管理员补充资金后重试。',
+  VIDEO_BUDGET_EXCEEDED: '已达到企业视频预算上限，请联系企业管理员调整预算后重试。',
+  MEDIA_FORBIDDEN: '当前账号没有视频生成权限，请联系企业管理员开通权限。',
   QUOTE_EXPIRED: '本次报价已过期，请重新发起',
   VIDEO_CONCURRENCY_LIMIT: '视频任务数已达上限，请稍后重试',
   NETWORK_ERROR: '网络连接失败，请检查网络',
   NETWORK_TIMEOUT: '网络连接超时，请稍后重试',
   VIDEO_NETWORK_ERROR: '网络连接失败，请检查网络',
   VIDEO_TIMEOUT: '网络连接超时，请稍后重试',
-  VIDEO_AUTH_REQUIRED: '视频任务授权不可用，请联系平台管理员',
-  PERMISSION_DENIED: '当前媒体任务权限不可用，请联系平台管理员',
+  VIDEO_AUTH_REQUIRED: '视频任务的访问授权不可用，请重新登录后恢复原任务；仍失败请联系平台管理员检查授权。',
+  PERMISSION_DENIED: '当前账号无权访问该媒体任务，请检查工作权限；如需授权，请联系平台管理员。',
   RATE_LIMITED: '请求过于频繁，请稍后重试',
   AUTH_REQUIRED: '登录状态已失效，请重新登录',
 }
@@ -59,15 +59,15 @@ export function mediaIssueMessage(job: MediaIssueState, kind: 'image' | 'video')
   if (job.error && Object.hasOwn(MEDIA_BUSINESS_MESSAGES, job.error)) return MEDIA_BUSINESS_MESSAGES[job.error]
   if (job.error === 'RESULT_EXPIRED') return `${name}结果已过期，无法重新下载`
   if (job.error === 'TRACKING_LIMIT') return `${name}跟踪已达本轮上限，请恢复原任务跟踪`
-  if (job.error === 'QUERY_UNAVAILABLE') return `${name}原任务暂时无法查询，请联系平台管理员`
-  if (job.error === 'DOWNLOAD_UNAVAILABLE') return `${name}原结果暂时无法下载，请联系平台管理员`
+  if (job.error === 'QUERY_UNAVAILABLE') return `平台当前无法查询原${name}任务，请稍后恢复原任务跟踪，勿重复生成；持续失败请联系平台管理员。`
+  if (job.error === 'DOWNLOAD_UNAVAILABLE') return `原${name}结果暂时不允许下载，请稍后重新保存原结果，勿重复生成；持续失败请联系平台管理员。`
   if (job.saveStatus === 'MISSING') return '本地成果文件缺失，请重新保存原结果'
-  if (job.saveStatus === 'SAVE_FAILED') return `${name}成果保存失败，请联系平台管理员`
+  if (job.saveStatus === 'SAVE_FAILED') return `${name}成果下载、文件校验或本地保存失败，请重新保存原结果，并检查磁盘空间和保存权限，勿重复生成。`
   if (job.generationStatus === 'RESULT_EXPIRED') return `${name}结果已过期，无法重新下载`
-  if (job.trackingStatus === 'AUTH_REQUIRED') return `${name}任务授权不可用，请联系平台管理员`
-  if (job.trackingStatus === 'INTERRUPTED') return `${name}任务跟踪中断，请联系平台管理员`
-  if (job.generationStatus === 'FAILED') return `${name}生成失败，请联系平台管理员`
-  if (job.generationStatus === 'PARTIAL_SUCCEEDED') return `部分${name}未生成成功，请联系平台管理员`
-  if (job.error && job.error !== 'TRACKING_STOPPED' && job.generationStatus !== 'CANCELLED') return `${name}任务处理失败，请联系平台管理员`
+  if (job.trackingStatus === 'AUTH_REQUIRED') return `${name}任务的访问授权不可用，请重新登录后恢复原任务；仍失败请联系平台管理员检查授权。`
+  if (job.trackingStatus === 'INTERRUPTED') return `${name}任务跟踪已中断，尚未确认原任务的最新状态，请恢复原任务跟踪，勿重复生成。`
+  if (job.generationStatus === 'FAILED') return `${name}生成失败，平台未返回可展示的具体原因；持续失败请联系平台管理员。`
+  if (job.generationStatus === 'PARTIAL_SUCCEEDED') return `部分${name}未生成成功，平台未返回可展示的具体原因，已生成的成果可继续使用。`
+  if (job.error && job.error !== 'TRACKING_STOPPED' && job.generationStatus !== 'CANCELLED') return `${name}任务处理异常，客户端没有取得具体原因，请查看原任务状态；持续失败请联系平台管理员。`
   return null
 }

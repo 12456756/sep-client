@@ -128,14 +128,14 @@ export class FeedbackController {
     this.emit()
     let result: { success: boolean; message?: string }
     try { result = await entry.confirmation.onConfirm(value) }
-    catch { result = { success: false, message: '操作失败，请联系平台管理员' } }
+    catch { result = { success: false, message: '操作未能完成，客户端没有取得具体原因，请重试；持续失败请联系平台管理员。' } }
     // A cleared session owns neither this response nor its confirmation promise.
     if (this.queue[0] !== entry) return
     entry.resolve?.(result.success)
     entry.resolve = undefined
     entry.confirmation = undefined
     if (result.success && !result.message) this.queue.shift()
-    else entry.item = { id, key: entry.item.key, message: result.message || '操作失败，请联系平台管理员', tone: result.success ? 'success' : 'error', busy: false }
+    else entry.item = { id, key: entry.item.key, message: result.message || '操作未能完成，客户端没有取得具体原因，请重试；持续失败请联系平台管理员。', tone: result.success ? 'success' : 'error', busy: false }
     this.emit()
   }
 

@@ -1,4 +1,5 @@
 import { modelRequestProgressSchema, type ModelRequestKind, type ModelRequestProgress } from '../../domain/model-request-progress'
+import { AppError } from '../../errors/app-error'
 
 export interface ModelRequestEvent {
   type: string
@@ -57,11 +58,19 @@ export class ModelRequestTracker {
         ? 'recovery'
         : this.retryPending ? 'retry' : 'execution'
     let snapshot: ModelRequestProgress
+    let stage: 'persist' | 'validate' = 'persist'
     try {
-      snapshot = modelRequestProgressSchema.parse(await this.persist(kind))
+      const saved = await this.persist(kind)
+      stage = 'validate'
+      snapshot = modelRequestProgressSchema.parse(saved)
     } catch (error) {
       if (signal?.aborted) signal.throwIfAborted()
-      this.persistFailure = new Error('节点模型请求计数保存失败，已停止发送模型请求。', { cause: error })
+      const invalidState = stage === 'validate' || error instanceof AppError && error.code === 'INVALID_STATE'
+      this.persistFailure = new AppError(invalidState ? 'INVALID_STATE' : 'PERSISTENCE_ERROR', {
+        message: invalidState ? '节点模型请求计数状态无效，已停止发送模型请求。' : '节点模型请求计数保存失败，已停止发送模型请求。',
+        cause: error,
+        details: { requestKind: kind, stage, causeName: error instanceof Error ? error.name : typeof error },
+      })
       throw this.persistFailure
     }
     signal?.throwIfAborted()

@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, symlink, truncate, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, symlink, truncate, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, type TestContext } from 'node:test'
@@ -30,14 +30,14 @@ test('preview joins owner-local planned deliveries with node completion, indepen
   await plans.save(owner, plan); await checkpoints.save(owner, checkpoint)
   await writeFile(join(root, 'report.md'), 'hello')
   assert.equal((await store.getDelivery(owner, 'task', 'node', 'report'))?.status, 'completed')
-  assert.equal(await store.getDeliveryPath(owner, 'task', 'node', 'report'), join(root, 'report.md'))
+  assert.equal(await store.getDeliveryPath(owner, 'task', 'node', 'report'), await realpath(join(root, 'report.md')))
   assert.equal(await store.getDeliveryPath({ ...owner, memberId: 'other' }, 'task', 'node', 'report'), null)
   const node = checkpoint.state.nodes[0]
   const file = node.delivery!.finalFiles[0]
   await checkpoints.save(owner, { ...checkpoint, state: { ...checkpoint.state, nodes: [
     { ...node, delivery: { ...node.delivery!, finalFiles: [{ ...file, sourceArtifact: { kind: 'image', artifactId: 'asset', sha256: file.sha256 } }] } },
   ] } })
-  assert.equal(await store.getDeliveryPath(owner, 'task', 'node', 'report'), join(root, 'report.md'))
+  assert.equal(await store.getDeliveryPath(owner, 'task', 'node', 'report'), await realpath(join(root, 'report.md')))
   await checkpoints.save(owner, checkpoint)
   assert.equal(await store.getDelivery({ ...owner, memberId: 'other' }, 'task', 'node', 'report'), null)
   assert.equal(await store.getDelivery(owner, 'task', 'peer', 'report'), null)
@@ -66,7 +66,7 @@ test('conversation previews read registered task files without requiring a DAG o
   const f = await conversationFixture(t)
   const first = await f.store.readConversation(f.owner, f.task, 'task-file-0')
   assert.ok(first)
-  assert.equal(await f.store.getConversationPath(f.owner, f.task, 'task-file-0'), f.path)
+  assert.equal(await f.store.getConversationPath(f.owner, f.task, 'task-file-0'), await realpath(f.path))
   assert.equal(first.name, 'report.MD')
   assert.equal(first.format, 'md')
   assert.equal(Buffer.from(first.bytes).toString(), '# conversation report')
@@ -97,6 +97,18 @@ test('conversation previews reject foreign owners, non-conversations, forged ide
   await assert.rejects(f.store.readConversation(f.owner, { ...f.task, files: [join(linked, 'private.md')] }, 'task-file-0'))
 })
 
+test('output locations accept absolute paths through a workspace alias and still reject nested symlinks', async t => {
+  const f = await conversationFixture(t)
+  const alias = join(f.root, 'workspace-alias')
+  await symlink(f.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir')
+  const task = { ...f.task, workDir: alias, files: [join(alias, 'report.MD')] }
+  assert.equal(await f.store.getConversationPath(f.owner, task, 'task-file-0'), await realpath(f.path))
+  assert.equal(await f.store.getConversationPath(f.owner, { ...task, files: [await realpath(f.path)] }, 'task-file-0'), await realpath(f.path))
+  const linked = join(f.workspace, 'linked.md')
+  await symlink(f.path, linked)
+  await assert.rejects(f.store.getConversationPath(f.owner, { ...task, files: [join(alias, 'linked.md')] }, 'task-file-0'), /UNSAFE_PATH/)
+})
+
 test('conversation previews reject missing, empty and oversized files without creating snapshots', async t => {
   const f = await conversationFixture(t)
   await writeFile(f.path, '')
@@ -113,8 +125,8 @@ test('output locations support any format without reading bytes and reject forei
   const archive = join(f.workspace, 'result.zip')
   await writeFile(archive, '')
   const task = { ...f.task, files: [archive] }
-  assert.equal(await f.store.getConversationPath(f.owner, task, 'task-file-0'), archive)
-  assert.equal(await f.store.getConversationPath(f.owner, { ...task, files: ['result.zip'] }, 'task-file-0'), archive)
+  assert.equal(await f.store.getConversationPath(f.owner, task, 'task-file-0'), await realpath(archive))
+  assert.equal(await f.store.getConversationPath(f.owner, { ...task, files: ['result.zip'] }, 'task-file-0'), await realpath(archive))
   assert.equal(await f.store.getConversationPath(f.owner, { ...task, ownerId: 'other' }, 'task-file-0'), null)
   assert.equal(await f.store.getConversationPath(f.owner, task, 'other-file-0'), null)
   const outside = join(f.root, 'private.zip')

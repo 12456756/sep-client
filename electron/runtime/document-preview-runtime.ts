@@ -1,5 +1,6 @@
 import { documentPreviewContentSchema, type DocumentPreviewContent } from '../../src/shared/document-preview'
 import { AppError } from '../errors/app-error'
+import { DOCUMENT_PREVIEW_FAILURES, documentPreviewFailureSchema, type DocumentPreviewFailure } from '../errors/document-preview-error'
 
 export interface DocumentPreviewWorker {
   postMessage(value: unknown): void
@@ -22,23 +23,24 @@ export class DocumentPreviewRuntime {
       return new Promise<DocumentPreviewContent>((resolve, reject) => {
         const worker = this.createWorker()
         let settled = false
-        const settle = (content?: DocumentPreviewContent, message = '文档预览失败，可重试或复制路径查看原件。') => {
+        const settle = (content?: DocumentPreviewContent, reason: DocumentPreviewFailure = 'CONVERSION_FAILED') => {
           if (settled) return
           settled = true
           clearTimeout(timer)
           this.cancel = undefined
           worker.kill()
           if (content) resolve(content)
-          else reject(new AppError('INTERNAL_ERROR', { message }))
+          else reject(new AppError('INTERNAL_ERROR', { message: DOCUMENT_PREVIEW_FAILURES[reason], details: { reason } }))
         }
-        const timer = setTimeout(() => settle(undefined, '文档预览耗时较长，可重试或复制路径查看原件。'), this.timeoutMs)
-        this.cancel = () => settle(undefined, '文档预览已取消。')
+        const timer = setTimeout(() => settle(undefined, 'CONVERSION_TIMEOUT'), this.timeoutMs)
+        this.cancel = () => settle(undefined, 'CANCELLED')
         worker.on('message', raw => {
           const parsed = documentPreviewContentSchema.safeParse(raw)
-          settle(parsed.success ? parsed.data : undefined)
+          const failed = documentPreviewFailureSchema.safeParse(raw)
+          settle(parsed.success ? parsed.data : undefined, failed.success ? failed.data.error : 'INVALID_RESPONSE')
         })
-        worker.once('exit', () => settle())
-        try { worker.postMessage({ format, bytes }) } catch { settle() }
+        worker.once('exit', () => settle(undefined, 'WORKER_EXITED'))
+        try { worker.postMessage({ format, bytes }) } catch { settle(undefined, 'SEND_FAILED') }
       })
     })
     this.tail = result.catch(() => undefined)

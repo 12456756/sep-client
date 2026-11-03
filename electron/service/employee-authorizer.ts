@@ -21,6 +21,7 @@ import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-c
 // EmployeeRuntimeConfig 是运行时的入参契约。定义点在 runtime/run-types.ts——
 // 那是个零依赖的类型模块，import 它不会把 pi SDK 拉进服务层（B2）。
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
+import type { EmployeeProfile } from '../domain/employee-profile'
 
 function videoAuthorizationFingerprint(video: EmployeeRuntimeConfig['video']): string {
   // Video arrays enumerate sets of tools, profiles, operations and supported parameters.
@@ -407,5 +408,29 @@ export class EmployeeAuthorizer {
       ...(runtimeSnapshot.video !== undefined ? { video: runtimeSnapshot.video } : {}),
       runtimeSnapshot,
     }
+  }
+
+  /** Refresh the grant before a scheduled plan is created; return only prompt-safe profile data. */
+  async validateScheduled(subscriptionId: string, modelId: string): Promise<EmployeeProfile> {
+    const scope = this.captureScope()
+    if (!scope) throw new AppError('AUTH_REQUIRED')
+    const instances = await this.readDirectory(true)
+    if (!scope.isCurrent()) throw new AppError('AUTH_REQUIRED')
+    const instance = instances.find(item => item.subscriptionId === subscriptionId && item.status === 'ACTIVE' && item.employeeId)
+    if (!instance) throw new AppError('EMPLOYEE_UNAVAILABLE')
+    if (!instance.allowedModels.includes(modelId)) throw new AppError('MODEL_NOT_ALLOWED')
+    return { name: instance.name, position: instance.position ?? undefined,
+      functionalCategory: instance.functionalCategory ?? undefined, description: instance.description ?? undefined }
+  }
+
+  /** Scheduled runs always refresh the current grant and assemble the employee's current skills. */
+  async authorizeScheduled(subscriptionId: string, modelId: string): Promise<EmployeeRuntimeConfig> {
+    const scope = this.captureScope()
+    if (!scope) throw new AppError('AUTH_REQUIRED')
+    const profile = await this.validateScheduled(subscriptionId, modelId)
+    const runtime = await this.authorize(subscriptionId, modelId)
+    if (!scope.isCurrent()) throw new AppError('AUTH_REQUIRED')
+    if (!runtime) throw new AppError('MODEL_NOT_ALLOWED')
+    return { ...runtime, employeeProfile: profile }
   }
 }

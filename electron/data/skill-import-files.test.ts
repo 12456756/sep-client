@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict'
-import { access, chmod, mkdtemp, mkdir, readdir, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdtemp, mkdir, open, readdir, rename, rm, symlink, utimes, writeFile, type FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -410,6 +410,8 @@ test('cancelling an active package removes its temporary archive', async () => {
   const preview = await f.files.preview({ requestId: 'req-cancel-package', candidateId: candidate.candidateId, revision: 1 })
   const controller = new AbortController()
   const packaging = f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'op-cancel-package' }, controller.signal)
+  // Cancellation can reject while the test is still polling for the archive.
+  void packaging.catch(() => undefined)
   const deadline = Date.now() + 5_000
   let seenArchive = false
   while (Date.now() < deadline) {
@@ -445,6 +447,42 @@ test('reports unwritable package directory without unhandled writer rejection', 
     )
   } finally {
     await chmod(f.temp, 0o700)
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('cancellation after source handle validation rejects safely and removes the active archive', async t => {
+  const f = await fixture()
+  const skill = await addSkill(join(f.home, '.agents', 'skills'))
+  const root = await agentsRoot(f.files)
+  const [candidate] = await f.files.scan([root.id])
+  assert.ok(candidate)
+  const preview = await f.files.preview({ requestId: 'req-cancel-validated', candidateId: candidate.candidateId, revision: 1 })
+  const controller = new AbortController()
+  const reason = new Error('IMPORT_CANCELLED')
+  const handle = await open(join(skill, 'SKILL.md'), 'r')
+  const prototype = Object.getPrototypeOf(handle) as FileHandle
+  const originalStat = prototype.stat
+  await handle.close()
+  let cancelledDuringValidation = false
+  let cancelledHandle: FileHandle | undefined
+  const mocked = t.mock.method(prototype, 'stat', async function (this: FileHandle, ...args: Parameters<FileHandle['stat']>) {
+    const info = await Reflect.apply(originalStat, this, args)
+    if (!controller.signal.aborted && (await readdir(f.temp).catch(() => [])).some(name => name.endsWith('.zip'))) {
+      cancelledDuringValidation = true
+      cancelledHandle = this
+      controller.abort(reason)
+    }
+    return info
+  })
+  try {
+    await assert.rejects(f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'op-cancel-validated' }, controller.signal), error => error === reason || error instanceof Error && error.name === 'AbortError' && error.cause === reason)
+    assert.equal(cancelledDuringValidation, true)
+    assert.equal(cancelledHandle?.fd, -1, 'the source handle must close before cancellation settles')
+    assert.deepEqual((await readdir(f.temp)).filter(name => name.endsWith('.zip')), [])
+  } finally {
+    mocked.mock.restore()
     await f.files.dispose()
     await rm(f.base, { recursive: true, force: true })
   }

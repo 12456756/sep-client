@@ -13,6 +13,7 @@ import '../../styles/work-hub.css'
 import { PlanningScope } from '../../features/enterprise/auto-planning-scope'
 import { groupWorkExecutions, resolveExecutionSelection } from '../../features/enterprise/work-execution-groups'
 import { WorkExecutionList } from './WorkExecutionList'
+import { WorkScheduleDialog } from '../../components/enterprise/scheduled/WorkScheduleDialog'
 
 type CreationRoute = Extract<AppRoute, { name: 'arrange' }>
 
@@ -30,6 +31,7 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
   const [listOpen, setListOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1180)
   const [order, setOrder] = useState(() => refreshWorkOrder(groupedWorks))
   const [workMenu, setWorkMenu] = useState<WorkMenuRequest | null>(null)
+  const [scheduleSource, setScheduleSource] = useState<{ id: string; title: string } | null>(null)
   const dismissWorkMenu = useCallback(() => setWorkMenu(null), [])
   const openWorkMenu = (workId: string, trigger: HTMLElement, point?: { x: number; y: number }) => {
     const rect = trigger.getBoundingClientRect()
@@ -39,8 +41,9 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
     setState(current => enterWorkHubRoute(current, route))
     if (route.name === 'arrange') setCreation(route)
     setWorkMenu(null)
+    setScheduleSource(null)
   }, [route])
-  useLayoutEffect(() => { setWorkMenu(null) }, [workspace.attachmentScopeKey])
+  useLayoutEffect(() => { setWorkMenu(null); setScheduleSource(null) }, [workspace.attachmentScopeKey])
   const nextOrder = refreshWorkOrder(groupedWorks, order)
   useLayoutEffect(() => { setOrder(current => refreshWorkOrder(groupedWorks, current)) }, [groupedWorks])
   const creationRoute = route.name === 'arrange' ? route : creation
@@ -60,7 +63,8 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
   }
   return <PlanningScope controller={workspace.planningController}><div className={`ent-work-hub${listOpen ? ' list-open' : ''}`}>
     {listOpen && <WorkListPane works={groupedWorks} records={records} selectedWorkId={selectedWorkId} filters={state.filters} onFilters={updateFilters} onSelect={workId => workspace.navigate({ name: 'work', workId })} onCreate={() => workspace.navigate(creation)} onClose={() => { setListOpen(false); dismissWorkMenu() }} onRetryTypes={() => workspace.retryWorkTypes()} menuWorkId={workMenu?.workId ?? null} onWorkMenu={openWorkMenu} />}
-    <WorkListActions key={workspace.attachmentScopeKey} works={groupedWorks} request={workMenu} busy={workspace.busy} onDismiss={dismissWorkMenu} onRename={workspace.renameWork} onPin={workspace.setWorkPinned} onRetry={workspace.rerunWork} onDelete={workspace.deleteWork} />
+    <WorkListActions key={workspace.attachmentScopeKey} works={groupedWorks} request={workMenu} busy={workspace.busy} onDismiss={dismissWorkMenu} onRename={workspace.renameWork} onPin={workspace.setWorkPinned} onRetry={workspace.rerunWork} onDelete={workspace.deleteWork} onSchedule={work => setScheduleSource({ id: work.id, title: work.title })} />
+    {scheduleSource ? <WorkScheduleDialog key={`${workspace.attachmentScopeKey}:${scheduleSource.id}`} source={scheduleSource} scopeKey={workspace.attachmentScopeKey} onClose={() => setScheduleSource(null)} onCreated={definition => { setScheduleSource(null); workspace.navigate({ name: 'scheduled', taskId: definition.id, view: 'configuration' }) }} /> : null}
     <main className="ent-work-main" aria-label={selectedWork ? `工作：${selectedWork.title}` : '新建工作'}>
       {!listOpen && <div className="ent-work-reopen"><IconHint label="展开工作列表"><button type="button" className="ent-work-icon" aria-label="展开工作列表" onClick={() => setListOpen(true)}><PanelLeftOpen size={18} aria-hidden /></button></IconHint><span>工作</span></div>}
       {excluded && <div className="ent-work-excluded" role="status"><span>当前工作不符合列表筛选，仍保留此对话。</span><button type="button" onClick={() => updateFilters(resetWorkRecordFilters())}>清除筛选</button></div>}

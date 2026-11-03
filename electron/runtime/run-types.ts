@@ -39,6 +39,7 @@ export interface TaskWorkerPort {
 }
 
 export interface QueuedRun {
+  signal?: AbortSignal
   taskId: string
   runId: string
   subscriptionId: string

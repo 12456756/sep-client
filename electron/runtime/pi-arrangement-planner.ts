@@ -224,7 +224,7 @@ export class PiArrangementPlanner implements ArrangementPlannerPort {
           throwIfAborted(planningSignal)
           log.warn('planning output rejected; requesting correction', { ...context, ...planningErrorFields(error) })
           void trace?.({ phase: stageTitle, kind: 'status', text: `规划校验失败，继续修正\n${JSON.stringify(planningErrorFields(error), null, 2)}` }).catch(() => undefined)
-          const continueWith = buildArrangementPlannerRepairPrompt(error.details.phase, planningData)
+          const continueWith = buildArrangementPlannerRepairPrompt(error.details.phase, planningData, error)
           nextPhase('provider-request', { promptLength: continueWith.length })
           return { continueWith }
         }

@@ -28,6 +28,20 @@ function fixture() {
 }
 
 describe('shared speech input lifecycle', () => {
+  it('keeps explicit recognition failures and explains mismatched results without delivering text', async () => {
+    const f = fixture()
+    f.api.recognizeSpeech = async () => ({ success: false, error: { code: 'INTERNAL_ERROR', statusCode: 500, message: '语音识别超时，请缩短录音后重试。' } })
+    await f.controller.start('one', f.result)
+    await f.controller.stop('one')
+    assert.equal(f.controller.getSnapshot().error, '语音识别超时，请缩短录音后重试。')
+    assert.deepEqual(f.results, [])
+    f.api.recognizeSpeech = async () => ({ success: true, data: { recordingId: 'another-recording', text: 'wrong result', silent: false } })
+    await f.controller.start('one', f.result)
+    await f.controller.stop('one')
+    assert.match(f.controller.getSnapshot().error ?? '', /与本次录音不匹配/)
+    assert.deepEqual(f.results, [])
+    assert.equal(f.controller.getSnapshot().phase, 'idle')
+  })
   it('never starts recording when application consent is canceled or returned after owner cancellation', async () => {
     const f = fixture()
     let begins = 0

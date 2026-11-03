@@ -78,7 +78,7 @@ function NodeSection({ node, employee, files, onResults }: {
   const body = useRef<HTMLDivElement>(null)
   const follow = useRef(true)
   // Completion resets the default; token updates and approval waits preserve manual choices.
-  const open = choice?.state === phase ? choice.open : active
+  const open = choice?.state === phase ? choice.open : false
   useEffect(() => {
     if (open && active && follow.current && body.current) body.current.scrollTop = body.current.scrollHeight
   }, [entries, open, active])
@@ -92,14 +92,14 @@ function NodeSection({ node, employee, files, onResults }: {
     </button>
     {!open && step.state === 'done' ? <p className="ent-transcript-collapsed">我已经完成工作。{files.length ? ` · ${files.length} 个产物` : ''}</p> : null}
     <div id={`transcript-node-${step.id}`} ref={body} className="ent-transcript-node-body" hidden={!open} tabIndex={open ? 0 : -1}
-      role="region" aria-label={`${step.title}的消息`} onScroll={() => {
+      role="region" aria-label={`${step.title}的消息`} onWheel={() => { follow.current = false }} onScroll={() => {
         const el = body.current
         if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
       }}>
       {entries.map(entry => <Entry key={entry.id} entry={entry} active={active} />)}
       {step.state === 'done' ? <p className="ent-transcript-completed"><CheckCircle2 size={15} aria-hidden />我已经完成工作。</p>
         : step.state === 'failed' ? <p className="ent-transcript-failed"><XCircle size={15} aria-hidden />当前节点执行失败，已产生的内容保留。</p>
-          : active ? <p className="ent-transcript-waiting" role="status"><LoaderCircle size={13} className="ent-spin" aria-hidden />{step.state === 'waiting-user' ? '等待你的确认' : entries.length ? '正在继续处理任务…' : '正在准备执行…'}</p> : null}
+      : active ? <p className="ent-transcript-waiting" role="status"><LoaderCircle size={13} className="ent-spin" aria-hidden />{step.state === 'waiting-user' ? '等待你的确认' : entries.length ? '正在继续处理任务…' : '正在准备执行…'}</p> : null}
       {files.length ? <button type="button" className="ent-btn sm ghost" onClick={onResults}><FileOutput size={14} aria-hidden />查看 {files.length} 个产物</button> : null}
     </div>
   </section>

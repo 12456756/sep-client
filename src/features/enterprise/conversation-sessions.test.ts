@@ -70,3 +70,18 @@ test('knowledge choices stay with their work and manual references are consumed 
   assert.deepEqual(session.knowledge, { mode: 'manual', knowledgeBaseIds: ['policy'], manualQuery: '年假', sources: [] })
   assert.equal(createConversationSessions(() => {}).get('a').knowledge, undefined)
 })
+
+test('pending send is retained across navigation, deduplicates lost acknowledgements and gives deliberate repeats new IDs', () => {
+  const sessions = createConversationSessions(() => {})
+  const first = sessions.get('a')
+  const id = first.beginSend('text-and-attachments')
+  assert.ok(id)
+  assert.equal(sessions.get('a').sending, true)
+  assert.equal(sessions.get('a').beginSend('text-and-attachments'), null)
+  first.finishSend()
+  assert.equal(sessions.get('a').beginSend('text-and-attachments'), id)
+  first.acceptSend('text')
+  first.finishSend()
+  assert.notEqual(first.beginSend('text-and-attachments'), id)
+  assert.equal(sessions.get('b').sending, false)
+})

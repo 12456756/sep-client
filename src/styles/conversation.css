@@ -165,3 +165,29 @@
 .ent-talk-media-asset button { width: 100%; min-height: 120px; border: 0; background: #f5f5f5; color: var(--ent-ink-2); cursor: pointer; }
 .ent-talk-media-asset figcaption { padding: 4px 6px; color: var(--ent-ink-3); font-size: 10px; }
 .ent-talk-media-status { margin: 8px 0 8px 38px; color: var(--ent-ink-3); font-size: 11px; }
+.ent-conversation-queue { margin-bottom: 8px; padding: 8px 12px; border: 1px solid var(--ent-line); border-radius: 8px; font-size: 12px; }
+.ent-conversation-queue summary { cursor: pointer; color: var(--ent-ink-2); }
+.ent-conversation-queue ol { max-height: 160px; overflow-y: auto; padding-left: 20px; }
+.ent-conversation-queue :is(li, p) { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ent-conversation-queue p { max-height: 100px; overflow-y: auto; }
+.ent-conversation-queue small { display: block; color: var(--ent-ink-3); }
+.ent-conversation-process { margin: 0; color: var(--ent-ink-2); font-size: 12px; }
+.ent-conversation-reply { width: 100%; }
+.ent-conversation-reply-status { display: flex; align-items: center; gap: 7px; min-height: 28px; color: var(--ent-ink-3); font-size: 12px; }
+.ent-conversation-process > summary { display: flex; align-items: center; gap: 7px; min-height: 36px; padding: 6px 0; cursor: pointer; list-style: none; }
+.ent-conversation-process > summary::-webkit-details-marker { display: none; }
+.ent-conversation-process > summary > svg { flex-shrink: 0; }
+.ent-conversation-process > summary > small { min-width: 0; margin-left: auto; overflow-wrap: anywhere; text-align: right; color: var(--ent-ink-3); font-size: 11px; }
+.ent-conversation-process[open] > summary .ent-conversation-process-chevron { transform: rotate(90deg); }
+.ent-conversation-process-body { max-height: min(400px, 45dvh); padding: 4px 0 12px; overflow-y: auto; overscroll-behavior-y: auto; scrollbar-width: thin; overflow-wrap: anywhere; }
+.ent-conversation-thinking { padding: 5px 0 5px 10px; border-left: 2px solid var(--ent-line-strong); }
+.ent-conversation-thinking > summary { display: flex; align-items: center; gap: 6px; min-height: 24px; cursor: pointer; }
+.ent-conversation-thinking > p { margin: 6px 0; padding: 0; border-radius: 0; background: none; font-size: 12px; line-height: 1.8; white-space: pre-wrap; }
+.ent-conversation-operation { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; line-height: 1.6; }
+.ent-conversation-operation > svg { flex-shrink: 0; margin-top: 3px; }
+.ent-conversation-operation > span { flex: 1; min-width: 0; }
+.ent-conversation-operation code { display: block; color: var(--ent-ink-3); font-size: 11px; overflow-wrap: anywhere; }
+.ent-conversation-operation > small { flex-shrink: 0; font-size: 11px; color: var(--ent-ink-3); }
+.ent-conversation-operation.failed { color: var(--ent-danger); }
+.ent-conversation-process-error { display: flex; align-items: center; gap: 8px; color: var(--ent-danger); }
+.ent-say .ent-conversation-process-empty { margin: 6px 0; padding: 0; background: none; color: var(--ent-ink-3); font-size: 12px; }

@@ -84,7 +84,6 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
   const [teamStageHeight, setTeamStageHeight] = useState(0);
   const teamStageRef = useRef<HTMLDivElement>(null);
   const flowRef = useRef<HTMLDivElement>(null);
-  const userScrolledRef = useRef(false);
   const reduced = usePrefersReducedMotion();
   const beat = reduced ? 0.3 : 1;
   const ready = !planning && draft.nodes.length > 0;
@@ -151,45 +150,12 @@ export function AutoArrangeAnimation({ draft, employees, planning, planningEvent
   }, [phase, nodeCount, beat, restored]);
 
   useEffect(() => {
-    if (phase !== 'flowing') return;
-    const scroller = flowRef.current?.closest<HTMLElement>('.ent-arr-view');
-    if (!scroller) return;
-    userScrolledRef.current = false;
-    const stopFollowing = () => { userScrolledRef.current = true; };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) stopFollowing();
-    };
-    scroller.addEventListener('wheel', stopFollowing, { passive: true });
-    scroller.addEventListener('touchstart', stopFollowing, { passive: true });
-    scroller.addEventListener('pointerdown', stopFollowing, { passive: true });
-    window.addEventListener('keydown', onKeyDown);
-    return () => {
-      scroller.removeEventListener('wheel', stopFollowing);
-      scroller.removeEventListener('touchstart', stopFollowing);
-      scroller.removeEventListener('pointerdown', stopFollowing);
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [phase]);
-
-  useEffect(() => {
-    if (stopped || (phase !== 'flowing' && phase !== 'done') || userScrolledRef.current) return;
+    if (stopped || phase !== 'flowing') return;
     const flow = flowRef.current;
     const scroller = flow?.closest<HTMLElement>('.ent-arr-view');
     if (!flow || !scroller) return;
-    // Scroll the workbench, never the document or a separate node-list viewport.
-    const frame = window.requestAnimationFrame(() => {
-      if (userScrolledRef.current) return;
-      if (phase === 'done') {
-        scroller.scrollTo({ top: 0, behavior: 'instant' });
-        return;
-      }
-      const revealed = flow.children.item(rows - 1);
-      if (!revealed) return;
-      const overflow = revealed.getBoundingClientRect().bottom - scroller.getBoundingClientRect().bottom + 16;
-      if (overflow > 0) scroller.scrollTo({ top: scroller.scrollTop + overflow, behavior: 'instant' });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [phase, rows, stopped]);
+    scroller.scrollTo({ top: 0, behavior: 'instant' });
+  }, [phase, stopped]);
 
   const at = phase === 'analyzing' ? 0 : phase === 'planning' ? 1 : phase === 'matching' ? 2 : 3;
   if (draft.status === 'awaiting-employee') {

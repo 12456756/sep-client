@@ -57,10 +57,13 @@ export class DocumentPreviewStore {
 }
 
 async function resolveExistingFile(workspace: string, filePath: string): Promise<string> {
-  const root = await realpath(workspace)
-  const requested = resolve(root, filePath)
-  const lexical = relative(root, requested)
-  if (!lexical || lexical === '..' || lexical.startsWith(`..${sep}`) || isAbsolute(lexical)) throw new Error('UNSAFE_PATH')
+  const workspacePath = resolve(workspace)
+  const root = await realpath(workspacePath)
+  const lexical = [workspacePath, root]
+    .map(base => relative(base, resolve(base, filePath)))
+    .find(path => path && path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path))
+  if (!lexical) throw new Error('UNSAFE_PATH')
+  const requested = resolve(root, lexical)
   const segments = lexical.split(sep)
   let current = root
   for (const [index, segment] of segments.entries()) {

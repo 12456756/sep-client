@@ -5,16 +5,19 @@
  * （渲染进程两个都在用：useWorkspaceDemo 用后者、useEnterpriseWorkspace 用前者）。
  */
 import { z } from 'zod'
+import { randomUUID } from 'node:crypto'
 import { INVOKE_CHANNELS } from '../channels'
 import { route } from '../router'
 import { CREATE_TASK_INVALID, createTaskInput } from './task'
 import { attachmentRefSchema } from '../../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../../src/shared/knowledge-selection'
+import { conversationQueueInputSchema } from '../../../src/shared/conversation-queue'
 
 /** 三种会话恢复模式，与服务层的 SessionRecoveryMode 同集合。 */
 const recoveryMode = z.enum(['strict', 'confirm_rebuild', 'auto_rebuild_from_task_history'])
 
 const continueInput = z.object({
+  messageId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   taskId: z.string().min(1),
   prompt: z.string().trim().min(1),
   recoveryMode: recoveryMode.optional(),
@@ -37,6 +40,7 @@ export const conversationRoutes = [
 
   route(INVOKE_CHANNELS.TASK_CONTINUE, continueInput, async (ctx, input) => {
     await ctx.conversations.continue({
+      messageId: input.messageId ?? randomUUID(),
       taskId: input.taskId,
       prompt: input.prompt,
       attachmentSessionId: input.attachmentSessionId,
@@ -49,6 +53,10 @@ export const conversationRoutes = [
     })
     return { success: true }
   }, { invalidMessage: '需要有效的任务与消息内容。' }),
+
+  route(INVOKE_CHANNELS.CONVERSATION_QUEUE, conversationQueueInputSchema, async (ctx, input) => ({
+    success: true, queue: await ctx.conversations.queue(input),
+  })),
 
   route(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, switchEmployeeInput, async (ctx, input) => {
     await ctx.conversations.switchEmployee(input.taskId, input.subscriptionId)

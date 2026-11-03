@@ -42,6 +42,9 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import { EmployeeAuthorizer } from '../service/employee-authorizer'
 import { EmployeeDirectory } from '../service/employee-directory'
 import { ConversationService } from '../service/conversation-service'
+import { ConversationQueueService } from '../service/conversation-queue-service'
+import { ConversationQueueStore } from '../data/conversation-queue-store'
+import { runtimeFailureEvent } from '../errors/runtime-feedback'
 import { TaskService } from '../service/task-service'
 import { TaskCreationGate } from '../service/task-creation-gate'
 import { ArrangementService } from '../service/arrangement-service'
@@ -78,6 +81,14 @@ import type { DocumentPreviewRuntime } from '../runtime/document-preview-runtime
 import { AttachmentStore } from '../data/attachment-store'
 import { AttachmentService } from '../service/attachment-service'
 import type { AttachmentExtractionRuntime } from '../runtime/attachment-extraction-runtime'
+import { randomUUID } from 'node:crypto'
+import { ScheduledTaskStore } from '../data/scheduled-task-store'
+import { ScheduledTaskService } from '../service/scheduled-task-service'
+import { ScheduledCreationService } from '../service/scheduled-creation-service'
+import { ScheduledTaskRunner } from '../service/scheduled-task-runner'
+import { ScheduledWorkSource } from '../service/scheduled-work-source'
+import { validateArrangementNodes, type ArrangementDraft, type RequestedTaskPermissionPolicy } from '../domain/arrangement-plan'
+import type { ArrangementWorkPlan } from '../../src/shared/scheduled-tasks'
 
 const log = logger.child('build-backend')
 
@@ -111,6 +122,7 @@ class BackendRuntime {
   readonly employees: EmployeeAuthorizer
   readonly tasks: TaskService
   readonly conversations: ConversationService
+  readonly conversationQueue: ConversationQueueService
   readonly arrangements: ArrangementService
   readonly attachments: AttachmentService
   private readonly attachmentStore: AttachmentStore
@@ -121,6 +133,8 @@ class BackendRuntime {
   readonly skills: SkillLibraryService
   readonly clientMonitor: ClientMonitorService
   readonly notifications: NotificationService
+  readonly scheduledTasks: ScheduledTaskService
+  readonly scheduledCreations: ScheduledCreationService
   readonly media: MediaService
   readonly speech: SpeechService
   private readonly speechRuntime: LazyAsync<SpeechRuntimePort>
@@ -331,8 +345,36 @@ class BackendRuntime {
       execution: () => this.getTaskRuntime(),
       attachments: this.attachments,
     }
-    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media })
-    this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans })
+    this.conversationQueue = new ConversationQueueService({ scope: this, store: new ConversationQueueStore(userDataDir),
+      getTask: taskId => this.taskManager.getTask(taskId),
+      isBusy: taskId => this.runtime.peek()?.hasConversationRun(taskId) ?? false,
+      startInitial: async (taskId, signal) => {
+        const runtime = await this.getTaskRuntime()
+        signal.throwIfAborted()
+        await runtime.executeTask(taskId, { conversation: true, signal })
+      },
+      onInitialFailure: async (taskId, error, owner, signal) => {
+        signal.throwIfAborted()
+        const changed = await this.taskManager.recordStartFailure(taskId, describeError(error))
+        if (signal.aborted || !changed) return
+        const task = await this.taskManager.getTask(taskId)
+        if (!signal.aborted && task) this.renderer.taskEvent(runtimeFailureEvent({ taskId, runId: taskId, subscriptionId: task.subscriptionId ?? taskId, owner }, error))
+      },
+      start: async (taskId, entry, signal) => {
+        const runtime = await this.getTaskRuntime()
+        signal.throwIfAborted()
+        await runtime.continueConversation(taskId, entry.prompt, { runId: entry.runId, signal, mode: entry.mode, confirmed: entry.confirmed,
+          knowledge: entry.knowledge, attachmentRefs: entry.attachmentRefs })
+      },
+      retry: async (taskId, signal) => {
+        const runtime = await this.getTaskRuntime()
+        signal.throwIfAborted()
+        await runtime.retryTask(taskId, { conversation: true, signal })
+      },
+      onFailure: (taskId, entry, error, scope, subscriptionId) => this.renderer.taskEvent(runtimeFailureEvent({ taskId, runId: entry.runId, subscriptionId, owner: scope }, error)),
+    })
+    this.tasks = new TaskService({ ...shared, taskRunStore: this.taskRunStore, workPlans: this.workPlans, creationGate, media: this.media, conversationQueue: this.conversationQueue })
+    this.conversations = new ConversationService({ ...shared, tasks: this.tasks, workPlans: this.workPlans, queue: this.conversationQueue })
     const previewFiles = new DocumentPreviewStore(userDataDir, this.workPlans, this.arrangementCheckpoints)
     this.resultFiles = new ResultFileService({
       scope: this,
@@ -380,6 +422,7 @@ class BackendRuntime {
       videoStore,
       creationGate,
       confirmations: arrangementConfirmations,
+      conversationQueue: this.conversationQueue,
       execution: () => this.getTaskRuntime(),
       planner: {
         plan: input => this.arrangementPlanner.get().then(planner => planner.plan(input)),
@@ -471,6 +514,82 @@ class BackendRuntime {
         },
       },
     })
+
+    const scheduledStorage = new ScheduledTaskStore(userDataDir)
+    const scheduledWorkSource = new ScheduledWorkSource({ workPlans: this.workPlans, storage: scheduledStorage,
+      tasks: this.taskManager, metadata: this.taskMetadataStore, attachments: this.attachments })
+    const validateScheduledEmployee = (subscriptionId: string, modelId: string) => this.employees.validateScheduled(subscriptionId, modelId)
+    const employeePlanner = async (input: import('../../src/shared/scheduled-tasks').ScheduleInput, employee: unknown, signal: AbortSignal) => {
+      const { PiEmployeePlanner } = await import('../runtime/pi-employee-planner')
+      return new PiEmployeePlanner({ gatewayUrl: config.SEP_GATEWAY_URL, workspaceRoot: join(userDataDir, 'scheduled-planning'),
+        getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).plan(input, employee, signal)
+    }
+    const arrangeScheduledWork = async (input: import('../../src/shared/scheduled-tasks').ScheduleInput, signal: AbortSignal): Promise<ArrangementWorkPlan | { status: 'blocked'; reasons: string[] }> => {
+      const scope = this.currentScope()
+      if (!scope) throw new AppError('AUTH_REQUIRED')
+      const authorized = await this.employees.refresh()
+      if (!authorized.length) return { status: 'blocked', reasons: ['当前没有已授权的员工可用于自动编排。'] }
+      const accessToken = await this.authSession.getValidAccessToken()
+      const catalog = await Promise.all(authorized.map(async employee => {
+        const response = await getEmployeeSkills(employee.employeeId, accessToken)
+        return {
+          subscriptionId: employee.subscriptionId, employeeId: employee.employeeId, name: employee.name,
+          description: employee.description ?? '', position: employee.position ?? '', functionalCategory: employee.functionalCategory ?? '',
+          capabilities: response.skills.map(skill => ({ id: skill.capability.id, name: skill.capability.name, description: skill.capability.description, type: skill.capability.type })),
+          allowedModels: [...employee.allowedModels], status: employee.status, source: 'authorized' as const, canExecute: true, canApply: false,
+        }
+      }))
+      const now = Date.now()
+      const draft: ArrangementDraft = {
+        id: randomUUID(), schemaVersion: 2, revision: 1, owner: scope, mode: 'auto', status: 'editing',
+        title: input.name, goal: input.goal, confirmedInputs: [], sharedSkillIds: [], conversation: null, nodes: [],
+        workspace: { mode: 'shared', path: input.workDir },
+        permissions: { preset: input.permissions.preset, approvalMode: input.permissions.approvalMode } satisfies RequestedTaskPermissionPolicy,
+        createdAt: now, updatedAt: now, lastPlanning: null, confirmedWorkPlanId: null,
+      }
+      const planner = await this.arrangementPlanner.get()
+      const generated = await planner.plan({ planningId: randomUUID(), modelId: input.modelId, plannerModelId: input.modelId,
+        draft, employees: catalog, plannerEmployees: catalog, signal, onProgress: () => undefined })
+      if (generated.unresolvedSteps?.length || !generated.nodes.length) return {
+        status: 'blocked', reasons: generated.unresolvedSteps?.map(step => step.reason) ?? ['规划没有生成可执行工作步骤。'],
+      }
+      validateArrangementNodes(generated.nodes)
+      const bySubscription = new Map(catalog.map(employee => [employee.subscriptionId, employee]))
+      for (const node of generated.nodes) {
+        const employee = bySubscription.get(node.subscriptionId)
+        if (!employee?.canExecute || !employee.allowedModels.includes(node.modelId)) throw new AppError('PERMISSION_DENIED')
+      }
+      return { status: 'ready', kind: 'arrangement', title: generated.title,
+        nodes: generated.nodes.map(node => ({ ...node, deliverables: node.deliverables ?? [], requiresUserConfirmation: node.requiresUserConfirmation ?? false })),
+        intentAnalysis: generated.intentAnalysis ?? null }
+    }
+    this.scheduledTasks = new ScheduledTaskService({
+      repository: scheduledStorage, scope: this, employee: validateScheduledEmployee, planner: employeePlanner, source: scheduledWorkSource,
+      arrangementPlanner: arrangeScheduledWork,
+      timeInterpreter: async (input, signal) => {
+        const { PiEmployeePlanner } = await import('../runtime/pi-employee-planner')
+        return new PiEmployeePlanner({ gatewayUrl: config.SEP_GATEWAY_URL, workspaceRoot: join(userDataDir, 'scheduled-planning'),
+          getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).interpretTime(input, signal)
+      },
+      runner: new ScheduledTaskRunner({ scope: this, tasks: this.taskManager, workPlans: this.workPlans, metadata: this.taskMetadataStore, source: scheduledWorkSource,
+        checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore, storage: scheduledStorage, authorize: validateScheduledEmployee,
+        execution: () => this.getTaskRuntime(),
+        resourcesConflict: async (left, right) => left.toLowerCase() === right.toLowerCase() }),
+    })
+    this.scheduledCreations = new ScheduledCreationService({
+      repository: scheduledStorage, scope: this, schedules: this.scheduledTasks,
+      catalog: async () => (await this.employees.refresh()).filter(employee => employee.status === 'ACTIVE').map(employee => ({
+        subscriptionId: employee.subscriptionId, name: employee.name, position: employee.position ?? '',
+        functionalCategory: employee.functionalCategory ?? '', description: employee.description ?? '', allowedModels: [...employee.allowedModels],
+      })),
+      authorize: validateScheduledEmployee,
+      validateWorkspace: async workDir => { await scheduledStorage.validateWorkspace(workDir) },
+      interpret: async (input, signal) => {
+        const { PiEmployeePlanner } = await import('../runtime/pi-employee-planner')
+        return new PiEmployeePlanner({ gatewayUrl: config.SEP_GATEWAY_URL, workspaceRoot: join(userDataDir, 'scheduled-planning'),
+          getRefreshToken: () => this.authSession.getRefreshToken(), onAuthenticationRequired: () => this.invalidateAuthentication() }).interpretCreation(input, signal)
+      },
+    })
   }
 
   /**
@@ -497,6 +616,9 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.conversationQueue.stop()
+    this.scheduledCreations.stop()
+    this.scheduledTasks.stop()
     this.arrangements.cancelAllPlanning()
     this.sessionRecovery.stop()
     await this.clientMonitor.stop()
@@ -520,7 +642,17 @@ class BackendRuntime {
   }
 
   resumeClientMonitor(): Promise<void> {
+    this.conversationQueue.start()
     return this.sessionRecovery.resume()
+  }
+
+  async resumeScheduledTasks(): Promise<void> {
+    await this.scheduledCreations.recover()
+    await this.scheduledTasks.resume()
+  }
+
+  wakeScheduledTasks(): void {
+    this.scheduledTasks.wake()
   }
 
   /**
@@ -618,6 +750,7 @@ class BackendRuntime {
     }
     const { TaskRuntime } = await import('../runtime/task-runtime')
     const runtime = new TaskRuntime({
+      onConversationSettled: (taskId, runId, owner) => this.conversationQueue.settled(taskId, runId, owner),
       createModelTrace: this.createModelTrace,
       taskManager: this.taskManager,
       getRefreshToken: () => this.authSession.getRefreshToken(),
@@ -626,6 +759,7 @@ class BackendRuntime {
       onApprovalRequest: request => this.renderer.approvalRequest(request),
       resolveEmployee: subscriptionId => this.employees.resolve(subscriptionId),
       authorizeEmployee: (subscriptionId, modelId) => this.employees.authorize(subscriptionId, modelId),
+      authorizeScheduledEmployee: (subscriptionId, modelId) => this.employees.authorizeScheduled(subscriptionId, modelId),
       authorizeModel: (modelId, preferredSubscriptionId) => this.employees.authorizeModel(modelId, preferredSubscriptionId),
       findEmployeeReplacement: input => this.arrangements.findEmployeeReplacement(input),
       userDataDir: this.userDataDir,

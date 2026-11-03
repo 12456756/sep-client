@@ -36,8 +36,8 @@ describe('arrangement process interface', () => {
     assert.match(html, /Employee a/)
     assert.match(html, /Employee b/)
     assert.doesNotMatch(html, /REPAIR PROMPT|INTERNAL PROMPT|textarea|发送|补充说明/)
-    assert.equal((html.match(/aria-expanded="true"/g) ?? []).length, 2)
-    assert.equal((html.match(/aria-expanded="false"/g) ?? []).length, 1)
+    assert.equal((html.match(/aria-expanded="true"/g) ?? []).length, 0)
+    assert.equal((html.match(/aria-expanded="false"/g) ?? []).length, 3)
     assert.match(html, /我已经完成工作。/)
   })
 

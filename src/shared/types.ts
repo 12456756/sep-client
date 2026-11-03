@@ -116,6 +116,8 @@ export interface ClientTask {
   ownerEnterpriseId: string
   subscriptionId?: string | null
   activeRunId: string | null
+  scheduledOrigin?: import('./scheduled-tasks').ScheduledOrigin
+  scheduledAdmission?: { runId: string; admittedAt: number }
   stateRevision?: number
   queuedAt?: number | null
   currentRunStartedAt?: number | null

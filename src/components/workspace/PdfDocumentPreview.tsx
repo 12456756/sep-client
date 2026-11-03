@@ -31,7 +31,7 @@ export default function PdfDocumentPreview({ bytes }: { bytes: Uint8Array }) {
     setDocument(null); setPage(1); setLoading(true)
     const task = getDocument({ data: new Uint8Array(bytes), isEvalSupported: false, enableXfa: false, useSystemFonts: true,
       useWorkerFetch: false, CMapReaderFactory: CMapReader, StandardFontDataFactory: FontReader })
-    void task.promise.then(pdf => { if (active && notice.isCurrent()) setDocument(pdf) }).catch(() => { if (active && notice.isCurrent()) { notice.show('PDF 预览失败，请联系平台管理员'); setLoading(false) } })
+    void task.promise.then(pdf => { if (active && notice.isCurrent()) setDocument(pdf) }).catch(() => { if (active && notice.isCurrent()) { notice.show('PDF 文件无法解析或预览资源加载失败，请重新打开预览或使用本地 PDF 阅读器打开原文件。'); setLoading(false) } })
     return () => { active = false; void task.destroy() }
   }, [bytes, capture])
   useEffect(() => {
@@ -54,7 +54,7 @@ export default function PdfDocumentPreview({ bytes }: { bytes: Uint8Array }) {
       render = task
       await task.promise
       if (active && notice.isCurrent()) setLoading(false)
-    }).catch(() => { if (active && notice.isCurrent()) { notice.show('当前页面显示失败，请联系平台管理员', 'error', `pdf-page:${page}`, true); setLoading(false) } })
+    }).catch(() => { if (active && notice.isCurrent()) { notice.show('当前 PDF 页面无法绘制，请重新打开预览或使用本地 PDF 阅读器查看该页。', 'error', `pdf-page:${page}`, true); setLoading(false) } })
     return () => { active = false; render?.cancel() }
   }, [document, page, zoom, capture])
   return <>

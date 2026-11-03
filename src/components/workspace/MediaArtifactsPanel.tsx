@@ -181,7 +181,7 @@ export function MediaCreationForm({ profiles, protocolVersion, defaultProfileId,
   return <form className="media-creation" onSubmit={event => {
     event.preventDefault()
     if (busy) return
-    if (!profile || !parameters || problem) { capture().show(problem || '图片生成配置不可用，请联系平台管理员', 'warning'); return }
+    if (!profile || !parameters || problem) { capture().show(problem || '当前没有可用的图片模型或尺寸配置，请更换模型、比例后重试；仍失败请联系平台管理员。', 'warning'); return }
     if (negotiated && !imageRequestedSpecSchema.safeParse(parameters).success) { capture().show('图片规格有冲突或格式错误，请检查填写内容。', 'warning'); return }
     onGenerate({ profileId: profile.profileId, operation, localAssetIds: selectedIds, creativeBrief: brief.trim(), parameters,
       ...(negotiated ? { protocolVersion: 3 as const, requestedSpec: parameters, specRevision: 1,

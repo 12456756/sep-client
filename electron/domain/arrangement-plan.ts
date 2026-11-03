@@ -287,6 +287,7 @@ export interface ArrangementDraft {
 }
 
 export interface WorkPlan {
+  scheduledOrigin?: import('../../src/shared/scheduled-tasks').ScheduledOrigin
   knowledge?: KnowledgeSelection
   id: string
   schemaVersion: 1 | 2
@@ -382,10 +383,13 @@ export function validateArrangementDraft(draft: ArrangementDraft): void {
 }
 
 export function validateArrangementNodes(nodes: readonly ArrangementNode[]): void {
+  const invalid = (path: Array<string | number>, expectation: string): AppError => new AppError('INVALID_ARGUMENT', {
+    details: { correctionIssues: [{ path: path.join('.'), code: 'custom', expectation }] },
+  })
   const ids = new Set<string>()
   const byId = new Map<string, ArrangementNode>()
-  for (const node of nodes) {
-    if (!/^[A-Za-z0-9_-]{1,128}$/.test(node.id) || ids.has(node.id)) throw new AppError('INVALID_ARGUMENT')
+  for (const [index, node] of nodes.entries()) {
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(node.id) || ids.has(node.id)) throw invalid(['nodes', index, 'id'], '节点 ID 必须为 1 至 128 位英文字母、数字、下划线或连字符，且不能重复。')
     if (!node.subscriptionId || !node.modelId || !node.title.trim() || !node.instruction.trim()) {
       throw new AppError('INVALID_ARGUMENT')
     }
@@ -393,31 +397,32 @@ export function validateArrangementNodes(nodes: readonly ArrangementNode[]): voi
     ids.add(node.id)
     byId.set(node.id, node)
   }
-  for (const node of nodes) {
+  for (const [index, node] of nodes.entries()) {
     const dependencies = new Set<string>()
-    for (const dependency of node.dependsOn) {
-      if (dependency === node.id || !byId.has(dependency) || dependencies.has(dependency)) throw new AppError('INVALID_ARGUMENT')
+    for (const [dependencyIndex, dependency] of node.dependsOn.entries()) {
+      if (dependency === node.id || !byId.has(dependency) || dependencies.has(dependency)) throw invalid(['nodes', index, 'dependsOn', dependencyIndex], '依赖必须引用已存在的其他有效节点，不能自引用或重复。')
       dependencies.add(dependency)
     }
-    for (const requirement of node.mediaRequirements ?? []) {
+    for (const [requirementIndex, requirement] of (node.mediaRequirements ?? []).entries()) {
       const source = requirement.inputFrom
       if (!source) continue
       if (!source.nodeId) continue
-      if (!dependencies.has(source.nodeId)) throw new AppError('INVALID_ARGUMENT')
+      const field = ['nodes', index, 'mediaRequirements', requirementIndex, 'inputFrom']
+      if (!dependencies.has(source.nodeId)) throw invalid([...field, 'nodeId'], 'inputFrom.nodeId 必须同时出现在当前节点 dependsOn 中。')
       const sourceNode = byId.get(source.nodeId)
-      if (!sourceNode) throw new AppError('INVALID_ARGUMENT')
+      if (!sourceNode) throw invalid([...field, 'nodeId'], '媒体来源节点不存在，请引用真实前置节点。')
       if (source.deliverableId) {
         const deliverable = sourceNode.deliverables?.find(item => item.id === source.deliverableId)
-        if (!deliverable) throw new AppError('INVALID_ARGUMENT')
+        if (!deliverable) throw invalid([...field, 'deliverableId'], 'deliverableId 必须属于 inputFrom.nodeId 指定的前置节点。')
         const expectedInputKind = requirement.operation === 'image-to-video' ? 'image' : requirement.kind
-        if (deliverable.artifact && deliverable.artifact.kind !== expectedInputKind) throw new AppError('INVALID_ARGUMENT')
+        if (deliverable.artifact && deliverable.artifact.kind !== expectedInputKind) throw invalid([...field, 'deliverableId'], '前置交付物类型与媒体操作所需的输入类型不一致，图生视频必须引用图片。')
       }
     }
   }
   const visiting = new Set<string>()
   const visited = new Set<string>()
   const visit = (id: string): void => {
-    if (visiting.has(id)) throw new AppError('INVALID_ARGUMENT')
+    if (visiting.has(id)) throw invalid(['nodes', nodes.findIndex(node => node.id === id), 'dependsOn'], '节点依赖形成循环，请移除造成循环的依赖，保留实际必要的执行顺序。')
     if (visited.has(id)) return
     visiting.add(id)
     for (const dependency of byId.get(id)?.dependsOn ?? []) visit(dependency)

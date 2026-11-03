@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { advanceModelRequestProgress, type ModelRequestKind, type ModelRequestProgress } from '../../domain/model-request-progress'
 import { ModelRequestTracker, buildModelRequestAwareness } from './model-request-tracker'
+import { AppError } from '../../errors/app-error'
 
 function fixture() {
   const kinds: ModelRequestKind[] = []
@@ -113,8 +114,25 @@ describe('model request tracker', () => {
 
   it('rejects invalid host snapshots instead of sending an incorrect round', async () => {
     const tracker = new ModelRequestTracker(async () => ({ executionRounds: 1, requestAttempts: 0, executionRetries: 0, compactionAttempts: 0 }))
-    await assert.rejects(tracker.prepare(), /计数保存失败/)
+    await assert.rejects(tracker.prepare(), { code: 'INVALID_STATE', message: '节点模型请求计数状态无效，已停止发送模型请求。' })
     assert.ok(tracker.failure)
+  })
+
+  it('distinguishes invalid host state from storage failures and latches both', async () => {
+    for (const code of ['INVALID_STATE', 'PERSISTENCE_ERROR'] as const) {
+      let calls = 0
+      const cause = new AppError(code)
+      const tracker = new ModelRequestTracker(async () => { calls++; throw cause })
+      await assert.rejects(tracker.prepare(), error => {
+        assert.ok(error instanceof AppError)
+        assert.equal(error.code, code)
+        assert.equal(error.cause, cause)
+        return true
+      })
+      tracker.startPrompt()
+      await assert.rejects(tracker.prepare(), error => error === tracker.failure)
+      assert.equal(calls, 1)
+    }
   })
 
   for (const priorRounds of [0, 2]) {

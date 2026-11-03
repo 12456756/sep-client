@@ -82,7 +82,7 @@ function mount(overrides: Partial<Props> = {}, writeText: (text: string) => Prom
   }, loaded.exports, loaded)
   const Component = (loaded.exports as { WorkListActions: typeof WorkListActions }).WorkListActions
   const props: Props = { works: [work], request: { workId: 'a', x: 1000, y: 750, trigger }, busy: false,
-    onDismiss: () => { props.request = null }, onRename: async () => true, onPin: async () => true, onRetry: async () => {}, onDelete: async () => true, ...overrides }
+    onDismiss: () => { props.request = null }, onRename: async () => true, onPin: async () => true, onRetry: async () => {}, onDelete: async () => true, onSchedule: () => {}, ...overrides }
   let elements: Element[] = []
   const find = (predicate: (element: Element) => boolean): Element => { const element = elements.find(predicate); assert.ok(element); return element }
   function render() {
@@ -154,7 +154,7 @@ test('pin and unpin target the menu row without requiring selection', async () =
   assert.deepEqual(calls, [['a', true], ['a', false]])
 })
 
-test('menu replaces copy with retry and a disabled scheduling placeholder', async () => {
+test('menu enables scheduling for confirmed arrangements and targets the original work', async () => {
   const calls: string[] = []
   const ui = mount({ onRetry: async id => { calls.push(id) } })
   try {
@@ -163,12 +163,17 @@ test('menu replaces copy with retry and a disabled scheduling placeholder', asyn
       .flatMap(child => React.isValidElement<{ children: React.ReactNode }>(child) ? React.Children.toArray(child.props.children) : [])
       .filter((child): child is React.ReactElement<{ children: React.ReactNode }> => React.isValidElement(child) && child.props.role === 'menuitem')
       .map(child => React.Children.toArray(child.props.children).filter(part => typeof part === 'string').join(''))
-    assert.deepEqual(labels, ['置顶', '重命名', '重新执行', '加入定时任务（开发中）', '删除'])
-    assert.equal(ui.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('加入定时任务（开发中）')).props.disabled, true)
+    assert.deepEqual(labels, ['置顶', '重命名', '重新执行', '加入定时任务', '删除'])
+    assert.equal(ui.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('加入定时任务')).props.disabled, false)
     ui.click('重新执行'); await tick()
     assert.deepEqual(calls, ['a'])
     assert.equal(ui.props.request, null)
   } finally { ui.cleanup() }
+  const scheduled: WorkItem[] = []
+  const enabled = mount({ onSchedule: work => scheduled.push(work) })
+  try { enabled.click('加入定时任务'); assert.equal(scheduled[0]?.id, 'a'); assert.equal(enabled.props.request, null) } finally { enabled.cleanup() }
+  const conversation = mount({ works: [{ ...work, workType: { state: 'resolved', kind: 'conversation' } }] })
+  try { assert.equal(conversation.find(e => e.type === 'button' && React.Children.toArray(e.props.children as React.ReactNode).includes('加入定时任务')).props.disabled, true) } finally { conversation.cleanup() }
 })
 
 test('retry is disabled while the workspace is busy or the work is active', () => {

@@ -22,7 +22,7 @@ it('distinguishes transport, HTTP and unknown failures without guessing authenti
     assert.equal(result.code, code)
     assert.doesNotMatch(result.message, /private|过期|停用/)
   }
-  assert.equal(runtimeFeedback(new Error('private stack /secret')).message, '工作运行失败，请联系平台管理员')
+  assert.equal(runtimeFeedback(new Error('private stack /secret')).message, '工作运行失败，客户端没有取得更具体的原因，请重试并保留发生时间，便于排查。')
 })
 
 it('recognizes a flattened response termination without guessing unrelated failures', () => {
@@ -66,6 +66,20 @@ it('keeps safe persisted messages stable and removes intermediate SDK diagnostic
     const safe = sanitizeRuntimeErrorEvent(event)
     assert.doesNotMatch(JSON.stringify(safe), /private/)
     assert.equal((safe.data as { attempt: number }).attempt, 1)
+  }
+})
+
+it('recognizes previous public failure messages when reading existing work records', () => {
+  for (const [message, code] of [
+    ['模型请求被拒绝，请联系平台管理员', 'REQUEST_DENIED'],
+    ['工作运行结果保存失败，请联系平台管理员', 'STORAGE_FAILED'],
+    ['工作历史会话无法恢复，请联系平台管理员', 'SESSION_UNRECOVERABLE'],
+    ['图片或视频已生成，但保存到交付目录失败，请联系平台管理员', 'MEDIA_DELIVERY_FAILED'],
+  ] as const) {
+    const result = runtimeFeedback(new Error(message))
+    assert.equal(result.code, code)
+    assert.notEqual(result.message, message)
+    assert.equal(runtimeFeedback(new Error(result.message)).code, code)
   }
 })
 

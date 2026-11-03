@@ -256,6 +256,7 @@ export function buildWorkItem({ task, employees, messages, streamingText, stream
     }));
   return {
     id: task.id,
+    ...(task.scheduledOrigin ? { scheduledOrigin: task.scheduledOrigin } : {}),
     executionGroup: task.executionGroup,
     knowledge: plan?.knowledge,
     title: task.title,

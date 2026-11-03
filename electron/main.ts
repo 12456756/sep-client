@@ -8,7 +8,7 @@
  * bootstrap/renderer-bridge.ts，IPC 注册归 controller/router.ts。
  */
 import './common/undici-polyfill'; // Pi SDK 使用的网络兼容层，必须是第一个副作用 import。
-import { app, BrowserWindow, dialog, safeStorage } from 'electron';
+import { app, BrowserWindow, dialog, powerMonitor, safeStorage } from 'electron';
 import { createBackend } from './bootstrap/build-backend';
 import { createAppUpdater } from './bootstrap/create-app-updater';
 import { createMainWindow } from './bootstrap/main-window';
@@ -96,7 +96,14 @@ if (deepLinks.primary) app.whenReady().then(async () => {
     const uninstallResultFiles = installResultFileProtocol(backend.resultFiles);
     app.once('will-quit', uninstallResultFiles);
     registerRoutes(createRequestContext(backend, () => bridge.currentWindow(), updater), { routes, listeners });
-    app.once('before-quit', () => updater.dispose());
+    const onSystemResume = () => {
+      backend.wakeScheduledTasks();
+    };
+    powerMonitor.on('resume', onSystemResume);
+    app.once('before-quit', () => {
+      powerMonitor.removeListener('resume', onSystemResume);
+      updater.dispose();
+    });
     installShutdownHandler({
       stop: () => backend.stopForApp(),
       isUpdateInstallPrepared: () => updater.isInstallPrepared(),

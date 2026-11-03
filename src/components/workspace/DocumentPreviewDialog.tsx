@@ -54,7 +54,7 @@ export default function DocumentPreviewDialog(props: DocumentPreviewDialogProps)
   const copyText = async () => {
     const notice = capture()
     try { await navigator.clipboard.writeText(part); if (notice.isCurrent()) setCopied(true) }
-    catch { if (notice.isCurrent()) { setCopied(false); notice.show('文档内容复制失败，请联系平台管理员') } }
+    catch { if (notice.isCurrent()) { setCopied(false); notice.show('文档内容复制失败，请重试或手动选择内容复制。') } }
   }
   return <dialog ref={dialog} className="document-preview-dialog" aria-label={`文档预览：${name}`} onCancel={event => { event.preventDefault(); onClose() }} onKeyDown={event => { if (event.key === 'Escape') event.stopPropagation() }} onClick={event => { if (event.target === event.currentTarget) onClose() }}>
     <header className="document-preview-heading"><div><strong title={name}>{name}</strong><small>{fileId !== undefined ? '当前对话成果' : data?.source === 'verified-original' ? '已核对原件' : data?.source === 'recovered-snapshot' ? '历史恢复版本' : '节点验收版本'}</small></div>

@@ -492,9 +492,14 @@ export class SkillImportFiles {
     try {
       const opened = await handle.stat()
       if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) throw new SkillImportFileError('CANDIDATE_CHANGED')
-      for await (const chunk of handle.createReadStream({ highWaterMark: 64 * 1024, signal, autoClose: false })) {
+      // Keep cancellation and handle cleanup in this generator, without a second stream lifecycle.
+      for (;;) {
         abort(signal)
-        yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        const chunk = Buffer.allocUnsafe(64 * 1024)
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, null)
+        abort(signal)
+        if (bytesRead === 0) break
+        yield chunk.subarray(0, bytesRead)
       }
       const finalPath = await realpath(file.absolutePath)
       const after = await handle.stat()

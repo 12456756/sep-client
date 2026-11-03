@@ -227,7 +227,7 @@ export interface EnterpriseWorkspace extends SkillLibraryWorkspace {
   goBack: () => void;
   startConversation: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>;
   arrangeWork: (draft: ArrangeWorkDraft) => Promise<boolean>;
-  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string, knowledge?: KnowledgeSelection) => Promise<boolean>;
+  sendMessage: (workId: string, text: string, attachments?: AttachmentView[], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId?: string) => Promise<boolean>;
   switchEmployee: (workId: string, employeeId: string) => Promise<void>;
   confirmStep: (workId: string) => Promise<void>;
   stopWork: (workId: string, reason: string) => Promise<boolean>;
@@ -312,7 +312,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const runtimeActivities = useRef(new Map<string, WorkActivity[]>());
   const latestRunByTask = useRef(new Map<string, string>());
   const messagesByTask = useRef(new Map<string, ClientTaskMessage[]>());
-  const pendingMessages = useRef(new Map<string, ClientTaskMessage[]>());
   const taskTypeCache = useRef<TaskReadCache | null>(null);
   const refreshModelCatalog = useCallback(async (): Promise<void> => {
     const requestId = modelCatalogRequestRef.current + 1;
@@ -425,15 +424,10 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
   const works = useMemo<WorkItem[]>(() => {
     const items = scopedTasks.map(task => {
       const history = messagesByTask.current.get(task.id);
-      const pending = pendingMessages.current.get(task.id) ?? [];
       return buildWorkItem({
         task,
         employees: myEmployees,
-        messages: pending.length ? [
-          ...(history?.length ? history : [{ id: `${task.id}-goal`, role: 'user' as const,
-            content: task.prompt, createdAt: task.createdAt, runId: '' }]),
-          ...pending,
-        ] : history,
+        messages: history,
         streamingText: streamingText.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')),
         streamingRunId: task.activeRunId ?? latestRunByTask.current.get(task.id),
         activities: runtimeActivities.current.get(runtimeKey(task.id, task.activeRunId ?? latestRunByTask.current.get(task.id) ?? '')) ?? [],
@@ -547,10 +541,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     runtimeActivities.current.clear();
     latestRunByTask.current.clear();
     messagesByTask.current.clear();
-    pendingMessages.current.clear();
 
     const messageVersions = new Map<string, number>();
-    const observedRuns = new Map<string, string | null>();
+    const observedRuns = new Map<string, string>();
     let receivedTaskList = false;
     let initialQueryRevision = 0;
     const pushedTaskIds = new Set<string>();
@@ -586,17 +579,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
           if (!result.success || !result.messages) { readFailure(`messages:${task.id}`, result, 'workMessages'); return; }
           failedReads.delete(`messages:${task.id}`);
           const messages = result.messages;
-          // Early admission snapshots may not contain the new run yet. Only a new
-          // persisted user message can acknowledge one optimistic send (not old identical text).
-          const matchedIds = new Set((messagesByTask.current.get(task.id) ?? []).map(message => message.id));
-          pendingMessages.current.set(task.id, (pendingMessages.current.get(task.id) ?? []).filter(pending => {
-            const match = messages.find(message => message.role === 'user'
-              && !matchedIds.has(message.id) && message.createdAt >= pending.createdAt
-              && message.content === pending.content);
-            if (!match) return true;
-            matchedIds.add(match.id);
-            return false;
-          }));
           messagesByTask.current.set(task.id, messages);
           if (settled && runId) streamingText.current.delete(runtimeKey(task.id, runId));
         } catch {
@@ -608,8 +590,9 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     };
     const refreshMessages = (task: ClientTask) => {
       const previousRun = observedRuns.get(task.id);
-      observedRuns.set(task.id, task.activeRunId);
-      if (previousRun !== task.activeRunId) void loadMessages([task]);
+      const state = `${task.activeRunId ?? ''}:${task.status}`;
+      observedRuns.set(task.id, state);
+      if (previousRun !== state) void loadMessages([task]);
     };
 
     const loadInitialTasks = () => {
@@ -669,7 +652,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const unsubscribePi = api.onPiEvent(event => {
       if (!active || deletedTaskIds.has(event.taskId)) return;
       // The selected arrangement detail owns its high-frequency transcript subscription.
-      if (event.type === 'arrangement_node_progress') return;
+      if (event.type === 'arrangement_node_progress' || event.type === 'thinking_delta') return;
       recordArrangementEvent(event);
       latestRunByTask.current.set(event.taskId, event.runId);
       const key = runtimeKey(event.taskId, event.runId);
@@ -766,7 +749,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     setBusy(true);
     try {
       const modelId = options?.modelId || employee.allowedModels[0];
-      if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请联系平台管理员' : '所选员工不支持当前模型，请重新选择');
+      if (!modelId || !employee.allowedModels.includes(modelId)) throw new UserFeedbackError(employeeId === GENERAL_ASSISTANT_ID ? '通用助手没有可用的模型授权，请更换员工或联系平台管理员配置模型。' : '所选员工不支持当前模型，请重新选择');
       const document = { ...conversationDocument(title, goal, employeeId, modelId, options), ...(options?.attachmentRefs?.length ? { attachmentCandidates: options.attachmentRefs.map(attachment => ({ attachment, mustUse: true })), attachmentSessionId: options.attachmentSessionId } : {}) };
       const created = await api.createArrangementDraft(document);
       if (!notice.isCurrent()) return false;
@@ -779,14 +762,14 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
         draft = updated.draft;
       }
       const input = { draftId: draft.id, expectedRevision: draft.revision };
-      const preflight = await api.preflightArrangementDraft(input);
-      if (!notice.isCurrent()) return false;
-      if (!preflight.success || !preflight.preflight?.canStart) {
-        throw responseError({ error: preflight.error ?? (preflight.preflight?.message ? { message: preflight.preflight.message } : undefined) }, 'preflight');
-      }
       const started = await api.confirmAndStartArrangement({ ...input, idempotencyKey: crypto.randomUUID() });
       if (!notice.isCurrent()) return false;
       if (!started.success || !started.execution) throw responseError(started, 'start');
+      if (started.task) setTasks(current => {
+        const latest = current.find(task => task.id === started.task!.id);
+        // A pushed run/failure can arrive before the creation response.
+        return mergeTaskUpdate(current, latest ? { ...latest, workType: started.task!.workType } : started.task!, deletedTaskIds);
+      });
       setActiveEmployeeByWork(current => ({ ...current, [started.execution!.id]: employeeId }));
       navigate({ name: 'work', workId: started.execution.id });
       return true;
@@ -796,7 +779,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     } finally {
       if (notice.isCurrent()) setBusy(false);
     }
-  }, [myEmployees, navigate, captureFeedback]);
+  }, [myEmployees, navigate, captureFeedback, deletedTaskIds]);
 
   const arrangeWork = useCallback(async (draft: ArrangeWorkDraft): Promise<boolean> => {
     const notice = captureFeedback();
@@ -866,22 +849,18 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     }
   }, [myEmployees, navigate, captureFeedback]);
 
-  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string, knowledge?: KnowledgeSelection): Promise<boolean> => {
+  const sendMessage = useCallback(async (workId: string, text: string, attachments: AttachmentView[] = [], attachmentSessionId?: string, knowledge?: KnowledgeSelection, messageId: string = crypto.randomUUID()): Promise<boolean> => {
     const prompt = text.trim();
     if (!prompt || attachments.length && !attachmentSessionId) return false;
-    const message: ClientTaskMessage = {
-      id: `pending-${crypto.randomUUID()}`, role: 'user', content: prompt, createdAt: Date.now(), runId: '',
-    };
-    pendingMessages.current.set(workId, [...(pendingMessages.current.get(workId) ?? []), message]);
-    setTasks(current => [...current]);
     const notice = captureFeedback();
-    const ok = await run(() => window.electronAPI.continueTask({ taskId: workId, prompt, knowledge, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) }), 'workSend');
-    if (!notice.isCurrent()) return false;
-    if (ok) return true;
-      pendingMessages.current.set(workId, (pendingMessages.current.get(workId) ?? []).filter(item => item.id !== message.id));
-      setTasks(current => [...current]);
-    return false;
-  }, [run, captureFeedback]);
+    try {
+      const result = await window.electronAPI.continueTask({ taskId: workId, messageId, prompt, knowledge, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) });
+      if (!notice.isCurrent()) return false;
+      if (!result.success) throw responseError(result, 'workSend');
+      notice.show('任务已加入队列', 'success', `conversation-queued:${workId}:${messageId}`);
+      return true;
+    } catch (error) { if (notice.isCurrent()) notice.fail(error, 'workSend'); return false; }
+  }, [captureFeedback]);
 
   const switchEmployee = useCallback(async (workId: string, employeeId: string) => {
     const notice = captureFeedback();
@@ -895,12 +874,15 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
     const execution = work?.arrangementExecution ?? arrangement.executions[workId];
     const nodeIds = execution?.nodes.filter(node => node.pendingConfirmation).map(node => node.nodeId) ?? [];
     if (nodeIds.length) await run(() => window.electronAPI.confirmArrangementNodes({ taskId: workId, nodeIds }), 'workConfirm');
-    else if (work?.workType.state === 'resolved' && work.workType.kind === 'conversation') await run(() => window.electronAPI.continueTask({ taskId: workId, prompt: '我已确认当前结果，请继续下一步。' }), 'workConfirm');
+    else if (work?.workType.state === 'resolved' && work.workType.kind === 'conversation') await run(() => window.electronAPI.continueTask({ taskId: workId, messageId: crypto.randomUUID(), prompt: '我已确认当前结果，请继续下一步。' }), 'workConfirm');
   }, [arrangement.executions, run, works]);
 
   const stopWork = useCallback(async (workId: string, reason: string) => {
+    const work = works.find(item => item.id === workId);
+    if (work?.kind === 'conversation') return feedback.confirm({ key: `stop:${scopeKey}:${workId}`, message: '确认终止当前对话任务？后续等待处理的信息也将取消，已产生的内容仍保留。', actionLabel: '终止', busyLabel: '正在终止',
+      onConfirm: async () => { await run(() => window.electronAPI.cancelTask(workId, reason.trim() || '用户终止了这项工作'), 'workStop', true); return { success: true }; } });
     return run(() => window.electronAPI.cancelTask(workId, reason.trim() || '用户终止了这项工作'), 'workStop');
-  }, [run]);
+  }, [run, works, feedback, scopeKey]);
 
   const retryWork = useCallback(async (workId: string, nodeId?: string, inputReply?: import('../../shared/arrangement-input').ArrangementInputReply) => {
     await run(() => window.electronAPI.retryTask(nodeId ? { taskId: workId, nodeId, ...(inputReply ? { inputReply } : {}) } : workId), 'workRetry');
@@ -995,7 +977,6 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       for (const id of memberIds.length ? memberIds : [workId]) {
         deletedTaskIds.add(id);
         messagesByTask.current.delete(id);
-        pendingMessages.current.delete(id);
         clearRuntimeState(id);
       }
       setTasks(current => {
@@ -1016,7 +997,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       window.localStorage.setItem(savedFlowsKey(enterpriseId), JSON.stringify(next));
       return true;
     } catch {
-      captureFeedback().show('常用工作未能保存到本机，请联系平台管理员');
+      captureFeedback().show('常用工作未能保存到本机，本机应用存储写入失败，请重启客户端后重试。');
       return false;
     }
   }, [enterpriseId, captureFeedback]);
