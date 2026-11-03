@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { DocumentPreviewRuntime, type DocumentPreviewWorker } from './document-preview-runtime'
+import { toEnvelope } from '../errors/error-mapper'
 
 function setup(timeoutMs = 1000) {
   const workers: { receive: (value: unknown) => void; exit: () => void; killed: boolean; input?: unknown }[] = []
@@ -53,8 +54,31 @@ test('worker errors and crashes reject only preview and the queue remains usable
 
 test('conversion timeout kills the isolated process without affecting task execution', async () => {
   const { runtime, workers } = setup(10)
-  await assert.rejects(runtime.render('xlsx', Buffer.from('slow')))
+  await assert.rejects(runtime.render('xlsx', Buffer.from('slow')), error => {
+    assert.equal(toEnvelope(error, { feedbackOperation: 'documentPreview' }).message,
+      '文档转换时间过长，暂时无法预览，请稍后重试或打开原文件。')
+    return true
+  })
   assert.equal(workers[0].killed, true)
+})
+
+test('known worker failure reasons survive conversion and unknown diagnostics stay private', async () => {
+  const { runtime, workers } = setup()
+  const limited = assert.rejects(runtime.render('xlsx', Buffer.from('large')), error => {
+    assert.equal(toEnvelope(error, { feedbackOperation: 'documentPreview' }).message,
+      'Excel 内容较多，超过 10 万单元格的预览上限，请复制文件路径后使用本地表格软件打开。')
+    return true
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  workers[0].receive({ error: 'SPREADSHEET_TOO_LARGE' })
+  await limited
+  const invalid = assert.rejects(runtime.render('xlsx', Buffer.from('bad')), error => {
+    assert.doesNotMatch(toEnvelope(error, { feedbackOperation: 'documentPreview' }).message, /private|secret/)
+    return true
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  workers[1].receive({ error: 'private token /secret' })
+  await invalid
 })
 
 test('logout cancels both active and queued conversions', async () => {

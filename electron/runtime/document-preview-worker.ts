@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { convertDocumentPreview } from './document-preview-converter'
 import { extractAttachment } from './attachment-extractor'
+import { DocumentPreviewError } from '../errors/document-preview-error'
 
 interface ParentPort {
   on(event: 'message', callback: (event: { data: unknown }) => void): void
@@ -16,6 +17,7 @@ parent.on('message', ({ data }) => {
     const request = requestSchema.safeParse(data)
     if (!request.success) { parent.postMessage({ error: 'INVALID_INPUT' }); return }
     try { parent.postMessage(await convertDocumentPreview(request.data.format, request.data.bytes)) }
-    catch { parent.postMessage({ error: 'CONVERSION_FAILED' }) }
+    catch (error) { parent.postMessage({ error: error instanceof DocumentPreviewError ? error.reason
+      : request.data.format.toLowerCase() === 'xlsx' ? 'SPREADSHEET_PARSE_FAILED' : 'CONVERSION_FAILED' }) }
   })()
 })

@@ -38,7 +38,7 @@ function microphoneError(error: unknown): string {
   if (name === 'NotAllowedError' || name === 'SecurityError') return '未获得麦克风权限，请检查系统麦克风隐私设置。'
   if (name === 'NotFoundError') return '未找到麦克风，请连接麦克风后重试。'
   if (name === 'NotReadableError') return '无法读取麦克风，请检查设备是否被其他程序占用。'
-  return '录音失败，请联系平台管理员'
+  return '录音未能完成，请检查麦克风连接和输入状态后重新录音。'
 }
 
 export class SpeechInputController {
@@ -73,7 +73,7 @@ export class SpeechInputController {
       if (this.active !== session) return
       if (!response.success) { this.fail(session, response.error?.message || operationFailure('speech')); return }
       const start = speechStartSchema.parse(response.data)
-      if (start.recordingId !== session.id) throw new UserFeedbackError('语音输入响应异常，请联系平台管理员')
+      if (start.recordingId !== session.id) throw new UserFeedbackError('语音输入响应与本次录音不匹配，请重新录音后重试。')
       if (!start.ready) {
         this.cancel(owner)
         this.update({ notice: start.permission === 'granted' ? '麦克风已授权。' : null,
@@ -110,18 +110,18 @@ export class SpeechInputController {
       const audio = await session.capture.stop()
       if (this.active !== session) return
       this.update({ phase: 'recognizing' })
-      session.timer = setTimeout(() => this.fail(session, '语音识别超时，请重试。'), 65_000)
+      session.timer = setTimeout(() => this.fail(session, '语音识别超时，请缩短录音后重试。'), 65_000)
       const response = await this.options.api().recognizeSpeech({ recordingId: session.id, sampleRate: audio.sampleRate, samples: new Float32Array(audio.samples) })
       if (this.active !== session) return
-      if (!response.success) { this.fail(session, response.error?.message || '语音识别失败，请联系平台管理员'); return }
+      if (!response.success) { this.fail(session, response.error?.message || '本次音频未能完成识别，请重新录音后重试。'); return }
       const result = speechResultSchema.parse(response.data)
-      if (result.recordingId !== session.id) throw new Error('Recording mismatch')
+      if (result.recordingId !== session.id) throw new UserFeedbackError('语音识别结果与本次录音不匹配，请重新录音后重试。')
       clearTimeout(session.timer)
       session.capture.cancel()
       this.active = null
       this.update({ phase: 'idle', error: result.silent || !result.text.trim() ? '未检测到有效声音，请检查麦克风输入音量。' : null })
       if (!result.silent && result.text.trim()) session.onResult(result.text.trim())
-    } catch { this.fail(session, '语音识别失败，请联系平台管理员') }
+    } catch (error) { this.fail(session, error instanceof UserFeedbackError ? error.message : '语音识别返回的数据不完整或音频处理失败，请重新录音后重试。') }
   }
 
   cancel(owner?: string): void {

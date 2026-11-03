@@ -513,10 +513,10 @@ export class ArrangementService {
     const scope = requireScope(this.deps.scope)
     const draft = await this.getDraft(draftId)
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
-    if (draft.mode !== 'auto' || !['ready', 'preflight-failed'].includes(draft.status) || draft.confirmedWorkPlanId) throw new AppError('INVALID_STATE')
+    if (draft.mode !== 'auto' || !['ready', 'preflight-failed'].includes(draft.status) || draft.confirmedWorkPlanId) throw new AppError('INVALID_STATE', { details: { reason: 'settings-locked' } })
     const nodeKnowledge = settings.nodeKnowledge ?? []
     const nodeKnowledgeIds = new Set(nodeKnowledge.map(item => item.nodeId))
-    if (nodeKnowledgeIds.size !== nodeKnowledge.length || nodeKnowledge.some(item => !draft.nodes.some(node => node.id === item.nodeId))) throw new AppError('INVALID_ARGUMENT')
+    if (nodeKnowledgeIds.size !== nodeKnowledge.length || nodeKnowledge.some(item => !draft.nodes.some(node => node.id === item.nodeId))) throw new AppError('INVALID_ARGUMENT', { details: { reason: 'settings-node-invalid' } })
     return this.deps.drafts.update(scope, draftId, expectedRevision, {
       ...draft,
       ...(settings.knowledge ? { knowledge: structuredClone(settings.knowledge) } : {}),
@@ -537,12 +537,12 @@ export class ArrangementService {
     const scope = requireScope(this.deps.scope)
     const draft = await this.getDraft(draftId)
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
-    if (draft.confirmedWorkPlanId || draft.status === 'planning') throw new AppError('INVALID_STATE')
-    if (inputs.attachmentCandidates.length && (!inputs.attachmentSessionId || !this.deps.attachments)) throw new AppError('INVALID_ARGUMENT')
+    if (draft.confirmedWorkPlanId || draft.status === 'planning') throw new AppError('INVALID_STATE', { details: { reason: 'attachments-locked' } })
+    if (inputs.attachmentCandidates.length && (!inputs.attachmentSessionId || !this.deps.attachments)) throw new AppError('INVALID_ARGUMENT', { details: { reason: 'attachment-session-unavailable' } })
     const refs = inputs.attachmentCandidates.map(item => item.attachment)
     if (inputs.attachmentSessionId && this.deps.attachments) await this.deps.attachments.claimDraft(inputs.attachmentSessionId, draftId, expectedRevision + 1, refs)
     const nodeBindings = new Map((inputs.nodes ?? []).map(item => [item.nodeId, item.inputRefs]))
-    if ([...nodeBindings.keys()].some(id => !draft.nodes.some(node => node.id === id))) throw new AppError('INVALID_ARGUMENT')
+    if ([...nodeBindings.keys()].some(id => !draft.nodes.some(node => node.id === id))) throw new AppError('INVALID_ARGUMENT', { details: { reason: 'attachment-node-missing' } })
     return this.deps.drafts.update(scope, draftId, expectedRevision, {
       ...draft,
       schemaVersion: inputs.attachmentCandidates.length ? 2 : draft.schemaVersion,
@@ -974,19 +974,19 @@ export class ArrangementService {
     ]
     const issues: ArrangementBlockingIssue[] = []
     if (subscriptions.some(item => !item.available || !item.passesThreshold) || general && !generalSubscription) {
-      issues.push({ code: 'EMPLOYEE_UNAVAILABLE', message: general ? '当前模型没有可用的员工授权，请联系平台管理员' : '所选员工当前不可用，请重新选择员工' })
+      issues.push({ code: 'EMPLOYEE_UNAVAILABLE', message: general ? '当前模型没有可用的员工授权，请更换模型或联系平台管理员配置员工授权。' : '所选员工当前不可用，请重新选择员工' })
     }
     if (modelIssues.length && !(general && !generalSubscription)) issues.push({
       code: 'MODEL_NOT_ALLOWED',
-      message: draft.mode === 'auto' ? '自动编排选择了不可用的模型，请联系平台管理员' : '所选员工不支持当前模型，请重新选择',
+      message: draft.mode === 'auto' ? '自动编排选择的模型不可用，请更换模型或联系平台管理员检查模型授权。' : '所选员工不支持当前模型，请重新选择',
     })
     if (draft.mode === 'auto' && draft.unresolvedSteps?.length) issues.push({ code: 'UNRESOLVED_STEPS', message: '还有工作步骤缺少员工，请先完成员工匹配' })
     if (draft.mode === 'auto') {
       for (const issue of deliveryPlanIssues(draft.nodes)) issues.push({ code: 'DELIVERY_INVALID', message: issue.code === 'DUPLICATE_DELIVERY'
-        ? '自动编排的交付文件冲突，请联系平台管理员'
+        ? '自动编排中多个步骤使用了相同的交付文件路径，请修改计划后重试。'
         : issue.code === 'MEDIA_FORMAT_UNSUPPORTED' ? '当前图片交付仅支持 PNG 格式，请调整要求后重新编排'
         : issue.code === 'WORKSPACE_MEDIA_UNSUPPORTED' ? '当前编排不支持所选图片或视频交付方式，请调整要求后重新编排'
-        : '自动编排的交付安排不完整，请联系平台管理员' })
+        : '自动编排缺少必要的工作目标或交付要求，请补充计划后重试。' })
     }
     return {
       preflightId: randomUUID(),

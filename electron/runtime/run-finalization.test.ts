@@ -116,7 +116,7 @@ describe('conversation finalization regressions', { timeout: 10_000 }, () => {
     const task = await f.manager.getTask(f.task.id)
     assert.equal(task?.status, TaskStatus.FAILED)
     assert.equal(task?.activeRunId, null)
-    assert.equal(task?.error, '工作运行结果保存失败，请联系平台管理员')
+    assert.equal(task?.error, '工作成果保存失败，请检查磁盘空间、成果目录读写权限后重试。')
   })
 
   it('retries a failed task settle using the already completed run outcome', async () => {

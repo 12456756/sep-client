@@ -9,6 +9,21 @@ import { ArrangementMediaRecoveryError } from '../domain/arrangement-media-runti
 
 function failure(code: RuntimeFailureCode): RuntimeFailure { return { code, message: RUNTIME_FAILURE_MESSAGES[code] } }
 
+// Older work records contain the former public copy. Recognize only these fixed
+// messages so opening history does not turn a known failure into an unknown one.
+const legacyFailures: Readonly<Record<string, RuntimeFailureCode>> = {
+  '模型请求被拒绝，请联系平台管理员': 'REQUEST_DENIED',
+  '模型服务暂时不可用，请联系平台管理员': 'SERVICE_UNAVAILABLE',
+  '所选模型不可用，请联系平台管理员': 'MODEL_NOT_ALLOWED',
+  '工作成果校验未通过，请联系平台管理员': 'DELIVERY_FAILED',
+  '当前媒体交付暂不可用，请联系平台管理员': 'MEDIA_UNAVAILABLE',
+  '图片或视频下载失败，自动恢复未成功，请联系平台管理员': 'MEDIA_DOWNLOAD_FAILED',
+  '图片或视频已生成，但保存到交付目录失败，请联系平台管理员': 'MEDIA_DELIVERY_FAILED',
+  '工作运行结果保存失败，请联系平台管理员': 'STORAGE_FAILED',
+  '工作历史会话无法恢复，请联系平台管理员': 'SESSION_UNRECOVERABLE',
+  '工作运行失败，请联系平台管理员': 'INTERNAL_ERROR',
+}
+
 const unrecoverableSessionMessages = new Set([
   '失败节点的历史会话记录丢失，无法继续已有上下文。',
   '失败节点的历史运行记录丢失，无法定位已有会话。',
@@ -22,6 +37,7 @@ export function runtimeFeedback(error: unknown): RuntimeFailure {
     if (error instanceof ArrangementMediaRecoveryError) return failure(error.phase === 'download' ? 'MEDIA_DOWNLOAD_FAILED' : 'MEDIA_DELIVERY_FAILED')
     const known = (Object.keys(RUNTIME_FAILURE_MESSAGES) as RuntimeFailureCode[]).find(code => RUNTIME_FAILURE_MESSAGES[code] === error.message)
     if (known) return failure(known)
+    if (Object.hasOwn(legacyFailures, error.message)) return failure(legacyFailures[error.message])
     const transport = transportKind(error)
     if (transport === 'timeout') return failure('MODEL_TIMEOUT')
     if (transport === 'network' || error.name === 'APIConnectionError' || error.message === 'Connection error.') return failure('NETWORK_ERROR')
