@@ -98,14 +98,17 @@ export class SkillImportApi {
           }
         } finally { reader.releaseLock() }
       }
+      const retryAfter = response.headers.get('retry-after')
+      const retryAfterMs = retryAfter ? Math.max(0, /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0
+      const boundedRetryAfterMs = Number.isFinite(retryAfterMs) ? retryAfterMs : 0
+      const retryableStatus = response.status === 429 || response.status >= 500
       let value: unknown
-      try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { throw new SkillImportApiError('INVALID_RESPONSE', response.status) }
+      try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+      catch { throw new SkillImportApiError('INVALID_RESPONSE', response.status, !response.ok && retryableStatus, response.ok ? 0 : boundedRetryAfterMs) }
       if (!response.ok) {
         const error = httpErrorSchema.safeParse(value)
-        const retryAfter = response.headers.get('retry-after')
-        const retryAfterMs = retryAfter ? Math.max(0, /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now()) : 0
         throw new SkillImportApiError(error.success ? error.data.code ?? 'IMPORT_UNAVAILABLE' : 'IMPORT_UNAVAILABLE', response.status,
-          response.status === 429 || response.status >= 500 || (error.success && error.data.retryable === true), Number.isFinite(retryAfterMs) ? retryAfterMs : 0)
+          retryableStatus || (error.success && error.data.retryable === true), boundedRetryAfterMs)
       }
       const parsed = schema.safeParse(value)
       if (!parsed.success) throw new SkillImportApiError('INVALID_RESPONSE', response.status)

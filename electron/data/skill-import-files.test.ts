@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict'
-import { access, chmod, mkdtemp, mkdir, readdir, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { access, chmod, mkdtemp, mkdir, readdir, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -136,6 +136,110 @@ test('does not follow symlinks outside approved roots', async () => {
   assert.deepEqual(await f.files.scan([root.id]), [])
   await f.files.dispose()
   await rm(f.base, { recursive: true, force: true })
+})
+
+test('does not rebind an approved missing root when it becomes a symlink', async () => {
+  const f = await fixture()
+  try {
+    const root = await agentsRoot(f.files)
+    await addSkill(f.project, 'outside')
+    await mkdir(join(f.home, '.agents'), { recursive: true })
+    await symlink(f.project, join(f.home, '.agents', 'skills'), 'dir')
+    assert.equal((await f.files.listRoots()).some(item => item.id === root.id), false)
+    assert.deepEqual(await f.files.scan([root.id]), [])
+    assert.deepEqual(f.files.getScanWarnings(), [{ code: 'ROOT_CHANGED', rootId: root.id }])
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('allows an approved missing root to be created as an ordinary directory', async () => {
+  const f = await fixture()
+  try {
+    const root = await agentsRoot(f.files)
+    await addSkill(join(f.home, '.agents', 'skills'))
+    assert.equal((await f.files.scan([root.id])).length, 1)
+    assert.deepEqual(f.files.getScanWarnings(), [])
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('skips never-created default roots but warns when an existing root disappears', async () => {
+  const f = await fixture()
+  try {
+    const root = await agentsRoot(f.files)
+    assert.deepEqual(await f.files.scan([root.id]), [])
+    assert.deepEqual(f.files.getScanWarnings(), [])
+    const skills = join(f.home, '.agents', 'skills')
+    await addSkill(skills)
+    await f.files.listRoots()
+    await rename(skills, join(f.home, '.agents', 'original-skills'))
+    await f.files.listRoots()
+    assert.deepEqual(await f.files.scan([root.id]), [])
+    assert.deepEqual(f.files.getScanWarnings(), [{ code: 'ROOT_UNAVAILABLE', rootId: root.id }])
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('does not rebind an authorized project root when replaced by a symlink', async () => {
+  const f = await fixture()
+  try {
+    const root = await f.files.addProjectRoot(f.project)
+    const outside = join(f.base, 'outside-project')
+    await addSkill(outside)
+    await rename(f.project, join(f.base, 'original-project'))
+    await symlink(outside, f.project, 'dir')
+    await f.files.listRoots()
+    assert.deepEqual(await f.files.scan([root.id]), [])
+    assert.deepEqual(f.files.getScanWarnings(), [{ code: 'ROOT_CHANGED', rootId: root.id }])
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('rejects an existing authorized root replaced by a symlink before scan', async () => {
+  const f = await fixture()
+  try {
+    const skills = join(f.home, '.agents', 'skills')
+    await addSkill(skills)
+    const root = await agentsRoot(f.files)
+    await addSkill(f.project, 'outside')
+    await rename(skills, join(f.home, '.agents', 'original-skills'))
+    await symlink(f.project, skills, 'dir')
+    await f.files.listRoots()
+    assert.deepEqual(await f.files.scan([root.id]), [])
+    assert.deepEqual(f.files.getScanWarnings(), [{ code: 'ROOT_CHANGED', rootId: root.id }])
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('rejects preview and packaging after an authorized root is replaced by a symlink', async () => {
+  const f = await fixture()
+  try {
+    const skills = join(f.home, '.agents', 'skills')
+    await addSkill(skills)
+    const root = await agentsRoot(f.files)
+    const [candidate] = await f.files.scan([root.id])
+    assert.ok(candidate)
+    const preview = await f.files.preview({ requestId: 'req-root-replaced', candidateId: candidate.candidateId, revision: 1 })
+    await addSkill(f.project)
+    await rename(skills, join(f.home, '.agents', 'original-skills'))
+    await symlink(f.project, skills, 'dir')
+    await assert.rejects(f.files.preview({ requestId: 'req-root-replaced-again', candidateId: candidate.candidateId, revision: 1 }), /PATH_OUTSIDE_ROOT/)
+    await assert.rejects(f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'op-root-replaced' }), /PATH_OUTSIDE_ROOT/)
+    assert.deepEqual(await readdir(f.temp).catch(() => []), [])
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
 })
 
 test('includes safe hidden resources and preserves authorized in-root symlink names', async () => {

@@ -27,14 +27,20 @@ const phaseLabels: Record<string, string> = {
 const consentPhases = new Set(['awaiting-local-consent', 'pairing'])
 const activePhases = new Set(['waiting-web-confirmation', 'connecting', 'waiting-client', 'ready', 'scanning', 'results', 'previewing', 'packaging', 'uploading'])
 
-export function SkillImportPage({ state, onClose, onConfirm, onSelectRoot, onRemoveRoot, onCancel, onRevoke, onCheckForUpdate, busy = false, error }: SkillImportPageProps) {
+export function SkillImportPage(props: SkillImportPageProps) {
+  const { state } = props
+  const sessionKey = JSON.stringify([state.instanceId, state.sessionId, state.pairing?.pairingId, state.scope])
+  return <SkillImportSessionPage key={sessionKey} {...props} />
+}
+
+function SkillImportSessionPage({ state, onClose, onConfirm, onSelectRoot, onRemoveRoot, onCancel, onRevoke, onCheckForUpdate, busy = false, error }: SkillImportPageProps) {
   void React
   const logoImage = new URL('../assets/logo.png', import.meta.url).href
   const [rememberDevice, setRememberDevice] = useState(false)
-  const [scope, setScope] = useState<ConsentInput['scope']>(state.scope ?? 'user')
-  const [selectedRoots, setSelectedRoots] = useState<string[]>([])
-  const [showDevices, setShowDevices] = useState(false)
   const availableRoots = useMemo(() => state.roots.filter(root => state.scope === 'all' || root.scope === state.scope), [state.roots, state.scope])
+  const scope = state.scope ?? 'user'
+  const [selectedRoots, setSelectedRoots] = useState<string[]>(() => availableRoots.map(root => root.rootId))
+  const [showDevices, setShowDevices] = useState(false)
   const activeJob = activePhases.has(state.phase)
   const confirming = consentPhases.has(state.phase)
   const selectedRootsValid = selectedRoots.every(id => availableRoots.some(root => root.rootId === id))
@@ -44,9 +50,11 @@ export function SkillImportPage({ state, onClose, onConfirm, onSelectRoot, onRem
     && availableRoots.some(root => selectedRoots.includes(root.rootId))
 
   useEffect(() => {
-    if (state.scope) setScope(state.scope)
-    if (state.scope && availableRoots.length) setSelectedRoots(availableRoots.filter(root => state.scope === 'all' || root.scope === state.scope).map(root => root.rootId))
-  }, [state.sessionId, state.scope, availableRoots])
+    setSelectedRoots(current => {
+      const remaining = current.filter(id => availableRoots.some(root => root.rootId === id))
+      return remaining.length === current.length ? current : remaining
+    })
+  }, [availableRoots])
 
   const toggleRoot = (rootId: string) => setSelectedRoots(current => current.includes(rootId) ? current.filter(id => id !== rootId) : [...current, rootId])
   const confirm = () => {

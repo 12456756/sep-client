@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream } from 'node:fs'
 import { chmod, lstat, mkdir, open, opendir, readdir, realpath, rm, stat } from 'node:fs/promises'
-import { join, relative, resolve, sep, basename, isAbsolute } from 'node:path'
+import { join, relative, resolve, sep, basename, dirname, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
 import { once } from 'node:events'
 import { finished } from 'node:stream/promises'
@@ -61,6 +61,19 @@ const ignoredDirs = new Set(['.git', 'node_modules', '.cache', 'cache'])
 const crcTable = Uint32Array.from({ length: 256 }, (_, n) => { let crc = n; for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); return crc >>> 0 })
 function crcUpdate(crc: number, bytes: Buffer): number { for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255]!; return crc >>> 0 }
 function within(root: string, path: string): boolean { const rel = relative(root, path); return rel === '' || (!isAbsolute(rel) && !rel.startsWith(`..${sep}`) && rel !== '..') }
+async function canonicalRootPath(path: string): Promise<string> {
+  const missing: string[] = []
+  let ancestor = path
+  for (;;) {
+    try { return resolve(await realpath(ancestor), ...missing.reverse()) }
+    catch (error) {
+      const parent = dirname(ancestor)
+      if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT' || parent === ancestor) throw error
+      missing.push(basename(ancestor))
+      ancestor = parent
+    }
+  }
+}
 function abort(signal?: AbortSignal): void { if (signal?.aborted) throw signal.reason ?? new Error('IMPORT_CANCELLED') }
 function safePath(value: string): boolean {
   return value.length > 0 && value.length <= 1024 && !value.startsWith('/') && !value.includes('\\') && ![...value].some(char => {
@@ -95,6 +108,7 @@ export class SkillImportFiles {
   private snapshots = new Map<string, Snapshot>()
   private packages = new Set<string>()
   private readonly removedRootIds = new Set<string>()
+  private readonly existingRootIds = new Set<string>()
   private scanWarnings: Array<{ code: string; rootId?: string }> = []
 
   constructor(options: Options) {
@@ -121,16 +135,19 @@ export class SkillImportFiles {
     for (const item of roots) {
       const path = resolve(item.path)
       let real = path
+      let exists = false
       try {
         if (!(await stat(path)).isDirectory()) continue
         real = await realpath(path)
-        if (!within(canonicalHome, real) && !within(canonicalConfig, real)) continue
+        exists = true
       } catch (error) {
-        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') { /* show known roots even before first use */ }
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') real = await canonicalRootPath(path)
         else continue
       }
+      if (!within(canonicalHome, real) && !within(canonicalConfig, real)) continue
       const id = createHash('sha256').update(`${this.platform}\0${real}`).digest('hex').slice(0, 24)
       if (this.removedRootIds.has(id)) continue
+      if (exists) this.existingRootIds.add(id)
       const existing = found.find(root => root.id === id)
       if (existing) {
         existing.sources = [...new Set([...existing.sources, ...item.sources])]
@@ -162,6 +179,7 @@ export class SkillImportFiles {
     const root: SkillImportRoot = { id, path: real, label: basename(real) || 'project', scope: 'project', sources: ['agents', 'claude-code', 'codex', 'gemini-cli', 'opencode'] }
     this.removedRootIds.delete(id)
     this.roots.set(id, root)
+    this.existingRootIds.add(id)
     return root
   }
 
@@ -195,7 +213,12 @@ export class SkillImportFiles {
     for (const root of selected) {
       abort(options.signal)
       let rootPath: string
-      try { rootPath = await realpath(root.path) } catch { this.scanWarnings.push({ code: 'ROOT_UNAVAILABLE', rootId: root.id }); continue }
+      try { rootPath = await realpath(root.path) } catch (error) {
+        if (this.existingRootIds.has(root.id) || !error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') this.scanWarnings.push({ code: 'ROOT_UNAVAILABLE', rootId: root.id })
+        continue
+      }
+      if (rootPath !== root.path) { this.scanWarnings.push({ code: 'ROOT_CHANGED', rootId: root.id }); continue }
+      this.existingRootIds.add(root.id)
       const dirs: string[] = []
       const starts = [rootPath]
       if (root.scope === 'project') {
@@ -355,7 +378,7 @@ export class SkillImportFiles {
   }
 
   async reset(): Promise<void> { this.candidates.clear(); this.snapshots.clear(); this.scanWarnings = []; for (const file of this.packages) await rm(file, { force: true }).catch(() => undefined); this.packages.clear() }
-  async dispose(): Promise<void> { await this.reset(); this.roots.clear(); this.removedRootIds.clear() }
+  async dispose(): Promise<void> { await this.reset(); this.roots.clear(); this.removedRootIds.clear(); this.existingRootIds.clear() }
 
   private async hasEntry(directory: string): Promise<boolean> {
     try {

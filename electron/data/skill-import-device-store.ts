@@ -21,7 +21,8 @@ const bindingSchema = z.object({
   roots: z.array(rootSchema).max(128), encryptedPrivateKey: z.string().min(1),
   enabled: z.boolean(), revokePending: z.boolean(), createdAt: z.string(), updatedAt: z.string(),
 }).strict()
-const recordsSchema = z.object({ bindings: z.array(bindingSchema).max(32) }).strict()
+const MAX_BINDINGS = 32
+const recordsSchema = z.object({ bindings: z.array(bindingSchema).max(MAX_BINDINGS) }).strict()
 
 export interface SkillImportEncryption {
   isEncryptionAvailable(): boolean
@@ -163,14 +164,15 @@ export class SkillImportDeviceStore {
       this.memory.set(record.bindingId, record)
       return { persisted: false, binding: identityView(record) }
     }
-    for (const [id, item] of this.memory) {
-      if (item.osUserId === record.osUserId && item.instanceId === record.instanceId && item.deviceId === record.deviceId) this.memory.delete(id)
-    }
     await this.writes.run(this.file, async () => {
       const current = await this.read()
       const withoutSame = current.bindings.filter(item => !(item.osUserId === this.options.osUserId && item.instanceId === record.instanceId && item.ownerUserId === record.ownerUserId && item.deviceId === record.deviceId))
+      if (withoutSame.length >= MAX_BINDINGS) throw Object.assign(new Error('DEVICE_LIMIT_REACHED'), { code: 'DEVICE_LIMIT_REACHED' })
       await this.write({ bindings: [...withoutSame, record] })
     })
+    for (const [id, item] of this.memory) {
+      if (item.osUserId === record.osUserId && item.instanceId === record.instanceId && item.deviceId === record.deviceId) this.memory.delete(id)
+    }
     return { persisted: true, binding: identityView(record) }
   }
 
@@ -216,7 +218,7 @@ export class SkillImportDeviceStore {
 
   private write(value: z.infer<typeof recordsSchema>): Promise<void> {
     if (!this.canPersist()) return Promise.resolve()
-    const payload = this.options.encryption.encryptString(JSON.stringify(value))
+    const payload = this.options.encryption.encryptString(JSON.stringify(recordsSchema.parse(value)))
     return writeJsonAtomic(this.file, { version: 1, payload })
   }
 }

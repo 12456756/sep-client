@@ -22,10 +22,10 @@ function installFixture() {
   }
   window.skillImportFixture = {
     calls, publish,
-    requestConsent: sessionId => publish({
+    requestConsent: (sessionId, roots = [{ rootId: 'fixture-root', label: '测试 Skills 目录', scope: 'user', authorized: false }]) => publish({
       visible: true, phase: 'awaiting-local-consent', sessionId,
       instanceId: 'fixture-instance', siteLabel: 'SEP UI Test', initiatorLabel: '测试用户', scope: 'user',
-      roots: [{ rootId: 'fixture-root', label: '测试 Skills 目录', scope: 'user', authorized: false }],
+      roots,
       pairing: { pairingId: 'fixture-pairing', shortCode: '123456', keyFingerprint: 'a'.repeat(64), expiresAt: new Date(Date.now() + 300_000).toISOString(), webConfirmed: true },
       progress: null, error: null,
     }),
@@ -35,6 +35,7 @@ function installFixture() {
     listRememberedAccounts: async () => ({ accounts: [], encryptionAvailable: true }),
     getSkillImportState: async () => { calls.stateReads++; return { success: true, data: structuredClone(state) } },
     onSkillImportStateChanged: callback => { listeners.add(callback); return () => listeners.delete(callback) },
+    selectSkillImportRoot: async () => ({ success: true, data: null }),
     setSkillImportVisible: async ({ visible }) => { publish({ visible }); return { success: true } },
     confirmSkillImportConsent: async input => {
       calls.consent.push(input)
@@ -177,6 +178,41 @@ try {
         { pairingId: 'fixture-pairing', rememberDevice: false, scope: 'user', rootIds: ['fixture-root'] },
       ])
       result.checks.push('local-consent-is-explicit-and-returns-to-the-same-workspace-dom')
+
+      const roots = [
+        { rootId: 'fixture-root-1', label: '排除的目录', scope: 'user', authorized: false },
+        { rootId: 'fixture-root-2', label: '保留的目录', scope: 'user', authorized: false },
+      ]
+      const addedRoot = { rootId: 'fixture-root-3', label: '新增目录', scope: 'user', authorized: false }
+      const checkedRoots = () => page.locator('.skill-import-root input').evaluateAll(inputs => inputs.map(input => input.checked))
+      await page.evaluate(roots => window.skillImportFixture.requestConsent('fixture-root-selection', roots), roots)
+      await page.locator('.skill-import-root input').nth(1).waitFor()
+      assert.deepEqual(await checkedRoots(), [true, true])
+      await page.locator('.skill-import-root input').nth(0).uncheck()
+      const reads = await page.evaluate(() => window.skillImportFixture.calls.stateReads)
+      await page.getByRole('button', { name: '添加项目或自定义目录', exact: true }).click()
+      await page.waitForFunction(reads => window.skillImportFixture.calls.stateReads > reads, reads)
+      await page.evaluate(() => new Promise(resolve => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve))))
+      assert.deepEqual(await checkedRoots(), [false, true], 'Cancelling directory selection must preserve excluded roots after refresh')
+      await page.evaluate(roots => window.skillImportFixture.publish({ roots }), [...roots, addedRoot])
+      await page.locator('.skill-import-root input').nth(2).waitFor()
+      assert.deepEqual(await checkedRoots(), [false, true, false], 'New roots require an explicit selection')
+      await page.locator('.skill-import-root input').nth(2).check()
+      await page.evaluate(roots => window.skillImportFixture.publish({ roots }), [roots[0], addedRoot])
+      await page.waitForFunction(() => document.querySelectorAll('.skill-import-root input').length === 2)
+      assert.deepEqual(await checkedRoots(), [false, true])
+      await page.getByRole('button', { name: '允许并开始扫描', exact: true }).click()
+      await page.locator('.skill-import-page').waitFor({ state: 'detached' })
+      assert.deepEqual(await page.evaluate(() => window.skillImportFixture.calls.consent.at(-1).rootIds), ['fixture-root-3'], 'Removed and excluded roots must not be submitted')
+      result.checks.push('root-refresh-preserves-exclusions-and-new-roots-require-explicit-selection')
+
+      await page.evaluate(roots => window.skillImportFixture.requestConsent('fixture-old-session', roots), roots)
+      await page.locator('.skill-import-root input').nth(1).waitFor()
+      await page.locator('.skill-import-root input').nth(0).uncheck()
+      await page.evaluate(roots => window.skillImportFixture.requestConsent('fixture-new-session', roots), roots)
+      await page.waitForFunction(() => document.querySelector('.skill-import-context code')?.textContent === 'fixture-new-')
+      assert.deepEqual(await checkedRoots(), [true, true], 'A new session must initialize its own root selection')
+      result.checks.push('new-session-initializes-independent-root-selection')
 
       await page.evaluate(() => window.skillImportFixture.requestConsent('fixture-cancel'))
       await page.getByRole('heading', { name: 'Skills 导入', exact: true }).waitFor()

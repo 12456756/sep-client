@@ -26,6 +26,8 @@ const MESSAGES: Record<string, string> = {
   NETWORK_UNAVAILABLE: '暂时无法连接站点，正在重试。', PREVIEW_TIMEOUT: '预览超时，请在网页重试。',
   REVOCATION_PENDING: '本机授权已停用，云端撤销尚未确认；联网后重试或在网页设备管理中撤销。',
   SCAN_PARTIAL: '部分目录无法完整读取或已达到扫描上限，当前结果可能不完整。请检查目录权限后从网页重新发起。',
+  SCAN_FAILED: '本机扫描未能完成，请检查目录权限后从网页重新发起。',
+  DEVICE_LIMIT_REACHED: '已达到设备授权保存上限，请先撤销不再使用的设备授权后重试。',
 }
 type Consent = z.infer<typeof SkillImportConsentInputSchema>
 type Command = z.infer<typeof SkillImportCommandSchema>
@@ -251,7 +253,7 @@ export class SkillImportService {
         current.challenge = await this.request(current, 'POST', 'challenges', SkillImportChallengeViewSchema, {
           purpose: 'session-grant', sessionId: current.sessionId, ...(current.deviceId ? { deviceId: current.deviceId } : { pairingId: current.pairingId }),
         }, false)
-        this.validateChallenge(current, current.challenge, current.identity)
+        this.validateChallenge(current, current.challenge, current.identity, consent.rememberDevice)
         proof = { ...proof, challengeId: current.challenge.challengeId,
           signature: current.identity.sign(current.challenge, consent.rememberDevice, consent.scope, consent.rootIds) }
         continue
@@ -264,6 +266,7 @@ export class SkillImportService {
         continue
       }
       if (grant.sessionId !== current.sessionId || grant.acceptedScopeHash !== acceptedScopeHash(consent.scope, consent.rootIds) || Date.parse(grant.sessionGrantExpiresAt) <= this.now()) throw new SkillImportApiError('SCOPE_MISMATCH')
+      if (current.challenge!.pairingId && current.challenge!.deviceId && grant.deviceId !== current.challenge!.deviceId) throw new SkillImportApiError('DEVICE_PROOF_INVALID')
       current.grant = grant.sessionGrant
       current.deadline = Math.min(Date.parse(grant.sessionExpiresAt), current.startedAt + SKILL_IMPORT_LIMITS.sessionMs)
       current.grantExpiresAt = Math.min(Date.parse(grant.sessionGrantExpiresAt), current.deadline)
@@ -327,12 +330,21 @@ export class SkillImportService {
           const scope = command.payload as { scope: ImportScope; rootIds: string[] }
           if (scope.scope !== current.consent!.scope || JSON.stringify(normalizedRootIds(scope.rootIds)) !== JSON.stringify(normalizedRootIds(current.consent!.rootIds))) throw new SkillImportApiError('SCOPE_MISMATCH')
           this.publish({ phase: 'scanning', progress: { phase: 'scanning', completed: 0 } })
-          const candidates = await this.options.files.scan(current.consent!.rootIds, { signal: current.controller.signal })
+          const scanned = await this.options.files.scan(current.consent!.rootIds, { signal: current.controller.signal })
+          const partial = Boolean(this.options.files.getScanWarnings?.().length)
+          // Existing Web clients already render candidate warnings. Keep useful results while
+          // making an incomplete scan explicit, including when no candidate could be read.
+          if (partial && !scanned.length) throw new SkillImportApiError('SCAN_PARTIAL')
+          const candidates = partial ? scanned.map(candidate => ({ ...candidate,
+            warnings: [...candidate.warnings.filter(warning => warning.severity === 'blocking'),
+              { code: 'SCAN_PARTIAL', message: MESSAGES['SCAN_PARTIAL']!, severity: 'warning' as const },
+              ...candidate.warnings.filter(warning => warning.severity === 'warning')].slice(0, 32),
+          })) : scanned
           for (let offset = 0; offset < Math.max(candidates.length, 1); offset += 25) {
             await this.event(current, command, 'candidates', { items: candidates.slice(offset, offset + 25), final: offset + 25 >= candidates.length })
           }
           this.publish({ phase: 'results', progress: { phase: 'scanning', completed: candidates.length },
-            error: this.options.files.getScanWarnings?.().length ? this.errorView('SCAN_PARTIAL') : null })
+            error: partial ? this.errorView('SCAN_PARTIAL') : null })
           break
         }
         case 'preview': {
@@ -367,10 +379,14 @@ export class SkillImportService {
     } catch (error) {
       this.assertCurrent(current)
       const code = this.code(error)
-      if (command.type !== 'preview' && command.type !== 'package-selected') throw error
-      const publicCode = ['CANDIDATE_CHANGED', 'SNAPSHOT_EXPIRED', 'PERMISSION_DENIED'].includes(code) ? code : 'PACKAGE_REJECTED'
-      await this.event(current, command, 'error', { code: publicCode, message: this.errorView(code).message, retryable: command.type === 'preview' })
-      if (command.type === 'package-selected') throw error
+      const publicCode = ['CANDIDATE_CHANGED', 'SNAPSHOT_EXPIRED', 'PERMISSION_DENIED'].includes(code) ? code : command.type === 'scan' ? 'SCAN_FAILED' : 'PACKAGE_REJECTED'
+      const payload = { code: publicCode, message: this.errorView(code).message, retryable: command.type === 'preview' }
+      if (command.type !== 'preview') {
+        try { await this.event(current, command, 'error', payload, true) }
+        catch (notificationError) { this.log.warn('import failure notification unavailable', { code: this.code(notificationError) }) }
+        throw error
+      }
+      await this.event(current, command, 'error', payload)
       this.publish({ phase: 'results', error: this.errorView(code) })
     }
   }
@@ -405,9 +421,15 @@ export class SkillImportService {
     }
   }
 
-  private async event(current: ActiveImport, command: Command, type: string, payload: unknown): Promise<void> {
+  private async event(current: ActiveImport, command: Command, type: string, payload: unknown, terminal = false): Promise<void> {
     const event = SkillImportEventSchema.parse({ eventId: randomUUID(), commandId: command.commandId, sequence: current.eventSequence + 1, type, payload })
-    const ack = await this.request(current, 'POST', `sessions/${current.sessionId}/events`, SkillImportEventAckSchema, event, true, type === 'preview')
+    this.assertCurrent(current)
+    const route = `sessions/${current.sessionId}/events`
+    // Failure reporting must not keep file access or shutdown alive during an outage.
+    const ack = terminal ? await current.api.request('POST', route, SkillImportEventAckSchema, {
+      body: event, token: current.grant, signal: AbortSignal.any([current.controller.signal, AbortSignal.timeout(3000)]),
+    }) : await this.request(current, 'POST', route, SkillImportEventAckSchema, event, true, type === 'preview')
+    this.assertCurrent(current)
     if (ack.eventId !== event.eventId || ack.cursor !== event.sequence) throw new SkillImportApiError('INVALID_RESPONSE')
     current.eventSequence = event.sequence
     if (!ack.ignored) {
@@ -445,7 +467,7 @@ export class SkillImportService {
     current.job = job().catch(async error => {
       if (this.active !== current) return
       const code = this.code(current.controller.signal.aborted ? current.controller.signal.reason : error)
-      this.publish({ error: this.errorView(code), ...(['CLIENT_UPGRADE_REQUIRED', 'STORAGE_UNAVAILABLE'].includes(code) ? { visible: true } : {}) })
+      this.publish({ error: this.errorView(code), ...(['CLIENT_UPGRADE_REQUIRED', 'STORAGE_UNAVAILABLE', 'DEVICE_LIMIT_REACHED'].includes(code) ? { visible: true } : {}) })
       await this.stopFromWorker(current, code === 'SESSION_EXPIRED' ? 'expired' : TERMINAL_CODES.has(code) ? 'cancelled' : 'failed')
     }).finally(() => { current.job = undefined })
   }
@@ -472,9 +494,10 @@ export class SkillImportService {
     if (this.active !== current) throw new SkillImportApiError('SESSION_CANCELLED')
     if (this.now() >= Math.min(current.deadline, current.idleDeadline)) throw new SkillImportApiError('SESSION_EXPIRED')
   }
-  private validateChallenge(current: ActiveImport, challenge: ImportChallenge, identity: ImportIdentity): void {
+  private validateChallenge(current: ActiveImport, challenge: ImportChallenge, identity: ImportIdentity, recoveringRememberedPairing = false): void {
     if (challenge.purpose !== 'session-grant' || challenge.instanceId !== current.instance.instanceId || challenge.sessionId !== current.sessionId || challenge.keyFingerprint !== identity.keyFingerprint || Date.parse(challenge.expiresAt) <= this.now()
-      || (current.deviceId ? challenge.deviceId !== current.deviceId || challenge.pairingId !== null : challenge.deviceId !== null || challenge.pairingId !== current.pairingId)) throw new SkillImportApiError('DEVICE_PROOF_INVALID')
+      || (current.deviceId ? challenge.deviceId !== current.deviceId || challenge.pairingId !== null
+        : challenge.pairingId !== current.pairingId || challenge.deviceId !== null && !recoveringRememberedPairing)) throw new SkillImportApiError('DEVICE_PROOF_INVALID')
   }
   private async refreshLocal(): Promise<void> {
     const roots = await this.options.files.listRoots()

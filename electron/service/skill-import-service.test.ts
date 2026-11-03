@@ -61,8 +61,8 @@ function requireScopeHash(scope: string, rootIds: string[]) {
   return acceptedScopeHash(scope as 'user' | 'project' | 'all', rootIds)
 }
 
-async function until(predicate: () => boolean): Promise<void> {
-  const deadline = Date.now() + 1000
+async function until(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
   while (!predicate()) { if (Date.now() > deadline) assert.fail('condition did not settle'); await new Promise(resolve => setTimeout(resolve, 1)) }
 }
 
@@ -290,4 +290,183 @@ test('retryable upload failure is reconciled by operation status without a secon
   assert.equal(h.service['state'].phase, 'uploaded', JSON.stringify({ state: h.service['state'], calls: h.calls.map(call => call.route) }))
   assert.equal(uploads, 1)
   assert.ok(operationReads >= 2)
+})
+
+test('lost first remembered grant recovers with the same pairing and its newly registered device', async () => {
+  const h = harness({ wait: async (_ms, signal) => { signal.throwIfAborted(); await new Promise(resolve => setTimeout(resolve, 1)) } })
+  h.service['options'].devices.available = () => true
+  const request = h.api.request.bind(h.api)
+  let grantCalls = 0
+  let rememberedDevice: string | undefined
+  h.service['options'].devices.remember = async (_identity, binding) => { rememberedDevice = binding.deviceId }
+  h.api.request = async (method, route, schema, options) => {
+    if (route === 'grants') {
+      grantCalls++
+      if (grantCalls === 1) throw new SkillImportApiError('NETWORK_UNAVAILABLE', 0, true)
+      if (grantCalls === 2) throw new SkillImportApiError('CHALLENGE_USED')
+      return { ...granted, deviceId: 'device_1', acceptedScopeHash: acceptedScopeHash('user', ['root_1']) }
+    }
+    if (route === 'challenges') {
+      assert.equal(options.body?.pairingId, 'pairing_1')
+      return { ...challenge, challengeId: 'replacement', deviceId: 'device_1' }
+    }
+    return request(method, route, schema, options)
+  }
+  try {
+    await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+    await until(() => h.service['state'].phase === 'awaiting-local-consent')
+    await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice: true, scope: 'user', rootIds: ['root_1'] })
+    await until(() => h.service['state'].phase === 'ready' || h.service['state'].phase === 'failed')
+    assert.equal(h.service['state'].phase, 'ready')
+    assert.equal(rememberedDevice, 'device_1')
+    assert.equal(grantCalls, 3)
+  } finally { await h.service.dispose() }
+})
+
+test('replacement challenges still reject a different pairing, key, or session', async () => {
+  for (const changed of [{ pairingId: 'other_pairing' }, { keyFingerprint: 'b'.repeat(64) }, { sessionId: 'other_session' }]) {
+    const h = harness()
+    h.service['options'].devices.available = () => true
+    const request = h.api.request.bind(h.api)
+    h.api.request = async (method, route, schema, options) => {
+      if (route === 'grants') throw new SkillImportApiError('CHALLENGE_USED')
+      if (route === 'challenges') return { ...challenge, challengeId: 'replacement', deviceId: 'device_1', ...changed }
+      return request(method, route, schema, options)
+    }
+    try {
+      await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+      await until(() => h.service['state'].phase === 'awaiting-local-consent')
+      await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice: true, scope: 'user', rootIds: ['root_1'] })
+      await until(() => h.service['state'].phase === 'failed')
+      assert.equal(h.service['state'].error?.code, 'DEVICE_PROOF_INVALID')
+    } finally { await h.service.dispose() }
+  }
+})
+
+test('grant recovery cannot create a remembered device without consent or switch the recovered device', async () => {
+  for (const rememberDevice of [false, true]) {
+    const h = harness()
+    h.service['options'].devices.available = () => true
+    const request = h.api.request.bind(h.api)
+    let grants = 0
+    let remembered = false
+    h.service['options'].devices.remember = async () => { remembered = true }
+    h.api.request = async (method, route, schema, options) => {
+      if (route === 'grants') {
+        if (++grants === 1) throw new SkillImportApiError('CHALLENGE_USED')
+        return { ...granted, deviceId: 'different_device', acceptedScopeHash: acceptedScopeHash('user', ['root_1']) }
+      }
+      if (route === 'challenges') return { ...challenge, challengeId: 'replacement', deviceId: 'device_1' }
+      return request(method, route, schema, options)
+    }
+    try {
+      await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+      await until(() => h.service['state'].phase === 'awaiting-local-consent')
+      await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice, scope: 'user', rootIds: ['root_1'] })
+      await until(() => h.service['state'].phase === 'failed')
+      assert.equal(h.service['state'].error?.code, 'DEVICE_PROOF_INVALID')
+      assert.equal(remembered, false)
+      assert.equal(h.calls.some(call => call.route.includes('/commands')), false)
+    } finally { await h.service.dispose() }
+  }
+})
+
+const scanCommand = () => ({ sessionId: 'session_1', commandId: 'scan_1', sequence: 1, expiresAt: date(), type: 'scan', payload: { scope: 'user', rootIds: ['root_1'] } })
+
+test('scan failures report a Web-visible error before stopping the hidden client', async () => {
+  const h = harness({ scan: async () => { throw new SkillImportApiError('PERMISSION_DENIED') }, commandItems: [scanCommand()] })
+  try {
+    await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+    await until(() => h.service['state'].phase === 'awaiting-local-consent')
+    await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice: false, scope: 'user', rootIds: ['root_1'] })
+    await until(() => h.service['state'].phase === 'failed')
+    const events = h.calls.filter(call => call.route.endsWith('/events')).map(call => call.options.body)
+    assert.deepEqual(events.map(event => event?.type), ['command-started', 'error'])
+    assert.equal((events[1]?.payload as { code: string }).code, 'PERMISSION_DENIED')
+    assert.equal(h.service['state'].visible, false)
+  } finally { await h.service.dispose() }
+})
+
+test('unreachable failure reporting is bounded and preserves the original scan error', { timeout: 8000 }, async () => {
+  const h = harness({ scan: async () => { throw new SkillImportApiError('PERMISSION_DENIED') }, commandItems: [scanCommand()] })
+  const request = h.api.request.bind(h.api)
+  let reports = 0
+  h.api.request = async (method, route, schema, options) => {
+    if (route.endsWith('/events') && options.body?.type === 'error') {
+      reports++
+      return new Promise((_resolve, reject) => {
+        const signal = options.signal!
+        if (signal.aborted) reject(signal.reason)
+        else signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+      })
+    }
+    return request(method, route, schema, options)
+  }
+  try {
+    await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+    await until(() => h.service['state'].phase === 'awaiting-local-consent')
+    await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice: false, scope: 'user', rootIds: ['root_1'] })
+    await until(() => h.service['state'].phase === 'failed', 5000)
+    assert.equal(reports, 1)
+    assert.equal(h.service['state'].error?.code, 'PERMISSION_DENIED')
+    assert.equal(h.service.isActive(), false)
+  } finally { await h.service.dispose() }
+})
+
+test('cancelling during failure reporting aborts the notification and completes cleanup', { timeout: 2000 }, async () => {
+  const h = harness({ scan: async () => { throw new SkillImportApiError('PERMISSION_DENIED') }, commandItems: [scanCommand()] })
+  const request = h.api.request.bind(h.api)
+  let reportingSignal: AbortSignal | undefined
+  let reset = false
+  h.files.reset = async () => { reset = true }
+  h.api.request = async (method, route, schema, options) => {
+    if (route.endsWith('/events') && options.body?.type === 'error') {
+      reportingSignal = options.signal!
+      return new Promise((_resolve, reject) => reportingSignal!.addEventListener('abort', () => reject(reportingSignal!.reason), { once: true }))
+    }
+    return request(method, route, schema, options)
+  }
+  try {
+    await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+    await until(() => h.service['state'].phase === 'awaiting-local-consent')
+    await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice: false, scope: 'user', rootIds: ['root_1'] })
+    await until(() => Boolean(reportingSignal))
+    await h.service.cancelActive()
+    assert.equal(reportingSignal!.aborted, true)
+    assert.equal(h.service['state'].phase, 'cancelled')
+    assert.equal(reset, true)
+    assert.equal(h.calls.some(call => call.route.endsWith('/events') && call.options.body?.type === 'command-completed'), false)
+  } finally { await h.service.dispose() }
+})
+
+test('partial scans return existing-protocol warnings on candidates and fail explicitly when none were readable', async () => {
+  const fullWarnings = [...Array.from({ length: 31 }, (_, index) => ({ code: `WARNING_${index}`, message: 'Existing warning', severity: 'warning' as const })),
+    { code: 'BLOCKED', message: 'Existing blocking warning', severity: 'blocking' as const }]
+  for (const { empty, warnings } of [{ empty: false, warnings: [] }, { empty: true, warnings: [] }, { empty: false, warnings: fullWarnings }]) {
+    const candidate = { candidateId: 'candidate_1', revision: 1, name: 'Demo', description: null, sources: ['codex'], scope: 'user' as const,
+      locations: [{ rootId: 'root_1', rootLabel: 'Personal', relativePath: 'demo' }], treeHash: null, availability: 'previewable' as const, warnings }
+    const h = harness({ scan: async () => empty ? [] : [candidate], commandItems: [scanCommand()] })
+    h.service['options'].files.getScanWarnings = () => [{ code: 'ROOT_UNAVAILABLE', rootId: 'root_1' }]
+    try {
+      await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+      await until(() => h.service['state'].phase === 'awaiting-local-consent')
+      await h.service.confirmConsent({ pairingId: 'pairing_1', rememberDevice: false, scope: 'user', rootIds: ['root_1'] })
+      await until(() => ['results', 'failed'].includes(h.service['state'].phase))
+      const events = h.calls.filter(call => call.route.endsWith('/events')).map(call => call.options.body)
+      if (empty) {
+        assert.equal(h.service['state'].phase, 'failed')
+        assert.equal(events.some(event => event?.type === 'candidates'), false)
+        const error = events.find(event => event?.type === 'error')
+        assert.equal((error?.payload as { code: string }).code, 'SCAN_FAILED')
+      } else {
+        assert.equal(h.service['state'].phase, 'results')
+        const batch = events.find(event => event?.type === 'candidates')
+        const received = (batch?.payload as { items: Array<{ warnings: Array<{ code: string; message: string; severity: string }> }> }).items[0].warnings
+        assert.ok(received.some(warning => warning.code === 'SCAN_PARTIAL' && warning.message === h.service['state'].error?.message))
+        assert.ok(received.length <= 32)
+        if (warnings.length) assert.ok(received.some(warning => warning.code === 'BLOCKED' && warning.severity === 'blocking'), 'Partial-scan warnings must never discard existing blocking warnings')
+        assert.ok(events.some(event => event?.type === 'command-completed'))
+      }
+    } finally { await h.service.dispose() }
+  }
 })

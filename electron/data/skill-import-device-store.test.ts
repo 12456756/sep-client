@@ -101,4 +101,27 @@ describe('SkillImportDeviceStore', () => {
       assert.equal((await store.getBinding('device-1', 'preview'))?.instanceId, 'preview')
     } finally { await rm(dir, { recursive: true, force: true }) }
   })
+
+  it('rejects a 33rd persistent device without changing the primary or backup and permits updates at capacity', async () => {
+    const { dir, store } = await setup()
+    try {
+      const created = input(store)
+      for (let index = 0; index < 32; index++) {
+        await store.saveBinding({ ...created.value, deviceId: `device-${index}` })
+      }
+      const file = join(dir, 'devices.json')
+      const primary = await readFile(file, 'utf8')
+      const backup = await readFile(`${file}.bak`, 'utf8')
+      await assert.rejects(store.saveBinding({ ...created.value, deviceId: 'device-32' }), /DEVICE_LIMIT_REACHED/)
+      assert.equal(await readFile(file, 'utf8'), primary)
+      assert.equal(await readFile(`${file}.bak`, 'utf8'), backup)
+      assert.equal((await store.listBindings()).length, 32)
+      assert.equal(await store.getBinding('device-32'), null)
+
+      const updated = await store.saveBinding({ ...created.value, deviceId: 'device-31', label: 'Updated Mac' })
+      assert.equal(updated.persisted, true)
+      assert.equal((await store.listBindings()).length, 32)
+      assert.equal((await store.getBinding('device-31'))?.label, 'Updated Mac')
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
 })

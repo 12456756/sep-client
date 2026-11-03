@@ -51,3 +51,33 @@ test('multipart upload streams the same bytes with only its upload grant', async
   assert.match(streamed, /name="file"; filename="skill.zip"/)
   assert.match(streamed, /zip123/)
 })
+
+test('non-JSON errors retain HTTP retry information without retrying client errors', async () => {
+  for (const status of [400, 429, 503]) {
+    const api = new SkillImportApi('https://sep.example/api', (async () => new Response('<html>Temporarily unavailable</html>', {
+      status, headers: { 'Retry-After': '2' },
+    })) as typeof fetch)
+    await assert.rejects(api.request('GET', 'pairings', z.unknown(), { signal: new AbortController().signal }), error => {
+      assert.ok(error instanceof SkillImportApiError)
+      assert.equal(error.status, status)
+      assert.equal(error.retryable, status !== 400)
+      assert.equal(error.retryAfterMs, 2000)
+      assert.doesNotMatch(error.message, /html|Temporarily/)
+      return true
+    })
+  }
+})
+
+test('malformed successful responses remain invalid even when the response schema accepts unknown', async () => {
+  const api = new SkillImportApi('https://sep.example/api', (async () => new Response('<html>Invalid API response</html>', {
+    headers: { 'Retry-After': '2' },
+  })) as typeof fetch)
+  await assert.rejects(api.request('GET', 'pairings', z.unknown(), { signal: new AbortController().signal }), error => {
+    assert.ok(error instanceof SkillImportApiError)
+    assert.equal(error.code, 'INVALID_RESPONSE')
+    assert.equal(error.status, 200)
+    assert.equal(error.retryable, false)
+    assert.equal(error.retryAfterMs, 0)
+    return true
+  })
+})
