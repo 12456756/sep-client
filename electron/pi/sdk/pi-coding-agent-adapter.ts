@@ -917,6 +917,12 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
           snapshot = await requestTracker?.prepare(options?.signal)
         } catch (error) {
           settingsManager.setRetryEnabled(false)
+          if (error instanceof AppError && requestTracker?.failure === error) {
+            log.error('model request preparation failed', {
+              runId: config.runId, model: config.modelId, taskTitle: config.taskTitle, nodeTitle: config.nodeTitle,
+              errorCode: error.code, ...error.details,
+            })
+          }
           throw error
         }
         const systemPrompt = config.transformSystemPrompt && context.systemPrompt
