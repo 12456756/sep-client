@@ -177,6 +177,147 @@ test('starts one message at a time after cleanup, preserves order, pauses on fai
   } finally { await f.cleanup() }
 })
 
+test('prioritizes a waiting message, interrupts outside the queue lock, and preserves the remaining order', async () => {
+  const f = await fixture()
+  const service = new ConversationQueueService({ ...f.options, interruptCurrent: async taskId => {
+    assert.equal(taskId, 'task')
+    f.task.activeRunId = null
+    f.task.lastRunId = 'initial'
+    f.task.status = 'interrupted'
+    await service.settled(taskId, 'initial')
+  } })
+  try {
+    await f.enqueue('message-a')
+    await f.enqueue('message-b')
+    await f.enqueue('message-c')
+    assert.deepEqual(f.started, [])
+
+    await service.prioritize('task', 'message-b')
+
+    assert.deepEqual(f.started, ['message-b'])
+    assert.deepEqual((await service.view('task')).items.map(item => item.id), ['message-a', 'message-c'])
+  } finally { service.stop(); await f.cleanup() }
+})
+
+test('allows a second priority request when the previous run settles after its replacement starts', async () => {
+  const f = await fixture()
+  const interruptedRuns: string[] = []
+  const service = new ConversationQueueService({ ...f.options, interruptCurrent: async (_taskId, runId) => {
+    interruptedRuns.push(runId)
+    f.task.activeRunId = null
+    f.task.lastRunId = runId
+    f.task.status = 'interrupted'
+  } })
+  try {
+    await f.enqueue('message-a')
+    await f.enqueue('message-b')
+    await f.enqueue('message-c')
+    await f.enqueue('message-d')
+
+    await service.prioritize('task', 'message-a')
+    assert.equal(f.task.activeRunId, 'message-a')
+
+    // The old marker still exists until its asynchronous settlement callback arrives.
+    await service.prioritize('task', 'message-b')
+    assert.equal(f.task.activeRunId, 'message-b')
+
+    await service.settled('task', 'initial')
+    await service.prioritize('task', 'message-c')
+    assert.equal(f.task.activeRunId, 'message-c')
+
+    // A stale settlement must not clear the marker for the currently interrupted run.
+    await service.settled('task', 'message-a')
+    await service.settled('task', 'message-b')
+    await service.prioritize('task', 'message-d')
+
+    assert.deepEqual(interruptedRuns, ['initial', 'message-a', 'message-b', 'message-c'])
+    assert.equal(f.task.activeRunId, 'message-d')
+    assert.deepEqual((await service.view('task')).items, [])
+  } finally { service.stop(); await f.cleanup() }
+})
+
+for (const outcome of ['completed', 'failed', 'cancelled', 'logout'] as const) {
+  test(`an empty-queue retry clears the old pause and handles ${outcome} without losing follow-ups`, async () => {
+    const f = await fixture()
+    let retries = 0
+    const service = new ConversationQueueService({ ...f.options, retry: async () => {
+      retries++; await f.options.retry()
+    } })
+    try {
+      f.task.lastRunId = 'initial'; f.task.activeRunId = null; f.task.status = 'failed'
+      await service.settled('task', 'initial')
+      assert.equal((await service.view('task')).paused, true)
+      await Promise.all([service.resume('task', { retryOriginal: true }), service.resume('task', { retryOriginal: true })])
+      assert.equal(retries, 1)
+      assert.equal((await service.view('task')).paused, false)
+      await service.enqueue('task', { id: 'later', prompt: 'later' }, async () => ({}))
+      await service.enqueue('task', { id: 'last', prompt: 'last' }, async () => ({}))
+      assert.deepEqual(f.started, [])
+      if (outcome === 'cancelled') await service.cancel('task')
+      if (outcome === 'logout') service.stop()
+      f.task.lastRunId = 'retry-initial'; f.task.activeRunId = null
+      f.task.status = outcome === 'failed' ? 'failed' : 'completed'
+      await service.settled('task', 'retry-initial')
+      assert.deepEqual(f.started, outcome === 'completed' ? ['later'] : [])
+      if (outcome === 'failed') assert.equal((await service.view('task')).paused, true)
+      if (outcome === 'completed') {
+        f.task.lastRunId = 'later'; f.task.activeRunId = null
+        await service.settled('task', 'later')
+        assert.deepEqual(f.started, ['later', 'last'])
+      }
+    } finally { service.stop(); await f.cleanup() }
+  })
+}
+
+test('empty-queue retry admission failure restores the pause and preserves the error', async () => {
+  const f = await fixture()
+  const failure = new Error('worker unavailable')
+  const service = new ConversationQueueService({ ...f.options, retry: async () => { throw failure } })
+  try {
+    f.task.status = 'failed'; f.task.activeRunId = null; f.task.lastRunId = 'initial'
+    await assert.rejects(service.resume('task', { retryOriginal: true }), error => error === failure)
+    assert.equal((await service.view('task')).paused, true)
+    await service.enqueue('task', { id: 'later', prompt: 'later' }, async () => ({}))
+    await service.view('task')
+    assert.deepEqual(f.started, [])
+  } finally { service.stop(); await f.cleanup() }
+})
+
+test('submission distinguishes an idle send from a running task with an empty queue', async () => {
+  const f = await fixture()
+  try {
+    f.task.status = 'completed'; f.task.activeRunId = null; f.task.lastRunId = 'initial'
+    assert.equal((await f.enqueue('immediate')).queued, false)
+    await f.service.view('task')
+    assert.deepEqual(f.started, ['immediate'])
+    assert.equal((await f.enqueue('waiting')).queued, true)
+    assert.equal((await f.enqueue('last')).queued, true)
+    await f.service.view('task')
+    assert.deepEqual(f.started, ['immediate'])
+  } finally { f.service.stop(); await f.cleanup() }
+})
+
+test('worker cleanup still requires waiting even after the active run id is cleared', async () => {
+  const f = await fixture()
+  const service = new ConversationQueueService({ ...f.options, isBusy: () => true })
+  try {
+    f.task.status = 'completed'; f.task.activeRunId = null; f.task.lastRunId = 'initial'
+    assert.equal((await service.enqueue('task', { id: 'later', prompt: 'later' }, async () => ({}))).queued, true)
+    await service.view('task')
+    assert.deepEqual(f.started, [])
+  } finally { service.stop(); await f.cleanup() }
+})
+
+test('an existing waiting message reports queuing even when no run is active', async () => {
+  const f = await fixture()
+  try {
+    f.task.status = 'failed'; f.task.activeRunId = null
+    await f.enqueue('waiting')
+    assert.equal((await f.enqueue('later')).queued, true)
+    assert.deepEqual(f.started, [])
+  } finally { f.service.stop(); await f.cleanup() }
+})
+
 test('restores a paused queue, keeps account isolation and cancels pending work on stop', async () => {
   const f = await fixture()
   try {

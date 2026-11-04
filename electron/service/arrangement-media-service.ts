@@ -6,7 +6,6 @@ import { ArrangementMediaSubmissionError, ArrangementMediaRecoveryError } from '
 import { arrangementMediaMimeByFormat } from '../domain/arrangement-plan'
 import type { MediaStorePort } from '../domain/media'
 import type { VideoStorePort } from '../domain/video-media'
-import { videoSpecAcceptance } from '../domain/video-media'
 import type { MediaJobCreated, MediaRunPort } from '../domain/media-tools'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { ArrangementCheckpointStorePort } from '../data/arrangement-checkpoint-store'
@@ -148,13 +147,9 @@ export class ArrangementMediaService implements ArrangementMediaPort {
     }
     const recoverJobIds = [...links.values()].map(link => link.jobId)
     const assertAcceptedOutput = async (link: ArrangementMediaLink) => {
-      const mismatched = link.kind === 'image'
-        ? (await this.options.images.getJob(scope, input.taskId, link.jobId))?.errorCode === 'OUTPUT_SPEC_MISMATCH'
-        : await (async () => {
-          const job = await this.options.videos?.getJob({ ...scope, subscriptionId: link.subscriptionId }, input.taskId, link.jobId)
-          return job ? videoSpecAcceptance(job).acceptance === 'mismatched' : false
-        })()
-      if (mismatched) throw new ArrangementMediaSubmissionError('原媒体输出与请求规格不符，不能作为最终交付。已保留原任务和文件，请处理规格差异后继续，不要重新提交生成。')
+      if (link.kind === 'image' && (await this.options.images.getJob(scope, input.taskId, link.jobId))?.errorCode === 'OUTPUT_SPEC_MISMATCH') {
+        throw new ArrangementMediaSubmissionError('原图片输出与请求规格不符，不能作为最终交付。已保留原任务和文件，请处理规格差异后继续，不要重新提交生成。')
+      }
     }
     const describe = async () => {
       await writes.run('links', refresh)

@@ -39,7 +39,7 @@ export const conversationRoutes = [
   }), { invalidMessage: CREATE_TASK_INVALID }),
 
   route(INVOKE_CHANNELS.TASK_CONTINUE, continueInput, async (ctx, input) => {
-    await ctx.conversations.continue({
+    const result = await ctx.conversations.continue({
       messageId: input.messageId ?? randomUUID(),
       taskId: input.taskId,
       prompt: input.prompt,
@@ -51,7 +51,7 @@ export const conversationRoutes = [
       ...(input.attachmentSessionId ? { attachmentSessionId: input.attachmentSessionId } : {}),
       ...(input.attachmentRefs ? { attachmentRefs: input.attachmentRefs } : {}),
     })
-    return { success: true }
+    return { success: true, queued: result.queued }
   }, { invalidMessage: '需要有效的任务与消息内容。' }),
 
   route(INVOKE_CHANNELS.CONVERSATION_QUEUE, conversationQueueInputSchema, async (ctx, input) => ({

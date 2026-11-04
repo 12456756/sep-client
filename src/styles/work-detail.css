@@ -42,8 +42,13 @@
 .ent-work-hub .ent-wk-inspector .ent-panel { box-shadow: none; }
 .ent-work-hub .ent-wk-inspector .ent-work-process :is(.ent-wk-activity-list, .ent-timeline) { max-height: none; overflow: visible; }
 .ent-work-hub .ent-wk-info-facts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; color: var(--ent-ink-2); font-size: 12px; overflow-wrap: anywhere; }
-.ent-work-hub .ent-failed-node-copy { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; }
-.ent-work-hub .ent-failed-node-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.ent-work-hub .ent-wk-detail-main > .ent-failure-notice { flex-direction: column; align-items: stretch; gap: 4px; padding-block: 6px; }
+.ent-failure-row { display: flex; align-items: center; gap: 12px; min-width: 0; width: 100%; }
+.ent-failure-row .ent-failure-reason { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--ent-danger); font-size: 12px; line-height: 1.6; text-overflow: ellipsis; white-space: nowrap; }
+.ent-failure-retry-hint { display: inline-flex; flex: 0 0 auto; }
+.ent-failure-row .ent-failure-retry { flex: 0 0 auto; width: 28px; height: 28px; min-width: 28px; padding: 0; border-radius: 4px; color: var(--ent-danger); }
+.ent-failure-row .ent-failure-retry:hover:not(:disabled) { background: var(--ent-danger-bg); }
+.ent-failure-row .ent-failure-retry:focus-visible { outline: 2px solid var(--ent-danger); outline-offset: 2px; }
 .ent-work-hub .ent-wk-inspector .ent-wk-grid { display: flex; flex-direction: column; gap: 16px; }
 .ent-work-hub .ent-wk-inspector .ent-wk-files { max-height: none; overflow: visible; }
 .ent-work-hub .ent-wk-inspector .ent-wk-file-actions { flex-wrap: wrap; }

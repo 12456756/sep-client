@@ -176,7 +176,7 @@ export function WorkConversation({ work, workspace, onClose }: ConversationProps
           {queued.queue.items.length > 0 || queued.queue.failed ? <details className="ent-conversation-queue">
             <summary>等待处理 {queued.queue.items.length}/10{queued.queue.paused ? ' · 已暂停' : ''}</summary>
             {queued.queue.failed ? <p>未完成：{queued.queue.failed.prompt}</p> : null}
-            <ol>{queued.queue.items.map(item => <li key={item.id}>{item.prompt}{item.attachmentNames.length ? <small>附件：{item.attachmentNames.join('、')}</small> : null}</li>)}</ol>
+            <ol>{queued.queue.items.map(item => <li key={item.id}><span>{item.prompt}{item.attachmentNames.length ? <small>附件：{item.attachmentNames.join('、')}</small> : null}</span>{work.isActive && !queued.queue.paused ? <button type="button" className="ent-btn sm ghost" disabled={queued.busy} onClick={() => void queued.prioritize(item.id)}>优先执行</button> : null}</li>)}</ol>
             {queued.queue.failed?.recoveryConfirmationRequired ? <p>会话文件已损坏，需要确认后根据任务历史重建上下文。</p> : null}
             {queued.queue.paused ? <button type="button" className="ent-btn sm" disabled={queued.busy || work.isActive} onClick={() => void (queued.queue.failed?.recoveryConfirmationRequired ? queued.recover() : queued.resume())}>{queued.queue.failed?.recoveryConfirmationRequired ? '重建会话并继续' : queued.queue.failed || work.status === 'failed' ? '重试并继续' : '继续处理'}</button> : null}
             {over ? <button type="button" className="ent-btn sm ghost" disabled={workspace.busy} onClick={() => void workspace.stopWork(work.id, '用户终止了这项工作')}>终止</button> : null}

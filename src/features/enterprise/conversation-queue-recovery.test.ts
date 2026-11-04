@@ -6,7 +6,7 @@ import { compileFunction } from 'node:vm'
 import ts from 'typescript'
 import { FeedbackController } from '../../shared/feedback-controller'
 import { feedbackMessage, responseError } from '../../shared/arrangement-feedback'
-import { conversationQueueViewSchema, type ConversationQueueInput } from '../../shared/conversation-queue'
+import { conversationQueueInputSchema, conversationQueueViewSchema, type ConversationQueueInput } from '../../shared/conversation-queue'
 
 function mountQueue() {
   const feedback = new FeedbackController()
@@ -56,6 +56,17 @@ test('rebuilding a failed queue message sends explicit confirmation only after t
   await pending
   assert.deepEqual(ui.requests[1], { taskId: 'task', action: 'recover', messageId: 'failed', confirmRecovery: true })
   assert.equal(ui.render().queue.failed, null)
+})
+
+test('priority execution remains available alongside explicit damaged-session recovery', async () => {
+  const input = { taskId: 'task', action: 'prioritize', entryId: 'waiting' } as const
+  assert.deepEqual(conversationQueueInputSchema.parse(input), input)
+  assert.equal(conversationQueueInputSchema.safeParse({ taskId: 'task', action: 'prioritize' }).success, false)
+  assert.equal(conversationQueueInputSchema.safeParse({ ...input, entryId: '../invalid' }).success, false)
+  const ui = mountQueue()
+  await ui.render().prioritize('waiting')
+  assert.deepEqual(ui.requests, [input])
+  assert.equal(ui.feedback.getSnapshot(), null)
 })
 
 test('cancelled or stale recovery confirmation cannot send a reconstruction request', async () => {

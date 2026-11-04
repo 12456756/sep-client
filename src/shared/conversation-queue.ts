@@ -11,6 +11,7 @@ export const conversationQueueItemSchema = z.object({
 export const conversationQueueInputSchema = z.discriminatedUnion('action', [
   z.object({ taskId: z.string().min(1), action: z.literal('get') }).strict(),
   z.object({ taskId: z.string().min(1), action: z.literal('resume') }).strict(),
+  z.object({ taskId: z.string().min(1), action: z.literal('prioritize'), entryId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/) }).strict(),
   z.object({
     taskId: z.string().min(1), action: z.literal('recover'),
     messageId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/), confirmRecovery: z.literal(true),

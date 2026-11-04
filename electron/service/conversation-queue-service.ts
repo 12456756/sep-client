@@ -16,6 +16,7 @@ interface Options {
   isBusy?(taskId: string): boolean
   start(taskId: string, entry: ConversationQueueEntry, signal: AbortSignal): Promise<void>
   retry(taskId: string, signal: AbortSignal): Promise<void>
+  interruptCurrent?(taskId: string, runId: string): Promise<void>
   startInitial?(taskId: string, signal: AbortSignal): Promise<void>
   onInitialFailure?(taskId: string, error: unknown, scope: TaskOwnerScope, signal: AbortSignal): Promise<void>
   onFailure?(taskId: string, entry: ConversationQueueEntry, error: unknown, scope: TaskOwnerScope, subscriptionId: string): void
@@ -106,6 +107,12 @@ export class ConversationQueueService {
           await this.options.store.save(scope, record)
           assert()
         }
+        if (record.priorityInterruptRunId) {
+          delete record.priorityInterruptRunId
+          record.paused = true
+          await this.options.store.save(scope, record)
+          assert()
+        }
         this.loaded.add(key)
       }
       return operation(record, task, assert, signal)
@@ -123,22 +130,25 @@ export class ConversationQueueService {
     return this.access(taskId, async record => this.viewOf(record))
   }
 
-  async enqueue(taskId: string, input: { id: string; prompt: string; requestKey?: string }, prepare: () => Promise<Partial<Prepared>>): Promise<ConversationQueueView> {
+  async enqueue(taskId: string, input: { id: string; prompt: string; requestKey?: string }, prepare: () => Promise<Partial<Prepared>>): Promise<ConversationQueueView & { queued: boolean }> {
     const lifecycle = this.controller.signal
     const view = await this.access(taskId, async (record, task, assert) => {
       const duplicate = record.entries.find(entry => entry.id === input.id)
       if (duplicate) {
         if (duplicate.prompt !== input.prompt || duplicate.requestKey !== input.requestKey) throw new AppError('INVALID_ARGUMENT')
-        return this.viewOf(record)
+        return { ...this.viewOf(record), queued: duplicate.status === 'waiting' }
       }
       if (record.entries.filter(entry => entry.status === 'waiting').length >= CONVERSATION_QUEUE_LIMIT) throw new AppError('CONVERSATION_QUEUE_FULL')
       const prepared = await prepare()
       assert()
       if (!task.activeRunId && !record.entries.some(entry => ['waiting', 'active', 'failed'].includes(entry.status)) && !['failed', 'interrupted'].includes(task.status) && task.executionHealth !== 'start-failed') record.paused = false
+      const queued = !!task.activeRunId || this.initialStarts.has(taskId) || !!this.options.isBusy?.(taskId)
+        || record.paused || task.status === 'pending' && !task.lastRunId || task.executionHealth === 'start-failed'
+        || record.entries.some(entry => ['waiting', 'active', 'failed'].includes(entry.status))
       record.entries.push({ ...prepared, ...input, runId: input.id, createdAt: Date.now(), status: 'waiting', attachmentNames: prepared.attachmentNames ?? [] })
       await this.options.store.save(record.owner, record)
       assert()
-      return this.viewOf(record)
+      return { ...this.viewOf(record), queued }
     })
     if (!lifecycle.aborted) void this.drain(taskId).catch(error => {
       if (!lifecycle.aborted) log.warn('queue scheduling failed', { taskId, error })
@@ -175,21 +185,32 @@ export class ConversationQueueService {
     const current = this.options.scope.currentScope()
     if (this.controller.signal.aborted || !current || owner && (owner.memberId !== current.memberId || owner.enterpriseId !== current.enterpriseId)) return Promise.resolve()
     return this.access(taskId, async (record, task, assert, signal) => {
+      if (task.activeRunId || task.lastRunId !== runId) {
+        if (record.priorityInterruptRunId === runId && task.activeRunId !== runId) {
+          delete record.priorityInterruptRunId
+          await this.options.store.save(record.owner, record)
+          assert()
+        }
+        return
+      }
       const entry = record.entries.find(item => item.runId === runId && ['active', 'failed'].includes(item.status))
-      if (task.activeRunId || task.lastRunId !== runId) return
       if (entry) entry.status = task.status === 'completed' ? 'completed' : 'failed'
-      if (['failed', 'interrupted'].includes(task.status)) record.paused = true
+      const priorityInterrupt = record.priorityInterruptRunId === runId && task.status === 'interrupted'
+      if (record.priorityInterruptRunId === runId) delete record.priorityInterruptRunId
+      if (priorityInterrupt) record.paused = false
+      else if (['failed', 'interrupted'].includes(task.status)) record.paused = true
       await this.options.store.save(record.owner, record)
       assert()
       await this.advance(record, task, assert, signal)
     })
   }
 
-  resume(taskId: string, recovery?: { messageId: string; confirmed: true }): Promise<void> {
+  resume(taskId: string, options: { retryOriginal?: boolean; messageId?: string; confirmed?: true } = {}): Promise<void> {
     return this.access(taskId, async (record, task, assert, signal) => {
       if (task.activeRunId || this.initialStarts.has(task.id) || this.options.isBusy?.(task.id)) return
       const failed = record.entries.find(item => item.status === 'failed')
-      if (recovery && (!failed?.recoveryConfirmationRequired || failed.id !== recovery.messageId || recovery.confirmed !== true)) throw new AppError('INVALID_STATE')
+      const recovery = options.messageId !== undefined || options.confirmed !== undefined
+      if (recovery && (!failed?.recoveryConfirmationRequired || failed.id !== options.messageId || options.confirmed !== true)) throw new AppError('INVALID_STATE')
       if (failed?.recoveryConfirmationRequired) {
         if (!recovery) throw new AppError('RECOVERY_CONFIRMATION_REQUIRED')
         failed.mode = 'confirm_rebuild'
@@ -204,13 +225,64 @@ export class ConversationQueueService {
         this.scheduleInitial(taskId)
         return
       }
-      if (!failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed') && record.entries.some(item => item.status === 'waiting')) {
+      if (!failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed'
+        || options.retryOriginal && !record.entries.some(item => item.status === 'waiting'))) {
         try { await this.options.retry(taskId, signal); assert() }
         catch (error) { assert(); record.paused = true; await this.options.store.save(record.owner, record); throw error }
         return
       }
       await this.advance(record, task, assert, signal, !!failed)
     })
+  }
+
+  async prioritize(taskId: string, entryId: string): Promise<void> {
+    const shouldInterrupt = await this.access(taskId, async (record, task, assert) => {
+      if (record.priorityInterruptRunId) {
+        const previousRunSettled = task.lastRunId === record.priorityInterruptRunId
+          && ['completed', 'failed', 'interrupted', 'paused'].includes(task.status)
+        const previousRunReplaced = !!task.activeRunId && task.activeRunId !== record.priorityInterruptRunId
+        if (!previousRunSettled && !previousRunReplaced) throw new AppError('INVALID_STATE')
+        delete record.priorityInterruptRunId
+      }
+      const index = record.entries.findIndex(entry => entry.id === entryId && entry.status === 'waiting')
+      if (index < 0) throw new AppError('NOT_FOUND')
+      const [entry] = record.entries.splice(index, 1)
+      record.entries.unshift(entry!)
+      const activeRunId = task.activeRunId
+      if (activeRunId) {
+        record.priorityInterruptRunId = activeRunId
+        record.paused = false
+      }
+      await this.options.store.save(record.owner, record)
+      assert()
+      return activeRunId
+    })
+    if (!shouldInterrupt) {
+      await this.drain(taskId)
+      return
+    }
+    if (!this.options.interruptCurrent) throw new AppError('INVALID_STATE')
+    try {
+      await this.options.interruptCurrent(taskId, shouldInterrupt)
+      await this.access(taskId, async (record, _task, assert) => {
+        if (record.priorityInterruptRunId !== shouldInterrupt) return
+        const interrupted = record.entries.find(entry => entry.runId === shouldInterrupt && entry.status === 'active')
+        if (interrupted) interrupted.status = 'failed'
+        await this.options.store.save(record.owner, record)
+        assert()
+      })
+    } catch (error) {
+      await this.access(taskId, async (record, _task, assert) => {
+        if (record.priorityInterruptRunId === shouldInterrupt) {
+          delete record.priorityInterruptRunId
+          record.paused = true
+          await this.options.store.save(record.owner, record)
+          assert()
+        }
+      })
+      throw error
+    }
+    await this.drain(taskId)
   }
 
   cancel(taskId: string, stop?: () => Promise<void>): Promise<void> {

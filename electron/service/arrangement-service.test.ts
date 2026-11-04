@@ -948,6 +948,58 @@ describe('ArrangementService', () => {
     assert.equal(planningCalls, 0)
   })
 
+  it('pins an approved applicant to the exact unresolved step during recheck', async () => {
+    let received: PlannerInput | undefined
+    let refreshed = false
+    const harness = planningHarness(async input => {
+      received = input
+      return { title: '客户反馈分析', nodes: [{ ...plannedNode, id: 'approved-node', stepId: 'step-1', subscriptionId: 'sub-enterprise' }], unresolvedSteps: [] }
+    }, { employees: {
+      async refresh() { refreshed = true },
+      async list() { assert.ok(refreshed); return [{ ...employee(), employeeId: 'employee-enterprise', subscriptionId: 'sub-enterprise', name: '企业分析员工' }, employee()] },
+    } })
+    const source = awaitingEmployeeDraft()
+    harness.setStored(persisted({ ...source, employeeAccessRequests: [{
+      requestId: 'request-a', stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'enterprise:old-subscription',
+      source: 'enterprise', name: '企业分析员工', status: 'APPROVED', requestedCapabilities: ['客户分析'],
+      createdAt: '2026-09-29T00:00:00.000Z', updatedAt: '2026-09-29T00:00:00.000Z',
+    }] }))
+
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
+    await eventually(() => harness.stored?.status !== 'planning')
+
+    assert.deepEqual(received?.draft.approvedEmployeeAssignments, [{ stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'sub-enterprise' }])
+    assert.equal(harness.stored?.nodes.find(node => node.stepId === 'step-1')?.subscriptionId, 'sub-enterprise')
+    assert.deepEqual(harness.stored?.unresolvedSteps, [])
+  })
+
+  for (const failure of ['missing', 'inactive', 'no-model', 'refresh-error', 'conflicting', 'reassigned', 'unresolved'] as const) {
+    it(`does not silently replace an approved applicant when ${failure}`, async () => {
+      let planningCalls = 0
+      const harness = planningHarness(async () => {
+        planningCalls++
+        return { title: 'Approved work', nodes: failure === 'unresolved' ? [] : [{ ...plannedNode, stepId: 'step-1' }],
+          unresolvedSteps: failure === 'unresolved' ? awaitingEmployeeDraft().unresolvedSteps : [] }
+      }, { employees: {
+        async refresh() { if (failure === 'refresh-error') throw new Error('Directory unavailable') },
+        async list() { return [employee(), ...(failure === 'missing' ? [] : [{ ...employee(), employeeId: 'employee-enterprise', subscriptionId: 'sub-enterprise',
+          status: failure === 'inactive' ? 'EXPIRED' : 'ACTIVE', allowedModels: failure === 'no-model' ? [] : ['model-a'] }])] },
+      } })
+      const request = { requestId: 'request-a', stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'enterprise:old-subscription',
+        source: 'enterprise' as const, name: 'Approved employee', status: 'APPROVED' as const, requestedCapabilities: ['Analysis'],
+        createdAt: '2026-09-29T00:00:00.000Z', updatedAt: '2026-09-29T00:00:00.000Z' }
+      harness.setStored(persisted({ ...awaitingEmployeeDraft(), employeeAccessRequests: [request,
+        ...(failure === 'conflicting' ? [{ ...request, requestId: 'request-b', employeeId: 'other-employee' }] : [])] }))
+      await harness.service.startPlanning('draft-a', 1, 'model-a')
+      await eventually(() => harness.stored?.status !== 'planning')
+      assert.equal(harness.stored?.lastPlanning?.status, 'failed')
+      assert.equal(planningCalls, ['reassigned', 'unresolved'].includes(failure) ? 1 : 0)
+      assert.equal(harness.stored?.unresolvedSteps?.[0]?.stepId, 'step-1')
+      assert.deepEqual(harness.stored?.nodes, [])
+      assert.equal(harness.taskCreates(), 0)
+    })
+  }
+
   it('starts auto planning, emits progress, and creates no Task before confirmation', async () => {
     const gate = deferred<ArrangementPlanningResult>()
     const harness = planningHarness(async () => gate.promise)

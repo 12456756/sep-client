@@ -62,6 +62,19 @@ export function useConversationQueue(taskId: string, scopeKey: string) {
     }
     finally { if (version === generation.current) { resuming.current = false; setBusy(false) } }
   }, [taskId, capture, refresh])
+  const prioritize = useCallback(async (entryId: string) => {
+    if (resuming.current) return
+    resuming.current = true
+    const version = generation.current, notice = capture()
+    setBusy(true)
+    try {
+      const result = await window.electronAPI.conversationQueue({ taskId, action: 'prioritize', entryId })
+      if (version !== generation.current || !notice.isCurrent()) return
+      if (!result.success) throw responseError(result, 'workRetry')
+      setQueue(conversationQueueViewSchema.parse(result.queue))
+    } catch (error) { if (version === generation.current && notice.isCurrent()) notice.fail(error, 'workRetry') }
+    finally { if (version === generation.current) { resuming.current = false; setBusy(false) } }
+  }, [taskId, capture])
   const recover = useCallback(async () => {
     const failed = queue.failed, notice = capture()
     if (!failed?.recoveryConfirmationRequired) return
@@ -72,5 +85,5 @@ export function useConversationQueue(taskId: string, scopeKey: string) {
       onConfirm: () => notice.isCurrent() ? resume(failed.id) : Promise.resolve({ success: false }),
     })
   }, [queue.failed, capture, feedback, scopeKey, taskId, resume])
-  return { queue, busy, refresh, resume: () => resume(), recover }
+  return { queue, busy, refresh, resume: () => resume(), recover, prioritize }
 }

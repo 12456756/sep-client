@@ -857,7 +857,7 @@ export function useEnterpriseWorkspace({ userId, userName, enterpriseId, enterpr
       const result = await window.electronAPI.continueTask({ taskId: workId, messageId, prompt, knowledge, ...(attachments.length ? { attachmentSessionId, attachmentRefs: attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })) } : {}) });
       if (!notice.isCurrent()) return false;
       if (!result.success) throw responseError(result, 'workSend');
-      notice.show('任务已加入队列', 'success', `conversation-queued:${workId}:${messageId}`);
+      if (result.queued === true) notice.show('任务已加入队列', 'success', `conversation-queued:${workId}:${messageId}`);
       return true;
     } catch (error) { if (notice.isCurrent()) notice.fail(error, 'workSend'); return false; }
   }, [captureFeedback]);

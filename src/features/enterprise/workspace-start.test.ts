@@ -131,7 +131,7 @@ test('shows queue success only after the additional message was persisted and do
   const ui = mountWorkspace(undefined, { continueTask: () => new Promise(resolve => { finish = resolve }) })
   const pending = ui.render().sendMessage('task', '追加信息', [], undefined, undefined, 'message')
   assert.deepEqual(ui.notices, [])
-  finish({ success: true })
+  finish({ success: true, queued: true })
   assert.equal(await pending, true)
   assert.deepEqual(ui.notices, [{ message: '任务已加入队列', tone: 'success' }])
 
@@ -139,4 +139,11 @@ test('shows queue success only after the additional message was persisted and do
   assert.equal(await rejected.render().sendMessage('task', '追加信息'), false)
   assert.deepEqual(rejected.notices, [])
   assert.equal(rejected.failures.length, 1)
+})
+
+test('an idle additional message succeeds without a queued notice', async () => {
+  const ui = mountWorkspace(undefined, { async continueTask() { return { success: true, queued: false } } })
+  assert.equal(await ui.render().sendMessage('task', '立即执行'), true)
+  assert.deepEqual(ui.notices, [])
+  assert.deepEqual(ui.failures, [])
 })

@@ -85,19 +85,19 @@ test('a persisted reply revision applies to new jobs without mutating the frozen
   assert.equal(f.node.mediaRequirements![0]!.specRevision, 2)
 })
 
-for (const kind of ['image', 'video'] as const) test(`${kind} outputs with confirmed spec mismatch cannot be automatically or explicitly delivered`, async () => {
+for (const kind of ['image', 'video'] as const) test(`${kind} output spec mismatch handling`, async () => {
   const owner = { memberId: 'member', enterpriseId: 'enterprise' }
   const operation = kind === 'image' ? 'generate' : 'text-to-video'
   const node: ArrangementNode = { id: 'node', subscriptionId: 'employee', modelId: 'model', title: 'Media', instruction: 'Generate media',
     expectedOutput: 'Media', dependsOn: [], skillIds: [], deliverables: [{ id: 'result', path: kind === 'image' ? 'result.png' : 'result.mp4',
       name: 'Result', contentOutline: [], acceptanceCriteria: [], format: kind === 'image' ? 'png' : 'mp4', artifact: { kind, source: 'media-output', operation } }] }
   const link: ArrangementMediaLink = { version: 1, owner, taskId: 'task', arrangementRunId: 'arrangement', nodeId: 'node', nodeRunId: 'run',
-    attempt: 1, subscriptionId: 'employee', kind, operation, jobId: 'job', inputs: [], outputs: [{ artifactId: 'artifact', sha256: 'a'.repeat(64), status: 'saved' }],
+    attempt: 1, subscriptionId: 'employee', kind, operation, jobId: 'job', requirementId: 'video', specRevision: 2, inputs: [], outputs: [{ artifactId: 'artifact', sha256: 'a'.repeat(64), status: 'saved' }],
     materializations: [], createdAt: 1, updatedAt: 1 }
   const imageJob = { runId: 'run', subscriptionId: 'employee', error: null, errorCode: 'OUTPUT_SPEC_MISMATCH' }
   const videoJob = { runId: 'run', request: videoRequestWithIdentitySchema.parse({ ...videoFixture.request, protocolVersion: 3, specRevision: 1,
     parameters: { width: videoFixture.output.width + 1 }, requestedSpec: { width: videoFixture.output.width + 1 }, parameterSources: {} }),
-    receipt: videoReceiptSchema.parse({ ...videoFixture.receipts.succeeded, outputs: [videoFixture.output] }) }
+    receipt: videoReceiptSchema.parse({ ...videoFixture.receipts.succeeded, acceptance: 'mismatched', deliveryStatus: 'mismatched', outputs: [videoFixture.output] }) }
   const before = structuredClone(kind === 'image' ? imageJob : videoJob)
   let materialized = 0
   const options = {
@@ -107,13 +107,23 @@ for (const kind of ['image', 'video'] as const) test(`${kind} outputs with confi
     links: { list: async () => [link], upsert: async (_scope: unknown, value: ArrangementMediaLink) => value },
     images: { listJobs: async () => [], getJob: async () => imageJob }, videos: { listJobs: async () => [], getJob: async () => videoJob },
     assets: { outputs: async () => [{ artifactId: 'artifact', kind, sha256: 'a'.repeat(64), size: 1, mime: kind === 'image' ? 'image/png' : 'video/mp4', status: 'saved' }],
-      materialize: async () => { materialized++ } }, media: {},
+      materialize: async () => { materialized++; return { id: 'result', path: 'result.mp4', format: 'mp4', size: 1,
+        sha256: 'a'.repeat(64), sourceArtifact: { kind: 'video', artifactId: 'artifact', sha256: 'a'.repeat(64) }, nodeRunId: 'run', validatedAt: 1 } } }, media: {},
   } as unknown as ArrangementMediaServiceOptions
   const session = await new ArrangementMediaService(options).prepareNode({ taskId: 'task', arrangementRunId: 'arrangement', nodeRunId: 'run', attempt: 1, planHash: 'hash', node, signal: new AbortController().signal })
-  await assert.rejects(session.automaticSubmission(), /规格不符/)
-  await assert.rejects(session.materialize({ nodeId: 'node', summary: 'Done', finalDeliverables: [{ id: 'result', path: node.deliverables![0]!.path }],
-    mediaDeliverables: [{ deliverableId: 'result', artifactId: 'artifact' }] }), /规格不符/)
-  assert.equal(materialized, 0)
+  if (kind === 'image') {
+    await assert.rejects(session.automaticSubmission(), /规格不符/)
+    await assert.rejects(session.materialize({ nodeId: 'node', summary: 'Done', finalDeliverables: [{ id: 'result', path: node.deliverables![0]!.path }],
+      mediaDeliverables: [{ deliverableId: 'result', artifactId: 'artifact' }] }), /规格不符/)
+    assert.equal(materialized, 0)
+  } else {
+    const submission = await session.automaticSubmission()
+    assert.ok(submission)
+    assert.deepEqual(submission.mediaDeliverables, [{ deliverableId: 'result', artifactId: 'artifact' }])
+    const files = await session.materialize(submission)
+    assert.equal(files[0]?.sourceArtifact?.artifactId, 'artifact')
+    assert.equal(materialized, 1)
+  }
   assert.deepEqual(kind === 'image' ? imageJob : videoJob, before)
   assert.deepEqual(link.materializations, [])
 })

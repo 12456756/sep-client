@@ -184,6 +184,27 @@ describe('task timeline admission', () => {
 })
 
 describe('task start failure recording', () => {
+  for (const fails of [false, true]) it(`routes an empty conversation retry through its queue and records admission failure=${fails}`, async () => {
+    const failure = new Error('worker unavailable')
+    let recorded: string | undefined
+    let resumed = 0
+    const service = harness({
+      taskManager: { async getTask() { return task }, async recordStartFailure(_id: string, error: string) { recorded = error } },
+      conversationQueue: {
+        async view() { return { paused: true, items: [], failed: null } },
+        async resume(id: string, options: unknown) {
+          assert.equal(id, task.id); assert.deepEqual(options, { retryOriginal: true }); resumed++
+          if (fails) throw failure
+        },
+      },
+      execution: async () => { assert.fail('conversation retry must be owned by the queue') },
+    })
+    if (fails) await assert.rejects(service.retry(task.id), error => error === failure)
+    else await service.retry(task.id)
+    assert.equal(resumed, 1)
+    assert.equal(recorded, fails ? 'Error: worker unavailable' : undefined)
+  })
+
   it('records sanitized failure details when initial execution cannot start', async () => {
     const failure = new Error('Bearer private-secret')
     let recorded: { taskId: string; error: string } | undefined
