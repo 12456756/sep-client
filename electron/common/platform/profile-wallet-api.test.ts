@@ -1,6 +1,7 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import * as api from './platform-api'
+import { config } from '../config'
 
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -19,8 +20,8 @@ describe('profile and personal recharge platform APIs', () => {
     }
     assert.deepEqual(await api.getClientProfile('access'), {
       ...profile,
-      user: { ...profile.user, avatar: 'https://longdaosep.cn/api/users/avatars/u.png' },
-      enterprise: { ...profile.enterprise, logo: 'https://longdaosep.cn/api/enterprise/logos/e.png' },
+      user: { ...profile.user, avatar: `${config.SEP_BASE_URL}/users/avatars/u.png` },
+      enterprise: { ...profile.enterprise, logo: `${config.SEP_BASE_URL}/enterprise/logos/e.png` },
     })
   })
 
@@ -37,8 +38,8 @@ describe('profile and personal recharge platform APIs', () => {
       assert.equal(file && 'name' in file ? file.name : undefined, 'avatar.png')
       return response(calls.length === 1 ? { avatar: '/api/users/avatars/a.png' } : { logo: '/api/enterprise/logos/l.png' }, 201)
     }
-    assert.equal((await api.uploadUserAvatar({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).avatar, 'https://longdaosep.cn/api/users/avatars/a.png')
-    assert.equal((await api.uploadEnterpriseLogo({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).logo, 'https://longdaosep.cn/api/enterprise/logos/l.png')
+    assert.equal((await api.uploadUserAvatar({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).avatar, `${config.SEP_BASE_URL}/users/avatars/a.png`)
+    assert.equal((await api.uploadEnterpriseLogo({ bytes: new Uint8Array([1, 2]), filename: 'avatar.png', contentType: 'image/png' }, 'access')).logo, `${config.SEP_BASE_URL}/enterprise/logos/l.png`)
     assert.match(calls[0]!, /\/users\/me\/avatar$/)
     assert.match(calls[1]!, /\/enterprise\/logo$/)
   })

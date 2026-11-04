@@ -83,3 +83,11 @@ test('only a live background preparation is shown as preparing; restored unstart
   assert.match(render('arranging'), /尚未开始/)
   assert.match(render('arranging'), />开始执行<\/button>/)
 })
+
+test('a damaged session exposes explicit reconstruction instead of an ineffective retry', () => {
+  queue = { paused: true, items: [], failed: { id: 'failed', prompt: '未完成的问题', createdAt: 1, attachmentNames: [], recoveryConfirmationRequired: true } }
+  const html = render()
+  assert.match(html, /会话文件已损坏，需要确认后根据任务历史重建上下文/)
+  assert.match(html, />重建会话并继续<\/button>/)
+  assert.doesNotMatch(html, />重试并继续<\/button>/)
+})

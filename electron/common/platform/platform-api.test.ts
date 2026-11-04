@@ -106,10 +106,10 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     globalThis.fetch = async () => response(organization)
 
     const result = await api.getEnterpriseOrganization('access')
-    assert.equal(result.enterprise.logo, 'https://longdaosep.cn/api/enterprise/logos/company.png')
-    assert.equal(result.employees[0]?.avatar, 'https://longdaosep.cn/api/employees/employee.png')
-    assert.equal(result.employees[0]?.avatarAsset?.faceUrl, 'https://longdaosep.cn/assets/employees/employee-face.webp')
-    assert.equal(result.members[0]?.avatar, 'https://longdaosep.cn/api/users/avatars/member.png')
+    assert.equal(result.enterprise.logo, `${config.SEP_BASE_URL}/enterprise/logos/company.png`)
+    assert.equal(result.employees[0]?.avatar, `${config.SEP_BASE_URL}/employees/employee.png`)
+    assert.equal(result.employees[0]?.avatarAsset?.faceUrl, `${config.SEP_ASSET_BASE_URL}/assets/employees/employee-face.webp`)
+    assert.equal(result.members[0]?.avatar, `${config.SEP_BASE_URL}/users/avatars/member.png`)
   })
 
   it('resolves subscription employee assets before they reach the renderer', async () => {
@@ -127,8 +127,8 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
     globalThis.fetch = async () => response(subscriptions)
 
     const result = await api.getSubscriptions('access')
-    assert.equal(result[0]?.template.avatar, 'https://longdaosep.cn/assets/employees/employee.webp')
-    assert.equal(result[0]?.template.avatarAsset?.faceUrl, 'https://longdaosep.cn/assets/employees/employee-face.webp')
+    assert.equal(result[0]?.template.avatar, `${config.SEP_ASSET_BASE_URL}/assets/employees/employee.webp`)
+    assert.equal(result[0]?.template.avatarAsset?.faceUrl, `${config.SEP_ASSET_BASE_URL}/assets/employees/employee-face.webp`)
   })
 
   it('reads platform candidates and preserves access request contracts', async () => {
@@ -236,7 +236,7 @@ describe('SEP 2026-09-16 supplemental API contract', () => {
         assert.equal(String(input), `${config.SEP_BASE_URL}/client/employee-access-requests`)
         assert.equal(init?.method, 'POST')
         const headers = new Headers(init?.headers)
-        assert.equal(headers.get('Origin'), 'https://longdaosep.cn')
+        assert.equal(headers.get('Origin'), config.SEP_WEB_ORIGIN)
         assert.equal(headers.get('Authorization'), 'Bearer access')
         assert.equal(headers.get('Content-Type'), 'application/json')
         assert.equal(headers.get('Idempotency-Key'), key)

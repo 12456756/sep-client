@@ -57,6 +57,7 @@ function setup(options: {
   failure?: Failure
   installFailure?: 'cleanup' | 'install'
   recoveryWork?: Promise<void>
+  importActive?: boolean
 } = {}) {
   const driver = new Driver()
   const rawFailure = new Error('SDK failed at /Users/private/update.zip from https://updates.test/file?token=secret')
@@ -88,7 +89,7 @@ function setup(options: {
     ])),
   }
   const stats = mock.fn(async () => {
-    assert.ok(options.installFailure, 'factory/check must not read business task state')
+    assert.ok(options.installFailure || options.importActive, 'factory/check must not read business task state')
     return { total: 0, pending: 0, running: 0, waitingApproval: 0, paused: 0, interrupted: 0, completed: 0, failed: 0 }
   })
   const recoveryOrder: string[] = []
@@ -104,7 +105,8 @@ function setup(options: {
   })
   const loginRefresh = mock.fn(() => assert.fail('update recovery must not refresh authentication'))
   const backend = {
-    tasks: { stats }, stopAll, resumeClientMonitor,
+    tasks: { stats }, stopAll, stopForApp: stopAll, resumeClientMonitor,
+    skillImport: { isActive: () => options.importActive ?? false },
     authSession: new Proxy({}, { get: () => loginRefresh }),
   } as unknown as Backend
   if (options.installFailure === 'install') {
@@ -183,7 +185,7 @@ describe('createAppUpdater behavior', () => {
       await updater.check()
       await updater.download()
       assert.deepEqual(harness.openExternal.mock.calls.map(call => call.arguments), [[
-        'https://download.longdaosep.cn/sep-client/beta/0.1.3/SEP-Client-0.1.3-mac-arm64.dmg',
+        'https://sep.longdaoec.com/sep-client/beta/0.1.3/SEP-Client-0.1.3-mac-arm64.dmg',
       ]])
       assert.equal(harness.driver.downloadUpdate.mock.callCount(), 0)
       assert.equal(harness.driver.quitAndInstall.mock.callCount(), 0)
@@ -265,6 +267,18 @@ describe('createAppUpdater behavior', () => {
       assert.doesNotMatch(JSON.stringify(harness.records), /https?:|\/Users\/|secret|update\.zip/)
     })
   }
+
+  it('blocks installation while an import runs even when business task counts are zero', async t => {
+    const harness = setup({ importActive: true })
+    const updater = harness.create()
+    t.after(() => updater.dispose())
+    await updater.check()
+    await updater.download()
+    await assert.rejects(updater.install(), (error: unknown) => error instanceof AppError && error.code === 'INVALID_STATE')
+    assert.equal(harness.driver.quitAndInstall.mock.callCount(), 0)
+    assert.equal(harness.stopAll.mock.callCount(), 0)
+    assert.equal(updater.getState().status, 'downloaded')
+  })
 
   for (const installFailure of ['cleanup', 'install'] as const) {
     it(`restores the client monitor and sends resync after ${installFailure} failure without refreshing login`, async t => {

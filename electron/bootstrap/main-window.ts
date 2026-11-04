@@ -17,11 +17,12 @@ const log = logger.child('main-window')
 
 export interface MainWindowOptions {
   speech?: SpeechPermissionGate
+  showOnReady?: boolean
   /** 窗口关闭时通知调用方断开推送。 */
   onClosed: () => void
 }
 
-export function createMainWindow({ onClosed, speech }: MainWindowOptions): BrowserWindow {
+export function createMainWindow({ onClosed, speech, showOnReady = true }: MainWindowOptions): BrowserWindow {
   Menu.setApplicationMenu(null)
 
   const windowChrome = getWindowChromeConfig(process.platform)
@@ -79,11 +80,11 @@ export function createMainWindow({ onClosed, speech }: MainWindowOptions): Brows
     log.info('renderer loaded')
     // 某些 Windows/Electron 组合在从 Vite 开发服务器加载渲染进程时，
     // 不会触发 ready-to-show。加载成功后不要让窗口一直隐藏。
-    if (!window.isDestroyed() && !window.isVisible()) window.show()
+    if (showOnReady && !window.isDestroyed() && !window.isVisible()) window.show()
   })
 
   window.once('ready-to-show', () => {
-    if (!window.isDestroyed()) window.show()
+    if (showOnReady && !window.isDestroyed()) window.show()
   })
 
   window.on('closed', onClosed)

@@ -59,7 +59,7 @@ function localInstant(parts: ZonedParts, timezone: string, milliseconds: number)
     for (let hours = -36; hours <= 36; hours += 6) {
       const sample = naive + hours * 3600000
       const actual = zonedParts(sample, timezone)
-      offsets.add(Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second) - sample)
+      offsets.add(Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute, actual.second, milliseconds) - sample)
     }
     const matches = [...offsets].map(offset => naive - offset).filter(value => {
       const actual = zonedParts(value, timezone)
@@ -73,6 +73,7 @@ export function nextScheduledAt(timestamp: number, rule: RecurrenceRule, timezon
   if (rule.frequency === 'once') return null
   if (rule.frequency === 'cron') return cronPreview(rule.expression, timezone, timestamp, 1)[0]!
   const current = zonedParts(timestamp, timezone)
+  const anchor = zonedParts(anchorTimestamp, timezone)
   let year = current.year, month = current.month, day = current.day
   if (rule.frequency === 'daily' || rule.frequency === 'weekly') {
     const days = rule.interval * (rule.frequency === 'weekly' ? 7 : 1)
@@ -81,9 +82,9 @@ export function nextScheduledAt(timestamp: number, rule: RecurrenceRule, timezon
   } else {
     const nextMonth = new Date(Date.UTC(year, month - 1 + rule.interval, 1))
     year = nextMonth.getUTCFullYear(); month = nextMonth.getUTCMonth() + 1
-    day = Math.min(zonedParts(anchorTimestamp, timezone).day, new Date(Date.UTC(year, month, 0)).getUTCDate())
+    day = Math.min(anchor.day, new Date(Date.UTC(year, month, 0)).getUTCDate())
   }
-  return localInstant({ ...current, year, month, day }, timezone, new Date(timestamp).getUTCMilliseconds())
+  return localInstant({ ...anchor, year, month, day }, timezone, new Date(anchorTimestamp).getUTCMilliseconds())
 }
 function scheduledAtIndex(anchorTimestamp: number, index: number, rule: RecurrenceRule, timezone: string): number {
   if (rule.frequency === 'cron') throw new RangeError('Cron schedules have no constant calendar index')

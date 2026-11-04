@@ -6,8 +6,8 @@ import { preflightSigning, signingConfiguration } from './release-signing.mjs'
 
 // Candidate feeds from the update plan; deployment and signing are release prerequisites.
 export const UPDATE_FEEDS = Object.freeze({
-  beta: 'https://download.longdaosep.cn/sep-client/beta/',
-  stable: 'https://download.longdaosep.cn/sep-client/stable/',
+  beta: 'https://sep.longdaoec.com/sep-client/beta/',
+  stable: 'https://sep.longdaoec.com/sep-client/stable/',
 })
 
 export function createBuilderConfig(build, channel, { signed = false, env = process.env, platform = process.platform } = {}) {

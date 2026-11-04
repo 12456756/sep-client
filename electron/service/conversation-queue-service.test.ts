@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { ConversationQueueStore } from '../data/conversation-queue-store'
 import { ConversationQueueService } from './conversation-queue-service'
 import type { ClientTask } from '../../src/shared/types'
+import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
+import { conversationQueueInputSchema } from '../../src/shared/conversation-queue'
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'conversation-queue-'))
@@ -417,4 +419,49 @@ test('failed persistence never acknowledges or launches a message; restored comp
     await restored.resume('task')
     assert.deepEqual(f.started, ['finished'])
   } finally { await f.cleanup() }
+})
+
+test('damaged session recovery requires confirmation for the failed message and preserves FIFO inputs after restart', async () => {
+  const f = await fixture()
+  const attempts: Array<{ id: string; confirmed?: boolean; attachmentRefs?: unknown; knowledge?: unknown }> = []
+  const refs = [{ attachmentId: 'image', sha256: 'a'.repeat(64) }]
+  const knowledge = { mode: 'none' as const, knowledgeBaseIds: [] }
+  const options = { ...f.options, start: async (_id: string, entry: import('../data/conversation-queue-store').ConversationQueueEntry, signal: AbortSignal) => {
+    attempts.push({ id: entry.id, confirmed: entry.confirmed, attachmentRefs: entry.attachmentRefs, knowledge: entry.knowledge })
+    if (!entry.confirmed) throw new ConversationRecoveryError('RECOVERY_CONFIRMATION_REQUIRED', 'damaged session')
+    await f.options.start(_id, entry, signal)
+  } }
+  const service = new ConversationQueueService(options)
+  try {
+    await service.enqueue('task', { id: 'one', prompt: 'one' }, async () => ({ attachmentRefs: refs, knowledge }))
+    await service.enqueue('task', { id: 'two', prompt: 'two' }, async () => ({ confirmed: true }))
+    f.task.lastRunId = 'initial'; f.task.activeRunId = null; f.task.status = 'completed'
+    await service.settled('task', 'initial')
+    assert.equal((await service.view('task')).failed?.recoveryConfirmationRequired, true)
+    service.stop()
+    const restored = new ConversationQueueService(options)
+    assert.equal((await restored.view('task')).failed?.recoveryConfirmationRequired, true)
+    await assert.rejects(() => restored.resume('task'), { code: 'RECOVERY_CONFIRMATION_REQUIRED' })
+    await assert.rejects(() => restored.resume('task', { messageId: 'two', confirmed: true }), { code: 'INVALID_STATE' })
+    assert.equal(attempts.length, 1)
+    await restored.resume('task', { messageId: 'one', confirmed: true })
+    assert.equal((await restored.view('task')).failed, null)
+    assert.deepEqual(attempts[1], { id: 'one', confirmed: true, attachmentRefs: refs, knowledge })
+    assert.deepEqual(f.started, ['one'])
+    const runId = f.task.activeRunId!
+    f.task.lastRunId = runId; f.task.activeRunId = null; f.task.status = 'completed'
+    await restored.settled('task', runId)
+    assert.deepEqual(f.started, ['one', 'two'])
+    restored.stop()
+  } finally { service.stop(); await f.cleanup() }
+})
+
+test('queue recovery IPC requires explicit confirmation and a concrete failed message identity', () => {
+  assert.equal(conversationQueueInputSchema.safeParse({ taskId: 'task', action: 'recover', messageId: 'one', confirmRecovery: true }).success, true)
+  for (const invalid of [
+    { taskId: 'task', action: 'recover', messageId: 'one' },
+    { taskId: 'task', action: 'recover', messageId: 'one', confirmRecovery: false },
+    { taskId: 'task', action: 'recover', confirmRecovery: true },
+    { taskId: 'task', action: 'resume', confirmRecovery: true },
+  ]) assert.equal(conversationQueueInputSchema.safeParse(invalid).success, false)
 })

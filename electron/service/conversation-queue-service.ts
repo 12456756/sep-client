@@ -7,6 +7,7 @@ import type { TaskOwnerScope } from '../data/scope-path'
 import { AppError } from '../errors/app-error'
 import { logger } from '../common/logger'
 import { requireScope, type ScopeSource } from './scope-guard'
+import { ConversationRecoveryError } from '../runtime/conversation-recovery-error'
 
 interface Options {
   scope: ScopeSource
@@ -119,7 +120,8 @@ export class ConversationQueueService {
   }
 
   private viewOf(record: ConversationQueueRecord): ConversationQueueView {
-    const visible = (entry: ConversationQueueEntry) => ({ id: entry.id, prompt: entry.prompt, createdAt: entry.createdAt, attachmentNames: entry.attachmentNames })
+    const visible = (entry: ConversationQueueEntry) => ({ id: entry.id, prompt: entry.prompt, createdAt: entry.createdAt, attachmentNames: entry.attachmentNames,
+      ...(entry.recoveryConfirmationRequired ? { recoveryConfirmationRequired: true } : {}) })
     const failed = record.entries.find(entry => entry.status === 'failed')
     return { preparing: this.initialStarts.has(record.taskId), paused: record.paused, items: record.entries.filter(entry => entry.status === 'waiting').map(visible), failed: failed ? visible(failed) : null }
   }
@@ -169,8 +171,9 @@ export class ConversationQueueService {
     } catch (error) {
       assert()
       entry.status = 'failed'; record.paused = true
+      entry.recoveryConfirmationRequired = error instanceof ConversationRecoveryError && error.code === 'RECOVERY_CONFIRMATION_REQUIRED'
       await this.options.store.save(record.owner, record)
-      this.options.onFailure?.(task.id, entry, error, record.owner, task.subscriptionId ?? task.id)
+      if (!entry.recoveryConfirmationRequired) this.options.onFailure?.(task.id, entry, error, record.owner, task.subscriptionId ?? task.id)
     }
   }
 
@@ -202,10 +205,18 @@ export class ConversationQueueService {
     })
   }
 
-  resume(taskId: string, options: { retryOriginal?: boolean } = {}): Promise<void> {
+  resume(taskId: string, options: { retryOriginal?: boolean; messageId?: string; confirmed?: true } = {}): Promise<void> {
     return this.access(taskId, async (record, task, assert, signal) => {
       if (task.activeRunId || this.initialStarts.has(task.id) || this.options.isBusy?.(task.id)) return
       const failed = record.entries.find(item => item.status === 'failed')
+      const recovery = options.messageId !== undefined || options.confirmed !== undefined
+      if (recovery && (!failed?.recoveryConfirmationRequired || failed.id !== options.messageId || options.confirmed !== true)) throw new AppError('INVALID_STATE')
+      if (failed?.recoveryConfirmationRequired) {
+        if (!recovery) throw new AppError('RECOVERY_CONFIRMATION_REQUIRED')
+        failed.mode = 'confirm_rebuild'
+        failed.confirmed = true
+        delete failed.recoveryConfirmationRequired
+      }
       if (failed) failed.runId = randomUUID()
       record.paused = false
       await this.options.store.save(record.owner, record)

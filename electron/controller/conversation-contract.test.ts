@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import { attachmentRefSchema } from '../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../src/shared/knowledge-selection'
+import { conversationQueueInputSchema } from '../../src/shared/conversation-queue'
 import { INVOKE_CHANNELS } from './channels'
 import type { Route } from './router'
 import type { RequestContext } from './request-context'
@@ -19,6 +20,7 @@ const dependencies: Record<string, unknown> = {
   './task': { createTaskInput: z.object({}), CREATE_TASK_INVALID: '' },
   '../../../src/shared/attachment-contracts': { attachmentRefSchema },
   '../../../src/shared/knowledge-selection': { knowledgeSelectionSchema },
+  '../../../src/shared/conversation-queue': { conversationQueueInputSchema },
 }
 const loaded = { exports: {} as { conversationRoutes?: Route[] } }
 compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => {

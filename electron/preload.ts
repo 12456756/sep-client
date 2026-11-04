@@ -80,6 +80,18 @@ function registerPasteTarget(input: PasteTarget): () => void {
 }
 
 const electronAPI = {
+  getSkillImportState: () => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_STATE),
+  confirmSkillImportConsent: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_CONSENT, input),
+  selectSkillImportRoot: () => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_SELECT_ROOT),
+  removeSkillImportRoot: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_REMOVE_ROOT, input),
+  cancelSkillImport: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_CANCEL, input),
+  revokeSkillImportDevice: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_REVOKE, input),
+  setSkillImportVisible: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_IMPORT_VISIBLE, input),
+  onSkillImportStateChanged: callback => {
+    const handler = (_event: IpcRendererEvent, state: import('../src/shared/skill-import-contracts').SkillImportStateView) => callback(state);
+    ipcRenderer.on(EVENT_CHANNELS.SKILL_IMPORT_STATE_CHANGED, handler);
+    return () => ipcRenderer.removeListener(EVENT_CHANNELS.SKILL_IMPORT_STATE_CHANGED, handler);
+  },
   submitScheduledCreation: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_SUBMIT_CREATION, input),
   cancelScheduledCreation: input => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_CANCEL_CREATION, input),
   listScheduledTasks: () => ipcRenderer.invoke(INVOKE_CHANNELS.SCHEDULE_LIST),
