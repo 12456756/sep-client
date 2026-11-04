@@ -400,7 +400,7 @@ export interface ElectronAPI {
   createConversation: (data: CreateConversationInput) => Promise<TaskResult>
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult & { queued?: boolean }>
-  conversationQueue: (input: { taskId: string; action: 'get' | 'resume' }) => Promise<IpcCommandResult & { queue?: import('./conversation-queue').ConversationQueueView }>
+  conversationQueue: (input: { taskId: string; action: 'get' | 'resume' | 'prioritize'; entryId?: string }) => Promise<IpcCommandResult & { queue?: import('./conversation-queue').ConversationQueueView }>
   switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>

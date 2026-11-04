@@ -175,6 +175,65 @@ test('starts one message at a time after cleanup, preserves order, pauses on fai
   } finally { await f.cleanup() }
 })
 
+test('prioritizes a waiting message, interrupts outside the queue lock, and preserves the remaining order', async () => {
+  const f = await fixture()
+  const service = new ConversationQueueService({ ...f.options, interruptCurrent: async taskId => {
+    assert.equal(taskId, 'task')
+    f.task.activeRunId = null
+    f.task.lastRunId = 'initial'
+    f.task.status = 'interrupted'
+    await service.settled(taskId, 'initial')
+  } })
+  try {
+    await f.enqueue('message-a')
+    await f.enqueue('message-b')
+    await f.enqueue('message-c')
+    assert.deepEqual(f.started, [])
+
+    await service.prioritize('task', 'message-b')
+
+    assert.deepEqual(f.started, ['message-b'])
+    assert.deepEqual((await service.view('task')).items.map(item => item.id), ['message-a', 'message-c'])
+  } finally { service.stop(); await f.cleanup() }
+})
+
+test('allows a second priority request when the previous run settles after its replacement starts', async () => {
+  const f = await fixture()
+  const interruptedRuns: string[] = []
+  const service = new ConversationQueueService({ ...f.options, interruptCurrent: async (_taskId, runId) => {
+    interruptedRuns.push(runId)
+    f.task.activeRunId = null
+    f.task.lastRunId = runId
+    f.task.status = 'interrupted'
+  } })
+  try {
+    await f.enqueue('message-a')
+    await f.enqueue('message-b')
+    await f.enqueue('message-c')
+    await f.enqueue('message-d')
+
+    await service.prioritize('task', 'message-a')
+    assert.equal(f.task.activeRunId, 'message-a')
+
+    // The old marker still exists until its asynchronous settlement callback arrives.
+    await service.prioritize('task', 'message-b')
+    assert.equal(f.task.activeRunId, 'message-b')
+
+    await service.settled('task', 'initial')
+    await service.prioritize('task', 'message-c')
+    assert.equal(f.task.activeRunId, 'message-c')
+
+    // A stale settlement must not clear the marker for the currently interrupted run.
+    await service.settled('task', 'message-a')
+    await service.settled('task', 'message-b')
+    await service.prioritize('task', 'message-d')
+
+    assert.deepEqual(interruptedRuns, ['initial', 'message-a', 'message-b', 'message-c'])
+    assert.equal(f.task.activeRunId, 'message-d')
+    assert.deepEqual((await service.view('task')).items, [])
+  } finally { service.stop(); await f.cleanup() }
+})
+
 for (const outcome of ['completed', 'failed', 'cancelled', 'logout'] as const) {
   test(`an empty-queue retry clears the old pause and handles ${outcome} without losing follow-ups`, async () => {
     const f = await fixture()

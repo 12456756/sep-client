@@ -344,6 +344,10 @@ class BackendRuntime {
     this.conversationQueue = new ConversationQueueService({ scope: this, store: new ConversationQueueStore(userDataDir),
       getTask: taskId => this.taskManager.getTask(taskId),
       isBusy: taskId => this.runtime.peek()?.hasConversationRun(taskId) ?? false,
+      interruptCurrent: async (taskId, runId) => {
+        const runtime = await this.getTaskRuntime()
+        await runtime.interruptConversation(taskId, runId)
+      },
       startInitial: async (taskId, signal) => {
         const runtime = await this.getTaskRuntime()
         signal.throwIfAborted()

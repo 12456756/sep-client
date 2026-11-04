@@ -139,7 +139,7 @@ export class ConversationService {
     })
   }
 
-  async queue(taskId: string, action: 'get' | 'resume'): Promise<ConversationQueueView> {
+  async queue(taskId: string, action: 'get' | 'resume' | 'prioritize', entryId?: string): Promise<ConversationQueueView> {
     if (!this.deps.queue) throw new AppError('INTERNAL_ERROR')
     const scope = requireScope(this.deps.scope)
     const type = (await this.deps.tasks.get(taskId)).workType
@@ -147,6 +147,10 @@ export class ConversationService {
     const current = requireScope(this.deps.scope)
     if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
     if (action === 'resume') await this.deps.queue.resume(taskId)
+    if (action === 'prioritize') {
+      if (!entryId) throw new AppError('INVALID_ARGUMENT')
+      await this.deps.queue.prioritize(taskId, entryId)
+    }
     return this.deps.queue.view(taskId)
   }
 }

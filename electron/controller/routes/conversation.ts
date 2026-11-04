@@ -53,8 +53,8 @@ export const conversationRoutes = [
     return { success: true, queued: result.queued }
   }, { invalidMessage: '需要有效的任务与消息内容。' }),
 
-  route(INVOKE_CHANNELS.CONVERSATION_QUEUE, z.object({ taskId: z.string().min(1), action: z.enum(['get', 'resume']) }).strict(), async (ctx, input) => ({
-    success: true, queue: await ctx.conversations.queue(input.taskId, input.action),
+  route(INVOKE_CHANNELS.CONVERSATION_QUEUE, z.object({ taskId: z.string().min(1), action: z.enum(['get', 'resume', 'prioritize']), entryId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional() }).strict(), async (ctx, input) => ({
+    success: true, queue: await ctx.conversations.queue(input.taskId, input.action, input.entryId),
   })),
 
   route(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, switchEmployeeInput, async (ctx, input) => {

@@ -823,6 +823,16 @@ class PiCodingAgentSession implements PiAgentSession {
     return { ...this.settledResponse }
   }
 
+  getContextCheckpoint(): string | null {
+    return this.session.sessionManager.getLeafId()
+  }
+
+  async restoreContextCheckpoint(checkpoint: string | null): Promise<void> {
+    if (checkpoint) this.session.sessionManager.branch(checkpoint)
+    else this.session.sessionManager.resetLeaf()
+    this.session.agent.state.messages = this.session.sessionManager.buildSessionContext().messages
+  }
+
   async prompt(text: string, options?: { images?: readonly { type: 'image'; data: string; mimeType: string }[] }): Promise<void> {
     this.diagnostics?.startPrompt()
     this.settledResponse = { text: '' }
