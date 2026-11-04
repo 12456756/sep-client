@@ -24,9 +24,8 @@ export function ScheduledExecutionFields({ value, employees, onChange, onChooseF
       onChange({ subscriptionId: selection.subscriptionId, settings: { ...patch, modelId: selection.modelId } })
     } else onChange({ settings: patch })
   }
-  return <>
-    <div className="ent-sch-composer-tools">
-      <div className="ent-sch-execution-selects">
+  const environment = <div className="ent-sch-composer-environment"><RunSettingsDirectory settings={value.settings} onChange={onSettings} allowedPresets={['workspace-edit', 'full-local']} onChooseFolder={onChooseFolder} /></div>
+  const execution = <div className="ent-sch-execution-selects">
         {!naturalLanguage ? <label className="ent-rs-compact ent-sch-mode" title="执行方式">{automatic ? <Users size={16} /> : <UserRound size={16} />}<select aria-label="任务模式" value={value.mode} onChange={event => {
           const mode = event.target.value as ScheduledTaskDraft['mode']
           if (mode === 'auto') {
@@ -38,10 +37,13 @@ export function ScheduledExecutionFields({ value, employees, onChange, onChooseF
           const selected = available.find(item => item.id === event.target.value)
           onChange({ subscriptionId: event.target.value, settings: { modelId: selected?.allowedModels[0] ?? '' } })
         }}><option value="">选择员工</option>{value.subscriptionId && !available.some(item => item.id === value.subscriptionId) ? <option value={value.subscriptionId}>原员工暂不可用</option> : null}{available.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label> : null}
-        <RunSettingsBar settings={value.settings} models={models} onChange={onSettings} portalWithinControl />
+        <RunSettingsBar settings={value.settings} models={models} onChange={onSettings} portalWithinControl={!naturalLanguage} />
       </div>
+  return <>
+    <div className={`ent-sch-composer-tools${naturalLanguage ? ' ent-sch-composer-tools-inline' : ''}`}>
+      {naturalLanguage ? <div className="ent-sch-composer-settings">{execution}{environment}</div> : execution}
       {action}
     </div>
-    <div className="ent-sch-composer-environment"><RunSettingsDirectory settings={value.settings} onChange={onSettings} allowedPresets={['workspace-edit', 'full-local']} onChooseFolder={onChooseFolder} /></div>
+    {!naturalLanguage ? environment : null}
   </>
 }

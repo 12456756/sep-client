@@ -19,7 +19,7 @@ import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import type { ConversationQueueService } from './conversation-queue-service'
 import { createHash } from 'node:crypto'
-import type { ConversationQueueView } from '../../src/shared/conversation-queue'
+import type { ConversationQueueInput, ConversationQueueView } from '../../src/shared/conversation-queue'
 
 export interface ConversationServiceDependencies {
   scope: ScopeSource
@@ -139,7 +139,8 @@ export class ConversationService {
     })
   }
 
-  async queue(taskId: string, action: 'get' | 'resume'): Promise<ConversationQueueView> {
+  async queue(input: ConversationQueueInput): Promise<ConversationQueueView> {
+    const { taskId, action } = input
     if (!this.deps.queue) throw new AppError('INTERNAL_ERROR')
     const scope = requireScope(this.deps.scope)
     const type = (await this.deps.tasks.get(taskId)).workType
@@ -147,6 +148,10 @@ export class ConversationService {
     const current = requireScope(this.deps.scope)
     if (current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
     if (action === 'resume') await this.deps.queue.resume(taskId)
+    if (action === 'prioritize') {
+      await this.deps.queue.prioritize(taskId, input.entryId)
+    }
+    if (action === 'recover') await this.deps.queue.resume(taskId, { messageId: input.messageId, confirmed: input.confirmRecovery })
     return this.deps.queue.view(taskId)
   }
 }

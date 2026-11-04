@@ -59,6 +59,35 @@ test('monthly recurrence clamps to the last day of shorter months', () => {
   assert.equal(nextScheduledAt(february, { frequency: 'monthly', interval: 1 }, 'UTC', first), Date.parse('2026-03-31T09:00:00.000Z'))
 })
 
+test('calendar recurrences restore the original wall time after a DST gap', () => {
+  const cases = [
+    { frequency: 'daily' as const, anchor: '2026-03-07T07:30:00.000Z', following: '2026-03-09T06:30:00.000Z' },
+    { frequency: 'weekly' as const, anchor: '2026-03-01T07:30:00.000Z', following: '2026-03-15T06:30:00.000Z' },
+    { frequency: 'monthly' as const, anchor: '2026-02-08T07:30:00.000Z', following: '2026-04-08T06:30:00.000Z' },
+  ]
+  for (const item of cases) {
+    const anchor = Date.parse(item.anchor)
+    const rule = { frequency: item.frequency, interval: 1 }
+    const gap = nextScheduledAt(anchor, rule, 'America/New_York', anchor)!
+    assert.equal(gap, Date.parse('2026-03-08T07:00:00.000Z'), item.frequency)
+    const following = nextScheduledAt(gap, rule, 'America/New_York', anchor)!
+    assert.equal(following, Date.parse(item.following), item.frequency)
+    assert.equal(latestScheduledOccurrence(anchor, following, rule, 'America/New_York')?.timestamp, following, item.frequency)
+  }
+})
+
+test('calendar recurrence and missed-time lookup preserve milliseconds', () => {
+  for (const milliseconds of ['123', '987']) {
+    const anchor = Date.parse(`2026-03-07T14:30:00.${milliseconds}Z`)
+    const expected = Date.parse(`2026-03-09T13:30:00.${milliseconds}Z`)
+    const rule = { frequency: 'daily' as const, interval: 1 }
+    const next = nextScheduledAt(anchor, rule, 'America/New_York', anchor)!
+    assert.equal(next, Date.parse(`2026-03-08T13:30:00.${milliseconds}Z`))
+    assert.equal(nextScheduledAt(next, rule, 'America/New_York', anchor), expected)
+    assert.equal(latestScheduledOccurrence(anchor, expected, rule, 'America/New_York')?.timestamp, expected)
+  }
+})
+
 test('once schedules have no next occurrence and weekly cadence advances calendar weeks', () => {
   const first = Date.parse('2026-10-18T08:00:00.000Z')
   assert.equal(nextScheduledAt(first, { frequency: 'once', interval: 1 }, 'UTC'), null)

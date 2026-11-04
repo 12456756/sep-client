@@ -131,7 +131,7 @@ describe('automatic arrangement final file handover', () => {
       }
       assert.ok(system.includes(`当前节点：${node.title}（${id}）`))
       assert.match(system, /员工资料：[\s\S]*"name": "Researcher"/)
-      assert.match(system, /## 四、高效率执行（强制要求）/)
+      assert.match(system, /## 四、执行原则/)
       assert.match(system, new RegExp(`检索问题：Internal guidance for ${id}`))
       assert.match(system, /知识库检索本次不可用/)
       assert.equal(context.useNativeSystemPrompt, true)
@@ -157,7 +157,7 @@ describe('automatic arrangement final file handover', () => {
     const result = await f.executor.execute(f.plan, 'task', 'run')
     assert.equal(result.status, 'completed')
     assert.equal(f.prompts.length, 4)
-    assert.ok(f.contexts.every(context => context.fixedSystemPrompt?.includes('## 四、高效率执行（强制要求）')))
+    assert.ok(f.contexts.every(context => context.fixedSystemPrompt?.includes('## 四、执行原则')))
   })
 
   it('switches from submission correction to file correction and retains actual issues in the checkpoint', async () => {

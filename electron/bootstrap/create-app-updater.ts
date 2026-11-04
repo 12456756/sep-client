@@ -62,8 +62,11 @@ export function createAppUpdater(backend: Backend, bridge: RendererBridge): AppU
       return new sdk.CancellationToken()
     },
     isNewerVersion: version => driver !== null && driver.currentVersion.compare(version) < 0,
-    taskStats: () => backend.tasks.stats(),
-    prepareInstall: () => withTimeout(backend.stopAll(), SHUTDOWN_BUDGET_MS, 'update-install-cleanup'),
+    taskStats: async () => {
+      const stats = await backend.tasks.stats()
+      return { ...stats, running: stats.running + (backend.skillImport?.isActive() ? 1 : 0) }
+    },
+    prepareInstall: () => withTimeout(backend.stopForApp(), SHUTDOWN_BUDGET_MS, 'update-install-cleanup'),
     restoreAfterInstallFailure: async () => {
       bridge.notificationUpdated({ type: 'resync' })
       await withTimeout(backend.resumeClientMonitor(), SHUTDOWN_BUDGET_MS, 'update-install-recovery')

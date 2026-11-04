@@ -105,7 +105,7 @@ export interface VideoStorePort {
   saveOutput(scope: VideoScope, taskId: string, jobId: string, output: VideoOutput, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<LocalVideoAsset>
 }
 
-/** Receipt measurements describe the delivered artifact; unknown fields never imply acceptance. */
+/** Preserve measured video metadata without evaluating it against the requested specification. */
 export function videoSpecAcceptance(job: Pick<LocalVideoJob, 'request' | 'receipt'>): {
   actualSpec?: VideoActualSpec
   acceptance: 'matched' | 'mismatched' | 'unknown'
@@ -124,16 +124,7 @@ export function videoSpecAcceptance(job: Pick<LocalVideoJob, 'request' | 'receip
     frameRate: output.frameRate, outputFormat: output.mimeType,
     aspectRatio: `${output.width}:${output.height}`,
   })) : [reportedSpec]
-  const requested = job.request.requestedSpec ?? {}
-  const entries = Object.entries(requested).filter(([, value]) => value !== undefined)
-  const differs = measuredSpecs.some(spec => entries.some(([key, value]) => {
-    const measured = spec[key as keyof typeof spec]
-    return measured !== undefined && !mediaSpecsEqual({ [key]: value }, { [key]: measured })
-  }))
-  const complete = entries.length > 0 && measuredSpecs.every(spec =>
-    entries.every(([key]) => spec[key as keyof typeof spec] !== undefined))
   // A single summary is truthful only when every delivered artifact has the same measured specification.
   const actualSpec = measuredSpecs.every(spec => mediaSpecsEqual(measuredSpecs[0], spec)) ? measuredSpecs[0] : undefined
-  return { ...(actualSpec && Object.keys(actualSpec).length ? { actualSpec } : {}), acceptance:
-    differs || job.receipt.acceptance === 'mismatched' ? 'mismatched' : complete ? 'matched' : 'unknown' }
+  return { ...(actualSpec && Object.keys(actualSpec).length ? { actualSpec } : {}), acceptance: 'unknown' }
 }

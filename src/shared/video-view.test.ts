@@ -87,7 +87,7 @@ test('saved conversation video output uses inline playback and folder reveal', (
   assert.doesNotMatch(html, /预览视频成果|导出视频成果/)
 })
 
-test('saved videos with fractional actual-spec duration remain visible with mismatch and billing details', () => {
+test('saved videos keep measured metadata and billing details without mismatch warnings', () => {
   const actual = { ...output, width: 1344, height: 768, durationSeconds: 4.458333 }
   const html = panel({ view: { mock: false, runtime: { ...runtime, executionMode: 'real' }, jobs: [job({
     protocolVersion: 3, parameters: { durationSeconds: 4 }, requestedSpec: { durationSeconds: 4 },
@@ -101,6 +101,7 @@ test('saved videos with fractional actual-spec duration remain visible with mism
   assert.match(html, /导出视频成果 1/)
   assert.match(html, /实付 ¥28\.800000/)
   assert.doesNotMatch(html, /尚无视频任务/)
+  assert.doesNotMatch(html, /不一致|不符|OUTPUT_SPEC_MISMATCH/)
 })
 
 test('real terminal billing stays visible and resumable while preserving measured output metadata', () => {
@@ -254,6 +255,25 @@ test('uncertain submission offers original tracking recovery and never a replace
   assert.doesNotMatch(html, /重新保存|重做|预览视频成果|导出视频成果/)
   const auth = jobs(job({ trackingStatus: 'AUTH_REQUIRED' }))
   assert.match(auth, /认证恢复后，请手动恢复跟踪/)
+})
+
+test('uncertain video submissions stay in the task summary without automatic notices after reopening', () => {
+  const pending = job({ generationStatus: 'SUBMISSION_UNKNOWN', trackingStatus: 'INTERRUPTED', billingStatus: 'RECONCILING' })
+  assert.match(videoTaskIssue([pending])!, /提交结果尚未确认/)
+  for (const trackingStatus of ['ACTIVE', 'INTERRUPTED', 'AUTH_REQUIRED', 'STOPPED'] as const) {
+    for (const error of [null, 'SUBMISSION_UNKNOWN', 'RATE_LIMITED']) {
+      assert.equal(videoTaskIssue([{ ...pending, trackingStatus, error }], 'notice'), null)
+      assert.equal(videoTaskIssue([{ ...pending, trackingStatus, error }], 'notice'), null)
+    }
+  }
+  const rejected = job({ generationStatus: 'FAILED', trackingStatus: 'STOPPED', error: 'VIDEO_BUDGET_EXCEEDED' })
+  assert.equal(videoTaskIssue([pending, rejected], 'notice'), videoTaskIssue([rejected]))
+})
+
+test('output specification mismatches remain visible in task data without automatic notices', () => {
+  const mismatch = job({ generationStatus: 'SUCCEEDED', trackingStatus: 'STOPPED', billingStatus: 'SETTLED', error: 'OUTPUT_SPEC_MISMATCH' })
+  assert.equal(videoTaskIssue([mismatch], 'notice'), null)
+  assert.equal(videoTaskIssue([mismatch]), null)
 })
 
 test('definitive business rejection shows its cause without recovery or regeneration actions', () => {

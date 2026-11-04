@@ -30,11 +30,12 @@ export interface EmployeeRuntimeConfig {
 
 export type SessionRecoveryMode = 'strict' | 'confirm_rebuild' | 'auto_rebuild_from_task_history'
 
-export type ControlIntent = 'none' | 'pause' | 'cancel' | 'stop' | 'interrupt'
+export type ControlIntent = 'none' | 'pause' | 'cancel' | 'stop' | 'interrupt' | 'priority-interrupt'
 
 export interface TaskWorkerPort {
   run(prompt: string): Promise<void>
   abort(): Promise<void>
+  discardCurrentTurnFromContext?(): Promise<void>
   dispose(): Promise<void>
 }
 

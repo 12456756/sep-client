@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { conversationQueueViewSchema, type ConversationQueueView } from '../../shared/conversation-queue'
-import { responseError } from '../../shared/arrangement-feedback'
+import { feedbackMessage, responseError } from '../../shared/arrangement-feedback'
 import { useOperationFeedback } from '../../components/feedback/use-operation-feedback'
+import { useFeedback } from '../../components/feedback/FeedbackProvider'
 
 export function useConversationQueue(taskId: string, scopeKey: string) {
   const [queue, setQueue] = useState<ConversationQueueView>({ paused: false, items: [], failed: null })
@@ -10,6 +11,7 @@ export function useConversationQueue(taskId: string, scopeKey: string) {
   const request = useRef(0)
   const resuming = useRef(false)
   const { capture } = useOperationFeedback(`${scopeKey}:${taskId}`)
+  const feedback = useFeedback()
   const failedRead = useRef(false)
   const refresh = useCallback(async () => {
     const version = generation.current, sequence = ++request.current, notice = capture()
@@ -37,19 +39,51 @@ export function useConversationQueue(taskId: string, scopeKey: string) {
     void poll()
     return () => { active = false; invalidate(); if (timer) clearTimeout(timer) }
   }, [refresh, scopeKey, invalidate])
-  const resume = useCallback(async () => {
-    if (resuming.current) return
+  const resume = useCallback(async (messageId?: string): Promise<{ success: boolean; message?: string }> => {
+    if (resuming.current) return { success: false }
     resuming.current = true
     const version = generation.current, sequence = ++request.current, notice = capture()
     setBusy(true)
     try {
-      const result = await window.electronAPI.conversationQueue({ taskId, action: 'resume' })
-      if (version !== generation.current || !notice.isCurrent()) return
+      const result = await window.electronAPI.conversationQueue(messageId
+        ? { taskId, action: 'recover', messageId, confirmRecovery: true }
+        : { taskId, action: 'resume' })
+      if (version !== generation.current || !notice.isCurrent()) return { success: false }
       if (!result.success) throw responseError(result, 'workRetry')
       if (sequence === request.current) setQueue(conversationQueueViewSchema.parse(result.queue))
       else await refresh()
-    } catch (error) { if (version === generation.current && notice.isCurrent()) notice.fail(error, 'workRetry') }
+      return { success: true }
+    } catch (error) {
+      if (version === generation.current && notice.isCurrent()) {
+        if (messageId) return { success: false, message: feedbackMessage(error, 'workRetry') }
+        notice.fail(error, 'workRetry')
+      }
+      return { success: false }
+    }
     finally { if (version === generation.current) { resuming.current = false; setBusy(false) } }
   }, [taskId, capture, refresh])
-  return { queue, busy, refresh, resume }
+  const prioritize = useCallback(async (entryId: string) => {
+    if (resuming.current) return
+    resuming.current = true
+    const version = generation.current, notice = capture()
+    setBusy(true)
+    try {
+      const result = await window.electronAPI.conversationQueue({ taskId, action: 'prioritize', entryId })
+      if (version !== generation.current || !notice.isCurrent()) return
+      if (!result.success) throw responseError(result, 'workRetry')
+      setQueue(conversationQueueViewSchema.parse(result.queue))
+    } catch (error) { if (version === generation.current && notice.isCurrent()) notice.fail(error, 'workRetry') }
+    finally { if (version === generation.current) { resuming.current = false; setBusy(false) } }
+  }, [taskId, capture])
+  const recover = useCallback(async () => {
+    const failed = queue.failed, notice = capture()
+    if (!failed?.recoveryConfirmationRequired) return
+    await feedback.confirm({
+      key: `conversation-recovery:${scopeKey}:${taskId}:${failed.id}`,
+      message: '会话文件已损坏，将根据已保存的任务历史重建上下文，部分上下文可能无法还原。确认后重试这条消息并继续处理后续信息。',
+      actionLabel: '确认重建并继续', busyLabel: '正在重建',
+      onConfirm: () => notice.isCurrent() ? resume(failed.id) : Promise.resolve({ success: false }),
+    })
+  }, [queue.failed, capture, feedback, scopeKey, taskId, resume])
+  return { queue, busy, refresh, resume: () => resume(), recover, prioritize }
 }

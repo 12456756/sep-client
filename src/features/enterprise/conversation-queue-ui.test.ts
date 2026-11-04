@@ -29,7 +29,7 @@ const dependencies: Record<string, unknown> = {
   './KnowledgeSelector': { KnowledgeSelector: empty },
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },
   '../../features/enterprise/conversation-media': { ConversationMedia: empty },
-  '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {} }) },
+  '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {}, async prioritize() {} }) },
   './ConversationMessages': { ConversationMessages: empty },
 }
 const filename = fileURLToPath(new URL('../../components/enterprise/WorkTalkDrawer.tsx', import.meta.url))
@@ -53,6 +53,7 @@ function render(status: WorkItem['status'] = 'completed') {
 test('conversation shows persisted pending text and attachment names, count and employee-switch lock', () => {
   queue = { paused: false, failed: null, items: [{ id: 'one', prompt: '分析销量', createdAt: 1, attachmentNames: ['销量.xlsx'] }] }
   const html = render('running')
+  assert.match(html, />优先执行<\/button>/)
   assert.match(html, /等待处理 1\/10/)
   assert.match(html, /分析销量/)
   assert.match(html, /附件：销量.xlsx/)
@@ -81,4 +82,12 @@ test('only a live background preparation is shown as preparing; restored unstart
   queue = { preparing: false, paused: false, items: [], failed: null }
   assert.match(render('arranging'), /尚未开始/)
   assert.match(render('arranging'), />开始执行<\/button>/)
+})
+
+test('a damaged session exposes explicit reconstruction instead of an ineffective retry', () => {
+  queue = { paused: true, items: [], failed: { id: 'failed', prompt: '未完成的问题', createdAt: 1, attachmentNames: [], recoveryConfirmationRequired: true } }
+  const html = render()
+  assert.match(html, /会话文件已损坏，需要确认后根据任务历史重建上下文/)
+  assert.match(html, />重建会话并继续<\/button>/)
+  assert.doesNotMatch(html, />重试并继续<\/button>/)
 })

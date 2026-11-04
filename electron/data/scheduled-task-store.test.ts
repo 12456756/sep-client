@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ScheduledTaskStore } from './scheduled-task-store'
@@ -44,7 +44,7 @@ test('workspace must already exist, be writable and never follow a replaced exec
     const store = new ScheduledTaskStore(dir)
     await assert.rejects(store.prepareWorkspace('relative-directory', 'run'))
     await assert.rejects(store.prepareWorkspace(join(dir, 'missing'), 'run'))
-    assert.equal(await store.prepareWorkspace(dir, 'run'), join(dir, 'scheduled-run'))
+    assert.equal(await store.prepareWorkspace(dir, 'run'), await realpath(join(dir, 'scheduled-run')))
     await assert.rejects(store.prepareWorkspace(dir, '../escape'))
   } finally { await rm(dir, { recursive: true, force: true }) }
 })

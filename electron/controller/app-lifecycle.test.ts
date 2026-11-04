@@ -56,7 +56,7 @@ describe('app shutdown wiring', () => {
   it('registers the shutdown handler with the assembled backend', () => {
     assert.match(
       mainSource,
-      /installShutdownHandler\(\{[\s\S]*?stop: \(\) => backend\.stopAll\(\)/,
+      /installShutdownHandler\(\{[\s\S]*?stop: \(\) => backend\.stopForApp\(\)/,
       '停机必须接到组装好的后端上，否则 before-quit 时没有可收的对象',
     )
   })
@@ -65,7 +65,7 @@ describe('app shutdown wiring', () => {
 describe('startup ordering', () => {
   it('opens the window only after the backend is assembled', () => {
     const composed = mainSource.indexOf('await createBackend({')
-    const opened = mainSource.indexOf('openMainWindow(backend.speech);')
+    const opened = mainSource.indexOf('openMainWindow(backend.speech, skillImport);')
     assert.ok(composed >= 0, 'whenReady 必须 await createBackend()')
     assert.ok(opened > composed, '窗口必须在组装成功之后才创建（C3）')
     assert.match(mainSource, /createMainWindow\(\{[^}]*speech/, '主窗口必须使用后端的麦克风授权守卫')

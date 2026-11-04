@@ -301,6 +301,14 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  getSkillImportState: () => Promise<IpcCommandResult & { data?: import('./skill-import-contracts').SkillImportStateView }>
+  confirmSkillImportConsent: (input: { pairingId: string; rememberDevice: boolean; scope: 'user' | 'project' | 'all'; rootIds: string[] }) => Promise<IpcCommandResult>
+  selectSkillImportRoot: () => Promise<IpcCommandResult>
+  removeSkillImportRoot: (input: { rootId: string }) => Promise<IpcCommandResult>
+  cancelSkillImport: (input: { sessionId: string }) => Promise<IpcCommandResult>
+  revokeSkillImportDevice: (input: { deviceId: string; instanceId: string }) => Promise<IpcCommandResult>
+  setSkillImportVisible: (input: { visible: boolean }) => Promise<IpcCommandResult>
+  onSkillImportStateChanged: (callback: (state: import('./skill-import-contracts').SkillImportStateView) => void) => () => void
   getScheduledWorkSource: (taskId: string) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').WorkScheduleContext }>
   createScheduledTaskFromWork: (value: import('./scheduled-tasks').CreateWorkSchedule) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
   editScheduledTaskFromWork: (value: import('./scheduled-tasks').EditWorkSchedule) => Promise<IpcCommandResult & { data?: import('./scheduled-tasks').ScheduledDefinition }>
@@ -400,7 +408,7 @@ export interface ElectronAPI {
   createConversation: (data: CreateConversationInput) => Promise<TaskResult>
   executeTask: (task: string | ExecuteTaskInput) => Promise<IpcCommandResult>
   continueTask: (input: ContinueTaskInput) => Promise<IpcCommandResult & { queued?: boolean }>
-  conversationQueue: (input: { taskId: string; action: 'get' | 'resume' }) => Promise<IpcCommandResult & { queue?: import('./conversation-queue').ConversationQueueView }>
+  conversationQueue: (input: import('./conversation-queue').ConversationQueueInput) => Promise<IpcCommandResult & { queue?: import('./conversation-queue').ConversationQueueView }>
   switchConversationEmployee: (input: SwitchConversationEmployeeInput) => Promise<IpcCommandResult>
   getTaskMessages: (taskId: string) => Promise<TaskMessagesResult>
   retryTask: (input: string | RetryTaskInput) => Promise<IpcCommandResult>

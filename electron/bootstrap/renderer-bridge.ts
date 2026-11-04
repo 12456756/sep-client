@@ -1,4 +1,5 @@
 import type { UpdateState } from '../../src/shared/ipc'
+import type { SkillImportStateView } from '../../src/shared/skill-import-contracts'
 import type { PlanningRecordChange } from '../../src/shared/auto-planning'
 import type { NotificationUpdate } from '../../src/shared/notification-contracts'
 /**
@@ -30,6 +31,10 @@ export class RendererBridge implements RendererPort {
 
   updateStateChanged(state: UpdateState): void {
     this.send(EVENT_CHANNELS.UPDATE_STATE_CHANGED, state)
+  }
+
+  skillImportStateChanged(state: SkillImportStateView): void {
+    this.send(EVENT_CHANNELS.SKILL_IMPORT_STATE_CHANGED, state)
   }
 
   notificationUpdated(update: NotificationUpdate): void {

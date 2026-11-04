@@ -286,6 +286,21 @@ describe('employee skill loader adapter boundary (no model requests)', () => {
   })
 })
 
+it('restoring a conversation checkpoint excludes an interrupted turn from the next provider context', async () => {
+  const interruptedText = 'unique interrupted context text'
+  const result = await mediaSession({}, undefined, undefined, undefined, async session => {
+    const checkpoint = session.getContextCheckpoint?.()
+    assert.notEqual(checkpoint, undefined)
+    await session.prompt(interruptedText)
+    await session.restoreContextCheckpoint?.(checkpoint!)
+    await session.prompt('priority message')
+  })
+  const nextRequest = result.bodies.at(-1)
+  assert.ok(nextRequest)
+  assert.doesNotMatch(JSON.stringify(nextRequest.messages), new RegExp(interruptedText))
+  assert.match(JSON.stringify(nextRequest.messages), /priority message/)
+})
+
 const mediaNames: MediaToolName[] = ['media_get_capabilities', 'media_generate_image', 'media_get_job', 'media_cancel_job']
 const generationInput = {
   profileId: 'profile-a', operation: 'generate', localAssetIds: [], creativeBrief: 'A product photo',

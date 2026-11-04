@@ -127,7 +127,7 @@ for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-
       await session.prompt('Hello')
       if (scenario === 'next-turn') await session.prompt('Try again')
       assert.ok(Date.now() - started < 5000, 'must not add a second 2/4/8-second wait')
-      const expected = ['recover', 'token-rotation'].includes(scenario) ? 2 : scenario === 'exhausted' ? 4 : scenario === 'next-turn' ? 3 : 1
+      const expected = ['recover', 'token-rotation'].includes(scenario) ? 2 : scenario === 'exhausted' ? 6 : scenario === 'next-turn' ? 3 : 1
       assert.equal(requests.length, expected)
       for (const { payload } of requests) {
         assert.equal('max_tokens' in payload, false)
@@ -135,7 +135,7 @@ for (const scenario of ['recover', 'token-rotation', 'cancel', 'too-long', 'non-
         assert.deepEqual(payload.stream_options, { include_usage: true })
       }
       const retries = events.filter(event => event.type === 'auto_retry_start')
-      assert.equal(retries.length, scenario === 'exhausted' ? 3 : ['recover', 'token-rotation', 'cancel', 'next-turn'].includes(scenario) ? 1 : 0)
+      assert.equal(retries.length, scenario === 'exhausted' ? 5 : ['recover', 'token-rotation', 'cancel', 'next-turn'].includes(scenario) ? 1 : 0)
       if (scenario === 'token-rotation') {
         assert.equal(requests[0]!.authorization, 'Bearer test-token')
         assert.equal(requests[1]!.authorization, 'Bearer rotated-token')

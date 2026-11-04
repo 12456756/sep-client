@@ -105,6 +105,7 @@ window.seedRun = status => {
  error: {code: 'EXECUTION_UNCERTAIN', message: '执行中断，请核查', action: 'review'}, attempts: [{id: 'attempt', number: 1, startedAt: Date.now(), finishedAt: null, status: 'admitted', error: null}]}];
 };
 function App() {
+ const dark = new URLSearchParams(window.location.search).has('dark');
  const [scope, setScope] = React.useState('test-user'); window.switchScope = setScope;
  const [route, setRoute] = React.useState({ name: 'scheduled' });
  window.scheduleNavigate = setRoute;
@@ -113,13 +114,13 @@ function App() {
  const navigate = next => { history.current.push(route); setRoute(next); };
  const work = {id: 'work', title: '行业周报执行结果', goal: '研究行业并生成文件', kind: 'flow', workType: {state: 'resolved', kind: 'arrangement'}, status: 'completed', progress: 100, currentEmployeeId: employee.id, currentEmployeeName: employee.name, steps: [], nextUserAction: null, createdAt: Date.now(), updatedAt: Date.now(), participants: [employee.id], deliverables: [{id: 'report', name: '行业报告.docx', path: 'D:/reports/report.docx', note: '研究成果'}], timeline: [], messages: [{id: 'message', role: 'employee', employeeId: employee.id, employeeName: employee.name, content: '报告已完成。', createdAt: Date.now()}], activities: [], sharedContext: {goal: '', confirmedInputs: [], previousResults: [], userNotes: []}, stopReason: null, workDir: 'D:/reports', scheduledOrigin: {definitionId: data.definitions[0]?.id, occurrenceId: data.occurrences[0]?.id}};
  const workspace = { route, employees, myEmployees: employees, works: [work], navigate, replaceRoute: setRoute, canGoBack: true, goBack: () => setRoute(history.current.pop()), chooseFolder: async () => 'D:/客户资料/报告成果/包含较长路径的目录/项目资料' };
- return <div className='ent-shell'><AppSideNav enterpriseName='示例企业' enterpriseMark='企' current={route.name} needsMeCount={0} canManage={false} userName='测试成员' collapsed={false} onToggleCollapse={() => {}} onNavigate={navigate} onOpenSettings={() => {}} onCheckUpdate={() => {}} onLogout={() => {}} /><main className='ent-shell-main'><header className='ent-topbar'>定时任务</header><div className='ent-scroll'>{route.name === 'scheduled' ? <ScheduledTasksPage workspace={workspace} scopeKey={scope} /> : <WorkDetailPage workspace={workspace} workId='work' />}</div></main></div>;
+ return <div className={dark ? 'ent-shell dark' : 'ent-shell'}><AppSideNav enterpriseName='示例企业' enterpriseMark='企' current={route.name} needsMeCount={0} canManage={false} userName='测试成员' collapsed={false} onToggleCollapse={() => {}} onNavigate={navigate} onOpenSettings={() => {}} onCheckUpdate={() => {}} onLogout={() => {}} /><main className='ent-shell-main'><header className='ent-topbar'>定时任务</header><div className='ent-scroll'>{route.name === 'scheduled' ? <ScheduledTasksPage workspace={workspace} scopeKey={scope} /> : <WorkDetailPage workspace={workspace} workId='work' />}</div></main></div>;
 }
 createRoot(document.getElementById('root')).render(<FeedbackProvider><React.StrictMode><App /></React.StrictMode></FeedbackProvider>);
 const importRoot = createRoot(document.body.appendChild(document.createElement('div')));
 window.openWorkSchedule = () => importRoot.render(<React.StrictMode><WorkScheduleDialog source={{id:'source-work',title:'原工作标题'}} scopeKey='test-user' onClose={() => importRoot.render(null)} onCreated={saved => { importRoot.render(null); window.scheduleNavigate({name:'scheduled',taskId:saved.id,view:'configuration'}); }} /></React.StrictMode>);
 `
-const bundle = await build({ stdin: { contents: fixture, loader: 'tsx', resolveDir: root }, bundle: true, write: false, outfile: 'fixture.js', format: 'iife', jsx: 'automatic',
+const bundle = await build({ stdin: { contents: fixture, loader: 'tsx', resolveDir: root }, bundle: true, write: false, outfile: 'fixture.js', format: 'iife', jsx: 'automatic', loader: { '.png': 'dataurl' },
   define: { 'process.env.NODE_ENV': JSON.stringify('development') },
   plugins: [{ name: 'scheduled-ui-asset-stubs', setup(build) {
     build.onResolve({ filter: /\?url$/ }, args => ({ path: args.path, namespace: 'scheduled-ui-asset' }))
@@ -143,12 +144,11 @@ let browser
 try {
   browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'msedge' })
   await mkdir(screenshots, { recursive: true })
-  for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 620 }, { width: 760, height: 900 }, { width: 390, height: 844 }]) {
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 1280, height: 620 }, { width: 1000, height: 760 }, { width: 760, height: 900 }, { width: 390, height: 844 }]) {
     const page = await browser.newPage({ viewport })
     const errors = []
     page.on('pageerror', error => errors.push(error.message))
-    await page.goto(`http://127.0.0.1:${server.address().port}`)
-    if (viewport.width === 1280) await page.locator('.ent-shell').evaluate(element => element.classList.add('dark'))
+    await page.goto(`http://127.0.0.1:${server.address().port}${viewport.width === 1280 ? '/?dark' : ''}`)
     await page.evaluate(() => window.openWorkSchedule())
     const imported = page.getByRole('dialog', { name: '加入定时任务', exact: true })
     await imported.getByRole('button', {name:'创建并启用',exact:true}).waitFor()
@@ -180,8 +180,43 @@ try {
     await sourceEdit.waitFor({state:'detached'})
     assert.equal(await page.evaluate(() => window.testData.definitions.length),1)
     await page.evaluate(() => { window.testData.definitions=[]; window.scheduleNavigate({name:'scheduled'}); window.switchScope('after-import') })
-    await page.getByRole('region', {name:'进行中的定时任务',exact:true}).waitFor({state:'detached'})
+    await page.locator('.ent-sch-sidebar .ent-sch-nav-task').waitFor({state:'detached'})
+    const openComposer = async () => {
+      if (!await page.getByLabel('定时任务工作内容', { exact: true }).isVisible()) await page.getByRole('button', { name: '新建任务', exact: true }).first().click()
+      await page.getByLabel('定时任务工作内容', { exact: true }).waitFor()
+      assert.equal(await page.getByRole('dialog', { name: '新建定时任务', exact: true }).count(), 0)
+    }
+    const openManual = async () => { await openComposer(); await page.getByRole('button', { name: '手动设置', exact: true }).click() }
+    await openComposer()
+    assert.equal(await page.locator('.ent-sch-home-compose').count(), 1)
+    assert.equal(await page.getByText('管理周期工作与下一次执行时间', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('还没有定时任务', { exact: true }).count(), 0)
+    await page.screenshot({ path: resolve(screenshots, `workspace-empty-${viewport.width}.png`), fullPage: true })
     const homeGoal = page.getByLabel('定时任务工作内容', { exact: true })
+    const checkHomeLayout = async () => {
+      const pane = await page.locator('.ent-sch-main-pane').boundingBox()
+      const composer = await page.locator('.ent-sch-home-compose').boundingBox()
+      const content = await page.locator('.ent-sch-home-content').boundingBox()
+      assert.ok(pane && composer && content)
+      assert.ok(content.y + content.height <= composer.y + 1)
+      assert.ok(pane.y + pane.height - composer.y - composer.height <= 29)
+      assert.ok(composer.y + composer.height <= viewport.height + 1)
+      await page.waitForFunction(() => {
+        const image = document.querySelector('.ent-sch-clock')
+        return image?.complete && image.naturalWidth === 112 && image.naturalHeight === 112
+      })
+      const icon = await page.locator('.ent-sch-clock').boundingBox()
+      const examples = await page.getByRole('region', { name: '定时任务示例', exact: true }).boundingBox()
+      assert.ok(icon && examples && examples.y >= icon.y + icon.height)
+      const centers = await page.locator('.ent-sch-home-compose').locator('.ent-model-trigger, .ent-rs-directory, .ent-rs-permission, .ent-rs-approval').evaluateAll(elements => elements.map(element => {
+        const box = element.getBoundingClientRect()
+        return box.y + box.height / 2
+      }))
+      assert.equal(centers.length, 4)
+      assert.ok(Math.max(...centers) - Math.min(...centers) < 2, JSON.stringify(centers))
+      assert.ok(await page.locator('.ent-sch-main-pane').evaluate(element => element.scrollWidth <= element.clientWidth + 1))
+    }
+    await checkHomeLayout()
     const modelControl = container => container.getByRole('combobox', { name: '模型', exact: true })
     const modelValue = async container => (await modelControl(container).textContent()).trim()
     const selectModel = async (container, value) => {
@@ -237,24 +272,40 @@ try {
     await checkControls(page.locator('.ent-sch-home-compose'), true, true)
     await checkControlFocus(page.locator('.ent-sch-home-compose'), true, true)
     await page.screenshot({ path: resolve(screenshots, `controls-home-${viewport.width}.png`), fullPage: true })
-    assert.equal(await page.getByRole('heading', { name: '定时任务', exact: true }).count(), 0)
+    assert.equal(await page.getByRole('heading', { name: '安排任务', exact: true }).count(), 1)
     assert.equal(await page.getByRole('button', { name: '全部任务', exact: true }).count(), 0)
     assert.equal(await page.locator('.ent-scroll').evaluate(element => getComputedStyle(element).backgroundColor), 'rgba(0, 0, 0, 0)')
     assert.equal(await page.getByRole('region', { name: '进行中的定时任务', exact: true }).count(), 0)
     assert.equal(await page.getByRole('region', { name: '已暂停的定时任务', exact: true }).count(), 0)
-    assert.equal(await page.locator('.ent-sch-home-scroll > section').count(), 1)
+    assert.equal(await page.getByRole('region', { name: '定时任务示例', exact: true }).count(), 1)
     assert.equal(await page.getByRole('button', { name: '创建并启用定时任务', exact: true }).isDisabled(), true)
     await page.getByRole('button', { name: '使用示例：行业日报', exact: true }).click()
     assert.match(await homeGoal.inputValue(), /每个工作日早上 9 点/)
     assert.equal(await homeGoal.evaluate(element => element === element.ownerDocument.activeElement), true)
     assert.equal(await modelValue(page), 'test-model')
     await modelControl(page).click()
+    const homePickerBounds = await page.getByRole('dialog', { name: '选择模型', exact: true }).boundingBox()
+    assert.ok(homePickerBounds && homePickerBounds.x >= 0 && homePickerBounds.y >= 0
+      && homePickerBounds.x + homePickerBounds.width <= viewport.width + 1
+      && homePickerBounds.y + homePickerBounds.height <= viewport.height + 1, JSON.stringify(homePickerBounds))
+    await page.screenshot({ path: resolve(screenshots, `home-model-picker-${viewport.width}.png`), fullPage: true })
     assert.deepEqual(await page.locator('.ent-model-options [role="option"]').evaluateAll(options => options.map(option => option.textContent)), ['暂不选择', 'test-model', 'alternate-model'])
     await page.getByRole('option', { name: 'alternate-model', exact: true }).click()
     await page.getByRole('button', { name: '选择目录', exact: true }).click()
     await page.getByLabel('访问权限', { exact: true }).selectOption('full-local')
     await page.getByRole('checkbox', { name: '自动放行', exact: true }).check()
     await homeGoal.fill('保留我的工作要求')
+    await openManual()
+    const manualDraft = page.getByRole('dialog', { name: '新建定时任务', exact: true })
+    await manualDraft.waitFor()
+    await manualDraft.getByRole('button', { name: '取消', exact: true }).click()
+    await manualDraft.waitFor({ state: 'detached' })
+    await openComposer()
+    assert.equal(await homeGoal.inputValue(), '保留我的工作要求')
+    assert.equal(await modelValue(page), 'alternate-model')
+    assert.equal(await page.getByLabel('访问权限', { exact: true }).inputValue(), 'full-local')
+    assert.equal(await page.getByRole('checkbox', { name: '自动放行', exact: true }).isChecked(), true)
+    assert.match(await page.locator('.ent-sch-home-compose .ent-rs-directory').textContent(), /项目资料/)
     await page.getByRole('button', { name: '使用示例：销售周报', exact: true }).click()
     await page.getByRole('alertdialog', { name: '替换当前内容？', exact: true }).waitFor()
     await page.getByRole('button', { name: '保留内容', exact: true }).click()
@@ -267,7 +318,9 @@ try {
     await page.screenshot({ path: resolve(screenshots, `home-empty-${viewport.width}.png`), fullPage: true })
     await page.getByRole('button', { name: '创建并启用定时任务', exact: true }).click()
     await page.getByText('已创建并启用', { exact: true }).waitFor()
-    assert.equal(await page.getByRole('dialog').count(), 0)
+    assert.equal(await page.getByRole('dialog', { name: '新建定时任务', exact: true }).count(), 0)
+    await checkHomeLayout()
+    await page.waitForFunction(() => document.querySelector('#schedule-home-goal')?.value === '')
     assert.equal(await homeGoal.inputValue(), '')
     assert.equal(await page.evaluate(() => window.testData.definitions.length), 1)
     const firstRequest = await page.evaluate(() => window.creationCalls[0])
@@ -291,6 +344,7 @@ try {
     await page.getByRole('button', { name: '关闭详情面板', exact: true }).click()
     await page.getByRole('button', { name: '返回', exact: true }).click()
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
+    await openComposer()
     await homeGoal.fill('问题：每天整理工作资料')
     await page.getByRole('button', { name: '选择目录', exact: true }).click()
     await page.getByRole('button', { name: '创建并启用定时任务', exact: true }).click()
@@ -312,14 +366,16 @@ try {
     await page.screenshot({ path: resolve(screenshots, `creation-retry-${viewport.width}.png`), fullPage: true })
     await page.getByRole('button', { name: '查看执行记录', exact: true }).first().click()
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
+    await openComposer()
     await page.getByText('发送结果未确认', { exact: true }).waitFor()
     await page.getByRole('button', { name: '重试同一请求', exact: true }).click()
     await page.getByText('发送结果未确认', { exact: true }).waitFor({ state: 'detached' })
+    await page.waitForFunction(() => document.querySelector('#schedule-home-goal')?.value === '')
     assert.equal(await homeGoal.inputValue(), '')
     assert.deepEqual(await page.evaluate(() => window.creationCalls.at(-1)), await page.evaluate(() => window.creationCalls.at(-2)))
     assert.equal(await page.evaluate(() => window.testData.definitions.length), 3)
     await homeGoal.fill('保持规划：每天整理资料')
-    await page.getByRole('button', { name: '选择目录', exact: true }).click()
+    await page.locator('.ent-sch-home-compose .ent-rs-directory').click()
     await page.getByRole('button', { name: '创建并启用定时任务', exact: true }).click()
     await page.getByText('正在生成工作计划', { exact: true }).waitFor()
     await page.screenshot({ path: resolve(screenshots, `creation-planning-${viewport.width}.png`), fullPage: true })
@@ -337,8 +393,7 @@ try {
     assert.equal(await page.getByText('未送达的前用户私密任务', { exact: true }).count(), 0)
     await page.evaluate(() => { window.testData.creations = []; window.testData.definitions = []; window.testData.occurrences = []; window.creationCalls = [] })
     await page.reload()
-    await homeGoal.waitFor()
-    await page.getByRole('button', { name: '新建定时任务', exact: true }).click()
+    await openManual()
     const dialog = page.getByRole('dialog', { name: '新建定时任务', exact: true })
     await dialog.waitFor()
     assert.equal(await dialog.getByLabel('工作目标', { exact: true }).inputValue(), '')
@@ -389,14 +444,14 @@ try {
     await page.getByRole('region', { name: '进行中的定时任务', exact: true }).waitFor()
     assert.equal(await page.getByRole('region', { name: '已暂停的定时任务', exact: true }).count(), 0)
     await page.screenshot({ path: resolve(screenshots, `home-active-${viewport.width}.png`), fullPage: true })
-    await page.locator('.ent-sch-task-card').click()
+    await page.locator('.ent-sch-nav-task').click()
     await page.getByRole('tab', { name: '任务配置', exact: true }).click()
     await page.getByRole('button', { name: '暂停后续调度', exact: true }).click()
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
     await page.getByRole('region', { name: '已暂停的定时任务', exact: true }).waitFor()
     assert.equal(await page.getByRole('region', { name: '进行中的定时任务', exact: true }).count(), 0)
     await page.screenshot({ path: resolve(screenshots, `home-paused-${viewport.width}.png`), fullPage: true })
-    await page.locator('.ent-sch-task-card').click()
+    await page.locator('.ent-sch-nav-task').click()
     await page.getByRole('tab', { name: '任务配置', exact: true }).click()
     await page.getByRole('button', { name: '编辑任务配置', exact: true }).click()
     await page.getByLabel('任务名称', { exact: true }).fill('新的行业周报')
@@ -407,7 +462,7 @@ try {
     await page.evaluate(() => window.seedRun('review'))
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
     await page.getByRole('region', { name: '进行中的定时任务', exact: true }).waitFor()
-    await page.locator('.ent-sch-task-card').click()
+    await page.locator('.ent-sch-nav-task').click()
     await page.getByRole('button', { name: '核查后关闭本次执行', exact: true }).waitFor()
     assert.equal(await page.getByRole('button', { name: '重新检查执行条件', exact: true }).count(), 0)
     await page.getByRole('button', { name: '核查后关闭本次执行', exact: true }).click()
@@ -415,7 +470,7 @@ try {
     await page.getByRole('button', { name: '已核查，关闭记录', exact: true }).click()
     await page.getByRole('button', { name: '核查后关闭本次执行', exact: true }).waitFor({ state: 'detached' })
     assert.equal(await page.evaluate(() => window.counters.acknowledge), 1)
-    await page.locator('.ent-scroll').evaluate(element => { element.scrollTop = 0 })
+    await page.locator('.ent-sch-main-pane').evaluate(element => { element.scrollTop = 0 })
     await page.screenshot({ path: resolve(screenshots, `history-${viewport.width}.png`), fullPage: true })
     const overflows = await page.locator('.ent-scheduled').evaluate(element => {
       const box = element.getBoundingClientRect()
@@ -424,7 +479,7 @@ try {
     assert.ok(overflows.horizontal <= 1, JSON.stringify(overflows))
     assert.ok(overflows.right <= viewport.width + 1, JSON.stringify(overflows))
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
-    await page.getByRole('button', { name: '新建定时任务', exact: true }).click()
+    await openManual()
     const automatic = page.getByRole('dialog', { name: '新建定时任务', exact: true })
     await automatic.getByLabel('任务模式', { exact: true }).selectOption('auto')
     await checkControls(automatic, true)
@@ -471,17 +526,44 @@ try {
       window.testData.definitions = Array.from({ length: 16 }, (_, index) => ({ ...structuredClone(original), id: 'many-' + index, enabled: true, pausedAt: null, nextRunAt: Date.now() + 86400000, input: { ...original.input, name: index === 0 ? 'LongTitleWithoutSpaces'.repeat(7) : '定期行业研究任务 ' + (index + 1) } }))
       window.testData.definitions.push({ ...structuredClone(original), id: 'paused', enabled: false, pausedAt: Date.now(), nextRunAt: null })
     })
-    await page.locator('.ent-sch-task-card').nth(16).waitFor({ state: 'attached' })
-    assert.deepEqual(await page.locator('.ent-sch-home-scroll > section > h3').allTextContents(), ['进行中16', '已暂停1', '待完成1', '历史记录1', '为你推荐'])
-    const beforeScroll = await page.locator('.ent-sch-home-compose').boundingBox()
+    await page.locator('.ent-sch-nav-task').nth(16).waitFor({ state: 'attached' })
+    const taskCount = await page.locator('.ent-sch-nav-task').count()
+    assert.equal(await page.locator('.ent-sch-home-compose').count(), 1)
+    await checkHomeLayout()
+    const composerBeforeScroll = await page.locator('.ent-sch-home-compose').boundingBox()
+    const beforeScroll = await page.locator('.ent-sch-main-pane').boundingBox()
     await page.getByLabel('定时任务概览', { exact: true }).evaluate(element => { element.scrollTop = element.scrollHeight })
-    const afterScroll = await page.locator('.ent-sch-home-compose').boundingBox()
+    const afterScroll = await page.locator('.ent-sch-main-pane').boundingBox()
     assert.equal(beforeScroll.y, afterScroll.y)
     assert.ok(afterScroll.y + afterScroll.height <= viewport.height + 1)
     const homeBounds = await page.locator('.ent-sch-home-page').evaluate(element => ({ width: element.clientWidth, scrollWidth: element.scrollWidth, bottom: element.getBoundingClientRect().bottom }))
     assert.ok(homeBounds.scrollWidth <= homeBounds.width + 1 && homeBounds.bottom <= viewport.height + 1, JSON.stringify(homeBounds))
     assert.ok(await page.getByLabel('定时任务概览', { exact: true }).evaluate(element => element.scrollTop > 0))
+    await page.getByLabel('定时任务创建区', { exact: true }).evaluate(element => { element.scrollTop = element.scrollHeight })
+    const composerAfterScroll = await page.locator('.ent-sch-home-compose').boundingBox()
+    assert.deepEqual(composerAfterScroll, composerBeforeScroll)
+    await page.getByRole('button', { name: '搜索定时任务', exact: true }).click()
+    await page.getByRole('searchbox', { name: '搜索任务名称或内容', exact: true }).fill('LongTitleWithoutSpaces')
+    assert.equal(await page.locator('.ent-sch-nav-task').count(), 1)
+    await page.locator('.ent-sch-nav-task').click()
+    await page.getByRole('tab', { name: '执行记录', exact: true }).waitFor()
+    assert.equal(await page.locator('.ent-sch-nav-task[aria-current="page"]').count(), 1)
+    assert.ok(await page.locator('.ent-sch-main-pane').evaluate(element => element.scrollWidth <= element.clientWidth + 1), 'Long task title overflows detail pane')
+    await page.getByRole('searchbox', { name: '搜索任务名称或内容', exact: true }).fill('不存在的任务名称')
+    await page.getByText('没有匹配的任务', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '搜索定时任务', exact: true }).click()
+    assert.equal(await page.getByRole('searchbox', { name: '搜索任务名称或内容', exact: true }).count(), 0)
+    assert.equal(await page.locator('.ent-sch-nav-task').count(), taskCount)
+    const paused = page.locator('.ent-sch-nav-fold').filter({ hasText: '已暂停' })
+    await paused.locator('summary').click()
+    assert.equal(await paused.getByRole('region', { name: '已暂停的定时任务', exact: true }).isVisible(), false)
+    await paused.locator('summary').click()
+    assert.equal(await paused.getByRole('region', { name: '已暂停的定时任务', exact: true }).isVisible(), true)
     await page.screenshot({ path: resolve(screenshots, `home-scroll-${viewport.width}.png`), fullPage: true })
+    await page.evaluate(() => window.scheduleNavigate({ name: 'scheduled', taskId: 'missing' }))
+    await page.getByRole('status').filter({ hasText: '未找到这项任务' }).waitFor()
+    await page.getByRole('button', { name: '返回首页', exact: true }).click()
+    await page.getByRole('button', { name: '新建任务', exact: true }).last().waitFor()
     assert.deepEqual(errors, [])
     await page.close()
   }

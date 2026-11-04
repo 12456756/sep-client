@@ -263,9 +263,9 @@ it('queue reads support legacy conversations and reject arrangements or unavaila
     scope: { currentScope: () => scope }, tasks,
     queue: { async view() { reads++; return { paused: false, items: [], failed: null } } },
   } as unknown as ConversationServiceDependencies)
-  assert.deepEqual(await make(harness()).queue(task.id, 'get'), { paused: false, items: [], failed: null })
-  await assert.rejects(() => make(harness({ workPlans: { async diagnose() { return { state: 'found', value: { mode: 'auto' } } } } })).queue(task.id, 'get'))
-  await assert.rejects(() => make(harness({ workPlans: undefined })).queue(task.id, 'get'))
+  assert.deepEqual(await make(harness()).queue({ taskId: task.id, action: 'get' }), { paused: false, items: [], failed: null })
+  await assert.rejects(() => make(harness({ workPlans: { async diagnose() { return { state: 'found', value: { mode: 'auto' } } } } })).queue({ taskId: task.id, action: 'get' }))
+  await assert.rejects(() => make(harness({ workPlans: undefined })).queue({ taskId: task.id, action: 'get' }))
   assert.equal(reads, 1)
 })
 

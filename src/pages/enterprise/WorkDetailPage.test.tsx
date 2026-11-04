@@ -45,7 +45,7 @@ const dependencies: Record<string, unknown> = {
     React.createElement(ArrangementTranscriptView, { ...props, nodes: buildArrangementTranscript(props.work.steps, []) }) },
   '../../components/enterprise/WorkPlanDrawer': { WorkPlanDrawer: () => null },
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
-  '../../components/enterprise/IconHint': { IconHint: ({ children }: { children: React.ReactNode }) => children },
+  '../../components/enterprise/IconHint': { IconHint: ({ children, label }: { children: React.ReactNode; label: string }) => React.createElement('span', { 'data-hint': label }, children) },
   '../../components/enterprise/WorkIndicators': { WorkStatusIcon: () => null, WorkTypeTag: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
@@ -80,8 +80,8 @@ const work: WorkItem = {
   stopReason: null, workDir: null,
 };
 
-function renderDetail(item: WorkItem): string {
-  const workspace = { works: [item], employees: [], myEmployees: [], busy: false, canGoBack: false } as unknown as EnterpriseWorkspace;
+function renderDetail(item: WorkItem, overrides: Partial<EnterpriseWorkspace> = {}): string {
+  const workspace = { works: [item], employees: [], myEmployees: [], busy: false, canGoBack: false, ...overrides } as unknown as EnterpriseWorkspace;
   const previousReact = Reflect.get(globalThis, 'React');
   Object.defineProperty(globalThis, 'React', { configurable: true, value: React });
   try {
@@ -170,7 +170,7 @@ it('keeps parallel questions available only while the arrangement can accept rep
     const html = renderDetail({ ...pending, status })
     assert.doesNotMatch(html, /提交补充并继续|<textarea/)
     if (status === 'paused') assert.match(html, /这项工作已终止/)
-    if (status === 'failed') assert.match(html, /这项工作中断了/)
+    if (status === 'failed') assert.match(html, /任务执行失败/)
   }
   for (const status of ['stopped', 'interrupted', 'completed', 'failed'] as const) {
     const html = renderDetail({ ...pending, arrangementExecution: { ...pending.arrangementExecution, status } })
@@ -183,7 +183,7 @@ it('keeps parallel questions available only while the arrangement can accept rep
 })
 
 // Check handlers and effect ownership; native focus behavior still needs window verification.
-function mountDetail(item: WorkItem = work) {
+function mountDetail(item: WorkItem = work, overrides: Partial<EnterpriseWorkspace> = {}) {
   const cells: unknown[] = [];
   const effects = new Map<number, { deps?: readonly unknown[]; cleanup?: () => void }>();
   let cursor = 0;
@@ -213,7 +213,7 @@ function mountDetail(item: WorkItem = work) {
   const Page = (loaded.exports as typeof import('./WorkDetailPage')).WorkDetailPage;
   let navigated = false;
   const workspace = { works: [item], employees: [], myEmployees: [], busy: false,
-    navigate: () => { navigated = true; } } as unknown as EnterpriseWorkspace;
+    navigate: () => { navigated = true; }, ...overrides } as unknown as EnterpriseWorkspace;
   const root = Page({ workspace, workId: item.id });
   const renderBody = root.type as (props: unknown) => React.ReactElement;
   let elements: React.ReactElement<Record<string, unknown>>[] = [];
@@ -238,6 +238,70 @@ function mountDetail(item: WorkItem = work) {
   render();
   return { render, dialog, find, navigated: () => navigated, unmount: () => effects.forEach(effect => effect.cleanup?.()) };
 }
+
+describe('compact failure notice', () => {
+  it('uses the same reason and icon-only retry for conversation and flow failures', () => {
+    for (const kind of ['conversation', 'flow'] as const) {
+      const html = renderDetail({ ...work, kind, status: 'failed', stopReason: '视频服务暂时不可用' });
+      assert.equal((html.match(/aria-label="任务失败"/g) ?? []).length, 1);
+      assert.match(html, /class="ent-failure-reason" title="视频服务暂时不可用">视频服务暂时不可用<\/p>/);
+      assert.match(html, /data-hint="重试任务"/);
+      assert.match(html, /<button[^>]*aria-label="重试任务"[^>]*><svg/);
+      assert.doesNotMatch(html, /重新试一次|中断原因：/);
+    }
+  });
+
+  it('retains the complete long reason and falls back to the next user action', () => {
+    const reason = '视频提交超时，'.repeat(80);
+    assert.match(renderDetail({ ...work, status: 'failed', stopReason: reason }), new RegExp(`title="${reason}"`));
+    assert.match(renderDetail({ ...work, status: 'failed', nextUserAction: '请检查视频服务连接' }), /class="ent-failure-reason"[^>]*>请检查视频服务连接<\/p>/);
+    assert.match(renderDetail({ ...work, status: 'failed' }), /class="ent-failure-reason"[^>]*>任务执行失败<\/p>/);
+  });
+
+  it('combines failed nodes into one frame without a duplicate task-failure banner', () => {
+    const flow: WorkItem = { ...work, kind: 'flow', status: 'failed', stopReason: '供应商连接超时',
+      steps: ['video', 'audio'].map(id => ({ id, title: id, employeeId: 'employee-a', employeeName: '员工',
+        input: '', output: '', dependsOn: [], needsConfirm: false, state: 'failed' })),
+      arrangementExecution: { activeRunId: null, status: 'failed', updatedAt: 1,
+        nodes: ['video', 'audio'].map(nodeId => ({ nodeId, status: 'failed', finalFiles: [] })) } };
+    const html = renderDetail(flow);
+    assert.equal((html.match(/class="ent-flow-act danger ent-failure-notice/g) ?? []).length, 1);
+    assert.doesNotMatch(html, /aria-label="任务失败"|有节点执行失败|可单独重试失败节点|>重试 video</);
+    for (const id of ['video', 'audio']) {
+      assert.match(html, new RegExp(`title="${id}：供应商连接超时"`));
+      assert.match(html, new RegExp(`aria-label="重试此节点：${id}"`));
+      assert.match(html, new RegExp(`data-hint="重试任务：${id}"`));
+    }
+  });
+
+  it('preserves task and node retry targets and disables retry while busy', () => {
+    const calls: unknown[][] = [];
+    const retryWork = async (...args: unknown[]) => { calls.push(args); };
+    for (const kind of ['conversation', 'flow'] as const) {
+      const item: WorkItem = { ...work, kind, status: 'failed', arrangementExecution: kind === 'flow'
+        ? { activeRunId: null, status: 'failed', updatedAt: 1, nodes: [{ nodeId: 'video', status: 'failed', finalFiles: [] }] }
+        : undefined };
+      const mounted = mountDetail(item, { retryWork });
+      const actions = mounted.find(element => typeof element.type === 'function' && element.type.name === (kind === 'flow' ? 'FailedNodeActions' : 'NeedsYou'));
+      const buttons: React.ReactElement<Record<string, unknown>>[] = [];
+      const visit = (nodes: React.ReactNode) => React.Children.forEach(nodes, child => {
+        if (!React.isValidElement<Record<string, unknown>>(child)) return;
+        if (typeof child.type === 'function' && ['NeedsYou', 'FailedNodeActions', 'FailureRetryRow'].includes(child.type.name)) {
+          visit((child.type as (props: unknown) => React.ReactNode)(child.props));
+          return;
+        }
+        if (child.type === 'button') buttons.push(child);
+        visit(child.props.children as React.ReactNode);
+      });
+      visit(actions);
+      assert.equal(buttons.length, 1);
+      (buttons[0]!.props.onClick as () => void)();
+      assert.deepEqual(calls.at(-1), kind === 'flow' ? [work.id, 'video'] : [work.id]);
+      mounted.unmount();
+      assert.match(renderDetail(item, { busy: true }), /aria-label="重试(?:任务|此节点：video)"[^>]*disabled=""/);
+    }
+  });
+});
 
 describe('WorkDetailPage media entry', () => {
   it('shows a pending task as waiting to start, not running time', () => {

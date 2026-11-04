@@ -11,6 +11,7 @@ import { route } from '../router'
 import { CREATE_TASK_INVALID, createTaskInput } from './task'
 import { attachmentRefSchema } from '../../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../../src/shared/knowledge-selection'
+import { conversationQueueInputSchema } from '../../../src/shared/conversation-queue'
 
 /** 三种会话恢复模式，与服务层的 SessionRecoveryMode 同集合。 */
 const recoveryMode = z.enum(['strict', 'confirm_rebuild', 'auto_rebuild_from_task_history'])
@@ -53,8 +54,8 @@ export const conversationRoutes = [
     return { success: true, queued: result.queued }
   }, { invalidMessage: '需要有效的任务与消息内容。' }),
 
-  route(INVOKE_CHANNELS.CONVERSATION_QUEUE, z.object({ taskId: z.string().min(1), action: z.enum(['get', 'resume']) }).strict(), async (ctx, input) => ({
-    success: true, queue: await ctx.conversations.queue(input.taskId, input.action),
+  route(INVOKE_CHANNELS.CONVERSATION_QUEUE, conversationQueueInputSchema, async (ctx, input) => ({
+    success: true, queue: await ctx.conversations.queue(input),
   })),
 
   route(INVOKE_CHANNELS.TASK_SWITCH_EMPLOYEE, switchEmployeeInput, async (ctx, input) => {
