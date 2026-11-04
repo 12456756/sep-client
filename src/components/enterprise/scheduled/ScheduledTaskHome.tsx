@@ -1,21 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowRight, ArrowUp, Plus, X } from 'lucide-react'
-import type { ScheduledDefinition, ScheduledOccurrence } from '../../../shared/scheduled-tasks'
+import { ArrowLeft, ArrowUp, ChevronDown, Plus, Search, X } from 'lucide-react'
+import scheduledClock from '../../../assets/scheduled-clock.png'
+import type { ScheduledDefinition } from '../../../shared/scheduled-tasks'
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace'
 import type { ScheduledTasksModel } from '../../../features/enterprise/use-scheduled-tasks'
-import { recurrenceLabel, RUN_LABELS, scheduledHomeGroups, scheduleTime, TERMINAL_RUNS } from '../../../features/enterprise/scheduled-task-model'
+import { recurrenceLabel, scheduledHomeGroups } from '../../../features/enterprise/scheduled-task-model'
 import { authorizedScheduledModels, emptyScheduledTaskDraft, SCHEDULE_EXAMPLES } from '../../../features/enterprise/scheduled-task-home'
 import type { ScheduledCreation, ScheduledCreationRequest } from '../../../shared/scheduled-creation'
 import { creationAccepted } from '../../../features/enterprise/scheduled-task-client'
-import { EmployeeFace } from '../EmployeeFace'
 import { ScheduledExecutionFields } from './ScheduledExecutionFields'
 import { ScheduledCreationList } from './ScheduledCreationList'
+import { ScheduledTaskDetail } from './ScheduledTaskDetail'
 
-interface Props { workspace: EnterpriseWorkspace; model: ScheduledTasksModel }
+interface Props { workspace: EnterpriseWorkspace; model: ScheduledTasksModel; selectedDefinition?: ScheduledDefinition; onCreate(): void }
 type Example = typeof SCHEDULE_EXAMPLES[number]
 
-export function ScheduledTaskHome({ workspace, model }: Props) {
+export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCreate }: Props) {
+  const [searching, setSearching] = useState(false)
+  const [search, setSearch] = useState('')
   const [draft, setDraft] = useState(emptyScheduledTaskDraft)
   const [replacement, setReplacement] = useState<Example | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -39,15 +42,6 @@ export function ScheduledTaskHome({ workspace, model }: Props) {
     submitted.current = null
   }, [data])
   const groups = useMemo(() => scheduledHomeGroups(data?.definitions ?? [], data?.occurrences ?? []), [data])
-  const runs = useMemo(() => {
-    const latest = new Map<string, ScheduledOccurrence>()
-    for (const run of data?.occurrences ?? []) {
-      const previous = latest.get(run.definitionId)
-      if (!previous || (!TERMINAL_RUNS.has(run.status) && TERMINAL_RUNS.has(previous.status)) || (TERMINAL_RUNS.has(run.status) === TERMINAL_RUNS.has(previous.status) && run.scheduledAt > previous.scheduledAt)) latest.set(run.definitionId, run)
-    }
-    return latest
-  }, [data])
-  const employees = useMemo(() => new Map(workspace.myEmployees.map(item => [item.id, item])), [workspace.myEmployees])
   const applyExample = (example: Example) => {
     setDraft(value => ({ ...value, goal: example.prompt }))
     lastExample.current = example.prompt
@@ -77,36 +71,48 @@ export function ScheduledTaskHome({ workspace, model }: Props) {
     input.current?.focus({ preventScroll: true })
   }
   const open = (id: string) => workspace.navigate({ name: 'scheduled', taskId: id, view: 'history' })
+  const focusComposer = () => {
+    workspace.replaceRoute({ name: 'scheduled' })
+    requestAnimationFrame(() => input.current?.focus({ preventScroll: true }))
+  }
   const creationDefinitions = new Set(data?.creations?.filter(item => item.stage !== 'cancelled').map(item => item.definitionId))
   const pendingDefinitions = groups.pending.filter(item => !creationDefinitions.has(item.id))
-  const group = (items: ScheduledDefinition[], paused: boolean) => items.length ? <section className="ent-sch-home-section" aria-label={paused ? '已暂停的定时任务' : '进行中的定时任务'}>
-    <h3>{paused ? '已暂停' : '进行中'}<small>{items.length}</small></h3>
-    <div className="ent-sch-home-grid">{items.map(item => {
-      const run = runs.get(item.id)
-      const employee = employees.get(item.input.subscriptionId)
-      const unfinished = run && !TERMINAL_RUNS.has(run.status)
-      const label = unfinished ? RUN_LABELS[run.status] : paused ? '已暂停' : run?.status === 'failed' || run?.status === 'timed_out' ? `最近${RUN_LABELS[run.status]}` : '等待下次运行'
-      return <button type="button" className="ent-sch-task-card" key={item.id} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: 'history' })}>
-        <span className="ent-sch-task-card-title"><strong>{item.input.name}</strong><span className={`ent-sch-status ${unfinished || (!paused && (run?.status === 'failed' || run?.status === 'timed_out')) ? run?.status : ''}`}>{label}</span></span>
-        <span className="ent-sch-task-card-goal">{item.input.goal}</span>
-        <span className="ent-sch-task-card-person"><EmployeeFace employee={employee} size="sm" round /><span>{item.input.mode === 'auto' ? '自动编排' : employee?.name ?? '员工暂不可用'}</span></span>
-        <span className="ent-sch-task-card-footer"><span>{recurrenceLabel(item)}</span>{!paused && item.nextRunAt !== null ? <span>下次 {scheduleTime(item.nextRunAt, item.input.timezone)}</span> : null}</span>
-      </button>
-    })}</div>
+  const matches = (item: ScheduledDefinition) => `${item.input.name} ${item.input.goal}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
+  const list = (items: ScheduledDefinition[], label: string) => items.length ? <section className="ent-sch-nav-group" aria-label={label}>
+    {items.filter(matches).map(item => <button type="button" className="ent-sch-nav-task" aria-current={selectedDefinition?.id === item.id ? 'page' : undefined} key={item.id} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: !item.plan && !item.enabled ? 'edit' : 'history' })}>
+      <strong>{item.input.name}</strong><span>{recurrenceLabel(item)}</span>
+    </button>)}
   </section> : null
+  const hasCreations = Boolean(data?.creations?.length || pending.length)
+  const missingTask = workspace.route.name === 'scheduled' && workspace.route.taskId && !selectedDefinition
+  const home = !selectedDefinition && !missingTask
 
-  return <div className="ent-sch-home">
-    <div className="ent-sch-home-scroll" tabIndex={0} aria-label="定时任务概览">
-      <ScheduledCreationList model={model} onResume={resume} onOpen={open} />
-      {group(groups.active, false)}
-      {group(groups.paused, true)}
-      {pendingDefinitions.length ? <section className="ent-sch-home-section ent-sch-home-compact" aria-label="待完成的定时任务"><h3>待完成<small>{pendingDefinitions.length}</small></h3>{pendingDefinitions.map(item => <button type="button" key={item.id} onClick={() => workspace.navigate({ name: 'scheduled', taskId: item.id, view: item.plan ? 'configuration' : 'edit' })}><strong>{item.input.name}</strong><span>继续设置<ArrowRight size={14} /></span></button>)}</section> : null}
-      {groups.history.length ? <section className="ent-sch-home-section ent-sch-home-compact" aria-label="定时任务历史"><h3>历史记录<small>{groups.history.length}</small></h3>{groups.history.map(item => <button type="button" key={item.id} onClick={() => open(item.id)}><strong>{item.input.name}</strong><span>{item.deleted ? '已归档' : runs.get(item.id) ? RUN_LABELS[runs.get(item.id)!.status] : '执行记录'}<ArrowRight size={14} /></span></button>)}</section> : null}
-      <section className="ent-sch-home-section ent-sch-examples" aria-label="定时任务示例"><h3>为你推荐</h3>
+  return <div className="ent-sch-workspace">
+    <aside className="ent-sch-sidebar" aria-label="定时任务导航">
+      <header><h2>定时任务</h2><button className="ent-sch-close" type="button" aria-label="搜索定时任务" title="搜索定时任务" aria-expanded={searching} onClick={() => { setSearching(value => !value); setSearch('') }}><Search size={17} /></button></header>
+      {searching ? <label className="ent-sch-search"><Search size={14} aria-hidden /><input autoFocus type="search" aria-label="搜索任务名称或内容" value={search} onChange={event => setSearch(event.target.value)} /></label> : null}
+      <button type="button" className="ent-sch-nav-new" onClick={focusComposer}><Plus size={18} />新建任务</button>
+      <div className="ent-sch-nav-scroll" aria-label="定时任务概览" tabIndex={0}>
+        {list(groups.active, '进行中的定时任务')}
+        {pendingDefinitions.length ? <><h3>待完成</h3>{list(pendingDefinitions, '待完成的定时任务')}</> : null}
+        <details className="ent-sch-nav-fold" open><summary>已暂停<ChevronDown size={14} /><small>{groups.paused.length || ''}</small></summary>{list(groups.paused, '已暂停的定时任务')}</details>
+        {groups.history.length ? <details className="ent-sch-nav-fold" open><summary>历史记录<ChevronDown size={14} /><small>{groups.history.length}</small></summary>{list(groups.history, '定时任务历史')}</details> : null}
+        {search.trim() && ![...groups.active, ...groups.paused, ...pendingDefinitions, ...groups.history].some(matches) ? <p className="ent-sch-search-empty">没有匹配的任务</p> : null}
+        {hasCreations ? <button type="button" className="ent-sch-nav-new" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}>创建进度</button> : null}
+      </div>
+    </aside>
+    <section className={`ent-sch-main-pane${home ? ' ent-sch-compose-pane' : ''}`} aria-label="定时任务内容">
+      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
+      <div className="ent-sch-home-content" tabIndex={0} aria-label="定时任务创建区">
+        <div className="ent-sch-welcome"><img className="ent-sch-clock" src={scheduledClock} width={80} height={80} alt="" /><h2>安排任务</h2>
+        <section className="ent-sch-examples" aria-label="定时任务示例"><h3>常用任务</h3>
         <div className="ent-sch-home-grid">{SCHEDULE_EXAMPLES.map(example => <button type="button" key={example.id} className="ent-sch-example" aria-label={`使用示例：${example.title}`} disabled={model.busy} onClick={() => selectExample(example)}><span><strong>{example.title}</strong><span>{example.description}</span></span><Plus size={19} aria-hidden /></button>)}</div>
-      </section>
-    </div>
+        </section>
+        </div>
+      <ScheduledCreationList model={model} onResume={resume} onOpen={open} />
+      </div>
     <form className="ent-sch-home-compose" onSubmit={event => { event.preventDefault(); submit() }}>
+      <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" onClick={onCreate}>手动设置</button></div>
       {continuation ? <div className="ent-sch-replying"><span>补充：{continuation.interpretation?.task.title ?? continuation.request.message}</span><button type="button" aria-label="退出补充" title="退出补充" disabled={awaiting} onClick={() => { setContinuationId(null); setDraft(value => ({ ...value, goal: '' })) }}><X size={14} /></button></div> : null}
       <fieldset disabled={sending} className="ent-sch-composer">
         <label className="sr-only" htmlFor="schedule-home-goal">定时任务工作内容</label><textarea id="schedule-home-goal" ref={input} rows={2} value={draft.goal} maxLength={16000} placeholder={continuation ? '补充缺少的信息…' : '安排一项定期完成的工作…'} onChange={event => setDraft(value => ({ ...value, goal: event.target.value }))} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) { event.preventDefault(); submit() } }} />
@@ -117,6 +123,8 @@ export function ScheduledTaskHome({ workspace, model }: Props) {
       </fieldset>
       {error ? <p role="alert" className="ent-sch-modal-error">{error}</p> : null}
     </form>
+      </>}
+    </section>
     <Dialog.Root open={replacement !== null} onOpenChange={open => { if (!open) setReplacement(null) }}><Dialog.Portal container={container}><Dialog.Overlay className="ent-sch-modal-overlay" /><Dialog.Content role="alertdialog" className="ent-sch-replace-dialog" onCloseAutoFocus={event => { event.preventDefault(); input.current?.focus({ preventScroll: true }) }}><Dialog.Title>替换当前内容？</Dialog.Title><Dialog.Description>当前内容已编辑，使用新示例会替换工作内容，其他设置保持不变。</Dialog.Description><footer><Dialog.Close asChild><button type="button" className="ent-btn">保留内容</button></Dialog.Close><button type="button" className="ent-btn primary" onClick={() => { if (replacement) applyExample(replacement) }}>替换内容</button></footer></Dialog.Content></Dialog.Portal></Dialog.Root>
   </div>
 }
