@@ -130,7 +130,9 @@ test('an upload response lost after server success is reconciled without a secon
   await until(() => h.service['state'].phase === 'uploaded' || h.service['state'].phase === 'failed')
   assert.equal(uploads, 0)
   assert.equal(h.service['state'].phase, 'uploaded', JSON.stringify({ state: h.service['state'], calls: h.calls.map(call => call.route) }))
+  assert.equal(h.service.isActive(), true, 'successful upload keeps the grant active for the next Web selection')
   assert.ok(h.states.filter(state => ['packaging', 'uploading', 'uploaded'].includes(state.phase)).every(state => !state.visible))
+  await h.service.cancel('session_1')
 })
 
 test('matching remembered device receives a fresh challenge without a second pairing confirmation', async () => {
@@ -274,13 +276,17 @@ test('preview expiry is bounded by the five-minute client limit', async () => {
 test('retryable upload failure is reconciled by operation status without a second upload', async () => {
   let uploads = 0
   let operationReads = 0
+  let commandPolls = 0
   const h = harness({
     commandItems: [{ sessionId: 'session_1', commandId: 'package_1', sequence: 1, expiresAt: date(), type: 'package-selected', payload: { candidateId: 'candidate_1', snapshotId: 'snapshot_1', operationId: 'op_1' } }],
-    wait: async () => {},
+    wait: async (_ms, signal) => { signal.throwIfAborted(); await new Promise<void>(resolve => setImmediate(resolve)) },
     request: async (_method, route, _schema, options) => {
       if (route === 'pairings') return { pairingId: 'pairing_1', shortCode: '123456', ownerLabel: 'Admin', scope: 'user', expiresAt: date(300_000), challenge }
       if (route === 'grants') return { ...granted, acceptedScopeHash: requireScopeHash(options.body!.scope as string, options.body!.rootIds as string[]) }
-      if (route.includes('/commands')) return { items: [{ sessionId: 'session_1', commandId: 'package_1', sequence: 1, expiresAt: date(), type: 'package-selected', payload: { candidateId: 'candidate_1', snapshotId: 'snapshot_1', operationId: 'op_1' } }], nextCursor: 1 }
+      if (route.includes('/commands')) {
+        commandPolls++
+        return { items: commandPolls === 1 ? [{ sessionId: 'session_1', commandId: 'package_1', sequence: 1, expiresAt: date(), type: 'package-selected', payload: { candidateId: 'candidate_1', snapshotId: 'snapshot_1', operationId: 'op_1' } }] : [], nextCursor: 1 }
+      }
       if (route.endsWith('/events')) return { ok: true, eventId: options.body!.eventId, cursor: options.body!.sequence, ignored: false }
       if (route.endsWith('/operations/op_1')) {
         operationReads++
@@ -298,6 +304,8 @@ test('retryable upload failure is reconciled by operation status without a secon
   assert.equal(h.service['state'].phase, 'uploaded', JSON.stringify({ state: h.service['state'], calls: h.calls.map(call => call.route) }))
   assert.equal(uploads, 1)
   assert.ok(operationReads >= 2)
+  assert.equal(h.service.isActive(), true, 'reconciled upload keeps the grant active for the next Web selection')
+  await h.service.cancel('session_1')
 })
 
 test('lost first remembered grant recovers with the same pairing and its newly registered device', async () => {

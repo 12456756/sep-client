@@ -398,7 +398,7 @@ export class SkillImportService {
       if (operation.operationId !== selection.operationId || Date.parse(operation.expiresAt) <= this.now()) throw new SkillImportApiError('OPERATION_CONFLICT')
       if (operation.status === 'succeeded') {
         if (operation.sha256 !== pkg.sha256) throw new SkillImportApiError('PACKAGE_CHANGED')
-        await this.stopFromWorker(current, 'uploaded')
+        this.publish({ phase: 'uploaded', error: null })
         return
       }
       if (operation.status === 'processing') { await this.wait(2000, current.controller.signal); continue }
@@ -411,7 +411,7 @@ export class SkillImportService {
         const artifact = await current.api.upload(current.sessionId, selection.operationId, grant.uploadGrant, pkg, SkillImportArtifactSchema, current.controller.signal)
         this.assertCurrent(current)
         if (artifact.sha256 !== pkg.sha256) throw new SkillImportApiError('PACKAGE_CHANGED')
-        await this.stopFromWorker(current, 'uploaded')
+        this.publish({ phase: 'uploaded', error: null })
         return
       } catch (error) {
         this.assertCurrent(current)
