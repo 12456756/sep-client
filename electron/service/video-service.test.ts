@@ -170,6 +170,45 @@ describe('VideoService mock submission, disk recovery and original delivery', ()
     assert.equal(f.gateway.calls.submit, 1); assert.equal(f.gateway.calls.quote, 1); assert.equal(f.gateway.calls.content, 1)
     restored.close()
   })
+
+  it('ignores a stale RUNNING receipt after success without losing the saved output', async () => {
+    const f = await fixture()
+    let raced = false
+    const real = (receipt: VideoReceipt): VideoReceipt => ({ ...receipt, mock: false, billingStatus: 'RESERVED',
+      recovery: { ...receipt.recovery, canQuery: true } })
+    const gateway: VideoGatewayPort = {
+      quote: async (value, signal) => ({ ...await f.gateway.quote(value, signal), amount: '0.900000', currency: 'CNY' }),
+      submit: async (value, signal) => real(await f.gateway.submit(value, signal)),
+      findReceipt: async (id, signal) => { const receipt = await f.gateway.findReceipt(id, signal); return receipt && real(receipt) },
+      getReceipt: async (id, signal) => {
+        const stale = await f.gateway.getReceipt(id, signal)
+        if (stale.status === 'RUNNING' && !raced) {
+          raced = true
+          const succeeded = real(await f.gateway.getReceipt(id, signal))
+          assert.equal(succeeded.status, 'SUCCEEDED')
+          const [job] = (await f.store.listJobs(scope)).filter(item => item.request.clientRequestId === succeeded.clientRequestId)
+          assert.ok(job)
+          await f.store.updateJob(scope, job.taskId, job.jobId, previous => ({ ...previous, receipt: succeeded,
+            trackingStatus: 'ACTIVE', error: succeeded.errorCode, updatedAt: Date.now() }))
+          const bytes = await f.gateway.content(succeeded.receiptId, succeeded.outputs[0]!.outputId, signal)
+          await f.store.saveOutput(scope, job.taskId, job.jobId, succeeded.outputs[0]!, bytes, signal)
+          await f.store.updateJob(scope, job.taskId, job.jobId, previous => ({ ...previous, saveStatus: 'SAVED', updatedAt: Date.now() }))
+        }
+        return real(stale)
+      },
+      content: f.gateway.content.bind(f.gateway),
+    }
+    const service = new VideoService({ scope, executionMode: 'real', store: f.store, gateway })
+    const created = await service.generate('task-a', input())
+    const afterStalePoll = await service.resume('task-a', created.jobId)
+    assert.equal(raced, true)
+    assert.equal(afterStalePoll.receipt?.status, 'SUCCEEDED')
+    assert.equal(afterStalePoll.saveStatus, 'SAVED')
+    assert.equal(f.gateway.calls.quote, 1)
+    assert.equal(f.gateway.calls.submit, 1)
+    service.close()
+  })
+
   for (const scenario of ['failed', 'partial', 'submission-unknown', 'expired', 'rejected', 'corrupt-download'] as const) {
     it(`restores the ${scenario} gateway scenario from disk without another submission`, async () => {
       const f = await fixture(scenario)

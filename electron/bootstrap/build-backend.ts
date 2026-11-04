@@ -74,6 +74,8 @@ import { SepMockVideoGateway, SepRealVideoGateway } from '../data/sep-video-medi
 import { createVideoScopeAdapter } from '../data/video-scope-adapter'
 import { MockVideoHostService, type MockVideoHostOptions } from '../service/mock-video-host-service'
 import { VideoRunService } from '../service/video-run-service'
+import { ConversationVideoRunService } from '../service/conversation-video-run-service'
+import { ConversationMediaService } from '../service/conversation-media-service'
 import { AppError } from '../errors/app-error'
 import { DocumentPreviewService } from '../service/document-preview-service'
 import { DocumentPreviewStore } from '../data/document-preview-store'
@@ -140,7 +142,9 @@ class BackendRuntime {
   private readonly speechRuntime: LazyAsync<SpeechRuntimePort>
   readonly video?: MockVideoHostService
   private readonly videoRuns?: VideoRunService
+  private readonly conversationVideo?: ConversationVideoRunService
   private readonly arrangementMedia: ArrangementMediaService
+  private readonly conversationMedia: ConversationMediaService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -310,6 +314,7 @@ class BackendRuntime {
       }
       this.video = new MockVideoHostService(videoOptions)
       this.videoRuns = new VideoRunService(videoOptions, this.video)
+      this.conversationVideo = new ConversationVideoRunService(this.videoRuns, videoOptions)
     }
     this.sessionRecovery = new SessionRecovery(this, [
       { name: 'history', run: () => this.clientMonitor.resumePending() },
@@ -321,10 +326,13 @@ class BackendRuntime {
         await this.video.resumePending(tasks.map(task => task.id))
       } },
     ])
+    const mediaAssets = new ArrangementMediaAssets(userDataDir, mediaStore, videoStore, this.attachments)
+    this.conversationMedia = new ConversationMediaService({ scope: this, images: mediaStore, assets: mediaAssets, media: this.media,
+      getTask: taskId => this.taskManager.getTask(taskId) })
     this.arrangementMedia = new ArrangementMediaService({
       scope: this, plans: this.workPlans, checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore,
       links: new ArrangementMediaLinkStore(userDataDir), images: mediaStore, videos: videoStore,
-      assets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore, this.attachments), media: this.media,
+      assets: mediaAssets, media: this.media,
       getTask: taskId => this.taskManager.getTask(taskId),
     })
 
@@ -780,7 +788,9 @@ class BackendRuntime {
       ),
       media: this.media,
       video: this.videoRuns,
+      conversationVideo: this.conversationVideo,
       arrangementMedia: this.arrangementMedia,
+      conversationMedia: this.conversationMedia,
       attachmentInputs: this.attachments,
     })
     log.info('task runtime loaded')

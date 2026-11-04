@@ -42,6 +42,23 @@ test('a final snapshot does not repeat the same streamed thinking', () => {
   assert.equal(runs[0]!.entries[0]!.text, '思考')
 })
 
+test('approval decisions replace the matching waiting row without mixing requests or runs', () => {
+  const requested = event(1, 'approval_requested', { requestId: 'upload', toolName: 'video_from_image' })
+  const quote = event(2, 'approval_requested', { requestId: 'quote', toolName: 'video_from_image' })
+  const otherRun = event(3, 'approval_requested', { requestId: 'upload' }, 'run-b')
+  const runs = buildConversationTranscript([requested, quote, otherRun,
+    event(4, 'approval_resolved', { requestId: 'upload', approved: true }),
+    event(5, 'approval_resolved', { requestId: 'quote', approved: false, reason: 'timeout' })])
+  assert.deepEqual(runs[0]!.entries.map(entry => entry.state), ['completed', 'failed'])
+  assert.ok(runs[0]!.entries.every(entry => !entry.text.includes('等待')))
+  assert.equal(runs[1]!.entries[0]!.state, 'waiting-user')
+  assert.match(runs[1]!.entries[0]!.text, /等待/)
+})
+
+test('a resolved approval without a request does not create a waiting notification', () => {
+  assert.deepEqual(buildConversationTranscript([event(1, 'approval_resolved', { requestId: 'unknown', approved: true })]), [])
+})
+
 const message = (id: string, role: WorkMessage['role'], runId?: string): WorkMessage => ({ id, role, runId, content: id, createdAt: 1 })
 const work = (messages: WorkMessage[], activeRunId: string | null = null) => ({
   id: 'task', messages, activeRunId, isActive: !!activeRunId, createdAt: 1, updatedAt: 2,

@@ -26,7 +26,7 @@ import { Type } from 'typebox'
 import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
-import { videoToolGenerationInputSchema, videoToolJobInputSchema } from '../../../src/shared/video-host'
+import { videoToolGenerationInputSchema, videoToolJobInputSchema, videoReferenceSourceSchema } from '../../../src/shared/video-host'
 import { videoBillingStatusSchema, videoOutputSchema, videoRuntimeSchema, videoSpecFailureSchema } from '../../../src/shared/video-media'
 import { mediaToolGenerationInputSchema } from '../../../src/shared/media-host'
 import { imageRequestedSpecSchema, videoRequestedSpecSchema, videoActualSpecSchema, mediaParameterSourcesSchema } from '../../../src/shared/media-spec-contract'
@@ -143,6 +143,7 @@ const videoTaskResultSchema = z.object({
   mock: z.boolean(), runtime: videoRuntimeSchema.refine(runtime => runtime.tools.length <= 4 &&
     runtime.profiles.every(profile => profile.capabilities.aspectRatios.every(ratio => ratio.length <= 32))),
   jobs: z.array(videoJobResultSchema).max(50),
+  referenceSources: z.array(videoReferenceSourceSchema).max(100).optional(),
   referenceAssets: z.array(z.object({
     localAssetId: videoId, taskId: videoId, jobId: z.null(), outputId: z.null(), source: z.literal('reference'),
     mime: z.enum(['image/png', 'image/jpeg', 'image/webp']), size: z.number().int().positive(),
@@ -187,7 +188,7 @@ function videoToolDefinitions(config: PiAgentSessionConfig, names: readonly Vide
     return {
       name, label: name, executionMode: 'sequential',
       description: name === 'video_get_job'
-        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. The host tracks and saves submitted jobs; generation tools return only after terminal status and local save are known. Never poll this tool or use sleep to wait. Image capabilities do not describe video availability.'
+        ? 'Read cached task-local video status by jobId, or call with {} to list VIDEO profiles, specifications, jobs and referenceAssets. When present, referenceSources maps current-turn attachment names and generated image sourceArtifactIds to usable reference localAssetIds. Select the actual requested image; clarify ambiguous multiple inputs rather than picking the first. The host tracks and saves submitted jobs; generation tools return only after terminal status and local save are known. Never poll this tool or use sleep to wait. Image capabilities do not describe video availability.'
         : `Generate a video using ${operation}. Inspect video_get_job({}) for actual authorization, profiles and protocol version. Preserve user specifications. Infer ordinary unspecified specifications from purpose, context and reference assets, record them as model sources and execute in the current turn without requesting confirmation of routine specifications. Ask only about consequential ambiguity or conflicting requirements. For protocol 3 send requestedSpec, parameterSources, specRevision and protocolVersion:3. Capability hints are advisory, not specification whitelists. Legacy parameters require explicit complete decisions; missing fields are never filled by the host. Never silently change specifications, switch model or substitute script animation. ${name === 'video_from_image' ? 'Supply one SAVED task-local referenceAssets localAssetId; never invent IDs or file paths.' : 'No reference assets are needed.'} The host validates cost and obtains approval before submission. Report the actual generation and local save states and chosen specifications; distinguish submitted, generated and saved. Report tool error codes and their source, never invent a missing-profile diagnosis, and never automatically retry a paid submission.`,
       parameters: name === 'video_get_job' ? Type.Object({ jobId: Type.Optional(id) }, { additionalProperties: false })
         : Type.Object({

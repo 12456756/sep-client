@@ -243,6 +243,47 @@ test('arrangement media mode auto-approves upload and quote without approval req
   await f.service.finishRun('task-a', 'run-a')
 })
 
+for (const [preset, approvalMode, expected] of [
+  ['full-local', 'auto-approve', 0],
+  ['full-local', 'confirm-each', 2],
+  ['workspace-edit', 'auto-approve', 2],
+] as const) test(`video upload and generation respect ${preset}/${approvalMode}`, async () => {
+  const f = await setup()
+  const toolPolicy = { preset, approvalMode, allowedTools: ['video_from_image', 'video_generate', 'video_get_job'],
+    allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled' as const, workspaceDir: f.root }
+  const tools = await f.service.prepareRun({ ...f.runInput, toolPolicy })
+  assert.ok(tools)
+  try {
+    const result = await tools.execute('video_from_image', input()) as { saveStatus: string }
+    assert.equal(result.saveStatus, 'SAVED')
+    assert.equal(f.approvals.length, expected)
+    assert.equal(f.state.uploads, 1)
+    assert.equal(f.gateway.calls.quote, 1)
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { await f.service.stopAll() }
+})
+
+test('video checks current approval mode again after quoting', async () => {
+  const f = await setup()
+  const policy = { preset: 'full-local' as const, approvalMode: 'auto-approve' as 'auto-approve' | 'confirm-each',
+    allowedTools: [], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled' as const, workspaceDir: f.root }
+  f.state.policy = policy
+  const quote = f.gateway.quote.bind(f.gateway)
+  f.gateway.quote = async (...args) => {
+    const result = await quote(...args)
+    policy.approvalMode = 'confirm-each'
+    return result
+  }
+  const tools = await f.service.prepareRun({ ...f.runInput, toolPolicy: policy })
+  assert.ok(tools)
+  try {
+    await tools.execute('video_from_image', input())
+    assert.equal(f.approvals.length, 1)
+    assert.ok('quote' in (f.approvals[0]!.input as Record<string, unknown>))
+    assert.equal(f.gateway.calls.submit, 1)
+  } finally { await f.service.stopAll() }
+})
+
 test('run resolves the authorized profile while requiring explicit model-supplied specifications', async () => {
   const f = await setup(), tools = await f.service.prepareRun(f.runInput)
   assert.ok(tools)

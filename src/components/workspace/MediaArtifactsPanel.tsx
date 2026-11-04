@@ -283,7 +283,6 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
   const [error, setError] = useState<string | null>(null)
   const feedbackController = useFeedback()
   const { capture } = useOperationFeedback(taskId)
-  const seenIssues = useRef(new Set<string>())
   const queryFailure = useRef(false)
   const [pending, setPending] = useState<Command | null>(null)
   const [preview, setPreview] = useState<MediaAssetView | null>(null)
@@ -306,11 +305,6 @@ function MediaTaskPanel({ taskId, visible = true, onSummary, presentation = 'ful
         setView(result.data)
         setError(null)
         queryFailure.current = false
-        for (const job of result.data.jobs) {
-          const message = mediaIssueMessage(job, 'image')
-          const key = `${job.jobId}:${message}`
-          if (message && !seenIssues.current.has(key)) { seenIssues.current.add(key); notice.show(message, 'error', `image-job:${taskId}:${key}`, true) }
-        }
       } else {
         const message = failure(result, 'imageRead'); setError(message)
         if (!queryFailure.current) { queryFailure.current = true; notice.show(message) }

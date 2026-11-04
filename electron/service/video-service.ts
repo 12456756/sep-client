@@ -24,6 +24,7 @@ export interface VideoServiceOptions {
 }
 const activities = new WriteChain()
 const generating = new Set(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'])
+const terminal = new Set(['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'])
 function tracking(receipt: VideoReceipt): boolean {
   return generating.has(receipt.status) || !receipt.mock && videoBillingPending(receipt.billingStatus) && receipt.recovery.canQuery
 }
@@ -130,9 +131,14 @@ export class VideoService {
   private async accept(job: LocalVideoJob, value: VideoReceipt): Promise<LocalVideoJob> {
     const receipt = videoReceiptSchema.parse(value)
     if (!receiptMatchesRequest(job, receipt) || (job.receipt && job.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
-    const terminal = ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(receipt.status)
-    return this.update(job, { receipt, specFailure: undefined, submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode,
-      ...(terminal && job.providerWaitMs === undefined ? { providerWaitMs: Math.max(0, this.now() - job.createdAt) } : {}) })
+    return this.store.updateJob(this.scope, job.taskId, job.jobId, previous => {
+      if (!receiptMatchesRequest(previous, receipt) || (previous.receipt && previous.receipt.receiptId !== receipt.receiptId)) throw new Error('Video receipt differs from original request.')
+      if (previous.receipt && terminal.has(previous.receipt.status) && !terminal.has(receipt.status)) return previous
+      const isTerminal = terminal.has(receipt.status)
+      return { ...previous, receipt, specFailure: undefined, submission: 'RECEIPTED', trackingStatus: tracking(receipt) ? 'ACTIVE' : 'STOPPED', error: receipt.errorCode,
+        ...(isTerminal && previous.providerWaitMs === undefined ? { providerWaitMs: Math.max(0, this.now() - previous.createdAt) } : {}),
+        updatedAt: Math.max(this.now(), previous.updatedAt) }
+    })
   }
 
   private async save(job: LocalVideoJob, signal: AbortSignal, repair = false): Promise<LocalVideoJob> {

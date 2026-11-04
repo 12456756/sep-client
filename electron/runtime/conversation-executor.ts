@@ -19,8 +19,10 @@ import type { SharedPiSession } from '../pi/sdk/pi-shared-session'
 import { createDefaultSharedPiSession, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { ConversationRecoveryError } from './conversation-recovery-error'
 import { withApprovedSkillReadPaths } from './run-skill-policy'
+import { MEDIA_SPEC_EXECUTION_PROMPT } from './media-execution-prompts'
 import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, TaskWorkerPort } from './run-types'
-import type { AttachmentInputPort } from '../domain/attachment-input'
+import type { AttachmentInputPort, ResolvedAttachmentInput } from '../domain/attachment-input'
+import type { ConversationMediaPort } from '../domain/conversation-media'
 import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentView } from '../../src/shared/attachment-contracts'
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
@@ -59,6 +61,7 @@ export interface ConversationExecutorOptions {
   onFailure?: (event: TaskExecutionEvent) => void
   media?: MediaRunPort
   video?: VideoRunPort
+  conversationMedia?: ConversationMediaPort
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
 }
@@ -103,6 +106,14 @@ export class ConversationExecutor {
     let active: ActiveRun | null = null
     let runCreated = false
     const knowledgeCancellation = new AbortController()
+    const mediaSignal = queued.signal ? AbortSignal.any([knowledgeCancellation.signal, queued.signal]) : knowledgeCancellation.signal
+    const waitForMedia = async (): Promise<void> => {
+      if (active?.control !== 'none') return
+      await Promise.all([
+        this.options.media?.waitForRun(taskId, runId, { recoverOriginal: true, signal: mediaSignal }),
+        this.options.video?.waitForRun(taskId, runId, { recoverOriginal: true, signal: mediaSignal }),
+      ])
+    }
 
     try {
       queued.signal?.throwIfAborted()
@@ -124,8 +135,10 @@ export class ConversationExecutor {
       let attachmentImages: readonly { data: string; mimeType: string }[] | undefined
       let attachmentText = ''
       let attachmentMetadata: AttachmentView[] | undefined
+      let resolvedAttachments: readonly ResolvedAttachmentInput[] = []
       if (scope && queued.attachmentRefs?.length && this.options.attachmentInputs) {
         const resolved = await this.options.attachmentInputs.resolveTaskInputs(scope, taskId, queued.attachmentRefs)
+        resolvedAttachments = resolved.attachments
         attachmentMetadata = resolved.attachments.map(item => ({ attachmentId: item.attachmentId, displayName: item.displayName, mediaType: item.mediaType, byteLength: item.byteLength, sha256: item.sha256, importSource: 'picker', extractionStatus: item.extractionStatus as AttachmentView['extractionStatus'], warnings: [] }))
         attachmentImages = resolved.images.map(image => ({ data: Buffer.from(image.bytes).toString('base64'), mimeType: image.mediaType }))
         attachmentText = resolved.attachments.filter(item => item.extractedText).map(item => `附件 ${item.displayName}：\n${item.extractedText}`).join('\n\n')
@@ -146,13 +159,21 @@ export class ConversationExecutor {
         taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
-      const videoTools = await this.options.video?.prepareRun({
+      const rawVideoTools = await this.options.video?.prepareRun({
         taskId, runId: runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
       })
       if (active.control !== 'none') {
         // stopTask may have won before prepareRun published its tracking state.
         await Promise.all([this.options.media?.stopTask(taskId), this.options.video?.stopTask(taskId)])
+        await this.finalize(active, queued, scope, runCreated)
+        return
+      }
+      const videoTools = rawVideoTools?.names.includes('video_from_image') && this.options.conversationMedia
+        ? await this.options.conversationMedia.prepareRun({ taskId, runId, attachments: resolvedAttachments, video: rawVideoTools,
+          signal: queued.signal ? AbortSignal.any([knowledgeCancellation.signal, queued.signal]) : knowledgeCancellation.signal })
+        : rawVideoTools
+      if (active.control !== 'none') {
         await this.finalize(active, queued, scope, runCreated)
         return
       }
@@ -182,6 +203,7 @@ export class ConversationExecutor {
         getRefreshToken: this.options.getRefreshToken,
         onAuthenticationRequired: this.options.onAuthenticationRequired,
         onApprovalRequest: request => this.options.approvals.request(request),
+        onResponseSettled: async () => { await waitForMedia() },
         onEvent: event => this.options.events.enqueue(event),
         onSessionCreated: async session => {
           if (!scope || !this.options.taskRunStore) return
@@ -233,8 +255,10 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (mediaTools?.names.includes('media_generate_image') || videoTools?.names.some(name => name !== 'video_get_job')) workerPrompt += `\n\n${MEDIA_SPEC_EXECUTION_PROMPT}`
       if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
+      if (videoTools?.names.includes('video_from_image') && this.options.conversationMedia) workerPrompt += '\n\n【视频参考图片】需要使用上传图片或本任务已生成的图片制作视频时，先查询 video_get_job({})。referenceSources 将本轮附件名称、已生成图片的 sourceArtifactId 与可用参考图 localAssetId 对应起来；使用用户指定的真实图片，不得因为图片以附件上传就改用文生视频。存在多张候选图且来源不明确时先询问，不默认选择第一张。'
       const selection = queued.knowledge ?? queued.arrangement?.knowledge
       let trustedNames: string[] = []
       if (selection?.mode === 'auto' && this.options.knowledgeSearch?.describe && active.control === 'none') {
@@ -259,7 +283,7 @@ export class ConversationExecutor {
         return
       }
       await worker.run(workerPrompt)
-      if (active.control === 'none') await Promise.all([this.options.media?.waitForRun(taskId, runId), this.options.video?.waitForRun(taskId, runId)])
+      await waitForMedia()
       await this.options.events.drain(taskId)
       if (!this.options.workers.isCurrent(active)) return
       await this.finalize(active, queued, scope, runCreated)
@@ -284,6 +308,7 @@ export class ConversationExecutor {
         if (scope) this.options.onFailure?.(runtimeFailureEvent({ taskId, runId, subscriptionId: queued.subscriptionId, owner: scope }, error))
       }
     } finally {
+      knowledgeCancellation.abort()
       await cleanupRun(taskId, runId, [
         ['video', () => this.options.video?.finishRun?.(taskId, runId)],
         ['events', () => this.options.events.forgetRun(runId)],

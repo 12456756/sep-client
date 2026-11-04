@@ -255,7 +255,6 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
   const [view, setView] = useState<VideoTaskView | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
   const { capture } = useOperationFeedback(taskId)
-  const seenIssues = useRef(new Set<string>())
   const queryFailure = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<OutputSelection | null>(null)
@@ -284,11 +283,6 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
       setView(next)
       setError(null)
       queryFailure.current = false
-      for (const job of next.jobs) {
-        const message = videoTaskIssue([job], 'notice')
-        const key = `${job.jobId}:${message}`
-        if (message && !seenIssues.current.has(key)) { seenIssues.current.add(key); notice.show(message, 'error', `video-job:${taskId}:${key}`, true) }
-      }
     } catch {
       if (current()) { setError(operationFailure('videoRead')); if (!queryFailure.current) { queryFailure.current = true; notice.show(operationFailure('videoRead')) } }
     }
