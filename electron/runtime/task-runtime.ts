@@ -43,6 +43,7 @@ import { monitorParticipationSchema, type MonitorParticipation } from '../common
 import type { MediaRunPort } from '../domain/media-tools'
 import type { VideoRunPort } from '../domain/video-tools'
 import type { ArrangementMediaPort } from '../domain/arrangement-media-runtime'
+import type { ConversationMediaPort } from '../domain/conversation-media'
 import type { KnowledgeSearchPort } from '../common/knowledge-context'
 import type { AttachmentInputPort } from '../domain/attachment-input'
 import type { TaskLifecycleRuntimeEvidence } from '../domain/task-lifecycle'
@@ -96,7 +97,9 @@ export interface TaskRuntimeOptions {
   monitor?: TaskMonitorPort
   media?: MediaRunPort
   video?: VideoRunPort
+  conversationVideo?: VideoRunPort
   arrangementMedia?: ArrangementMediaPort
+  conversationMedia?: ConversationMediaPort
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
   findEmployeeReplacement?: (input: ArrangementReplacementSearchInput) => Promise<ArrangementReplacementSearchResult>
@@ -235,7 +238,8 @@ export class TaskRuntime {
       onFinished: input => this.reportMonitorFinished(input),
       onFailure: event => this.notifyRunFailure(event),
       media: this.media,
-      video: this.video,
+      video: options.conversationVideo ?? this.video,
+      conversationMedia: options.conversationMedia,
       knowledgeSearch: this.knowledgeSearch,
       attachmentInputs: this.attachmentInputs,
     })

@@ -489,6 +489,11 @@ export class MockVideoHostService {
         const approve = async (details: Record<string, unknown>) => {
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+          const currentPolicy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
+          this.assert(scope, epoch, signal)
+          if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+          if (currentPolicy && (currentPolicy.preset === 'read-only' || currentPolicy.preset !== 'full-local' && !currentPolicy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
+          if (currentPolicy?.preset === 'full-local' && currentPolicy.approvalMode === 'auto-approve') return
           const allowed = await abortableVideo((run?.requestApproval ?? this.options.requestApproval)({ taskId, runId, subscriptionId: scope.subscriptionId, toolName, input: details }), signal)
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
