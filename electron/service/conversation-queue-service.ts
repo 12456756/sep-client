@@ -121,22 +121,25 @@ export class ConversationQueueService {
     return this.access(taskId, async record => this.viewOf(record))
   }
 
-  async enqueue(taskId: string, input: { id: string; prompt: string; requestKey?: string }, prepare: () => Promise<Partial<Prepared>>): Promise<ConversationQueueView> {
+  async enqueue(taskId: string, input: { id: string; prompt: string; requestKey?: string }, prepare: () => Promise<Partial<Prepared>>): Promise<ConversationQueueView & { queued: boolean }> {
     const lifecycle = this.controller.signal
     const view = await this.access(taskId, async (record, task, assert) => {
       const duplicate = record.entries.find(entry => entry.id === input.id)
       if (duplicate) {
         if (duplicate.prompt !== input.prompt || duplicate.requestKey !== input.requestKey) throw new AppError('INVALID_ARGUMENT')
-        return this.viewOf(record)
+        return { ...this.viewOf(record), queued: duplicate.status === 'waiting' }
       }
       if (record.entries.filter(entry => entry.status === 'waiting').length >= CONVERSATION_QUEUE_LIMIT) throw new AppError('CONVERSATION_QUEUE_FULL')
       const prepared = await prepare()
       assert()
       if (!task.activeRunId && !record.entries.some(entry => ['waiting', 'active', 'failed'].includes(entry.status)) && !['failed', 'interrupted'].includes(task.status) && task.executionHealth !== 'start-failed') record.paused = false
+      const queued = !!task.activeRunId || this.initialStarts.has(taskId) || !!this.options.isBusy?.(taskId)
+        || record.paused || task.status === 'pending' && !task.lastRunId || task.executionHealth === 'start-failed'
+        || record.entries.some(entry => ['waiting', 'active', 'failed'].includes(entry.status))
       record.entries.push({ ...prepared, ...input, runId: input.id, createdAt: Date.now(), status: 'waiting', attachmentNames: prepared.attachmentNames ?? [] })
       await this.options.store.save(record.owner, record)
       assert()
-      return this.viewOf(record)
+      return { ...this.viewOf(record), queued }
     })
     if (!lifecycle.aborted) void this.drain(taskId).catch(error => {
       if (!lifecycle.aborted) log.warn('queue scheduling failed', { taskId, error })
@@ -182,7 +185,7 @@ export class ConversationQueueService {
     })
   }
 
-  resume(taskId: string): Promise<void> {
+  resume(taskId: string, options: { retryOriginal?: boolean } = {}): Promise<void> {
     return this.access(taskId, async (record, task, assert, signal) => {
       if (task.activeRunId || this.initialStarts.has(task.id) || this.options.isBusy?.(task.id)) return
       const failed = record.entries.find(item => item.status === 'failed')
@@ -194,7 +197,8 @@ export class ConversationQueueService {
         this.scheduleInitial(taskId)
         return
       }
-      if (!failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed') && record.entries.some(item => item.status === 'waiting')) {
+      if (!failed && (['failed', 'interrupted'].includes(task.status) || task.executionHealth === 'start-failed'
+        || options.retryOriginal && !record.entries.some(item => item.status === 'waiting'))) {
         try { await this.options.retry(taskId, signal); assert() }
         catch (error) { assert(); record.paused = true; await this.options.store.save(record.owner, record); throw error }
         return
