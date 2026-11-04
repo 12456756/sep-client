@@ -28,6 +28,7 @@ import {
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import { requireScope, type ScopeSource } from './scope-guard'
 import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirectory, ArrangementPlannerPort, ArrangementPlannerDraft, ArrangementPlanningProgress, ArrangementPlannerEmployee, ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
+import { validateApprovedEmployeeAssignments } from '../domain/arrangement-planner'
 import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementEmployeeAccessRequest } from '../domain/arrangement-plan'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
 import { TaskCreationGate } from './task-creation-gate'
@@ -703,10 +704,23 @@ export class ArrangementService {
       context.completedNodeCount = current.nodes.length
       context.unresolvedStepCount = current.unresolvedSteps?.length ?? 0
       nextPhase('employee-loading')
+      const approvedRequests = (current.employeeAccessRequests ?? []).filter(request => request.status === 'APPROVED' &&
+        current.unresolvedSteps?.some(step => step.stepId === request.stepId))
+      if (approvedRequests.length) {
+        await this.deps.employees.refresh()
+        this.assertPlanningScope(owner.scope, owner.generation)
+      }
       const authorized = await this.loadAuthorizedPlannerEmployees({ ...context, ...diagnosticContext })
       this.assertPlanningScope(owner.scope, owner.generation)
       context.employeeCount = authorized.length
-      let planningDraft: ArrangementPlannerDraft = planningSource
+      const approvedEmployeeAssignments = approvedRequests.map(request => {
+        const sameStep = approvedRequests.filter(item => item.stepId === request.stepId)
+        if (sameStep.length !== 1) throw new AppError('INVALID_STATE', { message: `步骤 ${request.stepId} 有多个已批准员工，无法确定绑定关系。` })
+        const employee = authorized.find(item => item.employeeId === request.employeeId && item.status === 'ACTIVE' && item.canExecute !== false && item.allowedModels.length > 0)
+        if (!employee) throw new AppError('INVALID_STATE', { message: `已批准的员工“${request.name}”暂不可执行，请刷新授权后重试，不会自动改派其他员工。` })
+        return { stepId: request.stepId, employeeId: employee.employeeId, subscriptionId: employee.subscriptionId }
+      })
+      let planningDraft: ArrangementPlannerDraft = { ...planningSource, approvedEmployeeAssignments }
       let employees: ArrangementPlannerEmployee[] = authorized
       const plannerEmployees: ArrangementPlannerEmployee[] = authorized
       nextPhase('round-1')
@@ -721,6 +735,7 @@ export class ArrangementService {
       let unresolvedSteps = result.unresolvedSteps ?? []
       let candidateMatches = result.candidateMatches ?? []
       let executableNodes = mergeExecutableNodes([], sanitizePlannerNodes(result.nodes, current.nodes))
+      validateApprovedEmployeeAssignments(approvedEmployeeAssignments, executableNodes, unresolvedSteps)
       context.completedNodeCount = executableNodes.length
       context.unresolvedStepCount = unresolvedSteps.length
       if (unresolvedSteps.length && this.deps.candidateEmployees) {
@@ -778,6 +793,7 @@ export class ArrangementService {
         }
       }
       if (controller.signal.aborted) throw new PlanningCancelledError()
+      validateApprovedEmployeeAssignments(approvedEmployeeAssignments, executableNodes, unresolvedSteps)
       nextPhase('finalization')
       const latest = await this.deps.drafts.get(requireScope(this.deps.scope), draftId)
       this.assertPlanningScope(owner.scope, owner.generation)
