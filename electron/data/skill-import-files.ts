@@ -58,6 +58,10 @@ interface PreviewRequest { requestId: string; candidateId: string; revision: num
 interface PackageRequest { candidateId: string; snapshotId: string; operationId: string }
 
 const ignoredDirs = new Set(['.git', 'node_modules', '.cache', 'cache'])
+const projectAgentSources: Record<string, string> = {
+  '.agents': 'agents', '.claude': 'claude-code', '.codex': 'codex', '.gemini': 'gemini-cli', '.opencode': 'opencode',
+  '.workbuddy': 'workbuddy', '.codebuddy': 'codebuddy', '.qoder': 'qoder', '.qwen': 'qwen-code', '.kimi': 'kimi-code',
+}
 const crcTable = Uint32Array.from({ length: 256 }, (_, n) => { let crc = n; for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0); return crc >>> 0 })
 function crcUpdate(crc: number, bytes: Buffer): number { for (const byte of bytes) crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 255]!; return crc >>> 0 }
 function within(root: string, path: string): boolean { const rel = relative(root, path); return rel === '' || (!isAbsolute(rel) && !rel.startsWith(`..${sep}`) && rel !== '..') }
@@ -83,6 +87,16 @@ function safePath(value: string): boolean {
 }
 function safeFilename(value: string): string { return value.replace(/[^\p{L}\p{N}._-]+/gu, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'skill' }
 function publicPath(root: string, path: string): string { return relative(root, path).split(sep).join('/') || 'SKILL.md' }
+
+function candidateSources(root: SkillImportRoot, directory: string): string[] {
+  if (root.scope === 'user') return [...root.sources]
+  const parts = [basename(dirname(root.path)), basename(root.path), ...relative(root.path, directory).split(sep)]
+  for (let i = parts.length - 2; i >= 0; i--) {
+    const source = projectAgentSources[parts[i]!]
+    if (source && (parts[i + 1] === 'skills' || (source === 'opencode' && parts[i + 1] === 'skill'))) return [source]
+  }
+  return ['project']
+}
 
 function parseSkill(content: string): { name: string; description: string | null } {
   const normalized = content.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
@@ -121,16 +135,30 @@ export class SkillImportFiles {
   async listRoots(): Promise<SkillImportRoot[]> {
     const canonicalHome = await realpath(this.homeDir).catch(() => this.homeDir)
     const canonicalConfig = await realpath(this.xdgConfigHome).catch(() => this.xdgConfigHome)
-    const roots: Array<{ path: string; sources: string[] }> = [
-      { path: join(this.homeDir, '.agents', 'skills'), sources: ['agents', 'codex', 'claude-code', 'gemini-cli', 'opencode'] },
-      { path: join(this.homeDir, '.claude', 'skills'), sources: ['claude-code'] },
-      { path: join(this.homeDir, '.codex', 'skills'), sources: ['codex'] },
-      { path: join(this.homeDir, '.gemini', 'skills'), sources: ['gemini-cli'] },
-      { path: join(this.xdgConfigHome, 'opencode', 'skills'), sources: ['opencode'] },
-      { path: join(this.xdgConfigHome, 'opencode', 'skill'), sources: ['opencode'] },
+    const roots: Array<{ path: string; sources: string[]; label: string; optional?: boolean }> = [
+      { path: join(this.homeDir, '.agents', 'skills'), sources: ['agents'], label: '共享 Skills' },
+      { path: join(this.homeDir, '.claude', 'skills'), sources: ['claude-code'], label: 'Claude Code · skills' },
+      { path: join(this.homeDir, '.codex', 'skills'), sources: ['codex'], label: 'Codex · skills' },
+      { path: join(this.homeDir, '.gemini', 'skills'), sources: ['gemini-cli'], label: 'Gemini CLI · skills' },
+      { path: join(this.xdgConfigHome, 'opencode', 'skills'), sources: ['opencode'], label: 'OpenCode · XDG skills' },
+      { path: join(this.xdgConfigHome, 'opencode', 'skill'), sources: ['opencode'], label: 'OpenCode · XDG skill (legacy)' },
+      ...[
+        { directory: '.workbuddy', source: 'workbuddy', label: 'WorkBuddy' },
+        { directory: '.codebuddy', source: 'codebuddy', label: 'CodeBuddy' },
+        { directory: '.qoder', source: 'qoder', label: 'Qoder' },
+        { directory: '.qwen', source: 'qwen-code', label: 'Qwen Code' },
+        { directory: '.kimi', source: 'kimi-code', label: 'Kimi Code' },
+      ].map(agent => ({ path: join(this.homeDir, agent.directory, 'skills'), sources: [agent.source], label: `${agent.label} · skills`, optional: true })),
+      { path: join(this.xdgConfigHome, 'agents', 'skills'), sources: ['agents'], label: '共享 Skills · XDG', optional: true },
+      { path: join(this.homeDir, '.workbuddy', 'plugins', 'cache'), sources: ['workbuddy'], label: 'WorkBuddy · 本地插件', optional: true },
+      { path: join(this.homeDir, '.workbuddy', 'plugins', 'marketplaces', 'workbuddy-builtin', 'skills'), sources: ['workbuddy'], label: 'WorkBuddy · 内置 Skills', optional: true },
     ]
-    if (this.platform === 'darwin') roots.push({ path: join(this.homeDir, 'Library', 'Application Support', 'opencode', 'skills'), sources: ['opencode'] })
-    if (this.platform === 'win32') roots.push({ path: join(this.homeDir, 'AppData', 'Roaming', 'opencode', 'skills'), sources: ['opencode'] })
+    if (this.platform === 'darwin') {
+      roots.push({ path: join(this.homeDir, 'Library', 'Application Support', 'opencode', 'skills'), sources: ['opencode'], label: 'OpenCode · macOS skills' })
+      roots.push({ path: join(this.homeDir, 'DoubaoWork', 'skills'), sources: ['doubao-work'], label: '豆包办公 · 用户 Skills', optional: true })
+      roots.push({ path: join(this.homeDir, 'Library', 'Application Support', 'DoubaoWork', 'Default', '.doubaowork', 'agent_mode', 'workspace', '.skills'), sources: ['doubao-work'], label: '豆包办公 · 内置 Skills', optional: true })
+    }
+    if (this.platform === 'win32') roots.push({ path: join(this.homeDir, 'AppData', 'Roaming', 'opencode', 'skills'), sources: ['opencode'], label: 'OpenCode · Windows skills' })
     const found: SkillImportRoot[] = []
     for (const item of roots) {
       const path = resolve(item.path)
@@ -141,7 +169,10 @@ export class SkillImportFiles {
         real = await realpath(path)
         exists = true
       } catch (error) {
-        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') real = await canonicalRootPath(path)
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
+          if (item.optional) continue
+          real = await canonicalRootPath(path)
+        }
         else continue
       }
       if (!within(canonicalHome, real) && !within(canonicalConfig, real)) continue
@@ -153,7 +184,7 @@ export class SkillImportFiles {
         existing.sources = [...new Set([...existing.sources, ...item.sources])]
         continue
       }
-      const root = { id, path: real, label: `${item.sources[0]} · ${basename(path)}`, scope: 'user' as const, sources: item.sources }
+      const root = { id, path: real, label: item.label, scope: 'user' as const, sources: item.sources }
       this.roots.set(id, root)
       found.push(root)
     }
@@ -176,7 +207,7 @@ export class SkillImportFiles {
     const real = await realpath(resolve(path))
     if (!(await stat(real)).isDirectory()) throw new Error('ROOT_NOT_DIRECTORY')
     const id = createHash('sha256').update(`project\0${real}`).digest('hex').slice(0, 24)
-    const root: SkillImportRoot = { id, path: real, label: basename(real) || 'project', scope: 'project', sources: ['agents', 'claude-code', 'codex', 'gemini-cli', 'opencode'] }
+    const root: SkillImportRoot = { id, path: real, label: basename(real) || 'project', scope: 'project', sources: ['project'] }
     this.removedRootIds.delete(id)
     this.roots.set(id, root)
     this.existingRootIds.add(id)
@@ -222,7 +253,7 @@ export class SkillImportFiles {
       const dirs: string[] = []
       const starts = [rootPath]
       if (root.scope === 'project') {
-        for (const relativePath of ['.agents/skills', '.claude/skills', '.codex/skills', '.gemini/skills', '.opencode/skills', '.opencode/skill', 'skills']) {
+        for (const relativePath of [...Object.keys(projectAgentSources).map(agent => `${agent}/skills`), '.opencode/skill', 'skills']) {
           const path = join(rootPath, ...relativePath.split('/'))
           try { const real = await realpath(path); if (within(rootPath, real) && (await stat(real)).isDirectory()) starts.push(real) } catch { /* optional project agent root */ }
         }
@@ -409,7 +440,7 @@ export class SkillImportFiles {
     }
     const files = [entry]
     const id = randomUUID().replaceAll('-', '')
-    return { candidateId: id, revision: 1, name: details.name, description: details.description, sources: [...root.sources], scope: root.scope, locations: [{ rootId: root.id, rootLabel: root.label, relativePath: publicPath(rootPath, directory) }], treeHash: null, availability: 'previewable', warnings, directory, rootPath, files, rootIds: [root.id] }
+    return { candidateId: id, revision: 1, name: details.name, description: details.description, sources: candidateSources(root, directory), scope: root.scope, locations: [{ rootId: root.id, rootLabel: root.label, relativePath: publicPath(rootPath, directory) }], treeHash: null, availability: 'previewable', warnings, directory, rootPath, files, rootIds: [root.id] }
   }
 
   private async enumerate(directory: string, root: string, signal?: AbortSignal): Promise<{ files: FileEntry[]; directories: string[]; warnings: FileWarning[] }> {

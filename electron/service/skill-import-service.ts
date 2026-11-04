@@ -467,7 +467,10 @@ export class SkillImportService {
     current.job = job().catch(async error => {
       if (this.active !== current) return
       const code = this.code(current.controller.signal.aborted ? current.controller.signal.reason : error)
-      this.publish({ error: this.errorView(code), ...(['CLIENT_UPGRADE_REQUIRED', 'STORAGE_UNAVAILABLE', 'DEVICE_LIMIT_REACHED'].includes(code) ? { visible: true } : {}) })
+      // A non-retryable failure before the first pairing leaves the client in a
+      // hidden connecting state otherwise, so surface it as an actionable error.
+      const showInitialPairingError = !current.pairingId && error instanceof SkillImportApiError && !error.retryable
+      this.publish({ error: this.errorView(code), ...(['CLIENT_UPGRADE_REQUIRED', 'STORAGE_UNAVAILABLE', 'DEVICE_LIMIT_REACHED'].includes(code) || showInitialPairingError ? { visible: true } : {}) })
       await this.stopFromWorker(current, code === 'SESSION_EXPIRED' ? 'expired' : TERMINAL_CODES.has(code) ? 'cancelled' : 'failed')
     }).finally(() => { current.job = undefined })
   }

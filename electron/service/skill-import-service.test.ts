@@ -193,15 +193,23 @@ test('revoked, different-owner, missing-root, and expanded-scope bindings requir
   }
 })
 
-test('network failure stays quiet while a required client upgrade asks for local action', async () => {
+test('non-retryable initial pairing errors ask for local action', async () => {
   for (const code of ['IMPORT_UNAVAILABLE', 'CLIENT_UPGRADE_REQUIRED']) {
-    const h = harness({ request: async () => { throw new SkillImportApiError(code) } })
+    const h = harness({ request: async () => { throw new SkillImportApiError(code, 403, false) } })
     await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
     await until(() => h.service['state'].phase === 'failed')
-    assert.equal(h.service['state'].visible, code === 'CLIENT_UPGRADE_REQUIRED')
+    assert.equal(h.service['state'].visible, true)
     assert.equal(h.service['state'].error?.code, code)
     await h.service.dispose()
   }
+})
+
+test('retryable initial pairing outage remains in background while the client retries', async () => {
+  const h = harness({ request: async () => { throw new SkillImportApiError('NETWORK_UNAVAILABLE', 0, true) } })
+  await h.service.open({ instanceId: 'sep-default', sessionId: 'session_1' })
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(h.service['state'].visible, false)
+  await h.service.cancel('session_1')
 })
 
 test('remembered authorization finds the current owner and keeps the originally approved root subset', async () => {

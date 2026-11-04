@@ -1,5 +1,5 @@
 import * as assert from 'node:assert/strict'
-import { access, chmod, mkdtemp, mkdir, open, readdir, rename, rm, symlink, utimes, writeFile, type FileHandle } from 'node:fs/promises'
+import { access, chmod, mkdtemp, mkdir, open, readdir, realpath, rename, rm, symlink, utimes, writeFile, type FileHandle } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -30,6 +30,97 @@ function agentsRoot(files: SkillImportFiles): Promise<{ id: string }> {
     return root
   })
 }
+
+test('labels OpenCode compatibility roots distinctly and classifies actual user directories', async () => {
+  const f = await fixture()
+  try {
+    const files = new SkillImportFiles({ homeDir: f.home, tempDir: f.temp, platform: 'darwin' })
+    const roots = await files.listRoots()
+    const openCode = roots.filter(root => root.sources.includes('opencode'))
+    assert.equal(openCode.length, 3)
+    assert.equal(new Set(openCode.map(root => root.label)).size, 3)
+    const shared = roots.find(root => root.sources.includes('agents'))!
+    assert.deepEqual(shared.sources, ['agents'])
+    const claude = roots.find(root => root.sources.includes('claude-code'))!
+    await addSkill(shared.path, 'shared')
+    await addSkill(claude.path, 'claude')
+    const candidates = await files.scan([shared.id, claude.id])
+    assert.deepEqual(candidates.map(candidate => candidate.sources), [['agents'], ['claude-code']])
+    await files.dispose()
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('classifies project skills by their agent directory and keeps generic skills separate', async () => {
+  const f = await fixture()
+  try {
+    const paths = ['.agents/skills', '.claude/skills', '.codex/skills', '.gemini/skills', '.opencode/skills', '.opencode/skill', '.workbuddy/skills', '.codebuddy/skills', '.qoder/skills', '.qwen/skills', '.kimi/skills', 'skills']
+    const expected = ['agents', 'claude-code', 'codex', 'gemini-cli', 'opencode', 'opencode', 'workbuddy', 'codebuddy', 'qoder', 'qwen-code', 'kimi-code', 'project']
+    for (let i = 0; i < paths.length; i++) await addSkill(join(f.project, paths[i]!), `skill-${i}`)
+    const root = await f.files.addProjectRoot(f.project)
+    const candidates = await f.files.scan([root.id])
+    assert.equal(candidates.length, paths.length)
+    for (let i = 0; i < paths.length; i++) {
+      const candidate = candidates.find(item => item.locations.some(location => location.relativePath === `${paths[i]}/skill-${i}`))
+      assert.ok(candidate)
+      assert.deepEqual(candidate.sources, [expected[i]])
+    }
+    const directRoot = await f.files.addProjectRoot(join(f.project, '.claude', 'skills'))
+    assert.deepEqual((await f.files.scan([directRoot.id]))[0]?.sources, ['claude-code'])
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('discovers domestic agent skills and WorkBuddy plugin skills without scanning unrelated app data', async () => {
+  const f = await fixture()
+  try {
+    const files = new SkillImportFiles({ homeDir: f.home, tempDir: f.temp, platform: 'darwin' })
+    const before = await files.listRoots()
+    assert.equal(before.some(root => root.sources.includes('workbuddy') || root.sources.includes('doubao-work')), false)
+    const paths = [
+      ['.workbuddy/skills', 'workbuddy'],
+      ['.workbuddy/plugins/cache', 'workbuddy'],
+      ['.workbuddy/plugins/marketplaces/workbuddy-builtin/skills', 'workbuddy'],
+      ['DoubaoWork/skills', 'doubao-work'],
+      ['Library/Application Support/DoubaoWork/Default/.doubaowork/agent_mode/workspace/.skills', 'doubao-work'],
+      ['.codebuddy/skills', 'codebuddy'], ['.qoder/skills', 'qoder'], ['.qwen/skills', 'qwen-code'], ['.kimi/skills', 'kimi-code'],
+      ['.config/agents/skills', 'agents'],
+    ]
+    for (const [path] of paths) await addSkill(join(f.home, path!), path === '.workbuddy/plugins/cache' ? 'builtin/docx/1.0.0/skills/report' : 'weekly-report')
+    await addSkill(join(f.home, '.workbuddy', 'sessions'), 'not-a-skill-source')
+    const home = await realpath(f.home)
+    const roots = (await files.listRoots()).filter(root => paths.some(([path]) => root.path === join(home, path!)))
+    assert.equal(roots.length, paths.length)
+    const candidates = await files.scan(roots.map(root => root.id))
+    assert.equal(candidates.length, paths.length)
+    for (const [path, source] of paths) {
+      const root = roots.find(item => item.path === join(home, path!))!
+      const candidate = candidates.find(item => item.locations.some(location => location.rootId === root.id))!
+      assert.deepEqual(candidate.sources, [source])
+    }
+    await files.dispose()
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
+
+test('does not authorize a domestic agent skill root redirected outside the home directory', async () => {
+  const f = await fixture()
+  try {
+    await mkdir(join(f.home, '.workbuddy'), { recursive: true })
+    await addSkill(f.project)
+    await symlink(f.project, join(f.home, '.workbuddy', 'skills'))
+    assert.equal((await f.files.listRoots()).some(root => root.sources.includes('workbuddy')), false)
+  } finally {
+    await f.files.dispose()
+    await rm(f.base, { recursive: true, force: true })
+  }
+})
 
 test('scans authorized root, previews YAML metadata, and packages a Chinese UTF-8 ZIP', async () => {
   const f = await fixture()
