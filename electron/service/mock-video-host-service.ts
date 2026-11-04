@@ -84,7 +84,7 @@ function jobView(job: LocalVideoJob): VideoJobView {
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     ...(job.specFailure ? { specFailure: structuredClone(job.specFailure) } : {}),
-    createdAt: job.createdAt, updatedAt: job.updatedAt, error: measured.acceptance === 'mismatched' ? 'OUTPUT_SPEC_MISMATCH' : job.error,
+    createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error === 'OUTPUT_SPEC_MISMATCH' ? null : job.error,
     ...(job.lastQueriedAt === undefined ? {} : { lastQueriedAt: job.lastQueriedAt }),
     ...(job.providerWaitMs === undefined ? {} : { providerWaitMs: job.providerWaitMs }),
     ...(job.downloadMs === undefined ? {} : { downloadMs: job.downloadMs }),
