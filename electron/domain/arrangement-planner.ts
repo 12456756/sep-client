@@ -72,6 +72,7 @@ export interface ArrangementPlanningResult {
 export type ArrangementPlannerDraft = ArrangementDraft & {
   plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments']
   plannerKnowledgeCatalog?: import('./arrangement-planner-prompts').ArrangementPlannerInput['knowledgeCatalog']
+  approvedEmployeeAssignments?: Array<{ stepId: string; employeeId: string; subscriptionId: string }>
 }
 
 export interface ArrangementCandidateDirectory {
@@ -113,7 +114,7 @@ export interface ArrangementPlannerPort {
 }
 
 export function buildArrangementPlannerPrompt(
-  draft: Pick<ArrangementDraft, 'goal' | 'confirmedInputs' | 'intentAnalysis' | 'unresolvedSteps' | 'nodes' | 'candidateMatches' | 'attachmentCandidates'> & { plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments'] },
+  draft: Pick<ArrangementDraft, 'goal' | 'confirmedInputs' | 'intentAnalysis' | 'unresolvedSteps' | 'nodes' | 'candidateMatches' | 'attachmentCandidates'> & { plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments']; approvedEmployeeAssignments?: ArrangementPlannerDraft['approvedEmployeeAssignments'] },
   employees: readonly ArrangementPlannerEmployee[],
   planningStage: ArrangementPlanningStage = 'authorized',
 ): string {
@@ -191,6 +192,7 @@ export function parseArrangementPlannerOutput(
       ...(stringField(item.stepId) ? { stepId: stringField(item.stepId)! } : {}),
     }
   })
+  validateApprovedEmployeeAssignments(draft.approvedEmployeeAssignments ?? [], nodes, unresolvedSteps)
   const allowedAttachments = new Map((draft.attachmentCandidates ?? []).map(candidate => [candidate.attachment.attachmentId, candidate]))
   const usedAttachmentIds = new Set((draft.nodes ?? []).flatMap(node => (node.inputRefs ?? []).flatMap(ref => ref.kind === 'attachment' ? [ref.attachment.attachmentId] : [])))
   for (const [nodeIndex, node] of nodes.entries()) {
@@ -235,6 +237,21 @@ export function parseArrangementPlannerOutput(
     ...(intentAnalysis ? { intentAnalysis: structuredClone(intentAnalysis) } : {}),
     ...(unresolvedSteps.length ? { unresolvedSteps: structuredClone(unresolvedSteps) } : {}),
     ...(candidateMatches.length ? { candidateMatches: structuredClone(candidateMatches) } : {}),
+  }
+}
+
+export function validateApprovedEmployeeAssignments(
+  assignments: NonNullable<ArrangementPlannerDraft['approvedEmployeeAssignments']>,
+  nodes: readonly ArrangementNode[],
+  unresolvedSteps: readonly ArrangementUnresolvedStep[],
+): void {
+  for (const assignment of assignments) {
+    const assignedNodes = nodes.filter(node => node.stepId === assignment.stepId)
+    if (!assignedNodes.length || assignedNodes.some(node => node.subscriptionId !== assignment.subscriptionId) ||
+      unresolvedSteps.some(step => step.stepId === assignment.stepId)) {
+      throw planningFieldFailure('employee-validation', 'approved-employee-not-assigned', ['nodes'],
+        `已批准员工必须填入原步骤 ${assignment.stepId}，使用订阅 ${assignment.subscriptionId}，不得改派或保留为未解决。`)
+    }
   }
 }
 

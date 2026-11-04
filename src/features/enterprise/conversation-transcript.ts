@@ -46,6 +46,7 @@ export function buildConversationReplies(work: WorkItem, preparing: boolean): Co
 export function buildConversationTranscript(source: readonly TaskExecutionEvent[]): ConversationRunTranscript[] {
   const runs = new Map<string, ConversationRunTranscript>()
   const tools = new Map<string, ConversationProcessEntry>()
+  const approvals = new Map<string, ConversationProcessEntry>()
   const streamed = new Set<string>()
   const snapshots = new Set<string>()
   const turns = new Map<string, number>()
@@ -94,10 +95,22 @@ export function buildConversationTranscript(source: readonly TaskExecutionEvent[
         append(entry)
       }
       if (type === 'tool_execution_end') entry.state = data.success === false ? 'failed' : 'completed'
-    } else if (type === 'approval_requested' || type === 'auto_retry_start') {
+    } else if (type === 'approval_requested') {
       lastThinking.delete(runId)
-      append({ id: `${runId}:${event.sequence}:status`, kind: 'status', at,
-        text: type === 'approval_requested' ? '等待你的操作确认' : '连接暂时中断，正在重试' })
+      if (typeof data.requestId !== 'string') continue
+      const id = `${runId}:approval:${data.requestId}`
+      const entry: ConversationProcessEntry = { id, kind: 'status', at, state: 'waiting-user', text: '等待你的操作确认' }
+      approvals.set(id, entry)
+      append(entry)
+    } else if (type === 'approval_resolved') {
+      if (typeof data.requestId !== 'string') continue
+      const entry = approvals.get(`${runId}:approval:${data.requestId}`)
+      if (!entry) continue
+      entry.state = data.approved === true ? 'completed' : 'failed'
+      entry.text = data.approved === true ? '已允许操作' : '操作未获允许'
+    } else if (type === 'auto_retry_start') {
+      lastThinking.delete(runId)
+      append({ id: `${runId}:${event.sequence}:status`, kind: 'status', at, text: '连接暂时中断，正在重试' })
     }
   }
   return [...runs.values()]

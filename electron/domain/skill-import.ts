@@ -1,0 +1,15 @@
+import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign, verify, type KeyObject } from 'node:crypto'
+
+export type SkillImportScope = 'user' | 'project' | 'all'
+export const SKILL_IMPORT_PROTOCOL_VERSION = 1 as const
+export function normalizedRootIds(rootIds: readonly string[]): string[] { return [...new Set(rootIds)].sort() }
+export function consentHash(rememberDevice: boolean, scope: SkillImportScope | 'revoke', rootIds: readonly string[]): string { return createHash('sha256').update(JSON.stringify([rememberDevice, scope, normalizedRootIds(rootIds)])).digest('hex') }
+export function acceptedScopeHash(scope: SkillImportScope, rootIds: readonly string[]): string { return createHash('sha256').update(JSON.stringify([scope, normalizedRootIds(rootIds)])).digest('hex') }
+export function challengeMessage(input: { purpose: 'session-grant' | 'device-revoke'; instanceId: string; sessionId: string | null; pairingId: string | null; deviceId: string | null; keyFingerprint: string; challengeId: string; nonce: string; expiresAt: string }, consent: string): Buffer { return Buffer.from(JSON.stringify(['SEP-SKILL-IMPORT', 1, input.purpose, input.instanceId, input.sessionId, input.pairingId, input.deviceId, input.keyFingerprint, input.challengeId, input.nonce, input.expiresAt, consent]), 'utf8') }
+export function encodePublicKey(key: KeyObject): string { const publicKey = key.type === 'private' ? createPublicKey(key) : key; return publicKey.export({ type: 'spki', format: 'der' }).toString('base64url') }
+export function keyFingerprint(publicKey: string | KeyObject): string { const der = typeof publicKey === 'string' ? Buffer.from(publicKey, 'base64url') : (publicKey.type === 'private' ? createPublicKey(publicKey) : publicKey).export({ type: 'spki', format: 'der' }); return createHash('sha256').update(der).digest('hex') }
+export function generateDeviceKeyPair(): { privateKey: KeyObject; publicKey: string; keyFingerprint: string } { const pair = generateKeyPairSync('ed25519'); const publicKey = encodePublicKey(pair.publicKey); return { privateKey: pair.privateKey, publicKey, keyFingerprint: keyFingerprint(publicKey) } }
+export function signChallenge(privateKey: KeyObject, challenge: Parameters<typeof challengeMessage>[0], consent: string): string { return sign(null, challengeMessage(challenge, consent), privateKey).toString('base64url') }
+export function verifyChallenge(publicKey: string, signature: string, challenge: Parameters<typeof challengeMessage>[0], consent: string): boolean { return verify(null, challengeMessage(challenge, consent), createPublicKey({ key: Buffer.from(publicKey, 'base64url'), type: 'spki', format: 'der' }), Buffer.from(signature, 'base64url')) }
+export function privateKeyToDer(privateKey: KeyObject): string { return privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64') }
+export function privateKeyFromDer(encoded: string): KeyObject { return createPrivateKey({ key: Buffer.from(encoded, 'base64'), type: 'pkcs8', format: 'der' }) }

@@ -60,6 +60,25 @@ test('real host approves actual CNY quote, freezes mode, saves and reopens witho
   await reopened.stopAll()
 })
 
+test('video host ignores persisted specification mismatch without changing saved outputs or billing', async () => {
+  const f = await realSetup()
+  try {
+    const job = await f.host.generate('task-a', input())
+    await f.host.resume('task-a', job.jobId)
+    const saved = await f.host.resume('task-a', job.jobId)
+    await f.store.updateJob(scope, 'task-a', job.jobId, previous => ({ ...previous,
+      error: 'OUTPUT_SPEC_MISMATCH', receipt: { ...previous.receipt!, acceptance: 'mismatched', deliveryStatus: 'mismatched' } }))
+    const view = (await f.host.getTaskVideo('task-a')).jobs[0]
+    assert.equal(view.error, null)
+    assert.equal(view.generationStatus, 'SUCCEEDED')
+    assert.equal(view.saveStatus, 'SAVED')
+    assert.equal(view.actualCostCny, saved.actualCostCny)
+    assert.deepEqual(view.outputs, saved.outputs)
+    const stored = await f.store.getJob(scope, 'task-a', job.jobId)
+    assert.equal(stored?.receipt?.acceptance, 'mismatched')
+  } finally { await f.host.stopAll() }
+})
+
 test('lost real submit response recovers original request and never repeats submission', async () => {
   const f = await realSetup(), gateway = f.options.gateway(scope)
   const host = new MockVideoHostService({ ...f.options, gateway: () => ({ ...gateway,

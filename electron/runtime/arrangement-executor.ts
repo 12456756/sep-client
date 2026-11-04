@@ -1,4 +1,5 @@
 import { withApprovedSkillReadPaths } from './run-skill-policy'
+import { MEDIA_SPEC_EXECUTION_PROMPT } from './media-execution-prompts'
 /**
  * 编排式任务的节点执行器。
  *
@@ -155,6 +156,7 @@ ${node.mediaRequirements?.length ? `
 ${JSON.stringify(node.mediaRequirements, null, 2)}
 按以上 operation 和 inputFrom 完成媒体操作。前置资产使用后端提供的参考资产，不得猜测资产 ID、路径或重新生成前置成果。
 requiredSpec 是用户硬要求，proposedSpec 是模型建议；用户要求优先。使用 requirementId 指明当前需求的 id，并通过 requestedSpec、parameterSources、specRevision 结构化提交，不从默认值或能力数组首项补齐，也不把静态能力提示当规格白名单。preferred 中的风格、场景等用于创作提示，不得把任意创作字段直接作为规格参数。
+${MEDIA_SPEC_EXECUTION_PROMPT}
 读取工具真实可用性后执行；关键信息缺失时提出具体问题，不得声称完成。上游不支持时说明原因，不改规格、换模型或用脚本视频静默替代。generationMethod=ai-generated 的交付必须由真实媒体任务与已保存资产证明，单有 MP4 文件或模型自述不构成生成证据。
 确实需要用户补充关键规格或选择素材时，只返回 {"needsUserInput":{"question":"需要用户回答的具体问题"}}，进入等待输入；这不是交付完成。用户回复后沿用当前会话、已完成成果和原媒体任务，仅继续尚未完成的需求。
 inputSelection 是选图意图；当前每项需求只解析一个明确来源。多张候选未确定或用户尚未选图时，应说明缺少的选择，不得擅自选图或声称已完成。

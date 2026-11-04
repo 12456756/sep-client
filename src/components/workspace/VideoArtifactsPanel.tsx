@@ -62,8 +62,10 @@ function failure(result: IpcCommandResult, operation: FeedbackOperation): string
   return result.error?.code ? mediaSpecFailureMessage({ ...result.error, code: result.error.code }) ?? responseError(result, operation).message : responseError(result, operation).message
 }
 
-export function videoTaskIssue(jobs: VideoJobView[]): string | null {
+export function videoTaskIssue(jobs: VideoJobView[], context: 'summary' | 'notice' = 'summary'): string | null {
   for (const job of jobs) {
+    if (job.error === 'OUTPUT_SPEC_MISMATCH' ||
+      context === 'notice' && job.generationStatus === 'SUBMISSION_UNKNOWN') continue
     const message = job.specFailure ? mediaSpecFailureMessage(job.specFailure) ?? mediaIssueMessage(job, 'video') : mediaIssueMessage(job, 'video')
     if (message) return message
   }
@@ -125,14 +127,13 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
     const retry = generated && downloadable && ['SAVE_FAILED', 'MISSING'].includes(job.saveStatus)
     const resume = !explicitlyRejected && job.trackingStatus !== 'ACTIVE' && (videoBillingPending(job.billingStatus) || unfinished || generated && downloadable && ['PENDING', 'SAVE_FAILED', 'MISSING'].includes(job.saveStatus))
     if (compact) {
-      const issue = job.specFailure ? mediaSpecFailureMessage(job.specFailure) ?? mediaIssueMessage(job, 'video') : mediaIssueMessage(job, 'video')
+      const issue = videoTaskIssue([job])
       const savedOutputs = job.outputs.filter(output => videoOutputIsSaved(job, output.outputId))
-      const status = issue || (job.acceptance === 'mismatched' ? '生成结果与要求不一致，已保留原件'
-        : unfinished ? generation.label
+      const status = issue || (unfinished ? generation.label
           : videoBillingPending(job.billingStatus) ? '生成完成，费用核对中'
             : savedOutputs.length === 0 ? mediaSaveLabels[job.saveStatus].label : null)
       return <article className="media-result-job" key={job.jobId}>
-        {status && <p className="media-result-status" role={issue || job.acceptance === 'mismatched' ? 'alert' : 'status'}>{status}</p>}
+        {status && <p className="media-result-status" role={issue ? 'alert' : 'status'}>{status}</p>}
         {(resume || retry) && <div className="media-job-actions">
           {resume && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'resume')}><Play size={13} />继续</button>}
           {retry && <button type="button" className="media-command" disabled={busy} onClick={() => onAction(job, 'retry')}><Download size={13} />重新保存</button>}
@@ -150,7 +151,6 @@ export function VideoJobList({ jobs, busy, onAction, onPreview, onExport, compac
       {job.protocolVersion === 3 && <small>规格来源：{Object.entries(job.parameterSources ?? {}).map(([field, source]) => `${field}（${source === 'user' ? '用户要求' : source === 'model' ? '模型建议' : '上游决定'}）`).join('、') || '未指定字段由上游决定'} · 需求版本 {job.specRevision}</small>}
       {job.actualSpec && <small>实际生成：{job.actualSpec.durationSeconds === undefined ? '时长待核验' : `${job.actualSpec.durationSeconds} 秒`} · {job.actualSpec.width && job.actualSpec.height ? `${job.actualSpec.width}×${job.actualSpec.height}` : job.actualSpec.resolution ?? '尺寸待核验'} · {job.actualSpec.frameRate === undefined ? '帧率待核验' : `${job.actualSpec.frameRate} fps`}</small>}
       {job.specFailure && <p className="media-notice" role="alert">{mediaSpecFailureMessage(job.specFailure)}</p>}
-      {job.acceptance === 'mismatched' && <p className="media-notice" role="alert">实际视频与约定规格不符，原件和费用状态已保留；不会自动再次付费生成。</p>}
       <small className="media-job-id">任务 {job.jobId}</small>
       <div className="media-job-states" aria-live="polite">{[generation, mediaTrackingLabels[job.trackingStatus], mediaSaveLabels[job.saveStatus]].map((status, index) => <span className={`media-tone-${status.tone}`} key={index}>{status.label}</span>)}</div>
       <small>{videoBillingLabel(job)}</small>
@@ -255,7 +255,6 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
   const [view, setView] = useState<VideoTaskView | null>(null)
   const [pending, setPending] = useState<Command | null>(null)
   const { capture } = useOperationFeedback(taskId)
-  const seenIssues = useRef(new Set<string>())
   const queryFailure = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<OutputSelection | null>(null)
@@ -284,11 +283,6 @@ function VideoTaskController({ taskId, visible = true, onSummary, presentation =
       setView(next)
       setError(null)
       queryFailure.current = false
-      for (const job of next.jobs) {
-        const message = job.specFailure ? mediaSpecFailureMessage(job.specFailure) ?? mediaIssueMessage(job, 'video') : mediaIssueMessage(job, 'video')
-        const key = `${job.jobId}:${message}`
-        if (message && !seenIssues.current.has(key)) { seenIssues.current.add(key); notice.show(message, 'error', `video-job:${taskId}:${key}`, true) }
-      }
     } catch {
       if (current()) { setError(operationFailure('videoRead')); if (!queryFailure.current) { queryFailure.current = true; notice.show(operationFailure('videoRead')) } }
     }

@@ -96,6 +96,16 @@ function value(result: Awaited<ReturnType<Awaited<ReturnType<typeof sdk>>['execu
 }
 
 describe('video tools through the mocked Pi SDK extension API', () => {
+  it('preserves safe conversation reference identities and strips internal paths from source metadata', async () => {
+    const source = { localAssetId: 'reference-a', source: 'attachment', attachmentId: 'attachment-a', displayName: 'product.png' }
+    const generated = { localAssetId: 'reference-b', source: 'generated', sourceArtifactId: 'output-b', jobId: 'image-job', outputId: 'image-output' }
+    const runtime = await sdk({}, { mock: true, runtime: videoFixture.runtime, jobs: [], referenceAssets: [],
+      referenceSources: [{ ...source, path: secrets.path }, { ...generated, apiKey: secrets.apiKey }] })
+    const result = await runtime.execute('video_get_job', {})
+    assert.deepEqual(JSON.parse(value(result)).referenceSources, [source, generated])
+    assert.doesNotMatch(value(result), /private-key|private\/video/)
+  })
+
   it('preserves saved real video results with fractional measured duration across generation and queries', async () => {
     const completed: VideoJobView = {
       ...job, protocolVersion: 3, specRevision: 1,

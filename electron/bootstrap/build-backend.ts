@@ -2,6 +2,7 @@ import { NotificationService } from '../service/notification-service'
 import { NotificationSocket } from '../common/platform/notification-socket'
 import { SkillSubmissionStore } from '../data/skill-submission-store'
 import { SkillLibraryService } from '../service/skill-library-service'
+import type { SkillImportService } from '../service/skill-import-service'
 import { KnowledgeService } from '../service/knowledge-service'
 import { KnowledgeApi } from '../common/platform/knowledge-api'
 import { ResultFileService } from '../service/result-file-service'
@@ -73,6 +74,8 @@ import { SepMockVideoGateway, SepRealVideoGateway } from '../data/sep-video-medi
 import { createVideoScopeAdapter } from '../data/video-scope-adapter'
 import { MockVideoHostService, type MockVideoHostOptions } from '../service/mock-video-host-service'
 import { VideoRunService } from '../service/video-run-service'
+import { ConversationVideoRunService } from '../service/conversation-video-run-service'
+import { ConversationMediaService } from '../service/conversation-media-service'
 import { AppError } from '../errors/app-error'
 import { DocumentPreviewService } from '../service/document-preview-service'
 import { DocumentPreviewStore } from '../data/document-preview-store'
@@ -95,6 +98,7 @@ const log = logger.child('build-backend')
 export const AUTH_CLEANUP_BUDGET_MS = 5_000
 
 export interface BackendOptions {
+  skillImport?: SkillImportService
   /** Electron 的 userData 目录。所有持久化路径都从它派生。 */
   userDataDir: string
   /** 推给渲染进程的唯一出口，由 bootstrap/renderer-bridge.ts 实现。 */
@@ -111,6 +115,7 @@ export interface BackendOptions {
  * 用 `createBackend()` 创建——这个类不导出，避免出现第二个装配入口。
  */
 class BackendRuntime {
+  readonly skillImport?: SkillImportService
   readonly knowledge: KnowledgeService
   readonly authSession: AuthSessionManager
   readonly taskManager: TaskManager
@@ -137,7 +142,9 @@ class BackendRuntime {
   private readonly speechRuntime: LazyAsync<SpeechRuntimePort>
   readonly video?: MockVideoHostService
   private readonly videoRuns?: VideoRunService
+  private readonly conversationVideo?: ConversationVideoRunService
   private readonly arrangementMedia: ArrangementMediaService
+  private readonly conversationMedia: ConversationMediaService
 
   private readonly workPlans: WorkPlanStore
   private readonly arrangementCheckpoints: ArrangementCheckpointStore
@@ -155,7 +162,8 @@ class BackendRuntime {
   private authenticationCleanup: Promise<void> | null = null
   private readonly sessionRecovery: SessionRecovery
 
-  constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities }: BackendOptions) {
+  constructor({ userDataDir, renderer, isEncryptionAvailable = () => true, mediaGateway, mediaCapabilities, skillImport }: BackendOptions) {
+    this.skillImport = skillImport
     this.userDataDir = userDataDir
     this.modelTraces = new ModelTraceStore(join(userDataDir, 'model-logs'))
     this.renderer = renderer
@@ -306,6 +314,7 @@ class BackendRuntime {
       }
       this.video = new MockVideoHostService(videoOptions)
       this.videoRuns = new VideoRunService(videoOptions, this.video)
+      this.conversationVideo = new ConversationVideoRunService(this.videoRuns, videoOptions)
     }
     this.sessionRecovery = new SessionRecovery(this, [
       { name: 'history', run: () => this.clientMonitor.resumePending() },
@@ -317,10 +326,13 @@ class BackendRuntime {
         await this.video.resumePending(tasks.map(task => task.id))
       } },
     ])
+    const mediaAssets = new ArrangementMediaAssets(userDataDir, mediaStore, videoStore, this.attachments)
+    this.conversationMedia = new ConversationMediaService({ scope: this, images: mediaStore, assets: mediaAssets, media: this.media,
+      getTask: taskId => this.taskManager.getTask(taskId) })
     this.arrangementMedia = new ArrangementMediaService({
       scope: this, plans: this.workPlans, checkpoints: this.arrangementCheckpoints, runs: this.taskRunStore,
       links: new ArrangementMediaLinkStore(userDataDir), images: mediaStore, videos: videoStore,
-      assets: new ArrangementMediaAssets(userDataDir, mediaStore, videoStore, this.attachments), media: this.media,
+      assets: mediaAssets, media: this.media,
       getTask: taskId => this.taskManager.getTask(taskId),
     })
 
@@ -344,6 +356,10 @@ class BackendRuntime {
     this.conversationQueue = new ConversationQueueService({ scope: this, store: new ConversationQueueStore(userDataDir),
       getTask: taskId => this.taskManager.getTask(taskId),
       isBusy: taskId => this.runtime.peek()?.hasConversationRun(taskId) ?? false,
+      interruptCurrent: async (taskId, runId) => {
+        const runtime = await this.getTaskRuntime()
+        await runtime.interruptConversation(taskId, runId)
+      },
       startInitial: async (taskId, signal) => {
         const runtime = await this.getTaskRuntime()
         signal.throwIfAborted()
@@ -632,6 +648,11 @@ class BackendRuntime {
     await this.runtime.peek()?.stopAll()
   }
 
+  /** Application shutdown/update includes import cleanup; consumer logout remains independent. */
+  async stopForApp(): Promise<void> {
+    await Promise.all([this.stopAll(), this.skillImport?.cancelActive()])
+  }
+
   resumeClientMonitor(): Promise<void> {
     this.conversationQueue.start()
     return this.sessionRecovery.resume()
@@ -767,7 +788,9 @@ class BackendRuntime {
       ),
       media: this.media,
       video: this.videoRuns,
+      conversationVideo: this.conversationVideo,
       arrangementMedia: this.arrangementMedia,
+      conversationMedia: this.conversationMedia,
       attachmentInputs: this.attachments,
     })
     log.info('task runtime loaded')

@@ -35,6 +35,7 @@ export interface RequestContext {
   readonly backend: Backend
   /** 自动更新独立于登录会话；未组装时路由返回普通 IPC 错误。 */
   readonly updater?: AppUpdater
+  readonly skillImport?: Backend['skillImport']
   /** 需要父窗口的原生弹框（目录选择）用它。 */
   readonly window: () => BrowserWindow | null
 }
@@ -63,6 +64,7 @@ export function createRequestContext(
     video: video ?? backend.video,
     backend,
     updater,
+    skillImport: backend.skillImport,
     window,
   }
 }

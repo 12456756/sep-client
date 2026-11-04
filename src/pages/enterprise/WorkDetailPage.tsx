@@ -267,14 +267,11 @@ function NeedsYou({ work, workspace }: { work: WorkItem; workspace: EnterpriseWo
   }
 
   if (work.status === 'failed') {
+    if (work.kind === 'flow' && execution?.nodes.some(node => node.status === 'failed')) return null;
     return (
-      <div className="ent-flow-act danger">
-        <XCircle size={16} aria-hidden />
-        <p>{work.stopReason ? `中断原因：${work.stopReason}` : work.nextUserAction ?? '这项工作中断了，看一下再决定怎么继续'}</p>
-        {!(work.kind === 'flow' && work.arrangementExecution?.nodes.some(node => node.status === 'failed')) ? <button type="button" className="ent-btn primary sm" onClick={() => void workspace.retryWork(work.id)} disabled={workspace.busy}>
-          <RotateCcw size={13} aria-hidden />
-          重新试一次
-        </button> : null}
+      <div className="ent-flow-act danger ent-failure-notice" aria-label="任务失败">
+        <FailureRetryRow reason={work.stopReason?.trim() || work.nextUserAction?.trim() || '任务执行失败'}
+          busy={workspace.busy} onRetry={() => void workspace.retryWork(work.id)} />
       </div>
     );
   }
@@ -453,14 +450,30 @@ function FailedNodeActions({ work, busy, onRetry }: { work: WorkItem; busy: bool
   if (!failed.length) return null;
   const titles = new Map(work.steps.map(step => [step.id, step.title]));
   return (
-    <section className="ent-flow-act danger ent-failed-node-actions" aria-label="失败节点操作">
-      <XCircle size={16} aria-hidden />
-      <div className="ent-failed-node-copy"><strong>有节点执行失败</strong><span>可单独重试失败节点，已完成的结果会保留。</span></div>
-      <div className="ent-failed-node-list">
-        {failed.map(node => <button key={node.nodeId} type="button" className="ent-btn sm ghost" aria-label={`重试此节点：${titles.get(node.nodeId) ?? node.nodeId}`} disabled={busy} onClick={() => void onRetry(work.id, node.nodeId)}><RotateCcw size={13} aria-hidden />重试 {titles.get(node.nodeId) ?? node.nodeId}</button>)}
-      </div>
+    <section className="ent-flow-act danger ent-failure-notice ent-failed-node-actions" aria-label="失败节点操作">
+      {failed.map(node => {
+        const title = titles.get(node.nodeId) ?? node.nodeId;
+        const reason = work.status === 'failed' ? work.stopReason?.trim() || work.nextUserAction?.trim() : null;
+        return <FailureRetryRow key={node.nodeId} reason={`${title}：${reason || '节点执行失败'}`}
+          hint={`重试任务：${title}`} label={`重试此节点：${title}`} busy={busy} onRetry={() => void onRetry(work.id, node.nodeId)} />;
+      })}
     </section>
   );
+}
+
+function FailureRetryRow({ reason, hint = '重试任务', label = '重试任务', busy, onRetry }: {
+  reason: string; hint?: string; label?: string; busy: boolean; onRetry: () => void;
+}) {
+  return <div className="ent-failure-row">
+    <p className="ent-failure-reason" title={reason}>{reason}</p>
+    <IconHint label={hint} side="top">
+      <span className="ent-failure-retry-hint">
+        <button type="button" className="ent-icon-btn ent-failure-retry" aria-label={label} disabled={busy} onClick={onRetry}>
+          <RotateCcw size={15} aria-hidden />
+        </button>
+      </span>
+    </IconHint>
+  </div>;
 }
 
 function WorkActivityRow({ activity }: { activity: WorkActivity }) {

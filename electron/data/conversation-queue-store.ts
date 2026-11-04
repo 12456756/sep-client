@@ -17,7 +17,7 @@ const entrySchema = conversationQueueItemSchema.extend({
 })
 const queueSchema = z.object({
   version: z.literal(1), taskId: z.string(), owner: z.object({ memberId: z.string(), enterpriseId: z.string() }),
-  paused: z.boolean(), entries: z.array(entrySchema),
+  paused: z.boolean(), priorityInterruptRunId: z.string().optional(), entries: z.array(entrySchema),
 })
 export type ConversationQueueEntry = z.infer<typeof entrySchema>
 export type ConversationQueueRecord = z.infer<typeof queueSchema>

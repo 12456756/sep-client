@@ -1,7 +1,7 @@
 import type { ModelRequestKind, ModelRequestProgress } from '../../domain/model-request-progress'
 
 /** Maximum consecutive automatic retries; a successful SDK round resets the budget. */
-export const MAX_RUN_AUTO_RETRIES = 3
+export const MAX_RUN_AUTO_RETRIES = 5
 
 export interface PiAgentEvent {
   type: string
@@ -16,6 +16,8 @@ export interface PiAgentSession {
   readonly sessionFile: string | null
   /** Complete host-only reply for delivery validation; never forward it as an event or log field. */
   getSettledResponse?(): { text: string; stopReason?: string }
+  getContextCheckpoint?(): string | null
+  restoreContextCheckpoint?(checkpoint: string | null): Promise<void>
   prompt(text: string, options?: { images?: readonly { type: 'image'; data: string; mimeType: string }[] }): Promise<void>
   abort(): Promise<void>
   subscribe(listener: (event: PiAgentEvent) => void): () => void

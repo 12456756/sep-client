@@ -22,6 +22,14 @@ test('macOS packaging declares microphone purpose and signed audio input access'
   }
 })
 
+test('local and signed installers preserve the Skills import system protocol', () => {
+  const build = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).build
+  assert.deepEqual(build.protocols, [{ name: 'SEP Skills Import', schemes: ['sep-import'] }])
+  assert.deepEqual(createBuilderConfig(build, 'stable').protocols, build.protocols)
+  const signed = createBuilderConfig(build, 'stable', { signed: true, platform: 'darwin', env: { SEP_MAC_TEAM_ID: 'ABCDE12345', APPLE_KEYCHAIN_PROFILE: 'test-profile' } })
+  assert.deepEqual(signed.protocols, build.protocols)
+})
+
 test('local packages require ad hoc signing even with certificate discovery disabled', () => {
   const base = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).build
   for (const channel of ['beta', 'stable']) {
@@ -146,7 +154,7 @@ test('stable builder config preserves packaging settings and passes the installe
     assert.equal(run(dir, 'generate-builder-config.mjs', [channel]).status, 0)
     const path = resolve(dir, `.release/electron-builder.${channel}.json`)
     const config = JSON.parse(readFileSync(path, 'utf8'))
-    assert.deepEqual(config.publish, [{ provider: 'generic', url: `https://download.longdaosep.cn/sep-client/${channel}/`, channel: 'latest' }])
+    assert.deepEqual(config.publish, [{ provider: 'generic', url: `https://sep.longdaoec.com/sep-client/${channel}/`, channel: 'latest' }])
     assert.equal(config.directories.output, `dist/local/${channel}`)
     assert.equal(config.detectUpdateChannel, false)
     assert.equal(config.generateUpdatesFilesForAllChannels, false)

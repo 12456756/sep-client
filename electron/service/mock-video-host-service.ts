@@ -84,7 +84,7 @@ function jobView(job: LocalVideoJob): VideoJobView {
     ...((job.executionMode ?? 'mock') === 'real' ? { amountCny: job.receipt && !job.receipt.mock ? job.receipt.amountCny ?? job.quote.amount! : job.quote.amount!,
       ...(job.receipt && !job.receipt.mock ? { actualCostCny: job.receipt.actualCostCny, amountUsd: job.receipt.amountUsd ?? job.quote.amountUsd } : { amountUsd: job.quote.amountUsd }) } : {}),
     ...(job.specFailure ? { specFailure: structuredClone(job.specFailure) } : {}),
-    createdAt: job.createdAt, updatedAt: job.updatedAt, error: measured.acceptance === 'mismatched' ? 'OUTPUT_SPEC_MISMATCH' : job.error,
+    createdAt: job.createdAt, updatedAt: job.updatedAt, error: job.error === 'OUTPUT_SPEC_MISMATCH' ? null : job.error,
     ...(job.lastQueriedAt === undefined ? {} : { lastQueriedAt: job.lastQueriedAt }),
     ...(job.providerWaitMs === undefined ? {} : { providerWaitMs: job.providerWaitMs }),
     ...(job.downloadMs === undefined ? {} : { downloadMs: job.downloadMs }),
@@ -489,6 +489,11 @@ export class MockVideoHostService {
         const approve = async (details: Record<string, unknown>) => {
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+          const currentPolicy = this.options.policy ? await abortableVideo(this.options.policy(taskId), signal) : undefined
+          this.assert(scope, epoch, signal)
+          if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')
+          if (currentPolicy && (currentPolicy.preset === 'read-only' || currentPolicy.preset !== 'full-local' && !currentPolicy.allowedTools.includes(toolName))) throw new AppError('PERMISSION_DENIED')
+          if (currentPolicy?.preset === 'full-local' && currentPolicy.approvalMode === 'auto-approve') return
           const allowed = await abortableVideo((run?.requestApproval ?? this.options.requestApproval)({ taskId, runId, subscriptionId: scope.subscriptionId, toolName, input: details }), signal)
           this.assert(scope, epoch, signal)
           if (revision !== this.options.authorizationRevision()) throw new AppError('AUTH_REQUIRED')

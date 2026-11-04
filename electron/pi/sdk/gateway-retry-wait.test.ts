@@ -70,6 +70,10 @@ describe('gateway retry wait', () => {
       assert.equal(retry.schedule(), 4000)
       retry.inspect(response())
       assert.equal(retry.schedule(), 8000)
+      retry.inspect(response())
+      assert.equal(retry.schedule(), 16000)
+      retry.inspect(response())
+      assert.equal(retry.schedule(), 32000)
     }
     const retry = new GatewayRetryWait()
     retry.inspect(response({ 'retry-after-ms': '150', 'Retry-After': '5' }))

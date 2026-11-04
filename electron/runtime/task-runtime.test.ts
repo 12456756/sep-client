@@ -702,6 +702,7 @@ const PUBLIC_SIGNATURES = [
   'async switchConversationEmployee(taskId: string, subscriptionId: string): Promise<void> {',
   'async retryTask(taskId: string, options: { conversation?: boolean; nodeId?: string; inputReply?: ArrangementInputReply; signal?: AbortSignal } = {}): Promise<void> {',
   'async pauseTask(taskId: string): Promise<void> {',
+  'async interruptConversation(taskId: string, expectedRunId: string): Promise<void> {',
   'async cancelTask(taskId: string, reason?: string): Promise<void> {',
   'async stopAll(): Promise<void> {',
   'async stopArrangement(taskId: string, reason?: string): Promise<void> {',
@@ -724,7 +725,7 @@ describe('TaskRuntime public surface', () => {
     assert.deepEqual(
       declared.sort(),
       [
-        'cancelTask', 'confirmArrangementNodes', 'continueConversation', 'executeTask', 'hasConversationRun', 'pauseTask',
+        'cancelTask', 'confirmArrangementNodes', 'continueConversation', 'executeTask', 'hasConversationRun', 'interruptConversation', 'pauseTask',
         'respondToApproval', 'retryTask', 'stopAll', 'stopArrangement', 'switchConversationEmployee',
       ],
       'public method set changed: runtime must expose only the documented methods',

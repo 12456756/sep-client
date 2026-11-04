@@ -125,7 +125,7 @@ test('signed channel configs validate against installed builder schema and never
       assert.equal(config.forceCodeSigning, true)
       assert.equal(config.extraMetadata.sepUpdateMode, 'in-app')
       assert.equal(config.directories.output, `dist/${channel}`)
-      assert.equal(config.publish[0].url, `https://download.longdaosep.cn/sep-client/${channel}/`)
+      assert.equal(config.publish[0].url, `https://sep.longdaoec.com/sep-client/${channel}/`)
       assert.doesNotMatch(JSON.stringify(config), /SECRET_CERT|PRIVATE_PASSWORD|secret-value/)
     }
   }

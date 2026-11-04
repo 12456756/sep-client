@@ -11,7 +11,7 @@ export function externalUpdateDownloadUrl(channel: 'beta' | 'stable', version: s
     throw new Error('Unsupported update download')
   }
   const artifact = platform === 'darwin' ? 'mac-' + arch + '.dmg' : 'win-x64.exe'
-  return 'https://download.longdaosep.cn/sep-client/' + channel + '/' + version + '/SEP-Client-' + version + '-' + artifact
+  return 'https://sep.longdaoec.com/sep-client/' + channel + '/' + version + '/SEP-Client-' + version + '-' + artifact
 }
 
 export function supportsAppUpdates(isPackaged: boolean, platform: string, arch: string): boolean {
