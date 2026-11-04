@@ -89,6 +89,36 @@ describe('arrangement recommendation output contract', () => {
     assert.ok(JSON.stringify(example).includes('modelId'))
   })
 
+  it('requires an approved applicant to fill its assigned unresolved step', () => {
+    const approvedDraft = {
+      ...draft,
+      approvedEmployeeAssignments: [{ stepId: 'step-1', employeeId: 'employee-a', subscriptionId: 'subscription-a' }],
+    }
+    const assignedNode = {
+      id: 'node-1', stepId: 'step-1', subscriptionId: 'subscription-a', modelId: 'model-a',
+      title: '法务客户接待', objective: '完成法务客户接待', instruction: '按要求完成接待并记录结果',
+      expectedOutput: '接待记录', deliverables: [{ id: 'record', name: '接待记录', format: 'md', path: 'deliverables/record.md',
+        contentOutline: ['接待事项'], acceptanceCriteria: ['包含接待事项'] }], dependsOn: [],
+    }
+    const result = parseArrangementPlannerOutput(JSON.stringify({ title: draft.title, intentAnalysis, nodes: [assignedNode], unresolvedSteps: [], candidateMatches: [] }),
+      approvedDraft, [authorized])
+    assert.equal(result.nodes[0]?.subscriptionId, 'subscription-a')
+
+    for (const invalid of [
+      { nodes: [{ ...assignedNode, subscriptionId: 'other-subscription' }], unresolvedSteps: [] },
+      { nodes: [], unresolvedSteps },
+      { nodes: [{ ...assignedNode, stepId: 'step-renamed' }], unresolvedSteps: [] },
+      { nodes: [assignedNode, { ...assignedNode, id: 'node-2', subscriptionId: 'other-subscription' }], unresolvedSteps: [] },
+      { nodes: [assignedNode], unresolvedSteps },
+    ]) {
+      assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: draft.title, intentAnalysis, ...invalid, candidateMatches: [] }), approvedDraft, [authorized]),
+        error => (error as { details?: { reason?: string } }).details?.reason === 'approved-employee-not-assigned')
+    }
+    const prompt = buildArrangementPlannerPrompt(approvedDraft, [authorized])
+    assert.match(prompt, /"approvedEmployeeAssignments"/)
+    assert.match(prompt, /stepId=step-1 必须由 employeeId=employee-a/)
+  })
+
   it('includes confirmed input materials and constraints in every planning phase', () => {
     const confirmedInputs = ['使用 inputs/customer-brief.docx 中的要求', '预算不超过 10000 元']
     for (const employee of [authorized, { ...authorized, source: 'platform' as const, canExecute: false, allowedModels: [] }]) {
