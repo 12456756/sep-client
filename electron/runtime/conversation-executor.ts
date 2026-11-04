@@ -411,7 +411,7 @@ export class ConversationExecutor {
   ): Promise<void> {
     let outcome: TaskRunOutcome = active.control === 'cancel'
       ? 'cancelled'
-      : active.control === 'interrupt'
+      : active.control === 'interrupt' || active.control === 'priority-interrupt'
         ? 'interrupted'
         : active.control === 'pause'
           ? 'stopped'
@@ -462,6 +462,25 @@ export class ConversationExecutor {
         occurredAt: Date.now(),
         data: error ? { error } : null,
       }))
+    }
+    if (active.control === 'priority-interrupt') {
+      await persist('event-drain-before-context-rollback', () => this.options.events.drain(active.taskId))
+      if (!finalizationFailure) {
+        try {
+          if (!active.worker.discardCurrentTurnFromContext) throw new Error('The worker cannot restore its conversation checkpoint.')
+          await active.worker.discardCurrentTurnFromContext()
+        } catch (cause) {
+          outcome = 'failed'
+          error = '中断后无法恢复对话上下文，队列已暂停。'
+          finalizationFailure = cause
+          log.error('conversation context rollback failed', { taskId: active.taskId, runId: active.runId,
+            error: cause instanceof Error ? cause.message : String(cause) })
+        }
+      }
+      if (finalizationFailure) {
+        outcome = 'failed'
+        error = '中断后无法安全恢复对话上下文，队列已暂停。'
+      }
     }
     const response = this.options.events.takeResponse(active.runId)
     if (response) {

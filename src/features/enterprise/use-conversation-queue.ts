@@ -51,5 +51,18 @@ export function useConversationQueue(taskId: string, scopeKey: string) {
     } catch (error) { if (version === generation.current && notice.isCurrent()) notice.fail(error, 'workRetry') }
     finally { if (version === generation.current) { resuming.current = false; setBusy(false) } }
   }, [taskId, capture, refresh])
-  return { queue, busy, refresh, resume }
+  const prioritize = useCallback(async (entryId: string) => {
+    if (resuming.current) return
+    resuming.current = true
+    const version = generation.current, notice = capture()
+    setBusy(true)
+    try {
+      const result = await window.electronAPI.conversationQueue({ taskId, action: 'prioritize', entryId })
+      if (version !== generation.current || !notice.isCurrent()) return
+      if (!result.success) throw responseError(result, 'workRetry')
+      setQueue(conversationQueueViewSchema.parse(result.queue))
+    } catch (error) { if (version === generation.current && notice.isCurrent()) notice.fail(error, 'workRetry') }
+    finally { if (version === generation.current) { resuming.current = false; setBusy(false) } }
+  }, [taskId, capture])
+  return { queue, busy, refresh, resume, prioritize }
 }

@@ -25,6 +25,15 @@ compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => {
   assert.ok(Object.hasOwn(dependencies, id)); return dependencies[id]
 }, loaded.exports, loaded)
 const route = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.TASK_CONTINUE)!
+const queueRoute = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.CONVERSATION_QUEUE)!
+
+test('conversation queue accepts a validated priority action and rejects unrelated fields', () => {
+  assert.deepEqual(queueRoute.schema.parse({ taskId: 'task', action: 'prioritize', entryId: 'queued-message' }), {
+    taskId: 'task', action: 'prioritize', entryId: 'queued-message',
+  })
+  assert.throws(() => queueRoute.schema.parse({ taskId: 'task', action: 'prioritize', entryId: '../outside' }))
+  assert.throws(() => queueRoute.schema.parse({ taskId: 'task', action: 'prioritize', unexpected: true }))
+})
 
 for (const queued of [false, true]) test(`continue returns the backend waiting decision queued=${queued}`, async () => {
   const input = route.schema.parse({ taskId: 'task', messageId: 'message', prompt: 'follow-up', queued: !queued })

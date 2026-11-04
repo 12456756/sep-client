@@ -26,6 +26,8 @@ class FakeSession implements PiAgentSession {
   listener: ((event: { type: string; data: unknown; failure?: string }) => void) | null = null
   disposed = false
   aborted = false
+  checkpoint: string | null = 'before-turn'
+  restoredCheckpoints: Array<string | null> = []
 
   async prompt(_prompt?: string): Promise<void> {
     this.listener?.({ type: 'agent_start', data: {} })
@@ -33,6 +35,8 @@ class FakeSession implements PiAgentSession {
   }
 
   async abort(): Promise<void> { this.aborted = true }
+  getContextCheckpoint(): string | null { return this.checkpoint }
+  async restoreContextCheckpoint(checkpoint: string | null): Promise<void> { this.restoredCheckpoints.push(checkpoint) }
 
   subscribe(listener: (event: { type: string; data: unknown; failure?: string }) => void): () => void {
     this.listener = listener
@@ -68,6 +72,22 @@ function context(root: string) {
 }
 
 describe('PiTaskWorker', () => {
+  it('captures the session position before a turn and restores it when discarding an interrupted turn', async () => {
+    const runtime = new FakeRuntime()
+    const worker = new PiTaskWorker({
+      context: context(await makeDirectory()), runtime, createTokenManager: () => new FakeTokenManager(),
+      getRefreshToken: () => 'mock', onAuthenticationRequired() {}, onApprovalRequest: async () => false, onEvent() {},
+    })
+    try {
+      await worker.run('interrupted prompt')
+      runtime.session.checkpoint = 'after-turn'
+      await worker.discardCurrentTurnFromContext()
+      assert.deepEqual(runtime.session.restoredCheckpoints, ['before-turn'])
+      await worker.discardCurrentTurnFromContext()
+      assert.deepEqual(runtime.session.restoredCheckpoints, ['before-turn'])
+    } finally { await worker.dispose() }
+  })
+
   it('does not hand a failed tool batch to the host', async () => {
     const runtime = new FakeRuntime()
     let handoffs = 0

@@ -706,6 +706,16 @@ export class TaskRuntime {
     await active.completion
   }
 
+  async interruptConversation(taskId: string, expectedRunId: string): Promise<void> {
+    const active = this.workers.active(taskId)
+    if (!active || active.runId !== expectedRunId) return
+    active.control = 'priority-interrupt'
+    active.abortController?.abort()
+    this.approvals.denyRun(active.runId)
+    await Promise.all([active.worker.abort(), this.media?.stopTask(taskId), this.video?.stopTask(taskId)])
+    await active.completion
+  }
+
   async cancelTask(taskId: string, reason?: string): Promise<void> {
     this.arrangementPreparations.get(taskId)?.abort()
     const stopReason = redactText(reason?.trim() || '用户终止了这项工作')

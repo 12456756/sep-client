@@ -83,6 +83,8 @@ export class PiTaskWorker {
   private readonly onModelRequest: PiTaskWorkerOptions['onModelRequest']
   private readonly shouldYieldAfterToolTurn: PiTaskWorkerOptions['shouldYieldAfterToolTurn']
   private readonly sessionAdapter: SharedPiSession | null
+  private turnCheckpoint: string | null = null
+  private turnCheckpointCaptured = false
   private session: PiAgentSession | null = null
   private unsubscribe: (() => void) | null = null
   private active = false
@@ -269,6 +271,10 @@ export class PiTaskWorker {
         yielded = false
         yieldStop = undefined
         this.settledResponse = { text: '' }
+        if (!this.turnCheckpointCaptured) {
+          this.turnCheckpoint = session.getContextCheckpoint?.() ?? null
+          this.turnCheckpointCaptured = true
+        }
         stage = 'prompt'
         try {
           session.setRequestPurpose?.(requestPurpose)
@@ -327,6 +333,13 @@ export class PiTaskWorker {
       })
     }
     await this.session?.abort()
+  }
+
+  async discardCurrentTurnFromContext(): Promise<void> {
+    if (!this.turnCheckpointCaptured) return
+    await this.session?.restoreContextCheckpoint?.(this.turnCheckpoint)
+    this.turnCheckpoint = null
+    this.turnCheckpointCaptured = false
   }
 
   private checkCancellation(): void {
