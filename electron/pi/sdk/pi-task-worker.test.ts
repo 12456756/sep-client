@@ -10,6 +10,7 @@ import { SharedPiSession } from './pi-shared-session'
 import { setLogSink, type LogRecord } from '../../common/logger'
 import type { PiAgentRuntime, PiAgentSession, PiAgentSessionConfig } from './pi-agent-runtime'
 import { advanceModelRequestProgress, type ModelRequestProgress } from '../../domain/model-request-progress'
+import { GatewayRetryWait } from './gateway-retry-wait'
 
 const temporaryDirectories: string[] = []
 
@@ -651,9 +652,11 @@ for (const stage of ['token', 'session', 'persistence'] as const) {
 it('resets consecutive retry budget after a successful SDK round', async () => {
   const runtime = new FakeRuntime()
   runtime.session.prompt = async () => {
-    for (let index = 0; index < 4; index++) {
-      runtime.session.listener?.({ type: 'auto_retry_start', data: { attempt: 1, maxAttempts: 3, error: '503 overloaded' } })
-      runtime.session.listener?.({ type: 'auto_retry_end', data: { success: true, attempt: 1 } })
+    for (let index = 0; index < 7; index++) {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        runtime.session.listener?.({ type: 'auto_retry_start', data: { attempt, maxAttempts: 5, error: '503 overloaded' } })
+      }
+      runtime.session.listener?.({ type: 'auto_retry_end', data: { success: true, attempt: 5 } })
     }
   }
   const events: string[] = []
@@ -666,6 +669,27 @@ it('resets consecutive retry budget after a successful SDK round', async () => {
   assert.equal(runtime.session.aborted, false)
   assert.equal(events.includes('retry_budget_exhausted'), false)
   await worker.dispose()
+})
+
+it('aborts a session that exceeds five consecutive automatic retries', async () => {
+  const runtime = new FakeRuntime()
+  runtime.session.prompt = async () => {
+    for (let attempt = 1; attempt <= 6; attempt++) {
+      runtime.session.listener?.({ type: 'auto_retry_start', data: { attempt, maxAttempts: 5, error: '503 overloaded' } })
+    }
+  }
+  const events: string[] = []
+  const worker = new PiTaskWorker({
+    context: context(await makeDirectory()), getRefreshToken: () => 'refresh-token',
+    onAuthenticationRequired: () => {}, onApprovalRequest: async () => true,
+    onEvent: event => { events.push(event.type) }, runtime, createTokenManager: () => new FakeTokenManager(),
+  })
+  try {
+    await assert.rejects(worker.run('hello'), /5 次上限/)
+    assert.equal(runtime.session.aborted, true)
+    assert.equal(events.filter(type => type === 'auto_retry_start').length, 5)
+    assert.equal(events.filter(type => type === 'retry_budget_exhausted').length, 1)
+  } finally { await worker.dispose() }
 })
 
 
@@ -797,32 +821,51 @@ it('streams real SDK deltas before completion and returns denied tool results wi
   }
 })
 
-for (const { status, cancel } of [{ status: 401, cancel: false }, { status: 503, cancel: true }, { status: 503, cancel: false }]) {
-  it(`real SDK ${status}: ${status === 401 ? 'surfaces auth failure without retries' : cancel ? 'cancel interrupts retry backoff' : 'stops after three retries'}`, { timeout: 30000 }, async () => {
+for (const { status, cancel, recover } of [
+  { status: 401, cancel: false, recover: false },
+  { status: 503, cancel: true, recover: false },
+  { status: 503, cancel: false, recover: false },
+  { status: 503, cancel: false, recover: true },
+]) {
+  it(`real SDK ${status}: ${status === 401 ? 'surfaces auth failure without retries' : cancel ? 'cancel interrupts retry backoff' : recover ? 'recovers on the fifth retry' : 'stops after five retries'}`, { timeout: 30000 }, async () => {
     let requests = 0
     const server = createServer((request, response) => {
       request.resume()
       requests++
-      response.writeHead(status, { 'Content-Type': 'application/json' })
+      if (recover && requests === 6) {
+        response.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        writeChunk(response, { role: 'assistant', content: 'Recovered' }, 'stop')
+        response.end('data: [DONE]\n\n')
+        return
+      }
+      response.writeHead(status, { 'Content-Type': 'application/json', 'Retry-After': cancel ? '30' : '0' })
       response.end(JSON.stringify({ error: { message: status === 401 ? 'Unauthorized' : 'Service unavailable', type: 'test_error' } }))
     })
     await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
     const address = server.address()
     assert.ok(address && typeof address !== 'string')
     const events: string[] = []
+    const attempts: Array<{ attempt: number; maxAttempts: number }> = []
     const worker = new PiTaskWorker({
       context: { ...context(await makeDirectory()), gatewayUrl: `http://127.0.0.1:${address.port}/v1` },
       runtime: new PiCodingAgentAdapter(), createTokenManager: () => new FakeTokenManager(),
       getRefreshToken: () => 'test-refresh', onAuthenticationRequired: () => {}, onApprovalRequest: async () => false,
       onEvent: event => {
         events.push(event.type)
+        if (event.type === 'auto_retry_start') attempts.push(event.data as { attempt: number; maxAttempts: number })
         if (cancel && event.type === 'auto_retry_start') void worker.abort()
       },
     })
     try {
-      await assert.rejects(worker.run('Hello'))
-      assert.equal(requests, status === 401 || cancel ? 1 : 4)
+      if (recover) await worker.run('Hello')
+      else await assert.rejects(worker.run('Hello'))
+      assert.equal(requests, status === 401 || cancel ? 1 : 6)
       assert.equal(events.includes('auto_retry_start'), status === 503)
+      if (status === 503 && !cancel) {
+        assert.deepEqual(attempts.map(({ attempt, maxAttempts }) => [attempt, maxAttempts]), [
+          [1, 5], [2, 5], [3, 5], [4, 5], [5, 5],
+        ])
+      }
     } finally {
       await worker.dispose()
       server.closeAllConnections()
@@ -1086,7 +1129,8 @@ it('resumes the real SDK session with previous goal and successful tool results 
   }
 })
 
-it('surfaces missing finish_reason and manually resumes the saved tool result', { timeout: 30000 }, async () => {
+it('surfaces missing finish_reason and manually resumes the saved tool result', { timeout: 30000 }, async t => {
+  t.mock.method(GatewayRetryWait.prototype, 'wait', async (signal?: AbortSignal | null) => { signal?.throwIfAborted() })
   const requests: Array<{ messages: Array<Record<string, unknown>> }> = []
   const server = createServer((request, response) => {
     let body = ''
@@ -1098,7 +1142,7 @@ it('surfaces missing finish_reason and manually resumes the saved tool result', 
         writeChunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: 'saved-before-stream-error', type: 'function',
           function: { name: 'read', arguments: JSON.stringify({ path: 'retained.txt' }) } }] })
         writeChunk(response, {}, 'tool_calls')
-      } else if (requests.length <= 5) {
+      } else if (requests.length <= 7) {
         writeChunk(response, { role: 'assistant', content: 'incomplete streamed answer' })
         // DONE without a terminal finish_reason reproduces the observed failure.
       } else {
@@ -1131,8 +1175,8 @@ it('surfaces missing finish_reason and manually resumes the saved tool result', 
       else await promise
       await worker.dispose()
     }
-    assert.equal(requests.length, 6)
-    const messages = requests[5]!.messages
+    assert.equal(requests.length, 8)
+    const messages = requests[7]!.messages
     assert.equal(messages.filter(message => message.role === 'user' && String(message.content).includes('Unique original stream goal.')).length, 1)
     assert.equal(messages.filter(message => message.tool_call_id === 'saved-before-stream-error').length, 1)
     assert.match(String(messages.find(message => message.tool_call_id === 'saved-before-stream-error')?.content), /retained result after stream failure/)

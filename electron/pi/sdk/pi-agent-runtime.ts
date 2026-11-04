@@ -1,7 +1,7 @@
 import type { ModelRequestKind, ModelRequestProgress } from '../../domain/model-request-progress'
 
 /** Maximum consecutive automatic retries; a successful SDK round resets the budget. */
-export const MAX_RUN_AUTO_RETRIES = 3
+export const MAX_RUN_AUTO_RETRIES = 5
 
 export interface PiAgentEvent {
   type: string
