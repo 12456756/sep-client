@@ -11,6 +11,8 @@ import type { InputSnapshotRef } from '../../src/shared/attachment-contracts'
 import { ToolApprovals } from './run-approvals'
 import { PiTaskWorker, type PiTaskWorkerOptions } from '../pi/sdk/pi-task-worker'
 import { TaskRunStore, type TaskRunStorePort } from '../data/task-run-store'
+import { ConversationArtifactStore } from '../data/conversation-artifact-store'
+import type { ConversationArtifactStorePort } from '../domain/conversation-artifacts'
 import type { TaskManager } from './task-manager'
 import { WorkspaceLockManager } from './workspace-lock-manager'
 import { ConversationExecutor } from './conversation-executor'
@@ -90,6 +92,7 @@ export interface TaskRuntimeOptions {
   authorizeModel?: (modelId: string, preferredSubscriptionId?: string) => Promise<EmployeeRuntimeConfig | null>
   createWorker?: (options: PiTaskWorkerOptions) => TaskWorkerPort
   taskRunStore?: TaskRunStorePort
+  conversationArtifactStore?: ConversationArtifactStorePort
   userDataDir?: string
   getTaskWorkspaceRoot?: () => string
   workPlanStore?: WorkPlanStorePort
@@ -217,6 +220,7 @@ export class TaskRuntime {
     this.conversationExecutor = new ConversationExecutor({
       taskManager: this.taskManager,
       taskRunStore: this.taskRunStore,
+      conversationArtifacts: options.conversationArtifactStore ?? new ConversationArtifactStore(),
       workPlanStore: this.workPlanStore,
       createWorker: this.createWorker,
       getRefreshToken: this.getRefreshToken,
