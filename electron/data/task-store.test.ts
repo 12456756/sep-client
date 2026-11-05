@@ -46,6 +46,20 @@ afterEach(async () => {
 })
 
 describe('TaskStore', () => {
+  it('deduplicates historical file paths by workspace location while preserving distinct files', async () => {
+    const userData = await makeUserDataDir()
+    const store = new TaskStore(userData)
+    await store.initialize()
+    const scope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
+    const original = task(scope, 'artifacts')
+    original.workDir = join(userData, 'workspace')
+    const absolute = join(original.workDir, 'out', 'report.md')
+    original.files = [absolute, 'out/report.md', './out/../out/report.md', 'other/report.md']
+    await store.save(scope, [original])
+    const [loaded] = await store.load(scope)
+    assert.deepEqual(loaded?.files, [absolute, 'other/report.md'])
+  })
+
   it('persists start failure health and queue time across reloads', async () => {
     const userData = await makeUserDataDir()
     const store = new TaskStore(userData)
