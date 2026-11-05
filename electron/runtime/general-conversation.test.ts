@@ -90,6 +90,8 @@ test('general chat preserves selected model, permissions and history across turn
           taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
           sequence: 0, occurredAt: Date.now(), type, data,
         })
+        await emit('tool_execution_start', { toolId: 'report-write', toolName: 'write', input: { path: join(artifactDir, 'report.md') } })
+        await emit('tool_execution_end', { toolId: 'report-write', toolName: 'write', success: true })
         await emit('text_delta', { text: 'I will generate a square image.' })
         await emit('tool_execution_start', { toolId: 'image-tool', toolName: 'media_generate_image' })
         await emit('tool_execution_end', { toolId: 'image-tool', toolName: 'media_generate_image', success: true })
@@ -126,7 +128,7 @@ test('general chat preserves selected model, permissions and history across turn
     await settle(task.id)
     assert.equal(contexts.length, 3)
     assert.deepEqual(contexts.map(context => context.vision), [false, true, null])
-    assert.deepEqual((await manager.getTask(task.id))?.files, [`成果/${task.id}/report.md`])
+    assert.deepEqual((await manager.getTask(task.id))?.files, [join(task.workDir!, '成果', task.id, 'report.md')])
     for (const context of contexts) {
       assert.equal(context.modelId, 'selected')
       assert.equal(context.employeeProfile, undefined)

@@ -9,6 +9,7 @@ import type {
 } from '../../src/shared/types'
 import { TaskStatus } from '../../src/shared/types'
 import { TaskPersistenceError, TaskStore, type TaskStorePort } from '../data/task-store'
+import { taskFileKey } from '../data/task-file-path'
 import { ScopePath, TaskScopeError, assertSafeId, type TaskOwnerScope, type WorkspaceDirectoryNames } from '../data/scope-path'
 import { WorkspaceDirectoryStore } from '../data/workspace-directory-store'
 import { DefaultWorkspaceSettingsStore } from '../data/default-workspace-settings-store'
@@ -595,7 +596,9 @@ export class TaskManager {
     await this.commit(nextTasks => {
       const nextTask = nextTasks.get(taskId)
       // C9：去重判断必须与写入同处一个闭包，否则并发两次同名文件都会被追加。
-      if (!nextTask || nextTask.files.includes(filePath)) return
+      if (!nextTask) return
+      const key = taskFileKey(nextTask.workDir, filePath)
+      if (nextTask.files.some(file => taskFileKey(nextTask.workDir, file) === key)) return
       nextTask.files.push(filePath)
       nextTask.logs.push({ timestamp: Date.now(), message: `生成文件: ${filePath}`, level: 'info' })
       changed = true

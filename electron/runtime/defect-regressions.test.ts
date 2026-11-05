@@ -524,8 +524,8 @@ describe('C9 — check-then-commit 会歪曲错误码，并留下竞态窗口', 
 
     await Promise.all([
       manager.addTaskFile(task.id, 'out/report.md'),
-      manager.addTaskFile(task.id, 'out/report.md'),
-      manager.addTaskFile(task.id, 'out/report.md'),
+      manager.addTaskFile(task.id, join(task.workDir!, 'out', 'report.md')),
+      manager.addTaskFile(task.id, './out/../out/report.md'),
     ])
 
     const stored = await manager.getTask(task.id)
