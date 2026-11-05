@@ -848,7 +848,7 @@ describe('approved skill artifact authorization', () => {
     assert.equal(preparations, 0)
   })
 
-  it('explains a blocked oversized package before attempting skill IO', async () => {
+  it('rejects the retired client-limit blocked reason before attempting skill IO', async () => {
     const manifest = artifactManifest()
     const skill = manifest.runtime.skills[0]!
     const blockedManifest = { ...manifest, runtime: { ...manifest.runtime, skills: [{ ...skill, artifact: {
@@ -860,8 +860,24 @@ describe('approved skill artifact authorization', () => {
       preparations++
       return { skillPaths: [], skills: [] }
     })
-    await assert.rejects(authorizer.authorize('sub-a'), /fileCount 821 exceeds 500/)
+    await assert.rejects(authorizer.authorize('sub-a'), /Invalid employee runtime manifest/)
     assert.equal(preparations, 0)
+  })
+
+  it('authorizes large available package descriptors without size or file-count caps', async () => {
+    const manifest = artifactManifest()
+    const artifact = manifest.runtime.skills[0]!.artifact
+    artifact.format = 'zip'
+    artifact.byteLength = 20 * 1024 * 1024 + 1
+    artifact.fileCount = 821
+    const actual = approvedPreparedSkill(manifest)
+    let preparations = 0
+    const authorizer = artifactAuthorizer(manifest, async () => {
+      preparations++
+      return { skillPaths: [actual.path], skills: [actual] }
+    })
+    assert.ok(await authorizer.authorize('sub-a'))
+    assert.equal(preparations, 1)
   })
 
   it('preserves protocol negotiation for employees without skills and never downgrades a failed download', async () => {

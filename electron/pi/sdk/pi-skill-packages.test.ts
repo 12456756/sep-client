@@ -521,6 +521,35 @@ describe('SkillStore', () => {
     assert.equal(downloads(), 1)
   })
 
+  it('installs and reuses ZIP packages larger than 20 MiB with more than 500 files', async t => {
+    const content = '---\nname: orders\ndescription: Approved order operations\n---\n# Approved\n'
+    const largeAttachment = Buffer.alloc(20 * 1024 * 1024 + 1, 0x61)
+    const files = [
+      { path: 'orders/SKILL.md', bytes: Buffer.from(content) },
+      { path: 'orders/assets/large.bin', bytes: largeAttachment },
+      ...Array.from({ length: 501 }, (_, index) => ({ path: `orders/files/${index}.txt`, bytes: Buffer.from(`file ${index}`) })),
+    ]
+    const bytes = zipFixture(files)
+    const runtime = { ...artifactFixture(content), artifact: { ...zipDescriptor(bytes, files, 'orders/SKILL.md'), installationDirectory: 'orders' } }
+    assert.ok(bytes.length > 20 * 1024 * 1024)
+    assert.ok(runtime.artifact.fileCount > 500)
+    const downloads = serveArtifact(runtime, { bytes })
+    const { skills, runtimeRoot } = await createStore()
+    const root = join(runtimeRoot, '..')
+    t.after(() => rm(root, { recursive: true, force: true }))
+
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+    const skillPath = prepared.skillPaths[0]!
+    assert.equal((await readFile(join(skillPath, 'assets/large.bin'))).length, largeAttachment.length)
+    assert.equal((JSON.parse(await readFile(join(skillPath, packageManifestName), 'utf8')) as { files: unknown[] }).files.length, files.length)
+    assert.equal((await readdir(join(skillPath, 'files'))).length, 501)
+    assert.equal(downloads(), 1)
+
+    const reused = await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+    assert.equal(reused.skillPaths[0], skillPath)
+    assert.equal(downloads(), 1)
+  })
+
   it('installs the entire ZIP atomically, preserves approved entry hash and checks attachments on reload and reuse', async () => {
     const content = '\uFEFF\n\n---\r\nname: 订单-处理\r\ndescription: Approved operations\r\ndisable-model-invocation: true\r\nmetadata: {version: 1}\r\n---\r\nRead [guide](references/guide.md).\r\n'
     const files = [{ path: '订单-处理/SKILL.md', bytes: Buffer.from(content) }, { path: '订单-处理/references/guide.md', bytes: Buffer.from('Complete guide') }, { path: '订单-处理/assets/icon.bin', bytes: Buffer.from([0, 255, 1]) }, { path: '订单-处理/output/empty/', bytes: Buffer.alloc(0) }]

@@ -1,6 +1,5 @@
 import { z } from 'zod'
-import { skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactDownloadPath, skillArtifactNameSchema,
-  maxSkillArtifactBytes, maxSkillArtifactFiles } from './skill-artifact-contract'
+import { skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactDownloadPath, skillArtifactNameSchema } from './skill-artifact-contract'
 import { optionalVideoRuntimeSchema, videoRuntimeSnapshotSchema } from './video-runtime-contract'
 
 const identifier = z.string().min(1).max(128)
@@ -93,7 +92,7 @@ export const employeeRuntimeSnapshotSchema = z.object({
 
 export type EmployeeRuntimeSnapshot = z.infer<typeof employeeRuntimeSnapshotSchema>
 
-function clientArtifactLimitIssues(value: unknown, issues: readonly { path: PropertyKey[] }[]): string[] {
+function clientArtifactNumericIssues(value: unknown, issues: readonly { path: PropertyKey[] }[]): string[] {
   if (!value || typeof value !== 'object') return []
   const runtime = (value as { runtime?: { skills?: unknown } }).runtime
   if (!runtime || !Array.isArray(runtime.skills)) return []
@@ -107,19 +106,19 @@ function clientArtifactLimitIssues(value: unknown, issues: readonly { path: Prop
     if (!skill || typeof skill !== 'object') return []
     const artifact = (skill as { artifact?: Record<string, unknown> }).artifact
     const actual = artifact?.[field]
-    const maximum = field === 'byteLength' ? maxSkillArtifactBytes : maxSkillArtifactFiles
+    const maximum = Number.MAX_SAFE_INTEGER
     if (typeof actual !== 'number' || !Number.isFinite(actual) || actual <= maximum) return []
     const path = `runtime.skills[${index}].artifact.${field}`
-    return [`${path}=${actual} exceeds client limit ${maximum}`]
+    return [`${path}=${actual} exceeds the maximum safe integer ${maximum}`]
   })
 }
 
 export function parseEmployeeRuntimeManifest(value: unknown): EmployeeRuntimeManifest {
   const result = employeeRuntimeManifestSchema.safeParse(value)
   if (!result.success) {
-    const limitIssues = clientArtifactLimitIssues(value, result.error.issues)
-    throw new Error(limitIssues.length
-      ? `Invalid employee runtime manifest: ${limitIssues.join('; ')}.`
+    const numericIssues = clientArtifactNumericIssues(value, result.error.issues)
+    throw new Error(numericIssues.length
+      ? `Invalid employee runtime manifest: ${numericIssues.join('; ')}.`
       : 'Invalid employee runtime manifest.')
   }
   return result.data

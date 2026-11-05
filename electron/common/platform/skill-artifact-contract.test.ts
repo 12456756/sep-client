@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict'
 import {
   skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactBlockedSchema,
   skillArtifactBlockedReasonSchema, skillArtifactFrontmatterSchema, skillArtifactParamsSchema,
-  maxSkillArtifactBytes, maxSkillArtifactFiles, skillArtifactNameSchema, skillNameComparisonKey,
+  skillArtifactNameSchema, skillNameComparisonKey,
 } from './skill-artifact-contract'
 
 const available = {
@@ -21,9 +21,7 @@ describe('SEP skill artifact descriptor schema parity', () => {
       assert.deepEqual(skillArtifactSchema.parse({ ...available, format }), { ...available, format })
     }
     for (const reason of skillArtifactBlockedReasonSchema.options) {
-      const descriptor = reason === 'CLIENT_LIMIT_EXCEEDED'
-        ? { ...blocked, reason, fileCount: maxSkillArtifactFiles + 1 }
-        : { ...blocked, reason }
+      const descriptor = { ...blocked, reason }
       assert.deepEqual(skillArtifactSchema.parse(descriptor), descriptor)
     }
     assert.equal(skillArtifactAvailableSchema.safeParse(blocked).success, false)
@@ -47,7 +45,7 @@ describe('SEP skill artifact descriptor schema parity', () => {
       assert.equal(skillArtifactSchema.safeParse({ ...blocked, [key]: available[key as keyof typeof available] }).success, false)
     }
     assert.equal(skillArtifactSchema.safeParse({ ...blocked, fileCount: 501 }).success, false)
-    assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'CLIENT_LIMIT_EXCEEDED', fileCount: 501 }).success, true)
+    assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'CLIENT_LIMIT_EXCEEDED', fileCount: 501 }).success, false)
     assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'CLIENT_LIMIT_EXCEEDED' }).success, false)
     assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'UNKNOWN' }).success, false)
   })
@@ -61,13 +59,15 @@ describe('SEP skill artifact descriptor schema parity', () => {
       { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: Number.MAX_SAFE_INTEGER + 1 },
       { fileCount: 0 }, { fileCount: -1 }, { fileCount: 1.5 }, { fileCount: '501' }, { fileCount: Number.MAX_SAFE_INTEGER + 1 },
     ]) assert.equal(skillArtifactSchema.safeParse({ ...available, ...override }).success, false, JSON.stringify(override))
-    assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: maxSkillArtifactBytes + 1, fileCount: maxSkillArtifactFiles + 1,
+    assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: 20 * 1024 * 1024 + 1, fileCount: 501,
       installationDirectory: 'a'.repeat(64) }).success, true)
   })
 
-  it('accepts file counts above the former client limit', () => {
-    for (const fileCount of [501, 10_000, Number.MAX_SAFE_INTEGER]) {
-      assert.equal(skillArtifactSchema.safeParse({ ...available, format: 'zip', fileCount }).success, true)
+  it('accepts size and file counts above the former client limits', () => {
+    for (const field of ['byteLength', 'fileCount']) {
+      for (const value of [501, 10_001, 100 * 1024 * 1024 + 1, Number.MAX_SAFE_INTEGER]) {
+        assert.equal(skillArtifactSchema.safeParse({ ...available, format: 'zip', [field]: value }).success, true)
+      }
     }
   })
 

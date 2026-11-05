@@ -1,10 +1,6 @@
 import { z } from 'zod'
 
 export const skillArtifactProtocolVersion = 1 as const
-export const maxSkillArtifactBytes = 20 * 1024 * 1024
-export const maxSkillArtifactFiles = 500
-const maxBlockedArtifactBytes = 100 * 1024 * 1024
-const maxBlockedArtifactFiles = 10000
 export const skillArtifactSha256Schema = z.string().regex(/^[0-9a-f]{64}$/)
 const safeName = /^[\p{L}\p{N}]+(?:(?:-|\p{Zs}+)[\p{L}\p{N}]+)*$/u
 export function isSafeSkillPathComponent(value: string): boolean {
@@ -41,7 +37,7 @@ const identity = {
 }
 
 export const skillArtifactBlockedReasonSchema = z.enum([
-  'INVALID_ENTRY', 'PACKAGE_REQUIRED', 'PACKAGE_UNAVAILABLE', 'PACKAGE_CONTENT_MISMATCH', 'CLIENT_LIMIT_EXCEEDED',
+  'INVALID_ENTRY', 'PACKAGE_REQUIRED', 'PACKAGE_UNAVAILABLE', 'PACKAGE_CONTENT_MISMATCH',
 ])
 
 // Keep descriptor validation aligned with SEP shared/client-skill-artifact.dto.ts.
@@ -66,16 +62,7 @@ export const skillArtifactBlockedSchema = z.object({
   ...identity,
   status: z.literal('BLOCKED'),
   reason: skillArtifactBlockedReasonSchema,
-  byteLength: z.number().int().positive().max(maxBlockedArtifactBytes).optional(),
-  fileCount: z.number().int().positive().max(maxBlockedArtifactFiles).optional(),
-}).strict().superRefine((artifact, ctx) => {
-  const hasMetadata = artifact.byteLength !== undefined || artifact.fileCount !== undefined
-  const exceedsClientLimit = (artifact.byteLength ?? 0) > maxSkillArtifactBytes
-    || (artifact.fileCount ?? 0) > maxSkillArtifactFiles
-  if (artifact.reason === 'CLIENT_LIMIT_EXCEEDED' ? !exceedsClientLimit : hasMetadata) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'Blocked artifact metadata does not match its reason.' })
-  }
-})
+}).strict()
 
 export const skillArtifactSchema = z.discriminatedUnion('status', [
   skillArtifactAvailableSchema, skillArtifactBlockedSchema,
