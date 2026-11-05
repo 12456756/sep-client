@@ -32,6 +32,15 @@ async function flush(): Promise<void> {
 }
 
 describe('skill artifact rate limit recovery', () => {
+  it('does not impose a fixed skill download deadline and preserves caller cancellation', async t => {
+    t.mock.method(AbortSignal, 'timeout', () => { throw new Error('Unexpected fixed download timeout') })
+    const controller = new AbortController()
+    globalThis.fetch = async (_url, init) => {
+      assert.equal(init?.signal, controller.signal)
+      return new Response(bytes, { headers: headers() })
+    }
+    assert.deepEqual(await downloadSkillArtifact('sub-1', artifact, 'access', { signal: controller.signal }), bytes)
+  })
   it('waits for Retry-After and releases the rejected body before requesting the same artifact', async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
     let calls = 0
@@ -167,7 +176,7 @@ describe('skill artifact authenticated download', () => {
       assert.deepEqual([...new Headers(init?.headers)], [['authorization', 'Bearer ordinary-access']])
       assert.equal(init?.credentials, 'omit')
       assert.equal(init?.redirect, 'error')
-      assert.ok(init?.signal instanceof AbortSignal)
+      assert.equal(init?.signal, undefined)
       return new Response(bytes, { headers: headers() })
     }
     const result = await downloadSkillArtifact('sub-1', artifact, 'ordinary-access')

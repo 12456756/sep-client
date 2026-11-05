@@ -3,7 +3,6 @@ import { Readable } from 'node:stream'
 import { z } from 'zod'
 
 const SMALL_RESPONSE_BYTES = 1024 * 1024
-const CONTENT_RESPONSE_BYTES = 16 * SMALL_RESPONSE_BYTES
 const httpErrorSchema = z.object({ code: z.string().max(96).optional(), retryable: z.boolean().optional() }).passthrough()
 
 export class SkillImportApiError extends Error {
@@ -31,8 +30,8 @@ export class SkillImportApi {
 
   async request<T>(method: 'GET' | 'POST' | 'DELETE', route: string, schema: z.ZodType<T>, options: ImportHttpOptions): Promise<T> {
     const body = options.body === undefined ? undefined : JSON.stringify(options.body)
-    if (body && Buffer.byteLength(body) > (options.contentResponse ? CONTENT_RESPONSE_BYTES : SMALL_RESPONSE_BYTES)) throw new SkillImportApiError('REQUEST_BODY_TOO_LARGE')
-    return this.send(method, route, schema, { ...options, body }, 20_000)
+    if (body && !options.contentResponse && Buffer.byteLength(body) > SMALL_RESPONSE_BYTES) throw new SkillImportApiError('REQUEST_BODY_TOO_LARGE')
+    return this.send(method, route, schema, { ...options, body }, options.contentResponse ? undefined : 20_000)
   }
 
   async upload<T>(sessionId: string, operationId: string, token: string,
@@ -59,18 +58,18 @@ export class SkillImportApi {
       return await this.send('POST', `sessions/${sessionId}/package?operationId=${operationId}`, schema, {
         token, signal, body: stream as unknown as RequestInit['body'], contentResponse: true,
         headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': String(head.length + pkg.bytes + tail.length) },
-      }, 5 * 60_000)
+      })
     } finally { stream.destroy() }
   }
 
   private async send<T>(method: string, route: string, schema: z.ZodType<T>,
-    options: Omit<ImportHttpOptions, 'body'> & { body?: RequestInit['body']; headers?: Record<string, string> }, timeoutMs: number): Promise<T> {
+    options: Omit<ImportHttpOptions, 'body'> & { body?: RequestInit['body']; headers?: Record<string, string> }, timeoutMs?: number): Promise<T> {
     if (!/^[A-Za-z0-9_/?=&-]+$/.test(route) || route.startsWith('/') || route.includes('..')) throw new SkillImportApiError('INVALID_ARGUMENT')
     const controller = new AbortController()
     const abort = () => controller.abort(options.signal.reason)
     options.signal.addEventListener('abort', abort, { once: true })
-    const timer = setTimeout(() => controller.abort(new SkillImportApiError('NETWORK_TIMEOUT', 0, true)), timeoutMs)
-    timer.unref?.()
+    const timer = timeoutMs === undefined ? undefined : setTimeout(() => controller.abort(new SkillImportApiError('NETWORK_TIMEOUT', 0, true)), timeoutMs)
+    timer?.unref?.()
     try {
       options.signal.throwIfAborted()
       const init: RequestInit & { duplex?: 'half' } = {
@@ -81,7 +80,7 @@ export class SkillImportApi {
         ...(options.body instanceof Readable ? { duplex: 'half' as const } : {}),
       }
       const response = await this.fetcher(this.base + route, init)
-      const limit = response.ok && options.contentResponse ? CONTENT_RESPONSE_BYTES : SMALL_RESPONSE_BYTES
+      const limit = response.ok && options.contentResponse ? Infinity : SMALL_RESPONSE_BYTES
       const declaredBytes = Number(response.headers.get('content-length') ?? 0)
       if (declaredBytes > limit) { await response.body?.cancel(); throw new SkillImportApiError('RESPONSE_TOO_LARGE') }
       const reader = response.body?.getReader()

@@ -10,7 +10,7 @@ export function isSafeSkillPathComponent(value: string): boolean {
     && !/[ .]$/.test(part) && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))
 }
 export const skillArtifactNameSchema = z.string().refine(value =>
-  Array.from(value).length >= 1 && Array.from(value).length <= 64 && safeName.test(value)
+  value.length > 0 && safeName.test(value)
   && safeName.test(value.normalize('NFKC'))
   && isSafeSkillPathComponent(value), 'Invalid skill name.')
 
@@ -23,7 +23,7 @@ export const skillArtifactFrontmatterSchema = z.object({
   name: skillArtifactNameSchema,
   description: z.string().min(1).refine(value => value.trim().length > 0),
   license: z.string().optional(),
-  compatibility: z.string().min(1).max(500).optional(),
+  compatibility: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   'allowed-tools': z.string().optional(),
   'disable-model-invocation': z.boolean().optional(),
@@ -46,7 +46,7 @@ export const skillArtifactAvailableSchema = z.object({
   status: z.literal('AVAILABLE'),
   format: z.enum(['single-file', 'zip']),
   installationDirectory: skillArtifactNameSchema,
-  entryPath: z.string().max(1024).refine(value => {
+  entryPath: z.string().refine(value => {
     const parts = value.split('/')
     return parts.at(-1) === 'SKILL.md'
       && parts.every(isSafeSkillPathComponent)

@@ -55,12 +55,12 @@ describe('SEP skill artifact descriptor schema parity', () => {
       { protocolVersion: 2 }, { status: 'UNKNOWN' }, { format: 'tar' },
       { approvedContentSha256: 'bad' }, { entrySha256: 'A'.repeat(64) }, { artifactSha256: 'a'.repeat(63) },
       { installationDirectory: '' }, { installationDirectory: 'Bad_Name' }, { installationDirectory: '../skill' },
-      { installationDirectory: 'a'.repeat(65) }, { installationDirectory: 'a--b' },
+      { installationDirectory: 'a--b' },
       { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: Number.MAX_SAFE_INTEGER + 1 },
       { fileCount: 0 }, { fileCount: -1 }, { fileCount: 1.5 }, { fileCount: '501' }, { fileCount: Number.MAX_SAFE_INTEGER + 1 },
     ]) assert.equal(skillArtifactSchema.safeParse({ ...available, ...override }).success, false, JSON.stringify(override))
     assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: 20 * 1024 * 1024 + 1, fileCount: 501,
-      installationDirectory: 'a'.repeat(64) }).success, true)
+      installationDirectory: 'a'.repeat(65) }).success, true)
   })
 
   it('accepts size and file counts above the former client limits', () => {
@@ -79,7 +79,7 @@ describe('SEP skill artifact descriptor schema parity', () => {
       'a/./SKILL.md', 'a//SKILL.md', 'a\\SKILL.md', 'C:/SKILL.md', 'a\0/SKILL.md', 'a\n/SKILL.md',
       'a\x7f/SKILL.md', 'CON.txt/SKILL.md', 'COM¹/SKILL.md', 'ＣＯＭ１.txt/SKILL.md', 'nul/SKILL.md',
       'a./SKILL.md', 'a /SKILL.md', 'a?/SKILL.md', 'a|/SKILL.md', 'a＜/SKILL.md',
-      'skill.md', 'NOTSKILL.md', 'SKILL.md/', `${'a'.repeat(1020)}/SKILL.md`]) {
+      'skill.md', 'NOTSKILL.md', 'SKILL.md/']) {
       assert.equal(skillArtifactSchema.safeParse({ ...available, entryPath }).success, false, entryPath)
     }
   })
@@ -124,8 +124,8 @@ describe('SEP skill artifact descriptor schema parity', () => {
   })
 
   it('accepts Unicode letters and numbers without rewriting names and compares only using NFKC', () => {
-    for (const name of ['订单-处理', 'Orders', 'ＡＢＣ-１２３', '𠀀'.repeat(64), 'CRM 标签体系', 'SKU 生命周期管理', '电商 SOP 编排', 'CRM  标签', 'CRM\u00a0标签', 'CRM\u3000\u2002标签']) assert.equal(skillArtifactNameSchema.parse(name), name)
-    for (const name of ['中'.repeat(65), '𠀀'.repeat(65), 'a--b', '-中', '中-', '../中', 'a_b', 'a\u200db', '½', 'a\u0301', ' CRM', 'CRM ', 'CRM\t标签', 'CRM\n标签', 'CRM\u2028标签', 'CRM -标签', 'CON', 'ｎｕｌ', 'COM1', 'COM¹', 'ＣＯＭ１', 'lpt9']) assert.equal(skillArtifactNameSchema.safeParse(name).success, false, name)
+    for (const name of ['中'.repeat(65), '𠀀'.repeat(65), '订单-处理', 'Orders', 'ＡＢＣ-１２３', '𠀀'.repeat(64), 'CRM 标签体系', 'SKU 生命周期管理', '电商 SOP 编排', 'CRM  标签', 'CRM\u00a0标签', 'CRM\u3000\u2002标签']) assert.equal(skillArtifactNameSchema.parse(name), name)
+    for (const name of ['a--b', '-中', '中-', '../中', 'a_b', 'a\u200db', '½', 'a\u0301', ' CRM', 'CRM ', 'CRM\t标签', 'CRM\n标签', 'CRM\u2028标签', 'CRM -标签', 'CON', 'ｎｕｌ', 'COM1', 'COM¹', 'ＣＯＭ１', 'lpt9']) assert.equal(skillArtifactNameSchema.safeParse(name).success, false, name)
     assert.equal(skillNameComparisonKey('ＡＢＣ'), skillNameComparisonKey('abc'))
   })
 })

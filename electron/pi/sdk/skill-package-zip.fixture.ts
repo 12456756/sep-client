@@ -1,8 +1,9 @@
 import { deflateRawSync } from 'node:zlib'
 import type { SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 import { packageCrc32, packageSha256, type SkillPackageFile } from './skill-package-zip'
+import { skillZipEnd } from '../../common/skill-zip-format'
 
-export function zipFixture(files: readonly SkillPackageFile[], options: { deflate?: boolean; descriptor?: boolean; mode?: number } = {}): Buffer {
+export function zipFixture(files: readonly SkillPackageFile[], options: { deflate?: boolean; descriptor?: boolean; mode?: number; zip64?: boolean } = {}): Buffer {
   const locals: Buffer[] = []
   const centrals: Buffer[] = []
   let offset = 0
@@ -24,12 +25,20 @@ export function zipFixture(files: readonly SkillPackageFile[], options: { deflat
       local.writeUInt32LE(file.bytes.length, 22)
     }
     local.writeUInt16LE(name.length, 26)
-    const descriptor = Buffer.alloc(flags & 8 ? 16 : 0)
+    const localExtra = Buffer.alloc(options.zip64 ? 20 : 0)
+    if (options.zip64) {
+      local.writeUInt16LE(45, 4); local.writeUInt32LE(0xffffffff, 18); local.writeUInt32LE(0xffffffff, 22)
+      local.writeUInt16LE(20, 28)
+      localExtra.writeUInt16LE(1); localExtra.writeUInt16LE(16, 2)
+      localExtra.writeBigUInt64LE(BigInt(file.bytes.length), 4); localExtra.writeBigUInt64LE(BigInt(compressed.length), 12)
+    }
+    const descriptor = Buffer.alloc(flags & 8 ? (options.zip64 ? 24 : 16) : 0)
     if (flags & 8) {
       descriptor.writeUInt32LE(0x08074b50, 0)
       descriptor.writeUInt32LE(crc, 4)
-      descriptor.writeUInt32LE(compressed.length, 8)
-      descriptor.writeUInt32LE(file.bytes.length, 12)
+      if (options.zip64) {
+        descriptor.writeBigUInt64LE(BigInt(compressed.length), 8); descriptor.writeBigUInt64LE(BigInt(file.bytes.length), 16)
+      } else { descriptor.writeUInt32LE(compressed.length, 8); descriptor.writeUInt32LE(file.bytes.length, 12) }
     }
     const central = Buffer.alloc(46)
     central.writeUInt32LE(0x02014b50, 0)
@@ -43,18 +52,22 @@ export function zipFixture(files: readonly SkillPackageFile[], options: { deflat
     central.writeUInt16LE(name.length, 28)
     central.writeUInt32LE(((options.mode ?? (directory ? 0x41c0 : 0x8180)) << 16) >>> 0, 38)
     central.writeUInt32LE(offset, 42)
-    const record = Buffer.concat([local, name, compressed, descriptor])
+    const centralExtra = Buffer.alloc(options.zip64 ? 28 : 0)
+    if (options.zip64) {
+      central.writeUInt16LE(45, 6); central.writeUInt32LE(0xffffffff, 20); central.writeUInt32LE(0xffffffff, 24)
+      central.writeUInt32LE(0xffffffff, 42); central.writeUInt16LE(28, 30)
+      centralExtra.writeUInt16LE(1); centralExtra.writeUInt16LE(24, 2)
+      centralExtra.writeBigUInt64LE(BigInt(file.bytes.length), 4)
+      centralExtra.writeBigUInt64LE(BigInt(compressed.length), 12)
+      centralExtra.writeBigUInt64LE(BigInt(offset), 20)
+    }
+    const record = Buffer.concat([local, name, localExtra, compressed, descriptor])
     locals.push(record)
-    centrals.push(Buffer.concat([central, name]))
+    centrals.push(Buffer.concat([central, name, centralExtra]))
     offset += record.length
   }
   const centralBytes = Buffer.concat(centrals)
-  const end = Buffer.alloc(22)
-  end.writeUInt32LE(0x06054b50, 0)
-  end.writeUInt16LE(files.length, 8)
-  end.writeUInt16LE(files.length, 10)
-  end.writeUInt32LE(centralBytes.length, 12)
-  end.writeUInt32LE(offset, 16)
+  const end = skillZipEnd(files.length, centralBytes.length, offset)
   return Buffer.concat([...locals, centralBytes, end])
 }
 

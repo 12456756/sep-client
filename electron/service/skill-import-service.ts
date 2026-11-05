@@ -349,7 +349,7 @@ export class SkillImportService {
         }
         case 'preview': {
           this.publish({ phase: 'previewing', error: null })
-          const signal = AbortSignal.any([current.controller.signal, AbortSignal.timeout(SKILL_IMPORT_LIMITS.previewMs)])
+          const signal = current.controller.signal
           const preview = await this.options.files.preview({ ...(command.payload as { requestId: string; candidateId: string; revision: number }),
             expiresAt: new Date(Math.min(current.deadline, current.idleDeadline, this.now() + SKILL_IMPORT_LIMITS.pairingMs)).toISOString() }, signal)
           const files = preview.files

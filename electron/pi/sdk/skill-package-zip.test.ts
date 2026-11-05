@@ -5,11 +5,76 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { packageCrc32, packageSha256, readSkillZip, packageCache, packageManifestName, verifyPackageCache, type SkillPackageFile } from './skill-package-zip'
 import { zipFixture, zipDescriptor } from './skill-package-zip.fixture'
+import { skillZipEnd } from '../../common/skill-zip-format'
 
 const entry = { path: 'SKILL.md', bytes: Buffer.from('---\nname: orders\ndescription: Orders\n---\n# Work') }
 const guide = { path: 'references/guide.md', bytes: Buffer.from('Guide') }
 
 describe('authenticated ZIP reader', () => {
+  it('reads ZIP64 entry sizes and offsets with store, deflate and data descriptors', () => {
+    const files = [entry, guide]
+    for (const deflate of [false, true]) for (const descriptor of [false, true]) {
+      const bytes = zipFixture(files, { zip64: true, deflate, descriptor })
+      assert.deepEqual(readSkillZip(bytes, zipDescriptor(bytes, files)), files)
+    }
+  })
+
+  it('reads ZIP64 end records beyond 65535 entries', () => {
+    const files = [entry, ...Array.from({ length: 65535 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))]
+    const bytes = zipFixture(files)
+    const read = readSkillZip(bytes, zipDescriptor(bytes, files))
+    assert.equal(read.length, files.length)
+    assert.deepEqual(read.at(-1), files.at(-1))
+  })
+
+  it('validates ZIP64 end record counts, disk numbers, safe offsets and legacy consistency', () => {
+    const files = [entry]
+    const ordinary = zipFixture(files)
+    const centralSize = ordinary.readUInt32LE(ordinary.length - 10)
+    const centralStart = ordinary.readUInt32LE(ordinary.length - 6)
+    const end = skillZipEnd(65536, centralSize, centralStart)
+    end.writeBigUInt64LE(1n, 24); end.writeBigUInt64LE(1n, 32)
+    const base = Buffer.concat([ordinary.subarray(0, -22), end])
+    assert.deepEqual(readSkillZip(base, zipDescriptor(base, files)), files)
+    const record = base.length - 98
+    for (const mutate of [
+      (bytes: Buffer) => { bytes.writeUInt32LE(1, record + 60) },
+      (bytes: Buffer) => { bytes.writeUInt32LE(2, record + 72) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(1n << 63n, record + 64) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(43n, record + 4) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(2n, record + 24) },
+      (bytes: Buffer) => { bytes.writeUInt32LE(centralStart + 1, record + 92) },
+    ]) {
+      const bytes = Buffer.from(base)
+      mutate(bytes)
+      assert.throws(() => readSkillZip(bytes, zipDescriptor(bytes, files)), /unsafe/)
+    }
+  })
+
+  it('accepts a legacy ZIP at its maximum entry count without requiring a ZIP64 locator', () => {
+    const files = [entry, ...Array.from({ length: 65534 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))]
+    const zip64 = zipFixture(files)
+    const bytes = Buffer.concat([zip64.subarray(0, -98), zip64.subarray(-22)])
+    assert.equal(readSkillZip(bytes, zipDescriptor(bytes, files)).length, files.length)
+  })
+
+  it('rejects unsafe or contradictory ZIP64 size and offset metadata', () => {
+    const files = [entry]
+    const base = zipFixture(files, { zip64: true })
+    const central = base.readUInt32LE(base.length - 6)
+    const extra = central + 46 + Buffer.byteLength(entry.path)
+    for (const mutate of [
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(1n << 63n, extra + 4) },
+      (bytes: Buffer) => { bytes.writeUInt16LE(23, extra + 2) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(1n, extra + 20) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(1n, 30 + Buffer.byteLength(entry.path) + 4) },
+    ]) {
+      const bytes = Buffer.from(base)
+      mutate(bytes)
+      assert.throws(() => readSkillZip(bytes, zipDescriptor(bytes, files)), /unsafe/)
+    }
+  })
+
   it('matches known CRC32 and preserves store/deflate/descriptor/directory contents', () => {
     assert.equal(packageCrc32(Buffer.from('123456789')), 0xcbf43926)
     for (const deflate of [false, true]) for (const descriptor of [false, true]) {
