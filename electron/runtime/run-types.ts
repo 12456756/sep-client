@@ -18,6 +18,8 @@ export interface TaskToolPolicy {
 export interface EmployeeRuntimeConfig {
   subscriptionId: string
   modelId: string
+  /** Null or absent means the platform has not declared vision support. */
+  vision?: boolean | null
   gatewayUrl: string
 
   additionalSkillPaths?: string[]

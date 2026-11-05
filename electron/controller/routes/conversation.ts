@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import { INVOKE_CHANNELS } from '../channels'
 import { route } from '../router'
 import { CREATE_TASK_INVALID, createTaskInput } from './task'
-import { attachmentRefSchema } from '../../../src/shared/attachment-contracts'
+import { attachmentImportLimits, attachmentRefSchema } from '../../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../../src/shared/knowledge-selection'
 import { conversationQueueInputSchema } from '../../../src/shared/conversation-queue'
 
@@ -23,7 +23,7 @@ const continueInput = z.object({
   recoveryMode: recoveryMode.optional(),
   confirmRecovery: z.boolean().optional(),
   attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
-  attachmentRefs: z.array(attachmentRefSchema).max(10).optional(),
+  attachmentRefs: z.array(attachmentRefSchema).max(attachmentImportLimits.maxFiles).optional(),
   knowledge: knowledgeSelectionSchema.optional(),
 })
 

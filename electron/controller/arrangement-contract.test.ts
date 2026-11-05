@@ -44,6 +44,20 @@ const document = {
 }
 
 describe('arrangement work contract IPC', () => {
+  it('accepts 128 imported attachments and node bindings, rejecting 129', () => {
+    const routes = loadRoutes()
+    const create = routes.find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
+    const candidates = Array.from({ length: 128 }, (_, index) => ({ attachment: { attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) }, mustUse: false }))
+    const inputRefs = candidates.map(candidate => ({ kind: 'attachment', attachment: candidate.attachment, required: true, purpose: 'analysis' }))
+    const input = { ...document, attachmentCandidates: candidates, nodes: [{ ...node, inputRefs }] }
+    assert.equal(create.schema.safeParse(input).success, true)
+    assert.equal(create.schema.safeParse({ ...input, attachmentCandidates: [...candidates, candidates[0]] }).success, false)
+    assert.equal(create.schema.safeParse({ ...input, nodes: [{ ...node, inputRefs: [...inputRefs, inputRefs[0]] }] }).success, false)
+    const update = routes.find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_UPDATE_INPUTS)!
+    const updateInput = { draftId: 'draft', expectedRevision: 1, inputs: { attachmentCandidates: candidates, nodes: [{ nodeId: node.id, inputRefs }] } }
+    assert.equal(update.schema.safeParse(updateInput).success, true)
+    assert.equal(update.schema.safeParse({ ...updateInput, inputs: { attachmentCandidates: [...candidates, candidates[0]] } }).success, false)
+  })
   it('creates and starts automatic planning atomically using a validated submission key', async () => {
     const route = loadRoutes().find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_AND_PLAN)!
     const input = { requestId: '9d93a254-e4d4-4231-9cf3-e4b58c7d331a', modelId: 'model-a', document: { ...document, mode: 'auto', nodes: [] } }

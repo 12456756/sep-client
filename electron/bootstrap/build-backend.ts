@@ -18,7 +18,7 @@ import { shell, systemPreferences } from 'electron'
 import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { EmploymentTokenManager } from '../common/platform/employment-token-manager'
-import { getSubscriptions, getEmployeeRuntime, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
+import { getSubscriptions, getEmployeeRuntime, getEnabledModels, getEnterpriseOverview, getAllPlatformEmployees, createEmployeeAccessRequest, getEmployeeAccessRequest, getEmployeeSkills, listSkillVersions, previewSkill, createPersonalSkillVersion } from '../common/platform/platform-api'
 import { config } from '../common/config'
 import { loadOnce, type LazyAsync } from '../common/load-once'
 import { logger } from '../common/logger'
@@ -250,6 +250,7 @@ class BackendRuntime {
       new SkillStore(join(userDataDir, 'runtime'), skillVersions),
       config.SEP_GATEWAY_URL,
       { getRuntime: getEmployeeRuntime },
+      { list: getEnabledModels },
     )
 
     const mediaStore = new MediaStore(userDataDir)

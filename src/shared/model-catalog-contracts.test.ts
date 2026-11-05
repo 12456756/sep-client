@@ -3,15 +3,23 @@ import { describe, it } from 'node:test'
 import { modelBillingLabel, modelCatalogSchema } from './model-catalog-contracts'
 
 describe('model catalog contract', () => {
+  it('preserves explicit vision support and leaves missing capability unknown', () => {
+    const models = modelCatalogSchema.parse([
+      { modelId: 'vision', vision: true }, { modelId: 'text', vision: false },
+      { modelId: 'legacy' }, { modelId: 'unknown', vision: null },
+    ])
+    assert.deepEqual(models.map(model => model.vision), [true, false, null, null])
+    assert.equal(modelCatalogSchema.safeParse([{ modelId: 'invalid', vision: 'false' }]).success, false)
+  })
   it('keeps legacy models usable without guessing billing data', () => {
     assert.deepEqual(modelCatalogSchema.parse([{ modelId: 'model-a' }]), [{
-      modelId: 'model-a', displayName: 'model-a', billingMultiplier: null, discountLabel: null, isFree: null,
+      modelId: 'model-a', displayName: 'model-a', billingMultiplier: null, discountLabel: null, isFree: null, vision: null,
     }])
   })
 
   it('accepts the older SEP id and label fields', () => {
     assert.deepEqual(modelCatalogSchema.parse([{ id: 'model-old', label: '旧版模型' }]), [{
-      modelId: 'model-old', displayName: '旧版模型', billingMultiplier: null, discountLabel: null, isFree: null,
+      modelId: 'model-old', displayName: '旧版模型', billingMultiplier: null, discountLabel: null, isFree: null, vision: null,
     }])
   })
 

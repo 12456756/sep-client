@@ -8,6 +8,7 @@ const modelCatalogEntrySchema = z.object({
   billingMultiplier: z.string().nullable().optional(),
   discountLabel: z.string().nullable().optional(),
   isFree: z.boolean().optional(),
+  vision: z.boolean().nullable().optional(),
 }).passthrough()
 
 export interface ModelCatalogEntry {
@@ -16,6 +17,7 @@ export interface ModelCatalogEntry {
   billingMultiplier: string | null
   discountLabel: string | null
   isFree: boolean | null
+  vision: boolean | null
 }
 
 /** Older SEP deployments may omit the billing fields until the billing release is deployed. */
@@ -28,6 +30,7 @@ export const modelCatalogSchema = z.array(modelCatalogEntrySchema).transform(ent
     billingMultiplier: entry.billingMultiplier ?? null,
     discountLabel: entry.discountLabel?.trim() || null,
     isFree: entry.isFree ?? null,
+    vision: entry.vision ?? null,
   } satisfies ModelCatalogEntry
 }))
 

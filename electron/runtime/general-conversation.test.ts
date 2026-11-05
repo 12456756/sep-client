@@ -32,6 +32,7 @@ test('general chat preserves selected model, permissions and history across turn
   const videoTools: VideoHostTools = { names: ['video_generate', 'video_from_image', 'video_get_job'],
     async execute(name) { toolCalls.push(name); return { ok: true } } }
   let subscriptionId = 'subscription-a'
+  let vision: boolean | null = false
   let runtime: TaskRuntime | undefined
   const settle = async (id: string) => {
     for (let i = 0; i < 200; i++) {
@@ -44,7 +45,7 @@ test('general chat preserves selected model, permissions and history across turn
     taskManager: manager, taskRunStore: runs, workPlanStore: plans,
     resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://unused' }),
     authorizeEmployee: async () => assert.fail('must not authorize employee or prepare skills'),
-    authorizeModel: async modelId => ({ subscriptionId, modelId, gatewayUrl: 'http://unused', media, video }),
+    authorizeModel: async modelId => ({ subscriptionId, modelId, vision, gatewayUrl: 'http://unused', media, video }),
     getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
     knowledgeSearch: async () => assert.fail('must not search employee knowledge'),
     media: { async prepareRun(input) {
@@ -105,13 +106,16 @@ test('general chat preserves selected model, permissions and history across turn
     await runtime.executeTask(task.id, { conversation: true })
     await settle(task.id)
     subscriptionId = 'subscription-b'
+    vision = true
     await runtime.continueConversation(task.id, 'second')
     await settle(task.id)
     await runtime.stopAll()
     runtime = createRuntime()
+    vision = null
     await runtime.continueConversation(task.id, 'third')
     await settle(task.id)
     assert.equal(contexts.length, 3)
+    assert.deepEqual(contexts.map(context => context.vision), [false, true, null])
     for (const context of contexts) {
       assert.equal(context.modelId, 'selected')
       assert.equal(context.employeeProfile, undefined)

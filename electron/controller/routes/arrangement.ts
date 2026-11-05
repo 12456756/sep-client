@@ -3,7 +3,7 @@ import { arrangementPreflightFeedbackSchema } from '../../../src/shared/arrangem
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
 import { arrangementNodeWorkContractSchema, type ArrangementDraft } from '../../domain/arrangement-plan'
-import { draftAttachmentCandidateSchema, nodeInputRefSchema } from '../../../src/shared/attachment-contracts'
+import { attachmentImportLimits, draftAttachmentCandidateSchema, nodeInputRefSchema } from '../../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../../src/shared/knowledge-selection'
 
 const draftId = z.string().min(1)
@@ -44,7 +44,7 @@ const draftDocument = z.object({
   goal: z.string(),
   knowledge: knowledgeSelectionSchema.optional(),
   confirmedInputs: z.array(z.string()),
-  attachmentCandidates: z.array(draftAttachmentCandidateSchema).max(10).optional(),
+  attachmentCandidates: z.array(draftAttachmentCandidateSchema).max(attachmentImportLimits.maxFiles).optional(),
   attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
   sharedSkillIds: z.array(z.string()),
   conversation: z.object({
@@ -172,8 +172,8 @@ export const arrangementRoutes = [
     draftId, expectedRevision: revision,
     inputs: z.object({
       attachmentSessionId: z.string().regex(/^[A-Za-z0-9_-]{1,128}$/).optional(),
-      attachmentCandidates: z.array(draftAttachmentCandidateSchema).max(10),
-      nodes: z.array(z.object({ nodeId: z.string().min(1), inputRefs: z.array(nodeInputRefSchema).max(64) }).strict()).optional(),
+      attachmentCandidates: z.array(draftAttachmentCandidateSchema).max(attachmentImportLimits.maxFiles),
+      nodes: z.array(z.object({ nodeId: z.string().min(1), inputRefs: z.array(nodeInputRefSchema).max(attachmentImportLimits.maxFiles) }).strict()).optional(),
     }).strict(),
   }).strict(), async (ctx, input) => ({
     success: true, draft: await ctx.arrangements.updateInputs(input.draftId, input.expectedRevision, input.inputs),

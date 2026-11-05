@@ -716,6 +716,7 @@ export class ArrangementExecutor {
       worker = this.options.createWorker({
         context: {
           taskId, runId: nodeRunId, subscriptionId: node.subscriptionId, modelId: node.modelId,
+          vision: employee.vision,
           modelTrace,
           taskTitle: plan.goal,
           nodeTitle: node.title,

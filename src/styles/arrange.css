@@ -381,9 +381,36 @@ textarea.ent-mn-input.tall { min-height: 92px; }
 .ent-attachment-spinner { animation: attachment-spin 900ms linear infinite; }
 @keyframes attachment-spin { to { transform: rotate(360deg); } }
 .ent-attachment-usage { display: inline-flex; align-items: center; gap: 6px; color: var(--ent-ink-2); font-size: 12px; }
-.ent-message-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.ent-message-attachments > span { display: inline-flex; max-width: 320px; align-items: center; gap: 5px; padding: 4px 7px; border: 1px solid var(--arr-card-line); border-radius: 6px; background: var(--ent-panel); color: var(--ent-ink-2); font-size: 12px; overflow-wrap: anywhere; }
+.ent-message-attachments { display: flex; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; align-items: flex-start; gap: 8px; }
+.ent-message-attachment { box-sizing: border-box; display: inline-flex; max-width: min(320px, 100%); min-width: 0; padding: 5px 8px; border: 1px solid var(--arr-card-line); border-radius: 6px; background: var(--ent-panel); color: var(--ent-ink-2); font-size: 12px; overflow-wrap: anywhere; }
+.ent-message-attachment.is-image { width: 280px; flex-direction: column; padding: 0; overflow: hidden; }
+.ent-message-attachment-details { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 4px 7px; }
+.is-image > .ent-message-attachment-details { padding: 8px; }
+.ent-message-attachment-name { min-width: 0; overflow-wrap: anywhere; }
+.is-image .ent-message-attachment-name { flex: 1 0 100%; }
+.ent-message-attachment-details svg { flex-shrink: 0; }
+.ent-message-attachment-preview { display: grid; width: 100%; aspect-ratio: 16 / 10; place-items: center; padding: 0; border: 0; background: var(--ent-panel-subtle); color: var(--ent-ink-3); font: inherit; cursor: zoom-in; overflow: hidden; }
+.ent-message-attachment-preview:disabled { cursor: default; }
+.ent-message-attachment-preview img { display: block; width: 100%; height: 100%; min-height: 0; object-fit: contain; }
+.ent-message-attachment-placeholder { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.ent-message-attachment-preview:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: -2px; }
 .ent-message-attachments small { color: var(--ent-ink-3); white-space: nowrap; }
+.ent-attachment-image-dialog { box-sizing: border-box; width: min(1120px, calc(100vw - 32px)); height: min(860px, calc(100vh - 32px)); max-width: none; max-height: none; margin: auto; padding: 0; border: 1px solid var(--ent-line); border-radius: 8px; background: var(--ent-panel); color: var(--ent-ink-2); }
+.ent-attachment-image-dialog[open] { display: flex; flex-direction: column; }
+.ent-attachment-image-dialog::backdrop { background: rgb(0 0 0 / 65%); }
+.ent-attachment-image-heading { display: flex; flex-shrink: 0; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; padding: 12px; border-bottom: 1px solid var(--ent-line); }
+.ent-attachment-image-heading > div:first-child { display: flex; min-width: 0; flex: 1 1 200px; flex-direction: column; gap: 3px; }
+.ent-attachment-image-heading strong { font-size: 13px; overflow-wrap: anywhere; }
+.ent-attachment-image-heading small { font-size: 12px; }
+.ent-attachment-image-actions { display: flex; flex-shrink: 0; align-items: center; gap: 4px; }
+.ent-attachment-image-actions button { display: grid; width: 32px; height: 32px; place-items: center; padding: 0; border: 1px solid var(--ent-line); border-radius: 4px; color: inherit; background: var(--ent-panel); cursor: pointer; }
+.ent-attachment-image-actions button:disabled { opacity: .4; cursor: default; }
+.ent-attachment-image-actions button:hover:not(:disabled) { background: var(--ent-panel-subtle); }
+.ent-attachment-image-actions span { width: 48px; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; }
+.ent-attachment-image-viewport { display: flex; min-height: 0; flex: 1 1 auto; align-items: center; justify-content: center; padding: 12px; overflow: auto; background: var(--ent-panel-subtle); }
+.ent-attachment-image-viewport img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.ent-attachment-image-viewport.is-zoomed { display: block; }
+.ent-attachment-image-viewport.is-zoomed img { max-width: none; max-height: none; height: auto; margin: auto; }
 .ent-attachment-summary { display: grid; gap: 6px; margin: 10px 0; padding: 8px 10px; border: 1px solid var(--arr-card-line); border-radius: 7px; font-size: 12px; }
 .ent-attachment-summary label, .ent-attachment-summary div { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
 .ent-attachment-summary small { color: var(--ent-ink-3); }

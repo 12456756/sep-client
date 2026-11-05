@@ -312,16 +312,22 @@ const jobView = {
   billingStatus: 'pending', error: null, createdAt: 1, updatedAt: 1, assets: [], canCancelUpstream: false,
 }
 
+function messageText(value: unknown): string {
+  if (typeof value !== 'string') throw new TypeError('Expected text message content.')
+  return value
+}
+
 async function mediaSession(
   overrides: Partial<PiAgentSessionConfig>,
   call?: { name: string; input: unknown },
   result: unknown = jobView,
   prepare?: (root: string) => Promise<void>,
   continueSession?: (session: Awaited<ReturnType<PiCodingAgentAdapter['createSession']>>) => Promise<void>,
+  includeImage = false,
 ) {
   const root = await mkdtemp(join(tmpdir(), 'sep-pi-media-'))
   await prepare?.(root)
-  const bodies: Array<{ messages: Array<{ role: string; content: string }>; tools?: Array<{ function: { name: string; description: string; parameters: Record<string, unknown> } }> }> = []
+  const bodies: Array<{ messages: Array<{ role: string; content: string | unknown[] | null }>; tools?: Array<{ function: { name: string; description: string; parameters: Record<string, unknown> } }> }> = []
   const executions: Array<{ name: MediaToolName; input: unknown; signal?: AbortSignal }> = []
   let approvals = 0
   const server = createServer((request, response) => {
@@ -361,7 +367,9 @@ async function mediaSession(
       systemPrompt: literalPrompt, mediaTools: host, getAccessToken: async () => 'test-token',
       authorizeTool: async () => { approvals++; return false }, ...overrides,
     })
-    await session.prompt('Run the requested operation.')
+    await session.prompt('Run the requested operation.', includeImage ? {
+      images: [{ type: 'image', data: 'aW1hZ2UtZGF0YQ==', mimeType: 'image/png' }],
+    } : undefined)
     await continueSession?.(session)
     return { bodies, executions, approvals, literalPrompt }
   } finally {
@@ -419,6 +427,52 @@ describe('common Office skills with the real Pi SDK', () => {
 })
 
 describe('trusted media host tools with the real Pi SDK', () => {
+  it('rejects images for a model explicitly marked as text-only before sending HTTP', async () => {
+    await assert.rejects(mediaSession({ vision: false, mcpServers: [], getAccessToken: async () => { assert.fail('must not send an image request') } }, undefined, jobView, undefined, undefined, true), /不支持图片/)
+    const { bodies } = await mediaSession({ vision: false, mcpServers: [] })
+    assert.equal(bodies.length, 1)
+    assert.equal(typeof bodies[0]?.messages.find(message => message.role === 'user')?.content, 'string')
+  })
+
+  it('preserves images when vision support is declared or unknown', async () => {
+    for (const vision of [true, null]) {
+      const { bodies } = await mediaSession({ vision, mcpServers: [] }, undefined, jobView, undefined, undefined, true)
+      assert.ok(Array.isArray(bodies[0]?.messages.find(message => message.role === 'user')?.content))
+    }
+  })
+
+  it('rejects historical images when resuming with a text-only model before HTTP or retries', async () => {
+    let root = ''
+    await mediaSession({ vision: true, mcpServers: [] }, undefined, jobView,
+      async directory => { root = directory }, async first => {
+        const resumed = await new PiCodingAgentAdapter().createSession({
+          runId: 'run-text-only', modelId: 'model-a', vision: false, gatewayUrl: 'http://127.0.0.1:1/v1',
+          workspaceDir: root, agentDir: join(root, 'text-agent'), sessionDir: join(root, 'sessions'),
+          resumeSessionFile: first.sessionFile!, mcpServers: [],
+          getAccessToken: async () => { assert.fail('must not send historical images') }, authorizeTool: async () => false,
+        })
+        const failures: string[] = [], retries: string[] = []
+        resumed.subscribe(event => {
+          if (event.failure) failures.push(event.failure)
+          if (event.type === 'auto_retry_start') retries.push(event.type)
+        })
+        try {
+          await resumed.prompt('Continue without a new attachment.')
+          assert.match(failures.join('\n'), /不支持图片/)
+          assert.deepEqual(retries, [])
+        } finally { await resumed.dispose() }
+      }, true)
+  })
+  it('sends attached conversation images to the SEP gateway', async () => {
+    const { bodies } = await mediaSession({ mcpServers: [] }, undefined, jobView, undefined, undefined, true)
+    const userContent = bodies[0]?.messages.find(message => message.role === 'user')?.content
+    assert.ok(Array.isArray(userContent))
+    assert.deepEqual(userContent, [
+      { type: 'text', text: 'Run the requested operation.' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2UtZGF0YQ==' } },
+    ])
+  })
+
   it('preserves nested V3 image hints and adapter metadata in the actual model continuation', async () => {
     const sizes = Array.from({ length: 128 }, (_, index) => `${1024 + index}x1024`)
     const profile = {
@@ -436,7 +490,7 @@ describe('trusted media host tools with the real Pi SDK', () => {
       capabilities: { protocolVersion: 3, defaultProfileId: profile.profileId, tools: mediaNames, profiles: [profile] },
       referenceAssets: [], apiKey: 'private-capability-key',
     })
-    const text = bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content
+    const text = messageText(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content)
     const result = JSON.parse(text)
     const visible = result.capabilities.profiles[0]
     assert.deepEqual(visible.adapter, profile.adapter)
@@ -453,7 +507,7 @@ describe('trusted media host tools with the real Pi SDK', () => {
     const parameters = { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' }
     const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, { ...jobView, parameters })
     const continuation = bodies.at(-1)!.messages.find(message => message.role === 'tool')!
-    const result = JSON.parse(continuation.content)
+    const result = JSON.parse(messageText(continuation.content))
     assert.equal(result.jobId, 'job-a')
     assert.deepEqual(result.parameters, parameters)
   })
@@ -461,7 +515,7 @@ describe('trusted media host tools with the real Pi SDK', () => {
     const { bodies } = await mediaSession({}, { name: 'media_get_job', input: { jobId: 'job-a' } }, {
       ...jobView, protocolVersion: 3, parameters: { ...generationInput.parameters, size: 'small' },
     })
-    const result = JSON.parse(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content)
+    const result = JSON.parse(messageText(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content))
     assert.equal(result.jobId, 'job-a')
     assert.equal(result.parameters.size, 'small')
   })
@@ -471,7 +525,7 @@ describe('trusted media host tools with the real Pi SDK', () => {
       requestedSpec: { width: 800, height: 600, aspectRatio: '9:16' },
       parameterSources: { width: 'user', height: 'user', aspectRatio: 'model' },
     } })
-    const resultText = bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content
+    const resultText = messageText(bodies.at(-1)!.messages.find(message => message.role === 'tool')!.content)
     const result = JSON.parse(resultText)
     assert.deepEqual(executions, [])
     assert.equal(result.error.code, 'SPEC_CONFLICT')
@@ -550,7 +604,7 @@ describe('trusted media host tools with the real Pi SDK', () => {
       await writeFile(join(skill, 'SKILL.md'), '---\nname: local-only\ndescription: LOCAL_SKILL_MUST_NOT_APPEAR\n---\nLocal instructions.')
       await writeFile(join(root, '.pi', 'SYSTEM.md'), 'LOCAL_SYSTEM_OVERRIDE_MUST_NOT_APPEAR')
     })
-    const prompt = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+    const prompt = bodies[0].messages.filter(message => message.role === 'system').map(message => messageText(message.content)).join('\n')
     assert.match(prompt, /你运行在 Pi 中。你通过读取文件、执行命令、编辑代码和创建新文件来帮助用户。/)
     assert.match(prompt, /当前工作目录：.*sep-pi-media-/)
     assert.match(prompt, /主要文档：.*README.md/)
@@ -563,7 +617,7 @@ describe('trusted media host tools with the real Pi SDK', () => {
       const { bodies, executions } = await mediaSession({ systemPrompt,
         employeeProfile: { name: '培训师', description: '制作员工培训材料' },
       }, { name: 'media_generate_image', input: generationInput })
-      const prompt = bodies[0].messages.filter(message => message.role === 'system').map(message => message.content).join('\n')
+      const prompt = bodies[0].messages.filter(message => message.role === 'system').map(message => messageText(message.content)).join('\n')
       assert.equal(prompt.split('<employee_profile>').length, 2)
       assert.match(prompt, /不要求员工资料逐项列明这些手段/)
       assert.match(prompt, /工具可用性、费用及审批限制保持不变/)
@@ -576,7 +630,8 @@ describe('trusted media host tools with the real Pi SDK', () => {
 
   it('injects a literal system prompt and registers strict TypeBox schemas without profile secrets', async () => {
     const { bodies, literalPrompt } = await mediaSession({})
-    assert.ok(bodies[0].messages.some(message => message.role === 'system' && message.content.includes(literalPrompt)))
+    assert.ok(bodies[0].messages.some(message => message.role === 'system' &&
+      typeof message.content === 'string' && message.content.includes(literalPrompt)))
     assert.ok(!JSON.stringify(bodies[0]).includes('Do not read this file'))
     const tools = bodies[0].tools ?? []
     assert.deepEqual(tools.map(tool => tool.function.name).filter(name => name.startsWith('media_')), mediaNames)

@@ -51,14 +51,14 @@ describe('SEP enabled model catalog', () => {
     globalThis.fetch = async (input, init) => {
       calls.push({ url: String(input), authorization: new Headers(init?.headers).get('Authorization') })
       return response([
-        { modelId: 'model-a', displayName: '模型 A', billingMultiplier: '1', discountLabel: '按中转倍率计费', isFree: false },
+        { modelId: 'model-a', displayName: '模型 A', billingMultiplier: '1', discountLabel: '按中转倍率计费', isFree: false, vision: false },
         { id: 'legacy', label: 'Legacy model' },
       ])
     }
 
     assert.deepEqual(await api.getEnabledModels('access'), [
-      { modelId: 'model-a', displayName: '模型 A', billingMultiplier: '1', discountLabel: '按中转倍率计费', isFree: false },
-      { modelId: 'legacy', displayName: 'Legacy model', billingMultiplier: null, discountLabel: null, isFree: null },
+      { modelId: 'model-a', displayName: '模型 A', billingMultiplier: '1', discountLabel: '按中转倍率计费', isFree: false, vision: false },
+      { modelId: 'legacy', displayName: 'Legacy model', billingMultiplier: null, discountLabel: null, isFree: null, vision: null },
     ])
     assert.deepEqual(calls, [{ url: `${config.SEP_BASE_URL}/models/enabled`, authorization: 'Bearer access' }])
   })
