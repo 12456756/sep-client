@@ -54,7 +54,7 @@ export const skillArtifactAvailableSchema = z.object({
   entrySha256: skillArtifactSha256Schema,
   artifactSha256: skillArtifactSha256Schema,
   byteLength: z.number().int().positive().safe(),
-  fileCount: z.number().int().positive().max(500),
+  fileCount: z.number().int().positive().safe(),
   downloadPath: z.string().regex(/^\/client\/subscriptions\/[a-zA-Z0-9_-]{1,128}\/skills\/[a-zA-Z0-9_-]{1,128}\/versions\/[a-zA-Z0-9_-]{1,128}\/artifact$/),
 }).strict()
 
