@@ -20,10 +20,14 @@ test('import transport uses only the configured HTTPS instance and explicit gran
   await assert.rejects(api.request('GET', '../secrets', z.unknown(), { signal: new AbortController().signal }), /INVALID_ARGUMENT/)
 })
 
-test('response validation, escaped JSON budgets, and Retry-After remain bounded', async () => {
+test('content requests and responses have no client byte quota while validation and Retry-After remain enforced', async () => {
   const signal = new AbortController().signal
-  const limited = new SkillImportApi('https://sep.example/api', (async () => new Response('{"ok":true}', { headers: { 'content-length': '20000000' } })) as typeof fetch)
-  await assert.rejects(limited.request('GET', 'pairings', z.unknown(), { signal }), /RESPONSE_TOO_LARGE/)
+  const content = 'x'.repeat(17 * 1024 * 1024)
+  const large = new SkillImportApi('https://sep.example/api', (async (_url, init) => {
+    assert.equal(JSON.parse(String(init?.body)).content, content)
+    return new Response(JSON.stringify({ content }))
+  }) as typeof fetch)
+  assert.deepEqual(await large.request('POST', 'sessions/session/events', z.object({ content: z.string() }), { signal, body: { content }, contentResponse: true }), { content })
   const escaped = new SkillImportApi('https://sep.example/api', (async () => new Response('{}')) as typeof fetch)
   await assert.rejects(escaped.request('POST', 'pairings', z.unknown(), { signal, body: { content: '\u0001'.repeat(200000) } }), /REQUEST_BODY_TOO_LARGE/)
   const rate = new SkillImportApi('https://sep.example/api', (async () => new Response(JSON.stringify({ code: 'RATE_LIMITED', message: 'secret ignored' }), { status: 429, headers: { 'Retry-After': '8' } })) as typeof fetch)

@@ -100,7 +100,7 @@ export const skillVersionSchema = z.object({
 export const personalSkillVersionRequestSchema = z.object({
   capabilityId: resourceId, parentVersionId: resourceId,
   content: skillContent,
-  changeSummary: z.string().trim().max(2_000).optional(),
+  changeSummary: z.string().trim().optional(),
 }).strict()
 export const personalSkillSubmissionResponseSchema = skillVersionSchema.extend({
   id: z.string().min(1), capabilityId: z.string().min(1),

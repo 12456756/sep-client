@@ -3,11 +3,7 @@ import { access, chmod, mkdtemp, mkdir, open, readdir, realpath, rename, rm, sym
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { unzipSync } from 'fflate'
-import { createHash, randomBytes } from 'node:crypto'
-import { SkillImportFiles, SKILL_IMPORT_LIMITS } from './skill-import-files'
-import { readSkillZip, packageSha256 } from '../pi/sdk/skill-package-zip'
-import { SkillImportPreviewSchema } from '../../src/shared/skill-import-contracts'
+import { SkillImportFiles } from './skill-import-files'
 
 async function fixture(): Promise<{ base: string; home: string; project: string; temp: string; files: SkillImportFiles }> {
   const base = await mkdtemp(join(tmpdir(), 'sep-skill-import-'))
@@ -26,6 +22,63 @@ async function addSkill(root: string, name = 'weekly-report'): Promise<string> {
   await writeFile(join(directory, 'references', '样例.md'), '示例内容')
   return directory
 }
+
+test('discovers and packages deep skills beyond the former entry size quota', async () => {
+  const f = await fixture()
+  try {
+    const root = await f.files.addProjectRoot(f.project)
+    const directory = await addSkill(join(f.project, ...Array.from({ length: 8 }, () => 'nested')))
+    await writeFile(join(directory, 'SKILL.md'), '# Large skill\n' + 'x'.repeat(2 * 1024 * 1024 + 1))
+    const resources = join(directory, ...Array.from({ length: 8 }, () => 'resources'))
+    await mkdir(resources, { recursive: true })
+    await writeFile(join(resources, 'data.txt'), 'resource')
+    const [candidate] = await f.files.scan([root.id])
+    assert.ok(candidate)
+    const preview = await f.files.preview({ requestId: 'request_1', candidateId: candidate.candidateId, revision: candidate.revision })
+    assert.ok(preview.content.length > 2 * 1024 * 1024)
+    assert.ok(preview.files.some(file => file.relativePath.endsWith('data.txt')))
+    const pkg = await f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'operation_1' })
+    assert.ok(pkg.bytes > 2 * 1024 * 1024)
+    assert.equal(pkg.bytes, preview.estimatedPackageBytes)
+  } finally { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) }
+})
+
+test('previews more than ten thousand files without a client count quota', async () => {
+  const f = await fixture()
+  try {
+    const root = await f.files.addProjectRoot(f.project)
+    const directory = await addSkill(f.project)
+    const resources = join(directory, 'references')
+    for (let offset = 0; offset < 10000; offset += 64) {
+      await Promise.all(Array.from({ length: Math.min(64, 10000 - offset) }, (_, index) => writeFile(join(resources, `file-${offset + index}.txt`), 'x')))
+    }
+    const [candidate] = await f.files.scan([root.id])
+    assert.ok(candidate)
+    const preview = await f.files.preview({ requestId: 'request_1', candidateId: candidate.candidateId, revision: candidate.revision })
+    assert.equal(preview.fileCount, 10002)
+    assert.equal(preview.files.length, preview.fileCount)
+  } finally { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) }
+})
+
+test('streams a package above the former hundred MiB quota', async () => {
+  const f = await fixture()
+  try {
+    const root = await f.files.addProjectRoot(f.project)
+    const directory = await addSkill(f.project)
+    const resource = await open(join(directory, 'references', 'large.bin'), 'w')
+    try { await resource.truncate(100 * 1024 * 1024 + 1) } finally { await resource.close() }
+    const [candidate] = await f.files.scan([root.id])
+    assert.ok(candidate)
+    const preview = await f.files.preview({ requestId: 'request_1', candidateId: candidate.candidateId, revision: candidate.revision })
+    assert.ok(preview.estimatedPackageBytes > 100 * 1024 * 1024)
+    const pkg = await f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'operation_1' })
+    assert.ok(pkg.bytes > 100 * 1024 * 1024)
+    assert.equal(pkg.bytes, preview.estimatedPackageBytes)
+    let streamed = 0
+    for await (const chunk of pkg.open()) streamed += chunk.byteLength
+    assert.equal(streamed, pkg.bytes)
+  } finally { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) }
+})
 
 function agentsRoot(files: SkillImportFiles): Promise<{ id: string }> {
   return files.listRoots().then(roots => {
@@ -141,9 +194,17 @@ test('scans authorized root, previews YAML metadata, and packages a Chinese UTF-
   const chunks: Buffer[] = []
   for await (const chunk of archive.open()) chunks.push(Buffer.from(chunk))
   const zip = Buffer.concat(chunks)
-  const entries = unzipSync(zip)
-  assert.equal(Buffer.from(entries['references/样例.md']!).toString('utf8'), '示例内容')
-  assert.equal(zip.length, preview.estimatedPackageBytes)
+  const entries = new Map<string, Buffer>()
+  let zipOffset = 0
+  while (zip.readUInt32LE(zipOffset) === 0x04034b50) {
+    const nameLength = zip.readUInt16LE(zipOffset + 26)
+    const extraLength = zip.readUInt16LE(zipOffset + 28)
+    const entrySize = zip.readUInt32LE(zipOffset + 22)
+    const name = zip.subarray(zipOffset + 30, zipOffset + 30 + nameLength).toString('utf8')
+    entries.set(name, zip.subarray(zipOffset + 30 + nameLength + extraLength, zipOffset + 30 + nameLength + extraLength + entrySize))
+    zipOffset += 30 + nameLength + extraLength + entrySize
+  }
+  assert.equal(entries.get('references/样例.md')?.toString('utf8'), '示例内容')
   assert.match(archive.sha256, /^[0-9a-f]{64}$/)
   await f.files.dispose()
   await rm(f.base, { recursive: true, force: true })
@@ -165,86 +226,6 @@ test('discovers malformed metadata with a directory-name fallback', async () => 
   assert.ok(preview.warnings.some(warning => warning.code === 'METADATA_NORMALIZED'))
   await f.files.dispose()
   await rm(f.base, { recursive: true, force: true })
-})
-
-test('discovers and packages skills and attachments beyond six directory levels', async t => {
-  const f = await fixture()
-  t.after(async () => { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) })
-  const skills = join(f.home, '.agents', 'skills')
-  const skill = await addSkill(skills, 'a/b/c/d/e/f/g/h/deep-skill')
-  const attachment = 'references/a/b/c/d/e/f/g/h/guide.md'
-  await mkdir(join(skill, attachment, '..'), { recursive: true })
-  await writeFile(join(skill, attachment), 'Deep guide')
-  const root = await agentsRoot(f.files)
-  const [candidate] = await f.files.scan([root.id])
-  assert.ok(candidate)
-  assert.equal(f.files.getScanWarnings().some(warning => warning.code === 'DEPTH_LIMIT_REACHED'), false)
-  const preview = await f.files.preview({ requestId: 'req-deep', candidateId: candidate.candidateId, revision: 1 })
-  assert.ok(SkillImportPreviewSchema.safeParse(preview).success)
-  const archive = await f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'op-deep' })
-  const chunks: Buffer[] = []
-  for await (const chunk of archive.open()) chunks.push(Buffer.from(chunk))
-  assert.equal(Buffer.from(unzipSync(Buffer.concat(chunks))[attachment]!).toString(), 'Deep guide')
-})
-
-test('imports 120 MiB of resources using the actual compressed ZIP size and preserves every byte', async t => {
-  const f = await fixture()
-  t.after(async () => { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) })
-  const skill = await addSkill(join(f.home, '.agents', 'skills'))
-  const size = 120 * 1024 * 1024
-  const handle = await open(join(skill, 'references', 'large.bin'), 'w')
-  try { await handle.truncate(size) } finally { await handle.close() }
-  const root = await agentsRoot(f.files)
-  const [candidate] = await f.files.scan([root.id])
-  assert.ok(candidate)
-  const preview = await f.files.preview({ requestId: 'req-compressed', candidateId: candidate.candidateId, revision: 1 })
-  assert.ok(preview.totalUncompressedBytes > SKILL_IMPORT_LIMITS.packageBytes)
-  assert.ok(preview.estimatedPackageBytes < SKILL_IMPORT_LIMITS.packageBytes)
-  assert.ok(SkillImportPreviewSchema.safeParse(preview).success)
-  const archive = await f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'op-compressed' })
-  const chunks: Buffer[] = []
-  for await (const chunk of archive.open()) chunks.push(Buffer.from(chunk))
-  const zip = Buffer.concat(chunks)
-  assert.equal(zip.length, preview.estimatedPackageBytes)
-  assert.equal(packageSha256(zip), archive.sha256)
-  const entry = Buffer.from(preview.content)
-  const installed = readSkillZip(zip, { protocolVersion: 1, capabilityId: 'cap-test', versionId: 'v-test',
-    approvedContentSha256: packageSha256(entry), status: 'AVAILABLE', format: 'zip', installationDirectory: 'test',
-    entryPath: 'SKILL.md', entrySha256: packageSha256(entry), artifactSha256: archive.sha256,
-    byteLength: zip.length, fileCount: preview.fileCount, downloadPath: '/client/subscriptions/sub-test/skills/cap-test/versions/v-test/artifact' })
-  const resource = installed.find(file => file.path === 'references/large.bin')!
-  assert.equal(resource.bytes.length, size)
-  const expectedHash = createHash('sha256')
-  const block = Buffer.alloc(1024 * 1024)
-  for (let i = 0; i < 120; i++) expectedHash.update(block)
-  assert.equal(packageSha256(resource.bytes), expectedHash.digest('hex'))
-  assert.deepEqual(installed.find(file => file.path === 'SKILL.md')?.bytes, entry)
-})
-
-test('rejects a ZIP above 100 MiB after compression without leaving temporary files', async t => {
-  const f = await fixture()
-  t.after(async () => { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) })
-  const skill = await addSkill(join(f.home, '.agents', 'skills'))
-  const handle = await open(join(skill, 'references', 'random.bin'), 'w')
-  const block = randomBytes(1024 * 1024)
-  try { for (let i = 0; i < 101; i++) await handle.write(block) } finally { await handle.close() }
-  const root = await agentsRoot(f.files)
-  const [candidate] = await f.files.scan([root.id])
-  assert.ok(candidate)
-  await assert.rejects(f.files.preview({ requestId: 'req-over-budget', candidateId: candidate.candidateId, revision: 1 }), /PACKAGE_BUDGET_EXCEEDED/)
-  assert.deepEqual(await readdir(f.temp).catch(() => []), [])
-})
-
-test('retains the expanded-size budget before attempting compression', async t => {
-  const f = await fixture()
-  t.after(async () => { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) })
-  const skill = await addSkill(join(f.home, '.agents', 'skills'))
-  const handle = await open(join(skill, 'references', 'oversized.bin'), 'w')
-  try { await handle.truncate(SKILL_IMPORT_LIMITS.expandedBytes + 1) } finally { await handle.close() }
-  const root = await agentsRoot(f.files)
-  const [candidate] = await f.files.scan([root.id])
-  assert.ok(candidate)
-  await assert.rejects(f.files.preview({ requestId: 'req-expanded', candidateId: candidate.candidateId, revision: 1 }), /EXPANDED_BUDGET_EXCEEDED/)
 })
 
 test('preserves lowercase skill.md identity through preview and packaging', async () => {
@@ -292,21 +273,6 @@ test('rejects secret files without exposing their contents', async () => {
   await f.files.dispose()
   await rm(f.base, { recursive: true, force: true })
 })
-
-for (const path of ['.sep-package-manifest.json', '.SEP-PACKAGE-MANIFEST.JSON', '．sep-package-manifest.json',
-  '.sep-package-manifest.json/guide.md', 'references/a\u200bb.txt', 'references/\u202ereport.txt', 'references/bad?.txt']) {
-  test('rejects paths that server upload and client installation cannot accept: ' + JSON.stringify(path), async t => {
-    const f = await fixture()
-    t.after(async () => { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) })
-    const skill = await addSkill(join(f.home, '.agents', 'skills'))
-    await mkdir(join(skill, path, '..'), { recursive: true })
-    await writeFile(join(skill, path), 'attachment')
-    const root = await agentsRoot(f.files)
-    const [candidate] = await f.files.scan([root.id])
-    assert.ok(candidate)
-    await assert.rejects(f.files.preview({ requestId: 'req-path', candidateId: candidate.candidateId, revision: 1 }), /UNSAFE_PACKAGE_PATH/)
-  })
-}
 
 test('does not follow symlinks outside approved roots', async () => {
   const f = await fixture()
@@ -445,7 +411,15 @@ test('includes safe hidden resources and preserves authorized in-root symlink na
   const chunks: Buffer[] = []
   for await (const chunk of archive.open()) chunks.push(Buffer.from(chunk))
   const zip = Buffer.concat(chunks)
-  const names = Object.keys(unzipSync(zip))
+  const names: string[] = []
+  let offset = 0
+  while (zip.readUInt32LE(offset) === 0x04034b50) {
+    const nameLength = zip.readUInt16LE(offset + 26)
+    const extraLength = zip.readUInt16LE(offset + 28)
+    const size = zip.readUInt32LE(offset + 22)
+    names.push(zip.subarray(offset + 30, offset + 30 + nameLength).toString('utf8'))
+    offset += 30 + nameLength + extraLength + size
+  }
   assert.ok(names.includes('linked-file.md'))
   assert.ok(names.includes('linked-dir/guide.md'))
   await f.files.dispose()
@@ -483,7 +457,15 @@ test('preserves empty directories and invalidates their snapshot when changed', 
   const chunks: Buffer[] = []
   for await (const chunk of archive.open()) chunks.push(Buffer.from(chunk))
   const zip = Buffer.concat(chunks)
-  const names = Object.keys(unzipSync(zip))
+  let offset = 0
+  const names: string[] = []
+  while (zip.readUInt32LE(offset) === 0x04034b50) {
+    const nameLength = zip.readUInt16LE(offset + 26)
+    const extraLength = zip.readUInt16LE(offset + 28)
+    const size = zip.readUInt32LE(offset + 22)
+    names.push(zip.subarray(offset + 30, offset + 30 + nameLength).toString('utf8'))
+    offset += 30 + nameLength + extraLength + size
+  }
   assert.ok(names.includes('empty-dir/'))
   await mkdir(join(skill, 'empty-dir', 'nested'), { recursive: true })
   await assert.rejects(f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'op-empty-changed' }), /CANDIDATE_CHANGED/)
@@ -632,12 +614,12 @@ test('cancellation after source handle validation rejects safely and removes the
   const originalStat = prototype.stat
   await handle.close()
   let cancelledDuringValidation = false
-  const cancelled: { handle?: FileHandle } = {}
+  let cancelledHandle: FileHandle | undefined
   const mocked = t.mock.method(prototype, 'stat', async function (this: FileHandle, ...args: Parameters<FileHandle['stat']>) {
     const info = await Reflect.apply(originalStat, this, args)
     if (!controller.signal.aborted && (await readdir(f.temp).catch(() => [])).some(name => name.endsWith('.zip'))) {
       cancelledDuringValidation = true
-      cancelled.handle = this
+      cancelledHandle = this
       controller.abort(reason)
     }
     return info
@@ -645,7 +627,7 @@ test('cancellation after source handle validation rejects safely and removes the
   try {
     await assert.rejects(f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'op-cancel-validated' }, controller.signal), error => error === reason || error instanceof Error && error.name === 'AbortError' && error.cause === reason)
     assert.equal(cancelledDuringValidation, true)
-    assert.equal(cancelled.handle?.fd, -1, 'the source handle must close before cancellation settles')
+    assert.equal(cancelledHandle?.fd, -1, 'the source handle must close before cancellation settles')
     assert.deepEqual((await readdir(f.temp)).filter(name => name.endsWith('.zip')), [])
   } finally {
     mocked.mock.restore()

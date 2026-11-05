@@ -64,7 +64,7 @@ const assetSchema = z.object({
     asset.derivedFrom.localAssetId === assetId('output', JSON.stringify([asset.derivedFrom.jobId, asset.derivedFrom.outputId])))), 'Invalid asset identity, derivation or dimensions.')
 const snapshotSchema = z.object({
   version: z.literal(1), owner: ownerSchema, taskId: mediaId, runId: mediaId, subscriptionId: opaqueId,
-  systemPrompt: z.string().max(2_000_000), skills: z.array(z.object({ path: z.string().min(1).max(4096), sha256: hashSchema, version: opaqueId }).strict()).max(256),
+  systemPrompt: z.string(), skills: z.array(z.object({ path: z.string().min(1), sha256: hashSchema, version: opaqueId }).strict()),
   capabilities: mediaCapabilitiesSchema.nullable(), createdAt: timestamp,
   runtimeSnapshot: employeeRuntimeSnapshotSchema.optional(),
 }).strict().refine(snapshot => !snapshot.runtimeSnapshot || (
@@ -203,14 +203,14 @@ export class MediaStore implements MediaStorePort {
     }
   }
 
-  private async json<T>(file: string, schema: z.ZodType<T>): Promise<T | null> {
+  private async json<T>(file: string, schema: z.ZodType<T>, maxBytes = MAX_MANIFEST_BYTES): Promise<T | null> {
     await this.waitForPublication(dirname(file))
     let bytes: Buffer
-    try { bytes = await this.bytes(file, false, MAX_MANIFEST_BYTES) } catch (error) {
+    try { bytes = await this.bytes(file, false, maxBytes) } catch (error) {
       if (!missing(error)) throw error
       const name = relative(dirname(file), file)
       const names = await this.names(dirname(file))
-      if (names.includes(name)) return this.json(file, schema)
+      if (names.includes(name)) return this.json(file, schema, maxBytes)
       const evidence = names.some(entry => entry === `${name}.bak` || entry.startsWith(`${name}.corrupt-`) ||
         (entry.startsWith(`${name}.`) && entry.endsWith('.tmp')))
       if (evidence) throw new MediaPersistenceError()
@@ -221,8 +221,8 @@ export class MediaStore implements MediaStorePort {
     }
   }
 
-  private async write(file: string, value: unknown, beforePublish?: () => void): Promise<void> {
-    if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_MANIFEST_BYTES) throw new MediaPersistenceError('Media manifest exceeds the supported size.')
+  private async write(file: string, value: unknown, beforePublish?: () => void, maxBytes = MAX_MANIFEST_BYTES): Promise<void> {
+    if (Number.isFinite(maxBytes) && Buffer.byteLength(JSON.stringify(value), 'utf8') > maxBytes) throw new MediaPersistenceError('Media manifest exceeds the supported size.')
     // Only publication is tracked, not the WriteChain operation: writers read before publishing.
     await this.publishing(dirname(file), async () => {
       await this.assertPath(file)
@@ -617,7 +617,7 @@ export class MediaStore implements MediaStorePort {
     await writes.run(this.key(scope, snapshot.taskId), async () => {
       const existing = await this.getSnapshot(scope, snapshot.taskId, snapshot.runId)
       if (existing && !isDeepStrictEqual(existing, snapshot)) throw new MediaPersistenceError('Media run snapshots are immutable.')
-      if (!existing) await this.write(file, snapshot)
+      if (!existing) await this.write(file, snapshot, undefined, Infinity)
     })
   }
 
@@ -633,7 +633,7 @@ export class MediaStore implements MediaStorePort {
       }
       return snapshots.sort((a, b) => b.createdAt - a.createdAt || b.runId.localeCompare(a.runId))[0] ?? null
     }
-    const snapshot = await this.json(this.file(scope, taskId, 'snapshots', runId), snapshotSchema)
+    const snapshot = await this.json(this.file(scope, taskId, 'snapshots', runId), snapshotSchema, Infinity)
     if (snapshot) {
       assertOwner(snapshot.owner, scope)
       if (snapshot.taskId !== taskId || snapshot.runId !== runId) throw new MediaPersistenceError('Media snapshot identity does not match its manifest.')

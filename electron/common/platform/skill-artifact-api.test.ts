@@ -32,6 +32,15 @@ async function flush(): Promise<void> {
 }
 
 describe('skill artifact rate limit recovery', () => {
+  it('does not impose a fixed skill download deadline and preserves caller cancellation', async t => {
+    t.mock.method(AbortSignal, 'timeout', () => { throw new Error('Unexpected fixed download timeout') })
+    const controller = new AbortController()
+    globalThis.fetch = async (_url, init) => {
+      assert.equal(init?.signal, controller.signal)
+      return new Response(bytes, { headers: headers() })
+    }
+    assert.deepEqual(await downloadSkillArtifact('sub-1', artifact, 'access', { signal: controller.signal }), bytes)
+  })
   it('waits for Retry-After and releases the rejected body before requesting the same artifact', async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
     let calls = 0
@@ -158,23 +167,6 @@ describe('skill artifact rate limit recovery', () => {
 })
 
 describe('skill artifact authenticated download', () => {
-  it('allows ten minutes for large downloads while preserving caller cancellation', async t => {
-    const timeout = new AbortController()
-    const controller = new AbortController()
-    t.mock.method(AbortSignal, 'timeout', (duration: number) => {
-      assert.equal(duration, 10 * 60_000)
-      return timeout.signal
-    })
-    globalThis.fetch = async (_input, init) => {
-      assert.equal(init?.signal?.aborted, false)
-      controller.abort()
-      assert.equal(init?.signal?.aborted, true)
-      init?.signal?.throwIfAborted()
-      assert.fail('Cancelled download must stop')
-    }
-    await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access', { signal: controller.signal }), { name: 'AbortError' })
-  })
-
   it('returns exact Buffer bytes using only the ordinary access token and configured API prefix', async () => {
     let calls = 0
     globalThis.fetch = async (input, init) => {
@@ -184,7 +176,7 @@ describe('skill artifact authenticated download', () => {
       assert.deepEqual([...new Headers(init?.headers)], [['authorization', 'Bearer ordinary-access']])
       assert.equal(init?.credentials, 'omit')
       assert.equal(init?.redirect, 'error')
-      assert.ok(init?.signal instanceof AbortSignal)
+      assert.equal(init?.signal, undefined)
       return new Response(bytes, { headers: headers() })
     }
     const result = await downloadSkillArtifact('sub-1', artifact, 'ordinary-access')

@@ -16,7 +16,7 @@ describe('runtime skill names', () => {
     assert.equal(new Set(names.values()).size, entries.length)
     assert.deepEqual(names, allocateSkillNames([...entries].reverse()))
   })
-  it('keeps unique names unchanged and bounds aliases without splitting Unicode characters', () => {
+  it('keeps full names in collision aliases without splitting Unicode characters', () => {
     const entries: RuntimeSkillName[] = [
       { id: 'a', name: 'unique', source: 'employee' },
       { id: 'b', name: '𠀀'.repeat(64), source: 'employee' },
@@ -25,8 +25,9 @@ describe('runtime skill names', () => {
     const names = allocateSkillNames(entries)
     assert.equal(names.get('a'), 'unique')
     for (const value of names.values()) {
-      assert.ok(Array.from(value).length <= 64)
       assert.equal(Buffer.from(value).toString('utf8'), value)
     }
+    assert.ok(names.get('b')!.includes('𠀀'.repeat(64)))
+    assert.ok(names.get('c')!.includes('𠀀'.repeat(64)))
   })
 })

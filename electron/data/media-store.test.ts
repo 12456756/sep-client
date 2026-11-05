@@ -470,10 +470,13 @@ describe('MediaStore jobs and snapshots', () => {
     }
   })
 
-  it('rejects a snapshot whose serialized multibyte prompt would exceed the readable manifest limit', async () => {
+  it('round trips large skill snapshots without manifest or skill count quotas', async () => {
     const { store } = await fixture()
-    await assert.rejects(store.saveSnapshot(owner, { ...snapshot(), systemPrompt: '\u4e00'.repeat(1_500_000) }), /manifest exceeds/)
-    assert.equal(await store.getSnapshot(owner, 'task-a'), null)
+    const value = { ...snapshot(), systemPrompt: '\u4e00'.repeat(2_000_001),
+      skills: Array.from({ length: 257 }, (_, index) => ({ path: `skills/skill-${index}`, sha256: 'a'.repeat(64), version: 'v1' })) }
+    await store.saveSnapshot(owner, value)
+    assert.deepEqual(await store.getSnapshot(owner, 'task-a'), value)
+    await assert.rejects(store.saveSnapshot(owner, { ...value, systemPrompt: 'changed' }), /immutable/)
   })
 
   it('archives without losing job/assets/snapshots or hiding jobs from background scans', async () => {

@@ -10,7 +10,6 @@ import {
 
 const MAX_RATE_LIMIT_RETRIES = 3
 const MAX_RETRY_WAIT_MS = 5 * 60_000
-const ARTIFACT_DOWNLOAD_TIMEOUT_MS = 10 * 60_000
 
 export interface SkillArtifactDownloadOptions {
   signal?: AbortSignal
@@ -42,13 +41,12 @@ async function fetchArtifact(expected: AvailableDescriptor, accessToken: string,
   for (let attempt = 0; ; attempt++) {
     options.signal?.throwIfAborted()
     options.assertCurrent?.()
-    const timeout = AbortSignal.timeout(ARTIFACT_DOWNLOAD_TIMEOUT_MS)
     const response = await fetch(`${config.SEP_BASE_URL}${expected.downloadPath}`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${accessToken}` },
       credentials: 'omit',
       redirect: 'error',
-      signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+      signal: options.signal,
     })
     if (response.status !== 429 || response.redirected) return response
     // Release the rejected response before waiting; never read upstream error bodies.
