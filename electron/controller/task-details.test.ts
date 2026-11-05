@@ -40,10 +40,10 @@ function updateRoute(channel: string = INVOKE_CHANNELS.TASK_UPDATE_DETAILS): Tes
 }
 
 describe('task detail update IPC', () => {
-  it('creates tasks with 128 attachment references and rejects 129', () => {
+  it('creates tasks with 10 attachment references and rejects 11', () => {
     const route = updateRoute(INVOKE_CHANNELS.TASK_CREATE)
     const input = { title: 'Images', prompt: 'Inspect attachments', subscriptionId: 'sub', attachmentSessionId: 'session',
-      attachmentRefs: Array.from({ length: 128 }, (_, index) => ({ attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) })) }
+      attachmentRefs: Array.from({ length: 10 }, (_, index) => ({ attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) })) }
     assert.equal(route.schema.safeParse(input).success, true)
     assert.equal(route.schema.safeParse({ ...input, attachmentRefs: [...input.attachmentRefs, input.attachmentRefs[0]] }).success, false)
   })

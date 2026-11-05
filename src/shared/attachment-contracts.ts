@@ -3,7 +3,7 @@ import { z } from 'zod'
 const safeId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/)
 
-export const attachmentImportLimits = Object.freeze({ maxFiles: 128, maxFileBytes: 20 * 1024 * 1024, maxTotalBytes: 100 * 1024 * 1024 })
+export const attachmentImportLimits = Object.freeze({ maxFiles: 10, maxFileBytes: 20 * 1024 * 1024, maxTotalBytes: 100 * 1024 * 1024 })
 
 export const attachmentRefSchema = z.object({ attachmentId: safeId, sha256 }).strict()
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>
