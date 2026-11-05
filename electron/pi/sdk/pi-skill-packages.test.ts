@@ -509,6 +509,18 @@ describe('SkillStore', () => {
     assert.deepEqual(await readdir(join(prepared.skillPaths[0]!, '..')), ['orders'])
   })
 
+  it('installs a large approved SKILL.md with a long description', async () => {
+    const content = `---\nname: orders\ndescription: ${'x'.repeat(1100)}\n---\n${'Work instructions.\n'.repeat(30_000)}`
+    const runtime = artifactFixture(content)
+    const downloads = serveArtifact(runtime)
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 })
+    assert.ok(Buffer.byteLength(content) > 500 * 1024)
+    assert.equal(prepared.skills[0]?.description.length, 1100)
+    assert.equal(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'), 'utf8'), content)
+    assert.equal(downloads(), 1)
+  })
+
   it('installs the entire ZIP atomically, preserves approved entry hash and checks attachments on reload and reuse', async () => {
     const content = '\uFEFF\n\n---\r\nname: 订单-处理\r\ndescription: Approved operations\r\ndisable-model-invocation: true\r\nmetadata: {version: 1}\r\n---\r\nRead [guide](references/guide.md).\r\n'
     const files = [{ path: '订单-处理/SKILL.md', bytes: Buffer.from(content) }, { path: '订单-处理/references/guide.md', bytes: Buffer.from('Complete guide') }, { path: '订单-处理/assets/icon.bin', bytes: Buffer.from([0, 255, 1]) }, { path: '订单-处理/output/empty/', bytes: Buffer.alloc(0) }]
@@ -541,14 +553,16 @@ describe('SkillStore', () => {
     assert.deepEqual(await readdir(join(path, '../..')), ['订单-处理'])
   })
 
-  it('never falls back to a bare entry when the ZIP lacks a referenced attachment', async () => {
+  it('installs a ZIP when a mentioned resource is not bundled', async () => {
     const content = '---\nname: orders\ndescription: Orders\n---\nRead [guide](references/missing.md).'
     const files = [{ path: 'SKILL.md', bytes: Buffer.from(content) }]
     const bytes = zipFixture(files)
     const runtime = { ...artifactFixture(content), artifact: zipDescriptor(bytes, files) }
     const downloads = serveArtifact(runtime, { bytes })
     const { skills } = await createStore()
-    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /missing local resource/)
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    assert.equal(prepared.skills.length, 1)
+    assert.equal(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'), 'utf8'), content)
     assert.equal(downloads(), 1)
   })
 
@@ -989,10 +1003,13 @@ describe('SkillStore', () => {
     '---\nname: valid-name\ndescription: true\n---\n# Work',
     '---\nname: valid-name\ndescription: test\n---invalid\n# Work',
   ]) {
-    it('rejects invalid or hidden frontmatter: ' + content.split('\n')[1], async () => {
+    it('accepts document text with invalid or hidden frontmatter: ' + content.split('\n')[1], async () => {
       installPlatformMock({ versionId: 'version-v1', version: '1.0', content })
       const { skills } = await createStore()
-      await assert.rejects(skills.prepare(request()), /frontmatter/)
+      const prepared = await skills.prepare(request())
+      assert.equal(prepared.skills.length, 1)
+      assert.ok(prepared.skills[0]?.name)
+      assert.match(prepared.skills[0]?.content ?? '', /# Work|name: missing-end|name: valid-name/)
     })
   }
 
@@ -1004,10 +1021,11 @@ describe('SkillStore', () => {
     'Run `./helper.sh`.',
     'Read `guide.md`.',
   ]) {
-    it('rejects missing package resources: ' + content, async () => {
+    it('allows unbundled resource mentions in skill instructions: ' + content, async () => {
       installPlatformMock({ versionId: 'version-v1', version: '1.0', content })
       const { skills } = await createStore()
-      await assert.rejects(skills.prepare(request()), /missing local resource/)
+      const prepared = await skills.prepare(request())
+      assert.equal(prepared.skills.length, 1)
     })
   }
 

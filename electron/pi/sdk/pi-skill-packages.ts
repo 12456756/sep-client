@@ -7,10 +7,10 @@ import { WriteChain } from '../../data/write-chain'
 import { getEmployeeSkills, previewSkill, type SkillVersion } from '../../common/platform/platform-api'
 import { employeeRuntimeSkillSchema, type EmployeeRuntimeSkill, type PreparedEmployeeSkill } from '../../common/platform/employee-runtime-contract'
 import { downloadSkillArtifact } from '../../common/platform/skill-artifact-api'
-import { skillArtifactSchema, skillArtifactNameSchema, skillArtifactFrontmatterSchema, skillNameComparisonKey, maxSkillEntryBytes, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
+import { skillArtifactSchema, skillArtifactNameSchema, skillNameComparisonKey, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 import { z } from 'zod'
 import { AppError } from '../../errors/app-error'
-import { parseSkillMarkdown, validatedSkillMarkdown, validateSkillResources, approvedPackageBody, matchesApprovedSkillMarkdown } from './skill-package-parser'
+import { parseSkillMarkdown, validatedSkillMarkdown, approvedPackageBody, matchesApprovedSkillMarkdown } from './skill-package-parser'
 import { logger } from '../../common/logger'
 import { readSkillZip, packageCache, packageManifestName, packageSha256, safePackagePath, verifyPackageCache, assertSkillPathParents, type SkillPackageFile } from './skill-package-zip'
 
@@ -85,17 +85,14 @@ function fallbackName(capabilityId: string): string {
 function skillEntry(content: string, skill: SkillMetadata): { content: string; name: string; description: string } {
   const parsed = parseSkillMarkdown(content)
   const hasFrontmatter = parsed.hasFrontmatter
-  const metadata = hasFrontmatter ? parsed.frontmatter : {
+  const fallback = {
     name: fallbackName(skill.capability.id),
     description: skill.capability.description?.trim() || skill.capability.name,
   }
-  const valid = skillArtifactFrontmatterSchema.safeParse(metadata)
-  if (!valid.success) throw new Error('Skill frontmatter requires a valid name and description.')
-  if (!parsed.body.trim()) throw new Error('Approved skill entry is empty.')
-  validateSkillResources(parsed.body)
-  const entry = hasFrontmatter ? content : `---\nname: ${JSON.stringify(valid.data.name)}\ndescription: ${JSON.stringify(valid.data.description)}\n---\n\n${content}`
-  validatedSkillMarkdown(entry)
-  return { content: entry, name: valid.data.name, description: valid.data.description }
+  const metadata = validatedSkillMarkdown(content, fallback).metadata
+  const entry = hasFrontmatter ? content : `---\nname: ${JSON.stringify(metadata.name)}\ndescription: ${JSON.stringify(metadata.description)}\n---\n\n${content}`
+  validatedSkillMarkdown(entry, fallback)
+  return { content: entry, name: metadata.name, description: metadata.description }
 }
 
 function safeSegment(value: string): string {
@@ -109,14 +106,15 @@ function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approved
   }
   const files = artifact.format === 'zip' ? readSkillZip(bytes, artifact) : [{ path: 'SKILL.md', bytes }]
   const entry = files.find(file => file.path === artifact.entryPath)
-  if (!entry || entry.bytes.length > maxSkillEntryBytes || packageSha256(entry.bytes) !== artifact.entrySha256 ||
+  if (!entry || packageSha256(entry.bytes) !== artifact.entrySha256 ||
     artifact.format === 'single-file' && (artifact.entryPath !== 'SKILL.md' || artifact.fileCount !== 1)) {
     throw new Error('Approved skill artifact integrity mismatch.')
   }
   let content: string
   try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(entry.bytes) }
   catch { throw new Error('Approved skill entry is not valid UTF-8.') }
-  const parsed = validatedSkillMarkdown(content)
+  const fallback = { name: artifact.installationDirectory, description: `Instructions for ${artifact.installationDirectory}` }
+  const parsed = validatedSkillMarkdown(content, fallback)
   const metadata = parsed.metadata
   if (content !== approvedContent && !matchesApprovedSkillMarkdown(content, approvedContent)
     && !(artifact.format === 'zip' && approvedPackageBody(content) === approvedContent)) {
@@ -131,8 +129,7 @@ function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approved
     })
   }
   if (!safePackagePath(metadata.name) || skillNameComparisonKey(metadata.name) !== skillNameComparisonKey(artifact.installationDirectory)
-    || artifact.format === 'zip' && dirname(artifact.entryPath) !== '.' && skillNameComparisonKey(basename(dirname(artifact.entryPath))) !== skillNameComparisonKey(metadata.name)) throw new Error('Invalid approved skill frontmatter or directory.')
-  validateSkillResources(parsed.body, artifact.entryPath, new Set(files.filter(file => !file.directory).map(file => file.path)))
+    || artifact.format === 'zip' && dirname(artifact.entryPath) !== '.' && skillNameComparisonKey(basename(dirname(artifact.entryPath))) !== skillNameComparisonKey(metadata.name)) throw new Error('Invalid approved skill package directory.')
   // Validate normalized metadata, but install and freeze the exact authenticated bytes.
   return { content, name: metadata.name, description: metadata.description, files }
 }

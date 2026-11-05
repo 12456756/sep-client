@@ -3,8 +3,7 @@ import * as assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { maxSkillEntryBytes } from '../../common/platform/skill-artifact-contract'
-import { packageCrc32, packageSha256, readSkillZip, maxSkillPackageExpandedBytes, packageCache, packageManifestName, verifyPackageCache } from './skill-package-zip'
+import { packageCrc32, packageSha256, readSkillZip, packageCache, packageManifestName, verifyPackageCache } from './skill-package-zip'
 import { zipFixture, zipDescriptor } from './skill-package-zip.fixture'
 
 const entry = { path: 'SKILL.md', bytes: Buffer.from('---\nname: orders\ndescription: Orders\n---\n# Work') }
@@ -85,15 +84,26 @@ describe('bounded authenticated ZIP reader', () => {
     assert.throws(() => readSkillZip(truncated, zipDescriptor(truncated, files)), /unsafe/)
   })
 
-  it('enforces file count, per-entry and total inflation budgets before publication', () => {
-    for (const files of [
-      [entry, ...Array.from({ length: 500 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))],
-      [{ ...entry, bytes: Buffer.alloc(maxSkillEntryBytes + 1) }],
-      [entry, { path: 'huge.bin', bytes: Buffer.alloc(maxSkillPackageExpandedBytes) }],
-    ]) {
-      const bytes = zipFixture(files, { deflate: true })
-      assert.throws(() => readSkillZip(bytes, zipDescriptor(bytes, files)), /unsafe/)
-    }
+  it('keeps the file-count bound while accepting entries and packages above old size limits', () => {
+    const tooManyFiles = [entry, ...Array.from({ length: 500 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))]
+    const tooManyBytes = zipFixture(tooManyFiles)
+    assert.throws(() => readSkillZip(tooManyBytes, zipDescriptor(tooManyBytes, tooManyFiles)), /unsafe/)
+
+    const files = [
+      { path: 'SKILL.md', bytes: Buffer.alloc(500 * 1024 + 1, 0x23) },
+      { path: 'references/large.bin', bytes: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) },
+    ]
+    const bytes = zipFixture(files, { deflate: true })
+    const read = readSkillZip(bytes, zipDescriptor(bytes, files))
+    assert.equal(read[0]?.bytes.length, files[0]?.bytes.length)
+    assert.equal(read[1]?.bytes.length, files[1]?.bytes.length)
+  })
+
+  it('accepts a ZIP artifact larger than 20 MB', () => {
+    const files = [entry, { path: 'references/large.bin', bytes: Buffer.alloc(20 * 1024 * 1024 + 1, 0x61) }]
+    const bytes = zipFixture(files)
+    assert.ok(bytes.length > 20 * 1024 * 1024)
+    assert.deepEqual(readSkillZip(bytes, zipDescriptor(bytes, files)), files)
   })
 
   it('checks empty directories, complete inventory, manifest tampering and attachment/ancestor symlinks', async t => {
