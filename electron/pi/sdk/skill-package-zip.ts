@@ -52,7 +52,7 @@ function validateExtra(bytes: Buffer): void {
   }
 }
 
-/** Bounded in-memory ZIP reader. No extraction library, process, or dependency is needed. */
+/** Authenticated in-memory ZIP reader. No extraction library, process, or dependency is needed. */
 export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): SkillPackageFile[] {
   if (bytes.length !== artifact.byteLength || packageSha256(bytes) !== artifact.artifactSha256) invalid()
   let end = -1
@@ -63,7 +63,7 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
   const count = bytes.readUInt16LE(end + 10)
   const centralSize = bytes.readUInt32LE(end + 12)
   const centralStart = bytes.readUInt32LE(end + 16)
-  if (!count || count > 500 || bytes.readUInt16LE(end + 8) !== count || centralStart + centralSize !== end) invalid()
+  if (!count || bytes.readUInt16LE(end + 8) !== count || centralStart + centralSize !== end) invalid()
   const files: SkillPackageFile[] = []
   const paths = new Map<string, boolean>()
   const directorySpellings: string[] = []
@@ -118,7 +118,6 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
     ranges.push([local, rangeEnd])
     if (directory && (size !== 0 || compressed !== 0 || crc !== 0)) invalid()
     if (!directory) {
-      if (files.length >= 500) invalid()
       const compressedBytes = bytes.subarray(start, dataEnd)
       let data: Buffer
       try {
@@ -164,8 +163,8 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
 
 const cacheSchema = z.object({
   entryPath: z.string().refine(safePackagePath),
-  files: z.array(z.object({ path: z.string().refine(safePackagePath), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteLength: z.number().int().nonnegative().safe() }).strict()).min(1).max(500),
-  directories: z.array(z.string().refine(safePackagePath)).max(500).optional(),
+  files: z.array(z.object({ path: z.string().refine(safePackagePath), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteLength: z.number().int().nonnegative().safe() }).strict()).min(1),
+  directories: z.array(z.string().refine(safePackagePath)).optional(),
 }).passthrough()
 
 export function packageCache(files: readonly SkillPackageFile[], entryPath: string): { entryPath: string; files: Array<{ path: string; sha256: string; byteLength: number }>; directories: string[] } {
@@ -182,13 +181,11 @@ export function verifyPackageCache(entryFile: string, manifestBytes: Buffer): vo
   const expected = new Map(cache.files.map(file => [file.path, file]))
   const directories = new Set(cache.directories ?? [])
   if (expected.size !== cache.files.length || !expected.has(cache.entryPath)) invalid()
-  let entries = 0
   const manifestPath = join(dirname(entryFile), packageManifestName)
   function walk(path: string, prefix: string): void {
     const stat = lstatSync(path)
     if (!stat.isDirectory() || stat.isSymbolicLink()) invalid()
     for (const name of readdirSync(path)) {
-      if (++entries > 2000) invalid()
       const fullPath = join(path, name)
       const relative = prefix ? `${prefix}/${name}` : name
       const info = lstatSync(fullPath)

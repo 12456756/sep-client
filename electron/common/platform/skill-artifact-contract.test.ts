@@ -53,10 +53,16 @@ describe('SEP skill artifact descriptor schema parity', () => {
       { installationDirectory: '' }, { installationDirectory: 'Bad_Name' }, { installationDirectory: '../skill' },
       { installationDirectory: 'a'.repeat(65) }, { installationDirectory: 'a--b' },
       { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: Number.MAX_SAFE_INTEGER + 1 },
-      { fileCount: 0 }, { fileCount: 1.5 }, { fileCount: 501 },
+      { fileCount: 0 }, { fileCount: -1 }, { fileCount: 1.5 }, { fileCount: '501' }, { fileCount: Number.MAX_SAFE_INTEGER + 1 },
     ]) assert.equal(skillArtifactSchema.safeParse({ ...available, ...override }).success, false, JSON.stringify(override))
     assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: 20 * 1024 * 1024 + 1, fileCount: 500,
       installationDirectory: 'a'.repeat(64) }).success, true)
+  })
+
+  it('accepts file counts above the former client limit', () => {
+    for (const fileCount of [501, 10_000, Number.MAX_SAFE_INTEGER]) {
+      assert.equal(skillArtifactSchema.safeParse({ ...available, format: 'zip', fileCount }).success, true)
+    }
   })
 
   it('accepts only safe relative entry paths ending in SKILL.md', () => {

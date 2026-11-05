@@ -2,14 +2,14 @@ import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { packageCrc32, packageSha256, readSkillZip, packageCache, packageManifestName, verifyPackageCache } from './skill-package-zip'
+import { dirname, join } from 'node:path'
+import { packageCrc32, packageSha256, readSkillZip, packageCache, packageManifestName, verifyPackageCache, type SkillPackageFile } from './skill-package-zip'
 import { zipFixture, zipDescriptor } from './skill-package-zip.fixture'
 
 const entry = { path: 'SKILL.md', bytes: Buffer.from('---\nname: orders\ndescription: Orders\n---\n# Work') }
 const guide = { path: 'references/guide.md', bytes: Buffer.from('Guide') }
 
-describe('bounded authenticated ZIP reader', () => {
+describe('authenticated ZIP reader', () => {
   it('matches known CRC32 and preserves store/deflate/descriptor/directory contents', () => {
     assert.equal(packageCrc32(Buffer.from('123456789')), 0xcbf43926)
     for (const deflate of [false, true]) for (const descriptor of [false, true]) {
@@ -84,11 +84,7 @@ describe('bounded authenticated ZIP reader', () => {
     assert.throws(() => readSkillZip(truncated, zipDescriptor(truncated, files)), /unsafe/)
   })
 
-  it('keeps the file-count bound while accepting entries and packages above old size limits', () => {
-    const tooManyFiles = [entry, ...Array.from({ length: 500 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))]
-    const tooManyBytes = zipFixture(tooManyFiles)
-    assert.throws(() => readSkillZip(tooManyBytes, zipDescriptor(tooManyBytes, tooManyFiles)), /unsafe/)
-
+  it('accepts entries and packages above old size limits', () => {
     const files = [
       { path: 'SKILL.md', bytes: Buffer.alloc(500 * 1024 + 1, 0x23) },
       { path: 'references/large.bin', bytes: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) },
@@ -98,6 +94,45 @@ describe('bounded authenticated ZIP reader', () => {
     assert.equal(read[0]?.bytes.length, files[0]?.bytes.length)
     assert.equal(read[1]?.bytes.length, files[1]?.bytes.length)
   })
+
+  for (const files of [
+    [entry, ...Array.from({ length: 500 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))],
+    [...Array.from({ length: 501 }, (_, i) => ({ path: `directory-${i}/`, bytes: Buffer.alloc(0) })), entry],
+  ]) {
+    it(`accepts ${files.length} ZIP entries with ${files.filter(file => !file.path.endsWith('/')).length} files and verifies the declared count`, () => {
+      const bytes = zipFixture(files)
+      const artifact = zipDescriptor(bytes, files)
+      const read = readSkillZip(bytes, artifact)
+      assert.deepEqual(read, files.map(file => file.path.endsWith('/')
+        ? { path: file.path.slice(0, -1), bytes: file.bytes, directory: true }
+        : file))
+      assert.throws(() => readSkillZip(bytes, { ...artifact, fileCount: artifact.fileCount + 1 }), /unsafe/)
+    })
+  }
+
+  const largeCaches: Array<{ name: string; files: SkillPackageFile[] }> = [
+    { name: 'more than 500 files', files: [entry, ...Array.from({ length: 500 }, (_, i) => ({ path: `file-${i}`, bytes: Buffer.from('data') }))] },
+    { name: 'more than 500 explicit directories', files: [entry, ...Array.from({ length: 501 }, (_, i) => ({ path: `directory-${i}`, bytes: Buffer.alloc(0), directory: true as const }))] },
+    // Implicit parents exceed the old traversal limit without exceeding either old manifest limit.
+    { name: 'more than 2000 filesystem entries', files: [entry, ...Array.from({ length: 400 }, (_, i) => ({ path: `tree-${i}/a/b/c/file`, bytes: Buffer.from('data') }))] },
+  ]
+  for (const { name, files } of largeCaches) {
+    it(`verifies a cache with ${name} and still rejects tampered content`, async t => {
+      const root = await mkdtemp(join(tmpdir(), 'sep-zip-count-'))
+      t.after(() => rm(root, { recursive: true, force: true }))
+      for (const file of files) {
+        const path = join(root, file.path)
+        await mkdir(file.directory ? path : dirname(path), { recursive: true })
+        if (!file.directory) await writeFile(path, file.bytes)
+      }
+      const manifest = Buffer.from(JSON.stringify(packageCache(files, entry.path)))
+      await writeFile(join(root, packageManifestName), manifest)
+      const verify = () => verifyPackageCache(join(root, entry.path), manifest)
+      assert.doesNotThrow(verify)
+      await writeFile(join(root, entry.path), Buffer.alloc(entry.bytes.length, 0x23))
+      assert.throws(verify, /unsafe/)
+    })
+  }
 
   it('accepts a ZIP artifact larger than 20 MB', () => {
     const files = [entry, { path: 'references/large.bin', bytes: Buffer.alloc(20 * 1024 * 1024 + 1, 0x61) }]
