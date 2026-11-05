@@ -64,6 +64,13 @@ test('general chat preserves selected model, permissions and history across turn
     createWorker: options => ({
       async run(prompt) {
         contexts.push(options.context)
+        assert.match(prompt, new RegExp(`成果/${options.context.taskId}`))
+        assert.match(prompt, /用户明确指定文档或文件类型时，按指定类型生成/)
+        assert.match(prompt, /最近新闻、实时信息、外部检索、多来源调研、资料汇总、竞品比较，或形成了值得留存/)
+        assert.match(prompt, /形成了值得留存的方案、分析、总结、清单或说明，必须生成 Markdown（\.md）文件/)
+        assert.match(prompt, /即使最终答复很短，只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown/)
+        assert.match(prompt, /简单事实问答、闲聊或无需留档的内容不必生成文件/)
+        assert.match(prompt, /只报告实际创建并保存成功的文件/)
         assert.ok(['first', 'second', 'third'].some(text => prompt.startsWith(`${text}\n\n`)))
         assert.doesNotMatch(prompt, /当前通用助手没有账号主体的图片\/视频生成授权/)
         assert.match(prompt, /优先使用当前会话已提供的图片\/视频工具/)
@@ -75,6 +82,9 @@ test('general chat preserves selected model, permissions and history across turn
         await options.context.mediaTools.execute('media_generate_image', {})
         await options.context.videoTools.execute('video_generate', {})
         await options.context.videoTools.execute('video_from_image', {})
+        const artifactDir = join(options.context.workspaceDir, '成果', options.context.taskId)
+        await mkdir(artifactDir, { recursive: true })
+        await writeFile(join(artifactDir, 'report.md'), '# Result', 'utf8')
         const emit = (type: string, data: unknown) => options.onEvent({
           taskId: options.context.taskId, runId: options.context.runId, subscriptionId: options.context.subscriptionId,
           sequence: 0, occurredAt: Date.now(), type, data,
@@ -112,6 +122,7 @@ test('general chat preserves selected model, permissions and history across turn
     await runtime.continueConversation(task.id, 'third')
     await settle(task.id)
     assert.equal(contexts.length, 3)
+    assert.deepEqual((await manager.getTask(task.id))?.files, [`成果/${task.id}/report.md`])
     for (const context of contexts) {
       assert.equal(context.modelId, 'selected')
       assert.equal(context.employeeProfile, undefined)
@@ -136,6 +147,65 @@ test('general chat preserves selected model, permissions and history across turn
     assert.deepEqual(messages.filter(message => message.role === 'assistant').map(message => message.content),
       ['Generated and saved.', 'Generated and saved.', 'Generated and saved.'])
   } finally { await runtime?.stopAll(); await rm(root, { recursive: true, force: true }) }
+})
+
+test('general chat asks the model to create the fixed artifact path after preparation fails and ignores scan failures', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-general-artifact-fallback-'))
+  const scope = { memberId: 'member', enterpriseId: 'enterprise' }
+  const manager = new TaskManager(root)
+  const runs = new TaskRunStore(root)
+  let promptSeen = ''
+  const runtime = new TaskRuntime({
+    taskManager: manager, taskRunStore: runs,
+    resolveEmployee: id => ({ subscriptionId: id, modelId: 'model', gatewayUrl: 'http://unused' }),
+    authorizeModel: async modelId => ({ subscriptionId: 'general-model', modelId, gatewayUrl: 'http://unused' }),
+    getRefreshToken: () => 'fixture', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
+    conversationArtifactStore: {
+      async prepare(_workspace, taskId) { return { status: 'retry-in-prompt', relativePath: `成果/${taskId}` } },
+      async scan() { throw new Error('scan unavailable') },
+    },
+    createWorker: options => ({
+      async run(prompt) {
+        promptSeen = prompt
+        assert.ok(prompt.includes('\u8bf7\u5c1d\u8bd5'))
+        assert.ok(prompt.includes(`成果/${options.context.taskId}`))
+        assert.match(prompt, /用户明确指定文档或文件类型时，按指定类型生成/)
+        assert.match(prompt, /最近新闻、实时信息、外部检索、多来源调研、资料汇总、竞品比较，或形成了值得留存/)
+        assert.match(prompt, /形成了值得留存的方案、分析、总结、清单或说明，必须生成 Markdown（\.md）文件/)
+        assert.match(prompt, /即使最终答复很短，只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown/)
+        assert.match(prompt, /简单事实问答、闲聊或无需留档的内容不必生成文件/)
+        assert.match(prompt, /只报告实际创建并保存成功的文件/)
+        await mkdir(options.context.sessionDir, { recursive: true })
+        const sessionFile = join(options.context.sessionDir, 'session.jsonl')
+        await writeFile(sessionFile, '{}\n', 'utf8')
+        await options.onSessionCreated?.({ sessionId: 'session', sessionFile })
+      }, async abort() {}, async dispose() {},
+    }),
+  })
+  const settle = async (id: string) => {
+    for (let i = 0; i < 200; i++) {
+      if ((await manager.getTask(id))?.activeRunId === null) return
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    assert.fail('run did not settle')
+  }
+  try {
+    await manager.initialize()
+    await manager.setCurrentUser(scope.memberId, scope.enterpriseId)
+    const task = await manager.createTask('general', 'write a report', join(root, 'workspace'), 'general-model')
+    const plans = new WorkPlanStore(root)
+    await plans.save(scope, {
+      id: task.id, schemaVersion: 1, sourceDraftId: 'draft', sourceDraftRevision: 1, owner: scope, mode: 'conversation',
+      title: 'general', goal: task.prompt, nodes: [], confirmedInputs: [],
+      conversation: { kind: 'general', modelId: 'selected', participants: [{ subscriptionId: 'general-model', modelId: 'selected' }], activeSubscriptionId: 'general-model' },
+      workspace: { mode: 'shared', path: task.workDir }, permissions: effectivePermissionPolicy({ preset: 'full-local', approvalMode: 'auto-approve' }),
+      planHash: 'general', createdAt: Date.now(),
+    })
+    await runtime.executeTask(task.id, { conversation: true })
+    await settle(task.id)
+    assert.ok(promptSeen.length > 0)
+    assert.equal((await manager.getTask(task.id))?.status, 'completed')
+  } finally { await runtime.stopAll(); await rm(root, { recursive: true, force: true }) }
 })
 
 test('general chat searches selected knowledge bases only when auto mode is relevant', async () => {
