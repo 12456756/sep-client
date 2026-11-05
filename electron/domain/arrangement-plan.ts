@@ -2,6 +2,7 @@ import { knowledgeSelectionSchema, type KnowledgeSelection } from '../../src/sha
 import { AppError } from '../errors/app-error'
 import { z } from 'zod'
 import type { DraftAttachmentCandidate, InputSnapshotRef, NodeInputRef } from '../../src/shared/attachment-contracts'
+import { attachmentImportLimits } from '../../src/shared/attachment-contracts'
 import { imageRequestedSpecSchema, videoRequestedSpecSchema, mediaParameterSourcesSchema } from '../../src/shared/media-spec-contract'
 
 export type ArrangementMode = 'conversation' | 'auto' | 'manual'
@@ -184,7 +185,7 @@ export const arrangementNodeWorkContractSchema = z.object({
       requirementIds.add(requirement.id)
     }
   }).optional(),
-  inputRefs: z.array(nodeInputRefSchema).max(64).optional(),
+  inputRefs: z.array(nodeInputRefSchema).max(attachmentImportLimits.maxFiles).optional(),
 }).superRefine((node, context) => {
   for (const [index, file] of (node.deliverables ?? []).entries()) {
     const kind = arrangementMediaKindForFormat(file.format) ??

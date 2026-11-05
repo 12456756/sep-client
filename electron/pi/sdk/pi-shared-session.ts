@@ -8,6 +8,7 @@ import type { PiAgentEvent, PiAgentRuntime, PiAgentSession, PiAgentSessionConfig
 export class SharedPiSession {
   private session: PiAgentSession | null = null
   private sessionFile: string | null = null
+  private vision: boolean | null = null
   private unsubscribeSession: (() => void) | null = null
   private listener: ((event: PiAgentEvent) => void) | null = null
   private disposed = false
@@ -26,12 +27,14 @@ export class SharedPiSession {
   async open(config: PiAgentSessionConfig): Promise<PiAgentSession> {
     return this.enqueue(async () => {
       if (this.disposed) throw new Error('Shared Pi session adapter has been disposed.')
-      if (this.session) return this.session
+      if (this.session && this.vision === (config.vision ?? null)) return this.session
+      if (this.session) await this.disposeCurrent()
       const session = await this.runtime.createSession({
         ...config,
         resumeSessionFile: this.sessionFile ?? config.resumeSessionFile,
       })
       this.session = session
+      this.vision = config.vision ?? null
       this.sessionFile = session.sessionFile ?? this.sessionFile ?? config.resumeSessionFile ?? null
       this.bindSessionEvents(session)
       return session
@@ -45,6 +48,7 @@ export class SharedPiSession {
       await this.disposeCurrent()
       const session = await this.runtime.createSession({ ...config, resumeSessionFile: resumeSessionFile ?? undefined })
       this.session = session
+      this.vision = config.vision ?? null
       this.sessionFile = session.sessionFile ?? resumeSessionFile ?? null
       this.bindSessionEvents(session)
       return session

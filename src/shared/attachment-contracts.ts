@@ -3,6 +3,8 @@ import { z } from 'zod'
 const safeId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/)
 
+export const attachmentImportLimits = Object.freeze({ maxFiles: 128, maxFileBytes: 20 * 1024 * 1024, maxTotalBytes: 100 * 1024 * 1024 })
+
 export const attachmentRefSchema = z.object({ attachmentId: safeId, sha256 }).strict()
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>
 export interface InputSnapshotRef {
@@ -47,6 +49,16 @@ export const attachmentViewSchema = z.object({
 }).strict()
 export type AttachmentView = z.infer<typeof attachmentViewSchema>
 
+export type AttachmentPreviewMediaType = 'image/png' | 'image/jpeg' | 'image/webp'
+export interface AttachmentPreview {
+  attachmentId: string
+  sha256: string
+  mediaType: AttachmentPreviewMediaType
+  bytes: Uint8Array
+  width?: number
+  height?: number
+}
+
 export const attachmentImportSessionSchema = z.object({
   schemaVersion: z.literal(1),
   sessionId: safeId,
@@ -55,9 +67,7 @@ export const attachmentImportSessionSchema = z.object({
   status: z.enum(['open', 'cancelled', 'claimed', 'expired']),
   createdAt: z.number().int().nonnegative(),
   expiresAt: z.number().int().nonnegative(),
-  attachments: z.array(attachmentViewSchema).max(10),
+  attachments: z.array(attachmentViewSchema).max(attachmentImportLimits.maxFiles),
   revision: z.number().int().nonnegative().default(0),
 }).strict()
 export type AttachmentImportSession = z.infer<typeof attachmentImportSessionSchema>
-
-export const attachmentImportLimits = Object.freeze({ maxFiles: 10, maxFileBytes: 20 * 1024 * 1024, maxTotalBytes: 100 * 1024 * 1024 })

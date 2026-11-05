@@ -23,6 +23,26 @@ class FakeSession implements PiAgentSession {
 }
 
 describe('SharedPiSession', () => {
+  it('recreates a session on vision capability changes while retaining history', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const adapter = new SharedPiSession({ async createSession(config) {
+      configs.push(config)
+      return new FakeSession(`session-${configs.length}`)
+    } })
+    const config: PiAgentSessionConfig = { runId: 'run', modelId: 'model', gatewayUrl: 'g', workspaceDir: 'w', agentDir: 'a', sessionDir: 's', getAccessToken: async () => 'token', authorizeTool: async () => false }
+    try {
+      const first = await adapter.open(config) as FakeSession
+      assert.equal(await adapter.open({ ...config, vision: null }), first)
+      const textOnly = await adapter.open({ ...config, vision: false }) as FakeSession
+      assert.notEqual(textOnly, first)
+      assert.equal(first.disposed, 1)
+      assert.equal(configs[1].vision, false)
+      assert.equal(configs[1].resumeSessionFile, first.sessionFile)
+      assert.equal(await adapter.open({ ...config, vision: false }), textOnly)
+      assert.notEqual(await adapter.open({ ...config, vision: true }), textOnly)
+      assert.equal(textOnly.disposed, 1)
+    } finally { await adapter.dispose() }
+  })
   it('reuses one session and rebuilds on employee switch with the same file', async () => {
     const sessions: FakeSession[] = []
     const configs: PiAgentSessionConfig[] = []

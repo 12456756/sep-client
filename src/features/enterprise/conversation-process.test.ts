@@ -87,3 +87,16 @@ test('places folded processes inside their own employee replies across consecuti
   assert.equal((html.match(/data-conversation-reply=/g) ?? []).length, 2)
   assert.doesNotMatch(html, /<details[^>]+open/)
 })
+
+test('keeps image preview space and dimensions visible while preserving ordinary file attachments', () => {
+  const base = { byteLength: 2048, sha256: 'a'.repeat(64), importSource: 'picker' as const, extractionStatus: 'not-required' as const, warnings: [] }
+  const html = renderMessages([{ id: 'user-images', role: 'user', content: '看一下图片', createdAt: 1, attachments: [
+    { ...base, attachmentId: 'image', displayName: 'reference.png', mediaType: 'image/png', width: 1600, height: 900 },
+    { ...base, attachmentId: 'document', displayName: 'brief.pdf', mediaType: 'application/pdf' },
+  ] }], false)
+  assert.match(html, /ent-message-attachment-preview/)
+  assert.match(html, /1600 × 900/)
+  assert.match(html, /图片加载中/)
+  assert.match(html, /brief.pdf/)
+  assert.match(html, /2 KB/)
+})

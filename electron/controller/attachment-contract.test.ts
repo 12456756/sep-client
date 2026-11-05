@@ -28,17 +28,22 @@ function routes(): Route[] {
 
 test('all attachment routes require trusted main-frame calls and bounded strict inputs', () => {
   const list = routes()
-  assert.equal(list.length, 7)
+  assert.equal(list.length, 8)
   for (const route of list) assert.deepEqual((route as unknown as { options: unknown }).options, { trustedMainFrame: true })
   const files = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES)!
   const input = { sessionId: 'session-a', operationId: 'op-a', paths: ['/tmp/report.txt'] }
   assert.deepEqual(files.schema.parse(input), input)
-  for (const invalid of [{ ...input, sessionId: '../escape' }, { ...input, paths: [] }, { ...input, paths: Array(11).fill('/tmp/report.txt') }, { ...input, allowAll: true }]) assert.equal(files.schema.safeParse(invalid).success, false)
+  assert.equal(files.schema.safeParse({ ...input, paths: Array(128).fill('/tmp/report.txt') }).success, true)
+  for (const invalid of [{ ...input, sessionId: '../escape' }, { ...input, paths: [] }, { ...input, paths: Array(129).fill('/tmp/report.txt') }, { ...input, allowAll: true }]) assert.equal(files.schema.safeParse(invalid).success, false)
   const image = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_IMAGE)!
   const base = { sessionId: 'session-a', operationId: 'op-a', name: 'screenshot.png', type: 'image/png' }
   assert.equal(image.schema.safeParse({ ...base, bytes: new Uint8Array([1]) }).success, true)
   assert.equal(image.schema.safeParse({ ...base, bytes: new Uint8Array(20 * 1024 * 1024 + 1) }).success, false)
   assert.equal(image.schema.safeParse({ ...base, bytes: [1] }).success, false)
+  const preview = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_PREVIEW)!
+  const previewInput = { taskId: 'task-a', attachmentId: 'attachment-a', sha256: 'a'.repeat(64) }
+  assert.deepEqual(preview.schema.parse(previewInput), previewInput)
+  for (const invalid of [{ ...previewInput, taskId: '../task' }, { ...previewInput, attachmentId: '../image' }, { ...previewInput, sha256: 'A'.repeat(64) }, { ...previewInput, path: 'secret' }]) assert.equal(preview.schema.safeParse(invalid).success, false)
 })
 
 test('draft-node imports reject stale revision and unknown nodes before opening a session', async () => {
@@ -53,4 +58,21 @@ test('canceling a native picker preserves the existing session without import', 
   const session = { sessionId: 'session-a', status: 'open', attachments: [] }
   const result = await select.handle({ window: () => ({}), attachments: { async listSession() { return session }, async importFiles() { assert.fail('must not import') } } } as never, { sessionId: 'session-a' } as never)
   assert.deepEqual(result, { success: true, cancelled: true, data: session })
+})
+
+test('preview checks task access before reading attachment bytes', async () => {
+  const preview = routes().find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_PREVIEW)!
+  const input = { taskId: 'task-a', attachmentId: 'image-a', sha256: 'a'.repeat(64) }
+  const calls: string[] = []
+  const data = { bytes: new Uint8Array([1]), mediaType: 'image/png' }
+  const ctx = {
+    tasks: { async get(id: string) { assert.equal(id, input.taskId); calls.push('authorize'); return {} } },
+    attachments: { async previewTaskAttachment(...args: string[]) { assert.deepEqual(args, Object.values(input)); calls.push('read'); return data } },
+  }
+  assert.deepEqual(await preview.handle(ctx as never, input as never), { success: true, data })
+  assert.deepEqual(calls, ['authorize', 'read'])
+  ctx.tasks.get = async () => { throw new AppError('NOT_FOUND') }
+  calls.length = 0
+  await assert.rejects(async () => preview.handle(ctx as never, input as never))
+  assert.deepEqual(calls, [])
 })

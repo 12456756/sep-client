@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { INVOKE_CHANNELS } from './channels'
 import * as knowledgeSelection from '../../src/shared/knowledge-selection'
 import * as arrangementInput from '../../src/shared/arrangement-input'
+import * as attachmentContracts from '../../src/shared/attachment-contracts'
 
 interface TestRoute {
   channel: string
@@ -25,7 +26,7 @@ function updateRoute(channel: string = INVOKE_CHANNELS.TASK_UPDATE_DETAILS): Tes
       NO_INPUT: z.undefined(),
       route: (channel: string, schema: z.ZodType, handle: TestRoute['handle']) => ({ channel, schema, handle }),
     },
-    '../../../src/shared/attachment-contracts': { attachmentRefSchema: z.any() },
+    '../../../src/shared/attachment-contracts': attachmentContracts,
     '../../../src/shared/knowledge-selection': knowledgeSelection,
     '../../../src/shared/arrangement-input': arrangementInput,
   }
@@ -39,6 +40,13 @@ function updateRoute(channel: string = INVOKE_CHANNELS.TASK_UPDATE_DETAILS): Tes
 }
 
 describe('task detail update IPC', () => {
+  it('creates tasks with 128 attachment references and rejects 129', () => {
+    const route = updateRoute(INVOKE_CHANNELS.TASK_CREATE)
+    const input = { title: 'Images', prompt: 'Inspect attachments', subscriptionId: 'sub', attachmentSessionId: 'session',
+      attachmentRefs: Array.from({ length: 128 }, (_, index) => ({ attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) })) }
+    assert.equal(route.schema.safeParse(input).success, true)
+    assert.equal(route.schema.safeParse({ ...input, attachmentRefs: [...input.attachmentRefs, input.attachmentRefs[0]] }).success, false)
+  })
   it('validates rerun request identity and returns the newly created execution', async () => {
     const route = updateRoute(INVOKE_CHANNELS.TASK_RERUN)
     for (const input of ['task-a', { taskId: 'task-a' }, { taskId: '../task', requestId: 'request' },

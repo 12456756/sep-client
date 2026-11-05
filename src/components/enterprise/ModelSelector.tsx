@@ -26,7 +26,7 @@ export function ModelSelector({ models, value, title, allowEmpty, disabled = fal
   const catalogById = new Map(catalog.models.map(model => [model.modelId, model]))
   const keyword = query.trim().toLowerCase()
   const filtered = models.map(modelId => catalogById.get(modelId) ?? {
-    modelId, displayName: modelId, billingMultiplier: null, discountLabel: null, isFree: null,
+    modelId, displayName: modelId, billingMultiplier: null, discountLabel: null, isFree: null, vision: null,
   }).filter(model => `${model.modelId} ${model.displayName}`.toLowerCase().includes(keyword))
   const selected = models.includes(value) ? catalogById.get(value) : undefined
   const selectedBilling = selected ? modelBillingLabel(selected) : null

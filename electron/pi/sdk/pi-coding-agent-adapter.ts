@@ -59,6 +59,7 @@ import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnaps
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
 import { videoErrorMessage } from '../../../src/shared/video-errors'
+import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
 import { attachOfficeRuntime, officeTaskPolicy } from './pi-office-runtime'
 import { modelPayloadText, readableTraceValue, traceModelStream } from './pi-model-trace'
@@ -402,9 +403,31 @@ function getFailure(messages: unknown): string | undefined {
   return undefined
 }
 
-function gatewayContent(value: unknown): string | null {
+function gatewayContent(value: unknown): unknown {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) {
+    const imageParts = value.filter(part => part && typeof part === 'object' &&
+      (part as { type?: unknown }).type === 'image_url' &&
+      (part as { image_url?: unknown }).image_url && typeof (part as { image_url: { url?: unknown } }).image_url.url === 'string')
+    if (imageParts.length) {
+      const normalized: Array<Record<string, unknown>> = []
+      for (const part of value) {
+        if (!part || typeof part !== 'object') continue
+        const current = part as Record<string, unknown>
+        if (current.type === 'text' && typeof current.text === 'string') {
+          normalized.push({ type: 'text', text: current.text })
+          continue
+        }
+        if (current.type === 'image_url' && current.image_url && typeof current.image_url === 'object' &&
+          typeof (current.image_url as { url?: unknown }).url === 'string') {
+          const imageUrl = current.image_url as { url: string; detail?: unknown }
+          normalized.push({ type: 'image_url', image_url: { url: imageUrl.url,
+            ...(imageUrl.detail === 'auto' || imageUrl.detail === 'low' || imageUrl.detail === 'high' ? { detail: imageUrl.detail } : {}) } })
+          continue
+        }
+      }
+      return normalized
+    }
     return value.map(part => {
       if (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') {
         return (part as { text: string }).text
@@ -835,6 +858,9 @@ class PiCodingAgentSession implements PiAgentSession {
   }
 
   async prompt(text: string, options?: { images?: readonly { type: 'image'; data: string; mimeType: string }[] }): Promise<void> {
+    if (this.diagnostics?.current().vision === false && options?.images?.length) {
+      throw new AppError('MODEL_NOT_ALLOWED', { message: RUNTIME_FAILURE_MESSAGES.MODEL_VISION_UNSUPPORTED })
+    }
     this.diagnostics?.startPrompt()
     this.settledResponse = { text: '' }
     this.requestTracker?.startPrompt()
@@ -919,6 +945,10 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       apiKey: 'placeholder',
       api: 'openai-completions',
       streamSimple: (model, context, options) => lazyStream(model, async () => {
+        if (config.vision === false && context.messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image'))) {
+          settingsManager.setRetryEnabled(false)
+          throw new AppError('MODEL_NOT_ALLOWED', { message: RUNTIME_FAILURE_MESSAGES.MODEL_VISION_UNSUPPORTED })
+        }
         // ModelRuntime prepares headers before entering this provider; authenticate at fetch instead.
         await retryWait.wait(options?.signal)
         options?.signal?.throwIfAborted()
@@ -1022,7 +1052,7 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         id: config.modelId,
         name: config.modelId,
         reasoning: false,
-        input: ['text'],
+        input: config.vision === false ? ['text'] : ['text', 'image'],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         contextWindow: GATEWAY_CONTEXT_WINDOW,
         // Pi requires positive numeric metadata. This is not a provider output budget:
