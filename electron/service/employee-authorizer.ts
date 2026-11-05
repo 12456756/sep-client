@@ -336,8 +336,22 @@ export class EmployeeAuthorizer {
     for (const skill of approvedSkills ?? []) {
       const artifact = skill.artifact
       if (skillArtifactProtocolVersion === 1) {
-        if (!artifact || artifact.status !== 'AVAILABLE' || artifact.capabilityId !== skill.capabilityId
-          || artifact.versionId !== skill.versionId
+        if (!artifact) {
+          throw new Error('Employee runtime skill artifact is unavailable or mismatched.')
+        }
+        if (artifact.status === 'BLOCKED') {
+          if (artifact.reason === 'CLIENT_LIMIT_EXCEEDED') {
+            const limits = [
+              typeof artifact.byteLength === 'number' && artifact.byteLength > 20 * 1024 * 1024
+                ? `byteLength ${artifact.byteLength} exceeds ${20 * 1024 * 1024}` : null,
+              typeof artifact.fileCount === 'number' && artifact.fileCount > 500
+                ? `fileCount ${artifact.fileCount} exceeds 500` : null,
+            ].filter((item): item is string => item !== null)
+            throw new Error(`Employee runtime skill artifact exceeds client limits: ${limits.join('; ')}.`)
+          }
+          throw new Error(`Employee runtime skill artifact is blocked: ${artifact.reason}.`)
+        }
+        if (artifact.capabilityId !== skill.capabilityId || artifact.versionId !== skill.versionId
           || artifact.approvedContentSha256 !== createHash('sha256').update(skill.content).digest('hex')) {
           throw new Error('Employee runtime skill artifact is unavailable or mismatched.')
         }

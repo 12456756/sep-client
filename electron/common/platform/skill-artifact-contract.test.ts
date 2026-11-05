@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict'
 import {
   skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactBlockedSchema,
   skillArtifactBlockedReasonSchema, skillArtifactFrontmatterSchema, skillArtifactParamsSchema,
-  maxSkillArtifactBytes, skillArtifactNameSchema, skillNameComparisonKey,
+  maxSkillArtifactBytes, maxSkillArtifactFiles, skillArtifactNameSchema, skillNameComparisonKey,
 } from './skill-artifact-contract'
 
 const available = {
@@ -21,7 +21,10 @@ describe('SEP skill artifact descriptor schema parity', () => {
       assert.deepEqual(skillArtifactSchema.parse({ ...available, format }), { ...available, format })
     }
     for (const reason of skillArtifactBlockedReasonSchema.options) {
-      assert.deepEqual(skillArtifactSchema.parse({ ...blocked, reason }), { ...blocked, reason })
+      const descriptor = reason === 'CLIENT_LIMIT_EXCEEDED'
+        ? { ...blocked, reason, fileCount: maxSkillArtifactFiles + 1 }
+        : { ...blocked, reason }
+      assert.deepEqual(skillArtifactSchema.parse(descriptor), descriptor)
     }
     assert.equal(skillArtifactAvailableSchema.safeParse(blocked).success, false)
     assert.equal(skillArtifactBlockedSchema.safeParse(available).success, false)
@@ -40,9 +43,12 @@ describe('SEP skill artifact descriptor schema parity', () => {
       ]) assert.equal(skillArtifactSchema.safeParse({ ...descriptor, ...extra }).success, false)
     }
     assert.equal(skillArtifactSchema.safeParse({ ...available, reason: 'INVALID_ENTRY' }).success, false)
-    for (const key of ['format', 'installationDirectory', 'entryPath', 'entrySha256', 'artifactSha256', 'byteLength', 'fileCount', 'downloadPath']) {
+    for (const key of ['format', 'installationDirectory', 'entryPath', 'entrySha256', 'artifactSha256', 'downloadPath']) {
       assert.equal(skillArtifactSchema.safeParse({ ...blocked, [key]: available[key as keyof typeof available] }).success, false)
     }
+    assert.equal(skillArtifactSchema.safeParse({ ...blocked, fileCount: 501 }).success, false)
+    assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'CLIENT_LIMIT_EXCEEDED', fileCount: 501 }).success, true)
+    assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'CLIENT_LIMIT_EXCEEDED' }).success, false)
     assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'UNKNOWN' }).success, false)
   })
 
@@ -53,9 +59,9 @@ describe('SEP skill artifact descriptor schema parity', () => {
       { installationDirectory: '' }, { installationDirectory: 'Bad_Name' }, { installationDirectory: '../skill' },
       { installationDirectory: 'a'.repeat(65) }, { installationDirectory: 'a--b' },
       { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: maxSkillArtifactBytes + 1 },
-      { fileCount: 0 }, { fileCount: 1.5 }, { fileCount: 501 },
+      { fileCount: 0 }, { fileCount: 1.5 }, { fileCount: maxSkillArtifactFiles + 1 },
     ]) assert.equal(skillArtifactSchema.safeParse({ ...available, ...override }).success, false, JSON.stringify(override))
-    assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: maxSkillArtifactBytes, fileCount: 500,
+    assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: maxSkillArtifactBytes, fileCount: maxSkillArtifactFiles,
       installationDirectory: 'a'.repeat(64) }).success, true)
   })
 
