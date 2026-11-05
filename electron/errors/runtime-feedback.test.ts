@@ -3,8 +3,18 @@ import * as assert from 'node:assert/strict'
 import { AuthApiError } from '../common/platform/platform-api'
 import { runtimeFeedback, sanitizeRuntimeErrorEvent } from './runtime-feedback'
 import type { TaskExecutionEvent } from '../../src/shared/types'
-import { appError } from './app-error'
+import { AppError, appError } from './app-error'
 import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
+
+it('keeps the vision restriction visible after SDK error flattening', () => {
+  const message = '所选模型不支持图片输入，请选择支持图片的模型，或新建不含图片的对话。'
+  for (const error of [new AppError('MODEL_NOT_ALLOWED', { message }), new Error(message)]) {
+    assert.deepEqual(runtimeFeedback(error), { code: 'MODEL_VISION_UNSUPPORTED', message })
+  }
+  const event: TaskExecutionEvent = { taskId: 't', runId: 'r', subscriptionId: 's', sequence: 1, occurredAt: 1,
+    type: 'session_error', data: { error: message } }
+  assert.deepEqual(sanitizeRuntimeErrorEvent(event).data, { message })
+})
 
 it('recognizes the SDK timeout after its error class has been flattened', () => {
   for (const error of [new Error('Request timed out.'), Object.assign(new Error('private'), { name: 'APIConnectionTimeoutError' }),

@@ -5,7 +5,6 @@ export const maxSkillArtifactBytes = 20 * 1024 * 1024
 export const maxSkillArtifactFiles = 500
 const maxBlockedArtifactBytes = 100 * 1024 * 1024
 const maxBlockedArtifactFiles = 10000
-export const maxSkillEntryBytes = 500 * 1024
 export const skillArtifactSha256Schema = z.string().regex(/^[0-9a-f]{64}$/)
 const safeName = /^[\p{L}\p{N}]+(?:(?:-|\p{Zs}+)[\p{L}\p{N}]+)*$/u
 export function isSafeSkillPathComponent(value: string): boolean {
@@ -26,7 +25,7 @@ const artifactIdSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/)
 
 export const skillArtifactFrontmatterSchema = z.object({
   name: skillArtifactNameSchema,
-  description: z.string().min(1).max(1024).refine(value => value.trim().length > 0),
+  description: z.string().min(1).refine(value => value.trim().length > 0),
   license: z.string().optional(),
   compatibility: z.string().min(1).max(500).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
@@ -58,8 +57,8 @@ export const skillArtifactAvailableSchema = z.object({
   }, 'Invalid skill artifact entry path.'),
   entrySha256: skillArtifactSha256Schema,
   artifactSha256: skillArtifactSha256Schema,
-  byteLength: z.number().int().positive().max(maxSkillArtifactBytes),
-  fileCount: z.number().int().positive().max(maxSkillArtifactFiles),
+  byteLength: z.number().int().positive().safe(),
+  fileCount: z.number().int().positive().safe(),
   downloadPath: z.string().regex(/^\/client\/subscriptions\/[a-zA-Z0-9_-]{1,128}\/skills\/[a-zA-Z0-9_-]{1,128}\/versions\/[a-zA-Z0-9_-]{1,128}\/artifact$/),
 }).strict()
 

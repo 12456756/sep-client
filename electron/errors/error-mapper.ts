@@ -50,7 +50,7 @@ const SAFE_STORAGE = /safeStorage|secure storage|persist credentials/i
 
 const ATTACHMENT_ERRORS: Readonly<Record<string, readonly [ErrorCode, string]>> = {
   ATTACHMENT_TOO_LARGE: ['INVALID_ARGUMENT', '单个附件不能超过 20 MiB。'],
-  ATTACHMENT_TOTAL_TOO_LARGE: ['INVALID_ARGUMENT', '附件最多 10 个，总大小不能超过 100 MiB。'],
+  ATTACHMENT_TOTAL_TOO_LARGE: ['INVALID_ARGUMENT', '附件最多 128 个，总大小不能超过 100 MiB。'],
   ATTACHMENT_EMPTY: ['INVALID_ARGUMENT', '附件为空，请重新选择文件。'],
   ATTACHMENT_NOT_REGULAR_FILE: ['INVALID_ARGUMENT', '请选择本地普通文件，目录和链接不能作为附件。'],
   ATTACHMENT_IMAGE_SIGNATURE_INVALID: ['INVALID_ARGUMENT', '图片内容无效，请重新保存图片后添加。'],
@@ -62,6 +62,7 @@ const ATTACHMENT_ERRORS: Readonly<Record<string, readonly [ErrorCode, string]>> 
   ATTACHMENT_REFERENCE_INVALID: ['INVALID_STATE', '附件引用已失效，请重新添加并绑定附件。'],
   ATTACHMENT_TARGET_MISMATCH: ['INVALID_STATE', '附件属于其他输入，请在当前输入中重新添加。'],
   ATTACHMENT_INTEGRITY_MISMATCH: ['INVALID_STATE', '附件快照已损坏，请重新添加附件。'],
+  ATTACHMENT_PREVIEW_UNSUPPORTED: ['INVALID_ARGUMENT', '该附件不支持图片预览。'],
   ATTACHMENT_TASK_SNAPSHOT_CONFLICT: ['CONFLICT', '本轮附件已确认，请重新提交当前输入。'],
 }
 

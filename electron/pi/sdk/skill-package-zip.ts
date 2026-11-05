@@ -3,10 +3,9 @@ import { inflateRawSync } from 'node:zlib'
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { z } from 'zod'
-import { isSafeSkillPathComponent, maxSkillArtifactBytes, maxSkillEntryBytes, skillNameComparisonKey, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
+import { isSafeSkillPathComponent, skillNameComparisonKey, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 
 export const packageManifestName = '.sep-package-manifest.json'
-export const maxSkillPackageExpandedBytes = 64 * 1024 * 1024
 export interface SkillPackageFile { path: string; bytes: Buffer; directory?: true }
 
 export function assertSkillPathParents(path: string): void {
@@ -53,9 +52,9 @@ function validateExtra(bytes: Buffer): void {
   }
 }
 
-/** Bounded in-memory ZIP reader. No extraction library, process, or dependency is needed. */
+/** Authenticated in-memory ZIP reader. No extraction library, process, or dependency is needed. */
 export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): SkillPackageFile[] {
-  if (bytes.length !== artifact.byteLength || bytes.length > maxSkillArtifactBytes || packageSha256(bytes) !== artifact.artifactSha256) invalid()
+  if (bytes.length !== artifact.byteLength || packageSha256(bytes) !== artifact.artifactSha256) invalid()
   let end = -1
   for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 65557); offset--) {
     if (bytes.readUInt32LE(offset) === 0x06054b50 && offset + 22 + bytes.readUInt16LE(offset + 20) === bytes.length) { end = offset; break }
@@ -64,12 +63,11 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
   const count = bytes.readUInt16LE(end + 10)
   const centralSize = bytes.readUInt32LE(end + 12)
   const centralStart = bytes.readUInt32LE(end + 16)
-  if (!count || count > 500 || bytes.readUInt16LE(end + 8) !== count || centralStart + centralSize !== end) invalid()
+  if (!count || bytes.readUInt16LE(end + 8) !== count || centralStart + centralSize !== end) invalid()
   const files: SkillPackageFile[] = []
   const paths = new Map<string, boolean>()
   const directorySpellings: string[] = []
   const ranges: Array<[number, number]> = []
-  let total = 0
   let cursor = centralStart
   for (let index = 0; index < count; index++) {
     if (cursor + 46 > end || bytes.readUInt32LE(cursor) !== 0x02014b50) invalid()
@@ -85,7 +83,7 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
     const local = bytes.readUInt32LE(cursor + 42)
     const next = cursor + 46 + nameLength + extraLength + commentLength
     if (next > end || bytes.readUInt16LE(cursor + 34) !== 0 || flags & ~0x080e || ![0, 8].includes(method)
-      || (method === 0 && (flags & 6)) || size > maxSkillPackageExpandedBytes || compressed > maxSkillArtifactBytes) invalid()
+      || (method === 0 && (flags & 6))) invalid()
     const rawName = bytes.subarray(cursor + 46, cursor + 46 + nameLength)
     if (!(flags & 0x0800) && rawName.some(byte => byte >= 128)) invalid()
     let name: string
@@ -118,10 +116,8 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
       }
     } else if (bytes.readUInt32LE(local + 14) !== crc || bytes.readUInt32LE(local + 18) !== compressed || bytes.readUInt32LE(local + 22) !== size) invalid()
     ranges.push([local, rangeEnd])
-    total += size
-    if (total > maxSkillPackageExpandedBytes || directory && (size !== 0 || compressed !== 0 || crc !== 0)) invalid()
+    if (directory && (size !== 0 || compressed !== 0 || crc !== 0)) invalid()
     if (!directory) {
-      if (files.length >= 500 || path.split('/').at(-1) === 'SKILL.md' && size > maxSkillEntryBytes) invalid()
       const compressedBytes = bytes.subarray(start, dataEnd)
       let data: Buffer
       try {
@@ -167,8 +163,8 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
 
 const cacheSchema = z.object({
   entryPath: z.string().refine(safePackagePath),
-  files: z.array(z.object({ path: z.string().refine(safePackagePath), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteLength: z.number().int().nonnegative().max(maxSkillPackageExpandedBytes) }).strict()).min(1).max(500),
-  directories: z.array(z.string().refine(safePackagePath)).max(500).optional(),
+  files: z.array(z.object({ path: z.string().refine(safePackagePath), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteLength: z.number().int().nonnegative().safe() }).strict()).min(1),
+  directories: z.array(z.string().refine(safePackagePath)).optional(),
 }).passthrough()
 
 export function packageCache(files: readonly SkillPackageFile[], entryPath: string): { entryPath: string; files: Array<{ path: string; sha256: string; byteLength: number }>; directories: string[] } {
@@ -185,14 +181,11 @@ export function verifyPackageCache(entryFile: string, manifestBytes: Buffer): vo
   const expected = new Map(cache.files.map(file => [file.path, file]))
   const directories = new Set(cache.directories ?? [])
   if (expected.size !== cache.files.length || !expected.has(cache.entryPath)) invalid()
-  let total = 0
-  let entries = 0
   const manifestPath = join(dirname(entryFile), packageManifestName)
   function walk(path: string, prefix: string): void {
     const stat = lstatSync(path)
     if (!stat.isDirectory() || stat.isSymbolicLink()) invalid()
     for (const name of readdirSync(path)) {
-      if (++entries > 2000) invalid()
       const fullPath = join(path, name)
       const relative = prefix ? `${prefix}/${name}` : name
       const info = lstatSync(fullPath)
@@ -207,8 +200,6 @@ export function verifyPackageCache(entryFile: string, manifestBytes: Buffer): vo
       if (fullPath === manifestPath) { if (!readFileSync(fullPath).equals(manifestBytes)) invalid(); continue }
       const file = expected.get(relative)
       if (!file || info.size !== file.byteLength || packageSha256(readFileSync(fullPath)) !== file.sha256) invalid()
-      total += file.byteLength
-      if (total > maxSkillPackageExpandedBytes) invalid()
       expected.delete(relative)
     }
   }

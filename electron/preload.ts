@@ -56,7 +56,7 @@ function registerPasteTarget(input: PasteTarget): () => void {
     const notify = (event: { status?: 'started' | 'completed' | 'failed'; error?: string }) => { for (const callback of pasteListeners) callback({ composerId: input.composerId, sessionId: input.sessionId, operationId, text: text || undefined, ...event }); };
     notify({ status: 'started' });
     const entries = files.map(file => ({ file, path: (() => { try { return webUtils.getPathForFile(file as File); } catch { return ''; } })() }));
-    if (entries.length > attachmentImportLimits.maxFiles) { notify({ status: 'failed', error: '一次最多添加 10 个附件' }); return; }
+    if (entries.length > attachmentImportLimits.maxFiles) { notify({ status: 'failed', error: `一次最多添加 ${attachmentImportLimits.maxFiles} 个附件` }); return; }
     void (async () => {
       const paths = entries.flatMap(entry => entry.path ? [entry.path] : []);
       const imageEntries = entries.filter(entry => !entry.path);
@@ -159,6 +159,7 @@ const electronAPI = {
   listAttachments: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_LIST, input),
   removeAttachment: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_REMOVE, input),
   cancelAttachmentImport: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_CANCEL, input),
+  previewAttachment: input => ipcRenderer.invoke(INVOKE_CHANNELS.ATTACHMENT_PREVIEW, input),
   bindAttachmentPaste: input => registerPasteTarget(input),
   onAttachmentPaste: callback => { pasteListeners.add(callback); return () => pasteListeners.delete(callback); },
   login: credentials => ipcRenderer.invoke(INVOKE_CHANNELS.AUTH_LOGIN, credentials),

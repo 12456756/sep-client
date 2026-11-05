@@ -87,7 +87,7 @@ describe('TaskRuntime arrangement integration', () => {
       taskManager: manager, workPlanStore: new MemoryPlanStore(arrangement), arrangementCheckpointStore: new MemoryCheckpointStore(),
       getRefreshToken: () => 'refresh-token', onAuthenticationRequired: () => {}, onEvent: () => {}, onApprovalRequest: () => {},
       resolveEmployee: () => employee,
-      authorizeEmployee: async (subscriptionId, modelId) => ({ ...employee, subscriptionId, modelId: modelId ?? employee.modelId, systemPrompt: `Instructions for ${modelId}` }),
+      authorizeEmployee: async (subscriptionId, modelId) => ({ ...employee, subscriptionId, modelId: modelId ?? employee.modelId, vision: false, systemPrompt: `Instructions for ${modelId}` }),
       media: {
         async prepareRun(input) { prepared.push(input); return host },
         async waitForRun(taskId, runId) { assert.equal(taskId, task.id); if (runId === prepared[0]?.runId) { waiting = true; await delivery } },
@@ -95,6 +95,7 @@ describe('TaskRuntime arrangement integration', () => {
       },
       createWorker: options => {
         assert.equal(options.context.systemPrompt, `Instructions for ${options.context.modelId}`)
+        assert.equal(options.context.vision, false)
         assert.equal(options.context.mediaTools, host)
         return { async run() {
           started.push(options.context.modelId)

@@ -6,6 +6,7 @@ import * as assert from 'node:assert/strict'
 import { AttachmentStore } from '../data/attachment-store'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { AttachmentService } from './attachment-service'
+import { AppError } from '../errors/app-error'
 
 const ownerA: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 const ownerB: TaskOwnerScope = { memberId: 'member-b', enterpriseId: 'enterprise-a' }
@@ -41,7 +42,7 @@ test('appends later task snapshot and keeps the first frozen bytes after source 
   const root = await mkdtemp(join(tmpdir(), 'sep-attachment-service-'))
   const source = join(root, 'note.txt')
   await writeFile(source, 'first')
-  let current: TaskOwnerScope | null = ownerA
+  const current: TaskOwnerScope | null = ownerA
   const service = new AttachmentService(new AttachmentStore(root), () => current)
   const session = await service.beginSession({ kind: 'conversation', taskId: 'task-b' })
   const first = (await service.importFiles(session.sessionId, 'op-1', [source]))[0].item
@@ -55,4 +56,45 @@ test('appends later task snapshot and keeps the first frozen bytes after source 
   assert.equal(resolved.attachments.length, 2)
   assert.equal((await (await import('node:fs/promises')).readFile(resolved.attachments[0]!.readPath!)).toString(), 'first')
   assert.equal((await (await import('node:fs/promises')).readFile(resolved.attachments[1]!.readPath!)).toString(), 'second')
+})
+
+test('previews only an image claimed by the current task and verifies its digest', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-attachment-preview-'))
+  const imagePath = join(root, 'preview.png')
+  await writeFile(imagePath, png)
+  let current: TaskOwnerScope | null = ownerA
+  const store = new AttachmentStore(root)
+  const service = new AttachmentService(store, () => current)
+  const session = await service.beginSession({ kind: 'conversation', taskId: 'task-preview' })
+  const image = (await service.importFiles(session.sessionId, 'op-image', [imagePath]))[0]!.item
+  const ref = { attachmentId: image.attachmentId, sha256: image.sha256 }
+  await service.claimTask(session.sessionId, 'task-preview', [ref])
+  const preview = await service.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256)
+  assert.equal(preview.mediaType, 'image/png')
+  assert.deepEqual(Buffer.from(preview.bytes), png)
+  await assert.rejects(service.previewTaskAttachment('task-preview', ref.attachmentId, 'b'.repeat(64)), /ATTACHMENT_REFERENCE_INVALID/)
+  const other = new AttachmentService(new AttachmentStore(root), () => ownerB)
+  await assert.rejects(other.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256))
+  current = null
+  await assert.rejects(service.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256), /AUTH_REQUIRED/)
+  current = ownerA
+  const readTask = store.readTask.bind(store)
+  store.readTask = async (...args) => { const bytes = await readTask(...args); current = ownerB; return bytes }
+  await assert.rejects(service.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256), (error: unknown) => error instanceof AppError && error.code === 'AUTH_REQUIRED')
+  store.readTask = readTask
+  current = ownerA
+  await writeFile(store.taskReadPath(ownerA, 'task-preview', ref.attachmentId), 'corrupted')
+  await assert.rejects(service.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256), /ATTACHMENT_INTEGRITY_MISMATCH/)
+})
+
+test('does not preview non-image task attachments', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'sep-attachment-preview-'))
+  const textPath = join(root, 'note.txt')
+  await writeFile(textPath, 'not an image')
+  const service = new AttachmentService(new AttachmentStore(root), () => ownerA)
+  const session = await service.beginSession({ kind: 'conversation', taskId: 'task-text' })
+  const file = (await service.importFiles(session.sessionId, 'op-text', [textPath]))[0]!.item
+  const ref = { attachmentId: file.attachmentId, sha256: file.sha256 }
+  await service.claimTask(session.sessionId, 'task-text', [ref])
+  await assert.rejects(service.previewTaskAttachment('task-text', ref.attachmentId, ref.sha256), /ATTACHMENT_PREVIEW_UNSUPPORTED/)
 })

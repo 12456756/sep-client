@@ -23,6 +23,7 @@ import { MEDIA_SPEC_EXECUTION_PROMPT } from './media-execution-prompts'
 import type { ActiveRun, EmployeeRuntimeConfig, QueuedRun, SessionRecoveryMode, TaskWorkerPort } from './run-types'
 import type { AttachmentInputPort, ResolvedAttachmentInput } from '../domain/attachment-input'
 import type { ConversationMediaPort } from '../domain/conversation-media'
+import type { ConversationArtifactStorePort, ConversationArtifactDirectory } from '../domain/conversation-artifacts'
 import type { AttachmentRef } from '../../src/shared/attachment-contracts'
 import type { AttachmentView } from '../../src/shared/attachment-contracts'
 import { createRunCompletion, type WorkerRegistry } from './run-workers'
@@ -38,6 +39,8 @@ import type { KnowledgeSelection } from '../../src/shared/knowledge-selection'
 import { translatePiNativeSystemPrompt } from '../pi/sdk/pi-native-system-prompt'
 
 const log = logger.child('conversation-executor')
+
+const CONVERSATION_ARTIFACT_OUTPUT_PROMPT = '用户明确指定文档或文件类型时，按指定类型生成，并保存到本任务成果目录。用户未指定类型时，本轮如涉及最近新闻、实时信息、外部检索、多来源调研、资料汇总、竞品比较，或形成了值得留存的方案、分析、总结、清单或说明，必须生成 Markdown（.md）文件并保存到该目录；简单事实问答、闲聊或无需留档的内容不必生成文件。即使最终答复很短，只要本轮进行了新闻或资料检索，也要保存检索结果 Markdown。只报告实际创建并保存成功的文件。'
 
 export interface ConversationExecutorOptions {
   taskManager: TaskManager
@@ -62,6 +65,7 @@ export interface ConversationExecutorOptions {
   media?: MediaRunPort
   video?: VideoRunPort
   conversationMedia?: ConversationMediaPort
+  conversationArtifacts?: ConversationArtifactStorePort
   knowledgeSearch?: KnowledgeSearchPort
   attachmentInputs?: AttachmentInputPort
 }
@@ -105,6 +109,8 @@ export class ConversationExecutor {
     let worker: TaskWorkerPort | null = null
     let active: ActiveRun | null = null
     let runCreated = false
+    let artifactDirectory: ConversationArtifactDirectory | undefined
+    let artifactsScanned = false
     const knowledgeCancellation = new AbortController()
     const mediaSignal = queued.signal ? AbortSignal.any([knowledgeCancellation.signal, queued.signal]) : knowledgeCancellation.signal
     const waitForMedia = async (): Promise<void> => {
@@ -155,6 +161,17 @@ export class ConversationExecutor {
         },
       }
       this.options.workers.register(active)
+      if (queued.conversation && this.options.conversationArtifacts) {
+        try {
+          artifactDirectory = await this.options.conversationArtifacts.prepare(workspaceDir, taskId)
+          if (artifactDirectory.status !== 'ready') {
+            log.warn('conversation artifact directory is unavailable', { taskId, runId, status: artifactDirectory.status })
+          }
+        } catch (error) {
+          log.warn('conversation artifact directory preparation failed', { taskId, runId,
+            error: error instanceof Error ? error.message : String(error) })
+        }
+      }
       const mediaTools = await this.options.media?.prepareRun({
         taskId, runId, subscriptionId: queued.subscriptionId, employee, toolPolicy,
         requestApproval: request => this.options.approvals.request(request),
@@ -186,6 +203,7 @@ export class ConversationExecutor {
           tracePhase: '对话执行',
           subscriptionId: queued.subscriptionId,
           modelId: employee.modelId,
+          vision: employee.vision,
           gatewayUrl: employee.gatewayUrl,
           workspaceDir: task.workDir ?? this.options.workspaceRoot(),
           agentDir: conversationPaths?.agentDir ?? runPaths?.agentDir ?? `${this.options.workspaceRoot()}/.pi-runs/${runId}`,
@@ -255,6 +273,11 @@ export class ConversationExecutor {
       await this.options.taskManager.updateTaskStatus(taskId, TaskStatus.RUNNING)
       this.options.onStarted?.({ taskId, runId, startedAt: Date.now() })
       let workerPrompt = queued.workerPrompt ?? queued.prompt
+      if (artifactDirectory?.status === 'ready') {
+        workerPrompt += `\n\n【本任务成果目录】请将本轮需要保存的成果放入工作目录下的“${artifactDirectory.relativePath}”目录。该路径已由客户端创建并验证，请直接使用；不要改用其他目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
+      } else if (artifactDirectory?.status === 'retry-in-prompt') {
+        workerPrompt += `\n\n【本任务成果目录】客户端未能创建成果目录。请尝试在工作目录下创建“${artifactDirectory.relativePath}”，并将需要保存的成果放入该目录；只能使用这个固定路径，不要改用其他目录。若创建失败，继续完成可在对话中交付的工作，不要反复重试创建目录。${CONVERSATION_ARTIFACT_OUTPUT_PROMPT}`
+      }
       if (mediaTools?.names.includes('media_generate_image') || videoTools?.names.some(name => name !== 'video_get_job')) workerPrompt += `\n\n${MEDIA_SPEC_EXECUTION_PROMPT}`
       if (general) workerPrompt += '\n\n【媒体执行能力】真实 AI 生图、参考图编辑和视频生成优先使用当前会话已提供的图片/视频工具。保留用户明确规格；未指定的常规规格由模型根据用途、上下文和参考素材判断，在本轮直接执行，记录为 model 来源，不要仅为确认尺寸、比例、质量、数量等常规规格追加一轮对话。仅当关键信息缺失、需求冲突或存在影响结果的重要歧义时提问；遵守现有费用授权与工具审批。以工具返回的生成状态、保存状态和成果为准：明确说明已生成并保存、仍在生成或生成成功但保存失败，简要列出采用的规格；已生成时不要再请求用户确认后才开始。工具不可用或上游拒绝时，如实说明原因；不能静默以脚本合成替代并宣称真实模型生成。用户明确需要剪辑、字幕、图表动效或脚本动画时，可按现有工具权限制作并说明方式。'
       if (attachmentText) workerPrompt = `${workerPrompt}\n\n【已授权附件内容】\n${attachmentText}`
@@ -285,6 +308,8 @@ export class ConversationExecutor {
       await worker.run(workerPrompt)
       await waitForMedia()
       await this.options.events.drain(taskId)
+      await this.collectConversationArtifacts(taskId, runId, workspaceDir, artifactDirectory)
+      artifactsScanned = true
       if (!this.options.workers.isCurrent(active)) return
       await this.finalize(active, queued, scope, runCreated)
     } catch (error) {
@@ -299,6 +324,10 @@ export class ConversationExecutor {
         error: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
       })
       if (active) {
+        if (!artifactsScanned) {
+          await this.collectConversationArtifacts(taskId, runId, task.workDir ?? this.options.workspaceRoot(), artifactDirectory)
+          artifactsScanned = true
+        }
         await this.finalize(active, queued, scope, runCreated, error)
       } else {
         await this.options.taskManager
@@ -318,6 +347,22 @@ export class ConversationExecutor {
         ['completion', () => completion.settle()],
         ['queue', () => this.options.requestPump()],
       ])
+    }
+  }
+
+  private async collectConversationArtifacts(
+    taskId: string,
+    runId: string,
+    workspace: string,
+    directory: ConversationArtifactDirectory | undefined,
+  ): Promise<void> {
+    if (!directory || directory.status === 'unsafe' || !this.options.conversationArtifacts) return
+    try {
+      const files = await this.options.conversationArtifacts.scan(workspace, taskId)
+      for (const file of files) await this.options.taskManager.addTaskFile(taskId, file)
+    } catch (error) {
+      log.warn('conversation artifact scan failed', { taskId, runId,
+        error: error instanceof Error ? error.message : String(error) })
     }
   }
 

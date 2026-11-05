@@ -58,11 +58,17 @@ describe('SEP skill artifact descriptor schema parity', () => {
       { approvedContentSha256: 'bad' }, { entrySha256: 'A'.repeat(64) }, { artifactSha256: 'a'.repeat(63) },
       { installationDirectory: '' }, { installationDirectory: 'Bad_Name' }, { installationDirectory: '../skill' },
       { installationDirectory: 'a'.repeat(65) }, { installationDirectory: 'a--b' },
-      { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: maxSkillArtifactBytes + 1 },
-      { fileCount: 0 }, { fileCount: 1.5 }, { fileCount: maxSkillArtifactFiles + 1 },
+      { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: Number.MAX_SAFE_INTEGER + 1 },
+      { fileCount: 0 }, { fileCount: -1 }, { fileCount: 1.5 }, { fileCount: '501' }, { fileCount: Number.MAX_SAFE_INTEGER + 1 },
     ]) assert.equal(skillArtifactSchema.safeParse({ ...available, ...override }).success, false, JSON.stringify(override))
-    assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: maxSkillArtifactBytes, fileCount: maxSkillArtifactFiles,
+    assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: maxSkillArtifactBytes + 1, fileCount: maxSkillArtifactFiles + 1,
       installationDirectory: 'a'.repeat(64) }).success, true)
+  })
+
+  it('accepts file counts above the former client limit', () => {
+    for (const fileCount of [501, 10_000, Number.MAX_SAFE_INTEGER]) {
+      assert.equal(skillArtifactSchema.safeParse({ ...available, format: 'zip', fileCount }).success, true)
+    }
   })
 
   it('accepts only safe relative entry paths ending in SKILL.md', () => {
@@ -108,11 +114,11 @@ describe('SEP skill artifact descriptor schema parity', () => {
     const value = { name: 'example-skill', description: ' Description ', license: 'MIT', compatibility: 'Node',
       metadata: { author: 'mock' }, 'allowed-tools': 'Read Bash', custom: 'retained' }
     assert.deepEqual(skillArtifactFrontmatterSchema.parse(value), value)
-    for (const override of [{ description: '' }, { description: ' \n ' }, { description: 'x'.repeat(1025) },
+    for (const override of [{ description: '' }, { description: ' \n ' },
       { name: 'Bad_Name' }, { 'disable-model-invocation': 'true' }, { license: 1 }, { compatibility: '' }, { 'allowed-tools': ['Read'] }]) {
       assert.equal(skillArtifactFrontmatterSchema.safeParse({ ...value, ...override }).success, false)
     }
-    assert.equal(skillArtifactFrontmatterSchema.safeParse({ name: 'a', description: 'x'.repeat(1024), compatibility: 'x'.repeat(500) }).success, true)
+    assert.equal(skillArtifactFrontmatterSchema.safeParse({ name: 'a', description: 'x'.repeat(20_000), compatibility: 'x'.repeat(500) }).success, true)
     const extra = { ...value, metadata: { version: 1, nested: { safe: true } }, 'disable-model-invocation': true }
     assert.deepEqual(skillArtifactFrontmatterSchema.parse(extra), extra)
   })

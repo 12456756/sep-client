@@ -1,4 +1,4 @@
-import type { AttachmentImportSession, AttachmentImportTarget, AttachmentRef, AttachmentView } from '../../src/shared/attachment-contracts'
+import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentRef, AttachmentView } from '../../src/shared/attachment-contracts'
 import type { InputSnapshotRef as SharedInputSnapshotRef } from '../../src/shared/attachment-contracts'
 import type { TaskOwnerScope } from '../data/scope-path'
 import { AttachmentStore } from '../data/attachment-store'
@@ -6,6 +6,8 @@ import type { AttachmentStorePort } from '../data/attachment-store'
 import { createHash } from 'node:crypto'
 import type { AttachmentExtractor } from '../domain/attachment-extraction'
 import type { ResolvedAttachmentInput } from '../domain/attachment-input'
+import { AppError } from '../errors/app-error'
+import { attachmentImportLimits } from '../../src/shared/attachment-contracts'
 
 
 export interface AttachmentImportResult {
@@ -46,6 +48,30 @@ export class AttachmentService {
   importImageForSession(sessionId: string, operationId: string, bytes: Uint8Array, displayName: string, mediaType: string): Promise<AttachmentImportResult> { return this.importImage(this.currentScope(), sessionId, operationId, bytes, displayName, mediaType) }
   removeFromSession(sessionId: string, attachmentId: string, expectedRevision?: number): Promise<AttachmentImportSession> { return this.remove(this.currentScope(), sessionId, attachmentId, expectedRevision) }
   cancelSession(sessionId: string): Promise<boolean> { return this.cancel(this.currentScope(), sessionId) }
+
+  async previewTaskAttachment(taskId: string, attachmentId: string, sha256: string): Promise<AttachmentPreview> {
+    const scope = this.currentScope()
+    const metadata = await this.store.readTaskMetadata(scope, taskId)
+    const item = metadata.items.find(candidate => candidate.attachmentId === attachmentId && candidate.sha256 === sha256)
+    if (!item) throw new Error('ATTACHMENT_REFERENCE_INVALID')
+    const mediaType = item.mediaType
+    if (mediaType !== 'image/png' && mediaType !== 'image/jpeg' && mediaType !== 'image/webp') throw new Error('ATTACHMENT_PREVIEW_UNSUPPORTED')
+    if (item.byteLength > attachmentImportLimits.maxFileBytes) throw new Error('ATTACHMENT_TOO_LARGE')
+    const bytes = await this.store.readTask(scope, taskId, attachmentId)
+    if (bytes.byteLength !== item.byteLength || createHash('sha256').update(bytes).digest('hex') !== sha256) {
+      throw new Error('ATTACHMENT_INTEGRITY_MISMATCH')
+    }
+    const current = this.scopeProvider?.()
+    if (!current || current.memberId !== scope.memberId || current.enterpriseId !== scope.enterpriseId) throw new AppError('AUTH_REQUIRED')
+    return {
+      attachmentId,
+      sha256,
+      mediaType,
+      bytes: new Uint8Array(bytes),
+      ...(item.width ? { width: item.width } : {}),
+      ...(item.height ? { height: item.height } : {}),
+    }
+  }
 
   // Draft/task claims are intentionally explicit. The arrangement service should call these
   // only after its own revision and task ownership checks; this layer validates source refs.

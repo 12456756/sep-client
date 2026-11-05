@@ -56,6 +56,58 @@ const session = {
 }
 
 describe('general assistant model authorization', () => {
+  it('carries catalog vision capability for both general and employee runs', async () => {
+    let vision: boolean | null = false
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a', 'model')]), fakeSkills(), GATEWAY, undefined, {
+      async list(token) {
+        assert.equal(token, 'access-token')
+        return [{ modelId: 'model', displayName: 'model', billingMultiplier: null, discountLabel: null, isFree: null, vision }]
+      },
+    })
+    for (const capability of [false, true, null] as const) {
+      vision = capability
+      assert.equal((await authorizer.authorizeModel('model'))?.vision, capability)
+      assert.equal((await authorizer.authorize('sub-a'))?.vision, capability)
+    }
+  })
+
+  it('discards model capabilities if the account changes while loading the catalog', async () => {
+    const started = deferred<void>(), loading = deferred<[]>()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a', 'model')]), fakeSkills(), GATEWAY, undefined, {
+      list: () => { started.resolve(); return loading.promise },
+    })
+    const pending = authorizer.authorizeModel('model')
+    await started.promise
+    authorizer.clear()
+    loading.resolve([])
+    assert.equal(await pending, null)
+  })
+
+  it('uses the selected model capability and treats absent catalog entries as unknown', async () => {
+    const instance = { ...subscription('sub-a', 'default'), allowedModels: ['default', 'selected', 'missing'] }
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [instance]), fakeSkills(), GATEWAY, undefined, {
+      async list() {
+        return [{ modelId: 'selected', displayName: 'Selected', billingMultiplier: null, discountLabel: null, isFree: null, vision: false }]
+      },
+    })
+    assert.equal((await authorizer.authorize('sub-a', 'selected'))?.vision, false)
+    assert.equal((await authorizer.authorizeModel('missing'))?.vision, null)
+    assert.equal((await authorizer.authorize('sub-a', 'missing'))?.vision, null)
+  })
+
+  it('drops employee authorization if capabilities arrive after account invalidation', async () => {
+    const started = deferred<void>(), loading = deferred<[]>()
+    const skills = fakeSkills()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a', 'model')]), skills, GATEWAY, undefined, {
+      list: () => { started.resolve(); return loading.promise },
+    })
+    const pending = authorizer.authorize('sub-a')
+    await started.promise
+    authorizer.clear()
+    loading.resolve([])
+    assert.equal(await pending, null)
+    assert.equal(skills.prepared(), 0)
+  })
   it('loads shared media tools through a valid model grant without employee behavior or skills', async () => {
     const skills = fakeSkills()
     const manifest = runtimeManifest()

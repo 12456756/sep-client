@@ -26,6 +26,7 @@ export interface PiTaskWorkerContext {
   runId: string
   subscriptionId: string
   modelId: string
+  vision?: boolean | null
   gatewayUrl: string
   workspaceDir: string
   agentDir: string
@@ -149,6 +150,7 @@ export class PiTaskWorker {
         nodeTitle: this.context.nodeTitle,
         runId: this.context.runId,
         modelId: this.context.modelId,
+        vision: this.context.vision,
         gatewayUrl: this.context.gatewayUrl,
         workspaceDir: this.context.workspaceDir,
         agentDir: this.context.agentDir,

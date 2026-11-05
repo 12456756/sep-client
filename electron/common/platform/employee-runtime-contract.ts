@@ -64,7 +64,7 @@ export const preparedEmployeeSkillSchema = z.object({
   version: z.string().min(1),
   source: z.enum(['approved', 'owner-local']),
   name: skillArtifactNameSchema,
-  description: z.string().min(1).max(1024),
+  description: z.string().min(1),
   content: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   path: z.string().min(1),
