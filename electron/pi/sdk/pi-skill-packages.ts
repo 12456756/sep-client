@@ -1,7 +1,7 @@
 import { canUseSkillVersion } from '../../common/platform/skill-version-policy'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import type { SkillVersionStore } from '../../data/skill-version-store'
 import { WriteChain } from '../../data/write-chain'
 import { getEmployeeSkills, previewSkill, type SkillVersion } from '../../common/platform/platform-api'
@@ -128,8 +128,7 @@ function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approved
       details: { capabilityId: artifact.capabilityId, versionId: artifact.versionId, format: artifact.format },
     })
   }
-  if (!safePackagePath(metadata.name) || skillNameComparisonKey(metadata.name) !== skillNameComparisonKey(artifact.installationDirectory)
-    || artifact.format === 'zip' && dirname(artifact.entryPath) !== '.' && skillNameComparisonKey(basename(dirname(artifact.entryPath))) !== skillNameComparisonKey(metadata.name)) throw new Error('Invalid approved skill package directory.')
+  if (!safePackagePath(metadata.name) || skillNameComparisonKey(metadata.name) !== skillNameComparisonKey(artifact.installationDirectory)) throw new Error('Invalid approved skill package directory.')
   // Validate normalized metadata, but install and freeze the exact authenticated bytes.
   return { content, name: metadata.name, description: metadata.description, files }
 }

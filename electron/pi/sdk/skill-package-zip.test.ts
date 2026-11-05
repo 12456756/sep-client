@@ -30,7 +30,7 @@ describe('authenticated ZIP reader', () => {
 
   for (const paths of [
     ['references/a.md', 'references/a.md'], ['references/a.md', 'references/A.md'], ['references/a.md', 'references/ａ.md'],
-    ['references/a.md', 'References/b.md'], ['scripts', 'scripts/run.py'], ['extra/SKILL.md'], ['skill.md'],
+    ['references/a.md', 'References/b.md'], ['scripts', 'scripts/run.py'], ['skill.md'],
   ]) {
     it('rejects duplicate, normalization, parent and entry collisions: ' + paths.join(', '), () => {
       const files = [entry, ...paths.map(path => ({ path, bytes: Buffer.from('x') }))]
@@ -38,6 +38,12 @@ describe('authenticated ZIP reader', () => {
       assert.throws(() => readSkillZip(bytes, zipDescriptor(bytes, files)), /unsafe/)
     })
   }
+
+  it('preserves additional skill entries at distinct safe paths', () => {
+    const files = [entry, { ...entry, path: 'extra/SKILL.md' }, { ...entry, path: 'archive/skill.md' }, guide]
+    const bytes = zipFixture(files)
+    assert.deepEqual(readSkillZip(bytes, zipDescriptor(bytes, files)), files)
+  })
 
   it('rejects links and special filesystem node types', () => {
     for (const mode of [0xa1ff, 0x21ff, 0x11ff, 0x61ff]) {

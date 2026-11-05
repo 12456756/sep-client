@@ -158,6 +158,23 @@ describe('skill artifact rate limit recovery', () => {
 })
 
 describe('skill artifact authenticated download', () => {
+  it('allows ten minutes for large downloads while preserving caller cancellation', async t => {
+    const timeout = new AbortController()
+    const controller = new AbortController()
+    t.mock.method(AbortSignal, 'timeout', (duration: number) => {
+      assert.equal(duration, 10 * 60_000)
+      return timeout.signal
+    })
+    globalThis.fetch = async (_input, init) => {
+      assert.equal(init?.signal?.aborted, false)
+      controller.abort()
+      assert.equal(init?.signal?.aborted, true)
+      init?.signal?.throwIfAborted()
+      assert.fail('Cancelled download must stop')
+    }
+    await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access', { signal: controller.signal }), { name: 'AbortError' })
+  })
+
   it('returns exact Buffer bytes using only the ordinary access token and configured API prefix', async () => {
     let calls = 0
     globalThis.fetch = async (input, init) => {

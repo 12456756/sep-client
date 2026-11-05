@@ -624,18 +624,41 @@ describe('SkillStore', () => {
     })
   }
 
-  it('rejects ZIP name/directory mismatch and malformed UTF-8 instead of repairing approved bytes', async () => {
-    for (const malformed of [false, true]) {
-      const content = '---\nname: orders\ndescription: Approved\n---\nWork'
-      const entryPath = malformed ? 'orders/SKILL.md' : 'foreign/SKILL.md'
-      const files = [{ path: entryPath, bytes: malformed ? Buffer.concat([Buffer.from(content), Buffer.from([0xff])]) : Buffer.from(content) }]
-      const bytes = zipFixture(files)
-      const runtime = { ...artifactFixture(content), artifact: { ...zipDescriptor(bytes, files, entryPath),
-        approvedContentSha256: createHash('sha256').update(content).digest('hex') } }
-      serveArtifact(runtime, { bytes })
-      const { skills } = await createStore()
-      await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), malformed ? /UTF-8/ : /directory/)
+  it('installs and reuses mismatched directories and additional entries while loading only the approved entry', async () => {
+    const content = '---\nname: orders\ndescription: Approved\n---\nWork'
+    const entryPath = 'foreign/SKILL.md'
+    const files = [
+      { path: entryPath, bytes: Buffer.from(content) },
+      { path: 'foreign/extra/SKILL.md', bytes: Buffer.from('---\nname: extra\ndescription: Extra\n---\nOther work') },
+      { path: 'foreign/references/guide.md', bytes: Buffer.from('Guide') },
+    ]
+    const bytes = zipFixture(files)
+    const runtime = { ...artifactFixture(content), artifact: zipDescriptor(bytes, files, entryPath) }
+    const downloads = serveArtifact(runtime, { bytes })
+    const { skills } = await createStore()
+    const prepared = await skills.prepare({ ...request(), runtimeSkills: [runtime] })
+    for (const file of files) {
+      assert.deepEqual(await readFile(join(prepared.skillPaths[0]!, '..', file.path)), file.bytes)
     }
+    const { DefaultResourceLoader, SettingsManager } = await import('@earendil-works/pi-coding-agent')
+    const loader = new DefaultResourceLoader({ cwd: tmpdir(), agentDir: tmpdir(), settingsManager: SettingsManager.inMemory(),
+      noExtensions: true, noContextFiles: true, noPromptTemplates: true, noThemes: true, additionalSkillPaths: prepared.skillPaths,
+      ...employeeSkillLoaderOptions(tmpdir(), tmpdir(), prepared.skillPaths, loadSkills) })
+    await loader.reload()
+    assert.deepEqual(loader.getSkills().skills.map(skill => skill.name), ['orders'])
+    assert.deepEqual((await skills.prepare({ ...request(), runtimeSkills: [runtime] })).skillPaths, prepared.skillPaths)
+    assert.equal(downloads(), 1)
+  })
+
+  it('rejects malformed UTF-8 instead of repairing approved bytes', async () => {
+    const content = '---\nname: orders\ndescription: Approved\n---\nWork'
+    const files = [{ path: 'orders/SKILL.md', bytes: Buffer.concat([Buffer.from(content), Buffer.from([0xff])]) }]
+    const bytes = zipFixture(files)
+    const runtime = { ...artifactFixture(content), artifact: { ...zipDescriptor(bytes, files, files[0]!.path),
+      approvedContentSha256: createHash('sha256').update(content).digest('hex') } }
+    serveArtifact(runtime, { bytes })
+    const { skills } = await createStore()
+    await assert.rejects(skills.prepare({ ...request(), runtimeSkills: [runtime] }), /UTF-8/)
   })
 
   it('keeps owner-local content separate from approved artifact provenance', async () => {
