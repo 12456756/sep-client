@@ -29,8 +29,8 @@ compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => {
 const route = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.TASK_CONTINUE)!
 const queueRoute = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.CONVERSATION_QUEUE)!
 
-test('conversation accepts 128 attachment references and rejects 129', () => {
-  const input = { taskId: 'task', prompt: 'Inspect attachments', attachmentRefs: Array.from({ length: 128 }, (_, index) => ({ attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) })) }
+test('conversation accepts 10 attachment references and rejects 11', () => {
+  const input = { taskId: 'task', prompt: 'Inspect attachments', attachmentRefs: Array.from({ length: 10 }, (_, index) => ({ attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) })) }
   assert.equal(route.schema.safeParse(input).success, true)
   assert.equal(route.schema.safeParse({ ...input, attachmentRefs: [...input.attachmentRefs, input.attachmentRefs[0]] }).success, false)
 })

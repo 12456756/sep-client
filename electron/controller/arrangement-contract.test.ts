@@ -44,10 +44,10 @@ const document = {
 }
 
 describe('arrangement work contract IPC', () => {
-  it('accepts 128 imported attachments and node bindings, rejecting 129', () => {
+  it('accepts 10 imported attachments and node bindings, rejecting 11', () => {
     const routes = loadRoutes()
     const create = routes.find(entry => entry.channel === INVOKE_CHANNELS.ARRANGE_CREATE_DRAFT)!
-    const candidates = Array.from({ length: 128 }, (_, index) => ({ attachment: { attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) }, mustUse: false }))
+    const candidates = Array.from({ length: 10 }, (_, index) => ({ attachment: { attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) }, mustUse: false }))
     const inputRefs = candidates.map(candidate => ({ kind: 'attachment', attachment: candidate.attachment, required: true, purpose: 'analysis' }))
     const input = { ...document, attachmentCandidates: candidates, nodes: [{ ...node, inputRefs }] }
     assert.equal(create.schema.safeParse(input).success, true)
