@@ -9,15 +9,15 @@ import { ScopePath } from './scope-path'
 
 const scope: TaskOwnerScope = { memberId: 'member-a', enterpriseId: 'enterprise-a' }
 
-test('persists 10 attachments and rejects an 11th import', async t => {
+test('persists 128 attachments and rejects a 129th import', async t => {
   const root = await mkdtemp(join(tmpdir(), 'sep-attachment-limit-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   const store = new AttachmentStore(root)
   const session = await store.begin(scope, { kind: 'compose', composerId: 'composer-limit' })
-  for (let index = 0; index < 10; index++) {
+  for (let index = 0; index < 128; index++) {
     await store.importBytes(scope, session.sessionId, Buffer.from(`file-${index}`), `file-${index}.txt`, 'text/plain')
   }
-  assert.equal((await store.get(scope, session.sessionId))?.attachments.length, 10)
+  assert.equal((await store.get(scope, session.sessionId))?.attachments.length, 128)
   await assert.rejects(store.importBytes(scope, session.sessionId, Buffer.from('extra'), 'extra.txt', 'text/plain'), /ATTACHMENT_TOTAL_TOO_LARGE/)
 })
 

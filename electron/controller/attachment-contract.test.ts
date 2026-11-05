@@ -33,8 +33,8 @@ test('all attachment routes require trusted main-frame calls and bounded strict 
   const files = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_FILES)!
   const input = { sessionId: 'session-a', operationId: 'op-a', paths: ['/tmp/report.txt'] }
   assert.deepEqual(files.schema.parse(input), input)
-  assert.equal(files.schema.safeParse({ ...input, paths: Array(10).fill('/tmp/report.txt') }).success, true)
-  for (const invalid of [{ ...input, sessionId: '../escape' }, { ...input, paths: [] }, { ...input, paths: Array(11).fill('/tmp/report.txt') }, { ...input, allowAll: true }]) assert.equal(files.schema.safeParse(invalid).success, false)
+  assert.equal(files.schema.safeParse({ ...input, paths: Array(128).fill('/tmp/report.txt') }).success, true)
+  for (const invalid of [{ ...input, sessionId: '../escape' }, { ...input, paths: [] }, { ...input, paths: Array(129).fill('/tmp/report.txt') }, { ...input, allowAll: true }]) assert.equal(files.schema.safeParse(invalid).success, false)
   const image = list.find(route => route.channel === INVOKE_CHANNELS.ATTACHMENT_IMPORT_IMAGE)!
   const base = { sessionId: 'session-a', operationId: 'op-a', name: 'screenshot.png', type: 'image/png' }
   assert.equal(image.schema.safeParse({ ...base, bytes: new Uint8Array([1]) }).success, true)
