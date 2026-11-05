@@ -848,6 +848,22 @@ describe('approved skill artifact authorization', () => {
     assert.equal(preparations, 0)
   })
 
+  it('explains a blocked oversized package before attempting skill IO', async () => {
+    const manifest = artifactManifest()
+    const skill = manifest.runtime.skills[0]!
+    const blockedManifest = { ...manifest, runtime: { ...manifest.runtime, skills: [{ ...skill, artifact: {
+      protocolVersion: 1, status: 'BLOCKED', capabilityId: skill.capabilityId, versionId: skill.versionId,
+      approvedContentSha256: skill.artifact.approvedContentSha256, reason: 'CLIENT_LIMIT_EXCEEDED', fileCount: 821,
+    } }] } } as unknown as typeof manifest
+    let preparations = 0
+    const authorizer = artifactAuthorizer(blockedManifest, async () => {
+      preparations++
+      return { skillPaths: [], skills: [] }
+    })
+    await assert.rejects(authorizer.authorize('sub-a'), /fileCount 821 exceeds 500/)
+    assert.equal(preparations, 0)
+  })
+
   it('preserves protocol negotiation for employees without skills and never downgrades a failed download', async () => {
     const manifest = artifactManifest()
     const empty = { ...manifest, runtime: { ...manifest.runtime, skills: [] } }

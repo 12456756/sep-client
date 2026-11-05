@@ -4,5 +4,5 @@ export const generatedRuntimeConfig = {
   "environment": "production",
   "sepBaseUrl": "https://sep.longdaoec.com/api",
   "gatewayUrl": "https://sep.longdaoec.com/api/gateway/v1",
-  "buildTime": "2026-11-04T05:19:52.937Z"
+  "buildTime": "2026-11-04T09:51:19.191Z"
 } as const
