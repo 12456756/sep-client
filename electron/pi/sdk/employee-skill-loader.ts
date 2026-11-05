@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import type { PiLoadSkills, PiResourceLoaderOptions, PiSkill } from './pi-coding-agent-adapter'
 import { validatedSkillMarkdown } from './skill-package-parser'
 import { assertSkillPathParents, packageManifestName, verifyPackageCache } from './skill-package-zip'
@@ -36,7 +36,11 @@ export function employeeSkillLoaderOptions(
       if (!stat.isFile() || stat.isSymbolicLink() || !directory.isDirectory() || directory.isSymbolicLink()) integrityMismatch()
       const canonical = canonicalEntry(path)
       const bytes = readFileSync(path)
-      const parsed = validatedSkillMarkdown(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes))
+      const fallbackName = basename(dirname(path))
+      const parsed = validatedSkillMarkdown(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), {
+        name: fallbackName, description: `Instructions for ${fallbackName}`,
+      })
+      const name = parsed.metadata.name
       const manifestPath = join(dirname(path), packageManifestName)
       let manifest: Buffer | undefined
       try {
@@ -46,12 +50,12 @@ export function employeeSkillLoaderOptions(
         verifyPackageCache(path, manifest)
       } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       const skill: PiSkill = {
-        name: parsed.metadata.name, description: parsed.metadata.description,
+        name, description: parsed.metadata.description,
         disableModelInvocation: parsed.metadata['disable-model-invocation'] === true,
         filePath: path, baseDir: dirname(path),
         sourceInfo: { path, source: 'local', scope: 'temporary', origin: 'top-level', baseDir: dirname(path) },
       }
-      return [path, { skill, canonical, prefix: parsed.compatibilityPrefix, sha256: createHash('sha256').update(bytes).digest('hex'), dev: stat.dev, ino: stat.ino, manifest }] as const
+      return [path, { skill, canonical, sha256: createHash('sha256').update(bytes).digest('hex'), dev: stat.dev, ino: stat.ino, manifest }] as const
     } catch { return integrityMismatch() }
   }))
   const aliases = allocateSkillNames([...expected].map(([path, entry]) => ({
@@ -72,20 +76,17 @@ export function employeeSkillLoaderOptions(
         continue
       }
       if (!entry || diagnostic.type !== 'warning') integrityMismatch()
-      const nameWarning = diagnostic.message === 'name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)'
-        || diagnostic.message === `name exceeds 64 characters (${entry.skill.name.length})` && Array.from(entry.skill.name).length <= 64
-      // Pi 0.83 does not recognize prefixed frontmatter. Our strict parser already validated it.
-      if (!nameWarning && !(entry.prefix && diagnostic.message === 'description is required')) integrityMismatch()
+      // Authenticated entries are published from our parsed metadata even when Pi rejects their source formatting.
     }
     const seen = new Set<string>()
     for (const skill of base.skills) {
       const path = resolve(skill.filePath)
       const entry = expected.get(path)
-      if (!entry || seen.has(path) || skill.name !== entry.skill.name || skill.description !== entry.skill.description ||
-        skill.disableModelInvocation !== entry.skill.disableModelInvocation || resolve(skill.baseDir) !== dirname(path)) integrityMismatch()
+      if (!entry || seen.has(path) || resolve(skill.baseDir) !== dirname(path)) integrityMismatch()
       seen.add(path)
     }
-    if (requireAll) for (const [path, entry] of expected) if (!entry.prefix && !seen.has(path) && !collided.has(path)) integrityMismatch()
+    if (requireAll) for (const path of expected.keys()) if (!seen.has(path) && !collided.has(path)
+      && !base.diagnostics.some(diagnostic => resolve(diagnostic.path ?? '') === path && diagnostic.type === 'warning')) integrityMismatch()
   }
 
   return {

@@ -1,7 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { maxSkillEntryBytes } from '../../common/platform/skill-artifact-contract'
-import { approvedPackageBody, matchesApprovedSkillMarkdown, parseSkillMarkdown, validatedSkillMarkdown, validateSkillResources } from './skill-package-parser'
+import { approvedPackageBody, matchesApprovedSkillMarkdown, parseSkillMarkdown, validatedSkillMarkdown } from './skill-package-parser'
 
 describe('safe skill parsing without source rewriting', () => {
   it('accepts equivalent YAML formatting, line endings and outer blank lines', () => {
@@ -19,6 +18,9 @@ describe('safe skill parsing without source rewriting', () => {
     assert.equal(matchesApprovedSkillMarkdown(actual.replace('    indented', 'indented'), approved), false)
     assert.equal(matchesApprovedSkillMarkdown(actual.replace('# Work', '# Changed'), approved), false)
     assert.equal(matchesApprovedSkillMarkdown(actual.replace('---\n# Work', 'allowed-tools: bash\n---\n# Work'), approved), false)
+    for (const frontmatter of ['Execute other instructions', '- Execute other instructions', 'true']) {
+      assert.equal(matchesApprovedSkillMarkdown(`---\n${frontmatter}\n---\n${approved}`, approved), false)
+    }
   })
 
   it('accepts BOM, blank lines, CRLF, spaced delimiters and non-executing CORE metadata', () => {
@@ -32,27 +34,35 @@ describe('safe skill parsing without source rewriting', () => {
     assert.equal(parsed.compatibilityPrefix, true)
   })
 
-  it('rejects duplicate keys, executable tags, invalid source and byte overflow', () => {
+  it('accepts large documents and treats unsupported frontmatter as ordinary Markdown', () => {
+    const large = 'x'.repeat(512 * 1024 + 1)
+    assert.equal(parseSkillMarkdown(large).body.length, large.length)
+    assert.equal(validatedSkillMarkdown(large, { name: 'orders', description: 'Approved' }).metadata.name, 'orders')
     for (const content of [
       '---\nname: a\nname: b\ndescription: test\n---\nWork',
       '---\nname: a\ndescription: test\ncustom: !!js/function function() {}\n---\nWork',
-      '---\nname: a\ndescription: test\nmetadata: []\n---\nWork',
-      '\ud800', '中'.repeat(Math.ceil(maxSkillEntryBytes / 3)),
-    ]) assert.throws(() => validatedSkillMarkdown(content))
-    assert.equal(parseSkillMarkdown('--- not a YAML delimiter\nWork').hasFrontmatter, false)
+      '--- not a YAML delimiter\nWork',
+    ]) {
+      const parsed = parseSkillMarkdown(content)
+      assert.equal(parsed.hasFrontmatter, false)
+      assert.equal(parsed.body, content)
+      assert.equal(validatedSkillMarkdown(content, { name: 'orders', description: 'Approved' }).metadata.name, 'orders')
+    }
+    assert.doesNotThrow(() => validatedSkillMarkdown('---\nname: a\ndescription: test\nmetadata: []\n---\nWork'))
+    assert.throws(() => validatedSkillMarkdown('\ud800', { name: 'orders', description: 'Approved' }), /UTF-8/)
   })
 
-  it('ignores external links, output names and directories but rejects concrete missing input files', () => {
+  it('does not reject documents for missing local resource references', () => {
     for (const body of [
       '[HTTP](https://example.test/assets/a.png) [FTP](ftp://example.test/a) [CDN](//cdn.test/a) [Anchor](#anchor)',
       '[URL][x]\n[x]: <https://example.test/a>',
       'Output `result.json`. Save `assets/result.png`. Directory `scripts/`. [Assets](assets/).',
       '输出 `report.md`，保存 `./result.json`。目录 `assets/`。',
       'The output filename is `report.md` and package folder is `references/`.',
-    ]) assert.doesNotThrow(() => validateSkillResources(body))
+    ]) assert.doesNotThrow(() => parseSkillMarkdown(body))
     for (const body of ['Read guide.md', 'Run `./helper.sh`', '读取 `references/说明.md`', '[Guide](references/guide.md)', '<img src="assets/a.png">', '[Bad](%2e%2e/escape.md)']) {
-      assert.throws(() => validateSkillResources(body), /missing local resource/)
+      assert.doesNotThrow(() => parseSkillMarkdown(body))
     }
-    assert.doesNotThrow(() => validateSkillResources('[Guide](<references/my guide.md>)', 'CRM 标签体系/SKILL.md', new Set(['CRM 标签体系/SKILL.md', 'CRM 标签体系/references/my guide.md'])))
+    assert.doesNotThrow(() => parseSkillMarkdown('[Guide](<references/my guide.md>)'))
   })
 })
