@@ -105,7 +105,7 @@ test('checksums cover installers and release notes are generated', () => {
   const version = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')).version
   assert.match(readFileSync(resolve(dir, 'dist/RELEASE-NOTES-beta.md'), 'utf8'), new RegExp(`SEP Client ${version} \\(beta\\)`))
 })
-test('release scripts select stable and do not force cross-platform packaging', () => {
+test('local release packaging builds the complete macOS and Windows artifact set', () => {
   const pkg = JSON.parse(readFileSync('package.json', 'utf8'))
   for (const channel of ['stable']) {
     assert.match(pkg.scripts['package:' + channel], new RegExp('release:config:' + channel))
@@ -117,7 +117,12 @@ test('release scripts select stable and do not force cross-platform packaging', 
     assert.doesNotMatch(pkg.scripts['package:local:' + channel], /signed\.json/)
     assert.match(pkg.scripts['package:' + channel], new RegExp(`generate-checksums\\.mjs dist/${channel}`))
     assert.match(pkg.scripts['package:' + channel], new RegExp(`generate-release-notes\\.mjs ${channel} dist/${channel}`))
-    assert.doesNotMatch(pkg.scripts['package:' + channel], /npm run build|--mac --win/)
+    assert.doesNotMatch(pkg.scripts['package:' + channel], /--mac --win/)
+    assert.match(pkg.scripts['package:local:' + channel], /--mac --win/)
+    assert.match(pkg.scripts['package:ci:' + channel + ':mac'], /--mac/)
+    assert.doesNotMatch(pkg.scripts['package:ci:' + channel + ':mac'], /--win/)
+    assert.match(pkg.scripts['package:ci:' + channel + ':win'], /--win/)
+    assert.doesNotMatch(pkg.scripts['package:ci:' + channel + ':win'], /--mac/)
   }
   for (const name of ['package:beta', 'package:local:beta', 'release:config:beta', 'release:builder:beta', 'release:builder:signed:beta']) assert.equal(pkg.scripts[name], undefined)
   assert.equal(pkg.dependencies['@earendil-works/pi-coding-agent'], '0.83.0')
