@@ -31,8 +31,13 @@ function requiredEnv(env, name) {
 async function command(command, args, options = {}) {
   try {
     return await execute(command, args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, ...options })
-  } catch {
-    throw new Error(`${command} failed`)
+  } catch (error) {
+    const detail = [error?.stderr, error?.stdout]
+      .filter(value => typeof value === 'string' && value.trim().length > 0)
+      .join(' ')
+      .replaceAll(/\s+/g, ' ')
+      .trim()
+    throw new Error(`${command} failed${detail ? `: ${detail.slice(0, 500)}` : ''}`)
   }
 }
 
@@ -46,6 +51,7 @@ async function localFile(root, name) {
 function sshArgs(context) {
   return [
     '-i', context.key,
+    '-o', 'IdentitiesOnly=yes',
     '-o', 'BatchMode=yes',
     '-o', 'StrictHostKeyChecking=yes',
     '-o', `UserKnownHostsFile=${context.knownHosts}`,
