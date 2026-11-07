@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseArguments, shellQuote, sshConfig } from './upload-download-update.mjs'
+import { decodePrivateKey, parseArguments, shellQuote, sshConfig } from './upload-download-update.mjs'
 
 test('upload CLI accepts exactly source, prepared directory and stable channel', () => {
   assert.deepEqual(parseArguments(['source', 'prepared', 'stable']), { source: 'source', prepared: 'prepared', channel: 'stable' })
@@ -27,4 +27,11 @@ test('SSH config pins one identity and host key policy for both ssh and rsync', 
   assert.match(config, /^IdentitiesOnly yes$/m)
   assert.match(config, /^StrictHostKeyChecking yes$/m)
   assert.match(config, /^UserKnownHostsFile \/tmp\/sep-client-upload\/known_hosts$/m)
+})
+
+test('private key is restored from canonical base64 without altering OpenSSH line breaks', () => {
+  const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----\nYWJjZA==\n-----END OPENSSH PRIVATE KEY-----\n'
+  assert.equal(decodePrivateKey({ SEP_UPLOAD_SSH_KEY_BASE64: Buffer.from(privateKey).toString('base64') }), privateKey)
+  assert.throws(() => decodePrivateKey({ SEP_UPLOAD_SSH_KEY_BASE64: 'not-base64!' }), /valid base64/)
+  assert.throws(() => decodePrivateKey({ SEP_UPLOAD_SSH_KEY_BASE64: Buffer.from('not a private key').toString('base64') }), /private key/)
 })

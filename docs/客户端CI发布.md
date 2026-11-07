@@ -11,13 +11,13 @@
 
 在 GitHub Environment `sep-download-production` 配置以下 Secrets：
 
-- `SEP_UPLOAD_SSH_KEY`：访问华为云下载服务器的 SSH 私钥
+- `SEP_UPLOAD_SSH_KEY_BASE64`：访问华为云下载服务器的私钥文件内容经 Base64 编码后的单行文本
 - `SEP_UPLOAD_KNOWN_HOSTS`：服务器的固定 SSH host key，禁止关闭 host key 校验
 - `SEP_UPLOAD_HOST`：默认 `121.37.128.126`
 - `SEP_UPLOAD_USER`：默认 `root`
 - `SEP_UPLOAD_ROOT`：默认 `/www/sep/downloads/sep-client/stable`
 - `SEP_UPLOAD_PORT`：默认 `22`
 
-`SEP_UPLOAD_SSH_KEY` 必须是与服务器 `authorized_keys` 匹配的完整私钥（保留多行 PEM 内容）；`SEP_UPLOAD_KNOWN_HOSTS` 必须包含 `SEP_UPLOAD_HOST` 对应的完整 host key 行。发布器会在一次运行中为 `ssh` 和 `rsync` 使用同一份临时 SSH 配置，强制使用该私钥并启用 host key 校验。
+将与服务器 `authorized_keys` 匹配的私钥文件做 Base64 编码后，完整保存为 `SEP_UPLOAD_SSH_KEY_BASE64`（macOS/Linux 可运行 `base64 < ~/.ssh/sep_deploy | tr -d '\n'`）。这样可以避免 GitHub Secret 对私钥多行换行的转换导致 OpenSSH 报 `error in libcrypto`。`SEP_UPLOAD_KNOWN_HOSTS` 必须包含 `SEP_UPLOAD_HOST` 对应的完整 host key 行。发布器会在一次运行中为 `ssh` 和 `rsync` 使用同一份临时 SSH 配置，强制使用该私钥并启用 host key 校验。
 
 发布 job 使用 GitHub Environment 审批。版本目录已存在时会拒绝覆盖；更新清单发布失败时会恢复旧清单。工作流不会执行 SEP 容器重启、镜像拉取或前端部署。

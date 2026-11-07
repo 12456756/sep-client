@@ -28,6 +28,16 @@ function requiredEnv(env, name) {
   return value
 }
 
+function decodePrivateKey(env) {
+  const encoded = requiredEnv(env, 'SEP_UPLOAD_SSH_KEY_BASE64')
+  requireValue(/^[A-Za-z0-9+/]+={0,2}$/.test(encoded), 'SEP_UPLOAD_SSH_KEY_BASE64 is not valid base64')
+  const bytes = Buffer.from(encoded, 'base64')
+  requireValue(bytes.toString('base64') === encoded, 'SEP_UPLOAD_SSH_KEY_BASE64 is not valid base64')
+  const decoded = bytes.toString('utf8')
+  requireValue(decoded.includes('BEGIN OPENSSH PRIVATE KEY') || decoded.includes('BEGIN RSA PRIVATE KEY'), 'SEP_UPLOAD_SSH_KEY_BASE64 does not contain a supported private key')
+  return decoded
+}
+
 async function command(command, args, options = {}) {
   try {
     return await execute(command, args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, ...options })
@@ -114,7 +124,7 @@ async function upload({ source, prepared, channel, env = process.env }) {
   const versionRoot = `${context.root}/${plan.version}`
   const manifestStaging = `${context.root}/.sep-client-manifests-${plan.version}-${runId}`
   try {
-    await writeFile(key, requiredEnv(env, 'SEP_UPLOAD_SSH_KEY'), { mode: 0o600 })
+    await writeFile(key, decodePrivateKey(env), { mode: 0o600 })
     await writeFile(knownHosts, requiredEnv(env, 'SEP_UPLOAD_KNOWN_HOSTS'), { mode: 0o600 })
     await writeFile(config, `Host sep-upload\n${sshConfig(context)}`, { mode: 0o600 })
     await chmod(key, 0o600)
@@ -166,4 +176,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   }
 }
 
-export { upload, shellQuote, sshConfig }
+export { upload, shellQuote, sshConfig, decodePrivateKey }
