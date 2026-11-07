@@ -396,28 +396,41 @@ describe('automatic arrangement final file handover', () => {
     assert.equal(result.status, 'completed')
     assert.deepEqual(result.state.nodes.map(node => node.modelRequestProgress?.requestAttempts), [4, 4])
   })
-  it('does not commit an unsaved retry count to later checkpoints', async () => {
+  it('continues the node when saving its request count fails', async () => {
     let retried = false
     let saveAttempted = false
-    const f = await fixture(async id => {
+    const f = await fixture(async (id, _iteration, root) => {
       await f.workers.find(worker => worker.context.modelId === id)!.onModelRequest!('retry')
       retried = true
+      await writeFile(join(root, `deliverables/${id}.txt`), 'Findings '+id)
       return { text: submission(id) }
     })
     const save = f.checkpoints.save.bind(f.checkpoints)
     f.checkpoints.save = async (scope, value) => {
-      if (value.state.nodes[0]?.modelRequestProgress?.requestAttempts === 2) {
+      if (!saveAttempted && value.state.nodes[0]?.modelRequestProgress?.requestAttempts === 2) {
         saveAttempted = true
         throw new Error('ENOSPC')
       }
       await save(scope, value)
     }
     const result = await f.executor.execute(f.plan, 'task', 'run')
-    assert.equal(result.status, 'waiting-user')
+    assert.equal(result.status, 'completed')
     assert.equal(saveAttempted, true)
-    assert.equal(retried, false)
-    assert.equal(result.state.nodes[0]?.modelRequestProgress?.requestAttempts, 1)
-    assert.equal(f.checkpoint()?.state.nodes[0]?.modelRequestProgress?.requestAttempts, 1)
+    assert.equal(retried, true)
+    assert.ok((result.state.nodes[0]?.modelRequestProgress?.requestAttempts ?? 0) >= 2)
+  })
+  it('resets an invalid request count and continues the node', async () => {
+    const f = await fixture(async (id, _iteration, root) => {
+      await writeFile(join(root, `deliverables/${id}.txt`), 'Findings '+id)
+      return { text: submission(id) }
+    })
+    const state = createArrangementExecutionState(f.plan.nodes)
+    state.nodes[0] = { ...state.nodes[0]!, modelRequestProgress: {
+      executionRounds: -1, requestAttempts: 0, executionRetries: 0, compactionAttempts: 0,
+    } }
+    const result = await f.executor.execute(f.plan, 'task', 'run', state)
+    assert.equal(result.status, 'completed')
+    assert.equal(result.state.nodes[0]?.modelRequestProgress?.executionRounds, 1)
   })
   it('rejects retries from cancelled node workers without allocating another request', async () => {
     const f = await fixture(async id => {
