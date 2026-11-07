@@ -33,6 +33,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      - name: Prepare pinned speech assets
+        run: npm run speech:prepare
       - name: Check release tag
         if: github.event_name == 'push'
         shell: bash
@@ -54,6 +56,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      - name: Prepare pinned speech assets
+        run: npm run speech:prepare
       - run: npm run package:ci:stable:mac
       - uses: actions/upload-artifact@v4
         with:
@@ -72,6 +76,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      - name: Prepare pinned speech assets
+        run: npm run speech:prepare
       - run: npm run package:ci:stable:win
       - uses: actions/upload-artifact@v4
         with:
