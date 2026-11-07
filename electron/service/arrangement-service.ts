@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import type { Subscription } from '../common/platform/platform-api'
+import { AuthApiError, type Subscription } from '../common/platform/platform-api'
+import { AuthenticationRequiredError } from '../common/platform/authentication-required-error'
 import type { ArrangementDraftStorePort } from '../data/arrangement-draft-store'
 import type { WorkPlanStorePort } from '../data/work-plan-store'
 import type { TaskMetadataStore } from '../data/task-metadata-store'
@@ -27,7 +28,7 @@ import {
 } from '../domain/arrangement-plan'
 import type { EmployeeAuthorizer } from './employee-authorizer'
 import { requireScope, type ScopeSource } from './scope-guard'
-import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirectory, ArrangementPlannerPort, ArrangementPlannerDraft, ArrangementPlanningProgress, ArrangementPlannerEmployee, ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
+import type { ArrangementCandidateDirectory, ArrangementEmployeeCapabilityDirectory, ArrangementPlannerPort, ArrangementPlannerDraft, ArrangementPlanningProgress, ArrangementPlannerEmployee, ArrangementPlanningResult, ArrangementReplacementSearchInput, ArrangementReplacementSearchResult } from '../domain/arrangement-planner'
 import { validateApprovedEmployeeAssignments } from '../domain/arrangement-planner'
 import type { ArrangementUnresolvedStep, ArrangementCandidateMatch, ArrangementEmployeeAccessRequest } from '../domain/arrangement-plan'
 import type { EmployeeAccessRequest, EmployeeAccessRequestInput } from '../common/platform/platform-api'
@@ -112,6 +113,12 @@ export interface DraftPreflight {
 
 const DEFAULT_SUBSCRIPTION_THRESHOLD_MS = 15 * 60 * 1000
 const log = logger.child('arrangement-service')
+
+interface AuthorizedCandidateRecheck {
+  employees: readonly ArrangementPlannerEmployee[]
+  stepId: string
+  employeeId: string
+}
 
 export class ArrangementService {
   private readonly creationGate: TaskCreationGate
@@ -568,16 +575,20 @@ export class ArrangementService {
   }
 
   async startPlanning(draftId: string, expectedRevision: number, modelId?: string): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
+    return this.beginPlanning(draftId, expectedRevision, modelId)
+  }
+
+  private async beginPlanning(draftId: string, expectedRevision: number, modelId?: string, recheck?: AuthorizedCandidateRecheck): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
     const scope = requireScope(this.deps.scope)
     const key = JSON.stringify([scope, draftId])
     const existing = this.planningStarts.get(key)
     if (existing) return existing
-    const flight = this.startPlanningOnce(draftId, expectedRevision, modelId)
+    const flight = this.startPlanningOnce(draftId, expectedRevision, modelId, recheck)
     this.planningStarts.set(key, flight)
     try { return await flight } finally { if (this.planningStarts.get(key) === flight) this.planningStarts.delete(key) }
   }
 
-  private async startPlanningOnce(draftId: string, expectedRevision: number, modelId?: string): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
+  private async startPlanningOnce(draftId: string, expectedRevision: number, modelId?: string, recheck?: AuthorizedCandidateRecheck): Promise<{ draftId: string; planningId: string; status: 'planning' }> {
     const scope = requireScope(this.deps.scope)
     const generation = this.generation
     const draft = await this.getDraft(draftId)
@@ -601,7 +612,7 @@ export class ArrangementService {
     this.progress.set(JSON.stringify([scope, draftId]), { owner: scope, draftId, planningId, modelId: modelId ?? draft.planningModelId ?? '', sequence: 0, events: [] })
     this.notifyPlanningRecord(updated)
     this.emitPlanning({ planningId, draftId, draftRevision: expectedRevision + 1, type: 'arrangement_planning_started', occurredAt: Date.now(), data: {} })
-    void this.runPlanning(planningId, draftId, expectedRevision + 1, controller, modelId).catch(error => {
+    void this.runPlanning(planningId, draftId, expectedRevision + 1, controller, modelId, recheck).catch(error => {
       log.error('background planning failed', {
         planningId,
         runId: planningId,
@@ -630,12 +641,35 @@ export class ArrangementService {
   async requestEmployeeAccess(draftId: string, expectedRevision: number, stepId: string, employeeId: string): Promise<ArrangementDraft> {
     if (!this.deps.employeeAccessRequests) throw new AppError('INVALID_STATE')
     const scope = requireScope(this.deps.scope)
+    const generation = this.generation
     const draft = await this.getDraft(draftId)
     if (draft.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
     if (draft.mode !== 'auto' || draft.status !== 'awaiting-employee') throw new AppError('INVALID_STATE')
     if (!(draft.unresolvedSteps ?? []).some(step => step.stepId === stepId)) throw new AppError('INVALID_ARGUMENT')
     const candidate = (draft.candidateMatches ?? []).find(match => match.stepId === stepId && match.employeeId === employeeId)
     if (!candidate) throw new AppError('INVALID_ARGUMENT')
+    let authorized: Subscription[] = []
+    try { authorized = await this.deps.employees.list() } catch (error) {
+      if (isAuthorizationError(error)) throw error
+    }
+    this.assertPlanningScope(scope, generation)
+    try {
+      const refreshed = await this.deps.employees.refresh()
+      authorized = refreshed ?? await this.deps.employees.list()
+    } catch (error) {
+      if (isAuthorizationError(error)) throw error
+      log.warn('authorized employee refresh unavailable before access request', { draftId, stepId, employeeId, ...planningErrorFields(error) })
+    }
+    this.assertPlanningScope(scope, generation)
+    if (authorized.some(employee => employee.employeeId === employeeId && employee.status === 'ACTIVE')) {
+      const employees = await this.loadAuthorizedPlannerEmployees({ draftId, stepId, employeeId }, authorized)
+      this.assertPlanningScope(scope, generation)
+      await this.beginPlanning(draftId, expectedRevision, draft.planningModelId, { employees, stepId, employeeId })
+      return this.getDraft(draftId)
+    }
+    const current = await this.getDraft(draftId)
+    this.assertPlanningScope(scope, generation)
+    if (current.revision !== expectedRevision) throw new AppError('DRAFT_REVISION_CONFLICT')
     const existing = draft.employeeAccessRequests?.find(request => request.stepId === stepId && request.employeeId === employeeId)
     const latest = existing ? await this.deps.employeeAccessRequests.get(existing.requestId) : await this.deps.employeeAccessRequests.create({
       targetType: candidate.source === 'enterprise' ? 'ENTERPRISE_SUBSCRIPTION' : 'PLATFORM_EMPLOYEE',
@@ -670,7 +704,7 @@ export class ArrangementService {
 
   private readonly planningControllers = new Map<string, AbortController>()
 
-  private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController, modelId?: string): Promise<void> {
+  private async runPlanning(planningId: string, draftId: string, planningRevision: number, controller: AbortController, modelId?: string, recheck?: AuthorizedCandidateRecheck): Promise<void> {
     const owner = this.planningOwners.get(planningId)!
     const context: LogFields = { planningId, runId: planningId, draftId, draftRevision: planningRevision, modelId, completedNodeCount: 0, unresolvedStepCount: 0 }
     let diagnosticContext: PlanningDiagnosticContext = { round: 1, employeeScope: 'authorized' }
@@ -704,16 +738,16 @@ export class ArrangementService {
       context.completedNodeCount = current.nodes.length
       context.unresolvedStepCount = current.unresolvedSteps?.length ?? 0
       nextPhase('employee-loading')
-      const approvedRequests = (current.employeeAccessRequests ?? []).filter(request => request.status === 'APPROVED' &&
+      const approvedRequests = recheck ? [] : (current.employeeAccessRequests ?? []).filter(request => request.status === 'APPROVED' &&
         current.unresolvedSteps?.some(step => step.stepId === request.stepId))
       if (approvedRequests.length) {
         await this.deps.employees.refresh()
         this.assertPlanningScope(owner.scope, owner.generation)
       }
-      const authorized = await this.loadAuthorizedPlannerEmployees({ ...context, ...diagnosticContext })
+      const authorized = recheck ? [...recheck.employees] : await this.loadAuthorizedPlannerEmployees({ ...context, ...diagnosticContext })
       this.assertPlanningScope(owner.scope, owner.generation)
       context.employeeCount = authorized.length
-      const approvedEmployeeAssignments = approvedRequests.map(request => {
+      let approvedEmployeeAssignments = approvedRequests.map(request => {
         const sameStep = approvedRequests.filter(item => item.stepId === request.stepId)
         if (sameStep.length !== 1) throw new AppError('INVALID_STATE', { message: `步骤 ${request.stepId} 有多个已批准员工，无法确定绑定关系。` })
         const employee = authorized.find(item => item.employeeId === request.employeeId && item.status === 'ACTIVE' && item.canExecute !== false && item.allowedModels.length > 0)
@@ -722,9 +756,24 @@ export class ArrangementService {
       })
       let planningDraft: ArrangementPlannerDraft = { ...planningSource, approvedEmployeeAssignments }
       let employees: ArrangementPlannerEmployee[] = authorized
-      const plannerEmployees: ArrangementPlannerEmployee[] = authorized
+      let plannerEmployees: ArrangementPlannerEmployee[] = authorized
+      const initialAuthorizedPlannerEmployees: ArrangementPlannerEmployee[] = authorized
       nextPhase('round-1')
-      let result = await this.deps.planner!.plan({
+      let result: ArrangementPlanningResult
+      if (recheck) {
+        const candidates = [...(current.candidateMatches ?? [])].sort((left, right) =>
+          Number(right.stepId === recheck.stepId && right.employeeId === recheck.employeeId) -
+          Number(left.stepId === recheck.stepId && left.employeeId === recheck.employeeId))
+        const reconciled = await this.reconcileAuthorizedCandidates({
+          planningId, controller, context, planningSource, currentNodes: current.nodes,
+          intentAnalysis: current.intentAnalysis ?? null, unresolvedSteps: current.unresolvedSteps ?? [],
+          candidateMatches: candidates, executableNodes: current.nodes, approvedEmployeeAssignments,
+          fallback: authorized, authorized, modelId,
+        })
+        approvedEmployeeAssignments = reconciled.approvedEmployeeAssignments
+        result = { title: current.title, nodes: reconciled.executableNodes, unresolvedSteps: reconciled.unresolvedSteps,
+          candidateMatches: reconciled.candidateMatches, intentAnalysis: current.intentAnalysis ?? undefined }
+      } else result = await this.deps.planner!.plan({
         planningId, planningStage: 'authorized', draft: { ...planningDraft, plannerAttachmentMaterials }, employees, plannerEmployees, signal: controller.signal,
         modelId, plannerModelId: modelId,
         diagnosticContext,
@@ -738,7 +787,7 @@ export class ArrangementService {
       validateApprovedEmployeeAssignments(approvedEmployeeAssignments, executableNodes, unresolvedSteps)
       context.completedNodeCount = executableNodes.length
       context.unresolvedStepCount = unresolvedSteps.length
-      if (unresolvedSteps.length && this.deps.candidateEmployees) {
+      if (!recheck && unresolvedSteps.length && this.deps.candidateEmployees) {
         nextPhase('employee-loading', { round: 2, employeeScope: 'enterprise' })
         const enterpriseCandidates = await this.deps.candidateEmployees.listEnterprise()
         this.assertPlanningScope(owner.scope, owner.generation)
@@ -748,7 +797,7 @@ export class ArrangementService {
           employees = enterpriseCandidates
           nextPhase('round-2')
           result = await this.deps.planner!.plan({
-            planningId, planningStage: 'enterprise', draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            planningId, planningStage: 'enterprise', draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
             modelId, plannerModelId: modelId,
             diagnosticContext,
             onProgress: event => this.emitPlanning(event),
@@ -763,10 +812,22 @@ export class ArrangementService {
             mergeCandidateMatches(candidateMatches, result.candidateMatches ?? []),
             enterpriseMatches,
           )
+          const reconciled = await this.reconcileAuthorizedCandidates({
+            planningId, controller, context: { ...context, ...diagnosticContext }, planningSource, currentNodes: current.nodes,
+            intentAnalysis: intentAnalysis ?? null, unresolvedSteps, candidateMatches, executableNodes,
+            approvedEmployeeAssignments, fallback: initialAuthorizedPlannerEmployees, modelId,
+          })
+          plannerEmployees = reconciled.authorized
+          executableNodes = reconciled.executableNodes
+          unresolvedSteps = reconciled.unresolvedSteps
+          candidateMatches = reconciled.candidateMatches
+          approvedEmployeeAssignments = reconciled.approvedEmployeeAssignments
+          context.completedNodeCount = executableNodes.length
+          context.unresolvedStepCount = unresolvedSteps.length
         }
       }
 
-      if (unresolvedSteps.length && this.deps.candidateEmployees) {
+      if (!recheck && unresolvedSteps.length && this.deps.candidateEmployees) {
         nextPhase('employee-loading', { round: 3, employeeScope: 'platform' })
         const platform = await this.deps.candidateEmployees.listPlatform()
         this.assertPlanningScope(owner.scope, owner.generation)
@@ -776,7 +837,7 @@ export class ArrangementService {
           employees = platform
           nextPhase('round-3')
           result = await this.deps.planner!.plan({
-            planningId, planningStage: 'platform', draft: planningDraft, employees, plannerEmployees: authorized, signal: controller.signal,
+            planningId, planningStage: 'platform', draft: planningDraft, employees, plannerEmployees, signal: controller.signal,
             modelId, plannerModelId: modelId,
             diagnosticContext,
             onProgress: event => this.emitPlanning(event),
@@ -790,6 +851,18 @@ export class ArrangementService {
             mergeCandidateMatches(candidateMatches, result.candidateMatches ?? []),
             matchCandidateEmployees(unresolvedSteps, platform),
           )
+          const reconciled = await this.reconcileAuthorizedCandidates({
+            planningId, controller, context: { ...context, ...diagnosticContext }, planningSource, currentNodes: current.nodes,
+            intentAnalysis: intentAnalysis ?? null, unresolvedSteps, candidateMatches, executableNodes,
+            approvedEmployeeAssignments, fallback: initialAuthorizedPlannerEmployees, modelId,
+          })
+          plannerEmployees = reconciled.authorized
+          executableNodes = reconciled.executableNodes
+          unresolvedSteps = reconciled.unresolvedSteps
+          candidateMatches = reconciled.candidateMatches
+          approvedEmployeeAssignments = reconciled.approvedEmployeeAssignments
+          context.completedNodeCount = executableNodes.length
+          context.unresolvedStepCount = unresolvedSteps.length
         }
       }
       if (controller.signal.aborted) throw new PlanningCancelledError()
@@ -845,8 +918,109 @@ export class ArrangementService {
     return catalog.map(item => ({ id: item.id, name: item.name }))
   }
 
-  private async loadAuthorizedPlannerEmployees(context: LogFields): Promise<ArrangementPlannerEmployee[]> {
-    const employees = await this.deps.employees.list()
+  private async reconcileAuthorizedCandidates(input: {
+    planningId: string
+    controller: AbortController
+    context: LogFields
+    planningSource: ArrangementPlannerDraft
+    currentNodes: readonly ArrangementNode[]
+    intentAnalysis: NonNullable<ArrangementPlannerDraft['intentAnalysis']> | null
+    unresolvedSteps: readonly ArrangementUnresolvedStep[]
+    candidateMatches: readonly ArrangementCandidateMatch[]
+    executableNodes: readonly ArrangementNode[]
+    approvedEmployeeAssignments: readonly ApprovedEmployeeAssignment[]
+    fallback: readonly ArrangementPlannerEmployee[]
+    authorized?: readonly ArrangementPlannerEmployee[]
+    modelId?: string
+  }): Promise<{
+    authorized: ArrangementPlannerEmployee[]
+    executableNodes: ArrangementNode[]
+    unresolvedSteps: ArrangementUnresolvedStep[]
+    candidateMatches: ArrangementCandidateMatch[]
+    approvedEmployeeAssignments: ApprovedEmployeeAssignment[]
+  }> {
+    const owner = this.planningOwners.get(input.planningId)
+    if (!owner) throw new AppError('INVALID_STATE')
+    const loadAuthorized = async (): Promise<ArrangementPlannerEmployee[]> => {
+      try {
+        const subscriptions = await this.deps.employees.refresh()
+        this.assertPlanningScope(owner.scope, owner.generation)
+        return await this.loadAuthorizedPlannerEmployees(input.context, subscriptions)
+      } catch (error) {
+        if (isAuthorizationError(error)) throw error
+        this.assertPlanningScope(owner.scope, owner.generation)
+        log.warn('authorized employee refresh unavailable during candidate reconciliation', { ...input.context, ...planningErrorFields(error) })
+        return [...input.fallback]
+      }
+    }
+    if (input.controller.signal.aborted) throw new PlanningCancelledError()
+    const authorized = input.authorized ? [...input.authorized] : await loadAuthorized()
+    this.assertPlanningScope(owner.scope, owner.generation)
+    if (input.controller.signal.aborted) throw new PlanningCancelledError()
+    const assignments = selectAuthorizedCandidateAssignments(input.unresolvedSteps, input.candidateMatches, authorized, input.approvedEmployeeAssignments)
+    if (!assignments.length) return {
+      authorized,
+      executableNodes: [...input.executableNodes],
+      unresolvedSteps: [...input.unresolvedSteps],
+      candidateMatches: [...input.candidateMatches],
+      approvedEmployeeAssignments: [...input.approvedEmployeeAssignments],
+    }
+
+    const assignmentByStep = new Map(assignments.map(assignment => [assignment.stepId, assignment]))
+    const reconciliationSteps = input.unresolvedSteps.filter(step => assignmentByStep.has(step.stepId))
+    const reconciliationCandidates = input.candidateMatches.filter(match => assignmentByStep.has(match.stepId))
+    let result: ArrangementPlanningResult
+    try {
+      result = await this.deps.planner!.plan({
+        planningId: input.planningId, planningStage: 'authorized',
+        draft: {
+          ...input.planningSource,
+          intentAnalysis: input.intentAnalysis,
+          nodes: [...input.executableNodes],
+          unresolvedSteps: reconciliationSteps,
+          candidateMatches: reconciliationCandidates,
+          approvedEmployeeAssignments: assignments,
+          preserveExistingNodes: true,
+        },
+        employees: authorized, plannerEmployees: authorized, modelId: input.modelId, plannerModelId: input.modelId,
+        signal: input.controller.signal, diagnosticContext: { round: 1, employeeScope: 'authorized' },
+        onProgress: event => this.emitPlanning(event),
+      })
+      this.assertPlanningScope(owner.scope, owner.generation)
+      if (input.controller.signal.aborted) throw new PlanningCancelledError()
+      const addedNodes = sanitizePlannerNodes(result.nodes, input.currentNodes).filter(node => {
+        const assignment = node.stepId ? assignmentByStep.get(node.stepId) : undefined
+        return assignment && node.subscriptionId === assignment.subscriptionId
+          && !input.executableNodes.some(existing => existing.id === node.id || existing.stepId === node.stepId)
+      })
+      validateApprovedEmployeeAssignments(assignments, addedNodes, result.unresolvedSteps ?? [])
+      validateArrangementDraft({ ...input.planningSource, nodes: [...input.executableNodes, ...addedNodes] })
+      result = { ...result, nodes: addedNodes }
+    } catch (error) {
+      this.assertPlanningScope(owner.scope, owner.generation)
+      if (input.controller.signal.aborted || error instanceof PlanningCancelledError || isAuthorizationError(error)) throw error
+      log.warn('authorized candidate reconciliation did not produce execution nodes', { ...input.context, ...planningErrorFields(error) })
+      return {
+        authorized,
+        executableNodes: [...input.executableNodes],
+        unresolvedSteps: [...input.unresolvedSteps],
+        candidateMatches: [...input.candidateMatches],
+        approvedEmployeeAssignments: [...input.approvedEmployeeAssignments],
+      }
+    }
+    const reconciledNodes = mergeExecutableNodes(input.executableNodes, result.nodes)
+    const completedSteps = new Set(assignments.map(assignment => assignment.stepId))
+    return {
+      authorized,
+      executableNodes: reconciledNodes,
+      unresolvedSteps: input.unresolvedSteps.filter(step => !completedSteps.has(step.stepId)),
+      candidateMatches: input.candidateMatches.filter(match => !completedSteps.has(match.stepId)),
+      approvedEmployeeAssignments: mergeApprovedEmployeeAssignments(input.approvedEmployeeAssignments, assignments),
+    }
+  }
+
+  private async loadAuthorizedPlannerEmployees(context: LogFields, subscriptions?: readonly Subscription[]): Promise<ArrangementPlannerEmployee[]> {
+    const employees = subscriptions ?? await this.deps.employees.list()
     return Promise.all(employees.map(async employee => {
       let capabilities: ArrangementPlannerEmployee['capabilities'] = []
       let mediaTools = unknownArrangementMediaTools()
@@ -1171,6 +1345,49 @@ function sanitizePlannerNodes(nodes: readonly ArrangementNode[], userNodes: read
 function requestedCapabilityIds(draft: ArrangementDraft, stepId: string): string[] {
   const step = draft.intentAnalysis?.steps.find(item => item.id === stepId)
   return step?.requiredCapabilityIds?.length ? [...step.requiredCapabilityIds] : []
+}
+
+type ApprovedEmployeeAssignment = NonNullable<ArrangementPlannerDraft['approvedEmployeeAssignments']>[number]
+
+function isAuthorizationError(error: unknown): boolean {
+  return error instanceof AuthenticationRequiredError || error instanceof AuthApiError && (error.isUnauthorized || error.isForbidden)
+    || error instanceof AppError && (error.code === 'AUTH_REQUIRED' || error.code === 'PERMISSION_DENIED')
+}
+
+function selectAuthorizedCandidateAssignments(
+  steps: readonly ArrangementUnresolvedStep[],
+  candidates: readonly ArrangementCandidateMatch[],
+  authorized: readonly ArrangementPlannerEmployee[],
+  existing: readonly ApprovedEmployeeAssignment[],
+): ApprovedEmployeeAssignment[] {
+  const stepIds = new Set(steps.map(step => step.stepId))
+  const assignedSteps = new Set(existing.map(assignment => assignment.stepId))
+  const authorizedByEmployeeId = new Map(authorized
+    .filter(employee => employee.status === 'ACTIVE' && employee.canExecute !== false && employee.allowedModels.length > 0)
+    .map(employee => [employee.employeeId, employee]))
+  const selected = new Map<string, ApprovedEmployeeAssignment>()
+  for (const candidate of candidates) {
+    if (!stepIds.has(candidate.stepId) || assignedSteps.has(candidate.stepId) || selected.has(candidate.stepId)) continue
+    const employee = authorizedByEmployeeId.get(candidate.employeeId)
+    if (!employee) continue
+    selected.set(candidate.stepId, { stepId: candidate.stepId, employeeId: employee.employeeId, subscriptionId: employee.subscriptionId })
+  }
+  return [...selected.values()]
+}
+
+function mergeApprovedEmployeeAssignments(
+  existing: readonly ApprovedEmployeeAssignment[],
+  added: readonly ApprovedEmployeeAssignment[],
+): ApprovedEmployeeAssignment[] {
+  const byStep = new Map<string, ApprovedEmployeeAssignment>()
+  for (const assignment of [...existing, ...added]) {
+    const previous = byStep.get(assignment.stepId)
+    if (previous && (previous.employeeId !== assignment.employeeId || previous.subscriptionId !== assignment.subscriptionId)) {
+      throw new AppError('INVALID_STATE', { message: `步骤 ${assignment.stepId} 有冲突的员工绑定，无法确定执行员工。` })
+    }
+    byStep.set(assignment.stepId, assignment)
+  }
+  return [...byStep.values()]
 }
 
 function matchCandidateEmployees(

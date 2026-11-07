@@ -25,6 +25,7 @@ const operationFailures: Partial<Record<FeedbackOperation, string>> = {
   videoPreview: '视频文件格式不受支持或文件内容无法解码，请导出原文件后使用本地播放器打开。',
   imagePreview: '图片文件无法读取或解码，请重新保存原结果，或导出原文件后查看。',
   workOpenDirectory: '无法打开文件所在目录，请确认文件和目录仍存在，并检查系统访问权限。',
+  workRetry: '本次重试未能完成，请稍后再试。',
   speech: '语音输入失败，客户端没有取得具体原因，请重新录音后重试。',
 }
 export const operationFailure = (operation: FeedbackOperation): string => operationFailures[operation]

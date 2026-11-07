@@ -30,6 +30,32 @@ const planningReasons: Readonly<Record<string, string>> = {
   'invalid-unresolved-steps': '自动编排的员工匹配结果异常', 'invalid-unresolved-step': '自动编排的员工匹配结果异常',
 }
 
+const arrangementRetryMessages: readonly [string, string][] = [
+  ['Arrangement checkpoint storage is unavailable.', '无法读取这项工作的恢复进度，暂时无法重试。'],
+  ['Arrangement has no recoverable checkpoint.', '找不到这项工作的恢复记录，暂时无法继续。'],
+  ['Arrangement plan has no executable nodes.', '当前没有可继续执行的工作步骤，暂时无法重试。'],
+  ['Invalid employee runtime manifest', '员工运行配置暂不可用，暂时无法启动重试。'],
+  ['Employee runtime identity mismatch.', '员工运行配置暂不可用，暂时无法启动重试。'],
+  ['Employee runtime skill artifact', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+  ['Employee runtime skills were not fully prepared.', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+  ['Invalid approved skill package directory.', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+  ['Approved skill artifact', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+  ['Immutable skill entry integrity mismatch.', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+  ['Invalid employee skill metadata.', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+  ['The employee skills response does not match the subscription.', '员工运行配置暂不可用，暂时无法启动重试。'],
+  ['Duplicate employee skill metadata.', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+  ['Runtime skill version is not approved or is no longer available.', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+  ['Selected skill version is not approved or is no longer available.', '员工所需的能力包暂不可用，暂时无法启动重试。'],
+]
+
+function arrangementRetryFailureMessage(error: unknown, operation: FeedbackOperation): string | null {
+  if (operation !== 'workRetry') return null
+  if (error instanceof AppError && error.code === 'SKILL_CONTENT_MISMATCH') return '员工所需的能力包暂不可用，暂时无法启动重试。'
+  if (!(error instanceof Error)) return null
+  const message = error.message
+  return arrangementRetryMessages.find(([prefix]) => message === prefix || message.startsWith(prefix))?.[1] ?? null
+}
+
 const actionableMessages = new Set([
   '当前模型没有可用的员工授权，请更换模型或联系平台管理员配置员工授权。',
   '当前模型没有可用的员工授权，请联系平台管理员', '所选员工当前不可用，请重新选择员工',
@@ -143,13 +169,20 @@ export function operationFeedback(error: unknown, operation: FeedbackOperation, 
   if (error instanceof AuthApiError) {
     const statusCode = error.statusCode
     if (statusCode === 401) return { code: 'AUTH_REQUIRED', statusCode, message: '登录验证未通过，请重新登录' }
-    if (statusCode === 403) return { code: 'PERMISSION_DENIED', statusCode, message: `${FEEDBACK_OPERATIONS[operation]}请求被平台拒绝，请检查账号权限；如需开通权限，请联系平台管理员。` }
+    if (statusCode === 403) return { code: 'PERMISSION_DENIED', statusCode, message: operation === 'workRetry' ? '当前无法处理本次重试，请稍后再试。' : `${FEEDBACK_OPERATIONS[operation]}请求被平台拒绝，请检查账号权限；如需开通权限，请联系平台管理员。` }
     if (statusCode === 429) return { code: 'RATE_LIMITED', statusCode, message: '请求过于频繁，请稍后重试' }
     if (statusCode === 0 || statusCode === 408) return { code: 'NETWORK_ERROR', statusCode, message: statusCode === 408 ? '网络连接超时，请稍后重试' : '网络连接失败，请检查网络' }
+    if (operation === 'workRetry' && statusCode === 404) return { code: 'INTERNAL_ERROR', statusCode, message: '平台未找到重试所需的员工或运行配置，暂时无法继续。' }
+    if (operation === 'workRetry' && statusCode === 409) return { code: 'INTERNAL_ERROR', statusCode, message: '工作状态刚刚发生变化，请等待页面自动更新后再重试。' }
+    if (operation === 'workRetry' && (statusCode === 400 || statusCode === 422)) return { code: 'INTERNAL_ERROR', statusCode, message: '平台暂时无法处理本次重试，请稍后再试。' }
     return { ...fallback, statusCode, code: statusCode >= 500 ? 'SERVICE_UNAVAILABLE' : 'INTERNAL_ERROR',
-      message: statusCode >= 500 ? `${FEEDBACK_OPERATIONS[operation]}服务暂时不可用，请稍后重试；持续失败请联系平台管理员。` : fallback.message }
+      message: statusCode >= 500
+        ? operation === 'workRetry' ? '重试服务暂时不可用，请稍后再试。' : `${FEEDBACK_OPERATIONS[operation]}服务暂时不可用，请稍后重试；持续失败请联系平台管理员。`
+        : fallback.message }
   }
   if (error instanceof Error && error.message.startsWith('ATTACHMENT_') && mapped && mapped.message !== '操作未能完成。') return mapped
+  const retryMessage = arrangementRetryFailureMessage(error, operation)
+  if (retryMessage) return { ...(mapped ?? fallback), message: retryMessage }
   if (error instanceof AppError) {
     const base = { code: error.code, statusCode: mapped?.statusCode ?? 500 }
     const local = localMessages[operation]
@@ -172,7 +205,7 @@ export function operationFeedback(error: unknown, operation: FeedbackOperation, 
       EMPLOYEE_UNAVAILABLE: '所选员工当前不可用，请重新选择员工',
       SUBSCRIPTION_EXPIRING: '员工授权剩余时间不足，无法开始工作',
       WORKSPACE_INVALID: '工作目录不可用，请重新选择目录',
-      PERMISSION_DENIED: '当前工作权限不允许执行此操作，或本次操作未获批准，请检查工作权限和审批结果；如需授权，请联系平台管理员。',
+      PERMISSION_DENIED: operation === 'workRetry' ? '当前无法处理本次重试，请稍后再试。' : '当前工作权限不允许执行此操作，或本次操作未获批准，请检查工作权限和审批结果；如需授权，请联系平台管理员。',
       CONFLICT: '工作目录被其他任务占用，请稍后重试',
       NETWORK_ERROR: '网络连接失败，请检查网络', RATE_LIMITED: '请求过于频繁，请稍后重试',
     }
