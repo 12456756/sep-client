@@ -44,6 +44,7 @@ export interface PiAgentSessionConfig {
   nodeTitle?: string
   runId: string
   modelId: string
+  vision?: boolean | null
   gatewayUrl: string
   workspaceDir: string
   agentDir: string

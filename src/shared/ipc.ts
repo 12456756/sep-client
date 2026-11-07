@@ -9,7 +9,7 @@ import type { MediaAssetView, MediaGenerationInput, MediaJobView, MediaPreview, 
 import type { VideoGenerationInput, VideoJobView, VideoTaskView } from './video-host'
 import type { EnterpriseOrganization } from './platform-supplement-contracts'
 import type { ModelCatalogEntry } from './model-catalog-contracts'
-import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from './attachment-contracts'
+import type { AttachmentImportSession, AttachmentImportTarget, AttachmentPreview, AttachmentView } from './attachment-contracts'
 import type {
   ComputeAllowance,
   PersonalWallet,
@@ -379,6 +379,7 @@ export interface ElectronAPI {
   listAttachments: (input: { sessionId: string }) => Promise<IpcCommandResult & { data?: AttachmentImportSession | AttachmentView[] }>
   removeAttachment: (input: { sessionId: string; attachmentId: string; expectedRevision?: number }) => Promise<IpcCommandResult>
   cancelAttachmentImport: (input: { sessionId: string }) => Promise<IpcCommandResult>
+  previewAttachment: (input: { taskId: string; attachmentId: string; sha256: string }) => Promise<IpcCommandResult & { data?: AttachmentPreview }>
   bindAttachmentPaste: (input: { composerId: string; sessionId: string; target: AttachmentImportTarget; onPasteEdit?: (input: { operationId: string; composerId: string; text: string; selectionStart: number; selectionEnd: number; editorVersion: number }) => boolean }) => () => void
   onAttachmentPaste: (callback: (event: { composerId: string; sessionId: string; operationId: string; text?: string; status?: 'started' | 'completed' | 'failed'; error?: string }) => void) => () => void
   login: (credentials: LoginRequest) => Promise<LoginResult>

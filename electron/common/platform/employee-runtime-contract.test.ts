@@ -172,6 +172,24 @@ describe('existing SEP employee runtime manifest v1', () => {
     }
   })
 
+  it('accepts former size/count limits and reports unsafe numeric metadata without echoing skill content', () => {
+    const value = negotiatedFixture()
+    const skill = value.runtime.skills[0]!
+    for (const [field, actual, maximum] of [['fileCount', 821, 500], ['byteLength', 20 * 1024 * 1024 + 1, 20 * 1024 * 1024]] as const) {
+      const valid = { ...value, runtime: { ...value.runtime,
+        skills: [{ ...skill, artifact: { ...skill.artifact, [field]: actual } }] } }
+      assert.equal(parseEmployeeRuntimeManifest(valid).runtime.skills[0]?.artifact?.status, 'AVAILABLE')
+      assert.ok(actual > maximum)
+    }
+    const invalid = { ...value, runtime: { ...value.runtime,
+      skills: [{ ...skill, content: 'DO NOT ECHO THIS SKILL BODY', artifact: { ...skill.artifact, fileCount: Number.MAX_SAFE_INTEGER + 1 } }] } }
+    assert.throws(() => parseEmployeeRuntimeManifest(invalid), error => {
+      assert.match((error as Error).message, /runtime\.skills\[0\]\.artifact\.fileCount=9007199254740992/)
+      assert.equal((error as Error).message.includes('DO NOT ECHO THIS SKILL BODY'), false)
+      return true
+    })
+  })
+
   it('does not silently downgrade when the negotiated protocol or any descriptor is missing', async () => {
     const value = negotiatedFixture()
     for (const runtime of [

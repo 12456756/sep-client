@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
-import { attachmentRefSchema } from '../../src/shared/attachment-contracts'
+import { attachmentImportLimits, attachmentRefSchema } from '../../src/shared/attachment-contracts'
 import { knowledgeSelectionSchema } from '../../src/shared/knowledge-selection'
 import { conversationQueueInputSchema } from '../../src/shared/conversation-queue'
 import { INVOKE_CHANNELS } from './channels'
@@ -18,7 +18,7 @@ const dependencies: Record<string, unknown> = {
   zod: { z }, 'node:crypto': { randomUUID }, '../channels': { INVOKE_CHANNELS },
   '../router': { route: (channel: string, schema: z.ZodType, handle: Route['handle']) => ({ channel, schema, handle }) },
   './task': { createTaskInput: z.object({}), CREATE_TASK_INVALID: '' },
-  '../../../src/shared/attachment-contracts': { attachmentRefSchema },
+  '../../../src/shared/attachment-contracts': { attachmentImportLimits, attachmentRefSchema },
   '../../../src/shared/knowledge-selection': { knowledgeSelectionSchema },
   '../../../src/shared/conversation-queue': { conversationQueueInputSchema },
 }
@@ -28,6 +28,12 @@ compileFunction(compiled, ['require', 'exports', 'module'])((id: string) => {
 }, loaded.exports, loaded)
 const route = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.TASK_CONTINUE)!
 const queueRoute = loaded.exports.conversationRoutes!.find(item => item.channel === INVOKE_CHANNELS.CONVERSATION_QUEUE)!
+
+test('conversation accepts 128 attachment references and rejects 129', () => {
+  const input = { taskId: 'task', prompt: 'Inspect attachments', attachmentRefs: Array.from({ length: 128 }, (_, index) => ({ attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) })) }
+  assert.equal(route.schema.safeParse(input).success, true)
+  assert.equal(route.schema.safeParse({ ...input, attachmentRefs: [...input.attachmentRefs, input.attachmentRefs[0]] }).success, false)
+})
 
 test('conversation queue accepts a validated priority action and rejects unrelated fields', () => {
   assert.deepEqual(queueRoute.schema.parse({ taskId: 'task', action: 'prioritize', entryId: 'queued-message' }), {

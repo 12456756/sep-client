@@ -4,7 +4,6 @@ const resourceId = z.string().min(1).max(128)
 const nullableText = z.string().nullable()
 const count = z.number().int().nonnegative()
 const skillContent = z.string().refine(value => value.trim().length > 0, 'Skill content cannot be blank')
-  .refine(value => new TextEncoder().encode(value).byteLength <= 500 * 1024, 'Skill content cannot exceed 500 KiB (UTF-8)')
 
 export const platformEmployeeCapabilitySchema = z.object({
   id: resourceId, name: z.string(), description: z.string(), type: z.string().optional(),
@@ -101,7 +100,7 @@ export const skillVersionSchema = z.object({
 export const personalSkillVersionRequestSchema = z.object({
   capabilityId: resourceId, parentVersionId: resourceId,
   content: skillContent,
-  changeSummary: z.string().trim().max(2_000).optional(),
+  changeSummary: z.string().trim().optional(),
 }).strict()
 export const personalSkillSubmissionResponseSchema = skillVersionSchema.extend({
   id: z.string().min(1), capabilityId: z.string().min(1),

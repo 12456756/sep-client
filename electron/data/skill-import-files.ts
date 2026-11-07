@@ -5,19 +5,9 @@ import { join, relative, resolve, sep, basename, dirname, isAbsolute } from 'nod
 import { homedir } from 'node:os'
 import { once } from 'node:events'
 import { finished } from 'node:stream/promises'
+import { skillZipHeaders, skillZipEnd } from '../common/skill-zip-format'
 // @ts-expect-error js-yaml is an existing runtime dependency without local typings.
 import { load, CORE_SCHEMA } from 'js-yaml'
-
-export const SKILL_IMPORT_LIMITS = Object.freeze({
-  entryBytes: 2 * 1024 * 1024,
-  packageBytes: 100 * 1024 * 1024,
-  expandedBytes: 500 * 1024 * 1024,
-  files: 10_000,
-  candidates: 5_000,
-  scanDirectories: 20_000,
-  scanEntries: 100_000,
-  depth: 6,
-})
 
 export interface SkillImportRoot {
   id: string
@@ -80,7 +70,7 @@ async function canonicalRootPath(path: string): Promise<string> {
 }
 function abort(signal?: AbortSignal): void { if (signal?.aborted) throw signal.reason ?? new Error('IMPORT_CANCELLED') }
 function safePath(value: string): boolean {
-  return value.length > 0 && value.length <= 1024 && !value.startsWith('/') && !value.includes('\\') && ![...value].some(char => {
+  return value.length > 0 && !value.startsWith('/') && !value.includes('\\') && ![...value].some(char => {
     const code = char.charCodeAt(0)
     return code < 32 || code === 127
   }) && value.split('/').every(part => part && part !== '.' && part !== '..')
@@ -108,7 +98,7 @@ function parseSkill(content: string): { name: string; description: string | null
   const value = metadata as Record<string, unknown>
   const name = typeof value['name'] === 'string' && value['name'].trim() ? value['name'].trim() : ''
   const description = typeof value['description'] === 'string' && value['description'].trim() ? value['description'].trim() : null
-  if (!name || name.length > 160 || (description?.length ?? 0) > 4000) throw new Error('INVALID_SKILL_FRONTMATTER')
+  if (!name) throw new Error('INVALID_SKILL_FRONTMATTER')
   return { name, description }
 }
 
@@ -239,8 +229,6 @@ export class SkillImportFiles {
     this.snapshots.clear()
     this.scanWarnings = []
     const results: CandidateInternal[] = []
-    let scannedDirectories = 0
-    let scannedEntries = 0
     for (const root of selected) {
       abort(options.signal)
       let rootPath: string
@@ -261,24 +249,24 @@ export class SkillImportFiles {
       for (const start of [...new Set(starts)]) {
         if (await this.hasEntry(start)) dirs.push(start)
       }
-      const queue: Array<{ path: string; depth: number }> = [...new Set(starts)].map(path => ({ path, depth: 0 }))
-      while (queue.length) {
+      const queue = [...new Set(starts)]
+      const visited = new Set<string>()
+      for (let index = 0; index < queue.length; index++) {
         abort(options.signal)
-        if (++scannedDirectories > SKILL_IMPORT_LIMITS.scanDirectories) { this.scanWarnings.push({ code: 'DIRECTORY_LIMIT_REACHED', rootId: root.id }); break }
-        const current = queue.shift()!
-        if (current.depth >= SKILL_IMPORT_LIMITS.depth) { this.scanWarnings.push({ code: 'DEPTH_LIMIT_REACHED', rootId: root.id }); continue }
+        const current = queue[index]!
+        if (visited.has(current)) continue
+        visited.add(current)
         let directory
-        try { directory = await opendir(current.path) } catch { continue }
+        try { directory = await opendir(current) } catch { continue }
         for await (const entry of directory) {
-          if (++scannedEntries > SKILL_IMPORT_LIMITS.scanEntries) { this.scanWarnings.push({ code: 'ENTRY_LIMIT_REACHED', rootId: root.id }); queue.length = 0; break }
+          abort(options.signal)
           if (ignoredDirs.has(entry.name.toLowerCase()) || !entry.isDirectory() || entry.isSymbolicLink()) continue
-          const path = join(current.path, entry.name)
-          try { const real = await realpath(path); if (!within(rootPath, real)) continue; if (await this.hasEntry(real)) dirs.push(real); else queue.push({ path: real, depth: current.depth + 1 }) } catch { this.scanWarnings.push({ code: 'DIRECTORY_UNAVAILABLE', rootId: root.id }) }
+          const path = join(current, entry.name)
+          try { const real = await realpath(path); if (!within(rootPath, real)) continue; if (await this.hasEntry(real)) dirs.push(real); else queue.push(real) } catch { this.scanWarnings.push({ code: 'DIRECTORY_UNAVAILABLE', rootId: root.id }) }
         }
       }
       for (const directory of [...new Set(dirs)]) {
         abort(options.signal)
-        if (results.length >= SKILL_IMPORT_LIMITS.candidates) { this.scanWarnings.push({ code: 'CANDIDATE_LIMIT_REACHED', rootId: root.id }); break }
         try {
           const candidate = await this.inspect(root, rootPath, directory, options.signal)
           const duplicate = results.find(item => item.treeHash === candidate.treeHash && item.directory === directory)
@@ -299,7 +287,7 @@ export class SkillImportFiles {
     const candidate = this.candidates.get(request.candidateId)
     if (!candidate || candidate.revision !== request.revision) throw new SkillImportFileError('CANDIDATE_CHANGED')
     const entry = candidate.files.find(file => file.relativePath.toLowerCase() === 'skill.md')
-    if (!entry || entry.bytes > SKILL_IMPORT_LIMITS.entryBytes) throw new Error('ENTRY_BUDGET_EXCEEDED')
+    if (!entry) throw new SkillImportFileError('ENTRY_MISSING')
     const { files, directories, warnings } = await this.enumerate(candidate.directory, candidate.rootPath, signal)
     const hash = createHash('sha256')
     for (const path of directories) hash.update(`directory\0${path}\0`)
@@ -319,9 +307,14 @@ export class SkillImportFiles {
     if (contentHash !== fileHashes.get(entry.relativePath)) throw new SkillImportFileError('CANDIDATE_CHANGED')
     const snapshotId = randomUUID().replaceAll('-', '')
     const expiresAt = new Date(Math.min(request.expiresAt ? Date.parse(request.expiresAt) : Infinity, Date.now() + 5 * 60_000)).toISOString()
-    const estimatedPackageBytes = files.reduce((sum, file) => sum + file.bytes + Buffer.byteLength(file.relativePath) * 2 + 76, 22)
-      + directories.reduce((sum, path) => sum + Buffer.byteLength(path + '/') * 2 + 76, 0)
-    if (estimatedPackageBytes > SKILL_IMPORT_LIMITS.packageBytes) throw new SkillImportFileError('PACKAGE_BUDGET_EXCEEDED')
+    let localBytes = 0
+    let centralBytes = 0
+    for (const item of [...directories.map(path => ({ name: path + '/', size: 0 })), ...files.map(file => ({ name: file.relativePath, size: file.bytes }))]) {
+      const headers = skillZipHeaders({ name: Buffer.from(item.name), size: item.size, crc: 0, offset: localBytes })
+      localBytes += headers.local.length + item.size
+      centralBytes += headers.central.length
+    }
+    const estimatedPackageBytes = localBytes + centralBytes + skillZipEnd(files.length + directories.length, centralBytes, localBytes).length
     this.snapshots.set(snapshotId, { id: snapshotId, candidateId: candidate.candidateId, treeHash, expiresAt, files, directories, fileHashes, content: content.toString('utf8'), fileCount: files.length, totalBytes: files.reduce((sum, file) => sum + file.bytes, 0) })
     return { requestId: request.requestId, candidateId: candidate.candidateId, snapshotId, expiresAt, content: content.toString('utf8'), treeHash, fileCount: files.length, totalUncompressedBytes: files.reduce((sum, file) => sum + file.bytes, 0), estimatedPackageBytes, files: files.map(file => ({ relativePath: file.relativePath, bytes: file.bytes })), nextFilesCursor: null, warnings: [...candidate.warnings, ...warnings].slice(0, 32) }
   }
@@ -354,7 +347,6 @@ export class SkillImportFiles {
       abort(signal)
       if (output.errored) throw output.errored
       offset += buffer.length
-      if (offset > SKILL_IMPORT_LIMITS.packageBytes) throw new Error('PACKAGE_BUDGET_EXCEEDED')
       if (!output.write(buffer)) await Promise.race([
         once(output, 'drain', { signal }),
         completion.then(({ error }) => { throw error ?? new Error('PACKAGE_WRITER_CLOSED') }),
@@ -364,9 +356,7 @@ export class SkillImportFiles {
     try {
       for (const path of snapshot.directories) {
         const name = Buffer.from(path + '/', 'utf8')
-        const local = Buffer.alloc(30 + name.length)
-        local.writeUInt32LE(0x04034b50); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x800, 6)
-        local.writeUInt16LE(name.length, 26); name.copy(local, 30)
+        const { local } = skillZipHeaders({ name, crc: 0, size: 0, offset, directory: true })
         metadata.push({ name, crc: 0, size: 0, offset, directory: true })
         await emit(local)
       }
@@ -378,7 +368,7 @@ export class SkillImportFiles {
         if (firstHash.digest('hex') !== snapshot.fileHashes.get(file.relativePath)) throw new SkillImportFileError('CANDIDATE_CHANGED')
         const checksum = (fileCrc ^ 0xffffffff) >>> 0
         const name = Buffer.from(file.relativePath, 'utf8')
-        const local = Buffer.alloc(30 + name.length); local.writeUInt32LE(0x04034b50); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x800, 6); local.writeUInt32LE(checksum, 14); local.writeUInt32LE(file.bytes, 18); local.writeUInt32LE(file.bytes, 22); local.writeUInt16LE(name.length, 26); name.copy(local, 30)
+        const { local } = skillZipHeaders({ name, crc: checksum, size: file.bytes, offset })
         metadata.push({ name, crc: checksum, size: file.bytes, offset }); await emit(local)
         const contentHash = createHash('sha256')
         for await (const chunk of this.readChunks(file, candidate.rootPath, signal)) { contentHash.update(chunk); await emit(chunk) }
@@ -386,17 +376,16 @@ export class SkillImportFiles {
       }
       const centralOffset = offset
       for (const item of metadata) {
-        const central = Buffer.alloc(46 + item.name.length); central.writeUInt32LE(0x02014b50); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt16LE(0x800, 8); central.writeUInt32LE(item.crc, 16); central.writeUInt32LE(item.size, 20); central.writeUInt32LE(item.size, 24); central.writeUInt16LE(item.name.length, 28); central.writeUInt32LE(item.directory ? 0x10 : 0, 38); central.writeUInt32LE(item.offset, 42); item.name.copy(central, 46); await emit(central)
+        await emit(skillZipHeaders(item).central)
       }
       const centralSize = offset - centralOffset
-      const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50); end.writeUInt16LE(metadata.length, 8); end.writeUInt16LE(metadata.length, 10); end.writeUInt32LE(centralSize, 12); end.writeUInt32LE(centralOffset, 16); await emit(end)
+      await emit(skillZipEnd(metadata.length, centralSize, centralOffset))
       output.end()
       const written = await completion
       if (written.error) throw written.error
       abort(signal)
       await chmod(packagePath, 0o600)
       const bytes = offset
-      if (bytes > SKILL_IMPORT_LIMITS.packageBytes) throw new Error('PACKAGE_BUDGET_EXCEEDED')
       const result = { sha256: sha.digest('hex'), bytes, filename: `${safeFilename(candidate.name)}.zip`, open: async function* () { for await (const chunk of createReadStream(packagePath, { highWaterMark: 64 * 1024 })) yield Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk) } }
       this.packages.add(packagePath)
       return result
@@ -426,7 +415,6 @@ export class SkillImportFiles {
     for await (const entry of entries) if (entry.isFile() && entry.name.toLowerCase() === 'skill.md') { entryName = entry.name; break }
     if (!entryName) throw new Error('ENTRY_MISSING')
     const entry = { relativePath: entryName, absolutePath: join(directory, entryName), ...await this.fileIdentity(join(directory, entryName)) }
-    if (entry.bytes > SKILL_IMPORT_LIMITS.entryBytes) throw new SkillImportFileError('ENTRY_INVALID')
     const entryBytes = await this.readChecked(entry, rootPath, signal)
     let content: string
     try { content = new TextDecoder('utf-8', { fatal: true }).decode(entryBytes) }
@@ -435,7 +423,7 @@ export class SkillImportFiles {
     const warnings: FileWarning[] = []
     try { details = parseSkill(content) }
     catch {
-      details = { name: basename(directory).trim().slice(0, 160) || 'skill', description: null }
+      details = { name: basename(directory).trim() || 'skill', description: null }
       warnings.push({ code: 'METADATA_NORMALIZED', message: '元数据缺失或格式不规范，请在网页确认技能信息。', severity: 'warning' })
     }
     const files = [entry]
@@ -447,10 +435,9 @@ export class SkillImportFiles {
     const files: FileEntry[] = []
     const directories: string[] = []
     const warnings: FileWarning[] = []
-    await this.walk(directory, '', root, files, directories, warnings, 0, signal, new Set())
+    await this.walk(directory, '', root, files, directories, warnings, signal, new Set())
     files.sort((a, b) => a.relativePath.localeCompare(b.relativePath))
     directories.sort()
-    if (files.reduce((sum, file) => sum + file.bytes, 0) > SKILL_IMPORT_LIMITS.expandedBytes) throw new SkillImportFileError('EXPANDED_BUDGET_EXCEEDED')
     return { files, directories, warnings }
   }
 
@@ -460,9 +447,8 @@ export class SkillImportFiles {
     return { bytes: info.size, dev: info.dev, ino: info.ino, mtimeMs: info.mtimeMs, mode: info.mode }
   }
 
-  private async walk(current: string, prefix: string, root: string, output: FileEntry[], directories: string[], warnings: FileWarning[], depth: number, signal?: AbortSignal, visited = new Set<string>()): Promise<void> {
+  private async walk(current: string, prefix: string, root: string, output: FileEntry[], directories: string[], warnings: FileWarning[], signal?: AbortSignal, visited = new Set<string>()): Promise<void> {
     abort(signal)
-    if (depth > SKILL_IMPORT_LIMITS.depth) throw new SkillImportFileError('DEPTH_LIMIT_REACHED')
     const currentReal = await realpath(current)
     if (!within(root, currentReal)) throw new SkillImportFileError('PATH_OUTSIDE_ROOT')
     if (visited.has(currentReal)) throw new SkillImportFileError('SYMLINK_CYCLE')
@@ -485,13 +471,11 @@ export class SkillImportFiles {
       const targetInfo = info.isSymbolicLink() ? await stat(real) : info
       if (targetInfo.isDirectory()) {
         directories.push(relativePath)
-        if (output.length + directories.length > SKILL_IMPORT_LIMITS.files) throw new SkillImportFileError('FILE_COUNT_LIMIT')
-        await this.walk(real, relativePath, root, output, directories, warnings, depth + 1, signal, visited)
+        await this.walk(real, relativePath, root, output, directories, warnings, signal, visited)
         continue
       }
       if (!targetInfo.isFile()) throw new SkillImportFileError('UNSUPPORTED_FILE_TYPE')
       output.push({ relativePath, absolutePath: real, bytes: targetInfo.size, dev: targetInfo.dev, ino: targetInfo.ino, mtimeMs: targetInfo.mtimeMs, mode: targetInfo.mode })
-      if (output.length + directories.length > SKILL_IMPORT_LIMITS.files) throw new SkillImportFileError('FILE_COUNT_LIMIT')
     }
     visited.delete(currentReal)
   }

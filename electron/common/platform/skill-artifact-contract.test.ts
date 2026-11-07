@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict'
 import {
   skillArtifactSchema, skillArtifactAvailableSchema, skillArtifactBlockedSchema,
   skillArtifactBlockedReasonSchema, skillArtifactFrontmatterSchema, skillArtifactParamsSchema,
-  maxSkillArtifactBytes, skillArtifactNameSchema, skillNameComparisonKey,
+  skillArtifactNameSchema, skillNameComparisonKey,
 } from './skill-artifact-contract'
 
 const available = {
@@ -21,7 +21,8 @@ describe('SEP skill artifact descriptor schema parity', () => {
       assert.deepEqual(skillArtifactSchema.parse({ ...available, format }), { ...available, format })
     }
     for (const reason of skillArtifactBlockedReasonSchema.options) {
-      assert.deepEqual(skillArtifactSchema.parse({ ...blocked, reason }), { ...blocked, reason })
+      const descriptor = { ...blocked, reason }
+      assert.deepEqual(skillArtifactSchema.parse(descriptor), descriptor)
     }
     assert.equal(skillArtifactAvailableSchema.safeParse(blocked).success, false)
     assert.equal(skillArtifactBlockedSchema.safeParse(available).success, false)
@@ -40,9 +41,12 @@ describe('SEP skill artifact descriptor schema parity', () => {
       ]) assert.equal(skillArtifactSchema.safeParse({ ...descriptor, ...extra }).success, false)
     }
     assert.equal(skillArtifactSchema.safeParse({ ...available, reason: 'INVALID_ENTRY' }).success, false)
-    for (const key of ['format', 'installationDirectory', 'entryPath', 'entrySha256', 'artifactSha256', 'byteLength', 'fileCount', 'downloadPath']) {
+    for (const key of ['format', 'installationDirectory', 'entryPath', 'entrySha256', 'artifactSha256', 'downloadPath']) {
       assert.equal(skillArtifactSchema.safeParse({ ...blocked, [key]: available[key as keyof typeof available] }).success, false)
     }
+    assert.equal(skillArtifactSchema.safeParse({ ...blocked, fileCount: 501 }).success, false)
+    assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'CLIENT_LIMIT_EXCEEDED', fileCount: 501 }).success, false)
+    assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'CLIENT_LIMIT_EXCEEDED' }).success, false)
     assert.equal(skillArtifactSchema.safeParse({ ...blocked, reason: 'UNKNOWN' }).success, false)
   })
 
@@ -51,12 +55,20 @@ describe('SEP skill artifact descriptor schema parity', () => {
       { protocolVersion: 2 }, { status: 'UNKNOWN' }, { format: 'tar' },
       { approvedContentSha256: 'bad' }, { entrySha256: 'A'.repeat(64) }, { artifactSha256: 'a'.repeat(63) },
       { installationDirectory: '' }, { installationDirectory: 'Bad_Name' }, { installationDirectory: '../skill' },
-      { installationDirectory: 'a'.repeat(65) }, { installationDirectory: 'a--b' },
-      { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: maxSkillArtifactBytes + 1 },
-      { fileCount: 0 }, { fileCount: 1.5 }, { fileCount: 501 },
+      { installationDirectory: 'a--b' },
+      { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: '180' }, { byteLength: Number.MAX_SAFE_INTEGER + 1 },
+      { fileCount: 0 }, { fileCount: -1 }, { fileCount: 1.5 }, { fileCount: '501' }, { fileCount: Number.MAX_SAFE_INTEGER + 1 },
     ]) assert.equal(skillArtifactSchema.safeParse({ ...available, ...override }).success, false, JSON.stringify(override))
-    assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: maxSkillArtifactBytes, fileCount: 500,
-      installationDirectory: 'a'.repeat(64) }).success, true)
+    assert.equal(skillArtifactSchema.safeParse({ ...available, byteLength: 20 * 1024 * 1024 + 1, fileCount: 501,
+      installationDirectory: 'a'.repeat(65) }).success, true)
+  })
+
+  it('accepts size and file counts above the former client limits', () => {
+    for (const field of ['byteLength', 'fileCount']) {
+      for (const value of [501, 10_001, 100 * 1024 * 1024 + 1, Number.MAX_SAFE_INTEGER]) {
+        assert.equal(skillArtifactSchema.safeParse({ ...available, format: 'zip', [field]: value }).success, true)
+      }
+    }
   })
 
   it('accepts only safe relative entry paths ending in SKILL.md', () => {
@@ -67,7 +79,7 @@ describe('SEP skill artifact descriptor schema parity', () => {
       'a/./SKILL.md', 'a//SKILL.md', 'a\\SKILL.md', 'C:/SKILL.md', 'a\0/SKILL.md', 'a\n/SKILL.md',
       'a\x7f/SKILL.md', 'CON.txt/SKILL.md', 'COM¹/SKILL.md', 'ＣＯＭ１.txt/SKILL.md', 'nul/SKILL.md',
       'a./SKILL.md', 'a /SKILL.md', 'a?/SKILL.md', 'a|/SKILL.md', 'a＜/SKILL.md',
-      'skill.md', 'NOTSKILL.md', 'SKILL.md/', `${'a'.repeat(1020)}/SKILL.md`]) {
+      'skill.md', 'NOTSKILL.md', 'SKILL.md/']) {
       assert.equal(skillArtifactSchema.safeParse({ ...available, entryPath }).success, false, entryPath)
     }
   })
@@ -102,18 +114,18 @@ describe('SEP skill artifact descriptor schema parity', () => {
     const value = { name: 'example-skill', description: ' Description ', license: 'MIT', compatibility: 'Node',
       metadata: { author: 'mock' }, 'allowed-tools': 'Read Bash', custom: 'retained' }
     assert.deepEqual(skillArtifactFrontmatterSchema.parse(value), value)
-    for (const override of [{ description: '' }, { description: ' \n ' }, { description: 'x'.repeat(1025) },
+    for (const override of [{ description: '' }, { description: ' \n ' },
       { name: 'Bad_Name' }, { 'disable-model-invocation': 'true' }, { license: 1 }, { compatibility: '' }, { 'allowed-tools': ['Read'] }]) {
       assert.equal(skillArtifactFrontmatterSchema.safeParse({ ...value, ...override }).success, false)
     }
-    assert.equal(skillArtifactFrontmatterSchema.safeParse({ name: 'a', description: 'x'.repeat(1024), compatibility: 'x'.repeat(500) }).success, true)
+    assert.equal(skillArtifactFrontmatterSchema.safeParse({ name: 'a', description: 'x'.repeat(20_000), compatibility: 'x'.repeat(500) }).success, true)
     const extra = { ...value, metadata: { version: 1, nested: { safe: true } }, 'disable-model-invocation': true }
     assert.deepEqual(skillArtifactFrontmatterSchema.parse(extra), extra)
   })
 
   it('accepts Unicode letters and numbers without rewriting names and compares only using NFKC', () => {
-    for (const name of ['订单-处理', 'Orders', 'ＡＢＣ-１２３', '𠀀'.repeat(64), 'CRM 标签体系', 'SKU 生命周期管理', '电商 SOP 编排', 'CRM  标签', 'CRM\u00a0标签', 'CRM\u3000\u2002标签']) assert.equal(skillArtifactNameSchema.parse(name), name)
-    for (const name of ['中'.repeat(65), '𠀀'.repeat(65), 'a--b', '-中', '中-', '../中', 'a_b', 'a\u200db', '½', 'a\u0301', ' CRM', 'CRM ', 'CRM\t标签', 'CRM\n标签', 'CRM\u2028标签', 'CRM -标签', 'CON', 'ｎｕｌ', 'COM1', 'COM¹', 'ＣＯＭ１', 'lpt9']) assert.equal(skillArtifactNameSchema.safeParse(name).success, false, name)
+    for (const name of ['中'.repeat(65), '𠀀'.repeat(65), '订单-处理', 'Orders', 'ＡＢＣ-１２３', '𠀀'.repeat(64), 'CRM 标签体系', 'SKU 生命周期管理', '电商 SOP 编排', 'CRM  标签', 'CRM\u00a0标签', 'CRM\u3000\u2002标签']) assert.equal(skillArtifactNameSchema.parse(name), name)
+    for (const name of ['a--b', '-中', '中-', '../中', 'a_b', 'a\u200db', '½', 'a\u0301', ' CRM', 'CRM ', 'CRM\t标签', 'CRM\n标签', 'CRM\u2028标签', 'CRM -标签', 'CON', 'ｎｕｌ', 'COM1', 'COM¹', 'ＣＯＭ１', 'lpt9']) assert.equal(skillArtifactNameSchema.safeParse(name).success, false, name)
     assert.equal(skillNameComparisonKey('ＡＢＣ'), skillNameComparisonKey('abc'))
   })
 })

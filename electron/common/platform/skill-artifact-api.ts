@@ -4,7 +4,7 @@ import { config } from '../config'
 import { logger } from '../logger'
 import { AuthApiError } from './platform-api'
 import {
-  maxSkillArtifactBytes, skillArtifactAvailableSchema, skillArtifactParamsSchema,
+  skillArtifactAvailableSchema, skillArtifactParamsSchema,
   skillArtifactDownloadPath, type AvailableDescriptor,
 } from './skill-artifact-contract'
 
@@ -41,13 +41,12 @@ async function fetchArtifact(expected: AvailableDescriptor, accessToken: string,
   for (let attempt = 0; ; attempt++) {
     options.signal?.throwIfAborted()
     options.assertCurrent?.()
-    const timeout = AbortSignal.timeout(30_000)
     const response = await fetch(`${config.SEP_BASE_URL}${expected.downloadPath}`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${accessToken}` },
       credentials: 'omit',
       redirect: 'error',
-      signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+      signal: options.signal,
     })
     if (response.status !== 429 || response.redirected) return response
     // Release the rejected response before waiting; never read upstream error bodies.
@@ -95,7 +94,6 @@ export async function downloadSkillArtifact(subscriptionId: string, artifact: Av
     const encoding = response.headers.get('Content-Encoding')?.trim().toLowerCase()
     // Fetch decodes compressed bodies; their wire length is not the artifact length.
     if (length !== null && (!/^[1-9]\d*$/.test(length) || !Number.isSafeInteger(Number(length))
-      || Number(length) > maxSkillArtifactBytes + 1024 * 1024
       || ((!encoding || encoding === 'identity') && Number(length) !== expected.byteLength))) {
       throw new Error('Skill artifact content length mismatch.')
     }
@@ -110,7 +108,7 @@ export async function downloadSkillArtifact(subscriptionId: string, artifact: Av
       const { done, value } = await reader.read()
       if (done) break
       byteLength += value.byteLength
-      if (byteLength > expected.byteLength || byteLength > maxSkillArtifactBytes) throw new Error('Skill artifact byte limit exceeded.')
+      if (byteLength > expected.byteLength) throw new Error('Skill artifact body exceeds its declared length.')
       const chunk = Buffer.from(value)
       chunks.push(chunk)
       hash.update(chunk)

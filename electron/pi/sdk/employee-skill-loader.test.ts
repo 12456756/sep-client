@@ -183,15 +183,33 @@ describe('employee skills with the real DefaultResourceLoader (no model)', () =>
     })
   }
 
-  it('rejects all non-whitelisted diagnostics even for a valid prefixed entry', async t => {
+  it('tolerates parser warnings for an authenticated entry but rejects foreign diagnostics', async t => {
     const f = await fixture()
     t.after(f.cleanup)
     await f.skill(f.approved, '\uFEFF' + approvedContent)
     const options = employeeSkillLoaderOptions(f.cwd, f.agentDir, [f.approved], loadSkills)
     for (const message of ['description exceeds 1024 characters (1025)', 'unknown diagnostic', 'name must not contain consecutive hyphens']) {
-      assert.throws(() => options.skillsOverride!({ skills: [], diagnostics: [{ type: 'warning', message, path: join(f.approved, 'SKILL.md') }] }), /integrity mismatch/)
+      assert.doesNotThrow(() => options.skillsOverride!({ skills: [], diagnostics: [{ type: 'warning', message, path: join(f.approved, 'SKILL.md') }] }))
     }
     assert.throws(() => options.skillsOverride!({ skills: [], diagnostics: [{ type: 'warning', message: 'description is required', path: '/foreign/SKILL.md' }] }), /integrity mismatch/)
+  })
+
+  it('loads authenticated entries with malformed frontmatter and long descriptions', async t => {
+    const f = await fixture()
+    t.after(f.cleanup)
+    const malformed = '---\nname: [invalid\ndescription: ignored\n---\n# Work'
+    await f.skill(f.approved, malformed)
+    const loader = f.loader()
+    await loader.reload()
+    assert.equal(loader.getSkills().skills[0]?.name, 'orders')
+    assert.match(loader.getSkills().skills[0]?.description ?? '', /^Instructions for orders$/)
+
+    const longDescription = `---\nname: orders\ndescription: ${'x'.repeat(1100)}\n---\n# Work`
+    await f.skill(f.approved, longDescription)
+    await assert.rejects(loader.reload(), /integrity mismatch/)
+    const refreshed = f.loader()
+    await refreshed.reload()
+    assert.equal(refreshed.getSkills().skills[0]?.description.length, 1100)
   })
 
   for (const name of ['CRM 标签体系', 'SKU 生命周期管理', '电商 SOP 编排', 'CRM  标签', 'CRM\u00a0\u3000标签', '𠀀'.repeat(64)]) {

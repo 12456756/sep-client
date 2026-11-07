@@ -1,8 +1,6 @@
 import { z } from 'zod'
 
 export const skillArtifactProtocolVersion = 1 as const
-export const maxSkillArtifactBytes = 20 * 1024 * 1024
-export const maxSkillEntryBytes = 500 * 1024
 export const skillArtifactSha256Schema = z.string().regex(/^[0-9a-f]{64}$/)
 const safeName = /^[\p{L}\p{N}]+(?:(?:-|\p{Zs}+)[\p{L}\p{N}]+)*$/u
 export function isSafeSkillPathComponent(value: string): boolean {
@@ -12,7 +10,7 @@ export function isSafeSkillPathComponent(value: string): boolean {
     && !/[ .]$/.test(part) && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part))
 }
 export const skillArtifactNameSchema = z.string().refine(value =>
-  Array.from(value).length >= 1 && Array.from(value).length <= 64 && safeName.test(value)
+  value.length > 0 && safeName.test(value)
   && safeName.test(value.normalize('NFKC'))
   && isSafeSkillPathComponent(value), 'Invalid skill name.')
 
@@ -23,9 +21,9 @@ const artifactIdSchema = z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/)
 
 export const skillArtifactFrontmatterSchema = z.object({
   name: skillArtifactNameSchema,
-  description: z.string().min(1).max(1024).refine(value => value.trim().length > 0),
+  description: z.string().min(1).refine(value => value.trim().length > 0),
   license: z.string().optional(),
-  compatibility: z.string().min(1).max(500).optional(),
+  compatibility: z.string().min(1).optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   'allowed-tools': z.string().optional(),
   'disable-model-invocation': z.boolean().optional(),
@@ -48,15 +46,15 @@ export const skillArtifactAvailableSchema = z.object({
   status: z.literal('AVAILABLE'),
   format: z.enum(['single-file', 'zip']),
   installationDirectory: skillArtifactNameSchema,
-  entryPath: z.string().max(1024).refine(value => {
+  entryPath: z.string().refine(value => {
     const parts = value.split('/')
     return parts.at(-1) === 'SKILL.md'
       && parts.every(isSafeSkillPathComponent)
   }, 'Invalid skill artifact entry path.'),
   entrySha256: skillArtifactSha256Schema,
   artifactSha256: skillArtifactSha256Schema,
-  byteLength: z.number().int().positive().max(maxSkillArtifactBytes),
-  fileCount: z.number().int().positive().max(500),
+  byteLength: z.number().int().positive().safe(),
+  fileCount: z.number().int().positive().safe(),
   downloadPath: z.string().regex(/^\/client\/subscriptions\/[a-zA-Z0-9_-]{1,128}\/skills\/[a-zA-Z0-9_-]{1,128}\/versions\/[a-zA-Z0-9_-]{1,128}\/artifact$/),
 }).strict()
 

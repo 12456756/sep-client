@@ -349,7 +349,7 @@ export class SkillImportService {
         }
         case 'preview': {
           this.publish({ phase: 'previewing', error: null })
-          const signal = AbortSignal.any([current.controller.signal, AbortSignal.timeout(SKILL_IMPORT_LIMITS.previewMs)])
+          const signal = current.controller.signal
           const preview = await this.options.files.preview({ ...(command.payload as { requestId: string; candidateId: string; revision: number }),
             expiresAt: new Date(Math.min(current.deadline, current.idleDeadline, this.now() + SKILL_IMPORT_LIMITS.pairingMs)).toISOString() }, signal)
           const files = preview.files
@@ -398,7 +398,7 @@ export class SkillImportService {
       if (operation.operationId !== selection.operationId || Date.parse(operation.expiresAt) <= this.now()) throw new SkillImportApiError('OPERATION_CONFLICT')
       if (operation.status === 'succeeded') {
         if (operation.sha256 !== pkg.sha256) throw new SkillImportApiError('PACKAGE_CHANGED')
-        await this.stopFromWorker(current, 'uploaded')
+        this.publish({ phase: 'uploaded', error: null })
         return
       }
       if (operation.status === 'processing') { await this.wait(2000, current.controller.signal); continue }
@@ -411,7 +411,7 @@ export class SkillImportService {
         const artifact = await current.api.upload(current.sessionId, selection.operationId, grant.uploadGrant, pkg, SkillImportArtifactSchema, current.controller.signal)
         this.assertCurrent(current)
         if (artifact.sha256 !== pkg.sha256) throw new SkillImportApiError('PACKAGE_CHANGED')
-        await this.stopFromWorker(current, 'uploaded')
+        this.publish({ phase: 'uploaded', error: null })
         return
       } catch (error) {
         this.assertCurrent(current)

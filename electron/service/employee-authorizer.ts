@@ -22,6 +22,7 @@ import type { SkillArtifactAvailable } from '../common/platform/skill-artifact-c
 // 那是个零依赖的类型模块，import 它不会把 pi SDK 拉进服务层（B2）。
 import type { EmployeeRuntimeConfig } from '../runtime/run-types'
 import type { EmployeeProfile } from '../domain/employee-profile'
+import type { ModelCatalogEntry } from '../../src/shared/model-catalog-contracts'
 
 function videoAuthorizationFingerprint(video: EmployeeRuntimeConfig['video']): string {
   // Video arrays enumerate sets of tools, profiles, operations and supported parameters.
@@ -115,6 +116,7 @@ export class EmployeeAuthorizer {
     private readonly skills: SkillProvisioner,
     private readonly gatewayUrl: string,
     private readonly runtimeProvider?: RuntimeProvider,
+    private readonly modelCatalog?: { list(accessToken: string): Promise<readonly ModelCatalogEntry[]> },
   ) {}
 
   /** 用户显式刷新：绕过 TTL，但仍与在途请求合并（C4）。只保留 ACTIVE 实例。 */
@@ -135,7 +137,10 @@ export class EmployeeAuthorizer {
     const available = instances.filter(instance => instance.status === 'ACTIVE' && instance.allowedModels.includes(modelId))
     const selected = available.find(instance => instance.subscriptionId === preferredSubscriptionId) ?? available[0]
     if (!selected) return null
-    const grant = { subscriptionId: selected.subscriptionId, modelId, gatewayUrl: this.gatewayUrl }
+    const capabilities = this.modelCatalog
+      ? await this.readModelCapabilities(modelId, await this.session.getValidAccessToken()) : {}
+    if (!scope.isCurrent()) return null
+    const grant = { subscriptionId: selected.subscriptionId, modelId, gatewayUrl: this.gatewayUrl, ...capabilities }
     if (!this.runtimeProvider) return grant
     const current = await this.readRuntime(selected.subscriptionId)
     if (!scope.isCurrent() || !current?.scope.isCurrent() || !current.manifest
@@ -327,6 +332,8 @@ export class EmployeeAuthorizer {
         manifest.runtime.allowedModels.includes(candidate) && instance.allowedModels.includes(candidate)))
       : employee.modelId
     if (!selectedModel || (manifest && !manifest.runtime.allowedModels.includes(selectedModel)) || !instance.allowedModels.includes(selectedModel)) return null
+    const capabilities = await this.readModelCapabilities(selectedModel, accessToken)
+    if (!scope.isCurrent()) return null
     const skillArtifactProtocolVersion = manifest?.runtime.skillArtifactProtocolVersion
     // Keep the approved versions and resource identities fixed throughout asynchronous preparation.
     const approvedSkills = manifest && Object.freeze(manifest.runtime.skills.map(skill => Object.freeze({
@@ -336,8 +343,13 @@ export class EmployeeAuthorizer {
     for (const skill of approvedSkills ?? []) {
       const artifact = skill.artifact
       if (skillArtifactProtocolVersion === 1) {
-        if (!artifact || artifact.status !== 'AVAILABLE' || artifact.capabilityId !== skill.capabilityId
-          || artifact.versionId !== skill.versionId
+        if (!artifact) {
+          throw new Error('Employee runtime skill artifact is unavailable or mismatched.')
+        }
+        if (artifact.status === 'BLOCKED') {
+          throw new Error(`Employee runtime skill artifact is blocked: ${artifact.reason}.`)
+        }
+        if (artifact.capabilityId !== skill.capabilityId || artifact.versionId !== skill.versionId
           || artifact.approvedContentSha256 !== createHash('sha256').update(skill.content).digest('hex')) {
           throw new Error('Employee runtime skill artifact is unavailable or mismatched.')
         }
@@ -362,7 +374,7 @@ export class EmployeeAuthorizer {
       throw error
     }
     if (!scope.isCurrent()) return null
-    if (!manifest || !approvedSkills) return { ...employee, additionalSkillPaths: [...prepared.skillPaths] }
+    if (!manifest || !approvedSkills) return { ...employee, ...capabilities, additionalSkillPaths: [...prepared.skillPaths] }
     const parsedSkills = preparedEmployeeSkillSchema.array().safeParse(prepared.skills ?? [])
     if (!parsedSkills.success) throw new Error('Employee runtime skills were not fully prepared.')
     const actualSkills = parsedSkills.data
@@ -402,12 +414,19 @@ export class EmployeeAuthorizer {
     return {
       ...employee,
       modelId: selectedModel,
+      ...capabilities,
       additionalSkillPaths: [...prepared.skillPaths],
       systemPrompt: manifest.runtime.systemPrompt,
       ...(manifest.runtime.media !== undefined ? { media: manifest.runtime.media } : {}),
       ...(runtimeSnapshot.video !== undefined ? { video: runtimeSnapshot.video } : {}),
       runtimeSnapshot,
     }
+  }
+
+  private async readModelCapabilities(modelId: string, accessToken: string): Promise<Pick<EmployeeRuntimeConfig, 'vision'>> {
+    if (!this.modelCatalog) return {}
+    const models = await this.modelCatalog.list(accessToken)
+    return { vision: models.find(model => model.modelId === modelId)?.vision ?? null }
   }
 
   /** Refresh the grant before a scheduled plan is created; return only prompt-safe profile data. */

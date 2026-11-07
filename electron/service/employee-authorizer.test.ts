@@ -56,6 +56,58 @@ const session = {
 }
 
 describe('general assistant model authorization', () => {
+  it('carries catalog vision capability for both general and employee runs', async () => {
+    let vision: boolean | null = false
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a', 'model')]), fakeSkills(), GATEWAY, undefined, {
+      async list(token) {
+        assert.equal(token, 'access-token')
+        return [{ modelId: 'model', displayName: 'model', billingMultiplier: null, discountLabel: null, isFree: null, vision }]
+      },
+    })
+    for (const capability of [false, true, null] as const) {
+      vision = capability
+      assert.equal((await authorizer.authorizeModel('model'))?.vision, capability)
+      assert.equal((await authorizer.authorize('sub-a'))?.vision, capability)
+    }
+  })
+
+  it('discards model capabilities if the account changes while loading the catalog', async () => {
+    const started = deferred<void>(), loading = deferred<[]>()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a', 'model')]), fakeSkills(), GATEWAY, undefined, {
+      list: () => { started.resolve(); return loading.promise },
+    })
+    const pending = authorizer.authorizeModel('model')
+    await started.promise
+    authorizer.clear()
+    loading.resolve([])
+    assert.equal(await pending, null)
+  })
+
+  it('uses the selected model capability and treats absent catalog entries as unknown', async () => {
+    const instance = { ...subscription('sub-a', 'default'), allowedModels: ['default', 'selected', 'missing'] }
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [instance]), fakeSkills(), GATEWAY, undefined, {
+      async list() {
+        return [{ modelId: 'selected', displayName: 'Selected', billingMultiplier: null, discountLabel: null, isFree: null, vision: false }]
+      },
+    })
+    assert.equal((await authorizer.authorize('sub-a', 'selected'))?.vision, false)
+    assert.equal((await authorizer.authorizeModel('missing'))?.vision, null)
+    assert.equal((await authorizer.authorize('sub-a', 'missing'))?.vision, null)
+  })
+
+  it('drops employee authorization if capabilities arrive after account invalidation', async () => {
+    const started = deferred<void>(), loading = deferred<[]>()
+    const skills = fakeSkills()
+    const authorizer = new EmployeeAuthorizer(session, new EmployeeDirectory(async () => [subscription('sub-a', 'model')]), skills, GATEWAY, undefined, {
+      list: () => { started.resolve(); return loading.promise },
+    })
+    const pending = authorizer.authorize('sub-a')
+    await started.promise
+    authorizer.clear()
+    loading.resolve([])
+    assert.equal(await pending, null)
+    assert.equal(skills.prepared(), 0)
+  })
   it('loads shared media tools through a valid model grant without employee behavior or skills', async () => {
     const skills = fakeSkills()
     const manifest = runtimeManifest()
@@ -794,6 +846,38 @@ describe('approved skill artifact authorization', () => {
       await assert.rejects(authorizer.authorize('sub-a'), /artifact|manifest/i)
     }
     assert.equal(preparations, 0)
+  })
+
+  it('rejects the retired client-limit blocked reason before attempting skill IO', async () => {
+    const manifest = artifactManifest()
+    const skill = manifest.runtime.skills[0]!
+    const blockedManifest = { ...manifest, runtime: { ...manifest.runtime, skills: [{ ...skill, artifact: {
+      protocolVersion: 1, status: 'BLOCKED', capabilityId: skill.capabilityId, versionId: skill.versionId,
+      approvedContentSha256: skill.artifact.approvedContentSha256, reason: 'CLIENT_LIMIT_EXCEEDED', fileCount: 821,
+    } }] } } as unknown as typeof manifest
+    let preparations = 0
+    const authorizer = artifactAuthorizer(blockedManifest, async () => {
+      preparations++
+      return { skillPaths: [], skills: [] }
+    })
+    await assert.rejects(authorizer.authorize('sub-a'), /Invalid employee runtime manifest/)
+    assert.equal(preparations, 0)
+  })
+
+  it('authorizes large available package descriptors without size or file-count caps', async () => {
+    const manifest = artifactManifest()
+    const artifact = manifest.runtime.skills[0]!.artifact
+    artifact.format = 'zip'
+    artifact.byteLength = 20 * 1024 * 1024 + 1
+    artifact.fileCount = 821
+    const actual = approvedPreparedSkill(manifest)
+    let preparations = 0
+    const authorizer = artifactAuthorizer(manifest, async () => {
+      preparations++
+      return { skillPaths: [actual.path], skills: [actual] }
+    })
+    assert.ok(await authorizer.authorize('sub-a'))
+    assert.equal(preparations, 1)
   })
 
   it('preserves protocol negotiation for employees without skills and never downgrades a failed download', async () => {

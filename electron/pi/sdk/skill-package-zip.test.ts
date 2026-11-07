@@ -2,15 +2,79 @@ import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { maxSkillEntryBytes } from '../../common/platform/skill-artifact-contract'
-import { packageCrc32, packageSha256, readSkillZip, maxSkillPackageExpandedBytes, packageCache, packageManifestName, verifyPackageCache } from './skill-package-zip'
+import { dirname, join } from 'node:path'
+import { packageCrc32, packageSha256, readSkillZip, packageCache, packageManifestName, verifyPackageCache, type SkillPackageFile } from './skill-package-zip'
 import { zipFixture, zipDescriptor } from './skill-package-zip.fixture'
+import { skillZipEnd } from '../../common/skill-zip-format'
 
 const entry = { path: 'SKILL.md', bytes: Buffer.from('---\nname: orders\ndescription: Orders\n---\n# Work') }
 const guide = { path: 'references/guide.md', bytes: Buffer.from('Guide') }
 
-describe('bounded authenticated ZIP reader', () => {
+describe('authenticated ZIP reader', () => {
+  it('reads ZIP64 entry sizes and offsets with store, deflate and data descriptors', () => {
+    const files = [entry, guide]
+    for (const deflate of [false, true]) for (const descriptor of [false, true]) {
+      const bytes = zipFixture(files, { zip64: true, deflate, descriptor })
+      assert.deepEqual(readSkillZip(bytes, zipDescriptor(bytes, files)), files)
+    }
+  })
+
+  it('reads ZIP64 end records beyond 65535 entries', () => {
+    const files = [entry, ...Array.from({ length: 65535 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))]
+    const bytes = zipFixture(files)
+    const read = readSkillZip(bytes, zipDescriptor(bytes, files))
+    assert.equal(read.length, files.length)
+    assert.deepEqual(read.at(-1), files.at(-1))
+  })
+
+  it('validates ZIP64 end record counts, disk numbers, safe offsets and legacy consistency', () => {
+    const files = [entry]
+    const ordinary = zipFixture(files)
+    const centralSize = ordinary.readUInt32LE(ordinary.length - 10)
+    const centralStart = ordinary.readUInt32LE(ordinary.length - 6)
+    const end = skillZipEnd(65536, centralSize, centralStart)
+    end.writeBigUInt64LE(1n, 24); end.writeBigUInt64LE(1n, 32)
+    const base = Buffer.concat([ordinary.subarray(0, -22), end])
+    assert.deepEqual(readSkillZip(base, zipDescriptor(base, files)), files)
+    const record = base.length - 98
+    for (const mutate of [
+      (bytes: Buffer) => { bytes.writeUInt32LE(1, record + 60) },
+      (bytes: Buffer) => { bytes.writeUInt32LE(2, record + 72) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(1n << 63n, record + 64) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(43n, record + 4) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(2n, record + 24) },
+      (bytes: Buffer) => { bytes.writeUInt32LE(centralStart + 1, record + 92) },
+    ]) {
+      const bytes = Buffer.from(base)
+      mutate(bytes)
+      assert.throws(() => readSkillZip(bytes, zipDescriptor(bytes, files)), /unsafe/)
+    }
+  })
+
+  it('accepts a legacy ZIP at its maximum entry count without requiring a ZIP64 locator', () => {
+    const files = [entry, ...Array.from({ length: 65534 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))]
+    const zip64 = zipFixture(files)
+    const bytes = Buffer.concat([zip64.subarray(0, -98), zip64.subarray(-22)])
+    assert.equal(readSkillZip(bytes, zipDescriptor(bytes, files)).length, files.length)
+  })
+
+  it('rejects unsafe or contradictory ZIP64 size and offset metadata', () => {
+    const files = [entry]
+    const base = zipFixture(files, { zip64: true })
+    const central = base.readUInt32LE(base.length - 6)
+    const extra = central + 46 + Buffer.byteLength(entry.path)
+    for (const mutate of [
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(1n << 63n, extra + 4) },
+      (bytes: Buffer) => { bytes.writeUInt16LE(23, extra + 2) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(1n, extra + 20) },
+      (bytes: Buffer) => { bytes.writeBigUInt64LE(1n, 30 + Buffer.byteLength(entry.path) + 4) },
+    ]) {
+      const bytes = Buffer.from(base)
+      mutate(bytes)
+      assert.throws(() => readSkillZip(bytes, zipDescriptor(bytes, files)), /unsafe/)
+    }
+  })
+
   it('matches known CRC32 and preserves store/deflate/descriptor/directory contents', () => {
     assert.equal(packageCrc32(Buffer.from('123456789')), 0xcbf43926)
     for (const deflate of [false, true]) for (const descriptor of [false, true]) {
@@ -31,7 +95,7 @@ describe('bounded authenticated ZIP reader', () => {
 
   for (const paths of [
     ['references/a.md', 'references/a.md'], ['references/a.md', 'references/A.md'], ['references/a.md', 'references/ａ.md'],
-    ['references/a.md', 'References/b.md'], ['scripts', 'scripts/run.py'], ['extra/SKILL.md'], ['skill.md'],
+    ['references/a.md', 'References/b.md'], ['scripts', 'scripts/run.py'], ['skill.md'],
   ]) {
     it('rejects duplicate, normalization, parent and entry collisions: ' + paths.join(', '), () => {
       const files = [entry, ...paths.map(path => ({ path, bytes: Buffer.from('x') }))]
@@ -39,6 +103,12 @@ describe('bounded authenticated ZIP reader', () => {
       assert.throws(() => readSkillZip(bytes, zipDescriptor(bytes, files)), /unsafe/)
     })
   }
+
+  it('preserves additional skill entries at distinct safe paths', () => {
+    const files = [entry, { ...entry, path: 'extra/SKILL.md' }, { ...entry, path: 'archive/skill.md' }, guide]
+    const bytes = zipFixture(files)
+    assert.deepEqual(readSkillZip(bytes, zipDescriptor(bytes, files)), files)
+  })
 
   it('rejects links and special filesystem node types', () => {
     for (const mode of [0xa1ff, 0x21ff, 0x11ff, 0x61ff]) {
@@ -85,15 +155,61 @@ describe('bounded authenticated ZIP reader', () => {
     assert.throws(() => readSkillZip(truncated, zipDescriptor(truncated, files)), /unsafe/)
   })
 
-  it('enforces file count, per-entry and total inflation budgets before publication', () => {
-    for (const files of [
-      [entry, ...Array.from({ length: 500 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))],
-      [{ ...entry, bytes: Buffer.alloc(maxSkillEntryBytes + 1) }],
-      [entry, { path: 'huge.bin', bytes: Buffer.alloc(maxSkillPackageExpandedBytes) }],
-    ]) {
-      const bytes = zipFixture(files, { deflate: true })
-      assert.throws(() => readSkillZip(bytes, zipDescriptor(bytes, files)), /unsafe/)
-    }
+  it('accepts entries and packages above old size limits', () => {
+    const files = [
+      { path: 'SKILL.md', bytes: Buffer.alloc(500 * 1024 + 1, 0x23) },
+      { path: 'references/large.bin', bytes: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) },
+    ]
+    const bytes = zipFixture(files, { deflate: true })
+    const read = readSkillZip(bytes, zipDescriptor(bytes, files))
+    assert.equal(read[0]?.bytes.length, files[0]?.bytes.length)
+    assert.equal(read[1]?.bytes.length, files[1]?.bytes.length)
+  })
+
+  for (const files of [
+    [entry, ...Array.from({ length: 500 }, (_, i) => ({ path: `files/${i}`, bytes: Buffer.alloc(0) }))],
+    [...Array.from({ length: 501 }, (_, i) => ({ path: `directory-${i}/`, bytes: Buffer.alloc(0) })), entry],
+  ]) {
+    it(`accepts ${files.length} ZIP entries with ${files.filter(file => !file.path.endsWith('/')).length} files and verifies the declared count`, () => {
+      const bytes = zipFixture(files)
+      const artifact = zipDescriptor(bytes, files)
+      const read = readSkillZip(bytes, artifact)
+      assert.deepEqual(read, files.map(file => file.path.endsWith('/')
+        ? { path: file.path.slice(0, -1), bytes: file.bytes, directory: true }
+        : file))
+      assert.throws(() => readSkillZip(bytes, { ...artifact, fileCount: artifact.fileCount + 1 }), /unsafe/)
+    })
+  }
+
+  const largeCaches: Array<{ name: string; files: SkillPackageFile[] }> = [
+    { name: 'more than 500 files', files: [entry, ...Array.from({ length: 500 }, (_, i) => ({ path: `file-${i}`, bytes: Buffer.from('data') }))] },
+    { name: 'more than 500 explicit directories', files: [entry, ...Array.from({ length: 501 }, (_, i) => ({ path: `directory-${i}`, bytes: Buffer.alloc(0), directory: true as const }))] },
+    // Implicit parents exceed the old traversal limit without exceeding either old manifest limit.
+    { name: 'more than 2000 filesystem entries', files: [entry, ...Array.from({ length: 400 }, (_, i) => ({ path: `tree-${i}/a/b/c/file`, bytes: Buffer.from('data') }))] },
+  ]
+  for (const { name, files } of largeCaches) {
+    it(`verifies a cache with ${name} and still rejects tampered content`, async t => {
+      const root = await mkdtemp(join(tmpdir(), 'sep-zip-count-'))
+      t.after(() => rm(root, { recursive: true, force: true }))
+      for (const file of files) {
+        const path = join(root, file.path)
+        await mkdir(file.directory ? path : dirname(path), { recursive: true })
+        if (!file.directory) await writeFile(path, file.bytes)
+      }
+      const manifest = Buffer.from(JSON.stringify(packageCache(files, entry.path)))
+      await writeFile(join(root, packageManifestName), manifest)
+      const verify = () => verifyPackageCache(join(root, entry.path), manifest)
+      assert.doesNotThrow(verify)
+      await writeFile(join(root, entry.path), Buffer.alloc(entry.bytes.length, 0x23))
+      assert.throws(verify, /unsafe/)
+    })
+  }
+
+  it('accepts a ZIP artifact larger than 20 MB', () => {
+    const files = [entry, { path: 'references/large.bin', bytes: Buffer.alloc(20 * 1024 * 1024 + 1, 0x61) }]
+    const bytes = zipFixture(files)
+    assert.ok(bytes.length > 20 * 1024 * 1024)
+    assert.deepEqual(readSkillZip(bytes, zipDescriptor(bytes, files)), files)
   })
 
   it('checks empty directories, complete inventory, manifest tampering and attachment/ancestor symlinks', async t => {

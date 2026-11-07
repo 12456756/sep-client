@@ -8,7 +8,7 @@ import { gzipSync } from 'node:zlib'
 import { config } from '../config'
 import { AuthApiError } from './platform-api'
 import { downloadSkillArtifact } from './skill-artifact-api'
-import { maxSkillArtifactBytes, type SkillArtifactAvailable } from './skill-artifact-contract'
+import { type SkillArtifactAvailable } from './skill-artifact-contract'
 
 const originalFetch = globalThis.fetch
 afterEach(() => { globalThis.fetch = originalFetch })
@@ -32,6 +32,15 @@ async function flush(): Promise<void> {
 }
 
 describe('skill artifact rate limit recovery', () => {
+  it('does not impose a fixed skill download deadline and preserves caller cancellation', async t => {
+    t.mock.method(AbortSignal, 'timeout', () => { throw new Error('Unexpected fixed download timeout') })
+    const controller = new AbortController()
+    globalThis.fetch = async (_url, init) => {
+      assert.equal(init?.signal, controller.signal)
+      return new Response(bytes, { headers: headers() })
+    }
+    assert.deepEqual(await downloadSkillArtifact('sub-1', artifact, 'access', { signal: controller.signal }), bytes)
+  })
   it('waits for Retry-After and releases the rejected body before requesting the same artifact', async t => {
     t.mock.timers.enable({ apis: ['setTimeout'] })
     let calls = 0
@@ -167,7 +176,7 @@ describe('skill artifact authenticated download', () => {
       assert.deepEqual([...new Headers(init?.headers)], [['authorization', 'Bearer ordinary-access']])
       assert.equal(init?.credentials, 'omit')
       assert.equal(init?.redirect, 'error')
-      assert.ok(init?.signal instanceof AbortSignal)
+      assert.equal(init?.signal, undefined)
       return new Response(bytes, { headers: headers() })
     }
     const result = await downloadSkillArtifact('sub-1', artifact, 'ordinary-access')
@@ -193,7 +202,7 @@ describe('skill artifact authenticated download', () => {
       { downloadPath: '/client/subscriptions/sub-1/skills/cap-1/versions/other/artifact' },
       { capabilityId: 'other' }, { versionId: 'other' }, { apiKey: 'private' },
       { downloadPath: `https://example.com${artifact.downloadPath}` }, { downloadPath: `/api${artifact.downloadPath}` },
-      { downloadPath: `${artifact.downloadPath}?token=private` }, { byteLength: maxSkillArtifactBytes + 1 },
+      { downloadPath: `${artifact.downloadPath}?token=private` }, { byteLength: Number.MAX_SAFE_INTEGER + 1 },
     ]) await assert.rejects(downloadSkillArtifact('sub-1', { ...artifact, ...override } as SkillArtifactAvailable, 'access'))
     for (const id of ['', '..', 'a/b', 'a%2fb', 'a'.repeat(129)]) {
       await assert.rejects(downloadSkillArtifact(id, artifact, 'access'))
@@ -242,7 +251,7 @@ describe('skill artifact authenticated download', () => {
       { field: 'Content-Type', value: 'application/zip' }, { field: 'Content-Type', value: 'application/json' },
       { field: 'Content-Length', value: '0' },
       { field: 'Content-Length', value: String(bytes.length + 1) }, { field: 'Content-Length', value: `${bytes.length}.0` },
-      { field: 'Content-Length', value: `${bytes.length}e0` }, { field: 'Content-Length', value: String(maxSkillArtifactBytes + 1) },
+      { field: 'Content-Length', value: `${bytes.length}e0` },
       { field: 'Content-Length', value: '9007199254740992' },
       { field: 'X-SHA256', value: null }, { field: 'X-SHA256', value: digest.toUpperCase() },
       { field: 'X-SHA256', value: 'b'.repeat(64) },
@@ -266,17 +275,24 @@ describe('skill artifact authenticated download', () => {
     for (const body of [bytes, bytes.subarray(1), Buffer.alloc(bytes.length), Buffer.concat([bytes, bytes])]) {
       globalThis.fetch = async () => new Response(body, { headers: responseHeaders })
       if (body === bytes) assert.deepEqual(await downloadSkillArtifact('sub-1', artifact, 'access'), bytes)
-      else await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /body length mismatch|SHA256 mismatch|byte limit exceeded/)
+      else await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /body length mismatch|SHA256 mismatch|declared length/)
     }
   })
 
-  it('rejects excessive declared compressed wire lengths before reading or decoding the body', async () => {
-    let cancelled = false
-    globalThis.fetch = async () => new Response(new ReadableStream({ cancel() { cancelled = true } }), {
-      headers: { ...headers(), 'Content-Encoding': 'gzip', 'Content-Length': String(maxSkillArtifactBytes + 1024 * 1024 + 1) },
-    })
-    await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /content length mismatch/)
-    assert.equal(cancelled, true)
+  it('accepts an artifact larger than 20 MB when the declared bytes and hash match', async () => {
+    const largeBytes = Buffer.alloc(20 * 1024 * 1024 + 1, 0x61)
+    const largeDigest = createHash('sha256').update(largeBytes).digest('hex')
+    const largeArtifact: SkillArtifactAvailable = { ...artifact, byteLength: largeBytes.length,
+      entrySha256: largeDigest, artifactSha256: largeDigest }
+    globalThis.fetch = async () => new Response(largeBytes, { headers: headers(largeArtifact) })
+    assert.deepEqual(await downloadSkillArtifact('sub-1', largeArtifact, 'access'), largeBytes)
+  })
+
+  it('accepts a compressed wire length larger than 20 MB when the decoded artifact matches', async () => {
+    globalThis.fetch = async () => new Response(bytes, { headers: {
+      ...headers(), 'Content-Encoding': 'gzip', 'Content-Length': String(21 * 1024 * 1024),
+    } })
+    assert.deepEqual(await downloadSkillArtifact('sub-1', artifact, 'access'), bytes)
   })
 
   for (const encoding of ['identity', 'gzip']) {
@@ -306,7 +322,7 @@ describe('skill artifact authenticated download', () => {
         // Transport compression must not weaken decoded length or integrity checks.
         for (const invalid of [bytes.subarray(1), Buffer.alloc(bytes.length), Buffer.concat([bytes, bytes])]) {
           body = invalid
-          await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /content length mismatch|body length mismatch|SHA256 mismatch|byte limit exceeded/)
+          await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /content length mismatch|body length mismatch|SHA256 mismatch|declared length/)
         }
       })
     }
@@ -321,7 +337,7 @@ describe('skill artifact authenticated download', () => {
       },
       cancel() { cancelled = true },
     }), { headers: headers() })
-    await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /byte limit exceeded/)
+    await assert.rejects(downloadSkillArtifact('sub-1', artifact, 'access'), /declared length/)
     assert.equal(cancelled, true)
   })
 

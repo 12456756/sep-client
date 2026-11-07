@@ -73,6 +73,19 @@ function context(root: string) {
 }
 
 describe('PiTaskWorker', () => {
+  it('passes the authorized model vision capability to the SDK session', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const worker = new PiTaskWorker({
+      context: { ...context(await makeDirectory()), vision: false },
+      runtime: { async createSession(config) { configs.push(config); return new FakeSession() } },
+      createTokenManager: () => new FakeTokenManager(), getRefreshToken: () => 'mock',
+      onAuthenticationRequired() {}, onApprovalRequest: async () => false, onEvent() {},
+    })
+    try {
+      await worker.run('text prompt')
+      assert.equal(configs[0].vision, false)
+    } finally { await worker.dispose() }
+  })
   it('captures the session position before a turn and restores it when discarding an interrupted turn', async () => {
     const runtime = new FakeRuntime()
     const worker = new PiTaskWorker({

@@ -27,12 +27,12 @@ export function allocateSkillNames(entries: readonly RuntimeSkillName[]): Map<st
   }
   for (const entry of pending.sort((a, b) => a.id.localeCompare(b.id, 'en'))) {
     const prefix = `${entry.source}-`
-    const base = prefix + Array.from(entry.name).slice(0, 64 - prefix.length).join('')
+    const base = prefix + entry.name
     let alias = base
     let salt = 0
     while (used.has(skillNameComparisonKey(alias))) {
       const suffix = '-' + createHash('sha256').update(`${entry.id}:${salt++}`).digest('hex').slice(0, 12)
-      alias = Array.from(base).slice(0, 64 - suffix.length).join('') + suffix
+      alias = base + suffix
     }
     used.add(skillNameComparisonKey(alias))
     result.set(entry.id, alias)

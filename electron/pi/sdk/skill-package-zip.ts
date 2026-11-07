@@ -3,10 +3,9 @@ import { inflateRawSync } from 'node:zlib'
 import { lstatSync, readFileSync, readdirSync, realpathSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { z } from 'zod'
-import { isSafeSkillPathComponent, maxSkillArtifactBytes, maxSkillEntryBytes, skillNameComparisonKey, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
+import { isSafeSkillPathComponent, skillNameComparisonKey, type SkillArtifactAvailable } from '../../common/platform/skill-artifact-contract'
 
 export const packageManifestName = '.sep-package-manifest.json'
-export const maxSkillPackageExpandedBytes = 64 * 1024 * 1024
 export interface SkillPackageFile { path: string; bytes: Buffer; directory?: true }
 
 export function assertSkillPathParents(path: string): void {
@@ -35,57 +34,93 @@ export function packageCrc32(bytes: Buffer): number {
 
 export function safePackagePath(path: string): boolean {
   const parts = path.split('/')
-  return path.length > 0 && path.length <= 1024 && parts.every(part => {
+  return path.length > 0 && parts.every(part => {
     const key = skillNameComparisonKey(part)
     return isSafeSkillPathComponent(part) && !/[\p{Cc}\p{Cf}]/u.test(key)
       && key !== packageManifestName
   })
 }
 
-function validateExtra(bytes: Buffer): void {
+function uint64(bytes: Buffer, offset: number): number {
+  if (offset < 0 || offset + 8 > bytes.length) invalid()
+  const value = bytes.readBigUInt64LE(offset)
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) invalid()
+  return Number(value)
+}
+
+function zip64Extra(bytes: Buffer, fields: readonly boolean[]): number[] {
+  let zip64: Buffer | undefined
   for (let offset = 0; offset < bytes.length;) {
     if (offset + 4 > bytes.length) invalid()
     const id = bytes.readUInt16LE(offset)
     const length = bytes.readUInt16LE(offset + 2)
-    // ZIP64 and alternative Unicode filenames introduce ambiguous identities.
-    if (id === 0x0001 || id === 0x7075 || offset + 4 + length > bytes.length) invalid()
+    // Alternative filenames and duplicate ZIP64 fields have ambiguous identities.
+    if (id === 0x7075 || offset + 4 + length > bytes.length) invalid()
+    if (id === 1) {
+      if (zip64) invalid()
+      zip64 = bytes.subarray(offset + 4, offset + 4 + length)
+    }
     offset += 4 + length
   }
+  const required = fields.filter(Boolean).length * 8
+  if (required ? !zip64 || zip64.length !== required : zip64 !== undefined) invalid()
+  let cursor = 0
+  return fields.map(required => {
+    if (!required) return 0
+    const value = uint64(zip64!, cursor); cursor += 8; return value
+  })
 }
 
-/** Bounded in-memory ZIP reader. No extraction library, process, or dependency is needed. */
+/** Authenticated in-memory ZIP reader. No extraction library, process, or dependency is needed. */
 export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): SkillPackageFile[] {
-  if (bytes.length !== artifact.byteLength || bytes.length > maxSkillArtifactBytes || packageSha256(bytes) !== artifact.artifactSha256) invalid()
+  if (bytes.length !== artifact.byteLength || packageSha256(bytes) !== artifact.artifactSha256) invalid()
   let end = -1
   for (let offset = bytes.length - 22; offset >= Math.max(0, bytes.length - 65557); offset--) {
     if (bytes.readUInt32LE(offset) === 0x06054b50 && offset + 22 + bytes.readUInt16LE(offset + 20) === bytes.length) { end = offset; break }
   }
   if (end < 0 || bytes.readUInt16LE(end + 4) !== 0 || bytes.readUInt16LE(end + 6) !== 0) invalid()
-  const count = bytes.readUInt16LE(end + 10)
-  const centralSize = bytes.readUInt32LE(end + 12)
-  const centralStart = bytes.readUInt32LE(end + 16)
-  if (!count || count > 500 || bytes.readUInt16LE(end + 8) !== count || centralStart + centralSize !== end) invalid()
+  let count = bytes.readUInt16LE(end + 10)
+  let centralSize = bytes.readUInt32LE(end + 12)
+  let centralStart = bytes.readUInt32LE(end + 16)
+  let centralEnd = end
+  if (bytes.readUInt16LE(end + 8) !== count) invalid()
+  const locator = end - 20
+  if (locator >= 0 && bytes.readUInt32LE(locator) === 0x07064b50) {
+    if (bytes.readUInt32LE(locator + 4) !== 0 || bytes.readUInt32LE(locator + 16) !== 1) invalid()
+    const record = uint64(bytes, locator + 8)
+    if (record + 56 > locator || bytes.readUInt32LE(record) !== 0x06064b50
+      || uint64(bytes, record + 4) < 44 || uint64(bytes, record + 4) !== locator - record - 12
+      || bytes.readUInt32LE(record + 16) !== 0 || bytes.readUInt32LE(record + 20) !== 0) invalid()
+    const fullCount = uint64(bytes, record + 32)
+    const fullSize = uint64(bytes, record + 40)
+    const fullStart = uint64(bytes, record + 48)
+    if (uint64(bytes, record + 24) !== fullCount
+      || (count !== 0xffff && count !== fullCount)
+      || (centralSize !== 0xffffffff && centralSize !== fullSize)
+      || (centralStart !== 0xffffffff && centralStart !== fullStart)) invalid()
+    count = fullCount; centralSize = fullSize; centralStart = fullStart; centralEnd = record
+  } else if (centralSize === 0xffffffff || centralStart === 0xffffffff) invalid()
+  if (!count || count > centralSize / 46 || centralStart + centralSize !== centralEnd) invalid()
   const files: SkillPackageFile[] = []
   const paths = new Map<string, boolean>()
   const directorySpellings: string[] = []
   const ranges: Array<[number, number]> = []
-  let total = 0
   let cursor = centralStart
   for (let index = 0; index < count; index++) {
-    if (cursor + 46 > end || bytes.readUInt32LE(cursor) !== 0x02014b50) invalid()
+    if (cursor + 46 > centralEnd || bytes.readUInt32LE(cursor) !== 0x02014b50) invalid()
     const flags = bytes.readUInt16LE(cursor + 8)
     const method = bytes.readUInt16LE(cursor + 10)
     const crc = bytes.readUInt32LE(cursor + 16)
-    const compressed = bytes.readUInt32LE(cursor + 20)
-    const size = bytes.readUInt32LE(cursor + 24)
+    let compressed = bytes.readUInt32LE(cursor + 20)
+    let size = bytes.readUInt32LE(cursor + 24)
     const nameLength = bytes.readUInt16LE(cursor + 28)
     const extraLength = bytes.readUInt16LE(cursor + 30)
     const commentLength = bytes.readUInt16LE(cursor + 32)
     const attributes = bytes.readUInt32LE(cursor + 38)
-    const local = bytes.readUInt32LE(cursor + 42)
+    let local = bytes.readUInt32LE(cursor + 42)
     const next = cursor + 46 + nameLength + extraLength + commentLength
-    if (next > end || bytes.readUInt16LE(cursor + 34) !== 0 || flags & ~0x080e || ![0, 8].includes(method)
-      || (method === 0 && (flags & 6)) || size > maxSkillPackageExpandedBytes || compressed > maxSkillArtifactBytes) invalid()
+    if (next > centralEnd || bytes.readUInt16LE(cursor + 34) !== 0 || flags & ~0x080e || ![0, 8].includes(method)
+      || (method === 0 && (flags & 6))) invalid()
     const rawName = bytes.subarray(cursor + 46, cursor + 46 + nameLength)
     if (!(flags & 0x0800) && rawName.some(byte => byte >= 128)) invalid()
     let name: string
@@ -98,30 +133,40 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
     if (paths.has(key) || (type !== 0 && type !== (directory ? 0x4000 : 0x8000)) || Boolean(attributes & 0x10) && !directory) invalid()
     paths.set(key, directory)
     if (directory) directorySpellings.push(path)
-    validateExtra(bytes.subarray(cursor + 46 + nameLength, cursor + 46 + nameLength + extraLength))
+    const extended = zip64Extra(bytes.subarray(cursor + 46 + nameLength, cursor + 46 + nameLength + extraLength),
+      [size === 0xffffffff, compressed === 0xffffffff, local === 0xffffffff])
+    const centralZip64Size = size === 0xffffffff || compressed === 0xffffffff
+    if (size === 0xffffffff) size = extended[0]
+    if (compressed === 0xffffffff) compressed = extended[1]
+    if (local === 0xffffffff) local = extended[2]
     if (local + 30 > centralStart || bytes.readUInt32LE(local) !== 0x04034b50 || bytes.readUInt16LE(local + 6) !== flags
       || bytes.readUInt16LE(local + 8) !== method || bytes.readUInt16LE(local + 26) !== nameLength) invalid()
     const localExtra = bytes.readUInt16LE(local + 28)
     const start = local + 30 + nameLength + localExtra
     const dataEnd = start + compressed
-    if (dataEnd > centralStart || !bytes.subarray(local + 30, local + 30 + nameLength).equals(rawName)) invalid()
-    validateExtra(bytes.subarray(local + 30 + nameLength, start))
+    if (start > centralStart || dataEnd > centralStart || !bytes.subarray(local + 30, local + 30 + nameLength).equals(rawName)) invalid()
+    let localCompressed = bytes.readUInt32LE(local + 18)
+    let localSize = bytes.readUInt32LE(local + 22)
+    const localZip64Size = localSize === 0xffffffff || localCompressed === 0xffffffff
+    const localExtended = zip64Extra(bytes.subarray(local + 30 + nameLength, start), [localSize === 0xffffffff, localCompressed === 0xffffffff])
+    if (localSize === 0xffffffff) localSize = localExtended[0]
+    if (localCompressed === 0xffffffff) localCompressed = localExtended[1]
     let rangeEnd = dataEnd
     if (flags & 8) {
       const descriptor = dataEnd + (dataEnd + 4 <= centralStart && bytes.readUInt32LE(dataEnd) === 0x08074b50 ? 4 : 0)
-      if (descriptor + 12 > centralStart || bytes.readUInt32LE(descriptor) !== crc || bytes.readUInt32LE(descriptor + 4) !== compressed
-        || bytes.readUInt32LE(descriptor + 8) !== size) invalid()
-      rangeEnd = descriptor + 12
-      for (const [offset, expected] of [[14, crc], [18, compressed], [22, size]]) {
-        const value = bytes.readUInt32LE(local + offset)
+      const wide = localZip64Size || centralZip64Size
+      const descriptorSize = wide ? 20 : 12
+      if (descriptor + descriptorSize > centralStart || bytes.readUInt32LE(descriptor) !== crc
+        || (wide ? uint64(bytes, descriptor + 4) : bytes.readUInt32LE(descriptor + 4)) !== compressed
+        || (wide ? uint64(bytes, descriptor + 12) : bytes.readUInt32LE(descriptor + 8)) !== size) invalid()
+      rangeEnd = descriptor + descriptorSize
+      for (const [value, expected] of [[bytes.readUInt32LE(local + 14), crc], [localCompressed, compressed], [localSize, size]]) {
         if (value !== 0 && value !== expected) invalid()
       }
-    } else if (bytes.readUInt32LE(local + 14) !== crc || bytes.readUInt32LE(local + 18) !== compressed || bytes.readUInt32LE(local + 22) !== size) invalid()
+    } else if (bytes.readUInt32LE(local + 14) !== crc || localCompressed !== compressed || localSize !== size) invalid()
     ranges.push([local, rangeEnd])
-    total += size
-    if (total > maxSkillPackageExpandedBytes || directory && (size !== 0 || compressed !== 0 || crc !== 0)) invalid()
+    if (directory && (size !== 0 || compressed !== 0 || crc !== 0)) invalid()
     if (!directory) {
-      if (files.length >= 500 || path.split('/').at(-1) === 'SKILL.md' && size > maxSkillEntryBytes) invalid()
       const compressedBytes = bytes.subarray(start, dataEnd)
       let data: Buffer
       try {
@@ -139,16 +184,15 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
     }
     cursor = next
   }
-  if (cursor !== end || files.filter(file => !file.directory).length !== artifact.fileCount) invalid()
+  if (cursor !== centralEnd || files.filter(file => !file.directory).length !== artifact.fileCount) invalid()
   ranges.sort((a, b) => a[0] - b[0])
   let previous = 0
   for (const [start, finish] of ranges) { if (start !== previous) invalid(); previous = finish }
   if (previous !== centralStart) invalid()
   const spellings = new Map<string, string>()
-  for (const [key, directory] of paths) {
+  for (const key of paths.keys()) {
     const parts = key.split('/')
     for (let index = 1; index < parts.length; index++) if (paths.get(parts.slice(0, index).join('/')) === false) invalid()
-    if (!directory && key.split('/').at(-1) === 'skill.md' && !files.some(file => file.path === artifact.entryPath && skillNameComparisonKey(file.path) === key)) invalid()
   }
   // Case/normalization aliases of implicit parent directories are also collisions.
   for (const path of [...files.filter(file => !file.directory).map(file => file.path), ...directorySpellings]) {
@@ -167,8 +211,8 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
 
 const cacheSchema = z.object({
   entryPath: z.string().refine(safePackagePath),
-  files: z.array(z.object({ path: z.string().refine(safePackagePath), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteLength: z.number().int().nonnegative().max(maxSkillPackageExpandedBytes) }).strict()).min(1).max(500),
-  directories: z.array(z.string().refine(safePackagePath)).max(500).optional(),
+  files: z.array(z.object({ path: z.string().refine(safePackagePath), sha256: z.string().regex(/^[a-f0-9]{64}$/), byteLength: z.number().int().nonnegative().safe() }).strict()).min(1),
+  directories: z.array(z.string().refine(safePackagePath)).optional(),
 }).passthrough()
 
 export function packageCache(files: readonly SkillPackageFile[], entryPath: string): { entryPath: string; files: Array<{ path: string; sha256: string; byteLength: number }>; directories: string[] } {
@@ -185,14 +229,11 @@ export function verifyPackageCache(entryFile: string, manifestBytes: Buffer): vo
   const expected = new Map(cache.files.map(file => [file.path, file]))
   const directories = new Set(cache.directories ?? [])
   if (expected.size !== cache.files.length || !expected.has(cache.entryPath)) invalid()
-  let total = 0
-  let entries = 0
   const manifestPath = join(dirname(entryFile), packageManifestName)
   function walk(path: string, prefix: string): void {
     const stat = lstatSync(path)
     if (!stat.isDirectory() || stat.isSymbolicLink()) invalid()
     for (const name of readdirSync(path)) {
-      if (++entries > 2000) invalid()
       const fullPath = join(path, name)
       const relative = prefix ? `${prefix}/${name}` : name
       const info = lstatSync(fullPath)
@@ -207,8 +248,6 @@ export function verifyPackageCache(entryFile: string, manifestBytes: Buffer): vo
       if (fullPath === manifestPath) { if (!readFileSync(fullPath).equals(manifestBytes)) invalid(); continue }
       const file = expected.get(relative)
       if (!file || info.size !== file.byteLength || packageSha256(readFileSync(fullPath)) !== file.sha256) invalid()
-      total += file.byteLength
-      if (total > maxSkillPackageExpandedBytes) invalid()
       expected.delete(relative)
     }
   }

@@ -23,6 +23,63 @@ async function addSkill(root: string, name = 'weekly-report'): Promise<string> {
   return directory
 }
 
+test('discovers and packages deep skills beyond the former entry size quota', async () => {
+  const f = await fixture()
+  try {
+    const root = await f.files.addProjectRoot(f.project)
+    const directory = await addSkill(join(f.project, ...Array.from({ length: 8 }, () => 'nested')))
+    await writeFile(join(directory, 'SKILL.md'), '# Large skill\n' + 'x'.repeat(2 * 1024 * 1024 + 1))
+    const resources = join(directory, ...Array.from({ length: 8 }, () => 'resources'))
+    await mkdir(resources, { recursive: true })
+    await writeFile(join(resources, 'data.txt'), 'resource')
+    const [candidate] = await f.files.scan([root.id])
+    assert.ok(candidate)
+    const preview = await f.files.preview({ requestId: 'request_1', candidateId: candidate.candidateId, revision: candidate.revision })
+    assert.ok(preview.content.length > 2 * 1024 * 1024)
+    assert.ok(preview.files.some(file => file.relativePath.endsWith('data.txt')))
+    const pkg = await f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'operation_1' })
+    assert.ok(pkg.bytes > 2 * 1024 * 1024)
+    assert.equal(pkg.bytes, preview.estimatedPackageBytes)
+  } finally { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) }
+})
+
+test('previews more than ten thousand files without a client count quota', async () => {
+  const f = await fixture()
+  try {
+    const root = await f.files.addProjectRoot(f.project)
+    const directory = await addSkill(f.project)
+    const resources = join(directory, 'references')
+    for (let offset = 0; offset < 10000; offset += 64) {
+      await Promise.all(Array.from({ length: Math.min(64, 10000 - offset) }, (_, index) => writeFile(join(resources, `file-${offset + index}.txt`), 'x')))
+    }
+    const [candidate] = await f.files.scan([root.id])
+    assert.ok(candidate)
+    const preview = await f.files.preview({ requestId: 'request_1', candidateId: candidate.candidateId, revision: candidate.revision })
+    assert.equal(preview.fileCount, 10002)
+    assert.equal(preview.files.length, preview.fileCount)
+  } finally { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) }
+})
+
+test('streams a package above the former hundred MiB quota', async () => {
+  const f = await fixture()
+  try {
+    const root = await f.files.addProjectRoot(f.project)
+    const directory = await addSkill(f.project)
+    const resource = await open(join(directory, 'references', 'large.bin'), 'w')
+    try { await resource.truncate(100 * 1024 * 1024 + 1) } finally { await resource.close() }
+    const [candidate] = await f.files.scan([root.id])
+    assert.ok(candidate)
+    const preview = await f.files.preview({ requestId: 'request_1', candidateId: candidate.candidateId, revision: candidate.revision })
+    assert.ok(preview.estimatedPackageBytes > 100 * 1024 * 1024)
+    const pkg = await f.files.packageSelected({ candidateId: candidate.candidateId, snapshotId: preview.snapshotId, operationId: 'operation_1' })
+    assert.ok(pkg.bytes > 100 * 1024 * 1024)
+    assert.equal(pkg.bytes, preview.estimatedPackageBytes)
+    let streamed = 0
+    for await (const chunk of pkg.open()) streamed += chunk.byteLength
+    assert.equal(streamed, pkg.bytes)
+  } finally { await f.files.dispose(); await rm(f.base, { recursive: true, force: true }) }
+})
+
 function agentsRoot(files: SkillImportFiles): Promise<{ id: string }> {
   return files.listRoots().then(roots => {
     const root = roots.find(item => item.path.endsWith('/.agents/skills'))

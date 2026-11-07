@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import type { SkillLibraryItem } from '../../shared/skill-library';
 import { buildSkillSelectionOptions, buildSkillVersions, findSkillVersion, initialSkillViewingVersion, skillReadingParts, unifiedSkillSelection, unifiedSkillVersion } from './skill-version-model';
 
 const approved = { id: 'enterprise', capabilityId: 'skill', scope: 'ENTERPRISE', version: '1.0', status: 'ENTERPRISE_APPROVED' };
+
+test('skill source and change summary editors do not impose character quotas', () => {
+  const source = readFileSync('src/components/enterprise/skills/SkillDetail.tsx', 'utf8');
+  assert.doesNotMatch(source, /maxLength=/);
+});
 const uploaded = { ...approved, id: 'uploaded', scope: 'PERSONAL', status: 'PENDING_ENTERPRISE_REVIEW', createdAt: '2026-10-20' };
 const local = { idempotencyKey: 'local', createdAt: '2026-10-20', uploadedVersion: uploaded, request: { capabilityId: 'skill', parentVersionId: approved.id, content: '# text', changeSummary: '我的优化' } };
 const skill: SkillLibraryItem = { capability: { id: 'skill', name: '分析', description: '', type: 'SKILL' }, versions: [approved, uploaded], localVersions: [local], usableVersionIds: ['enterprise', 'local'], bindings: [

@@ -203,6 +203,7 @@ export class ConversationExecutor {
           tracePhase: '对话执行',
           subscriptionId: queued.subscriptionId,
           modelId: employee.modelId,
+          vision: employee.vision,
           gatewayUrl: employee.gatewayUrl,
           workspaceDir: task.workDir ?? this.options.workspaceRoot(),
           agentDir: conversationPaths?.agentDir ?? runPaths?.agentDir ?? `${this.options.workspaceRoot()}/.pi-runs/${runId}`,

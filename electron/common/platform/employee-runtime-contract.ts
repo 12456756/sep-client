@@ -63,7 +63,7 @@ export const preparedEmployeeSkillSchema = z.object({
   version: z.string().min(1),
   source: z.enum(['approved', 'owner-local']),
   name: skillArtifactNameSchema,
-  description: z.string().min(1).max(1024),
+  description: z.string().min(1),
   content: z.string().min(1),
   sha256: z.string().regex(/^[a-f0-9]{64}$/),
   path: z.string().min(1),
@@ -92,8 +92,34 @@ export const employeeRuntimeSnapshotSchema = z.object({
 
 export type EmployeeRuntimeSnapshot = z.infer<typeof employeeRuntimeSnapshotSchema>
 
+function clientArtifactNumericIssues(value: unknown, issues: readonly { path: PropertyKey[] }[]): string[] {
+  if (!value || typeof value !== 'object') return []
+  const runtime = (value as { runtime?: { skills?: unknown } }).runtime
+  if (!runtime || !Array.isArray(runtime.skills)) return []
+  const skills = runtime.skills
+
+  return issues.flatMap(issue => {
+    const [runtimeKey, skillsKey, index, artifactKey, field] = issue.path
+    if (runtimeKey !== 'runtime' || skillsKey !== 'skills' || typeof index !== 'number'
+      || artifactKey !== 'artifact' || (field !== 'byteLength' && field !== 'fileCount')) return []
+    const skill = skills[index]
+    if (!skill || typeof skill !== 'object') return []
+    const artifact = (skill as { artifact?: Record<string, unknown> }).artifact
+    const actual = artifact?.[field]
+    const maximum = Number.MAX_SAFE_INTEGER
+    if (typeof actual !== 'number' || !Number.isFinite(actual) || actual <= maximum) return []
+    const path = `runtime.skills[${index}].artifact.${field}`
+    return [`${path}=${actual} exceeds the maximum safe integer ${maximum}`]
+  })
+}
+
 export function parseEmployeeRuntimeManifest(value: unknown): EmployeeRuntimeManifest {
   const result = employeeRuntimeManifestSchema.safeParse(value)
-  if (!result.success) throw new Error('Invalid employee runtime manifest.')
+  if (!result.success) {
+    const numericIssues = clientArtifactNumericIssues(value, result.error.issues)
+    throw new Error(numericIssues.length
+      ? `Invalid employee runtime manifest: ${numericIssues.join('; ')}.`
+      : 'Invalid employee runtime manifest.')
+  }
   return result.data
 }

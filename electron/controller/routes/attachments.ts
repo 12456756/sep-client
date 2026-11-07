@@ -9,6 +9,7 @@ import { route } from '../router'
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const sessionInput = z.object({ sessionId: id }).strict()
 const operationInput = sessionInput.extend({ operationId: id })
+const previewInput = z.object({ taskId: id, attachmentId: id, sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()
 const trusted = { trustedMainFrame: true }
 
 export const attachmentRoutes = [
@@ -46,6 +47,10 @@ export const attachmentRoutes = [
   }).strict(), async (ctx, input) => {
     await ctx.attachments.importImageForSession(input.sessionId, input.operationId, input.bytes, input.name, input.type)
     return { success: true, data: await ctx.attachments.listSession(input.sessionId) }
+  }, trusted),
+  route(INVOKE_CHANNELS.ATTACHMENT_PREVIEW, previewInput, async (ctx, input) => {
+    await ctx.tasks.get(input.taskId)
+    return { success: true, data: await ctx.attachments.previewTaskAttachment(input.taskId, input.attachmentId, input.sha256) }
   }, trusted),
   route(INVOKE_CHANNELS.ATTACHMENT_REMOVE, sessionInput.extend({ attachmentId: id, expectedRevision: z.number().int().nonnegative().optional() }).strict(), async (ctx, input) => ({
     success: true, data: await ctx.attachments.removeFromSession(input.sessionId, input.attachmentId, input.expectedRevision),
