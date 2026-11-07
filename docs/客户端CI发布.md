@@ -18,4 +18,6 @@
 - `SEP_UPLOAD_ROOT`：默认 `/www/sep/downloads/sep-client/stable`
 - `SEP_UPLOAD_PORT`：默认 `22`
 
+`SEP_UPLOAD_SSH_KEY` 必须是与服务器 `authorized_keys` 匹配的完整私钥（保留多行 PEM 内容）；`SEP_UPLOAD_KNOWN_HOSTS` 必须包含 `SEP_UPLOAD_HOST` 对应的完整 host key 行。发布器会在一次运行中为 `ssh` 和 `rsync` 使用同一份临时 SSH 配置，强制使用该私钥并启用 host key 校验。
+
 发布 job 使用 GitHub Environment 审批。版本目录已存在时会拒绝覆盖；更新清单发布失败时会恢复旧清单。工作流不会执行 SEP 容器重启、镜像拉取或前端部署。

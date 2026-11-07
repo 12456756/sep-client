@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { parseArguments, shellQuote } from './upload-download-update.mjs'
+import { parseArguments, shellQuote, sshConfig } from './upload-download-update.mjs'
 
 test('upload CLI accepts exactly source, prepared directory and stable channel', () => {
   assert.deepEqual(parseArguments(['source', 'prepared', 'stable']), { source: 'source', prepared: 'prepared', channel: 'stable' })
@@ -13,4 +13,18 @@ test('remote shell quoting preserves apostrophes as data', () => {
   assert.equal(shellQuote("/tmp/it's-safe"), "'/tmp/it'\\''s-safe'")
   assert.throws(() => shellQuote(''), /invalid remote path/)
   assert.throws(() => shellQuote('bad\0path'), /invalid remote path/)
+})
+
+test('SSH config pins one identity and host key policy for both ssh and rsync', () => {
+  const config = sshConfig({
+    host: '121.37.128.126', user: 'root', port: '22',
+    key: '/tmp/sep-client-upload/id_ed25519', knownHosts: '/tmp/sep-client-upload/known_hosts',
+  })
+  assert.match(config, /^HostName 121\.37\.128\.126$/m)
+  assert.match(config, /^User root$/m)
+  assert.match(config, /^Port 22$/m)
+  assert.match(config, /^IdentityFile \/tmp\/sep-client-upload\/id_ed25519$/m)
+  assert.match(config, /^IdentitiesOnly yes$/m)
+  assert.match(config, /^StrictHostKeyChecking yes$/m)
+  assert.match(config, /^UserKnownHostsFile \/tmp\/sep-client-upload\/known_hosts$/m)
 })
