@@ -81,9 +81,13 @@ async function ssh(context, script, phase) {
   }
 }
 
+function rsyncArguments(context, source, destination) {
+  return ['--archive', '--checksum', '--protect-args', '-e', `ssh -F ${shellQuote(context.config)}`, source, `sep-upload:${destination}`]
+}
+
 async function rsync(context, source, destination, phase) {
   try {
-    return await command('rsync', ['--archive', '--checksum', '--protect-args', '-e', `ssh -F ${shellQuote(context.config)} sep-upload`, source, `sep-upload:${destination}`])
+    return await command('rsync', rsyncArguments(context, source, destination))
   } catch (error) {
     throw new Error(`${phase}: ${error.message}`)
   }
@@ -218,4 +222,4 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   }
 }
 
-export { upload, preflight, shellQuote, sshConfig, decodePrivateKey }
+export { upload, preflight, shellQuote, sshConfig, rsyncArguments, decodePrivateKey }
