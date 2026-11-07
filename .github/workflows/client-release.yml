@@ -35,8 +35,6 @@ jobs:
       - run: npm ci
       - name: Prepare pinned speech assets
         run: npm run speech:prepare
-      - name: Prepare pinned OfficeCLI assets
-        run: npm run office:prepare
       - name: Check release tag
         if: github.event_name == 'push'
         shell: bash
@@ -62,8 +60,10 @@ jobs:
         run: npm install --no-save --package-lock=false --ignore-scripts --force sherpa-onnx-darwin-arm64@1.13.8 sherpa-onnx-darwin-x64@1.13.8
       - name: Prepare pinned speech assets
         run: npm run speech:prepare
-      - name: Prepare pinned OfficeCLI assets
-        run: npm run office:prepare
+      - name: Prepare pinned OfficeCLI arm64 asset
+        run: npm run office:prepare -- darwin arm64
+      - name: Prepare pinned OfficeCLI x64 asset
+        run: npm run office:prepare -- darwin x64
       - run: npm run package:ci:stable:mac
       - uses: actions/upload-artifact@v4
         with:
