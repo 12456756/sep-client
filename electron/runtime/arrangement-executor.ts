@@ -340,13 +340,21 @@ export class ArrangementExecutor {
             try {
               progress = advanceModelRequestProgress(latest.modelRequestProgress, kind, recoveredSession ? 'since-resume' : undefined)
             } catch (cause) {
-              logger.child('arrangement-executor').error('invalid model request progress', {
+              logger.child('arrangement-executor').warn('invalid model request progress; resetting count', {
                 taskId, arrangementRunId, nodeId: node.id, requestKind: kind, progress: latest.modelRequestProgress,
+                cause: cause instanceof Error ? cause.message : String(cause),
               })
-              throw new AppError('INVALID_STATE', { message: '节点模型请求计数状态无效。', cause })
+              progress = advanceModelRequestProgress(undefined, 'execution', recoveredSession ? 'since-resume' : undefined)
             }
             const next = { ...current, nodes: current.nodes.map(item => item.nodeId === node.id ? { ...item, modelRequestProgress: progress } : item) }
-            await this.persist(plan, taskId, arrangementRunId, next)
+            try {
+              await this.persist(plan, taskId, arrangementRunId, next)
+            } catch (error) {
+              logger.child('arrangement-executor').warn('failed to persist model request progress; continuing', {
+                taskId, arrangementRunId, nodeId: node.id, requestKind: kind,
+                cause: error instanceof Error ? error.message : String(error),
+              })
+            }
             current = next
             this.checkExecutionControl()
             cancellation.signal.throwIfAborted()
