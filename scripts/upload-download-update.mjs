@@ -47,7 +47,8 @@ async function command(command, args, options = {}) {
       .join(' ')
       .replaceAll(/\s+/g, ' ')
       .trim()
-    throw new Error(`${command} failed${detail ? `: ${detail.slice(0, 500)}` : ''}`)
+    const status = Number.isInteger(error?.code) ? ` (exit ${error.code})` : error?.signal ? ` (signal ${error.signal})` : ''
+    throw new Error(`${command} failed${status}${detail ? `: ${detail.slice(-500)}` : ''}`)
   }
 }
 
@@ -160,6 +161,43 @@ async function upload({ source, prepared, channel, env = process.env }) {
   }
 }
 
+async function preflight({ version, env = process.env }) {
+  requireValue(typeof version === 'string' && /^\d+\.\d+\.\d+$/.test(version), 'preflight requires a stable release version')
+  const context = {
+    host: requiredEnv(env, 'SEP_UPLOAD_HOST'),
+    user: requiredEnv(env, 'SEP_UPLOAD_USER'),
+    root: requiredEnv(env, 'SEP_UPLOAD_ROOT').replace(/\/+$/, ''),
+    port: env.SEP_UPLOAD_PORT || '22',
+  }
+  requireValue(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(context.host), 'SEP_UPLOAD_HOST contains invalid characters')
+  requireValue(/^[A-Za-z_][A-Za-z0-9._-]*$/.test(context.user), 'SEP_UPLOAD_USER contains invalid characters')
+  requireValue(context.root.startsWith('/') && context.root !== '/', 'SEP_UPLOAD_ROOT must be a non-root absolute path')
+  requireValue(/^\d+$/.test(context.port) && Number(context.port) >= 1 && Number(context.port) <= 65535, 'SEP_UPLOAD_PORT must be between 1 and 65535')
+
+  const temp = await mkdtemp(join(tmpdir(), 'sep-client-ssh-preflight-'))
+  const key = join(temp, 'id_ed25519')
+  const knownHosts = join(temp, 'known_hosts')
+  const config = join(temp, 'ssh_config')
+  Object.assign(context, { key, knownHosts, config })
+  try {
+    await writeFile(key, decodePrivateKey(env), { mode: 0o600 })
+    await writeFile(knownHosts, requiredEnv(env, 'SEP_UPLOAD_KNOWN_HOSTS'), { mode: 0o600 })
+    await writeFile(config, `Host sep-upload\n${sshConfig(context)}`, { mode: 0o600 })
+    await chmod(key, 0o600)
+    await chmod(knownHosts, 0o600)
+    await chmod(config, 0o600)
+    const identity = await command('ssh-keygen', ['-lf', key])
+    console.log(`SSH identity loaded: ${identity.stdout.trim()}`)
+    const remoteCheck = `set -eu; test -d ${shellQuote(context.root)}; test ! -e ${shellQuote(`${context.root}/${version}`)}; printf 'remote directory and version slot are ready\\n'`
+    await command('ssh', ['-F', config, 'sep-upload', `bash -c ${shellQuote(remoteCheck)}`])
+    console.log(`SSH preflight passed for ${context.user}@${context.host}:${context.root}, version ${version}`)
+  } catch (error) {
+    throw new Error(`SSH preflight failed: ${error.message}`)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+}
+
 export function parseArguments(args = process.argv.slice(2)) {
   requireValue(args.length === 3 && args.every(value => typeof value === 'string' && value.length > 0 && !value.startsWith('--')), 'usage: node scripts/upload-download-update.mjs <source-dir> <prepared-dir> <stable>')
   requireValue(args[2] === 'stable', 'usage: node scripts/upload-download-update.mjs <source-dir> <prepared-dir> <stable>')
@@ -168,12 +206,16 @@ export function parseArguments(args = process.argv.slice(2)) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    const result = await upload(parseArguments())
-    console.log(`uploaded ${result.artifacts} client artifacts for ${result.channel} ${result.version}; manifests published last`)
+    if (process.argv[2] === '--preflight' && process.argv.length === 4) {
+      await preflight({ version: process.argv[3] })
+    } else {
+      const result = await upload(parseArguments())
+      console.log(`uploaded ${result.artifacts} client artifacts for ${result.channel} ${result.version}; manifests published last`)
+    }
   } catch (error) {
     console.error(`client download upload failed: ${error.message}`)
     process.exitCode = 1
   }
 }
 
-export { upload, shellQuote, sshConfig, decodePrivateKey }
+export { upload, preflight, shellQuote, sshConfig, decodePrivateKey }

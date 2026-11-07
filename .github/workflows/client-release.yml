@@ -46,8 +46,29 @@ jobs:
       - run: npm run test:packaging
       - run: npm run test:updates
 
-  build-mac:
+  preflight:
     needs: validate
+    if: github.event_name == 'push' || inputs.publish == true
+    runs-on: ubuntu-latest
+    environment: sep-download-production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check download server SSH access
+        env:
+          SEP_UPLOAD_HOST: ${{ secrets.SEP_UPLOAD_HOST || '121.37.128.126' }}
+          SEP_UPLOAD_USER: ${{ secrets.SEP_UPLOAD_USER || 'root' }}
+          SEP_UPLOAD_ROOT: ${{ secrets.SEP_UPLOAD_ROOT || '/www/sep/downloads/sep-client/stable' }}
+          SEP_UPLOAD_SSH_KEY_BASE64: ${{ secrets.SEP_UPLOAD_SSH_KEY_BASE64 }}
+          SEP_UPLOAD_KNOWN_HOSTS: ${{ secrets.SEP_UPLOAD_KNOWN_HOSTS }}
+          SEP_UPLOAD_PORT: ${{ secrets.SEP_UPLOAD_PORT || '22' }}
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          node scripts/upload-download-update.mjs --preflight "$version"
+
+  build-mac:
+    needs: [validate, preflight]
+    if: always() && needs.validate.result == 'success' && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
@@ -73,7 +94,8 @@ jobs:
           retention-days: 14
 
   build-win:
-    needs: validate
+    needs: [validate, preflight]
+    if: always() && needs.validate.result == 'success' && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -127,7 +149,7 @@ jobs:
           retention-days: 30
 
   publish:
-    needs: assemble
+    needs: [assemble, preflight]
     if: github.event_name == 'push' || inputs.publish == true
     runs-on: ubuntu-latest
     environment: sep-download-production
