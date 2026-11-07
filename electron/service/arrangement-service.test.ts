@@ -894,6 +894,69 @@ describe('ArrangementService', () => {
     assert.equal(second.employeeAccessRequests?.[0]?.requestId, 'request-a')
   })
 
+  it('rechecks authorization before creating an access request and resumes planning when already authorized', async () => {
+    let refreshes = 0
+    let authorized = [employee()]
+    let accessRequests = 0
+    const harness = planningHarness(async input => {
+      assert.equal(input.planningStage, 'authorized')
+      assert.deepEqual(input.draft.approvedEmployeeAssignments, [{ stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'authorized-sub' }])
+      return { title: 'Authorized report', nodes: [{ ...plannedNode, stepId: 'step-1', subscriptionId: 'authorized-sub' }], unresolvedSteps: [], candidateMatches: [] }
+    }, {
+      employees: {
+        async list() { return authorized },
+        async refresh() {
+          refreshes += 1
+          authorized = [{ ...employee(), employeeId: 'employee-enterprise', subscriptionId: 'authorized-sub', name: 'Authorized analyst' }]
+          return authorized
+        },
+      },
+      employeeAccessRequests: {
+        async create() { accessRequests += 1; throw new Error('must not create an access request') },
+        async get() { throw new Error('must not read an access request') },
+      },
+    })
+    harness.setStored(awaitingEmployeeDraft())
+
+    const updated = await harness.service.requestEmployeeAccess('draft-a', 1, 'step-1', 'employee-enterprise')
+    assert.equal(updated.status, 'planning')
+    await eventually(() => harness.stored?.status === 'ready')
+    assert.equal(refreshes, 1)
+    assert.equal(accessRequests, 0)
+    assert.equal(harness.stored?.nodes.find(node => node.stepId === 'step-1')?.subscriptionId, 'authorized-sub')
+    assert.deepEqual(harness.stored?.candidateMatches, [])
+  })
+
+  it('preserves existing nodes and other pending steps when an applicant is already authorized', async () => {
+    const source = awaitingEmployeeDraft()
+    const retainedNode = { ...plannedNode, id: 'existing-node', stepId: 'existing-step' }
+    const otherStep = { stepId: 'step-2', reason: 'needs a writer', requiredCapabilities: ['writing'] }
+    const otherCandidate = { ...source.candidateMatches![0]!, stepId: 'step-2', employeeId: 'employee-writer', name: 'Writer' }
+    let authorized = [employee()]
+    const harness = planningHarness(async input => {
+      assert.deepEqual(input.draft.nodes, [retainedNode])
+      assert.deepEqual(input.draft.unresolvedSteps?.map(step => step.stepId), ['step-1'])
+      return { title: 'Report', nodes: [{ ...plannedNode, id: 'bound-node', stepId: 'step-1', subscriptionId: 'authorized-sub', dependsOn: ['existing-node'] }] }
+    }, {
+      employees: {
+        async list() { return authorized },
+        async refresh() { authorized = [employee(), { ...employee(), employeeId: 'employee-enterprise', subscriptionId: 'authorized-sub' }]; return authorized },
+      },
+      employeeAccessRequests: { async create() { assert.fail('must not create an application') }, async get() { assert.fail('must not read an application') } },
+    })
+    harness.setStored({ ...source, nodes: [retainedNode], unresolvedSteps: [...source.unresolvedSteps!, otherStep], candidateMatches: [...source.candidateMatches!, otherCandidate] })
+
+    await harness.service.requestEmployeeAccess('draft-a', 1, 'step-1', 'employee-enterprise')
+    await eventually(() => harness.stored?.status !== 'planning')
+
+    assert.equal(harness.stored?.status, 'awaiting-employee')
+    assert.deepEqual(harness.stored?.nodes.map(node => node.id), ['existing-node', 'bound-node'])
+    assert.deepEqual(harness.stored?.nodes[0], retainedNode)
+    assert.deepEqual(harness.stored?.unresolvedSteps, [otherStep])
+    assert.deepEqual(harness.stored?.candidateMatches, [otherCandidate])
+    assert.equal(harness.plannerCalls(), 1)
+  })
+
   it('rejects access requests for a step or employee that is not a candidate', async () => {
     const stored: ArrangementDraft = {
       ...awaitingEmployeeDraft(),
@@ -1325,6 +1388,154 @@ describe('ArrangementService', () => {
     ])
     assert.equal(harness.events[1]?.planningId, result.planningId)
   })
+
+  it('binds an enterprise candidate to an execution node when it is authorized after round two', async () => {
+    const unresolved = { stepId: 'step-1', reason: 'needs analysis', requiredCapabilities: ['analysis'] }
+    const enterpriseCandidate = {
+      subscriptionId: 'enterprise-sub', employeeId: 'employee-enterprise', name: 'Enterprise analyst', status: 'ACTIVE',
+      source: 'enterprise' as const, canExecute: false, canApply: true, allowedModels: [],
+      capabilities: [{ id: 'analysis', name: 'analysis', description: 'analysis' }],
+    }
+    const authorizedEmployee = { ...employee(), subscriptionId: 'authorized-sub', employeeId: 'employee-enterprise', name: 'Enterprise analyst' }
+    let authorized = [employee()]
+    let refreshes = 0
+    const stages: string[] = []
+    const harness = planningHarness(async input => {
+      const stage = input.planningStage ?? 'authorized'
+      stages.push(stage)
+      if (stage === 'authorized' && stages.length === 1) return { title: 'Report', nodes: [], unresolvedSteps: [unresolved] }
+      if (stage === 'enterprise') return { title: 'Report', nodes: [], unresolvedSteps: [unresolved] }
+      assert.equal(stage, 'authorized')
+      assert.deepEqual(input.draft.approvedEmployeeAssignments, [{ stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'authorized-sub' }])
+      return { title: 'Report', nodes: [{ ...plannedNode, id: 'enterprise-node', stepId: 'step-1', subscriptionId: 'authorized-sub' }], unresolvedSteps: [], candidateMatches: [] }
+    }, {
+      employees: {
+        async list() { return authorized },
+        async refresh() { refreshes += 1; authorized = [authorizedEmployee]; return authorized },
+      },
+    })
+    harness.addCandidates([enterpriseCandidate])
+
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
+    await eventually(() => harness.stored?.status !== 'planning')
+
+    assert.deepEqual(stages, ['authorized', 'enterprise', 'authorized'])
+    assert.equal(refreshes, 1)
+    assert.equal(harness.stored?.status, 'ready')
+    assert.equal(harness.stored?.nodes.find(node => node.stepId === 'step-1')?.subscriptionId, 'authorized-sub')
+    assert.deepEqual(harness.stored?.unresolvedSteps, [])
+    assert.deepEqual(harness.stored?.candidateMatches, [])
+  })
+
+  it('keeps an authorized candidate pending when the binding planner cannot produce a node', async () => {
+    const unresolved = { stepId: 'step-1', reason: 'needs analysis', requiredCapabilities: ['analysis'] }
+    const enterpriseCandidate = {
+      subscriptionId: 'enterprise-sub', employeeId: 'employee-enterprise', name: 'Enterprise analyst', status: 'ACTIVE',
+      source: 'enterprise' as const, canExecute: false, canApply: true, allowedModels: [],
+      capabilities: [{ id: 'analysis', name: 'analysis', description: 'analysis' }],
+    }
+    const stages: string[] = []
+    const harness = planningHarness(async input => {
+      const stage = input.planningStage ?? 'authorized'
+      stages.push(stage)
+      if (stage === 'authorized' && stages.length === 1) return { title: 'Report', nodes: [], unresolvedSteps: [unresolved] }
+      if (stage === 'enterprise') return { title: 'Report', nodes: [], unresolvedSteps: [unresolved] }
+      throw new Error('binding planner unavailable')
+    }, {
+      employees: {
+        async list() { return [{ ...employee(), employeeId: 'employee-enterprise', subscriptionId: 'authorized-sub', name: 'Enterprise analyst' }] },
+        async refresh() { return [{ ...employee(), employeeId: 'employee-enterprise', subscriptionId: 'authorized-sub', name: 'Enterprise analyst' }] },
+      },
+    })
+    harness.addCandidates([enterpriseCandidate])
+
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
+    await eventually(() => harness.stored?.status !== 'planning')
+
+    assert.deepEqual(stages, ['authorized', 'enterprise', 'authorized'])
+    assert.equal(harness.stored?.status, 'awaiting-employee')
+    assert.deepEqual(harness.stored?.unresolvedSteps, [unresolved])
+    assert.equal(harness.stored?.candidateMatches?.[0]?.employeeId, 'employee-enterprise')
+  })
+
+  for (const refreshFails of [false, true]) it(`reconciles a platform candidate after round three with ${refreshFails ? 'the initial snapshot on refresh failure' : 'the refreshed subscription'}`, async () => {
+    const unresolved = { stepId: 'step-1', reason: 'needs research', requiredCapabilities: ['research'] }
+    const enterpriseCandidate = {
+      subscriptionId: 'enterprise-sub', employeeId: 'employee-enterprise', name: 'Enterprise researcher', status: 'ACTIVE',
+      source: 'enterprise' as const, canExecute: false, canApply: true, allowedModels: [],
+      capabilities: [{ id: 'research', name: 'research', description: 'research' }],
+    }
+    const platformCandidate = {
+      subscriptionId: 'platform:employee-platform', employeeId: 'employee-platform', name: 'Platform researcher', status: 'APPROVED',
+      source: 'platform' as const, canExecute: false, canApply: true, allowedModels: [],
+      capabilities: [{ id: 'research', name: 'research', description: 'research' }],
+    }
+    const authorizedEmployee = { ...employee(), subscriptionId: 'platform-authorized-sub', employeeId: 'employee-platform', name: 'Platform researcher' }
+    let authorized = refreshFails ? [authorizedEmployee] : [employee()]
+    let refreshes = 0
+    const stages: string[] = []
+    const harness = planningHarness(async input => {
+      const stage = input.planningStage ?? 'authorized'
+      stages.push(stage)
+      if (stage === 'authorized' && stages.length === 1) return { title: 'Report', nodes: [], unresolvedSteps: [unresolved] }
+      if (stage === 'enterprise') return { title: 'Report', nodes: [], unresolvedSteps: [unresolved], candidateMatches: [{ stepId: 'step-1', employeeId: 'employee-enterprise', subscriptionId: 'enterprise-sub', source: 'enterprise', name: 'Enterprise researcher', rationale: 'enterprise candidate', canExecute: false, canApply: true }] }
+      if (stage === 'platform') return { title: 'Report', nodes: [], unresolvedSteps: [unresolved], candidateMatches: [{ stepId: 'step-1', employeeId: 'employee-platform', subscriptionId: 'platform:employee-platform', source: 'platform', name: 'Platform researcher', rationale: 'platform candidate', canExecute: false, canApply: true }] }
+      assert.equal(stage, 'authorized')
+      assert.deepEqual(input.draft.approvedEmployeeAssignments, [{ stepId: 'step-1', employeeId: 'employee-platform', subscriptionId: 'platform-authorized-sub' }])
+      return { title: 'Report', nodes: [{ ...plannedNode, id: 'platform-node', stepId: 'step-1', subscriptionId: 'platform-authorized-sub' }], unresolvedSteps: [], candidateMatches: [] }
+    }, {
+      employees: {
+        async list() { return authorized },
+        async refresh() {
+          refreshes += 1
+          if (refreshFails) throw new Error('directory unavailable')
+          if (refreshes === 2) authorized = [authorizedEmployee]
+          return authorized
+        },
+      },
+    })
+    harness.addCandidates([enterpriseCandidate])
+    harness.addPlatformCandidates([platformCandidate])
+
+    await harness.service.startPlanning('draft-a', 1, 'model-a')
+    await eventually(() => harness.stored?.status !== 'planning')
+
+    assert.deepEqual(stages, ['authorized', 'enterprise', 'platform', 'authorized'])
+    assert.equal(refreshes, 2)
+    assert.equal(harness.stored?.status, 'ready')
+    assert.equal(harness.stored?.nodes.find(node => node.stepId === 'step-1')?.subscriptionId, 'platform-authorized-sub')
+    assert.deepEqual(harness.stored?.unresolvedSteps, [])
+    assert.deepEqual(harness.stored?.candidateMatches, [])
+  })
+
+  for (const invalidResult of ['wrong-employee', 'unrelated-node', 'missing-dependency', 'still-unresolved'] as const) {
+    it(`retains pending work instead of accepting a binding result with ${invalidResult}`, async () => {
+      const source = awaitingEmployeeDraft()
+      let calls = 0
+      const harness = planningHarness(async () => {
+        calls += 1
+        if (calls < 3) return { title: 'Report', nodes: [], unresolvedSteps: source.unresolvedSteps, candidateMatches: calls === 2 ? source.candidateMatches : [] }
+        return {
+          title: 'Report', nodes: [{ ...plannedNode, stepId: invalidResult === 'unrelated-node' ? 'unknown-step' : 'step-1',
+            subscriptionId: invalidResult === 'wrong-employee' ? 'sub-a' : 'authorized-sub',
+            dependsOn: invalidResult === 'missing-dependency' ? ['missing-node'] : [] }],
+          unresolvedSteps: invalidResult === 'still-unresolved' ? source.unresolvedSteps : [],
+        }
+      }, {
+        employees: { async list() { return [employee(), { ...employee(), employeeId: 'employee-enterprise', subscriptionId: 'authorized-sub' }] },
+          async refresh() { return [employee(), { ...employee(), employeeId: 'employee-enterprise', subscriptionId: 'authorized-sub' }] } },
+      })
+      harness.addCandidates([{ subscriptionId: 'sub-enterprise', employeeId: 'employee-enterprise', name: 'Analyst', source: 'enterprise', canExecute: false, canApply: true, status: 'ACTIVE', allowedModels: [] }])
+
+      await harness.service.startPlanning('draft-a', 1, 'model-a')
+      await eventually(() => harness.stored?.status !== 'planning')
+
+      assert.equal(harness.stored?.status, 'awaiting-employee')
+      assert.deepEqual(harness.stored?.nodes, [])
+      assert.deepEqual(harness.stored?.unresolvedSteps, source.unresolvedSteps)
+      assert.deepEqual(harness.stored?.candidateMatches, source.candidateMatches)
+    })
+  }
 
   it('does not overwrite a newer draft revision with a late planning result', async () => {
     const gate = deferred<ArrangementPlanningResult>()

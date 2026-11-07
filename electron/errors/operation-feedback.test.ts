@@ -112,6 +112,42 @@ it('uses operation-specific work messages and preserves only verified business r
   assert.doesNotMatch(toEnvelope(appError('INVALID_ARGUMENT', { message: 'private input' }), { feedbackOperation: 'imageGenerate' }).message, /private/)
 })
 
+it('uses self-service messages for arrangement retry failures', () => {
+  const cases = [
+    [new Error('Arrangement checkpoint storage is unavailable.'), '无法读取这项工作的恢复进度，暂时无法重试。'],
+    [new Error('Arrangement has no recoverable checkpoint.'), '找不到这项工作的恢复记录，暂时无法继续。'],
+    [new Error('Arrangement plan has no executable nodes.'), '当前没有可继续执行的工作步骤，暂时无法重试。'],
+    [new Error('Invalid employee runtime manifest: runtime.skills[0].artifact.fileCount exceeds the maximum safe integer.'), '员工运行配置暂不可用，暂时无法启动重试。'],
+    [new Error('Employee runtime identity mismatch.'), '员工运行配置暂不可用，暂时无法启动重试。'],
+    [new Error('Employee runtime skills were not fully prepared.'), '员工所需的能力包暂不可用，暂时无法启动重试。'],
+    [new Error('Invalid approved skill package directory.'), '员工所需的能力包暂不可用，暂时无法启动重试。'],
+    [appError('SKILL_CONTENT_MISMATCH'), '员工所需的能力包暂不可用，暂时无法启动重试。'],
+    [appError('PERMISSION_DENIED'), '当前无法处理本次重试，请稍后再试。'],
+    [new Error('unknown retry failure'), '本次重试未能完成，请稍后再试。'],
+  ] as const
+  for (const [error, expected] of cases) {
+    const result = toEnvelope(error, { authenticated: true, feedbackOperation: 'workRetry' })
+    assert.equal(result.message, expected)
+    assert.doesNotMatch(result.message, /客户端|管理员/)
+  }
+})
+
+it('uses status-specific self-service messages for retry submission responses', () => {
+  const cases = [
+    [400, '平台暂时无法处理本次重试，请稍后再试。'],
+    [404, '平台未找到重试所需的员工或运行配置，暂时无法继续。'],
+    [409, '工作状态刚刚发生变化，请等待页面自动更新后再重试。'],
+    [422, '平台暂时无法处理本次重试，请稍后再试。'],
+    [403, '当前无法处理本次重试，请稍后再试。'],
+    [503, '重试服务暂时不可用，请稍后再试。'],
+  ] as const
+  for (const [statusCode, expected] of cases) {
+    const result = toEnvelope(new AuthApiError({ statusCode, message: 'private platform response' }), { authenticated: true, feedbackOperation: 'workRetry' })
+    assert.equal(result.message, expected)
+    assert.doesNotMatch(result.message, /客户端|管理员|private/)
+  }
+})
+
 it('preserves known planning reasons without exposing contract paths or model output', () => {
   const cases = [
     ['invalid-json', '自动编排返回内容格式异常'], ['empty-plan', '自动编排未生成工作步骤'],
