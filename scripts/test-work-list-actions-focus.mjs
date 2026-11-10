@@ -22,6 +22,7 @@ try {
     const { default: React } = await import(reactPath)
     const { createRoot } = (await import(domPath)).default
     const { WorkListPane } = await import('/pages/enterprise/WorkListPane.tsx')
+    const { useWorkListPagination } = await import('/features/enterprise/use-work-list-pagination.ts')
     const { WorkListActions } = await import('/pages/enterprise/WorkListActions.tsx')
     const { FeedbackProvider, useFeedback } = await import('/components/feedback/FeedbackProvider.tsx')
     await import('/styles/work-hub.css')
@@ -34,11 +35,15 @@ try {
       const [request, setRequest] = React.useState(null)
       const [busy, setBusy] = React.useState(false)
       const [filters, setFilters] = React.useState({ bucket: 'all', workType: 'all', search: '' })
+      const pagination = useWorkListPagination(works, filters, null, true)
       const dismiss = React.useCallback(() => setRequest(null), [])
-      window.focusTest = { reset: ids => setWorks(ids.map(work)) }
+      window.focusTest = {
+        reset: ids => setWorks(ids.map(work)),
+        show: id => pagination.onPageChange(Math.floor(works.findIndex(item => item.id === id) / pagination.pageSize) + 1),
+      }
       return e('div', { className: 'ent-shell ent-work-shell', style: { height: '100vh' } },
         e('div', { className: 'ent-work-hub list-open', style: { height: '100vh' } },
-          e(WorkListPane, { works, records: works, filters, onFilters: setFilters, selectedWorkId: null,
+          e(WorkListPane, { works, records: pagination.records, pagination, filters, onFilters: setFilters, selectedWorkId: null,
             onSelect() {}, onCreate() {}, onClose() {}, onRetryTypes() {}, menuWorkId: request?.workId,
             onWorkMenu: (workId, trigger, point) => setRequest({ workId, trigger, x: point?.x ?? 200, y: point?.y ?? 200 }) }),
           e(WorkListActions, { works, request, busy, onDismiss: dismiss, onPin: async () => true,
@@ -61,6 +66,7 @@ try {
 
   const row = id => page.getByRole('button', { name: `测试工作 ${id}，已完成，会话`, exact: true })
   const openDelete = async id => {
+    await page.evaluate(id => window.focusTest.show(id), id)
     await row(id).scrollIntoViewIfNeeded()
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     await row(id).click({ button: 'right' })

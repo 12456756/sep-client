@@ -84,6 +84,11 @@
 .ent-work-status:is(.is-paused,.is-unstarted,.is-queued) { color: var(--ent-ink-3); }
 .ent-work-type-tag { display: inline-flex; align-items: center; justify-content: center; width: 25px; height: 21px; flex: 0 0 25px; border-radius: 5px; color: var(--ent-ink-2); background: var(--ent-panel-subtle); }
 .ent-work-list-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--ent-line) transparent; }
+.ent-work-list-heading, .ent-work-list > .ent-work-filters { flex-shrink: 0; }
+.ent-work-pagination { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 16px 10px; border-top: 1px solid var(--ent-line); color: var(--ent-ink-3); font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
+.ent-work-pagination-controls { display: flex; align-items: center; justify-content: center; gap: 4px; width: 100%; }
+.ent-work-pagination-page { flex: 1; min-width: 0; text-align: center; overflow-wrap: anywhere; }
+.ent-work-pagination .ent-work-icon:disabled { opacity: .35; cursor: default; background: transparent; color: var(--ent-ink-3); }
 .ent-work-row { display: flex; align-items: flex-start; gap: 8px; width: 100%; min-width: 0; padding: 14px 16px; border: 0; border-bottom: 1px solid var(--ent-line); color: var(--ent-ink); background: transparent; text-align: left; font: inherit; cursor: pointer; }
 .ent-work-row:hover { background: var(--work-hover); }
 .ent-work-row.selected { background: var(--work-selected); }

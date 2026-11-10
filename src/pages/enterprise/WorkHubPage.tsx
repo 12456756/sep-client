@@ -14,6 +14,7 @@ import { PlanningScope } from '../../features/enterprise/auto-planning-scope'
 import { groupWorkExecutions, resolveExecutionSelection } from '../../features/enterprise/work-execution-groups'
 import { WorkExecutionList } from './WorkExecutionList'
 import { WorkScheduleDialog } from '../../components/enterprise/scheduled/WorkScheduleDialog'
+import { useWorkListPagination } from '../../features/enterprise/use-work-list-pagination'
 
 type CreationRoute = Extract<AppRoute, { name: 'arrange' }>
 
@@ -55,6 +56,8 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
     ?? (route.workId !== selectedWorkId && selectedGroup?.executions.some(work => work.id === route.workId) ? route.workId : undefined) : undefined
   const selectedExecution = selectedGroup ? resolveExecutionSelection(selectedGroup, requestedExecution).detail : null
   const records = applyWorkOrder(filterWorkRecords(groupedWorks, state.filters), nextOrder)
+  const pagination = useWorkListPagination(records, state.filters, selectedWorkId, listOpen)
+  useLayoutEffect(() => { dismissWorkMenu() }, [pagination.page, pagination.pageSize, dismissWorkMenu])
   const excluded = Boolean(selectedWork && !records.some(work => work.id === selectedWork.id))
   const updateFilters = (filters: WorkRecordFilterState) => {
     setState(current => ({ ...current, filters }))
@@ -62,7 +65,7 @@ export function WorkHubPage({ workspace }: { workspace: EnterpriseWorkspace }) {
     if (route.name === 'records') workspace.replaceRoute({ name: 'records', ...filters })
   }
   return <PlanningScope controller={workspace.planningController}><div className={`ent-work-hub${listOpen ? ' list-open' : ''}`}>
-    {listOpen && <WorkListPane works={groupedWorks} records={records} selectedWorkId={selectedWorkId} filters={state.filters} onFilters={updateFilters} onSelect={workId => workspace.navigate({ name: 'work', workId })} onCreate={() => workspace.navigate(creation)} onClose={() => { setListOpen(false); dismissWorkMenu() }} onRetryTypes={() => workspace.retryWorkTypes()} menuWorkId={workMenu?.workId ?? null} onWorkMenu={openWorkMenu} />}
+    {listOpen && <WorkListPane works={groupedWorks} records={pagination.records} pagination={pagination} selectedWorkId={selectedWorkId} filters={state.filters} onFilters={updateFilters} onSelect={workId => workspace.navigate({ name: 'work', workId })} onCreate={() => workspace.navigate(creation)} onClose={() => { setListOpen(false); dismissWorkMenu() }} onRetryTypes={() => workspace.retryWorkTypes()} menuWorkId={workMenu?.workId ?? null} onWorkMenu={openWorkMenu} />}
     <WorkListActions key={workspace.attachmentScopeKey} works={groupedWorks} request={workMenu} busy={workspace.busy} onDismiss={dismissWorkMenu} onRename={workspace.renameWork} onPin={workspace.setWorkPinned} onRetry={workspace.rerunWork} onDelete={workspace.deleteWork} onSchedule={work => setScheduleSource({ id: work.id, title: work.title })} />
     {scheduleSource ? <WorkScheduleDialog key={`${workspace.attachmentScopeKey}:${scheduleSource.id}`} source={scheduleSource} scopeKey={workspace.attachmentScopeKey} onClose={() => setScheduleSource(null)} onCreated={definition => { setScheduleSource(null); workspace.navigate({ name: 'scheduled', taskId: definition.id, view: 'configuration' }) }} /> : null}
     <main className="ent-work-main" aria-label={selectedWork ? `工作：${selectedWork.title}` : '新建工作'}>
