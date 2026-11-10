@@ -12,6 +12,7 @@ import { creationAccepted } from '../../../features/enterprise/scheduled-task-cl
 import { ScheduledExecutionFields } from './ScheduledExecutionFields'
 import { ScheduledCreationList } from './ScheduledCreationList'
 import { ScheduledTaskDetail } from './ScheduledTaskDetail'
+import { ComposerResizeHandle } from '../ComposerResizeHandle'
 
 interface Props { workspace: EnterpriseWorkspace; model: ScheduledTasksModel; selectedDefinition?: ScheduledDefinition; onCreate(): void }
 type Example = typeof SCHEDULE_EXAMPLES[number]
@@ -120,6 +121,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
           try { const chosen = await workspace.chooseFolder(path); setError(null); return chosen }
           catch { setError('无法选择目录，请重试。'); return null }
         }} />
+        <ComposerResizeHandle inputRef={input} />
       </fieldset>
       {error ? <p role="alert" className="ent-sch-modal-error">{error}</p> : null}
     </form>

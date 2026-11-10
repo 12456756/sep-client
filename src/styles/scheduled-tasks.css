@@ -44,10 +44,10 @@
 .ent-sch-home-compose { flex: none; width: 100%; max-width: 960px; align-self: center; margin: 0; }
 .ent-sch-home-compose-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 .ent-sch-home-compose fieldset { position: relative; padding: 0; margin: 0; min-width: 0; box-shadow: 0 2px 12px rgb(20 25 30 / 4%); background: var(--ent-panel); }
-.ent-sch-home-compose .ent-sch-composer textarea { min-height: 100px; height: 100px; max-height: min(180px, 24dvh); resize: vertical; font-size: 14px; }
+.ent-sch-home-compose .ent-sch-composer textarea { min-height: 100px; height: 100px; max-height: min(180px, 24dvh); resize: none; font-size: 14px; }
 .ent-shell .ent-sch-home-compose textarea:focus-visible { outline: none !important; box-shadow: none !important; }
 .ent-sch-home-compose textarea::placeholder { color: var(--ent-ink-3); }
-.ent-sch-home-compose .ent-sch-composer-tools-inline { flex-wrap: nowrap; padding: 8px 12px; }
+.ent-sch-home-compose .ent-sch-composer-tools-inline { flex-wrap: nowrap; padding: 8px 24px 12px 12px; }
 .ent-sch-composer-settings { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: thin; }
 .ent-sch-home-compose .ent-sch-composer-settings .ent-sch-execution-selects { flex: none; flex-wrap: nowrap; max-width: 200px; }
 .ent-sch-home-compose .ent-sch-composer-tools-inline .ent-sch-composer-environment { flex: none; border: 0; margin: 0; padding: 0; }

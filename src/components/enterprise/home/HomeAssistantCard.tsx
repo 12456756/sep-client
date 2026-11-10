@@ -13,6 +13,7 @@ import { isSubmitEnter } from '../../../shared/composer-shortcut'
 import { EmployeeFace } from '../EmployeeFace'
 import { useSpeechInput } from '../../../features/speech/use-speech-input'
 import { SpeechInputActions } from '../../speech/SpeechInputActions'
+import { ComposerResizeHandle } from '../ComposerResizeHandle'
 
 interface Props {
   employees: SiliconEmployee[]
@@ -119,6 +120,7 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, demo, busy, edito
   return <section className="sep-home-assistant" aria-label="AI 助手">
     <div className="sep-home-assistant-heading"><img src={assistantImage} width={64} height={64} alt="" /><div><h2>AI 助手</h2><p>我可以帮您完成任务、分析数据、创建内容或调用企业员工</p></div><button type="button" aria-label="打开任务中心" onClick={onCreate}><ChevronRight size={19} aria-hidden /></button></div>
     <div className="sep-home-composer" data-composer-id={draft.composerId} data-editor-version={editor.version.current}>
+      <ComposerResizeHandle inputRef={input} />
       <textarea {...speech.inputProps} aria-label="工作需求" placeholder="请输入您的需求，例如：帮我分析本月销售数据，生成可视化报表" value={editor.text} onChange={event => editor.update(event.target.value)} disabled={busy || submitting} rows={2}
         onKeyDown={event => { speech.inputProps.onKeyDown(event); if (isSubmitEnter(event, speech.isComposing())) { event.preventDefault(); void submit() } }} />
       {employeeId !== GENERAL_ASSISTANT_ID ? <div className="sep-home-draft-chips">
