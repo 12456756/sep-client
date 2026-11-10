@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { it } from 'node:test';
+import { afterEach, beforeEach, it } from 'node:test';
+import * as React from 'react';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { EmployeeCard } from '../../components/enterprise/EmployeeCard';
@@ -7,6 +8,10 @@ import { EmployeesPage } from './EmployeesPage';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SiliconEmployee } from '../../features/enterprise/types';
 import type { SkillLibraryItem } from '../../shared/skill-library';
+
+let previousReact: unknown;
+beforeEach(() => { previousReact = Reflect.get(globalThis, 'React'); Reflect.set(globalThis, 'React', React); });
+afterEach(() => { if (previousReact === undefined) Reflect.deleteProperty(globalThis, 'React'); else Reflect.set(globalThis, 'React', previousReact); });
 
 const employee: SiliconEmployee = {
   id: 'test-subscription', name: '测试员工', avatar: null, avatarAsset: null, mark: '测', roleName: 'LEGACY_ROLE', department: 'LEGACY_DEPARTMENT',

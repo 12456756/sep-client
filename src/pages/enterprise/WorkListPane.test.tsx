@@ -16,7 +16,7 @@ beforeEach(() => { previousReact = Reflect.get(globalThis, 'React'); Reflect.set
 afterEach(() => { if (previousReact === undefined) Reflect.deleteProperty(globalThis, 'React'); else Reflect.set(globalThis, 'React', previousReact) })
 
 function props(): Parameters<typeof WorkListPane>[0] {
-  return { works: [work], records: [work], pagination: { listRef: React.createRef(), page: 1, pageSize: 5, pageCount: 1, total: 1, onPageChange: () => {} }, selectedWorkId: 'a', filters: resetWorkRecordFilters(), onFilters: () => {}, onSelect: () => {}, onCreate: () => {}, onClose: () => {}, onRetryTypes: () => {}, menuWorkId: null, onWorkMenu: () => {} }
+  return { works: [work], records: [work], pagination: { listRef: React.createRef(), page: 1, pageSize: 5, pageSizeChoice: 'auto', onPageSizeChange: () => {}, pageCount: 1, total: 1, onPageChange: () => {} }, selectedWorkId: 'a', filters: resetWorkRecordFilters(), onFilters: () => {}, onSelect: () => {}, onCreate: () => {}, onClose: () => {}, onRetryTypes: () => {}, menuWorkId: null, onWorkMenu: () => {} }
 }
 
 test('work rows use one named button with semantic status and unknown-type icons', () => {

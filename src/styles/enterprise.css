@@ -9,6 +9,7 @@
  */
 
 @import '../components/workspace/media-artifacts.css';
+@import './list-pagination.css';
 
 :root {
   /*

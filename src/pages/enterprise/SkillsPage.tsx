@@ -10,6 +10,8 @@ import type { AppRoute } from '../../features/enterprise/types';
 import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpriseWorkspace';
 import type { SkillLibraryItem } from '../../shared/skill-library';
 import '../../styles/skills.css';
+import { useDirectoryPagination } from '../../features/enterprise/use-directory-pagination';
+import { ListPagination } from '../../components/enterprise/ListPagination';
 
 type SkillsRoute = Extract<AppRoute, { name: 'skills' }>;
 interface Props {
@@ -56,6 +58,13 @@ function SkillList({ workspace, employeeFilterId, missingSkillId }: { workspace:
   const hasError = Boolean(workspace.skillsError);
   const filtered = Boolean(state.query.trim() || state.employeeFilterId || state.versionFilter !== 'all');
   const canRetry = !pending && !workspace.skillsLoading && (workspace.skillsRetrySeconds == null || workspace.skillsRetrySeconds <= 0);
+  const pagination = useDirectoryPagination({
+    records: matches, getId: item => item.capability.id,
+    filterKey: JSON.stringify([state.query, state.employeeFilterId, state.versionFilter, state.sort]),
+    storageKey: 'sep.skills.page-size', rowSelector: '.skill-row',
+    selectedId: state.focusId?.replace(/^skill-detail-/, '') ?? state.anchorId,
+    disabled: Boolean(pending),
+  });
 
   useEffect(() => {
     if (workspace.skillsLoading || workspace.skillsError || !state.employeeFilterId || options.some(option => option.id === state.employeeFilterId)) return;
@@ -87,7 +96,7 @@ function SkillList({ workspace, employeeFilterId, missingSkillId }: { workspace:
     }
   };
   const retrySkill = switchError ? workspace.skills.find(skill => skill.capability.id === switchError.skillId) : undefined;
-  return <div className="ent-page skill-library" aria-busy={workspace.skillsLoading} data-skill-list>
+  return <div className="ent-page skill-library ent-paginated-directory" aria-busy={workspace.skillsLoading} data-skill-list>
     <div className="skill-toolbar">
       <label className="skill-search"><Search size={16} aria-hidden /><input type="search" aria-label="搜索技能或员工" value={state.query} onChange={event => update({ query: event.target.value })} placeholder="搜索技能或员工…" /></label>
       <select className="ent-select" aria-label="按员工筛选" value={state.employeeFilterId} onChange={event => update({ employeeFilterId: event.target.value, query: '' })}><option value="">全部员工</option>{state.employeeFilterId && !options.some(option => option.id === state.employeeFilterId) ? <option value={state.employeeFilterId}>正在确认员工…</option> : null}{options.map(option => <option key={option.id} value={option.id}>{option.label} · {option.count}</option>)}</select>
@@ -105,7 +114,10 @@ function SkillList({ workspace, employeeFilterId, missingSkillId }: { workspace:
     {workspace.skillsLoading && hasCachedSkills ? <p className="skill-refreshing" role="status"><RefreshCw size={14} aria-hidden />正在更新技能，当前列表仍可使用。</p> : null}
     {missingSkillId && !workspace.skillsLoading && !hasError ? <div className="ent-banner info">该技能不在当前授权列表中。<button type="button" className="ent-btn sm" onClick={() => workspace.navigate({ name: 'skills' })}>返回技能列表</button></div> : null}
     {!workspace.skillsLoading && !hasError && !matches.length ? <Empty title={filtered ? '没有匹配的技能' : '当前账号还没有已授权的员工技能'}>{filtered ? '请尝试调整搜索词或清除筛选条件。' : '企业给你的硅基员工配置技能后，会显示在这里。'}</Empty> : null}
-    {matches.length ? <section className="skill-list-surface" aria-label="员工技能列表"><div className="skill-list-columns" aria-hidden><span>技能 / 简介</span><span>关联员工</span><span>使用版本 · 全部关联员工</span><span>操作</span></div><ul className="skill-rows">{matches.map(item => <SkillRow key={item.capability.id} skill={item} options={options} pendingVersionId={pending?.skillId === item.capability.id ? pending.versionId : undefined} disabled={Boolean(pending)} onVersion={id => void switchVersion(item, id)} onOpen={() => open(item.capability.id)} onEmployee={id => update({ employeeFilterId: id, query: '' })} />)}</ul></section> : null}
+    <div className="ent-directory-scroll" ref={pagination.listRef} data-skill-scroll>
+    {matches.length ? <section className="skill-list-surface" aria-label="员工技能列表"><div className="skill-list-columns" aria-hidden><span>技能 / 简介</span><span>关联员工</span><span>使用版本 · 全部关联员工</span><span>操作</span></div><ul className="skill-rows">{pagination.records.map(item => <SkillRow key={item.capability.id} skill={item} options={options} pendingVersionId={pending?.skillId === item.capability.id ? pending.versionId : undefined} disabled={Boolean(pending)} onVersion={id => void switchVersion(item, id)} onOpen={() => open(item.capability.id)} onEmployee={id => update({ employeeFilterId: id, query: '' })} />)}</ul></section> : null}
+    </div>
+    <ListPagination pagination={pagination} label="员工技能分页" disabled={Boolean(pending)} />
   </div>;
 }
 
