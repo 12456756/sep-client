@@ -488,7 +488,7 @@
 /* 抬头上的控件不能跟着拖窗口，否则点不动。 */
 .ent-top-actions, .ent-top button { -webkit-app-region: no-drag; }
 /* 圆形图标钮。页面抬头右侧的操作用它。 */
-.ent-top-icon { position: relative; display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: #69708a; background: var(--ent-panel); cursor: pointer; transition: background var(--ent-ease), border-color var(--ent-ease), color var(--ent-ease); }
+.ent-top-icon { position: relative; display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: var(--ent-panel-subtle); cursor: pointer; transition: background var(--ent-ease), border-color var(--ent-ease), color var(--ent-ease); }
 .ent-top-icon:hover { border-color: var(--ent-brand-border); color: var(--ent-brand); background: var(--ent-brand-tint); }
 .ent-top-icon .ent-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border: 2px solid var(--ent-panel); border-radius: 50%; background: var(--ent-attention); }
 .ent-view-switch { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); background: var(--ent-panel-subtle); }

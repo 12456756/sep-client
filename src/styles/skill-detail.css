@@ -1,5 +1,8 @@
 .skill-detail-navigation,.skill-detail-notice,.skill-content-toolbar,.skill-editor-footer,.skill-inline-actions { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
 .skill-detail-navigation,.skill-detail-notice,.skill-content-toolbar,.skill-editor-footer { justify-content:space-between; }
+.skill-detail-navigation .skill-detail-back { min-height:36px; padding:0 10px; gap:8px; border-radius:6px; font-size:14px; font-weight:500; line-height:20px; }
+.skill-detail-navigation .skill-detail-back:hover:not(:disabled) { background:var(--ent-brand-softer); }
+.skill-detail-navigation .skill-detail-back:focus-visible { outline:2px solid var(--ent-brand-ink); outline-offset:2px; }
 .skill-detail-heading h1 { margin:0; font-size:23px; font-weight:650; overflow-wrap:anywhere; }
 .skill-detail-tabs { display:flex; gap:24px; border-bottom:1px solid var(--ent-line); }
 .skill-detail-tabs > button { padding:4px 0 12px; border:0; border-bottom:2px solid transparent; color:var(--ent-ink-3); font:inherit; background:none; cursor:pointer; }

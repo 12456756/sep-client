@@ -92,6 +92,27 @@ function renderDetail(item: WorkItem, overrides: Partial<EnterpriseWorkspace> = 
   }
 }
 
+it('returns directly to a new conversation regardless of work type or navigation history', () => {
+  for (const canGoBack of [true, false]) {
+    for (const kind of ['conversation', 'flow'] as const) {
+      const replacements: unknown[] = [];
+      const mounted = mountDetail({ ...work, kind, workType: { state: 'resolved', kind: kind === 'flow' ? 'arrangement' : 'conversation' } }, {
+        canGoBack,
+        replaceRoute: route => { replacements.push(route); },
+        goBack: () => assert.fail('must not revisit navigation history'),
+        navigate: () => assert.fail('must not append navigation history'),
+        stopWork: async () => assert.fail('must not stop the work'),
+        deleteWork: async () => assert.fail('must not delete the work'),
+      });
+      try {
+        const button = mounted.find(element => element.type === 'button' && element.props.className === 'ent-wk-back');
+        (button.props.onClick as () => void)();
+        assert.deepEqual(replacements, [{ name: 'arrange', mode: 'chat' }]);
+      } finally { mounted.unmount(); }
+    }
+  }
+});
+
 it('renders actual image and video elements with direct media interaction', () => {
   const image = renderToStaticMarkup(React.createElement(ResultFileMedia, { preview: { url: 'sep-result://preview/image', mime: 'image/png', kind: 'image' }, name: 'mug.png', onZoom() {}, onError() {} }));
   assert.match(image, /<img[^>]+src="sep-result:\/\/preview\/image"/);

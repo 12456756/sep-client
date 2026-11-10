@@ -1,9 +1,10 @@
-import { CircleAlert, CircleCheck, CircleHelp, Layers, ListFilter, LoaderCircle, MessageSquare, MoreHorizontal, Pin, Plus, RotateCcw, Search, Square, Workflow, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, CircleAlert, CircleCheck, CircleHelp, Layers, ListFilter, LoaderCircle, MessageSquare, MoreHorizontal, Pin, Plus, RotateCcw, Search, Square, Workflow, X } from 'lucide-react'
 import { IconHint } from '../../components/enterprise/IconHint'
 import { WorkStatusIcon, WorkTypeTag, workStatusLabel, workTypeLabel } from '../../components/enterprise/WorkIndicators'
 import type { WorkItem } from '../../features/enterprise/types'
 import { countWorkRecordStatuses, countWorkRecordTypes, countUnresolvedWorkRecordTypes, type WorkRecordBucket, type WorkRecordFilterState, type WorkRecordTypeFilter } from '../../features/enterprise/work-record-filters'
 import { relativeTime } from '../../features/enterprise/vocabulary'
+import type { WorkListPagination } from '../../features/enterprise/use-work-list-pagination'
 
 const BUCKETS: { id: WorkRecordBucket; label: string; icon: typeof Layers }[] = [
   { id: 'all', label: '全部工作', icon: Layers },
@@ -21,6 +22,7 @@ const TYPES: { id: WorkRecordTypeFilter; label: string; icon: typeof Layers }[] 
 interface Props {
   works: WorkItem[]
   records: WorkItem[]
+  pagination: WorkListPagination
   selectedWorkId: string | null
   filters: WorkRecordFilterState
   onFilters: (filters: WorkRecordFilterState) => void
@@ -32,7 +34,7 @@ interface Props {
   onWorkMenu: (workId: string, trigger: HTMLElement, point?: { x: number; y: number }) => void
 }
 
-export function WorkListPane({ works, records, selectedWorkId, filters, onFilters, onSelect, onCreate, onClose, onRetryTypes, menuWorkId, onWorkMenu }: Props) {
+export function WorkListPane({ works, records, pagination, selectedWorkId, filters, onFilters, onSelect, onCreate, onClose, onRetryTypes, menuWorkId, onWorkMenu }: Props) {
   const statuses = countWorkRecordStatuses(works, filters)
   const types = countWorkRecordTypes(works, filters)
   const unresolved = countUnresolvedWorkRecordTypes(works, filters)
@@ -50,7 +52,7 @@ export function WorkListPane({ works, records, selectedWorkId, filters, onFilter
       {unresolved.loading > 0 && <IconHint label={`${unresolved.loading} 项工作类型加载中，仅显示在全部类型中`}><span role="status" tabIndex={0} aria-label={`${unresolved.loading} 项工作类型加载中`}><LoaderCircle size={14} className="ent-spin" aria-hidden /></span></IconHint>}
       {unresolved.unavailable > 0 && <IconHint label={`${unresolved.unavailable} 项工作类型暂不可用，点击重试`}><button type="button" onClick={onRetryTypes} aria-label="重新读取工作类型"><CircleHelp size={14} aria-hidden /></button></IconHint>}
     </div>
-    <div className="ent-work-list-scroll">
+    <div className="ent-work-list-scroll" ref={pagination.listRef}>
       {!records.length && <div className="ent-work-list-empty"><p>{works.length ? '没有符合筛选条件的工作' : '还没有工作'}</p>{works.length ? <button type="button" className="ent-btn sm ghost" onClick={() => onFilters({ bucket: 'all', workType: 'all', search: '' })}><RotateCcw size={14} aria-hidden />清除筛选</button> : <button type="button" className="ent-btn sm ghost" onClick={onCreate}><Plus size={14} aria-hidden />开始第一项工作</button>}</div>}
       {records.map(work => <div key={work.recordKey ?? work.id} className="ent-work-row-wrap">
         <button type="button" className={`ent-work-row${work.id === selectedWorkId ? ' selected' : ''}`} aria-current={work.id === selectedWorkId ? 'true' : undefined} aria-label={`${work.title}，${workStatusLabel(work)}，${workTypeLabel(work.workType)}`} aria-keyshortcuts="Shift+F10" onClick={() => onSelect(work.id)}
@@ -62,5 +64,15 @@ export function WorkListPane({ works, records, selectedWorkId, filters, onFilter
         <IconHint label="更多操作"><button type="button" className="ent-work-row-menu" aria-label={`更多操作：${work.title || '未命名工作'}`} aria-haspopup="menu" aria-expanded={menuWorkId === work.id} aria-controls={menuWorkId === work.id ? 'ent-work-context-menu' : undefined} onClick={event => onWorkMenu(work.id, event.currentTarget)}><MoreHorizontal size={16} aria-hidden /></button></IconHint>
       </div>)}
     </div>
+    <nav className="ent-work-pagination" aria-label="工作列表分页">
+      <span className="ent-work-pagination-count">共 {pagination.total} 项 · 每页 {pagination.pageSize} 项</span>
+      <div className="ent-work-pagination-controls">
+        <IconHint label="第一页" side="top"><button type="button" className="ent-work-icon" aria-label="第一页" disabled={pagination.page === 1} onClick={() => pagination.onPageChange(1)}><ChevronsLeft size={16} aria-hidden /></button></IconHint>
+        <IconHint label="上一页" side="top"><button type="button" className="ent-work-icon" aria-label="上一页" disabled={pagination.page === 1} onClick={() => pagination.onPageChange(pagination.page - 1)}><ChevronLeft size={16} aria-hidden /></button></IconHint>
+        <span className="ent-work-pagination-page" role="status" aria-live="polite" aria-atomic="true">{pagination.page} / {pagination.pageCount}</span>
+        <IconHint label="下一页" side="top"><button type="button" className="ent-work-icon" aria-label="下一页" disabled={pagination.page === pagination.pageCount} onClick={() => pagination.onPageChange(pagination.page + 1)}><ChevronRight size={16} aria-hidden /></button></IconHint>
+        <IconHint label="最后一页" side="top"><button type="button" className="ent-work-icon" aria-label="最后一页" disabled={pagination.page === pagination.pageCount} onClick={() => pagination.onPageChange(pagination.pageCount)}><ChevronsRight size={16} aria-hidden /></button></IconHint>
+      </div>
+    </nav>
   </aside>
 }

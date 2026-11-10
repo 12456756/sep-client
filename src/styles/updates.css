@@ -1,4 +1,4 @@
-.ent-update-entry { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: var(--ent-panel); font-size: var(--ent-fs-note); white-space: nowrap; cursor: pointer; }
+.ent-update-entry { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: var(--ent-radius-pill); color: var(--ent-ink-2); background: var(--ent-panel-subtle); font-size: var(--ent-fs-note); white-space: nowrap; cursor: pointer; }
 .ent-update-entry.has-update { color: var(--ent-brand-ink); border-color: var(--ent-brand-border); background: var(--ent-brand-soft); }
 .ent-update-entry:hover { border-color: var(--ent-brand); }
 .ent-update-entry:focus-visible, .ent-update-panel button:focus-visible, .ent-update-confirm button:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 3px; }
