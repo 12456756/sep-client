@@ -8,6 +8,7 @@ import { dialog } from 'electron'
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { appError } from '../../errors/app-error'
+import { WINDOW_CHROME_HEIGHT, WINDOW_THEME_COLORS } from '../../common/window-layout'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from '../channels'
 import { NO_INPUT, listener, route } from '../router'
 
@@ -25,11 +26,6 @@ const approvalResponse = z.object({
 const windowTheme = z.enum(['light', 'dark'])
 const directorySelection = z.string().trim().max(32768).refine(path => !path || isAbsolute(path)).optional()
 const trusted = { trustedMainFrame: true } as const
-
-const WINDOW_THEME_COLORS = {
-  light: { color: '#f7f8fc', symbolColor: '#5c6375', background: '#f7f8fc' },
-  dark: { color: '#1a1d26', symbolColor: '#c2c7d3', background: '#11131a' },
-} as const
 
 export const systemRoutes = [
   route(INVOKE_CHANNELS.WORKSPACE_GET_DEFAULT_DIRECTORY, NO_INPUT, async ctx => ({ success: true, path: await ctx.tasks.getDefaultWorkspaceDirectory() }), { ...trusted, errorShape: 'ipc' }),
@@ -56,7 +52,7 @@ export const systemRoutes = [
     if (!window) throw appError('INTERNAL_ERROR', { details: { reason: 'main window unavailable' } })
     const colors = WINDOW_THEME_COLORS[input]
     if (process.platform === 'win32') {
-      window.setTitleBarOverlay({ color: colors.color, symbolColor: colors.symbolColor, height: 44 })
+      window.setTitleBarOverlay({ color: colors.color, symbolColor: colors.symbolColor, height: WINDOW_CHROME_HEIGHT })
     }
     window.setBackgroundColor(colors.background)
     return { success: true }

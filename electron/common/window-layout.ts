@@ -7,6 +7,11 @@
 export const WINDOW_CHROME_HEIGHT = 44
 export const WINDOWS_CONTROLS_INSET = 144
 
+export const WINDOW_THEME_COLORS = {
+  light: { color: '#f8f1ef', symbolColor: '#514d55', background: '#f7f8fc' },
+  dark: { color: '#261f27', symbolColor: '#c2c7d3', background: '#11131a' },
+} as const
+
 export interface WindowChromeConfig {
   titleBarStyle: 'hidden' | 'hiddenInset'
   trafficLightPosition?: { x: number; y: number }
@@ -32,8 +37,8 @@ export function getWindowChromeConfig(platform: NodeJS.Platform): WindowChromeCo
   return {
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#f7f8fc',
-      symbolColor: '#5c6375',
+      color: WINDOW_THEME_COLORS.light.color,
+      symbolColor: WINDOW_THEME_COLORS.light.symbolColor,
       height: WINDOW_CHROME_HEIGHT,
     },
     contentTop: WINDOW_CHROME_HEIGHT,
