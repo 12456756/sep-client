@@ -6,6 +6,7 @@ import { runInNewContext } from 'node:vm'
 import * as ts from 'typescript'
 import { z } from 'zod'
 import { appError } from '../errors/app-error'
+import * as windowLayout from '../common/window-layout'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from './channels'
 import type { SelectDirectoryResult } from '../../src/shared/ipc'
 
@@ -17,7 +18,7 @@ interface TestRoute {
 }
 
 // Run the actual route with the native dialog replaced; Node cannot load Electron UI APIs.
-function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'selected')] }) {
+function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'selected')] }, platform = 'win32') {
   const calls: Array<{ defaultPath?: string; properties: string[] }> = []
   const exports: { systemRoutes?: TestRoute[] } = {}
   const source = readFileSync(new URL('./routes/system.ts', import.meta.url), 'utf8')
@@ -27,6 +28,7 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
     'node:path': { isAbsolute },
     zod: { z },
     '../../errors/app-error': { appError },
+    '../../common/window-layout': windowLayout,
     '../channels': { INVOKE_CHANNELS, SEND_CHANNELS },
     '../router': {
       NO_INPUT: z.undefined(),
@@ -34,7 +36,7 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
       listener: () => ({}),
     },
   }
-  runInNewContext(compiled, { exports, require: (name: string) => {
+  runInNewContext(compiled, { exports, process: { platform }, require: (name: string) => {
     assert.ok(name in imports, 'unexpected route dependency: ' + name)
     return imports[name]
   } })
@@ -53,6 +55,41 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
   }
   return { route, calls, paths, saved, defaultPath, ctx, routes: exports.systemRoutes ?? [] }
 }
+
+describe('native window theme IPC', () => {
+  it('keeps native backgrounds transparent across theme changes', async () => {
+    const { routes } = harness()
+    const route = routes.find(entry => entry.channel === INVOKE_CHANNELS.WINDOW_SET_THEME)!
+    const overlays: Array<{ color: string; symbolColor: string; height: number }> = []
+    const backgrounds: string[] = []
+    const ctx = { window: () => ({
+      setTitleBarOverlay: (value: typeof overlays[number]) => overlays.push(value),
+      setBackgroundColor: (value: string) => backgrounds.push(value),
+    }) }
+    for (const theme of ['light', 'dark', 'light'] as const) {
+      const colors = windowLayout.WINDOW_THEME_COLORS[theme]
+      assert.equal((await route.handle(ctx, route.schema.parse(theme))).success, true)
+      assert.equal(overlays.at(-1)?.color, '#00000000')
+      assert.equal(overlays.at(-1)?.symbolColor, colors.symbolColor)
+      assert.equal(overlays.at(-1)?.height, 44)
+      assert.equal(backgrounds.at(-1), colors.background)
+    }
+    for (const invalid of [null, 'system', {}, { theme: 'light', surface: 'invalid' }, { theme: 'light', surface: 'panel', color: '#000000' }]) {
+      assert.equal(route.schema.safeParse(invalid).success, false)
+    }
+    await assert.rejects(() => route.handle({ window: () => null }, 'light'), { code: 'INTERNAL_ERROR' })
+  })
+
+  it('does not call the Windows overlay API on other platforms', async () => {
+    for (const platform of ['darwin', 'linux']) {
+      const { routes } = harness(undefined, platform)
+      const route = routes.find(entry => entry.channel === INVOKE_CHANNELS.WINDOW_SET_THEME)!
+      let background = ''
+      await route.handle({ window: () => ({ setBackgroundColor: (value: string) => { background = value } }) }, route.schema.parse('dark'))
+      assert.equal(background, windowLayout.WINDOW_THEME_COLORS.dark.background)
+    }
+  })
+})
 
 describe('directory selection IPC', () => {
   it('opens the dialog at the prepared default workspace for no input', async () => {

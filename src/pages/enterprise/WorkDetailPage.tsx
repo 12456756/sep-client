@@ -118,14 +118,13 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
 
   return (
     <div className="ent-page ent-wk">
-      {/* 返回是真的返回：从首页员工抽屉进来的回首页，从工作记录进来的回工作记录。
-          没有上一页时（比如刚安排完直接落在这一页）退到工作记录。 */}
+      {/* 固定返回新对话，替换当前路由以免把详情再次加入历史。 */}
       <button
         type="button"
         className="ent-wk-back"
-        onClick={() => (workspace.canGoBack ? workspace.goBack() : workspace.navigate({ name: 'records' }))}
+        onClick={() => workspace.replaceRoute({ name: 'arrange', mode: 'chat' })}
       >
-        <ArrowLeft size={14} aria-hidden />
+        <ArrowLeft size={18} aria-hidden />
         返回
       </button>
 

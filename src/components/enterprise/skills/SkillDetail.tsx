@@ -141,7 +141,7 @@ export function SkillDetail({ workspace, skill, sourceEmployeeId, returnTo }: Pr
   };
 
   return <div className="ent-page skill-detail">
-    <div className="skill-detail-navigation"><button type="button" className="skill-text-button" disabled={busy} onClick={back}><ArrowLeft size={15} aria-hidden />{returnLabel}</button>{returnTo?.name === 'employee' ? <button type="button" className="skill-text-button" disabled={busy} onClick={() => workspace.navigate({ name: 'skills' })}>全部技能</button> : null}</div>
+    <div className="skill-detail-navigation"><button type="button" className="skill-text-button skill-detail-back" disabled={busy} onClick={back}><ArrowLeft size={18} aria-hidden />{returnLabel}</button>{returnTo?.name === 'employee' ? <button type="button" className="skill-text-button" disabled={busy} onClick={() => workspace.navigate({ name: 'skills' })}>全部技能</button> : null}</div>
     <header className="skill-detail-heading"><h1>{skill.capability.name || '未命名技能'}</h1></header>
     {notice ? <div className="ent-banner info skill-detail-notice" role="status"><span>{notice}</span>{savedId ? <button type="button" className="ent-btn sm" disabled={busy} onClick={returnToList}>返回列表切换</button> : null}</div> : null}
     {workspace.skillsWarning ? <p className="skill-caption" role="status">{workspace.skillsWarning}</p> : null}

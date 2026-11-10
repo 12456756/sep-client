@@ -63,6 +63,8 @@
 .ent-employee-drawer::backdrop { background: rgb(18 20 28 / 38%); }
 .ent-employee-drawer[open] { animation: ent-employee-drawer-in 180ms ease-out; }
 .ent-employee-drawer-panel { display: flex; flex-direction: column; height: 100%; }
+/* Native Windows controls remain above modal dialogs. Reserve their top band. */
+[data-platform='win32'] .ent-employee-drawer-panel { box-sizing: border-box; padding-top: var(--window-chrome-height, 44px); }
 .ent-employee-drawer-heading { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; min-height: 64px; padding: 12px 24px; border-bottom: 1px solid var(--ent-line-soft); }
 .ent-employee-drawer-heading h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .ent-employee-drawer-heading button:focus-visible { outline: 2px solid var(--ent-brand-solid); outline-offset: 2px; }

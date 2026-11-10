@@ -33,8 +33,7 @@ button, input, textarea, select, label { -webkit-app-region: no-drag; }
   pointer-events: auto;
 }
 [data-platform='win32'] .electron-window-chrome { z-index: 0; }
-/* Windows paints the native overlay with this color; match it without forcing a
-   light strip over the dark brand panel on macOS. */
+/* Windows controls are transparent. This renderer surface sits beneath page overlays. */
 [data-platform='win32'] .electron-window-chrome { background: var(--work-rail, #f7f8fc); }
 
 

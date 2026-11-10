@@ -8,7 +8,7 @@ import { dialog } from 'electron'
 import { isAbsolute } from 'node:path'
 import { z } from 'zod'
 import { appError } from '../../errors/app-error'
-import { WINDOW_CHROME_HEIGHT, WINDOW_THEME_COLORS } from '../../common/window-layout'
+import { WINDOW_CHROME_HEIGHT, WINDOW_THEME_COLORS, WINDOWS_CONTROLS_BACKGROUND } from '../../common/window-layout'
 import { INVOKE_CHANNELS, SEND_CHANNELS } from '../channels'
 import { NO_INPUT, listener, route } from '../router'
 
@@ -52,7 +52,7 @@ export const systemRoutes = [
     if (!window) throw appError('INTERNAL_ERROR', { details: { reason: 'main window unavailable' } })
     const colors = WINDOW_THEME_COLORS[input]
     if (process.platform === 'win32') {
-      window.setTitleBarOverlay({ color: colors.color, symbolColor: colors.symbolColor, height: WINDOW_CHROME_HEIGHT })
+      window.setTitleBarOverlay({ color: WINDOWS_CONTROLS_BACKGROUND, symbolColor: colors.symbolColor, height: WINDOW_CHROME_HEIGHT })
     }
     window.setBackgroundColor(colors.background)
     return { success: true }

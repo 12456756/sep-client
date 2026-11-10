@@ -6,6 +6,8 @@
 
 export const WINDOW_CHROME_HEIGHT = 44
 export const WINDOWS_CONTROLS_INSET = 144
+// Let the renderer compose toolbar, drawer and modal backdrops beneath native controls.
+export const WINDOWS_CONTROLS_BACKGROUND = '#00000000'
 
 export const WINDOW_THEME_COLORS = {
   light: { color: '#f8f1ef', symbolColor: '#514d55', background: '#f7f8fc' },
@@ -37,7 +39,7 @@ export function getWindowChromeConfig(platform: NodeJS.Platform): WindowChromeCo
   return {
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: WINDOW_THEME_COLORS.light.color,
+      color: platform === 'win32' ? WINDOWS_CONTROLS_BACKGROUND : WINDOW_THEME_COLORS.light.color,
       symbolColor: WINDOW_THEME_COLORS.light.symbolColor,
       height: WINDOW_CHROME_HEIGHT,
     },
