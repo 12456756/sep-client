@@ -5,12 +5,62 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, write
 import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { test } from 'node:test'
+import yaml from 'js-yaml'
 import { getConfig, validateConfiguration } from 'app-builder-lib/out/util/config/config.js'
 import { DebugLogger } from 'builder-util'
 import { createBuilderConfig } from './generate-builder-config.mjs'
 import signAdhoc from './mac-adhoc-sign.cjs'
 
 const root = process.cwd()
+
+test('release workflow restores versioned speech caches before unconditional verification on every build platform', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  for (const job of ['validate', 'build-mac', 'build-win']) {
+    const steps = workflow.jobs[job].steps
+    const caches = steps.filter(step => step.uses === 'actions/cache@v4' && step.with.key.startsWith('speech-'))
+    assert.equal(caches.length, 1, `${job} must have one speech cache`)
+    const cache = caches[0]
+    assert.equal(cache.with.key, "speech-v1-${{ runner.os }}-${{ hashFiles('resources/speech/sensevoice-int8/manifest.json') }}")
+    assert.deepEqual(cache.with.path.trim().split(/\r?\n/), [
+      'resources/speech/sensevoice-int8/model.int8.onnx',
+      'resources/speech/sensevoice-int8/tokens.txt',
+    ])
+    assert.equal(cache.with['restore-keys'], undefined)
+    assert.equal(cache.if, undefined)
+    const prepare = steps.find(step => step.run === 'npm run speech:prepare')
+    assert.ok(prepare, `${job} must verify even on cache hits`)
+    assert.equal(prepare.if, undefined)
+    assert.ok(steps.indexOf(cache) < steps.indexOf(prepare))
+  }
+})
+
+test('release workflow caches only pinned target OfficeCLI binaries and always prepares both macOS architectures', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  for (const [job, paths, commands] of [
+    ['build-mac', ['resources/office/officecli-mac-arm64', 'resources/office/officecli-mac-x64'],
+      ['npm run office:prepare -- darwin arm64', 'npm run office:prepare -- darwin x64']],
+    ['build-win', ['resources/office/officecli-win-x64.exe'], ['npm run office:prepare']],
+  ]) {
+    const steps = workflow.jobs[job].steps
+    const caches = steps.filter(step => step.uses === 'actions/cache@v4' && step.with.key.startsWith('officecli-'))
+    assert.equal(caches.length, 1, `${job} must have one OfficeCLI cache`)
+    const cache = caches[0]
+    assert.equal(cache.with.key, "officecli-v1-${{ runner.os }}-${{ hashFiles('resources/office/manifest.json') }}")
+    assert.deepEqual(cache.with.path.trim().split(/\r?\n/), paths)
+    assert.equal(cache.with['restore-keys'], undefined)
+    assert.equal(cache.if, undefined)
+    const packageIndex = steps.findIndex(step => step.run?.startsWith('npm run package:ci:stable:'))
+    assert.ok(packageIndex >= 0)
+    for (const command of commands) {
+      const prepare = steps.find(step => step.run === command)
+      assert.ok(prepare, `${job} must prepare ${command}`)
+      assert.equal(prepare.if, undefined)
+      assert.ok(steps.indexOf(cache) < steps.indexOf(prepare))
+      assert.ok(steps.indexOf(prepare) < packageIndex)
+    }
+  }
+})
+
 test('macOS packaging declares microphone purpose and signed audio input access', () => {
   const pkg = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
   assert.ok(pkg.build.mac.extendInfo?.NSMicrophoneUsageDescription)

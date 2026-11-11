@@ -33,6 +33,13 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      - name: Cache pinned speech assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            resources/speech/sensevoice-int8/model.int8.onnx
+            resources/speech/sensevoice-int8/tokens.txt
+          key: speech-v1-${{ runner.os }}-${{ hashFiles('resources/speech/sensevoice-int8/manifest.json') }}
       - name: Prepare pinned speech assets
         run: npm run speech:prepare
       - name: Check release tag
@@ -79,8 +86,22 @@ jobs:
       - run: npm ci
       - name: Install pinned macOS speech runtimes for both architectures
         run: npm install --no-save --package-lock=false --ignore-scripts --force sherpa-onnx-darwin-arm64@1.13.8 sherpa-onnx-darwin-x64@1.13.8
+      - name: Cache pinned speech assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            resources/speech/sensevoice-int8/model.int8.onnx
+            resources/speech/sensevoice-int8/tokens.txt
+          key: speech-v1-${{ runner.os }}-${{ hashFiles('resources/speech/sensevoice-int8/manifest.json') }}
       - name: Prepare pinned speech assets
         run: npm run speech:prepare
+      - name: Cache pinned OfficeCLI assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            resources/office/officecli-mac-arm64
+            resources/office/officecli-mac-x64
+          key: officecli-v1-${{ runner.os }}-${{ hashFiles('resources/office/manifest.json') }}
       - name: Prepare pinned OfficeCLI arm64 asset
         run: npm run office:prepare -- darwin arm64
       - name: Prepare pinned OfficeCLI x64 asset
@@ -104,8 +125,20 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      - name: Cache pinned speech assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            resources/speech/sensevoice-int8/model.int8.onnx
+            resources/speech/sensevoice-int8/tokens.txt
+          key: speech-v1-${{ runner.os }}-${{ hashFiles('resources/speech/sensevoice-int8/manifest.json') }}
       - name: Prepare pinned speech assets
         run: npm run speech:prepare
+      - name: Cache pinned OfficeCLI assets
+        uses: actions/cache@v4
+        with:
+          path: resources/office/officecli-win-x64.exe
+          key: officecli-v1-${{ runner.os }}-${{ hashFiles('resources/office/manifest.json') }}
       - name: Prepare pinned OfficeCLI assets
         run: npm run office:prepare
       - run: npm run package:ci:stable:win

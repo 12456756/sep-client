@@ -9,6 +9,10 @@
 
 流水线在 macOS runner 构建 macOS ARM64/x64 DMG 与 ZIP，在 Windows runner 构建 Windows x64 NSIS EXE；Ubuntu runner 汇总并强制校验 10 个安装包及 blockmap。发布阶段先上传版本目录，再远程校验 SHA256，最后更新 `latest.yml` 和 `latest-mac.yml`。
 
+语音模型在验证、Windows 和 macOS 构建任务中使用 GitHub Actions 缓存；OfficeCLI 在 Windows 和 macOS 构建任务中缓存对应平台的程序，macOS 同时包含 ARM64 和 x64。缓存键由操作系统和对应 `manifest.json` 的哈希组成，不随客户端版本变化，也不回退匹配旧版本缓存。各平台始终按同一提交中的清单固定组件版本，缓存不包含清单、源码配置或签名凭据。
+
+恢复缓存后仍执行 `speech:prepare` 和 `office:prepare`，核验大小与哈希；OfficeCLI 还会恢复所需执行权限。首次运行、缓存未命中或文件校验失败时才从固定版本的来源下载；打包前后仍保留原有完整性校验。缓存位于 GitHub，不会写入生产下载服务器，缓存被清理后可以重新下载。
+
 在 GitHub Environment `sep-download-production` 配置以下 Secrets：
 
 - `SEP_UPLOAD_SSH_KEY_BASE64`：访问华为云下载服务器的私钥文件内容经 Base64 编码后的单行文本
