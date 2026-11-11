@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
-import { buildArrangementPlannerPrompt, parseArrangementPlannerOutput, type ArrangementPlannerEmployee } from './arrangement-planner'
+import { buildArrangementPlannerPrompt, parseArrangementPlannerOutput, type ArrangementPlannerDraft, type ArrangementPlannerEmployee } from './arrangement-planner'
 import { arrangementNodeWorkContractSchema, type ArrangementDraft } from './arrangement-plan'
 import { planningErrorFields } from '../errors/planning-diagnostics'
 import { ARRANGEMENT_PLANNER_RULES } from './arrangement-planner-prompts'
@@ -35,6 +35,26 @@ function outputExample(prompt: string): Record<string, unknown> {
   }
   return example
 }
+
+describe('authorized candidate node binding', () => {
+  const existing = { id: 'existing-node', stepId: 'existing-step', subscriptionId: authorized.subscriptionId, modelId: 'model-a',
+    title: 'Existing work', instruction: 'Keep this work', expectedOutput: 'Materials', knowledgeQuery: 'Internal policies', dependsOn: [], skillIds: [], requiresUserConfirmation: false }
+  const bindingDraft: ArrangementPlannerDraft = { ...draft, nodes: [existing], preserveExistingNodes: true,
+    approvedEmployeeAssignments: [{ stepId: 'step-1', employeeId: authorized.employeeId, subscriptionId: authorized.subscriptionId }] }
+  const bound = { ...existing, id: 'bound-node', stepId: 'step-1', dependsOn: [existing.id] }
+
+  it('validates a new bound node against retained dependencies without requiring their regeneration', () => {
+    const parsed = parseArrangementPlannerOutput(JSON.stringify({ title: 'Bound plan', nodes: [bound] }), bindingDraft, [authorized])
+    assert.deepEqual(parsed.nodes.map(node => node.id), ['bound-node'])
+    assert.deepEqual(parsed.nodes[0]?.dependsOn, ['existing-node'])
+    assert.deepEqual(bindingDraft.nodes, [existing])
+    assert.match(buildArrangementPlannerPrompt(bindingDraft, [authorized]), /只.*绑定.*步骤/)
+  })
+
+  it('still rejects unknown dependencies in supplemental binding plans', () => {
+    assert.throws(() => parseArrangementPlannerOutput(JSON.stringify({ title: 'Bound plan', nodes: [{ ...bound, dependsOn: ['missing'] }] }), bindingDraft, [authorized]))
+  })
+})
 
 describe('arrangement recommendation output contract', () => {
   for (const source of ['enterprise', 'platform'] as const) {

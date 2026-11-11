@@ -190,10 +190,9 @@ export function readSkillZip(bytes: Buffer, artifact: SkillArtifactAvailable): S
   for (const [start, finish] of ranges) { if (start !== previous) invalid(); previous = finish }
   if (previous !== centralStart) invalid()
   const spellings = new Map<string, string>()
-  for (const [key, directory] of paths) {
+  for (const key of paths.keys()) {
     const parts = key.split('/')
     for (let index = 1; index < parts.length; index++) if (paths.get(parts.slice(0, index).join('/')) === false) invalid()
-    if (!directory && key.split('/').at(-1) === 'skill.md' && !files.some(file => file.path === artifact.entryPath && skillNameComparisonKey(file.path) === key)) invalid()
   }
   // Case/normalization aliases of implicit parent directories are also collisions.
   for (const path of [...files.filter(file => !file.directory).map(file => file.path), ...directorySpellings]) {

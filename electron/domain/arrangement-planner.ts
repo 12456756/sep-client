@@ -73,6 +73,7 @@ export type ArrangementPlannerDraft = ArrangementDraft & {
   plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments']
   plannerKnowledgeCatalog?: import('./arrangement-planner-prompts').ArrangementPlannerInput['knowledgeCatalog']
   approvedEmployeeAssignments?: Array<{ stepId: string; employeeId: string; subscriptionId: string }>
+  preserveExistingNodes?: boolean
 }
 
 export interface ArrangementCandidateDirectory {
@@ -114,7 +115,7 @@ export interface ArrangementPlannerPort {
 }
 
 export function buildArrangementPlannerPrompt(
-  draft: Pick<ArrangementDraft, 'goal' | 'confirmedInputs' | 'intentAnalysis' | 'unresolvedSteps' | 'nodes' | 'candidateMatches' | 'attachmentCandidates'> & { plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments']; approvedEmployeeAssignments?: ArrangementPlannerDraft['approvedEmployeeAssignments'] },
+  draft: Pick<ArrangementDraft, 'goal' | 'confirmedInputs' | 'intentAnalysis' | 'unresolvedSteps' | 'nodes' | 'candidateMatches' | 'attachmentCandidates'> & { plannerAttachmentMaterials?: import('./arrangement-planner-prompts').ArrangementPlannerInput['attachments']; approvedEmployeeAssignments?: ArrangementPlannerDraft['approvedEmployeeAssignments']; preserveExistingNodes?: boolean },
   employees: readonly ArrangementPlannerEmployee[],
   planningStage: ArrangementPlanningStage = 'authorized',
 ): string {
@@ -223,7 +224,7 @@ export function parseArrangementPlannerOutput(
     ...structuredClone(draft),
     title: record.title.trim(),
     status: nodes.length === 0 ? 'awaiting-employee' : 'ready',
-    nodes,
+    nodes: draft.preserveExistingNodes ? [...draft.nodes, ...nodes] : nodes,
     intentAnalysis,
     unresolvedSteps,
     revision: draft.revision,

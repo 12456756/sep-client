@@ -1,0 +1,178 @@
+name: SEP Client Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'client-v*'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified bundle to the client download server
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sep-client-stable-release
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Prepare pinned speech assets
+        run: npm run speech:prepare
+      - name: Check release tag
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          normalized="${GITHUB_REF_NAME#client-}"
+          test "$normalized" = "$expected"
+      - run: npm run typecheck
+      - run: npm run test:packaging
+      - run: npm run test:updates
+
+  preflight:
+    needs: validate
+    if: github.event_name == 'push' || inputs.publish == true
+    runs-on: ubuntu-latest
+    environment: sep-download-production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check download server SSH access
+        env:
+          SEP_UPLOAD_HOST: ${{ secrets.SEP_UPLOAD_HOST || '121.37.128.126' }}
+          SEP_UPLOAD_USER: ${{ secrets.SEP_UPLOAD_USER || 'root' }}
+          SEP_UPLOAD_ROOT: ${{ secrets.SEP_UPLOAD_ROOT || '/www/sep/downloads/sep-client/stable' }}
+          SEP_UPLOAD_SSH_KEY_BASE64: ${{ secrets.SEP_UPLOAD_SSH_KEY_BASE64 }}
+          SEP_UPLOAD_KNOWN_HOSTS: ${{ secrets.SEP_UPLOAD_KNOWN_HOSTS }}
+          SEP_UPLOAD_PORT: ${{ secrets.SEP_UPLOAD_PORT || '22' }}
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          node scripts/upload-download-update.mjs --preflight "$version"
+
+  build-mac:
+    needs: [validate, preflight]
+    if: always() && needs.validate.result == 'success' && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Install pinned macOS speech runtimes for both architectures
+        run: npm install --no-save --package-lock=false --ignore-scripts --force sherpa-onnx-darwin-arm64@1.13.8 sherpa-onnx-darwin-x64@1.13.8
+      - name: Prepare pinned speech assets
+        run: npm run speech:prepare
+      - name: Prepare pinned OfficeCLI arm64 asset
+        run: npm run office:prepare -- darwin arm64
+      - name: Prepare pinned OfficeCLI x64 asset
+        run: npm run office:prepare -- darwin x64
+      - run: npm run package:ci:stable:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sep-client-mac
+          path: dist/local/stable
+          if-no-files-found: error
+          retention-days: 14
+
+  build-win:
+    needs: [validate, preflight]
+    if: always() && needs.validate.result == 'success' && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Prepare pinned speech assets
+        run: npm run speech:prepare
+      - name: Prepare pinned OfficeCLI assets
+        run: npm run office:prepare
+      - run: npm run package:ci:stable:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sep-client-win
+          path: dist/local/stable
+          if-no-files-found: error
+          retention-days: 14
+
+  assemble:
+    needs: [build-mac, build-win]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: sep-client-mac
+          path: release-source
+      - uses: actions/download-artifact@v4
+        with:
+          name: sep-client-win
+          path: release-win
+      - name: Merge platform artifacts
+        shell: bash
+        run: cp -a release-win/. release-source/
+      - run: node scripts/verify-update-manifest.mjs release-source --require-all-platforms
+      - run: node scripts/prepare-download-update.mjs release-source stable release-prepared
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sep-client-release-${{ github.run_id }}
+          path: |
+            release-source
+            release-prepared
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [assemble, preflight]
+    if: github.event_name == 'push' || inputs.publish == true
+    runs-on: ubuntu-latest
+    environment: sep-download-production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: sep-client-release-${{ github.run_id }}
+          path: release-bundle
+      - name: Upload client files and publish manifests last
+        env:
+          SEP_UPLOAD_HOST: ${{ secrets.SEP_UPLOAD_HOST || '121.37.128.126' }}
+          SEP_UPLOAD_USER: ${{ secrets.SEP_UPLOAD_USER || 'root' }}
+          SEP_UPLOAD_ROOT: ${{ secrets.SEP_UPLOAD_ROOT || '/www/sep/downloads/sep-client/stable' }}
+          SEP_UPLOAD_SSH_KEY_BASE64: ${{ secrets.SEP_UPLOAD_SSH_KEY_BASE64 }}
+          SEP_UPLOAD_KNOWN_HOSTS: ${{ secrets.SEP_UPLOAD_KNOWN_HOSTS }}
+          SEP_UPLOAD_PORT: ${{ secrets.SEP_UPLOAD_PORT || '22' }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: node scripts/upload-download-update.mjs release-bundle/release-source release-bundle/release-prepared stable
+      - name: Verify the public update feed
+        run: node scripts/test-update-feed.mjs https://sep.longdaoec.com/sep-client/stable/ --require-all-platforms
