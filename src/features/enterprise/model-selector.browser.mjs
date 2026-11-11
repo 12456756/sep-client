@@ -61,6 +61,10 @@ test('model selection opens a searchable popover above the trigger with the know
   await trigger.click()
   const dialog = page.getByRole('dialog', { name: '选择模型' })
   await dialog.waitFor()
+  assert.deepEqual(await page.getByRole('textbox', { name: '搜索模型', exact: true }).evaluate(element => {
+    const style = window.getComputedStyle(element)
+    return [style.outlineStyle, style.boxShadow]
+  }), ['none', 'none'])
   const button = await trigger.boundingBox(), popup = await dialog.boundingBox()
   assert.ok(Math.abs(popup.y + popup.height - (button.y - 8)) <= 2)
   assert.ok(Math.abs(popup.x - button.x) <= 2)
