@@ -57,7 +57,7 @@ function harness(result = { canceled: false, filePaths: [join(process.cwd(), 'se
 }
 
 describe('native window theme IPC', () => {
-  it('keeps native backgrounds transparent across theme changes', async () => {
+  it('keeps native backgrounds transparent with theme-aware hover contrast across theme changes', async () => {
     const { routes } = harness()
     const route = routes.find(entry => entry.channel === INVOKE_CHANNELS.WINDOW_SET_THEME)!
     const overlays: Array<{ color: string; symbolColor: string; height: number }> = []
@@ -69,7 +69,7 @@ describe('native window theme IPC', () => {
     for (const theme of ['light', 'dark', 'light'] as const) {
       const colors = windowLayout.WINDOW_THEME_COLORS[theme]
       assert.equal((await route.handle(ctx, route.schema.parse(theme))).success, true)
-      assert.equal(overlays.at(-1)?.color, '#00000000')
+      assert.equal(overlays.at(-1)?.color, `${colors.color}00`)
       assert.equal(overlays.at(-1)?.symbolColor, colors.symbolColor)
       assert.equal(overlays.at(-1)?.height, 44)
       assert.equal(backgrounds.at(-1), colors.background)

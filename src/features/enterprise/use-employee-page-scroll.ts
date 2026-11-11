@@ -18,7 +18,7 @@ export function useEmployeePageScroll(
   useLayoutEffect(() => { snapshot.current = state; });
 
   useLayoutEffect(() => {
-    const element = container.current;
+    const element = container.current?.querySelector<HTMLElement>('[data-employee-scroll]') ?? container.current;
     if (!element) return;
     if (route.name === 'skills') return;
     if (route.name !== 'employees') {
@@ -41,7 +41,7 @@ export function useEmployeePageScroll(
 
   useLayoutEffect(() => {
     if (route.name !== 'employees' || !pending.current || !ready || !container.current) return;
-    const element = container.current;
+    const element = container.current.querySelector<HTMLElement>('[data-employee-scroll]') ?? container.current;
     element.scrollTop = savedScroll.current;
     if (state.focusId) {
       const trigger = document.getElementById(state.focusId);
@@ -54,7 +54,7 @@ export function useEmployeePageScroll(
     if (previousFilters.current === filters) return;
     previousFilters.current = filters;
     if (route.name !== 'employees' || pending.current || !container.current) return;
-    container.current.scrollTop = 0;
+    (container.current.querySelector<HTMLElement>('[data-employee-scroll]') ?? container.current).scrollTop = 0;
     savedScroll.current = 0;
   }, [container, route, filters]);
 }

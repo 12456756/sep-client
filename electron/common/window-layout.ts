@@ -6,8 +6,6 @@
 
 export const WINDOW_CHROME_HEIGHT = 44
 export const WINDOWS_CONTROLS_INSET = 144
-// Let the renderer compose toolbar, drawer and modal backdrops beneath native controls.
-export const WINDOWS_CONTROLS_BACKGROUND = '#00000000'
 
 export const WINDOW_THEME_COLORS = {
   light: { color: '#f8f1ef', symbolColor: '#514d55', background: '#f7f8fc' },
@@ -39,7 +37,8 @@ export function getWindowChromeConfig(platform: NodeJS.Platform): WindowChromeCo
   return {
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: platform === 'win32' ? WINDOWS_CONTROLS_BACKGROUND : WINDOW_THEME_COLORS.light.color,
+      // Electron uses the RGB value to choose hover contrast, even when alpha is zero.
+      color: platform === 'win32' ? `${WINDOW_THEME_COLORS.light.color}00` : WINDOW_THEME_COLORS.light.color,
       symbolColor: WINDOW_THEME_COLORS.light.symbolColor,
       height: WINDOW_CHROME_HEIGHT,
     },

@@ -144,6 +144,9 @@
 .sep-home-dialog-done { display: block; min-width: 92px; margin: 18px 0 0 auto; padding: 8px 16px; border: 0; border-radius: 8px; background: #c0353b; color: #fff; font-size: 13px !important; }
 .sep-home-picker-search { display: flex; align-items: center; gap: 8px; margin: 16px 0; padding: 10px; border: 1px solid #e7dce1; border-radius: 8px; color: #8490a3; }
 .sep-home-picker-search input { width: 100%; border: 0; outline: 0; color: inherit; background: transparent; font: inherit; font-size: 13px; }
+.sep-home-picker-search:focus-within { border-color: #cbc0c7; }
+/* The employee dialog is portaled outside .ent-shell, so it needs its own legacy focus-ring override. */
+.sep-home-dialog .sep-home-picker-search input:focus-visible { outline: 0 !important; box-shadow: none !important; }
 .sep-home-picker-list { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow: auto; }
 .sep-home-picker-list button { display: flex; align-items: center; gap: 10px; padding: 9px; border: 1px solid #eee8ec; border-radius: 9px; background: #fff; color: inherit; text-align: left; }
 .sep-home-picker-list button:disabled { opacity: .55; cursor: default; }

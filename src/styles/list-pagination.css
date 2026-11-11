@@ -1,0 +1,20 @@
+.ent-scroll:has(> .ent-paginated-directory) { display: flex; overflow: hidden; }
+.ent-page.ent-paginated-directory { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-bottom: 0; overflow: hidden; animation: none; }
+.ent-paginated-directory > :not(.ent-directory-scroll) { flex-shrink: 0; }
+.ent-directory-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; }
+.ent-list-pagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; padding: 12px 0; border-top: 1px solid var(--ent-line); background: var(--work-canvas, var(--ent-panel)); color: var(--ent-ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.ent-list-pagination-summary, .ent-list-pagination-controls { display: flex; align-items: center; gap: 8px; }
+.ent-list-pagination-summary { flex-wrap: wrap; }
+.ent-page-size-controls, .ent-page-size-label, .ent-page-size-auto { display: inline-flex; align-items: center; gap: 5px; }
+.ent-page-size-controls { gap: 10px; }
+.ent-page-size-input { width: 58px; max-width: 100%; height: 28px; padding: 0 5px; border: 1px solid var(--ent-line); border-radius: 6px; background: var(--ent-panel); color: var(--ent-ink-2); font: inherit; }
+.ent-page-size-auto { cursor: pointer; white-space: nowrap; }
+.ent-page-size-auto input { width: 13px; height: 13px; margin: 0; accent-color: var(--ent-brand-solid); }
+.ent-page-size-controls input:focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+.ent-page-size-controls input:disabled { opacity: .5; cursor: default; }
+.ent-list-pagination-controls button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--ent-ink-2); cursor: pointer; }
+.ent-list-pagination-controls button:hover:not(:disabled) { background: var(--ent-panel-subtle); }
+.ent-list-pagination-controls button:disabled { opacity: .35; cursor: default; }
+.ent-list-pagination-controls > span { min-width: 64px; text-align: center; }
+.ent-list-pagination :is(button, select):focus-visible { outline: 2px solid var(--ent-brand); outline-offset: 2px; }
+@media (max-width: 600px) { .ent-list-pagination { justify-content: center; padding-block: 8px; } }

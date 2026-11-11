@@ -36,4 +36,5 @@
 .ent-model-catalog-error { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--ent-danger, #b42318); font-size: 12px; }
 .ent-model-catalog-error button { border: 0; color: inherit; background: transparent; text-decoration: underline; cursor: pointer; }
 .ent-knowledge-search:focus-within, .ent-model-search:focus-within { border-color: var(--ent-line-strong); box-shadow: none; }
-.ent-knowledge-search input:focus-visible, .ent-model-search input:focus-visible { outline: 0; box-shadow: none; }
+/* These popovers are portaled outside .ent-shell, so override the legacy global focus ring here. */
+.ent-knowledge-search input:focus-visible, .ent-model-search input:focus-visible { outline: 0 !important; box-shadow: none !important; }

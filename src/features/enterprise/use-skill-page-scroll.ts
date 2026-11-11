@@ -10,7 +10,7 @@ export function useSkillPageScroll(container: RefObject<HTMLDivElement | null>, 
   const previousFilters = useRef(filters);
   useLayoutEffect(() => { snapshot.current = state; });
   useLayoutEffect(() => {
-    const element = container.current;
+    const element = container.current?.querySelector<HTMLElement>('[data-skill-scroll]') ?? container.current;
     if (!element || route.name !== 'skills') return;
     if (route.skillId) { element.scrollTop = 0; return; }
     pending.current = true;
@@ -25,7 +25,7 @@ export function useSkillPageScroll(container: RefObject<HTMLDivElement | null>, 
     return () => element.removeEventListener('scroll', record);
   }, [container, route, update]);
   useLayoutEffect(() => {
-    const element = container.current;
+    const element = container.current?.querySelector<HTMLElement>('[data-skill-scroll]') ?? container.current;
     if (route.name !== 'skills' || route.skillId || !pending.current || !ready || !element) return;
     const saved = snapshot.current;
     const anchor = Array.from(element.querySelectorAll<HTMLElement>('[data-skill-id]')).find(row => row.dataset.skillId === saved.anchorId);
@@ -39,6 +39,6 @@ export function useSkillPageScroll(container: RefObject<HTMLDivElement | null>, 
   useLayoutEffect(() => {
     if (filters === previousFilters.current) return;
     previousFilters.current = filters;
-    if (route.name === 'skills' && !route.skillId && container.current) container.current.scrollTop = 0;
+    if (route.name === 'skills' && !route.skillId && container.current) (container.current.querySelector<HTMLElement>('[data-skill-scroll]') ?? container.current).scrollTop = 0;
   }, [container, route, filters]);
 }

@@ -10,6 +10,8 @@ import type { EnterpriseWorkspace } from '../../features/enterprise/useEnterpris
 import type { EmployeeAvailability } from '../../features/enterprise/types';
 import { EMPLOYEE_AVAILABILITY } from '../../features/enterprise/vocabulary';
 import type { EmployeeLoadState } from '../../features/enterprise/use-workspace-employees';
+import { useDirectoryPagination } from '../../features/enterprise/use-directory-pagination';
+import { ListPagination } from '../../components/enterprise/ListPagination';
 
 interface Props {
   workspace: EnterpriseWorkspace;
@@ -42,8 +44,14 @@ export function EmployeesPage({ workspace, scope: initialScope, state: controlle
   const directoryUnavailable = Boolean(employeeLoad?.error) || organizationError;
   const countUnavailable = loading || directoryUnavailable;
   const statusUnavailable = Boolean(employeeStatusLoad?.loading || employeeStatusLoad?.error);
+  const pagination = useDirectoryPagination({
+    records: list, getId: employee => employee.id,
+    filterKey: JSON.stringify([workspace.attachmentScopeKey, scope, state.search, state.availability, state.view]),
+    storageKey: 'sep.employees.page-size', rowSelector: state.view === 'list' ? '.ent-emp-row' : '.ent-emp-card',
+    layoutKey: state.view, selectedId: state.focusId?.replace(/^employee-detail-/, '') ?? null,
+  });
 
-  return <div className="ent-page ent-employees-page" data-employee-view={state.view}>
+  return <div className="ent-page ent-employees-page ent-paginated-directory" data-employee-view={state.view}>
     <div className="ent-toolbar ent-employees-toolbar">
       <div className="ent-segment ent-employee-scope" role="group" aria-label="员工范围">
         <button type="button" aria-pressed={scope === 'mine'} className={scope === 'mine' ? 'active' : undefined} onClick={() => update({ scope: 'mine', search: '', availability: '', scrollTop: 0 })}>分配给我的</button>
@@ -64,9 +72,12 @@ export function EmployeesPage({ workspace, scope: initialScope, state: controlle
     {workspace.skillsError ? <div className="ent-banner info"><span>{workspace.skillsError}{skillsUnavailable ? ' 当前仅可搜索员工名称和介绍。' : ''}</span><button type="button" className="ent-btn sm" disabled={workspace.skillsLoading || (workspace.skillsRetrySeconds !== null && workspace.skillsRetrySeconds > 0)} onClick={() => void workspace.refreshSkills()}>{workspace.skillsRetrySeconds !== null && workspace.skillsRetrySeconds > 0 ? `${workspace.skillsRetrySeconds} 秒后重试` : '重试技能'}</button></div> : null}
     {!loading && !directoryUnavailable && !list.length ? <Empty title={state.search.trim() || state.availability ? '没有符合条件的员工' : scope === 'all' ? '企业暂无员工' : '暂未分配员工'}>{state.search.trim() || state.availability ? <button type="button" className="link" onClick={clearFilters}>清除筛选</button> : scope === 'all' ? '企业创建员工后，会显示在这里。' : '企业为你分配员工后，会显示在这里。'}</Empty> : null}
     {employeeStatusLoad?.error && !employeeStatusLoad.loading ? <div className="ent-banner info"><span>员工状态暂未更新，确认完成前无法开始新对话。</span><button type="button" className="ent-btn sm" onClick={employeeStatusLoad.retry}>重试</button></div> : null}
-    {list.length > 0 ? <div className={state.view === 'list' ? 'ent-emp-list' : 'ent-emp-grid'}>{list.map(employee => {
+    <div className="ent-directory-scroll" ref={pagination.listRef} data-employee-scroll>
+    {list.length > 0 ? <div className={state.view === 'list' ? 'ent-emp-list' : 'ent-emp-grid'}>{pagination.records.map(employee => {
       const reason = employeeChatDisabledReason(employee) ?? (employeeLoad?.loading || employeeLoad?.error ? '员工订阅正在确认或暂不可用' : statusUnavailable ? '员工状态正在确认或暂不可用' : null);
       return <EmployeeCard key={employee.id} employee={employee} skills={employeeSkills(workspace.skills, employee.id)} chatDisabledReason={reason} onOpen={open} onChat={reason ? undefined : chat} compact={state.view === 'list'} />;
     })}</div> : null}
+    </div>
+    <ListPagination pagination={pagination} label="硅基员工分页" />
   </div>;
 }

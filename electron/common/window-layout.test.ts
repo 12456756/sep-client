@@ -12,11 +12,11 @@ test('macOS reserves a top chrome area and uses inset traffic lights', () => {
   })
 })
 
-test('Windows uses transparent native controls and reserves their hit area', () => {
+test('Windows uses a transparent light surface for native hover contrast and reserves its hit area', () => {
   assert.deepEqual(getWindowChromeConfig('win32'), {
     titleBarStyle: 'hidden',
     titleBarOverlay: {
-      color: '#00000000',
+      color: '#f8f1ef00',
       symbolColor: '#514d55',
       height: 44,
     },

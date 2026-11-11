@@ -5,6 +5,7 @@ import type { WorkItem } from '../../features/enterprise/types'
 import { countWorkRecordStatuses, countWorkRecordTypes, countUnresolvedWorkRecordTypes, type WorkRecordBucket, type WorkRecordFilterState, type WorkRecordTypeFilter } from '../../features/enterprise/work-record-filters'
 import { relativeTime } from '../../features/enterprise/vocabulary'
 import type { WorkListPagination } from '../../features/enterprise/use-work-list-pagination'
+import { PageSizeControl } from '../../components/enterprise/PageSizeControl'
 
 const BUCKETS: { id: WorkRecordBucket; label: string; icon: typeof Layers }[] = [
   { id: 'all', label: '全部工作', icon: Layers },
@@ -65,7 +66,10 @@ export function WorkListPane({ works, records, pagination, selectedWorkId, filte
       </div>)}
     </div>
     <nav className="ent-work-pagination" aria-label="工作列表分页">
-      <span className="ent-work-pagination-count">共 {pagination.total} 项 · 每页 {pagination.pageSize} 项</span>
+      <div className="ent-work-pagination-summary">
+        <span className="ent-work-pagination-count">共 {pagination.total} 项</span>
+        <PageSizeControl pageSize={pagination.pageSize} choice={pagination.pageSizeChoice} onChange={pagination.onPageSizeChange} />
+      </div>
       <div className="ent-work-pagination-controls">
         <IconHint label="第一页" side="top"><button type="button" className="ent-work-icon" aria-label="第一页" disabled={pagination.page === 1} onClick={() => pagination.onPageChange(1)}><ChevronsLeft size={16} aria-hidden /></button></IconHint>
         <IconHint label="上一页" side="top"><button type="button" className="ent-work-icon" aria-label="上一页" disabled={pagination.page === 1} onClick={() => pagination.onPageChange(pagination.page - 1)}><ChevronLeft size={16} aria-hidden /></button></IconHint>

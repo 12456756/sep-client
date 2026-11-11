@@ -1,5 +1,6 @@
 import { AlertCircle, ChevronRight, Coins, Gauge, Info, RefreshCw, Wallet, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { formatAllowanceValue, formatComputeAmount, formatConfiguredLimit, formatOptionalComputeAmount, formatRemainingPercent, getComputeTrendPoints, getComputeTrendTotal, selectComputeBreakdown } from '../../features/enterprise/compute-center-model'
 import { useComputeCenter, type ComputeCenterTab } from '../../features/enterprise/use-compute-center'
 import { ComputeUsageTab, ComputeWalletTab, type ComputeDetail } from '../../components/enterprise/ComputeUsageTables'
@@ -41,6 +42,8 @@ function DetailDrawer({ drawer, onClose }: { drawer: DrawerState; onClose: () =>
   useEffect(() => {
     if (!drawer) return
     const previous = document.activeElement
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
     const element = panel.current
     element?.querySelector<HTMLButtonElement>('button')?.focus()
     const keydown = (event: KeyboardEvent) => {
@@ -54,21 +57,29 @@ function DetailDrawer({ drawer, onClose }: { drawer: DrawerState; onClose: () =>
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus() }
     }
     document.addEventListener('keydown', keydown)
-    return () => { document.removeEventListener('keydown', keydown); if (previous instanceof HTMLElement && previous.isConnected) previous.focus() }
+    return () => {
+      document.removeEventListener('keydown', keydown)
+      document.body.style.overflow = previousOverflow
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus()
+    }
   }, [drawer, onClose])
   if (!drawer) return null
-  return (
+  return createPortal((
     <div className="compute-drawer-backdrop" role="presentation" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
       <aside ref={panel} className="compute-drawer" role="dialog" aria-modal="true" aria-label={drawer.title}>
         <div className="compute-drawer-head"><div><h2>{drawer.title}</h2></div><button type="button" className="compute-icon-button" onClick={onClose} aria-label="关闭"><X size={17} /></button></div>
         <div className="compute-drawer-body">{drawer.children}</div>
       </aside>
     </div>
-  )
+  ), document.body)
 }
 
 function DetailRows({ entries }: { entries: Array<[string, string]> }): React.JSX.Element {
   return <dl className="compute-detail-list">{entries.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+}
+
+function DetailSection({ title, entries }: { title: string; entries: Array<[string, string]> }): React.JSX.Element {
+  return <section className="compute-detail-section"><h3>{title}</h3><DetailRows entries={entries} /></section>
 }
 
 type AllowanceProgressTone = 'recharge' | 'monthly' | 'daily'
@@ -154,9 +165,20 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
   const trendTotal = !trendLoading && !trendError && trend ? formatOptionalComputeAmount(getComputeTrendTotal(trend)) : '—'
 
   const allowanceDetail = (
-    <DetailRows entries={[
-      ['额度上限', formatAllowanceValue(allowance.limitCNY)], ['已使用', formatComputeAmount(allowance.usedCNY)], ['可用额度', remaining], ['企业充值余额', formatComputeAmount(allowance.topUpRemainingCNY)], ['充值总额', formatOptionalComputeAmount(allowance.topUpAmountCNY)], ['充值已用', formatOptionalComputeAmount(allowance.topUpConsumedCNY)], ['每日限额', formatConfiguredLimit(allowance.dailyLimitCNY)], ['每日已用', formatOptionalComputeAmount(allowance.dailyUsedCNY)], ['每日剩余', formatOptionalComputeAmount(allowance.dailyRemainingCNY)], ['每月限额', formatConfiguredLimit(monthlyLimit)], ['每月已用', formatOptionalComputeAmount(monthlyUsed)], ['每月剩余', formatOptionalComputeAmount(monthlyRemaining)],
-    ]} />
+    <div className="compute-detail-groups">
+      <DetailSection title={allowance.period === 'DAY' ? '当前周期额度 · 每日' : allowance.period === 'MONTH' ? '当前周期额度 · 每月' : '当前周期额度'} entries={[
+        ['额度上限', formatAllowanceValue(allowance.limitCNY)], ['已使用', formatComputeAmount(allowance.usedCNY)], ['可用额度', remaining],
+      ]} />
+      <DetailSection title="企业分配" entries={[
+        ['充值余额', formatComputeAmount(allowance.topUpRemainingCNY)], ['累计充值', formatOptionalComputeAmount(allowance.topUpAmountCNY)], ['充值已用', formatOptionalComputeAmount(allowance.topUpConsumedCNY)],
+      ]} />
+      <DetailSection title="每日限额" entries={[
+        ['限额', formatConfiguredLimit(allowance.dailyLimitCNY)], ['当日已用', formatOptionalComputeAmount(allowance.dailyUsedCNY)], ['当日剩余', formatOptionalComputeAmount(allowance.dailyRemainingCNY)],
+      ]} />
+      <DetailSection title="每月限额" entries={[
+        ['限额', formatConfiguredLimit(monthlyLimit)], ['当月已用', formatOptionalComputeAmount(monthlyUsed)], ['当月剩余', formatOptionalComputeAmount(monthlyRemaining)],
+      ]} />
+    </div>
   )
 
   return (
@@ -165,7 +187,7 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
       {/* 结论层：三个数字，一眼看完 */}
       <section className="compute-summary" aria-label="算力总览">
         <div className="compute-summary-item">
-          <span className="compute-summary-label"><Gauge size={14} aria-hidden />企业余额</span>
+          <span className="compute-summary-label"><Gauge size={14} aria-hidden />企业分配余额</span>
           <strong className="compute-summary-value">{formatComputeAmount(allowance.topUpRemainingCNY)}</strong>
           <span className="compute-summary-note">当前周期剩余 {remaining}</span>
         </div>
