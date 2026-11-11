@@ -1,19 +1,38 @@
 import { useRef, type RefObject } from 'react'
 import '../../styles/composer-resize.css'
 
-export function ComposerResizeHandle({ inputRef }: { inputRef: RefObject<HTMLTextAreaElement> }) {
+interface Props {
+  inputRef: RefObject<HTMLTextAreaElement>
+  resizeTargetRef?: RefObject<HTMLElement>
+  onResize?: (previousHeight: number, nextHeight: number) => void
+}
+
+function constrainedHeight(target: HTMLElement, height: number): number {
+  const style = window.getComputedStyle(target)
+  const minHeight = Number.parseFloat(style.minHeight) || 0
+  const maxHeight = Number.parseFloat(style.maxHeight)
+  return Math.max(minHeight, Number.isFinite(maxHeight) ? Math.min(maxHeight, height) : height)
+}
+
+export function ComposerResizeHandle({ inputRef, resizeTargetRef, onResize }: Props) {
   const drag = useRef<{ pointerId: number; y: number; height: number } | null>(null)
   const resize = (height: number) => {
     const input = inputRef.current
-    if (input && !input.disabled) input.style.height = `${Math.max(0, height)}px`
+    const target = resizeTargetRef?.current ?? input
+    if (!input || !target || input.disabled) return
+    const previousHeight = target.offsetHeight
+    const nextHeight = constrainedHeight(target, height)
+    target.style.height = `${nextHeight}px`
+    onResize?.(previousHeight, nextHeight)
   }
 
   return <button type="button" className="ent-composer-resize" aria-label="调整输入框高度" title="调整输入框高度"
     onPointerDown={event => {
       const input = inputRef.current
-      if (event.button !== 0 || !input || input.disabled) return
+      const target = resizeTargetRef?.current ?? input
+      if (event.button !== 0 || !input || !target || input.disabled) return
       event.preventDefault()
-      drag.current = { pointerId: event.pointerId, y: event.clientY, height: input.offsetHeight }
+      drag.current = { pointerId: event.pointerId, y: event.clientY, height: target.offsetHeight }
       event.currentTarget.setPointerCapture(event.pointerId)
     }}
     onPointerMove={event => {
@@ -30,7 +49,7 @@ export function ComposerResizeHandle({ inputRef }: { inputRef: RefObject<HTMLTex
     onKeyDown={event => {
       if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
       event.preventDefault()
-      const input = inputRef.current
-      if (input) resize(input.offsetHeight + (event.key === 'ArrowDown' ? 20 : -20))
+      const target = resizeTargetRef?.current ?? inputRef.current
+      if (target) resize(target.offsetHeight + (event.key === 'ArrowDown' ? 20 : -20))
     }} />
 }

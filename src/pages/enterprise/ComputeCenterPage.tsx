@@ -165,7 +165,7 @@ function OverviewTab({ state, days, trend, trendLoading, trendError, onRetryTren
       {/* 结论层：三个数字，一眼看完 */}
       <section className="compute-summary" aria-label="算力总览">
         <div className="compute-summary-item">
-          <span className="compute-summary-label"><Gauge size={14} aria-hidden />企业余额</span>
+          <span className="compute-summary-label"><Gauge size={14} aria-hidden />企业分配余额</span>
           <strong className="compute-summary-value">{formatComputeAmount(allowance.topUpRemainingCNY)}</strong>
           <span className="compute-summary-note">当前周期剩余 {remaining}</span>
         </div>

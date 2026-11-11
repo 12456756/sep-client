@@ -43,11 +43,11 @@
 .ent-sch-example:disabled { opacity: .6; cursor: default; }
 .ent-sch-home-compose { flex: none; width: 100%; max-width: 960px; align-self: center; margin: 0; }
 .ent-sch-home-compose-actions { display: flex; justify-content: flex-end; margin-bottom: 8px; }
-.ent-sch-home-compose fieldset { position: relative; padding: 0; margin: 0; min-width: 0; box-shadow: 0 2px 12px rgb(20 25 30 / 4%); background: var(--ent-panel); }
-.ent-sch-home-compose .ent-sch-composer textarea { min-height: 100px; height: 100px; max-height: min(180px, 24dvh); resize: none; font-size: 14px; }
+.ent-sch-home-compose fieldset { position: relative; display: flex; flex-direction: column; min-height: 164px; max-height: calc(min(180px, 24dvh) + 64px); padding: 0; margin: 0; min-width: 0; box-shadow: 0 2px 12px rgb(20 25 30 / 4%); background: var(--ent-panel); }
+.ent-sch-home-compose .ent-sch-composer textarea { flex: 1 1 auto; min-height: 100px; height: auto; max-height: none; resize: none; font-size: 14px; }
 .ent-shell .ent-sch-home-compose textarea:focus-visible { outline: none !important; box-shadow: none !important; }
 .ent-sch-home-compose textarea::placeholder { color: var(--ent-ink-3); }
-.ent-sch-home-compose .ent-sch-composer-tools-inline { flex-wrap: nowrap; padding: 8px 24px 12px 12px; }
+.ent-sch-home-compose .ent-sch-composer-tools-inline { flex: none; flex-wrap: nowrap; padding: 8px 24px 12px 12px; }
 .ent-sch-composer-settings { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; overflow-x: auto; scrollbar-width: thin; }
 .ent-sch-home-compose .ent-sch-composer-settings .ent-sch-execution-selects { flex: none; flex-wrap: nowrap; max-width: 200px; }
 .ent-sch-home-compose .ent-sch-composer-tools-inline .ent-sch-composer-environment { flex: none; border: 0; margin: 0; padding: 0; }
@@ -97,8 +97,9 @@
 .ent-sch-search-empty { padding: 8px; color: var(--ent-ink-3); font-size: 12px; }
 .ent-sch-main-pane { min-width: 0; min-height: 0; overflow: auto; padding: 24px 28px; container-type: inline-size; }
 .ent-sch-main-pane > .ent-btn { margin-bottom: 20px; }
-.ent-sch-compose-pane { display: flex; flex-direction: column; overflow: hidden; gap: 16px; }
+.ent-sch-compose-pane { display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; gap: 16px; }
 .ent-sch-home-content { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+.ent-sch-compose-pane > .ent-sch-home-content { flex: 0 0 max(480px, calc(100dvh - 440px)); }
 .ent-sch-home-content > .ent-sch-creations { flex: none; width: 100%; max-width: 960px; margin-inline: auto; }
 .ent-sch-welcome { flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 28px 0; color: var(--ent-ink-2); }
 .ent-sch-clock { display: block; width: 80px; height: 80px; flex: none; object-fit: contain; }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { ArrowLeft, ArrowUp, ChevronDown, Plus, Search, X } from 'lucide-react'
 import scheduledClock from '../../../assets/scheduled-clock.png'
@@ -24,6 +24,9 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
   const [replacement, setReplacement] = useState<Example | null>(null)
   const [error, setError] = useState<string | null>(null)
   const input = useRef<HTMLTextAreaElement>(null)
+  const composer = useRef<HTMLFieldSetElement>(null)
+  const mainPane = useRef<HTMLElement>(null)
+  const resizeScrollFrame = useRef<number | null>(null)
   const lastExample = useRef('')
   const submitted = useRef<ScheduledCreationRequest | null>(null)
   const [continuationId, setContinuationId] = useState<string | null>(null)
@@ -76,6 +79,18 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     workspace.replaceRoute({ name: 'scheduled' })
     requestAnimationFrame(() => input.current?.focus({ preventScroll: true }))
   }
+  const scrollWithComposer = useCallback(() => {
+    if (resizeScrollFrame.current !== null) return
+    resizeScrollFrame.current = requestAnimationFrame(() => {
+      resizeScrollFrame.current = null
+      const pane = mainPane.current
+      const target = composer.current
+      if (!pane || !target) return
+      const overflow = target.getBoundingClientRect().bottom - pane.getBoundingClientRect().bottom + 12
+      if (overflow > 0) pane.scrollBy({ top: overflow })
+    })
+  }, [])
+  useEffect(() => () => { if (resizeScrollFrame.current !== null) cancelAnimationFrame(resizeScrollFrame.current) }, [])
   const creationDefinitions = new Set(data?.creations?.filter(item => item.stage !== 'cancelled').map(item => item.definitionId))
   const pendingDefinitions = groups.pending.filter(item => !creationDefinitions.has(item.id))
   const matches = (item: ScheduledDefinition) => `${item.input.name} ${item.input.goal}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
@@ -102,7 +117,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
         {hasCreations ? <button type="button" className="ent-sch-nav-new" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}>创建进度</button> : null}
       </div>
     </aside>
-    <section className={`ent-sch-main-pane${home ? ' ent-sch-compose-pane' : ''}`} aria-label="定时任务内容">
+    <section ref={mainPane} className={`ent-sch-main-pane${home ? ' ent-sch-compose-pane' : ''}`} aria-label="定时任务内容">
       {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
       <div className="ent-sch-home-content" tabIndex={0} aria-label="定时任务创建区">
         <div className="ent-sch-welcome"><img className="ent-sch-clock" src={scheduledClock} width={80} height={80} alt="" /><h2>安排任务</h2>
@@ -115,13 +130,13 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     <form className="ent-sch-home-compose" onSubmit={event => { event.preventDefault(); submit() }}>
       <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" onClick={onCreate}>手动设置</button></div>
       {continuation ? <div className="ent-sch-replying"><span>补充：{continuation.interpretation?.task.title ?? continuation.request.message}</span><button type="button" aria-label="退出补充" title="退出补充" disabled={awaiting} onClick={() => { setContinuationId(null); setDraft(value => ({ ...value, goal: '' })) }}><X size={14} /></button></div> : null}
-      <fieldset disabled={sending} className="ent-sch-composer">
+      <fieldset ref={composer} disabled={sending} className="ent-sch-composer">
         <label className="sr-only" htmlFor="schedule-home-goal">定时任务工作内容</label><textarea id="schedule-home-goal" ref={input} rows={2} value={draft.goal} maxLength={16000} placeholder={continuation ? '补充缺少的信息…' : '安排一项定期完成的工作…'} onChange={event => setDraft(value => ({ ...value, goal: event.target.value }))} onKeyDown={event => { if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing) { event.preventDefault(); submit() } }} />
         <ScheduledExecutionFields naturalLanguage value={{ ...draft, settings }} employees={workspace.myEmployees} onChange={patch => setDraft(value => ({ ...value, ...patch, settings: { ...value.settings, ...patch.settings } }))} action={<button type="submit" className="ent-sch-home-send" aria-label={continuation ? '发送补充信息' : '创建并启用定时任务'} title={continuation ? '发送补充信息' : '创建并启用'} disabled={awaiting || !draft.goal.trim() || !settings.workDir.trim() || !models.includes(settings.modelId)}><ArrowUp size={19} aria-hidden /></button>} onChooseFolder={async path => {
           try { const chosen = await workspace.chooseFolder(path); setError(null); return chosen }
           catch { setError('无法选择目录，请重试。'); return null }
         }} />
-        <ComposerResizeHandle inputRef={input} />
+        <ComposerResizeHandle inputRef={input} resizeTargetRef={composer} onResize={scrollWithComposer} />
       </fieldset>
       {error ? <p role="alert" className="ent-sch-modal-error">{error}</p> : null}
     </form>
