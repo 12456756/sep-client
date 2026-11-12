@@ -13,6 +13,16 @@ import signAdhoc from './mac-adhoc-sign.cjs'
 
 const root = process.cwd()
 
+test('release workflow uses an Intel macOS runner while preserving both target architectures', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  assert.equal(workflow.jobs['build-mac']['runs-on'], 'macos-15-intel')
+  const build = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).build
+  assert.deepEqual(createBuilderConfig(build, 'stable').mac.target, [
+    { target: 'dmg', arch: ['x64', 'arm64'] },
+    { target: 'zip', arch: ['x64', 'arm64'] },
+  ])
+})
+
 test('release workflow restores versioned speech caches before unconditional verification on every build platform', () => {
   const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
   for (const job of ['validate', 'build-mac', 'build-win']) {
