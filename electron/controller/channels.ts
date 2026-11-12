@@ -78,6 +78,8 @@ export const INVOKE_CHANNELS = {
   SKILL_LIBRARY_SELECT: 'skill-library:select',
   SKILL_LIBRARY_SAVE: 'skill-library:save',
   SKILL_LIBRARY_RETRY: 'skill-library:retry',
+  SKILL_LIBRARY_REWRITE: 'skill-library:rewrite',
+  SKILL_LIBRARY_CANCEL_REWRITE: 'skill-library:cancel-rewrite',
   AUTH_LOGIN: 'auth:login',
   AUTH_LIST_REMEMBERED_ACCOUNTS: 'auth:list-remembered-accounts',
   AUTH_GET_REMEMBERED_PASSWORD: 'auth:get-remembered-password',

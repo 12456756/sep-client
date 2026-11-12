@@ -77,6 +77,7 @@ import { VideoRunService } from '../service/video-run-service'
 import { ConversationVideoRunService } from '../service/conversation-video-run-service'
 import { ConversationMediaService } from '../service/conversation-media-service'
 import { AppError } from '../errors/app-error'
+import { ScopePath } from '../data/scope-path'
 import { DocumentPreviewService } from '../service/document-preview-service'
 import { DocumentPreviewStore } from '../data/document-preview-store'
 import type { DocumentPreviewRuntime } from '../runtime/document-preview-runtime'
@@ -342,6 +343,17 @@ class BackendRuntime {
       subscriptions: () => this.employees.list(), versions: skillVersions,
       submissions: new SkillSubmissionStore(userDataDir),
       platform: { skills: getEmployeeSkills, list: listSkillVersions, preview: previewSkill, create: createPersonalSkillVersion },
+      authorizeRewriteModel: modelId => this.employees.authorizeModel(modelId),
+      rewriter: { rewrite: async (input, signal) => {
+        const scope = this.currentScope()
+        if (!scope) throw new AppError('AUTH_REQUIRED')
+        const { PiSkillRewriter } = await import('../runtime/pi-skill-rewriter')
+        return new PiSkillRewriter({ gatewayUrl: config.SEP_GATEWAY_URL,
+          workspaceRoot: join(new ScopePath(userDataDir).ownerRoot(scope), 'skill-rewrites'),
+          getRefreshToken: () => this.authSession.getRefreshToken(),
+          onAuthenticationRequired: () => this.invalidateAuthentication(),
+        }).rewrite(input, signal)
+      } },
     })
 
     // 服务只拿到作用域、数据存取和执行端口；运行时实现继续由组合根延迟加载。
@@ -629,6 +641,7 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.skills.cancelAllRewrites()
     this.conversationQueue.stop()
     this.scheduledCreations.stop()
     this.scheduledTasks.stop()

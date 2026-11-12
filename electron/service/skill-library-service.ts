@@ -11,6 +11,8 @@ import type { SkillVersionStore } from '../data/skill-version-store'
 import type { SkillSubmissionStore } from '../data/skill-submission-store'
 import type { LocalSkillSubmission, SaveSkillInput, SaveSkillResult, SkillLibraryItem } from '../../src/shared/skill-library'
 import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../src/shared/skill-library'
+import { skillRewriteInputSchema, skillRewriteOutputSchema, splitSkillRewriteSource, type SkillRewriteInput, type SkillRewriteResult } from '../../src/shared/skill-rewrite'
+import type { SkillRewritePort } from '../domain/skill-rewrite'
 
 interface SkillPlatform {
   skills(employeeId: string, token: string): Promise<unknown>
@@ -25,6 +27,8 @@ interface Options {
   versions: SkillVersionStore
   submissions: SkillSubmissionStore
   platform: SkillPlatform
+  rewriter?: SkillRewritePort
+  authorizeRewriteModel?: (modelId: string) => Promise<{ subscriptionId: string } | null>
 }
 const log = logger.child('skill-library')
 const libraryIdSchema = z.string().min(1).refine(id => id.trim().length > 0)
@@ -54,6 +58,7 @@ async function loadBounded<T, R>(items: T[], load: (item: T) => Promise<R>): Pro
 }
 
 export class SkillLibraryService {
+  private readonly rewrites = new Map<string, { scope: TaskOwnerScope; controller: AbortController }>()
   private snapshot: { scope: TaskOwnerScope; items: SkillLibraryItem[] } | null = null
   private inFlight: { scope: TaskOwnerScope; promise: Promise<{ items: SkillLibraryItem[]; skippedCount: number }> } | null = null
   constructor(private readonly options: Options) {}
@@ -175,6 +180,52 @@ export class SkillLibraryService {
     if (!item) throw new Error('没有此技能的有效员工授权。')
     this.checkScope(scope)
     return { scope, item }
+  }
+
+  async rewrite(rawInput: SkillRewriteInput): Promise<SkillRewriteResult> {
+    const input = skillRewriteInputSchema.parse(rawInput)
+    const scope = requireScope(this.options.scope)
+    if (this.rewrites.has(input.requestId)) throw new AppError('INVALID_STATE')
+    if ([...this.rewrites.values()].filter(job => job.scope.memberId === scope.memberId && job.scope.enterpriseId === scope.enterpriseId).length >= 2) throw new AppError('RATE_LIMITED')
+    const controller = new AbortController()
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(120_000)])
+    this.rewrites.set(input.requestId, { scope: { ...scope }, controller })
+    try {
+      const { item } = await this.authorized(input.capabilityId)
+      this.checkScope(scope)
+      signal.throwIfAborted()
+      if (!item.versions.some(version => version.id === input.versionId) &&
+          !item.localVersions.some(version => version.idempotencyKey === input.versionId || version.uploadedVersion?.id === input.versionId)) throw new AppError('NOT_FOUND')
+      const grant = await this.options.authorizeRewriteModel?.(input.modelId)
+      this.checkScope(scope)
+      signal.throwIfAborted()
+      if (!grant) throw new AppError('MODEL_NOT_ALLOWED')
+      if (!this.options.rewriter) throw new AppError('SERVICE_UNAVAILABLE')
+      const output = skillRewriteOutputSchema.parse(await this.options.rewriter.rewrite({ ...input, subscriptionId: grant.subscriptionId, skillName: item.capability.name }, signal))
+      this.checkScope(scope)
+      signal.throwIfAborted()
+      if (splitSkillRewriteSource(output.body).metadata) throw new AppError('SKILL_REWRITE_FAILED')
+      const body = output.body.replace(/\r\n?/g, '\n').replace(/\n/g, input.content.includes('\r\n') ? '\r\n' : '\n')
+      const content = splitSkillRewriteSource(input.content).metadata + body
+      if (content.length > 100_000) throw new AppError('SKILL_REWRITE_FAILED')
+      return { requestId: input.requestId, content, summary: output.summary, changes: output.changes }
+    } catch (error) {
+      if (signal.aborted) throw new AppError('SKILL_REWRITE_CANCELLED')
+      throw error
+    } finally {
+      this.rewrites.delete(input.requestId)
+    }
+  }
+
+  cancelRewrite(input: { requestId: string }): void {
+    const scope = requireScope(this.options.scope)
+    const job = this.rewrites.get(input.requestId)
+    if (job?.scope.memberId === scope.memberId && job.scope.enterpriseId === scope.enterpriseId) job.controller.abort()
+  }
+
+  cancelAllRewrites(): void {
+    for (const job of this.rewrites.values()) job.controller.abort()
+    this.snapshot = null
   }
 
   async save(input: SaveSkillInput): Promise<SaveSkillResult> {

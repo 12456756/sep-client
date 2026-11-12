@@ -150,6 +150,8 @@ const electronAPI = {
   platform: runtimePlatform,
   windowChrome: { height: windowChromeConfig.contentTop, rightInset: windowChromeConfig.windowsRightInset },
   listSkillLibrary: () => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_LIST),
+  rewriteLibrarySkill: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_REWRITE, input),
+  cancelSkillRewrite: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_CANCEL_REWRITE, input),
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_PREVIEW, input),
   selectSkillVersion: (input: { capabilityId: string; versionId: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SELECT, input),
   savePersonalSkill: (input: import('../src/shared/skill-library').SaveSkillInput) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_SAVE, input),

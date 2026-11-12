@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { PersonalSkillVersionRequest } from '../../shared/platform-supplement-contracts';
 import type { SaveSkillResult, SkillLibraryItem } from '../../shared/skill-library';
 import { FOLLOW_PLATFORM_SKILL_VERSION } from '../../shared/skill-library';
+import type { SkillRewriteInput, SkillRewriteResult } from '../../shared/skill-rewrite';
 import { classifySkillLoadError, formatSkillRateLimitMessage, type SkillLoadError, type SkillLoadErrorKind } from './skill-load-state';
 
 const FOCUS_REFRESH_COOLDOWN_MS = 30_000;
@@ -115,6 +116,16 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     if (!result.success || result.data === undefined) throw new Error(result.error?.message || '原文读取失败');
     return result.data;
   }, [identity]);
+  const rewriteSkillSource = useCallback(async (input: SkillRewriteInput): Promise<SkillRewriteResult> => {
+    const result = await window.electronAPI.rewriteLibrarySkill(input);
+    if (!identity.active) throw new Error('登录身份已变化，请重新打开技能。');
+    if (!result.success || !result.data) throw new Error(result.error?.message || '改写失败，请重试');
+    return result.data;
+  }, [identity]);
+  const cancelSkillRewrite = useCallback(async (requestId: string): Promise<void> => {
+    const result = await window.electronAPI.cancelSkillRewrite({ requestId });
+    if (!result.success) throw new Error(result.error?.message || '取消失败，请重试');
+  }, []);
   const selectSkillVersion = useCallback(async (capabilityId: string, versionId: string): Promise<void> => {
     const result = await window.electronAPI.selectSkillVersion({ capabilityId, versionId });
     if (!identity.active) throw new Error('登录身份已变化，请重新打开技能。');
@@ -164,6 +175,8 @@ export function useSkillLibrary(scopeKey: string, enabled = true) {
     skillsRetrySeconds: stateScopeKey === scopeKey ? skillsRetrySeconds : null,
     refreshSkills,
     previewSkillSource,
+    rewriteSkillSource,
+    cancelSkillRewrite,
     selectSkillVersion,
     saveSkillSource,
     retrySkillUpload,

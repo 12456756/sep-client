@@ -29,6 +29,8 @@ export const ERROR_CODES = {
   INVALID_STATE: { status: 409, retryable: false, level: 'warn', message: '当前状态下无法执行该操作。' },
   DRAFT_REVISION_CONFLICT: { status: 409, retryable: true, level: 'warn', message: '安排草稿已被更新，请重新加载后再保存。' },
   PLANNING_FAILED: { status: 503, retryable: true, level: 'warn', message: '自动编排暂时未能完成，请稍后重试。' },
+  SKILL_REWRITE_FAILED: { status: 503, retryable: true, level: 'warn', message: '未能生成有效的技能修改建议，请稍后重试。' },
+  SKILL_REWRITE_CANCELLED: { status: 409, retryable: true, level: 'warn', message: '技能改写已取消或超时，草稿未改动。' },
   MODEL_NOT_ALLOWED: { status: 403, retryable: false, level: 'warn', message: '所选模型不在该硅基员工的可用范围内。' },
   SUBSCRIPTION_EXPIRING: { status: 409, retryable: false, level: 'warn', message: '硅基员工订阅剩余时间不足，无法开始这项工作。' },
   WORKSPACE_INVALID: { status: 400, retryable: false, level: 'warn', message: '工作目录不可用或不符合安全策略。' },

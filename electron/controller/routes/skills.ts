@@ -2,9 +2,12 @@ import { z } from 'zod'
 import { idempotencyKeySchema, personalSkillVersionRequestSchema, skillVersionIdSchema } from '../../../src/shared/platform-supplement-contracts'
 import { INVOKE_CHANNELS } from '../channels'
 import { NO_INPUT, route } from '../router'
+import { skillRewriteCancelSchema, skillRewriteInputSchema } from '../../../src/shared/skill-rewrite'
 
 const versionInput = z.object({ capabilityId: skillVersionIdSchema, versionId: skillVersionIdSchema }).strict()
 export const skillRoutes = [
+  route(INVOKE_CHANNELS.SKILL_LIBRARY_REWRITE, skillRewriteInputSchema, async (ctx, input) => ({ success: true, data: await ctx.skills.rewrite(input) })),
+  route(INVOKE_CHANNELS.SKILL_LIBRARY_CANCEL_REWRITE, skillRewriteCancelSchema, (ctx, input) => { ctx.skills.cancelRewrite(input); return { success: true } }),
   route(INVOKE_CHANNELS.SKILL_LIBRARY_LIST, NO_INPUT, async ctx => {
     const { items, skippedCount } = await ctx.skills.listWithDiagnostics()
     return { success: true, data: items, skippedCount }
