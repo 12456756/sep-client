@@ -92,6 +92,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   const contentRoute = workspace.employeeBackgroundRoute;
   const contentWorkspace = route.name === 'employee' ? { ...workspace, route: contentRoute } : workspace;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSidebarCollapsed, setSettingsSidebarCollapsed] = useState(false);
   const [updateOpen, setUpdateOpen] = useState(false);
   const profile = profileWorkspace.profile;
   const userAvatar = displayedUserAvatar(profile, initialUserAvatar ?? null, userName);
@@ -133,6 +134,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
     && (workspace.employeePageState.scope !== 'all' || workspace.organizationStatus !== 'loading');
   useEmployeePageScroll(scroll, contentRoute, workspace.employeePageState, workspace.updateEmployeePageState, employeePageReady);
   useSkillPageScroll(scroll, contentRoute, workspace.skillPageState, workspace.updateSkillPageState, !workspace.skillsLoading || workspace.skills.length > 0);
+  const visibleSidebarCollapsed = settingsOpen ? settingsSidebarCollapsed : sidebarCollapsed;
   const previousRoute = useRef(route);
   useLayoutEffect(() => {
     const previous = previousRoute.current;
@@ -144,8 +146,11 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
 
   const topBar = (
     <AppTopBar
-      sidebarCollapsed={sidebarCollapsed}
-      onToggleSidebar={() => setSidebarCollapsed(value => !value)}
+      sidebarCollapsed={visibleSidebarCollapsed}
+      onToggleSidebar={() => {
+        if (settingsOpen) setSettingsSidebarCollapsed(value => !value);
+        else setSidebarCollapsed(value => !value);
+      }}
       actions={(
         <div className="ent-top-actions-group">
           <div className="ent-view-switch" role="group" aria-label="页面切换">
@@ -166,7 +171,7 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
   );
 
   return (
-    <div className={`ent-shell${darkMode ? ' dark' : ''}${sidebarCollapsed ? ' sidebar-collapsed' : ''}${['arrange', 'records', 'work'].includes(contentRoute.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
+    <div className={`ent-shell${darkMode ? ' dark' : ''}${visibleSidebarCollapsed ? ' sidebar-collapsed' : ''}${['arrange', 'records', 'work'].includes(contentRoute.name) ? ' ent-work-shell' : ''}`} data-theme={darkMode ? 'dark' : 'light'}>
       <AppSideNav
         enterpriseName={displayEnterpriseName}
         enterpriseMark={displayEnterpriseName.slice(0, 1) || overview.mark}
@@ -176,9 +181,9 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
         canManage={canManage}
         userName={displayUserName}
         userAvatar={userAvatar}
-        collapsed={sidebarCollapsed}
+        collapsed={visibleSidebarCollapsed}
         onNavigate={workspace.navigate}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => { setSettingsSidebarCollapsed(false); setSettingsOpen(true); }}
         onLogout={() => { void onLogout(); }}
       />
       <div className="ent-shell-main">
@@ -213,6 +218,8 @@ function ClientAppContent({ update, userId, userName, enterpriseId, enterpriseNa
           canManage={canManage}
           uploading={profileWorkspace.uploading}
           error={profileWorkspace.error}
+          sidebarCollapsed={settingsSidebarCollapsed}
+          onToggleSidebar={() => setSettingsSidebarCollapsed(value => !value)}
           onUploadAvatar={async input => {
             const result = await profileWorkspace.uploadAvatar(input);
             await workspace.refreshOrganization();

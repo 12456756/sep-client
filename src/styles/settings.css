@@ -1,6 +1,8 @@
-.ent-settings-backdrop { position: fixed; z-index: 80; inset: 60px 0 0; background: var(--ent-panel); }
-.ent-settings-layout { position: fixed; z-index: 81; inset: 60px 0 0; display: grid; grid-template-columns: 256px minmax(0, 1fr); min-width: 0; min-height: 0; color: var(--ent-ink); background: var(--ent-panel); outline: none; }
-.ent-settings-sidebar { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 24px 16px; border-right: 1px solid var(--ent-line); background: var(--ent-panel-subtle); }
+.ent-settings-backdrop { position: fixed; z-index: 80; inset: 60px 0 0; background: var(--work-canvas); }
+.ent-settings-layout { --ent-settings-sidebar-width: var(--ent-side-w); position: fixed; z-index: 81; inset: 60px 0 0; display: grid; grid-template-columns: var(--ent-settings-sidebar-width) minmax(0, 1fr); min-width: 0; min-height: 0; color: var(--ent-ink); background: var(--work-canvas); outline: none; }
+.ent-settings-layout.sidebar-collapsed { --ent-settings-sidebar-width: var(--ent-side-w-collapsed); }
+.ent-settings-sidebar { display: flex; min-width: 0; min-height: 0; flex-direction: column; padding: 24px 16px; border-right: 1px solid var(--ent-line); background: var(--work-rail); }
+.ent-settings-sidebar-toggle { position: fixed; z-index: 82; top: 14px; left: calc(var(--ent-settings-sidebar-width) + 28px); }
 .ent-settings-sidebar-head { display: flex; align-items: center; gap: 8px; margin: 0 0 24px; }
 .ent-settings-sidebar-head h2 { margin: 0; font-size: 20px; font-weight: 650; }
 .ent-settings-icon { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; flex: 0 0 32px; padding: 0; border: 0; border-radius: 6px; color: var(--ent-ink-3); background: transparent; cursor: pointer; }
@@ -20,6 +22,15 @@
 .ent-settings-nav-item span { min-width: 0; overflow-wrap: anywhere; }
 .ent-settings-nav-item:hover { background: var(--ent-muted-bg); }
 .ent-settings-nav-item.active { color: var(--ent-brand-ink); background: var(--ent-brand-soft); font-weight: 600; }
+.ent-settings-layout.sidebar-collapsed .ent-settings-sidebar { padding-inline: 16px; }
+.ent-settings-layout.sidebar-collapsed .ent-settings-sidebar-head { justify-content: center; }
+.ent-settings-layout.sidebar-collapsed .ent-settings-sidebar-head h2,
+.ent-settings-layout.sidebar-collapsed .ent-settings-search,
+.ent-settings-layout.sidebar-collapsed .ent-settings-nav-label,
+.ent-settings-layout.sidebar-collapsed .ent-settings-nav-item span { display: none; }
+.ent-settings-layout.sidebar-collapsed .ent-settings-nav { margin-top: 0; }
+.ent-settings-layout.sidebar-collapsed .ent-settings-nav-group + .ent-settings-nav-group { margin-top: 16px; }
+.ent-settings-layout.sidebar-collapsed .ent-settings-nav-item { justify-content: center; gap: 0; padding-inline: 0; }
 .ent-settings-close { position: absolute; z-index: 1; top: 24px; right: 24px; }
 .ent-settings-content { min-width: 0; min-height: 0; padding: 48px 64px 80px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .ent-settings-reading { width: 100%; max-width: 880px; margin: 0 auto; }
@@ -64,13 +75,11 @@
 .ent-settings-layout .speech-system-settings { width: 100%; margin: 0; padding: 22px 0; border-top: 1px solid var(--ent-line-soft); color: var(--ent-ink-2); }
 .ent-settings-layout .speech-system-settings:focus-visible { outline-color: var(--ent-brand); }
 @media (max-width: 1000px) {
-  .ent-settings-layout { grid-template-columns: 216px minmax(0, 1fr); }
   .ent-settings-content { padding: 40px 40px 64px; }
   .ent-settings-layout .ent-default-model-settings { grid-template-columns: minmax(0, 1fr) minmax(140px, 210px); }
   .ent-settings-layout .ent-default-workspace-actions .ent-btn { max-width: 200px; }
 }
 @media (max-width: 720px) {
-  .ent-settings-layout { grid-template-columns: 170px minmax(0, 1fr); }
   .ent-settings-sidebar { padding: 20px 12px; }
   .ent-settings-sidebar-head { gap: 4px; }
   .ent-settings-content { padding: 68px 24px 48px; }
@@ -80,6 +89,12 @@
   .ent-settings-layout .ent-default-workspace-actions .ent-btn { max-width: 100%; }
   .ent-settings-layout .ent-default-workspace-actions { max-width: 100%; }
   .ent-settings-reading > h2 { margin-bottom: 32px; }
+}
+@media (max-width: 1080px) {
+  .ent-settings-sidebar-toggle { left: calc(var(--ent-settings-sidebar-width) + 20px); }
+}
+@media (max-width: 520px) {
+  .ent-settings-sidebar-toggle { left: calc(var(--ent-settings-sidebar-width) + 14px); }
 }
 @media (max-width: 480px) {
   .ent-settings-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }

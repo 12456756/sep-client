@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog'
-import { ArrowLeft, Camera, CircleUserRound, ImagePlus, Mic, RefreshCw, Search, Settings, X } from 'lucide-react'
+import { ArrowLeft, Camera, CircleUserRound, ImagePlus, Mic, PanelLeft, RefreshCw, Search, Settings, X } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ClientProfile } from '../../shared/profile-wallet-contracts'
 import type { UploadInput } from '../../shared/ipc'
@@ -16,6 +16,8 @@ interface Props {
   canManage: boolean
   uploading: 'avatar' | 'logo' | null
   error: string | null
+  sidebarCollapsed: boolean
+  onToggleSidebar: () => void
   onUploadAvatar: (input: UploadInput) => Promise<unknown>
   onUploadLogo: (input: UploadInput) => Promise<unknown>
   onRefresh: () => Promise<unknown>
@@ -32,7 +34,7 @@ async function readImage(file: File): Promise<UploadInput> {
 }
 
 export function ProfileSettingsDialog({
-  profile, userName, canManage, uploading, error, onUploadAvatar, onUploadLogo, onRefresh, onClose, models,
+  profile, userName, canManage, uploading, error, sidebarCollapsed, onToggleSidebar, onUploadAvatar, onUploadLogo, onRefresh, onClose, models,
 }: Props) {
   const avatarInput = useRef<HTMLInputElement>(null)
   const logoInput = useRef<HTMLInputElement>(null)
@@ -118,7 +120,7 @@ export function ProfileSettingsDialog({
   return (
     <Dialog.Root open onOpenChange={open => { if (!open) onClose() }}>
       <Dialog.Overlay className="ent-settings-backdrop" />
-      <Dialog.Content className="ent-settings-layout" aria-describedby={undefined}
+      <Dialog.Content className={`ent-settings-layout${sidebarCollapsed ? ' sidebar-collapsed' : ''}`} aria-describedby={undefined}
         onKeyDown={event => {
           if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
             event.preventDefault()
@@ -133,7 +135,10 @@ export function ProfileSettingsDialog({
           if (previous instanceof HTMLElement && previous.isConnected) previous.focus({ preventScroll: true })
           else document.querySelector<HTMLElement>('.ent-side-user')?.focus({ preventScroll: true })
         }}>
-        <aside className="ent-settings-sidebar">
+        <button type="button" className="ent-top-sidebar-toggle ent-settings-sidebar-toggle" aria-label={sidebarCollapsed ? '展开设置导航' : '收起设置导航'} title={sidebarCollapsed ? '展开设置导航' : '收起设置导航'} aria-expanded={!sidebarCollapsed} aria-controls="ent-settings-navigation" onClick={onToggleSidebar}>
+          <PanelLeft size={20} strokeWidth={1.8} aria-hidden />
+        </button>
+        <aside id="ent-settings-navigation" className="ent-settings-sidebar" aria-label="设置导航">
           <header className="ent-settings-sidebar-head">
             <button type="button" className="ent-settings-icon" onClick={onClose} aria-label="返回工作台" title="返回工作台"><ArrowLeft size={18} aria-hidden /></button>
             <Dialog.Title>设置</Dialog.Title>
@@ -148,7 +153,7 @@ export function ProfileSettingsDialog({
               <span className="ent-settings-nav-label">{group}</span>
               {pages.filter(page => page.group === group).map(page => {
                 const Icon = pageIcons[page.id]
-                return <button key={page.id} type="button" className={`ent-settings-nav-item${!searching && currentPage?.id === page.id ? ' active' : ''}`} aria-current={!searching && currentPage?.id === page.id ? 'page' : undefined}
+                return <button key={page.id} type="button" className={`ent-settings-nav-item${!searching && currentPage?.id === page.id ? ' active' : ''}`} aria-label={page.title} title={sidebarCollapsed ? page.title : undefined} aria-current={!searching && currentPage?.id === page.id ? 'page' : undefined}
                   onClick={() => { setActivePage(page.id); setQuery('') }}>
                   <Icon size={17} strokeWidth={1.8} aria-hidden /><span>{page.title}</span>
                 </button>
