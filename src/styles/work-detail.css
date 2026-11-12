@@ -44,6 +44,13 @@
 .ent-work-hub .ent-wk-inspector .ent-panel { box-shadow: none; }
 .ent-work-hub .ent-wk-inspector .ent-work-process :is(.ent-wk-activity-list, .ent-timeline) { max-height: none; overflow: visible; }
 .ent-work-hub .ent-wk-info-facts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; color: var(--ent-ink-2); font-size: 12px; overflow-wrap: anywhere; }
+.ent-wk-skills-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--ent-ink-2); font-size: 12px; }
+.ent-wk-skills-list { margin: 8px 0 0; padding: 0; list-style: none; }
+.ent-wk-skills-list > li { display: flex; flex-direction: column; gap: 6px; padding: 14px 0; border-bottom: 1px solid var(--ent-line); overflow-wrap: anywhere; }
+.ent-wk-skills-list strong { font-size: 13px; }
+.ent-wk-skills-list span { color: var(--ent-ink-2); font-size: 12px; }
+.ent-wk-skills-list small { color: var(--ent-ink-3); font-size: 11px; }
+.ent-wk-skills-list .ent-wk-skill-description { margin: 0; color: var(--ent-ink-2); font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
 .ent-work-hub .ent-wk-detail-main > .ent-failure-notice { flex-direction: column; align-items: stretch; gap: 4px; padding-block: 6px; }
 .ent-failure-row { display: flex; align-items: center; gap: 12px; min-width: 0; width: 100%; }
 .ent-failure-row .ent-failure-reason { flex: 1 1 0; min-width: 0; overflow: hidden; color: var(--ent-danger); font-size: 12px; line-height: 1.6; text-overflow: ellipsis; white-space: nowrap; }

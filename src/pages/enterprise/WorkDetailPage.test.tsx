@@ -47,6 +47,7 @@ const dependencies: Record<string, unknown> = {
   '../../components/enterprise/WorkTalkDrawer': { WorkConversation: () => null, WorkTalkDrawer: () => null },
   '../../components/enterprise/IconHint': { IconHint: ({ children, label }: { children: React.ReactNode; label: string }) => React.createElement('span', { 'data-hint': label }, children) },
   '../../components/enterprise/WorkIndicators': { WorkStatusIcon: () => null, WorkTypeTag: () => null },
+  '../../components/enterprise/WorkSkills': { WorkSkills: () => null },
   '../../components/workspace/MediaArtifactsPanel': { MediaArtifactsPanel },
   '../../components/workspace/ArrangementMediaPanel': { ArrangementMediaPanel },
   '../../components/workspace/DocumentPreviewButton': { DocumentPreviewButton },
@@ -362,7 +363,7 @@ describe('WorkDetailPage media entry', () => {
 
   it('opens every detail as a modal without navigation and keeps the media controller mounted', () => {
     const page = mountDetail();
-    for (const label of ['查看产出结果', '查看工作过程', '查看工作信息']) {
+    for (const label of ['查看产出结果', '查看工作过程', '查看工作信息', '查看使用技能']) {
       (page.find(element => element.props['aria-label'] === label).props.onClick as () => void)();
       page.render();
       assert.equal(page.dialog.open, true);

@@ -2,7 +2,7 @@
 
 import {
   AlertTriangle, ArrowLeft, CheckCircle2, ChevronDown, Copy, FileOutput, Info, LoaderCircle,
-  RotateCcw, StopCircle, Trash2, X, XCircle,
+  RotateCcw, Sparkles, StopCircle, Trash2, X, XCircle,
 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Empty, StepStateChip } from '../../components/enterprise/atoms';
@@ -11,6 +11,7 @@ import { ArrangementTranscript } from '../../components/enterprise/arrange/Arran
 import { WorkConversation } from '../../components/enterprise/WorkTalkDrawer';
 import { IconHint } from '../../components/enterprise/IconHint';
 import { WorkStatusIcon, WorkTypeTag } from '../../components/enterprise/WorkIndicators';
+import { WorkSkills } from '../../components/enterprise/WorkSkills';
 import { MediaArtifactsPanel } from '../../components/workspace/MediaArtifactsPanel';
 import { ArrangementMediaPanel } from '../../components/workspace/ArrangementMediaPanel';
 import { ResultFileCard } from '../../components/workspace/ResultFileCard';
@@ -49,7 +50,7 @@ export function WorkDetailPage({ workspace, workId }: Props) {
 }
 
 /** 抬头右边和抽屉之间共用的一个状态：现在拉开的是哪个抽屉。 */
-type Panel = 'results' | 'process' | 'info' | null;
+type Panel = 'results' | 'process' | 'skills' | 'info' | null;
 
 function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWorkspace }) {
   const isConversation = work.kind === 'conversation';
@@ -136,6 +137,7 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
           <IconHint label="产出结果" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看产出结果" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'results'} onClick={() => openInspector('results')}><FileOutput size={16} aria-hidden /></button></IconHint>
           {isConversation ? <IconHint label="工作过程" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作过程" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'process'} onClick={() => openInspector('process')}><LoaderCircle size={16} aria-hidden /></button></IconHint> : null}
           <IconHint label="工作信息" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看工作信息" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'info'} onClick={() => openInspector('info')}><Info size={16} aria-hidden /></button></IconHint>
+          <IconHint label="使用技能" side="bottom"><button type="button" className="ent-icon-btn ent-wk-inspector-trigger" aria-label="查看使用技能" aria-haspopup="dialog" aria-controls={`work-inspector-${work.id}`} aria-expanded={panel === 'skills'} onClick={() => openInspector('skills')}><Sparkles size={16} aria-hidden /></button></IconHint>
         </div>
       </div>
 
@@ -203,7 +205,10 @@ function Detail({ work, workspace }: { work: WorkItem; workspace: EnterpriseWork
             if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) setPanel(null);
           }}
         >
-          <div className="ent-wk-inspector-heading"><strong id={`work-inspector-title-${work.id}`}>{panel === 'results' ? '产出结果' : panel === 'process' ? '工作过程' : '工作信息'}</strong><button ref={inspectorCloseButton} type="button" className="ent-icon-btn" aria-label="关闭详情面板" onClick={() => setPanel(null)}><X size={16} aria-hidden /></button></div>
+          <div className="ent-wk-inspector-heading"><strong id={`work-inspector-title-${work.id}`}>{panel === 'results' ? '产出结果' : panel === 'process' ? '工作过程' : panel === 'skills' ? '使用技能' : '工作信息'}</strong><button ref={inspectorCloseButton} type="button" className="ent-icon-btn" aria-label="关闭详情面板" onClick={() => setPanel(null)}><X size={16} aria-hidden /></button></div>
+          <section className="ent-panel ent-wk-inspector-content" aria-label="使用技能" hidden={panel !== 'skills'}>
+            <WorkSkills work={work} scopeKey={workspace.attachmentScopeKey} visible={panel === 'skills'} />
+          </section>
           <section className="ent-panel ent-wk-inspector-content" aria-label="产出结果" hidden={panel !== 'results'}>
             {isConversation ? <MediaArtifactsPanel taskId={work.id} visible={panel === 'results'} onSummary={handleMediaSummary} presentation="results" /> : null}
             {!isConversation && panel === 'results' && work.arrangementExecution?.media?.length ? <ArrangementMediaPanel media={work.arrangementExecution.media} deliverables={work.deliverables} /> : null}

@@ -3,7 +3,7 @@ import type { TaskExecutionEvent } from '../../shared/types'
 import { mergeTranscriptEvents, selectTranscriptEvent } from './arrangement-transcript'
 
 /** Subscribe before reading disk so a slow history query cannot overwrite live output. */
-export function useArrangementTranscript(taskId: string, scopeKey: string) {
+export function useArrangementTranscript(taskId: string, scopeKey: string, selectEvent = selectTranscriptEvent, enabled = true) {
   const [snapshot, setSnapshot] = useState<{ key: string; events: TaskExecutionEvent[]; loading: boolean; error: string | null }>({
     key: '', events: [], loading: true, error: null,
   })
@@ -11,6 +11,7 @@ export function useArrangementTranscript(taskId: string, scopeKey: string) {
   const reload = useCallback(() => setRevision(value => value + 1), [])
   const key = JSON.stringify([scopeKey, taskId])
   useEffect(() => {
+    if (!enabled) return
     let active = true
     const api = window.electronAPI
     let buffered: TaskExecutionEvent[] = []
@@ -25,7 +26,7 @@ export function useArrangementTranscript(taskId: string, scopeKey: string) {
     setSnapshot(previous => ({ key, events: previous.key === key ? previous.events : [], loading: true, error: null }))
     const unsubscribe = api.onPiEvent(event => {
       if (!active || event.taskId !== taskId) return
-      const selected = selectTranscriptEvent(event)
+      const selected = selectEvent(event)
       if (selected) buffered.push(selected)
       if (!timer && buffered.length) timer = setTimeout(flush, 80)
     })
@@ -45,7 +46,7 @@ export function useArrangementTranscript(taskId: string, scopeKey: string) {
             if (!result.success) throw new Error(result.error?.message || '执行过程加载失败')
             append((result.events ?? []).flatMap(event => {
               if (event.taskId !== taskId) return []
-              const selected = selectTranscriptEvent(event)
+              const selected = selectEvent(event)
               return selected ? [selected] : []
             }))
           }
@@ -57,7 +58,7 @@ export function useArrangementTranscript(taskId: string, scopeKey: string) {
       }
     })()
     return () => { active = false; unsubscribe(); clearTimeout(timer) }
-  }, [key, taskId, revision])
+  }, [key, taskId, revision, selectEvent, enabled])
   return { events: snapshot.key === key ? snapshot.events : [], loading: snapshot.key !== key || snapshot.loading,
     error: snapshot.key === key ? snapshot.error : null, reload }
 }

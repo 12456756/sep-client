@@ -37,9 +37,9 @@ function mount(api: Partial<ElectronAPI>) {
     (id: string) => id === 'react' ? hooks : projection, loaded.exports, loaded)
   const hook = (loaded.exports as typeof import('./use-arrangement-transcript')).useArrangementTranscript
   return {
-    render(taskId = 'task', scope = 'scope-a') {
+    render(taskId = 'task', scope = 'scope-a', selectEvent = projection.selectTranscriptEvent, enabled = true) {
       cursor = 0; pending = []
-      const result = hook(taskId, scope)
+      const result = hook(taskId, scope, selectEvent, enabled)
       pending.forEach(run => run())
       return result
     },
@@ -56,6 +56,30 @@ const event = (sequence: number, text: string): TaskExecutionEvent => ({ taskId:
   sequence, type: 'arrangement_node_progress', occurredAt: sequence, data: { eventType: 'text_delta', nodeId: 'a', nodeRunId: 'node-run', text } })
 
 describe('arrangement transcript loading', () => {
+  it('loads selected events only while the inspector is visible and unsubscribes on close', async () => {
+    let subscriptions = 0
+    let unsubscriptions = 0
+    let reads = 0
+    const selected = (value: TaskExecutionEvent) => value.type === 'text_delta' ? value : null
+    const page = mount({
+      onPiEvent() { subscriptions++; return () => { unsubscriptions++ } },
+      async listTaskRuns() { reads++; return { success: true, runs: [] } },
+    })
+    try {
+      page.render('task', 'scope-a', selected, false)
+      assert.equal(reads, 0)
+      page.render('task', 'scope-a', selected, true)
+      await tick()
+      assert.equal(subscriptions, 1)
+      assert.equal(page.render('task', 'scope-a', selected, true).loading, false)
+      page.render('task', 'scope-a', selected, false)
+      assert.equal(unsubscriptions, 1)
+      page.render('task', 'scope-a', selected, true)
+      await tick()
+      assert.equal(reads, 2)
+    } finally { page.dispose() }
+  })
+
   it('subscribes before disk IO and merges late history with live events without duplicates', async () => {
     let listener!: (event: TaskExecutionEvent) => void
     let finish!: (value: { success: true; events: TaskExecutionEvent[] }) => void
