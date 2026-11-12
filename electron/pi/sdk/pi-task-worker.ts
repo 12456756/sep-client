@@ -18,6 +18,7 @@ export function createDefaultSharedPiSession(): SharedPiSession {
 }
 
 export interface PiTaskWorkerContext {
+  resolveConnectorBinding?: () => Promise<import('../../domain/connectors').ConnectorBinding | undefined>
   modelTrace?: PiAgentSessionConfig['modelTrace']
   taskTitle?: string
   tracePhase?: string
@@ -150,6 +151,7 @@ export class PiTaskWorker {
         nodeTitle: this.context.nodeTitle,
         runId: this.context.runId,
         modelId: this.context.modelId,
+        connectorBinding: await this.context.resolveConnectorBinding?.(),
         vision: this.context.vision,
         gatewayUrl: this.context.gatewayUrl,
         workspaceDir: this.context.workspaceDir,
@@ -389,5 +391,3 @@ export class PiTaskWorker {
     return operation
   }
 }
-
-

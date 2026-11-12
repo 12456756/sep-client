@@ -23,6 +23,7 @@ import {
   type BashOperations,
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+import { attachConnectorTools } from './pi-connector-tools'
 import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
@@ -1088,7 +1089,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       log.warn('common skill unavailable', { skillId: 'officecli', reason })
       await config.reportPolicyEvent?.('common_skill_unavailable', { skillId: 'officecli', reason })
     }
-    const baseMcp = await createMcpRuntime(servers, config.workspaceDir)
+    const connector = canUseMcp ? config.connectorBinding : undefined
+    const baseMcp = attachConnectorTools(await createMcpRuntime([...servers, ...(connector?.servers ?? [])], config.workspaceDir,
+      connector ? new Map(connector.servers.map(server => [server.name, connector.fetch])) : undefined), connector, config.workspaceDir)
     const attached = await attachOfficeRuntime(baseMcp, common, config).catch(async error => {
       await baseMcp.dispose()
       throw error
@@ -1175,5 +1178,3 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     }
   }
 }
-
-

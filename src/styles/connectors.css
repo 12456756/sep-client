@@ -1,0 +1,48 @@
+.connectors-page { min-width: 0; }
+.connector-status.connected { color: var(--ent-ready); }
+.connector-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.connector-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; color: var(--ent-danger); font-size: 13px; }
+.connectors-heading { padding-bottom: 24px; border-bottom: 1px solid var(--ent-line-soft); }
+.connectors-heading h1 { margin: 0; font-size: 20px; font-weight: 600; }
+.connectors-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; margin: 24px 0 20px; }
+.connectors-toolbar h2 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 15px; }
+.connectors-toolbar h2 span { color: var(--ent-ink-3); font-size: 13px; font-weight: 400; }
+.connectors-search { display: flex; align-items: center; gap: 8px; width: 260px; max-width: 100%; min-height: 36px; padding: 0 10px; border: 1px solid var(--ent-line); border-radius: 6px; color: var(--ent-ink-3); background: var(--ent-panel); }
+.connectors-search:focus-within { outline: 2px solid var(--ent-brand-border); outline-offset: 2px; }
+.connectors-search input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ent-ink); background: transparent; font: inherit; }
+.connectors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 20px; }
+.connector-card { min-width: 0; padding: 20px; border: 1px solid var(--ent-line); border-radius: 8px; background: var(--ent-panel); }
+.connector-card-heading, .connector-detail-heading { display: flex; align-items: center; gap: 12px; }
+.connector-logo { display: grid; place-items: center; width: 44px; height: 44px; flex: 0 0 44px; color: #0089ff; background: var(--ent-panel-subtle); border-radius: 8px; }
+.connector-logo img { width: 36px; height: 36px; object-fit: contain; }
+.connector-card-heading h3, .connector-detail-heading h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+.connector-card-heading > div { min-width: 0; }
+.connector-card-heading > div > span, .connector-detail-heading p { color: var(--ent-ink-3); font-size: 11px; }
+.connector-status { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; margin-left: auto; color: var(--ent-ink-3); font-size: 11px; }
+.connector-card-description { margin: 22px 0 12px; color: var(--ent-ink-2); font-size: 13px; }
+.connector-capabilities { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--ent-ink-3); font-size: 11px; }
+.connector-card footer { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--ent-line-soft); }
+.connector-card footer > span { color: var(--ent-ink-3); font-size: 11px; }
+.connector-card footer .ent-btn { padding: 0 6px; }
+.connector-back { margin: 18px 0; padding-left: 0; }
+.connector-detail { max-width: 760px; }
+.connector-detail-heading { padding: 8px 0 24px; }
+.connector-detail-heading p { margin: 0; }
+.connector-account { display: flex; flex-wrap: wrap; gap: 16px; padding: 20px 0; border-top: 1px solid var(--ent-line-soft); border-bottom: 1px solid var(--ent-line-soft); font-size: 13px; }
+.connector-account > span { color: var(--ent-ink-3); }
+.connector-account strong { font-weight: 400; }
+.connector-detail h3 { margin: 24px 0 8px; font-size: 15px; }
+.connector-permissions { margin: 0; padding: 0; list-style: none; }
+.connector-permissions li { display: flex; align-items: flex-start; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--ent-line-soft); }
+.connector-permissions li > svg { color: var(--ent-ink-3); flex-shrink: 0; }
+.connector-permissions strong { font-size: 13px; font-weight: 500; }
+.connector-permissions p { margin: 6px 0 0; color: var(--ent-ink-3); font-size: 13px; overflow-wrap: anywhere; }
+.connector-authorization { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 16px; padding-top: 24px; }
+.connector-authorization p { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--ent-ink-3); font-size: 13px; }
+.connectors-empty { display: grid; justify-items: center; gap: 12px; padding: 64px 0; color: var(--ent-ink-3); }
+.connectors-empty h3 { margin: 0; font-size: 15px; font-weight: 400; }
+@media (max-width: 600px) {
+  .connectors-page { padding: 20px 16px; }
+  .connectors-search { width: 100%; }
+  .connector-card { padding: 16px; }
+}

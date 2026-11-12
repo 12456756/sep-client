@@ -38,6 +38,7 @@ export interface McpServerConfig {
 }
 
 export interface PiAgentSessionConfig {
+  connectorBinding?: import('../../domain/connectors').ConnectorBinding
   modelTrace?: import('../../domain/model-trace').ModelTraceRecorder
   taskTitle?: string
   tracePhase?: string
@@ -81,5 +82,3 @@ export interface PiAgentSessionConfig {
 export interface PiAgentRuntime {
   createSession(config: PiAgentSessionConfig): Promise<PiAgentSession>
 }
-
-

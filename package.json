@@ -5,13 +5,13 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "electron-vite dev --watch",
-    "dev:debug": "electron-vite dev --watch --remoteDebuggingPort 9333 --inspect 9334",
+    "dev": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && electron-vite dev --watch",
+    "dev:debug": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && electron-vite dev --watch --remoteDebuggingPort 9333 --inspect 9334",
     "mcp:electron-debug": "node scripts/electron-debug-mcp.mjs",
     "mcp:electron-debug:install": "node scripts/electron-debug-mcp.mjs --install",
     "test:electron-debug": "node scripts/test-electron-debug.mjs",
     "dev:preview": "vite --config vite.preview.config.ts --open /?preview=workspace",
-    "build": "node scripts/generate-runtime-config.mjs && electron-vite build",
+    "build": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && node scripts/generate-runtime-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
     "package": "npm run package:local:stable",
     "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.node.json --noEmit",
@@ -55,7 +55,7 @@
     "release:upload": "node scripts/upload-download-update.mjs",
     "test:releases": "node --test scripts/release-flow.test.mjs scripts/record-release-build.test.mjs scripts/release-version.test.mjs scripts/release-notes.test.mjs",
     "verify:release-signatures": "node scripts/verify-release-signatures.mjs",
-    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/office-assets.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
+    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/office-assets.test.mjs scripts/dingtalk-assets.test.mjs scripts/feishu-assets.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
     "verify:packaged-runtime": "node scripts/verify-packaged-runtime.mjs",
     "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
     "release:builder:signed:stable": "node scripts/generate-builder-config.mjs stable --signed",
@@ -106,6 +106,7 @@
     "zustand": "^5.0.1"
   },
   "devDependencies": {
+    "@larksuite/cli": "1.0.100",
     "@tailwindcss/vite": "^4.0.0",
     "@types/express": "^5.0.3",
     "@types/node": "^22.9.0",
@@ -114,6 +115,7 @@
     "@typescript-eslint/eslint-plugin": "^8.14.0",
     "@typescript-eslint/parser": "^8.14.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "dingtalk-workspace-cli": "1.0.68",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.7",
     "electron-vite": "^2.3.0",
@@ -189,6 +191,10 @@
     ],
     "extraResources": [
       {
+        "from": "node_modules/dingtalk-workspace-cli/assets/dws-skills.zip",
+        "to": "dingtalk/dws-skills.zip"
+      },
+      {
         "from": "resources/common-skills",
         "to": "common-skills",
         "filter": [
@@ -223,6 +229,8 @@
     "artifactName": "SEP-Client-${version}-${os}-${arch}.${ext}"
   },
   "allowScripts": {
-    "electron@33.4.11": true
+    "@larksuite/cli@1.0.100": false,
+    "electron@33.4.11": true,
+    "dingtalk-workspace-cli@1.0.68": false
   }
 }

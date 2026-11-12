@@ -110,7 +110,7 @@ interface Connection {
   transport: StdioClientTransport | StreamableHTTPClientTransport
 }
 
-function makeConnection(config: McpServerConfig, workspaceDir: string): Connection {
+function makeConnection(config: McpServerConfig, workspaceDir: string, fetch?: typeof globalThis.fetch): Connection {
   const transport = config.transport.type === 'stdio'
     ? new StdioClientTransport({
       command: config.transport.command, args: config.transport.args,
@@ -118,6 +118,7 @@ function makeConnection(config: McpServerConfig, workspaceDir: string): Connecti
       cwd: config.transport.cwd ?? workspaceDir, stderr: 'pipe', maxBufferSize: 1_048_576,
     })
     : new StreamableHTTPClientTransport(new URL(config.transport.url), {
+      fetch,
       requestInit: { headers: config.transport.headers, redirect: 'error' },
       reconnectionOptions: { maxRetries: 0, initialReconnectionDelay: 1000, maxReconnectionDelay: 1000, reconnectionDelayGrowFactor: 1 },
     })
@@ -166,7 +167,7 @@ async function closeConnection(connection: Connection): Promise<void> {
   }
 }
 
-export async function createMcpRuntime(servers: readonly McpServerConfig[], workspaceDir: string): Promise<McpRuntime> {
+export async function createMcpRuntime(servers: readonly McpServerConfig[], workspaceDir: string, fetches?: ReadonlyMap<string, typeof fetch>): Promise<McpRuntime> {
   const configs = parseMcpServers(servers)
   const connections: Connection[] = []
   const tools: McpRuntime['tools'] = []
@@ -176,7 +177,7 @@ export async function createMcpRuntime(servers: readonly McpServerConfig[], work
   try {
     for (const config of configs) {
       if (!config.enabledTools?.length) continue
-      const connection = makeConnection(config, workspaceDir)
+      const connection = makeConnection(config, workspaceDir, fetches?.get(config.name))
       connections.push(connection)
       const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
       await withTimeout(connection.client.connect(connection.transport, { timeout }), timeout, 'MCP connect')

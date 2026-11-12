@@ -69,6 +69,21 @@ describe('MCP configuration', () => {
 })
 
 describe('MCP tool bridge', () => {
+  it('uses the injected authenticated fetch for discovery and tool execution', async () => {
+    const server = await serve(request => request.method === 'tools/list' ? { tools: [tool] } : { content: [{ type: 'text', text: 'authorized result' }] })
+    const calls: string[] = []
+    const authenticated: typeof fetch = async (input, init) => {
+      if (init?.body) calls.push(JSON.parse(String(init.body)).method)
+      return fetch(input, init)
+    }
+    const bridge = await createMcpRuntime([config(server.url)], process.cwd(), new Map([['docs', authenticated]]))
+    cleanups.push(() => bridge.dispose())
+    const result = await bridge.tools[0]!.execute('authorized', { query: 'document' }, undefined)
+    assert.equal(result.content[0].text, 'authorized result')
+    assert.ok(calls.includes('initialize'))
+    assert.ok(calls.includes('tools/list'))
+    assert.ok(calls.includes('tools/call'))
+  })
   it('preserves already-decoded browser/MCP text including unrecoverable characters in place', async () => {
     const text = 'before\n\u4e2d\u6587\n\ufffd\u9225\u72b2\u7c8b\nafter'
     const server = await serve(request => request.method === 'tools/list'

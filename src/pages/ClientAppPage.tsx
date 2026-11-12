@@ -37,6 +37,7 @@ import { EmployeesPage } from './enterprise/EmployeesPage';
 import { HomePageRedesign as HomePage } from './enterprise/HomePageRedesign';
 import { SkillsPage } from './enterprise/SkillsPage';
 import { ComputeCenterPage } from './enterprise/ComputeCenterPage';
+import { ConnectorsPage } from './enterprise/ConnectorsPage';
 import { OrganizationPage } from './enterprise/OrganizationPage';
 import { KnowledgePage } from './enterprise/knowledge/KnowledgePage';
 import { ScheduledTasksPage } from './enterprise/ScheduledTasksPage';
@@ -280,6 +281,8 @@ function PageBody({ workspace, userName, employeeLoad, employeeStatusLoad, draft
       return <SkillsPage workspace={workspace} skillId={route.skillId} employeeFilterId={route.employeeFilterId} sourceEmployeeId={route.sourceEmployeeId} returnTo={route.returnTo} />;
     case 'compute-center':
       return <ComputeCenterPage />;
+    case 'connectors':
+      return <ConnectorsPage />;
     case 'knowledge':
       return <KnowledgePage kbId={route.kbId} navigate={workspace.navigate} />;
     default:

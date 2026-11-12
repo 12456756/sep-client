@@ -302,6 +302,9 @@ export interface WindowChromeRuntime {
 }
 
 export interface ElectronAPI {
+  getConnectorState(id: import('./connectors').ConnectorId): Promise<{ success: boolean; data?: import('./connectors').ConnectorState; error?: IpcError }>
+  connectConnector(id: import('./connectors').ConnectorId): Promise<{ success: boolean; error?: IpcError }>
+  disconnectConnector(id: import('./connectors').ConnectorId): Promise<{ success: boolean; error?: IpcError }>
   getSkillImportState: () => Promise<IpcCommandResult & { data?: import('./skill-import-contracts').SkillImportStateView }>
   confirmSkillImportConsent: (input: { pairingId: string; rememberDevice: boolean; scope: 'user' | 'project' | 'all'; rootIds: string[] }) => Promise<IpcCommandResult>
   selectSkillImportRoot: () => Promise<IpcCommandResult>

@@ -23,6 +23,20 @@ class FakeSession implements PiAgentSession {
 }
 
 describe('SharedPiSession', () => {
+  it('rebuilds tools after connector authorization changes while retaining history', async () => {
+    const configs: PiAgentSessionConfig[] = []
+    const adapter = new SharedPiSession({ async createSession(config) { configs.push(config); return new FakeSession(`session-${configs.length}`) } })
+    const config: PiAgentSessionConfig = { runId: 'run', modelId: 'model', gatewayUrl: 'g', workspaceDir: 'w', agentDir: 'a', sessionDir: 's', getAccessToken: async () => 'token', authorizeTool: async () => false }
+    try {
+      const first = await adapter.open(config) as FakeSession
+      const connected = await adapter.open({ ...config, connectorBinding: { revision: 'authorized', servers: [], fetch } }) as FakeSession
+      assert.notEqual(first, connected)
+      assert.equal(first.disposed, 1)
+      assert.equal(configs[1].resumeSessionFile, first.sessionFile)
+      assert.notEqual(await adapter.open(config), connected)
+      assert.equal(connected.disposed, 1)
+    } finally { await adapter.dispose() }
+  })
   it('recreates a session on vision capability changes while retaining history', async () => {
     const configs: PiAgentSessionConfig[] = []
     const adapter = new SharedPiSession({ async createSession(config) {
@@ -76,4 +90,3 @@ describe('SharedPiSession', () => {
     assert.equal(sessions[1].disposed, 1)
   })
 })
-

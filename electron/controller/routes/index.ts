@@ -24,8 +24,10 @@ import { attachmentRoutes } from './attachments'
 import { resultFileRoutes } from './result-files'
 import { skillImportRoutes } from './skill-import'
 import { scheduledRoutes } from './scheduled'
+import { connectorRoutes } from './connectors'
 
 export const routes: readonly Route[] = [
+  ...connectorRoutes,
   ...skillImportRoutes,
   ...resultFileRoutes,
   ...scheduledRoutes,
@@ -48,5 +50,3 @@ export const routes: readonly Route[] = [
 ]
 
 export const listeners: readonly Listener[] = [...systemListeners]
-
-
