@@ -110,7 +110,8 @@ try {
 
     await reset('chat')
     await page.evaluate(() => { window.electronAPI.selectAttachments = async () => ({ success: false, error: { message: '单个附件不能超过 20 MiB。' } }); window.electronAPI.listAttachments = async () => ({ success: true, data: [] }) })
-    await page.getByRole('button', { name: '添加附件', exact: true }).click()
+    await page.getByRole('button', { name: '添加文件或连接器', exact: true }).click()
+    await page.getByRole('menuitem', { name: '添加文件', exact: true }).click()
     await notice('单个附件不能超过 20 MiB。')
     await dismiss()
     assert.equal(await page.locator('.feedback-dialog').count(), 0)

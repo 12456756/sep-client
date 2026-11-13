@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { GENERAL_ASSISTANT_ID } from './general-assistant'
 import type { RetainedAttachmentState } from './use-attachment-composer'
+import type { ConnectorId } from '../../shared/connectors'
 
 /** One mutable editor buffer belongs to one mounted authenticated workspace. */
 export interface HomeDraft {
   text: string
   employeeId: string
   modelId: string
+  connectorId?: ConnectorId
   composerId: string
   epoch: number
   attachment: RetainedAttachmentState
@@ -32,6 +34,7 @@ export function useHomeDraftOwner(): HomeDraft {
         void window.electronAPI.cancelAttachmentImport({ sessionId: session.sessionId }).catch(() => undefined)
       }
       owner.draft.text = ''
+      owner.draft.connectorId = undefined
       owner.draft.attachment.session = null
       owner.draft.attachment.attachments = []
     })

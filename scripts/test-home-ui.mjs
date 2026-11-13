@@ -77,7 +77,7 @@ try {
     assert.equal(await page.getByRole('button', { name: '上下文', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: '截图', exact: true }).count(), 0);
     assert.equal(await page.getByRole('button', { name: '上传文件', exact: true }).count(), 0);
-    assert.equal(await page.getByRole('button', { name: '添加附件', exact: true }).count(), 1);
+    assert.equal(await page.getByRole('button', { name: '添加文件或连接器', exact: true }).count(), 1);
     assert.equal(await page.getByRole('button', { name: '语音输入', exact: true }).isDisabled(), true, 'Preview never opens a microphone');
     await page.getByRole('textbox', { name: '工作需求' }).fill('请生成一份周报');
     await page.getByRole('button', { name: '发送需求' }).click();

@@ -9,6 +9,8 @@ import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 import { KnowledgeSelector } from '../KnowledgeSelector';
+import type { ConnectorId } from '../../../shared/connectors';
+import { withComposerConnector } from '../../../features/enterprise/composer-connectors';
 
 interface Props {
   busy?: boolean;
@@ -17,7 +19,7 @@ interface Props {
   placeholder: string;
   submitLabel: string;
   submitDisabled: boolean;
-  onSubmit: () => void;
+  onSubmit: (text?: string) => void;
   onAttachmentsChange?: (attachments: AttachmentView[]) => void;
   onAttachmentSessionChange?: (session: AttachmentImportSession | null) => void;
   onAttachmentsBusyChange?: (busy: boolean) => void;
@@ -50,6 +52,7 @@ export function GoalComposer({
   showExamples = false,
 }: Props) {
   const [, setAttachments] = useState<AttachmentView[]>([]);
+  const [connectorId, setConnectorId] = useState<ConnectorId>();
   const [attachmentsBusy, setAttachmentsBusy] = useState(false);
   const [attachmentListContainer, setAttachmentListContainer] = useState<HTMLDivElement | null>(null);
   const composerId = useRef(`goal-${crypto.randomUUID()}`);
@@ -85,12 +88,12 @@ export function GoalComposer({
               speech.inputProps.onKeyDown(event);
               if (isSubmitEnter(event, speech.isComposing())) {
                 event.preventDefault();
-                if (!submitDisabled && !busy && !speech.busy) onSubmit();
+                if (!submitDisabled && !busy && !speech.busy && !attachmentsBusy) onSubmit(withComposerConnector(value, connectorId));
               }
             }}
           />
           <div className="ent-goal-bar">
-            <AttachmentComposer listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={onAttachmentSessionChange} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
+            <AttachmentComposer connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={attachmentBindingKey} disabled={busy || speech.busy} onChange={items => { setAttachments(items); onAttachmentsChange?.(items); }} onSessionChange={onAttachmentSessionChange} onBusyChange={value => { setAttachmentsBusy(value); onAttachmentsBusyChange?.(value); }} onPasteEdit={onPasteEdit} />
             <KnowledgeSelector value={settings.knowledge} onChange={knowledge => onSettingsChange({ knowledge })} disabled={busy} scopeKey={attachmentBindingKey} />
             <RunSettingsBar
               settings={settings}
@@ -105,8 +108,8 @@ export function GoalComposer({
               className="ent-goal-send"
               aria-label={submitLabel}
               title={submitLabel}
-              onClick={() => { if (!speech.busy) onSubmit(); }}
-              disabled={submitDisabled || speech.busy || attachmentsBusy}
+              onClick={() => { if (!busy && !speech.busy && !attachmentsBusy) onSubmit(withComposerConnector(value, connectorId)); }}
+              disabled={submitDisabled || busy || speech.busy || attachmentsBusy}
             >
               <ArrowUp size={17} aria-hidden />
             </button>

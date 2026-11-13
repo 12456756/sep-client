@@ -1,5 +1,5 @@
 import * as Dialog from '@radix-ui/react-dialog'
-import { Bot, Check, ChevronRight, FileText, LoaderCircle, Paperclip, Search, Send, Settings, X } from 'lucide-react'
+import { Bot, Check, ChevronRight, FileText, Link, LoaderCircle, Search, Send, Settings, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState, type RefObject } from 'react'
 import assistantImage from '../../../assets/home/assistant.svg'
 import type { HomeDraft } from '../../../features/enterprise/home-draft'
@@ -14,12 +14,17 @@ import { EmployeeFace } from '../EmployeeFace'
 import { useSpeechInput } from '../../../features/speech/use-speech-input'
 import { SpeechInputActions } from '../../speech/SpeechInputActions'
 import { ComposerResizeHandle } from '../ComposerResizeHandle'
+import { ComposerAddMenu } from './ComposerAddMenu'
+import { CONNECTOR_CATALOG } from '../../../features/enterprise/connector-catalog'
+import type { ConnectorId } from '../../../shared/connectors'
+import { withComposerConnector } from '../../../features/enterprise/composer-connectors'
 
 interface Props {
   employees: SiliconEmployee[]
   draft: HomeDraft
   onSubmit: (employeeId: string, text: string, options?: ConversationOptions) => Promise<boolean>
   onCreate: () => void
+  onManageConnectors: () => void
   demo: boolean
   busy: boolean
 }
@@ -64,9 +69,16 @@ function LiveAssistant(props: Props & { editor: Editor }) {
     select: () => { setAttachmentError(null); void composer.select() }, remove: id => { setAttachmentError(null); void composer.remove(id) } }} />
 }
 
-function AssistantForm({ employees, draft, onSubmit, onCreate, demo, busy, editor, attachment }: Props & { editor: Editor; attachment?: Attachments }) {
+function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnectors, demo, busy, editor, attachment }: Props & { editor: Editor; attachment?: Attachments }) {
   const [employeeId, setEmployeeId] = useState(draft.employeeId)
   const [modelId, setModelId] = useState(draft.modelId)
+  const [connectorId, setConnectorId] = useState(draft.connectorId)
+  const connector = CONNECTOR_CATALOG.find(item => item.id === connectorId)
+  const selectConnector = (id?: ConnectorId) => {
+    draft.connectorId = id
+    setConnectorId(id)
+    input.current?.focus()
+  }
   const [panel, setPanel] = useState<'employee' | 'demo' | 'file' | null>(null)
   const [query, setQuery] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -102,13 +114,16 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, demo, busy, edito
     setSubmitting(true)
     setError(null)
     try {
-      const success = await onSubmit(employeeId, editor.text.trim(), {
+      const text = withComposerConnector(editor.text, connectorId)
+      const success = await onSubmit(employeeId, text, {
         modelId: selectedModel,
         attachmentSessionId: draft.attachment.session?.sessionId,
         attachmentRefs: attachment?.attachments.map(item => ({ attachmentId: item.attachmentId, sha256: item.sha256 })),
       })
       if (success) {
         editor.update('')
+        draft.connectorId = undefined
+        setConnectorId(undefined)
         draft.attachment.session = null
         draft.attachment.attachments = []
         draft.epoch++
@@ -126,9 +141,10 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, demo, busy, edito
       {employeeId !== GENERAL_ASSISTANT_ID ? <div className="sep-home-draft-chips">
         <button type="button" disabled={blocked} title={employee?.name} onClick={() => selectEmployee(GENERAL_ASSISTANT_ID)}><Bot size={12} aria-hidden />{employee?.name ?? '请重新选择员工'}<X size={11} aria-hidden /></button>
       </div> : null}
+      {connector ? <div className="sep-home-draft-chips"><button type="button" disabled={blocked} aria-label={`移除${connector.name}连接器`} onClick={() => selectConnector(undefined)}><Link size={12} aria-hidden />{connector.name}<X size={11} aria-hidden /></button></div> : null}
       {attachment?.attachments.length ? <div className="sep-home-attachments" aria-label="已添加附件">{attachment.attachments.map(item => <div key={item.attachmentId}><FileText size={15} aria-hidden /><span title={item.displayName}>{item.displayName}<small>{item.extractionStatus === 'failed' ? '解析失败' : item.extractionStatus === 'pending' ? '正在处理' : '已添加'}</small></span><button type="button" disabled={blocked} onClick={() => attachment.remove(item.attachmentId)} aria-label={`移除 ${item.displayName}`}><X size={13} aria-hidden /></button></div>)}</div> : null}
       <div className="sep-home-composer-toolbar"><div className="sep-home-composer-actions">
-        <button type="button" className="sep-home-paperclip" aria-label="添加附件" title="上传文件" disabled={blocked} onClick={() => demo ? setPanel('file') : attachment?.select()}><Paperclip size={20} aria-hidden /></button>
+        <ComposerAddMenu disabled={blocked} demo={demo} selected={connectorId} onFile={() => demo ? setPanel('file') : attachment?.select()} onSelect={selectConnector} onManage={onManageConnectors} />
         <button type="button" disabled={blocked} onClick={() => { setQuery(''); setPanel('employee') }}><Settings size={15} aria-hidden /><span>选择员工</span></button>
         <div className="sep-home-model-control" aria-label="选择模型">
           <ModelSelector models={models} value={selectedModel} title={selectedModel || '模型'} allowEmpty={false} disabled={blocked} onChange={selectModel} />

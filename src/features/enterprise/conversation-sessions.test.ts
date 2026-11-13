@@ -3,6 +3,20 @@ import { test } from 'node:test'
 import { createConversationSessions } from './conversation-sessions'
 import type { AttachmentImportSession } from '../../shared/attachment-contracts'
 
+test('connector selection stays with its conversation, survives failed sends and is consumed after acceptance', () => {
+  const sessions = createConversationSessions(() => {})
+  const entry = sessions.get('a')
+  entry.setConnector('feishu')
+  assert.equal(sessions.get('a').connectorId, 'feishu')
+  assert.equal(sessions.get('b').connectorId, undefined)
+  entry.beginSend('request')
+  entry.finishSend()
+  assert.equal(entry.connectorId, 'feishu')
+  entry.acceptSend('request')
+  assert.equal(entry.connectorId, undefined)
+  assert.equal(createConversationSessions(() => {}).get('a').connectorId, undefined)
+})
+
 test('work drafts, reading position and attachments are isolated between works and login lifetimes', () => {
   const firstLogin = createConversationSessions(() => {})
   const a = firstLogin.get('a')

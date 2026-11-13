@@ -70,7 +70,7 @@ export function HomeDashboard({ userName, employees, works, draft, onNavigate, o
         </div>
       </header>
       <HomeAssistantCard employees={model.roster} draft={draft} onSubmit={onSubmit}
-        onCreate={() => onNavigate({ name: 'arrange', mode: 'pick' })} demo={demo} busy={busy || Boolean(employeeLoad?.loading)} />
+        onCreate={() => onNavigate({ name: 'arrange', mode: 'pick' })} onManageConnectors={() => onNavigate({ name: 'connectors' })} demo={demo} busy={busy || Boolean(employeeLoad?.loading)} />
       <section className="sep-home-employees" aria-label="我的员工">
         <div className="sep-home-section-heading">
           <h2><Settings size={20} aria-hidden />我的员工</h2>
