@@ -17,7 +17,7 @@ function ConnectorEntry({ connector: selected, selectedId, query, onSelect }: { 
   const connection = useConnectors(selected.id);
   const { state, loading, busy, available } = connection;
   const connected = state.status === 'connected';
-  const documentsOnly = connected && state.coverage !== 'workspace';
+  const documentsOnly = connected && (state.coverage === 'documents' || selected.id === 'dingtalk' && !state.coverage);
   const authorizing = state.status === 'authorizing';
   const statusText = !available ? '仅限桌面客户端' : loading ? '加载中' : connection.error ? '状态不可用' : connected ? '已连接' : authorizing ? '授权中' : state.status === 'error' ? '需要重新连接' : '未连接';
   const status = <span className={`connector-status${connected ? ' connected' : ''}`}>{connected ? <CheckCircle2 size={13} aria-hidden /> : authorizing || loading ? <LoaderCircle size={13} className="spin" aria-hidden /> : <Unplug size={13} aria-hidden />}{statusText}</span>;
@@ -31,8 +31,8 @@ function ConnectorEntry({ connector: selected, selectedId, query, onSelect }: { 
           <div><h2>{selected.name}</h2><p>{selected.category} · {selected.description}</p></div>
           {status}
         </div>
-        <div className="connector-account"><span>连接账号</span><strong>{connected ? `已授权${selected.name}账号` : statusText}</strong>{state.connectedAt && connected ? <span>连接于 {new Date(state.connectedAt).toLocaleString('zh-CN')}</span> : null}</div>
-        <h3>支持的业务</h3>
+        <div className="connector-account"><span>连接账号</span><strong>{connected ? state.accountLabel || `已授权${selected.name}账号` : statusText}</strong>{state.connectedAt && connected ? <span>连接于 {new Date(state.connectedAt).toLocaleString('zh-CN')}</span> : null}</div>
+        <h3>{selected.id === 'wecom' ? '可接入的业务' : '支持的业务'}</h3>
         <ul className="connector-permissions">{selected.capabilities.map(capability => <li key={capability.name}><FileText size={17} aria-hidden /><div><strong>{capability.name}</strong><p>{capability.description}</p></div></li>)}</ul>
         <div className="connector-authorization">
           <p role="status"><Info size={16} aria-hidden />{!available ? '请在桌面客户端中连接账号' : state.error || state.notice || (authorizing ? (state.phase === 'setup' ? `请在浏览器中完成${selected.name}应用配置，随后继续账号授权` : `请在浏览器中完成${selected.name}授权`) : documentsOnly ? '当前仅有文档授权，请升级授权以连接更多业务' : connected ? `已连接，实际可用范围以${selected.name}账号权限和业务授权为准` : `使用自己的${selected.name}账号授权，实际可用范围以账号权限为准`)}</p>
@@ -47,7 +47,7 @@ function ConnectorEntry({ connector: selected, selectedId, query, onSelect }: { 
         <div className="connector-card-heading"><ConnectorLogo connector={selected} /><div><h3>{selected.name}</h3><span>{selected.category}</span></div>{status}</div>
         {failure}<p className="connector-card-description">{selected.description}</p>
         <div className="connector-capabilities">{selected.capabilities.slice(0, 4).map(capability => <span key={capability.name}>{capability.name}</span>)}</div>
-        <footer><span>{documentsOnly ? '文档已连接，可升级授权' : connected ? `${selected.name}账号已连接` : authorizing ? '等待浏览器授权' : '个人账号授权'}</span><button type="button" className="ent-btn ghost" onClick={() => onSelect(selected.id)}>{connected ? '管理连接' : '查看详情'}<ArrowUpRight size={15} aria-hidden /></button></footer>
+        <footer><span>{documentsOnly ? '文档已连接，可升级授权' : connected ? `${selected.name}账号已连接` : authorizing ? '等待浏览器授权' : selected.id === 'wecom' ? '企业微信扫码授权' : '个人账号授权'}</span><button type="button" className="ent-btn ghost" onClick={() => onSelect(selected.id)}>{connected ? '管理连接' : '查看详情'}<ArrowUpRight size={15} aria-hidden /></button></footer>
       </article>;
 }
 

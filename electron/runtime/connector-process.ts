@@ -12,6 +12,7 @@ export interface ConnectorProcessOptions {
   signal: AbortSignal
   timeoutMs?: number
   onOutput?(text: string): void
+  preferStdout?: boolean
 }
 export type ConnectorProcessRunner = (options: ConnectorProcessOptions) => Promise<ConnectorCommandResult>
 
@@ -67,7 +68,7 @@ export const runConnectorProcess: ConnectorProcessRunner = async options => {
       if (stopped || failure) {
         resolve({ text: '连接器调用已中止或超时；执行结果尚未确认，请先查询状态，勿自动重试。', isError: true, executionUncertain: true })
       } else {
-        const text = safeOutput(code === 0 ? out || err : err || out, secrets)
+        const text = safeOutput(code === 0 || options.preferStdout ? out || err : err || out, secrets)
         resolve({ text: text.length > 128000 ? `${text.slice(0, 128000)}\n[truncated; narrow the query or page size]` : text, isError: code !== 0 })
       }
     })

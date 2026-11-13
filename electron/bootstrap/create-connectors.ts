@@ -37,5 +37,15 @@ export function createConnectorRegistry(options: {
         currentScope, open,
       })
     },
+    wecom: async () => {
+      const { WecomWorkspaceRuntime } = await import('../runtime/wecom-workspace')
+      const { WecomWorkspaceStore } = await import('../data/wecom-workspace-store')
+      const root = packageRoot('@wecom/cli')
+      return new WecomWorkspaceRuntime({
+        store: new WecomWorkspaceStore(userDataDir, new ConnectorStore(userDataDir, encryption, 'wecom')),
+        binary: await prepareConnectorBinary(join(root ? join(root, 'bin') : join(options.resourcesPath, 'wecom'), process.platform === 'win32' ? 'wecom-cli.exe' : 'wecom-cli'), join(userDataDir, 'connector-runtime', 'wecom')),
+        currentScope, open,
+      })
+    },
   })
 }

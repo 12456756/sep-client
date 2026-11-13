@@ -1,5 +1,6 @@
 import dingtalkLogo from '../../assets/dingtalk.png';
 import feishuLogo from '../../assets/feishu.ico';
+import wecomLogo from '../../assets/wecom.ico';
 import type { ConnectorId } from '../../shared/connectors';
 
 export interface ConnectorDefinition {
@@ -13,6 +14,15 @@ export interface ConnectorDefinition {
 }
 
 export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
+  {
+    id: 'wecom', name: '企业微信', category: '协同办公', description: '会话、消息与通讯录',
+    logoUrl: wecomLogo, authorizationAvailable: true,
+    capabilities: [
+      { name: '会话与消息查询', description: '查询本次授权可访问的会话和消息，开放范围以企业策略为准。' },
+      { name: '消息发送', description: '按指令发送文本消息，具体身份和可发送对象以官方接口权限为准。' },
+      { name: '身份与通讯录', description: '核对当前授权身份，查询有权访问的人员信息。' },
+    ],
+  },
   {
     id: 'feishu', name: '飞书', category: '协同办公', description: '文档、多维表格与团队协作',
     logoUrl: feishuLogo, authorizationAvailable: true,

@@ -19,6 +19,9 @@ test('full DingTalk tools use registered approvals and preserve MCP tools and di
   const both = attachConnectorTools(base, { ...binding, commands: [...binding.commands!, { ...binding.commands![0], id: 'feishu', name: '飞书' }] }, '.')
   assert.deepEqual(both.tools.map(tool => tool.name), ['dingtalk_reference', 'dingtalk_schema', 'dingtalk_execute', 'feishu_reference', 'feishu_schema', 'feishu_execute'])
   assert.equal(both.permissions.get('feishu_execute'), 'confirm-each')
+  const wecom = attachConnectorTools(base, { ...binding, commands: [{ ...binding.commands![0], id: 'wecom', name: '企业微信' }] }, '.')
+  assert.deepEqual(wecom.tools.map(tool => tool.name), ['wecom_reference', 'wecom_schema', 'wecom_execute'])
+  assert.equal(wecom.permissions.get('wecom_execute'), 'confirm-each')
   const policy = { allowedTools: [...runtime.permissions.keys()], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled' as const, approvalMode: 'confirm-each' as const, workspaceDir: '.' }
   assert.equal(evaluateToolCall('dingtalk_execute', {}, policy, runtime.permissions).requiresApproval, true)
   assert.equal(evaluateToolCall('dingtalk_schema', {}, policy, runtime.permissions).requiresApproval, false)

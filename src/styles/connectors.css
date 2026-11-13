@@ -30,7 +30,7 @@
 .connector-detail-heading p { margin: 0; }
 .connector-account { display: flex; flex-wrap: wrap; gap: 16px; padding: 20px 0; border-top: 1px solid var(--ent-line-soft); border-bottom: 1px solid var(--ent-line-soft); font-size: 13px; }
 .connector-account > span { color: var(--ent-ink-3); }
-.connector-account strong { font-weight: 400; }
+.connector-account strong { min-width: 0; overflow-wrap: anywhere; font-weight: 400; }
 .connector-detail h3 { margin: 24px 0 8px; font-size: 15px; }
 .connector-permissions { margin: 0; padding: 0; list-style: none; }
 .connector-permissions li { display: flex; align-items: flex-start; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--ent-line-soft); }

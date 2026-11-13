@@ -5,13 +5,13 @@
   "type": "module",
   "main": "out/main/index.js",
   "scripts": {
-    "dev": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && electron-vite dev --watch",
-    "dev:debug": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && electron-vite dev --watch --remoteDebuggingPort 9333 --inspect 9334",
+    "dev": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && node scripts/wecom-assets.mjs && electron-vite dev --watch",
+    "dev:debug": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && node scripts/wecom-assets.mjs && electron-vite dev --watch --remoteDebuggingPort 9333 --inspect 9334",
     "mcp:electron-debug": "node scripts/electron-debug-mcp.mjs",
     "mcp:electron-debug:install": "node scripts/electron-debug-mcp.mjs --install",
     "test:electron-debug": "node scripts/test-electron-debug.mjs",
     "dev:preview": "vite --config vite.preview.config.ts --open /?preview=workspace",
-    "build": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && node scripts/generate-runtime-config.mjs && electron-vite build",
+    "build": "node scripts/dingtalk-assets.mjs && node scripts/feishu-assets.mjs && node scripts/wecom-assets.mjs && node scripts/generate-runtime-config.mjs && electron-vite build",
     "preview": "electron-vite preview",
     "package": "npm run package:local:stable",
     "typecheck": "tsc -p tsconfig.web.json --noEmit && tsc -p tsconfig.node.json --noEmit",
@@ -55,7 +55,7 @@
     "release:upload": "node scripts/upload-download-update.mjs",
     "test:releases": "node --test scripts/release-flow.test.mjs scripts/record-release-build.test.mjs scripts/release-version.test.mjs scripts/release-notes.test.mjs",
     "verify:release-signatures": "node scripts/verify-release-signatures.mjs",
-    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/office-assets.test.mjs scripts/dingtalk-assets.test.mjs scripts/feishu-assets.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
+    "test:packaging": "node --test scripts/packaging.test.mjs scripts/packaged-runtime.test.mjs scripts/speech-packaging.test.mjs scripts/office-assets.test.mjs scripts/dingtalk-assets.test.mjs scripts/feishu-assets.test.mjs scripts/wecom-assets.test.mjs scripts/release-signing.test.mjs scripts/release-signatures.test.mjs",
     "verify:packaged-runtime": "node scripts/verify-packaged-runtime.mjs",
     "release:builder:stable": "node scripts/generate-builder-config.mjs stable",
     "release:builder:signed:stable": "node scripts/generate-builder-config.mjs stable --signed",
@@ -81,8 +81,8 @@
     "@xyflow/react": "^12.11.5",
     "chardet": "2.2.0",
     "class-variance-authority": "^0.7.1",
-    "cron-parser": "5.10.2",
     "clsx": "^2.1.1",
+    "cron-parser": "5.10.2",
     "dompurify": "3.4.17",
     "electron-store": "^11.0.2",
     "electron-updater": "6.8.9",
@@ -115,6 +115,7 @@
     "@typescript-eslint/eslint-plugin": "^8.14.0",
     "@typescript-eslint/parser": "^8.14.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "@wecom/cli": "1.3.4",
     "dingtalk-workspace-cli": "1.0.68",
     "electron": "^33.4.11",
     "electron-builder": "^25.1.7",
@@ -135,7 +136,12 @@
   "build": {
     "appId": "cn.longdao.longsilicon",
     "protocols": [
-      { "name": "SEP Skills Import", "schemes": ["sep-import"] }
+      {
+        "name": "SEP Skills Import",
+        "schemes": [
+          "sep-import"
+        ]
+      }
     ],
     "productName": "硅基员工平台",
     "copyright": "Copyright © 2026 龙道集团",
@@ -229,6 +235,7 @@
     "artifactName": "SEP-Client-${version}-${os}-${arch}.${ext}"
   },
   "allowScripts": {
+    "@wecom/cli@1.3.4": false,
     "@larksuite/cli@1.0.100": false,
     "electron@33.4.11": true,
     "dingtalk-workspace-cli@1.0.68": false
