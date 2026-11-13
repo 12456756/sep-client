@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { FileText, Pencil, Trash2 } from 'lucide-react'
 import type { ScheduledWorkPlan, ScheduledDefinition, ScheduledOccurrence } from '../../../shared/scheduled-tasks'
 import type { EnterpriseWorkspace } from '../../../features/enterprise/useEnterpriseWorkspace'
@@ -16,6 +16,14 @@ export function ScheduledTaskDetail({ definition, workspace, model }: { definiti
   const tab = route.view === 'configuration' ? 'configuration' : 'history'
   const [confirming, setConfirming] = useState<'archive' | 'review' | 'cancel' | null>(null)
   const [confirmedRun, setConfirmedRun] = useState<string | null>(null)
+  const confirmationRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!confirming) return
+    confirmationRef.current?.focus({ preventScroll: true })
+    confirmationRef.current?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+  }, [confirming])
+
   const employee = workspace.myEmployees.find(item => item.id === definition.input.subscriptionId)
   const runs = model.data?.occurrences.filter(run => run.definitionId === definition.id).sort((a, b) => b.scheduledAt - a.scheduledAt) ?? []
   const active = runs.some(run => !TERMINAL_RUNS.has(run.status))
@@ -59,6 +67,6 @@ export function ScheduledTaskDetail({ definition, workspace, model }: { definiti
         </section> : null}
       </div>}
     </div>}
-    {confirming ? <div className="ent-sch-confirm" role="alertdialog" aria-label={confirming === 'archive' ? '删除定时任务' : confirming === 'review' ? '核查确认' : '停止执行'}><p>{confirming === 'archive' ? '删除后停止未来调度，已有执行历史仍会保留。确定删除吗？' : confirming === 'review' ? '我已核查现有文件和外部操作，并确认关闭本次执行。此操作不会重跑任务。' : '停止本次执行？已产生的文件和外部操作不会自动撤回。'}</p><div className="ent-sch-actions"><button type="button" className="ent-btn" disabled={model.busy} onClick={() => setConfirming(null)}>返回</button><button type="button" className="ent-btn danger" disabled={model.busy} onClick={() => void perform()}>{confirming === 'archive' ? '确认删除' : confirming === 'review' ? '已核查，关闭记录' : '确认停止'}</button></div></div> : null}
+    {confirming ? <div ref={confirmationRef} tabIndex={-1} className="ent-sch-confirm" role="alertdialog" aria-label={confirming === 'archive' ? '删除定时任务' : confirming === 'review' ? '核查确认' : '停止执行'}><p>{confirming === 'archive' ? '删除后停止未来调度，已有执行历史仍会保留。确定删除吗？' : confirming === 'review' ? '我已核查现有文件和外部操作，并确认关闭本次执行。此操作不会重跑任务。' : '停止本次执行？已产生的文件和外部操作不会自动撤回。'}</p><div className="ent-sch-actions"><button type="button" className="ent-btn" disabled={model.busy} onClick={() => setConfirming(null)}>返回</button><button type="button" className="ent-btn danger" disabled={model.busy} onClick={() => void perform()}>{confirming === 'archive' ? '确认删除' : confirming === 'review' ? '已核查，关闭记录' : '确认停止'}</button></div></div> : null}
   </div>
 }
