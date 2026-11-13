@@ -113,8 +113,8 @@ describe('MCP extension with real Pi session', () => {
           assert.equal(calls, 0)
         } else {
           assert.deepEqual(names, scenario === 'global-auto-approve'
-            ? ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash', name]
-            : ['ls', name])
+            ? ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash', 'get_current_time', name]
+            : ['ls', 'get_current_time', name])
           assert.equal(approvals, scenario === 'auto-approve' || scenario === 'global-auto-approve' ? 0 : 1)
           assert.equal(calls, scenario === 'denied' ? 0 : 1)
           assert.equal(requests.length, 2)

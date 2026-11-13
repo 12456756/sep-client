@@ -3,6 +3,7 @@ import type { WorkActivity, WorkStatus } from './types'
 const TOOL_LABELS: Readonly<Record<string, string>> = {
   ls: '查看目录', find: '查找文件', grep: '搜索文件内容', read: '读取文件',
   bash: '执行命令', write: '写入文件', edit: '编辑文件',
+  get_current_time: '查询当前时间',
 }
 const BROWSER_LABELS: Readonly<Record<string, string>> = {
   browser_navigate: '打开网页', browser_navigate_back: '返回上一页',
