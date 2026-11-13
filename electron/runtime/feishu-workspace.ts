@@ -64,11 +64,11 @@ export class FeishuWorkspaceRuntime implements ConnectorRuntimePort {
       started = true; resolveStart()
     }
     attempt.done = this.writes.run(key(scope), async () => {
-      const record = await this.read(scope)
       if (!valid()) throw new Error('Connector account changed.')
-      const app = record?.app ?? await this.oauth.register(open, attempt.controller.signal)
+      // Explicit connection always lets the user choose the app and organization again.
+      const app = await this.oauth.register(open, attempt.controller.signal)
       if (!valid()) throw new Error('Connector account changed.')
-      // Save only encrypted application configuration so a cancelled login can resume setup.
+      // Never persist a user token before the selected application's OAuth completes.
       await this.options.store.write(scope, { revision: randomUUID(), app })
       attempt.state = { id: 'feishu', status: 'authorizing', phase: 'authorization' }
       const token = await this.oauth.login(app, open, attempt.controller.signal)

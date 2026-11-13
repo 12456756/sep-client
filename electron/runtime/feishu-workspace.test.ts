@@ -20,13 +20,18 @@ async function fixture() {
   const store = new ConnectorStore(root, { available: () => true, encrypt: value => Buffer.from(value).toString('base64'), decrypt: value => Buffer.from(value, 'base64').toString() }, 'feishu')
   const calls: Parameters<FeishuRunner>[0][] = []
   let scope: TaskOwnerScope | null = owner
-  let complete!: () => void
+  let complete: (() => void) | undefined
   let refreshes = 0
   let revokes = 0
+  let registrations = 0
+  const opened: string[] = []
+  const loginApps: string[] = []
   const runtime = new FeishuWorkspaceRuntime({ store, directories: new ConnectorProcessDirectories(root, 'feishu'), binary: 'fixture', currentScope: () => scope, open: async () => {},
     oauth: {
-      register: async open => { await open('https://open.feishu.cn/page/cli?user_code=fixture'); return { clientId: 'own-app', clientSecret: 'private-app-secret' } },
-      login: async (_app, open, signal) => {
+      register: async open => { registrations++; complete = undefined; await open('https://open.feishu.cn/page/cli?user_code=fixture'); opened.push('setup'); return { clientId: 'own-app', clientSecret: 'private-app-secret' } },
+      login: async (app, open, signal) => {
+        loginApps.push(app.clientId)
+        opened.push('authorization')
         await open('https://accounts.feishu.cn/oauth/verify')
         await new Promise<void>(resolve => { complete = resolve; signal.addEventListener('abort', () => resolve(), { once: true }) })
         return token()
@@ -38,11 +43,35 @@ async function fixture() {
   })
   const finish = async (): Promise<void> => {
     for (let i = 0; i < 100 && !complete; i++) await new Promise(resolve => setTimeout(resolve, 5))
+    assert.ok(complete)
     complete()
     for (let i = 0; i < 100 && (await runtime.state(owner)).status === 'authorizing'; i++) await new Promise(resolve => setTimeout(resolve, 5))
   }
-  return { runtime, store, root, calls, finish, get loginStarted() { return typeof complete === 'function' }, get refreshes() { return refreshes }, get revokes() { return revokes }, set scope(value: TaskOwnerScope | null) { scope = value } }
+  return { runtime, store, root, calls, finish, opened, loginApps, get registrations() { return registrations }, get loginStarted() { return typeof complete === 'function' }, get refreshes() { return refreshes }, get revokes() { return revokes }, set scope(value: TaskOwnerScope | null) { scope = value } }
 }
+
+test('explicit Feishu connection always reopens app selection instead of reusing a failed app', async () => {
+  const f = await fixture()
+  await f.store.write(owner, { revision: 'failed-app', app: { clientId: 'wrong-organization-app', clientSecret: 'old-secret' } })
+  await f.runtime.connect(owner)
+  await f.runtime.connect(owner)
+  await f.finish()
+  assert.equal(f.registrations, 1)
+  assert.deepEqual(f.opened, ['setup', 'authorization'])
+  assert.deepEqual(f.loginApps, ['own-app'])
+  assert.equal((await f.runtime.state(owner)).status, 'connected')
+  const oldBinding = await f.runtime.binding(owner)
+  await f.runtime.connect(owner)
+  await f.finish()
+  assert.equal(f.registrations, 2)
+  assert.deepEqual(f.opened, ['setup', 'authorization', 'setup', 'authorization'])
+  assert.equal((await oldBinding!.commands![0].execute(['calendar', '+agenda'], f.root)).isError, true)
+  await f.runtime.disconnect(owner)
+  await f.runtime.connect(owner)
+  await f.finish()
+  assert.equal(f.registrations, 3)
+  f.runtime.cancel()
+})
 
 test('Feishu uses the owner encrypted store, private CLI identity, and revocable bindings', async () => {
   const f = await fixture()
@@ -56,7 +85,7 @@ test('Feishu uses the owner encrypted store, private CLI identity, and revocable
   assert.ok(binding?.commands?.[0])
   const commands = binding.commands[0]
   assert.equal(await commands.reference('lark-shared/SKILL.md'), 'official Feishu instructions')
-  assert.equal((await commands.execute(['calendar', '+agenda'], f.root)).isError, false)
+  assert.equal((await commands.execute(['calendar', '+agenda', '--as', 'user', '--format', 'json'], f.root)).isError, false)
   assert.deepEqual(f.calls.at(-1)?.args, ['calendar', '+agenda', '--as', 'user', '--format', 'json'])
   assert.equal(f.calls.at(-1)?.identity?.token.accessToken, 'private-user-token')
   assert.doesNotMatch(await readFile(join(f.root, 'task-data', 'v3', 'ZQ', 'YQ', 'connectors', 'feishu.json'), 'utf8'), /private-user-token|private-app-secret/)
@@ -100,6 +129,13 @@ test('Feishu cancellation and signout prevent late OAuth credentials from being 
 })
 
 test('Feishu command/schema guards prevent identity override and schema execution bypass', () => {
+  for (const identity of [[], ['--as', 'user'], ['--as=user'], ['--as', 'user', '--as=user']]) {
+    assert.deepEqual(validateFeishuArgs(['im', '+chat-create', '--name', 'test-group', ...identity, '--format', 'json']), ['im', '+chat-create', '--name', 'test-group', '--as', 'user', '--format', 'json'])
+    assert.deepEqual(validateFeishuArgs(['im', '+chat-search', '--query', 'test-group', ...identity, '--format=json']), ['im', '+chat-search', '--query', 'test-group', '--as', 'user', '--format', 'json'])
+  }
+  for (const identity of [['--as', 'bot'], ['--as=bot'], ['--as'], ['--as', 'user', '--as', 'bot']]) {
+    assert.throws(() => validateFeishuArgs(['im', '+chat-create', '--name', 'test-group', ...identity]))
+  }
   for (const args of [['auth', 'login'], ['config', 'show'], ['im', 'list', '--as', 'bot'], ['docs', 'read', '--profile=x'], ['drive', 'get', '--access-token=x'], ['calendar', '+agenda', '--'], ['im', 'exec'], ['application', 'secret']]) assert.throws(() => validateFeishuArgs(args))
   for (const path of ['calendar +agenda -- --help', 'calendar +agenda --as bot', 'auth.status', 'calendar;whoami', '../config', 'calendar  +agenda']) assert.throws(() => feishuSchemaArgs(path))
   assert.deepEqual(feishuSchemaArgs('calendar +agenda'), ['calendar', '+agenda', '--help'])
