@@ -582,6 +582,32 @@ test('remote CLI validates default/selected feeds, strict mode, and arguments', 
   }
 })
 
+test('remote CLI accepts the release timeout and applies an explicit short timeout', async t => {
+  let stall = false
+  const { origin } = await serve(t, () => stall)
+  const script = join(scriptDirectory, 'test-update-feed.mjs')
+  const args = [`${origin}/stable/`, '--allow-local-http', '--require-all-platforms']
+  const success = await spawnCli(script, [...args, '--timeout-ms', '120000'])
+  assert.equal(success.code, 0, success.stderr)
+  assert.match(success.stdout, /verified anonymous feed latest-mac.yml/)
+  stall = true
+  const failure = await spawnCli(script, [...args, '--timeout-ms', '60'])
+  assert.notEqual(failure.code, 0)
+  assert.match(failure.stderr, /timed out after 60ms/)
+})
+
+test('remote CLI rejects invalid and duplicate timeouts before any requests', async t => {
+  const { origin, requests } = await serve(t)
+  const script = join(scriptDirectory, 'test-update-feed.mjs')
+  const args = [`${origin}/stable/`, '--allow-local-http']
+  for (const values of [[], ['0'], ['-1'], ['1.5'], ['120001'], ['Infinity'], ['NaN'], ['1e3'], [''], ['120000', '--timeout-ms', '60']]) {
+    const failure = await spawnCli(script, [...args, '--timeout-ms', ...values])
+    assert.notEqual(failure.code, 0)
+    assert.match(failure.stderr, /timeout-ms/)
+  }
+  assert.equal(requests.length, 0)
+})
+
 test('CLI main guards execute when launched through symlinked temporary paths (including macOS /var aliases)', async t => {
   const temporary = await tempDirectory(t)
   const { origin } = await serve(t)

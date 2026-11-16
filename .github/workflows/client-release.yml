@@ -76,7 +76,7 @@ jobs:
   build-mac:
     needs: [validate, preflight]
     if: always() && needs.validate.result == 'success' && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
-    runs-on: macos-15
+    runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -210,4 +210,4 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: node scripts/upload-download-update.mjs release-bundle/release-source release-bundle/release-prepared stable
       - name: Verify the public update feed
-        run: node scripts/test-update-feed.mjs https://sep.longdaoec.com/sep-client/stable/ --require-all-platforms
+        run: node scripts/test-update-feed.mjs https://sep.longdaoec.com/sep-client/stable/ --require-all-platforms --timeout-ms 120000

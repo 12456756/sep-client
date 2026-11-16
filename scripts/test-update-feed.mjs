@@ -144,7 +144,7 @@ export async function verifyUpdateFeed(baseUrl, { manifestName, requireAllPlatfo
 }
 
 export async function main(args = process.argv.slice(2)) {
-  const usage = 'usage: node scripts/test-update-feed.mjs <base-url> [--allow-local-http] [--manifest latest.yml|latest-mac.yml] [--require-all-platforms]'
+  const usage = 'usage: node scripts/test-update-feed.mjs <base-url> [--allow-local-http] [--manifest latest.yml|latest-mac.yml] [--require-all-platforms] [--timeout-ms <1-120000>]'
   let baseUrl
   const options = {}
   for (let index = 0; index < args.length; index += 1) {
@@ -152,6 +152,14 @@ export async function main(args = process.argv.slice(2)) {
     if (arg === '--allow-local-http' && !options.allowLocalHttp) options.allowLocalHttp = true
     else if (arg === '--require-all-platforms' && !options.requireAllPlatforms) options.requireAllPlatforms = true
     else if (arg === '--manifest' && !options.manifestName) options.manifestName = validateManifestName(args[++index])
+    else if (arg === '--timeout-ms' && options.timeoutMs === undefined) {
+      const value = args[++index]
+      const timeoutMs = Number(value)
+      if (!/^\d+$/.test(value ?? '') || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
+        throw new Error(`--timeout-ms must be an integer between 1 and ${MAX_TIMEOUT_MS}`)
+      }
+      options.timeoutMs = timeoutMs
+    }
     else if (!arg.startsWith('--') && !baseUrl) baseUrl = arg
     else throw new Error(usage)
   }
