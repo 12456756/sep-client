@@ -10,6 +10,7 @@ import { defaultRunSettings, type RunSettings } from '../../../features/enterpri
 import type { ScheduledTaskDraft } from '../../../features/enterprise/scheduled-task-home'
 import { ScheduledExecutionFields } from './ScheduledExecutionFields'
 import { ScheduledTimeSettings } from './ScheduledTimeSettings'
+import { ComposerResizeHandle } from '../ComposerResizeHandle'
 
 interface Props { definition?: ScheduledDefinition; initialDraft?: ScheduledTaskDraft; workspace: EnterpriseWorkspace; model: ScheduledTasksModel }
 
@@ -28,6 +29,7 @@ export function ScheduledTaskEditor(props: Props) {
 }
 
 export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, model, onClose, parsing = false, onParsingChange = () => {} }: Props & { onClose(): void; parsing?: boolean; onParsingChange?(value: boolean): void }) {
+  const input = useRef<HTMLTextAreaElement>(null)
   // Freeze the revision so polling cannot silently replace the draft during editing.
   const [original] = useState(definition)
   const [requestId] = useState(() => crypto.randomUUID())
@@ -69,8 +71,8 @@ export function ScheduledTaskEditorForm({ definition, initialDraft, workspace, m
     <div className="ent-sch-editor-body"><fieldset disabled={busy}>
       <label className="sr-only" htmlFor="scheduled-title">任务名称</label><input id="scheduled-title" className="ent-sch-title-input" value={name} maxLength={160} required onChange={event => setName(event.target.value)} placeholder="定时任务标题" />
       <div className="ent-sch-composer">
-        <label className="sr-only" htmlFor="scheduled-goal">工作目标</label><textarea id="scheduled-goal" value={goal} maxLength={16000} required rows={5} onChange={event => setGoal(event.target.value)} placeholder="描述员工应该做什么，以及需要交付的文件或结果" />
-        <ScheduledExecutionFields value={{ goal, mode, subscriptionId: employeeId, settings }} employees={workspace.myEmployees} onChange={patch => { if (patch.mode) setMode(patch.mode); if (patch.subscriptionId !== undefined) setEmployeeId(patch.subscriptionId); if (patch.settings) setSettings(value => ({ ...value, ...patch.settings })) }} onChooseFolder={async path => { try { return await workspace.chooseFolder(path) } catch { setError('无法选择目录，请重试。'); return null } }} />
+        <label className="sr-only" htmlFor="scheduled-goal">工作目标</label><textarea id="scheduled-goal" ref={input} value={goal} maxLength={16000} required rows={5} onChange={event => setGoal(event.target.value)} placeholder="描述员工应该做什么，以及需要交付的文件或结果" />
+        <ScheduledExecutionFields value={{ goal, mode, subscriptionId: employeeId, settings }} employees={workspace.myEmployees} onChange={patch => { if (patch.mode) setMode(patch.mode); if (patch.subscriptionId !== undefined) setEmployeeId(patch.subscriptionId); if (patch.settings) setSettings(value => ({ ...value, ...patch.settings })) }} action={<ComposerResizeHandle inputRef={input} />} onChooseFolder={async path => { try { return await workspace.chooseFolder(path) } catch { setError('无法选择目录，请重试。'); return null } }} />
       </div>
       {!available.length ? <p className="ent-sch-modal-error" role="status">当前没有可用员工，请先检查员工授权。</p> : null}
       {settings.permissions.approvalMode === 'auto-approve' ? <p className="ent-sch-permission-warning">工具操作将按所选权限自动放行。{settings.permissions.preset === 'full-local' ? '完整本地权限可访问工作目录以外的文件。' : ''}</p> : null}

@@ -72,7 +72,7 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     if (awaiting) return
     setContinuationId(creation.id)
     setDraft(value => ({ ...value, goal: '', settings: { ...value.settings, workDir: creation.request.workDir, modelId: creation.request.modelId, permissions: { ...creation.request.permissions } } }))
-    input.current?.focus({ preventScroll: true })
+    focusComposer()
   }
   const open = (id: string) => workspace.navigate({ name: 'scheduled', taskId: id, view: 'history' })
   const focusComposer = () => {
@@ -100,8 +100,9 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
     </button>)}
   </section> : null
   const hasCreations = Boolean(data?.creations?.length || pending.length)
+  const creationsView = workspace.route.name === 'scheduled' && workspace.route.view === 'creations'
   const missingTask = workspace.route.name === 'scheduled' && workspace.route.taskId && !selectedDefinition
-  const home = !selectedDefinition && !missingTask
+  const home = !creationsView && !selectedDefinition && !missingTask
 
   return <div className="ent-sch-workspace">
     <aside className="ent-sch-sidebar" aria-label="定时任务导航">
@@ -114,18 +115,17 @@ export function ScheduledTaskHome({ workspace, model, selectedDefinition, onCrea
         <details className="ent-sch-nav-fold" open><summary>已暂停<ChevronDown size={14} /><small>{groups.paused.length || ''}</small></summary>{list(groups.paused, '已暂停的定时任务')}</details>
         {groups.history.length ? <details className="ent-sch-nav-fold" open><summary>历史记录<ChevronDown size={14} /><small>{groups.history.length}</small></summary>{list(groups.history, '定时任务历史')}</details> : null}
         {search.trim() && ![...groups.active, ...groups.paused, ...pendingDefinitions, ...groups.history].some(matches) ? <p className="ent-sch-search-empty">没有匹配的任务</p> : null}
-        {hasCreations ? <button type="button" className="ent-sch-nav-new" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}>创建进度</button> : null}
+        {hasCreations ? <button type="button" className="ent-sch-nav-new" aria-current={creationsView ? 'page' : undefined} onClick={() => workspace.replaceRoute({ name: 'scheduled', view: 'creations' })}>创建进度</button> : null}
       </div>
     </aside>
     <section ref={mainPane} className={`ent-sch-main-pane${home ? ' ent-sch-compose-pane' : ''}`} aria-label="定时任务内容">
-      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
+      {!home ? <><button type="button" className="ent-btn ghost sm" onClick={() => workspace.replaceRoute({ name: 'scheduled' })}><ArrowLeft size={14} />返回首页</button>{creationsView ? hasCreations ? <ScheduledCreationList model={model} onResume={resume} onOpen={open} /> : <p role="status">暂无创建进度。</p> : selectedDefinition ? <ScheduledTaskDetail key={selectedDefinition.id} definition={selectedDefinition} workspace={workspace} model={model} /> : <p role="status">未找到这项任务，请返回首页。</p>}</> : <>
       <div className="ent-sch-home-content" tabIndex={0} aria-label="定时任务创建区">
         <div className="ent-sch-welcome"><img className="ent-sch-clock" src={scheduledClock} width={80} height={80} alt="" /><h2>安排任务</h2>
         <section className="ent-sch-examples" aria-label="定时任务示例"><h3>常用任务</h3>
         <div className="ent-sch-home-grid">{SCHEDULE_EXAMPLES.map(example => <button type="button" key={example.id} className="ent-sch-example" aria-label={`使用示例：${example.title}`} disabled={model.busy} onClick={() => selectExample(example)}><span><strong>{example.title}</strong><span>{example.description}</span></span><Plus size={19} aria-hidden /></button>)}</div>
         </section>
         </div>
-      <ScheduledCreationList model={model} onResume={resume} onOpen={open} />
       </div>
     <form className="ent-sch-home-compose" onSubmit={event => { event.preventDefault(); submit() }}>
       <div className="ent-sch-home-compose-actions"><button type="button" className="ent-btn ghost sm" onClick={onCreate}>手动设置</button></div>

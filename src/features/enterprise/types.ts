@@ -304,7 +304,7 @@ export type AppRoute =
   /** employeeId 只在 chat 下有意义：从员工页点「安排工作」时预选那位同事。 */
   | { name: 'arrange'; templateId?: string; mode?: ArrangeMode; employeeId?: string }
   | { name: 'records'; bucket?: 'all' | 'active' | 'mine' | 'done' | 'stopped'; workType?: 'all' | 'conversation' | 'arrangement'; search?: string }
-  | { name: 'scheduled'; taskId?: string; view?: 'new' | 'edit' | 'configuration' | 'history'; runId?: string }
+  | { name: 'scheduled'; taskId?: string; view?: 'new' | 'edit' | 'configuration' | 'history' | 'creations'; runId?: string }
   | { name: 'work'; workId: string; executionTaskId?: string }
   | { name: 'skills'; skillId?: string; employeeFilterId?: string; sourceEmployeeId?: string; returnTo?: { name: 'skill-list' } | { name: 'employee'; employeeId: string } }
   | { name: 'knowledge'; kbId?: string }

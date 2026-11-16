@@ -81,6 +81,7 @@
 .ent-sch-sidebar > header h2 { font-size: 17px; font-weight: 600; }
 .ent-sch-nav-new { width: 100%; display: flex; align-items: center; gap: 9px; padding: 10px 8px; border: 0; border-radius: 6px; background: transparent; color: var(--ent-ink-2); text-align: left; cursor: pointer; font: inherit; font-size: 14px; }
 .ent-sch-nav-new:hover { background: var(--ent-panel); color: var(--ent-ink); }
+.ent-sch-nav-new[aria-current=page] { background: var(--ent-brand-soft); color: var(--ent-brand); }
 .ent-sch-nav-scroll { flex: 1; min-height: 0; overflow-y: auto; margin-top: 10px; }
 .ent-sch-nav-task { width: 100%; min-width: 0; display: flex; flex-direction: column; gap: 5px; padding: 11px 10px; margin-bottom: 3px; border: 0; border-radius: 6px; background: transparent; color: var(--ent-ink-2); cursor: pointer; text-align: left; font: inherit; }
 .ent-sch-nav-task strong { width: 100%; font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -100,7 +101,7 @@
 .ent-sch-compose-pane { display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; gap: 16px; }
 .ent-sch-home-content { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 .ent-sch-compose-pane > .ent-sch-home-content { flex: 0 0 max(480px, calc(100dvh - 440px)); }
-.ent-sch-home-content > .ent-sch-creations { flex: none; width: 100%; max-width: 960px; margin-inline: auto; }
+.ent-sch-main-pane > .ent-sch-creations { width: 100%; max-width: 960px; margin-inline: auto; }
 .ent-sch-welcome { flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 28px 0; color: var(--ent-ink-2); }
 .ent-sch-clock { display: block; width: 80px; height: 80px; flex: none; object-fit: contain; }
 .ent-sch-welcome h2 { font-size: 20px; font-weight: 500; }
@@ -133,6 +134,9 @@
 .ent-sch-composer textarea { display: block; border: 0; background: transparent; color: inherit; width: 100%; resize: vertical; min-height: 142px; max-height: 300px; padding: 15px 16px; line-height: 1.75; font: inherit; box-sizing: border-box; outline: none; border-radius: 8px 8px 0 0; }
 .ent-sch-editor ::placeholder, .ent-sch-custom-modal ::placeholder { color: var(--ent-ink-3); opacity: .75; }
 .ent-sch-composer-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 6px 12px; min-width: 0; }
+.ent-sch-editor .ent-sch-composer textarea { resize: none; }
+.ent-sch-editor .ent-sch-composer-tools { flex-wrap: nowrap; }
+.ent-sch-editor .ent-sch-composer-tools > .ent-composer-resize { position: relative; right: auto; bottom: auto; flex: none; margin-left: auto; }
 .ent-sch-execution-selects { display: flex; flex: 1; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .ent-sch-execution-selects .ent-rs-compact { border: 1px solid transparent; border-radius: 6px; background: var(--ent-brand-soft); }
 .ent-sch-execution-selects .ent-rs-compact:hover { border-color: var(--ent-brand-border); }
@@ -158,7 +162,7 @@
 .ent-sch-time-row + .ent-sch-time-row { border-top: 1px solid var(--ent-line-soft); }
 .ent-sch-time-row > :first-child { flex-shrink: 0; }
 .ent-sch-time-row :is(select, input:not([type=checkbox])) { border: 0; border-radius: 4px; padding: 5px 6px; background: transparent; color: var(--ent-ink-2); font: inherit; text-align: right; min-width: 0; max-width: 100%; }
-.ent-sch-time-row select { cursor: pointer; }
+.ent-sch-repeat .ent-sch-time-row select { min-width: 112px; padding-inline: 12px; text-align: left; cursor: pointer; }
 .ent-sch-time-row input[type=number] { width: 70px; }
 .ent-sch-time-value { display: inline-flex; align-items: center; gap: 4px; color: var(--ent-ink-3); }
 .ent-sch-weekdays { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
