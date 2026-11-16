@@ -86,7 +86,7 @@ async function fixture() {
   async function tools(input: Partial<Parameters<ConversationMediaPort['prepareRun']>[0]> = {}) {
     const host = await video.prepareRun(runInput)
     assert.ok(host)
-    return service.prepareRun({ taskId: task.id, runId: runInput.runId, attachments: [], signal: new AbortController().signal, video: host, ...input })
+    return (await service.prepareRun({ taskId: task.id, runId: runInput.runId, attachments: [], signal: new AbortController().signal, video: host, ...input })).video!
   }
   async function generateImage(taskId = task.id) {
     const host = await media.prepareRun({ ...runInput, taskId })
@@ -101,6 +101,68 @@ async function fixture() {
 type ReferenceView = { referenceAssets: MediaAssetView[]; referenceSources: VideoReferenceSource[] }
 const videoInput = (id: string) => ({ creativeBrief: 'Animate this product', localAssetIds: [id],
   parameters: { ...videoFixture.quoteRequest.parameters, resolution: '720p', outputFormat: 'video/mp4' } })
+
+const imageInput = { creativeBrief: 'Keep the product and replace its background', operation: 'edit',
+  parameters: { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' } }
+
+test('image-only conversations discover named attachments and edit exactly the selected image', async () => {
+  const f = await fixture(), first = await f.attach(png, 'first.png'), second = await f.attach(MOCK_MEDIA_PNG, 'second.png')
+  const host = await f.media.prepareRun(f.runInput)
+  const tools = (await f.service.prepareRun({ taskId: f.task.id, runId: 'run-a',
+    attachments: [...first.resolved.attachments, ...second.resolved.attachments], signal: new AbortController().signal, media: host })).media!
+  const view = await tools.execute('media_get_capabilities', {}) as ReferenceView
+  assert.deepEqual(view.referenceSources.map(source => source.source === 'attachment' && source.displayName), ['first.png', 'second.png'])
+  assert.equal((await f.images.listJobs(owner, f.task.id)).length, 0)
+  const selected = view.referenceSources[1]!.localAssetId
+  await assert.rejects(tools.execute('media_generate_image', imageInput), { code: 'INVALID_ARGUMENT' })
+  await assert.rejects(tools.execute('media_generate_image', { ...imageInput, localAssetIds: view.referenceSources.map(source => source.localAssetId) }), { code: 'INVALID_ARGUMENT' })
+  assert.equal((await f.images.listJobs(owner, f.task.id)).length, 0)
+  await tools.execute('media_generate_image', { ...imageInput, localAssetIds: [selected] })
+  await f.media.waitForRun(f.task.id, 'run-a')
+  const jobs = await f.images.listJobs(owner, f.task.id)
+  assert.equal(jobs.length, 1)
+  assert.equal(jobs[0]!.input.operation, 'edit')
+  assert.deepEqual(jobs[0]!.input.localAssetIds, [selected])
+})
+
+test('image reference discovery converts saved outputs but never makes them implicit next-turn inputs', async () => {
+  const f = await fixture(), attached = await f.attach(), output = await f.generateImage()
+  const prepare = async (runId: string, attachments = attached.resolved.attachments) => {
+    const host = await f.media.prepareRun({ ...f.runInput, runId })
+    return (await f.service.prepareRun({ taskId: f.task.id, runId, attachments, signal: new AbortController().signal, media: host })).media!
+  }
+  const tools = await prepare('run-edit')
+  const view = await tools.execute('media_get_capabilities', {}) as ReferenceView
+  assert.ok(view.referenceSources.some(source => source.source === 'generated' && source.sourceArtifactId === output.localAssetId))
+  await tools.execute('media_generate_image', { ...imageInput, localAssetIds: [output.localAssetId] })
+  await f.media.waitForRun(f.task.id, 'run-edit')
+  const next = await prepare('run-b', [])
+  const nextView = await next.execute('media_get_capabilities', {}) as ReferenceView
+  assert.ok(nextView.referenceSources.every(source => source.source !== 'attachment'))
+  await next.execute('media_generate_image', { ...imageInput, operation: 'generate' })
+  await f.media.waitForRun(f.task.id, 'run-b')
+  const jobs = await f.images.listJobs(owner, f.task.id)
+  assert.equal(jobs.length, 3)
+  assert.equal(jobs.at(-1)!.input.operation, 'generate')
+  assert.deepEqual(jobs.at(-1)!.input.localAssetIds, [])
+})
+
+test('image reference bridge preserves edit permissions, cancellation and task ownership', async () => {
+  const f = await fixture(), attached = await f.attach(), controller = new AbortController()
+  const employee = { ...f.employee, media: { ...MOCK_MEDIA_CAPABILITIES,
+    profiles: MOCK_MEDIA_CAPABILITIES.profiles.map(profile => ({ ...profile, operations: ['generate'] as Array<'generate' | 'edit'> })) } }
+  const host = await f.media.prepareRun({ ...f.runInput, employee })
+  const tools = (await f.service.prepareRun({ taskId: f.task.id, runId: 'run-a', attachments: attached.resolved.attachments,
+    signal: controller.signal, media: host })).media!
+  const view = await tools.execute('media_get_capabilities', {}) as ReferenceView
+  await assert.rejects(tools.execute('media_generate_image', { ...imageInput, localAssetIds: [view.referenceAssets[0]!.localAssetId] }))
+  const foreign = await f.manager.createTask('Other', 'Other', join(f.root, 'other'), 'subscription-a')
+  const output = await f.generateImage(foreign.id)
+  await assert.rejects(tools.execute('media_generate_image', { ...imageInput, localAssetIds: [output.localAssetId] }), { code: 'NOT_FOUND' })
+  assert.equal((await f.images.listJobs(owner, f.task.id)).length, 0)
+  controller.abort(new Error('Conversation cancelled'))
+  await assert.rejects(tools.execute('media_get_capabilities', {}), /Conversation cancelled/)
+})
 
 test('conversation uploads its actual image attachment and saves the generated video through the existing host', async () => {
   const f = await fixture(), attached = await f.attach()
@@ -123,14 +185,14 @@ test('each queued turn identifies its own named attachments and retry reuses the
   const first = await f.attach(png, 'first.png'), second = await f.attach(MOCK_MEDIA_PNG, 'second.png')
   const firstTools = await f.tools({ attachments: first.resolved.attachments })
   const before = await firstTools.execute('video_get_job', {}) as ReferenceView
-  const secondTools = await f.service.prepareRun({ taskId: f.task.id, runId: 'run-b', attachments: second.resolved.attachments,
-    signal: new AbortController().signal, video: firstTools })
+  const secondTools = (await f.service.prepareRun({ taskId: f.task.id, runId: 'run-b', attachments: second.resolved.attachments,
+    signal: new AbortController().signal, video: firstTools })).video!
   const after = await secondTools.execute('video_get_job', {}) as ReferenceView
   assert.equal(after.referenceAssets.length, 2)
   assert.deepEqual(after.referenceSources.map(source => source.source === 'attachment' ? source.displayName : undefined), ['second.png'])
   assert.notEqual(after.referenceSources[0]!.localAssetId, before.referenceSources[0]!.localAssetId)
-  const retry = await new ConversationMediaService(f.options).prepareRun({ taskId: f.task.id, runId: 'run-retry', attachments: first.resolved.attachments,
-    signal: new AbortController().signal, video: firstTools })
+  const retry = (await new ConversationMediaService(f.options).prepareRun({ taskId: f.task.id, runId: 'run-retry', attachments: first.resolved.attachments,
+    signal: new AbortController().signal, video: firstTools })).video!
   const retried = await retry.execute('video_get_job', {}) as ReferenceView
   assert.equal(retried.referenceSources[0]!.localAssetId, before.referenceSources[0]!.localAssetId)
   assert.equal((await f.images.listAssets(owner, f.task.id)).length, 2)
@@ -188,7 +250,7 @@ test('foreign task images and attachments cannot be converted or uploaded by a c
 test('cancelled or superseded account runs cannot expose references or start video generation', async () => {
   const f = await fixture(), attached = await f.attach(), controller = new AbortController()
   const tools = await f.tools({ attachments: attached.resolved.attachments, signal: controller.signal })
-  const liveTools = await f.service.prepareRun({ taskId: f.task.id, runId: 'run-b', attachments: [], signal: new AbortController().signal, video: tools })
+  const liveTools = (await f.service.prepareRun({ taskId: f.task.id, runId: 'run-b', attachments: [], signal: new AbortController().signal, video: tools })).video!
   controller.abort(new Error('Conversation cancelled'))
   await assert.rejects(tools.execute('video_get_job', {}), /Conversation cancelled/)
   await f.manager.setCurrentUser(other.memberId, other.enterpriseId)
@@ -217,10 +279,12 @@ test('cancelling while attachment conversion is pending prevents publication and
   assert.equal((await f.images.listAssets(owner, f.task.id)).length, 0)
 })
 
-for (const kind of ['general', 'employee'] as const) test(`${kind} conversation runtime connects first-turn and follow-up images to the existing video host`, async () => {
+for (const mediaKind of ['image', 'video'] as const) for (const kind of ['general', 'employee'] as const)
+test(`${kind} conversation runtime connects first-turn and follow-up images to the ${mediaKind} host`, async () => {
   const f = await fixture(), attached = await f.attach(), runs = new TaskRunStore(f.root)
   f.videoOptions.tracker = { ...f.videoOptions.tracker, maxAttempts: 1 }
   const conversationVideo = new ConversationVideoRunService(f.video, f.videoOptions)
+  const employee = { ...f.employee, ...(mediaKind === 'image' ? { video: undefined } : {}) }
   const plans = new WorkPlanStore(f.root)
   await plans.save(owner, { id: f.task.id, schemaVersion: 1, sourceDraftId: 'draft-a', sourceDraftRevision: 1, owner,
     mode: 'conversation', title: f.task.title, goal: f.task.prompt, nodes: [], confirmedInputs: [],
@@ -229,8 +293,8 @@ for (const kind of ['general', 'employee'] as const) test(`${kind} conversation 
     inputSnapshot: attached.snapshot, planHash: 'conversation-a', createdAt: Date.now() })
   let failure: unknown, executed = 0, approvals = 0
   const runtime = new TaskRuntime({ taskManager: f.manager, taskRunStore: runs, workPlanStore: plans, getTaskWorkspaceRoot: () => f.root,
-    resolveEmployee: () => f.employee, getRefreshToken: () => 'fixture', onAuthenticationRequired() {},
-    authorizeModel: async () => f.employee,
+    resolveEmployee: () => employee, getRefreshToken: () => 'fixture', onAuthenticationRequired() {},
+    authorizeModel: async () => employee,
     onEvent() {}, onApprovalRequest(request) { approvals++; runtime.respondToApproval({ requestId: request.requestId, approved: true }) },
     attachmentInputs: f.attachments, conversationMedia: f.service, video: f.video, conversationVideo, media: f.media,
     createWorker: options => ({ async run(prompt) {
@@ -238,16 +302,23 @@ for (const kind of ['general', 'employee'] as const) test(`${kind} conversation 
         assert.match(prompt, /parameterSources.*requestedSpec.*实际存在/)
         assert.match(prompt, /不得.*width.*height/)
         assert.match(prompt, /提交状态.*未知.*原任务/)
-        const tools = options.context.videoTools!
+        let generatedJobId: string | undefined
         if (executed === 2) {
-          await options.context.mediaTools!.execute('media_generate_image', { creativeBrief: 'A new product photograph',
-            parameters: { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' } })
+          const result = await options.context.mediaTools!.execute('media_generate_image', { creativeBrief: 'A new product photograph',
+            parameters: { aspectRatio: '1:1', count: 1, size: 'small', quality: 'standard' } }) as { jobId: string }
+          generatedJobId = result.jobId
         } else assert.equal(options.context.inputImages?.length, 1)
-        const view = await tools.execute('video_get_job', {}) as ReferenceView
-        const source = view.referenceSources.find(source => source.source === (executed === 2 ? 'generated' : 'attachment'))
+        const view = await (mediaKind === 'image' ? options.context.mediaTools!.execute('media_get_capabilities', {}) :
+          options.context.videoTools!.execute('video_get_job', {})) as ReferenceView
+        const source = view.referenceSources.find(source => executed === 2
+          ? source.source === 'generated' && source.jobId === generatedJobId : source.source === 'attachment')
         assert.ok(source)
         if (source.source === 'attachment') assert.equal(source.displayName, executed === 0 ? 'product.png' : 'follow-up.png')
-        await tools.execute('video_from_image', videoInput(source.localAssetId))
+        if (mediaKind === 'image') {
+          assert.equal(options.context.videoTools, undefined, 'Image editing must work without video authorization')
+          assert.match(prompt, /图片参考素材/)
+          await options.context.mediaTools!.execute('media_generate_image', { ...imageInput, localAssetIds: [source.localAssetId] })
+        } else await options.context.videoTools!.execute('video_from_image', videoInput(source.localAssetId))
         assert.ok(options.onResponseSettled)
         await options.onResponseSettled({ text: 'Video delivered.', stopReason: 'stop' })
         await mkdir(options.context.sessionDir, { recursive: true })
@@ -276,10 +347,17 @@ for (const kind of ['general', 'employee'] as const) test(`${kind} conversation 
   await settle()
   assert.equal(executed, 3)
   assert.equal(approvals, 0, 'unrestricted conversation media must not request approval')
-  assert.equal(f.gateway.calls.submit, 3)
-  assert.equal(f.gateway.calls.quote, 3)
+  assert.equal(f.gateway.calls.submit, mediaKind === 'video' ? 3 : 0)
+  assert.equal(f.gateway.calls.quote, mediaKind === 'video' ? 3 : 0)
   assert.equal((await f.manager.getTask(f.task.id))?.status, 'completed')
-  assert.deepEqual(Buffer.from(f.uploaded[0]!), png)
-  assert.deepEqual(Buffer.from(f.uploaded[1]!), MOCK_MEDIA_PNG)
-  assert.deepEqual(Buffer.from(f.uploaded[2]!), MOCK_MEDIA_PNG)
+  if (mediaKind === 'video') {
+    assert.deepEqual(Buffer.from(f.uploaded[0]!), png)
+    assert.deepEqual(Buffer.from(f.uploaded[1]!), MOCK_MEDIA_PNG)
+    assert.deepEqual(Buffer.from(f.uploaded[2]!), MOCK_MEDIA_PNG)
+  } else {
+    const jobs = await f.images.listJobs(owner, f.task.id)
+    assert.equal(jobs.length, 4)
+    assert.deepEqual(jobs.map(job => job.input.operation), ['edit', 'edit', 'generate', 'edit'])
+    assert.ok(jobs.every(job => job.saveStatus === 'SAVED'))
+  }
 })

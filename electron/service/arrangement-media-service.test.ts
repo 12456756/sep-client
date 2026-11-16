@@ -6,6 +6,80 @@ import type { ArrangementMediaLink } from '../domain/arrangement-media'
 import * as videoFixture from '../../src/shared/fixtures/media-video-v1.json'
 import { videoReceiptSchema, videoRequestWithIdentitySchema } from '../../src/shared/video-media'
 
+async function imageFixture(operation: 'generate' | 'edit', count = 1, source = false) {
+  const owner = { memberId: 'member', enterpriseId: 'enterprise' }
+  const node: ArrangementNode = { id: 'node', subscriptionId: 'employee', modelId: 'model', title: 'Image', instruction: 'Image',
+    expectedOutput: 'Image', dependsOn: [], skillIds: [],
+    inputRefs: Array.from({ length: count }, (_, index) => ({ kind: 'attachment' as const, purpose: 'media-source' as const,
+      required: true, attachment: { attachmentId: `attachment-${index}`, sha256: 'a'.repeat(64) } })),
+    mediaRequirements: [{ id: 'image', kind: 'image', operation, ...(source ? { inputFrom: { artifactId: 'output-a' } } : {}) }] }
+  const options = {
+    scope: { currentScope: () => owner }, getTask: async () => ({ subscriptionId: 'employee' }),
+    plans: { get: async () => ({ planHash: 'hash', nodes: [node], workspace: { path: '/workspace' } }) },
+    checkpoints: { get: async () => null }, runs: { list: async () => [] }, links: { list: async () => [] },
+    images: { listJobs: async () => [], getAsset: async (_scope: unknown, _taskId: string, id: string) => ({ localAssetId: id,
+      taskId: 'task', source: 'reference', mime: 'image/png', status: 'SAVED', width: 1, height: 1, size: 1 }) },
+    assets: { attachmentReference: async (_scope: unknown, _taskId: string, ref: { attachmentId: string }) =>
+      ({ artifactId: 'ref-' + ref.attachmentId, sha256: 'a'.repeat(64) }),
+    reference: async () => ({ artifactId: 'ref-output', sha256: 'a'.repeat(64) }) }, media: {},
+  } as unknown as ArrangementMediaServiceOptions
+  const session = await new ArrangementMediaService(options).prepareNode({ taskId: 'task', arrangementRunId: 'arrangement', nodeRunId: 'run',
+    attempt: 1, planHash: 'hash', node, signal: new AbortController().signal })
+  const calls: Array<Record<string, unknown>> = []
+  const tools = (capabilities = MOCK_MEDIA_CAPABILITIES) => session.bind({ names: ['media_get_capabilities', 'media_generate_image'],
+    execute: async (name, raw) => {
+      if (name === 'media_get_capabilities') return { capabilities, referenceAssets: [] }
+      calls.push(raw as Record<string, unknown>); return { jobId: 'job' }
+    } }).media!
+  return { session, calls, tools }
+}
+
+test('image arrangement does not infer edit or pass references merely because attachments exist', async () => {
+  const f = await imageFixture('generate', 2)
+  await f.tools().execute('media_generate_image', { creativeBrief: 'A new image' })
+  assert.equal(f.calls[0]!.operation, 'generate')
+  assert.deepEqual(f.calls[0]!.localAssetIds, [])
+})
+
+test('image arrangement requires a single explicit candidate when multiple references are bound', async () => {
+  const f = await imageFixture('edit', 2), tools = f.tools()
+  await assert.rejects(tools.execute('media_generate_image', { creativeBrief: 'Edit product' }), { code: 'INVALID_ARGUMENT' })
+  assert.equal(f.calls.length, 0)
+  await tools.execute('media_generate_image', { creativeBrief: 'Edit product', localAssetIds: ['ref-attachment-1'] })
+  assert.equal(f.calls[0]!.operation, 'edit')
+  assert.deepEqual(f.calls[0]!.localAssetIds, ['ref-attachment-1'])
+  await assert.rejects(tools.execute('media_generate_image', { creativeBrief: 'Edit', localAssetIds: ['foreign'] }), { code: 'PERMISSION_DENIED' })
+})
+
+test('image arrangement chooses the requirement input rather than all bound references', async () => {
+  const f = await imageFixture('edit', 2, true)
+  await f.tools().execute('media_generate_image', { creativeBrief: 'Edit previous output' })
+  assert.deepEqual(f.calls[0]!.localAssetIds, ['ref-output'])
+})
+
+test('image arrangement checks edit operation authorization before dispatching generation', async () => {
+  const f = await imageFixture('edit')
+  const tools = f.tools({ ...MOCK_MEDIA_CAPABILITIES,
+    profiles: MOCK_MEDIA_CAPABILITIES.profiles.map(profile => ({ ...profile, operations: ['generate'] })) })
+  await assert.rejects(tools.execute('media_generate_image', { creativeBrief: 'Edit product' }), { code: 'PERMISSION_DENIED' })
+  assert.equal(f.calls.length, 0)
+})
+
+test('image arrangement keeps a unique planned reference and rejects missing, conflicting or substituted inputs', async () => {
+  const f = await imageFixture('edit'), tools = f.tools()
+  await tools.execute('media_generate_image', { creativeBrief: 'Edit the only bound image' })
+  assert.deepEqual(f.calls[0]!.localAssetIds, ['ref-attachment-0'])
+  await assert.rejects(tools.execute('media_generate_image', { creativeBrief: 'Wrong operation', operation: 'generate' }), { code: 'SPEC_CONFLICT' })
+  await assert.rejects(tools.execute('media_generate_image', { creativeBrief: 'Wrong requirement', requirementId: 'unknown' }), { code: 'SPEC_CONFLICT' })
+  const empty = await imageFixture('edit', 0)
+  await assert.rejects(empty.tools().execute('media_generate_image', { creativeBrief: 'No source' }), { code: 'INVALID_ARGUMENT' })
+  const bound = await imageFixture('edit', 1, true)
+  await assert.rejects(bound.tools().execute('media_generate_image', { creativeBrief: 'Substituted source', localAssetIds: ['ref-attachment-0'] }), { code: 'SPEC_CONFLICT' })
+  const generated = await imageFixture('generate')
+  await assert.rejects(generated.tools().execute('media_generate_image', { creativeBrief: 'New image', localAssetIds: ['ref-attachment-0'] }), { code: 'INVALID_ARGUMENT' })
+  assert.equal(empty.calls.length + bound.calls.length + generated.calls.length, 0)
+})
+
 async function fixture(specRevisions?: Record<string, number>, existing: ArrangementMediaLink[] = [], multiple = false, replacement = false) {
   const owner = { memberId: 'member', enterpriseId: 'enterprise' }
   const node: ArrangementNode = { id: 'node', subscriptionId: 'employee', modelId: 'model', title: 'Video', instruction: 'Generate video',

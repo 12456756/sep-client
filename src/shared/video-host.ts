@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { videoParametersSchema, videoOperationSchema, type VideoOutput, type VideoRuntime, type VideoReceipt, type VideoSpecFailure } from './video-media'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoRequestedSpecSchema, type VideoActualSpec, type VideoRequestedSpec, type MediaParameterSources } from './media-spec-contract'
+import { mediaReferenceSourceSchema } from './media-host'
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
 const profileId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/)
@@ -43,10 +44,7 @@ export const videoToolGenerationInputSchema = z.object({
 export const videoToolJobInputSchema = z.object({ jobId: id.optional() }).strict()
 
 /** Model-facing identities only; source paths and platform upload IDs are never exposed. */
-export const videoReferenceSourceSchema = z.discriminatedUnion('source', [
-  z.object({ localAssetId: id, source: z.literal('attachment'), attachmentId: id, displayName: z.string().min(1).max(256) }),
-  z.object({ localAssetId: id, source: z.literal('generated'), sourceArtifactId: id, jobId: id.optional(), outputId: z.string().min(1).max(1024).optional() }),
-])
+export const videoReferenceSourceSchema = mediaReferenceSourceSchema
 export type VideoReferenceSource = z.infer<typeof videoReferenceSourceSchema>
 
 /** No disk paths, remote reference IDs, prompts, quotes or upstream metadata. */

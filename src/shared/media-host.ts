@@ -1,6 +1,15 @@
 import { z } from 'zod'
 import { imageRequestedSpecSchema, mediaParameterSourcesSchema } from './media-spec-contract'
 
+/** Model-facing identities only; never include local paths or platform upload IDs. */
+const referenceId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)
+export const mediaReferenceSourceSchema = z.discriminatedUnion('source', [
+  z.object({ localAssetId: referenceId, source: z.literal('attachment'), attachmentId: referenceId, displayName: z.string().min(1).max(256) }),
+  z.object({ localAssetId: referenceId, source: z.literal('generated'), sourceArtifactId: referenceId,
+    jobId: referenceId.optional(), outputId: z.string().min(1).max(1024).optional() }),
+])
+export type MediaReferenceSource = z.infer<typeof mediaReferenceSourceSchema>
+
 /** The model supplies specification decisions; the host validates authorization without inventing defaults. */
 export const mediaToolGenerationInputSchema = z.object({
   requirementId: z.string().trim().min(1).max(128).optional(),
