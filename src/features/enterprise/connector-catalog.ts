@@ -1,6 +1,7 @@
 import dingtalkLogo from '../../assets/dingtalk.png';
 import feishuLogo from '../../assets/feishu.ico';
 import wecomLogo from '../../assets/wecom.ico';
+import tmeetLogo from '../../assets/tencent-meeting.ico';
 import type { ConnectorId } from '../../shared/connectors';
 
 export interface ConnectorDefinition {
@@ -14,6 +15,16 @@ export interface ConnectorDefinition {
 }
 
 export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
+  {
+    id: 'tmeet', name: '腾讯会议', category: '视频会议', description: '会议安排、录制与智能纪要',
+    logoUrl: tmeetLogo, authorizationAvailable: true,
+    capabilities: [
+      { name: '会议查询', description: '查询和搜索当前账号可访问的会议。' },
+      { name: '会议安排', description: '创建、修改和取消普通预约会议。' },
+      { name: '录制查询', description: '搜索已生成且有权访问的会议录制。' },
+      { name: '纪要与转写', description: '读取录制对应的智能纪要和转写内容。' },
+    ],
+  },
   {
     id: 'wecom', name: '企业微信', category: '协同办公', description: '会话、消息与通讯录',
     logoUrl: wecomLogo, authorizationAvailable: true,

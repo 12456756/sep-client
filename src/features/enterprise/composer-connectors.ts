@@ -4,6 +4,7 @@ export const composerConnectorNames: Record<ConnectorId, string> = {
   dingtalk: '钉钉',
   feishu: '飞书',
   wecom: '企业微信',
+  tmeet: '腾讯会议',
 }
 
 export function withComposerConnector(text: string, connectorId?: ConnectorId): string {

@@ -197,6 +197,11 @@
     ],
     "extraResources": [
       {
+        "from": "resources/tencent-meeting",
+        "to": "tencent-meeting",
+        "filter": ["NOTICE"]
+      },
+      {
         "from": "node_modules/dingtalk-workspace-cli/assets/dws-skills.zip",
         "to": "dingtalk/dws-skills.zip"
       },

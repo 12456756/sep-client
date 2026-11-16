@@ -10,7 +10,7 @@ test('connector service forwards provider ID and authenticated scope for every a
   let scope: TaskOwnerScope | null = { enterpriseId: 'company', memberId: 'person' }
   const calls: string[] = []
   const provider = (id: ConnectorId): ConnectorRuntimePort => ({ state: async owner => { calls.push(`state:${id}:${owner.memberId}`); return { id, status: 'disconnected' } }, connect: async owner => { calls.push(`connect:${id}:${owner.memberId}`) }, disconnect: async owner => { calls.push(`disconnect:${id}:${owner.memberId}`) }, cancel: () => {}, binding: async () => undefined })
-  const registry = new ConnectorRegistry({ dingtalk: async () => provider('dingtalk'), feishu: async () => provider('feishu'), wecom: async () => provider('wecom') })
+  const registry = new ConnectorRegistry({ dingtalk: async () => provider('dingtalk'), feishu: async () => provider('feishu'), wecom: async () => provider('wecom'), tmeet: async () => provider('tmeet') })
   const service = new ConnectorService({ currentScope: () => scope }, async () => registry)
   assert.equal((await service.state('feishu')).id, 'feishu')
   await service.connect('feishu'); await service.disconnect('dingtalk')

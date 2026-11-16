@@ -22,6 +22,12 @@ test('full DingTalk tools use registered approvals and preserve MCP tools and di
   const wecom = attachConnectorTools(base, { ...binding, commands: [{ ...binding.commands![0], id: 'wecom', name: '企业微信' }] }, '.')
   assert.deepEqual(wecom.tools.map(tool => tool.name), ['wecom_reference', 'wecom_schema', 'wecom_execute'])
   assert.equal(wecom.permissions.get('wecom_execute'), 'confirm-each')
+  const tmeet = attachConnectorTools(base, { ...binding, commands: [{ ...binding.commands![0], id: 'tmeet', name: '腾讯会议' }] }, '.')
+  assert.deepEqual(tmeet.tools.map(tool => tool.name), ['tmeet_reference', 'tmeet_schema', 'tmeet_execute'])
+  assert.equal(tmeet.permissions.get('tmeet_execute'), 'confirm-each')
+  const meetingPolicy = { allowedTools: [...tmeet.permissions.keys()], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled' as const, approvalMode: 'confirm-each' as const, workspaceDir: '.' }
+  assert.equal(evaluateToolCall('tmeet_execute', {}, meetingPolicy, tmeet.permissions).requiresApproval, true)
+  assert.equal(evaluateToolCall('tmeet_schema', {}, meetingPolicy, tmeet.permissions).requiresApproval, false)
   const policy = { allowedTools: [...runtime.permissions.keys()], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled' as const, approvalMode: 'confirm-each' as const, workspaceDir: '.' }
   assert.equal(evaluateToolCall('dingtalk_execute', {}, policy, runtime.permissions).requiresApproval, true)
   assert.equal(evaluateToolCall('dingtalk_schema', {}, policy, runtime.permissions).requiresApproval, false)
