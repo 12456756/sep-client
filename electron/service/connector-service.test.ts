@@ -10,12 +10,14 @@ test('connector service forwards provider ID and authenticated scope for every a
   let scope: TaskOwnerScope | null = { enterpriseId: 'company', memberId: 'person' }
   const calls: string[] = []
   const provider = (id: ConnectorId): ConnectorRuntimePort => ({ state: async owner => { calls.push(`state:${id}:${owner.memberId}`); return { id, status: 'disconnected' } }, connect: async owner => { calls.push(`connect:${id}:${owner.memberId}`) }, disconnect: async owner => { calls.push(`disconnect:${id}:${owner.memberId}`) }, cancel: () => {}, binding: async () => undefined })
-  const registry = new ConnectorRegistry({ dingtalk: async () => provider('dingtalk'), feishu: async () => provider('feishu'), wecom: async () => provider('wecom'), tmeet: async () => provider('tmeet'), qqmail: async () => provider('qqmail') })
+  const registry = new ConnectorRegistry({ dingtalk: async () => provider('dingtalk'), feishu: async () => provider('feishu'), wecom: async () => provider('wecom'), tmeet: async () => provider('tmeet'), qqmail: async () => provider('qqmail'), kdocs: async () => provider('kdocs') })
   const service = new ConnectorService({ currentScope: () => scope }, async () => registry)
   assert.equal((await service.state('feishu')).id, 'feishu')
   await service.connect('feishu'); await service.disconnect('dingtalk')
   assert.deepEqual(calls, ['state:feishu:person', 'connect:feishu:person', 'disconnect:dingtalk:person'])
+  await service.connect('kdocs'); await service.disconnect('kdocs')
+  assert.deepEqual(calls.slice(-2), ['connect:kdocs:person', 'disconnect:kdocs:person'])
   scope = null
   await assert.rejects(service.connect('feishu'))
-  assert.equal(calls.length, 3)
+  assert.equal(calls.length, 5)
 })

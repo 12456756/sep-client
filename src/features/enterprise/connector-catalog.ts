@@ -3,6 +3,7 @@ import feishuLogo from '../../assets/feishu.ico';
 import wecomLogo from '../../assets/wecom.ico';
 import tmeetLogo from '../../assets/tencent-meeting.ico';
 import qqMailLogo from '../../assets/qq-mail.ico';
+import kdocsLogo from '../../assets/kdocs.png';
 import type { ConnectorId } from '../../shared/connectors';
 
 export interface ConnectorDefinition {
@@ -16,6 +17,16 @@ export interface ConnectorDefinition {
 }
 
 export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
+  {
+    id: 'kdocs', name: '金山文档', category: '云文档', description: '云文档检索、编辑与表格读写',
+    logoUrl: kdocsLogo, authorizationAvailable: true,
+    capabilities: [
+      { name: '文档搜索与阅读', description: '搜索和浏览云文档，读取有权访问的文档正文。' },
+      { name: '文档创建与编辑', description: '新建文档，向智能文档追加、插入或替换内容。' },
+      { name: '文件整理', description: '查询文件信息与链接，重命名、移动和复制文件。' },
+      { name: '表格读写', description: '查询工作表，读取选区并更新单元格值或公式。' },
+    ],
+  },
   {
     id: 'qqmail', name: 'QQ 邮箱', category: '电子邮件', description: '邮件检索、阅读与收发',
     logoUrl: qqMailLogo, authorizationAvailable: true,

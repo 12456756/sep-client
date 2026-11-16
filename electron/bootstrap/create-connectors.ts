@@ -48,6 +48,10 @@ export function createConnectorRegistry(options: {
   }
   const managed = (runtime: ConnectorRuntimePort, dependency: ConnectorDependencyPort): ConnectorRuntimePort => new ManagedConnector(runtime, dependency, currentScope)
   return new ConnectorRegistry({
+    kdocs: async () => {
+      const { KdocsWorkspaceRuntime } = await import('../runtime/kdocs-workspace')
+      return new KdocsWorkspaceRuntime({ store: new ConnectorStore(userDataDir, encryption, 'kdocs'), currentScope, open })
+    },
     qqmail: async () => {
       const { QQMailWorkspaceRuntime } = await import('../runtime/qq-mail-workspace')
       return new QQMailWorkspaceRuntime({ store: new ConnectorStore(userDataDir, encryption, 'qqmail'), currentScope })

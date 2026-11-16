@@ -20,7 +20,7 @@ function ConnectorEntry({ connector: selected, query }: { connector: ConnectorDe
   const connectButton = useRef<HTMLButtonElement>(null);
   const { state, loading, busy, available } = connection;
   const connected = state.status === 'connected';
-  const documentsOnly = connected && (state.coverage === 'documents' || selected.id === 'dingtalk' && !state.coverage);
+  const documentsOnly = connected && selected.id === 'dingtalk' && (!state.coverage || state.coverage === 'documents');
   const authorizing = state.status === 'authorizing';
   const preparing = state.status === 'preparing';
   const preparationText = connectorPreparationText(state);
@@ -28,7 +28,7 @@ function ConnectorEntry({ connector: selected, query }: { connector: ConnectorDe
   const status = <span className={`connector-status${connected ? ' connected' : ''}`}>{connected ? <CheckCircle2 size={13} aria-hidden /> : preparing || authorizing || loading ? <LoaderCircle size={13} className="spin" aria-hidden /> : <Unplug size={13} aria-hidden />}{statusText}</span>;
   if (!`${selected.name} ${selected.category} ${selected.description}`.toLowerCase().includes(query.trim().toLowerCase())) return null;
   const failure = connection.error && !mailOpen ? <div className="connector-error" role="alert">{connection.error}<button type="button" className="ent-btn ghost" onClick={() => { void connection.refresh(); }}><RefreshCw size={14} aria-hidden />重试</button></div> : null;
-  const providerNotice = selected.id === 'wecom' && connected ? undefined : state.notice;
+  const providerNotice = selected.id === 'kdocs' ? state.notice || '支持 WPS 个人账号；企业账号请使用 WPS 365' : selected.id === 'wecom' && connected ? undefined : state.notice;
   const notice = mailOpen ? null : !available ? '请在桌面客户端中连接账号' : preparationText || state.error || providerNotice || (authorizing ? (selected.id === 'qqmail' ? '正在验证邮箱收发服务' : state.phase === 'setup' ? `请在浏览器中完成${selected.name}应用配置，随后继续账号授权` : `请在浏览器中完成${selected.name}授权`) : documentsOnly ? '当前仅有文档授权，请升级授权以连接更多业务' : null);
   return <article className="connector-card" aria-label={`${selected.name}连接器`}>
         <div className="connector-card-heading"><ConnectorLogo connector={selected} /><div><h3>{selected.name}</h3><span>{selected.category}</span></div>{status}</div>

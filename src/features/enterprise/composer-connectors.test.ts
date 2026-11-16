@@ -8,4 +8,5 @@ test('all composers preserve ordinary prompts and identify the selected connecto
   assert.equal(withComposerConnector('查询本周日程', 'feishu'), '请使用飞书连接器完成以下需求：\n\n查询本周日程')
   assert.equal(withComposerConnector('查询明天的会议', 'tmeet'), '请使用腾讯会议连接器完成以下需求：\n\n查询明天的会议')
   assert.equal(withComposerConnector('读取未读邮件', 'qqmail'), '请使用QQ 邮箱连接器完成以下需求：\n\n读取未读邮件')
+  assert.equal(withComposerConnector('搜索项目周报', 'kdocs'), '请使用金山文档连接器完成以下需求：\n\n搜索项目周报')
 })

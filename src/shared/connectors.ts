@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const connectorIdSchema = z.enum(['dingtalk', 'feishu', 'wecom', 'tmeet', 'qqmail'])
+export const connectorIdSchema = z.enum(['dingtalk', 'feishu', 'wecom', 'tmeet', 'qqmail', 'kdocs'])
 export type ConnectorId = z.infer<typeof connectorIdSchema>
 export const connectorStateSchema = z.object({
   id: connectorIdSchema,
