@@ -46,6 +46,17 @@ describe('employee runtime skill artifact negotiation errors', () => {
 })
 
 describe('SEP enabled model catalog', () => {
+  it('preserves the timeout cause when a bounded platform read fails', async () => {
+    const cause = new DOMException('private timeout diagnostic', 'TimeoutError')
+    globalThis.fetch = async () => { throw cause }
+    await assert.rejects(api.getEnabledModels('access'), error => {
+      assert.ok(error instanceof api.AuthApiError)
+      assert.equal(error.statusCode, 0)
+      assert.equal(error.cause, cause)
+      return true
+    })
+  })
+
   it('loads billing metadata with the authenticated API request and accepts legacy entries', async () => {
     const calls: Array<{ url: string; authorization: string | null }> = []
     globalThis.fetch = async (input, init) => {

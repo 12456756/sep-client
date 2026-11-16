@@ -5,6 +5,8 @@ import type { ClientTaskStats } from '../../src/shared/types'
 import { logger } from '../common/logger'
 import { UPDATE_RETRY_DELAYS_MS, UPDATE_STARTUP_DELAY_MS } from '../common/update-config'
 import { appError, isAppError } from '../errors/app-error'
+import { transportKind } from '../common/transport-error'
+import { updateFailureMessage, type UpdateFailureReason } from '../../src/shared/update-feedback'
 
 const log = logger.child('app-updater')
 const versionSchema = z.string().max(100).regex(/^\d+\.\d+\.\d+(?:-[\da-zA-Z.-]+)?(?:\+[\da-zA-Z.-]+)?$/)
@@ -21,6 +23,18 @@ const progressSchema = z.object({
 
 type Operation = 'check' | 'download' | 'cancel' | 'install'
 type AvailableState = Extract<UpdateState, { status: 'available' }>
+
+function failureReason(error: unknown, depth = 0): UpdateFailureReason {
+  const transport = transportKind(error)
+  if (transport) return transport
+  if (!error || typeof error !== 'object' || depth > 4) return 'unknown'
+  const value = error as { code?: unknown; cause?: unknown }
+  if (value.code === 'ENOSPC') return 'disk_space'
+  if (value.code === 'EACCES' || value.code === 'EPERM') return 'permission'
+  if (['ERR_UPDATER_INVALID_SIGNATURE', 'ERR_CHECKSUM_MISMATCH', 'ERR_UPDATER_NO_CHECKSUM'].includes(String(value.code))) return 'verification'
+  if (['ERR_UPDATER_CHANNEL_FILE_NOT_FOUND', 'ERR_UPDATER_ASSET_NOT_FOUND', 'ERR_UPDATER_NO_FILES_PROVIDED', 'ERR_UPDATER_ZIP_FILE_NOT_FOUND'].includes(String(value.code))) return 'source_unavailable'
+  return failureReason(value.cause, depth + 1)
+}
 
 /** SDK 与 Electron 留在组装适配器中；状态机可用受控驱动测试。 */
 export interface UpdateDriver {
@@ -74,10 +88,10 @@ export class AppUpdater {
       ['download-progress', payload => this.progress(payload)],
       ['update-downloaded', payload => this.downloaded(payload)],
       // SDK 也会在 Promise reject 前触发 error；由操作 catch 统一处理，避免重复状态。
-      ['error', () => {
+      ['error', error => {
         if (this.installing && !this.disposed) {
           this.installPrepared = false
-          this.fail('install')
+          this.fail('install', error)
           void this.recoverInstall().finally(() => { this.installing = false })
         }
       }],
@@ -123,9 +137,9 @@ export class AppUpdater {
       } else {
         this.setState({ status: 'not-available', currentVersion: this.options.currentVersion, checkedAt: new Date().toISOString() })
       }
-    } catch {
-      if (!this.disposed) this.fail('check')
-      throw this.operationError('check')
+    } catch (error) {
+      if (!this.disposed) this.fail('check', error)
+      throw this.operationError('check', error)
     } finally { this.checking = false }
   }
 
@@ -145,9 +159,9 @@ export class AppUpdater {
             this.available = { ...available, downloadOpened: true }
             this.setState(this.available)
           }
-        } catch {
-          if (!this.disposed) this.fail('download')
-          throw this.operationError('download')
+        } catch (error) {
+          if (!this.disposed) this.fail('download', error)
+          throw this.operationError('download', error)
         } finally { this.downloadWork = null }
       })
       this.downloadWork = work
@@ -165,10 +179,10 @@ export class AppUpdater {
         if (this.disposed || token.cancelled) return
         if (!this.downloadedEvent || files.length === 0) throw new Error('Unverified download')
         this.setState({ status: 'downloaded', currentVersion: this.options.currentVersion, version: available.version })
-      } catch {
+      } catch (error) {
         if (this.disposed || token.cancelled) return
-        this.fail('download')
-        throw this.operationError('download')
+        this.fail('download', error)
+        throw this.operationError('download', error)
       } finally {
         if (token.cancelled && !this.disposed) this.setState({ status: 'idle', currentVersion: this.options.currentVersion })
         token.dispose()
@@ -200,13 +214,15 @@ export class AppUpdater {
       if (this.disposed || this.state.status !== 'downloaded') throw this.invalid('更新状态已改变，请重新检查。')
       this.installPrepared = true
       driver.quitAndInstall(false, true)
-      if (this.getState().status === 'error') throw this.operationError('install')
+      const state = this.getState()
+      if (state.status === 'error') throw appError('SERVICE_UNAVAILABLE', { message: state.message })
     } catch (error) {
       this.installPrepared = false
       await this.recoverInstall()
       this.installing = false
       // 任务或停机检查失败时保留 downloaded，用户可以稍后直接重试。
-      throw isAppError(error) && error.code === 'INVALID_STATE' ? error : this.operationError('install')
+      if (!isAppError(error)) log.warn('update operation failed', { operation: 'install', error })
+      throw isAppError(error) ? error : this.operationError('install', error)
     }
   }
 
@@ -224,7 +240,7 @@ export class AppUpdater {
     if (!this.cleanupStarted) return Promise.resolve()
     this.cleanupStarted = false
     this.recovery = Promise.resolve().then(() => this.options.restoreAfterInstallFailure?.())
-      .catch(() => { log.warn('update cleanup recovery failed') })
+      .catch(error => { log.warn('update cleanup recovery failed', { error }) })
       .finally(() => { this.recovery = null })
     return this.recovery
   }
@@ -281,14 +297,16 @@ export class AppUpdater {
 
   private invalid(message: string): Error { return appError('INVALID_STATE', { message }) }
 
-  private operationError(operation: Operation): Error {
-    const messages = { check: '检查更新失败，请稍后重试。', download: '下载更新失败，请检查网络后重试。', cancel: '取消下载失败，请稍后重试。', install: '安装更新失败，请稍后重试或手动下载新版本。' }
-    return appError('SERVICE_UNAVAILABLE', { message: messages[operation] })
+  private operationError(operation: Operation, cause?: unknown): Error {
+    const reason = failureReason(cause)
+    const code = reason === 'network' || reason === 'timeout' ? 'NETWORK_ERROR' :
+      reason === 'disk_space' ? 'PERSISTENCE_ERROR' : reason === 'permission' ? 'PERMISSION_DENIED' : 'SERVICE_UNAVAILABLE'
+    return appError(code, { message: updateFailureMessage(operation, reason), cause })
   }
 
-  private fail(operation: Operation): void {
-    log.warn('update operation failed', { operation })
+  private fail(operation: Operation, error?: unknown): void {
+    log.warn('update operation failed', { operation, error })
     this.setState({ status: 'error', currentVersion: this.options.currentVersion, operation,
-      message: this.operationError(operation).message, retryable: true })
+      message: this.operationError(operation, error).message, retryable: true })
   }
 }

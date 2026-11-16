@@ -82,7 +82,33 @@ describe('toEnvelope', () => {
       assert.equal(result.message, ERROR_CODES.INTERNAL_ERROR.message)
       assert.doesNotMatch(result.message, /Origin|Referer/)
     }
-    assert.equal(toEnvelope(apiError(403, 'Forbidden'), { authenticated: true }).code, 'AUTH_REQUIRED')
+    assert.equal(toEnvelope(apiError(403, 'Forbidden'), { authenticated: true }).code, 'PERMISSION_DENIED')
+  })
+
+  it('keeps permission rejection separate from session expiry and login rejection', () => {
+    for (const resource of ['profile', 'skills', 'notifications'] as const) {
+      const result = toEnvelope(new AuthApiError({ statusCode: 403, message: 'Bearer private' }, resource), { authenticated: true })
+      assert.equal(result.code, 'PERMISSION_DENIED')
+      assert.equal(result.statusCode, 403)
+      assert.doesNotMatch(result.message, /重新登录|private/)
+    }
+    assert.equal(toEnvelope(new AuthApiError({ statusCode: 403, message: 'Forbidden' }, 'login')).reason, 'forbidden')
+  })
+
+  it('maps actual transport failures and nested timeout causes without exposing diagnostics', () => {
+    for (const error of [new TypeError('fetch failed'), Object.assign(new Error('private host'), { code: 'ENOTFOUND' }),
+      new TypeError('fetch failed', { cause: Object.assign(new Error('private host'), { code: 'ETIMEDOUT' }) }), apiError(408, 'private')]) {
+      const result = toEnvelope(error, { authenticated: true })
+      assert.equal(result.code, 'NETWORK_ERROR')
+      assert.equal(result.retryable, true)
+      assert.doesNotMatch(result.message, /private|fetch|ENOTFOUND/)
+    }
+    assert.match(toEnvelope(new TypeError('fetch failed', { cause: { code: 'UND_ERR_CONNECT_TIMEOUT' } })).message, /超时/)
+    assert.match(toEnvelope(new AuthApiError({ statusCode: 0, message: 'private' }, 'model-catalog', {
+      cause: new DOMException('private timeout diagnostic', 'TimeoutError'),
+    })).message, /超时/)
+    assert.equal(toEnvelope(new TypeError('Cannot read properties of undefined')).code, 'INTERNAL_ERROR')
+    assert.equal(toEnvelope(new DOMException('cancelled', 'AbortError')).code, 'INTERNAL_ERROR')
   })
 
 
@@ -99,6 +125,12 @@ describe('toEnvelope', () => {
 
   it('recognizes secure storage failures by message', () => {
     assert.equal(toEnvelope(new Error('safeStorage is unavailable')).code, 'STORAGE_UNAVAILABLE')
+  })
+
+  it('preserves domain error classification when a nested cause is a transport failure', () => {
+    const error = new TaskPersistenceError()
+    Object.defineProperty(error, 'cause', { value: Object.assign(new Error('private'), { code: 'ECONNRESET' }) })
+    assert.equal(toEnvelope(error).code, 'PERSISTENCE_ERROR')
   })
 
   it('maps known attachment failures to actionable copy without exposing paths', () => {

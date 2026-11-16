@@ -28,6 +28,7 @@ import { operationFeedback } from './operation-feedback'
 import type { FeedbackOperation } from '../../src/shared/arrangement-feedback'
 import { isMediaSpecError, type MediaSpecFailureContext } from '../../src/shared/media-spec-contract'
 import { mediaSpecToolFailureFrom } from './media-tool-error'
+import { transportKind } from '../common/transport-error'
 
 /** 送到渲染进程的错误信封。message 是中文，绝不含技术细节。 */
 export interface IpcErrorEnvelope extends MediaSpecFailureContext {
@@ -77,10 +78,11 @@ function envelope(code: ErrorCode, message?: string): IpcErrorEnvelope {
 }
 
 function mapAuthApiError(error: AuthApiError): IpcErrorEnvelope {
-  if (error.isNetworkError && error.statusCode === 0) return envelope('NETWORK_ERROR')
+  if (error.isNetworkError && error.statusCode === 0) return envelope('NETWORK_ERROR', transportKind(error) === 'timeout' ? '网络连接超时，请稍后重试。' : undefined)
+  if (error.statusCode === 408) return envelope('NETWORK_ERROR', '网络连接超时，请稍后重试。')
   // 技能缺失要与"员工不存在"区分开：前者管理员发布一下就能好，后者不能。
   if (error.statusCode === 401) return envelope('INVALID_CREDENTIALS')
-  if (error.statusCode === 403) return envelope('ACCOUNT_DISABLED')
+  if (error.statusCode === 403) return envelope('PERMISSION_DENIED', '当前操作请求被拒绝，请检查账号权限；如需帮助，请联系平台管理员。')
   if (error.statusCode === 404) return envelope('NOT_FOUND')
   if (error.statusCode === 429) return { ...envelope('RATE_LIMITED'), ...(error.error.retryAfterMs ? { retryAfterMs: error.error.retryAfterMs } : {}) }
   if (error.statusCode >= 500) return envelope('SERVICE_UNAVAILABLE')
@@ -120,10 +122,8 @@ function mapEnvelope(error: unknown, context: { authenticated?: boolean }): IpcE
     if (error.resource === 'skills' && error.statusCode === 403 && /^Missing Origin or Referer header\.?$/i.test(error.message.trim())) {
       return envelope('INTERNAL_ERROR')
     }
-    // 已登录之后收到 401/403，含义是"会话/授权失效，请重新登录"，
-    // 登录接口则按响应内容识别验证失败。原来 authError 与 taskError 各自处理，
-    // 同一个错误在两条路径上给出的码不一样。
-    if (context.authenticated && (error.statusCode === 401 || error.statusCode === 403)) {
+    // Only 401 establishes an expired session; a business 403 does not require re-login.
+    if (context.authenticated && error.statusCode === 401) {
       return envelope('AUTH_REQUIRED')
     }
     if (error.resource === 'login') {
@@ -150,6 +150,8 @@ function mapEnvelope(error: unknown, context: { authenticated?: boolean }): IpcE
     return envelope(code, message)
   }
   if (error instanceof Error && SAFE_STORAGE.test(error.message)) return envelope('STORAGE_UNAVAILABLE')
+  const transport = transportKind(error)
+  if (transport) return envelope('NETWORK_ERROR', transport === 'timeout' ? '网络连接超时，请稍后重试。' : undefined)
   return envelope('INTERNAL_ERROR')
 }
 

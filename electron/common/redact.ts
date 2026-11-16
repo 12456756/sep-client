@@ -18,7 +18,10 @@ const MAX_DEPTH = 5
 export function redactText(value: string, maxLength: number = MAX_STRING_LENGTH): string {
   const redacted = value
     .replace(/Bearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
-    .replace(/([?&](?:token|password|secret|api[_-]?key)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/Basic\s+[A-Za-z0-9+/=]+/gi, 'Basic [redacted]')
+    .replace(/([?&](?:token|(?:access|refresh|id)[_-]?token|password|secret|api[_-]?key|sig|signature|x-amz-signature|x-amz-credential)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/\b((?:set-cookie|cookie)\s*:\s*)[^\r\n]*/gi, '$1[redacted]')
+    .replace(/(?<![?&\w-])((?:["']?)(?:password|secret|token|(?:access|refresh|id)[_-]?token|(?:x[_-]?)?api[_-]?key)(?:["']?)\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*(?:"|$)|'(?:[^'\\]|\\.)*(?:'|$)|[^\s,;}]+)/gi, '$1[redacted]')
   return redacted.length <= maxLength
     ? redacted
     : `${redacted.slice(0, maxLength)}...[truncated]`
@@ -41,6 +44,10 @@ export function redactValue(value: unknown, depth = 0, key = '', limits: { maxDe
   if (typeof value === 'string') return redactText(value)
   if (typeof value !== 'object') return undefined
   if (depth >= (limits.maxDepth ?? MAX_DEPTH)) return '[max-depth]'
+  if (value instanceof Error) {
+    return redactValue({ ...value, name: value.name, message: value.message, stack: value.stack,
+      cause: value.cause, ...(value instanceof AggregateError ? { errors: value.errors } : {}) }, depth, '', limits)
+  }
   if (Array.isArray(value)) {
     return value.slice(0, limits.maxArrayLength ?? MAX_ARRAY_LENGTH).map(item => redactValue(item, depth + 1, '', limits))
   }

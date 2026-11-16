@@ -50,6 +50,7 @@ export function reportError(
     code: result.code,
     ...(statusCode === undefined ? {} : { statusCode }),
     cause: describeError(error),
+    diagnostic: error,
     ...(error instanceof AppError && error.details ? { details: error.details } : {}),
   }
   if (spec.level === 'error') log.error('operation failed', payload)
@@ -90,12 +91,14 @@ export function installProcessHandlers(options: { onFatal?: (error: unknown) => 
   process.on('unhandledRejection', reason => {
     log.error('unhandled rejection', {
       cause: describeError(reason),
+      diagnostic: reason,
       stack: reason instanceof Error ? describeError(reason.stack ?? '') : undefined,
     })
   })
   process.on('uncaughtException', error => {
     log.error('uncaught exception', {
       cause: describeError(error),
+      diagnostic: error,
       stack: describeError(error.stack ?? ''),
     })
     options.onFatal?.(error)
@@ -108,7 +111,7 @@ export function installProcessHandlers(options: { onFatal?: (error: unknown) => 
  */
 export function reportFatal(title: string, error: unknown, context: LogFields = {}): void {
   const message = toEnvelope(error).message
-  log.error('fatal error', { ...context, title, cause: describeError(error) })
+  log.error('fatal error', { ...context, title, cause: describeError(error), diagnostic: error })
   presentFatal?.(title, message)
 }
 

@@ -208,8 +208,9 @@ export class AuthApiError extends Error {
   constructor(
     public readonly error: ApiError,
     public readonly resource?: AuthApiResource,
+    options?: ErrorOptions,
   ) {
-    super(error.message)
+    super(error.message, options)
     this.name = 'AuthApiError'
   }
 
@@ -254,7 +255,7 @@ async function getJson<T>(path: string, accessToken: string, resource: AuthApiRe
   const boundedRead = ['notifications', 'skills', 'subscriptions', 'model-catalog'].includes(resource)
   const failTransport = (error: unknown): never => {
     if (boundedRead && !signal?.aborted && (error instanceof TypeError || isTransportTimeout(error))) {
-      throw new AuthApiError({ statusCode: 0, message: 'Platform read connection failed or timed out' }, resource)
+      throw new AuthApiError({ statusCode: 0, message: 'Platform read connection failed or timed out' }, resource, { cause: error })
     }
     throw error
   }

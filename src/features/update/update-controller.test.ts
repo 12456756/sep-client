@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import type { IpcCommandResult, UpdateState, UpdateStateResult } from '../../shared/ipc'
 import { createUpdateController, type UpdateAPI } from './update-controller'
 import { parseUpdateState, updateErrorMessages, updateSnapshotError, type UpdateOperation } from './update-state'
+import { updateFailureMessage } from '../../shared/update-feedback'
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -23,6 +24,25 @@ const downloaded: UpdateState = { status: 'downloaded', currentVersion: '1.0.0',
 const ok: IpcCommandResult = { success: true }
 const fail: IpcCommandResult = { success: false, error: { message: 'secret token /private/path https://private' } }
 const settle = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() }
+
+test('preserves controlled failure reasons from state and command responses', async () => {
+  const h = await ready()
+  const message = updateFailureMessage('check', 'timeout')
+  h.emit({ ...idle, status: 'error', operation: 'check', retryable: true, message })
+  assert.equal(h.controller.getSnapshot().error, message)
+  h.handlers.check = async () => ({ success: false, error: { message: updateFailureMessage('check', 'disk_space') } })
+  await h.controller.getSnapshot().check()
+  assert.equal(h.controller.getSnapshot().error, updateFailureMessage('check', 'disk_space'))
+  h.disconnect()
+})
+
+test('retains the specific reason installation was blocked', async () => {
+  const h = await ready(downloaded)
+  h.handlers.install = async () => ({ success: false, error: { message: '无法确认任务状态，请稍后重试。' } })
+  await h.controller.getSnapshot().install()
+  assert.equal(h.controller.getSnapshot().error, '无法确认任务状态，请稍后重试。')
+  h.disconnect()
+})
 
 test('browser download mode and confirmation survive IPC without pretending the update is installed', async () => {
   const external: UpdateState = { ...available, downloadMode: 'external' }

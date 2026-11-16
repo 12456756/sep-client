@@ -5,6 +5,8 @@ import { AppError } from './app-error'
 import type { ErrorCode } from './error-codes'
 import { workFeedbackMessage } from './work-feedback'
 import { DOCUMENT_PREVIEW_FAILURES } from './document-preview-error'
+import { transportKind } from '../common/transport-error'
+export { transportKind } from '../common/transport-error'
 
 interface PublicError { code: ErrorCode; message: string; statusCode: number }
 
@@ -147,15 +149,6 @@ function mediaFileMessage(error: unknown, operation: FeedbackOperation): string 
   if (code === 'ENOSPC') return '磁盘空间不足，无法保存文件，请清理空间后重试。'
   if (code === 'EACCES' || code === 'EPERM') return '文件或保存目录没有访问权限，请选择有读写权限的位置后重试。'
   return null
-}
-
-export function transportKind(error: unknown, depth = 0): 'network' | 'timeout' | null {
-  if (!(error instanceof Error) || depth > 3) return null
-  const code = 'code' in error ? String(error.code) : ''
-  if (error.name === 'TimeoutError' || error.name === 'APIConnectionTimeoutError' || error.message === 'Request timed out.' || ['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(code)) return 'timeout'
-  if (['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_SOCKET'].includes(code)) return 'network'
-  return transportKind(error.cause, depth + 1)
-    ?? (error instanceof TypeError && error.message === 'fetch failed' ? 'network' : null)
 }
 
 /** Raw platform messages are deliberately never copied into the public result. */

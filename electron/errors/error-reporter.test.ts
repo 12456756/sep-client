@@ -67,7 +67,7 @@ describe('reportError', () => {
   it('does not leak the authenticated flag into the log fields', () => {
     capture()
     reportError('task:execute', new Error('x'), { authenticated: true, taskId: 'task-a' })
-    assert.deepEqual(Object.keys(captured[0]?.fields ?? {}).sort(), ['cause', 'code', 'operation', 'taskId'])
+    assert.deepEqual(Object.keys(captured[0]?.fields ?? {}).sort(), ['cause', 'code', 'diagnostic', 'operation', 'taskId'])
   })
 })
 

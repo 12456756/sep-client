@@ -33,6 +33,17 @@ describe('redactOptionalText', () => {
 })
 
 describe('redactValue', () => {
+  it('keeps Error stacks, native causes and bounded cycles while redacting credentials', () => {
+    const inner = Object.assign(new Error('Authorization: Basic PRIVATE_BASIC'), { code: 'ECONNRESET', accessToken: 'PRIVATE_TOKEN' })
+    const outer = new Error('https://host?refresh_token=PRIVATE_REFRESH&page=2', { cause: inner })
+    inner.cause = outer
+    const result = JSON.stringify(redactValue({ error: outer }))
+    assert.match(result, /ECONNRESET/)
+    assert.match(result, /stack/)
+    assert.match(result, /page=2/)
+    assert.match(result, /max-depth/)
+    assert.doesNotMatch(result, /PRIVATE_/)
+  })
   it('replaces values whose key looks sensitive', () => {
     assert.deepEqual(
       redactValue({ accessToken: 'a', apiKey: 'b', Cookie: 'c', keep: 'd' }),

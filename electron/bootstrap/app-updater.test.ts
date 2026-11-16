@@ -5,6 +5,8 @@ import type { CancellationToken, UpdateCheckResult } from 'electron-updater'
 import type { UpdateState } from '../../src/shared/ipc'
 import type { ClientTaskStats } from '../../src/shared/types'
 import { AppUpdater, normalizeReleaseNotes, type UpdateDriver } from './app-updater'
+import { AppError } from '../errors/app-error'
+import { setLogSink, type LogRecord } from '../common/logger'
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason: unknown) => void } {
   let resolve!: (value: T) => void
@@ -64,6 +66,30 @@ async function downloaded(): Promise<ReturnType<typeof setup>> {
 }
 
 describe('AppUpdater', () => {
+  it('classifies update failures and keeps the original diagnostic out of public state', async () => {
+    const logs: LogRecord[] = []
+    const restore = setLogSink(record => { logs.push(record) })
+    try {
+      for (const [code, expected] of [['ENOSPC', /磁盘空间/], ['EACCES', /访问权限/],
+        ['ERR_UPDATER_INVALID_SIGNATURE', /校验/], ['ERR_UPDATER_CHANNEL_FILE_NOT_FOUND', /更新文件不可用/],
+        ['ECONNRESET', /网络/], ['ETIMEDOUT', /超时/]] as const) {
+        const { updater, driver } = setup()
+        const cause = Object.assign(new Error('Bearer PRIVATE_VALUE'), { code })
+        driver.checkWork = Promise.reject(cause)
+        await assert.rejects(updater.check(), error => {
+          assert.ok(error instanceof AppError)
+          assert.match(error.message, expected)
+          assert.equal(error.cause, cause)
+          return true
+        })
+        assert.match(JSON.stringify(updater.getState()), expected)
+        assert.doesNotMatch(JSON.stringify(updater.getState()), /PRIVATE_VALUE|Bearer/)
+        updater.dispose()
+      }
+      assert.match(JSON.stringify(logs), /ENOSPC/)
+      assert.doesNotMatch(JSON.stringify(logs), /PRIVATE_VALUE/)
+    } finally { restore() }
+  })
   it('opens unsigned releases in the browser without downloading, installing or stopping tasks', async () => {
     const opened: string[] = []
     const { updater, driver, stats, tokens } = setup(true, async version => { opened.push(version) })

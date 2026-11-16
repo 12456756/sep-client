@@ -21,6 +21,8 @@ import { RendererBridge } from './bootstrap/renderer-bridge';
 import { installShutdownHandler } from './bootstrap/shutdown';
 import type { SpeechPermissionGate } from './bootstrap/speech-permissions';
 import { logger } from './common/logger';
+import { join } from 'node:path';
+import { installFileLogging } from './common/file-log';
 import { createRequestContext } from './controller/request-context';
 import { registerRoutes } from './controller/router';
 import { listeners, routes } from './controller/routes';
@@ -69,6 +71,8 @@ function openMainWindow(speech: SpeechPermissionGate, skillImport: SkillImportSe
 }
 
 if (deepLinks.primary) app.whenReady().then(async () => {
+  const stopFileLogging = installFileLogging(join(app.getPath('userData'), 'logs'));
+  app.once('will-quit', stopFileLogging);
   // 报错模块的两件兜底：进程级异常有痕迹，致命错误用户看得见（第 4.3 节）。
   setFatalPresenter((title, message) => dialog.showErrorBox(title, message));
   installProcessHandlers({ onFatal: presentFatalOnce });

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { UpdateState } from '../../shared/ipc'
+import { safeUpdateCommandMessage } from '../../shared/update-feedback'
 
 export type UpdateOperation = 'check' | 'download' | 'cancel' | 'install'
 export type UpdateRelease = {
@@ -39,12 +40,12 @@ const updateStateSchema = z.discriminatedUnion('status', [
   }),
 ])
 
-/** Strip unknown fields and replace every IPC error message before it enters UI state. */
+/** Strip unknown fields and accept only locally defined error messages. */
 export function parseUpdateState(value: unknown): UpdateState | null {
   const result = updateStateSchema.safeParse(value)
   if (!result.success) return null
   const state = result.data
-  return state.status === 'error' ? { ...state, message: updateErrorMessages[state.operation] } : state
+  return state.status === 'error' ? { ...state, message: safeUpdateCommandMessage(state) ?? updateErrorMessages[state.operation] } : state
 }
 
 export function canUpdate(state: UpdateState | null, operation: UpdateOperation): boolean {

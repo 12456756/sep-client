@@ -10,7 +10,7 @@
  *   - 全部字段过 redact。这条与安全约束绑定，不是风格问题。
  */
 import { inspect } from 'node:util'
-import { redactValue } from './redact'
+import { redactText, redactValue } from './redact'
 import { formatRuntimeLog } from './runtime-log-format'
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error'
@@ -84,6 +84,13 @@ interface LoggerState {
 }
 
 const state: LoggerState = { level: defaultLevel(), sink: writeToConsole }
+const additionalSinks = new Set<LogSink>()
+
+/** Add a destination without replacing console output or other destinations. */
+export function addLogSink(sink: LogSink): () => void {
+  additionalSinks.add(sink)
+  return () => { additionalSinks.delete(sink) }
+}
 
 /** 运行期改级别。测试与排障用；生产由 SEP_LOG_LEVEL 决定。 */
 export function setLogLevel(level: LogLevel): void {
@@ -104,13 +111,15 @@ export function setLogSink(sink: LogSink): () => void {
 function emit(level: LogLevel, scope: string, bound: LogFields, message: string, fields?: LogFields): void {
   if (!isLogLevelEnabled(level)) return
   const merged = { ...bound, ...fields }
-  state.sink({
+  const record: LogRecord = {
     level,
-    scope,
-    message,
+    scope: redactText(scope),
+    message: redactText(message),
     fields: (redactValue(merged) ?? {}) as LogFields,
     timestamp: Date.now(),
-  })
+  }
+  state.sink(record)
+  for (const sink of additionalSinks) sink(record)
 }
 
 function build(scope: string, bound: LogFields): Logger {

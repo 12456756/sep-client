@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { ElectronAPI, UpdateState } from '../../shared/ipc'
+import { safeUpdateCommandMessage } from '../../shared/update-feedback'
 import {
   canUpdate, parseUpdateState, projectUpdateRelease, projectUpdateState, updateErrorMessages, updateSnapshotError,
   type UpdateOperation, type UpdateRelease,
@@ -25,6 +26,7 @@ interface Command { operation: UpdateOperation }
 
 const successSchema = z.object({ success: z.literal(true) })
 const snapshotSchema = successSchema.extend({ state: z.unknown() })
+const failureSchema = z.object({ success: z.literal(false), error: z.object({ message: z.string() }) })
 
 /** No DOM dependency. connect() owns the IPC lifetime; subscribe() owns store listeners. */
 export function createUpdateController(api: UpdateAPI): {
@@ -100,7 +102,8 @@ export function createUpdateController(api: UpdateAPI): {
           operation === 'cancel' ? api.cancelUpdateDownload() : api.installUpdate())
       if (lifetime !== owner || command !== current) return
       if (!successSchema.safeParse(result).success) {
-        publish({ error: updateErrorMessages[operation] })
+        const failure = failureSchema.safeParse(result)
+        publish({ error: failure.success ? safeUpdateCommandMessage(failure.data.error) ?? updateErrorMessages[operation] : updateErrorMessages[operation] })
       } else {
         // Recover missing terminal events or subscriptions; never infer status from a command result.
         await refresh(owner)
