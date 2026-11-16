@@ -13,6 +13,12 @@ import signAdhoc from './mac-adhoc-sign.cjs'
 
 const root = process.cwd()
 
+test('release workflow allows 120 seconds per public artifact verification', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  const step = workflow.jobs.publish.steps.find(step => step.name === 'Verify the public update feed')
+  assert.equal(step.run, 'node scripts/test-update-feed.mjs https://sep.longdaoec.com/sep-client/stable/ --require-all-platforms --timeout-ms 120000')
+})
+
 test('release workflow uses an Intel macOS runner while preserving both target architectures', () => {
   const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
   assert.equal(workflow.jobs['build-mac']['runs-on'], 'macos-15-intel')
