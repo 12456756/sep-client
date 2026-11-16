@@ -13,6 +13,44 @@ import signAdhoc from './mac-adhoc-sign.cjs'
 
 const root = process.cwd()
 
+test('Windows dependency installation clears inherited PowerShell modules without disabling install scripts', () => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  const install = workflow.jobs['build-win'].steps.find(step => step.run?.includes('npm ci'))
+  assert.equal(install.shell, 'cmd')
+  assert.deepEqual(install.run.trim().split(/\r?\n/), ['set "PSModulePath="', 'npm ci'])
+})
+
+test('Windows install shell allows Node children to extract the pinned DingTalk archive with system modules', { skip: process.platform !== 'win32' }, t => {
+  const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
+  const install = workflow.jobs['build-win'].steps.find(step => step.run?.includes('npm ci'))
+  const directory = mkdtempSync(resolve(tmpdir(), 'sep-windows-install-'))
+  t.after(() => rmSync(directory, { recursive: true, force: true }))
+  const archive = resolve(root, 'node_modules/dingtalk-workspace-cli/assets/dws-windows-amd64.zip')
+  const probe = resolve(directory, 'probe.cjs')
+  writeFileSync(probe, [
+    "const assert = require('node:assert/strict')",
+    "const { spawnSync } = require('node:child_process')",
+    'assert.equal(process.env.PSModulePath, undefined)',
+    "const quote = value => \"'\" + value.replaceAll(\"'\", \"''\") + \"'\"",
+    "const command = \"$ErrorActionPreference='Stop'; Expand-Archive -LiteralPath \" + quote(process.argv[2]) + ' -DestinationPath ' + quote(process.argv[3]) + '; (Get-Module Microsoft.PowerShell.Archive).Path'",
+    "const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { encoding: 'utf8' })",
+    'process.stdout.write(result.stdout ?? "")',
+    'process.stderr.write(result.stderr ?? "")',
+    'assert.equal(result.status, 0, result.stderr)',
+    'assert.match(result.stdout, /WindowsPowerShell/i)',
+  ].join('\n'))
+  const executable = resolve(directory, 'extracted')
+  const command = install.run.replace('npm ci', `"${process.execPath}" "${probe}" "${archive}" "${executable}"`)
+  const batch = resolve(directory, 'install.cmd')
+  writeFileSync(batch, `@echo off\r\nchcp 65001 >nul\r\n${command.trim().replace(/\r?\n/g, '\r\n')}\r\n`, 'utf8')
+  const result = spawnSync(process.env.ComSpec ?? 'cmd.exe', ['/d', '/s', '/c', 'install.cmd'], {
+    cwd: directory, encoding: 'utf8', timeout: 60000,
+    env: { ...process.env, PSModulePath: resolve(process.env.ProgramFiles, 'PowerShell/7/Modules') },
+  })
+  assert.equal(result.status, 0, `${result.error ?? ''}\n${result.stdout}\n${result.stderr}`)
+  assert.equal(readFileSync(resolve(executable, 'dws.exe')).subarray(0, 2).toString(), 'MZ')
+})
+
 test('release workflow allows 120 seconds per public artifact verification', () => {
   const workflow = yaml.load(readFileSync(resolve(root, '.github/workflows/client-release.yml'), 'utf8'))
   const step = workflow.jobs.publish.steps.find(step => step.name === 'Verify the public update feed')
