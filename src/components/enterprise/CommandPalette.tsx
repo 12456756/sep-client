@@ -88,6 +88,14 @@ export function CommandPalette({
         action: () => onNavigate({ name: "knowledge" }),
       },
       {
+        id: "connectors",
+        label: "连接器",
+        hint: "管理外部平台账号",
+        keywords: "连接器 钉钉 账号 授权",
+        icon: Search,
+        action: () => onNavigate({ name: "connectors" }),
+      },
+      {
         id: "appearance",
         label: darkMode ? "切换到浅色主题" : "切换到深色主题",
         hint: "只影响当前客户端外观",

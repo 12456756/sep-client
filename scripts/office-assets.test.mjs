@@ -18,7 +18,7 @@ test('Office packaging keeps only the target executable and includes the common 
     assert.equal(build.afterSign, 'scripts/office-after-sign.cjs')
     assert.ok(build.extraResources.some(item => item.to === 'common-skills'))
     assert.ok(build.extraResources.find(item => item.to === 'office').filter.includes('LICENSE'))
-    assert.ok(!build.extraResources.some(item => item.filter.some(pattern => pattern.includes('officecli-'))))
+    assert.ok(!build.extraResources.some(item => (item.filter ?? []).some(pattern => pattern.includes('officecli-'))))
   }
   assert.equal(officeManifest.version, '1.0.156')
   assert.equal(Object.keys(officeManifest.assets).length, 4)

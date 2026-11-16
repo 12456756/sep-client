@@ -35,6 +35,7 @@ export function useDrawer(onClose: () => void, initialFocusSelector?: string): R
     const initialSelector = initialFocusSelector ? `${initialFocusSelector}, ${FOCUSABLE}` : FOCUSABLE;
     panel.current?.querySelector<HTMLElement>(initialSelector)?.focus();
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key === 'Escape') { event.preventDefault(); close.current(); return; }
       if (event.key !== 'Tab' || !panel.current) return;
       const stops = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)];

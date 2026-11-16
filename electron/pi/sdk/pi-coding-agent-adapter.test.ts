@@ -38,7 +38,7 @@ describe('thinking event projection', () => {
 describe('task tool policy session options', () => {
   it('advertises policy tools without the removed web search', () => {
     assert.deepEqual(sessionToolOptions(readOnlyPolicy), {
-      tools: ['read', 'grep', 'find', 'ls'],
+      tools: ['read', 'grep', 'find', 'ls', 'get_current_time'],
     })
   })
 
@@ -50,7 +50,7 @@ describe('task tool policy session options', () => {
 
   it('advertises only default tools when no task policy is present', () => {
     assert.deepEqual(sessionToolOptions(undefined), {
-      tools: ['read', 'bash', 'edit', 'write'],
+      tools: ['read', 'bash', 'edit', 'write', 'get_current_time'],
     })
   })
 
@@ -231,7 +231,7 @@ describe('tool failure classification', () => {
 describe('MCP tool advertisement', () => {
   it('adds only registered MCP names and preserves existing tools', () => {
     assert.deepEqual(sessionToolOptions({ ...readOnlyPolicy, allowedTools: ['ls', 'mcp__fake__search'] }, false, ['mcp__docs__search']), {
-      tools: ['ls', 'mcp__docs__search'],
+      tools: ['ls', 'get_current_time', 'mcp__docs__search'],
     })
   })
   it('noTools overrides even registered MCP tools', () => {
@@ -251,7 +251,7 @@ describe('unrestricted full-local session options', () => {
       commandPolicy: 'disabled',
       approvalMode: 'auto-approve',
     }, false, ['mcp__docs__search']), {
-      tools: ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash', 'mcp__docs__search'],
+      tools: ['read', 'grep', 'find', 'ls', 'write', 'edit', 'bash', 'get_current_time', 'mcp__docs__search'],
     })
   })
 })

@@ -6,6 +6,7 @@ import { CommandPalette } from '../components/enterprise/CommandPalette';
 import { Empty } from '../components/enterprise/atoms';
 import type { AppRoute } from '../features/enterprise/types';
 import { OrganizationEmptyState } from './enterprise/OrganizationEmptyState';
+import { ConnectorsPage } from './enterprise/ConnectorsPage';
 import '../styles/enterprise.css';
 
 /** Browser-only layout inspection. No fake account, platform data, IPC or task execution. */
@@ -69,7 +70,7 @@ export function WorkspacePreviewPage(): JSX.Element {
           )}
         />
         <div className="ent-scroll">
-          {isOrganization ? <OrganizationEmptyState /> : (
+          {route.name === 'connectors' ? <ConnectorsPage /> : isOrganization ? <OrganizationEmptyState /> : (
             <div className="ent-page preview-disconnected" role="status">
               <Empty title="尚未连接平台">
                 请打开桌面客户端并登录，以获取真实的硅基员工、技能和工作记录。浏览器预览不提供任务运行功能。

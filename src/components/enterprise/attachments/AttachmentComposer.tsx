@@ -1,9 +1,12 @@
-import { FileText, LoaderCircle, Paperclip, X } from 'lucide-react'
+import { FileText, X } from 'lucide-react'
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import type { AttachmentImportSession, AttachmentImportTarget, AttachmentView } from '../../../shared/attachment-contracts'
 import { useAttachmentComposer, type RetainedAttachmentState } from '../../../features/enterprise/use-attachment-composer'
 import { useOperationFeedback } from '../../feedback/use-operation-feedback'
+import { ComposerAddMenu } from '../home/ComposerAddMenu'
+import { ComposerConnectorChip } from './ComposerConnectorChip'
+import type { ConnectorId } from '../../../shared/connectors'
 
 interface Props {
   target: AttachmentImportTarget
@@ -19,13 +22,16 @@ interface Props {
   onSelectFinished?: (attachments: AttachmentView[] | null) => void
   onBusyChange?: (busy: boolean) => void
   listContainer?: HTMLDivElement | null
+  connectorId?: ConnectorId
+  onConnectorChange: (id?: ConnectorId) => void
 }
 
-export function AttachmentComposer({ target, bindingKey, disabled = false, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer }: Props) {
+export function AttachmentComposer({ target, bindingKey, disabled = false, retainedState, onChange, onSessionChange, onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished, onBusyChange, listContainer, connectorId, onConnectorChange }: Props) {
   const { capture } = useOperationFeedback(bindingKey)
   const notice = capture()
   const composer = useAttachmentComposer({ target, bindingKey, disabled, retainedState, onError: message => notice.show(message), onPasteEdit, onPasteImported, onPasteStarted, onSelectStarted, onSelectFinished })
   const attachments = composer.attachments
+  const chip = <ComposerConnectorChip value={connectorId} disabled={disabled || composer.busy} onRemove={() => onConnectorChange(undefined)} />
   useEffect(() => { onChange?.(attachments) }, [attachments, onChange])
   useEffect(() => { onSessionChange?.(composer.session) }, [composer.session, onSessionChange])
   useEffect(() => { onBusyChange?.(composer.busy) }, [composer.busy, onBusyChange])
@@ -47,10 +53,8 @@ export function AttachmentComposer({ target, bindingKey, disabled = false, retai
   ) : null
   return (
     <div className="ent-attachment-composer" data-attachment-composer data-composer-id={composer.composerId}>
-      {listContainer ? createPortal(attachmentList, listContainer) : attachmentList}
-      <button type="button" className="ent-attachment-button" onClick={() => void composer.select()} disabled={disabled || composer.busy} title={composer.busy ? '处理中…' : '添加附件'} aria-label={composer.busy ? '附件处理中' : '添加附件'}>
-        {composer.busy ? <LoaderCircle size={16} aria-hidden className="ent-attachment-spinner" /> : <Paperclip size={16} aria-hidden />}
-      </button>
+      {listContainer ? createPortal(<>{chip}{attachmentList}</>, listContainer) : <>{chip}{attachmentList}</>}
+      <ComposerAddMenu disabled={disabled || composer.busy} selected={connectorId} onFile={() => void composer.select()} onSelect={onConnectorChange} />
     </div>
   )
 }

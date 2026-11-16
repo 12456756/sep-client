@@ -23,6 +23,8 @@ import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
 import { KnowledgeSelector } from '../KnowledgeSelector';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
+import type { ConnectorId } from '../../../shared/connectors';
+import { withComposerConnector } from '../../../features/enterprise/composer-connectors';
 
 export interface ManualDraft {
   title: string;
@@ -65,6 +67,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
   const { capture: captureFeedback } = useOperationFeedback(attachmentBindingKey);
   const [title, setTitle] = useState(seed?.title ?? '');
   const [goal, setGoal] = useState(seed?.goal ?? '');
+  const [connectorId, setConnectorId] = useState<ConnectorId>();
   const [materials, setMaterials] = useState((seed?.confirmedInputs ?? []).join('\n'));
   const [attachmentRefs, setAttachmentRefs] = useState<AttachmentView[]>([]);
   const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(null);
@@ -104,7 +107,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
   const confirmedInputs = materials.split('\n').map(line => line.trim()).filter(Boolean);
   const draft = (): ManualDraft => ({
     title: title.trim() || fallbackTitle,
-    goal: goal.trim() || title.trim() || fallbackTitle,
+    goal: withComposerConnector(goal.trim() || title.trim() || fallbackTitle, connectorId),
     steps,
     confirmedInputs,
     attachmentRefs,
@@ -359,7 +362,7 @@ export function ManualArrange({ employees, busy, seed, onSave, onStart, settings
               </label>
             </>
           )}
-          <AttachmentComposer target={attachmentTarget} bindingKey={attachmentBindingKey} disabled={busy} onBusyChange={setAttachmentsBusy} onPasteStarted={handlePasteStarted} onPasteImported={handlePasteImported} onSelectStarted={() => { pasteNodeByOperation.current.set('__picker__', { nodeId: null, existingIds: new Set(knownAttachmentIds.current) }); }} onSelectFinished={items => {
+          <AttachmentComposer connectorId={connectorId} onConnectorChange={id => { setConnectorId(id); setSaved(false); }} target={attachmentTarget} bindingKey={attachmentBindingKey} disabled={busy || speech.busy} onBusyChange={setAttachmentsBusy} onPasteStarted={handlePasteStarted} onPasteImported={handlePasteImported} onSelectStarted={() => { pasteNodeByOperation.current.set('__picker__', { nodeId: null, existingIds: new Set(knownAttachmentIds.current) }); }} onSelectFinished={items => {
             const picker = pasteNodeByOperation.current.get('__picker__');
             pasteNodeByOperation.current.delete('__picker__');
             if (picker && items) bindNewAttachments(picker.nodeId, items.filter(item => !picker.existingIds.has(item.attachmentId)));

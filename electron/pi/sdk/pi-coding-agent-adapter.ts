@@ -23,6 +23,7 @@ import {
   type BashOperations,
 } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
+import { attachConnectorTools } from './pi-connector-tools'
 import { z } from 'zod'
 import type { MediaToolName } from '../../domain/media-tools'
 import type { VideoToolName } from '../../domain/video-tools'
@@ -58,6 +59,7 @@ import { GatewayRetryWait } from './gateway-retry-wait'
 import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
 import { employeeSkillLoaderOptions } from './employee-skill-loader'
 import { encodingToolDefinitions } from './pi-text-tools'
+import { CURRENT_TIME_TOOL_NAME, currentTimeToolDefinition } from './pi-current-time'
 import { videoErrorMessage } from '../../../src/shared/video-errors'
 import { RUNTIME_FAILURE_MESSAGES } from '../../../src/shared/runtime-feedback'
 import { prepareCommonSkills, type CommonSkillsResult } from './common-skills'
@@ -381,6 +383,7 @@ export function sessionToolOptions(
     ...allowedTools.filter(name => (!name.startsWith('mcp__') || registeredMcpNames.includes(name)) &&
       (!name.startsWith('media_') || registeredMediaNames.includes(name as MediaToolName)) &&
       (!name.startsWith('video_') || registeredVideoNames.includes(name as VideoToolName))),
+    ...(!toolPolicy || allowedTools.length > 0 ? [CURRENT_TIME_TOOL_NAME] : []),
     ...registeredMcpNames,
     ...registeredMediaNames,
     ...registeredVideoNames,
@@ -637,6 +640,7 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
     })) {
       if (selected.includes(tool.name)) pi.registerTool(tool)
     }
+    if (selected.includes(CURRENT_TIME_TOOL_NAME)) pi.registerTool(currentTimeToolDefinition())
   }
   const mediaNames = registeredMediaNames(config)
   const videoNames = registeredVideoNames(config)
@@ -697,6 +701,11 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
   const toolGuard: ExtensionFactory = pi => {
     pi.on('tool_call', async (event: ToolCallEvent): Promise<ToolCallEventResult> => {
       const toolName = event.toolName ?? 'unknown'
+      if (toolName === CURRENT_TIME_TOOL_NAME) {
+        const enabled = sessionToolOptions(config.toolPolicy, config.disableTools).tools?.includes(toolName) === true
+          && pi.getActiveTools().includes(toolName)
+        return enabled ? { block: false } : { block: true, reason: 'Current-time tool is not enabled for this run.' }
+      }
       if (toolName.startsWith('video_')) {
         if (registeredVideoNames(config).includes(toolName as VideoToolName) && pi.getActiveTools().includes(toolName)) {
           return { block: false }
@@ -1088,7 +1097,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       log.warn('common skill unavailable', { skillId: 'officecli', reason })
       await config.reportPolicyEvent?.('common_skill_unavailable', { skillId: 'officecli', reason })
     }
-    const baseMcp = await createMcpRuntime(servers, config.workspaceDir)
+    const connector = canUseMcp ? config.connectorBinding : undefined
+    const baseMcp = attachConnectorTools(await createMcpRuntime([...servers, ...(connector?.servers ?? [])], config.workspaceDir,
+      connector ? new Map(connector.servers.map(server => [server.name, connector.fetch])) : undefined), connector, config.workspaceDir)
     const attached = await attachOfficeRuntime(baseMcp, common, config).catch(async error => {
       await baseMcp.dispose()
       throw error
@@ -1175,5 +1186,3 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     }
   }
 }
-
-

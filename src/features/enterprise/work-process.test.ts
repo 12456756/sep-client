@@ -14,6 +14,7 @@ describe('user-facing work process', () => {
     }
   })
   it('uses live operations, not completed actions or raw logs, for the current status', () => {
+    assert.equal(processActivityLabel(activity('get_current_time')), '查询当前时间')
     assert.equal(currentWorkOperation('running', [activity('ls', 'completed')]), '正在处理，请稍候')
     assert.equal(currentWorkOperation('running', [activity('ls')]), '正在查看目录')
     assert.equal(currentWorkOperation('waiting-user', [activity('bash', 'waiting-user')]), '等待你的确认：执行命令')

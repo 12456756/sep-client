@@ -10,6 +10,7 @@ import type { Backend } from '../bootstrap/build-backend'
 import type { MockVideoHostService } from '../service/mock-video-host-service'
 
 export interface RequestContext {
+  readonly connectors: Backend['connectors']
   readonly knowledge: Backend['knowledge']
   /** 服务层句柄。任务类路由只该用这几个。 */
   readonly notifications: Backend['notifications']
@@ -47,6 +48,7 @@ export function createRequestContext(
   video?: MockVideoHostService,
 ): RequestContext {
   return {
+    connectors: backend.connectors,
     knowledge: backend.knowledge,
     notifications: backend.notifications,
     skills: backend.skills,
@@ -68,5 +70,3 @@ export function createRequestContext(
     window,
   }
 }
-
-

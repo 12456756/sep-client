@@ -308,6 +308,7 @@ export type AppRoute =
   | { name: 'work'; workId: string; executionTaskId?: string }
   | { name: 'skills'; skillId?: string; employeeFilterId?: string; sourceEmployeeId?: string; returnTo?: { name: 'skill-list' } | { name: 'employee'; employeeId: string } }
   | { name: 'knowledge'; kbId?: string }
+  | { name: 'connectors' }
   | { name: 'compute-center' };
 
 export type AppRouteName = AppRoute['name'];

@@ -14,7 +14,9 @@ import { ResultFileStore } from '../data/result-file-store'
  * 隐藏单例，因此入口、生命周期和依赖方向都能从这个文件追踪。
  */
 import { dirname, join } from 'node:path'
-import { shell, systemPreferences } from 'electron'
+import { app, safeStorage, shell, systemPreferences } from 'electron'
+import { ConnectorService } from '../service/connector-service'
+import type { ConnectorRegistryPort } from '../domain/connectors'
 import { SpeechSystemAccess } from './speech-system-access'
 import { AuthSessionManager } from '../common/platform/auth-session-manager'
 import { EmploymentTokenManager } from '../common/platform/employment-token-manager'
@@ -116,6 +118,8 @@ export interface BackendOptions {
  * 用 `createBackend()` 创建——这个类不导出，避免出现第二个装配入口。
  */
 class BackendRuntime {
+  readonly connectors: ConnectorService
+  private readonly connectorRuntime: LazyAsync<ConnectorRegistryPort>
   readonly skillImport?: SkillImportService
   readonly knowledge: KnowledgeService
   readonly authSession: AuthSessionManager
@@ -169,6 +173,19 @@ class BackendRuntime {
     this.modelTraces = new ModelTraceStore(join(userDataDir, 'model-logs'))
     this.renderer = renderer
     this.isEncryptionAvailable = isEncryptionAvailable
+    this.connectorRuntime = loadOnce(async () => {
+      const { createConnectorRegistry } = await import('./create-connectors')
+      return createConnectorRegistry({
+        userDataDir, packaged: app.isPackaged, resourcesPath: process.resourcesPath,
+        encryption: {
+          available: () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+          encrypt: (value: string) => safeStorage.encryptString(value).toString('base64'),
+          decrypt: (value: string) => safeStorage.decryptString(Buffer.from(value, 'base64')),
+        },
+        currentScope: () => this.currentScope(), open: url => shell.openExternal(url),
+      })
+    })
+    this.connectors = new ConnectorService(this, () => this.connectorRuntime.get())
     this.runtime = loadOnce(() => this.loadTaskRuntime())
     this.arrangementPlanner = loadOnce(() => this.loadArrangementPlanner())
     this.documentPreviewRuntime = loadOnce(async () => (await import('./create-document-preview-runtime')).createDocumentPreviewRuntime())
@@ -641,6 +658,7 @@ class BackendRuntime {
 
   /** 收干净所有在跑的 run。运行时没加载过就没有 run。 */
   async stopAll(): Promise<void> {
+    this.connectorRuntime.peek()?.cancel()
     this.skills.cancelAllRewrites()
     this.conversationQueue.stop()
     this.scheduledCreations.stop()
@@ -776,6 +794,7 @@ class BackendRuntime {
     }
     const { TaskRuntime } = await import('../runtime/task-runtime')
     const runtime = new TaskRuntime({
+      connectorBinding: owner => this.connectors.binding(owner),
       onConversationSettled: (taskId, runId, owner) => this.conversationQueue.settled(taskId, runId, owner),
       createModelTrace: this.createModelTrace,
       taskManager: this.taskManager,

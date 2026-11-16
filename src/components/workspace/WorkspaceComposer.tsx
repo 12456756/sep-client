@@ -4,6 +4,10 @@ import { isSubmitEnter } from '../../shared/composer-shortcut';
 import { formatDirectoryPath } from '../../shared/path-display';
 import type { AvailableEmployee, AvailableSkill, AvailableWorkflow, ConversationDraft, LocalWorkspaceBinding, Task } from '../../features/workspace/useWorkspaceDemo';
 import { WorkspaceEmployeeAvatar } from './WorkspaceEmployeeAvatar';
+import { ComposerAddMenuLoader } from '../enterprise/attachments/ComposerAddMenuLoader';
+import { ComposerConnectorChip } from '../enterprise/attachments/ComposerConnectorChip';
+import { withComposerConnector } from '../../features/enterprise/composer-connectors';
+import type { ConnectorId } from '../../shared/connectors';
 
 interface Props {
   compact?: boolean;
@@ -26,6 +30,8 @@ type AddPanel = 'skills' | 'employees' | null;
 export function WorkspaceComposer({ compact = false, mode, busy = false, draft, employees, skills, workflows, currentTask, activeEmployeeId, onEmployeeChange, onDraftChange, onConversationSubmit, onWorkflowSubmit }: Props) {
   const composing = useRef(false);
   const [text, setText] = useState('');
+  const [connector, setConnector] = useState<{ taskId?: string; value?: ConnectorId }>({ taskId: currentTask?.id });
+  const connectorId = connector.taskId === currentTask?.id ? connector.value : undefined;
   const [workflowId, setWorkflowId] = useState('');
   const [workflowInputs, setWorkflowInputs] = useState<Record<string, string | number | boolean>>({});
   const [workspace, setWorkspace] = useState<LocalWorkspaceBinding>(draft.workspace);
@@ -148,7 +154,7 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
   const handleEmployeeChange = (id: string) => addEmployee(id);
   const submit = () => {
     if (!canSubmit) return;
-    if (mode === 'conversation') { onConversationSubmit(text.trim()); setText(''); return; }
+    if (mode === 'conversation') { onConversationSubmit(withComposerConnector(text, connectorId)); setText(''); setConnector({ taskId: currentTask?.id }); return; }
     if (workflow) onWorkflowSubmit({ workflowId: workflow.id, employeeId: workflow.employeeIds[0], workspace, inputs: workflowInputs });
   };
 
@@ -166,19 +172,25 @@ export function WorkspaceComposer({ compact = false, mode, busy = false, draft, 
     </div>}
     {mode === 'conversation' && selectedSkillIds.length > 0 && <div className="composer-chip-strip" aria-label="已添加技能">{selectedSkillIds.map(id => { const skill = skills.find(item => item.id === id); if (!skill) return null; return <span className="composer-skill-chip" key={id}><button type="button" className="composer-chip-remove" onClick={() => removeSkill(id)} aria-label={`移除技能${skill.name}`} title={`移除技能${skill.name}`}><X size={12} /></button><Wrench size={13} /><span>{skill.name}</span></span>; })}</div>}
     {attachments.length > 0 && <div className="composer-chip-strip composer-attachment-strip" aria-label="已添加文件">{attachments.map(name => <span className="composer-file-chip" key={name}><FileText size={13} /><span title={name}>{name}</span><button type="button" className="composer-chip-remove" onClick={() => setAttachments(items => items.filter(item => item !== name))} aria-label={`移除文件${name}`} title={`移除文件${name}`}><X size={12} /></button></span>)}</div>}
+    {mode === 'conversation' ? <ComposerConnectorChip value={connectorId} disabled={busy} onRemove={() => setConnector({ taskId: currentTask?.id })} /> : null}
     {mode === 'conversation' && <textarea value={text} onChange={event => setText(event.target.value)} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={event => { if (isSubmitEnter(event, composing.current)) { event.preventDefault(); submit(); } }} placeholder={employee ? `交代给${employee.displayName}的工作…` : '先添加一位硅基员工'} aria-label="对话消息" rows={compact ? 3 : 5} />}
     <div className="workspace-composer-footer"><div className="workspace-composer-tools">
-      <div className="composer-add-wrap" ref={addMenuRef}>
+      {mode === 'conversation' ? <>
+        <input ref={fileInputRef} type="file" multiple hidden onChange={handleFiles} />
+        <ComposerAddMenuLoader disabled={busy} selected={connectorId} onFile={() => fileInputRef.current?.click()} onSelect={value => setConnector({ taskId: currentTask?.id, value })}>
+          <div role="separator" />
+          <button type="button" role="menuitem" onClick={() => setAddPanel(addPanel === 'skills' ? null : 'skills')}><Wrench size={16} aria-hidden /><span>添加技能</span><ChevronRight size={14} aria-hidden /></button>
+          {addPanel === 'skills' ? skills.filter(skill => skill.installed).map(skill => <button type="button" role="menuitem" key={skill.id} onClick={() => addSkill(skill.id)} disabled={selectedSkillIds.includes(skill.id)}><Wrench size={13} aria-hidden /><span>{skill.name}</span></button>) : null}
+          <button type="button" role="menuitem" onClick={() => setAddPanel(addPanel === 'employees' ? null : 'employees')}><Bot size={16} aria-hidden /><span>添加硅基员工</span><ChevronRight size={14} aria-hidden /></button>
+          {addPanel === 'employees' ? employees.map(item => <button type="button" role="menuitem" key={item.id} onClick={() => addEmployee(item.id)}><WorkspaceEmployeeAvatar employee={item} /><span>{item.displayName}</span></button>) : null}
+        </ComposerAddMenuLoader>
+      </> : <div className="composer-add-wrap" ref={addMenuRef}>
         <button className="workspace-add-button" type="button" onClick={() => { setAddMenuOpen(value => !value); setAddPanel(null); }} aria-expanded={addMenuOpen} aria-label="添加内容" title="添加文件、技能或硅基员工"><span className={`composer-add-icon ${addMenuOpen ? 'is-hidden' : ''}`}><Plus size={20} /></span><span className={`composer-add-icon ${addMenuOpen ? '' : 'is-hidden'}`}><X size={19} /></span></button>
         {addMenuOpen && <div className="composer-add-menu" role="menu">
           <input ref={fileInputRef} className="composer-file-input" type="file" multiple aria-hidden="true" tabIndex={-1} onChange={handleFiles} />
           <button type="button" role="menuitem" onClick={() => fileInputRef.current?.click()} title="添加文件"><Paperclip size={15} /><span>添加文件</span></button>
-          {mode === 'conversation' && <button type="button" role="menuitem" onMouseEnter={() => setAddPanel('skills')} onFocus={() => setAddPanel('skills')} onClick={() => setAddPanel(addPanel === 'skills' ? null : 'skills')} title="添加技能"><Wrench size={15} /><span>添加技能</span><ChevronRight size={14} className={addPanel === 'skills' ? 'rotate-90' : ''} /></button>}
-          {mode === 'conversation' && <button type="button" role="menuitem" onMouseEnter={() => setAddPanel('employees')} onFocus={() => setAddPanel('employees')} onClick={() => setAddPanel(addPanel === 'employees' ? null : 'employees')} title="添加硅基员工"><Bot size={15} /><span>添加硅基员工</span><ChevronRight size={14} className={addPanel === 'employees' ? 'rotate-90' : ''} /></button>}
-          {addPanel === 'skills' && <div className="composer-add-submenu composer-add-submenu-side">{skills.filter(skill => skill.installed).map(skill => <button type="button" key={skill.id} onClick={() => addSkill(skill.id)} disabled={selectedSkillIds.includes(skill.id)} title={selectedSkillIds.includes(skill.id) ? '已添加' : `添加${skill.name}`}><Wrench size={13} /><span>{skill.name}</span></button>)}</div>}
-          {addPanel === 'employees' && <div className="composer-add-submenu composer-add-submenu-side">{employees.map(item => <button type="button" key={item.id} onClick={() => addEmployee(item.id)} className={employeeIds.includes(item.id) ? 'selected' : ''} title={`切换到${item.displayName}`}><WorkspaceEmployeeAvatar employee={item} /><span>{item.displayName}</span></button>)}</div>}
         </div>}
-      </div>
+      </div>}
       {mode === 'conversation' && <label className="composer-model-control"><Sparkles size={14} /><span>模型</span><select value={draft.modelId} disabled={!employee} onChange={event => onDraftChange({ modelId: event.target.value })} title="选择模型"><option value="">默认</option>{employee?.modelOptions.map(model => <option key={model.id} value={model.id}>{model.displayName}</option>)}</select></label>}
       {(mode === 'workflow' || mode === 'conversation') && <div className={`composer-workspace-group ${workspaceLocked ? 'locked' : ''}`} aria-label="工作目录设置"><button className="workspace-tool-button workspace-directory-button" type="button" onClick={() => void chooseDirectory()} disabled={workspaceLocked} title={workspaceLocked ? '已创建的对话不能修改工作目录' : (visibleWorkspacePath || '选择工作目录')}><FolderOpen size={15} /><span>{visibleWorkspacePath ? formatDirectoryPath(visibleWorkspacePath) : '选择工作目录'}</span></button><label className="composer-permission-control"><ShieldCheck size={14} /><span>权限</span><select value={workspace.accessMode} onChange={event => updateWorkspace({ ...workspace, accessMode: event.target.value as LocalWorkspaceBinding['accessMode'] })} title="设置工作目录权限"><option value="read-write">读写</option><option value="read-only">只读</option></select></label></div>}
     </div><button className="workspace-submit" onClick={submit} disabled={!canSubmit} aria-label="安排工作" title={busy ? '正在安排工作' : '安排工作'}>{busy ? <LoaderCircle size={17} className="spin" /> : <ArrowUp size={17} />}</button></div>

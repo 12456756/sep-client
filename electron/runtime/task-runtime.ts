@@ -79,6 +79,7 @@ function filePathFromInput(input: unknown): string | null {
 }
 
 export interface TaskRuntimeOptions {
+  connectorBinding?: (owner: import('../data/scope-path').TaskOwnerScope) => Promise<import('../domain/connectors').ConnectorBinding | undefined>
   onConversationSettled?: (taskId: string, runId: string, owner: { memberId: string; enterpriseId: string }) => Promise<void>
   createModelTrace?: ModelTraceFactory
   taskManager: TaskManager
@@ -174,7 +175,10 @@ export class TaskRuntime {
       const context = workerOptions.context
       const modelTrace = context.modelTrace ?? options.createModelTrace?.({ taskId: context.taskId, runId: context.runId,
         title: context.taskTitle ?? '对话任务', phase: context.tracePhase ?? (context.arrangementNodeId ? `节点：${context.nodeTitle ?? context.arrangementNodeId}` : '对话执行') })
-      const tracedOptions = { ...workerOptions, context: { ...context, modelTrace } }
+      const owner = this.taskManager.getCurrentUserScope()
+      const tracedOptions = { ...workerOptions, context: { ...context, modelTrace,
+        resolveConnectorBinding: owner && options.connectorBinding ? () => options.connectorBinding!(owner) : undefined,
+      } }
       return options.createWorker?.(tracedOptions) ?? new PiTaskWorker(tracedOptions)
     }
     this.taskRunStore = options.taskRunStore ?? (options.userDataDir ? new TaskRunStore(options.userDataDir) : null)

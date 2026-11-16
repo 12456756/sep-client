@@ -1,10 +1,12 @@
 import { createContext } from 'react'
 import type { RetainedAttachmentState } from './use-attachment-composer'
 import type { KnowledgeSelection } from '../../shared/knowledge-selection'
+import type { ConnectorId } from '../../shared/connectors'
 
 export interface ConversationSessionState {
   draft: string
   knowledge?: KnowledgeSelection
+  connectorId?: ConnectorId
   attachment: RetainedAttachmentState
   scrollTop: number
   followsLatest: boolean
@@ -15,6 +17,7 @@ export interface ConversationSessionState {
   subscribe: (listener: () => void) => () => void
   setDraft: (draft: string) => void
   setKnowledge: (knowledge: KnowledgeSelection) => void
+  setConnector: (connectorId?: ConnectorId) => void
   acceptSend: (sentDraft: string) => void
   beginSend: (fingerprint: string) => string | null
   finishSend: () => void
@@ -47,6 +50,7 @@ export function createConversationSessions(cancelSession: (sessionId: string) =>
           subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener) },
           setDraft(draft) { if (current.draft === draft) return; current.draft = draft; notify() },
           setKnowledge(knowledge) { current.knowledge = knowledge; notify() },
+          setConnector(connectorId) { current.connectorId = connectorId; notify() },
           beginSend(fingerprint) {
             if (current.sending) return null
             if (current.pendingSend?.fingerprint !== fingerprint) current.pendingSend = { fingerprint, id: crypto.randomUUID() }
@@ -58,6 +62,7 @@ export function createConversationSessions(cancelSession: (sessionId: string) =>
           acceptSend(sentDraft) {
             current.pendingSend = null
             if (current.draft === sentDraft) current.draft = ''
+            current.connectorId = undefined
             current.attachment.session = null
             current.attachment.attachments = []
             current.attachmentEpoch++

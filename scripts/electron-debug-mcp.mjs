@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { access, readFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const TOOL_VERSION = '1.10.0'
@@ -21,11 +21,26 @@ export async function ensureElectronDebugMcp() {
   // Version 1.10.0 omits its postinstall script. Attach mode needs no second Electron.
   const args = ['install', '--prefix', toolRoot, '--ignore-scripts', '--omit=optional',
     '--no-audit', '--no-fund', 'electron-debug-mcp@' + TOOL_VERSION]
-  const npmCli = process.env.npm_execpath
+  let npmCli = process.env.npm_execpath
+  if (!npmCli && process.platform === 'win32') {
+    // Run npm's JS entry directly so cmd.exe cannot split paths containing spaces.
+    const searchDirs = [dirname(process.execPath), ...(process.env.PATH ?? '').split(delimiter)]
+    for (const directory of searchDirs) {
+      if (!directory) continue
+      const candidate = join(directory.replace(/^"|"$/g, ''), 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      try {
+        await access(candidate)
+        npmCli = candidate
+        break
+      } catch (error) {
+        if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error
+      }
+    }
+    if (!npmCli) throw new Error('Cannot find npm-cli.js beside Node.js or on PATH')
+  }
   const child = npmCli
     ? spawn(process.execPath, [npmCli, ...args], { cwd: PROJECT_ROOT, stdio: ['ignore', 'pipe', 'pipe'] })
-    : spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', args,
-      { cwd: PROJECT_ROOT, stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' })
+    : spawn('npm', args, { cwd: PROJECT_ROOT, stdio: ['ignore', 'pipe', 'pipe'] })
   // stdout belongs exclusively to MCP JSON-RPC when started by a host.
   child.stdout.pipe(process.stderr)
   child.stderr.pipe(process.stderr)

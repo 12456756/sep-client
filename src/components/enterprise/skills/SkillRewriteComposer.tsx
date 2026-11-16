@@ -159,7 +159,7 @@ export function SkillRewriteComposer({ content, revision, disabled, onRewrite, o
         return <article className="skill-chat-round" key={round.id} aria-label={`第 ${number} 轮调整`}>
           <div className="skill-chat-user"><span className="skill-chat-speaker">你</span><p>{round.prompt}</p></div>
           <div className="skill-chat-assistant"><div className="skill-chat-assistant-heading"><Sparkles size={15} aria-hidden /><strong>修改建议</strong><span>{round.model}</span></div>
-            {status === 'generating' ? <p className="skill-chat-round-status" role="status"><LoaderCircle size={14} aria-hidden />正在生成修改建议…</p>
+            {status === 'generating' ? <p className="skill-chat-round-status" role="status"><LoaderCircle size={14} className="ent-spin" aria-hidden />正在生成修改建议…</p>
               : status === 'failed' ? <div className="skill-chat-round-status"><span className="skill-error" role="alert">{round.error}</span><button className="skill-text-button" type="button" disabled={disabled || generating} onClick={() => void preview(round.prompt, round.model)}><RefreshCw size={13} aria-hidden />重试</button></div>
                 : status === 'pending' && round.result ? <>
                   <p className="skill-chat-response">{round.result.summary}</p>

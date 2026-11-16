@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import * as icons from 'lucide-react'
 import * as ts from 'typescript'
 import * as sessions from './conversation-sessions'
+import * as composerConnectors from './composer-connectors'
 import type { ConversationQueueView } from '../../shared/conversation-queue'
 import type { WorkItem } from './types'
 import type { EnterpriseWorkspace } from './useEnterpriseWorkspace'
@@ -25,6 +26,7 @@ const dependencies: Record<string, unknown> = {
   '../speech/SpeechInputActions': { SpeechInputActions: empty },
   './attachments/AttachmentComposer': { AttachmentComposer: empty },
   '../../features/enterprise/conversation-sessions': sessions,
+  '../../features/enterprise/composer-connectors': composerConnectors,
   '../../features/enterprise/general-assistant': { GENERAL_ASSISTANT_ID: 'general' },
   './KnowledgeSelector': { KnowledgeSelector: empty },
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },

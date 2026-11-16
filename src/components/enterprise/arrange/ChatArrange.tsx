@@ -16,6 +16,8 @@ import { SpeechInputActions } from '../../speech/SpeechInputActions';
 import { AttachmentComposer } from '../attachments/AttachmentComposer';
 import type { AttachmentImportSession, AttachmentView } from '../../../shared/attachment-contracts';
 import { KnowledgeSelector } from '../KnowledgeSelector';
+import type { ConnectorId } from '../../../shared/connectors';
+import { withComposerConnector } from '../../../features/enterprise/composer-connectors';
 
 interface Props {
   employees: SiliconEmployee[];
@@ -34,6 +36,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const [pickOpen, setPickOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [text, setText] = useState('');
+  const [connectorId, setConnectorId] = useState<ConnectorId>();
   const [submitted, setSubmitted] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentView[]>([]);
   const [attachmentSession, setAttachmentSession] = useState<AttachmentImportSession | null>(null);
@@ -81,7 +84,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
   const start = () => {
     if (ready && !busy && !speech.busy) {
       setSubmitted(true);
-      onStart(employeeId, text.trim(), attachments, attachmentSession);
+      onStart(employeeId, withComposerConnector(text, connectorId), attachments, attachmentSession);
     }
   };
 
@@ -115,7 +118,7 @@ export function ChatArrange({ employees, busy, employeeId, onEmployeeChange, onS
           }}
         />
         <div className="ent-chat-askbar">
-          <AttachmentComposer listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
+          <AttachmentComposer connectorId={connectorId} onConnectorChange={setConnectorId} listContainer={attachmentListContainer} target={{ kind: 'compose', composerId: composerId.current }} bindingKey={`${attachmentBindingKey}:${employeeId}`} disabled={busy || speech.busy} onChange={setAttachments} onSessionChange={setAttachmentSession} onBusyChange={setAttachmentsBusy} onPasteEdit={onPasteEdit} />
           <div className="ent-chat-who" ref={pick}>
             <button
               type="button"

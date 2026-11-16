@@ -30,7 +30,7 @@ const requireStub = (id: string): unknown => {
 compileFunction(compiled, ['require', 'exports', 'module'], { filename })(requireStub, pageModule.exports, pageModule);
 const { AppSideNav } = pageModule.exports as typeof import('./AppSideNav');
 
-function render(current: 'home' | 'arrange' | 'records' | 'work' | 'scheduled' = 'home', needsMeCount = 0): string {
+function render(current: 'home' | 'arrange' | 'records' | 'work' | 'scheduled' | 'connectors' = 'home', needsMeCount = 0): string {
   const previousReact = Reflect.get(globalThis, 'React');
   Reflect.set(globalThis, 'React', React);
   try {
@@ -64,4 +64,11 @@ test('keeps the unified work entry active for existing work routes', () => {
 test('shows an independent scheduled-task navigation entry and marks its page active', () => {
   const html = render('scheduled');
   assert.match(html, /aria-label="定时任务" aria-current="page"/);
+});
+
+test('places connectors between knowledge and compute and marks its page active', () => {
+  const html = render('connectors');
+  assert.match(html, /aria-label="连接器" aria-current="page"/);
+  assert.ok(html.indexOf('aria-label="知识库"') < html.indexOf('aria-label="连接器"'));
+  assert.ok(html.indexOf('aria-label="连接器"') < html.indexOf('aria-label="算力中心"'));
 });

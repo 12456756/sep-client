@@ -52,7 +52,7 @@ function Harness() {
     <button type="button" data-testid="copy" onClick={() => { void navigator.clipboard.writeText('clipboard-regression') }}>copy</button>
     <button type="button" data-testid="snapshot" onClick={() => { document.body.dataset.speechPhase = speechInput.getSnapshot().phase }}>snapshot</button>
     <main style={{ maxWidth: 1100, margin: '20px auto', position: 'relative' }}>
-      {surface === 'home' ? <div className="sep-home"><HomeAssistantCard employees={[employee]} draft={homeDraft} busy={false} demo={false} onCreate={() => {}} onSubmit={async () => { send(); return true }} /></div> : null}
+      {surface === 'home' ? <div className="sep-home"><HomeAssistantCard employees={[employee]} draft={homeDraft} busy={false} demo={false} onCreate={() => {}} onManageConnectors={() => {}} onSubmit={async () => { send(); return true }} /></div> : null}
       {surface === 'chat' ? <ChatArrange employees={[employee]} busy={false} employeeId={employeeId} onEmployeeChange={setEmployeeId} onStart={send} {...shared} /> : null}
       {surface === 'auto' || surface === 'two' ? <GoalComposer value={value} onChange={setValue} placeholder="工作目标" submitLabel="开始" submitDisabled={!value} onSubmit={send} {...shared} /> : null}
       {surface === 'two' ? <ChatArrange employees={[employee]} busy={false} employeeId={employeeId} onEmployeeChange={setEmployeeId} onStart={send} {...shared} /> : null}
