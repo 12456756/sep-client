@@ -4,7 +4,8 @@ export const connectorIdSchema = z.enum(['dingtalk', 'feishu', 'wecom', 'tmeet',
 export type ConnectorId = z.infer<typeof connectorIdSchema>
 export const connectorStateSchema = z.object({
   id: connectorIdSchema,
-  status: z.enum(['disconnected', 'authorizing', 'connected', 'error']),
+  status: z.enum(['disconnected', 'preparing', 'authorizing', 'connected', 'error']),
+  dependency: z.object({ phase: z.enum(['downloading', 'verifying']), received: z.number().int().nonnegative(), total: z.number().int().positive() }).optional(),
   connectedAt: z.number().optional(),
   phase: z.enum(['setup', 'authorization']).optional(),
   coverage: z.enum(['documents', 'workspace', 'messaging', 'meetings', 'mail']).optional(),

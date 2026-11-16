@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom'
 import { CONNECTOR_CATALOG } from '../../../features/enterprise/connector-catalog'
 import type { ConnectorDefinition } from '../../../features/enterprise/connector-catalog'
 import { useConnectors } from '../../../features/enterprise/use-connectors'
+import { connectorPreparationText } from '../../../features/enterprise/connector-preparation'
 import type { ConnectorId } from '../../../shared/connectors'
 import { useAnchoredPopover } from '../use-anchored-popover'
 import './composer-add-menu.css'
@@ -75,13 +76,15 @@ function ConnectorChoice({ connector, demo, selected, onSelect }: Pick<Props, 'd
   const connection = useConnectors(connector.id)
   const connected = !demo && connection.state.status === 'connected'
   const authorizing = !demo && connection.state.status === 'authorizing'
-  const status = demo || !connection.available ? '仅限桌面客户端' : connection.loading ? '加载中' : connection.error ? '状态不可用' : connected ? '已连接' : authorizing ? '等待授权' : '点击连接'
+  const preparing = !demo && connection.state.status === 'preparing'
+  const status = demo || !connection.available ? '仅限桌面客户端' : connection.loading ? '加载中' : connection.error ? '状态不可用' : connected ? '已连接' : preparing ? connectorPreparationText(connection.state) : authorizing ? '等待授权' : connection.state.status === 'error' ? '点击重试' : '点击连接'
   return <>
-    <button type="button" role="menuitem" aria-label={`${connector.name}，${status}`} disabled={demo || !connection.available || connection.loading || connection.busy || authorizing || Boolean(connection.error)}
+    <button type="button" role="menuitem" aria-label={`${connector.name}，${status}`} disabled={demo || !connection.available || connection.loading || connection.busy || preparing || authorizing || Boolean(connection.error)}
       onClick={() => { if (connected) onSelect(connector.id); else void connection.connect() }}>
       <img src={connector.logoUrl} alt="" /><span>{connector.name}<small>{status}</small></span>
-      {connection.loading || connection.busy || authorizing ? <LoaderCircle size={15} className="spin" aria-hidden /> : connected && selected === connector.id ? <Check size={15} aria-hidden /> : null}
+      {connection.loading || connection.busy || preparing || authorizing ? <LoaderCircle size={15} className="spin" aria-hidden /> : connected && selected === connector.id ? <Check size={15} aria-hidden /> : null}
     </button>
+    {connection.state.error ? <p role="alert">{connection.state.error}</p> : null}
     {connection.error ? <><p role="alert">{connection.error}</p><button type="button" role="menuitem" disabled={connection.busy || connection.loading} onClick={() => { void connection.refresh() }}><RefreshCw size={16} aria-hidden /><span>重试</span></button></> : null}
   </>
 }

@@ -72,6 +72,30 @@ test('rejects a modified artifact before creating output', async t => {
   await assert.rejects(readFile(output), error => error.code === 'ENOENT' || error.code === 'EISDIR')
 })
 
+test('upload preparation binds the complete connector set and rejects changed components', async t => {
+  const { source, output } = await fixture(t)
+  const directory = join(source, 'connector-assets')
+  await mkdir(directory)
+  let firstArchive
+  for (const [platform, arch] of [['win32', 'x64'], ['darwin', 'x64'], ['darwin', 'arm64']]) {
+    const components = []
+    for (const id of ['dingtalk', 'feishu', 'wecom']) {
+      const bytes = Buffer.from(`${id}-${platform}-${arch}`)
+      const sha256 = createHash('sha256').update(bytes).digest('hex')
+      const archive = `${id}-1.0.0-${platform}-${arch}-${sha256}.zip`
+      await writeFile(join(directory, archive), bytes)
+      firstArchive ??= archive
+      components.push({ id, version: '1.0.0', platform, arch, sha256, bytes: bytes.length, archive })
+    }
+    await writeFile(join(directory, `${platform}-${arch}.json`), JSON.stringify({ schemaVersion: 1, components }))
+  }
+  const prepared = await prepareDownloadUpdate({ source, output, channel: 'stable' })
+  assert.equal(prepared.plan.connectorArtifacts.length, 9)
+  assert.ok(prepared.plan.connectorArtifacts.every(item => item.size > 0 && item.name.endsWith(`${item.sha256}.zip`)))
+  await writeFile(join(directory, firstArchive), 'tampered')
+  await assert.rejects(prepareDownloadUpdate({ source, output: output + '-tampered', channel: 'stable' }), /Connector archive/)
+})
+
 test('requires matching platform manifests and a fresh disjoint output directory', async t => {
   const { root, source, output } = await fixture(t)
   const other = await fixture(t, '1.2.4')

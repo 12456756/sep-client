@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
+import { connectorArtifactPlan } from './verify-connector-assets.mjs'
 
 const execute = promisify(execFile)
 const MANIFESTS = ['latest.yml', 'latest-mac.yml']
@@ -100,6 +101,8 @@ async function upload({ source, prepared, channel, env = process.env }) {
   requireValue(plan.schemaVersion === 1 && plan.channel === channel && typeof plan.version === 'string', 'upload plan identity is invalid')
   requireValue(Array.isArray(plan.artifacts) && plan.artifacts.length === 10, 'upload plan must contain the complete three-platform artifact set')
   const artifacts = plan.artifacts.map(item => ({ ...item, name: flatName(item.name) }))
+  const connectorArtifacts = await connectorArtifactPlan(source, { required: true })
+  requireValue(JSON.stringify(connectorArtifacts) === JSON.stringify(plan.connectorArtifacts ?? []), 'connector artifacts changed after upload preparation')
   for (const item of artifacts) {
     requireValue(Number.isSafeInteger(item.size) && item.size > 0 && /^[a-f0-9]{64}$/.test(item.sha256), `upload plan hash or size is invalid: ${item.name}`)
     const local = await localFile(source, item.name)
@@ -137,6 +140,18 @@ async function upload({ source, prepared, channel, env = process.env }) {
     await chmod(config, 0o600)
     await ssh(context, `set -eu; test -d ${shellQuote(context.root)}; test ! -e ${shellQuote(versionRoot)}; mkdir ${shellQuote(staging)} ${shellQuote(manifestStaging)}`, 'SSH preflight (remote directory check and staging creation)')
     for (const item of artifacts) await rsync(context, (await localFile(source, item.name)).file, `${staging}/${item.name}`, `artifact upload (${item.name})`)
+    if (connectorArtifacts.length) {
+      const componentStaging = `${staging}/connector-assets`
+      const componentRoot = `${context.root}/connector-assets`
+      await ssh(context, `set -eu; mkdir ${shellQuote(componentStaging)}; mkdir -p ${shellQuote(componentRoot)}`, 'connector directory preparation')
+      for (const item of connectorArtifacts) {
+        await rsync(context, (await localFile(join(source, 'connector-assets'), item.name)).file, `${componentStaging}/${item.name}`, `connector upload (${item.name})`)
+        const staged = shellQuote(`${componentStaging}/${item.name}`)
+        const target = shellQuote(`${componentRoot}/${item.name}`)
+        await ssh(context, `set -eu; printf '%s  %s\\n' ${shellQuote(item.sha256)} ${staged} | sha256sum -c -; if test -e ${target}; then printf '%s  %s\\n' ${shellQuote(item.sha256)} ${target} | sha256sum -c -; else mv ${staged} ${target}; fi`, 'connector verification and publication')
+      }
+      await ssh(context, `rm -rf -- ${shellQuote(componentStaging)}`, 'connector staging cleanup')
+    }
     const remoteChecks = artifacts.map(item => `printf '%s  %s\\n' ${shellQuote(item.sha256)} ${shellQuote(`${staging}/${item.name}`)} | sha256sum -c -`)
     await ssh(context, `set -eu; ${remoteChecks.join('; ')}; mv ${shellQuote(staging)} ${shellQuote(versionRoot)}`, 'remote artifact checksum verification and version directory publish')
     for (const name of MANIFESTS) await rsync(context, (await localFile(prepared, name)).file, `${manifestStaging}/${name}`, `update manifest upload (${name})`)

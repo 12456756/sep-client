@@ -26,7 +26,7 @@ export function attachConnectorTools(runtime: McpRuntime, binding: ConnectorBind
       }
     }
     return [
-      tool('reference', async params => ({ text: await provider.reference(String(params.path)), isError: false })),
+      tool('reference', async (params, signal) => ({ text: await provider.reference(String(params.path), signal), isError: false })),
       tool('schema', (params, signal) => provider.schema(String(params.path), signal)),
       tool('execute', (params, signal) => provider.execute(params.args as string[], workspaceDir, signal)),
     ]

@@ -146,9 +146,9 @@ export class FeishuWorkspaceRuntime implements ConnectorRuntimePort {
       schema: 'Inspect the exact Feishu CLI command contract. Use a space-separated command path for --help, e.g. calendar +agenda, or a dotted API schema such as calendar.events.instance_view. Do not guess arguments.',
       execute: 'Execute a Feishu business command as the connected personal user. args is argv without lark-cli. Read the relevant official reference and command schema first. Client fixes user identity and JSON output. No auth/config/profile/token/identity override flags. Writes need approval; high-risk confirmation flags require explicit user approval for the concrete action. Never retry uncertain writes. Preserve pagination and verify writes with a read. Granted scopes and account permissions determine availability.',
     },
-      reference: async path => {
+      reference: async (path, source) => {
         if (!/^lark-[a-z-]+\/(?:SKILL\.md|(?:references|routes|scenes)\/[\w/.-]+\.md)$/.test(path) || path.split('/').includes('..')) throw new Error('Invalid Feishu reference.')
-        const result = await invoke(['skills', 'read', path, '--json'])
+        const result = await invoke(['skills', 'read', path, '--json'], undefined, source)
         if (result.isError) throw new Error('Feishu reference unavailable.')
         return z.object({ content: z.string() }).parse(JSON.parse(result.text)).content
       },

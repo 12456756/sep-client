@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { constants, realpathSync } from 'node:fs'
 import { lstat, mkdir, open, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { connectorArtifactPlan } from './verify-connector-assets.mjs'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import yaml from 'js-yaml'
@@ -135,6 +136,7 @@ export async function prepareDownloadUpdate({ source, output, channel }) {
     version,
     feed,
     artifacts,
+    connectorArtifacts: await connectorArtifactPlan(root),
     downloads: {
       macArm64: new URL(`${version}/SEP-Client-${version}-mac-arm64.dmg`, feed).href,
       macX64: new URL(`${version}/SEP-Client-${version}-mac-x64.dmg`, feed).href,

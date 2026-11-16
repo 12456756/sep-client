@@ -26,8 +26,8 @@ export function useConnectors(id: ConnectorId = 'dingtalk') {
   }, [available, id]);
   useEffect(() => { mounted.current = true; void refresh(); return () => { mounted.current = false; }; }, [refresh]);
   useEffect(() => {
-    if (state.status !== 'authorizing' && state.status !== 'connected') return;
-    const delay = state.status === 'authorizing' ? 1500 : 15000;
+    if (state.status !== 'preparing' && state.status !== 'authorizing' && state.status !== 'connected') return;
+    const delay = state.status === 'preparing' ? 500 : state.status === 'authorizing' ? 1500 : 15000;
     let stopped = false;
     let timer: number;
     const poll = async (): Promise<void> => { await refresh(); if (!stopped) timer = window.setTimeout(() => { void poll(); }, delay); };

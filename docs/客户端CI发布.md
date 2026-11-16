@@ -2,6 +2,12 @@
 
 `.github/workflows/client-release.yml` 只负责 SEP 客户端下载源，不部署 SEP 前端、后端或 Docker 镜像。
 
+钉钉、飞书、企业微信采用独立组件分发。`scripts/connector-assets.mjs` 在 afterPack 中按锁定版本准备原生程序、许可证及钉钉资料包，输出到构建目录的 `connector-assets/`；安装包只包含 `connector-dependencies.json` 清单，不携带这三个 CLI。开发启动仍使用本地 npm 开发依赖。
+
+Windows x64、macOS x64/arm64 构建的组件随平台产物合并，发布前由 `verify-connector-assets.mjs` 核对九个归档的大小及 SHA-256。上传脚本先将组件发布到 stable 下的 `connector-assets/`，校验后才发布客户端更新清单。组件文件名包含内容哈希，旧组件需要长期保留供旧客户端首次使用；不要随客户端版本目录一起清理。手动发布也必须带上完整 `connector-assets/` 和 upload-plan 中的组件清单。
+
+客户端第一次连接时只下载对应连接器组件，验证归档及各文件后写入用户目录的 `connector-runtime/<id>/<归档哈希>/`。列表查询和任务工具发现不下载；已有授权但缓存缺失时，在首次调用资料、契约或命令前补齐。下载支持进度、取消及重试，失败不执行命令。下载由 Electron 网络栈使用系统网络配置，不携带平台登录凭据。腾讯会议和 QQ 邮箱继续使用内置实现。Mac 本地包组件采用 ad hoc 签名，正式签名包的组件另行 Developer ID 签名和公证；Windows 正式签名包组件使用现有打包签名器。各系统真实下载、执行及公证仍需在发布验收中验证。
+
 触发方式：
 
 - 推送与 `package.json` 版本一致的 `v<version>` 或 `client-v<version>` 标签：构建、校验并进入生产发布环境。推荐使用 `v<version>`，例如 `v0.5.1`。

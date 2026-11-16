@@ -38,6 +38,11 @@ test('full DingTalk tools use registered approvals and preserve MCP tools and di
   assert.equal(evaluateToolCall('dingtalk_schema', {}, policy, runtime.permissions).requiresApproval, false)
   const result = await runtime.tools[2].execute('id', { args: ['chat', 'send'] }, undefined)
   assert.equal(result.details.executionUncertain, true)
+  const controller = new AbortController()
+  let referenceSignal: AbortSignal | undefined
+  binding.commands![0].reference = async (_path, signal) => { referenceSignal = signal; return 'guide' }
+  await runtime.tools[0].execute('reference', { path: 'SKILL.md' }, controller.signal)
+  assert.equal(referenceSignal, controller.signal)
   binding.commands![0].execute = async () => { throw new ConnectorInputError('请查询 dingtalk_schema。') }
   const invalid = await runtime.tools[2].execute('invalid', { args: ['auth', 'export'] }, undefined)
   assert.equal(invalid.details.isError, true)

@@ -15,7 +15,7 @@ export interface ConnectorCommandBinding {
   id: ConnectorId
   name: string
   instructions: { reference: string; schema: string; execute: string }
-  reference(path: string): Promise<string>
+  reference(path: string, signal?: AbortSignal): Promise<string>
   schema(path: string, signal?: AbortSignal): Promise<ConnectorCommandResult>
   execute(args: string[], workspaceDir: string, signal?: AbortSignal): Promise<ConnectorCommandResult>
 }
