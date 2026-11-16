@@ -6,6 +6,8 @@
 dialog[data-feedback-host]::backdrop { background: transparent !important; }
 .feedback-field { display: grid; gap: 8px; margin-top: 16px; }
 .feedback-field input { box-sizing: border-box; width: 100%; height: 36px; padding: 0 10px; border: 1px solid #aaa; border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+/* Portaled fields need a focus indicator that stays inside the scrollable dialog. */
+.feedback-dialog .feedback-field input:focus-visible { outline: 2px solid currentColor !important; outline-offset: -2px; box-shadow: none !important; }
 .feedback-validation { margin: 8px 0 0; color: #c83c3c; }
 .feedback-status { color: #b47a10; margin-top: 1px; }
 .feedback-error .feedback-status { color: #c83c3c; }
