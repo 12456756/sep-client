@@ -16,6 +16,10 @@ export function createConnectorRegistry(options: {
   const { userDataDir, encryption, currentScope, open } = options
   const packageRoot = (name: string): string | undefined => options.packaged ? undefined : dirname(createRequire(import.meta.url).resolve(`${name}/package.json`))
   return new ConnectorRegistry({
+    qqmail: async () => {
+      const { QQMailWorkspaceRuntime } = await import('../runtime/qq-mail-workspace')
+      return new QQMailWorkspaceRuntime({ store: new ConnectorStore(userDataDir, encryption, 'qqmail'), currentScope })
+    },
     tmeet: async () => {
       const { TencentMeetingWorkspaceRuntime } = await import('../runtime/tencent-meeting-workspace')
       return new TencentMeetingWorkspaceRuntime({ store: new ConnectorStore(userDataDir, encryption, 'tmeet'), currentScope, open })

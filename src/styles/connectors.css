@@ -1,4 +1,7 @@
 .connectors-page { min-width: 0; }
+.qqmail-dialog-icon { color: var(--ent-ink-2); }
+.qqmail-verifying { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; color: var(--ent-ink-3); font-size: 13px; }
+.connector-card footer > span { overflow-wrap: anywhere; min-width: 0; }
 .connector-status.connected { color: var(--ent-ready); }
 .connector-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; max-width: 100%; }
 .connector-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; color: var(--ent-danger); font-size: 13px; }

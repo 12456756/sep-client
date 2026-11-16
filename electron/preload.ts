@@ -112,6 +112,7 @@ const electronAPI = {
   requestKnowledge: (input: KnowledgeRequestInput) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_REQUEST, input),
   getConnectorState: (id: import('../src/shared/connectors').ConnectorId) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_STATE, id),
   connectConnector: (id: import('../src/shared/connectors').ConnectorId) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_CONNECT, id),
+  connectQQMail: (credentials: import('../src/shared/connectors').QQMailCredentials) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_QQ_MAIL_CONNECT, credentials),
   disconnectConnector: (id: import('../src/shared/connectors').ConnectorId) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_DISCONNECT, id),
   cancelKnowledgeRequests: (requestIds: string[]) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_CANCEL, requestIds),
   getSpeechPermission: () => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_PERMISSION),

@@ -25,6 +25,11 @@ test('full DingTalk tools use registered approvals and preserve MCP tools and di
   const tmeet = attachConnectorTools(base, { ...binding, commands: [{ ...binding.commands![0], id: 'tmeet', name: '腾讯会议' }] }, '.')
   assert.deepEqual(tmeet.tools.map(tool => tool.name), ['tmeet_reference', 'tmeet_schema', 'tmeet_execute'])
   assert.equal(tmeet.permissions.get('tmeet_execute'), 'confirm-each')
+  const mail = attachConnectorTools(base, { ...binding, commands: [{ ...binding.commands![0], id: 'qqmail', name: 'QQ 邮箱' }] }, '.')
+  assert.deepEqual(mail.tools.map(tool => tool.name), ['qqmail_reference', 'qqmail_schema', 'qqmail_execute'])
+  const mailPolicy = { allowedTools: [...mail.permissions.keys()], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled' as const, approvalMode: 'confirm-each' as const, workspaceDir: '.' }
+  assert.equal(evaluateToolCall('qqmail_execute', {}, mailPolicy, mail.permissions).requiresApproval, true)
+  assert.equal(evaluateToolCall('qqmail_schema', {}, mailPolicy, mail.permissions).requiresApproval, false)
   const meetingPolicy = { allowedTools: [...tmeet.permissions.keys()], allowedPaths: [], deniedPaths: [], commandPolicy: 'disabled' as const, approvalMode: 'confirm-each' as const, workspaceDir: '.' }
   assert.equal(evaluateToolCall('tmeet_execute', {}, meetingPolicy, tmeet.permissions).requiresApproval, true)
   assert.equal(evaluateToolCall('tmeet_schema', {}, meetingPolicy, tmeet.permissions).requiresApproval, false)

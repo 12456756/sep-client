@@ -1,4 +1,4 @@
-import type { ConnectorId, ConnectorState } from '../../src/shared/connectors'
+import type { ConnectorId, ConnectorState, QQMailCredentials } from '../../src/shared/connectors'
 import type { TaskOwnerScope } from '../data/scope-path'
 
 export class ConnectorInputError extends Error {
@@ -27,7 +27,7 @@ export interface ConnectorRegistryPort {
 }
 export interface ConnectorRuntimePort {
   state(scope: TaskOwnerScope): Promise<ConnectorState>
-  connect(scope: TaskOwnerScope): Promise<void>
+  connect(scope: TaskOwnerScope, credentials?: QQMailCredentials): Promise<void>
   disconnect(scope: TaskOwnerScope): Promise<void>
   binding(scope: TaskOwnerScope): Promise<ConnectorBinding | undefined>
   cancel(): void

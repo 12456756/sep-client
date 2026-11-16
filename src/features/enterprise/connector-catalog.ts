@@ -2,6 +2,7 @@ import dingtalkLogo from '../../assets/dingtalk.png';
 import feishuLogo from '../../assets/feishu.ico';
 import wecomLogo from '../../assets/wecom.ico';
 import tmeetLogo from '../../assets/tencent-meeting.ico';
+import qqMailLogo from '../../assets/qq-mail.ico';
 import type { ConnectorId } from '../../shared/connectors';
 
 export interface ConnectorDefinition {
@@ -15,6 +16,16 @@ export interface ConnectorDefinition {
 }
 
 export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
+  {
+    id: 'qqmail', name: 'QQ 邮箱', category: '电子邮件', description: '邮件检索、阅读与收发',
+    logoUrl: qqMailLogo, authorizationAvailable: true,
+    capabilities: [
+      { name: '邮件检索', description: '按关键词和未读状态分页查询邮件。' },
+      { name: '正文阅读', description: '读取邮件正文及附件名称、大小等信息。' },
+      { name: '发送与回复', description: '使用已连接的邮箱发送和回复文本邮件。' },
+      { name: '文件夹查询', description: '查看邮箱文件夹与分类。' },
+    ],
+  },
   {
     id: 'tmeet', name: '腾讯会议', category: '视频会议', description: '会议安排、录制与智能纪要',
     logoUrl: tmeetLogo, authorizationAvailable: true,

@@ -45,6 +45,7 @@ export const INVOKE_CHANNELS = {
   KNOWLEDGE_REQUEST: 'knowledge:request',
   CONNECTOR_STATE: 'connector:state',
   CONNECTOR_CONNECT: 'connector:connect',
+  CONNECTOR_QQ_MAIL_CONNECT: 'connector:qq-mail-connect',
   CONNECTOR_DISCONNECT: 'connector:disconnect',
   KNOWLEDGE_CANCEL: 'knowledge:cancel',
   SPEECH_PERMISSION: 'speech:permission',
