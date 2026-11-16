@@ -41,11 +41,13 @@ function withAuth<TInput, TResult>(
   handler: (ctx: RequestContext, accessToken: string, input: TInput) => Promise<TResult>,
 ): (ctx: RequestContext, input: TInput) => Promise<{ success: true; data: TResult }> {
   return async (ctx, input) => {
+    const revision = ctx.backend.authSession.getSessionRevision()
     try {
       const accessToken = await ctx.backend.authSession.getValidAccessToken()
       return { success: true, data: await handler(ctx, accessToken, input) }
     } catch (error) {
-      if (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized)) {
+      if (revision === ctx.backend.authSession.getSessionRevision() &&
+        (error instanceof AuthenticationRequiredError || (error instanceof AuthApiError && error.isUnauthorized))) {
         ctx.backend.invalidateAuthentication()
       }
       throw error
