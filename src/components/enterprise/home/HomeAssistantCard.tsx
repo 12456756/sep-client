@@ -18,6 +18,8 @@ import { ComposerAddMenu } from './ComposerAddMenu'
 import { CONNECTOR_CATALOG } from '../../../features/enterprise/connector-catalog'
 import type { ConnectorId } from '../../../shared/connectors'
 import { withComposerConnector } from '../../../features/enterprise/composer-connectors'
+import { useModelPreference } from '../../workspace/model-preference-scope'
+import { resolveTaskModel } from '../../../shared/model-preferences'
 
 interface Props {
   employees: SiliconEmployee[]
@@ -70,6 +72,7 @@ function LiveAssistant(props: Props & { editor: Editor }) {
 }
 
 function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnectors, demo, busy, editor, attachment }: Props & { editor: Editor; attachment?: Attachments }) {
+  const { defaultModelId } = useModelPreference()
   const [employeeId, setEmployeeId] = useState(draft.employeeId)
   const [modelId, setModelId] = useState(draft.modelId)
   const [connectorId, setConnectorId] = useState(draft.connectorId)
@@ -93,10 +96,10 @@ function AssistantForm({ employees, draft, onSubmit, onCreate, onManageConnector
   const selectionProblem = !employee ? '所选员工已不在当前授权列表，请重新选择。'
     : !demo && (employee.availability === 'unavailable' || employee.availability === 'needs-auth' || !employee.allowedModels.length) ? '该员工当前不可用，请检查授权或选择其他员工。' : null
   const models = employee?.allowedModels ?? []
-  const selectedModel = models.includes(modelId) ? modelId : models[0] ?? ''
+  const selectedModel = resolveTaskModel(models, defaultModelId, modelId)
   const selectEmployee = (id: string) => {
     const nextEmployee = id === GENERAL_ASSISTANT_ID ? assistant : employees.find(item => item.id === id)
-    const nextModelId = nextEmployee?.allowedModels[0] ?? ''
+    const nextModelId = resolveTaskModel(nextEmployee?.allowedModels ?? [], defaultModelId)
     draft.employeeId = id
     draft.modelId = nextModelId
     setEmployeeId(id)
