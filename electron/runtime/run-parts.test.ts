@@ -9,7 +9,7 @@ import { RunQueue } from './run-queue'
 import { createRunCompletion, WorkerRegistry } from './run-workers'
 import { EventPipeline } from './run-events'
 import type { ActiveRun, QueuedRun } from './run-types'
-import type { TaskExecutionEvent } from '../../src/shared/types'
+import type { TaskExecutionEvent, ToolAuthorizationRequest } from '../../src/shared/types'
 
 function queued(runId: string, taskId = `task-of-${runId}`): QueuedRun {
   return {
@@ -87,6 +87,29 @@ describe('WorkspaceLockManager', () => {
 })
 
 describe('ToolApprovals', () => {
+  it('keeps manual browser handoff open for three minutes while other approvals expire after one minute', async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+    const requests: ToolAuthorizationRequest[] = []
+    const broker = new ToolApprovals({ onRequest: request => { requests.push(request) } })
+    t.after(() => broker.denyAll())
+    const base = { taskId: 'task', runId: 'run', subscriptionId: 'employee' }
+    const handoff = broker.request({ ...base, toolName: 'mcp__playwright__browser_set_mode', input: { operation: 'manual-handoff' } })
+    const command = broker.request({ ...base, toolName: 'bash', input: {} })
+    const external = broker.request({ ...base, toolName: 'mcp__playwright__browser_set_mode', input: { mode: 'visible' } })
+    assert.equal(requests[0].expiresAt! - requests[0].timestamp, 180_000)
+    assert.equal(requests[1].expiresAt! - requests[1].timestamp, 60_000)
+    assert.equal(requests[2].expiresAt! - requests[2].timestamp, 60_000)
+    t.mock.timers.tick(60_000)
+    assert.equal(await command, false)
+    assert.equal(await external, false)
+    assert.equal(broker.size, 1)
+    t.mock.timers.tick(119_999)
+    assert.equal(broker.size, 1, 'handoff must remain open until the full three minutes elapse')
+    t.mock.timers.tick(1)
+    assert.equal(await handoff, false)
+    assert.equal(broker.respond({ requestId: requests[0].requestId, approved: true }), false)
+  })
+
   it('routes concurrent approvals by request ID', async () => {
     const requests: string[] = []
     const broker = new ToolApprovals({

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { z } from 'zod'
 import { useFeedback } from './feedback/FeedbackProvider'
+import { isBrowserHandoffRequest, toolApprovalTimeoutMs } from '../shared/tool-approval'
 
 interface ToolApprovalRequest {
   requestId?: string
@@ -41,7 +42,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     let active = true
     const approval = new AbortController()
     const revision = feedback.getRevision()
-    const deadline = request.expiresAt ?? (request.timestamp ?? Date.now()) + 60_000
+    const deadline = request.expiresAt ?? (request.timestamp ?? Date.now()) + toolApprovalTimeoutMs(request)
     const remaining = deadline - Date.now()
     let settled = false
     const settle = (accepted: boolean) => {
@@ -55,7 +56,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
     const isVideo = request.toolName === 'video_generate' || request.toolName === 'video_from_image'
     const raw = z.object({ mock: z.boolean().optional() }).safeParse(request.input)
     const input = z.record(z.string(), z.unknown()).safeParse(request.input)
-    const browserHandoff = request.toolName === 'mcp__playwright__browser_set_mode' && input.success && input.data.operation === 'manual-handoff'
+    const browserHandoff = isBrowserHandoffRequest(request)
     const transmission = (isVideo || request.toolName === 'media_generate_image') && input.success && input.data.operation === 'upload-references'
     if (!Number.isFinite(deadline) || remaining <= 0 || isVideo && !transmission && (!raw.success || raw.data.mock !== true && !quote.success)) {
       settle(false)
@@ -68,7 +69,7 @@ export function ToolApprovalDialog({ request, onApprove, onDeny }: Props) {
       return
     }
     let message = Object.hasOwn(messages, request.toolName) ? messages[request.toolName] : `员工请求执行未知工具“${request.toolName}”，风险无法确认，建议拒绝。是否仍允许？`
-    if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。请在 60 秒内完成；取消或超时会关闭此浏览器会话。'
+    if (browserHandoff) message = '浏览器窗口已打开，请完成登录、扫码或验证，再点击“已完成，继续”。请在 3 分钟内完成；取消或超时会关闭此浏览器会话。'
     if (transmission) message = '允许上传所选参考图？此操作仅传输参考图，生成前会校验报价。'
     if (price?.success) message += ` 本次报价 ${price.data.quote.amount} ${price.data.quote.currency}。`
     if (input.success && ['bash', 'write', 'edit'].includes(request.toolName)) {
