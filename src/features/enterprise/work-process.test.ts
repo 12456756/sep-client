@@ -14,6 +14,7 @@ describe('user-facing work process', () => {
     }
   })
   it('uses live operations, not completed actions or raw logs, for the current status', () => {
+    assert.equal(processActivityLabel(activity('mcp__playwright__browser_set_mode')), '切换浏览器显示')
     assert.equal(processActivityLabel(activity('get_current_time')), '查询当前时间')
     assert.equal(currentWorkOperation('running', [activity('ls', 'completed')]), '正在处理，请稍候')
     assert.equal(currentWorkOperation('running', [activity('ls')]), '正在查看目录')

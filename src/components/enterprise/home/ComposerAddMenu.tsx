@@ -8,6 +8,7 @@ import { useConnectors } from '../../../features/enterprise/use-connectors'
 import { connectorPreparationText } from '../../../features/enterprise/connector-preparation'
 import type { ConnectorId } from '../../../shared/connectors'
 import { useAnchoredPopover } from '../use-anchored-popover'
+import { GitHubConnectDialog } from '../GitHubConnectDialog'
 import './composer-add-menu.css'
 
 const ConnectorsPage = lazy(() => import('../../../pages/enterprise/ConnectorsPage').then(module => ({ default: module.ConnectorsPage })))
@@ -26,6 +27,7 @@ export function ComposerAddMenu({ disabled, demo = false, selected, onFile, onSe
   const [open, setOpen] = useState(false)
   const [view, setView] = useState<'main' | 'connectors'>('main')
   const [managing, setManaging] = useState(false)
+  const [githubOpen, setGithubOpen] = useState(false)
   const { root, popover, position } = useAnchoredPopover(open, setOpen, true)
   const id = useId()
   const close = () => { setOpen(false); root.current?.querySelector('button')?.focus() }
@@ -56,11 +58,12 @@ export function ComposerAddMenu({ disabled, demo = false, selected, onFile, onSe
       </> : <>
         <button type="button" role="menuitem" onClick={() => setView('main')}><ArrowLeft size={16} aria-hidden /><span>连接器</span></button>
         <div role="separator" />
-        <ConnectorChoices demo={demo} selected={selected} onSelect={connectorId => { close(); onSelect(connectorId) }} />
+        <ConnectorChoices demo={demo} selected={selected} onSelect={connectorId => { close(); onSelect(connectorId) }} onGitHubConnect={() => { close(); setGithubOpen(true) }} />
         <div role="separator" />
         <button type="button" role="menuitem" onClick={() => { close(); if (onManage) onManage(); else setManaging(true) }}><Settings size={16} aria-hidden /><span>管理连接器</span><ChevronRight size={15} aria-hidden /></button>
       </>}
     </div>, document.body) : null}
+    {githubOpen ? <GitHubComposerConnect onClose={() => setGithubOpen(false)} restoreFocus={() => root.current?.querySelector('button')?.focus()} /> : null}
     <Dialog.Root open={managing} onOpenChange={setManaging}><Dialog.Portal><Dialog.Overlay className="sep-composer-connectors-overlay" /><Dialog.Content className="sep-composer-connectors-dialog" aria-describedby={undefined} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setManaging(false) } else if (event.key === 'Tab') event.stopPropagation() }} onCloseAutoFocus={event => { event.preventDefault(); root.current?.querySelector('button')?.focus() }}>
       <div className="sep-composer-connectors-heading"><Dialog.Title>管理连接器</Dialog.Title><Dialog.Close asChild><button type="button" aria-label="关闭连接器管理" title="关闭"><X size={18} aria-hidden /></button></Dialog.Close></div>
       {managing ? <Suspense fallback={<p role="status">加载中…</p>}><ConnectorsPage /></Suspense> : null}
@@ -68,11 +71,16 @@ export function ComposerAddMenu({ disabled, demo = false, selected, onFile, onSe
   </div>
 }
 
-function ConnectorChoices({ demo, selected, onSelect }: Pick<Props, 'demo' | 'selected' | 'onSelect'>): React.JSX.Element {
-  return <>{CONNECTOR_CATALOG.map(connector => <ConnectorChoice key={connector.id} connector={connector} demo={demo} selected={selected} onSelect={onSelect} />)}</>
+function GitHubComposerConnect({ onClose, restoreFocus }: { onClose(): void; restoreFocus(): void }): React.JSX.Element {
+  const connection = useConnectors('github')
+  return <GitHubConnectDialog busy={connection.busy} error={connection.error} onConnect={connection.connect} onClose={onClose} restoreFocus={restoreFocus} />
 }
 
-function ConnectorChoice({ connector, demo, selected, onSelect }: Pick<Props, 'demo' | 'selected' | 'onSelect'> & { connector: ConnectorDefinition }): React.JSX.Element {
+function ConnectorChoices({ demo, selected, onSelect, onGitHubConnect }: Pick<Props, 'demo' | 'selected' | 'onSelect'> & { onGitHubConnect(): void }): React.JSX.Element {
+  return <>{CONNECTOR_CATALOG.map(connector => <ConnectorChoice key={connector.id} connector={connector} demo={demo} selected={selected} onSelect={onSelect} onGitHubConnect={onGitHubConnect} />)}</>
+}
+
+function ConnectorChoice({ connector, demo, selected, onSelect, onGitHubConnect }: Pick<Props, 'demo' | 'selected' | 'onSelect'> & { connector: ConnectorDefinition; onGitHubConnect(): void }): React.JSX.Element {
   const connection = useConnectors(connector.id)
   const connected = !demo && connection.state.status === 'connected'
   const authorizing = !demo && connection.state.status === 'authorizing'
@@ -80,7 +88,7 @@ function ConnectorChoice({ connector, demo, selected, onSelect }: Pick<Props, 'd
   const status = demo || !connection.available ? '仅限桌面客户端' : connection.loading ? '加载中' : connection.error ? '状态不可用' : connected ? '已连接' : preparing ? connectorPreparationText(connection.state) : authorizing ? '等待授权' : connection.state.status === 'error' ? '点击重试' : '点击连接'
   return <>
     <button type="button" role="menuitem" aria-label={`${connector.name}，${status}`} disabled={demo || !connection.available || connection.loading || connection.busy || preparing || authorizing || Boolean(connection.error)}
-      onClick={() => { if (connected) onSelect(connector.id); else void connection.connect() }}>
+      onClick={() => { if (connected) onSelect(connector.id); else if (connector.id === 'github') onGitHubConnect(); else void connection.connect() }}>
       <img src={connector.logoUrl} alt="" /><span>{connector.name}<small>{status}</small></span>
       {connection.loading || connection.busy || preparing || authorizing ? <LoaderCircle size={15} className="spin" aria-hidden /> : connected && selected === connector.id ? <Check size={15} aria-hidden /> : null}
     </button>

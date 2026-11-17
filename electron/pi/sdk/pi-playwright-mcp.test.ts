@@ -8,7 +8,7 @@ import { createMcpRuntime } from './pi-mcp-client'
 import { createPlaywrightMcpServer, loadHostMcpServers, unpackedCliPath } from './pi-playwright-mcp'
 
 describe('bundled Playwright MCP', () => {
-  it('uses the bundled CLI, isolated Edge, text snapshots and explicit approvals on Windows', () => {
+  it('uses the bundled CLI, headless isolated Edge, text snapshots and explicit approvals on Windows', () => {
     const server = createPlaywrightMcpServer('win32')
     assert.equal(server.name, 'playwright')
     assert.equal(server.transport.type, 'stdio')
@@ -17,6 +17,7 @@ describe('bundled Playwright MCP', () => {
     assert.ok(server.transport.args?.[0]?.endsWith('cli.js'))
     assert.ok(server.transport.args?.includes('msedge'))
     assert.ok(server.transport.args?.includes('--isolated'))
+    assert.ok(server.transport.args?.includes('--headless'))
     assert.ok(server.transport.args?.includes('--image-responses'))
     assert.ok(server.transport.args?.includes('omit'))
     assert.ok(!server.transport.args?.includes('--no-sandbox'))

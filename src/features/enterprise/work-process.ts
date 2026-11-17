@@ -12,6 +12,7 @@ const BROWSER_LABELS: Readonly<Record<string, string>> = {
   browser_select_option: '选择网页选项', browser_press_key: '执行网页按键操作',
   browser_tabs: '管理浏览器标签页', browser_wait_for: '等待网页响应',
   browser_handle_dialog: '处理网页对话框', browser_close: '关闭浏览器',
+  browser_set_mode: '切换浏览器显示',
   browser_take_screenshot: '截取网页画面', browser_evaluate: '执行网页操作',
 }
 

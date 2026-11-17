@@ -6,6 +6,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { WorkspacePreviewPage } from './pages/WorkspacePreviewPage';
+import { AppErrorBoundary } from './components/AppErrorBoundary';
 import './index.css';
 
 const root = document.getElementById('root');
@@ -25,8 +26,10 @@ const HomePreviewPage = preview === 'home'
 
 ReactDOM.createRoot(root).render(
   <React.StrictMode>
-    {previewRequested ? <WorkspacePreviewPage /> : HomePreviewPage ? (
-      <React.Suspense fallback={null}><HomePreviewPage /></React.Suspense>
-    ) : <App />}
+    <AppErrorBoundary>
+      {previewRequested ? <WorkspacePreviewPage /> : HomePreviewPage ? (
+        <React.Suspense fallback={null}><HomePreviewPage /></React.Suspense>
+      ) : <App />}
+    </AppErrorBoundary>
   </React.StrictMode>,
 );

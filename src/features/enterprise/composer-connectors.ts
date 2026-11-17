@@ -7,6 +7,7 @@ export const composerConnectorNames: Record<ConnectorId, string> = {
   tmeet: '腾讯会议',
   qqmail: 'QQ 邮箱',
   kdocs: '金山文档',
+  github: 'GitHub',
 }
 
 export function withComposerConnector(text: string, connectorId?: ConnectorId): string {

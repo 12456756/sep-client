@@ -33,7 +33,7 @@ describe('built-in Office runtime', () => {
       rl.on('close', () => fs.writeFileSync('closed', 'yes'));
     `)
     const base = await createMcpRuntime([], root)
-    const attached = await attachOfficeRuntime(base, { skills: [], unavailable: [],
+    const attached = await attachOfficeRuntime({ ...base, builtinBrowser: true }, { skills: [], unavailable: [],
       office: { executable: process.execPath, sha256: '' } }, {
       runId: 'abort-office', modelId: 'm', gatewayUrl: '', workspaceDir: root, agentDir: root, sessionDir: root,
       getAccessToken: async () => '', authorizeTool: async () => true,
@@ -42,6 +42,7 @@ describe('built-in Office runtime', () => {
     })
     t.after(() => attached.runtime.dispose())
     assert.equal(attached.enabled, true)
+    assert.equal(attached.runtime.builtinBrowser, true, 'Office composition must retain the trusted browser handoff')
     const office = attached.runtime.tools.find(tool => tool.name === OFFICE_TOOL_NAME)!
     const controller = new AbortController()
     const pending = office.execute('abort', { command: ['create', 'test.docx'] }, controller.signal)

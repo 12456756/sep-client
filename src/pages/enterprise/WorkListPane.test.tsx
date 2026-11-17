@@ -39,6 +39,17 @@ test('work rows use one named button with semantic status and unknown-type icons
   } finally { if (oldReact === undefined) Reflect.deleteProperty(globalThis, 'React'); else Reflect.set(globalThis, 'React', oldReact) }
 })
 
+test('work summaries show parsed message text while preserving source and action precedence', () => {
+  const content = '工具返回**生成成功、已保存**。\n\n[查看记录](https://example.com/video)'
+  const record = { ...work, messages: [{ id: 'reply', role: 'employee' as const, content, createdAt: 1 }] }
+  const renderRecord = (item: WorkItem) => renderToStaticMarkup(React.createElement(WorkListPane, { ...props(), works: [item], records: [item] }))
+  assert.match(renderRecord(record), /class="ent-work-row-summary">工具返回生成成功、已保存。 查看记录<\/span>/)
+  assert.equal(record.messages[0]?.content, content)
+  assert.match(renderRecord({ ...record, nextUserAction: '**请确认：**继续生成' }), /class="ent-work-row-summary">请确认：继续生成<\/span>/)
+  assert.match(renderRecord({ ...record, messages: [], goal: '**整理报告**' }), /class="ent-work-row-summary">整理报告<\/span>/)
+  assert.match(renderRecord({ ...record, messages: [], goal: '' }), /class="ent-work-row-summary">尚无消息<\/span>/)
+})
+
 test('running and loading status icons use the shared spin animation', () => {
   const running = { ...work, id: 'running', status: 'running' } as unknown as WorkItem
   const loading = { ...work, id: 'loading', workType: { state: 'loading' } } as unknown as WorkItem

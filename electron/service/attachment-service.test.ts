@@ -76,7 +76,7 @@ test('previews only an image claimed by the current task and verifies its digest
   const other = new AttachmentService(new AttachmentStore(root), () => ownerB)
   await assert.rejects(other.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256))
   current = null
-  await assert.rejects(service.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256), /AUTH_REQUIRED/)
+  await assert.rejects(service.previewTaskAttachment('task-preview', ref.attachmentId, ref.sha256), (error: unknown) => error instanceof AppError && error.code === 'AUTH_REQUIRED')
   current = ownerA
   const readTask = store.readTask.bind(store)
   store.readTask = async (...args) => { const bytes = await readTask(...args); current = ownerB; return bytes }

@@ -1,4 +1,5 @@
 import type { NotificationUpdate } from '../src/shared/notification-contracts';
+import type { SkillLibraryQuery } from '../src/shared/skill-library';
 import type { PlanningRecordChange } from '../src/shared/auto-planning';
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 import type { ElectronAPI, UpdateState } from '../src/shared/ipc';
@@ -114,6 +115,7 @@ const electronAPI = {
   getConnectorState: (id: import('../src/shared/connectors').ConnectorId) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_STATE, id),
   connectConnector: (id: import('../src/shared/connectors').ConnectorId) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_CONNECT, id),
   connectQQMail: (credentials: import('../src/shared/connectors').QQMailCredentials) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_QQ_MAIL_CONNECT, credentials),
+  connectGitHub: (credentials: import('../src/shared/connectors').GitHubCredentials) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_GITHUB_CONNECT, credentials),
   disconnectConnector: (id: import('../src/shared/connectors').ConnectorId) => ipcRenderer.invoke(INVOKE_CHANNELS.CONNECTOR_DISCONNECT, id),
   cancelKnowledgeRequests: (requestIds: string[]) => ipcRenderer.invoke(INVOKE_CHANNELS.KNOWLEDGE_CANCEL, requestIds),
   getSpeechPermission: () => ipcRenderer.invoke(INVOKE_CHANNELS.SPEECH_PERMISSION),
@@ -154,7 +156,7 @@ const electronAPI = {
   },
   platform: runtimePlatform,
   windowChrome: { height: windowChromeConfig.contentTop, rightInset: windowChromeConfig.windowsRightInset },
-  listSkillLibrary: () => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_LIST),
+  listSkillLibrary: (input?: SkillLibraryQuery) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_LIST, input),
   rewriteLibrarySkill: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_REWRITE, input),
   cancelSkillRewrite: input => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_CANCEL_REWRITE, input),
   previewLibrarySkill: (input: { capabilityId: string; versionId: string }) => ipcRenderer.invoke(INVOKE_CHANNELS.SKILL_LIBRARY_PREVIEW, input),

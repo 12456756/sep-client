@@ -87,3 +87,24 @@ test('reference uploads, local commands and other tools retain explicit approval
     } finally { ui.cleanup() }
   }
 })
+
+test('manual browser handoff waits for completion and uses the existing expiry and cancellation', async () => {
+  for (const accepted of [true, false]) {
+    const ui = mount('mcp__playwright__browser_set_mode', { operation: 'manual-handoff' })
+    try {
+      const dialog = ui.feedback.getSnapshot()
+      assert.match(dialog!.message, /60 秒/)
+      assert.equal(dialog!.actionLabel, '已完成，继续')
+      assert.deepEqual(ui.decisions, [])
+      if (accepted) await ui.feedback.accept(dialog!.id)
+      else ui.feedback.dismiss(dialog!.id)
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.deepEqual(ui.decisions, [accepted])
+    } finally { ui.cleanup() }
+  }
+  const expired = mount('mcp__playwright__browser_set_mode', {}, Date.now() - 1)
+  try {
+    assert.deepEqual(expired.decisions, [false])
+    assert.equal(expired.feedback.getSnapshot(), null)
+  } finally { expired.cleanup() }
+})

@@ -10,6 +10,7 @@ export type SkillLoadErrorKind = 'rate-limited' | 'auth' | 'forbidden' | 'networ
 export interface SkillLoadFailureInput {
   message?: string;
   statusCode?: number;
+  retryAfterMs?: number;
 }
 
 export interface SkillLoadError {
@@ -17,6 +18,7 @@ export interface SkillLoadError {
   message: string;
   statusCode?: number;
   retryAfterSeconds?: number;
+  retryAt?: number;
 }
 
 export const DEFAULT_SKILL_RETRY_AFTER_SECONDS = 30;
@@ -37,7 +39,8 @@ export function classifySkillLoadError(input: SkillLoadFailureInput | unknown): 
   const statusCode = typeof value.statusCode === 'number' ? value.statusCode : undefined;
 
   if (statusCode === 429) {
-    const seconds = retryAfterSeconds(message);
+    const seconds = typeof value.retryAfterMs === 'number' && Number.isFinite(value.retryAfterMs) && value.retryAfterMs > 0
+      ? Math.ceil(value.retryAfterMs / 1000) : retryAfterSeconds(message);
     return { kind: 'rate-limited', message: formatSkillRateLimitMessage(seconds), statusCode, retryAfterSeconds: seconds };
   }
   if (statusCode === 401) return { kind: 'auth', message: '登录状态已过期，请重新登录。', statusCode };

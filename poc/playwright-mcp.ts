@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module'
 /** Real Pi + pinned Playwright MCP + local Edge; no SEP or external website. */
 import * as assert from 'node:assert/strict'
 import { createServer, type ServerResponse } from 'node:http'
@@ -7,7 +6,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { PiCodingAgentAdapter } from '../electron/pi/sdk/pi-coding-agent-adapter'
-import { createPlaywrightMcpServer } from '../electron/pi/sdk/pi-playwright-mcp'
 import type { PiAgentEvent, PiAgentSession } from '../electron/pi/sdk/pi-agent-runtime'
 
 function chunk(response: ServerResponse, delta: unknown, finishReason: string | null = null): void {
@@ -54,8 +52,12 @@ const server = createServer(async (request, response) => {
       action = { name: 'browser_click', input: { target: '#save' } }
     }
     if (requests === 6) action = { name: 'browser_snapshot', input: { target: '#result' } }
-    if (requests === 7) assert.match(String(results[5]?.content), /Saved: SEP MCP 123/)
-    assert.ok(requests <= 7, 'No unbounded tool retry loop')
+    if (requests === 7) {
+      assert.match(String(results[5]?.content), /Saved: SEP MCP 123/)
+      action = { name: 'browser_set_mode', input: { mode: 'visible' } }
+    }
+    if (requests === 8) assert.match(String(results[6]?.content), /Background browser ready/)
+    assert.ok(requests <= 8, 'No unbounded tool retry loop')
     response.writeHead(200, { 'content-type': 'text/event-stream' })
     if (action) {
       chunk(response, { role: 'assistant', tool_calls: [{ index: 0, id: `browser-call-${requests}`, type: 'function',
@@ -77,25 +79,19 @@ try {
   const address = server.address()
   assert.ok(address && typeof address !== 'string')
   base = `http://127.0.0.1:${address.port}`
-  const preset = createPlaywrightMcpServer()
-  assert.equal(preset.transport.type, 'stdio')
-  if (preset.transport.type !== 'stdio') throw new Error('Expected stdio preset')
-  const electronPath = createRequire(import.meta.url)('electron') as string
   session = await new PiCodingAgentAdapter().createSession({
     runId: randomUUID(), workspaceDir: root, agentDir: join(root, 'agent'), sessionDir: join(root, 'sessions'),
     modelId: 'test', gatewayUrl: `${base}/v1`, getAccessToken: async () => 'local-fixture-token',
     authorizeTool: async () => { approvals++; return true },
-    mcpServers: [{ ...preset, transport: { ...preset.transport, command: electronPath,
-      args: [...preset.transport.args!, '--headless'] } }],
   })
   session.subscribe(event => events.push(event))
   await session.prompt('Use the local test form and verify the saved result.')
   if (failure) throw failure
-  assert.equal(requests, 7)
-  assert.equal(approvals, 6)
+  assert.equal(requests, 8)
+  assert.equal(approvals, 7)
   assert.equal(events.filter(event => event.type === 'tool_execution_end' && !(event.data as { success: boolean }).success).length, 1)
   assert.equal(events.some(event => event.type === 'auto_retry_start'), false)
-  process.stdout.write('PASS: real browser navigation/input/click/snapshot, long context, error feedback, approvals and no automatic retries.\n')
+  process.stdout.write('PASS: default headless browser navigation/input/click/snapshot, long context, error feedback, manual window/completion/background, approvals and no automatic retries.\n')
 } finally {
   await session?.dispose()
   server.closeAllConnections()

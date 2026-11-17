@@ -33,7 +33,7 @@ async function fixture(skills: unknown[], listError?: Error, listedVersions = [p
     versions, submissions: new SkillSubmissionStore(root),
     platform: {
       // Deliberately include invalid platform payloads to exercise the runtime boundary.
-      skills: async () => ({ subscriptionId: 'sub', skills }),
+      skills: async () => { if (listError) throw listError; return { subscriptionId: 'sub', skills } },
       list: async input => {
         if (listError) throw listError
         return listedVersions.filter(version => version.capabilityId === input.capabilityId)

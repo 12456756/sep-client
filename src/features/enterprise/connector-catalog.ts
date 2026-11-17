@@ -4,6 +4,7 @@ import wecomLogo from '../../assets/wecom.ico';
 import tmeetLogo from '../../assets/tencent-meeting.ico';
 import qqMailLogo from '../../assets/qq-mail.ico';
 import kdocsLogo from '../../assets/kdocs.png';
+import githubLogo from '../../assets/github.png';
 import type { ConnectorId } from '../../shared/connectors';
 
 export interface ConnectorDefinition {
@@ -17,6 +18,16 @@ export interface ConnectorDefinition {
 }
 
 export const CONNECTOR_CATALOG: readonly ConnectorDefinition[] = [
+  {
+    id: 'github', name: 'GitHub', category: '研发协作', description: '仓库、代码、Issue 与 Pull Request',
+    logoUrl: githubLogo, authorizationAvailable: true,
+    capabilities: [
+      { name: '仓库与代码', description: '搜索有权访问的仓库和代码，读取文件与目录。' },
+      { name: '分支与提交', description: '查看分支、提交记录和提交详情。' },
+      { name: 'Issue 协作', description: '搜索和阅读 Issue；启用写入后可创建、更新和评论。' },
+      { name: 'Pull Request', description: '查询 PR 详情、差异与评审；启用写入后可创建 PR。' },
+    ],
+  },
   {
     id: 'kdocs', name: '金山文档', category: '云文档', description: '云文档检索、编辑与表格读写',
     logoUrl: kdocsLogo, authorizationAvailable: true,

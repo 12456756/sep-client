@@ -1,7 +1,7 @@
 import { canUseSkillVersion } from '../../common/platform/skill-version-policy'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve, toNamespacedPath } from 'node:path'
 import type { SkillVersionStore } from '../../data/skill-version-store'
 import { WriteChain } from '../../data/write-chain'
 import { getEmployeeSkills, previewSkill, type SkillVersion } from '../../common/platform/platform-api'
@@ -51,6 +51,16 @@ type SkillMetadata = z.infer<typeof metadataSchema>['skills'][number]
 
 function checkCurrent(input: SkillStoreRequest): void {
   if (input.isCurrent && !input.isCurrent()) throw new Error('Employee preparation scope changed.')
+}
+
+async function createSkillStagingDirectory(parent: string, prefix = '.staging-'): Promise<string> {
+  assertSkillPathParents(parent)
+  await mkdir(parent, { recursive: true, mode: 0o700 })
+  assertSkillPathParents(parent)
+  // Keep staging outside version directories; mkdtemp needs explicit long-path support on Windows.
+  const temporary = await mkdtemp(toNamespacedPath(join(parent, prefix)))
+  // Integrity checks and snapshots use ordinary absolute paths.
+  return join(parent, basename(temporary))
 }
 
 export async function publishSkillDirectory(
@@ -135,6 +145,25 @@ function approvedEntry(bytes: Buffer, artifact: SkillArtifactAvailable, approved
 
 const preparations = new WriteChain()
 
+async function reuseTextSkill(target: string, content: Buffer, manifest: Buffer): Promise<boolean> {
+  assertSkillPathParents(target)
+  let directory: Awaited<ReturnType<typeof lstat>>
+  try { directory = await lstat(target) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    throw error
+  }
+  try {
+    if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error()
+    for (const [name, expected] of [['SKILL.md', content], ['manifest.json', manifest]] as const) {
+      const path = join(target, name)
+      const file = await lstat(path)
+      if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || !(await readFile(path)).equals(expected)) throw new Error()
+    }
+  } catch { throw new Error('Immutable skill entry integrity mismatch.') }
+  return true
+}
+
 async function reusePackage(packageRoot: string, entryPath: string, cache: Buffer): Promise<boolean> {
   assertSkillPathParents(packageRoot)
   let directory: Awaited<ReturnType<typeof lstat>>
@@ -184,9 +213,7 @@ export class SkillStore {
     checkCurrent(input)
     const entry = approvedEntry(bytes, artifact, content)
     if (!cached) {
-      await mkdir(parent, { recursive: true, mode: 0o700 })
-      assertSkillPathParents(parent)
-      const temporary = await mkdtemp(join(parent, '.artifact-'))
+      const temporary = await createSkillStagingDirectory(parent, '.artifact-')
       try {
         await writeFile(join(temporary, 'package'), bytes, { mode: 0o600, flag: 'wx' })
         checkCurrent(input)
@@ -289,7 +316,7 @@ export class SkillStore {
             : entry.files
           const cache = Buffer.from(JSON.stringify({ ...snapshot, ...packageCache(installedFiles, artifact.entryPath) }))
           if (!await reusePackage(packageRoot, artifact.entryPath, cache)) {
-            const temporary = await mkdtemp(join(parent, '.staging-'))
+            const temporary = await createSkillStagingDirectory(dirname(parent))
             try {
               for (const file of installedFiles) {
                 const path = join(temporary, file.path)
@@ -374,8 +401,8 @@ export class SkillStore {
       const versionId = activeVersion?.versionId ?? platform?.versionId ?? `platform-${skill.currentVersion.id}`
       const version = activeVersion?.version ?? platform?.version ?? skill.currentVersion.version
       const sha256 = createHash('sha256').update(entry.content).digest('hex')
-      const versionKey = createHash('sha256').update(JSON.stringify([versionId, version])).digest('hex')
-      const parent = join(skillRoot, safeSegment(skill.capability.id), `${versionKey}-${sha256}`)
+      const versionKey = createHash('sha256').update(JSON.stringify([versionId, version, sha256])).digest('hex')
+      const parent = join(skillRoot, safeSegment(skill.capability.id), versionKey)
       const target = join(parent, entry.name)
       const snapshot: PreparedEmployeeSkill = {
         capabilityId: skill.capability.id, versionId,
@@ -384,21 +411,25 @@ export class SkillStore {
         name: entry.name, description: entry.description, content: entry.content, sha256, path: target,
       }
       checkCurrent(input)
-      assertSkillPathParents(parent)
-      await mkdir(parent, { recursive: true })
-      assertSkillPathParents(parent)
-      const temporary = await mkdtemp(join(parent, '.staging-'))
-      try {
-        await writeFile(join(temporary, 'SKILL.md'), entry.content, { encoding: 'utf8', mode: 0o600 })
-        await writeFile(join(temporary, 'manifest.json'), JSON.stringify(snapshot), { encoding: 'utf8', mode: 0o600 })
+      const contentBytes = Buffer.from(entry.content, 'utf8')
+      const manifest = Buffer.from(JSON.stringify(snapshot), 'utf8')
+      if (!await reuseTextSkill(target, contentBytes, manifest)) {
         checkCurrent(input)
-        await publishSkillDirectory(temporary, target, async () => {
-          const existing = await readFile(join(target, 'SKILL.md'), 'utf8')
-          if (existing !== entry.content) throw new Error('Immutable skill entry integrity mismatch.')
-        })
-      } finally {
-        // Only this operation's private staging tree can be deleted; published paths stay alive.
-        await rm(temporary, { recursive: true, force: true })
+        assertSkillPathParents(parent)
+        await mkdir(parent, { recursive: true })
+        assertSkillPathParents(parent)
+        const temporary = await createSkillStagingDirectory(dirname(parent))
+        try {
+          await writeFile(join(temporary, 'SKILL.md'), contentBytes, { mode: 0o600 })
+          await writeFile(join(temporary, 'manifest.json'), manifest, { mode: 0o600 })
+          checkCurrent(input)
+          await publishSkillDirectory(temporary, target, async () => {
+            if (!await reuseTextSkill(target, contentBytes, manifest)) throw new Error('Immutable skill entry integrity mismatch.')
+          })
+        } finally {
+          // Only this operation's private staging tree can be deleted; published paths stay alive.
+          await rm(temporary, { recursive: true, force: true })
+        }
       }
       checkCurrent(input)
       if (scope && this.versions && platform && isAutomaticSelection) {

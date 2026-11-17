@@ -4,6 +4,7 @@ import { readFile, writeFile, mkdir, copyFile, chmod, mkdtemp, rm } from 'node:f
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { prepareDevelopmentAssets } from './dev-assets-cache.mjs'
 
 const require = createRequire(import.meta.url)
 const packageRoot = dirname(require.resolve('@wecom/cli/package.json'))
@@ -45,4 +46,13 @@ export async function afterWecomPack(context) {
     : join(context.appOutDir, 'resources')
   await prepareWecom(join(resources, 'wecom'), context.electronPlatformName, arch)
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await prepareWecom(join(packageRoot, 'bin'))
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const directory = join(packageRoot, 'bin')
+  await prepareDevelopmentAssets({ directory,
+    sources: [join(packageRoot, 'package.json'), join(packageRoot, 'LICENSE'),
+      join(packageRoot, 'assets', `cli-${process.platform}-${process.arch}-${pinned.version}.tgz`),
+      fileURLToPath(new URL('../resources/wecom/manifest.json', import.meta.url))],
+    outputs: [process.platform === 'win32' ? 'wecom-cli.exe' : 'wecom-cli', 'LICENSE'],
+    prepare: () => prepareWecom(directory),
+  })
+}

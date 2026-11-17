@@ -53,8 +53,9 @@ import {
   requiresToolApproval,
 } from '../../../pi-extension'
 import { logger } from '../../common/logger'
-import { createMcpRuntime, type McpRuntime } from './pi-mcp-client'
-import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES } from './pi-playwright-mcp'
+import type { McpRuntime } from './pi-mcp-client'
+import { BROWSER_MODE_TOOL, createHostMcpRuntime } from './pi-browser-runtime'
+import { loadHostMcpServers, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
 import { buildEmployeeSystemPrompt } from './employee-system-prompt'
 import { GatewayRetryWait } from './gateway-retry-wait'
 import { buildModelRequestAwareness, ModelRequestTracker, type ModelRequestSnapshot } from './model-request-tracker'
@@ -696,8 +697,8 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
 
   const mcpExtension: ExtensionFactory = pi => {
     for (const tool of mcp.tools) {
-      pi.registerTool(tool.name === 'mcp__playwright__browser_snapshot'
-        ? { ...tool, promptGuidelines: PLAYWRIGHT_GUIDELINES } : tool)
+      const promptSnippet = PLAYWRIGHT_TOOL_SNIPPETS[tool.name]
+      pi.registerTool(promptSnippet ? { ...tool, promptSnippet } : tool)
     }
     pi.on('tool_result', event => {
       if (!mcp.permissions.has(event.toolName)) return
@@ -740,6 +741,10 @@ export function buildExtensions(config: PiAgentSessionConfig, mcp: McpRuntime): 
         if (!decision.requiresApproval) return { block: false }
         const approved = await config.authorizeTool({ toolName, input: redactValue({ command: decision.args }) })
         return { block: !approved, ...(approved ? {} : { reason: 'User denied Office document modification.' }) }
+      }
+      if (toolName === BROWSER_MODE_TOOL && mcp.builtinBrowser && pi.getActiveTools().includes(toolName)) {
+        // The host opens the window first, then waits for actual human completion.
+        return { block: false }
       }
       if (toolPolicy && isUnrestrictedToolPolicy(toolPolicy)) {
         // In the explicit highest-permission mode, the policy is no longer a
@@ -1108,8 +1113,10 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
       await config.reportPolicyEvent?.('common_skill_unavailable', { skillId: 'officecli', reason })
     }
     const connector = canUseMcp ? config.connectorBinding : undefined
-    const baseMcp = attachConnectorTools(await createMcpRuntime([...servers, ...(connector?.servers ?? [])], config.workspaceDir,
-      connector ? new Map(connector.servers.map(server => [server.name, connector.fetch])) : undefined), connector, config.workspaceDir)
+    const builtinBrowser = canUseMcp && config.mcpServers === undefined && !process.env.SEP_MCP_CONFIG && process.env.SEP_PLAYWRIGHT_MCP !== '0'
+    const baseMcp = attachConnectorTools(await createHostMcpRuntime([...servers, ...(connector?.servers ?? [])], config.workspaceDir, builtinBrowser,
+      connector ? new Map(connector.servers.map(server => [server.name, connector.fetch])) : undefined,
+      () => config.authorizeTool({ toolName: BROWSER_MODE_TOOL, input: { operation: 'manual-handoff' } })), connector, config.workspaceDir)
     const attached = await attachOfficeRuntime(baseMcp, common, config).catch(async error => {
       await baseMcp.dispose()
       throw error
@@ -1123,6 +1130,10 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
     } }
     try {
       const employeePrompt = !config.useNativeSystemPrompt && config.employeeProfile ? buildEmployeeSystemPrompt(config.employeeProfile) : undefined
+      // Append once for both native and custom prompts; the SDK skips tool guidelines for custom prompts.
+      const browserPrompt = mcp.tools.some(tool => tool.name === 'mcp__playwright__browser_snapshot')
+        ? ['浏览器使用规则：', ...PLAYWRIGHT_GUIDELINES, ...(mcp.builtinBrowser ? PLAYWRIGHT_HANDOFF_GUIDELINES : [])].join('\n')
+        : undefined
       const resourceLoader = new DefaultResourceLoader({
         cwd: config.workspaceDir,
         agentDir: config.agentDir,
@@ -1141,8 +1152,9 @@ export class PiCodingAgentAdapter implements PiAgentRuntime {
         // Native mode also bypasses discovered SYSTEM.md overrides; employee chats keep literal overrides.
         systemPromptOverride: config.useNativeSystemPrompt ? () => undefined
           : config.systemPrompt === undefined ? undefined : () => config.systemPrompt,
-        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || common.unavailable.length
+        appendSystemPromptOverride: employeePrompt || config.fixedSystemPrompt || browserPrompt || common.unavailable.length
           ? base => [...base, ...(employeePrompt ? [employeePrompt] : []), ...(config.fixedSystemPrompt ? [config.fixedSystemPrompt] : []),
+            ...(browserPrompt ? [browserPrompt] : []),
             ...(common.unavailable.length ? ['The built-in Office capability is unavailable for this session. Do not claim it was used or install another executable.'] : [])]
           : undefined,
       })

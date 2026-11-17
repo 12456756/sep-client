@@ -108,7 +108,7 @@ export async function attachOfficeRuntime(
     },
   }))
   let closing: Promise<void> | undefined
-  return { enabled: true, runtime: { builtinOffice: true, tools: [...base.tools, ...tools],
+  return { enabled: true, runtime: { ...base, builtinOffice: true, tools: [...base.tools, ...tools],
     permissions: new Map([...base.permissions, [OFFICE_TOOL_NAME, 'confirm-each' as const]]),
     dispose: () => closing ??= Promise.all([base.dispose(), closeOffice()]).then(() => undefined) } }
 }
