@@ -1,6 +1,6 @@
 import { Children, isValidElement, memo, useEffect, useRef, useState, type ReactNode } from 'react';
 import Markdown, { type Components } from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { messageRemarkPlugins } from '../../features/enterprise/message-markdown';
 
 const COPY_FEEDBACK_MS = 2500;
 
@@ -52,11 +52,10 @@ const components: Components = {
     <pre tabIndex={0}>{children}</pre>
   </div>,
 };
-const remarkPlugins = [remarkGfm];
 const safeUrl = (url: string): string => /^https?:\/\//i.test(url) ? url : '';
 
 export const MessageContent = memo(function MessageContent({ content }: MessageContentProps) {
   return <div className="ent-markdown">
-    <Markdown skipHtml remarkPlugins={remarkPlugins} components={components} urlTransform={safeUrl}>{content}</Markdown>
+    <Markdown skipHtml remarkPlugins={messageRemarkPlugins} components={components} urlTransform={safeUrl}>{content}</Markdown>
   </div>;
 });

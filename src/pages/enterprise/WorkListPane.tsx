@@ -1,5 +1,7 @@
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, CircleAlert, CircleCheck, CircleHelp, Layers, ListFilter, LoaderCircle, MessageSquare, MoreHorizontal, Pin, Plus, RotateCcw, Search, Square, Workflow, X } from 'lucide-react'
+import { memo } from 'react'
 import { IconHint } from '../../components/enterprise/IconHint'
+import { messageSummary } from '../../features/enterprise/message-markdown'
 import { WorkStatusIcon, WorkTypeTag, workStatusLabel, workTypeLabel } from '../../components/enterprise/WorkIndicators'
 import type { WorkItem } from '../../features/enterprise/types'
 import { countWorkRecordStatuses, countWorkRecordTypes, countUnresolvedWorkRecordTypes, type WorkRecordBucket, type WorkRecordFilterState, type WorkRecordTypeFilter } from '../../features/enterprise/work-record-filters'
@@ -19,6 +21,10 @@ const TYPES: { id: WorkRecordTypeFilter; label: string; icon: typeof Layers }[] 
   { id: 'conversation', label: '会话', icon: MessageSquare },
   { id: 'arrangement', label: '编排', icon: Workflow },
 ]
+
+const WorkSummary = memo(function WorkSummary({ content }: { content: string }) {
+  return <span className="ent-work-row-summary">{messageSummary(content)}</span>
+})
 
 interface Props {
   works: WorkItem[]
@@ -60,7 +66,7 @@ export function WorkListPane({ works, records, pagination, selectedWorkId, filte
           onContextMenu={event => { event.preventDefault(); onWorkMenu(work.id, event.currentTarget, { x: event.clientX, y: event.clientY }) }}
           onKeyDown={event => { if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') { event.preventDefault(); onWorkMenu(work.id, event.currentTarget) } }}>
         <WorkStatusIcon work={work} focusable={false} />
-        <span className="ent-work-row-body"><span className="ent-work-row-title"><strong>{work.title || '未命名工作'}</strong>{work.pinnedAt ? <span className="ent-work-pinned" role="img" aria-label="已置顶"><Pin size={12} aria-hidden /></span> : null}<WorkTypeTag workType={work.workType} focusable={false} /></span><span className="ent-work-row-summary">{work.nextUserAction || work.messages.at(-1)?.content || work.goal || '尚无消息'}</span><span className="ent-work-row-meta"><span>{work.currentEmployeeName || '待分配员工'}</span><time>{relativeTime(work.updatedAt)}</time></span></span>
+        <span className="ent-work-row-body"><span className="ent-work-row-title"><strong>{work.title || '未命名工作'}</strong>{work.pinnedAt ? <span className="ent-work-pinned" role="img" aria-label="已置顶"><Pin size={12} aria-hidden /></span> : null}<WorkTypeTag workType={work.workType} focusable={false} /></span><WorkSummary content={work.nextUserAction || work.messages.at(-1)?.content || work.goal || '尚无消息'} /><span className="ent-work-row-meta"><span>{work.currentEmployeeName || '待分配员工'}</span><time>{relativeTime(work.updatedAt)}</time></span></span>
         </button>
         <IconHint label="更多操作"><button type="button" className="ent-work-row-menu" aria-label={`更多操作：${work.title || '未命名工作'}`} aria-haspopup="menu" aria-expanded={menuWorkId === work.id} aria-controls={menuWorkId === work.id ? 'ent-work-context-menu' : undefined} onClick={event => onWorkMenu(work.id, event.currentTarget)}><MoreHorizontal size={16} aria-hidden /></button></IconHint>
       </div>)}
