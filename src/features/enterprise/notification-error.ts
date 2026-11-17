@@ -3,6 +3,10 @@ export function notificationErrorMessage(error: unknown, operation: 'read' | 'mu
   const failure = error && typeof error === 'object' ? error as { statusCode?: number; code?: string } : {}
   if (failure.statusCode === 429 || failure.code === 'RATE_LIMITED') return '通知请求较多，请稍后重试。'
   if (failure.statusCode === 401 || failure.code === 'AUTH_REQUIRED') return '登录状态已过期，请重新登录。'
+  if (failure.statusCode === 403 || failure.code === 'PERMISSION_DENIED') return '当前账号没有此通知操作的权限，请联系平台管理员。'
+  if (failure.statusCode === 408) return '通知服务连接超时，请稍后重试。'
+  if (failure.statusCode === 0 || failure.code === 'NETWORK_ERROR') return '通知服务连接失败，请检查网络后重试。'
+  if (failure.statusCode !== undefined && failure.statusCode >= 500 || failure.code === 'SERVICE_UNAVAILABLE') return '通知服务暂时不可用，请稍后重试。'
   const message = error instanceof Error ? error.message : ''
   if (/No handler registered for ['"]notifications:/.test(message)) {
     return '通知服务已更新，请重启客户端后查看。'

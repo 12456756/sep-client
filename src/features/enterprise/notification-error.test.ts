@@ -4,6 +4,13 @@ import { notificationCooldownDelay, notificationErrorMessage, notificationRetryD
 import { assertNotificationCommand } from './notification-state'
 
 describe('notification user-facing errors', () => {
+  it('explains permission, transport and service failures without exposing backend messages', () => {
+    assert.match(notificationErrorMessage({ code: 'PERMISSION_DENIED', statusCode: 403 }), /权限/)
+    assert.doesNotMatch(notificationErrorMessage({ statusCode: 403 }), /登录/)
+    assert.match(notificationErrorMessage({ code: 'NETWORK_ERROR', message: 'private' }), /网络/)
+    assert.match(notificationErrorMessage({ statusCode: 408 }), /超时/)
+    assert.match(notificationErrorMessage({ statusCode: 503 }), /暂时不可用/)
+  })
   it('preserves IPC rate-limit metadata and explains the actual failure', () => {
     let failure: unknown
     try { assertNotificationCommand({ success: false, error: { code: 'RATE_LIMITED', statusCode: 429, message: 'safe message', retryAfterMs: 65_000 } }) } catch (error) { failure = error }
