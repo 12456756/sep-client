@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { connectorStateSchema, type ConnectorState, type ConnectorId, type QQMailCredentials } from '../../shared/connectors';
+import { connectorStateSchema, type ConnectorCredentials, type ConnectorState, type ConnectorId } from '../../shared/connectors';
 
 export function useConnectors(id: ConnectorId = 'dingtalk') {
   const [state, setState] = useState<ConnectorState>({ id, status: 'disconnected' });
@@ -34,18 +34,21 @@ export function useConnectors(id: ConnectorId = 'dingtalk') {
     timer = window.setTimeout(() => { void poll(); }, delay);
     return () => { stopped = true; window.clearTimeout(timer); };
   }, [state.status, refresh]);
-  const act = async (action: 'connect' | 'disconnect', credentials?: QQMailCredentials): Promise<boolean> => {
+  const act = async (action: 'connect' | 'disconnect', credentials?: ConnectorCredentials): Promise<boolean> => {
     if (acting.current || !available) return false;
     acting.current = true;
     sequence.current++;
     setBusy(true); setError(undefined);
     try {
-      const result = await (action === 'connect' ? id === 'qqmail' && credentials ? window.electronAPI.connectQQMail(credentials) : window.electronAPI.connectConnector(id) : window.electronAPI.disconnectConnector(id));
+      const result = await (action === 'disconnect' ? window.electronAPI.disconnectConnector(id)
+        : id === 'github' && credentials && 'token' in credentials ? window.electronAPI.connectGitHub(credentials)
+        : id === 'qqmail' && credentials && 'email' in credentials ? window.electronAPI.connectQQMail(credentials)
+        : window.electronAPI.connectConnector(id));
       if (!result.success) throw new Error(result.error?.message || '操作失败，请重试');
       await refresh();
       return mounted.current;
     } catch (cause) { await refresh(); if (mounted.current) setError(cause instanceof Error ? cause.message : '操作失败，请重试'); return false; }
     finally { acting.current = false; if (mounted.current) setBusy(false); }
   };
-  return { state, loading, busy, available, error, refresh, connect: (credentials?: QQMailCredentials) => act('connect', credentials), disconnect: () => act('disconnect') };
+  return { state, loading, busy, available, error, refresh, connect: (credentials?: ConnectorCredentials) => act('connect', credentials), disconnect: () => act('disconnect') };
 }

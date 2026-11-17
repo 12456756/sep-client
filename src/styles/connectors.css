@@ -1,4 +1,8 @@
 .connectors-page { min-width: 0; }
+.github-token-link { display: inline-block; margin-top: 8px; color: inherit; text-underline-offset: 3px; }
+.github-write-option { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; line-height: 1.6; }
+.github-write-option input { flex: 0 0 auto; margin: 4px 0 0; accent-color: #b53636; }
+.github-verifying { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; font-size: 13px; }
 .qqmail-dialog-icon { color: var(--ent-ink-2); }
 .qqmail-verifying { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; color: var(--ent-ink-3); font-size: 13px; }
 .connector-card footer > span { overflow-wrap: anywhere; min-width: 0; }

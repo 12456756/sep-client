@@ -48,6 +48,10 @@ export function createConnectorRegistry(options: {
   }
   const managed = (runtime: ConnectorRuntimePort, dependency: ConnectorDependencyPort): ConnectorRuntimePort => new ManagedConnector(runtime, dependency, currentScope)
   return new ConnectorRegistry({
+    github: async () => {
+      const { GitHubWorkspaceRuntime } = await import('../runtime/github-workspace')
+      return new GitHubWorkspaceRuntime({ store: new ConnectorStore(userDataDir, encryption, 'github'), currentScope, request: options.request })
+    },
     kdocs: async () => {
       const { KdocsWorkspaceRuntime } = await import('../runtime/kdocs-workspace')
       return new KdocsWorkspaceRuntime({ store: new ConnectorStore(userDataDir, encryption, 'kdocs'), currentScope, open })
