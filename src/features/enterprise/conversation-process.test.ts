@@ -13,6 +13,9 @@ import * as transcript from './conversation-transcript'
 import { buildConversationTranscript } from './conversation-transcript'
 import type { WorkItem, WorkMessage } from './types'
 import type { TaskExecutionEvent } from '../../shared/types'
+import * as conversationResults from './conversation-results'
+import { ResultFileCard } from '../../components/workspace/ResultFileCard'
+import { FeedbackProvider } from '../../components/feedback/FeedbackProvider'
 
 const filename = fileURLToPath(new URL('../../components/enterprise/ConversationMessages.tsx', import.meta.url))
 const dependencies: Record<string, unknown> = {
@@ -22,6 +25,10 @@ const dependencies: Record<string, unknown> = {
   './ConversationProcess': { ConversationProcessView },
   './EmployeeFace': { EmployeeFace: () => null },
   './MessageContent': { MessageContent: ({ content }: { content: string }) => React.createElement('div', null, content) },
+  '../../features/enterprise/conversation-media': {},
+  '../../features/enterprise/conversation-results': conversationResults,
+  '../workspace/ResultFileCard': { ResultFileCard },
+  '../workspace/result-file-card.css': {},
 }
 const componentModule = { exports: {} }
 compileFunction(ts.transpileModule(readFileSync(filename, 'utf8'), { compilerOptions: {
@@ -99,4 +106,27 @@ test('keeps image preview space and dimensions visible while preserving ordinary
   assert.match(html, /图片加载中/)
   assert.match(html, /brief.pdf/)
   assert.match(html, /2 KB/)
+})
+
+test('places generated document and media cards after their reply text and before its timestamp', () => {
+  const work = { id: 'task', currentEmployeeId: 'employee', currentEmployeeName: '电商分析师', createdAt: 1, updatedAt: 2,
+    messages: [{ id: 'reply', role: 'employee', content: '文件已保存：销售总结.md', createdAt: 2, runId: 'run' }],
+    deliverables: [{ id: 'task-file-0', name: '销售总结.md', path: '成果/task/销售总结.md', note: '', format: 'md' }] } as WorkItem
+  const previousReact = Reflect.get(globalThis, 'React')
+  Object.defineProperty(globalThis, 'React', { configurable: true, value: React })
+  let html: string
+  try {
+    html = renderToStaticMarkup(React.createElement(FeedbackProvider, null, React.createElement(ConversationMessagesView, {
+      work, employees: [], preparing: false, runs: [], loading: false, error: null, onReload() {},
+      media: [{ runId: 'run', file: { id: 'image', name: '产品图.png', format: 'png', path: '', note: '', sourceArtifact: { kind: 'image', artifactId: 'image', sha256: '' } }, request: { taskId: 'task', assetId: 'image' } }],
+    })))
+  } finally {
+    if (previousReact === undefined) Reflect.deleteProperty(globalThis, 'React')
+    else Object.defineProperty(globalThis, 'React', { configurable: true, value: previousReact })
+  }
+  assert.ok(html.indexOf('文件已保存') < html.indexOf('ent-conversation-results'))
+  assert.ok(html.indexOf('ent-conversation-results') < html.indexOf('ent-message-time'))
+  assert.match(html, /预览文档：销售总结.md/)
+  assert.match(html, /result-file-card-media/)
+  assert.equal((html.match(/aria-label="产物 /g) ?? []).length, 2)
 })

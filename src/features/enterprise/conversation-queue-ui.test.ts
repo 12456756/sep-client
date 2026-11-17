@@ -30,7 +30,6 @@ const dependencies: Record<string, unknown> = {
   '../../features/enterprise/general-assistant': { GENERAL_ASSISTANT_ID: 'general' },
   './KnowledgeSelector': { KnowledgeSelector: empty },
   '../../shared/knowledge-selection': { noKnowledgeSelection: () => ({ mode: 'none', knowledgeBaseIds: [] }) },
-  '../../features/enterprise/conversation-media': { ConversationMedia: empty },
   '../../features/enterprise/use-conversation-queue': { useConversationQueue: () => ({ queue, busy: false, async refresh() {}, async resume() {}, async prioritize() {} }) },
   './ConversationMessages': { ConversationMessages: empty },
 }
