@@ -262,6 +262,10 @@ export class MockVideoHostService {
       configVersion !== undefined && configVersion !== profile.configVersion || !profile.operations.includes(input.operation)) {
       throw new AppError('PERMISSION_DENIED')
     }
+    const referenceRule = input.operation === 'image-to-video' ? profile.referenceRules?.find(rule => rule.operation === input.operation) : undefined
+    if (referenceRule && (input.localAssetIds.length < referenceRule.minCount || input.localAssetIds.length > referenceRule.maxCount)) {
+      throw new AppError('INVALID_ARGUMENT', { details: { field: 'localAssetIds', source: 'platform' } })
+    }
     if (input.localAssetIds.length > profile.capabilities.maxReferenceCount) throw new AppError('ADAPTER_FIELD_UNMAPPED', { details: { field: 'localAssetIds', source: 'adapter' } })
     if (runtime.protocolVersion === 3 && input.protocolVersion !== 3) throw new AppError('MISSING_SPEC', { details: { field: 'specRevision', source: 'client' } })
     if (input.protocolVersion === 3) {
@@ -514,8 +518,11 @@ export class MockVideoHostService {
             if (createHash('sha256').update(reference.bytes).digest('hex') !== reference.sha256) throw new AppError('INVALID_ARGUMENT')
             references.push({ ...reference, localAssetId: id, mime: inspected.mime, size: reference.bytes.byteLength, status: 'SAVED' })
           }
+          const rule = profile.referenceRules?.find(entry => entry.operation === input.operation)
           const problem = mediaReferenceProblem(references, profile.referenceSupport ?? {
-            maxCount: Math.min(1, profile.capabilities.maxReferenceCount), maxInputBytes: profile.capabilities.maxInputBytes, mimeTypes: ['image/png'],
+            maxCount: Math.min(profile.capabilities.maxReferenceCount, rule?.maxCount ?? profile.capabilities.maxReferenceCount),
+            maxInputBytes: Math.min(profile.capabilities.maxInputBytes, rule?.maxInputBytes ?? profile.capabilities.maxInputBytes),
+            mimeTypes: rule ? rule.mimeTypes.filter(mime => mime === 'image/png') : ['image/png'],
           })
           if (problem) throw new AppError('INVALID_ARGUMENT', { message: problem })
           for (const reference of references) {

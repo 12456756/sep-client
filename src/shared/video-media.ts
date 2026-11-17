@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { mediaSpecMetadataSchema, mediaSpecsEqual, videoActualSpecSchema, videoRequestedSpecSchema, type VideoRequestedSpec } from './media-spec-contract'
-import { MAX_MEDIA_REFERENCES, mediaReferenceSupportSchema, type MediaReferenceSupport } from './media-references'
+import { MAX_MEDIA_REFERENCE_BYTES, MAX_MEDIA_REFERENCES, mediaReferenceSupportSchema, type MediaReferenceSupport } from './media-references'
 import { mediaUpstreamErrorSchema } from './media-upstream-error'
 import { readSepRuntimeV3Metadata, sepRuntimeV3ProfileMetadata, sepRuntimeV3Schema, type SepRuntimeV3ProfileMetadata } from './sep-runtime-v3-contract'
 
@@ -213,19 +213,25 @@ const currentSepVideoRuntimeSchema = sepRuntimeV3Schema('video').transform((runt
     const operations = profile.operations.filter((op): op is VideoOperation => profile.adapter.operations.includes(op)
       && (op === 'text-to-video' && runtime.tools.includes('video_generate')
         || op === 'image-to-video' && runtime.tools.includes('video_from_image')
-          && !!reference && reference.maxCount >= 1 && reference.minCount <= 1 && reference.mimeTypes.includes('image/png')))
+          && !!reference && reference.maxCount >= 1 && reference.minCount <= MAX_MEDIA_REFERENCES && reference.mimeTypes.includes('image/png')))
     if (!operations.length) return []
+    const referenceSupport = reference && operations.includes('image-to-video') ? {
+      maxCount: Math.min(MAX_MEDIA_REFERENCES, reference.maxCount),
+      maxInputBytes: Math.min(MAX_MEDIA_REFERENCE_BYTES, reference.maxInputBytes),
+      mimeTypes: reference.mimeTypes.filter(mime => mime === 'image/png'),
+    } : undefined
     const audioModes = [...new Set(profile.parameters.audio?.values?.filter((value): value is boolean => typeof value === 'boolean') ?? [])]
     return [{ profileId: profile.profileId, configVersion: profile.configVersion, kind: 'video' as const,
       displayName: profile.displayName, executionMode: 'async-query' as const, operations,
       capabilities: {
         supportsTextToVideo: operations.includes('text-to-video'), supportsImageToVideo: operations.includes('image-to-video'),
         supportsAudio: audioModes.includes(true), audioModes, durationsSeconds: [], aspectRatios: [], resolutions: [],
-        frameRates: [], outputFormats: [], maxInputBytes: Math.min(100 * 1024 * 1024, reference?.maxInputBytes ?? 0),
-        maxReferenceCount: operations.includes('image-to-video') ? 1 : 0, supportsTaskQuery: true,
+        frameRates: [], outputFormats: [], maxInputBytes: referenceSupport?.maxInputBytes ?? 0,
+        maxReferenceCount: referenceSupport?.maxCount ?? 0, supportsTaskQuery: true,
         supportsCancel: profile.adapter.supportsCancel, resultRetentionSeconds: 24 * 60 * 60,
       },
       adapterId: profile.adapter.id, adapterVersion: profile.adapter.version, capabilityHints: [],
+      ...(referenceSupport ? { referenceSupport } : {}),
       ...readSepRuntimeV3Metadata(profile),
     }]
   })

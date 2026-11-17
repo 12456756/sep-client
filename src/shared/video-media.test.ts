@@ -3,7 +3,35 @@ import { createHash } from 'node:crypto'
 import { test } from 'node:test'
 import * as fixture from './fixtures/media-video-v1.json'
 import * as v2Fixture from './fixtures/media-video-v2.json'
+import { sepRuntimeV3Fixture } from './fixtures/sep-media-runtime-v3'
 import { videoAllowedAudioModes, videoOutputSchema, videoProfileSchema, videoReceiptSchema, videoRequestSchema, videoRequestWithIdentitySchema, videoRuntimeSchema, videoQuoteResponseSchema } from './video-media'
+
+for (const maxCount of [9, 30, 40]) test(`current V3 video retains operation reference limits up to ${maxCount}`, () => {
+  const runtime = sepRuntimeV3Fixture('video')
+  const profile = runtime.profiles[0]!
+  profile.adapter.referenceSupport.maxCount = maxCount + 1
+  profile.referenceRules[1]!.maxCount = maxCount
+  profile.referenceRules[1]!.maxInputBytes = 2048
+  const parsed = videoRuntimeSchema.parse(runtime)
+  const normalized = parsed.profiles[0]!
+  assert.equal(normalized.capabilities.maxReferenceCount, Math.min(maxCount, 32))
+  assert.ok('referenceSupport' in normalized)
+  assert.deepEqual(normalized.referenceSupport, { maxCount: Math.min(maxCount, 32), maxInputBytes: 2048, mimeTypes: ['image/png'] })
+  assert.deepEqual(videoRuntimeSchema.parse(parsed), parsed)
+})
+
+test('current V3 video supports multiple required references within client safety limits', () => {
+  const runtime = sepRuntimeV3Fixture('video')
+  const profile = runtime.profiles[0]!
+  profile.adapter.referenceSupport.maxCount = 40
+  profile.referenceRules[1]!.maxCount = 40
+  profile.referenceRules[1]!.minCount = 2
+  assert.ok(videoRuntimeSchema.parse(runtime).tools.includes('video_from_image'))
+  profile.referenceRules[1]!.minCount = 33
+  const parsed = videoRuntimeSchema.parse(runtime)
+  assert.equal(parsed.tools.includes('video_from_image'), false)
+  assert.ok(parsed.tools.includes('video_generate'))
+})
 
 test('SEP V3 video runtime normalizes advisory hints and round-trips without inventing audio defaults', () => {
   const runtime = {
