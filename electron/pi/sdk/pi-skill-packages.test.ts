@@ -1,9 +1,10 @@
 import { afterEach, describe, it } from 'node:test'
 import * as assert from 'node:assert/strict'
+import { readdirSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, readdir, writeFile, lstat, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, toNamespacedPath } from 'node:path'
 import { loadSkills } from '@earendil-works/pi-coding-agent'
 import type { SkillVersion } from '../../common/platform/platform-api'
 import { SkillVersionStore } from '../../data/skill-version-store'
@@ -183,6 +184,177 @@ describe('SkillStore', () => {
       throw new Error('Negotiated preparation must not preview or downgrade.')
     }
     return () => downloads
+  }
+
+  it('uses a compact directory layout without removing legacy installations', async t => {
+    const content = '---\nname: orders\ndescription: Approved orders\n---\n# Approved\n'
+    installPlatformMock({ versionId: 'version-v1', version: '1.0', content })
+    const root = await mkdtemp(join(tmpdir(), 'sep-skill-layout-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const skills = new SkillStore(root)
+    const capabilityRoot = join(root, scope.enterpriseId, scope.memberId, 'sub-a', 'skills', 'cap-a')
+    const sha256 = createHash('sha256').update(content).digest('hex')
+    const legacyKey = createHash('sha256').update(JSON.stringify(['platform-version-v1', '1.0'])).digest('hex')
+    const legacy = join(capabilityRoot, `${legacyKey}-${sha256}`, 'orders')
+    await mkdir(legacy, { recursive: true })
+    await writeFile(join(legacy, 'SKILL.md'), content)
+    await writeFile(join(legacy, 'manifest.json'), 'legacy snapshot')
+    let sawStaging = false
+    const prepared = await skills.prepare({ ...request(), isCurrent: () => {
+      const staging = readdirSync(capabilityRoot).filter(name => name.startsWith('.staging-'))
+      sawStaging ||= staging.length > 0
+      return true
+    } })
+    const installed = prepared.skillPaths[0]!
+    assert.match(basename(dirname(installed)), /^[a-f0-9]{64}$/)
+    assert.equal(legacy.length - installed.length, 65)
+    assert.equal(sawStaging, true)
+    assert.equal(await readFile(join(legacy, 'SKILL.md'), 'utf8'), content)
+    assert.equal(await readFile(join(legacy, 'manifest.json'), 'utf8'), 'legacy snapshot')
+    assert.equal(await readFile(join(installed, 'SKILL.md'), 'utf8'), content)
+    assert.equal((await skills.prepare(request())).skillPaths[0], installed)
+    assert.equal((await readdir(capabilityRoot)).some(name => name.startsWith('.staging-')), false)
+  })
+
+  it('keeps content and version identities distinct in the compact directory layout', async t => {
+    const root = await mkdtemp(join(tmpdir(), 'sep-skill-identity-'))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const skills = new SkillStore(root)
+    const prepared = []
+    for (const state of [
+      { versionId: 'version-v1', version: '1.0', content: '# First' },
+      { versionId: 'version-v1', version: '1.0', content: '# Changed' },
+      { versionId: 'version-v2', version: '1.0', content: '# First' },
+      { versionId: 'version-v1', version: '2.0', content: '# First' },
+    ]) {
+      installPlatformMock(state)
+      prepared.push(await skills.prepare(request()))
+    }
+    assert.equal(new Set(prepared.map(result => result.skillPaths[0])).size, prepared.length)
+    assert.equal(await readSkillBody(prepared[0]!.skillPaths[0]!), '# First')
+    assert.equal(await readSkillBody(prepared[1]!.skillPaths[0]!), '# Changed')
+  })
+
+  for (const ownerLocal of [false, true]) {
+    it(`reuses the ${ownerLocal ? 'owner-local' : 'approved'} text skill cache without staging after restart`, async t => {
+      installPlatformMock({ versionId: 'version-v1', version: '1.0', content: '# Approved' })
+      const { skills, versions, runtimeRoot } = await createStore()
+      t.after(() => rm(dirname(runtimeRoot), { recursive: true, force: true }))
+      if (ownerLocal) {
+        const local = await versions.save(scope, { subscriptionId: 'sub-a', employeeId: 'employee-a', capabilityId: 'cap-a',
+          baseSkillVersionId: 'version-v1', version: 'Owner', content: '# Private owner', localSubmissionId: 'local-text-cache' })
+        await versions.select(scope, 'sub-a', 'cap-a', local.versionId)
+      }
+      const first = await skills.prepare(request())
+      const capabilityRoot = dirname(dirname(first.skillPaths[0]!))
+      const entry = join(first.skillPaths[0]!, 'SKILL.md')
+      const before = await lstat(entry)
+      let sawStaging = false
+      const input = { ...request(), isCurrent: () => {
+        sawStaging ||= readdirSync(capabilityRoot).some(name => name.startsWith('.staging-'))
+        return !sawStaging
+      } }
+      assert.deepEqual(await skills.prepare(input), first)
+      assert.deepEqual(await new SkillStore(runtimeRoot, versions).prepare(input), first)
+      assert.equal(sawStaging, false)
+      const after = await lstat(entry)
+      assert.equal(after.ino, before.ino)
+      assert.equal(after.mtimeMs, before.mtimeMs)
+      assert.equal(first.skills[0]?.source, ownerLocal ? 'owner-local' : 'approved')
+      globalThis.fetch = async () => new Response('{}', { status: 403 })
+      await assert.rejects(skills.prepare(input), { statusCode: 403 })
+    })
+  }
+
+  for (const corruption of ['content', 'manifest', 'missing-entry', 'missing-manifest', 'entry-directory'] as const) {
+    it(`rejects ${corruption} in the text skill cache without staging or repairing`, async t => {
+      installPlatformMock({ versionId: 'version-v1', version: '1.0', content: '# Approved' })
+      const root = await mkdtemp(join(tmpdir(), 'sep-text-cache-'))
+      t.after(() => rm(root, { recursive: true, force: true }))
+      const skills = new SkillStore(root)
+      const prepared = await skills.prepare(request())
+      const target = prepared.skillPaths[0]!
+      const entry = join(target, 'SKILL.md'), manifest = join(target, 'manifest.json')
+      const entryBefore = await readFile(entry), manifestBefore = await readFile(manifest)
+      if (corruption === 'content') await writeFile(entry, '# Tampered')
+      if (corruption === 'manifest') await writeFile(manifest, '{}')
+      if (corruption === 'missing-entry' || corruption === 'entry-directory') await rm(entry)
+      if (corruption === 'missing-manifest') await rm(manifest)
+      if (corruption === 'entry-directory') await mkdir(entry)
+      let sawStaging = false
+      await assert.rejects(new SkillStore(root).prepare({ ...request(), isCurrent: () => {
+        sawStaging ||= readdirSync(dirname(dirname(target))).some(name => name.startsWith('.staging-'))
+        return true
+      } }), /integrity mismatch/)
+      assert.equal(sawStaging, false)
+      if (corruption === 'missing-entry') await assert.rejects(readFile(entry), { code: 'ENOENT' })
+      else if (corruption === 'entry-directory') assert.equal((await lstat(entry)).isDirectory(), true)
+      else assert.deepEqual(await readFile(entry), corruption === 'content' ? Buffer.from('# Tampered') : entryBefore)
+      if (corruption === 'missing-manifest') await assert.rejects(readFile(manifest), { code: 'ENOENT' })
+      else assert.deepEqual(await readFile(manifest), corruption === 'manifest' ? Buffer.from('{}') : manifestBefore)
+    })
+  }
+
+  for (const format of ['legacy', 'single-file', 'zip'] as const) {
+    it(`supports long Windows paths through the ${format} directory layout and SDK loading`, async t => {
+      const root = await mkdtemp(join(tmpdir(), 'sep-skill-long-'))
+      t.after(() => rm(toNamespacedPath(root), { recursive: true, force: true }))
+      const runtimeRoot = join(root, 'r'.repeat(180))
+      const runtime = artifactFixture()
+      const files = [{ path: 'SKILL.md', bytes: Buffer.from(runtime.content) },
+        { path: 'references/guide.md', bytes: Buffer.from('Approved guide') }]
+      const bytes = format === 'zip' ? zipFixture(files) : Buffer.from(runtime.content)
+      if (format === 'legacy') installPlatformMock({ versionId: runtime.versionId, version: runtime.version, content: runtime.content })
+      else {
+        if (format === 'zip') runtime.artifact = zipDescriptor(bytes, files)
+        serveArtifact(runtime, { bytes })
+      }
+      const skills = new SkillStore(runtimeRoot)
+      const input = { ...request(), ...(format === 'legacy' ? {} : { runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 as const }) }
+      const prepared = await skills.prepare(input)
+      const installed = prepared.skillPaths[0]!
+      assert.ok(installed.length > 300)
+      assert.equal(await readFile(join(installed, 'SKILL.md'), 'utf8'), runtime.content)
+      const options = employeeSkillLoaderOptions(root, root, prepared.skillPaths, loadSkills)
+      const loaded = options.skillsOverride!(loadSkills({ cwd: root, agentDir: root, skillPaths: prepared.skillPaths, includeDefaults: false }))
+      assert.equal(loaded.skills[0]?.name, 'orders')
+      assert.deepEqual(loaded.diagnostics, [])
+      t.diagnostic(`Verified ${format} skill path with ${installed.length} characters.`)
+      assert.deepEqual(await new SkillStore(runtimeRoot).prepare(input), prepared)
+      const capabilityRoot = join(runtimeRoot, scope.enterpriseId, scope.memberId, 'sub-a', 'skills', 'cap-a')
+      assert.equal((await readdir(capabilityRoot)).some(name => name.startsWith('.')), false)
+      if (format === 'zip') assert.equal(await readFile(join(installed, 'references/guide.md'), 'utf8'), 'Approved guide')
+    })
+
+    for (const prefix of format === 'legacy' ? ['.staging-'] : ['.artifact-', '.staging-']) {
+      it(`cleans ${prefix} from the ${format} directory layout after cancellation`, async t => {
+        const root = await mkdtemp(join(tmpdir(), 'sep-skill-cancel-'))
+        t.after(() => rm(root, { recursive: true, force: true }))
+        const runtime = artifactFixture()
+        if (format === 'legacy') installPlatformMock({ versionId: runtime.versionId, version: runtime.version, content: runtime.content })
+        else {
+          const files = [{ path: 'SKILL.md', bytes: Buffer.from(runtime.content) }]
+          const bytes = format === 'zip' ? zipFixture(files) : Buffer.from(runtime.content)
+          if (format === 'zip') runtime.artifact = zipDescriptor(bytes, files)
+          serveArtifact(runtime, { bytes })
+        }
+        const capabilityRoot = join(root, scope.enterpriseId, scope.memberId, 'sub-a', 'skills', 'cap-a')
+        let cancelled = false
+        const skills = new SkillStore(root)
+        const input = { ...request(), ...(format === 'legacy' ? {} : { runtimeSkills: [runtime], skillArtifactProtocolVersion: 1 as const }) }
+        await assert.rejects(skills.prepare({ ...input, isCurrent: () => {
+          let entries: string[]
+          try { entries = readdirSync(capabilityRoot) }
+          catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true; throw error }
+          cancelled ||= entries.some(name => name.startsWith(prefix))
+          return !cancelled
+        } }), /scope changed/)
+        assert.equal(cancelled, true)
+        assert.equal((await readdir(capabilityRoot)).some(name => name.startsWith('.')), false)
+        const prepared = await skills.prepare(input)
+        assert.equal(await readFile(join(prepared.skillPaths[0]!, 'SKILL.md'), 'utf8'), runtime.content)
+      })
+    }
   }
 
   it('accepts authenticated YAML wrappers and backend parsing prefixes while preserving exact installed bytes', async () => {
