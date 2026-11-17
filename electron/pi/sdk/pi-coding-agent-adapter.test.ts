@@ -13,6 +13,8 @@ import { setLogSink } from '../../common/logger'
 import { prepareCommonSkills } from './common-skills'
 import { OFFICE_TOOL_NAME } from './pi-office-policy'
 import { translatePiNativeSystemPrompt } from './pi-native-system-prompt'
+import { BROWSER_MODE_TOOL } from './pi-browser-runtime'
+import { createPlaywrightMcpServer, PLAYWRIGHT_GUIDELINES, PLAYWRIGHT_HANDOFF_GUIDELINES, PLAYWRIGHT_TOOL_SNIPPETS } from './pi-playwright-mcp'
 import type { ModelTraceEntry } from '../../domain/model-trace'
 
 const readOnlyPolicy = {
@@ -380,6 +382,85 @@ async function mediaSession(
     restoreLog()
   }
 }
+
+describe('browser instructions in real provider requests', () => {
+  const cases: Array<{ name: string; overrides: Partial<PiAgentSessionConfig> }> = [
+    { name: 'native general assistant', overrides: { useNativeSystemPrompt: true, disableSkills: true,
+      transformSystemPrompt: translatePiNativeSystemPrompt, systemPrompt: 'IGNORED_NATIVE_OVERRIDE' } },
+    { name: 'default employee', overrides: { systemPrompt: undefined, employeeProfile: { name: 'Researcher' } } },
+    { name: 'custom employee', overrides: { systemPrompt: 'CUSTOM_EMPLOYEE_RULES', employeeProfile: { name: 'Researcher' } } },
+    { name: 'discovered system override', overrides: { systemPrompt: undefined } },
+    { name: 'arrangement node', overrides: { useNativeSystemPrompt: true, fixedSystemPrompt: 'NODE_EXECUTION_RULES',
+      transformSystemPrompt: translatePiNativeSystemPrompt } },
+  ]
+  for (const entry of cases) {
+    it(`includes browser rules once per request for ${entry.name}, without unavailable handoff tools`, async () => {
+      const { bodies } = await mediaSession({ ...entry.overrides, mcpServers: [createPlaywrightMcpServer()] },
+        undefined, jobView, entry.name === 'discovered system override' ? async root => {
+          await mkdir(join(root, '.pi'), { recursive: true })
+          await writeFile(join(root, '.pi', 'SYSTEM.md'), 'DISCOVERED_SYSTEM_RULES')
+        } : undefined, async session => { await session.prompt('Continue the research.') })
+      assert.equal(bodies.length, 2)
+      for (const body of bodies) {
+        const system = body.messages.filter(message => message.role === 'system').map(message => messageText(message.content)).join('\n')
+        for (const guideline of PLAYWRIGHT_GUIDELINES) assert.equal(system.split(guideline).length - 1, 1)
+        for (const guideline of PLAYWRIGHT_HANDOFF_GUIDELINES) assert.ok(!system.includes(guideline))
+        assert.ok(!system.includes(BROWSER_MODE_TOOL))
+        assert.ok(!body.tools?.some(tool => tool.function.name === BROWSER_MODE_TOOL))
+        const navigation = body.tools?.find(tool => tool.function.name === 'mcp__playwright__browser_navigate')
+        assert.equal(navigation?.function.description, 'Navigate to a URL', 'preserve the upstream tool contract')
+        if (entry.name !== 'custom employee' && entry.name !== 'discovered system override') {
+          for (const snippet of Object.values(PLAYWRIGHT_TOOL_SNIPPETS)) assert.ok(system.includes(snippet))
+        }
+        if (entry.name === 'custom employee') assert.ok(system.includes('CUSTOM_EMPLOYEE_RULES'))
+        if (entry.name === 'discovered system override') assert.ok(system.includes('DISCOVERED_SYSTEM_RULES'))
+        if (entry.name === 'arrangement node') assert.ok(system.includes('NODE_EXECUTION_RULES'))
+      }
+    })
+  }
+
+  it('adds handoff instructions only with the built-in mode tool', async t => {
+    if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+      t.skip('Requires default browser configuration.'); return
+    }
+    const { bodies } = await mediaSession({ mcpServers: undefined, disableSkills: true,
+      useNativeSystemPrompt: true, mediaTools: undefined })
+    const system = bodies[0].messages.filter(message => message.role === 'system').map(message => messageText(message.content)).join('\n')
+    for (const guideline of [...PLAYWRIGHT_GUIDELINES, ...PLAYWRIGHT_HANDOFF_GUIDELINES]) {
+      assert.equal(system.split(guideline).length - 1, 1)
+    }
+    assert.ok(bodies[0].tools?.some(tool => tool.function.name === BROWSER_MODE_TOOL))
+    assert.match(system, /watching automated actions/)
+  })
+
+  for (const overrides of [
+    { mcpServers: [] },
+    { mcpServers: undefined, disableTools: true },
+    { mcpServers: undefined, toolPolicy: { ...readOnlyPolicy, allowedTools: [] } },
+  ] satisfies Array<Partial<PiAgentSessionConfig>>) {
+    it(`does not advertise browser rules without browser tools: ${JSON.stringify(overrides)}`, async () => {
+      const { bodies } = await mediaSession(overrides)
+      const system = bodies[0].messages.filter(message => message.role === 'system').map(message => messageText(message.content)).join('\n')
+      assert.ok(!system.includes('浏览器使用规则：'))
+      assert.ok(!bodies[0].tools?.some(tool => tool.function.name.startsWith('mcp__playwright__')))
+    })
+  }
+})
+
+describe('built-in browser handoff with the real Pi SDK', () => {
+  for (const approvalMode of ['auto-approve', 'confirm-each'] as const) {
+    it(`waits for human completion once in full-local ${approvalMode}`, async t => {
+      if (process.env.SEP_MCP_CONFIG || process.env.SEP_PLAYWRIGHT_MCP === '0') {
+        t.skip('Requires default browser configuration.'); return
+      }
+      const { approvals, bodies } = await mediaSession({ mcpServers: undefined, enableCommonTools: true,
+        toolPolicy: { ...readOnlyPolicy, preset: 'full-local', approvalMode },
+      }, { name: BROWSER_MODE_TOOL, input: { mode: 'visible' } })
+      assert.equal(approvals, 1, 'completion is required even when normal tool approval is automatic')
+      assert.match(messageText(bodies[1].messages.find(message => message.role === 'tool')!.content), /denied or expired/)
+    })
+  }
+})
 
 describe('common Office skills with the real Pi SDK', () => {
   it('advertises the verified common skill and tool for an employee session', async t => {

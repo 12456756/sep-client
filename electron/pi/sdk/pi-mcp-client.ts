@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import type { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js'
 import { Type } from 'typebox'
 import type { RegisteredToolPermissions } from '../../../pi-extension/guard'
@@ -97,6 +98,8 @@ function createTool(config: McpServerConfig, client: Client, tool: Tool) {
 }
 
 export interface McpRuntime {
+  /** Set only by the host browser facade; its handoff owns the completion prompt. */
+  readonly builtinBrowser?: true
   /** Set only by the built-in Office facade, never by an external server. */
   readonly builtinOffice?: true
   readonly tools: ReturnType<typeof createTool>[]
@@ -104,10 +107,15 @@ export interface McpRuntime {
   dispose(): Promise<void>
 }
 
+export interface LocalMcpConnection {
+  client: Client
+  transport: InMemoryTransport
+}
+
 interface Connection {
   config: McpServerConfig
   client: Client
-  transport: StdioClientTransport | StreamableHTTPClientTransport
+  transport: StdioClientTransport | StreamableHTTPClientTransport | InMemoryTransport
 }
 
 function makeConnection(config: McpServerConfig, workspaceDir: string, fetch?: typeof globalThis.fetch): Connection {
@@ -167,7 +175,7 @@ async function closeConnection(connection: Connection): Promise<void> {
   }
 }
 
-export async function createMcpRuntime(servers: readonly McpServerConfig[], workspaceDir: string, fetches?: ReadonlyMap<string, typeof fetch>): Promise<McpRuntime> {
+export async function createMcpRuntime(servers: readonly McpServerConfig[], workspaceDir: string, fetches?: ReadonlyMap<string, typeof fetch>, localConnections?: ReadonlyMap<string, LocalMcpConnection>): Promise<McpRuntime> {
   const configs = parseMcpServers(servers)
   const connections: Connection[] = []
   const tools: McpRuntime['tools'] = []
@@ -177,7 +185,8 @@ export async function createMcpRuntime(servers: readonly McpServerConfig[], work
   try {
     for (const config of configs) {
       if (!config.enabledTools?.length) continue
-      const connection = makeConnection(config, workspaceDir, fetches?.get(config.name))
+      const local = localConnections?.get(config.name)
+      const connection: Connection = local ? { config, ...local } : makeConnection(config, workspaceDir, fetches?.get(config.name))
       connections.push(connection)
       const timeout = config.timeoutMs ?? DEFAULT_TIMEOUT_MS
       await withTimeout(connection.client.connect(connection.transport, { timeout }), timeout, 'MCP connect')
